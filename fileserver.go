@@ -6,15 +6,15 @@
 //
 // Client requests:
 //
-//	$ curl http://localhost:3333/files/
+//	$ curl http://localhost:3000/files/
 //	<pre>
 //	<a href="notes.txt">notes.txt</a>
 //	</pre>
 //
-//	$ curl http://localhost:3333/files/notes.txt
+//	$ curl http://localhost:3000/files/notes.txt
 //	Notessszzz
 //
-//	$ curl -X POST -F "file=@./01 - Murmaider.mp3" http://localhost:3333/files/upload
+//	$ curl -X POST -F "file=@./01 - Murmaider.mp3" http://localhost:3000/files/upload
 //  {"filename":"01 - Murmaider.mp3","ok":true,"path":"data/01 - Murmaider.mp3","size":8383732}
 package main
 
@@ -41,7 +41,7 @@ func main() {
 	filesDir := http.Dir(filepath.Join(workDir, "data"))
 	FileServer(r, "/files", filesDir)
 
-	http.ListenAndServe(":3333", r)
+	http.ListenAndServe(":3000", r)
 }
 
 // FileServer conveniently sets up a http.FileServer handler to serve
