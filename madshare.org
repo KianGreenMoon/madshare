@@ -8,7 +8,7 @@ Concept doc for federated audio service (primarily for music)
 - Audio files and those metadata should be separated.
 - Server lets upload, download and playing audio files with and without decoding (by using ffmpeg)
 - Server has one admin account.
-- Server has clients accounts.
+- Server has user accounts.
 - A user could not to upload new audio files without admin permission.
 - By default server should not to allow download and play a media file for unathorized users to prevent a legal attack.
 - Server can connecting with another servers by a federation protocol
