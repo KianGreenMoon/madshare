@@ -24,3 +24,4 @@ Concept doc for federated audio service (primarily for music)
 - Client should allow to discover audio files on the server's friends and madnetwork
 - Client should allow to play audio files
 - Client should allow to download audio files
+- Client should allow to upload audio files
