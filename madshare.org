@@ -5,20 +5,21 @@
 Concept doc for federated audio service (primarily for music)
 ** server side
 - Server should contain audio files on a server disk, optional with s3
-- Audio files and those metadata should be separated.
+- Audio files and they metadata should be separated.
 - Server lets upload, download and playing audio files with and without decoding (by using ffmpeg)
 - Server has one admin account.
 - Server has user accounts.
 - A user could not to upload new audio files without admin permission.
 - By default server should not to allow download and play a media file for unathorized users to prevent a legal attack.
 - Server can connecting with another servers by a federation protocol
-- To prevent any legal issues servers can connecting each others only by trusted system: Two admins exchange their keys for connecting. But every server has full access to all friend's network.
+- To prevent any legal issues servers can connecting each others only by trusted system: Two admins exchange their keys for connecting. But every server has full access to all friend's network (madnetwork).
 - An admin may share his library to the madnetwork - all federated servers.
 - An admin may share his library only to his friends - servers, those he trusted.
 - An admin may prevent to share his library at all.
 - Connected servers could download and upload audio files to each other. Each audio file is verified by his hash sum.
 - Connected servers could be balancers for streaming music files if they have same audio files.
 - Servers can block spam servers those files are scam (untrusted servers). Each admin aprooves or disaprooves media files, that he can see in madnetwork. If server has critical mass of untrusted media, his files have low rating and clients don't see those media. Prevent spam attack on the madnetwork.
+  # But okay, that can give a weapon for war inside the madnetwork. But how to prevent the war? Individual for each servers another server's raiting? Something else? Manual blacklist servers without any raiting system. Give information with whem the spam server is friended to block them too? I should think about.
 *** AI features
 - Recommendation functional
 - Search music by hum
