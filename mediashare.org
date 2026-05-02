@@ -18,3 +18,23 @@
 Идея в том, чтобы любому человеку, многоязычному, одноязычному, было легко найти контент, в нужном языковом диапозоне, если он хочет или он с этим окей с субтитрами, и с запоминанем выбора нужного языка/озвучки вплоть до тайтла/сериала или фильма.
 - cf.00 Целевые платформы клиентов: Browser (Firefox, Chromium), Android, IOS, Windows, MacOS, Linux, FreeBSD.
   Можно смотреть в сторону использования фреймворка вроде Electron, или любой другой, использующий chromium под капотом, когда запускается вне браузера, но я лично довольно скептично отношусь к идее возить браузер для приложения. Тем не менее, это действительно, наверное, самый дешёвый способ сделать одно приложение для всего. Но производительность стоит проверить, эти приложения очень часто довольно херово оптимизированы в итоге, и потребляют тонну ресурсов. Не сами они даже, а chromium. Ну вы поняли.
+
+* Madshare
+Концепция для аудио, преимущественно музыки
+** server side
+- Server should contain audio files on a server disk, optional with s3
+- Audio files and those metadata should be separated.
+- Server lets upload, download and playing audio files with and without decoding (by using ffmpeg)
+- Server has one admin account.
+- Server has clients accounts.
+- A user could not to upload new audio files without admin permission.
+- By default server should not to allow download and play a media file for unathorized users to prevent a legal attack.
+- Server can connecting with another servers by a federation protocol
+- Connected servers could be balancers for streaming music files if they have same audio files.
+- Connected servers could download and upload audio files to each other. Each audio file is verified by his hash sum.
+- Servers can block spam servers those files are scam (untrusted servers). Each admin aprooves or disaprooves media files, that he can see in madnetwork. If server has critical mass of untrusted media, his files have low rating and clients don't see those media. Prevent spam attack on the madnetwork.
+** client side
+- Client should allow to discover audio files on the server
+- Client should allow to discover audio files on the server's friends and madnetwork
+- Client should allow to play audio files
+- Client should allow to download audio files
