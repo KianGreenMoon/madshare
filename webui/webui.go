@@ -1,4 +1,4 @@
-package main
+package webui
 
 import (
 	"html/template"
@@ -16,7 +16,7 @@ func showUploadForm(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func mainui() {
+func Route() {
 	http.HandleFunc("/", showUploadForm)
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }

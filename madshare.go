@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"sync"
+	"daemonlord.ygg/madshare/webui"
 )
 
 func main() {
@@ -18,7 +19,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		mainui()
+		webui.Route()
 	}()
 	wg.Wait()
 	log.Println("End!")
