@@ -28,21 +28,7 @@ import (
 	"io"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 )
-
-func mainfs() {
-	r := chi.NewRouter()
-	r.Use(middleware.Logger)
-
-	// Create a route along /files that will serve contents from
-	// the ./data/ folder.
-	workDir, _ := os.Getwd()
-	filesDir := http.Dir(filepath.Join(workDir, "data"))
-	FileServer(r, "/files", filesDir)
-
-	http.ListenAndServe(":3000", r)
-}
 
 // FileServer conveniently sets up a http.FileServer handler to serve
 // static files from a http.FileSystem.
@@ -105,6 +91,9 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+	w.WriteHeader(http.StatusCreated) //201
 	json.NewEncoder(w).Encode(map[string]any{
 		"ok":       true,
 		"filename": header.Filename,

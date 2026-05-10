@@ -7,9 +7,60 @@
 <body>
   <h1>Upload file</h1>
 
-  <form action="http://localhost:3000/files/upload" method="post" enctype="multipart/form-data">
-    <input type="file" name="file">
+  <form id="uploadForm" action="http://localhost:3000/files/upload" method="post" enctype="multipart/form-data">
+    <input type="file" name="file" id="fileInput">
     <button type="submit">Upload</button>
   </form>
+
+  <div id="status" aria-live="polite"></div>
+
+  <script>
+    const form = document.getElementById('uploadForm');
+    const fileInput = document.getElementById('fileInput');
+    const status = document.getElementById('status');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault(); // prevent normal form navigation
+
+      const file = fileInput.files[0];
+      if (!file) {
+        status.textContent = 'Please choose a file.';
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      status.textContent = 'Uploading...';
+
+      try {
+        const res = await fetch(form.action, {
+          method: 'POST',
+          body: formData,
+          // include credentials if your API needs cookies:
+          // credentials: 'include'
+        });
+
+        if (!res.ok) {
+          // try parse json error, fallback to status text
+          let errText = res.statusText;
+          try { const j = await res.json(); errText = j.error || JSON.stringify(j); } catch (_) {}
+          status.textContent = 'Upload failed: ' + errText;
+          return;
+        }
+
+        const body = await (res.headers.get('Content-Type') || '').includes('application/json') ? res.json() : null;
+        status.textContent = 'Upload successful.';
+
+        // Optional: navigate client-side (uncomment if desired)
+        // window.location.href = '/files';
+        // or to a file detail if API returned one:
+        // if (body && body.url) window.location.href = body.url;
+
+      } catch (err) {
+        status.textContent = 'Upload error: ' + err.message;
+      }
+    });
+  </script>
 </body>
 </html>
