@@ -14,7 +14,7 @@ func showUploadForm(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func main() {
+func mainui() {
 	http.HandleFunc("/", showUploadForm)
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }

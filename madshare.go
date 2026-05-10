@@ -1,13 +1,15 @@
 package main
 
 import (
-    "net/http"
+	"log"
+	"net/http"
 
-    "github.com/go-chi/chi/v5"
-    "github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 func main() {
+	log.Println("Start the program")
     r := chi.NewRouter()
     r.Use(middleware.Logger)
     r.Get("/", func(w http.ResponseWriter, r *http.Request) {
