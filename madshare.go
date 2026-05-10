@@ -14,14 +14,12 @@ func main() {
 		defer wg.Done()
 		route()
 	}()
-	log.Println("Started!")
 	log.Println("Starting web-ui...")
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		mainui()
 	}()
-	log.Println("Started!")
 	wg.Wait()
 	log.Println("End!")
 }
