@@ -2,18 +2,22 @@ package main
 
 import (
 	"log"
-	"net/http"
-
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	"sync"
 )
 
 func main() {
 	log.Println("Start the program")
-    r := chi.NewRouter()
-    r.Use(middleware.Logger)
-    r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-        w.Write([]byte("Hello World!"))
-    })
-    http.ListenAndServe(":3000", r)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		route()
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mainui()
+	}()
+	wg.Wait()
+	log.Println("End!")
 }
