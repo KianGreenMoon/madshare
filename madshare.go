@@ -3,6 +3,8 @@ package main
 import (
 	"log"
 	"sync"
+
+	"daemonlord.ygg/madshare/api"
 	"daemonlord.ygg/madshare/webui"
 )
 
@@ -11,7 +13,7 @@ func main() {
 	var wg sync.WaitGroup
 	log.Println("Starting api...")
 	wg.Go(func() {
-		route()
+		api.Route()
 	})
 	log.Println("Starting web-ui...")
 	wg.Go(func() {

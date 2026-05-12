@@ -16,7 +16,7 @@
 //
 //	$ curl -X POST -F "file=@./01 - Murmaider.mp3" http://localhost:3000/files/upload
 //  {"filename":"01 - Murmaider.mp3","ok":true,"path":"data/01 - Murmaider.mp3","size":8383732}
-package main
+package api
 
 import (
 	"net/http"
