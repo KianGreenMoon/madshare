@@ -10,17 +10,13 @@ func main() {
 	log.Println("Start the program")
 	var wg sync.WaitGroup
 	log.Println("Starting api...")
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		route()
-	}()
+	})
 	log.Println("Starting web-ui...")
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		webui.Route()
-	}()
+	})
 	wg.Wait()
 	log.Println("End!")
 }
