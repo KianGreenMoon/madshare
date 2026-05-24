@@ -9,7 +9,4 @@ type Storage interface {
 	Stat(hash string) (int64, error)
 	// Put stores the content of r under <hash>/<filename>.
 	Put(hash, filename string, r io.Reader, size int64) error
-	// CacheDir returns a local directory for spooling large uploads before their
-	// hash is confirmed. Remote backends (e.g. S3) should return os.TempDir().
-	CacheDir() string
 }

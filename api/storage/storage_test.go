@@ -23,9 +23,7 @@ func sha256hex(data []byte) string {
 // newLocal returns a Local backed by a temp dir that is cleaned up after t.
 func newLocal(t *testing.T) *Local {
 	t.Helper()
-	base := t.TempDir()
-	cache := filepath.Join(base, ".cache")
-	return NewLocal(base, cache)
+	return NewLocal(t.TempDir())
 }
 
 // ---- HashUpload -------------------------------------------------------------

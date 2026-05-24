@@ -12,9 +12,10 @@ import (
 	"daemonlord.ygg/madshare/api/storage"
 )
 
-func Route() {
-	store := storage.NewLocal("./data/files", "./data/files/.cache")
-	h := &handler{storage: store}
+// NewRouter builds and returns the API HTTP handler.
+// The caller is responsible for calling http.ListenAndServe.
+func NewRouter(store storage.Storage, cacheDir string) http.Handler {
+	h := &handler{storage: store, cacheDir: cacheDir}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -28,10 +29,10 @@ func Route() {
 		log.Printf("getwd: %v; using relative path", err)
 		workDir = "."
 	}
-	filesDir := http.Dir(filepath.Join(workDir, "data"))
+	filesDir := http.Dir(filepath.Join(workDir, "data", "files"))
 	fileServer(r, "/files", filesDir, h)
 
-	log.Fatal(http.ListenAndServe(":3000", r))
+	return r
 }
 
 func fileServer(r chi.Router, path string, root http.FileSystem, h *handler) {

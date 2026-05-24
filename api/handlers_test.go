@@ -3,25 +3,30 @@ package api
 import (
 	"bytes"
 	"encoding/json"
-	"io"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"strings"
 	"testing"
 
 	"daemonlord.ygg/madshare/api/storage"
 )
 
-// buildUploadRequest creates a multipart POST request with the given filename
-// and body content directed at /files/upload.
-func buildUploadRequest(t *testing.T, fieldName, filename string, body []byte) *http.Request {
+// buildUploadRequest creates a multipart POST request with the given filename,
+// MIME type, and body content directed at /files/upload.
+func buildUploadRequest(t *testing.T, fieldName, filename, contentType string, body []byte) *http.Request {
 	t.Helper()
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
-	fw, err := mw.CreateFormFile(fieldName, filename)
+
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, fieldName, filename))
+	h.Set("Content-Type", contentType)
+	fw, err := mw.CreatePart(h)
 	if err != nil {
-		t.Fatalf("CreateFormFile: %v", err)
+		t.Fatalf("CreatePart: %v", err)
 	}
 	if _, err := fw.Write(body); err != nil {
 		t.Fatalf("Write to form: %v", err)
@@ -37,8 +42,7 @@ func buildUploadRequest(t *testing.T, fieldName, filename string, body []byte) *
 func newTestHandler(t *testing.T) *handler {
 	t.Helper()
 	base := t.TempDir()
-	cache := base + "/.cache"
-	return &handler{storage: storage.NewLocal(base, cache)}
+	return &handler{storage: storage.NewLocal(base), cacheDir: t.TempDir()}
 }
 
 // ---- Upload: normal cases ---------------------------------------------------
@@ -46,7 +50,7 @@ func newTestHandler(t *testing.T) *handler {
 func TestUploadFile_HappyPath(t *testing.T) {
 	h := newTestHandler(t)
 	data := []byte("hello audio")
-	req := buildUploadRequest(t, "file", "song.mp3", data)
+	req := buildUploadRequest(t, "file", "song.mp3", "audio/mpeg", data)
 	rr := httptest.NewRecorder()
 
 	h.uploadFile(rr, req)
@@ -77,7 +81,7 @@ func TestUploadFile_Deduplication(t *testing.T) {
 	data := []byte("deduplicate me")
 
 	upload := func() *httptest.ResponseRecorder {
-		req := buildUploadRequest(t, "file", "dup.mp3", data)
+		req := buildUploadRequest(t, "file", "dup.mp3", "audio/mpeg", data)
 		rr := httptest.NewRecorder()
 		h.uploadFile(rr, req)
 		return rr
@@ -140,7 +144,7 @@ func TestUploadFile_NotMultipart(t *testing.T) {
 func TestUploadFile_PathTraversalFilename(t *testing.T) {
 	h := newTestHandler(t)
 	data := []byte("traversal payload")
-	req := buildUploadRequest(t, "file", "../../../etc/passwd", data)
+	req := buildUploadRequest(t, "file", "../../../etc/passwd", "audio/mpeg", data)
 	rr := httptest.NewRecorder()
 
 	h.uploadFile(rr, req)
@@ -154,6 +158,20 @@ func TestUploadFile_PathTraversalFilename(t *testing.T) {
 		if strings.Contains(path, "..") {
 			t.Errorf("response path contains '..': %q", path)
 		}
+	}
+}
+
+// TestUploadFile_InvalidMIMEType verifies that non-audio/video MIME types are
+// rejected with 415 Unsupported Media Type.
+func TestUploadFile_InvalidMIMEType(t *testing.T) {
+	h := newTestHandler(t)
+	req := buildUploadRequest(t, "file", "evil.sh", "application/x-sh", []byte("#!/bin/bash"))
+	rr := httptest.NewRecorder()
+
+	h.uploadFile(rr, req)
+
+	if rr.Code != http.StatusUnsupportedMediaType {
+		t.Errorf("status = %d, want 415", rr.Code)
 	}
 }
 
@@ -216,7 +234,7 @@ func TestWriteJSON_CORSHeader(t *testing.T) {
 // TestUploadFile_EmptyBody sends a multipart form with a zero-byte file.
 func TestUploadFile_EmptyBody(t *testing.T) {
 	h := newTestHandler(t)
-	req := buildUploadRequest(t, "file", "empty.mp3", []byte{})
+	req := buildUploadRequest(t, "file", "empty.mp3", "audio/mpeg", []byte{})
 	rr := httptest.NewRecorder()
 
 	h.uploadFile(rr, req)
@@ -232,7 +250,7 @@ func TestUploadFile_EmptyBody(t *testing.T) {
 func TestUploadFile_ResponsePathUsesBase(t *testing.T) {
 	h := newTestHandler(t)
 	data := []byte("path test")
-	req := buildUploadRequest(t, "file", "/some/nested/dir/track.mp3", data)
+	req := buildUploadRequest(t, "file", "/some/nested/dir/track.mp3", "audio/mpeg", data)
 	rr := httptest.NewRecorder()
 	h.uploadFile(rr, req)
 
@@ -250,10 +268,19 @@ func TestUploadFile_ResponsePathUsesBase(t *testing.T) {
 	}
 }
 
-// TestUploadFile_RouteNotIntegrationTested documents the testability gap caused
-// by Route() calling http.ListenAndServe directly instead of returning an
-// http.Handler.
-func TestUploadFile_RouteNotIntegrationTested(t *testing.T) {
-	t.Log("INFO: Route() calls http.ListenAndServe directly and returns nothing, making it untestable without refactoring. Recommend signature: func Route() http.Handler")
-	_ = io.Discard // suppress unused import warning
+// TestNewRouter_Integration verifies NewRouter returns a working http.Handler
+// testable via httptest.NewServer without binding a real port.
+func TestNewRouter_Integration(t *testing.T) {
+	store := storage.NewLocal(t.TempDir())
+	srv := httptest.NewServer(NewRouter(store, t.TempDir()))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET / status = %d, want 200", resp.StatusCode)
+	}
 }

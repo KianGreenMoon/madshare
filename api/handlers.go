@@ -10,9 +10,23 @@ import (
 
 const maxUploadSize = 500 << 20 // 500 MB
 
+// allowedMIMETypes is the set of media types accepted for upload.
+// Extend this list when adding new supported formats.
+var allowedMIMETypes = map[string]bool{
+	"audio/mpeg":  true,
+	"audio/ogg":   true,
+	"audio/flac":  true,
+	"audio/wav":   true,
+	"audio/x-wav": true,
+	"audio/mp4":   true,
+	"video/mp4":   true,
+	"video/webm":  true,
+}
+
 // handler holds the dependencies for the API HTTP handlers.
 type handler struct {
-	storage storage.Storage
+	storage  storage.Storage
+	cacheDir string
 }
 
 func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
@@ -29,7 +43,12 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	hash, content, size, cleanup, err := storage.HashUpload(file, header.Size, h.storage.CacheDir())
+	if !allowedMIMETypes[header.Header.Get("Content-Type")] {
+		http.Error(w, "unsupported media type", http.StatusUnsupportedMediaType)
+		return
+	}
+
+	hash, content, size, cleanup, err := storage.HashUpload(file, header.Size, h.cacheDir)
 	if cleanup != nil {
 		defer cleanup()
 	}
