@@ -1,50 +1,130 @@
-// This example demonstrates how to serve static files from your filesystem.
+// This file handles file uploads with SHA-256 content-addressed storage and
+// deduplication. Small files are hashed in memory; large files are spooled to
+// a cache directory first so the hash can be verified before committing.
 //
 // Boot the server:
 //
-//	$ go run main.go
+//	$ go run madshare.go
 //
-// Client requests:
+// Upload a file:
 //
-//	$ curl http://localhost:3000/files/
-//	<pre>
-//	<a href="notes.txt">notes.txt</a>
-//	</pre>
+//	$ curl -X POST -F "file=@./song.mp3" http://localhost:3000/files/upload
+//	{"existed":false,"filename":"song.mp3","hash":"a3f...","ok":true,"path":"a3f.../song.mp3","size":8383732}
 //
-//	$ curl http://localhost:3000/files/notes.txt
-//	Notessszzz
+// Uploading the same file again:
 //
-//	$ curl -X POST -F "file=@./01 - Murmaider.mp3" http://localhost:3000/files/upload
-//  {"filename":"01 - Murmaider.mp3","ok":true,"path":"data/01 - Murmaider.mp3","size":8383732}
+//	{"existed":true,"filename":"song.mp3","hash":"a3f...","ok":true,"size":8383732}
 package api
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
-
-	"encoding/json"
-	"io"
 
 	"github.com/go-chi/chi/v5"
 )
 
-// FileServer conveniently sets up a http.FileServer handler to serve
-// static files from a http.FileSystem.
+const maxUploadSize = 500 << 20 // 500 MB
+
+// memBufferLimit is the file size below which uploads are hashed entirely in
+// memory. Above this threshold the upload is spooled to FileStorage.CacheDir()
+// so heap pressure stays bounded. Computed once at startup from heap headroom,
+// capped at 50 MB.
+var memBufferLimit = func() int64 {
+	const hardCap = 50 << 20
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	// Use at most a quarter of idle heap, capped at hardCap.
+	avail := int64(ms.HeapIdle) / 4
+	if avail <= 0 || avail > hardCap {
+		return hardCap
+	}
+	return avail
+}()
+
+// FileStorage abstracts where files are persisted.
+// Implement this interface for local disk (LocalStorage) or S3.
+type FileStorage interface {
+	// Stat returns the stored byte count for hash, or -1 if the hash is unknown.
+	Stat(hash string) (int64, error)
+	// Put stores the content of r under <hash>/<filename>.
+	Put(hash, filename string, r io.Reader, size int64) error
+	// CacheDir returns a local directory suitable for spooling large uploads
+	// before their hash is confirmed. Remote backends (S3) return os.TempDir().
+	CacheDir() string
+}
+
+// LocalStorage stores files at BaseDir/<sha256>/<filename>.
+type LocalStorage struct {
+	baseDir  string
+	cacheDir string
+}
+
+func NewLocalStorage(baseDir, cacheDir string) *LocalStorage {
+	return &LocalStorage{baseDir: baseDir, cacheDir: cacheDir}
+}
+
+func (s *LocalStorage) Stat(hash string) (int64, error) {
+	entries, err := os.ReadDir(filepath.Join(s.baseDir, hash))
+	if os.IsNotExist(err) {
+		return -1, nil
+	}
+	if err != nil {
+		return -1, err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			info, err := e.Info()
+			if err != nil {
+				return -1, err
+			}
+			return info.Size(), nil
+		}
+	}
+	return -1, nil
+}
+
+func (s *LocalStorage) Put(hash, filename string, r io.Reader, size int64) error {
+	dir := filepath.Join(s.baseDir, hash)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	dst := filepath.Join(dir, filepath.Base(filename))
+	f, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(f, r)
+	return err
+}
+
+func (s *LocalStorage) CacheDir() string { return s.cacheDir }
+
+// DefaultStorage is used by UploadFile. Swap it out (e.g. in main or tests)
+// to point at a different backend.
+var DefaultStorage FileStorage = NewLocalStorage("./data", "./data/.cache")
+
+// FileServer registers static file serving under path and the upload endpoint.
 func FileServer(r chi.Router, path string, root http.FileSystem) {
 	if strings.ContainsAny(path, "{}*") {
 		panic("FileServer does not permit any URL parameters.")
 	}
 
-	r.Post(path + "/upload", UploadFile)
+	r.Post(path+"/upload", UploadFile)
 
 	if path != "/" && path[len(path)-1] != '/' {
 		r.Get(path, http.RedirectHandler(path+"/", 301).ServeHTTP)
 		path += "/"
 	}
 	path += "*"
-
 
 	r.Get(path, func(w http.ResponseWriter, r *http.Request) {
 		rctx := chi.RouteContext(r.Context())
@@ -55,10 +135,7 @@ func FileServer(r chi.Router, path string, root http.FileSystem) {
 }
 
 func UploadFile(w http.ResponseWriter, r *http.Request) {
-	const maxUploadSize = 50 << 20 // 50 MB
-
-	err := r.ParseMultipartForm(maxUploadSize)
-	if err != nil {
+	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
 		http.Error(w, "file too large or invalid multipart form", http.StatusBadRequest)
 		return
 	}
@@ -70,34 +147,103 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	err = os.MkdirAll("./data", 0755)
+	hash, content, size, cleanup, err := hashUpload(file, header.Size, DefaultStorage.CacheDir())
+	if cleanup != nil {
+		defer cleanup()
+	}
 	if err != nil {
-		http.Error(w, "cannot create upload dir", http.StatusInternalServerError)
+		http.Error(w, "failed to process upload", http.StatusInternalServerError)
 		return
 	}
 
-	dstPath := filepath.Join("./data", filepath.Base(header.Filename))
-	dst, err := os.Create(dstPath)
+	stored, err := DefaultStorage.Stat(hash)
 	if err != nil {
-		http.Error(w, "cannot create destination file", http.StatusInternalServerError)
+		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	defer dst.Close()
+	if stored == size {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":       true,
+			"existed":  true,
+			"hash":     hash,
+			"filename": header.Filename,
+			"size":     size,
+		})
+		return
+	}
 
-	_, err = io.Copy(dst, file)
-	if err != nil {
+	if err := DefaultStorage.Put(hash, header.Filename, content, size); err != nil {
 		http.Error(w, "cannot save file", http.StatusInternalServerError)
 		return
 	}
 
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"ok":       true,
+		"existed":  false,
+		"hash":     hash,
+		"filename": header.Filename,
+		"size":     size,
+		"path":     hash + "/" + filepath.Base(header.Filename),
+	})
+}
+
+// hashUpload computes the SHA-256 of r. Files with declaredSize <= memBufferLimit
+// are read entirely into memory. Larger files are spooled to a temp file in
+// cacheDir so heap usage stays bounded.
+//
+// The returned cleanup func (if non-nil) must be deferred by the caller to
+// remove the temp file once it is no longer needed.
+func hashUpload(r io.Reader, declaredSize int64, cacheDir string) (
+	hash string, content io.Reader, size int64, cleanup func(), err error,
+) {
+	h := sha256.New()
+
+	if declaredSize <= memBufferLimit {
+		buf, readErr := io.ReadAll(io.TeeReader(r, h))
+		if readErr != nil {
+			err = readErr
+			return
+		}
+		hash = hex.EncodeToString(h.Sum(nil))
+		content = bytes.NewReader(buf)
+		size = int64(len(buf))
+		return
+	}
+
+	// Large file: spool to a temp file while computing the hash.
+	if err = os.MkdirAll(cacheDir, 0755); err != nil {
+		return
+	}
+	tmp, tmpErr := os.CreateTemp(cacheDir, "upload-*")
+	if tmpErr != nil {
+		err = tmpErr
+		return
+	}
+	cleanup = func() {
+		tmp.Close()
+		os.Remove(tmp.Name())
+	}
+
+	n, copyErr := io.Copy(io.MultiWriter(tmp, h), r)
+	if copyErr != nil {
+		err = copyErr
+		return
+	}
+	if _, seekErr := tmp.Seek(0, io.SeekStart); seekErr != nil {
+		err = seekErr
+		return
+	}
+
+	hash = hex.EncodeToString(h.Sum(nil))
+	content = tmp
+	size = n
+	return
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-	w.WriteHeader(http.StatusCreated) //201
-	json.NewEncoder(w).Encode(map[string]any{
-		"ok":       true,
-		"filename": header.Filename,
-		"size":     header.Size,
-		"path":     dstPath,
-	})
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
 }
