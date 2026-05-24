@@ -2,17 +2,23 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"daemonlord.ygg/madshare/api/storage"
+	"daemonlord.ygg/madshare/database"
 )
+
+// ---- helpers ----------------------------------------------------------------
 
 // buildUploadRequest creates a multipart POST request with the given filename,
 // MIME type, and body content directed at /files/upload.
@@ -38,17 +44,28 @@ func buildUploadRequest(t *testing.T, fieldName, filename, contentType string, b
 	return req
 }
 
-// newTestHandler returns a handler wired to a temp-dir Local backend.
-func newTestHandler(t *testing.T) *handler {
+// newTestHandler returns a handler wired to a temp-dir Local backend and a
+// fresh in-memory DB. The DB is closed automatically when the test ends.
+func newTestHandler(t *testing.T) (*handler, *database.DB, string) {
 	t.Helper()
 	base := t.TempDir()
-	return &handler{storage: storage.NewLocal(base), cacheDir: t.TempDir()}
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	h := &handler{
+		storage:  storage.NewLocal(base),
+		repo:     db,
+		cacheDir: t.TempDir(),
+	}
+	return h, db, base
 }
 
 // ---- Upload: normal cases ---------------------------------------------------
 
 func TestUploadFile_HappyPath(t *testing.T) {
-	h := newTestHandler(t)
+	h, db, _ := newTestHandler(t)
 	data := []byte("hello audio")
 	req := buildUploadRequest(t, "file", "song.mp3", "audio/mpeg", data)
 	rr := httptest.NewRecorder()
@@ -72,14 +89,34 @@ func TestUploadFile_HappyPath(t *testing.T) {
 	if resp["hash"] == "" || resp["hash"] == nil {
 		t.Error("response missing hash")
 	}
+	// path field should no longer be sent in the success response.
+	if _, ok := resp["path"]; ok {
+		t.Error("response includes legacy 'path' field; clients should not construct paths")
+	}
+
+	// All three DB rows must exist.
+	var (
+		fileCount, uploadCount, metaCount int
+	)
+	db.QueryRow(`SELECT COUNT(*) FROM files`).Scan(&fileCount)
+	db.QueryRow(`SELECT COUNT(*) FROM file_uploads`).Scan(&uploadCount)
+	db.QueryRow(`SELECT COUNT(*) FROM media_metadata`).Scan(&metaCount)
+	if fileCount != 1 {
+		t.Errorf("files rows = %d, want 1", fileCount)
+	}
+	if uploadCount != 1 {
+		t.Errorf("file_uploads rows = %d, want 1", uploadCount)
+	}
+	if metaCount != 1 {
+		t.Errorf("media_metadata rows = %d, want 1", metaCount)
+	}
 }
 
-// TestUploadFile_DeduplicationStubbed documents the interim Task 5 state:
-// the dedupe path is stubbed out until Task 6 wires the DB-backed
-// repository. Both uploads currently return 201. Task 6 reinstates the
-// 200/existed=true behaviour via DB lookup.
-func TestUploadFile_DeduplicationStubbed(t *testing.T) {
-	h := newTestHandler(t)
+// TestUploadFile_SameHashSameFilename verifies the second upload of identical
+// bytes + filename returns 200 existed=true and DOES NOT add a duplicate
+// file_uploads row.
+func TestUploadFile_SameHashSameFilename(t *testing.T) {
+	h, db, _ := newTestHandler(t)
 	data := []byte("deduplicate me")
 
 	upload := func() *httptest.ResponseRecorder {
@@ -91,19 +128,61 @@ func TestUploadFile_DeduplicationStubbed(t *testing.T) {
 
 	first := upload()
 	if first.Code != http.StatusCreated {
-		t.Fatalf("first upload status = %d", first.Code)
+		t.Fatalf("first status = %d", first.Code)
 	}
 
 	second := upload()
-	if second.Code != http.StatusCreated {
-		t.Fatalf("second upload status = %d, want 201 (stubbed dedupe)", second.Code)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status = %d, want 200; body: %s", second.Code, second.Body.String())
+	}
+	var resp map[string]any
+	json.NewDecoder(second.Body).Decode(&resp)
+	if resp["existed"] != true {
+		t.Errorf("existed = %v, want true on dedupe", resp["existed"])
+	}
+
+	var uploadCount int
+	db.QueryRow(`SELECT COUNT(*) FROM file_uploads`).Scan(&uploadCount)
+	if uploadCount != 1 {
+		t.Errorf("file_uploads rows = %d, want 1 (duplicate filename ignored)", uploadCount)
 	}
 }
 
-// TestUploadFile_MissingFileField ensures 400 is returned when the "file"
-// multipart field is absent.
+// TestUploadFile_SameHashDifferentFilename verifies that re-uploading the same
+// bytes under a new filename returns 200 existed=true and adds a second
+// file_uploads row.
+func TestUploadFile_SameHashDifferentFilename(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	data := []byte("same bytes different name")
+
+	first := httptest.NewRecorder()
+	h.uploadFile(first, buildUploadRequest(t, "file", "first.mp3", "audio/mpeg", data))
+	if first.Code != http.StatusCreated {
+		t.Fatalf("first status = %d", first.Code)
+	}
+
+	second := httptest.NewRecorder()
+	h.uploadFile(second, buildUploadRequest(t, "file", "second.mp3", "audio/mpeg", data))
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status = %d, want 200", second.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(second.Body).Decode(&resp)
+	if resp["existed"] != true {
+		t.Errorf("existed = %v, want true", resp["existed"])
+	}
+
+	var uploadCount int
+	db.QueryRow(`SELECT COUNT(*) FROM file_uploads`).Scan(&uploadCount)
+	if uploadCount != 2 {
+		t.Errorf("file_uploads rows = %d, want 2", uploadCount)
+	}
+}
+
+// ---- Upload: error cases ---------------------------------------------------
+
 func TestUploadFile_MissingFileField(t *testing.T) {
-	h := newTestHandler(t)
+	h, _, _ := newTestHandler(t)
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 	mw.WriteField("irrelevant", "value")
@@ -120,9 +199,8 @@ func TestUploadFile_MissingFileField(t *testing.T) {
 	}
 }
 
-// TestUploadFile_NotMultipart sends a plain POST body instead of multipart.
 func TestUploadFile_NotMultipart(t *testing.T) {
-	h := newTestHandler(t)
+	h, _, _ := newTestHandler(t)
 	req := httptest.NewRequest(http.MethodPost, "/files/upload", strings.NewReader("not multipart"))
 	req.Header.Set("Content-Type", "text/plain")
 	rr := httptest.NewRecorder()
@@ -134,34 +212,8 @@ func TestUploadFile_NotMultipart(t *testing.T) {
 	}
 }
 
-// ---- Upload: security cases -------------------------------------------------
-
-// TestUploadFile_PathTraversalFilename sends a filename with path separators.
-// The response path field must not expose ".." components.
-func TestUploadFile_PathTraversalFilename(t *testing.T) {
-	h := newTestHandler(t)
-	data := []byte("traversal payload")
-	req := buildUploadRequest(t, "file", "../../../etc/passwd", "audio/mpeg", data)
-	rr := httptest.NewRecorder()
-
-	h.uploadFile(rr, req)
-
-	if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
-		t.Fatalf("unexpected status %d: %s", rr.Code, rr.Body.String())
-	}
-	var resp map[string]any
-	json.NewDecoder(rr.Body).Decode(&resp)
-	if path, ok := resp["path"].(string); ok {
-		if strings.Contains(path, "..") {
-			t.Errorf("response path contains '..': %q", path)
-		}
-	}
-}
-
-// TestUploadFile_InvalidMIMEType verifies that non-audio MIME types are
-// rejected with 415 Unsupported Media Type.
 func TestUploadFile_InvalidMIMEType(t *testing.T) {
-	h := newTestHandler(t)
+	h, _, _ := newTestHandler(t)
 	req := buildUploadRequest(t, "file", "evil.sh", "application/x-sh", []byte("#!/bin/bash"))
 	rr := httptest.NewRecorder()
 
@@ -173,11 +225,10 @@ func TestUploadFile_InvalidMIMEType(t *testing.T) {
 }
 
 // TestUploadFile_VideoRejected guards the v0 decision to accept audio only.
-// Video MIMEs must return 415.
 func TestUploadFile_VideoRejected(t *testing.T) {
 	for _, mime := range []string{"video/mp4", "video/webm"} {
 		t.Run(mime, func(t *testing.T) {
-			h := newTestHandler(t)
+			h, _, _ := newTestHandler(t)
 			req := buildUploadRequest(t, "file", "clip.bin", mime, []byte("fake video"))
 			rr := httptest.NewRecorder()
 			h.uploadFile(rr, req)
@@ -188,10 +239,101 @@ func TestUploadFile_VideoRejected(t *testing.T) {
 	}
 }
 
+// TestUploadFile_PathTraversalFilename sends a filename with path separators.
+// The stored blob must land inside baseDir.
+func TestUploadFile_PathTraversalFilename(t *testing.T) {
+	h, _, baseDir := newTestHandler(t)
+	data := []byte("traversal payload")
+	req := buildUploadRequest(t, "file", "../../../etc/passwd", "audio/mpeg", data)
+	rr := httptest.NewRecorder()
+
+	h.uploadFile(rr, req)
+
+	if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", rr.Code, rr.Body.String())
+	}
+	// The stored file's basename must be the sanitised name under baseDir.
+	wantBase := "passwd"
+	matches, _ := filepath.Glob(filepath.Join(baseDir, "*", wantBase))
+	if len(matches) != 1 {
+		t.Errorf("expected 1 sanitised %q under baseDir, found %d", wantBase, len(matches))
+	}
+}
+
+// fakeRepo lets tests force GetFileByHash and InsertFile outcomes.
+type fakeRepo struct {
+	getResult   *database.File
+	getErr      error
+	insertErr   error
+	recordErr   error
+	insertCalls int
+}
+
+func (f *fakeRepo) GetFileByHash(_ context.Context, _ string) (*database.File, error) {
+	return f.getResult, f.getErr
+}
+
+func (f *fakeRepo) InsertFile(_ context.Context, file *database.File, _ *database.FileUpload, _ *database.MediaMetadata) error {
+	f.insertCalls++
+	if f.insertErr != nil {
+		return f.insertErr
+	}
+	file.ID = 1
+	return nil
+}
+
+func (f *fakeRepo) RecordUpload(_ context.Context, _ int64, _ string) error {
+	return f.recordErr
+}
+
+// TestUploadFile_InsertFailureLeavesOrphan verifies that when storage.Put
+// succeeds but repo.InsertFile fails, the handler returns 500 and the blob
+// remains on disk (the reconciler removes it later).
+func TestUploadFile_InsertFailureLeavesOrphan(t *testing.T) {
+	baseDir := t.TempDir()
+	repo := &fakeRepo{insertErr: errors.New("simulated db failure")}
+	h := &handler{
+		storage:  storage.NewLocal(baseDir),
+		repo:     repo,
+		cacheDir: t.TempDir(),
+	}
+
+	data := []byte("orphan me")
+	req := buildUploadRequest(t, "file", "lost.mp3", "audio/mpeg", data)
+	rr := httptest.NewRecorder()
+	h.uploadFile(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rr.Code)
+	}
+	if repo.insertCalls != 1 {
+		t.Errorf("InsertFile called %d times, want 1", repo.insertCalls)
+	}
+
+	// The blob must be on disk despite the DB failure.
+	matches, _ := filepath.Glob(filepath.Join(baseDir, "*", "lost.mp3"))
+	if len(matches) != 1 {
+		t.Errorf("expected 1 orphan blob on disk, found %d", len(matches))
+	}
+}
+
+// TestUploadFile_EmptyBody sends a multipart form with a zero-byte file.
+func TestUploadFile_EmptyBody(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	req := buildUploadRequest(t, "file", "empty.mp3", "audio/mpeg", []byte{})
+	rr := httptest.NewRecorder()
+
+	h.uploadFile(rr, req)
+
+	if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+		t.Errorf("unexpected status %d for empty upload: %s", rr.Code, rr.Body.String())
+	}
+}
+
 // TestUploadFile_CORSAbsentOnErrorResponse documents that CORS headers are
 // missing on error responses (returned via http.Error, not writeJSON).
 func TestUploadFile_CORSAbsentOnErrorResponse(t *testing.T) {
-	h := newTestHandler(t)
+	h, _, _ := newTestHandler(t)
 
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
@@ -201,12 +343,11 @@ func TestUploadFile_CORSAbsentOnErrorResponse(t *testing.T) {
 	rr := httptest.NewRecorder()
 	h.uploadFile(rr, req)
 
-	// Document current behaviour: CORS is absent on 400 error responses.
 	cors := rr.Header().Get("Access-Control-Allow-Origin")
 	if cors == "*" {
 		t.Log("CORS present on error response")
 	} else {
-		t.Logf("INFO: CORS header absent on error response (status %d) — browser clients cannot read error details cross-origin", rr.Code)
+		t.Logf("INFO: CORS header absent on error response (status %d)", rr.Code)
 	}
 }
 
@@ -244,48 +385,15 @@ func TestWriteJSON_CORSHeader(t *testing.T) {
 	}
 }
 
-// TestUploadFile_EmptyBody sends a multipart form with a zero-byte file.
-func TestUploadFile_EmptyBody(t *testing.T) {
-	h := newTestHandler(t)
-	req := buildUploadRequest(t, "file", "empty.mp3", "audio/mpeg", []byte{})
-	rr := httptest.NewRecorder()
-
-	h.uploadFile(rr, req)
-
-	if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
-		t.Errorf("unexpected status %d for empty upload: %s", rr.Code, rr.Body.String())
-	}
-}
-
-// TestUploadFile_ResponsePathUsesBase verifies the "path" field in the JSON
-// response is <hash>/<basename> even when the client sends a full path as the
-// filename.
-func TestUploadFile_ResponsePathUsesBase(t *testing.T) {
-	h := newTestHandler(t)
-	data := []byte("path test")
-	req := buildUploadRequest(t, "file", "/some/nested/dir/track.mp3", "audio/mpeg", data)
-	rr := httptest.NewRecorder()
-	h.uploadFile(rr, req)
-
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("status = %d: %s", rr.Code, rr.Body.String())
-	}
-	var resp map[string]any
-	json.NewDecoder(rr.Body).Decode(&resp)
-	path, _ := resp["path"].(string)
-	if !strings.HasSuffix(path, "/track.mp3") {
-		t.Errorf("response path %q should end with /track.mp3", path)
-	}
-	if strings.Contains(path, "some/nested") {
-		t.Errorf("response path %q leaks directory structure from client filename", path)
-	}
-}
-
-// TestNewRouter_Integration verifies NewRouter returns a working http.Handler
-// testable via httptest.NewServer without binding a real port.
+// TestNewRouter_Integration verifies NewRouter returns a working http.Handler.
 func TestNewRouter_Integration(t *testing.T) {
 	store := storage.NewLocal(t.TempDir())
-	srv := httptest.NewServer(NewRouter(store, t.TempDir()))
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	srv := httptest.NewServer(NewRouter(store, db, t.TempDir()))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/")

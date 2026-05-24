@@ -7,15 +7,16 @@ import (
 	"path/filepath"
 	"strings"
 
+	"daemonlord.ygg/madshare/api/storage"
+	"daemonlord.ygg/madshare/database"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"daemonlord.ygg/madshare/api/storage"
 )
 
 // NewRouter builds and returns the API HTTP handler.
 // The caller is responsible for calling http.ListenAndServe.
-func NewRouter(store storage.Storage, cacheDir string) http.Handler {
-	h := &handler{storage: store, cacheDir: cacheDir}
+func NewRouter(store storage.Storage, repo database.Repository, cacheDir string) http.Handler {
+	h := &handler{storage: store, repo: repo, cacheDir: cacheDir}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)

@@ -1,11 +1,16 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
+	"io"
+	"log"
 	"net/http"
-	"path/filepath"
+	"time"
 
 	"daemonlord.ygg/madshare/api/storage"
+	"daemonlord.ygg/madshare/database"
+	"daemonlord.ygg/madshare/media"
 )
 
 const maxUploadSize = 500 << 20 // 500 MB
@@ -24,6 +29,7 @@ var allowedMIMETypes = map[string]bool{
 // handler holds the dependencies for the API HTTP handlers.
 type handler struct {
 	storage  storage.Storage
+	repo     database.Repository
 	cacheDir string
 }
 
@@ -41,7 +47,8 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	if !allowedMIMETypes[header.Header.Get("Content-Type")] {
+	mimeType := header.Header.Get("Content-Type")
+	if !allowedMIMETypes[mimeType] {
 		http.Error(w, "unsupported media type", http.StatusUnsupportedMediaType)
 		return
 	}
@@ -59,11 +66,56 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO(task 6): dedupe via DB. Until Task 6 wires the repository in,
-	// every upload is treated as new and written to disk.
+	ctx := r.Context()
+
+	// Dedupe via DB: same content hash means we already have the bytes
+	// on disk. Record the (possibly new) filename and short-circuit.
+	existing, err := h.repo.GetFileByHash(ctx, hash)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if existing != nil {
+		if err := h.repo.RecordUpload(ctx, existing.ID, header.Filename); err != nil {
+			http.Error(w, "storage error", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":       true,
+			"existed":  true,
+			"hash":     hash,
+			"filename": header.Filename,
+			"size":     size,
+		})
+		return
+	}
+
+	// New file: extract tags before writing so a parse failure doesn't
+	// leave an orphan blob.
+	tags := extractTagsOrEmpty(content, mimeType)
 
 	if err := h.storage.Put(hash, header.Filename, content); err != nil {
 		http.Error(w, "cannot save file", http.StatusInternalServerError)
+		return
+	}
+
+	now := time.Now().Unix()
+	f := &database.File{
+		Hash:           hash,
+		ByteSize:       size,
+		MimeType:       mimeType,
+		StorageBackend: "local",
+		ObjectKey:      hash + "/" + header.Filename,
+		CreatedAt:      now,
+	}
+	upload := &database.FileUpload{Filename: header.Filename, UploadedAt: now}
+	meta := tagsToMetadata(tags, now)
+
+	if err := h.repo.InsertFile(ctx, f, upload, meta); err != nil {
+		// The blob is on disk but the DB doesn't know about it. Log
+		// loudly so the reconciler (or an operator) can clean it up.
+		log.Printf("orphan blob: hash=%s err=%v", hash, err)
+		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
 
@@ -73,8 +125,60 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		"hash":     hash,
 		"filename": header.Filename,
 		"size":     size,
-		"path":     hash + "/" + filepath.Base(header.Filename),
 	})
+}
+
+// extractTagsOrEmpty runs media.ExtractTags on content if it is seekable.
+// A failure or non-seekable reader returns empty Tags — metadata is
+// nice-to-have, not load-bearing for the upload flow.
+//
+// content is left positioned at offset 0 so the subsequent storage.Put
+// reads the full body.
+func extractTagsOrEmpty(content io.Reader, mimeType string) *media.Tags {
+	seeker, ok := content.(io.ReadSeeker)
+	if !ok {
+		return &media.Tags{}
+	}
+	if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+		return &media.Tags{}
+	}
+	tags, err := media.ExtractTags(seeker, mimeType)
+	if err != nil {
+		log.Printf("tag extraction failed: %v", err)
+		tags = &media.Tags{}
+	}
+	if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+		log.Printf("rewind after tag extraction: %v", err)
+	}
+	return tags
+}
+
+// tagsToMetadata maps the in-process Tags struct onto the nullable
+// database.MediaMetadata struct. Empty strings and zero ints become NULL.
+func tagsToMetadata(t *media.Tags, extractedAt int64) *database.MediaMetadata {
+	return &database.MediaMetadata{
+		Title:       nullString(t.Title),
+		Artist:      nullString(t.Artist),
+		Album:       nullString(t.Album),
+		AlbumArtist: nullString(t.AlbumArtist),
+		Genre:       nullString(t.Genre),
+		Composer:    nullString(t.Composer),
+		Comment:     nullString(t.Comment),
+		TagFormat:   nullString(t.TagFormat),
+		Year:        nullInt(t.Year),
+		TrackNumber: nullInt(t.TrackNumber),
+		TrackTotal:  nullInt(t.TrackTotal),
+		DiscNumber:  nullInt(t.DiscNumber),
+		ExtractedAt: extractedAt,
+	}
+}
+
+func nullString(s string) sql.NullString {
+	return sql.NullString{String: s, Valid: s != ""}
+}
+
+func nullInt(i int) sql.NullInt64 {
+	return sql.NullInt64{Int64: int64(i), Valid: i != 0}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
