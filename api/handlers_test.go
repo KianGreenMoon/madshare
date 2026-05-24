@@ -74,9 +74,11 @@ func TestUploadFile_HappyPath(t *testing.T) {
 	}
 }
 
-// TestUploadFile_Deduplication uploads the same bytes twice and verifies the
-// second response reports existed=true with 200 OK (not 201).
-func TestUploadFile_Deduplication(t *testing.T) {
+// TestUploadFile_DeduplicationStubbed documents the interim Task 5 state:
+// the dedupe path is stubbed out until Task 6 wires the DB-backed
+// repository. Both uploads currently return 201. Task 6 reinstates the
+// 200/existed=true behaviour via DB lookup.
+func TestUploadFile_DeduplicationStubbed(t *testing.T) {
 	h := newTestHandler(t)
 	data := []byte("deduplicate me")
 
@@ -93,13 +95,8 @@ func TestUploadFile_Deduplication(t *testing.T) {
 	}
 
 	second := upload()
-	if second.Code != http.StatusOK {
-		t.Fatalf("second upload status = %d, want 200", second.Code)
-	}
-	var resp map[string]any
-	json.NewDecoder(second.Body).Decode(&resp)
-	if resp["existed"] != true {
-		t.Errorf("existed = %v, want true on second upload", resp["existed"])
+	if second.Code != http.StatusCreated {
+		t.Fatalf("second upload status = %d, want 201 (stubbed dedupe)", second.Code)
 	}
 }
 
@@ -161,7 +158,7 @@ func TestUploadFile_PathTraversalFilename(t *testing.T) {
 	}
 }
 
-// TestUploadFile_InvalidMIMEType verifies that non-audio/video MIME types are
+// TestUploadFile_InvalidMIMEType verifies that non-audio MIME types are
 // rejected with 415 Unsupported Media Type.
 func TestUploadFile_InvalidMIMEType(t *testing.T) {
 	h := newTestHandler(t)
@@ -172,6 +169,22 @@ func TestUploadFile_InvalidMIMEType(t *testing.T) {
 
 	if rr.Code != http.StatusUnsupportedMediaType {
 		t.Errorf("status = %d, want 415", rr.Code)
+	}
+}
+
+// TestUploadFile_VideoRejected guards the v0 decision to accept audio only.
+// Video MIMEs must return 415.
+func TestUploadFile_VideoRejected(t *testing.T) {
+	for _, mime := range []string{"video/mp4", "video/webm"} {
+		t.Run(mime, func(t *testing.T) {
+			h := newTestHandler(t)
+			req := buildUploadRequest(t, "file", "clip.bin", mime, []byte("fake video"))
+			rr := httptest.NewRecorder()
+			h.uploadFile(rr, req)
+			if rr.Code != http.StatusUnsupportedMediaType {
+				t.Errorf("status = %d, want 415 for %s", rr.Code, mime)
+			}
+		})
 	}
 }
 

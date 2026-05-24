@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,30 +23,25 @@ func NewLocal(baseDir string) *Local {
 	return &Local{baseDir: baseDir}
 }
 
-func (s *Local) Stat(hash string) (int64, error) {
+// Exists reports whether the blob at <hash>/<filename> already exists on disk.
+func (s *Local) Exists(hash, filename string) (bool, error) {
 	if !validHash.MatchString(hash) {
-		return -1, fmt.Errorf("storage: invalid hash %q", hash)
+		return false, fmt.Errorf("storage: invalid hash %q", hash)
 	}
-	entries, err := os.ReadDir(filepath.Join(s.baseDir, hash))
-	if os.IsNotExist(err) {
-		return -1, nil
+	path := filepath.Join(s.baseDir, hash, filepath.Base(filename))
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
 	}
-	if err != nil {
-		return -1, err
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
 	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			info, err := e.Info()
-			if err != nil {
-				return -1, err
-			}
-			return info.Size(), nil
-		}
-	}
-	return -1, nil
+	return false, err
 }
 
-func (s *Local) Put(hash, filename string, r io.Reader, size int64) error {
+// Put writes r to <baseDir>/<hash>/<filename>, creating the hash directory if
+// needed. Path traversal in filename is neutralised by filepath.Base.
+func (s *Local) Put(hash, filename string, r io.Reader) error {
 	if !validHash.MatchString(hash) {
 		return fmt.Errorf("storage: invalid hash %q", hash)
 	}

@@ -11,7 +11,7 @@ import (
 const maxUploadSize = 500 << 20 // 500 MB
 
 // allowedMIMETypes is the set of media types accepted for upload.
-// Extend this list when adding new supported formats.
+// v0 is audio only; video support is deferred.
 var allowedMIMETypes = map[string]bool{
 	"audio/mpeg":  true,
 	"audio/ogg":   true,
@@ -19,8 +19,6 @@ var allowedMIMETypes = map[string]bool{
 	"audio/wav":   true,
 	"audio/x-wav": true,
 	"audio/mp4":   true,
-	"video/mp4":   true,
-	"video/webm":  true,
 }
 
 // handler holds the dependencies for the API HTTP handlers.
@@ -61,23 +59,10 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stored, err := h.storage.Stat(hash)
-	if err != nil {
-		http.Error(w, "storage error", http.StatusInternalServerError)
-		return
-	}
-	if stored == size {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":       true,
-			"existed":  true,
-			"hash":     hash,
-			"filename": header.Filename,
-			"size":     size,
-		})
-		return
-	}
+	// TODO(task 6): dedupe via DB. Until Task 6 wires the repository in,
+	// every upload is treated as new and written to disk.
 
-	if err := h.storage.Put(hash, header.Filename, content, size); err != nil {
+	if err := h.storage.Put(hash, header.Filename, content); err != nil {
 		http.Error(w, "cannot save file", http.StatusInternalServerError)
 		return
 	}

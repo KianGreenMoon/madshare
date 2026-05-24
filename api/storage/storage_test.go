@@ -231,62 +231,68 @@ func TestHashUpload_HashIsActualSHA256(t *testing.T) {
 	}
 }
 
-// ---- Local.Stat -------------------------------------------------------------
+// ---- Local.Exists -----------------------------------------------------------
 
-// TestLocalStat_MissingHash ensures -1 is returned for an unknown hash.
-func TestLocalStat_MissingHash(t *testing.T) {
+// TestLocalExists_Missing returns false for an unknown hash/filename.
+func TestLocalExists_Missing(t *testing.T) {
 	s := newLocal(t)
-	size, err := s.Stat("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+	ok, err := s.Exists("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "any.mp3")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if size != -1 {
-		t.Errorf("size = %d, want -1", size)
+	if ok {
+		t.Error("Exists = true on empty store, want false")
 	}
 }
 
-// TestLocalStat_ExistingHash stores a file then verifies Stat returns its size.
-func TestLocalStat_ExistingHash(t *testing.T) {
+// TestLocalExists_Present stores a file then verifies Exists returns true.
+func TestLocalExists_Present(t *testing.T) {
 	s := newLocal(t)
 	hash := sha256hex([]byte("test content"))
 	data := []byte("test content")
 
-	if err := s.Put(hash, "test.txt", bytes.NewReader(data), int64(len(data))); err != nil {
+	if err := s.Put(hash, "test.txt", bytes.NewReader(data)); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
-	size, err := s.Stat(hash)
+	ok, err := s.Exists(hash, "test.txt")
 	if err != nil {
-		t.Fatalf("Stat: %v", err)
+		t.Fatalf("Exists: %v", err)
 	}
-	if size != int64(len(data)) {
-		t.Errorf("Stat = %d, want %d", size, len(data))
+	if !ok {
+		t.Error("Exists = false after Put, want true")
 	}
 }
 
-// TestLocalStat_DirectoryWithNoFiles covers the edge case where the hash
-// directory exists but contains only subdirectories (Stat should return -1).
-func TestLocalStat_DirectoryOnlyEntries(t *testing.T) {
+// TestLocalExists_DifferentFilename verifies Exists is per-filename, not
+// per-hash — same hash with a different filename returns false.
+func TestLocalExists_DifferentFilename(t *testing.T) {
 	s := newLocal(t)
-	hash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	hashDir := filepath.Join(s.baseDir, hash)
-	subDir := filepath.Join(hashDir, "subdir")
-	if err := os.MkdirAll(subDir, 0755); err != nil {
+	hash := sha256hex([]byte("same bytes"))
+	if err := s.Put(hash, "first.mp3", bytes.NewReader([]byte("same bytes"))); err != nil {
 		t.Fatal(err)
 	}
-
-	size, err := s.Stat(hash)
+	ok, err := s.Exists(hash, "second.mp3")
 	if err != nil {
-		t.Fatalf("Stat: %v", err)
+		t.Fatal(err)
 	}
-	if size != -1 {
-		t.Errorf("Stat with dir-only entries = %d, want -1", size)
+	if ok {
+		t.Error("Exists = true for different filename, want false")
 	}
 }
 
-// TestLocalStat_ConcurrentWrites races two Put calls for the same hash to
-// surface any data race. Run with -race.
-func TestLocalStat_ConcurrentWrites(t *testing.T) {
+// TestLocalExists_InvalidHash returns an error for a malformed hash.
+func TestLocalExists_InvalidHash(t *testing.T) {
+	s := newLocal(t)
+	_, err := s.Exists("not-a-hash", "any.mp3")
+	if err == nil {
+		t.Error("expected error for invalid hash, got nil")
+	}
+}
+
+// TestLocalPut_Concurrent races two Put calls for the same hash to surface
+// any data race. Run with -race.
+func TestLocalPut_Concurrent(t *testing.T) {
 	s := newLocal(t)
 	hash := sha256hex([]byte("concurrent"))
 	data := []byte("concurrent")
@@ -295,7 +301,7 @@ func TestLocalStat_ConcurrentWrites(t *testing.T) {
 	errs := make(chan error, goroutines)
 	for i := 0; i < goroutines; i++ {
 		go func() {
-			errs <- s.Put(hash, "file.txt", bytes.NewReader(data), int64(len(data)))
+			errs <- s.Put(hash, "file.txt", bytes.NewReader(data))
 		}()
 	}
 	for i := 0; i < goroutines; i++ {
@@ -304,12 +310,12 @@ func TestLocalStat_ConcurrentWrites(t *testing.T) {
 		}
 	}
 
-	size, err := s.Stat(hash)
+	ok, err := s.Exists(hash, "file.txt")
 	if err != nil {
-		t.Fatalf("Stat after concurrent writes: %v", err)
+		t.Fatalf("Exists after concurrent writes: %v", err)
 	}
-	if size != int64(len(data)) {
-		t.Errorf("Stat = %d, want %d", size, len(data))
+	if !ok {
+		t.Error("Exists = false after concurrent writes")
 	}
 }
 
@@ -321,7 +327,7 @@ func TestLocalPut_Normal(t *testing.T) {
 	hash := sha256hex([]byte("normal"))
 	data := []byte("normal file content")
 
-	if err := s.Put(hash, "audio.mp3", bytes.NewReader(data), int64(len(data))); err != nil {
+	if err := s.Put(hash, "audio.mp3", bytes.NewReader(data)); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
@@ -343,7 +349,7 @@ func TestLocalPut_EmptyFilename(t *testing.T) {
 	hash := sha256hex([]byte("emptyname"))
 	data := []byte("data")
 
-	err := s.Put(hash, "", bytes.NewReader(data), int64(len(data)))
+	err := s.Put(hash, "", bytes.NewReader(data))
 	// Document the actual behaviour. An empty filename causes filepath.Base("")
 	// to return "." which is the directory itself — os.Create("dir/.") on Linux
 	// returns EISDIR. The test asserts an error IS returned (i.e. not silently
@@ -369,7 +375,7 @@ func TestLocalPut_PathTraversalInFilename(t *testing.T) {
 
 	// Attempt classic path traversal via the filename parameter.
 	malicious := "../../../tmp/evil"
-	if err := s.Put(hash, malicious, bytes.NewReader(data), int64(len(data))); err != nil {
+	if err := s.Put(hash, malicious, bytes.NewReader(data)); err != nil {
 		// An error is acceptable; it must not write outside baseDir.
 		t.Logf("Put with traversal filename returned error (acceptable): %v", err)
 		return
@@ -405,7 +411,7 @@ func TestLocalPut_HashPathTraversal(t *testing.T) {
 	maliciousHash := "../evil-hash"
 	data := []byte("escape attempt")
 
-	err := s.Put(maliciousHash, "file.txt", bytes.NewReader(data), int64(len(data)))
+	err := s.Put(maliciousHash, "file.txt", bytes.NewReader(data))
 	// The file must NOT be written to the parent of baseDir.
 	escapedDir := filepath.Join(filepath.Dir(s.baseDir), "evil-hash")
 	if _, statErr := os.Stat(escapedDir); statErr == nil {
@@ -422,7 +428,7 @@ func TestLocalPut_FilenameWithNullByte(t *testing.T) {
 	hash := sha256hex([]byte("nullbyte"))
 	data := []byte("null byte test")
 
-	err := s.Put(hash, "file\x00.txt", bytes.NewReader(data), int64(len(data)))
+	err := s.Put(hash, "file\x00.txt", bytes.NewReader(data))
 	// On Linux, os.Create with a null byte in the name returns EINVAL.
 	// We assert that if no error was returned the file can be stat'd cleanly.
 	t.Logf("Put with null-byte filename returned err=%v", err)
@@ -434,7 +440,7 @@ func TestLocalPut_CreatesHashDir(t *testing.T) {
 	hash := sha256hex([]byte("mkdir"))
 	data := []byte("mkdir test")
 
-	if err := s.Put(hash, "f.bin", bytes.NewReader(data), int64(len(data))); err != nil {
+	if err := s.Put(hash, "f.bin", bytes.NewReader(data)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(s.baseDir, hash)); errors.Is(err, fs.ErrNotExist) {
