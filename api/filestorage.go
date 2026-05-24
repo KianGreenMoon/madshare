@@ -34,7 +34,7 @@ import (
 const maxUploadSize = 500 << 20 // 500 MB
 
 // memBufferLimit is the file size below which uploads are hashed entirely in
-// memory. Above this threshold the upload is spooled to FileStorage.CacheDir()
+// memory. Above this threshold the upload is spooled to fileStorage.cacheDirF()
 // so heap pressure stays bounded. Computed once at startup from heap headroom,
 // capped at 50 MB.
 var memBufferLimit = func() int64 {
@@ -49,68 +49,21 @@ var memBufferLimit = func() int64 {
 	return avail
 }()
 
-// FileStorage abstracts where files are persisted.
-// Implement this interface for local disk (LocalStorage) or S3.
-type FileStorage interface {
+// fileStorage abstracts where files are persisted.
+// Implement this interface for local disk (localStorage) or S3.
+type fileStorage interface {
 	// Stat returns the stored byte count for hash, or -1 if the hash is unknown.
 	Stat(hash string) (int64, error)
 	// Put stores the content of r under <hash>/<filename>.
 	Put(hash, filename string, r io.Reader, size int64) error
-	// CacheDir returns a local directory suitable for spooling large uploads
+	// cacheDirF returns a local directory suitable for spooling large uploads
 	// before their hash is confirmed. Remote backends (S3) return os.TempDir().
-	CacheDir() string
+	cacheDirF() string
 }
 
-// LocalStorage stores files at BaseDir/<sha256>/<filename>.
-type LocalStorage struct {
-	baseDir  string
-	cacheDir string
-}
-
-func NewLocalStorage(baseDir, cacheDir string) *LocalStorage {
-	return &LocalStorage{baseDir: baseDir, cacheDir: cacheDir}
-}
-
-func (s *LocalStorage) Stat(hash string) (int64, error) {
-	entries, err := os.ReadDir(filepath.Join(s.baseDir, hash))
-	if os.IsNotExist(err) {
-		return -1, nil
-	}
-	if err != nil {
-		return -1, err
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			info, err := e.Info()
-			if err != nil {
-				return -1, err
-			}
-			return info.Size(), nil
-		}
-	}
-	return -1, nil
-}
-
-func (s *LocalStorage) Put(hash, filename string, r io.Reader, size int64) error {
-	dir := filepath.Join(s.baseDir, hash)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-	dst := filepath.Join(dir, filepath.Base(filename))
-	f, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = io.Copy(f, r)
-	return err
-}
-
-func (s *LocalStorage) CacheDir() string { return s.cacheDir }
-
-// DefaultStorage is used by UploadFile. Swap it out (e.g. in main or tests)
+// defaultStorage is used by UploadFile. Swap it out (e.g. in main or tests)
 // to point at a different backend.
-var DefaultStorage FileStorage = NewLocalStorage("./data", "./data/.cache")
+var defaultStorage fileStorage = newLocalStorage("./data/files", "./data/files/.cache")
 
 // FileServer registers static file serving under path and the upload endpoint.
 func FileServer(r chi.Router, path string, root http.FileSystem) {
@@ -147,7 +100,7 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	hash, content, size, cleanup, err := hashUpload(file, header.Size, DefaultStorage.CacheDir())
+	hash, content, size, cleanup, err := hashUpload(file, header.Size, defaultStorage.cacheDirF())
 	if cleanup != nil {
 		defer cleanup()
 	}
@@ -156,7 +109,7 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stored, err := DefaultStorage.Stat(hash)
+	stored, err := defaultStorage.Stat(hash)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -172,7 +125,7 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := DefaultStorage.Put(hash, header.Filename, content, size); err != nil {
+	if err := defaultStorage.Put(hash, header.Filename, content, size); err != nil {
 		http.Error(w, "cannot save file", http.StatusInternalServerError)
 		return
 	}
@@ -186,6 +139,54 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 		"path":     hash + "/" + filepath.Base(header.Filename),
 	})
 }
+
+
+// localStorage stores files at BaseDir/<sha256>/<filename>.
+type localStorage struct {
+	baseDir  string
+	cacheDir string
+}
+
+func newLocalStorage(baseDir, cacheDir string) *localStorage {
+	return &localStorage{baseDir: baseDir, cacheDir: cacheDir}
+}
+
+func (s *localStorage) Stat(hash string) (int64, error) {
+	entries, err := os.ReadDir(filepath.Join(s.baseDir, hash))
+	if os.IsNotExist(err) {
+		return -1, nil
+	}
+	if err != nil {
+		return -1, err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			info, err := e.Info()
+			if err != nil {
+				return -1, err
+			}
+			return info.Size(), nil
+		}
+	}
+	return -1, nil
+}
+
+func (s *localStorage) Put(hash, filename string, r io.Reader, size int64) error {
+	dir := filepath.Join(s.baseDir, hash)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	dst := filepath.Join(dir, filepath.Base(filename))
+	f, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(f, r)
+	return err
+}
+
+func (s *localStorage) cacheDirF() string { return s.cacheDir }
 
 // hashUpload computes the SHA-256 of r. Files with declaredSize <= memBufferLimit
 // are read entirely into memory. Larger files are spooled to a temp file in
