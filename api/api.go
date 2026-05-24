@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,15 +18,20 @@ func Route() {
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Hello World!"))
 	})
 
-	workDir, _ := os.Getwd()
+	workDir, err := os.Getwd()
+	if err != nil {
+		log.Printf("getwd: %v; using relative path", err)
+		workDir = "."
+	}
 	filesDir := http.Dir(filepath.Join(workDir, "data"))
 	fileServer(r, "/files", filesDir, h)
 
-	http.ListenAndServe(":3000", r)
+	log.Fatal(http.ListenAndServe(":3000", r))
 }
 
 func fileServer(r chi.Router, path string, root http.FileSystem, h *handler) {

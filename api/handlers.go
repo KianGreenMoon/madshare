@@ -16,6 +16,7 @@ type handler struct {
 }
 
 func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
 	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
 		http.Error(w, "file too large or invalid multipart form", http.StatusBadRequest)
 		return
@@ -34,6 +35,10 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		http.Error(w, "failed to process upload", http.StatusInternalServerError)
+		return
+	}
+	if hash == "" {
+		http.Error(w, "failed to hash upload", http.StatusInternalServerError)
 		return
 	}
 
