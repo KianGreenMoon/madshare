@@ -17,6 +17,8 @@ func showUploadForm(w http.ResponseWriter, r *http.Request) {
 }
 
 func Route() {
+	static := http.FileServer(http.Dir("webui/static"))
+	http.Handle("/static/", http.StripPrefix("/static/", static))
 	http.HandleFunc("/", showUploadForm)
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
