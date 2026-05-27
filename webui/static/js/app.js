@@ -1,7 +1,9 @@
-const API = 'http://localhost:3000';
+// BUG-14: read API base from HTML meta so non-local deployments work
+const API = document.querySelector('meta[name="api-url"]')?.content || 'http://localhost:3000';
 
 // ── Theme ─────────────────────────────────────────────────────────────────
 
+const VALID_THEMES = new Set(['dark', 'light', 'ocean', 'sunset']); // BUG-07
 const html      = document.documentElement;
 const themeDots = document.querySelectorAll('.theme-dot');
 
@@ -10,6 +12,7 @@ applyTheme(localStorage.getItem('madshare-theme') || 'dark');
 themeDots.forEach(dot => dot.addEventListener('click', () => applyTheme(dot.dataset.theme)));
 
 function applyTheme(name) {
+  if (!VALID_THEMES.has(name)) name = 'dark'; // BUG-07: reject unknown values
   html.dataset.theme = name;
   localStorage.setItem('madshare-theme', name);
   themeDots.forEach(d => {
@@ -21,58 +24,81 @@ function applyTheme(name) {
 
 // ── Library ──────────────────────────────────────────────────────────────
 
-let playlist = [];
+let playlist             = [];
+let libraryLoading       = false; // BUG-03: concurrent call guard
+let libraryReloadPending = false; // BUG-03: queue at most one extra reload
 
 async function loadLibrary() {
-  let tracks;
+  if (libraryLoading) { libraryReloadPending = true; return; } // BUG-03
+  libraryLoading = true;
   try {
-    const res = await fetch(`${API}/api/files`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    tracks = await res.json();
-  } catch (err) {
-    console.error('Failed to load library:', err);
-    return;
-  }
+    let tracks;
+    try {
+      const res = await fetch(`${API}/api/files`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      tracks = await res.json();
+    } catch (err) {
+      console.error('Failed to load library:', err);
+      return;
+    }
 
-  const list  = document.getElementById('trackList');
-  const empty = document.getElementById('emptyState');
+    const list  = document.getElementById('trackList');
+    const empty = document.getElementById('emptyState');
 
-  if (!tracks || tracks.length === 0) return;
+    // BUG-08/01: remove only track rows; leave #emptyState in the DOM
+    list.querySelectorAll('.track-row').forEach(el => el.remove());
+    playlist = [];
 
-  empty.remove();
-  playlist = [];
+    if (!tracks || tracks.length === 0) {
+      if (empty) empty.style.display = ''; // BUG-13: show empty state again
+      return;
+    }
 
-  tracks.forEach((t, i) => {
-    const title  = t.title  || t.filename;
-    const artist = t.artist || '';
-    const meta   = [artist, t.album, t.year || null].filter(Boolean).join(' · ');
-    const dur    = t.duration ? fmtTime(t.duration) : '—';
+    if (empty) empty.style.display = 'none'; // BUG-08: hide, never remove
 
-    playlist.push({ url: `${API}${t.url}`, title, artist });
+    tracks.forEach((t, i) => {
+      const title  = t.title  || t.filename;
+      const artist = t.artist || '';
+      const meta   = [artist, t.album, t.year || null].filter(Boolean).join(' · ');
+      const dur    = t.duration ? fmtTime(t.duration) : '—'; // BUG-09: stays '—' until API exposes duration
 
-    const li = document.createElement('li');
-    li.className = 'track-row';
-    li.tabIndex  = 0;
-    li.dataset.idx = i;
-    li.setAttribute('role', 'button');
-    li.setAttribute('aria-label', `Play ${title}`);
-    li.innerHTML = `
-      <span class="track-num">${i + 1}</span>
-      <span class="track-icon-playing" aria-hidden="true">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-      </span>
-      <div class="track-info">
-        <div class="track-title">${esc(title)}</div>
-        <div class="track-meta">${esc(meta)}</div>
-      </div>
-      <span class="track-dur">${esc(dur)}</span>
-    `;
-    li.addEventListener('click', () => playIndex(i));
-    li.addEventListener('keydown', e => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); playIndex(i); }
+      playlist.push({ url: `${API}${t.url}`, title, artist });
+
+      const li = document.createElement('li');
+      li.className = 'track-row';
+      li.tabIndex  = 0;
+      li.dataset.idx = i;
+      li.setAttribute('role', 'button');
+      li.setAttribute('aria-label', `Play ${title}`);
+      li.innerHTML = `
+        <span class="track-num">${i + 1}</span>
+        <span class="track-icon-playing" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        </span>
+        <div class="track-info">
+          <div class="track-title">${esc(title)}</div>
+          <div class="track-meta">${esc(meta)}</div>
+        </div>
+        <span class="track-dur">${esc(dur)}</span>
+      `;
+      li.addEventListener('click', () => playIndex(i));
+      li.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); playIndex(i); }
+      });
+      list.appendChild(li);
     });
-    list.appendChild(li);
-  });
+
+    // BUG-02: restore playing highlight if audio is still running after reload
+    if (currentIndex >= 0 && currentIndex < playlist.length) {
+      list.querySelectorAll('.track-row')[currentIndex]?.classList.add('playing');
+    }
+  } finally {
+    libraryLoading = false;
+    if (libraryReloadPending) { // BUG-03: flush one queued reload
+      libraryReloadPending = false;
+      loadLibrary();
+    }
+  }
 }
 
 // ── Player ───────────────────────────────────────────────────────────────
@@ -113,17 +139,23 @@ function playIndex(idx) {
 }
 
 document.getElementById('btnPrev').addEventListener('click', () => {
-  const prev = currentIndex > 0 ? currentIndex - 1 : playlist.length - 1;
-  playIndex(prev);
+  if (currentIndex < 0) return; // BUG-04: nothing playing yet
+  playIndex(currentIndex > 0 ? currentIndex - 1 : playlist.length - 1);
 });
 
 document.getElementById('btnNext').addEventListener('click', () => {
-  const next = currentIndex < playlist.length - 1 ? currentIndex + 1 : 0;
-  playIndex(next);
+  if (currentIndex < 0) return; // BUG-04: nothing playing yet
+  playIndex(currentIndex < playlist.length - 1 ? currentIndex + 1 : 0);
 });
 
 btnPlay.addEventListener('click', () => {
-  if (stopped && currentIndex >= 0) { playIndex(currentIndex); return; }
+  if (stopped && currentIndex >= 0) {
+    // BUG-10: resume from seeked position — don't reassign audio.src
+    stopped = false;
+    audio.play().catch(() => {});
+    syncPlayIcon();
+    return;
+  }
   if (audio.paused) audio.play().catch(() => {});
   else              audio.pause();
 });
@@ -140,9 +172,9 @@ audio.addEventListener('play',  syncPlayIcon);
 audio.addEventListener('pause', syncPlayIcon);
 audio.addEventListener('ended', () => {
   if (shuffle && playlist.length > 1) {
-    let next;
-    do { next = Math.floor(Math.random() * playlist.length); } while (next === currentIndex);
-    playIndex(next);
+    // BUG-05: build pool of other indices — no infinite loop possible
+    const others = playlist.map((_, i) => i).filter(i => i !== currentIndex);
+    playIndex(others[Math.floor(Math.random() * others.length)]);
   } else if (currentIndex < playlist.length - 1) {
     playIndex(currentIndex + 1);
   } else {
@@ -152,7 +184,8 @@ audio.addEventListener('ended', () => {
 });
 
 function syncPlayIcon() {
-  const playing = !audio.paused && !stopped;
+  // BUG-11: derive state from audio element only — stopped flag is for button logic only
+  const playing = !audio.paused;
   iconPlay.style.display  = playing ? 'none' : '';
   iconPause.style.display = playing ? ''     : 'none';
   btnPlay.setAttribute('aria-label', playing ? 'Pause' : 'Play');
@@ -209,18 +242,24 @@ dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover
 dropZone.addEventListener('drop', e => {
   e.preventDefault();
   dropZone.classList.remove('dragover');
-  const file = e.dataTransfer.files[0];
-  if (file) uploadFile(file);
+  const files = Array.from(e.dataTransfer.files); // BUG-12: handle all dropped files
+  if (files.length) uploadFiles(files);
 });
 
 fileInput.addEventListener('change', () => {
-  const file = fileInput.files[0];
-  if (file) uploadFile(file);
+  const files = Array.from(fileInput.files); // BUG-12
+  if (files.length) uploadFiles(files);
   fileInput.value = '';
 });
 
+async function uploadFiles(files) { // BUG-12: upload sequentially, one reload at the end
+  for (const file of files) {
+    await uploadFile(file);
+  }
+}
+
 async function uploadFile(file) {
-  setStatus('Uploading "' + file.name + '"…', '');
+  setStatus('Uploading "' + file.name + '"…', ''); // uses textContent — safe (BUG-06)
   const fd = new FormData();
   fd.append('file', file);
 
@@ -239,9 +278,7 @@ async function uploadFile(file) {
   }
 
   setStatus((data.existed ? 'Already in library' : 'Uploaded') + ': ' + file.name, 'success');
-  document.getElementById('trackList').innerHTML = '';
-  playlist = [];
-  await loadLibrary();
+  await loadLibrary(); // BUG-08/01/13: loadLibrary now owns clearing rows internally
 }
 
 function setStatus(msg, type) {
