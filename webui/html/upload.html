@@ -11,56 +11,56 @@
       --surface:       #16161c;
       --surface-hover: #1e1e28;
       --text:          #e2e2ea;
-      --text-muted:    #7a7a8a;
+      --text-muted:    #9090a8;   /* 6:1 on surface — WCAG AA */
       --accent:        #7b68ee;
       --accent-dim:    #5548c8;
       --accent-glow:   rgba(123,104,238,0.15);
       --border:        #252530;
       --error:         #e05c5c;
       --success:       #5cb870;
-      --range-track:   #252530;
+      --range-track:   #35354a;   /* lifted so bar is visible at rest */
     }
     :root[data-theme="light"] {
       --bg:            #f5f5f7;
       --surface:       #ffffff;
       --surface-hover: #ededf5;
       --text:          #1a1a2e;
-      --text-muted:    #8888a0;
+      --text-muted:    #656580;   /* 5.6:1 on white — WCAG AA */
       --accent:        #6c5ce7;
       --accent-dim:    #5048c0;
       --accent-glow:   rgba(108,92,231,0.12);
       --border:        #dedee8;
       --error:         #d63031;
       --success:       #00b894;
-      --range-track:   #dedee8;
+      --range-track:   #c0c0d0;
     }
     :root[data-theme="ocean"] {
       --bg:            #0a1628;
       --surface:       #0f2040;
       --surface-hover: #162a50;
       --text:          #c8e6f5;
-      --text-muted:    #5a8aaa;
+      --text-muted:    #5d9ab8;   /* 5.3:1 on surface — WCAG AA */
       --accent:        #00cec9;
       --accent-dim:    #00a8a4;
       --accent-glow:   rgba(0,206,201,0.12);
       --border:        #1a3050;
       --error:         #ff7675;
       --success:       #55efc4;
-      --range-track:   #1a3050;
+      --range-track:   #2a4060;
     }
     :root[data-theme="sunset"] {
       --bg:            #1a0a10;
       --surface:       #26101a;
       --surface-hover: #321525;
       --text:          #f5e0d0;
-      --text-muted:    #9a6a60;
+      --text-muted:    #c09080;   /* 6.5:1 on surface — WCAG AA */
       --accent:        #fd7c6e;
       --accent-dim:    #e05a4e;
       --accent-glow:   rgba(253,124,110,0.12);
       --border:        #3a1820;
       --error:         #ff4757;
       --success:       #7bed9f;
-      --range-track:   #3a1820;
+      --range-track:   #4a2530;
     }
 
     :root {
@@ -101,7 +101,7 @@
       letter-spacing: -0.02em;
       color: var(--text);
     }
-    .logo span { color: var(--accent); }
+    .logo span { color: var(--accent); }   /* accent on "Mad" — the differentiator */
 
     .header-actions {
       display: flex;
@@ -198,21 +198,6 @@
     }
     .track-row.playing .track-icon-playing { display: flex; }
 
-    .track-icon {
-      flex-shrink: 0;
-      width: 36px;
-      height: 36px;
-      border-radius: 6px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 16px;
-      color: var(--text-muted);
-    }
-    .track-row.playing .track-icon { color: var(--accent); border-color: var(--accent); }
-
     .track-info { flex: 1; min-width: 0; }
     .track-title {
       white-space: nowrap;
@@ -228,7 +213,7 @@
       text-overflow: ellipsis;
     }
 
-    .track-size {
+    .track-dur {
       flex-shrink: 0;
       font-size: 12px;
       color: var(--text-muted);
@@ -241,6 +226,20 @@
       color: var(--text-muted);
     }
     .empty-state p { margin-top: var(--space-2); font-size: 14px; }
+    .btn-upload-empty {
+      margin-top: var(--space-4);
+      padding: var(--space-2) var(--space-5);
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius);
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 150ms ease;
+    }
+    .btn-upload-empty:hover { background: var(--accent-dim); }
+    .btn-upload-empty:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 
     /* ── Player bar ── */
     #player-bar {
@@ -272,18 +271,17 @@
       pointer-events: none;
     }
 
+    /* Three-column grid: track info | controls | time+volume */
     .player-main {
-      display: flex;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
       align-items: center;
       gap: var(--space-4);
       padding: var(--space-2) var(--space-5);
       height: 80px;
     }
 
-    .player-track {
-      flex: 1;
-      min-width: 0;
-    }
+    .player-track { min-width: 0; }
     .player-title {
       font-size: 14px;
       font-weight: 500;
@@ -320,7 +318,8 @@
       padding: 0;
       flex-shrink: 0;
     }
-    .ctrl-btn:hover { color: var(--text); background: var(--surface-hover); }
+    .ctrl-btn:hover  { color: var(--text); background: var(--surface-hover); }
+    .ctrl-btn.active { color: var(--accent); }
     .ctrl-btn:focus-visible { outline: 2px solid var(--accent); }
 
     .ctrl-btn.primary {
@@ -330,6 +329,13 @@
       height: 42px;
     }
     .ctrl-btn.primary:hover { background: var(--accent-dim); color: #fff; }
+
+    .player-right {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: var(--space-3);
+    }
 
     .player-time {
       font-size: 11px;
@@ -416,7 +422,7 @@
     .drop-zone {
       border: 2px dashed var(--border);
       border-radius: var(--radius);
-      padding: var(--space-6) var(--space-5);
+      padding: 40px var(--space-5);
       text-align: center;
       color: var(--text-muted);
       cursor: pointer;
@@ -434,8 +440,8 @@
       opacity: 0;
       cursor: pointer;
     }
-    .drop-zone .drop-icon { font-size: 28px; margin-bottom: var(--space-2); }
-    .drop-zone p { font-size: 14px; pointer-events: none; }
+    .drop-zone .drop-icon { font-size: 40px; margin-bottom: var(--space-3); }
+    .drop-zone p { font-size: 14px; pointer-events: none; color: var(--text); }
     .drop-zone small { font-size: 12px; color: var(--text-muted); pointer-events: none; }
 
     .upload-status {
@@ -450,7 +456,7 @@
 <body>
 
 <header>
-  <span class="logo">Mad<span>share</span></span>
+  <span class="logo"><span>Mad</span>share</span>
   <div class="header-actions">
     <div class="theme-switcher" role="group" aria-label="Color theme">
       <button class="theme-dot active" data-theme="dark"   title="Dark"   aria-label="Dark theme"   aria-pressed="true"></button>
@@ -466,8 +472,9 @@
   <p class="section-title">Library</p>
   <ul class="track-list" id="trackList" role="list" aria-label="Music library">
     <li class="empty-state" id="emptyState">
-      <span style="font-size:32px">&#9835;</span>
-      <p>No tracks yet. Upload your first file.</p>
+      <span style="font-size:40px">&#9835;</span>
+      <p>No tracks yet.</p>
+      <button class="btn-upload-empty" id="openUploadEmpty">Upload your first file</button>
     </li>
   </ul>
 </main>
@@ -486,6 +493,11 @@
     </div>
 
     <div class="player-controls">
+      <button class="ctrl-btn" id="btnShuffle" aria-label="Shuffle off" title="Shuffle off">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M10.59 9.17 5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/>
+        </svg>
+      </button>
       <button class="ctrl-btn" id="btnPrev" aria-label="Previous" title="Previous">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
           <path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/>
@@ -495,11 +507,6 @@
         <svg id="iconPlay"  width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
         <svg id="iconPause" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
       </button>
-      <button class="ctrl-btn" id="btnStop" aria-label="Stop" title="Stop">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-          <path d="M6 6h12v12H6z"/>
-        </svg>
-      </button>
       <button class="ctrl-btn" id="btnNext" aria-label="Next" title="Next">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
           <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
@@ -507,13 +514,14 @@
       </button>
     </div>
 
-    <span class="player-time" id="playerTime" aria-live="off">0:00 / 0:00</span>
-
-    <div class="player-volume">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-        <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
-      </svg>
-      <input type="range" id="volume-slider" min="0" max="1" step="0.02" value="1" aria-label="Volume">
+    <div class="player-right">
+      <span class="player-time" id="playerTime" aria-live="off">0:00 / 0:00</span>
+      <div class="player-volume">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+        </svg>
+        <input type="range" id="volume-slider" min="0" max="1" step="0.02" value="1" aria-label="Volume">
+      </div>
     </div>
   </div>
 </div>
@@ -586,6 +594,7 @@
       const title  = t.title  || t.filename;
       const artist = t.artist || '';
       const meta   = [artist, t.album, t.year || null].filter(Boolean).join(' · ');
+      const dur    = t.duration ? fmtTime(t.duration) : '—';
 
       playlist.push({ url: `${API}${t.url}`, title, artist });
 
@@ -600,12 +609,11 @@
         <span class="track-icon-playing" aria-hidden="true">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
         </span>
-        <div class="track-icon" aria-hidden="true">&#9835;</div>
         <div class="track-info">
           <div class="track-title">${esc(title)}</div>
           <div class="track-meta">${esc(meta)}</div>
         </div>
-        <span class="track-size">${esc(formatBytes(t.byte_size))}</span>
+        <span class="track-dur">${esc(dur)}</span>
       `;
       li.addEventListener('click', () => playIndex(i));
       li.addEventListener('keydown', e => {
@@ -619,6 +627,7 @@
 
   let currentIndex = -1;
   let stopped      = false;
+  let shuffle      = false;
 
   const audio        = document.getElementById('audio');
   const playerBar    = document.getElementById('player-bar');
@@ -628,6 +637,7 @@
   const progressBar  = document.getElementById('progressBar');
   const progressFill = document.getElementById('progressFill');
   const btnPlay      = document.getElementById('btnPlay');
+  const btnShuffle   = document.getElementById('btnShuffle');
   const iconPlay     = document.getElementById('iconPlay');
   const iconPause    = document.getElementById('iconPause');
   const volumeSlider = document.getElementById('volume-slider');
@@ -666,21 +676,27 @@
     else              audio.pause();
   });
 
-  document.getElementById('btnStop').addEventListener('click', () => {
-    audio.pause();
-    audio.currentTime = 0;
-    stopped = true;
-    syncPlayIcon();
-    progressFill.style.width = '0%';
-    progressBar.setAttribute('aria-valuenow', 0);
-    playerTime.textContent = '0:00 / ' + fmtTime(audio.duration || 0);
+  btnShuffle.addEventListener('click', () => {
+    shuffle = !shuffle;
+    btnShuffle.classList.toggle('active', shuffle);
+    const label = shuffle ? 'Shuffle on' : 'Shuffle off';
+    btnShuffle.setAttribute('aria-label', label);
+    btnShuffle.title = label;
   });
 
   audio.addEventListener('play',  syncPlayIcon);
   audio.addEventListener('pause', syncPlayIcon);
   audio.addEventListener('ended', () => {
-    if (currentIndex < playlist.length - 1) playIndex(currentIndex + 1);
-    else { stopped = true; syncPlayIcon(); }
+    if (shuffle && playlist.length > 1) {
+      let next;
+      do { next = Math.floor(Math.random() * playlist.length); } while (next === currentIndex);
+      playIndex(next);
+    } else if (currentIndex < playlist.length - 1) {
+      playIndex(currentIndex + 1);
+    } else {
+      stopped = true;
+      syncPlayIcon();
+    }
   });
 
   function syncPlayIcon() {
@@ -728,6 +744,7 @@
   const status    = document.getElementById('uploadStatus');
 
   document.getElementById('openUpload').addEventListener('click', openModal);
+  document.getElementById('openUploadEmpty')?.addEventListener('click', openModal);
   document.getElementById('closeModal').addEventListener('click', closeModal);
   modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
@@ -781,12 +798,6 @@
   }
 
   // ── Utilities ────────────────────────────────────────────────────────────
-
-  function formatBytes(n) {
-    if (n < 1024)    return n + ' B';
-    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
-    return (n / 1048576).toFixed(1) + ' MB';
-  }
 
   function esc(s) {
     return String(s)
