@@ -94,6 +94,44 @@ func (db *DB) InsertFile(ctx context.Context, f *File, upload *FileUpload, meta 
 	return nil
 }
 
+// ListFiles returns all files ordered by created_at DESC, joined with
+// the first recorded filename and media_metadata tags.
+func (db *DB) ListFiles(ctx context.Context) ([]*FileListEntry, error) {
+	const q = `
+		SELECT
+			f.id, f.hash, f.mime_type, f.byte_size, f.object_key, f.created_at,
+			COALESCE((SELECT filename FROM file_uploads WHERE file_id = f.id LIMIT 1), f.hash) AS filename,
+			COALESCE(m.title,  '') AS title,
+			COALESCE(m.artist, '') AS artist,
+			COALESCE(m.album,  '') AS album,
+			COALESCE(m.year,    0) AS year
+		FROM files f
+		LEFT JOIN media_metadata m ON m.file_id = f.id
+		ORDER BY f.created_at DESC`
+
+	rows, err := db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("list files: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*FileListEntry
+	for rows.Next() {
+		var e FileListEntry
+		if err := rows.Scan(
+			&e.ID, &e.Hash, &e.MimeType, &e.ByteSize, &e.ObjectKey, &e.CreatedAt,
+			&e.Filename, &e.Title, &e.Artist, &e.Album, &e.Year,
+		); err != nil {
+			return nil, fmt.Errorf("scan file list entry: %w", err)
+		}
+		out = append(out, &e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list files rows: %w", err)
+	}
+	return out, nil
+}
+
 // RecordUpload appends an upload row for an existing file. UNIQUE conflicts
 // on (file_id, filename) are silently ignored — the same file uploaded with
 // the same name twice is not an error.

@@ -16,4 +16,8 @@ type Repository interface {
 	// RecordUpload inserts a new file_uploads row for an existing file.
 	// A duplicate (file_id, filename) tuple is silently ignored.
 	RecordUpload(ctx context.Context, fileID int64, filename string) error
+
+	// ListFiles returns all files ordered by upload time descending,
+	// joined with their first filename and media metadata.
+	ListFiles(ctx context.Context) ([]*FileListEntry, error)
 }

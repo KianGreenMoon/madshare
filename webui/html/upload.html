@@ -1,66 +1,464 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Upload</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Madshare</title>
+  <style>
+    :root {
+      --bg:            #0d0d10;
+      --surface:       #16161c;
+      --surface-hover: #1e1e28;
+      --text:          #e2e2ea;
+      --text-muted:    #7a7a8a;
+      --accent:        #7b68ee;
+      --accent-dim:    #5548c8;
+      --border:        #252530;
+      --error:         #e05c5c;
+      --success:       #5cb870;
+      --space-1: 4px;  --space-2: 8px;  --space-3: 12px;
+      --space-4: 16px; --space-5: 24px; --space-6: 32px;
+      --radius: 8px;
+      --player-h: 72px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 15px;
+      line-height: 1.5;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding-bottom: calc(var(--player-h) + var(--space-4));
+    }
+
+    /* ── Header ── */
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: var(--space-4) var(--space-5);
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .logo {
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      color: var(--text);
+    }
+    .logo span { color: var(--accent); }
+
+    .btn-upload {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: var(--space-2) var(--space-4);
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius);
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 150ms ease;
+    }
+    .btn-upload:hover { background: var(--accent-dim); }
+    .btn-upload:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+    /* ── Library ── */
+    main { padding: var(--space-5); max-width: 760px; margin: 0 auto; }
+
+    .section-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      margin-bottom: var(--space-4);
+    }
+
+    .track-list { list-style: none; }
+
+    .track-row {
+      display: flex;
+      align-items: center;
+      gap: var(--space-4);
+      padding: var(--space-3) var(--space-4);
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: background 120ms ease;
+    }
+    .track-row:hover  { background: var(--surface-hover); }
+    .track-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .track-row.playing { background: var(--surface-hover); }
+    .track-row.playing .track-title { color: var(--accent); }
+
+    .track-icon {
+      flex-shrink: 0;
+      width: 36px;
+      height: 36px;
+      border-radius: 6px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      color: var(--text-muted);
+    }
+    .track-row.playing .track-icon { color: var(--accent); border-color: var(--accent); }
+
+    .track-info { flex: 1; min-width: 0; }
+    .track-title {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-weight: 500;
+    }
+    .track-meta {
+      font-size: 13px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .track-size {
+      flex-shrink: 0;
+      font-size: 12px;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: var(--space-7) var(--space-5);
+      color: var(--text-muted);
+    }
+    .empty-state p { margin-top: var(--space-2); font-size: 14px; }
+
+    /* ── Player bar ── */
+    #player-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: var(--player-h);
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: var(--space-4);
+      padding: 0 var(--space-5);
+      z-index: 10;
+    }
+    #player-bar.hidden { display: none; }
+
+    .player-track {
+      flex: 1;
+      min-width: 0;
+    }
+    .player-title {
+      font-size: 14px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .player-artist {
+      font-size: 12px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    audio {
+      flex: 2;
+      min-width: 0;
+      height: 36px;
+      accent-color: var(--accent);
+    }
+
+    /* ── Upload modal ── */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.65);
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-backdrop.hidden { display: none; }
+
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: var(--space-5);
+      width: min(420px, calc(100vw - 2 * var(--space-5)));
+    }
+
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: var(--space-5);
+    }
+    .modal-header h2 { font-size: 16px; font-weight: 600; }
+
+    .btn-close {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 20px;
+      line-height: 1;
+      cursor: pointer;
+      padding: var(--space-1);
+      border-radius: 4px;
+    }
+    .btn-close:hover { color: var(--text); background: var(--surface-hover); }
+    .btn-close:focus-visible { outline: 2px solid var(--accent); }
+
+    .drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: var(--space-6) var(--space-5);
+      text-align: center;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: border-color 150ms ease, background 150ms ease;
+      position: relative;
+    }
+    .drop-zone.dragover {
+      border-color: var(--accent);
+      background: rgba(123,104,238,0.07);
+      color: var(--text);
+    }
+    .drop-zone input[type="file"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+    }
+    .drop-zone .drop-icon { font-size: 28px; margin-bottom: var(--space-2); }
+    .drop-zone p { font-size: 14px; pointer-events: none; }
+    .drop-zone small { font-size: 12px; color: var(--text-muted); pointer-events: none; }
+
+    .upload-status {
+      margin-top: var(--space-4);
+      font-size: 13px;
+      min-height: 20px;
+    }
+    .upload-status.error   { color: var(--error); }
+    .upload-status.success { color: var(--success); }
+  </style>
 </head>
 <body>
-  <h1>Upload file</h1>
 
-  <form id="uploadForm" action="http://localhost:3000/files/upload" method="post" enctype="multipart/form-data">
-    <input type="file" name="file" id="fileInput">
-    <button type="submit">Upload</button>
-  </form>
+<header>
+  <span class="logo">Mad<span>share</span></span>
+  <button class="btn-upload" id="openUpload" aria-haspopup="dialog">
+    &#x2B; Upload
+  </button>
+</header>
 
-  <div id="status" aria-live="polite"></div>
+<main>
+  <p class="section-title">Library</p>
+  <ul class="track-list" id="trackList" role="list" aria-label="Music library">
+    <li class="empty-state" id="emptyState">
+      <span style="font-size:32px">&#9835;</span>
+      <p>No tracks yet. Upload your first file.</p>
+    </li>
+  </ul>
+</main>
 
-  <script>
-    const form = document.getElementById('uploadForm');
-    const fileInput = document.getElementById('fileInput');
-    const status = document.getElementById('status');
+<div id="playerBar" class="hidden" aria-label="Now playing">
+  <div class="player-track">
+    <div class="player-title" id="playerTitle"></div>
+    <div class="player-artist" id="playerArtist"></div>
+  </div>
+  <audio id="audio" controls></audio>
+</div>
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault(); // prevent normal form navigation
+<!-- Upload modal -->
+<div class="modal-backdrop hidden" id="uploadModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="modalTitle">Upload Music</h2>
+      <button class="btn-close" id="closeModal" aria-label="Close">&times;</button>
+    </div>
+    <div class="drop-zone" id="dropZone">
+      <input type="file" id="fileInput" accept="audio/*" aria-label="Choose audio file">
+      <div class="drop-icon">&#9835;</div>
+      <p>Drop an audio file here</p>
+      <small>or click to browse &mdash; MP3, FLAC, OGG, WAV</small>
+    </div>
+    <div class="upload-status" id="uploadStatus" aria-live="polite"></div>
+  </div>
+</div>
 
-      const file = fileInput.files[0];
-      if (!file) {
-        status.textContent = 'Please choose a file.';
+<script type="module">
+  const API = 'http://localhost:3000';
+
+  // ── Library ──────────────────────────────────────────────────────────────
+
+  async function loadLibrary() {
+    let tracks;
+    try {
+      const res = await fetch(`${API}/api/files`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      tracks = await res.json();
+    } catch (err) {
+      console.error('Failed to load library:', err);
+      return;
+    }
+
+    const list = document.getElementById('trackList');
+    const empty = document.getElementById('emptyState');
+
+    if (!tracks || tracks.length === 0) return;
+
+    empty.remove();
+
+    for (const t of tracks) {
+      const title  = t.title  || t.filename;
+      const artist = t.artist || '';
+      const meta   = [artist, t.album, t.year || null].filter(Boolean).join(' · ');
+      const size   = formatBytes(t.byte_size);
+
+      const li = document.createElement('li');
+      li.className = 'track-row';
+      li.tabIndex = 0;
+      li.dataset.url    = `${API}${t.url}`;
+      li.dataset.title  = title;
+      li.dataset.artist = artist;
+      li.setAttribute('role', 'button');
+      li.setAttribute('aria-label', `Play ${title}`);
+
+      li.innerHTML = `
+        <div class="track-icon" aria-hidden="true">&#9835;</div>
+        <div class="track-info">
+          <div class="track-title">${esc(title)}</div>
+          <div class="track-meta">${esc(meta)}</div>
+        </div>
+        <span class="track-size">${esc(size)}</span>
+      `;
+
+      li.addEventListener('click', () => playTrack(li));
+      li.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); playTrack(li); } });
+
+      list.appendChild(li);
+    }
+  }
+
+  // ── Player ───────────────────────────────────────────────────────────────
+
+  let currentRow = null;
+  const audio      = document.getElementById('audio');
+  const playerBar  = document.getElementById('playerBar');
+  const playerTitle  = document.getElementById('playerTitle');
+  const playerArtist = document.getElementById('playerArtist');
+
+  function playTrack(row) {
+    if (currentRow) currentRow.classList.remove('playing');
+    currentRow = row;
+    row.classList.add('playing');
+
+    audio.src = row.dataset.url;
+    audio.play().catch(() => {});
+    playerTitle.textContent  = row.dataset.title;
+    playerArtist.textContent = row.dataset.artist;
+    playerBar.classList.remove('hidden');
+  }
+
+  // ── Upload modal ─────────────────────────────────────────────────────────
+
+  const modal     = document.getElementById('uploadModal');
+  const dropZone  = document.getElementById('dropZone');
+  const fileInput = document.getElementById('fileInput');
+  const status    = document.getElementById('uploadStatus');
+
+  document.getElementById('openUpload').addEventListener('click', openModal);
+  document.getElementById('closeModal').addEventListener('click', closeModal);
+  modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+  function openModal()  { modal.classList.remove('hidden'); fileInput.focus(); }
+  function closeModal() { modal.classList.add('hidden'); setStatus('', ''); }
+
+  dropZone.addEventListener('dragover', e  => { e.preventDefault(); dropZone.classList.add('dragover'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    const file = e.dataTransfer.files[0];
+    if (file) uploadFile(file);
+  });
+
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files[0];
+    if (file) uploadFile(file);
+    fileInput.value = '';
+  });
+
+  async function uploadFile(file) {
+    setStatus('Uploading “' + file.name + '”…', '');
+
+    const fd = new FormData();
+    fd.append('file', file);
+
+    let data;
+    try {
+      const res = await fetch(`${API}/files/upload`, { method: 'POST', body: fd });
+      if (!res.ok) {
+        const msg = await res.text().catch(() => res.statusText);
+        setStatus('Upload failed: ' + msg, 'error');
         return;
       }
+      data = await res.json();
+    } catch (err) {
+      setStatus('Upload error: ' + err.message, 'error');
+      return;
+    }
 
-      const formData = new FormData();
-      formData.append('file', file);
+    const label = data.existed ? 'Already in library' : 'Uploaded';
+    setStatus(label + ': ' + file.name, 'success');
 
-      status.textContent = 'Uploading...';
+    // Refresh the track list so the new file appears
+    document.getElementById('trackList').innerHTML = '';
+    await loadLibrary();
+  }
 
-      try {
-        const res = await fetch(form.action, {
-          method: 'POST',
-          body: formData,
-          // include credentials if your API needs cookies:
-          // credentials: 'include'
-        });
+  function setStatus(msg, type) {
+    status.textContent = msg;
+    status.className   = 'upload-status' + (type ? ' ' + type : '');
+  }
 
-        if (!res.ok) {
-          // try parse json error, fallback to status text
-          let errText = res.statusText;
-          try { const j = await res.json(); errText = j.error || JSON.stringify(j); } catch (_) {}
-          status.textContent = 'Upload failed: ' + errText;
-          return;
-        }
+  // ── Utilities ────────────────────────────────────────────────────────────
 
-        const body = await (res.headers.get('Content-Type') || '').includes('application/json') ? res.json() : null;
-        status.textContent = 'Upload successful.';
+  function formatBytes(n) {
+    if (n < 1024)       return n + ' B';
+    if (n < 1048576)    return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1048576).toFixed(1) + ' MB';
+  }
 
-        // Optional: navigate client-side (uncomment if desired)
-        // window.location.href = '/files';
-        // or to a file detail if API returned one:
-        // if (body && body.url) window.location.href = body.url;
+  function esc(s) {
+    return String(s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
 
-      } catch (err) {
-        status.textContent = 'Upload error: ' + err.message;
-      }
-    });
-  </script>
+  // ── Boot ─────────────────────────────────────────────────────────────────
+  loadLibrary();
+</script>
 </body>
 </html>

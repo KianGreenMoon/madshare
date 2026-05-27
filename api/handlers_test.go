@@ -244,7 +244,7 @@ func TestUploadFile_VideoRejected(t *testing.T) {
 func TestUploadFile_PathTraversalFilename(t *testing.T) {
 	h, _, baseDir := newTestHandler(t)
 	data := []byte("traversal payload")
-	req := buildUploadRequest(t, "file", "../../../etc/passwd", "audio/mpeg", data)
+	req := buildUploadRequest(t, "file", "../../../etc/track.mp3", "audio/mpeg", data)
 	rr := httptest.NewRecorder()
 
 	h.uploadFile(rr, req)
@@ -253,7 +253,7 @@ func TestUploadFile_PathTraversalFilename(t *testing.T) {
 		t.Fatalf("unexpected status %d: %s", rr.Code, rr.Body.String())
 	}
 	// The stored file's basename must be the sanitised name under baseDir.
-	wantBase := "passwd"
+	wantBase := "track.mp3"
 	matches, _ := filepath.Glob(filepath.Join(baseDir, "*", wantBase))
 	if len(matches) != 1 {
 		t.Errorf("expected 1 sanitised %q under baseDir, found %d", wantBase, len(matches))
@@ -262,11 +262,12 @@ func TestUploadFile_PathTraversalFilename(t *testing.T) {
 
 // fakeRepo lets tests force GetFileByHash and InsertFile outcomes.
 type fakeRepo struct {
-	getResult   *database.File
-	getErr      error
-	insertErr   error
-	recordErr   error
-	insertCalls int
+	getResult     *database.File
+	getErr        error
+	insertErr     error
+	recordErr     error
+	insertCalls   int
+	listFilesErr  error
 }
 
 func (f *fakeRepo) GetFileByHash(_ context.Context, _ string) (*database.File, error) {
@@ -284,6 +285,10 @@ func (f *fakeRepo) InsertFile(_ context.Context, file *database.File, _ *databas
 
 func (f *fakeRepo) RecordUpload(_ context.Context, _ int64, _ string) error {
 	return f.recordErr
+}
+
+func (f *fakeRepo) ListFiles(_ context.Context) ([]*database.FileListEntry, error) {
+	return nil, f.listFilesErr
 }
 
 // TestUploadFile_InsertFailureLeavesOrphan verifies that when storage.Put
@@ -403,5 +408,239 @@ func TestNewRouter_Integration(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("GET / status = %d, want 200", resp.StatusCode)
+	}
+}
+
+// ---- listFiles handler ------------------------------------------------------
+
+// TestListFiles_Empty verifies GET /api/files returns an empty JSON array (not
+// null) when no files have been uploaded.
+func TestListFiles_Empty(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/files", nil)
+	rr := httptest.NewRecorder()
+
+	h.listFiles(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	ct := rr.Header().Get("Content-Type")
+	if !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+
+	var items []any
+	if err := json.NewDecoder(rr.Body).Decode(&items); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// Must be an array (len 0), never null.
+	if len(items) != 0 {
+		t.Errorf("items = %v, want empty array", items)
+	}
+}
+
+// TestListFiles_ReturnsUploadedFiles uploads a file then checks that
+// GET /api/files returns it with the expected fields.
+func TestListFiles_ReturnsUploadedFiles(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+
+	// Upload a file first.
+	req := buildUploadRequest(t, "file", "track.mp3", "audio/mpeg", []byte("audio content"))
+	rr := httptest.NewRecorder()
+	h.uploadFile(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("upload status = %d; body: %s", rr.Code, rr.Body.String())
+	}
+
+	// Extract the hash from the upload response so we can check it in the list.
+	var uploadResp map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&uploadResp); err != nil {
+		t.Fatalf("decode upload response: %v", err)
+	}
+	wantHash, _ := uploadResp["hash"].(string)
+
+	// Now list.
+	listReq := httptest.NewRequest(http.MethodGet, "/api/files", nil)
+	listRR := httptest.NewRecorder()
+	h.listFiles(listRR, listReq)
+
+	if listRR.Code != http.StatusOK {
+		t.Fatalf("list status = %d; body: %s", listRR.Code, listRR.Body.String())
+	}
+
+	type fileItem struct {
+		ID       int64  `json:"id"`
+		Hash     string `json:"hash"`
+		Filename string `json:"filename"`
+		MimeType string `json:"mime_type"`
+		ByteSize int64  `json:"byte_size"`
+		URL      string `json:"url"`
+		Title    string `json:"title"`
+		Artist   string `json:"artist"`
+	}
+	var items []fileItem
+	if err := json.NewDecoder(listRR.Body).Decode(&items); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(items))
+	}
+	got := items[0]
+	if got.Hash != wantHash {
+		t.Errorf("hash = %q, want %q", got.Hash, wantHash)
+	}
+	if got.Filename != "track.mp3" {
+		t.Errorf("filename = %q, want track.mp3", got.Filename)
+	}
+	if got.MimeType != "audio/mpeg" {
+		t.Errorf("mime_type = %q, want audio/mpeg", got.MimeType)
+	}
+	if got.ByteSize <= 0 {
+		t.Errorf("byte_size = %d, want > 0", got.ByteSize)
+	}
+	if got.URL == "" {
+		t.Error("url field is empty")
+	}
+	if got.ID <= 0 {
+		t.Errorf("id = %d, want > 0", got.ID)
+	}
+}
+
+// TestListFiles_URLFormatMatchesFileServer verifies that the URL returned by
+// listFiles actually matches the path where the file server will find the blob.
+// A mismatch here means the download link is broken.
+func TestListFiles_URLFormatMatchesFileServer(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	data := []byte("url test content")
+	req := buildUploadRequest(t, "file", "song.mp3", "audio/mpeg", data)
+	rr := httptest.NewRecorder()
+	h.uploadFile(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("upload status = %d", rr.Code)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/files", nil)
+	listRR := httptest.NewRecorder()
+	h.listFiles(listRR, listReq)
+
+	var items []map[string]any
+	if err := json.NewDecoder(listRR.Body).Decode(&items); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d", len(items))
+	}
+
+	url, _ := items[0]["url"].(string)
+	hash, _ := items[0]["hash"].(string)
+	wantURLPrefix := "/files/" + hash + "/"
+	if !strings.HasPrefix(url, wantURLPrefix) {
+		t.Errorf("url = %q, want prefix %q; download link is broken", url, wantURLPrefix)
+	}
+}
+
+// TestListFiles_DBError verifies that a repository error returns 500.
+func TestListFiles_DBError(t *testing.T) {
+	baseDir := t.TempDir()
+	repo := &fakeRepo{} // overriding ListFiles via embedding
+	repo.listFilesErr = errors.New("simulated db failure")
+	h := &handler{
+		storage:  storage.NewLocal(baseDir),
+		repo:     repo,
+		cacheDir: t.TempDir(),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/files", nil)
+	rr := httptest.NewRecorder()
+	h.listFiles(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rr.Code)
+	}
+}
+
+// TestListFiles_CORSHeader verifies that listFiles sets the wildcard CORS header.
+func TestListFiles_CORSHeader(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/files", nil)
+	rr := httptest.NewRecorder()
+	h.listFiles(rr, req)
+
+	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want *", got)
+	}
+}
+
+// ---- Security: MIME bypass via filename extension ---------------------------
+
+// TestUploadFile_DisallowedExtensionRejected verifies that files with dangerous
+// extensions are rejected even when Content-Type claims an allowed audio type.
+// This guards against stored XSS: without this check an attacker could upload
+// evil.html with Content-Type: audio/mpeg and the file server would serve it
+// as text/html.
+func TestUploadFile_DisallowedExtensionRejected(t *testing.T) {
+	cases := []struct {
+		filename string
+		mime     string
+	}{
+		{"evil.html", "audio/mpeg"},
+		{"evil.js", "audio/mpeg"},
+		{"evil.svg", "audio/ogg"},
+		{"evil.php", "audio/flac"},
+		{"noext", "audio/mpeg"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.filename, func(t *testing.T) {
+			h, _, _ := newTestHandler(t)
+			req := buildUploadRequest(t, "file", tc.filename, tc.mime, []byte("<script>alert(1)</script>"))
+			rr := httptest.NewRecorder()
+			h.uploadFile(rr, req)
+			if rr.Code != http.StatusUnsupportedMediaType {
+				t.Errorf("status = %d, want 415 for %q with %s", rr.Code, tc.filename, tc.mime)
+			}
+		})
+	}
+}
+
+// TestUploadFile_TraversalFilenameProducesCorrectURL verifies that a filename
+// containing path-traversal components ("../../../music/track.mp3") is
+// sanitized to its base component ("track.mp3") by the Go standard library's
+// mime/multipart parser (which calls filepath.Base on every part filename per
+// RFC 7578 §4.2). Both the stored blob path and the download URL are safe.
+func TestUploadFile_TraversalFilenameProducesCorrectURL(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	data := []byte("traversal url test")
+	req := buildUploadRequest(t, "file", "../../../music/track.mp3", "audio/mpeg", data)
+	rr := httptest.NewRecorder()
+	h.uploadFile(rr, req)
+
+	if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+		t.Fatalf("upload status = %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Now list files and check the URL.
+	listReq := httptest.NewRequest(http.MethodGet, "/api/files", nil)
+	listRR := httptest.NewRecorder()
+	h.listFiles(listRR, listReq)
+
+	var items []map[string]any
+	if err := json.NewDecoder(listRR.Body).Decode(&items); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d", len(items))
+	}
+
+	url, _ := items[0]["url"].(string)
+	hash, _ := items[0]["hash"].(string)
+
+	// Go's multipart parser applies filepath.Base to every filename (RFC 7578 §4.2),
+	// so header.Filename == "track.mp3" (not the raw "../../../music/track.mp3").
+	// The ObjectKey and download URL therefore resolve correctly.
+	wantURL := "/files/" + hash + "/track.mp3"
+	if url != wantURL {
+		t.Errorf("url = %q, want %q — Go multipart sanitization may have changed",
+			url, wantURL)
 	}
 }

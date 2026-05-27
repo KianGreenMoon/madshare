@@ -25,6 +25,8 @@ func NewRouter(store storage.Storage, repo database.Repository, cacheDir string)
 		w.Write([]byte("Hello World!"))
 	})
 
+	r.Get("/api/files", h.listFiles)
+
 	workDir, err := os.Getwd()
 	if err != nil {
 		log.Printf("getwd: %v; using relative path", err)
