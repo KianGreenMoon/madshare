@@ -25,17 +25,19 @@ type FileUpload struct {
 // FileListEntry is a flattened view of a file row joined with its first
 // upload filename and media_metadata tags. Used for the library listing.
 type FileListEntry struct {
-	ID        int64
-	Hash      string
-	Filename  string
-	MimeType  string
-	ByteSize  int64
-	ObjectKey string
-	CreatedAt int64
-	Title     string
-	Artist    string
-	Album     string
-	Year      int64
+	ID              int64
+	Hash            string
+	Filename        string
+	MimeType        string
+	ByteSize        int64
+	ObjectKey       string
+	CreatedAt       int64
+	Title           string
+	Artist          string
+	AlbumArtist     sql.NullString
+	Album           string
+	Year            int64
+	DurationSeconds sql.NullFloat64
 }
 
 // MediaMetadata is a row in the media_metadata table. All tag fields are

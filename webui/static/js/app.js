@@ -27,7 +27,9 @@ function applyTheme(name) {
 let playlist             = [];
 let libraryLoading       = false; // BUG-03: concurrent call guard
 let libraryReloadPending = false; // BUG-03: queue at most one extra reload
+let currentSort          = 'all'; // active sort-tab key
 
+// Fetch tracks from API, rebuild playlist array, then re-render.
 async function loadLibrary() {
   if (libraryLoading) { libraryReloadPending = true; return; } // BUG-03
   libraryLoading = true;
@@ -42,56 +44,27 @@ async function loadLibrary() {
       return;
     }
 
-    const list  = document.getElementById('trackList');
-    const empty = document.getElementById('emptyState');
-
-    // BUG-08/01: remove only track rows; leave #emptyState in the DOM
-    list.querySelectorAll('.track-row').forEach(el => el.remove());
     playlist = [];
 
-    if (!tracks || tracks.length === 0) {
-      if (empty) empty.style.display = ''; // BUG-13: show empty state again
-      return;
-    }
-
-    if (empty) empty.style.display = 'none'; // BUG-08: hide, never remove
-
-    tracks.forEach((t, i) => {
-      const title  = t.title  || t.filename;
-      const artist = t.artist || '';
-      const meta   = [artist, t.album, t.year || null].filter(Boolean).join(' · ');
-      const dur    = t.duration ? fmtTime(t.duration) : '—'; // BUG-09: stays '—' until API exposes duration
-
-      playlist.push({ url: `${API}${t.url}`, title, artist });
-
-      const li = document.createElement('li');
-      li.className = 'track-row';
-      li.tabIndex  = 0;
-      li.dataset.idx = i;
-      li.setAttribute('role', 'button');
-      li.setAttribute('aria-label', `Play ${title}`);
-      li.innerHTML = `
-        <span class="track-num">${i + 1}</span>
-        <span class="track-icon-playing" aria-hidden="true">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-        </span>
-        <div class="track-info">
-          <div class="track-title">${esc(title)}</div>
-          <div class="track-meta">${esc(meta)}</div>
-        </div>
-        <span class="track-dur">${esc(dur)}</span>
-      `;
-      li.addEventListener('click', () => playIndex(i));
-      li.addEventListener('keydown', e => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); playIndex(i); }
+    if (tracks && tracks.length > 0) {
+      tracks.forEach(t => {
+        const title  = t.title  || t.filename;
+        const artist = t.artist || '';
+        const dur    = t.duration ? fmtTime(t.duration) : '—'; // BUG-09: stays '—' until API exposes duration
+        playlist.push({
+          url:         `${API}${t.url}`,
+          title,
+          artist,
+          albumArtist: t.album_artist || '',
+          album:       t.album || '',
+          year:        t.year  || null,
+          dur,
+        });
       });
-      list.appendChild(li);
-    });
-
-    // BUG-02: restore playing highlight if audio is still running after reload
-    if (currentIndex >= 0 && currentIndex < playlist.length) {
-      list.querySelectorAll('.track-row')[currentIndex]?.classList.add('playing');
     }
+
+    // Re-render using the active sort — no extra fetch needed on tab switch
+    renderLibrary();
   } finally {
     libraryLoading = false;
     if (libraryReloadPending) { // BUG-03: flush one queued reload
@@ -100,6 +73,129 @@ async function loadLibrary() {
     }
   }
 }
+
+// Render playlist into the DOM according to currentSort.
+// Called by loadLibrary() and by sort-tab clicks.
+function renderLibrary() {
+  const list  = document.getElementById('trackList');
+  const empty = document.getElementById('emptyState');
+
+  // BUG-08/01: remove only track rows and group headers; leave #emptyState in DOM
+  list.querySelectorAll('.track-row, .group-header').forEach(el => el.remove());
+
+  if (playlist.length === 0) {
+    if (empty) empty.style.display = ''; // BUG-13: show empty state again
+    return;
+  }
+
+  if (empty) empty.style.display = 'none'; // BUG-08: hide, never remove
+
+  if (currentSort === 'all') {
+    // Numbered flat list — API response order (newest first)
+    playlist.forEach((track, i) => {
+      list.appendChild(makeTrackRow(track, i, i, false));
+    });
+  } else {
+    // Grouped view: group by field, sort groups alpha (unknown/empty last)
+    const field = currentSort === 'artist'       ? 'artist'
+                : currentSort === 'album-artist' ? 'albumArtist'
+                :                                  'album';
+
+    // Build map: groupKey -> [{track, originalIndex}]
+    const groups = new Map();
+    playlist.forEach((track, i) => {
+      const key = track[field] || '';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push({ track, originalIndex: i });
+    });
+
+    // Sort group keys: known names first (alpha), empty/unknown last
+    const sortedKeys = [...groups.keys()].sort((a, b) => {
+      if (!a && !b) return 0;
+      if (!a) return 1;   // empty last
+      if (!b) return -1;
+      return a.localeCompare(b, undefined, { sensitivity: 'base' });
+    });
+
+    sortedKeys.forEach(key => {
+      // Group header <li>
+      const header = document.createElement('li');
+      header.className = key ? 'group-header' : 'group-header group-header--unknown';
+      header.setAttribute('aria-hidden', 'true'); // decorative — list items are labelled
+      header.textContent = key || 'Unknown';
+      list.appendChild(header);
+
+      // Track rows for this group — pass originalIndex so playIndex() still works
+      groups.get(key).forEach(({ track, originalIndex }) => {
+        list.appendChild(makeTrackRow(track, originalIndex, null, true));
+      });
+    });
+  }
+
+  // BUG-02: restore playing highlight after re-render
+  if (currentIndex >= 0 && currentIndex < playlist.length) {
+    list.querySelectorAll('.track-row').forEach(row => {
+      row.classList.toggle('playing', Number(row.dataset.idx) === currentIndex);
+    });
+  }
+}
+
+// Build a single <li class="track-row"> element.
+// idx        — index into playlist[] used by playIndex()
+// displayNum — 1-based display number shown in .track-num (null hides it via "grouped" class)
+// grouped    — if true, adds "grouped" class (hides num column, playing icon)
+function makeTrackRow(track, idx, displayNum, grouped) {
+  const meta = [track.artist, track.album, track.year].filter(Boolean).join(' · ');
+
+  const li = document.createElement('li');
+  li.className = grouped ? 'track-row grouped' : 'track-row';
+  li.tabIndex  = 0;
+  li.dataset.idx = idx;
+  li.setAttribute('role', 'button');
+  li.setAttribute('aria-label', `Play ${track.title}`);
+  li.innerHTML = `
+    <span class="track-num">${grouped ? '' : (displayNum + 1)}</span>
+    <span class="track-icon-playing" aria-hidden="true">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+    </span>
+    <div class="track-info">
+      <div class="track-title">${esc(track.title)}</div>
+      <div class="track-meta">${esc(meta)}</div>
+    </div>
+    <span class="track-dur">${esc(track.dur)}</span>
+  `;
+  li.addEventListener('click', () => playIndex(idx));
+  li.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); playIndex(idx); }
+  });
+  return li;
+}
+
+// ── Sort tabs ─────────────────────────────────────────────────────────────
+
+const sortTabs = document.querySelectorAll('.sort-tab');
+
+sortTabs.forEach(tab => {
+  tab.addEventListener('click', () => {
+    currentSort = tab.dataset.sort;
+    sortTabs.forEach(t => {
+      const active = t === tab;
+      t.classList.toggle('active', active);
+      t.setAttribute('aria-selected', String(active));
+    });
+    renderLibrary();
+  });
+
+  // Arrow key navigation between tabs (ARIA tabs pattern)
+  tab.addEventListener('keydown', e => {
+    const tabs = [...sortTabs];
+    const i    = tabs.indexOf(tab);
+    let target = null;
+    if (e.key === 'ArrowRight') target = tabs[(i + 1) % tabs.length];
+    if (e.key === 'ArrowLeft')  target = tabs[(i - 1 + tabs.length) % tabs.length];
+    if (target) { e.preventDefault(); target.focus(); }
+  });
+});
 
 // ── Player ───────────────────────────────────────────────────────────────
 
@@ -133,8 +229,9 @@ function playIndex(idx) {
   playerArtist.textContent = track.artist;
   playerBar.classList.remove('hidden');
 
-  document.querySelectorAll('.track-row').forEach((row, i) => {
-    row.classList.toggle('playing', i === idx);
+  // Match by data-idx so grouped views (non-sequential DOM order) work correctly
+  document.querySelectorAll('.track-row').forEach(row => {
+    row.classList.toggle('playing', Number(row.dataset.idx) === idx);
   });
 }
 
@@ -218,7 +315,10 @@ volumeSlider.addEventListener('input', () => { audio.volume = volumeSlider.value
 
 function fmtTime(s) {
   if (!isFinite(s)) return '0:00';
-  return Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0');
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = String(Math.floor(s % 60)).padStart(2, '0');
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
 }
 
 // ── Upload modal ─────────────────────────────────────────────────────────

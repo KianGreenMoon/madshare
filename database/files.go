@@ -103,8 +103,10 @@ func (db *DB) ListFiles(ctx context.Context) ([]*FileListEntry, error) {
 			COALESCE((SELECT filename FROM file_uploads WHERE file_id = f.id LIMIT 1), f.hash) AS filename,
 			COALESCE(m.title,  '') AS title,
 			COALESCE(m.artist, '') AS artist,
+			m.album_artist,
 			COALESCE(m.album,  '') AS album,
-			COALESCE(m.year,    0) AS year
+			COALESCE(m.year,    0) AS year,
+			m.duration_seconds
 		FROM files f
 		LEFT JOIN media_metadata m ON m.file_id = f.id
 		ORDER BY f.created_at DESC`
@@ -120,7 +122,7 @@ func (db *DB) ListFiles(ctx context.Context) ([]*FileListEntry, error) {
 		var e FileListEntry
 		if err := rows.Scan(
 			&e.ID, &e.Hash, &e.MimeType, &e.ByteSize, &e.ObjectKey, &e.CreatedAt,
-			&e.Filename, &e.Title, &e.Artist, &e.Album, &e.Year,
+			&e.Filename, &e.Title, &e.Artist, &e.AlbumArtist, &e.Album, &e.Year, &e.DurationSeconds,
 		); err != nil {
 			return nil, fmt.Errorf("scan file list entry: %w", err)
 		}

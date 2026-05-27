@@ -24,6 +24,12 @@
 
 <main>
   <p class="section-title">Library</p>
+  <div class="sort-tabs" role="tablist" aria-label="Sort library by">
+    <button class="sort-tab active" role="tab" aria-selected="true"  data-sort="all">All</button>
+    <button class="sort-tab"        role="tab" aria-selected="false" data-sort="artist">Artist</button>
+    <button class="sort-tab"        role="tab" aria-selected="false" data-sort="album-artist">Album Artist</button>
+    <button class="sort-tab"        role="tab" aria-selected="false" data-sort="album">Album</button>
+  </div>
   <ul class="track-list" id="trackList" role="list" aria-label="Music library">
     <li class="empty-state" id="emptyState">
       <span style="font-size:40px">&#9835;</span>

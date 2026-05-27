@@ -157,31 +157,39 @@ func (h *handler) listFiles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type fileItem struct {
-		ID       int64  `json:"id"`
-		Hash     string `json:"hash"`
-		Filename string `json:"filename"`
-		MimeType string `json:"mime_type"`
-		ByteSize int64  `json:"byte_size"`
-		URL      string `json:"url"`
-		Title    string `json:"title"`
-		Artist   string `json:"artist"`
-		Album    string `json:"album"`
-		Year     int64  `json:"year"`
+		ID          int64    `json:"id"`
+		Hash        string   `json:"hash"`
+		Filename    string   `json:"filename"`
+		MimeType    string   `json:"mime_type"`
+		ByteSize    int64    `json:"byte_size"`
+		URL         string   `json:"url"`
+		Title       string   `json:"title"`
+		Artist      string   `json:"artist"`
+		AlbumArtist string   `json:"album_artist"`
+		Album       string   `json:"album"`
+		Year        int64    `json:"year"`
+		Duration    *float64 `json:"duration"` // seconds; null when not yet extracted
 	}
 
 	items := make([]fileItem, 0, len(entries))
 	for _, e := range entries {
+		var dur *float64
+		if e.DurationSeconds.Valid {
+			dur = &e.DurationSeconds.Float64
+		}
 		items = append(items, fileItem{
-			ID:       e.ID,
-			Hash:     e.Hash,
-			Filename: e.Filename,
-			MimeType: e.MimeType,
-			ByteSize: e.ByteSize,
-			URL:      "/files/" + e.ObjectKey,
-			Title:    e.Title,
-			Artist:   e.Artist,
-			Album:    e.Album,
-			Year:     e.Year,
+			ID:          e.ID,
+			Hash:        e.Hash,
+			Filename:    e.Filename,
+			MimeType:    e.MimeType,
+			ByteSize:    e.ByteSize,
+			URL:         "/files/" + e.ObjectKey,
+			Title:       e.Title,
+			Artist:      e.Artist,
+			AlbumArtist: e.AlbumArtist.String,
+			Album:       e.Album,
+			Year:        e.Year,
+			Duration:    dur,
 		})
 	}
 	writeJSON(w, http.StatusOK, items)
