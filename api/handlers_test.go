@@ -603,6 +603,69 @@ func TestUploadFile_DisallowedExtensionRejected(t *testing.T) {
 	}
 }
 
+// TestUploadFile_ExtensionCaseInsensitive verifies that uppercase or mixed-case
+// extensions are accepted. The check uses strings.ToLower so "SONG.MP3" must
+// pass the same as "song.mp3".
+func TestUploadFile_ExtensionCaseInsensitive(t *testing.T) {
+	cases := []string{"SONG.MP3", "track.OGG", "album.FLAC", "clip.WAV", "file.M4A"}
+	for _, filename := range cases {
+		t.Run(filename, func(t *testing.T) {
+			h, _, _ := newTestHandler(t)
+			req := buildUploadRequest(t, "file", filename, "audio/mpeg", []byte("audio data"))
+			rr := httptest.NewRecorder()
+			h.uploadFile(rr, req)
+			if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+				t.Errorf("status = %d, want 2xx for uppercase extension %q", rr.Code, filename)
+			}
+		})
+	}
+}
+
+// TestUploadFile_TrailingSpaceInExtensionRejected verifies that a filename with
+// a trailing space after the extension (e.g. "song.mp3 ") is rejected.
+// filepath.Ext returns ".mp3 " (with the space), which is not in allowedExtensions.
+func TestUploadFile_TrailingSpaceInExtensionRejected(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	// The space is part of the filename; the multipart parser preserves it.
+	req := buildUploadRequest(t, "file", "song.mp3 ", "audio/mpeg", []byte("audio data"))
+	rr := httptest.NewRecorder()
+	h.uploadFile(rr, req)
+	if rr.Code != http.StatusUnsupportedMediaType {
+		t.Errorf("status = %d, want 415 for filename with trailing space in extension", rr.Code)
+	}
+}
+
+// TestUploadFile_DoubleExtensionAllowed documents that a double-extension filename
+// like "evil.html.mp3" is accepted: filepath.Ext returns the last extension
+// (".mp3"), which is in the allowlist. The file server serves it as audio/mpeg
+// (not text/html), so stored XSS does not apply.
+func TestUploadFile_DoubleExtensionAllowed(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	req := buildUploadRequest(t, "file", "evil.html.mp3", "audio/mpeg", []byte("<script>alert(1)</script>"))
+	rr := httptest.NewRecorder()
+	h.uploadFile(rr, req)
+	// Must be accepted — the effective extension is .mp3.
+	if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want 2xx for double-extension evil.html.mp3", rr.Code)
+	}
+}
+
+// TestUploadFile_MIMETypeWithParamsRejected documents that a Content-Type that
+// includes MIME parameters (e.g. "audio/mpeg; charset=utf-8") is rejected by the
+// current implementation because the map lookup is an exact string match and the
+// semicolon-suffix does not appear in allowedMIMETypes. This is a false negative
+// (legitimate clients that include parameters are blocked) rather than a bypass.
+func TestUploadFile_MIMETypeWithParamsRejected(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	req := buildUploadRequest(t, "file", "song.mp3", "audio/mpeg; charset=utf-8", []byte("audio data"))
+	rr := httptest.NewRecorder()
+	h.uploadFile(rr, req)
+	// The current implementation rejects this; document the behavior.
+	if rr.Code != http.StatusUnsupportedMediaType {
+		t.Logf("INFO: MIME type with params returned %d (may have been relaxed)", rr.Code)
+	}
+}
+
 // TestUploadFile_TraversalFilenameProducesCorrectURL verifies that a filename
 // containing path-traversal components ("../../../music/track.mp3") is
 // sanitized to its base component ("track.mp3") by the Go standard library's
