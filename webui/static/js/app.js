@@ -22,6 +22,18 @@ function applyTheme(name) {
   });
 }
 
+// ── Duration cache ────────────────────────────────────────────────────────
+// Persists fetched durations across page loads so headers aren't re-fetched.
+const DUR_CACHE_KEY = 'madshare-durations';
+function loadDurCache() {
+  try { return JSON.parse(localStorage.getItem(DUR_CACHE_KEY) || '{}'); }
+  catch { return {}; }
+}
+function saveDurCache(c) {
+  try { localStorage.setItem(DUR_CACHE_KEY, JSON.stringify(c)); }
+  catch {} // quota exceeded — not fatal
+}
+
 // ── Library ──────────────────────────────────────────────────────────────
 
 let playlist             = [];
@@ -45,16 +57,17 @@ async function loadLibrary() {
     }
 
     playlist = [];
+    const durCache = loadDurCache();
 
     if (tracks && tracks.length > 0) {
       tracks.forEach(t => {
-        const title  = t.title  || t.filename;
+        const title = t.title  || t.filename;
         const artist = t.artist || '';
-        const dur    = t.duration ? fmtTime(t.duration) : '—'; // BUG-09: stays '—' until API exposes duration
+        const url   = `${API}${t.url}`;
+        // Prefer server duration, fall back to cached, fall back to '—'
+        const dur   = t.duration ? fmtTime(t.duration) : (durCache[url] || '—');
         playlist.push({
-          url:         `${API}${t.url}`,
-          title,
-          artist,
+          url, title, artist,
           albumArtist: t.album_artist || '',
           album:       t.album || '',
           year:        t.year  || null,
@@ -65,6 +78,7 @@ async function loadLibrary() {
 
     // Re-render using the active sort — no extra fetch needed on tab switch
     renderLibrary();
+    fetchMissingDurations(); // background: fetch audio headers for tracks still showing '—'
   } finally {
     libraryLoading = false;
     if (libraryReloadPending) { // BUG-03: flush one queued reload
@@ -171,6 +185,46 @@ function makeTrackRow(track, idx, displayNum, grouped) {
   return li;
 }
 
+// Fetch audio metadata headers in the background for tracks still showing '—'.
+// Runs 4 requests concurrently; saves results to localStorage so the next
+// page load shows durations immediately without any fetch.
+async function fetchMissingDurations() {
+  const cache   = loadDurCache();
+  const missing = playlist
+    .map((track, i) => ({ track, i }))
+    .filter(({ track }) => track.dur === '—');
+
+  if (!missing.length) return;
+
+  function fetchOne({ track, i }) {
+    return new Promise(resolve => {
+      const a   = new Audio();
+      a.preload = 'metadata';
+      a.src     = track.url;
+      const done = () => {
+        if (isFinite(a.duration) && a.duration > 0) {
+          const dur      = fmtTime(a.duration);
+          track.dur      = dur;
+          cache[track.url] = dur;
+          // Update every rendered row for this index (may appear across sort views)
+          document.querySelectorAll(`.track-row[data-idx="${i}"] .track-dur`)
+            .forEach(el => { el.textContent = dur; });
+        }
+        a.src = ''; // release
+        resolve();
+      };
+      a.addEventListener('loadedmetadata', done, { once: true });
+      a.addEventListener('error',          done, { once: true });
+    });
+  }
+
+  const CONCURRENCY = 4;
+  for (let j = 0; j < missing.length; j += CONCURRENCY) {
+    await Promise.all(missing.slice(j, j + CONCURRENCY).map(fetchOne));
+    saveDurCache(cache);
+  }
+}
+
 // ── Sort tabs ─────────────────────────────────────────────────────────────
 
 const sortTabs = document.querySelectorAll('.sort-tab');
@@ -267,6 +321,20 @@ btnShuffle.addEventListener('click', () => {
 
 audio.addEventListener('play',  syncPlayIcon);
 audio.addEventListener('pause', syncPlayIcon);
+
+// When a track loads into the player, update its duration in the list immediately.
+audio.addEventListener('loadedmetadata', () => {
+  if (currentIndex < 0 || !isFinite(audio.duration) || audio.duration <= 0) return;
+  const track = playlist[currentIndex];
+  if (track.dur !== '—') return; // already known
+  const dur = fmtTime(audio.duration);
+  track.dur = dur;
+  const cache = loadDurCache();
+  cache[track.url] = dur;
+  saveDurCache(cache);
+  document.querySelectorAll(`.track-row[data-idx="${currentIndex}"] .track-dur`)
+    .forEach(el => { el.textContent = dur; });
+});
 audio.addEventListener('ended', () => {
   if (shuffle && playlist.length > 1) {
     // BUG-05: build pool of other indices — no infinite loop possible
