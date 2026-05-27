@@ -1,11 +1,12 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Madshare</title>
   <style>
-    :root {
+    /* ── Themes ── */
+    :root[data-theme="dark"] {
       --bg:            #0d0d10;
       --surface:       #16161c;
       --surface-hover: #1e1e28;
@@ -13,13 +14,60 @@
       --text-muted:    #7a7a8a;
       --accent:        #7b68ee;
       --accent-dim:    #5548c8;
+      --accent-glow:   rgba(123,104,238,0.15);
       --border:        #252530;
       --error:         #e05c5c;
       --success:       #5cb870;
+      --range-track:   #252530;
+    }
+    :root[data-theme="light"] {
+      --bg:            #f5f5f7;
+      --surface:       #ffffff;
+      --surface-hover: #ededf5;
+      --text:          #1a1a2e;
+      --text-muted:    #8888a0;
+      --accent:        #6c5ce7;
+      --accent-dim:    #5048c0;
+      --accent-glow:   rgba(108,92,231,0.12);
+      --border:        #dedee8;
+      --error:         #d63031;
+      --success:       #00b894;
+      --range-track:   #dedee8;
+    }
+    :root[data-theme="ocean"] {
+      --bg:            #0a1628;
+      --surface:       #0f2040;
+      --surface-hover: #162a50;
+      --text:          #c8e6f5;
+      --text-muted:    #5a8aaa;
+      --accent:        #00cec9;
+      --accent-dim:    #00a8a4;
+      --accent-glow:   rgba(0,206,201,0.12);
+      --border:        #1a3050;
+      --error:         #ff7675;
+      --success:       #55efc4;
+      --range-track:   #1a3050;
+    }
+    :root[data-theme="sunset"] {
+      --bg:            #1a0a10;
+      --surface:       #26101a;
+      --surface-hover: #321525;
+      --text:          #f5e0d0;
+      --text-muted:    #9a6a60;
+      --accent:        #fd7c6e;
+      --accent-dim:    #e05a4e;
+      --accent-glow:   rgba(253,124,110,0.12);
+      --border:        #3a1820;
+      --error:         #ff4757;
+      --success:       #7bed9f;
+      --range-track:   #3a1820;
+    }
+
+    :root {
       --space-1: 4px;  --space-2: 8px;  --space-3: 12px;
       --space-4: 16px; --space-5: 24px; --space-6: 32px;
       --radius: 8px;
-      --player-h: 72px;
+      --player-h: 84px;
     }
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -54,6 +102,37 @@
       color: var(--text);
     }
     .logo span { color: var(--accent); }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+    }
+
+    .theme-switcher {
+      display: flex;
+      gap: 3px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 3px;
+    }
+
+    .theme-dot {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: 2px solid transparent;
+      cursor: pointer;
+      transition: transform 120ms ease, border-color 120ms ease;
+    }
+    .theme-dot:hover { transform: scale(1.15); }
+    .theme-dot[data-theme="dark"]   { background: linear-gradient(135deg, #0d0d10 50%, #7b68ee 50%); }
+    .theme-dot[data-theme="light"]  { background: linear-gradient(135deg, #f5f5f7 50%, #6c5ce7 50%); }
+    .theme-dot[data-theme="ocean"]  { background: linear-gradient(135deg, #0a1628 50%, #00cec9 50%); }
+    .theme-dot[data-theme="sunset"] { background: linear-gradient(135deg, #1a0a10 50%, #fd7c6e 50%); }
+    .theme-dot.active { border-color: var(--accent); }
+    .theme-dot:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
     .btn-upload {
       display: flex;
@@ -100,6 +179,25 @@
     .track-row.playing { background: var(--surface-hover); }
     .track-row.playing .track-title { color: var(--accent); }
 
+    .track-num {
+      flex-shrink: 0;
+      width: 22px;
+      text-align: right;
+      font-size: 13px;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .track-row.playing .track-num { display: none; }
+    .track-icon-playing {
+      display: none;
+      flex-shrink: 0;
+      width: 22px;
+      align-items: center;
+      justify-content: center;
+      color: var(--accent);
+    }
+    .track-row.playing .track-icon-playing { display: flex; }
+
     .track-icon {
       flex-shrink: 0;
       width: 36px;
@@ -139,7 +237,7 @@
 
     .empty-state {
       text-align: center;
-      padding: var(--space-7) var(--space-5);
+      padding: 48px var(--space-5);
       color: var(--text-muted);
     }
     .empty-state p { margin-top: var(--space-2); font-size: 14px; }
@@ -147,19 +245,40 @@
     /* ── Player bar ── */
     #player-bar {
       position: fixed;
-      bottom: 0;
-      left: 0;
-      right: 0;
-      height: var(--player-h);
+      bottom: 0; left: 0; right: 0;
       background: var(--surface);
       border-top: 1px solid var(--border);
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+    }
+    #player-bar.hidden { display: none; }
+
+    /* Progress bar */
+    .progress-wrap {
+      position: relative;
+      width: 100%;
+      height: 4px;
+      background: var(--range-track);
+      cursor: pointer;
+      transition: height 100ms ease;
+    }
+    .progress-wrap:hover { height: 6px; }
+    .progress-fill {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 0%;
+      background: var(--accent);
+      pointer-events: none;
+    }
+
+    .player-main {
       display: flex;
       align-items: center;
       gap: var(--space-4);
-      padding: 0 var(--space-5);
-      z-index: 10;
+      padding: var(--space-2) var(--space-5);
+      height: 80px;
     }
-    #player-bar.hidden { display: none; }
 
     .player-track {
       flex: 1;
@@ -180,12 +299,78 @@
       text-overflow: ellipsis;
     }
 
-    audio {
-      flex: 2;
-      min-width: 0;
-      height: 36px;
-      accent-color: var(--accent);
+    .player-controls {
+      display: flex;
+      align-items: center;
+      gap: var(--space-1);
     }
+
+    .ctrl-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-radius: 50%;
+      width: 36px;
+      height: 36px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 120ms ease, background 120ms ease;
+      padding: 0;
+      flex-shrink: 0;
+    }
+    .ctrl-btn:hover { color: var(--text); background: var(--surface-hover); }
+    .ctrl-btn:focus-visible { outline: 2px solid var(--accent); }
+
+    .ctrl-btn.primary {
+      background: var(--accent);
+      color: #fff;
+      width: 42px;
+      height: 42px;
+    }
+    .ctrl-btn.primary:hover { background: var(--accent-dim); color: #fff; }
+
+    .player-time {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .player-volume {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      color: var(--text-muted);
+    }
+
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      height: 4px;
+      border-radius: 2px;
+      background: var(--range-track);
+      cursor: pointer;
+      outline: none;
+    }
+    input[type="range"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: none;
+    }
+
+    #volume-slider { width: 76px; }
 
     /* ── Upload modal ── */
     .modal-backdrop {
@@ -240,7 +425,7 @@
     }
     .drop-zone.dragover {
       border-color: var(--accent);
-      background: rgba(123,104,238,0.07);
+      background: var(--accent-glow);
       color: var(--text);
     }
     .drop-zone input[type="file"] {
@@ -266,9 +451,15 @@
 
 <header>
   <span class="logo">Mad<span>share</span></span>
-  <button class="btn-upload" id="openUpload" aria-haspopup="dialog">
-    &#x2B; Upload
-  </button>
+  <div class="header-actions">
+    <div class="theme-switcher" role="group" aria-label="Color theme">
+      <button class="theme-dot active" data-theme="dark"   title="Dark"   aria-label="Dark theme"   aria-pressed="true"></button>
+      <button class="theme-dot"        data-theme="light"  title="Light"  aria-label="Light theme"  aria-pressed="false"></button>
+      <button class="theme-dot"        data-theme="ocean"  title="Ocean"  aria-label="Ocean theme"  aria-pressed="false"></button>
+      <button class="theme-dot"        data-theme="sunset" title="Sunset" aria-label="Sunset theme" aria-pressed="false"></button>
+    </div>
+    <button class="btn-upload" id="openUpload" aria-haspopup="dialog">&#x2B; Upload</button>
+  </div>
 </header>
 
 <main>
@@ -281,12 +472,50 @@
   </ul>
 </main>
 
-<div id="playerBar" class="hidden" aria-label="Now playing">
-  <div class="player-track">
-    <div class="player-title" id="playerTitle"></div>
-    <div class="player-artist" id="playerArtist"></div>
+<!-- Player bar -->
+<div id="player-bar" class="hidden" aria-label="Now playing">
+  <div class="progress-wrap" id="progressBar" role="slider"
+       aria-label="Playback position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+       tabindex="0">
+    <div class="progress-fill" id="progressFill"></div>
   </div>
-  <audio id="audio" controls></audio>
+  <div class="player-main">
+    <div class="player-track">
+      <div class="player-title"  id="playerTitle">—</div>
+      <div class="player-artist" id="playerArtist"></div>
+    </div>
+
+    <div class="player-controls">
+      <button class="ctrl-btn" id="btnPrev" aria-label="Previous" title="Previous">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/>
+        </svg>
+      </button>
+      <button class="ctrl-btn primary" id="btnPlay" aria-label="Play" title="Play">
+        <svg id="iconPlay"  width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+        <svg id="iconPause" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+      </button>
+      <button class="ctrl-btn" id="btnStop" aria-label="Stop" title="Stop">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M6 6h12v12H6z"/>
+        </svg>
+      </button>
+      <button class="ctrl-btn" id="btnNext" aria-label="Next" title="Next">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
+        </svg>
+      </button>
+    </div>
+
+    <span class="player-time" id="playerTime" aria-live="off">0:00 / 0:00</span>
+
+    <div class="player-volume">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+      </svg>
+      <input type="range" id="volume-slider" min="0" max="1" step="0.02" value="1" aria-label="Volume">
+    </div>
+  </div>
 </div>
 
 <!-- Upload modal -->
@@ -306,10 +535,33 @@
   </div>
 </div>
 
+<audio id="audio" preload="auto"></audio>
+
 <script type="module">
   const API = 'http://localhost:3000';
 
+  // ── Theme ─────────────────────────────────────────────────────────────────
+
+  const html      = document.documentElement;
+  const themeDots = document.querySelectorAll('.theme-dot');
+
+  applyTheme(localStorage.getItem('madshare-theme') || 'dark');
+
+  themeDots.forEach(dot => dot.addEventListener('click', () => applyTheme(dot.dataset.theme)));
+
+  function applyTheme(name) {
+    html.dataset.theme = name;
+    localStorage.setItem('madshare-theme', name);
+    themeDots.forEach(d => {
+      const on = d.dataset.theme === name;
+      d.classList.toggle('active', on);
+      d.setAttribute('aria-pressed', String(on));
+    });
+  }
+
   // ── Library ──────────────────────────────────────────────────────────────
+
+  let playlist = [];
 
   async function loadLibrary() {
     let tracks;
@@ -322,62 +574,150 @@
       return;
     }
 
-    const list = document.getElementById('trackList');
+    const list  = document.getElementById('trackList');
     const empty = document.getElementById('emptyState');
 
     if (!tracks || tracks.length === 0) return;
 
     empty.remove();
+    playlist = [];
 
-    for (const t of tracks) {
+    tracks.forEach((t, i) => {
       const title  = t.title  || t.filename;
       const artist = t.artist || '';
       const meta   = [artist, t.album, t.year || null].filter(Boolean).join(' · ');
-      const size   = formatBytes(t.byte_size);
+
+      playlist.push({ url: `${API}${t.url}`, title, artist });
 
       const li = document.createElement('li');
       li.className = 'track-row';
-      li.tabIndex = 0;
-      li.dataset.url    = `${API}${t.url}`;
-      li.dataset.title  = title;
-      li.dataset.artist = artist;
+      li.tabIndex  = 0;
+      li.dataset.idx = i;
       li.setAttribute('role', 'button');
       li.setAttribute('aria-label', `Play ${title}`);
-
       li.innerHTML = `
+        <span class="track-num">${i + 1}</span>
+        <span class="track-icon-playing" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        </span>
         <div class="track-icon" aria-hidden="true">&#9835;</div>
         <div class="track-info">
           <div class="track-title">${esc(title)}</div>
           <div class="track-meta">${esc(meta)}</div>
         </div>
-        <span class="track-size">${esc(size)}</span>
+        <span class="track-size">${esc(formatBytes(t.byte_size))}</span>
       `;
-
-      li.addEventListener('click', () => playTrack(li));
-      li.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); playTrack(li); } });
-
+      li.addEventListener('click', () => playIndex(i));
+      li.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); playIndex(i); }
+      });
       list.appendChild(li);
-    }
+    });
   }
 
   // ── Player ───────────────────────────────────────────────────────────────
 
-  let currentRow = null;
-  const audio      = document.getElementById('audio');
-  const playerBar  = document.getElementById('playerBar');
+  let currentIndex = -1;
+  let stopped      = false;
+
+  const audio        = document.getElementById('audio');
+  const playerBar    = document.getElementById('player-bar');
   const playerTitle  = document.getElementById('playerTitle');
   const playerArtist = document.getElementById('playerArtist');
+  const playerTime   = document.getElementById('playerTime');
+  const progressBar  = document.getElementById('progressBar');
+  const progressFill = document.getElementById('progressFill');
+  const btnPlay      = document.getElementById('btnPlay');
+  const iconPlay     = document.getElementById('iconPlay');
+  const iconPause    = document.getElementById('iconPause');
+  const volumeSlider = document.getElementById('volume-slider');
 
-  function playTrack(row) {
-    if (currentRow) currentRow.classList.remove('playing');
-    currentRow = row;
-    row.classList.add('playing');
+  function playIndex(idx) {
+    if (idx < 0 || idx >= playlist.length) return;
+    currentIndex = idx;
+    stopped      = false;
 
-    audio.src = row.dataset.url;
+    const track = playlist[idx];
+    audio.src = track.url;
     audio.play().catch(() => {});
-    playerTitle.textContent  = row.dataset.title;
-    playerArtist.textContent = row.dataset.artist;
+
+    playerTitle.textContent  = track.title;
+    playerArtist.textContent = track.artist;
     playerBar.classList.remove('hidden');
+
+    document.querySelectorAll('.track-row').forEach((row, i) => {
+      row.classList.toggle('playing', i === idx);
+    });
+  }
+
+  document.getElementById('btnPrev').addEventListener('click', () => {
+    const prev = currentIndex > 0 ? currentIndex - 1 : playlist.length - 1;
+    playIndex(prev);
+  });
+
+  document.getElementById('btnNext').addEventListener('click', () => {
+    const next = currentIndex < playlist.length - 1 ? currentIndex + 1 : 0;
+    playIndex(next);
+  });
+
+  btnPlay.addEventListener('click', () => {
+    if (stopped && currentIndex >= 0) { playIndex(currentIndex); return; }
+    if (audio.paused) audio.play().catch(() => {});
+    else              audio.pause();
+  });
+
+  document.getElementById('btnStop').addEventListener('click', () => {
+    audio.pause();
+    audio.currentTime = 0;
+    stopped = true;
+    syncPlayIcon();
+    progressFill.style.width = '0%';
+    progressBar.setAttribute('aria-valuenow', 0);
+    playerTime.textContent = '0:00 / ' + fmtTime(audio.duration || 0);
+  });
+
+  audio.addEventListener('play',  syncPlayIcon);
+  audio.addEventListener('pause', syncPlayIcon);
+  audio.addEventListener('ended', () => {
+    if (currentIndex < playlist.length - 1) playIndex(currentIndex + 1);
+    else { stopped = true; syncPlayIcon(); }
+  });
+
+  function syncPlayIcon() {
+    const playing = !audio.paused && !stopped;
+    iconPlay.style.display  = playing ? 'none' : '';
+    iconPause.style.display = playing ? ''     : 'none';
+    btnPlay.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+    btnPlay.title = playing ? 'Pause' : 'Play';
+  }
+
+  // Progress
+  audio.addEventListener('timeupdate', () => {
+    if (!audio.duration) return;
+    const pct = (audio.currentTime / audio.duration) * 100;
+    progressFill.style.width = pct + '%';
+    progressBar.setAttribute('aria-valuenow', Math.round(pct));
+    playerTime.textContent = fmtTime(audio.currentTime) + ' / ' + fmtTime(audio.duration);
+  });
+
+  progressBar.addEventListener('click', e => {
+    if (!audio.duration) return;
+    const r = progressBar.getBoundingClientRect();
+    audio.currentTime = ((e.clientX - r.left) / r.width) * audio.duration;
+  });
+
+  progressBar.addEventListener('keydown', e => {
+    if (!audio.duration) return;
+    if (e.key === 'ArrowRight') audio.currentTime = Math.min(audio.duration, audio.currentTime + 5);
+    if (e.key === 'ArrowLeft')  audio.currentTime = Math.max(0, audio.currentTime - 5);
+  });
+
+  // Volume
+  volumeSlider.addEventListener('input', () => { audio.volume = volumeSlider.value; });
+
+  function fmtTime(s) {
+    if (!isFinite(s)) return '0:00';
+    return Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0');
   }
 
   // ── Upload modal ─────────────────────────────────────────────────────────
@@ -395,7 +735,7 @@
   function openModal()  { modal.classList.remove('hidden'); fileInput.focus(); }
   function closeModal() { modal.classList.add('hidden'); setStatus('', ''); }
 
-  dropZone.addEventListener('dragover', e  => { e.preventDefault(); dropZone.classList.add('dragover'); });
+  dropZone.addEventListener('dragover',  e  => { e.preventDefault(); dropZone.classList.add('dragover'); });
   dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
   dropZone.addEventListener('drop', e => {
     e.preventDefault();
@@ -411,8 +751,7 @@
   });
 
   async function uploadFile(file) {
-    setStatus('Uploading “' + file.name + '”…', '');
-
+    setStatus('Uploading "' + file.name + '"…', '');
     const fd = new FormData();
     fd.append('file', file);
 
@@ -430,11 +769,9 @@
       return;
     }
 
-    const label = data.existed ? 'Already in library' : 'Uploaded';
-    setStatus(label + ': ' + file.name, 'success');
-
-    // Refresh the track list so the new file appears
+    setStatus((data.existed ? 'Already in library' : 'Uploaded') + ': ' + file.name, 'success');
     document.getElementById('trackList').innerHTML = '';
+    playlist = [];
     await loadLibrary();
   }
 
@@ -446,15 +783,15 @@
   // ── Utilities ────────────────────────────────────────────────────────────
 
   function formatBytes(n) {
-    if (n < 1024)       return n + ' B';
-    if (n < 1048576)    return (n / 1024).toFixed(1) + ' KB';
+    if (n < 1024)    return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
     return (n / 1048576).toFixed(1) + ' MB';
   }
 
   function esc(s) {
     return String(s)
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
-      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
   // ── Boot ─────────────────────────────────────────────────────────────────
