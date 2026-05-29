@@ -12,12 +12,18 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
-// NewRouter builds and returns the API HTTP handler.
-// The caller is responsible for calling http.ListenAndServe.
-//
-// filesDir is the directory uploaded blobs are served from (the same path the
-// store writes to); maxUploadSize caps the upload request body in bytes.
-func NewRouter(store storage.Storage, repo database.Repository, cacheDir, filesDir string, maxUploadSize int64) http.Handler {
+// Deps bundles the dependencies the API route groups need. filesDir is the
+// directory uploaded blobs are served from (the same path the store writes to);
+// MaxUploadSize caps the upload request body in bytes.
+type Deps struct {
+	Store         storage.Storage
+	Repo          database.Repository
+	CacheDir      string
+	FilesDir      string
+	MaxUploadSize int64
+}
+
+func (d Deps) newHandler() *handler {
 	// KNOWN ISSUE (TODO): imagesDir nests inside filesDir, and the /files/*
 	// file server serves the whole filesDir tree. As a side effect cover images
 	// are also reachable at /files/images/<key>, not just at /images/*. Harmless
@@ -25,21 +31,24 @@ func NewRouter(store storage.Storage, repo database.Repository, cacheDir, filesD
 	// the URL surface is wider than intended and would bypass any future
 	// access control applied only to /images/*. Revisit how this is laid out —
 	// e.g. store images outside the served files tree, or 404 /files/images.
-	imagesDir := filepath.Join(filesDir, "images")
-	h := &handler{
-		storage:       store,
-		repo:          repo,
-		cacheDir:      cacheDir,
-		imagesDir:     imagesDir,
-		maxUploadSize: maxUploadSize,
+	return &handler{
+		storage:       d.Store,
+		repo:          d.Repo,
+		cacheDir:      d.CacheDir,
+		imagesDir:     filepath.Join(d.FilesDir, "images"),
+		maxUploadSize: d.MaxUploadSize,
 	}
+}
 
-	r := chi.NewRouter()
-	r.Use(middleware.Logger)
-	r.Use(middleware.Recoverer)
-	r.Use(corsMiddleware)
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("Hello World!"))
+// RegisterAPI mounts the core API route group on r: the health check, the
+// non-admin /api/* endpoints, /files/*, and /images/*. It registers no
+// middleware — the caller owns that (see NewRouter and madshare.go's
+// buildHandler). The web UI owns "/", so the health check lives at /healthz to
+// avoid colliding with it on a full-stack listener.
+func RegisterAPI(r chi.Router, d Deps) {
+	h := d.newHandler()
+	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
 	})
 
 	r.Get("/api/files", h.listFiles)
@@ -51,34 +60,53 @@ func NewRouter(store storage.Storage, repo database.Repository, cacheDir, filesD
 	r.Get("/api/albums/{album}/image", h.getAlbumImage)
 	r.Post("/api/albums/{album}/image", h.uploadAlbumImage)
 
-	// Admin endpoints are grouped so an auth gate can slot in ahead of them.
-	r.Route("/api/admin", func(r chi.Router) {
-		// SECURITY TODO: these endpoints delete files and prune DB records with
-		// no authentication. Acceptable for v0 loopback-only use; gate this
-		// group (e.g. r.Use(adminGate)) before any non-loopback deployment.
-		// r.Use(adminGate)
-		r.Delete("/files/{hash}", h.adminDeleteFile)
-		r.Post("/prune", h.adminPrune)
-	})
+	fileServer(r, "/files", noListFS{http.Dir(d.FilesDir)}, h)
 
-	fileServer(r, "/files", noListFS{http.Dir(filesDir)}, h)
-
-	imagesFS := noListFS{http.Dir(imagesDir)}
+	imagesFS := noListFS{http.Dir(h.imagesDir)}
 	r.Get("/images/*", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		rctx := chi.RouteContext(r.Context())
 		pathPrefix := strings.TrimSuffix(rctx.RoutePattern(), "/*")
 		http.StripPrefix(pathPrefix, http.FileServer(imagesFS)).ServeHTTP(w, r)
 	})
+}
 
+// RegisterAdmin mounts the admin route group (/api/admin/*) on r.
+func RegisterAdmin(r chi.Router, d Deps) {
+	h := d.newHandler()
+	// Admin endpoints are grouped so an auth gate can slot in ahead of them.
+	r.Route("/api/admin", func(r chi.Router) {
+		// SECURITY TODO: these endpoints delete files and prune DB records with
+		// no authentication. The listener `serve` list can keep this group off
+		// non-loopback interfaces, but that is topology, not auth — gate this
+		// group (e.g. r.Use(adminGate)) before any real deployment.
+		// r.Use(adminGate)
+		r.Delete("/files/{hash}", h.adminDeleteFile)
+		r.Post("/prune", h.adminPrune)
+	})
+}
+
+// NewRouter builds a full API handler (api + admin groups) with the standard
+// middleware. It is a convenience for tests and pure-API embedding; the running
+// server composes route groups per listener via the Register* functions.
+func NewRouter(store storage.Storage, repo database.Repository, cacheDir, filesDir string, maxUploadSize int64) http.Handler {
+	d := Deps{Store: store, Repo: repo, CacheDir: cacheDir, FilesDir: filesDir, MaxUploadSize: maxUploadSize}
+	r := chi.NewRouter()
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
+	r.Use(CORS)
+	RegisterAPI(r, d)
+	RegisterAdmin(r, d)
 	return r
 }
 
-// corsMiddleware sets permissive CORS headers on every response, including
-// error responses written via http.Error (which previously carried none, so
+// CORS sets permissive CORS headers on every response, including error
+// responses written via http.Error (which previously carried none, so
 // cross-origin JS clients could not read the error body). It also answers
-// preflight OPTIONS requests directly.
-func corsMiddleware(next http.Handler) http.Handler {
+// preflight OPTIONS requests directly. With the bundled, same-origin web UI
+// these headers are inert; they matter for separately hosted or non-browser
+// clients. (Revisit making this opt-in alongside the auth layer.)
+func CORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, DELETE, OPTIONS")

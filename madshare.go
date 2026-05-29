@@ -2,18 +2,25 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sync"
+	"syscall"
+	"time"
 
 	"daemonlord.ygg/madshare/api"
 	"daemonlord.ygg/madshare/api/storage"
 	"daemonlord.ygg/madshare/config"
 	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/webui"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 func main() {
@@ -24,10 +31,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config %s: %v", *configPath, err)
 	}
+	for _, w := range cfg.Warnings() {
+		log.Printf("config warning: %s", w)
+	}
+	// Feature gate: a listener may only serve the web UI if it is compiled in.
+	for i, l := range cfg.Listen {
+		if l.Serves(config.GroupWebUI) && !webui.Available {
+			log.Fatalf("listen[%d] serves %q but this binary was built with -tags nowebui; rebuild without that tag or drop %q", i, config.GroupWebUI, config.GroupWebUI)
+		}
+	}
 
 	log.Println("Start the program")
-
-	// Config values are validated by config.Load.
 
 	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0755); err != nil {
 		log.Fatalf("mkdir %s: %v", filepath.Dir(cfg.Database.Path), err)
@@ -44,18 +58,118 @@ func main() {
 		log.Printf("reconcile orphans: %v", err)
 	}
 
-	store := storage.NewLocal(filesDir)
-	maxUploadSize := cfg.Storage.MaxUploadBytes()
+	deps := api.Deps{
+		Store:         storage.NewLocal(filesDir),
+		Repo:          db,
+		CacheDir:      os.TempDir(),
+		FilesDir:      filesDir,
+		MaxUploadSize: cfg.Storage.MaxUploadBytes(),
+	}
 
+	servers, err := startListeners(cfg, deps)
+	if err != nil {
+		log.Fatalf("start listeners: %v", err)
+	}
+
+	// Block until a termination signal, then shut every server down gracefully.
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	<-stop
+	log.Println("Shutting down...")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	var wg sync.WaitGroup
-	log.Println("Starting api...")
-	wg.Go(func() {
-		log.Fatal(http.ListenAndServe(cfg.API.Addr, api.NewRouter(store, db, os.TempDir(), filesDir, maxUploadSize)))
-	})
-	log.Println("Starting web-ui...")
-	wg.Go(func() {
-		webui.Route(cfg.WebUI.Addr, cfg.API.PublicURL)
-	})
+	for _, srv := range servers {
+		wg.Go(func() {
+			if err := srv.Shutdown(shutdownCtx); err != nil {
+				log.Printf("shutdown %s: %v", srv.Addr, err)
+			}
+		})
+	}
 	wg.Wait()
 	log.Println("End!")
+}
+
+// startListeners binds and serves one http.Server per [[listen]] entry. Each
+// server runs in its own goroutine; a bind failure aborts startup. The returned
+// servers are live and must be shut down by the caller.
+func startListeners(cfg config.Config, deps api.Deps) ([]*http.Server, error) {
+	servers := make([]*http.Server, 0, len(cfg.Listen))
+	for _, lc := range cfg.Listen {
+		handler, err := buildHandler(lc, deps, cfg.WebUI.APIBase)
+		if err != nil {
+			return nil, err
+		}
+		ln, err := net.Listen("tcp", lc.BindAddr())
+		if err != nil {
+			return nil, err
+		}
+		srv := &http.Server{Addr: lc.BindAddr(), Handler: handler}
+		servers = append(servers, srv)
+		log.Printf("listening on %s serving %v", lc.BindAddr(), lc.Serve)
+		go func() {
+			if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Fatalf("serve %s: %v", srv.Addr, err)
+			}
+		}()
+	}
+	return servers, nil
+}
+
+// buildHandler composes the chi router for one listener: shared middleware plus
+// only the route groups named in the listener's serve list.
+func buildHandler(lc config.ListenConfig, deps api.Deps, apiBase string) (http.Handler, error) {
+	r := chi.NewRouter()
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
+	r.Use(api.CORS)
+	if len(lc.AllowFrom) > 0 {
+		mw, err := allowFrom(lc.AllowFrom)
+		if err != nil {
+			return nil, err
+		}
+		r.Use(mw)
+	}
+
+	if lc.Serves(config.GroupAPI) {
+		api.RegisterAPI(r, deps)
+	}
+	if lc.Serves(config.GroupAdmin) {
+		api.RegisterAdmin(r, deps)
+		webui.RegisterAdminPage(r, apiBase) // no-op in -tags nowebui builds
+	}
+	if lc.Serves(config.GroupWebUI) {
+		webui.Register(r, apiBase)
+	}
+	return r, nil
+}
+
+// allowFrom returns middleware that rejects (403) any request whose source IP
+// is not within one of the given CIDRs. The CIDRs are already validated by
+// config.Load; they are re-parsed here so the middleware owns its own state.
+func allowFrom(cidrs []string) (func(http.Handler) http.Handler, error) {
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			return nil, err
+		}
+		nets = append(nets, n)
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			host, _, err := net.SplitHostPort(r.RemoteAddr)
+			if err != nil {
+				host = r.RemoteAddr
+			}
+			ip := net.ParseIP(host)
+			for _, n := range nets {
+				if ip != nil && n.Contains(ip) {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+			http.Error(w, "forbidden", http.StatusForbidden)
+		})
+	}, nil
 }

@@ -1,16 +1,41 @@
-[api]
-addr = ":3000"
-# URL browsers use to reach the API — change this for remote/production deployments
-public_url = "http://localhost:3000"
+# Madshare configuration. Copy to madshare.toml and edit. If no madshare.toml
+# exists, the built-in defaults apply (a single loopback listener serving the
+# full stack). See docs/architecture/listeners-and-config.md for the full model.
 
-[webui]
-addr = ":8080"
+# One [[listen]] block per bound socket. Each chooses which route groups it
+# serves:
+#   api    -> /healthz, /api/* (library), /files/*, /images/*   (the product)
+#   webui  -> /, /cmus, /static/*                               (bundled UI)
+#   admin  -> /api/admin/* (delete, prune) and the /admin page  (destructive)
+#
+# The bundled web UI talks to the API over relative, same-origin URLs, so no
+# public URL is configured. A listener that serves "webui" should also serve
+# "api", or the page loads but its calls 404.
+
+# Default-equivalent: everything on loopback. Safe while admin is unauthed.
+[[listen]]
+addr  = "127.0.0.1"
+port  = 3000
+serve = ["api", "webui", "admin"]
+
+# Example: also expose the API (only) to others. Bind a SPECIFIC address — do
+# not pair this with 0.0.0.0 on the same port (0.0.0.0 includes loopback and
+# the two bindings would collide). Reusing port 3000 on a different address is
+# fine.
+#[[listen]]
+#addr  = "192.168.1.67"        # this host's LAN or yggdrasil address
+#port  = 3000
+#serve = ["api"]
+#allow_from = ["192.168.1.0/24"]   # optional source-IP allowlist (not auth)
+
+# Only set api_base for a SEPARATELY hosted web UI pointing at a remote backend.
+# Leave empty (or omit) for the bundled server so the UI uses relative URLs.
+#[webui]
+#api_base = "https://media.example.org"
 
 [database]
 path = "./data/madshare.db"
 
 [storage]
-# Directory where uploaded blobs are stored and served from
-files_dir = "./data/files"
-# Maximum size of a single upload, in MiB
-max_upload_mb = 500
+files_dir = "./data/files"   # uploaded blobs; cover images go in <files_dir>/images
+max_upload_mb = 500          # per-request upload cap, in MiB

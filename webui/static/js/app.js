@@ -1,5 +1,7 @@
-// BUG-14: read API base from HTML meta so non-local deployments work
-const API = document.querySelector('meta[name="api-url"]')?.content || 'http://localhost:3000';
+// Read API base from HTML meta. Empty default => relative, same-origin URLs
+// (the page and API share an origin in the bundled server). A non-empty value
+// points a separately hosted UI at a remote API origin.
+const API = document.querySelector('meta[name="api-url"]')?.content || '';
 
 // ── Theme ─────────────────────────────────────────────────────────────────
 

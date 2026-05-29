@@ -15,14 +15,18 @@ func TestLoad_MissingFile_ReturnsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error on missing file, got: %v", err)
 	}
-	if cfg.API.Addr != ":3000" {
-		t.Errorf("API.Addr = %q, want :3000", cfg.API.Addr)
+	if len(cfg.Listen) != 1 {
+		t.Fatalf("len(Listen) = %d, want 1 default listener", len(cfg.Listen))
 	}
-	if cfg.API.PublicURL != "http://localhost:3000" {
-		t.Errorf("API.PublicURL = %q, want http://localhost:3000", cfg.API.PublicURL)
+	l := cfg.Listen[0]
+	if l.Addr != "127.0.0.1" || l.Port != 3000 {
+		t.Errorf("default listener = %s:%d, want 127.0.0.1:3000", l.Addr, l.Port)
 	}
-	if cfg.WebUI.Addr != ":8080" {
-		t.Errorf("WebUI.Addr = %q, want :8080", cfg.WebUI.Addr)
+	if !l.Serves(config.GroupAPI) || !l.Serves(config.GroupWebUI) || !l.Serves(config.GroupAdmin) {
+		t.Errorf("default listener serve = %v, want api+webui+admin", l.Serve)
+	}
+	if cfg.WebUI.APIBase != "" {
+		t.Errorf("WebUI.APIBase = %q, want empty (relative, same-origin)", cfg.WebUI.APIBase)
 	}
 	if cfg.Database.Path != "./data/madshare.db" {
 		t.Errorf("Database.Path = %q, want ./data/madshare.db", cfg.Database.Path)
@@ -38,46 +42,38 @@ func TestLoad_MissingFile_ReturnsDefaults(t *testing.T) {
 	}
 }
 
-func TestLoad_PartialOverride_UnsetFieldsKeepDefaults(t *testing.T) {
-	dir := t.TempDir()
-	f := filepath.Join(dir, "partial.toml")
-	os.WriteFile(f, []byte("[api]\naddr = \":9000\"\n"), 0o600)
+func TestLoad_FilePresentWithoutListen_KeepsDefaultListener(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "nolisten.toml")
+	os.WriteFile(f, []byte("[storage]\nmax_upload_mb = 100\n"), 0o600)
 
 	cfg, err := config.Load(f)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.API.Addr != ":9000" {
-		t.Errorf("API.Addr = %q, want :9000", cfg.API.Addr)
+	if len(cfg.Listen) != 1 || cfg.Listen[0].Port != 3000 {
+		t.Errorf("Listen = %+v, want the default single listener", cfg.Listen)
 	}
-	// These were NOT in the file — must keep defaults
-	if cfg.API.PublicURL != "http://localhost:3000" {
-		t.Errorf("API.PublicURL = %q, want default http://localhost:3000", cfg.API.PublicURL)
-	}
-	if cfg.WebUI.Addr != ":8080" {
-		t.Errorf("WebUI.Addr = %q, want default :8080", cfg.WebUI.Addr)
-	}
-	if cfg.Database.Path != "./data/madshare.db" {
-		t.Errorf("Database.Path = %q, want default", cfg.Database.Path)
-	}
-	if cfg.Storage.FilesDir != "./data/files" {
-		t.Errorf("Storage.FilesDir = %q, want default ./data/files", cfg.Storage.FilesDir)
-	}
-	if cfg.Storage.MaxUploadMB != 500 {
-		t.Errorf("Storage.MaxUploadMB = %d, want default 500", cfg.Storage.MaxUploadMB)
+	if cfg.Storage.MaxUploadMB != 100 {
+		t.Errorf("Storage.MaxUploadMB = %d, want 100", cfg.Storage.MaxUploadMB)
 	}
 }
 
 func TestLoad_FullOverride(t *testing.T) {
-	dir := t.TempDir()
-	f := filepath.Join(dir, "full.toml")
+	f := filepath.Join(t.TempDir(), "full.toml")
 	os.WriteFile(f, []byte(`
-[api]
-addr = ":4000"
-public_url = "https://example.com"
+[[listen]]
+addr = "127.0.0.1"
+port = 3000
+serve = ["api", "webui", "admin"]
+
+[[listen]]
+addr = "192.168.1.67"
+port = 3000
+serve = ["api"]
+allow_from = ["192.168.1.0/24"]
 
 [webui]
-addr = ":9080"
+api_base = "https://example.com"
 
 [database]
 path = "/var/lib/madshare/db.sqlite"
@@ -91,14 +87,20 @@ max_upload_mb = 100
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.API.Addr != ":4000" {
-		t.Errorf("API.Addr = %q, want :4000", cfg.API.Addr)
+	if len(cfg.Listen) != 2 {
+		t.Fatalf("len(Listen) = %d, want 2", len(cfg.Listen))
 	}
-	if cfg.API.PublicURL != "https://example.com" {
-		t.Errorf("API.PublicURL = %q", cfg.API.PublicURL)
+	if cfg.Listen[0].BindAddr() != "127.0.0.1:3000" {
+		t.Errorf("Listen[0].BindAddr() = %q", cfg.Listen[0].BindAddr())
 	}
-	if cfg.WebUI.Addr != ":9080" {
-		t.Errorf("WebUI.Addr = %q", cfg.WebUI.Addr)
+	if cfg.Listen[1].BindAddr() != "192.168.1.67:3000" {
+		t.Errorf("Listen[1].BindAddr() = %q", cfg.Listen[1].BindAddr())
+	}
+	if cfg.Listen[1].Serves(config.GroupWebUI) {
+		t.Error("Listen[1] should not serve webui")
+	}
+	if cfg.WebUI.APIBase != "https://example.com" {
+		t.Errorf("WebUI.APIBase = %q", cfg.WebUI.APIBase)
 	}
 	if cfg.Database.Path != "/var/lib/madshare/db.sqlite" {
 		t.Errorf("Database.Path = %q", cfg.Database.Path)
@@ -108,6 +110,26 @@ max_upload_mb = 100
 	}
 	if cfg.Storage.MaxUploadMB != 100 {
 		t.Errorf("Storage.MaxUploadMB = %d, want 100", cfg.Storage.MaxUploadMB)
+	}
+}
+
+func TestListenConfig_BindAddr(t *testing.T) {
+	cases := []struct {
+		addr string
+		port int
+		want string
+	}{
+		{"127.0.0.1", 3000, "127.0.0.1:3000"},
+		{"", 3000, ":3000"},
+		{"0.0.0.0", 8080, "0.0.0.0:8080"},
+		{"::1", 3000, "[::1]:3000"},
+		{"[::1]", 3000, "[::1]:3000"}, // bracketed input must not double-bracket
+	}
+	for _, tc := range cases {
+		l := config.ListenConfig{Addr: tc.addr, Port: tc.port}
+		if got := l.BindAddr(); got != tc.want {
+			t.Errorf("BindAddr(%q,%d) = %q, want %q", tc.addr, tc.port, got, tc.want)
+		}
 	}
 }
 
@@ -121,9 +143,12 @@ func TestMaxUploadBytes_NoOverflowAtLimit(t *testing.T) {
 	}
 }
 
-// TestLoad_Validation exercises config.Load's validation of storage and
-// database fields, including the max_upload_mb bounds (now testable because
-// validation lives in Load rather than in main()).
+// validListeners is a [[listen]] block that passes validation, prepended to
+// storage/database test cases that would otherwise have no listeners.
+const validListeners = "[[listen]]\naddr = \"127.0.0.1\"\nport = 3000\nserve = [\"api\"]\n"
+
+// TestLoad_Validation exercises config.Load's validation. Storage/database
+// cases prepend a valid listener so only the field under test fails.
 func TestLoad_Validation(t *testing.T) {
 	cases := []struct {
 		name string
@@ -132,20 +157,64 @@ func TestLoad_Validation(t *testing.T) {
 		// empty string means the config must load without error.
 		wantErrContains string
 	}{
-		{"empty database path", "[database]\npath = \"\"\n", "database.path must not be empty"},
-		{"empty files_dir", "[storage]\nfiles_dir = \"\"\n", "files_dir must not be empty"},
-		{"zero max_upload_mb", "[storage]\nmax_upload_mb = 0\n", "max_upload_mb must be positive"},
-		{"negative max_upload_mb", "[storage]\nmax_upload_mb = -1\n", "max_upload_mb must be positive"},
+		{"empty database path", validListeners + "[database]\npath = \"\"\n", "database.path must not be empty"},
+		{"empty files_dir", validListeners + "[storage]\nfiles_dir = \"\"\n", "files_dir must not be empty"},
+		{"zero max_upload_mb", validListeners + "[storage]\nmax_upload_mb = 0\n", "max_upload_mb must be positive"},
+		{"negative max_upload_mb", validListeners + "[storage]\nmax_upload_mb = -1\n", "max_upload_mb must be positive"},
 		{
 			name:            "over-limit max_upload_mb",
-			toml:            fmt.Sprintf("[storage]\nmax_upload_mb = %d\n", int64(config.MaxUploadMBLimit)+1),
+			toml:            validListeners + fmt.Sprintf("[storage]\nmax_upload_mb = %d\n", int64(config.MaxUploadMBLimit)+1),
 			wantErrContains: "max_upload_mb must not exceed",
 		},
 		{
 			name: "at-limit max_upload_mb accepted",
-			toml: fmt.Sprintf("[storage]\nmax_upload_mb = %d\n", int64(config.MaxUploadMBLimit)),
+			toml: validListeners + fmt.Sprintf("[storage]\nmax_upload_mb = %d\n", int64(config.MaxUploadMBLimit)),
 		},
-		{name: "valid override", toml: "[storage]\nmax_upload_mb = 100\n"},
+		{name: "valid override", toml: validListeners + "[storage]\nmax_upload_mb = 100\n"},
+
+		// Listener validation.
+		{
+			name:            "port out of range",
+			toml:            "[[listen]]\nport = 70000\nserve = [\"api\"]\n",
+			wantErrContains: "out of range",
+		},
+		{
+			name:            "invalid addr",
+			toml:            "[[listen]]\naddr = \"not-an-ip\"\nport = 3000\nserve = [\"api\"]\n",
+			wantErrContains: "not a valid IP",
+		},
+		{
+			name:            "empty serve",
+			toml:            "[[listen]]\nport = 3000\nserve = []\n",
+			wantErrContains: "at least one group",
+		},
+		{
+			name:            "unknown group",
+			toml:            "[[listen]]\nport = 3000\nserve = [\"api\", \"bogus\"]\n",
+			wantErrContains: "unknown group",
+		},
+		{
+			name:            "invalid allow_from cidr",
+			toml:            "[[listen]]\nport = 3000\nserve = [\"api\"]\nallow_from = [\"nonsense\"]\n",
+			wantErrContains: "invalid CIDR",
+		},
+		{
+			name: "wildcard overlaps specific on same port",
+			toml: "[[listen]]\naddr = \"0.0.0.0\"\nport = 3000\nserve = [\"api\"]\n" +
+				"[[listen]]\naddr = \"127.0.0.1\"\nport = 3000\nserve = [\"api\"]\n",
+			wantErrContains: "conflict",
+		},
+		{
+			name: "duplicate specific bind",
+			toml: "[[listen]]\naddr = \"127.0.0.1\"\nport = 3000\nserve = [\"api\"]\n" +
+				"[[listen]]\naddr = \"127.0.0.1\"\nport = 3000\nserve = [\"webui\"]\n",
+			wantErrContains: "duplicate bind",
+		},
+		{
+			name: "same port on different specific addrs is allowed",
+			toml: "[[listen]]\naddr = \"127.0.0.1\"\nport = 3000\nserve = [\"api\"]\n" +
+				"[[listen]]\naddr = \"192.168.1.67\"\nport = 3000\nserve = [\"api\"]\n",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -168,9 +237,21 @@ func TestLoad_Validation(t *testing.T) {
 	}
 }
 
+func TestConfig_Warnings_WebUIWithoutAPI(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "warn.toml")
+	os.WriteFile(f, []byte("[[listen]]\naddr = \"127.0.0.1\"\nport = 3000\nserve = [\"webui\"]\n"), 0o600)
+	cfg, err := config.Load(f)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	w := cfg.Warnings()
+	if len(w) != 1 || !strings.Contains(w[0], "would 404") {
+		t.Errorf("Warnings() = %v, want one webui-without-api advisory", w)
+	}
+}
+
 func TestLoad_InvalidTOML_ReturnsError(t *testing.T) {
-	dir := t.TempDir()
-	f := filepath.Join(dir, "bad.toml")
+	f := filepath.Join(t.TempDir(), "bad.toml")
 	os.WriteFile(f, []byte("not = valid [toml"), 0o600)
 	_, err := config.Load(f)
 	if err == nil {
@@ -181,9 +262,8 @@ func TestLoad_InvalidTOML_ReturnsError(t *testing.T) {
 func TestLoad_DatabasePathRelative_MkdirAllSafeCheck(t *testing.T) {
 	// Verify that a relative path with ".." components can be set
 	// (the security concern is whether madshare.go validates it).
-	dir := t.TempDir()
-	f := filepath.Join(dir, "traversal.toml")
-	os.WriteFile(f, []byte("[database]\npath = \"../../tmp/evil.db\"\n"), 0o600)
+	f := filepath.Join(t.TempDir(), "traversal.toml")
+	os.WriteFile(f, []byte(validListeners+"[database]\npath = \"../../tmp/evil.db\"\n"), 0o600)
 	cfg, err := config.Load(f)
 	if err != nil {
 		t.Fatalf("load: %v", err)

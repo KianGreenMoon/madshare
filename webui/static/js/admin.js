@@ -1,10 +1,10 @@
 // Admin page — uploads (XHR w/ progress), files table (fetch/render/filter),
 // hash-based delete with inline confirm, prune dry-run → modal → commit, toasts.
 //
-// Reads the API base from <meta name="api-url"> just like app.js, so non-local
-// deployments work. All admin calls are cross-origin to the API server.
-
-const API = document.querySelector('meta[name="api-url"]')?.content || 'http://localhost:3000';
+// Reads the API base from <meta name="api-url"> just like app.js. Empty default
+// => relative, same-origin URLs (bundled server); a non-empty value points a
+// separately hosted UI at a remote API origin.
+const API = document.querySelector('meta[name="api-url"]')?.content || '';
 
 // ── Theme (shared pattern with app.js) ─────────────────────────────────────
 

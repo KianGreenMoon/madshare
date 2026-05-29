@@ -495,13 +495,13 @@ func TestCORS_Preflight(t *testing.T) {
 func TestNewRouter_Integration(t *testing.T) {
 	srv := newTestServer(t)
 
-	resp, err := http.Get(srv.URL + "/")
+	resp, err := http.Get(srv.URL + "/healthz")
 	if err != nil {
-		t.Fatalf("GET /: %v", err)
+		t.Fatalf("GET /healthz: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Errorf("GET / status = %d, want 200", resp.StatusCode)
+		t.Errorf("GET /healthz status = %d, want 200", resp.StatusCode)
 	}
 }
 
