@@ -2,11 +2,15 @@ package api
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"testing"
 
 	"daemonlord.ygg/madshare/auth"
+	"daemonlord.ygg/madshare/database"
 )
 
 // doJSON performs a JSON request with the given client and returns the status
@@ -206,6 +210,62 @@ func TestListings_AnonymousCannotBrowsePrivate(t *testing.T) {
 		if len(items) != 1 {
 			t.Errorf("anon GET %s after guest flag = %d items, want 1", url, len(items))
 		}
+	}
+}
+
+// insertTaggedFile inserts a file with real artist/album metadata directly
+// through the store (the upload fixture carries no tags, so it can't populate
+// the artist/album buckets /api/tracks requires).
+func insertTaggedFile(t *testing.T, db *database.DB, hash, artist, album, title string) {
+	t.Helper()
+	f := &database.File{
+		Hash: hash, ByteSize: 1, MimeType: "audio/mpeg", StorageBackend: "local",
+		ObjectKey: hash + "/t.mp3", CreatedAt: 1700000000,
+	}
+	meta := &database.MediaMetadata{
+		Title:       sql.NullString{String: title, Valid: true},
+		Artist:      sql.NullString{String: artist, Valid: true},
+		Album:       sql.NullString{String: album, Valid: true},
+		ExtractedAt: 1700000000,
+	}
+	if err := db.InsertFile(context.Background(), f,
+		&database.FileUpload{Filename: "t.mp3", UploadedAt: 1700000000}, meta); err != nil {
+		t.Fatalf("InsertFile: %v", err)
+	}
+}
+
+// TestListings_TrackFilteringOverHTTP exercises the /api/tracks access filter on
+// the wire (handler accessFilter + content.all bypass + the *Filtered query),
+// which the DB-only test cannot reach.
+func TestListings_TrackFilteringOverHTTP(t *testing.T) {
+	srv, db := newAuthTestServer(t)
+	const hash = "aa11bb22cc33dd44ee55ff66aa77bb88cc99dd00ee11ff22aa33bb44cc55dd66"
+	insertTaggedFile(t, db, hash, "An Artist", "An Album", "Track One")
+
+	tracksURL := srv.URL + "/api/tracks?artist=" + url.QueryEscape("An Artist") +
+		"&album=" + url.QueryEscape("An Album")
+
+	count := func(client *http.Client) int {
+		var tracks []map[string]any
+		doJSON(t, client, http.MethodGet, tracksURL, nil, &tracks)
+		return len(tracks)
+	}
+
+	// Anonymous: the private track is filtered out.
+	if n := count(http.DefaultClient); n != 0 {
+		t.Errorf("anon /api/tracks (private) = %d, want 0", n)
+	}
+	// Admin holds content.all and bypasses the filter entirely.
+	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
+	if n := count(admin); n != 1 {
+		t.Errorf("admin /api/tracks (content.all) = %d, want 1", n)
+	}
+	// Once guest-playable, the anonymous track listing reveals it.
+	if _, err := db.SetGuestPlayable(context.Background(), hash, true); err != nil {
+		t.Fatalf("SetGuestPlayable: %v", err)
+	}
+	if n := count(http.DefaultClient); n != 1 {
+		t.Errorf("anon /api/tracks after guest flag = %d, want 1", n)
 	}
 }
 
