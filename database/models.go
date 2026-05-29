@@ -2,6 +2,29 @@ package database
 
 import "database/sql"
 
+// User is a row in the users table.
+type User struct {
+	ID                     int64
+	Username               string
+	PasswordHash           string
+	PasswordChangeRequired bool
+	Disabled               bool
+	CreatedAt              int64
+}
+
+// APIToken is a row in the api_tokens table. The raw token is never stored —
+// only its hash. RawToken is populated only at creation time, to show once.
+type APIToken struct {
+	ID         int64
+	UserID     int64
+	Name       string
+	CreatedAt  int64
+	LastUsedAt sql.NullInt64
+	ExpiresAt  sql.NullInt64
+	RevokedAt  sql.NullInt64
+	RawToken   string `json:"-"`
+}
+
 // File is a row in the files table — one record per unique content hash.
 type File struct {
 	ID             int64

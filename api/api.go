@@ -21,6 +21,9 @@ type Deps struct {
 	CacheDir      string
 	FilesDir      string
 	MaxUploadSize int64
+	// Auth backs the /api/auth/* endpoints. When nil (e.g. NewRouter in tests),
+	// those endpoints are not registered.
+	Auth AuthStore
 }
 
 func (d Deps) newHandler() *handler {
@@ -69,6 +72,12 @@ func RegisterAPI(r chi.Router, d Deps) {
 		pathPrefix := strings.TrimSuffix(rctx.RoutePattern(), "/*")
 		http.StripPrefix(pathPrefix, http.FileServer(imagesFS)).ServeHTTP(w, r)
 	})
+
+	// Authentication endpoints (login/logout/me/password/tokens) live in the
+	// api group so they are reachable wherever the API is served.
+	if d.Auth != nil {
+		registerAuth(r, d.Auth)
+	}
 }
 
 // RegisterAdmin mounts the admin route group (/api/admin/*) on r.

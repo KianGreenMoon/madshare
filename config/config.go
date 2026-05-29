@@ -32,7 +32,21 @@ type Config struct {
 	WebUI    WebUIConfig    `toml:"webui"`
 	Database DatabaseConfig `toml:"database"`
 	Storage  StorageConfig  `toml:"storage"`
+	Auth     AuthConfig     `toml:"auth"`
 }
+
+// AuthConfig holds the first-run admin bootstrap credential. The password is
+// consumed only when the users table is empty (see docs/architecture/auth.md
+// §3.4); afterwards it is ignored. Prefer the MADSHARE_INITIAL_ADMIN_PASSWORD
+// environment variable over writing the password into the config file.
+type AuthConfig struct {
+	InitialAdminUser     string `toml:"initial_admin_user"`
+	InitialAdminPassword string `toml:"initial_admin_password"`
+}
+
+// InitialAdminPasswordEnv is the environment variable that overrides
+// [auth].initial_admin_password when set.
+const InitialAdminPasswordEnv = "MADSHARE_INITIAL_ADMIN_PASSWORD"
 
 // ListenConfig describes one bound socket and the route groups served on it.
 type ListenConfig struct {
@@ -110,6 +124,9 @@ func defaults() Config {
 			FilesDir:    "./data/files",
 			MaxUploadMB: 500,
 		},
+		Auth: AuthConfig{
+			InitialAdminUser: "admin",
+		},
 	}
 }
 
@@ -135,6 +152,11 @@ func Load(path string) (Config, error) {
 			// File present but defined no [[listen]] — restore the default.
 			cfg.Listen = defaults().Listen
 		}
+	}
+	// The env var, when set, overrides the file's initial admin password so the
+	// secret need not live in the config file at all.
+	if pw := os.Getenv(InitialAdminPasswordEnv); pw != "" {
+		cfg.Auth.InitialAdminPassword = pw
 	}
 	if err := cfg.validate(); err != nil {
 		return cfg, err

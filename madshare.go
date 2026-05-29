@@ -16,6 +16,7 @@ import (
 
 	"daemonlord.ygg/madshare/api"
 	"daemonlord.ygg/madshare/api/storage"
+	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/config"
 	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/webui"
@@ -58,12 +59,24 @@ func main() {
 		log.Printf("reconcile orphans: %v", err)
 	}
 
+	// First-run admin bootstrap: create the admin only when no users exist.
+	created, err := auth.Bootstrap(context.Background(), db, cfg.Auth.InitialAdminUser, cfg.Auth.InitialAdminPassword)
+	if err != nil {
+		log.Fatalf("bootstrap admin: %v", err)
+	}
+	if created {
+		log.Printf("created initial admin user %q (must change password on first login)", cfg.Auth.InitialAdminUser)
+	} else if cfg.Auth.InitialAdminPassword != "" {
+		log.Printf("warning: users already exist; the initial admin password is unused — unset %s / [auth].initial_admin_password", config.InitialAdminPasswordEnv)
+	}
+
 	deps := api.Deps{
 		Store:         storage.NewLocal(filesDir),
 		Repo:          db,
 		CacheDir:      os.TempDir(),
 		FilesDir:      filesDir,
 		MaxUploadSize: cfg.Storage.MaxUploadBytes(),
+		Auth:          db,
 	}
 
 	servers, err := startListeners(cfg, deps)
@@ -123,6 +136,11 @@ func buildHandler(lc config.ListenConfig, deps api.Deps, apiBase string) (http.H
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(api.CORS)
+	// Resolve the request's identity (session cookie / bearer token) for every
+	// route; authorization is enforced per group below.
+	if deps.Auth != nil {
+		r.Use(auth.Identify(deps.Auth))
+	}
 	if len(lc.AllowFrom) > 0 {
 		mw, err := allowFrom(lc.AllowFrom)
 		if err != nil {
@@ -135,7 +153,12 @@ func buildHandler(lc config.ListenConfig, deps api.Deps, apiBase string) (http.H
 		api.RegisterAPI(r, deps)
 	}
 	if lc.Serves(config.GroupAdmin) {
-		api.RegisterAdmin(r, deps)
+		// The destructive admin API requires the file.delete permission. The
+		// admin page itself is left ungated so it can render its login prompt.
+		r.Group(func(gr chi.Router) {
+			gr.Use(auth.RequirePermission(auth.PermFileDelete))
+			api.RegisterAdmin(gr, deps)
+		})
 		webui.RegisterAdminPage(r, apiBase) // no-op in -tags nowebui builds
 	}
 	if lc.Serves(config.GroupWebUI) {
