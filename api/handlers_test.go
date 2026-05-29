@@ -363,37 +363,15 @@ func TestUploadFile_EmptyBody(t *testing.T) {
 	}
 }
 
-// TestUploadFile_CORSAbsentOnErrorResponse documents that CORS headers are
-// missing on error responses (returned via http.Error, not writeJSON).
-func TestUploadFile_CORSAbsentOnErrorResponse(t *testing.T) {
-	h, _, _ := newTestHandler(t)
+// CORS on error responses is now covered by TestCORS_OnErrorResponse, which
+// exercises the corsMiddleware through the full router.
 
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-	mw.Close()
-	req := httptest.NewRequest(http.MethodPost, "/files/upload", &buf)
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	rr := httptest.NewRecorder()
-	h.uploadFile(rr, req)
-
-	cors := rr.Header().Get("Access-Control-Allow-Origin")
-	if cors == "*" {
-		t.Log("CORS present on error response")
-	} else {
-		t.Logf("INFO: CORS header absent on error response (status %d)", rr.Code)
-	}
-}
-
-// TestUploadFile_MaxUploadSizeConstant verifies the declared constant against
-// both the spec (50 MB from CLAUDE.md) and the code (500 MB).
+// TestUploadFile_MaxUploadSizeConstant pins the request-body cap. This 500 MB
+// ceiling is intentionally distinct from the 50 MB in-memory hashing threshold
+// in CLAUDE.md (storage.memBufferLimit) — they are not meant to match.
 func TestUploadFile_MaxUploadSizeConstant(t *testing.T) {
-	const specLimit = 50 << 20
 	if maxUploadSize != 500<<20 {
-		t.Errorf("maxUploadSize = %d, expected code value 500 MB (%d)", maxUploadSize, 500<<20)
-	}
-	if maxUploadSize != specLimit {
-		t.Logf("MISMATCH: maxUploadSize is %d MB but CLAUDE.md spec says 50 MB",
-			maxUploadSize>>20)
+		t.Errorf("maxUploadSize = %d, expected 500 MB (%d)", maxUploadSize, 500<<20)
 	}
 }
 
@@ -408,13 +386,58 @@ func TestWriteJSON_ContentType(t *testing.T) {
 	}
 }
 
-// TestWriteJSON_CORSHeader verifies the wildcard CORS header is set by writeJSON.
-func TestWriteJSON_CORSHeader(t *testing.T) {
-	rr := httptest.NewRecorder()
-	writeJSON(rr, http.StatusOK, nil)
+// TestCORS_OnErrorResponse verifies the wildcard CORS header is set even on
+// error responses written via http.Error — the corsMiddleware applies to every
+// route, so cross-origin JS clients can read error bodies. A bad upload (no
+// multipart body) exercises an http.Error path.
+func TestCORS_OnErrorResponse(t *testing.T) {
+	store := storage.NewLocal(t.TempDir())
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	srv := httptest.NewServer(NewRouter(store, db, t.TempDir()))
+	defer srv.Close()
 
-	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+	resp, err := http.Post(srv.URL+"/files/upload", "text/plain", strings.NewReader("not multipart"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 400 {
+		t.Fatalf("expected an error status, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("Access-Control-Allow-Origin on error = %q, want *", got)
+	}
+}
+
+// TestCORS_Preflight verifies an OPTIONS preflight request is answered with the
+// CORS headers and no route 405.
+func TestCORS_Preflight(t *testing.T) {
+	store := storage.NewLocal(t.TempDir())
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	srv := httptest.NewServer(NewRouter(store, db, t.TempDir()))
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodOptions, srv.URL+"/files/upload", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
 		t.Errorf("Access-Control-Allow-Origin = %q, want *", got)
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("preflight status = %d, want 204", resp.StatusCode)
 	}
 }
 
@@ -588,14 +611,25 @@ func TestListFiles_DBError(t *testing.T) {
 	}
 }
 
-// TestListFiles_CORSHeader verifies that listFiles sets the wildcard CORS header.
+// TestListFiles_CORSHeader verifies the /api/files response carries the
+// wildcard CORS header (applied by corsMiddleware at the router level).
 func TestListFiles_CORSHeader(t *testing.T) {
-	h, _, _ := newTestHandler(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/files", nil)
-	rr := httptest.NewRecorder()
-	h.listFiles(rr, req)
+	store := storage.NewLocal(t.TempDir())
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	srv := httptest.NewServer(NewRouter(store, db, t.TempDir()))
+	defer srv.Close()
 
-	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+	resp, err := http.Get(srv.URL + "/api/files")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
 		t.Errorf("Access-Control-Allow-Origin = %q, want *", got)
 	}
 }
@@ -678,21 +712,8 @@ func TestUploadFile_DoubleExtensionAllowed(t *testing.T) {
 	}
 }
 
-// TestUploadFile_MIMETypeWithParamsRejected documents that a Content-Type that
-// includes MIME parameters (e.g. "audio/mpeg; charset=utf-8") is rejected by the
-// current implementation because the map lookup is an exact string match and the
-// semicolon-suffix does not appear in allowedMIMETypes. This is a false negative
-// (legitimate clients that include parameters are blocked) rather than a bypass.
-func TestUploadFile_MIMETypeWithParamsRejected(t *testing.T) {
-	h, _, _ := newTestHandler(t)
-	req := buildUploadRequest(t, "file", "song.mp3", "audio/mpeg; charset=utf-8", []byte("audio data"))
-	rr := httptest.NewRecorder()
-	h.uploadFile(rr, req)
-	// The current implementation rejects this; document the behavior.
-	if rr.Code != http.StatusUnsupportedMediaType {
-		t.Logf("INFO: MIME type with params returned %d (may have been relaxed)", rr.Code)
-	}
-}
+// Acceptance of parameterized MIME types is now asserted by
+// TestUploadFile_MIMEWithParameters.
 
 // TestUploadFile_TraversalFilenameProducesCorrectURL verifies that a filename
 // containing path-traversal components ("../../../music/track.mp3") is
@@ -733,5 +754,250 @@ func TestUploadFile_TraversalFilenameProducesCorrectURL(t *testing.T) {
 	if url != wantURL {
 		t.Errorf("url = %q, want %q — Go multipart sanitization may have changed",
 			url, wantURL)
+	}
+}
+
+// ---- Fix: MIME type with parameters -----------------------------------------
+
+// TestUploadFile_MIMEWithParameters verifies a Content-Type carrying parameters
+// (e.g. "audio/mpeg; charset=utf-8") is accepted: the handler parses the media
+// type with mime.ParseMediaType before checking the allow-list.
+func TestUploadFile_MIMEWithParameters(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	req := buildUploadRequest(t, "file", "song.mp3", "audio/mpeg; charset=utf-8", []byte("audio data"))
+	rr := httptest.NewRecorder()
+	h.uploadFile(rr, req)
+	if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want 2xx for parameterized MIME type; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// ---- Fix: Windows-path filename sanitization --------------------------------
+
+// TestSanitizeFilename covers Unix and Windows path stripping plus degenerate
+// inputs that must collapse to the empty string.
+func TestSanitizeFilename(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"song.mp3", "song.mp3"},
+		{`C:\Users\evil.mp3`, "evil.mp3"},
+		{`\\server\share\track.mp3`, "track.mp3"},
+		{"../../etc/passwd", "passwd"},
+		{"dir/sub/track.flac", "track.flac"},
+		{"", ""},
+		{".", ""},
+		{"..", ""},
+		{"/", ""},
+	}
+	for _, tc := range cases {
+		if got := sanitizeFilename(tc.in); got != tc.want {
+			t.Errorf("sanitizeFilename(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestUploadFile_WindowsPathFilenameProducesCleanURL verifies that a Windows
+// absolute-path filename is reduced to its base name in the stored ObjectKey
+// and download URL, rather than embedding backslashes (filepath.Base alone
+// does not strip backslashes on Linux).
+func TestUploadFile_WindowsPathFilenameProducesCleanURL(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	req := buildUploadRequest(t, "file", `C:\Users\evil.mp3`, "audio/mpeg", []byte("win path test"))
+	rr := httptest.NewRecorder()
+	h.uploadFile(rr, req)
+	if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+		t.Fatalf("upload status = %d: %s", rr.Code, rr.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/files", nil)
+	listRR := httptest.NewRecorder()
+	h.listFiles(listRR, listReq)
+
+	var items []map[string]any
+	if err := json.NewDecoder(listRR.Body).Decode(&items); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d", len(items))
+	}
+	url, _ := items[0]["url"].(string)
+	hash, _ := items[0]["hash"].(string)
+	wantURL := "/files/" + hash + "/evil.mp3"
+	if url != wantURL {
+		t.Errorf("url = %q, want %q (backslashes should be stripped)", url, wantURL)
+	}
+}
+
+// ---- Fix: directory listing disabled & nosniff header -----------------------
+
+// TestFileServer_NoDirectoryListing verifies that requesting a directory under
+// /files/ returns 404 rather than an HTML index of hash dirs and filenames.
+func TestFileServer_NoDirectoryListing(t *testing.T) {
+	store := storage.NewLocal(t.TempDir())
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	srv := httptest.NewServer(NewRouter(store, db, t.TempDir()))
+	defer srv.Close()
+
+	// Upload a file so a hash directory exists on disk.
+	body := buildUploadBody(t, "file", "song.mp3", "audio/mpeg", []byte("dir listing test"))
+	upResp, err := http.Post(srv.URL+"/files/upload", body.contentType, body.reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upResp.Body.Close()
+
+	// The root files directory must not list its contents.
+	resp, err := http.Get(srv.URL + "/files/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("GET /files/ status = %d, want 404 (directory listing must be disabled)", resp.StatusCode)
+	}
+}
+
+// TestFileServer_NosniffHeader verifies the file server sets
+// X-Content-Type-Options: nosniff on served files.
+func TestFileServer_NosniffHeader(t *testing.T) {
+	store := storage.NewLocal(t.TempDir())
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	srv := httptest.NewServer(NewRouter(store, db, t.TempDir()))
+	defer srv.Close()
+
+	body := buildUploadBody(t, "file", "song.mp3", "audio/mpeg", []byte("nosniff test"))
+	upResp, err := http.Post(srv.URL+"/files/upload", body.contentType, body.reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var up map[string]any
+	json.NewDecoder(upResp.Body).Decode(&up)
+	upResp.Body.Close()
+	hash, _ := up["hash"].(string)
+
+	resp, err := http.Get(srv.URL + "/files/" + hash + "/song.mp3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+}
+
+// uploadBody bundles a multipart request body with its content type for use
+// with http.Post against a test server.
+type uploadBody struct {
+	reader      *bytes.Reader
+	contentType string
+}
+
+func buildUploadBody(t *testing.T, fieldName, filename, contentType string, body []byte) uploadBody {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, fieldName, filename))
+	h.Set("Content-Type", contentType)
+	fw, err := mw.CreatePart(h)
+	if err != nil {
+		t.Fatalf("CreatePart: %v", err)
+	}
+	if _, err := fw.Write(body); err != nil {
+		t.Fatalf("Write to form: %v", err)
+	}
+	mw.Close()
+	return uploadBody{reader: bytes.NewReader(buf.Bytes()), contentType: mw.FormDataContentType()}
+}
+
+// ---- Image upload path: same MIME/ext robustness as audio -------------------
+
+// buildImageRequest builds a multipart POST request with an "image" field.
+func buildImageRequest(t *testing.T, filename, contentType string, body []byte) *http.Request {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="image"; filename="%s"`, filename))
+	h.Set("Content-Type", contentType)
+	fw, err := mw.CreatePart(h)
+	if err != nil {
+		t.Fatalf("CreatePart: %v", err)
+	}
+	fw.Write(body)
+	mw.Close()
+	req := httptest.NewRequest(http.MethodPost, "/api/artists/Foo/image", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	return req
+}
+
+// TestSaveImageUpload_MIMEWithParameters verifies a parameterized image
+// Content-Type is accepted (mirrors the audio upload fix).
+func TestSaveImageUpload_MIMEWithParameters(t *testing.T) {
+	t.Chdir(t.TempDir())
+	req := buildImageRequest(t, "cover.png", "image/png; charset=binary", []byte("img"))
+	key, mime, err := saveImageUpload(req)
+	if err != nil {
+		t.Fatalf("saveImageUpload rejected parameterized MIME: %v", err)
+	}
+	if mime != "image/png" {
+		t.Errorf("mime = %q, want image/png", mime)
+	}
+	if !strings.HasSuffix(key, ".png") {
+		t.Errorf("key = %q, want .png suffix", key)
+	}
+}
+
+// TestSaveImageUpload_UppercaseExtension verifies an uppercase extension is
+// accepted and normalized (cameras commonly produce ".JPG").
+func TestSaveImageUpload_UppercaseExtension(t *testing.T) {
+	t.Chdir(t.TempDir())
+	req := buildImageRequest(t, "PHOTO.JPG", "image/jpeg", []byte("img"))
+	key, mime, err := saveImageUpload(req)
+	if err != nil {
+		t.Fatalf("saveImageUpload rejected uppercase extension: %v", err)
+	}
+	if mime != "image/jpeg" {
+		t.Errorf("mime = %q, want image/jpeg", mime)
+	}
+	if !strings.HasSuffix(key, ".jpg") {
+		t.Errorf("key = %q, want normalized .jpg suffix", key)
+	}
+}
+
+// TestSaveImageUpload_RejectsBadType verifies a disallowed MIME type is rejected.
+func TestSaveImageUpload_RejectsBadType(t *testing.T) {
+	t.Chdir(t.TempDir())
+	req := buildImageRequest(t, "evil.svg", "image/svg+xml", []byte("<svg/>"))
+	if _, _, err := saveImageUpload(req); err == nil {
+		t.Error("saveImageUpload accepted disallowed image type")
+	}
+}
+
+// TestSanitizeFilename_RejectsControlChars verifies NUL/control characters
+// collapse to the empty string (clean 400 instead of a later os.Create 500).
+func TestSanitizeFilename_RejectsControlChars(t *testing.T) {
+	for _, in := range []string{"song\x00.mp3", "a\tb.mp3", "x\x7f.mp3"} {
+		if got := sanitizeFilename(in); got != "" {
+			t.Errorf("sanitizeFilename(%q) = %q, want \"\"", in, got)
+		}
+	}
+}
+
+// TestSaveImageUpload_DisallowedExtensionRejected verifies that an allowed MIME
+// type paired with a disallowed extension is rejected (image analogue of the
+// audio MIME-bypass guard).
+func TestSaveImageUpload_DisallowedExtensionRejected(t *testing.T) {
+	t.Chdir(t.TempDir())
+	req := buildImageRequest(t, "evil.svg", "image/png", []byte("not really png"))
+	if _, _, err := saveImageUpload(req); err == nil {
+		t.Error("saveImageUpload accepted disallowed extension with allowed MIME type")
 	}
 }

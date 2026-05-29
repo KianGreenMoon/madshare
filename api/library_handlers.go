@@ -4,9 +4,11 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -196,11 +198,13 @@ func saveImageUpload(r *http.Request) (objectKey, mimeType string, err error) {
 	}
 	defer file.Close()
 
-	claimedMIME := header.Header.Get("Content-Type")
-	if !allowedImageMIMETypes[claimedMIME] {
+	// Parse off any parameters (e.g. "image/png; charset=binary") before the
+	// allow-list check, mirroring the audio upload path.
+	claimedMIME, _, parseErr := mime.ParseMediaType(header.Header.Get("Content-Type"))
+	if parseErr != nil || !allowedImageMIMETypes[claimedMIME] {
 		return "", "", fmt.Errorf("unsupported image type")
 	}
-	ext := filepath.Ext(header.Filename)
+	ext := strings.ToLower(filepath.Ext(sanitizeFilename(header.Filename)))
 	canonicalMIME, ok := allowedImageExtensions[ext]
 	if !ok {
 		return "", "", fmt.Errorf("unsupported image extension")
@@ -229,5 +233,6 @@ func saveImageUpload(r *http.Request) (objectKey, mimeType string, err error) {
 func serveImageFile(w http.ResponseWriter, r *http.Request, objectKey, mimeType string) {
 	path := filepath.Join("data", "images", objectKey)
 	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	http.ServeFile(w, r, path)
 }

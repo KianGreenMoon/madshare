@@ -185,10 +185,11 @@ func TestListFiles_Empty(t *testing.T) {
 		t.Fatalf("ListFiles: %v", err)
 	}
 	// Result must be non-nil so it encodes as [] not null.
-	// Current implementation returns nil on empty; document the behaviour.
 	if entries == nil {
-		t.Log("INFO: ListFiles returns nil on empty DB (encodes as JSON null, not []); " +
-			"handler compensates with make([]fileItem, 0, ...)")
+		t.Fatal("ListFiles returned nil on empty DB; want non-nil empty slice")
+	}
+	if len(entries) != 0 {
+		t.Fatalf("ListFiles on empty DB returned %d entries; want 0", len(entries))
 	}
 }
 

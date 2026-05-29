@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,11 @@ import (
 	"daemonlord.ygg/madshare/media"
 )
 
+// maxUploadSize caps the total size of an upload request body. This is the
+// hard ceiling on what the server will accept; it is distinct from the 50 MB
+// in-memory hashing threshold (storage.memBufferLimit) documented in
+// CLAUDE.md, above which an upload is spooled to the cache dir instead of
+// being buffered in RAM.
 const maxUploadSize = 500 << 20 // 500 MB
 
 // allowedMIMETypes is the set of media types accepted for upload.
@@ -63,12 +69,22 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	mimeType := header.Header.Get("Content-Type")
-	if !allowedMIMETypes[mimeType] {
+	// Parse off any parameters (e.g. "audio/mpeg; charset=utf-8") so the
+	// allow-list check compares the bare media type.
+	mimeType, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
+	if err != nil || !allowedMIMETypes[mimeType] {
 		http.Error(w, "unsupported media type", http.StatusUnsupportedMediaType)
 		return
 	}
-	ext := strings.ToLower(filepath.Ext(header.Filename))
+
+	// Reduce the client-supplied name to a safe base name before it is used
+	// for the extension check, on-disk path, and download URL.
+	filename := sanitizeFilename(header.Filename)
+	if filename == "" {
+		http.Error(w, "invalid filename", http.StatusBadRequest)
+		return
+	}
+	ext := strings.ToLower(filepath.Ext(filename))
 	if !allowedExtensions[ext] {
 		http.Error(w, "unsupported file extension", http.StatusUnsupportedMediaType)
 		return
@@ -97,7 +113,7 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if existing != nil {
-		if err := h.repo.RecordUpload(ctx, existing.ID, header.Filename); err != nil {
+		if err := h.repo.RecordUpload(ctx, existing.ID, filename); err != nil {
 			http.Error(w, "storage error", http.StatusInternalServerError)
 			return
 		}
@@ -105,7 +121,7 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 			"ok":       true,
 			"existed":  true,
 			"hash":     hash,
-			"filename": header.Filename,
+			"filename": filename,
 			"size":     size,
 		})
 		return
@@ -115,7 +131,7 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 	// leave an orphan blob.
 	tags := extractTagsOrEmpty(content, mimeType)
 
-	if err := h.storage.Put(hash, header.Filename, content); err != nil {
+	if err := h.storage.Put(hash, filename, content); err != nil {
 		http.Error(w, "cannot save file", http.StatusInternalServerError)
 		return
 	}
@@ -126,10 +142,10 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		ByteSize:       size,
 		MimeType:       mimeType,
 		StorageBackend: "local",
-		ObjectKey:      hash + "/" + header.Filename,
+		ObjectKey:      hash + "/" + filename,
 		CreatedAt:      now,
 	}
-	upload := &database.FileUpload{Filename: header.Filename, UploadedAt: now}
+	upload := &database.FileUpload{Filename: filename, UploadedAt: now}
 	meta := tagsToMetadata(tags, now)
 
 	if err := h.repo.InsertFile(ctx, f, upload, meta); err != nil {
@@ -144,9 +160,30 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		"ok":       true,
 		"existed":  false,
 		"hash":     hash,
-		"filename": header.Filename,
+		"filename": filename,
 		"size":     size,
 	})
+}
+
+// sanitizeFilename reduces a client-supplied filename to a safe base name.
+// It strips both Unix and Windows path components: filepath.Base alone does
+// not remove backslash-separated segments on non-Windows hosts, so a name
+// like `C:\Users\evil.mp3` would otherwise be stored verbatim and produce a
+// malformed ObjectKey and broken download URL. Returns "" when nothing usable
+// remains.
+func sanitizeFilename(name string) string {
+	// Reject NUL and other control characters: a NUL would otherwise pass the
+	// extension check and fail later at os.Create with a confusing 500.
+	if strings.ContainsFunc(name, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return ""
+	}
+	// Normalise Windows separators so filepath.Base strips the directory part.
+	name = strings.ReplaceAll(name, "\\", "/")
+	name = filepath.Base(name)
+	if name == "." || name == "/" || name == ".." {
+		return ""
+	}
+	return name
 }
 
 func (h *handler) listFiles(w http.ResponseWriter, r *http.Request) {
@@ -249,9 +286,8 @@ func nullInt(i int) sql.NullInt64 {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	// CORS headers are set globally by corsMiddleware.
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
 }

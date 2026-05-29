@@ -100,7 +100,7 @@ func (db *DB) ListFiles(ctx context.Context) ([]*FileListEntry, error) {
 	const q = `
 		SELECT
 			f.id, f.hash, f.mime_type, f.byte_size, f.object_key, f.created_at,
-			COALESCE((SELECT filename FROM file_uploads WHERE file_id = f.id LIMIT 1), f.hash) AS filename,
+			COALESCE((SELECT filename FROM file_uploads WHERE file_id = f.id ORDER BY id LIMIT 1), f.hash) AS filename,
 			COALESCE(m.title,  '') AS title,
 			COALESCE(m.artist, '') AS artist,
 			m.album_artist,
@@ -117,7 +117,7 @@ func (db *DB) ListFiles(ctx context.Context) ([]*FileListEntry, error) {
 	}
 	defer rows.Close()
 
-	var out []*FileListEntry
+	out := make([]*FileListEntry, 0)
 	for rows.Next() {
 		var e FileListEntry
 		if err := rows.Scan(

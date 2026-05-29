@@ -1,6 +1,7 @@
 package api
 
 import (
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -21,6 +22,7 @@ func NewRouter(store storage.Storage, repo database.Repository, cacheDir string)
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	r.Use(corsMiddleware)
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Hello World!"))
 	})
@@ -39,17 +41,62 @@ func NewRouter(store storage.Storage, repo database.Repository, cacheDir string)
 		log.Printf("getwd: %v; using relative path", err)
 		workDir = "."
 	}
-	filesDir := http.Dir(filepath.Join(workDir, "data", "files"))
+	filesDir := noListFS{http.Dir(filepath.Join(workDir, "data", "files"))}
 	fileServer(r, "/files", filesDir, h)
 
-	imagesDir := http.Dir(filepath.Join(workDir, "data", "images"))
+	imagesDir := noListFS{http.Dir(filepath.Join(workDir, "data", "images"))}
 	r.Get("/images/*", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		rctx := chi.RouteContext(r.Context())
 		pathPrefix := strings.TrimSuffix(rctx.RoutePattern(), "/*")
 		http.StripPrefix(pathPrefix, http.FileServer(imagesDir)).ServeHTTP(w, r)
 	})
 
 	return r
+}
+
+// corsMiddleware sets permissive CORS headers on every response, including
+// error responses written via http.Error (which previously carried none, so
+// cross-origin JS clients could not read the error body). It also answers
+// preflight OPTIONS requests directly.
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// noListFS wraps an http.FileSystem to disable directory listings: opening a
+// directory with no index.html returns fs.ErrNotExist, so http.FileServer
+// responds 404 instead of rendering an index of hash dirs and filenames.
+type noListFS struct{ fsys http.FileSystem }
+
+func (n noListFS) Open(name string) (http.File, error) {
+	f, err := n.fsys.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if info.IsDir() {
+		index := strings.TrimSuffix(name, "/") + "/index.html"
+		if idx, err := n.fsys.Open(index); err != nil {
+			f.Close()
+			return nil, fs.ErrNotExist
+		} else {
+			idx.Close()
+		}
+	}
+	return f, nil
 }
 
 func fileServer(r chi.Router, path string, root http.FileSystem, h *handler) {
@@ -66,6 +113,7 @@ func fileServer(r chi.Router, path string, root http.FileSystem, h *handler) {
 	path += "*"
 
 	r.Get(path, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		rctx := chi.RouteContext(r.Context())
 		pathPrefix := strings.TrimSuffix(rctx.RoutePattern(), "/*")
 		fs := http.StripPrefix(pathPrefix, http.FileServer(root))
