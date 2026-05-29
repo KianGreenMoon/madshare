@@ -685,6 +685,11 @@ function uploadOne(file, item) {
 
 const previewBtn   = document.getElementById('previewPrune');
 const pruneResults = document.getElementById('pruneResults');
+const deepVerify   = document.getElementById('deepVerify');
+
+// lastPruneDeep captures the scan mode used for the preview, so the subsequent
+// commit prunes exactly what was previewed even if the checkbox is toggled after.
+let lastPruneDeep = false;
 
 previewBtn.addEventListener('click', runPreview);
 
@@ -692,14 +697,15 @@ async function runPreview() {
   previewBtn.disabled = true;
   previewBtn.setAttribute('aria-busy', 'true');
   const original = previewBtn.textContent;
-  previewBtn.textContent = 'Scanning…';
+  lastPruneDeep = deepVerify.checked;
+  previewBtn.textContent = lastPruneDeep ? 'Verifying…' : 'Scanning…';
 
   let data;
   try {
     const res = await fetch(`${API}/api/admin/prune`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ confirm: false }),
+      body: JSON.stringify({ confirm: false, deep: lastPruneDeep }),
     });
     if (handleAuthError(res)) return;
     data = await res.json().catch(() => ({}));
@@ -766,7 +772,9 @@ function renderDanglingPanel(data) {
   panel.appendChild(head);
 
   const sub = document.createElement('p');
-  sub.textContent = 'These point to files missing from disk.';
+  sub.textContent = data.deep
+    ? 'These files are missing from disk or their contents are corrupted.'
+    : 'These point to files missing from disk.';
   panel.appendChild(sub);
 
   panel.appendChild(buildDanglingList(data.dangling));
@@ -796,6 +804,12 @@ function buildDanglingList(entries) {
     hash.textContent = shortHash(entry.hash);
     hash.title = entry.hash || '';
     li.append(name, hash);
+    if (entry.reason) {
+      const reason = document.createElement('span');
+      reason.className = 'dangling-reason is-' + entry.reason;
+      reason.textContent = entry.reason; // "missing" | "corrupt"
+      li.appendChild(reason);
+    }
     ul.appendChild(li);
   });
   return ul;
@@ -862,7 +876,7 @@ async function commitPrune() {
     const res = await fetch(`${API}/api/admin/prune`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ confirm: true }),
+      body: JSON.stringify({ confirm: true, deep: lastPruneDeep }),
     });
     if (handleAuthError(res)) { closePruneModal(); return; }
     data = await res.json().catch(() => ({}));

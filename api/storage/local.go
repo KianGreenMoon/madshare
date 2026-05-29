@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -58,19 +60,70 @@ func (s *Local) DeleteAll(hash string) (bool, error) {
 	return true, nil
 }
 
-// HashDirExists reports whether the <baseDir>/<hash> directory exists.
-func (s *Local) HashDirExists(hash string) (bool, error) {
+// BlobPresent reports whether <baseDir>/<hash> exists and contains at least one
+// regular file. An emptied hash directory (the blob deleted but the directory
+// left behind) reads as not present.
+func (s *Local) BlobPresent(hash string) (bool, error) {
 	if !validHash.MatchString(hash) {
 		return false, fmt.Errorf("storage: invalid hash %q", hash)
 	}
-	info, err := os.Stat(filepath.Join(s.baseDir, hash))
-	if err == nil {
-		return info.IsDir(), nil
+	entries, err := os.ReadDir(filepath.Join(s.baseDir, hash))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("storage: read hash dir: %w", err)
 	}
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
+	for _, e := range entries {
+		if e.Type().IsRegular() {
+			return true, nil
+		}
 	}
-	return false, fmt.Errorf("storage: stat hash dir: %w", err)
+	return false, nil
+}
+
+// VerifyBlob re-reads the blob(s) under <baseDir>/<hash> and reports whether one
+// hashes to hash. Returns false (no error) when the directory is missing/empty
+// or the content has been corrupted (no file matches the expected digest).
+func (s *Local) VerifyBlob(hash string) (bool, error) {
+	if !validHash.MatchString(hash) {
+		return false, fmt.Errorf("storage: invalid hash %q", hash)
+	}
+	dir := filepath.Join(s.baseDir, hash)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("storage: read hash dir: %w", err)
+	}
+	for _, e := range entries {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		sum, err := sha256File(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return false, err
+		}
+		if sum == hash {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// sha256File streams a file through SHA-256 and returns the hex digest.
+func sha256File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("storage: open %s: %w", path, err)
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("storage: hash %s: %w", path, err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Put writes r to <baseDir>/<hash>/<filename>, creating the hash directory if

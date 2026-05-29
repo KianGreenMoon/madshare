@@ -59,18 +59,20 @@ func (h *handler) adminDeleteFile(w http.ResponseWriter, r *http.Request) {
 }
 
 // adminPrune handles POST /api/admin/prune. An empty body is treated as a dry
-// run. The request body is {"confirm": bool}; confirm=true deletes every
-// dangling record (a files row whose backing blob directory is missing).
+// run. The request body is {"confirm": bool, "deep": bool}: confirm=true deletes
+// every flagged record, and deep=true additionally rehashes each present blob to
+// flag corrupted content (an integrity scan), not just missing files.
 func (h *handler) adminPrune(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Confirm bool `json:"confirm"`
+		Deep    bool `json:"deep"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid json"})
 		return
 	}
 
-	result, err := database.PruneDangling(r.Context(), h.repo, h.storage, body.Confirm)
+	result, err := database.PruneDangling(r.Context(), h.repo, h.storage, body.Confirm, body.Deep)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "prune scan failed"})
 		return
@@ -80,8 +82,9 @@ func (h *handler) adminPrune(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":             true,
 			"dry_run":        true,
+			"deep":           result.Deep,
 			"scanned":        result.Scanned,
-			"dangling":       fileRefsJSON(result.Dangling),
+			"dangling":       danglingJSON(result.Dangling),
 			"dangling_count": len(result.Dangling),
 		})
 		return
@@ -91,27 +94,29 @@ func (h *handler) adminPrune(w http.ResponseWriter, r *http.Request) {
 	for _, f := range result.Failed {
 		failed = append(failed, map[string]any{"hash": f.Hash, "error": f.Err})
 	}
-	h.audit(r.Context(), "file.prune", "", fmt.Sprintf("pruned %d, failed %d", len(result.Pruned), len(result.Failed)))
+	h.audit(r.Context(), "file.prune", "",
+		fmt.Sprintf("deep=%v pruned %d, failed %d", result.Deep, len(result.Pruned), len(result.Failed)))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":           true,
 		"dry_run":      false,
+		"deep":         result.Deep,
 		"scanned":      result.Scanned,
-		"pruned":       fileRefsJSON(result.Pruned),
+		"pruned":       danglingJSON(result.Pruned),
 		"pruned_count": len(result.Pruned),
 		"failed":       failed,
 	})
 }
 
-// fileRefsJSON shapes FileRefs into the {hash, filenames} objects the API
-// returns, ensuring filenames is always a JSON array (never null).
-func fileRefsJSON(refs []database.FileRef) []map[string]any {
+// danglingJSON shapes DanglingRefs into {hash, filenames, reason} objects,
+// ensuring filenames is always a JSON array (never null).
+func danglingJSON(refs []database.DanglingRef) []map[string]any {
 	out := make([]map[string]any, 0, len(refs))
 	for _, ref := range refs {
 		names := ref.Filenames
 		if names == nil {
 			names = []string{}
 		}
-		out = append(out, map[string]any{"hash": ref.Hash, "filenames": names})
+		out = append(out, map[string]any{"hash": ref.Hash, "filenames": names, "reason": ref.Reason})
 	}
 	return out
 }

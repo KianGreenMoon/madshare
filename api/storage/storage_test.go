@@ -496,38 +496,116 @@ func TestLocalDeleteAll_InvalidHash(t *testing.T) {
 	}
 }
 
-// ---- Local.HashDirExists -----------------------------------------------------
+// ---- Local.BlobPresent -------------------------------------------------------
 
-func TestLocalHashDirExists_Present(t *testing.T) {
+func TestLocalBlobPresent_Present(t *testing.T) {
 	s := newLocal(t)
 	hash := sha256hex([]byte("present"))
 	if err := s.Put(hash, "x.mp3", bytes.NewReader([]byte("present"))); err != nil {
 		t.Fatal(err)
 	}
-	ok, err := s.HashDirExists(hash)
+	ok, err := s.BlobPresent(hash)
 	if err != nil {
-		t.Fatalf("HashDirExists: %v", err)
+		t.Fatalf("BlobPresent: %v", err)
 	}
 	if !ok {
-		t.Error("HashDirExists = false after Put, want true")
+		t.Error("BlobPresent = false after Put, want true")
 	}
 }
 
-func TestLocalHashDirExists_Missing(t *testing.T) {
+func TestLocalBlobPresent_Missing(t *testing.T) {
 	s := newLocal(t)
 	hash := sha256hex([]byte("absent"))
-	ok, err := s.HashDirExists(hash)
+	ok, err := s.BlobPresent(hash)
 	if err != nil {
-		t.Fatalf("HashDirExists: %v", err)
+		t.Fatalf("BlobPresent: %v", err)
 	}
 	if ok {
-		t.Error("HashDirExists = true on empty store, want false")
+		t.Error("BlobPresent = true on empty store, want false")
 	}
 }
 
-func TestLocalHashDirExists_InvalidHash(t *testing.T) {
+// TestLocalBlobPresent_EmptyDir is the Issue-2 case: the file was deleted but
+// its hash directory was left behind. BlobPresent must report not-present.
+func TestLocalBlobPresent_EmptyDir(t *testing.T) {
 	s := newLocal(t)
-	if _, err := s.HashDirExists("nope"); err == nil {
+	hash := sha256hex([]byte("emptied"))
+	if err := s.Put(hash, "x.mp3", bytes.NewReader([]byte("emptied"))); err != nil {
+		t.Fatal(err)
+	}
+	// Remove the file but keep the directory.
+	if err := os.Remove(filepath.Join(s.baseDir, hash, "x.mp3")); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := s.BlobPresent(hash)
+	if err != nil {
+		t.Fatalf("BlobPresent: %v", err)
+	}
+	if ok {
+		t.Error("BlobPresent = true for an emptied hash dir, want false")
+	}
+}
+
+func TestLocalBlobPresent_InvalidHash(t *testing.T) {
+	s := newLocal(t)
+	if _, err := s.BlobPresent("nope"); err == nil {
+		t.Error("expected error for invalid hash, got nil")
+	}
+}
+
+// ---- Local.VerifyBlob --------------------------------------------------------
+
+func TestLocalVerifyBlob_Intact(t *testing.T) {
+	s := newLocal(t)
+	data := []byte("intact content")
+	hash := sha256hex(data)
+	if err := s.Put(hash, "song.mp3", bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := s.VerifyBlob(hash)
+	if err != nil {
+		t.Fatalf("VerifyBlob: %v", err)
+	}
+	if !ok {
+		t.Error("VerifyBlob = false for intact blob, want true")
+	}
+}
+
+func TestLocalVerifyBlob_Corrupted(t *testing.T) {
+	s := newLocal(t)
+	data := []byte("original content")
+	hash := sha256hex(data)
+	if err := s.Put(hash, "song.mp3", bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	// Corrupt the stored bytes without touching the hash-named directory.
+	if err := os.WriteFile(filepath.Join(s.baseDir, hash, "song.mp3"), []byte("rotted"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := s.VerifyBlob(hash)
+	if err != nil {
+		t.Fatalf("VerifyBlob: %v", err)
+	}
+	if ok {
+		t.Error("VerifyBlob = true for corrupted blob, want false")
+	}
+}
+
+func TestLocalVerifyBlob_Missing(t *testing.T) {
+	s := newLocal(t)
+	hash := sha256hex([]byte("never stored"))
+	ok, err := s.VerifyBlob(hash)
+	if err != nil {
+		t.Fatalf("VerifyBlob: %v", err)
+	}
+	if ok {
+		t.Error("VerifyBlob = true for missing blob, want false")
+	}
+}
+
+func TestLocalVerifyBlob_InvalidHash(t *testing.T) {
+	s := newLocal(t)
+	if _, err := s.VerifyBlob("nope"); err == nil {
 		t.Error("expected error for invalid hash, got nil")
 	}
 }

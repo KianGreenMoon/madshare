@@ -5,17 +5,40 @@ import (
 	"testing"
 )
 
-// fakeProbe is an in-test blobProbe backed by a set of "present" hashes.
+// fakeProbe is an in-test blobProbe backed by a set of "present" hashes and an
+// "intact" set (for the deep scan). A hash absent from intact but present in
+// present models a corrupted blob. deleted records DeleteAll sweeps.
 type fakeProbe struct {
 	present map[string]bool
+	intact  map[string]bool
+	deleted map[string]bool
 	err     error
 }
 
-func (p *fakeProbe) HashDirExists(hash string) (bool, error) {
+func (p *fakeProbe) BlobPresent(hash string) (bool, error) {
 	if p.err != nil {
 		return false, p.err
 	}
 	return p.present[hash], nil
+}
+
+func (p *fakeProbe) VerifyBlob(hash string) (bool, error) {
+	if p.err != nil {
+		return false, p.err
+	}
+	// A present blob with no explicit intact map defaults to intact.
+	if p.intact == nil {
+		return p.present[hash], nil
+	}
+	return p.intact[hash], nil
+}
+
+func (p *fakeProbe) DeleteAll(hash string) (bool, error) {
+	if p.deleted == nil {
+		p.deleted = map[string]bool{}
+	}
+	p.deleted[hash] = true
+	return true, nil
 }
 
 // seedFile inserts a files row (plus one upload) and returns its hash.
@@ -42,7 +65,7 @@ func TestPruneDangling_DryRunReportsButKeeps(t *testing.T) {
 
 	probe := &fakeProbe{present: map[string]bool{hashHealthy: true}} // dangling blob missing
 
-	res, err := PruneDangling(ctx, db, probe, false)
+	res, err := PruneDangling(ctx, db, probe, false, false)
 	if err != nil {
 		t.Fatalf("PruneDangling: %v", err)
 	}
@@ -74,7 +97,7 @@ func TestPruneDangling_ConfirmDeletesDanglingOnly(t *testing.T) {
 
 	probe := &fakeProbe{present: map[string]bool{hashHealthy: true}}
 
-	res, err := PruneDangling(ctx, db, probe, true)
+	res, err := PruneDangling(ctx, db, probe, true, false)
 	if err != nil {
 		t.Fatalf("PruneDangling: %v", err)
 	}
@@ -94,12 +117,64 @@ func TestPruneDangling_ConfirmDeletesDanglingOnly(t *testing.T) {
 	}
 
 	// Idempotent re-run: nothing left to prune, no error.
-	res2, err := PruneDangling(ctx, db, probe, true)
+	res2, err := PruneDangling(ctx, db, probe, true, false)
 	if err != nil {
 		t.Fatalf("PruneDangling re-run: %v", err)
 	}
 	if len(res2.Dangling) != 0 || len(res2.Pruned) != 0 {
 		t.Errorf("re-run found work: dangling=%v pruned=%v", res2.Dangling, res2.Pruned)
+	}
+}
+
+// TestPruneDangling_DeepDetectsCorruption verifies the opt-in deep scan flags a
+// present-but-corrupted blob (Issue 1) while the cheap scan leaves it alone, and
+// that the reason is reported and the blob swept on confirm.
+func TestPruneDangling_DeepDetectsCorruption(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	seedFile(t, db, hashHealthy, "good.mp3")
+	seedFile(t, db, hashDangling, "rotted.mp3")
+
+	// Both blobs are present, but hashDangling's content no longer matches.
+	probe := &fakeProbe{
+		present: map[string]bool{hashHealthy: true, hashDangling: true},
+		intact:  map[string]bool{hashHealthy: true}, // hashDangling corrupted
+	}
+
+	// Cheap scan: both present, nothing flagged.
+	shallow, err := PruneDangling(ctx, db, probe, false, false)
+	if err != nil {
+		t.Fatalf("shallow PruneDangling: %v", err)
+	}
+	if len(shallow.Dangling) != 0 {
+		t.Errorf("shallow Dangling = %+v, want none (corruption invisible to cheap scan)", shallow.Dangling)
+	}
+
+	// Deep scan (dry run): the corrupted blob is flagged with reason "corrupt".
+	deep, err := PruneDangling(ctx, db, probe, false, true)
+	if err != nil {
+		t.Fatalf("deep PruneDangling: %v", err)
+	}
+	if !deep.Deep {
+		t.Error("result.Deep = false, want true")
+	}
+	if len(deep.Dangling) != 1 || deep.Dangling[0].Hash != hashDangling || deep.Dangling[0].Reason != ReasonCorrupt {
+		t.Fatalf("deep Dangling = %+v, want one corrupt entry for %s", deep.Dangling, hashDangling)
+	}
+
+	// Deep scan (confirm): prunes the row and sweeps the bad blob.
+	committed, err := PruneDangling(ctx, db, probe, true, true)
+	if err != nil {
+		t.Fatalf("deep confirm PruneDangling: %v", err)
+	}
+	if len(committed.Pruned) != 1 || committed.Pruned[0].Reason != ReasonCorrupt {
+		t.Fatalf("deep Pruned = %+v, want one corrupt entry", committed.Pruned)
+	}
+	if !probe.deleted[hashDangling] {
+		t.Error("corrupt blob was not swept via DeleteAll on confirm")
+	}
+	if got, _ := db.GetFileByHash(ctx, hashHealthy); got == nil {
+		t.Error("healthy file was pruned; want it kept")
 	}
 }
 
@@ -113,7 +188,7 @@ func TestPruneDangling_AllHealthy(t *testing.T) {
 
 	probe := &fakeProbe{present: map[string]bool{hashHealthy: true, hashDangling: true}}
 
-	res, err := PruneDangling(ctx, db, probe, true)
+	res, err := PruneDangling(ctx, db, probe, true, false)
 	if err != nil {
 		t.Fatalf("PruneDangling: %v", err)
 	}

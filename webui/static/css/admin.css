@@ -814,3 +814,24 @@ main {
   font-size: 0.85rem;
   color: var(--text-muted);
 }
+
+/* ── Deep verify / prune reasons ─────────────────────────────────────────── */
+.deep-verify-row {
+  margin: var(--space-3) 0 var(--space-4);
+  align-items: flex-start;
+  max-width: 60ch;
+}
+.dangling-reason {
+  margin-left: auto;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--border);
+}
+.dangling-reason.is-missing { color: var(--text-muted); }
+.dangling-reason.is-corrupt {
+  color: var(--error);
+  border-color: var(--danger);
+}

@@ -80,6 +80,13 @@
       blob is missing are <strong>dangling</strong> and can be pruned. Preview is
       non-destructive &mdash; it only scans and reports.
     </p>
+    <label class="check-row deep-verify-row">
+      <input type="checkbox" id="deepVerify">
+      <span>
+        <strong>Deep verify</strong> &mdash; re-read and re-hash every file to also
+        catch <em>corrupted</em> blobs (slower; reads all content).
+      </span>
+    </label>
     <button class="btn btn-destructive-outline" id="previewPrune">Preview prune</button>
 
     <div class="prune-results" id="pruneResults" aria-live="polite"></div>

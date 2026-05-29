@@ -16,7 +16,15 @@ type Storage interface {
 	// idempotent: removed is false with a nil error when nothing was stored.
 	DeleteAll(hash string) (removed bool, err error)
 
-	// HashDirExists reports whether the <hash> directory exists, regardless of
-	// its contents. Used to detect blobs that back a database record.
-	HashDirExists(hash string) (bool, error)
+	// BlobPresent reports whether a backing blob exists for hash: the <hash>
+	// directory exists AND holds at least one regular file. An emptied hash
+	// directory (file deleted, directory left behind) reads as not present, so
+	// the prune scan catches it. This is the cheap existence check.
+	BlobPresent(hash string) (bool, error)
+
+	// VerifyBlob is the deep integrity check: it reads the blob(s) under <hash>
+	// and reports whether one hashes to hash. It returns false (no error) when
+	// the blob is missing or its content has been corrupted (digest mismatch).
+	// Expensive — it reads file content — so callers gate it behind an opt-in.
+	VerifyBlob(hash string) (bool, error)
 }
