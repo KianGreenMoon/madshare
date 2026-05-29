@@ -19,6 +19,7 @@
   <div class="header-actions">
     <div class="user-area" id="userArea" hidden>
       <span class="user-name" id="userName"></span>
+      <button class="btn btn-neutral" id="changePassBtn">Change password</button>
       <button class="btn btn-neutral" id="logoutBtn">Log out</button>
     </div>
     <div class="theme-switcher" role="group" aria-label="Color theme">
@@ -113,6 +114,32 @@
   </section>
 
 </main>
+
+<!-- ── Change-password modal ── -->
+<div class="modal-backdrop hidden" id="passModal" role="dialog" aria-modal="true" aria-labelledby="passTitle">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="passTitle">Change password</h2>
+      <button class="btn-close" id="passClose" aria-label="Close">&times;</button>
+    </div>
+    <p class="modal-body" id="passForced" hidden>
+      Your password was set during first-run setup. Choose a new one to continue.
+    </p>
+    <form class="login-form" id="passForm">
+      <label for="oldPass">Current password</label>
+      <input type="password" id="oldPass" autocomplete="current-password" required>
+      <label for="newPass">New password</label>
+      <input type="password" id="newPass" autocomplete="new-password" minlength="8" required>
+      <label for="confirmPass">Confirm new password</label>
+      <input type="password" id="confirmPass" autocomplete="new-password" minlength="8" required>
+      <p class="login-error" id="passError" role="alert" hidden></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-neutral" id="passCancel">Cancel</button>
+        <button type="submit" class="btn btn-neutral" id="passSubmit">Change password</button>
+      </div>
+    </form>
+  </div>
+</div>
 
 <!-- ── Prune confirmation modal ── -->
 <div class="modal-backdrop hidden" id="pruneModal" role="dialog" aria-modal="true" aria-labelledby="pruneModalTitle" aria-describedby="pruneModalBody">

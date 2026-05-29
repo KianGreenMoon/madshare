@@ -866,7 +866,8 @@ function showSignedIn(identity) {
   userArea.hidden = false;
   userName.textContent = identity.username;
   if (identity.password_change_required) {
-    toast('Security: change your password — it was set during first-run setup.', 'error');
+    // Forced flow: the modal can't be dismissed until the password is changed.
+    openPassModal(true);
   }
 }
 
@@ -909,6 +910,93 @@ loginForm.addEventListener('submit', async e => {
 logoutBtn.addEventListener('click', async () => {
   try { await fetch(`${API}/api/auth/logout`, { method: 'POST' }); } catch {}
   showLogin();
+});
+
+// ── Change password ───────────────────────────────────────────────────────
+const changePassBtn = document.getElementById('changePassBtn');
+const passModal     = document.getElementById('passModal');
+const passForm      = document.getElementById('passForm');
+const oldPass       = document.getElementById('oldPass');
+const newPass       = document.getElementById('newPass');
+const confirmPass   = document.getElementById('confirmPass');
+const passError     = document.getElementById('passError');
+const passForced    = document.getElementById('passForced');
+const passCancel    = document.getElementById('passCancel');
+const passClose     = document.getElementById('passClose');
+
+// passIsForced is true when the user must change a first-run password; the
+// modal then hides its dismiss controls and cannot be closed until success.
+let passIsForced = false;
+
+function openPassModal(forced) {
+  passIsForced = forced;
+  passForm.reset();
+  passError.hidden = true;
+  passForced.hidden = !forced;
+  passCancel.hidden = forced;
+  passClose.hidden = forced;
+  passModal.classList.remove('hidden');
+  oldPass.focus();
+}
+
+function closePassModal() {
+  if (passIsForced) return; // cannot dismiss a forced change
+  passModal.classList.add('hidden');
+}
+
+changePassBtn.addEventListener('click', () => openPassModal(false));
+passCancel.addEventListener('click', closePassModal);
+passClose.addEventListener('click', closePassModal);
+passModal.addEventListener('click', e => { if (e.target === passModal) closePassModal(); });
+passModal.addEventListener('keydown', e => { if (e.key === 'Escape') closePassModal(); });
+
+passForm.addEventListener('submit', async e => {
+  e.preventDefault();
+  passError.hidden = true;
+  if (newPass.value !== confirmPass.value) {
+    passError.textContent = 'New passwords do not match.';
+    passError.hidden = false;
+    return;
+  }
+  if (newPass.value.length < 8) {
+    passError.textContent = 'New password must be at least 8 characters.';
+    passError.hidden = false;
+    return;
+  }
+  try {
+    const res = await fetch(`${API}/api/auth/password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ old_password: oldPass.value, new_password: newPass.value }),
+    });
+    if (!res.ok) {
+      const msg = (await res.text()).trim();
+      // A 401 is ambiguous: a missing session vs. a wrong current password.
+      // The session-missing case carries "authentication required".
+      if (res.status === 401 && /authentication required/i.test(msg)) {
+        passIsForced = false;
+        passModal.classList.add('hidden');
+        handleAuthError(res);
+        return;
+      }
+      if (res.status === 401) {
+        passError.textContent = 'Current password is incorrect.';
+      } else {
+        passError.textContent = `Couldn’t change password: ${msg || `HTTP ${res.status}`}`;
+      }
+      passError.hidden = false;
+      return;
+    }
+    // Success: clear the forced flag, refresh identity, close, and continue.
+    passIsForced = false;
+    passModal.classList.add('hidden');
+    toast('Password changed.', 'success');
+    const identity = await fetchIdentity();
+    if (identity) { currentUser = identity; }
+  } catch (err) {
+    passError.textContent = `Couldn’t change password: ${err.message}`;
+    passError.hidden = false;
+  }
 });
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
