@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/BurntSushi/toml"
@@ -44,8 +45,11 @@ func defaults() Config {
 // defaults are returned. Fields absent from the file keep their default values.
 func Load(path string) (Config, error) {
 	cfg := defaults()
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return cfg, nil
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return cfg, nil
+		}
+		return cfg, fmt.Errorf("config file %s: %w", path, err)
 	}
 	_, err := toml.DecodeFile(path, &cfg)
 	return cfg, err

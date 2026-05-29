@@ -29,6 +29,10 @@ func main() {
 
 	log.Println("Start the program")
 
+	if cfg.Database.Path == "" {
+		log.Fatal("config: database.path must not be empty")
+	}
+
 	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0755); err != nil {
 		log.Fatalf("mkdir %s: %v", filepath.Dir(cfg.Database.Path), err)
 	}
