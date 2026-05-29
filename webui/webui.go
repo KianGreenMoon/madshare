@@ -27,8 +27,15 @@ func showUploadForm(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func noCacheStatic(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+		next.ServeHTTP(w, r)
+	})
+}
+
 func Route() {
-	static := http.FileServer(http.Dir("webui/static"))
+	static := noCacheStatic(http.FileServer(http.Dir("webui/static")))
 	http.Handle("/static/", http.StripPrefix("/static/", static))
 	http.HandleFunc("/library", showLibrary)
 	http.HandleFunc("/", showUploadForm)
