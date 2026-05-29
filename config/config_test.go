@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -116,6 +117,48 @@ func TestMaxUploadBytes_NoOverflowAtLimit(t *testing.T) {
 	s := config.StorageConfig{MaxUploadMB: config.MaxUploadMBLimit}
 	if got := s.MaxUploadBytes(); got <= 0 {
 		t.Errorf("MaxUploadBytes() at limit = %d, want positive", got)
+	}
+}
+
+// TestLoad_Validation exercises config.Load's validation of storage and
+// database fields, including the max_upload_mb bounds (now testable because
+// validation lives in Load rather than in main()).
+func TestLoad_Validation(t *testing.T) {
+	cases := []struct {
+		name    string
+		toml    string
+		wantErr bool
+	}{
+		{"empty database path", "[database]\npath = \"\"\n", true},
+		{"empty files_dir", "[storage]\nfiles_dir = \"\"\n", true},
+		{"zero max_upload_mb", "[storage]\nmax_upload_mb = 0\n", true},
+		{"negative max_upload_mb", "[storage]\nmax_upload_mb = -1\n", true},
+		{
+			name:    "over-limit max_upload_mb",
+			toml:    fmt.Sprintf("[storage]\nmax_upload_mb = %d\n", int64(config.MaxUploadMBLimit)+1),
+			wantErr: true,
+		},
+		{
+			name:    "at-limit max_upload_mb accepted",
+			toml:    fmt.Sprintf("[storage]\nmax_upload_mb = %d\n", int64(config.MaxUploadMBLimit)),
+			wantErr: false,
+		},
+		{"valid override", "[storage]\nmax_upload_mb = 100\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := filepath.Join(t.TempDir(), "c.toml")
+			if err := os.WriteFile(f, []byte(tc.toml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := config.Load(f)
+			if tc.wantErr && err == nil {
+				t.Errorf("Load(%q) = nil error, want error", tc.toml)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("Load(%q) = %v, want nil error", tc.toml, err)
+			}
+		})
 	}
 }
 

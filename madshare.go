@@ -27,18 +27,7 @@ func main() {
 
 	log.Println("Start the program")
 
-	if cfg.Database.Path == "" {
-		log.Fatal("config: database.path must not be empty")
-	}
-	if cfg.Storage.FilesDir == "" {
-		log.Fatal("config: storage.files_dir must not be empty")
-	}
-	if cfg.Storage.MaxUploadMB <= 0 {
-		log.Fatal("config: storage.max_upload_mb must be positive")
-	}
-	if cfg.Storage.MaxUploadMB > config.MaxUploadMBLimit {
-		log.Fatalf("config: storage.max_upload_mb must not exceed %d", config.MaxUploadMBLimit)
-	}
+	// Config values are validated by config.Load.
 
 	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0755); err != nil {
 		log.Fatalf("mkdir %s: %v", filepath.Dir(cfg.Database.Path), err)

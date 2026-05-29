@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -68,14 +69,38 @@ func defaults() Config {
 
 // Load reads the TOML config file at path. If the file does not exist the
 // defaults are returned. Fields absent from the file keep their default values.
+// The resulting config is validated before it is returned, so callers can rely
+// on the returned Config being usable.
 func Load(path string) (Config, error) {
 	cfg := defaults()
 	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			return cfg, nil
+		if !os.IsNotExist(err) {
+			return cfg, fmt.Errorf("config file %s: %w", path, err)
 		}
-		return cfg, fmt.Errorf("config file %s: %w", path, err)
+		// Missing file: fall through with defaults, which still get validated.
+	} else if _, err := toml.DecodeFile(path, &cfg); err != nil {
+		return cfg, err
 	}
-	_, err := toml.DecodeFile(path, &cfg)
-	return cfg, err
+	if err := cfg.validate(); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// validate checks that the config holds usable values. It is run by Load on
+// every successfully-parsed config (including the all-defaults case).
+func (c Config) validate() error {
+	if c.Database.Path == "" {
+		return errors.New("config: database.path must not be empty")
+	}
+	if c.Storage.FilesDir == "" {
+		return errors.New("config: storage.files_dir must not be empty")
+	}
+	if c.Storage.MaxUploadMB <= 0 {
+		return errors.New("config: storage.max_upload_mb must be positive")
+	}
+	if c.Storage.MaxUploadMB > MaxUploadMBLimit {
+		return fmt.Errorf("config: storage.max_upload_mb must not exceed %d", MaxUploadMBLimit)
+	}
+	return nil
 }
