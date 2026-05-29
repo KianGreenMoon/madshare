@@ -34,155 +34,295 @@ function saveDurCache(c) {
   catch {} // quota exceeded — not fatal
 }
 
-// ── Library ──────────────────────────────────────────────────────────────
+// ── Library — drill-down state ────────────────────────────────────────────
 
-let playlist             = [];
-let libraryLoading       = false; // BUG-03: concurrent call guard
-let libraryReloadPending = false; // BUG-03: queue at most one extra reload
-let currentSort          = 'all'; // active sort-tab key
+// drill tracks which panel level is currently shown and what was selected.
+// playlist is shared with the player — playIndex() reads it directly.
+const drill = { level: 'artists', artist: null, album: null };
+let playlist = [];
 
-// Fetch tracks from API, rebuild playlist array, then re-render.
-async function loadLibrary() {
-  if (libraryLoading) { libraryReloadPending = true; return; } // BUG-03
-  libraryLoading = true;
+// Fetch and render the top-level artists panel.
+async function loadArtists() {
+  drill.level  = 'artists';
+  drill.artist = null;
+  drill.album  = null;
+
+  const panel = document.getElementById('libraryPanel');
+  panel.innerHTML = '<div class="panel-loading" aria-live="polite" role="status"></div>';
+
+  let artists;
   try {
-    let tracks;
-    try {
-      const res = await fetch(`${API}/api/files`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      tracks = await res.json();
-    } catch (err) {
-      console.error('Failed to load library:', err);
-      return;
-    }
-
-    playlist = [];
-    const durCache = loadDurCache();
-
-    if (tracks && tracks.length > 0) {
-      tracks.forEach(t => {
-        const title = t.title  || t.filename;
-        const artist = t.artist || '';
-        const url   = `${API}${t.url}`;
-        // Prefer server duration, fall back to cached, fall back to '—'
-        const dur   = t.duration ? fmtTime(t.duration) : (durCache[url] || '—');
-        playlist.push({
-          url, title, artist,
-          albumArtist: t.album_artist || '',
-          album:       t.album || '',
-          year:        t.year  || null,
-          dur,
-        });
-      });
-    }
-
-    // Re-render using the active sort — no extra fetch needed on tab switch
-    renderLibrary();
-    fetchMissingDurations(); // background: fetch audio headers for tracks still showing '—'
-  } finally {
-    libraryLoading = false;
-    if (libraryReloadPending) { // BUG-03: flush one queued reload
-      libraryReloadPending = false;
-      loadLibrary();
-    }
-  }
-}
-
-// Render playlist into the DOM according to currentSort.
-// Called by loadLibrary() and by sort-tab clicks.
-function renderLibrary() {
-  const list  = document.getElementById('trackList');
-  const empty = document.getElementById('emptyState');
-
-  // BUG-08/01: remove only track rows and group headers; leave #emptyState in DOM
-  list.querySelectorAll('.track-row, .group-header').forEach(el => el.remove());
-
-  if (playlist.length === 0) {
-    if (empty) empty.style.display = ''; // BUG-13: show empty state again
+    const res = await fetch(`${API}/api/artists`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    artists = await res.json();
+  } catch (err) {
+    console.error('Failed to load artists:', err);
+    panel.innerHTML = '<div class="panel-empty" role="alert">Failed to load library.</div>';
     return;
   }
 
-  if (empty) empty.style.display = 'none'; // BUG-08: hide, never remove
+  renderBreadcrumb();
+  renderArtistList(artists);
+}
 
-  if (currentSort === 'all') {
-    // Numbered flat list — API response order (newest first)
-    playlist.forEach((track, i) => {
-      list.appendChild(makeTrackRow(track, i, i, false));
-    });
-  } else {
-    // Grouped view: group by field, sort groups alpha (unknown/empty last)
-    const field = currentSort === 'artist'       ? 'artist'
-                : currentSort === 'album-artist' ? 'albumArtist'
-                :                                  'album';
+// Fetch and render the albums panel for a given artist.
+async function drillToAlbums(artistName) {
+  drill.level  = 'albums';
+  drill.artist = artistName;
+  drill.album  = null;
 
-    // Build map: groupKey -> [{track, originalIndex}]
-    const groups = new Map();
-    playlist.forEach((track, i) => {
-      const key = track[field] || '';
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push({ track, originalIndex: i });
-    });
+  const panel = document.getElementById('libraryPanel');
+  panel.innerHTML = '';
 
-    // Sort group keys: known names first (alpha), empty/unknown last
-    const sortedKeys = [...groups.keys()].sort((a, b) => {
-      if (!a && !b) return 0;
-      if (!a) return 1;   // empty last
-      if (!b) return -1;
-      return a.localeCompare(b, undefined, { sensitivity: 'base' });
-    });
-
-    sortedKeys.forEach(key => {
-      // Group header <li>
-      const header = document.createElement('li');
-      header.className = key ? 'group-header' : 'group-header group-header--unknown';
-      header.setAttribute('aria-hidden', 'true'); // decorative — list items are labelled
-      header.textContent = key || 'Unknown';
-      list.appendChild(header);
-
-      // Track rows for this group — pass originalIndex so playIndex() still works
-      groups.get(key).forEach(({ track, originalIndex }) => {
-        list.appendChild(makeTrackRow(track, originalIndex, null, true));
-      });
-    });
+  let albums;
+  try {
+    const res = await fetch(`${API}/api/albums?artist=${encodeURIComponent(artistName || '')}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    albums = await res.json();
+  } catch (err) {
+    console.error('Failed to load albums:', err);
+    panel.innerHTML = '<div class="panel-empty" role="alert">Failed to load albums.</div>';
+    return;
   }
 
-  // BUG-02: restore playing highlight after re-render
-  if (currentIndex >= 0 && currentIndex < playlist.length) {
-    list.querySelectorAll('.track-row').forEach(row => {
-      row.classList.toggle('playing', Number(row.dataset.idx) === currentIndex);
-    });
+  renderBreadcrumb();
+  renderAlbumList(albums);
+}
+
+// Fetch and render the tracks panel for a given artist + album.
+async function drillToTracks(artistName, albumTitle) {
+  drill.level  = 'tracks';
+  drill.artist = artistName;
+  drill.album  = albumTitle;
+
+  const panel = document.getElementById('libraryPanel');
+  panel.innerHTML = '';
+
+  let tracks;
+  try {
+    const res = await fetch(
+      `${API}/api/tracks?artist=${encodeURIComponent(artistName || '')}&album=${encodeURIComponent(albumTitle || '')}`
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    tracks = await res.json();
+  } catch (err) {
+    console.error('Failed to load tracks:', err);
+    panel.innerHTML = '<div class="panel-empty" role="alert">Failed to load tracks.</div>';
+    return;
+  }
+
+  renderBreadcrumb();
+  renderTrackList(tracks);
+}
+
+// Rebuild the breadcrumb nav from current drill state.
+// Uses addEventListener (not onclick) — module scripts don't share global scope.
+function renderBreadcrumb() {
+  const bc = document.getElementById('breadcrumb');
+  bc.innerHTML = '';
+
+  const displayArtist = drill.artist || 'Unknown Artist';
+  const displayAlbum  = drill.album  || 'Other';
+
+  function mkLink(label, handler) {
+    const btn = document.createElement('button');
+    btn.className = 'bc-item bc-link';
+    btn.textContent = label;
+    btn.addEventListener('click', handler);
+    return btn;
+  }
+  function mkSep() {
+    const s = document.createElement('span');
+    s.className = 'bc-sep';
+    s.textContent = '›';
+    return s;
+  }
+  function mkCurrent(label) {
+    const s = document.createElement('span');
+    s.className = 'bc-item bc-current';
+    s.textContent = label;
+    return s;
+  }
+
+  if (drill.level === 'artists') {
+    bc.appendChild(mkCurrent('Library'));
+  } else if (drill.level === 'albums') {
+    bc.appendChild(mkLink('Library', loadArtists));
+    bc.appendChild(mkSep());
+    bc.appendChild(mkCurrent(displayArtist));
+  } else {
+    const capturedArtist = drill.artist;
+    bc.appendChild(mkLink('Library', loadArtists));
+    bc.appendChild(mkSep());
+    bc.appendChild(mkLink(displayArtist, () => drillToAlbums(capturedArtist)));
+    bc.appendChild(mkSep());
+    bc.appendChild(mkCurrent(displayAlbum));
   }
 }
 
-// Build a single <li class="track-row"> element.
-// idx        — index into playlist[] used by playIndex()
-// displayNum — 1-based display number shown in .track-num (null hides it via "grouped" class)
-// grouped    — if true, adds "grouped" class (hides num column, playing icon)
-function makeTrackRow(track, idx, displayNum, grouped) {
-  const meta = [track.artist, track.album, track.year].filter(Boolean).join(' · ');
+// Render a list of artist rows into #libraryPanel.
+function renderArtistList(artists) {
+  const panel = document.getElementById('libraryPanel');
 
-  const li = document.createElement('li');
-  li.className = grouped ? 'track-row grouped' : 'track-row';
-  li.tabIndex  = 0;
-  li.dataset.idx = idx;
-  li.setAttribute('role', 'button');
-  li.setAttribute('aria-label', `Play ${track.title}`);
-  li.innerHTML = `
-    <span class="track-num">${grouped ? '' : (displayNum + 1)}</span>
-    <span class="track-icon-playing" aria-hidden="true">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-    </span>
-    <div class="track-info">
-      <div class="track-title">${esc(track.title)}</div>
-      <div class="track-meta">${esc(meta)}</div>
-    </div>
-    <span class="track-dur">${esc(track.dur)}</span>
-  `;
-  li.addEventListener('click', () => playIndex(idx));
-  li.addEventListener('keydown', e => {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); playIndex(idx); }
+  if (!artists || artists.length === 0) {
+    panel.innerHTML =
+      `<div class="panel-fade-in"><div class="panel-empty">` +
+      `No music yet. <a href="#" id="openUploadEmpty">Upload files →</a>` +
+      `</div></div>`;
+    document.getElementById('openUploadEmpty')?.addEventListener('click', e => {
+      e.preventDefault();
+      openModal();
+    });
+    return;
+  }
+
+  // Build all rows as a fragment for a single DOM write.
+  const wrap = document.createElement('div');
+  wrap.className = 'panel-fade-in';
+
+  artists.forEach(artist => {
+    const displayName = artist.name || 'Unknown Artist';
+    const count       = artist.track_count ?? 0;
+    const row         = document.createElement('div');
+    row.className     = 'panel-row artist-row';
+    row.tabIndex      = 0;
+    row.setAttribute('role', 'button');
+    row.setAttribute('aria-label', `Browse ${displayName}`);
+    row.innerHTML =
+      `<span class="row-name">${esc(displayName)}</span>` +
+      `<span class="row-meta">${count} track${count !== 1 ? 's' : ''}</span>` +
+      `<span class="row-chevron" aria-hidden="true">›</span>`;
+    row.addEventListener('click', () => drillToAlbums(artist.name));
+    row.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); drillToAlbums(artist.name); }
+    });
+    wrap.appendChild(row);
   });
-  return li;
+
+  panel.innerHTML = '';
+  panel.appendChild(wrap);
+}
+
+// Render a list of album cards into #libraryPanel.
+function renderAlbumList(albums) {
+  const panel = document.getElementById('libraryPanel');
+
+  if (!albums || albums.length === 0) {
+    panel.innerHTML =
+      `<div class="panel-fade-in"><div class="panel-empty">No albums found.</div></div>`;
+    return;
+  }
+
+  const wrap = document.createElement('div');
+  wrap.className = 'panel-fade-in';
+
+  // Music note SVG used as art placeholder
+  const noteSvg =
+    `<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">` +
+    `<path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/>` +
+    `</svg>`;
+
+  albums.forEach(album => {
+    const title      = album.title       || 'Other';
+    const count      = album.track_count ?? 0;
+    const yearPrefix = album.year        ? `${album.year} · ` : '';
+    const artContent = album.has_image
+      ? `<img src="${API}/api/albums/${encodeURIComponent(album.title || '')}/image?artist=${encodeURIComponent(album.artist_name || '')}" alt="" loading="lazy">`
+      : noteSvg;
+
+    const row = document.createElement('div');
+    row.className = 'panel-row album-row';
+    row.tabIndex  = 0;
+    row.setAttribute('role', 'button');
+    row.setAttribute('aria-label', `Browse album ${title}`);
+    row.innerHTML =
+      `<div class="row-art">${artContent}</div>` +
+      `<div class="row-body">` +
+        `<div class="row-name">${esc(title)}</div>` +
+        `<div class="row-meta">${esc(yearPrefix)}${count} track${count !== 1 ? 's' : ''}</div>` +
+      `</div>` +
+      `<span class="row-chevron" aria-hidden="true">›</span>`;
+    row.addEventListener('click', () => drillToTracks(album.artist_name, album.title));
+    row.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); drillToTracks(album.artist_name, album.title); }
+    });
+    wrap.appendChild(row);
+  });
+
+  panel.innerHTML = '';
+  panel.appendChild(wrap);
+}
+
+// Render a list of track rows into #libraryPanel and populate playlist[].
+function renderTrackList(tracks) {
+  const panel = document.getElementById('libraryPanel');
+
+  // Always reset playlist when entering a track list so player reflects current album.
+  playlist = [];
+
+  if (!tracks || tracks.length === 0) {
+    panel.innerHTML =
+      `<div class="panel-fade-in"><div class="panel-empty">No tracks found.</div></div>`;
+    return;
+  }
+
+  const durCache = loadDurCache();
+
+  // Populate shared playlist array first so playIndex() works immediately.
+  tracks.forEach(t => {
+    const url = `${API}${t.url}`;
+    const dur = t.duration_seconds
+      ? fmtTime(t.duration_seconds)
+      : (durCache[url] || '—');
+    playlist.push({
+      url,
+      title:  t.title  || t.filename || 'Unknown',
+      artist: drill.artist || '',
+      dur,
+    });
+  });
+
+  const wrap = document.createElement('div');
+  wrap.className = 'panel-fade-in';
+
+  tracks.forEach((t, i) => {
+    const displayNum = t.track_number || (i + 1);
+    const track      = playlist[i];
+    const row        = document.createElement('div');
+    row.className    = 'track-row';
+    row.tabIndex     = 0;
+    row.dataset.idx  = i;
+    row.setAttribute('role', 'button');
+    row.setAttribute('aria-label', `Play ${track.title}`);
+    row.innerHTML =
+      `<span class="track-num">${displayNum}</span>` +
+      `<span class="track-icon-playing" aria-hidden="true">` +
+        `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>` +
+      `</span>` +
+      `<div class="track-info">` +
+        `<div class="track-title">${esc(track.title)}</div>` +
+        `<div class="track-meta">${esc(drill.artist || '')}</div>` +
+      `</div>` +
+      `<span class="track-dur">${esc(track.dur)}</span>`;
+    row.addEventListener('click', () => playIndex(i));
+    row.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); playIndex(i); }
+    });
+    wrap.appendChild(row);
+  });
+
+  panel.innerHTML = '';
+  panel.appendChild(wrap);
+
+  // Restore playing highlight if we're still on the same playlist.
+  if (currentIndex >= 0 && currentIndex < playlist.length) {
+    wrap.querySelectorAll('.track-row').forEach(row => {
+      row.classList.toggle('playing', Number(row.dataset.idx) === currentIndex);
+    });
+  }
+
+  // Background fetch for any tracks still showing '—'.
+  fetchMissingDurations();
 }
 
 // Fetch audio metadata headers in the background for tracks still showing '—'.
@@ -203,10 +343,10 @@ async function fetchMissingDurations() {
       a.src     = track.url;
       const done = () => {
         if (isFinite(a.duration) && a.duration > 0) {
-          const dur      = fmtTime(a.duration);
-          track.dur      = dur;
+          const dur        = fmtTime(a.duration);
+          track.dur        = dur;
           cache[track.url] = dur;
-          // Update every rendered row for this index (may appear across sort views)
+          // Update every rendered row for this index
           document.querySelectorAll(`.track-row[data-idx="${i}"] .track-dur`)
             .forEach(el => { el.textContent = dur; });
         }
@@ -225,34 +365,16 @@ async function fetchMissingDurations() {
   }
 }
 
-// ── Sort tabs ─────────────────────────────────────────────────────────────
-
-const sortTabs = document.querySelectorAll('.sort-tab');
-
-sortTabs.forEach(tab => {
-  tab.addEventListener('click', () => {
-    currentSort = tab.dataset.sort;
-    sortTabs.forEach(t => {
-      const active = t === tab;
-      t.classList.toggle('active', active);
-      t.setAttribute('aria-selected', String(active));
-    });
-    renderLibrary();
-  });
-
-  // Arrow key navigation between tabs (ARIA tabs pattern)
-  tab.addEventListener('keydown', e => {
-    const tabs = [...sortTabs];
-    const i    = tabs.indexOf(tab);
-    let target = null;
-    if (e.key === 'ArrowRight') target = tabs[(i + 1) % tabs.length];
-    if (e.key === 'ArrowLeft')  target = tabs[(i - 1 + tabs.length) % tabs.length];
-    if (target) { e.preventDefault(); target.focus(); }
-  });
-});
+// Reload whichever drill level is currently shown — called after a successful upload.
+async function reloadCurrentLevel() {
+  if (drill.level === 'artists')     loadArtists();
+  else if (drill.level === 'albums') drillToAlbums(drill.artist);
+  else                               drillToTracks(drill.artist, drill.album);
+}
 
 // ── Player ───────────────────────────────────────────────────────────────
 
+// playlist is declared in the library section above — shared here.
 let currentIndex = -1;
 let stopped      = false;
 let shuffle      = false;
@@ -446,7 +568,7 @@ async function uploadFile(file) {
   }
 
   setStatus((data.existed ? 'Already in library' : 'Uploaded') + ': ' + file.name, 'success');
-  await loadLibrary(); // BUG-08/01/13: loadLibrary now owns clearing rows internally
+  await reloadCurrentLevel();
 }
 
 function setStatus(msg, type) {
@@ -463,4 +585,4 @@ function esc(s) {
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────────
-loadLibrary();
+loadArtists();
