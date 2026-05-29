@@ -11,19 +11,17 @@ var (
 	libraryTmpl = template.Must(template.ParseFiles("webui/html/library.html"))
 )
 
-func showCmus(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	if err := cmusTmpl.Execute(w, nil); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
+type pageData struct {
+	APIURL string
 }
 
-func showLibrary(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	if err := libraryTmpl.Execute(w, nil); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+func makeHandler(tmpl *template.Template, apiURL string) http.HandlerFunc {
+	data := pageData{APIURL: apiURL}
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := tmpl.Execute(w, data); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 	}
 }
 
@@ -34,10 +32,10 @@ func noCacheStatic(next http.Handler) http.Handler {
 	})
 }
 
-func Route() {
+func Route(addr, apiURL string) {
 	static := noCacheStatic(http.FileServer(http.Dir("webui/static")))
 	http.Handle("/static/", http.StripPrefix("/static/", static))
-	http.HandleFunc("/cmus", showCmus)
-	http.HandleFunc("/", showLibrary)
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	http.HandleFunc("/cmus", makeHandler(cmusTmpl, apiURL))
+	http.HandleFunc("/", makeHandler(libraryTmpl, apiURL))
+	log.Fatal(http.ListenAndServe(addr, nil))
 }
