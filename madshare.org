@@ -32,3 +32,5 @@ Concept doc for federated audio service (primarily for music)
 - Client should allow to play audio files
 - Client should allow to download audio files
 - Client should allow to upload audio files
+*** Desktop/Mobile client
+- Client should work as a server (can connect to external servers and share his library) and local music player app.
