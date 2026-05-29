@@ -17,6 +17,10 @@
     <a href="/admin" class="nav-link nav-link--active" aria-current="page">Admin</a>
   </nav>
   <div class="header-actions">
+    <div class="user-area" id="userArea" hidden>
+      <span class="user-name" id="userName"></span>
+      <button class="btn btn-neutral" id="logoutBtn">Log out</button>
+    </div>
     <div class="theme-switcher" role="group" aria-label="Color theme">
       <button class="theme-dot active" data-theme="dark"   title="Dark"   aria-label="Dark theme"   aria-pressed="true"></button>
       <button class="theme-dot"        data-theme="light"  title="Light"  aria-label="Light theme"  aria-pressed="false"></button>
@@ -25,6 +29,25 @@
     </div>
   </div>
 </header>
+
+<!-- ── Login overlay ── shown until the admin authenticates -->
+<div class="modal-backdrop hidden" id="loginModal" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="loginTitle">Sign in</h2>
+    </div>
+    <form class="login-form" id="loginForm">
+      <label for="loginUser">Username</label>
+      <input type="text" id="loginUser" autocomplete="username" required autofocus>
+      <label for="loginPass">Password</label>
+      <input type="password" id="loginPass" autocomplete="current-password" required>
+      <p class="login-error" id="loginError" role="alert" hidden></p>
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-neutral" id="loginSubmit">Sign in</button>
+      </div>
+    </form>
+  </div>
+</div>
 
 <!-- Persistent admin banner: a region, not an alert (it is always present, not an event) -->
 <div class="admin-banner" role="region" aria-label="Admin mode">

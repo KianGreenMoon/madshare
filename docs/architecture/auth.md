@@ -301,9 +301,17 @@ will extend.
 
 ## 10. Phasing
 
-1. **Authentication**: `users`/`sessions`/`api_tokens`, argon2id, first-run admin
-   bootstrap, `identify` + login/logout/token endpoints, web UI login. Gate the
-   `admin` route group (`requirePermission`). *No read-behavior change yet.*
+1. **Authentication** — **IMPLEMENTED** (`auth/` package, migration
+   `003_auth.sql`, `/api/auth/*`, admin-page login UI). `users`/`sessions`/
+   `api_tokens`, argon2id, first-run admin bootstrap, `Identify` + login/logout/
+   me/password/token endpoints, web UI login. The `admin` route group is gated by
+   `RequirePermission(file.delete)`. *No read-behavior change.* Deviation from the
+   strict phasing: the RBAC tables (`roles`/`role_permissions`/`user_roles`) and
+   seeded built-in roles were created in this phase's migration too, so the admin
+   gate uses a real permission rather than a throwaway flag — Phase 2 is then pure
+   enforcement (no new schema). Remaining Phase-1 polish: a dedicated
+   change-password form / forced-change flow (backend endpoint exists; UI nudges
+   via a toast for now).
 2. **RBAC (Layer A)**: `roles`/`permissions`, seed roles, gate upload/delete/edit;
    add `uploaded_by` and owner-delete rule; audit log; login rate limiting; CSRF.
 3. **Content access (Layer B)**: `access_groups`/`content_grants`,

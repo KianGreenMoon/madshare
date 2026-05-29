@@ -328,6 +328,10 @@ async function doDelete(tr, f, wrap) {
     const res = await fetch(`${API}/api/admin/files/${encodeURIComponent(f.hash)}`, {
       method: 'DELETE',
     });
+    if (handleAuthError(res)) {
+      tr.removeAttribute('aria-busy');
+      return;
+    }
     data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) {
       throw new Error(data.error || `HTTP ${res.status}`);
@@ -585,6 +589,7 @@ async function runPreview() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ confirm: false }),
     });
+    if (handleAuthError(res)) return;
     data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
   } catch (err) {
@@ -747,6 +752,7 @@ async function commitPrune() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ confirm: true }),
     });
+    if (handleAuthError(res)) { closePruneModal(); return; }
     data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
   } catch (err) {
@@ -820,5 +826,95 @@ function renderPruneCommitResult(data) {
   pruneResults.appendChild(panel);
 }
 
+// ── Auth ────────────────────────────────────────────────────────────────────
+// Admin actions require a session. The session cookie is HttpOnly and rides
+// along on same-origin requests automatically, so we only manage the UI state.
+const loginModal  = document.getElementById('loginModal');
+const loginForm   = document.getElementById('loginForm');
+const loginUser   = document.getElementById('loginUser');
+const loginPass   = document.getElementById('loginPass');
+const loginError  = document.getElementById('loginError');
+const userArea    = document.getElementById('userArea');
+const userName    = document.getElementById('userName');
+const logoutBtn   = document.getElementById('logoutBtn');
+
+// currentUser holds the identity returned by /api/auth/me, or null if signed out.
+let currentUser = null;
+
+async function fetchIdentity() {
+  try {
+    const res = await fetch(`${API}/api/auth/me`);
+    if (res.status === 401) return null;
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+function showLogin() {
+  currentUser = null;
+  userArea.hidden = true;
+  loginModal.classList.remove('hidden');
+  loginError.hidden = true;
+  loginUser.focus();
+}
+
+function showSignedIn(identity) {
+  currentUser = identity;
+  loginModal.classList.add('hidden');
+  userArea.hidden = false;
+  userName.textContent = identity.username;
+  if (identity.password_change_required) {
+    toast('Security: change your password — it was set during first-run setup.', 'error');
+  }
+}
+
+// handleAuthError shows the login overlay when a response is a 401. Returns true
+// when it handled an auth failure (caller should stop).
+function handleAuthError(res) {
+  if (res && res.status === 401) {
+    toast('Your session expired — please sign in again.', 'error');
+    showLogin();
+    return true;
+  }
+  return false;
+}
+
+loginForm.addEventListener('submit', async e => {
+  e.preventDefault();
+  loginError.hidden = true;
+  try {
+    const res = await fetch(`${API}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: loginUser.value, password: loginPass.value }),
+    });
+    if (!res.ok) {
+      loginError.textContent = res.status === 401 ? 'Invalid username or password.' : `Sign-in failed (HTTP ${res.status}).`;
+      loginError.hidden = false;
+      return;
+    }
+    loginPass.value = '';
+    const identity = await fetchIdentity();
+    if (!identity) { showLogin(); return; }
+    showSignedIn(identity);
+    loadFiles();
+  } catch (err) {
+    loginError.textContent = `Sign-in failed: ${err.message}`;
+    loginError.hidden = false;
+  }
+});
+
+logoutBtn.addEventListener('click', async () => {
+  try { await fetch(`${API}/api/auth/logout`, { method: 'POST' }); } catch {}
+  showLogin();
+});
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
-loadFiles();
+(async function boot() {
+  const identity = await fetchIdentity();
+  if (!identity) { showLogin(); return; }
+  showSignedIn(identity);
+  loadFiles();
+})();
