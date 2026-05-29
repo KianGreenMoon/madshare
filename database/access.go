@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 )
 
@@ -51,9 +52,13 @@ func (db *DB) FileAccessibleByHash(ctx context.Context, hash string, userID sql.
 }
 
 // SetGuestPlayable sets the guest-playable flag on the file with the given
-// hash. found is false (no error) when no file matches.
+// hash. Any explicit set is a manual decision (guest_playable_manual = 1), so
+// the auto-derivation policy will never override it (auth.md §5.1). found is
+// false (no error) when no file matches.
 func (db *DB) SetGuestPlayable(ctx context.Context, hash string, guest bool) (found bool, err error) {
-	res, err := db.ExecContext(ctx, `UPDATE files SET guest_playable = ? WHERE hash = ?`, boolToInt(guest), hash)
+	res, err := db.ExecContext(ctx,
+		`UPDATE files SET guest_playable = ?, guest_playable_manual = 1 WHERE hash = ?`,
+		boolToInt(guest), hash)
 	if err != nil {
 		return false, err
 	}
@@ -61,7 +66,9 @@ func (db *DB) SetGuestPlayable(ctx context.Context, hash string, guest bool) (fo
 	return n > 0, nil
 }
 
-// SetLicense sets (or clears, with "") the license metadata on a file.
+// SetLicense sets (or clears, with "") the license metadata on a file. When the
+// auto-derivation policy is enabled and the new license is on the allow-list,
+// the file's guest_playable flag is granted (unless it was set manually).
 func (db *DB) SetLicense(ctx context.Context, hash, license string) (found bool, err error) {
 	var lic sql.NullString
 	if license != "" {
@@ -72,7 +79,13 @@ func (db *DB) SetLicense(ctx context.Context, hash, license string) (found bool,
 		return false, err
 	}
 	n, _ := res.RowsAffected()
-	return n > 0, nil
+	if n == 0 {
+		return false, nil
+	}
+	if _, err := db.autoDeriveGuest(ctx, hash); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 // AccessGroup is a row in access_groups.
@@ -115,6 +128,82 @@ func (db *DB) AddGroupMember(ctx context.Context, groupID, userID int64) error {
 	return err
 }
 
+// DeleteAccessGroup removes a group (cascading to its members and grants).
+// found is false (no error) when no group matches.
+func (db *DB) DeleteAccessGroup(ctx context.Context, groupID int64) (found bool, err error) {
+	res, err := db.ExecContext(ctx, `DELETE FROM access_groups WHERE id = ?`, groupID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// GroupMember is a user belonging to an access group.
+type GroupMember struct {
+	UserID   int64
+	Username string
+}
+
+// ListGroupMembers returns the members of a group, ordered by username.
+func (db *DB) ListGroupMembers(ctx context.Context, groupID int64) ([]GroupMember, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT u.id, u.username
+		 FROM access_group_members agm JOIN users u ON u.id = agm.user_id
+		 WHERE agm.group_id = ? ORDER BY u.username`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []GroupMember
+	for rows.Next() {
+		var m GroupMember
+		if err := rows.Scan(&m.UserID, &m.Username); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// RemoveGroupMember removes a user from a group (idempotent — no error when the
+// membership does not exist).
+func (db *DB) RemoveGroupMember(ctx context.Context, groupID, userID int64) error {
+	_, err := db.ExecContext(ctx,
+		`DELETE FROM access_group_members WHERE group_id = ? AND user_id = ?`, groupID, userID)
+	return err
+}
+
+// ContentGrant is a row in content_grants.
+type ContentGrant struct {
+	ID        int64
+	GroupID   int64
+	ScopeType string
+	Artist    sql.NullString
+	Album     sql.NullString
+	FileID    sql.NullInt64
+}
+
+// ListContentGrants returns the grants attached to a group, newest first.
+func (db *DB) ListContentGrants(ctx context.Context, groupID int64) ([]ContentGrant, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT id, group_id, scope_type, scope_artist, scope_album, scope_file_id
+		 FROM content_grants WHERE group_id = ? ORDER BY id DESC`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ContentGrant
+	for rows.Next() {
+		var g ContentGrant
+		if err := rows.Scan(&g.ID, &g.GroupID, &g.ScopeType, &g.Artist, &g.Album, &g.FileID); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
 // AddContentGrant attaches a content scope to a group. For ScopeAll the scope
 // values are ignored; for ScopeArtist/ScopeAlbum pass the names; for ScopeFile
 // pass fileID.
@@ -134,4 +223,28 @@ func (db *DB) AddContentGrant(ctx context.Context, groupID int64, scopeType, art
 		return 0, err
 	}
 	return res.LastInsertId()
+}
+
+// DeleteContentGrant removes a single grant. found is false (no error) when no
+// grant matches the id.
+func (db *DB) DeleteContentGrant(ctx context.Context, grantID int64) (found bool, err error) {
+	res, err := db.ExecContext(ctx, `DELETE FROM content_grants WHERE id = ?`, grantID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// GetFileIDByHash returns the files.id for a content hash. found is false (no
+// error) when no file matches.
+func (db *DB) GetFileIDByHash(ctx context.Context, hash string) (id int64, found bool, err error) {
+	err = db.QueryRowContext(ctx, `SELECT id FROM files WHERE hash = ?`, hash).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return id, true, nil
 }

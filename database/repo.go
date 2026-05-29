@@ -37,6 +37,16 @@ type Repository interface {
 	// combination. album="" selects the Other bucket (no album tag).
 	ListTracksByAlbumArtist(ctx context.Context, artist, album string) ([]*TrackEntry, error)
 
+	// ListFilesFiltered, ListArtistsFiltered, ListAlbumsByArtistFiltered, and
+	// ListTracksByAlbumArtistFiltered are the access-filtered counterparts of the
+	// listings above: they return only what the user (invalid userID =
+	// anonymous) may reach per the §5.3 predicate. Callers holding content.all
+	// use the unfiltered variants.
+	ListFilesFiltered(ctx context.Context, userID sql.NullInt64) ([]*FileListEntry, error)
+	ListArtistsFiltered(ctx context.Context, userID sql.NullInt64) ([]*ArtistEntry, error)
+	ListAlbumsByArtistFiltered(ctx context.Context, artist string, userID sql.NullInt64) ([]*AlbumEntry, error)
+	ListTracksByAlbumArtistFiltered(ctx context.Context, artist, album string, userID sql.NullInt64) ([]*TrackEntry, error)
+
 	// UpsertArtistImage stores (or replaces) the image reference for an artist.
 	UpsertArtistImage(ctx context.Context, artist, objectKey, mimeType string, updatedAt int64) error
 

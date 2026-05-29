@@ -70,6 +70,11 @@ type handler struct {
 	imagesDir string
 	// maxUploadSize caps the upload request body in bytes (from config).
 	maxUploadSize int64
+	// authzEnabled mirrors Deps.Auth != nil: when true, library listings are
+	// access-filtered for the requesting identity (content.all and anonymous
+	// handled in the listing handlers). When false (open embedding / tests),
+	// listings are unfiltered, matching fileAccessGuard's pass-through.
+	authzEnabled bool
 }
 
 func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
@@ -206,26 +211,50 @@ func sanitizeFilename(name string) string {
 	return name
 }
 
+// accessFilter reports whether library listings should be access-filtered for
+// this request, and the actor id to filter by. Filtering applies only when
+// authz is configured and the identity lacks content.all (admins/moderators see
+// everything); when authz is off it mirrors fileAccessGuard's pass-through.
+func (h *handler) accessFilter(ctx context.Context) (userID sql.NullInt64, filter bool) {
+	if !h.authzEnabled {
+		return sql.NullInt64{}, false
+	}
+	if auth.FromContext(ctx).Has(auth.PermContentAll) {
+		return sql.NullInt64{}, false
+	}
+	return actorID(ctx), true
+}
+
 func (h *handler) listFiles(w http.ResponseWriter, r *http.Request) {
-	entries, err := h.repo.ListFiles(r.Context())
+	var (
+		entries []*database.FileListEntry
+		err     error
+	)
+	if uid, filter := h.accessFilter(r.Context()); filter {
+		entries, err = h.repo.ListFilesFiltered(r.Context(), uid)
+	} else {
+		entries, err = h.repo.ListFiles(r.Context())
+	}
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
 
 	type fileItem struct {
-		ID          int64    `json:"id"`
-		Hash        string   `json:"hash"`
-		Filename    string   `json:"filename"`
-		MimeType    string   `json:"mime_type"`
-		ByteSize    int64    `json:"byte_size"`
-		URL         string   `json:"url"`
-		Title       string   `json:"title"`
-		Artist      string   `json:"artist"`
-		AlbumArtist string   `json:"album_artist"`
-		Album       string   `json:"album"`
-		Year        int64    `json:"year"`
-		Duration    *float64 `json:"duration"` // seconds; null when not yet extracted
+		ID            int64    `json:"id"`
+		Hash          string   `json:"hash"`
+		Filename      string   `json:"filename"`
+		MimeType      string   `json:"mime_type"`
+		ByteSize      int64    `json:"byte_size"`
+		URL           string   `json:"url"`
+		Title         string   `json:"title"`
+		Artist        string   `json:"artist"`
+		AlbumArtist   string   `json:"album_artist"`
+		Album         string   `json:"album"`
+		Year          int64    `json:"year"`
+		Duration      *float64 `json:"duration"` // seconds; null when not yet extracted
+		GuestPlayable bool     `json:"guest_playable"`
+		License       string   `json:"license"`
 	}
 
 	items := make([]fileItem, 0, len(entries))
@@ -235,18 +264,20 @@ func (h *handler) listFiles(w http.ResponseWriter, r *http.Request) {
 			dur = &e.DurationSeconds.Float64
 		}
 		items = append(items, fileItem{
-			ID:          e.ID,
-			Hash:        e.Hash,
-			Filename:    e.Filename,
-			MimeType:    e.MimeType,
-			ByteSize:    e.ByteSize,
-			URL:         "/files/" + e.ObjectKey,
-			Title:       e.Title,
-			Artist:      e.Artist,
-			AlbumArtist: e.AlbumArtist.String,
-			Album:       e.Album,
-			Year:        e.Year,
-			Duration:    dur,
+			ID:            e.ID,
+			Hash:          e.Hash,
+			Filename:      e.Filename,
+			MimeType:      e.MimeType,
+			ByteSize:      e.ByteSize,
+			URL:           "/files/" + e.ObjectKey,
+			Title:         e.Title,
+			Artist:        e.Artist,
+			AlbumArtist:   e.AlbumArtist.String,
+			Album:         e.Album,
+			Year:          e.Year,
+			Duration:      dur,
+			GuestPlayable: e.GuestPlayable,
+			License:       e.License.String,
 		})
 	}
 	writeJSON(w, http.StatusOK, items)

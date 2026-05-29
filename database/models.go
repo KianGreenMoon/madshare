@@ -71,6 +71,8 @@ type FileListEntry struct {
 	Album           string
 	Year            int64
 	DurationSeconds sql.NullFloat64
+	GuestPlayable   bool
+	License         sql.NullString
 }
 
 // ArtistEntry is a row returned by ListArtists.

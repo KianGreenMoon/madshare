@@ -77,6 +77,7 @@ func main() {
 		FilesDir:      filesDir,
 		MaxUploadSize: cfg.Storage.MaxUploadBytes(),
 		Auth:          db,
+		Manage:        db,
 	}
 
 	servers, err := startListeners(cfg, deps)

@@ -49,6 +49,28 @@ func (db *DB) GetUserByUsername(ctx context.Context, username string) (*User, er
 	return &u, nil
 }
 
+// ListUsers returns all users (id, username, disabled), ordered by username.
+// Used by the admin UI to populate access-group membership pickers.
+func (db *DB) ListUsers(ctx context.Context) ([]*User, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT id, username, disabled, created_at FROM users ORDER BY username`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*User
+	for rows.Next() {
+		var u User
+		var disabled int
+		if err := rows.Scan(&u.ID, &u.Username, &disabled, &u.CreatedAt); err != nil {
+			return nil, err
+		}
+		u.Disabled = disabled != 0
+		out = append(out, &u)
+	}
+	return out, rows.Err()
+}
+
 // AssignRoleByName grants the named built-in role to a user. A duplicate
 // assignment is ignored.
 func (db *DB) AssignRoleByName(ctx context.Context, userID int64, roleName string) error {

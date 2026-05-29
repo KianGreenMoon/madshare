@@ -103,6 +103,7 @@
             <th scope="col">Artist</th>
             <th scope="col">Album</th>
             <th scope="col" class="col-size">Size</th>
+            <th scope="col" class="col-access">Access</th>
             <th scope="col" class="col-actions">Actions</th>
           </tr>
         </thead>
@@ -111,6 +112,52 @@
         </tbody>
       </table>
     </div>
+  </section>
+
+  <!-- ── Access groups ── -->
+  <section class="admin-section" aria-labelledby="groupsHeading" id="accessSection" hidden>
+    <h2 class="section-title" id="groupsHeading">Access groups</h2>
+    <p class="danger-copy">
+      Groups bundle users and grant them access to content scopes (whole library,
+      an artist, an album, or a single file). A listener can only play what a
+      group they belong to is granted — plus anything marked guest-playable.
+    </p>
+
+    <form class="inline-form" id="groupCreateForm">
+      <label for="groupName" class="visually-hidden">New group name</label>
+      <input type="text" id="groupName" placeholder="New group name…" autocomplete="off" required>
+      <button type="submit" class="btn btn-neutral">Create group</button>
+    </form>
+
+    <div class="groups-list" id="groupsList" aria-live="polite"></div>
+  </section>
+
+  <!-- ── Auto-publish policy ── -->
+  <section class="admin-section" aria-labelledby="autoderiveHeading" id="autoderiveSection" hidden>
+    <h2 class="section-title" id="autoderiveHeading">Auto-publish by license</h2>
+    <p class="danger-copy">
+      When enabled, any file whose license is on the allow-list below is
+      automatically marked guest-playable. This only ever <em>grants</em> access
+      and never overrides a file you set manually. Tag-sourced licenses are
+      unverified — you opt in and own the legal call.
+    </p>
+
+    <form class="autoderive-form" id="autoderiveForm">
+      <label class="check-row">
+        <input type="checkbox" id="autoderiveEnabled">
+        <span>Enable license-based auto-publish</span>
+      </label>
+
+      <fieldset class="license-allowlist" id="autoderiveLicenses">
+        <legend>Free-license allow-list</legend>
+        <!-- checkboxes injected by JS -->
+      </fieldset>
+
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-neutral" id="autoderiveSave">Save policy</button>
+        <button type="button" class="btn btn-neutral" id="autoderiveApply">Save &amp; apply now</button>
+      </div>
+    </form>
   </section>
 
 </main>

@@ -6,6 +6,24 @@
 // separately hosted UI at a remote API origin.
 const API = document.querySelector('meta[name="api-url"]')?.content || '';
 
+// ── Content-access (Phase 3c) constants & permission helpers ────────────────
+// License vocabulary mirrors api.knownLicenses; "" clears the license.
+const LICENSE_OPTIONS = ['', 'CC0-1.0', 'CC-BY-4.0', 'CC-BY-SA-4.0', 'public-domain', 'all-rights-reserved', 'unknown'];
+// Free licenses offered as the auto-publish allow-list.
+const FREE_LICENSES = ['CC0-1.0', 'CC-BY-4.0', 'CC-BY-SA-4.0', 'public-domain'];
+
+// Capabilities of the signed-in user, refreshed from /api/auth/me.
+let canManageUsers = false; // user.manage → groups/grants/auto-derive
+let canEditMeta    = false; // metadata.edit → per-file guest/license
+
+function applyPermissions(identity) {
+  const perms = (identity && identity.permissions) || [];
+  canManageUsers = perms.includes('user.manage');
+  canEditMeta    = perms.includes('metadata.edit');
+  document.getElementById('accessSection').hidden     = !canManageUsers;
+  document.getElementById('autoderiveSection').hidden = !canManageUsers;
+}
+
 // ── Theme (shared pattern with app.js) ─────────────────────────────────────
 
 const VALID_THEMES = new Set(['dark', 'light', 'ocean', 'sunset']);
@@ -122,7 +140,7 @@ function renderStateRow(text, extraClass) {
   const tr = document.createElement('tr');
   tr.className = 'table-state-row';
   const td = document.createElement('td');
-  td.colSpan = 5;
+  td.colSpan = 6;
   if (extraClass) td.className = extraClass;
   td.textContent = text;
   tr.appendChild(td);
@@ -134,7 +152,7 @@ function renderErrorRow() {
   const tr = document.createElement('tr');
   tr.className = 'table-state-row';
   const td = document.createElement('td');
-  td.colSpan = 5;
+  td.colSpan = 6;
 
   const msg = document.createElement('div');
   msg.setAttribute('role', 'alert');
@@ -156,7 +174,7 @@ function renderEmptyRow() {
   const tr = document.createElement('tr');
   tr.className = 'table-state-row';
   const td = document.createElement('td');
-  td.colSpan = 5;
+  td.colSpan = 6;
 
   const wrap = document.createElement('div');
   wrap.className = 'empty-state';
@@ -251,14 +269,108 @@ function buildRow(f) {
   tdSize.dataset.label = 'Size';
   tdSize.textContent = fmtBytes(f.byte_size);
 
+  // Access (guest-playable + license)
+  const tdAccess = document.createElement('td');
+  tdAccess.className = 'cell-access';
+  tdAccess.dataset.label = 'Access';
+  tdAccess.appendChild(buildAccessControls(f));
+
   // Actions
   const tdActions = document.createElement('td');
   tdActions.className = 'cell-actions';
   tdActions.dataset.label = 'Actions';
   tdActions.appendChild(makeDeleteButton(tr, f));
 
-  tr.append(tdTitle, tdArtist, tdAlbum, tdSize, tdActions);
+  tr.append(tdTitle, tdArtist, tdAlbum, tdSize, tdAccess, tdActions);
   return tr;
+}
+
+// buildAccessControls renders the per-file guest-playable toggle and license
+// select. Without metadata.edit it falls back to a read-only summary.
+function buildAccessControls(f) {
+  const wrap = document.createElement('div');
+  wrap.className = 'access-controls';
+
+  if (!canEditMeta) {
+    const span = document.createElement('span');
+    span.className = 'cell-muted';
+    span.textContent = (f.guest_playable ? 'Guest' : 'Private') + (f.license ? ` · ${f.license}` : '');
+    wrap.appendChild(span);
+    return wrap;
+  }
+
+  // Guest-playable toggle
+  const label = document.createElement('label');
+  label.className = 'guest-toggle';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = !!f.guest_playable;
+  cb.addEventListener('change', () => setGuest(f, cb));
+  const txt = document.createElement('span');
+  txt.textContent = 'Guest';
+  label.append(cb, txt);
+
+  // License select
+  const sel = document.createElement('select');
+  sel.className = 'license-select';
+  sel.setAttribute('aria-label', 'License');
+  LICENSE_OPTIONS.forEach(lic => {
+    const opt = document.createElement('option');
+    opt.value = lic;
+    opt.textContent = lic || '— license —';
+    if ((f.license || '') === lic) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  sel.addEventListener('change', () => setLicense(f, sel, cb));
+
+  wrap.append(label, sel);
+  return wrap;
+}
+
+async function setGuest(f, cb) {
+  const desired = cb.checked;
+  cb.disabled = true;
+  try {
+    const res = await fetch(`${API}/api/admin/files/${encodeURIComponent(f.hash)}/guest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ guest_playable: desired }),
+    });
+    if (handleAuthError(res)) { cb.checked = !desired; return; }
+    if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
+    f.guest_playable = desired;
+    toast(`"${displayTitle(f)}" is now ${desired ? 'guest-playable' : 'private'}.`, 'success');
+  } catch (err) {
+    cb.checked = !desired;
+    toast(`Couldn't update access: ${err.message}`, 'error');
+  } finally {
+    cb.disabled = false;
+  }
+}
+
+async function setLicense(f, sel, cb) {
+  const desired = sel.value;
+  const previous = f.license || '';
+  sel.disabled = true;
+  try {
+    const res = await fetch(`${API}/api/admin/files/${encodeURIComponent(f.hash)}/license`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ license: desired }),
+    });
+    if (handleAuthError(res)) { sel.value = previous; return; }
+    if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
+    f.license = desired;
+    // Auto-derive may have flipped guest-playable; reflect it without a refetch
+    // only on the optimistic path — a reload keeps things authoritative.
+    toast(`License set to ${desired || 'none'} for "${displayTitle(f)}".`, 'success');
+    if (cb) loadFiles();
+  } catch (err) {
+    sel.value = previous;
+    toast(`Couldn't update license: ${err.message}`, 'error');
+  } finally {
+    sel.disabled = false;
+  }
 }
 
 function displayTitle(f) {
@@ -854,6 +966,7 @@ async function fetchIdentity() {
 
 function showLogin() {
   currentUser = null;
+  applyPermissions(null);
   userArea.hidden = true;
   loginModal.classList.remove('hidden');
   loginError.hidden = true;
@@ -865,6 +978,12 @@ function showSignedIn(identity) {
   loginModal.classList.add('hidden');
   userArea.hidden = false;
   userName.textContent = identity.username;
+  applyPermissions(identity);
+  if (canManageUsers) {
+    // Users feed the add-member pickers, so load them before the groups render.
+    loadUsers().then(loadGroups);
+    loadAutoDerive();
+  }
   if (identity.password_change_required) {
     // Forced flow: the modal can't be dismissed until the password is changed.
     openPassModal(true);
@@ -998,6 +1117,281 @@ passForm.addEventListener('submit', async e => {
     passError.hidden = false;
   }
 });
+
+// ── Access groups & grants (Phase 3c) ───────────────────────────────────────
+// All endpoints require user.manage; the section is hidden otherwise.
+
+const groupsList      = document.getElementById('groupsList');
+const groupCreateForm = document.getElementById('groupCreateForm');
+const groupName       = document.getElementById('groupName');
+
+let allUsers = [];
+
+// el is a tiny DOM builder: el('button', {class:'btn'}, ['Label']).
+function el(tag, props = {}, children = []) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === 'class') node.className = v;
+    else if (k === 'text') node.textContent = v;
+    else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
+  }
+  (Array.isArray(children) ? children : [children]).forEach(c => {
+    if (c != null) node.append(c.nodeType ? c : document.createTextNode(c));
+  });
+  return node;
+}
+
+async function loadUsers() {
+  try {
+    const res = await fetch(`${API}/api/admin/users`);
+    if (handleAuthError(res)) return;
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    allUsers = await res.json();
+  } catch (err) {
+    console.error('load users:', err);
+    allUsers = [];
+  }
+}
+
+async function loadGroups() {
+  groupsList.replaceChildren(el('p', { class: 'cell-muted', text: 'Loading groups…' }));
+  let groups;
+  try {
+    const res = await fetch(`${API}/api/admin/access/groups`);
+    if (handleAuthError(res)) return;
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    groups = await res.json();
+  } catch (err) {
+    groupsList.replaceChildren(el('p', { class: 'cell-muted', text: `Failed to load groups: ${err.message}` }));
+    return;
+  }
+  renderGroups(groups || []);
+}
+
+function renderGroups(groups) {
+  if (!groups.length) {
+    groupsList.replaceChildren(el('p', { class: 'cell-muted', text: 'No groups yet.' }));
+    return;
+  }
+  groupsList.replaceChildren(...groups.map(buildGroupCard));
+}
+
+function buildGroupCard(g) {
+  const card = el('div', { class: 'group-card' });
+
+  const head = el('div', { class: 'group-head' }, [
+    el('h3', { class: 'group-name', text: g.name }),
+    el('button', {
+      class: 'btn btn-destructive-outline btn-sm',
+      text: 'Delete group',
+      onclick: () => deleteGroup(g),
+    }),
+  ]);
+
+  // Members
+  const memberItems = (g.members || []).map(m =>
+    el('li', {}, [
+      el('span', { text: m.username }),
+      el('button', {
+        class: 'btn btn-neutral btn-sm', text: 'Remove',
+        onclick: () => removeMember(g, m.user_id),
+      }),
+    ]));
+  const memberList = el('ul', { class: 'member-list' },
+    memberItems.length ? memberItems : [el('li', { class: 'cell-muted', text: 'No members.' })]);
+
+  // Add-member control: users not already in the group.
+  const memberIds = new Set((g.members || []).map(m => m.user_id));
+  const candidates = allUsers.filter(u => !memberIds.has(u.id));
+  const memberSelect = el('select', { class: 'license-select', 'aria-label': 'Add user' },
+    candidates.length
+      ? candidates.map(u => el('option', { value: String(u.id), text: u.username }))
+      : [el('option', { value: '', text: 'All users are members' })]);
+  const addMemberBtn = el('button', {
+    class: 'btn btn-neutral btn-sm', text: 'Add member',
+    onclick: () => { if (memberSelect.value) addMember(g, Number(memberSelect.value)); },
+  });
+  if (!candidates.length) addMemberBtn.disabled = true;
+
+  // Grants
+  const grantItems = (g.grants || []).map(gr =>
+    el('li', {}, [
+      el('span', { text: describeGrant(gr) }),
+      el('button', {
+        class: 'btn btn-neutral btn-sm', text: 'Remove',
+        onclick: () => deleteGrant(g, gr.id),
+      }),
+    ]));
+  const grantList = el('ul', { class: 'grant-list' },
+    grantItems.length ? grantItems : [el('li', { class: 'cell-muted', text: 'No grants — group can reach nothing.' })]);
+
+  card.append(
+    head,
+    el('h4', { class: 'group-sub', text: 'Members' }),
+    memberList,
+    el('div', { class: 'inline-form' }, [memberSelect, addMemberBtn]),
+    el('h4', { class: 'group-sub', text: 'Grants' }),
+    grantList,
+    buildGrantForm(g),
+  );
+  return card;
+}
+
+function describeGrant(gr) {
+  switch (gr.scope_type) {
+    case 'all':    return 'Whole library';
+    case 'artist': return `Artist: ${gr.artist}`;
+    case 'album':  return `Album: ${gr.artist} — ${gr.album}`;
+    case 'file':   return `File #${gr.file_id}`;
+    default:       return gr.scope_type;
+  }
+}
+
+function buildGrantForm(g) {
+  const scope = el('select', { class: 'license-select', 'aria-label': 'Grant scope' }, [
+    el('option', { value: 'all', text: 'Whole library' }),
+    el('option', { value: 'artist', text: 'Artist' }),
+    el('option', { value: 'album', text: 'Album' }),
+    el('option', { value: 'file', text: 'File (hash)' }),
+  ]);
+  const artist = el('input', { type: 'text', placeholder: 'Artist', class: 'grant-input' });
+  const album  = el('input', { type: 'text', placeholder: 'Album', class: 'grant-input' });
+  const fileHash = el('input', { type: 'text', placeholder: 'File hash', class: 'grant-input' });
+
+  function sync() {
+    artist.hidden   = !(scope.value === 'artist' || scope.value === 'album');
+    album.hidden    = scope.value !== 'album';
+    fileHash.hidden = scope.value !== 'file';
+  }
+  scope.addEventListener('change', sync);
+  sync();
+
+  const addBtn = el('button', {
+    class: 'btn btn-neutral btn-sm', text: 'Add grant',
+    onclick: () => addGrant(g, {
+      scope_type: scope.value,
+      artist: artist.value.trim(),
+      album: album.value.trim(),
+      file_hash: fileHash.value.trim(),
+    }),
+  });
+
+  return el('div', { class: 'inline-form grant-form' }, [scope, artist, album, fileHash, addBtn]);
+}
+
+groupCreateForm.addEventListener('submit', async e => {
+  e.preventDefault();
+  const name = groupName.value.trim();
+  if (!name) return;
+  try {
+    const res = await fetch(`${API}/api/admin/access/groups`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    if (handleAuthError(res)) return;
+    if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
+    groupName.value = '';
+    toast(`Group "${name}" created.`, 'success');
+    loadGroups();
+  } catch (err) {
+    toast(`Couldn't create group: ${err.message}`, 'error');
+  }
+});
+
+async function deleteGroup(g) {
+  if (!confirm(`Delete group "${g.name}"? Its members and grants are removed.`)) return;
+  await mutateGroup(`/api/admin/access/groups/${g.id}`, 'DELETE', null, `Group "${g.name}" deleted.`);
+}
+async function addMember(g, userID) {
+  await mutateGroup(`/api/admin/access/groups/${g.id}/members`, 'POST', { user_id: userID }, 'Member added.');
+}
+async function removeMember(g, userID) {
+  await mutateGroup(`/api/admin/access/groups/${g.id}/members/${userID}`, 'DELETE', null, 'Member removed.');
+}
+async function addGrant(g, body) {
+  await mutateGroup(`/api/admin/access/groups/${g.id}/grants`, 'POST', body, 'Grant added.');
+}
+async function deleteGrant(g, grantID) {
+  await mutateGroup(`/api/admin/access/grants/${grantID}`, 'DELETE', null, 'Grant removed.');
+}
+
+// mutateGroup performs a group/grant mutation, then refreshes the list.
+async function mutateGroup(path, method, body, okMsg) {
+  try {
+    const opts = { method };
+    if (body != null) {
+      opts.headers = { 'Content-Type': 'application/json' };
+      opts.body = JSON.stringify(body);
+    }
+    const res = await fetch(`${API}${path}`, opts);
+    if (handleAuthError(res)) return;
+    if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
+    toast(okMsg, 'success');
+    loadGroups();
+  } catch (err) {
+    toast(`Action failed: ${err.message}`, 'error');
+  }
+}
+
+// ── Auto-publish (license auto-derivation) policy ───────────────────────────
+
+const autoderiveForm    = document.getElementById('autoderiveForm');
+const autoderiveEnabled = document.getElementById('autoderiveEnabled');
+const autoderiveLicenses = document.getElementById('autoderiveLicenses');
+const autoderiveApply   = document.getElementById('autoderiveApply');
+
+// Build the allow-list checkboxes once.
+FREE_LICENSES.forEach(lic => {
+  autoderiveLicenses.appendChild(el('label', { class: 'check-row' }, [
+    el('input', { type: 'checkbox', value: lic, 'data-license': lic }),
+    el('span', { text: lic }),
+  ]));
+});
+
+async function loadAutoDerive() {
+  try {
+    const res = await fetch(`${API}/api/admin/settings/autoderive`);
+    if (handleAuthError(res)) return;
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const p = await res.json();
+    autoderiveEnabled.checked = !!p.enabled;
+    const on = new Set(p.licenses || []);
+    autoderiveLicenses.querySelectorAll('input[type=checkbox]').forEach(cb => {
+      cb.checked = on.has(cb.value);
+    });
+  } catch (err) {
+    console.error('load auto-derive:', err);
+  }
+}
+
+function autoderivePayload(applyNow) {
+  const licenses = Array.from(autoderiveLicenses.querySelectorAll('input:checked')).map(cb => cb.value);
+  return { enabled: autoderiveEnabled.checked, licenses, apply_now: applyNow };
+}
+
+async function saveAutoDerive(applyNow) {
+  try {
+    const res = await fetch(`${API}/api/admin/settings/autoderive`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(autoderivePayload(applyNow)),
+    });
+    if (handleAuthError(res)) return;
+    if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
+    const data = await res.json().catch(() => ({}));
+    if (applyNow) {
+      toast(`Policy saved — ${data.applied || 0} file(s) newly published.`, 'success');
+      loadFiles();
+    } else {
+      toast('Auto-publish policy saved.', 'success');
+    }
+  } catch (err) {
+    toast(`Couldn't save policy: ${err.message}`, 'error');
+  }
+}
+
+autoderiveForm.addEventListener('submit', e => { e.preventDefault(); saveAutoDerive(false); });
+autoderiveApply.addEventListener('click', () => saveAutoDerive(true));
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 (async function boot() {

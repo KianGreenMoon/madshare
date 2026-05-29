@@ -98,7 +98,21 @@ func (db *DB) InsertFile(ctx context.Context, f *File, upload *FileUpload, meta 
 // ListFiles returns all files ordered by created_at DESC, joined with
 // the first recorded filename and media_metadata tags.
 func (db *DB) ListFiles(ctx context.Context) ([]*FileListEntry, error) {
-	const q = `
+	return db.listFiles(ctx, "")
+}
+
+// ListFilesFiltered returns only the files the user (invalid userID = anonymous)
+// may play/download, applying the §5.3 access predicate. Callers holding the
+// content.all permission should use the unfiltered ListFiles instead.
+func (db *DB) ListFilesFiltered(ctx context.Context, userID sql.NullInt64) ([]*FileListEntry, error) {
+	return db.listFiles(ctx, accessClause, userID)
+}
+
+// listFiles is the shared query. When where is non-empty it is appended as an
+// access predicate (with its bind args), restricting the result to reachable
+// files.
+func (db *DB) listFiles(ctx context.Context, where string, args ...any) ([]*FileListEntry, error) {
+	q := `
 		SELECT
 			f.id, f.hash, f.mime_type, f.byte_size, f.object_key, f.created_at,
 			COALESCE((SELECT filename FROM file_uploads WHERE file_id = f.id ORDER BY id LIMIT 1), f.hash) AS filename,
@@ -107,12 +121,17 @@ func (db *DB) ListFiles(ctx context.Context) ([]*FileListEntry, error) {
 			m.album_artist,
 			COALESCE(m.album,  '') AS album,
 			COALESCE(m.year,    0) AS year,
-			m.duration_seconds
+			m.duration_seconds,
+			f.guest_playable,
+			f.license
 		FROM files f
-		LEFT JOIN media_metadata m ON m.file_id = f.id
-		ORDER BY f.created_at DESC`
+		LEFT JOIN media_metadata m ON m.file_id = f.id`
+	if where != "" {
+		q += "\n\t\tWHERE " + where
+	}
+	q += "\n\t\tORDER BY f.created_at DESC"
 
-	rows, err := db.QueryContext(ctx, q)
+	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list files: %w", err)
 	}
@@ -121,12 +140,15 @@ func (db *DB) ListFiles(ctx context.Context) ([]*FileListEntry, error) {
 	out := make([]*FileListEntry, 0)
 	for rows.Next() {
 		var e FileListEntry
+		var guest int
 		if err := rows.Scan(
 			&e.ID, &e.Hash, &e.MimeType, &e.ByteSize, &e.ObjectKey, &e.CreatedAt,
 			&e.Filename, &e.Title, &e.Artist, &e.AlbumArtist, &e.Album, &e.Year, &e.DurationSeconds,
+			&guest, &e.License,
 		); err != nil {
 			return nil, fmt.Errorf("scan file list entry: %w", err)
 		}
+		e.GuestPlayable = guest == 1
 		out = append(out, &e)
 	}
 	if err := rows.Err(); err != nil {

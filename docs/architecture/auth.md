@@ -1,6 +1,6 @@
 # Authentication & authorization
 
-**Status:** design / proposal (not yet implemented)
+**Status:** implemented through Phase 3 (content access); federation (Phase 4) deferred
 **Builds on:** the listener/route-group architecture (`docs/architecture/listeners-and-config.md`)
 **Concept source:** `madshare.org` (server-side access rules, default-deny, sharing scopes)
 
@@ -323,18 +323,31 @@ will extend.
    on the Admin page" message. **Deferred within this phase:** the owner-can-
    delete-own rule (delete is currently `file.delete`-only — delete any), and
    login rate limiting + CSRF.
-3. **Content access (Layer B)** — **PARTIALLY IMPLEMENTED**:
+3. **Content access (Layer B)** — **IMPLEMENTED**:
    - **Done (3a, migration 005):** `access_groups`/`access_group_members`/
      `content_grants` tables, `files.guest_playable`/`license` columns, the §5.3
      access predicate (`database.FileAccessibleByHash`) + management DB methods.
    - **Done (3b):** **default-deny flipped** on `/files/*` play/download via
      `Deps.fileAccessGuard` (content.all bypass, guest_playable, or a group grant;
      404 on denial; cover images not gated; pass-through when auth unconfigured).
-   - **Remaining (3c):** management API + admin UI for groups/grants/guest_playable/
-     license; **access-filtering the listing endpoints** (metadata is still
-     browseable today); the opt-in license→guest auto-derivation policy. Also note:
-     a file's uploader is not auto-granted play access (only content.all / grant /
-     guest) — revisit owner-play if desired.
+   - **Done (3c, migration 006):** management API under `/api/admin/access/*`
+     (groups/members/grants — gated by `user.manage`), per-file `/api/admin/files/
+     {hash}/{guest,license}` (gated by `metadata.edit`), and the auto-derive
+     policy at `/api/admin/settings/autoderive` (`user.manage`). **Listing
+     endpoints are now access-filtered**: `/api/files|artists|albums|tracks` use
+     `*Filtered` repo queries for non-`content.all` identities (anonymous sees
+     only guest-playable), pass-through when auth is unconfigured. The opt-in
+     license→guest **auto-derivation** is a DB-backed `settings` key/value policy
+     (`access.autoderive.*`); it only ever *grants*, skips files whose
+     `guest_playable` was set manually (`files.guest_playable_manual`), and runs
+     on a license change or via an explicit "apply now" sweep (`ApplyAutoDerive`).
+     The admin page gained an Access-groups section, per-file guest/license
+     controls in the files table, and an auto-publish policy panel (all gated by
+     the signed-in user's permissions). Auto-derivation storage/permission choices
+     were settled with the owner during implementation (DB setting + admin UI;
+     `user.manage` for group administration).
+   - **Note (still deferred):** a file's uploader is not auto-granted play access
+     (only content.all / grant / guest) — revisit owner-play if desired.
 4. **Federation authn** (future).
 
 ## 11. Decisions (settled with the owner)

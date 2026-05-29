@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"daemonlord.ygg/madshare/database"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -30,7 +31,15 @@ var allowedImageExtensions = map[string]string{
 }
 
 func (h *handler) listArtists(w http.ResponseWriter, r *http.Request) {
-	artists, err := h.repo.ListArtists(r.Context())
+	var (
+		artists []*database.ArtistEntry
+		err     error
+	)
+	if uid, filter := h.accessFilter(r.Context()); filter {
+		artists, err = h.repo.ListArtistsFiltered(r.Context(), uid)
+	} else {
+		artists, err = h.repo.ListArtists(r.Context())
+	}
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -55,7 +64,15 @@ func (h *handler) listArtists(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) listAlbums(w http.ResponseWriter, r *http.Request) {
 	artist := r.URL.Query().Get("artist")
-	albums, err := h.repo.ListAlbumsByArtist(r.Context(), artist)
+	var (
+		albums []*database.AlbumEntry
+		err    error
+	)
+	if uid, filter := h.accessFilter(r.Context()); filter {
+		albums, err = h.repo.ListAlbumsByArtistFiltered(r.Context(), artist, uid)
+	} else {
+		albums, err = h.repo.ListAlbumsByArtist(r.Context(), artist)
+	}
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -90,7 +107,15 @@ func (h *handler) listTracks(w http.ResponseWriter, r *http.Request) {
 	artist := r.URL.Query().Get("artist")
 	album := r.URL.Query().Get("album")
 
-	tracks, err := h.repo.ListTracksByAlbumArtist(r.Context(), artist, album)
+	var (
+		tracks []*database.TrackEntry
+		err    error
+	)
+	if uid, filter := h.accessFilter(r.Context()); filter {
+		tracks, err = h.repo.ListTracksByAlbumArtistFiltered(r.Context(), artist, album, uid)
+	} else {
+		tracks, err = h.repo.ListTracksByAlbumArtist(r.Context(), artist, album)
+	}
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return

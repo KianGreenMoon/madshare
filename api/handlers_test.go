@@ -349,6 +349,22 @@ func (f *fakeRepo) ListTracksByAlbumArtist(_ context.Context, _, _ string) ([]*d
 	return nil, nil
 }
 
+func (f *fakeRepo) ListFilesFiltered(_ context.Context, _ sql.NullInt64) ([]*database.FileListEntry, error) {
+	return nil, f.listFilesErr
+}
+
+func (f *fakeRepo) ListArtistsFiltered(_ context.Context, _ sql.NullInt64) ([]*database.ArtistEntry, error) {
+	return nil, nil
+}
+
+func (f *fakeRepo) ListAlbumsByArtistFiltered(_ context.Context, _ string, _ sql.NullInt64) ([]*database.AlbumEntry, error) {
+	return nil, nil
+}
+
+func (f *fakeRepo) ListTracksByAlbumArtistFiltered(_ context.Context, _, _ string, _ sql.NullInt64) ([]*database.TrackEntry, error) {
+	return nil, nil
+}
+
 func (f *fakeRepo) UpsertArtistImage(_ context.Context, _, _, _ string, _ int64) error {
 	return nil
 }

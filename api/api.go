@@ -25,6 +25,9 @@ type Deps struct {
 	// Auth backs the /api/auth/* endpoints. When nil (e.g. NewRouter in tests),
 	// those endpoints are not registered.
 	Auth AuthStore
+	// Manage backs the content-access management endpoints (/api/admin/access/*,
+	// per-file guest/license, auto-derive). When nil, they are not registered.
+	Manage ManageStore
 }
 
 // protect returns middleware enforcing perm, but only when auth is configured
@@ -52,6 +55,7 @@ func (d Deps) newHandler() *handler {
 		cacheDir:      d.CacheDir,
 		imagesDir:     filepath.Join(d.FilesDir, "images"),
 		maxUploadSize: d.MaxUploadSize,
+		authzEnabled:  d.Auth != nil,
 	}
 }
 
@@ -97,15 +101,23 @@ func RegisterAPI(r chi.Router, d Deps) {
 	}
 }
 
-// RegisterAdmin mounts the admin route group (/api/admin/*) on r.
+// RegisterAdmin mounts the admin route group (/api/admin/*) on r. Gating is
+// per-route (not a blanket subrouter middleware) so each endpoint can require
+// the capability it actually needs: destructive file ops are file.delete, while
+// content-access management is user.manage / metadata.edit (registered by
+// registerManage). protect is a pass-through when auth is not configured.
 func RegisterAdmin(r chi.Router, d Deps) {
 	h := d.newHandler()
 	r.Route("/api/admin", func(r chi.Router) {
-		// Destructive admin endpoints require the file.delete capability (a
-		// pass-through when auth is not configured — see Deps.protect).
-		r.Use(d.protect(auth.PermFileDelete))
-		r.Delete("/files/{hash}", h.adminDeleteFile)
-		r.Post("/prune", h.adminPrune)
+		fileDelete := d.protect(auth.PermFileDelete)
+		r.With(fileDelete).Delete("/files/{hash}", h.adminDeleteFile)
+		r.With(fileDelete).Post("/prune", h.adminPrune)
+
+		// Content-access management (Phase 3c). Only registered when a store is
+		// configured; its routes carry their own permission gates.
+		if d.Manage != nil {
+			registerManage(r, d)
+		}
 	})
 }
 
