@@ -2,9 +2,7 @@ package api
 
 import (
 	"io/fs"
-	"log"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -16,8 +14,18 @@ import (
 
 // NewRouter builds and returns the API HTTP handler.
 // The caller is responsible for calling http.ListenAndServe.
-func NewRouter(store storage.Storage, repo database.Repository, cacheDir string) http.Handler {
-	h := &handler{storage: store, repo: repo, cacheDir: cacheDir}
+//
+// filesDir is the directory uploaded blobs are served from (the same path the
+// store writes to); maxUploadSize caps the upload request body in bytes.
+func NewRouter(store storage.Storage, repo database.Repository, cacheDir, filesDir string, maxUploadSize int64) http.Handler {
+	imagesDir := filepath.Join(filesDir, "images")
+	h := &handler{
+		storage:       store,
+		repo:          repo,
+		cacheDir:      cacheDir,
+		imagesDir:     imagesDir,
+		maxUploadSize: maxUploadSize,
+	}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -36,20 +44,14 @@ func NewRouter(store storage.Storage, repo database.Repository, cacheDir string)
 	r.Get("/api/albums/{album}/image", h.getAlbumImage)
 	r.Post("/api/albums/{album}/image", h.uploadAlbumImage)
 
-	workDir, err := os.Getwd()
-	if err != nil {
-		log.Printf("getwd: %v; using relative path", err)
-		workDir = "."
-	}
-	filesDir := noListFS{http.Dir(filepath.Join(workDir, "data", "files"))}
-	fileServer(r, "/files", filesDir, h)
+	fileServer(r, "/files", noListFS{http.Dir(filesDir)}, h)
 
-	imagesDir := noListFS{http.Dir(filepath.Join(workDir, "data", "images"))}
+	imagesFS := noListFS{http.Dir(imagesDir)}
 	r.Get("/images/*", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		rctx := chi.RouteContext(r.Context())
 		pathPrefix := strings.TrimSuffix(rctx.RoutePattern(), "/*")
-		http.StripPrefix(pathPrefix, http.FileServer(imagesDir)).ServeHTTP(w, r)
+		http.StripPrefix(pathPrefix, http.FileServer(imagesFS)).ServeHTTP(w, r)
 	})
 
 	return r

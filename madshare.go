@@ -16,8 +16,6 @@ import (
 	"daemonlord.ygg/madshare/webui"
 )
 
-const filesDir = "./data/files"
-
 func main() {
 	configPath := flag.String("config", "madshare.toml", "path to config file")
 	flag.Parse()
@@ -32,6 +30,12 @@ func main() {
 	if cfg.Database.Path == "" {
 		log.Fatal("config: database.path must not be empty")
 	}
+	if cfg.Storage.FilesDir == "" {
+		log.Fatal("config: storage.files_dir must not be empty")
+	}
+	if cfg.Storage.MaxUploadMB <= 0 {
+		log.Fatal("config: storage.max_upload_mb must be positive")
+	}
 
 	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0755); err != nil {
 		log.Fatalf("mkdir %s: %v", filepath.Dir(cfg.Database.Path), err)
@@ -43,16 +47,18 @@ func main() {
 	}
 	defer db.Close()
 
+	filesDir := cfg.Storage.FilesDir
 	if err := database.ReconcileOrphans(context.Background(), db, filesDir); err != nil {
 		log.Printf("reconcile orphans: %v", err)
 	}
 
 	store := storage.NewLocal(filesDir)
+	maxUploadSize := cfg.Storage.MaxUploadBytes()
 
 	var wg sync.WaitGroup
 	log.Println("Starting api...")
 	wg.Go(func() {
-		log.Fatal(http.ListenAndServe(cfg.API.Addr, api.NewRouter(store, db, os.TempDir())))
+		log.Fatal(http.ListenAndServe(cfg.API.Addr, api.NewRouter(store, db, os.TempDir(), filesDir, maxUploadSize)))
 	})
 	log.Println("Starting web-ui...")
 	wg.Go(func() {

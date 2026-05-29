@@ -138,13 +138,13 @@ func (h *handler) getArtistImage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	serveImageFile(w, r, objectKey, mimeType)
+	h.serveImageFile(w, r, objectKey, mimeType)
 }
 
 func (h *handler) uploadArtistImage(w http.ResponseWriter, r *http.Request) {
 	artist := chi.URLParam(r, "artist")
 	r.Body = http.MaxBytesReader(w, r.Body, maxImageSize)
-	objectKey, mimeType, err := saveImageUpload(r)
+	objectKey, mimeType, err := h.saveImageUpload(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -168,14 +168,14 @@ func (h *handler) getAlbumImage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	serveImageFile(w, r, objectKey, mimeType)
+	h.serveImageFile(w, r, objectKey, mimeType)
 }
 
 func (h *handler) uploadAlbumImage(w http.ResponseWriter, r *http.Request) {
 	album := chi.URLParam(r, "album")
 	artist := r.URL.Query().Get("artist")
 	r.Body = http.MaxBytesReader(w, r.Body, maxImageSize)
-	objectKey, mimeType, err := saveImageUpload(r)
+	objectKey, mimeType, err := h.saveImageUpload(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -187,7 +187,7 @@ func (h *handler) uploadAlbumImage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func saveImageUpload(r *http.Request) (objectKey, mimeType string, err error) {
+func (h *handler) saveImageUpload(r *http.Request) (objectKey, mimeType string, err error) {
 	if err := r.ParseMultipartForm(maxImageSize); err != nil {
 		return "", "", fmt.Errorf("image too large or invalid form")
 	}
@@ -219,10 +219,10 @@ func saveImageUpload(r *http.Request) (objectKey, mimeType string, err error) {
 	hashHex := fmt.Sprintf("%x", sum)
 	key := hashHex[:16] + ext
 
-	if err := os.MkdirAll("data/images", 0o755); err != nil {
+	if err := os.MkdirAll(h.imagesDir, 0o755); err != nil {
 		return "", "", fmt.Errorf("create images dir: %w", err)
 	}
-	dest := filepath.Join("data", "images", key)
+	dest := filepath.Join(h.imagesDir, key)
 	if err := os.WriteFile(dest, data, 0o644); err != nil {
 		return "", "", fmt.Errorf("write image: %w", err)
 	}
@@ -230,8 +230,8 @@ func saveImageUpload(r *http.Request) (objectKey, mimeType string, err error) {
 	return key, canonicalMIME, nil
 }
 
-func serveImageFile(w http.ResponseWriter, r *http.Request, objectKey, mimeType string) {
-	path := filepath.Join("data", "images", objectKey)
+func (h *handler) serveImageFile(w http.ResponseWriter, r *http.Request, objectKey, mimeType string) {
+	path := filepath.Join(h.imagesDir, objectKey)
 	w.Header().Set("Content-Type", mimeType)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	http.ServeFile(w, r, path)

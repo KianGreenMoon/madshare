@@ -16,13 +16,6 @@ import (
 	"daemonlord.ygg/madshare/media"
 )
 
-// maxUploadSize caps the total size of an upload request body. This is the
-// hard ceiling on what the server will accept; it is distinct from the 50 MB
-// in-memory hashing threshold (storage.memBufferLimit) documented in
-// CLAUDE.md, above which an upload is spooled to the cache dir instead of
-// being buffered in RAM.
-const maxUploadSize = 500 << 20 // 500 MB
-
 // allowedMIMETypes is the set of media types accepted for upload.
 // v0 is audio only; video support is deferred.
 var allowedMIMETypes = map[string]bool{
@@ -53,11 +46,16 @@ type handler struct {
 	storage  storage.Storage
 	repo     database.Repository
 	cacheDir string
+	// imagesDir is where artist/album cover images are stored and served. It is
+	// the "images" subdirectory of the configured files_dir.
+	imagesDir string
+	// maxUploadSize caps the upload request body in bytes (from config).
+	maxUploadSize int64
 }
 
 func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
-	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, h.maxUploadSize)
+	if err := r.ParseMultipartForm(h.maxUploadSize); err != nil {
 		http.Error(w, "file too large or invalid multipart form", http.StatusBadRequest)
 		return
 	}

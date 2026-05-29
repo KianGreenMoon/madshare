@@ -11,6 +11,7 @@ type Config struct {
 	API      APIConfig      `toml:"api"`
 	WebUI    WebUIConfig    `toml:"webui"`
 	Database DatabaseConfig `toml:"database"`
+	Storage  StorageConfig  `toml:"storage"`
 }
 
 type APIConfig struct {
@@ -26,6 +27,20 @@ type DatabaseConfig struct {
 	Path string `toml:"path"`
 }
 
+type StorageConfig struct {
+	// FilesDir is the directory where uploaded blobs are stored and served.
+	FilesDir string `toml:"files_dir"`
+	// MaxUploadMB caps the size of a single upload request body, in MiB. It is
+	// distinct from the in-memory hashing threshold (storage.memBufferLimit),
+	// above which an upload is spooled to the cache dir rather than buffered.
+	MaxUploadMB int64 `toml:"max_upload_mb"`
+}
+
+// MaxUploadBytes returns the configured upload cap in bytes.
+func (s StorageConfig) MaxUploadBytes() int64 {
+	return s.MaxUploadMB << 20
+}
+
 func defaults() Config {
 	return Config{
 		API: APIConfig{
@@ -37,6 +52,10 @@ func defaults() Config {
 		},
 		Database: DatabaseConfig{
 			Path: "./data/madshare.db",
+		},
+		Storage: StorageConfig{
+			FilesDir:    "./data/files",
+			MaxUploadMB: 500,
 		},
 	}
 }

@@ -8,3 +8,9 @@ addr = ":8080"
 
 [database]
 path = "./data/madshare.db"
+
+[storage]
+# Directory where uploaded blobs are stored and served from
+files_dir = "./data/files"
+# Maximum size of a single upload, in MiB
+max_upload_mb = 500

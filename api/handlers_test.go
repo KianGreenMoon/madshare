@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -44,6 +45,10 @@ func buildUploadRequest(t *testing.T, fieldName, filename, contentType string, b
 	return req
 }
 
+// testMaxUpload is the upload cap used by test handlers (mirrors the config
+// default of 500 MiB).
+const testMaxUpload = 500 << 20
+
 // newTestHandler returns a handler wired to a temp-dir Local backend and a
 // fresh in-memory DB. The DB is closed automatically when the test ends.
 func newTestHandler(t *testing.T) (*handler, *database.DB, string) {
@@ -55,11 +60,28 @@ func newTestHandler(t *testing.T) (*handler, *database.DB, string) {
 	}
 	t.Cleanup(func() { db.Close() })
 	h := &handler{
-		storage:  storage.NewLocal(base),
-		repo:     db,
-		cacheDir: t.TempDir(),
+		storage:       storage.NewLocal(base),
+		repo:          db,
+		cacheDir:      t.TempDir(),
+		imagesDir:     filepath.Join(base, "images"),
+		maxUploadSize: testMaxUpload,
 	}
 	return h, db, base
+}
+
+// newTestServer wires a router whose file-serving directory matches the store's
+// directory, so uploads and the file server read/write the same place.
+func newTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	srv := httptest.NewServer(NewRouter(storage.NewLocal(dir), db, t.TempDir(), dir, testMaxUpload))
+	t.Cleanup(srv.Close)
+	return srv
 }
 
 // ---- Upload: normal cases ---------------------------------------------------
@@ -262,12 +284,12 @@ func TestUploadFile_PathTraversalFilename(t *testing.T) {
 
 // fakeRepo lets tests force GetFileByHash and InsertFile outcomes.
 type fakeRepo struct {
-	getResult     *database.File
-	getErr        error
-	insertErr     error
-	recordErr     error
-	insertCalls   int
-	listFilesErr  error
+	getResult    *database.File
+	getErr       error
+	insertErr    error
+	recordErr    error
+	insertCalls  int
+	listFilesErr error
 }
 
 func (f *fakeRepo) GetFileByHash(_ context.Context, _ string) (*database.File, error) {
@@ -326,9 +348,10 @@ func TestUploadFile_InsertFailureLeavesOrphan(t *testing.T) {
 	baseDir := t.TempDir()
 	repo := &fakeRepo{insertErr: errors.New("simulated db failure")}
 	h := &handler{
-		storage:  storage.NewLocal(baseDir),
-		repo:     repo,
-		cacheDir: t.TempDir(),
+		storage:       storage.NewLocal(baseDir),
+		repo:          repo,
+		cacheDir:      t.TempDir(),
+		maxUploadSize: testMaxUpload,
 	}
 
 	data := []byte("orphan me")
@@ -366,12 +389,17 @@ func TestUploadFile_EmptyBody(t *testing.T) {
 // CORS on error responses is now covered by TestCORS_OnErrorResponse, which
 // exercises the corsMiddleware through the full router.
 
-// TestUploadFile_MaxUploadSizeConstant pins the request-body cap. This 500 MB
-// ceiling is intentionally distinct from the 50 MB in-memory hashing threshold
-// in CLAUDE.md (storage.memBufferLimit) — they are not meant to match.
-func TestUploadFile_MaxUploadSizeConstant(t *testing.T) {
-	if maxUploadSize != 500<<20 {
-		t.Errorf("maxUploadSize = %d, expected 500 MB (%d)", maxUploadSize, 500<<20)
+// TestUploadFile_ExceedsMaxUploadSize verifies the handler rejects a body
+// larger than its configured maxUploadSize. The cap comes from config
+// (storage.max_upload_mb) and is enforced via http.MaxBytesReader.
+func TestUploadFile_ExceedsMaxUploadSize(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	h.maxUploadSize = 64 // tiny cap so a normal upload trips it
+	req := buildUploadRequest(t, "file", "song.mp3", "audio/mpeg", bytes.Repeat([]byte("x"), 4096))
+	rr := httptest.NewRecorder()
+	h.uploadFile(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for body exceeding maxUploadSize", rr.Code)
 	}
 }
 
@@ -391,14 +419,7 @@ func TestWriteJSON_ContentType(t *testing.T) {
 // route, so cross-origin JS clients can read error bodies. A bad upload (no
 // multipart body) exercises an http.Error path.
 func TestCORS_OnErrorResponse(t *testing.T) {
-	store := storage.NewLocal(t.TempDir())
-	db, err := database.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	srv := httptest.NewServer(NewRouter(store, db, t.TempDir()))
-	defer srv.Close()
+	srv := newTestServer(t)
 
 	resp, err := http.Post(srv.URL+"/files/upload", "text/plain", strings.NewReader("not multipart"))
 	if err != nil {
@@ -417,14 +438,7 @@ func TestCORS_OnErrorResponse(t *testing.T) {
 // TestCORS_Preflight verifies an OPTIONS preflight request is answered with the
 // CORS headers and no route 405.
 func TestCORS_Preflight(t *testing.T) {
-	store := storage.NewLocal(t.TempDir())
-	db, err := database.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	srv := httptest.NewServer(NewRouter(store, db, t.TempDir()))
-	defer srv.Close()
+	srv := newTestServer(t)
 
 	req, _ := http.NewRequest(http.MethodOptions, srv.URL+"/files/upload", nil)
 	resp, err := http.DefaultClient.Do(req)
@@ -443,14 +457,7 @@ func TestCORS_Preflight(t *testing.T) {
 
 // TestNewRouter_Integration verifies NewRouter returns a working http.Handler.
 func TestNewRouter_Integration(t *testing.T) {
-	store := storage.NewLocal(t.TempDir())
-	db, err := database.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	srv := httptest.NewServer(NewRouter(store, db, t.TempDir()))
-	defer srv.Close()
+	srv := newTestServer(t)
 
 	resp, err := http.Get(srv.URL + "/")
 	if err != nil {
@@ -597,9 +604,10 @@ func TestListFiles_DBError(t *testing.T) {
 	repo := &fakeRepo{} // overriding ListFiles via embedding
 	repo.listFilesErr = errors.New("simulated db failure")
 	h := &handler{
-		storage:  storage.NewLocal(baseDir),
-		repo:     repo,
-		cacheDir: t.TempDir(),
+		storage:       storage.NewLocal(baseDir),
+		repo:          repo,
+		cacheDir:      t.TempDir(),
+		maxUploadSize: testMaxUpload,
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files", nil)
@@ -614,14 +622,7 @@ func TestListFiles_DBError(t *testing.T) {
 // TestListFiles_CORSHeader verifies the /api/files response carries the
 // wildcard CORS header (applied by corsMiddleware at the router level).
 func TestListFiles_CORSHeader(t *testing.T) {
-	store := storage.NewLocal(t.TempDir())
-	db, err := database.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	srv := httptest.NewServer(NewRouter(store, db, t.TempDir()))
-	defer srv.Close()
+	srv := newTestServer(t)
 
 	resp, err := http.Get(srv.URL + "/api/files")
 	if err != nil {
@@ -832,14 +833,7 @@ func TestUploadFile_WindowsPathFilenameProducesCleanURL(t *testing.T) {
 // TestFileServer_NoDirectoryListing verifies that requesting a directory under
 // /files/ returns 404 rather than an HTML index of hash dirs and filenames.
 func TestFileServer_NoDirectoryListing(t *testing.T) {
-	store := storage.NewLocal(t.TempDir())
-	db, err := database.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	srv := httptest.NewServer(NewRouter(store, db, t.TempDir()))
-	defer srv.Close()
+	srv := newTestServer(t)
 
 	// Upload a file so a hash directory exists on disk.
 	body := buildUploadBody(t, "file", "song.mp3", "audio/mpeg", []byte("dir listing test"))
@@ -863,14 +857,7 @@ func TestFileServer_NoDirectoryListing(t *testing.T) {
 // TestFileServer_NosniffHeader verifies the file server sets
 // X-Content-Type-Options: nosniff on served files.
 func TestFileServer_NosniffHeader(t *testing.T) {
-	store := storage.NewLocal(t.TempDir())
-	db, err := database.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	srv := httptest.NewServer(NewRouter(store, db, t.TempDir()))
-	defer srv.Close()
+	srv := newTestServer(t)
 
 	body := buildUploadBody(t, "file", "song.mp3", "audio/mpeg", []byte("nosniff test"))
 	upResp, err := http.Post(srv.URL+"/files/upload", body.contentType, body.reader)
@@ -941,9 +928,9 @@ func buildImageRequest(t *testing.T, filename, contentType string, body []byte) 
 // TestSaveImageUpload_MIMEWithParameters verifies a parameterized image
 // Content-Type is accepted (mirrors the audio upload fix).
 func TestSaveImageUpload_MIMEWithParameters(t *testing.T) {
-	t.Chdir(t.TempDir())
+	h, _, _ := newTestHandler(t)
 	req := buildImageRequest(t, "cover.png", "image/png; charset=binary", []byte("img"))
-	key, mime, err := saveImageUpload(req)
+	key, mime, err := h.saveImageUpload(req)
 	if err != nil {
 		t.Fatalf("saveImageUpload rejected parameterized MIME: %v", err)
 	}
@@ -958,9 +945,9 @@ func TestSaveImageUpload_MIMEWithParameters(t *testing.T) {
 // TestSaveImageUpload_UppercaseExtension verifies an uppercase extension is
 // accepted and normalized (cameras commonly produce ".JPG").
 func TestSaveImageUpload_UppercaseExtension(t *testing.T) {
-	t.Chdir(t.TempDir())
+	h, _, _ := newTestHandler(t)
 	req := buildImageRequest(t, "PHOTO.JPG", "image/jpeg", []byte("img"))
-	key, mime, err := saveImageUpload(req)
+	key, mime, err := h.saveImageUpload(req)
 	if err != nil {
 		t.Fatalf("saveImageUpload rejected uppercase extension: %v", err)
 	}
@@ -973,10 +960,25 @@ func TestSaveImageUpload_UppercaseExtension(t *testing.T) {
 }
 
 // TestSaveImageUpload_RejectsBadType verifies a disallowed MIME type is rejected.
+// TestSaveImageUpload_StoresUnderImagesDir verifies the saved blob lands in the
+// handler's imagesDir (the "images" subdir of files_dir), not a hardcoded path.
+func TestSaveImageUpload_StoresUnderImagesDir(t *testing.T) {
+	h, _, base := newTestHandler(t)
+	req := buildImageRequest(t, "cover.png", "image/png", []byte("img"))
+	key, _, err := h.saveImageUpload(req)
+	if err != nil {
+		t.Fatalf("saveImageUpload: %v", err)
+	}
+	want := filepath.Join(base, "images", key)
+	if _, err := os.Stat(want); err != nil {
+		t.Errorf("image not stored under files_dir/images: stat %s: %v", want, err)
+	}
+}
+
 func TestSaveImageUpload_RejectsBadType(t *testing.T) {
-	t.Chdir(t.TempDir())
+	h, _, _ := newTestHandler(t)
 	req := buildImageRequest(t, "evil.svg", "image/svg+xml", []byte("<svg/>"))
-	if _, _, err := saveImageUpload(req); err == nil {
+	if _, _, err := h.saveImageUpload(req); err == nil {
 		t.Error("saveImageUpload accepted disallowed image type")
 	}
 }
@@ -995,9 +997,9 @@ func TestSanitizeFilename_RejectsControlChars(t *testing.T) {
 // type paired with a disallowed extension is rejected (image analogue of the
 // audio MIME-bypass guard).
 func TestSaveImageUpload_DisallowedExtensionRejected(t *testing.T) {
-	t.Chdir(t.TempDir())
+	h, _, _ := newTestHandler(t)
 	req := buildImageRequest(t, "evil.svg", "image/png", []byte("not really png"))
-	if _, _, err := saveImageUpload(req); err == nil {
+	if _, _, err := h.saveImageUpload(req); err == nil {
 		t.Error("saveImageUpload accepted disallowed extension with allowed MIME type")
 	}
 }

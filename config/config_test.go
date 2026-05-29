@@ -25,6 +25,15 @@ func TestLoad_MissingFile_ReturnsDefaults(t *testing.T) {
 	if cfg.Database.Path != "./data/madshare.db" {
 		t.Errorf("Database.Path = %q, want ./data/madshare.db", cfg.Database.Path)
 	}
+	if cfg.Storage.FilesDir != "./data/files" {
+		t.Errorf("Storage.FilesDir = %q, want ./data/files", cfg.Storage.FilesDir)
+	}
+	if cfg.Storage.MaxUploadMB != 500 {
+		t.Errorf("Storage.MaxUploadMB = %d, want 500", cfg.Storage.MaxUploadMB)
+	}
+	if got := cfg.Storage.MaxUploadBytes(); got != 500<<20 {
+		t.Errorf("Storage.MaxUploadBytes() = %d, want %d", got, 500<<20)
+	}
 }
 
 func TestLoad_PartialOverride_UnsetFieldsKeepDefaults(t *testing.T) {
@@ -49,6 +58,12 @@ func TestLoad_PartialOverride_UnsetFieldsKeepDefaults(t *testing.T) {
 	if cfg.Database.Path != "./data/madshare.db" {
 		t.Errorf("Database.Path = %q, want default", cfg.Database.Path)
 	}
+	if cfg.Storage.FilesDir != "./data/files" {
+		t.Errorf("Storage.FilesDir = %q, want default ./data/files", cfg.Storage.FilesDir)
+	}
+	if cfg.Storage.MaxUploadMB != 500 {
+		t.Errorf("Storage.MaxUploadMB = %d, want default 500", cfg.Storage.MaxUploadMB)
+	}
 }
 
 func TestLoad_FullOverride(t *testing.T) {
@@ -64,6 +79,10 @@ addr = ":9080"
 
 [database]
 path = "/var/lib/madshare/db.sqlite"
+
+[storage]
+files_dir = "/srv/madshare/files"
+max_upload_mb = 100
 `), 0o600)
 
 	cfg, err := config.Load(f)
@@ -81,6 +100,12 @@ path = "/var/lib/madshare/db.sqlite"
 	}
 	if cfg.Database.Path != "/var/lib/madshare/db.sqlite" {
 		t.Errorf("Database.Path = %q", cfg.Database.Path)
+	}
+	if cfg.Storage.FilesDir != "/srv/madshare/files" {
+		t.Errorf("Storage.FilesDir = %q", cfg.Storage.FilesDir)
+	}
+	if cfg.Storage.MaxUploadMB != 100 {
+		t.Errorf("Storage.MaxUploadMB = %d, want 100", cfg.Storage.MaxUploadMB)
 	}
 }
 
