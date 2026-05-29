@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"daemonlord.ygg/madshare/config"
@@ -125,25 +126,26 @@ func TestMaxUploadBytes_NoOverflowAtLimit(t *testing.T) {
 // validation lives in Load rather than in main()).
 func TestLoad_Validation(t *testing.T) {
 	cases := []struct {
-		name    string
-		toml    string
-		wantErr bool
+		name string
+		toml string
+		// wantErrContains is a substring the returned error must contain. An
+		// empty string means the config must load without error.
+		wantErrContains string
 	}{
-		{"empty database path", "[database]\npath = \"\"\n", true},
-		{"empty files_dir", "[storage]\nfiles_dir = \"\"\n", true},
-		{"zero max_upload_mb", "[storage]\nmax_upload_mb = 0\n", true},
-		{"negative max_upload_mb", "[storage]\nmax_upload_mb = -1\n", true},
+		{"empty database path", "[database]\npath = \"\"\n", "database.path must not be empty"},
+		{"empty files_dir", "[storage]\nfiles_dir = \"\"\n", "files_dir must not be empty"},
+		{"zero max_upload_mb", "[storage]\nmax_upload_mb = 0\n", "max_upload_mb must be positive"},
+		{"negative max_upload_mb", "[storage]\nmax_upload_mb = -1\n", "max_upload_mb must be positive"},
 		{
-			name:    "over-limit max_upload_mb",
-			toml:    fmt.Sprintf("[storage]\nmax_upload_mb = %d\n", int64(config.MaxUploadMBLimit)+1),
-			wantErr: true,
+			name:            "over-limit max_upload_mb",
+			toml:            fmt.Sprintf("[storage]\nmax_upload_mb = %d\n", int64(config.MaxUploadMBLimit)+1),
+			wantErrContains: "max_upload_mb must not exceed",
 		},
 		{
-			name:    "at-limit max_upload_mb accepted",
-			toml:    fmt.Sprintf("[storage]\nmax_upload_mb = %d\n", int64(config.MaxUploadMBLimit)),
-			wantErr: false,
+			name: "at-limit max_upload_mb accepted",
+			toml: fmt.Sprintf("[storage]\nmax_upload_mb = %d\n", int64(config.MaxUploadMBLimit)),
 		},
-		{"valid override", "[storage]\nmax_upload_mb = 100\n", false},
+		{name: "valid override", toml: "[storage]\nmax_upload_mb = 100\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -152,11 +154,15 @@ func TestLoad_Validation(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err := config.Load(f)
-			if tc.wantErr && err == nil {
-				t.Errorf("Load(%q) = nil error, want error", tc.toml)
-			}
-			if !tc.wantErr && err != nil {
-				t.Errorf("Load(%q) = %v, want nil error", tc.toml, err)
+			switch {
+			case tc.wantErrContains == "":
+				if err != nil {
+					t.Errorf("Load(%q) = %v, want nil error", tc.toml, err)
+				}
+			case err == nil:
+				t.Errorf("Load(%q) = nil error, want error containing %q", tc.toml, tc.wantErrContains)
+			case !strings.Contains(err.Error(), tc.wantErrContains):
+				t.Errorf("Load(%q) error = %q, want it to contain %q", tc.toml, err.Error(), tc.wantErrContains)
 			}
 		})
 	}
