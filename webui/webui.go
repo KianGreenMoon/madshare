@@ -3,7 +3,9 @@
 package webui
 
 import (
+	"embed"
 	"html/template"
+	"io/fs"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -14,10 +16,33 @@ import (
 // config validation reject listeners that ask to serve the UI.
 const Available = true
 
+// The templates and static assets are embedded at build time so the binary
+// carries the UI itself — no CWD-relative file access at serve time. These
+// embeds exist only in the !nowebui build, so a -tags nowebui binary ships
+// without them.
+//
+//go:embed html/*.html
+var htmlFS embed.FS
+
+//go:embed static
+var staticFS embed.FS
+
+// staticRoot is the embedded static tree rooted at the "static" directory, so
+// request paths (e.g. "js/app.js") map directly without a leading "static/".
+var staticRoot = mustSub(staticFS, "static")
+
+func mustSub(f embed.FS, dir string) fs.FS {
+	sub, err := fs.Sub(f, dir)
+	if err != nil {
+		panic(err) // the embedded tree is fixed at build time
+	}
+	return sub
+}
+
 var (
-	cmusTmpl    = template.Must(template.ParseFiles("webui/html/cmus.html"))
-	libraryTmpl = template.Must(template.ParseFiles("webui/html/library.html"))
-	adminTmpl   = template.Must(template.ParseFiles("webui/html/admin.html"))
+	cmusTmpl    = template.Must(template.ParseFS(htmlFS, "html/cmus.html"))
+	libraryTmpl = template.Must(template.ParseFS(htmlFS, "html/library.html"))
+	adminTmpl   = template.Must(template.ParseFS(htmlFS, "html/admin.html"))
 )
 
 // pageData is the data injected into every page. APIURL is the absolute API
@@ -47,10 +72,10 @@ func noCacheStatic(next http.Handler) http.Handler {
 // Register mounts the web UI route group on r: the library page at "/", the
 // cmus view at "/cmus", and the static assets under "/static/". apiBase is the
 // API origin for the page (empty = relative, same-origin). Templates and static
-// files are read relative to the working directory, so the binary must be run
-// from the project root.
+// assets are served from the embedded filesystem, so the binary needs no
+// access to webui/ on disk.
 func Register(r chi.Router, apiBase string) {
-	static := noCacheStatic(http.FileServer(http.Dir("webui/static")))
+	static := noCacheStatic(http.FileServer(http.FS(staticRoot)))
 	r.Handle("/static/*", http.StripPrefix("/static/", static))
 	r.Get("/cmus", makeHandler(cmusTmpl, apiBase))
 	r.Get("/", makeHandler(libraryTmpl, apiBase))
