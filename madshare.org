@@ -11,6 +11,9 @@ Concept doc for federated audio service (primarily for music)
 - Server has user accounts.
 - A user could not to upload new audio files without admin permission.
 - By default server should not to allow download and play a media file for unathorized users to prevent a legal attack.
+- Each media file has a flag whether it may be played/downloaded by unauthorized guests (for open / non-copyrighted music). This is just an access grant to the "anonymous public" principal; the default is deny.
+- Each media file may also store a /license/ as metadata (a controlled vocabulary / SPDX-style code, e.g. CC0, CC-BY, public-domain, all-rights-reserved, unknown), distinct from the guest-playable flag.
+- The admin may opt in to a policy that auto-derives the guest-playable flag from the license (e.g. auto-publish anything licensed CC0 or public-domain). Caveats: license read from uploaded file tags is unverified, so the admin opts in and owns the legal risk; auto-derivation only ever /grants/ for a recognized-free allowlist; unknown or missing license stays private; a manual override always wins.
 - Server can connecting with another servers by a federation protocol
 - To prevent any legal issues servers can connecting each others only by trusted system: Two admins exchange their keys for connecting. But every server has full access to all friend's network (madnetwork).
 - An admin may share his library to the madnetwork - all federated servers.
