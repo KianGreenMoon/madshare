@@ -7,22 +7,22 @@ import (
 )
 
 var (
+	cmusTmpl    = template.Must(template.ParseFiles("webui/html/cmus.html"))
 	libraryTmpl = template.Must(template.ParseFiles("webui/html/library.html"))
-	uploadTmpl  = template.Must(template.ParseFiles("webui/html/upload.html"))
 )
+
+func showCmus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if err := cmusTmpl.Execute(w, nil); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
 
 func showLibrary(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	if err := libraryTmpl.Execute(w, nil); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-}
-
-func showUploadForm(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	if err := uploadTmpl.Execute(w, nil); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -37,7 +37,7 @@ func noCacheStatic(next http.Handler) http.Handler {
 func Route() {
 	static := noCacheStatic(http.FileServer(http.Dir("webui/static")))
 	http.Handle("/static/", http.StripPrefix("/static/", static))
-	http.HandleFunc("/library", showLibrary)
-	http.HandleFunc("/", showUploadForm)
+	http.HandleFunc("/cmus", showCmus)
+	http.HandleFunc("/", showLibrary)
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
