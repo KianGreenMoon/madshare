@@ -392,14 +392,33 @@ func TestUploadFile_EmptyBody(t *testing.T) {
 // TestUploadFile_ExceedsMaxUploadSize verifies the handler rejects a body
 // larger than its configured maxUploadSize. The cap comes from config
 // (storage.max_upload_mb) and is enforced via http.MaxBytesReader.
+//
+// uploadFile returns 400 for several distinct reasons (malformed multipart,
+// missing field, invalid filename), so checking the status alone would pass
+// even if size enforcement regressed. We therefore assert two things: the
+// identical request SUCCEEDS under a generous cap (proving the body is
+// otherwise valid), and FAILS with the size-specific message under a tiny cap.
 func TestUploadFile_ExceedsMaxUploadSize(t *testing.T) {
+	body := bytes.Repeat([]byte("x"), 4096)
+
+	// Control: the same well-formed request succeeds when the cap is generous.
 	h, _, _ := newTestHandler(t)
-	h.maxUploadSize = 64 // tiny cap so a normal upload trips it
-	req := buildUploadRequest(t, "file", "song.mp3", "audio/mpeg", bytes.Repeat([]byte("x"), 4096))
+	rrOK := httptest.NewRecorder()
+	h.uploadFile(rrOK, buildUploadRequest(t, "file", "song.mp3", "audio/mpeg", body))
+	if rrOK.Code != http.StatusCreated {
+		t.Fatalf("control upload status = %d, want 201; body: %s", rrOK.Code, rrOK.Body.String())
+	}
+
+	// Same request, tiny cap: must be rejected specifically for size.
+	h2, _, _ := newTestHandler(t)
+	h2.maxUploadSize = 64
 	rr := httptest.NewRecorder()
-	h.uploadFile(rr, req)
+	h2.uploadFile(rr, buildUploadRequest(t, "file", "song.mp3", "audio/mpeg", body))
 	if rr.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400 for body exceeding maxUploadSize", rr.Code)
+		t.Fatalf("status = %d, want 400 for body exceeding maxUploadSize", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "file too large") {
+		t.Errorf("error body = %q, want it to mention the size limit", rr.Body.String())
 	}
 }
 

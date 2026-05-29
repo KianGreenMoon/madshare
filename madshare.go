@@ -36,6 +36,9 @@ func main() {
 	if cfg.Storage.MaxUploadMB <= 0 {
 		log.Fatal("config: storage.max_upload_mb must be positive")
 	}
+	if cfg.Storage.MaxUploadMB > config.MaxUploadMBLimit {
+		log.Fatalf("config: storage.max_upload_mb must not exceed %d", config.MaxUploadMBLimit)
+	}
 
 	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0755); err != nil {
 		log.Fatalf("mkdir %s: %v", filepath.Dir(cfg.Database.Path), err)

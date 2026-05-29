@@ -27,6 +27,12 @@ type DatabaseConfig struct {
 	Path string `toml:"path"`
 }
 
+// MaxUploadMBLimit is the largest accepted value for max_upload_mb (1 TiB
+// expressed in MiB). It is far below the point at which MaxUploadBytes would
+// overflow int64, so MaxUploadBytes cannot wrap negative for any accepted
+// config value.
+const MaxUploadMBLimit = 1 << 20
+
 type StorageConfig struct {
 	// FilesDir is the directory where uploaded blobs are stored and served.
 	FilesDir string `toml:"files_dir"`

@@ -18,6 +18,13 @@ import (
 // filesDir is the directory uploaded blobs are served from (the same path the
 // store writes to); maxUploadSize caps the upload request body in bytes.
 func NewRouter(store storage.Storage, repo database.Repository, cacheDir, filesDir string, maxUploadSize int64) http.Handler {
+	// KNOWN ISSUE (TODO): imagesDir nests inside filesDir, and the /files/*
+	// file server serves the whole filesDir tree. As a side effect cover images
+	// are also reachable at /files/images/<key>, not just at /images/*. Harmless
+	// today (no auth, images are public, nosniff is set, listing is 404'd), but
+	// the URL surface is wider than intended and would bypass any future
+	// access control applied only to /images/*. Revisit how this is laid out —
+	// e.g. store images outside the served files tree, or 404 /files/images.
 	imagesDir := filepath.Join(filesDir, "images")
 	h := &handler{
 		storage:       store,

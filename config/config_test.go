@@ -109,6 +109,16 @@ max_upload_mb = 100
 	}
 }
 
+// TestMaxUploadBytes_NoOverflowAtLimit verifies the documented invariant:
+// MaxUploadBytes stays positive for any value up to MaxUploadMBLimit, so an
+// accepted config can never wrap int64 negative.
+func TestMaxUploadBytes_NoOverflowAtLimit(t *testing.T) {
+	s := config.StorageConfig{MaxUploadMB: config.MaxUploadMBLimit}
+	if got := s.MaxUploadBytes(); got <= 0 {
+		t.Errorf("MaxUploadBytes() at limit = %d, want positive", got)
+	}
+}
+
 func TestLoad_InvalidTOML_ReturnsError(t *testing.T) {
 	dir := t.TempDir()
 	f := filepath.Join(dir, "bad.toml")
