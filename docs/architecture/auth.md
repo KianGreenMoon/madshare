@@ -309,11 +309,20 @@ will extend.
    strict phasing: the RBAC tables (`roles`/`role_permissions`/`user_roles`) and
    seeded built-in roles were created in this phase's migration too, so the admin
    gate uses a real permission rather than a throwaway flag — Phase 2 is then pure
-   enforcement (no new schema). Remaining Phase-1 polish: a dedicated
-   change-password form / forced-change flow (backend endpoint exists; UI nudges
-   via a toast for now).
-2. **RBAC (Layer A)**: `roles`/`permissions`, seed roles, gate upload/delete/edit;
-   add `uploaded_by` and owner-delete rule; audit log; login rate limiting; CSRF.
+   enforcement (no new schema). The change-password UI (incl. the forced
+   first-run flow) is implemented.
+2. **RBAC (Layer A)** — **IMPLEMENTED** (enforcement; schema already seeded in
+   Phase 1). Migration `004_uploaded_by_audit.sql` adds `files.uploaded_by` and
+   the `audit_log` table. Gating via `Deps.protect(perm)` (a pass-through when
+   `Auth` is unset, so `NewRouter`/tests stay open; active in `buildHandler`
+   where `Identify` runs): upload → `file.upload`, cover-image edit →
+   `metadata.edit`, admin delete/prune → `file.delete`. Uploads record the
+   uploader (`uploaded_by`) and an `audit_log` row; deletes/prunes/image edits
+   are audited too (best-effort: an audit write failure logs but never fails the
+   action). The library page's upload modal surfaces a 401/403 with a "sign in
+   on the Admin page" message. **Deferred within this phase:** the owner-can-
+   delete-own rule (delete is currently `file.delete`-only — delete any), and
+   login rate limiting + CSRF.
 3. **Content access (Layer B)**: `access_groups`/`content_grants`,
    `guest_playable`/`license`, the §5.3 predicate, listing filters, license
    auto-derivation policy, and **flip default-deny** on play/download.

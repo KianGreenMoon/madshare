@@ -3,10 +3,12 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"regexp"
+	"strings"
 
 	"daemonlord.ygg/madshare/database"
 	"github.com/go-chi/chi/v5"
@@ -47,6 +49,7 @@ func (h *handler) adminDeleteFile(w http.ResponseWriter, r *http.Request) {
 	if filenames == nil {
 		filenames = []string{}
 	}
+	h.audit(r.Context(), "file.delete", hash, strings.Join(filenames, ", "))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":           true,
 		"hash":         hash,
@@ -88,6 +91,7 @@ func (h *handler) adminPrune(w http.ResponseWriter, r *http.Request) {
 	for _, f := range result.Failed {
 		failed = append(failed, map[string]any{"hash": f.Hash, "error": f.Err})
 	}
+	h.audit(r.Context(), "file.prune", "", fmt.Sprintf("pruned %d, failed %d", len(result.Pruned), len(result.Failed)))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":           true,
 		"dry_run":      false,

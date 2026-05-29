@@ -36,18 +36,34 @@ func newAuthTestServer(t *testing.T) (*httptest.Server, *database.DB) {
 		t.Fatalf("bootstrap admin: created=%v err=%v", created, err)
 	}
 
+	// With Auth set, RegisterAPI/RegisterAdmin gate the protected routes
+	// themselves (see Deps.protect); the test only needs Identify in the chain.
 	deps := Deps{Store: storage.NewLocal(dir), Repo: db, CacheDir: t.TempDir(), FilesDir: dir, MaxUploadSize: testMaxUpload, Auth: db}
 	r := chi.NewRouter()
 	r.Use(auth.Identify(db))
 	RegisterAPI(r, deps)
-	r.Group(func(gr chi.Router) {
-		gr.Use(auth.RequirePermission(auth.PermFileDelete))
-		RegisterAdmin(gr, deps)
-	})
+	RegisterAdmin(r, deps)
 
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 	return srv, db
+}
+
+// makeUser creates a user with the given password and role and returns its id.
+func makeUser(t *testing.T, db *database.DB, username, password, role string) int64 {
+	t.Helper()
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	id, err := db.CreateUser(context.Background(), username, hash, false)
+	if err != nil {
+		t.Fatalf("create user %s: %v", username, err)
+	}
+	if err := db.AssignRoleByName(context.Background(), id, role); err != nil {
+		t.Fatalf("assign role %s: %v", role, err)
+	}
+	return id
 }
 
 func login(t *testing.T, client *http.Client, base, user, pass string) *http.Response {

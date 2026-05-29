@@ -153,12 +153,10 @@ func buildHandler(lc config.ListenConfig, deps api.Deps, apiBase string) (http.H
 		api.RegisterAPI(r, deps)
 	}
 	if lc.Serves(config.GroupAdmin) {
-		// The destructive admin API requires the file.delete permission. The
-		// admin page itself is left ungated so it can render its login prompt.
-		r.Group(func(gr chi.Router) {
-			gr.Use(auth.RequirePermission(auth.PermFileDelete))
-			api.RegisterAdmin(gr, deps)
-		})
+		// RegisterAdmin gates the destructive API by file.delete when auth is
+		// configured (deps.Auth set). The admin page itself is left ungated so
+		// it can render its login prompt.
+		api.RegisterAdmin(r, deps)
 		webui.RegisterAdminPage(r, apiBase) // no-op in -tags nowebui builds
 	}
 	if lc.Serves(config.GroupWebUI) {

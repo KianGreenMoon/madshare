@@ -62,11 +62,11 @@ func (h *handler) listAlbums(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type albumItem struct {
-		Title      string  `json:"title"`
-		ArtistName string  `json:"artist_name"`
-		Year       *int64  `json:"year"`
-		TrackCount int     `json:"track_count"`
-		HasImage   bool    `json:"has_image"`
+		Title      string `json:"title"`
+		ArtistName string `json:"artist_name"`
+		Year       *int64 `json:"year"`
+		TrackCount int    `json:"track_count"`
+		HasImage   bool   `json:"has_image"`
 	}
 
 	items := make([]albumItem, 0, len(albums))
@@ -153,6 +153,7 @@ func (h *handler) uploadArtistImage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
+	h.audit(r.Context(), "metadata.image", "artist:"+artist, "")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -184,6 +185,7 @@ func (h *handler) uploadAlbumImage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
+	h.audit(r.Context(), "metadata.image", "album:"+artist+"/"+album, "")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

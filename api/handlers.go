@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"io"
@@ -12,9 +13,27 @@ import (
 	"time"
 
 	"daemonlord.ygg/madshare/api/storage"
+	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/media"
 )
+
+// actorID returns the acting user's id from the request context as a nullable
+// column value (invalid when the request is anonymous / unauthenticated).
+func actorID(ctx context.Context) sql.NullInt64 {
+	if id := auth.FromContext(ctx); id != nil {
+		return sql.NullInt64{Int64: id.UserID, Valid: true}
+	}
+	return sql.NullInt64{}
+}
+
+// audit records a privileged action, logging (but not failing the request) on
+// error — the audit log must never block the operation it describes.
+func (h *handler) audit(ctx context.Context, action, target, detail string) {
+	if err := h.repo.RecordAudit(ctx, actorID(ctx), action, target, detail); err != nil {
+		log.Printf("audit %s %s: %v", action, target, err)
+	}
+}
 
 // allowedMIMETypes is the set of media types accepted for upload.
 // v0 is audio only; video support is deferred.
@@ -115,6 +134,7 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "storage error", http.StatusInternalServerError)
 			return
 		}
+		h.audit(ctx, "file.upload", hash, "dedup: "+filename)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":       true,
 			"existed":  true,
@@ -142,6 +162,7 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		StorageBackend: "local",
 		ObjectKey:      hash + "/" + filename,
 		CreatedAt:      now,
+		UploadedBy:     actorID(ctx),
 	}
 	upload := &database.FileUpload{Filename: filename, UploadedAt: now}
 	meta := tagsToMetadata(tags, now)
@@ -153,6 +174,7 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
+	h.audit(ctx, "file.upload", hash, filename)
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"ok":       true,

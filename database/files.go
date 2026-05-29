@@ -41,9 +41,9 @@ func (db *DB) InsertFile(ctx context.Context, f *File, upload *FileUpload, meta 
 	defer tx.Rollback()
 
 	res, err := tx.ExecContext(ctx, `
-		INSERT INTO files (hash, byte_size, mime_type, storage_backend, object_key, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		f.Hash, f.ByteSize, f.MimeType, f.StorageBackend, f.ObjectKey, f.CreatedAt,
+		INSERT INTO files (hash, byte_size, mime_type, storage_backend, object_key, created_at, uploaded_by)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		f.Hash, f.ByteSize, f.MimeType, f.StorageBackend, f.ObjectKey, f.CreatedAt, f.UploadedBy,
 	)
 	if err != nil {
 		return fmt.Errorf("insert files: %w", err)

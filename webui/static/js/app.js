@@ -558,6 +558,12 @@ async function uploadFile(file) {
   let data;
   try {
     const res = await fetch(`${API}/files/upload`, { method: 'POST', body: fd });
+    if (res.status === 401 || res.status === 403) {
+      // Uploading requires the file.upload permission. The library page has no
+      // login of its own yet — point the user at the admin page to sign in.
+      setStatus('Uploading requires signing in — open the Admin page to log in.', 'error');
+      return;
+    }
     if (!res.ok) {
       const msg = await res.text().catch(() => res.statusText);
       setStatus('Upload failed: ' + msg, 'error');

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"daemonlord.ygg/madshare/api/storage"
+	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/database"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -24,6 +25,17 @@ type Deps struct {
 	// Auth backs the /api/auth/* endpoints. When nil (e.g. NewRouter in tests),
 	// those endpoints are not registered.
 	Auth AuthStore
+}
+
+// protect returns middleware enforcing perm, but only when auth is configured
+// (d.Auth != nil). With no auth backend — e.g. NewRouter in tests or a
+// deliberately open embedding — it is a pass-through, so the gating is active
+// exactly when the Identify middleware is also present (see madshare.go).
+func (d Deps) protect(perm string) func(http.Handler) http.Handler {
+	if d.Auth == nil {
+		return func(next http.Handler) http.Handler { return next }
+	}
+	return auth.RequirePermission(perm)
 }
 
 func (d Deps) newHandler() *handler {
@@ -59,10 +71,15 @@ func RegisterAPI(r chi.Router, d Deps) {
 	r.Get("/api/albums", h.listAlbums)
 	r.Get("/api/tracks", h.listTracks)
 	r.Get("/api/artists/{artist}/image", h.getArtistImage)
-	r.Post("/api/artists/{artist}/image", h.uploadArtistImage)
 	r.Get("/api/albums/{album}/image", h.getAlbumImage)
-	r.Post("/api/albums/{album}/image", h.uploadAlbumImage)
+	// Editing cover images is a metadata.edit capability.
+	r.With(d.protect(auth.PermMetadataEdit)).Post("/api/artists/{artist}/image", h.uploadArtistImage)
+	r.With(d.protect(auth.PermMetadataEdit)).Post("/api/albums/{album}/image", h.uploadAlbumImage)
 
+	// Uploading new files requires file.upload. The route is registered here
+	// (rather than inside fileServer) so the gate wraps only the write path; the
+	// GET file server stays open.
+	r.With(d.protect(auth.PermFileUpload)).Post("/files/upload", h.uploadFile)
 	fileServer(r, "/files", noListFS{http.Dir(d.FilesDir)}, h)
 
 	imagesFS := noListFS{http.Dir(h.imagesDir)}
@@ -83,13 +100,10 @@ func RegisterAPI(r chi.Router, d Deps) {
 // RegisterAdmin mounts the admin route group (/api/admin/*) on r.
 func RegisterAdmin(r chi.Router, d Deps) {
 	h := d.newHandler()
-	// Admin endpoints are grouped so an auth gate can slot in ahead of them.
 	r.Route("/api/admin", func(r chi.Router) {
-		// SECURITY TODO: these endpoints delete files and prune DB records with
-		// no authentication. The listener `serve` list can keep this group off
-		// non-loopback interfaces, but that is topology, not auth — gate this
-		// group (e.g. r.Use(adminGate)) before any real deployment.
-		// r.Use(adminGate)
+		// Destructive admin endpoints require the file.delete capability (a
+		// pass-through when auth is not configured — see Deps.protect).
+		r.Use(d.protect(auth.PermFileDelete))
 		r.Delete("/files/{hash}", h.adminDeleteFile)
 		r.Post("/prune", h.adminPrune)
 	})
@@ -160,7 +174,7 @@ func fileServer(r chi.Router, path string, root http.FileSystem, h *handler) {
 		panic("fileServer does not permit any URL parameters.")
 	}
 
-	r.Post(path+"/upload", h.uploadFile)
+	// The POST <path>/upload route is registered (and gated) by the caller.
 
 	if path != "/" && path[len(path)-1] != '/' {
 		r.Get(path, http.RedirectHandler(path+"/", 301).ServeHTTP)

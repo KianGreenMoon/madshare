@@ -1,6 +1,9 @@
 package database
 
-import "context"
+import (
+	"context"
+	"database/sql"
+)
 
 // Repository is the persistence boundary the upload handler depends on.
 // Implementations must be safe for concurrent use.
@@ -57,4 +60,8 @@ type Repository interface {
 	// ListFileRefs returns one FileRef per files row, each carrying the
 	// content hash and the filenames recorded for it, ordered by file id.
 	ListFileRefs(ctx context.Context) ([]FileRef, error)
+
+	// RecordAudit appends a row to the audit log. actorUserID is invalid for
+	// system/anonymous actions.
+	RecordAudit(ctx context.Context, actorUserID sql.NullInt64, action, target, detail string) error
 }

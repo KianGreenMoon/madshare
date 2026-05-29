@@ -34,6 +34,9 @@ type File struct {
 	StorageBackend string
 	ObjectKey      string
 	CreatedAt      int64
+	// UploadedBy is the id of the uploading user, or invalid for pre-auth /
+	// federated files.
+	UploadedBy sql.NullInt64
 }
 
 // FileUpload is a row in the file_uploads table — one record per

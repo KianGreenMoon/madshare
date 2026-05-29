@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -298,6 +299,16 @@ type fakeRepo struct {
 
 	fileRefs    []database.FileRef
 	fileRefsErr error
+
+	auditCalls   int
+	lastAudit    string // "action|target"
+	lastUploaded sql.NullInt64
+}
+
+func (f *fakeRepo) RecordAudit(_ context.Context, actor sql.NullInt64, action, target, _ string) error {
+	f.auditCalls++
+	f.lastAudit = action + "|" + target
+	return nil
 }
 
 func (f *fakeRepo) GetFileByHash(_ context.Context, _ string) (*database.File, error) {
@@ -309,6 +320,7 @@ func (f *fakeRepo) InsertFile(_ context.Context, file *database.File, _ *databas
 	if f.insertErr != nil {
 		return f.insertErr
 	}
+	f.lastUploaded = file.UploadedBy
 	file.ID = 1
 	return nil
 }
