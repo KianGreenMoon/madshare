@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"reflect"
 	"testing"
 )
 
@@ -169,6 +170,166 @@ func TestInsertFile_UniqueHashConflict(t *testing.T) {
 	f2 := newFile(f.Hash)
 	if err := db.InsertFile(ctx, f2, newUpload("b.mp3"), newMeta()); err == nil {
 		t.Fatal("expected error on duplicate hash, got nil")
+	}
+}
+
+// ---- DeleteFileByHash --------------------------------------------------------
+
+// TestDeleteFileByHash_CascadesToChildRows is the critical correctness check:
+// deleting a files row must also remove its file_uploads AND media_metadata
+// rows via ON DELETE CASCADE. This only fires when foreign_keys is ON on the
+// executing connection (see Open).
+func TestDeleteFileByHash_CascadesToChildRows(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	hash := "abcd000000000000000000000000000000000000000000000000000000000000"
+	f := newFile(hash)
+	if err := db.InsertFile(ctx, f, newUpload("first.mp3"), newMeta()); err != nil {
+		t.Fatalf("InsertFile: %v", err)
+	}
+	if err := db.RecordUpload(ctx, f.ID, "second.mp3"); err != nil {
+		t.Fatalf("RecordUpload: %v", err)
+	}
+
+	filenames, found, err := db.DeleteFileByHash(ctx, hash)
+	if err != nil {
+		t.Fatalf("DeleteFileByHash: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want true")
+	}
+	want := []string{"first.mp3", "second.mp3"}
+	if !reflect.DeepEqual(filenames, want) {
+		t.Errorf("filenames = %v, want %v", filenames, want)
+	}
+
+	var files, uploads, meta int
+	db.QueryRow(`SELECT COUNT(*) FROM files`).Scan(&files)
+	db.QueryRow(`SELECT COUNT(*) FROM file_uploads`).Scan(&uploads)
+	db.QueryRow(`SELECT COUNT(*) FROM media_metadata`).Scan(&meta)
+	if files != 0 {
+		t.Errorf("files rows = %d, want 0", files)
+	}
+	if uploads != 0 {
+		t.Errorf("file_uploads rows = %d, want 0 (cascade failed)", uploads)
+	}
+	if meta != 0 {
+		t.Errorf("media_metadata rows = %d, want 0 (cascade failed)", meta)
+	}
+}
+
+// TestDeleteFileByHash_NotFound returns found=false (no error) for an unknown hash.
+func TestDeleteFileByHash_NotFound(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	filenames, found, err := db.DeleteFileByHash(ctx, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+	if err != nil {
+		t.Fatalf("DeleteFileByHash on miss: %v", err)
+	}
+	if found {
+		t.Error("found = true on miss, want false")
+	}
+	if filenames != nil {
+		t.Errorf("filenames = %v, want nil on miss", filenames)
+	}
+}
+
+// TestDeleteFileByHash_LeavesOtherFiles deletes one file and confirms a second,
+// unrelated file is untouched.
+func TestDeleteFileByHash_LeavesOtherFiles(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	hashA := "aaaa000000000000000000000000000000000000000000000000000000000000"
+	hashB := "bbbb000000000000000000000000000000000000000000000000000000000000"
+	if err := db.InsertFile(ctx, newFile(hashA), newUpload("a.mp3"), newMeta()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertFile(ctx, newFile(hashB), newUpload("b.mp3"), newMeta()); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, found, err := db.DeleteFileByHash(ctx, hashA); err != nil || !found {
+		t.Fatalf("DeleteFileByHash(A): found=%v err=%v", found, err)
+	}
+
+	got, err := db.GetFileByHash(ctx, hashB)
+	if err != nil {
+		t.Fatalf("GetFileByHash(B): %v", err)
+	}
+	if got == nil {
+		t.Error("file B was removed; want it to survive deletion of A")
+	}
+}
+
+// ---- ListFileRefs ------------------------------------------------------------
+
+func TestListFileRefs_Empty(t *testing.T) {
+	db := openMem(t)
+	refs, err := db.ListFileRefs(context.Background())
+	if err != nil {
+		t.Fatalf("ListFileRefs: %v", err)
+	}
+	if refs == nil {
+		t.Fatal("ListFileRefs returned nil; want non-nil empty slice")
+	}
+	if len(refs) != 0 {
+		t.Errorf("len = %d, want 0", len(refs))
+	}
+}
+
+func TestListFileRefs_GroupsFilenames(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	hash := "1234000000000000000000000000000000000000000000000000000000000000"
+	f := newFile(hash)
+	if err := db.InsertFile(ctx, f, newUpload("one.mp3"), newMeta()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RecordUpload(ctx, f.ID, "two.mp3"); err != nil {
+		t.Fatal(err)
+	}
+
+	refs, err := db.ListFileRefs(ctx)
+	if err != nil {
+		t.Fatalf("ListFileRefs: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("len = %d, want 1", len(refs))
+	}
+	if refs[0].Hash != hash {
+		t.Errorf("Hash = %q, want %q", refs[0].Hash, hash)
+	}
+	want := []string{"one.mp3", "two.mp3"}
+	if !reflect.DeepEqual(refs[0].Filenames, want) {
+		t.Errorf("Filenames = %v, want %v", refs[0].Filenames, want)
+	}
+}
+
+// TestListFileRefs_NoUploads verifies a file with no file_uploads rows yields
+// an empty (not nil-with-one-empty-string) filename slice.
+func TestListFileRefs_NoUploads(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	hash := "5678000000000000000000000000000000000000000000000000000000000000"
+	// Insert a files row with no upload rows by passing nil upload.
+	if err := db.InsertFile(ctx, newFile(hash), nil, newMeta()); err != nil {
+		t.Fatal(err)
+	}
+
+	refs, err := db.ListFileRefs(ctx)
+	if err != nil {
+		t.Fatalf("ListFileRefs: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("len = %d, want 1", len(refs))
+	}
+	if len(refs[0].Filenames) != 0 {
+		t.Errorf("Filenames = %v, want empty slice", refs[0].Filenames)
 	}
 }
 

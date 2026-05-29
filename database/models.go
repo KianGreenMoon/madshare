@@ -22,6 +22,13 @@ type FileUpload struct {
 	UploadedAt int64
 }
 
+// FileRef pairs a content hash with the original filenames recorded for it.
+// Used by admin delete/prune flows to report what was (or would be) removed.
+type FileRef struct {
+	Hash      string
+	Filenames []string
+}
+
 // FileListEntry is a flattened view of a file row joined with its first
 // upload filename and media_metadata tags. Used for the library listing.
 type FileListEntry struct {

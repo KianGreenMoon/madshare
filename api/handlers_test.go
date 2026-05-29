@@ -290,6 +290,14 @@ type fakeRepo struct {
 	recordErr    error
 	insertCalls  int
 	listFilesErr error
+
+	deleteFilenames []string
+	deleteFound     bool
+	deleteErr       error
+	deleteCalls     int
+
+	fileRefs    []database.FileRef
+	fileRefsErr error
 }
 
 func (f *fakeRepo) GetFileByHash(_ context.Context, _ string) (*database.File, error) {
@@ -339,6 +347,15 @@ func (f *fakeRepo) GetArtistImage(_ context.Context, _ string) (string, string, 
 
 func (f *fakeRepo) GetAlbumImage(_ context.Context, _, _ string) (string, string, bool, error) {
 	return "", "", false, nil
+}
+
+func (f *fakeRepo) DeleteFileByHash(_ context.Context, _ string) ([]string, bool, error) {
+	f.deleteCalls++
+	return f.deleteFilenames, f.deleteFound, f.deleteErr
+}
+
+func (f *fakeRepo) ListFileRefs(_ context.Context) ([]database.FileRef, error) {
+	return f.fileRefs, f.fileRefsErr
 }
 
 // TestUploadFile_InsertFailureLeavesOrphan verifies that when storage.Put

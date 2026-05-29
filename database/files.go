@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -130,6 +131,89 @@ func (db *DB) ListFiles(ctx context.Context) ([]*FileListEntry, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list files rows: %w", err)
+	}
+	return out, nil
+}
+
+// DeleteFileByHash removes the files row identified by hash within a single
+// transaction. The recorded filenames are read before the delete so callers
+// can report or reconcile them. file_uploads and media_metadata rows are
+// removed by ON DELETE CASCADE (foreign-key enforcement is on per connection;
+// see Open). Returns found=false (no error) when no row matches.
+func (db *DB) DeleteFileByHash(ctx context.Context, hash string) ([]string, bool, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var id int64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM files WHERE hash = ?`, hash).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("select file id: %w", err)
+	}
+
+	rows, err := tx.QueryContext(ctx, `SELECT filename FROM file_uploads WHERE file_id = ? ORDER BY id`, id)
+	if err != nil {
+		return nil, false, fmt.Errorf("select filenames: %w", err)
+	}
+	var filenames []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return nil, false, fmt.Errorf("scan filename: %w", err)
+		}
+		filenames = append(filenames, name)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, false, fmt.Errorf("filename rows: %w", err)
+	}
+	rows.Close()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM files WHERE id = ?`, id); err != nil {
+		return nil, false, fmt.Errorf("delete file: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, fmt.Errorf("commit: %w", err)
+	}
+	return filenames, true, nil
+}
+
+// ListFileRefs returns one FileRef per files row with the filenames recorded
+// for it, ordered by file id. Files with no upload rows carry an empty slice.
+func (db *DB) ListFileRefs(ctx context.Context) ([]FileRef, error) {
+	const q = `
+		SELECT f.hash, COALESCE(GROUP_CONCAT(u.filename, char(10)), '')
+		FROM files f
+		LEFT JOIN file_uploads u ON u.file_id = f.id
+		GROUP BY f.id
+		ORDER BY f.id`
+
+	rows, err := db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("list file refs: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]FileRef, 0)
+	for rows.Next() {
+		var hash, joined string
+		if err := rows.Scan(&hash, &joined); err != nil {
+			return nil, fmt.Errorf("scan file ref: %w", err)
+		}
+		ref := FileRef{Hash: hash}
+		if joined != "" {
+			ref.Filenames = strings.Split(joined, "\n")
+		}
+		out = append(out, ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("file ref rows: %w", err)
 	}
 	return out, nil
 }

@@ -9,6 +9,7 @@ import (
 var (
 	cmusTmpl    = template.Must(template.ParseFiles("webui/html/cmus.html"))
 	libraryTmpl = template.Must(template.ParseFiles("webui/html/library.html"))
+	adminTmpl   = template.Must(template.ParseFiles("webui/html/admin.html"))
 )
 
 type pageData struct {
@@ -36,6 +37,7 @@ func Route(addr, apiURL string) {
 	static := noCacheStatic(http.FileServer(http.Dir("webui/static")))
 	http.Handle("/static/", http.StripPrefix("/static/", static))
 	http.HandleFunc("/cmus", makeHandler(cmusTmpl, apiURL))
+	http.HandleFunc("/admin", makeHandler(adminTmpl, apiURL))
 	http.HandleFunc("/", makeHandler(libraryTmpl, apiURL))
 	log.Fatal(http.ListenAndServe(addr, nil))
 }

@@ -5,6 +5,7 @@ package database
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -20,13 +21,23 @@ type DB struct {
 //
 // Use ":memory:" for an in-process database (mostly for tests).
 func Open(dsn string) (*DB, error) {
-	sqlDB, err := sql.Open("sqlite", dsn)
+	// SQLite enforces ON DELETE CASCADE only when foreign_keys is ON on the
+	// *executing* connection, and the pragma does not persist across the
+	// pooled connections database/sql opens lazily. Issuing the pragma once
+	// (below) only configures whichever connection happens to serve that Exec.
+	// Encode it in the DSN instead so modernc.org/sqlite applies it to every
+	// connection in the pool. :memory: is special-cased: each connection gets
+	// its own private database, so we pin the pool to a single connection.
+	openDSN := dsn
+	if dsn != ":memory:" {
+		openDSN = withForeignKeysPragma(dsn)
+	}
+
+	sqlDB, err := sql.Open("sqlite", openDSN)
 	if err != nil {
 		return nil, fmt.Errorf("sql.Open: %w", err)
 	}
 
-	// Pragmas must be set on the live connection. For :memory: DBs each
-	// connection has its own database, so pin the pool to one connection.
 	if dsn == ":memory:" {
 		sqlDB.SetMaxOpenConns(1)
 	}
@@ -47,6 +58,21 @@ func Open(dsn string) (*DB, error) {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return db, nil
+}
+
+// withForeignKeysPragma appends the modernc.org/sqlite connection pragma that
+// turns on foreign-key enforcement for every connection in the pool. The driver
+// reads _pragma query parameters from the DSN and issues them on each new
+// connection. If the dsn already names a foreign_keys pragma it is left as-is.
+func withForeignKeysPragma(dsn string) string {
+	if strings.Contains(dsn, "_pragma=foreign_keys") {
+		return dsn
+	}
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	return dsn + sep + "_pragma=foreign_keys(1)"
 }
 
 // Close closes the underlying database handle.

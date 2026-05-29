@@ -51,6 +51,16 @@ func NewRouter(store storage.Storage, repo database.Repository, cacheDir, filesD
 	r.Get("/api/albums/{album}/image", h.getAlbumImage)
 	r.Post("/api/albums/{album}/image", h.uploadAlbumImage)
 
+	// Admin endpoints are grouped so an auth gate can slot in ahead of them.
+	r.Route("/api/admin", func(r chi.Router) {
+		// SECURITY TODO: these endpoints delete files and prune DB records with
+		// no authentication. Acceptable for v0 loopback-only use; gate this
+		// group (e.g. r.Use(adminGate)) before any non-loopback deployment.
+		// r.Use(adminGate)
+		r.Delete("/files/{hash}", h.adminDeleteFile)
+		r.Post("/prune", h.adminPrune)
+	})
+
 	fileServer(r, "/files", noListFS{http.Dir(filesDir)}, h)
 
 	imagesFS := noListFS{http.Dir(imagesDir)}
@@ -71,7 +81,7 @@ func NewRouter(store storage.Storage, repo database.Repository, cacheDir, filesD
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

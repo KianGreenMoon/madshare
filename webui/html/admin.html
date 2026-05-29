@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Madshare — Admin</title>
+  <meta name="api-url" content="{{.APIURL}}">
+  <link rel="stylesheet" href="/static/css/admin.css">
+</head>
+<body>
+
+<header>
+  <span class="logo"><span>Mad</span>share</span>
+  <nav class="main-nav" aria-label="Site navigation">
+    <a href="/" class="nav-link">Library</a>
+    <a href="/cmus" class="nav-link">cmus</a>
+    <a href="/admin" class="nav-link nav-link--active" aria-current="page">Admin</a>
+  </nav>
+  <div class="header-actions">
+    <div class="theme-switcher" role="group" aria-label="Color theme">
+      <button class="theme-dot active" data-theme="dark"   title="Dark"   aria-label="Dark theme"   aria-pressed="true"></button>
+      <button class="theme-dot"        data-theme="light"  title="Light"  aria-label="Light theme"  aria-pressed="false"></button>
+      <button class="theme-dot"        data-theme="ocean"  title="Ocean"  aria-label="Ocean theme"  aria-pressed="false"></button>
+      <button class="theme-dot"        data-theme="sunset" title="Sunset" aria-label="Sunset theme" aria-pressed="false"></button>
+    </div>
+  </div>
+</header>
+
+<!-- Persistent admin banner: a region, not an alert (it is always present, not an event) -->
+<div class="admin-banner" role="region" aria-label="Admin mode">
+  <span class="admin-banner-icon" aria-hidden="true">&#x1F6E1;</span>
+  <span>Admin &mdash; uploads, deletion and pruning affect the live library.</span>
+</div>
+
+<main>
+
+  <!-- ── Upload ── -->
+  <section class="admin-section" aria-labelledby="uploadHeading">
+    <h2 class="section-title" id="uploadHeading">Upload</h2>
+
+    <div class="drop-zone" id="dropZone">
+      <input type="file" id="fileInput" accept="audio/*,.m4a,.aac,.opus" multiple aria-label="Choose audio files">
+      <div class="drop-icon" aria-hidden="true">&#9835;</div>
+      <p>Drop audio files here</p>
+      <small>or click to browse &mdash; MP3 &middot; OGG &middot; FLAC &middot; WAV &middot; MP4 &middot; M4A &middot; AAC &middot; OPUS</small>
+    </div>
+
+    <ul class="upload-queue" id="uploadQueue" aria-live="polite" aria-label="Upload queue"></ul>
+  </section>
+
+  <!-- ── Maintenance / Verify & Prune ── -->
+  <section class="admin-section danger-zone" aria-labelledby="pruneHeading">
+    <h2 class="section-title section-title--danger" id="pruneHeading">Danger Zone</h2>
+    <p class="danger-copy">
+      Verify that every database record still has its file on disk. Records whose
+      blob is missing are <strong>dangling</strong> and can be pruned. Preview is
+      non-destructive &mdash; it only scans and reports.
+    </p>
+    <button class="btn btn-destructive-outline" id="previewPrune">Preview prune</button>
+
+    <div class="prune-results" id="pruneResults" aria-live="polite"></div>
+  </section>
+
+  <!-- ── Files table ── -->
+  <section class="admin-section" aria-labelledby="filesHeading">
+    <div class="files-bar">
+      <h2 class="section-title section-title--files" id="filesHeading">Files (<span id="fileCount">0</span>)</h2>
+      <div class="files-search">
+        <label for="fileFilter" class="visually-hidden">Filter files</label>
+        <input type="search" id="fileFilter" placeholder="Filter files…" autocomplete="off">
+      </div>
+    </div>
+
+    <div class="files-table-wrap">
+      <table class="files-table">
+        <thead>
+          <tr>
+            <th scope="col">Title</th>
+            <th scope="col">Artist</th>
+            <th scope="col">Album</th>
+            <th scope="col" class="col-size">Size</th>
+            <th scope="col" class="col-actions">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="filesBody" aria-busy="true">
+          <!-- populated by JS -->
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+
+<!-- ── Prune confirmation modal ── -->
+<div class="modal-backdrop hidden" id="pruneModal" role="dialog" aria-modal="true" aria-labelledby="pruneModalTitle" aria-describedby="pruneModalBody">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="pruneModalTitle">Prune records?</h2>
+      <button class="btn-close" id="closePruneModal" aria-label="Close">&times;</button>
+    </div>
+    <p class="modal-body" id="pruneModalBody"></p>
+    <div class="modal-actions">
+      <button class="btn btn-neutral" id="cancelPrune">Cancel</button>
+      <button class="btn btn-destructive-solid" id="confirmPrune">Prune records</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Toast regions ── -->
+<!-- Two stacks share visual position; split by politeness for assistive tech. -->
+<div class="toast-stack" id="toastStatus" role="status" aria-live="polite"></div>
+<div class="toast-stack" id="toastAlert"  role="alert"  aria-live="assertive"></div>
+
+<script type="module" src="/static/js/admin.js"></script>
+</body>
+</html>

@@ -47,4 +47,14 @@ type Repository interface {
 	// GetAlbumImage returns the image object key and MIME type for an album.
 	// Returns found=false (no error) when no image is stored.
 	GetAlbumImage(ctx context.Context, artist, album string) (objectKey, mimeType string, found bool, err error)
+
+	// DeleteFileByHash removes the files row for hash (cascading to its
+	// file_uploads and media_metadata rows). It returns the filenames that
+	// were recorded for the file before deletion. found is false (no error)
+	// when no row matches the hash.
+	DeleteFileByHash(ctx context.Context, hash string) (filenames []string, found bool, err error)
+
+	// ListFileRefs returns one FileRef per files row, each carrying the
+	// content hash and the filenames recorded for it, ordered by file id.
+	ListFileRefs(ctx context.Context) ([]FileRef, error)
 }

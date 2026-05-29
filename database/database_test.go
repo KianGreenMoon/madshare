@@ -1,6 +1,9 @@
 package database
 
 import (
+	"context"
+	"database/sql"
+	"path/filepath"
 	"sort"
 	"testing"
 )
@@ -92,5 +95,60 @@ func TestOpen_ForeignKeysEnabled(t *testing.T) {
 	}
 	if on != 1 {
 		t.Errorf("foreign_keys = %d, want 1", on)
+	}
+}
+
+// TestOpen_FileDB_CascadeAcrossPooledConns is the load-bearing check that the
+// DSN _pragma=foreign_keys(1) fix works for a real file-backed DB, where the
+// pool may hand out multiple connections. With concurrency allowed, a delete
+// served by a connection that never ran "PRAGMA foreign_keys = ON" would skip
+// the cascade — this test would catch that regression.
+func TestOpen_FileDB_CascadeAcrossPooledConns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "madshare.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open file db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	ctx := context.Background()
+
+	// Force the pool to materialise several connections and hold them open, so
+	// the insert/delete below are served by connections that were created
+	// lazily by the pool rather than the single one Open ran its one-off
+	// "PRAGMA foreign_keys = ON" against. Without the DSN-level pragma those
+	// connections have foreign_keys OFF and the cascade silently no-ops.
+	const conns = 8
+	db.SetMaxOpenConns(conns)
+	held := make([]*sql.Conn, 0, conns)
+	for i := 0; i < conns; i++ {
+		c, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatalf("open conn %d: %v", i, err)
+		}
+		held = append(held, c)
+	}
+	for _, c := range held {
+		c.Close() // return to pool; they remain open and reusable
+	}
+
+	hash := "9999000000000000000000000000000000000000000000000000000000000000"
+	f := newFile(hash)
+	if err := db.InsertFile(ctx, f, newUpload("song.mp3"), newMeta()); err != nil {
+		t.Fatalf("InsertFile: %v", err)
+	}
+
+	if _, found, err := db.DeleteFileByHash(ctx, hash); err != nil || !found {
+		t.Fatalf("DeleteFileByHash: found=%v err=%v", found, err)
+	}
+
+	var uploads, meta int
+	db.QueryRow(`SELECT COUNT(*) FROM file_uploads`).Scan(&uploads)
+	db.QueryRow(`SELECT COUNT(*) FROM media_metadata`).Scan(&meta)
+	if uploads != 0 {
+		t.Errorf("file_uploads rows = %d, want 0 (FK cascade not enforced on file DB)", uploads)
+	}
+	if meta != 0 {
+		t.Errorf("media_metadata rows = %d, want 0 (FK cascade not enforced on file DB)", meta)
 	}
 }

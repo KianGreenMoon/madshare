@@ -39,6 +39,40 @@ func (s *Local) Exists(hash, filename string) (bool, error) {
 	return false, err
 }
 
+// DeleteAll removes the entire <baseDir>/<hash> directory and everything under
+// it. It is idempotent: a missing directory yields (false, nil).
+func (s *Local) DeleteAll(hash string) (bool, error) {
+	if !validHash.MatchString(hash) {
+		return false, fmt.Errorf("storage: invalid hash %q", hash)
+	}
+	dir := filepath.Join(s.baseDir, hash)
+	if _, err := os.Stat(dir); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("storage: stat %s: %w", dir, err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return false, fmt.Errorf("storage: remove %s: %w", dir, err)
+	}
+	return true, nil
+}
+
+// HashDirExists reports whether the <baseDir>/<hash> directory exists.
+func (s *Local) HashDirExists(hash string) (bool, error) {
+	if !validHash.MatchString(hash) {
+		return false, fmt.Errorf("storage: invalid hash %q", hash)
+	}
+	info, err := os.Stat(filepath.Join(s.baseDir, hash))
+	if err == nil {
+		return info.IsDir(), nil
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return false, fmt.Errorf("storage: stat hash dir: %w", err)
+}
+
 // Put writes r to <baseDir>/<hash>/<filename>, creating the hash directory if
 // needed. Path traversal in filename is neutralised by filepath.Base.
 func (s *Local) Put(hash, filename string, r io.Reader) error {

@@ -448,6 +448,90 @@ func TestLocalPut_CreatesHashDir(t *testing.T) {
 	}
 }
 
+// ---- Local.DeleteAll ---------------------------------------------------------
+
+// TestLocalDeleteAll_RemovesAllFilenames stores two filenames under one hash
+// and verifies DeleteAll wipes the whole hash directory.
+func TestLocalDeleteAll_RemovesAllFilenames(t *testing.T) {
+	s := newLocal(t)
+	hash := sha256hex([]byte("delete me"))
+	if err := s.Put(hash, "a.mp3", bytes.NewReader([]byte("delete me"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put(hash, "b.mp3", bytes.NewReader([]byte("delete me"))); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := s.DeleteAll(hash)
+	if err != nil {
+		t.Fatalf("DeleteAll: %v", err)
+	}
+	if !removed {
+		t.Error("removed = false, want true for an existing hash dir")
+	}
+	if _, err := os.Stat(filepath.Join(s.baseDir, hash)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("hash dir still exists after DeleteAll: stat err = %v", err)
+	}
+}
+
+// TestLocalDeleteAll_Missing is idempotent: deleting an absent hash is a no-op.
+func TestLocalDeleteAll_Missing(t *testing.T) {
+	s := newLocal(t)
+	hash := sha256hex([]byte("never stored"))
+
+	removed, err := s.DeleteAll(hash)
+	if err != nil {
+		t.Fatalf("DeleteAll on missing: %v", err)
+	}
+	if removed {
+		t.Error("removed = true for a missing hash, want false")
+	}
+}
+
+// TestLocalDeleteAll_InvalidHash rejects a malformed hash.
+func TestLocalDeleteAll_InvalidHash(t *testing.T) {
+	s := newLocal(t)
+	if _, err := s.DeleteAll("not-a-hash"); err == nil {
+		t.Error("expected error for invalid hash, got nil")
+	}
+}
+
+// ---- Local.HashDirExists -----------------------------------------------------
+
+func TestLocalHashDirExists_Present(t *testing.T) {
+	s := newLocal(t)
+	hash := sha256hex([]byte("present"))
+	if err := s.Put(hash, "x.mp3", bytes.NewReader([]byte("present"))); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := s.HashDirExists(hash)
+	if err != nil {
+		t.Fatalf("HashDirExists: %v", err)
+	}
+	if !ok {
+		t.Error("HashDirExists = false after Put, want true")
+	}
+}
+
+func TestLocalHashDirExists_Missing(t *testing.T) {
+	s := newLocal(t)
+	hash := sha256hex([]byte("absent"))
+	ok, err := s.HashDirExists(hash)
+	if err != nil {
+		t.Fatalf("HashDirExists: %v", err)
+	}
+	if ok {
+		t.Error("HashDirExists = true on empty store, want false")
+	}
+}
+
+func TestLocalHashDirExists_InvalidHash(t *testing.T) {
+	s := newLocal(t)
+	if _, err := s.HashDirExists("nope"); err == nil {
+		t.Error("expected error for invalid hash, got nil")
+	}
+}
+
 // ---- errorReader helper -----------------------------------------------------
 
 type errorReader struct{ err error }
