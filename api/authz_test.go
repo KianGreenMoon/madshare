@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/cookiejar"
 	"testing"
@@ -75,6 +77,54 @@ func TestAuthz_AdminDeleteRequiresFileDelete(t *testing.T) {
 		t.Errorf("uploader delete = %d, want 403", resp.StatusCode)
 	}
 	resp.Body.Close()
+}
+
+func TestAuthz_FileAccessEnforced(t *testing.T) {
+	srv, db := newAuthTestServer(t)
+	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
+
+	// Admin uploads a file; capture its hash.
+	resp := uploadViaClient(t, admin, srv.URL, "tune.mp3")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("admin upload = %d, want 201", resp.StatusCode)
+	}
+	var up struct {
+		Hash string `json:"hash"`
+	}
+	json.NewDecoder(resp.Body).Decode(&up)
+	resp.Body.Close()
+	blobPath := srv.URL + "/files/" + up.Hash + "/tune.mp3"
+
+	get := func(c *http.Client) int {
+		r, err := c.Get(blobPath)
+		if err != nil {
+			t.Fatalf("GET blob: %v", err)
+		}
+		r.Body.Close()
+		return r.StatusCode
+	}
+
+	// Anonymous: default-deny -> 404.
+	if code := get(http.DefaultClient); code != http.StatusNotFound {
+		t.Errorf("anonymous blob GET = %d, want 404 (default-deny)", code)
+	}
+	// Admin holds content.all -> 200.
+	if code := get(admin); code != http.StatusOK {
+		t.Errorf("admin blob GET = %d, want 200", code)
+	}
+	// A plain listener with no grant -> 404.
+	makeUser(t, db, "lis", "listener-pass-1", auth.RoleListener)
+	lis := clientFor(t, srv.URL, "lis", "listener-pass-1")
+	if code := get(lis); code != http.StatusNotFound {
+		t.Errorf("ungranted listener blob GET = %d, want 404", code)
+	}
+	// Mark the file guest-playable -> anonymous can now fetch it.
+	if _, err := db.SetGuestPlayable(context.Background(), up.Hash, true); err != nil {
+		t.Fatalf("SetGuestPlayable: %v", err)
+	}
+	if code := get(http.DefaultClient); code != http.StatusOK {
+		t.Errorf("guest-playable blob GET (anon) = %d, want 200", code)
+	}
 }
 
 func TestAudit_UploadRecorded(t *testing.T) {

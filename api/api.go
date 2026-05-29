@@ -78,9 +78,9 @@ func RegisterAPI(r chi.Router, d Deps) {
 
 	// Uploading new files requires file.upload. The route is registered here
 	// (rather than inside fileServer) so the gate wraps only the write path; the
-	// GET file server stays open.
+	// GET file server is guarded separately by the content-access check.
 	r.With(d.protect(auth.PermFileUpload)).Post("/files/upload", h.uploadFile)
-	fileServer(r, "/files", noListFS{http.Dir(d.FilesDir)}, h)
+	fileServer(r, "/files", noListFS{http.Dir(d.FilesDir)}, d.fileAccessGuard())
 
 	imagesFS := noListFS{http.Dir(h.imagesDir)}
 	r.Get("/images/*", func(w http.ResponseWriter, r *http.Request) {
@@ -169,7 +169,7 @@ func (n noListFS) Open(name string) (http.File, error) {
 	return f, nil
 }
 
-func fileServer(r chi.Router, path string, root http.FileSystem, h *handler) {
+func fileServer(r chi.Router, path string, root http.FileSystem, guard func(http.Handler) http.Handler) {
 	if strings.ContainsAny(path, "{}*") {
 		panic("fileServer does not permit any URL parameters.")
 	}
@@ -182,11 +182,46 @@ func fileServer(r chi.Router, path string, root http.FileSystem, h *handler) {
 	}
 	path += "*"
 
-	r.Get(path, func(w http.ResponseWriter, r *http.Request) {
+	r.With(guard).Get(path, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		rctx := chi.RouteContext(r.Context())
 		pathPrefix := strings.TrimSuffix(rctx.RoutePattern(), "/*")
 		fs := http.StripPrefix(pathPrefix, http.FileServer(root))
 		fs.ServeHTTP(w, r)
 	})
+}
+
+// fileAccessGuard returns middleware enforcing per-file play/download access on
+// the blob server. It is a pass-through when auth is not configured (NewRouter /
+// tests / open embedding). Cover images (served under <files>/images) are not
+// gated. A denied request gets 404 — not 403 — so it does not reveal that a
+// file exists.
+func (d Deps) fileAccessGuard() func(http.Handler) http.Handler {
+	if d.Auth == nil {
+		return func(next http.Handler) http.Handler { return next }
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rest := chi.URLParam(r, "*")
+			seg, _, _ := strings.Cut(rest, "/")
+			if seg == "images" { // cover art is not gated
+				next.ServeHTTP(w, r)
+				return
+			}
+			if id := auth.FromContext(r.Context()); id.Has(auth.PermContentAll) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			ok, err := d.Repo.FileAccessibleByHash(r.Context(), seg, actorID(r.Context()))
+			if err != nil {
+				http.Error(w, "storage error", http.StatusInternalServerError)
+				return
+			}
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }

@@ -64,4 +64,9 @@ type Repository interface {
 	// RecordAudit appends a row to the audit log. actorUserID is invalid for
 	// system/anonymous actions.
 	RecordAudit(ctx context.Context, actorUserID sql.NullInt64, action, target, detail string) error
+
+	// FileAccessibleByHash reports whether the user (invalid userID = anonymous)
+	// may play/download the file with the given hash. Callers holding the
+	// content.all permission bypass this. Unknown hashes return false.
+	FileAccessibleByHash(ctx context.Context, hash string, userID sql.NullInt64) (bool, error)
 }

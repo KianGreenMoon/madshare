@@ -311,6 +311,10 @@ func (f *fakeRepo) RecordAudit(_ context.Context, actor sql.NullInt64, action, t
 	return nil
 }
 
+func (f *fakeRepo) FileAccessibleByHash(_ context.Context, _ string, _ sql.NullInt64) (bool, error) {
+	return true, nil
+}
+
 func (f *fakeRepo) GetFileByHash(_ context.Context, _ string) (*database.File, error) {
 	return f.getResult, f.getErr
 }
