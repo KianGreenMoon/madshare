@@ -26,6 +26,13 @@ func NewRouter(store storage.Storage, repo database.Repository, cacheDir string)
 	})
 
 	r.Get("/api/files", h.listFiles)
+	r.Get("/api/artists", h.listArtists)
+	r.Get("/api/albums", h.listAlbums)
+	r.Get("/api/tracks", h.listTracks)
+	r.Get("/api/artists/{artist}/image", h.getArtistImage)
+	r.Post("/api/artists/{artist}/image", h.uploadArtistImage)
+	r.Get("/api/albums/{album}/image", h.getAlbumImage)
+	r.Post("/api/albums/{album}/image", h.uploadAlbumImage)
 
 	workDir, err := os.Getwd()
 	if err != nil {
@@ -34,6 +41,13 @@ func NewRouter(store storage.Storage, repo database.Repository, cacheDir string)
 	}
 	filesDir := http.Dir(filepath.Join(workDir, "data", "files"))
 	fileServer(r, "/files", filesDir, h)
+
+	imagesDir := http.Dir(filepath.Join(workDir, "data", "images"))
+	r.Get("/images/*", func(w http.ResponseWriter, r *http.Request) {
+		rctx := chi.RouteContext(r.Context())
+		pathPrefix := strings.TrimSuffix(rctx.RoutePattern(), "/*")
+		http.StripPrefix(pathPrefix, http.FileServer(imagesDir)).ServeHTTP(w, r)
+	})
 
 	return r
 }

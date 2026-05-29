@@ -40,6 +40,33 @@ type FileListEntry struct {
 	DurationSeconds sql.NullFloat64
 }
 
+// ArtistEntry is a row returned by ListArtists.
+type ArtistEntry struct {
+	Name       string
+	TrackCount int
+	HasImage   bool
+}
+
+// AlbumEntry is a row returned by ListAlbumsByArtist.
+// Title="" represents the "Other" bucket (tracks with no album).
+type AlbumEntry struct {
+	ArtistName string
+	Title      string
+	Year       sql.NullInt64
+	TrackCount int
+	HasImage   bool
+}
+
+// TrackEntry is a row returned by ListTracksByAlbumArtist.
+type TrackEntry struct {
+	ID              int64
+	Title           string
+	TrackNumber     sql.NullInt64
+	DurationSeconds sql.NullFloat64
+	ObjectKey       string
+	MimeType        string
+}
+
 // MediaMetadata is a row in the media_metadata table. All tag fields are
 // nullable because uploads may carry incomplete (or no) tags.
 type MediaMetadata struct {

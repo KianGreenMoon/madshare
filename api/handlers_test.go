@@ -291,6 +291,34 @@ func (f *fakeRepo) ListFiles(_ context.Context) ([]*database.FileListEntry, erro
 	return nil, f.listFilesErr
 }
 
+func (f *fakeRepo) ListArtists(_ context.Context) ([]*database.ArtistEntry, error) {
+	return nil, nil
+}
+
+func (f *fakeRepo) ListAlbumsByArtist(_ context.Context, _ string) ([]*database.AlbumEntry, error) {
+	return nil, nil
+}
+
+func (f *fakeRepo) ListTracksByAlbumArtist(_ context.Context, _, _ string) ([]*database.TrackEntry, error) {
+	return nil, nil
+}
+
+func (f *fakeRepo) UpsertArtistImage(_ context.Context, _, _, _ string, _ int64) error {
+	return nil
+}
+
+func (f *fakeRepo) UpsertAlbumImage(_ context.Context, _, _, _, _ string, _ int64) error {
+	return nil
+}
+
+func (f *fakeRepo) GetArtistImage(_ context.Context, _ string) (string, string, bool, error) {
+	return "", "", false, nil
+}
+
+func (f *fakeRepo) GetAlbumImage(_ context.Context, _, _ string) (string, string, bool, error) {
+	return "", "", false, nil
+}
+
 // TestUploadFile_InsertFailureLeavesOrphan verifies that when storage.Put
 // succeeds but repo.InsertFile fails, the handler returns 500 and the blob
 // remains on disk (the reconciler removes it later).

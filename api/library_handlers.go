@@ -1,0 +1,233 @@
+package api
+
+import (
+	"crypto/sha256"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+)
+
+const maxImageSize = 10 << 20 // 10 MB
+
+var allowedImageMIMETypes = map[string]bool{
+	"image/jpeg": true,
+	"image/png":  true,
+	"image/webp": true,
+}
+
+var allowedImageExtensions = map[string]string{
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".png":  "image/png",
+	".webp": "image/webp",
+}
+
+func (h *handler) listArtists(w http.ResponseWriter, r *http.Request) {
+	artists, err := h.repo.ListArtists(r.Context())
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+
+	type artistItem struct {
+		Name       string `json:"name"`
+		TrackCount int    `json:"track_count"`
+		HasImage   bool   `json:"has_image"`
+	}
+
+	items := make([]artistItem, 0, len(artists))
+	for _, a := range artists {
+		items = append(items, artistItem{
+			Name:       a.Name,
+			TrackCount: a.TrackCount,
+			HasImage:   a.HasImage,
+		})
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (h *handler) listAlbums(w http.ResponseWriter, r *http.Request) {
+	artist := r.URL.Query().Get("artist")
+	albums, err := h.repo.ListAlbumsByArtist(r.Context(), artist)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+
+	type albumItem struct {
+		Title      string  `json:"title"`
+		ArtistName string  `json:"artist_name"`
+		Year       *int64  `json:"year"`
+		TrackCount int     `json:"track_count"`
+		HasImage   bool    `json:"has_image"`
+	}
+
+	items := make([]albumItem, 0, len(albums))
+	for _, a := range albums {
+		var year *int64
+		if a.Year.Valid {
+			year = &a.Year.Int64
+		}
+		items = append(items, albumItem{
+			Title:      a.Title,
+			ArtistName: a.ArtistName,
+			Year:       year,
+			TrackCount: a.TrackCount,
+			HasImage:   a.HasImage,
+		})
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (h *handler) listTracks(w http.ResponseWriter, r *http.Request) {
+	artist := r.URL.Query().Get("artist")
+	album := r.URL.Query().Get("album")
+
+	tracks, err := h.repo.ListTracksByAlbumArtist(r.Context(), artist, album)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+
+	type trackItem struct {
+		ID          int64    `json:"id"`
+		Title       string   `json:"title"`
+		TrackNumber *int64   `json:"track_number"`
+		Duration    *float64 `json:"duration_seconds"`
+		URL         string   `json:"url"`
+		MimeType    string   `json:"mime_type"`
+	}
+
+	items := make([]trackItem, 0, len(tracks))
+	for _, t := range tracks {
+		var trackNum *int64
+		if t.TrackNumber.Valid {
+			trackNum = &t.TrackNumber.Int64
+		}
+		var dur *float64
+		if t.DurationSeconds.Valid {
+			dur = &t.DurationSeconds.Float64
+		}
+		items = append(items, trackItem{
+			ID:          t.ID,
+			Title:       t.Title,
+			TrackNumber: trackNum,
+			Duration:    dur,
+			URL:         "/files/" + t.ObjectKey,
+			MimeType:    t.MimeType,
+		})
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (h *handler) getArtistImage(w http.ResponseWriter, r *http.Request) {
+	artist := chi.URLParam(r, "artist")
+	objectKey, mimeType, found, err := h.repo.GetArtistImage(r.Context(), artist)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	serveImageFile(w, r, objectKey, mimeType)
+}
+
+func (h *handler) uploadArtistImage(w http.ResponseWriter, r *http.Request) {
+	artist := chi.URLParam(r, "artist")
+	r.Body = http.MaxBytesReader(w, r.Body, maxImageSize)
+	objectKey, mimeType, err := saveImageUpload(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := h.repo.UpsertArtistImage(r.Context(), artist, objectKey, mimeType, time.Now().Unix()); err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *handler) getAlbumImage(w http.ResponseWriter, r *http.Request) {
+	album := chi.URLParam(r, "album")
+	artist := r.URL.Query().Get("artist")
+	objectKey, mimeType, found, err := h.repo.GetAlbumImage(r.Context(), artist, album)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	serveImageFile(w, r, objectKey, mimeType)
+}
+
+func (h *handler) uploadAlbumImage(w http.ResponseWriter, r *http.Request) {
+	album := chi.URLParam(r, "album")
+	artist := r.URL.Query().Get("artist")
+	r.Body = http.MaxBytesReader(w, r.Body, maxImageSize)
+	objectKey, mimeType, err := saveImageUpload(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := h.repo.UpsertAlbumImage(r.Context(), artist, album, objectKey, mimeType, time.Now().Unix()); err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func saveImageUpload(r *http.Request) (objectKey, mimeType string, err error) {
+	if err := r.ParseMultipartForm(maxImageSize); err != nil {
+		return "", "", fmt.Errorf("image too large or invalid form")
+	}
+
+	file, header, err := r.FormFile("image")
+	if err != nil {
+		return "", "", fmt.Errorf("missing image field")
+	}
+	defer file.Close()
+
+	claimedMIME := header.Header.Get("Content-Type")
+	if !allowedImageMIMETypes[claimedMIME] {
+		return "", "", fmt.Errorf("unsupported image type")
+	}
+	ext := filepath.Ext(header.Filename)
+	canonicalMIME, ok := allowedImageExtensions[ext]
+	if !ok {
+		return "", "", fmt.Errorf("unsupported image extension")
+	}
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return "", "", fmt.Errorf("read image: %w", err)
+	}
+
+	sum := sha256.Sum256(data)
+	hashHex := fmt.Sprintf("%x", sum)
+	key := hashHex[:16] + ext
+
+	if err := os.MkdirAll("data/images", 0o755); err != nil {
+		return "", "", fmt.Errorf("create images dir: %w", err)
+	}
+	dest := filepath.Join("data", "images", key)
+	if err := os.WriteFile(dest, data, 0o644); err != nil {
+		return "", "", fmt.Errorf("write image: %w", err)
+	}
+
+	return key, canonicalMIME, nil
+}
+
+func serveImageFile(w http.ResponseWriter, r *http.Request, objectKey, mimeType string) {
+	path := filepath.Join("data", "images", objectKey)
+	w.Header().Set("Content-Type", mimeType)
+	http.ServeFile(w, r, path)
+}
