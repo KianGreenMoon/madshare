@@ -156,6 +156,59 @@ func TestManage_GuestPlayableEndpoint(t *testing.T) {
 	}
 }
 
+// TestListings_AnonymousCannotBrowsePrivate is the regression test for the
+// reported bug: a guest could not *play* a file but could still *see* it via the
+// listing API. Every browse surface must be empty for an anonymous client when
+// no file is guest-playable, and must reveal the file only once it is.
+func TestListings_AnonymousCannotBrowsePrivate(t *testing.T) {
+	srv, _ := newAuthTestServer(t)
+	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
+	hash, path := uploadAndHash(t, admin, srv.URL, "private.mp3")
+
+	// The fixture upload carries no tags, so it groups under the empty
+	// artist/album buckets. /api/tracks needs a non-empty artist param
+	// (pre-existing behaviour), so track-level filtering is covered by the DB
+	// test TestFilteredListings_RespectAccess instead.
+	listings := []string{
+		"/api/files",
+		"/api/artists",
+		"/api/albums",
+	}
+
+	// Anonymous: no file is guest-playable, so every listing is empty and the
+	// blob itself is 404 (existence not revealed).
+	for _, url := range listings {
+		var items []map[string]any
+		doJSON(t, http.DefaultClient, http.MethodGet, srv.URL+url, nil, &items)
+		if len(items) != 0 {
+			t.Errorf("anon GET %s = %d items, want 0 (private file leaked)", url, len(items))
+		}
+	}
+	if code := doJSON(t, http.DefaultClient, http.MethodGet, srv.URL+path, nil, nil); code != http.StatusNotFound {
+		t.Errorf("anon stream of private file = %d, want 404", code)
+	}
+
+	// Admin (content.all) always sees the full library.
+	var adminFiles []map[string]any
+	doJSON(t, admin, http.MethodGet, srv.URL+"/api/files", nil, &adminFiles)
+	if len(adminFiles) != 1 {
+		t.Errorf("admin /api/files = %d, want 1", len(adminFiles))
+	}
+
+	// Once guest-playable, the same anonymous browse surfaces reveal it.
+	if code := doJSON(t, admin, http.MethodPost, srv.URL+"/api/admin/files/"+hash+"/guest",
+		map[string]any{"guest_playable": true}, nil); code != http.StatusOK {
+		t.Fatalf("set guest = %d, want 200", code)
+	}
+	for _, url := range listings {
+		var items []map[string]any
+		doJSON(t, http.DefaultClient, http.MethodGet, srv.URL+url, nil, &items)
+		if len(items) != 1 {
+			t.Errorf("anon GET %s after guest flag = %d items, want 1", url, len(items))
+		}
+	}
+}
+
 func TestManage_LicenseAutoDerive(t *testing.T) {
 	srv, _ := newAuthTestServer(t)
 	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
