@@ -323,9 +323,18 @@ will extend.
    on the Admin page" message. **Deferred within this phase:** the owner-can-
    delete-own rule (delete is currently `file.delete`-only — delete any), and
    login rate limiting + CSRF.
-3. **Content access (Layer B)**: `access_groups`/`content_grants`,
-   `guest_playable`/`license`, the §5.3 predicate, listing filters, license
-   auto-derivation policy, and **flip default-deny** on play/download.
+3. **Content access (Layer B)** — **PARTIALLY IMPLEMENTED**:
+   - **Done (3a, migration 005):** `access_groups`/`access_group_members`/
+     `content_grants` tables, `files.guest_playable`/`license` columns, the §5.3
+     access predicate (`database.FileAccessibleByHash`) + management DB methods.
+   - **Done (3b):** **default-deny flipped** on `/files/*` play/download via
+     `Deps.fileAccessGuard` (content.all bypass, guest_playable, or a group grant;
+     404 on denial; cover images not gated; pass-through when auth unconfigured).
+   - **Remaining (3c):** management API + admin UI for groups/grants/guest_playable/
+     license; **access-filtering the listing endpoints** (metadata is still
+     browseable today); the opt-in license→guest auto-derivation policy. Also note:
+     a file's uploader is not auto-granted play access (only content.all / grant /
+     guest) — revisit owner-play if desired.
 4. **Federation authn** (future).
 
 ## 11. Decisions (settled with the owner)
