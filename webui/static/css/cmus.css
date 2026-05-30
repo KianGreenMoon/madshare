@@ -428,6 +428,8 @@ html, body {
 }
 .track-item.is-playing .track-num  { display: none; }
 .track-item.is-playing .eq-bars    { display: flex; }
+.track-item.unavailable { opacity: 0.4; }
+.track-item.unavailable .track-title { color: var(--color-text-dim); }
 
 @keyframes eq-bounce {
   from { height: 3px; }
@@ -664,4 +666,10 @@ input[type="range"]::-moz-range-thumb {
     var(--color-scrubber-fill) var(--volume-level),
     var(--color-scrubber-track) var(--volume-level)
   );
+}
+
+.track-item.unavailable .track-title::after {
+  content: ' — not found';
+  font-style: italic;
+  font-weight: 400;
 }

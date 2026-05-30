@@ -201,6 +201,8 @@ main { padding: var(--space-5); max-width: 860px; margin: 0 auto; }
 .track-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .track-row.playing { background: var(--surface-hover); }
 .track-row.playing .track-title { color: var(--accent); }
+.track-row.unavailable { opacity: 0.4; }
+.track-row.unavailable .track-title { color: var(--text-muted); }
 
 .track-num {
   flex-shrink: 0;
@@ -622,3 +624,9 @@ input[type="range"]::-moz-range-thumb {
   border-radius: inherit;
 }
 .row-body { flex: 1; min-width: 0; }
+
+.track-row.unavailable .track-title::after {
+  content: ' — not found';
+  font-style: italic;
+  font-weight: 400;
+}

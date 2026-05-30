@@ -409,7 +409,9 @@ function playIndex(idx) {
 
   // Match by data-idx so grouped views (non-sequential DOM order) work correctly
   document.querySelectorAll('.track-row').forEach(row => {
-    row.classList.toggle('playing', Number(row.dataset.idx) === idx);
+    const rowIdx = Number(row.dataset.idx);
+    row.classList.toggle('playing', rowIdx === idx);
+    if (rowIdx === idx) row.classList.remove('unavailable');
   });
 }
 
@@ -462,6 +464,20 @@ audio.addEventListener('loadedmetadata', () => {
 audio.addEventListener('ended', () => {
   if (shuffle && playlist.length > 1) {
     // BUG-05: build pool of other indices — no infinite loop possible
+    const others = playlist.map((_, i) => i).filter(i => i !== currentIndex);
+    playIndex(others[Math.floor(Math.random() * others.length)]);
+  } else if (currentIndex < playlist.length - 1) {
+    playIndex(currentIndex + 1);
+  } else {
+    stopped = true;
+    syncPlayIcon();
+  }
+});
+
+audio.addEventListener('error', () => {
+  const failedRow = document.querySelector(`.track-row[data-idx="${currentIndex}"]`);
+  if (failedRow) failedRow.classList.add('unavailable');
+  if (shuffle && playlist.length > 1) {
     const others = playlist.map((_, i) => i).filter(i => i !== currentIndex);
     playIndex(others[Math.floor(Math.random() * others.length)]);
   } else if (currentIndex < playlist.length - 1) {

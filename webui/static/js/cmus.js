@@ -460,6 +460,7 @@ function highlightPlayingTrack(index) {
     el.classList.toggle('is-playing', idx === index);
     el.classList.toggle('is-paused',  idx === index && !state.isPlaying);
     el.setAttribute('aria-selected', idx === index ? 'true' : 'false');
+    if (idx === index) el.classList.remove('unavailable');
   });
 }
 
@@ -552,6 +553,20 @@ audio.addEventListener('ended', () => {
     playTrack(state.currentTrackIndex + 1);
   } else {
     // End of album — reset icon
+    state.isPlaying = false;
+    iconPlay.style.display  = '';
+    iconPause.style.display = 'none';
+    btnPlay.setAttribute('aria-label', 'Play');
+    tracksList.querySelectorAll('.track-item').forEach(el => el.classList.remove('is-playing', 'is-paused'));
+  }
+});
+
+audio.addEventListener('error', () => {
+  const failedEl = tracksList.querySelector(`.track-item[data-track-index="${state.currentTrackIndex}"]`);
+  if (failedEl) failedEl.classList.add('unavailable');
+  if (state.currentTrackIndex < state.tracks.length - 1) {
+    playTrack(state.currentTrackIndex + 1);
+  } else {
     state.isPlaying = false;
     iconPlay.style.display  = '';
     iconPause.style.display = 'none';
