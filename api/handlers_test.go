@@ -381,9 +381,21 @@ func (f *fakeRepo) GetAlbumImage(_ context.Context, _, _ string) (string, string
 	return "", "", false, nil
 }
 
-func (f *fakeRepo) DeleteFileByHash(_ context.Context, _ string) ([]string, bool, error) {
+func (f *fakeRepo) SoftDeleteFileByHash(_ context.Context, _ string) ([]string, bool, error) {
 	f.deleteCalls++
 	return f.deleteFilenames, f.deleteFound, f.deleteErr
+}
+
+func (f *fakeRepo) HardDeleteFileByHash(_ context.Context, _ string) ([]string, bool, error) {
+	return f.deleteFilenames, f.deleteFound, f.deleteErr
+}
+
+func (f *fakeRepo) RestoreFileByHash(_ context.Context, _ string) (bool, error) {
+	return true, nil
+}
+
+func (f *fakeRepo) ListTrashedFiles(_ context.Context) ([]*database.FileListEntry, error) {
+	return nil, nil
 }
 
 func (f *fakeRepo) ListFileRefs(_ context.Context) ([]database.FileRef, error) {

@@ -10,16 +10,17 @@ import (
 )
 
 // GetFileByHash looks up a files row by content hash. Returns (nil, nil) if
-// no row matches — callers treat that as "new upload".
+// no row matches — callers treat that as "new upload". Soft-deleted files are
+// returned with DeletedAt set so the upload handler can restore them.
 func (db *DB) GetFileByHash(ctx context.Context, hash string) (*File, error) {
 	const q = `
-		SELECT id, hash, byte_size, mime_type, storage_backend, object_key, created_at
+		SELECT id, hash, byte_size, mime_type, storage_backend, object_key, created_at, deleted_at
 		FROM files
 		WHERE hash = ?`
 
 	var f File
 	err := db.QueryRowContext(ctx, q, hash).Scan(
-		&f.ID, &f.Hash, &f.ByteSize, &f.MimeType, &f.StorageBackend, &f.ObjectKey, &f.CreatedAt,
+		&f.ID, &f.Hash, &f.ByteSize, &f.MimeType, &f.StorageBackend, &f.ObjectKey, &f.CreatedAt, &f.DeletedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -127,7 +128,9 @@ func (db *DB) listFiles(ctx context.Context, where string, args ...any) ([]*File
 		FROM files f
 		LEFT JOIN media_metadata m ON m.file_id = f.id`
 	if where != "" {
-		q += "\n\t\tWHERE " + where
+		q += "\n\t\tWHERE f.deleted_at IS NULL AND " + where
+	} else {
+		q += "\n\t\tWHERE f.deleted_at IS NULL"
 	}
 	q += "\n\t\tORDER BY f.created_at DESC"
 
@@ -157,12 +160,59 @@ func (db *DB) listFiles(ctx context.Context, where string, args ...any) ([]*File
 	return out, nil
 }
 
-// DeleteFileByHash removes the files row identified by hash within a single
-// transaction. The recorded filenames are read before the delete so callers
-// can report or reconcile them. file_uploads and media_metadata rows are
-// removed by ON DELETE CASCADE (foreign-key enforcement is on per connection;
-// see Open). Returns found=false (no error) when no row matches.
-func (db *DB) DeleteFileByHash(ctx context.Context, hash string) ([]string, bool, error) {
+// SoftDeleteFileByHash marks the file as trashed by setting deleted_at. The
+// blob is left on disk. file_uploads and media_metadata rows are preserved.
+// Returns found=false (no error) when no live (non-trashed) row matches.
+func (db *DB) SoftDeleteFileByHash(ctx context.Context, hash string) ([]string, bool, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var id int64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM files WHERE hash = ? AND deleted_at IS NULL`, hash).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("select file id: %w", err)
+	}
+
+	rows, err := tx.QueryContext(ctx, `SELECT filename FROM file_uploads WHERE file_id = ? ORDER BY id`, id)
+	if err != nil {
+		return nil, false, fmt.Errorf("select filenames: %w", err)
+	}
+	var filenames []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return nil, false, fmt.Errorf("scan filename: %w", err)
+		}
+		filenames = append(filenames, name)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, false, fmt.Errorf("filename rows: %w", err)
+	}
+	rows.Close()
+
+	if _, err := tx.ExecContext(ctx, `UPDATE files SET deleted_at = ? WHERE id = ?`, time.Now().Unix(), id); err != nil {
+		return nil, false, fmt.Errorf("soft delete file: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, fmt.Errorf("commit: %w", err)
+	}
+	return filenames, true, nil
+}
+
+// HardDeleteFileByHash permanently removes the files row identified by hash.
+// The recorded filenames are read before the delete so callers can report or
+// reconcile them. file_uploads and media_metadata rows are removed by ON
+// DELETE CASCADE. Works on both live and trashed files.
+// Returns found=false (no error) when no row matches.
+func (db *DB) HardDeleteFileByHash(ctx context.Context, hash string) ([]string, bool, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, false, fmt.Errorf("begin tx: %w", err)
@@ -204,6 +254,65 @@ func (db *DB) DeleteFileByHash(ctx context.Context, hash string) ([]string, bool
 		return nil, false, fmt.Errorf("commit: %w", err)
 	}
 	return filenames, true, nil
+}
+
+// RestoreFileByHash clears deleted_at on a trashed file, returning it to the
+// live library. Returns found=false (no error) when no trashed row matches.
+func (db *DB) RestoreFileByHash(ctx context.Context, hash string) (bool, error) {
+	res, err := db.ExecContext(ctx,
+		`UPDATE files SET deleted_at = NULL WHERE hash = ? AND deleted_at IS NOT NULL`, hash)
+	if err != nil {
+		return false, fmt.Errorf("restore file: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// ListTrashedFiles returns all soft-deleted files ordered by deletion time
+// descending, joined with the first recorded filename and media_metadata tags.
+func (db *DB) ListTrashedFiles(ctx context.Context) ([]*FileListEntry, error) {
+	const q = `
+		SELECT
+			f.id, f.hash, f.mime_type, f.byte_size, f.object_key, f.created_at,
+			COALESCE((SELECT filename FROM file_uploads WHERE file_id = f.id ORDER BY id LIMIT 1), f.hash) AS filename,
+			COALESCE(m.title,  '') AS title,
+			COALESCE(m.artist, '') AS artist,
+			m.album_artist,
+			COALESCE(m.album,  '') AS album,
+			COALESCE(m.year,    0) AS year,
+			m.duration_seconds,
+			f.guest_playable,
+			f.license,
+			f.deleted_at
+		FROM files f
+		LEFT JOIN media_metadata m ON m.file_id = f.id
+		WHERE f.deleted_at IS NOT NULL
+		ORDER BY f.deleted_at DESC`
+
+	rows, err := db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("list trashed files: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]*FileListEntry, 0)
+	for rows.Next() {
+		var e FileListEntry
+		var guest int
+		if err := rows.Scan(
+			&e.ID, &e.Hash, &e.MimeType, &e.ByteSize, &e.ObjectKey, &e.CreatedAt,
+			&e.Filename, &e.Title, &e.Artist, &e.AlbumArtist, &e.Album, &e.Year, &e.DurationSeconds,
+			&guest, &e.License, &e.DeletedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan trashed file: %w", err)
+		}
+		e.GuestPlayable = guest == 1
+		out = append(out, &e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list trashed files rows: %w", err)
+	}
+	return out, nil
 }
 
 // ListFileRefs returns one FileRef per files row with the filenames recorded

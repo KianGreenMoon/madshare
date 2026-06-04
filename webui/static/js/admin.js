@@ -382,7 +382,7 @@ function displayTitle(f) {
 function makeDeleteButton(tr, f) {
   const btn = document.createElement('button');
   btn.className = 'btn btn-destructive-outline btn-sm';
-  btn.textContent = 'Delete';
+  btn.textContent = 'Move to Trash';
   btn.addEventListener('click', () => enterDeleteConfirm(tr, f, btn));
   return btn;
 }
@@ -395,7 +395,7 @@ function enterDeleteConfirm(tr, f, deleteBtn) {
 
   const label = document.createElement('span');
   label.className = 'delete-confirm-label';
-  label.textContent = 'Delete?';
+  label.textContent = 'Move to Trash?';
 
   const cancel = document.createElement('button');
   cancel.className = 'btn btn-neutral btn-sm';
@@ -403,7 +403,7 @@ function enterDeleteConfirm(tr, f, deleteBtn) {
 
   const confirm = document.createElement('button');
   confirm.className = 'btn btn-destructive-solid btn-sm';
-  confirm.textContent = 'Confirm delete';
+  confirm.textContent = 'Confirm';
 
   const restore = () => {
     cell.replaceChildren(makeDeleteButton(tr, f));
@@ -478,7 +478,8 @@ async function doDelete(tr, f, wrap) {
   // Fallback if animation is disabled / doesn't fire.
   setTimeout(() => { if (tr.isConnected) finish(); }, 220);
 
-  toast(`Deleted “${displayTitle(f)}”`, 'success');
+  toast(`”${displayTitle(f)}” moved to Trash`, 'success');
+  loadTrash();
 }
 
 // Debounced filter input (~150ms).
@@ -1407,10 +1408,234 @@ async function saveAutoDerive(applyNow) {
 autoderiveForm.addEventListener('submit', e => { e.preventDefault(); saveAutoDerive(false); });
 autoderiveApply.addEventListener('click', () => saveAutoDerive(true));
 
+// ── Trash bucket ─────────────────────────────────────────────────────────────
+
+const trashBody    = document.getElementById('trashBody');
+const trashCountEl = document.getElementById('trashCount');
+
+function fmtDate(unix) {
+  if (!unix) return '—';
+  return new Date(unix * 1000).toLocaleDateString(undefined, { dateStyle: 'medium' });
+}
+
+async function loadTrash() {
+  trashBody.setAttribute('aria-busy', 'true');
+  trashBody.replaceChildren();
+  const tr = document.createElement('tr');
+  tr.className = 'table-state-row';
+  const td = document.createElement('td');
+  td.colSpan = 6;
+  td.textContent = 'Loading…';
+  tr.appendChild(td);
+  trashBody.appendChild(tr);
+
+  let items;
+  try {
+    const res = await fetch(`${API}/api/admin/trash`);
+    if (handleAuthError(res)) return;
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    items = await res.json();
+  } catch (err) {
+    console.error('Failed to load trash:', err);
+    trashBody.setAttribute('aria-busy', 'false');
+    trashBody.replaceChildren();
+    const tr2 = document.createElement('tr');
+    tr2.className = 'table-state-row';
+    const td2 = document.createElement('td');
+    td2.colSpan = 6;
+    td2.textContent = `Failed to load trash: ${err.message}`;
+    tr2.appendChild(td2);
+    trashBody.appendChild(tr2);
+    return;
+  }
+
+  trashBody.setAttribute('aria-busy', 'false');
+  items = Array.isArray(items) ? items : [];
+  trashCountEl.textContent = String(items.length);
+
+  if (items.length === 0) {
+    trashBody.replaceChildren();
+    const tr3 = document.createElement('tr');
+    tr3.className = 'table-state-row';
+    const td3 = document.createElement('td');
+    td3.colSpan = 6;
+    td3.textContent = 'Trash is empty.';
+    tr3.appendChild(td3);
+    trashBody.appendChild(tr3);
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+  items.forEach(f => frag.appendChild(buildTrashRow(f)));
+  trashBody.replaceChildren(frag);
+}
+
+function buildTrashRow(f) {
+  const tr = document.createElement('tr');
+  tr.dataset.hash = f.hash;
+
+  const tdTitle = document.createElement('td');
+  tdTitle.className = 'cell-title-td';
+  tdTitle.dataset.label = 'Title';
+  const titleSpan = document.createElement('span');
+  if (f.title) {
+    titleSpan.className = 'cell-title';
+    titleSpan.textContent = f.title;
+  } else {
+    titleSpan.className = 'cell-title is-fallback';
+    titleSpan.textContent = f.filename || 'Untitled';
+  }
+  const hashSpan = document.createElement('span');
+  hashSpan.className = 'cell-hash';
+  hashSpan.textContent = shortHash(f.hash);
+  hashSpan.title = f.hash || '';
+  tdTitle.append(titleSpan, hashSpan);
+
+  const tdArtist = document.createElement('td');
+  tdArtist.dataset.label = 'Artist';
+  if (f.artist) {
+    tdArtist.textContent = f.artist;
+  } else {
+    tdArtist.className = 'cell-muted';
+    tdArtist.textContent = '—';
+  }
+
+  const tdAlbum = document.createElement('td');
+  tdAlbum.dataset.label = 'Album';
+  if (f.album) {
+    tdAlbum.textContent = f.album;
+  } else {
+    tdAlbum.className = 'cell-muted';
+    tdAlbum.textContent = '—';
+  }
+
+  const tdSize = document.createElement('td');
+  tdSize.className = 'cell-size';
+  tdSize.dataset.label = 'Size';
+  tdSize.textContent = fmtBytes(f.byte_size);
+
+  const tdDate = document.createElement('td');
+  tdDate.dataset.label = 'Deleted';
+  tdDate.textContent = fmtDate(f.deleted_at);
+
+  const tdActions = document.createElement('td');
+  tdActions.className = 'cell-actions';
+  tdActions.dataset.label = 'Actions';
+  tdActions.appendChild(buildTrashActions(tr, f));
+
+  tr.append(tdTitle, tdArtist, tdAlbum, tdSize, tdDate, tdActions);
+  return tr;
+}
+
+function buildTrashActions(tr, f) {
+  const wrap = document.createElement('div');
+  wrap.style.display = 'flex';
+  wrap.style.gap = 'var(--space-2)';
+
+  const restoreBtn = document.createElement('button');
+  restoreBtn.className = 'btn btn-neutral btn-sm';
+  restoreBtn.textContent = 'Restore';
+  restoreBtn.addEventListener('click', () => doTrashRestore(tr, f, wrap));
+
+  const deleteBtn = document.createElement('button');
+  deleteBtn.className = 'btn btn-destructive-outline btn-sm';
+  deleteBtn.textContent = 'Delete forever';
+  deleteBtn.addEventListener('click', () => enterTrashDeleteConfirm(tr, f, wrap));
+
+  wrap.append(restoreBtn, deleteBtn);
+  return wrap;
+}
+
+async function doTrashRestore(tr, f, wrap) {
+  wrap.querySelectorAll('button').forEach(b => (b.disabled = true));
+  try {
+    const res = await fetch(`${API}/api/admin/trash/${encodeURIComponent(f.hash)}/restore`, {
+      method: 'POST',
+    });
+    if (handleAuthError(res)) { wrap.querySelectorAll('button').forEach(b => (b.disabled = false)); return; }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  } catch (err) {
+    wrap.querySelectorAll('button').forEach(b => (b.disabled = false));
+    toast(`Couldn't restore "${displayTitle(f)}": ${err.message}`, 'error');
+    return;
+  }
+
+  tr.classList.add('row-removing');
+  const finish = () => {
+    tr.remove();
+    trashCountEl.textContent = String(Math.max(0, parseInt(trashCountEl.textContent, 10) - 1));
+  };
+  tr.addEventListener('animationend', finish, { once: true });
+  setTimeout(() => { if (tr.isConnected) finish(); }, 220);
+
+  toast(`"${displayTitle(f)}" restored to library.`, 'success');
+  loadFiles();
+}
+
+function enterTrashDeleteConfirm(tr, f, actionsWrap) {
+  actionsWrap.replaceChildren();
+
+  const label = document.createElement('span');
+  label.className = 'delete-confirm-label';
+  label.textContent = 'Delete forever?';
+
+  const cancel = document.createElement('button');
+  cancel.className = 'btn btn-neutral btn-sm';
+  cancel.textContent = 'Cancel';
+
+  const confirm = document.createElement('button');
+  confirm.className = 'btn btn-destructive-solid btn-sm';
+  confirm.textContent = 'Delete forever';
+
+  const restore = () => {
+    actionsWrap.replaceChildren(buildTrashActions(tr, f));
+    actionsWrap.querySelector('button')?.focus();
+  };
+
+  cancel.addEventListener('click', restore);
+  confirm.addEventListener('click', () => doTrashHardDelete(tr, f, actionsWrap));
+  actionsWrap.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { e.stopPropagation(); restore(); }
+  });
+
+  actionsWrap.append(label, cancel, confirm);
+  cancel.focus();
+}
+
+async function doTrashHardDelete(tr, f, wrap) {
+  tr.setAttribute('aria-busy', 'true');
+  wrap.querySelectorAll('button').forEach(b => (b.disabled = true));
+  try {
+    const res = await fetch(`${API}/api/admin/trash/${encodeURIComponent(f.hash)}`, {
+      method: 'DELETE',
+    });
+    if (handleAuthError(res)) { tr.removeAttribute('aria-busy'); return; }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  } catch (err) {
+    tr.removeAttribute('aria-busy');
+    wrap.replaceChildren(buildTrashActions(tr, f));
+    toast(`Couldn't delete "${displayTitle(f)}": ${err.message}`, 'error');
+    return;
+  }
+
+  tr.classList.add('row-removing');
+  const finish = () => {
+    tr.remove();
+    trashCountEl.textContent = String(Math.max(0, parseInt(trashCountEl.textContent, 10) - 1));
+  };
+  tr.addEventListener('animationend', finish, { once: true });
+  setTimeout(() => { if (tr.isConnected) finish(); }, 220);
+
+  toast(`"${displayTitle(f)}" permanently deleted.`, 'success');
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 (async function boot() {
   const identity = await fetchIdentity();
   if (!identity) { showLogin(); return; }
   showSignedIn(identity);
   loadFiles();
+  loadTrash();
 })();

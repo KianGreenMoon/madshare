@@ -14,8 +14,10 @@ func (db *DB) ListArtists(ctx context.Context) ([]*ArtistEntry, error) {
 		    COUNT(*) AS track_count,
 		    CASE WHEN ai.artist_name IS NOT NULL THEN 1 ELSE 0 END AS has_image
 		FROM media_metadata m
+		JOIN files f ON f.id = m.file_id
 		LEFT JOIN artist_images ai
 		    ON ai.artist_name = COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
+		WHERE f.deleted_at IS NULL
 		GROUP BY name
 		ORDER BY LOWER(name) ASC`
 
@@ -54,7 +56,7 @@ func (db *DB) ListArtistsFiltered(ctx context.Context, userID sql.NullInt64) ([]
 		JOIN files f ON f.id = m.file_id
 		LEFT JOIN artist_images ai
 		    ON ai.artist_name = COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
-		WHERE ` + accessClause + `
+		WHERE f.deleted_at IS NULL AND ` + accessClause + `
 		GROUP BY name
 		ORDER BY LOWER(name) ASC`
 
@@ -89,10 +91,12 @@ func (db *DB) ListAlbumsByArtist(ctx context.Context, artist string) ([]*AlbumEn
 		    COUNT(*) AS track_count,
 		    CASE WHEN ali.album_title IS NOT NULL THEN 1 ELSE 0 END AS has_image
 		FROM media_metadata m
+		JOIN files f ON f.id = m.file_id
 		LEFT JOIN album_images ali
 		    ON ali.album_artist = COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
 		    AND ali.album_title = COALESCE(NULLIF(m.album, ''), '')
-		WHERE ? = '' OR COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') = ?
+		WHERE f.deleted_at IS NULL
+		  AND (? = '' OR COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') = ?)
 		GROUP BY COALESCE(NULLIF(m.album, ''), ''), COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
 		ORDER BY year ASC, LOWER(COALESCE(NULLIF(m.album, ''), '')) ASC`
 
@@ -137,7 +141,8 @@ func (db *DB) ListAlbumsByArtistFiltered(ctx context.Context, artist string, use
 		LEFT JOIN album_images ali
 		    ON ali.album_artist = COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
 		    AND ali.album_title = COALESCE(NULLIF(m.album, ''), '')
-		WHERE (? = '' OR COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') = ?)
+		WHERE f.deleted_at IS NULL
+		  AND (? = '' OR COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') = ?)
 		  AND ` + accessClause + `
 		GROUP BY COALESCE(NULLIF(m.album, ''), ''), COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
 		ORDER BY year ASC, LOWER(COALESCE(NULLIF(m.album, ''), '')) ASC`
@@ -188,7 +193,8 @@ func (db *DB) ListTracksByAlbumArtist(ctx context.Context, artist, album string)
 		    FROM file_uploads
 		    GROUP BY file_id
 		) fu ON fu.file_id = f.id
-		WHERE COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') = ?
+		WHERE f.deleted_at IS NULL
+		  AND COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') = ?
 		  AND COALESCE(NULLIF(m.album, ''), '') = ?
 		ORDER BY m.track_number ASC, LOWER(COALESCE(NULLIF(m.title, ''), fu.filename, '')) ASC`
 
@@ -234,7 +240,8 @@ func (db *DB) ListTracksByAlbumArtistFiltered(ctx context.Context, artist, album
 		    FROM file_uploads
 		    GROUP BY file_id
 		) fu ON fu.file_id = f.id
-		WHERE COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') = ?
+		WHERE f.deleted_at IS NULL
+		  AND COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') = ?
 		  AND COALESCE(NULLIF(m.album, ''), '') = ?
 		  AND ` + accessClause + `
 		ORDER BY m.track_number ASC, LOWER(COALESCE(NULLIF(m.title, ''), fu.filename, '')) ASC`

@@ -19,9 +19,9 @@ import (
 // malformed value returns a clean 400 instead of a storage-layer error.
 var adminHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// adminDeleteFile handles DELETE /api/admin/files/{hash}. It deletes the DB
-// record first, then the blob: with DB-first ordering a blob-delete failure
-// leaves a reconcilable orphan rather than a dangling row pointing at nothing.
+// adminDeleteFile handles DELETE /api/admin/files/{hash}. It soft-deletes the
+// file (sets deleted_at, blob stays on disk). The file moves to the trash
+// bucket; use DELETE /api/admin/trash/{hash} for permanent removal.
 func (h *handler) adminDeleteFile(w http.ResponseWriter, r *http.Request) {
 	hash := chi.URLParam(r, "hash")
 	if !adminHashPattern.MatchString(hash) {
@@ -29,7 +29,87 @@ func (h *handler) adminDeleteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filenames, found, err := h.repo.DeleteFileByHash(r.Context(), hash)
+	filenames, found, err := h.repo.SoftDeleteFileByHash(r.Context(), hash)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not found"})
+		return
+	}
+
+	if filenames == nil {
+		filenames = []string{}
+	}
+	h.audit(r.Context(), "file.trash", hash, strings.Join(filenames, ", "))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"hash":      hash,
+		"filenames": filenames,
+	})
+}
+
+// adminTrashList handles GET /api/admin/trash. It returns all soft-deleted
+// files ordered by deletion time descending.
+func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
+	entries, err := h.repo.ListTrashedFiles(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+		return
+	}
+
+	type trashItem struct {
+		ID        int64  `json:"id"`
+		Hash      string `json:"hash"`
+		Filename  string `json:"filename"`
+		Title     string `json:"title"`
+		Artist    string `json:"artist"`
+		Album     string `json:"album"`
+		ByteSize  int64  `json:"byte_size"`
+		URL       string `json:"url"`
+		DeletedAt int64  `json:"deleted_at"`
+	}
+
+	items := make([]trashItem, 0, len(entries))
+	for _, e := range entries {
+		items = append(items, trashItem{
+			ID:        e.ID,
+			Hash:      e.Hash,
+			Filename:  e.Filename,
+			Title:     e.Title,
+			Artist:    e.Artist,
+			Album:     e.Album,
+			ByteSize:  e.ByteSize,
+			URL:       "/files/" + e.ObjectKey,
+			DeletedAt: e.DeletedAt.Int64,
+		})
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+// adminTrashHardDelete handles DELETE /api/admin/trash/{hash}. It permanently
+// removes the DB row and the blob. The file must already be in the trash;
+// live (non-trashed) files return 404 to enforce the two-step safety model.
+func (h *handler) adminTrashHardDelete(w http.ResponseWriter, r *http.Request) {
+	hash := chi.URLParam(r, "hash")
+	if !adminHashPattern.MatchString(hash) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid hash"})
+		return
+	}
+
+	// Verify the file is actually in the trash before permanently removing it.
+	existing, err := h.repo.GetFileByHash(r.Context(), hash)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+		return
+	}
+	if existing == nil || !existing.DeletedAt.Valid {
+		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not found"})
+		return
+	}
+
+	filenames, found, err := h.repo.HardDeleteFileByHash(r.Context(), hash)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
 		return
@@ -41,8 +121,6 @@ func (h *handler) adminDeleteFile(w http.ResponseWriter, r *http.Request) {
 
 	blobRemoved, err := h.storage.DeleteAll(hash)
 	if err != nil {
-		// The row is gone but the blob lingers — the reconciler will sweep it.
-		// Mirror the upload handler's orphan log format and still report success.
 		log.Printf("orphan blob: hash=%s err=%v", hash, err)
 	}
 
@@ -56,6 +134,29 @@ func (h *handler) adminDeleteFile(w http.ResponseWriter, r *http.Request) {
 		"blob_removed": blobRemoved,
 		"filenames":    filenames,
 	})
+}
+
+// adminTrashRestore handles POST /api/admin/trash/{hash}/restore. It restores
+// a trashed file back to the live library.
+func (h *handler) adminTrashRestore(w http.ResponseWriter, r *http.Request) {
+	hash := chi.URLParam(r, "hash")
+	if !adminHashPattern.MatchString(hash) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid hash"})
+		return
+	}
+
+	found, err := h.repo.RestoreFileByHash(r.Context(), hash)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not found"})
+		return
+	}
+
+	h.audit(r.Context(), "file.restore", hash, "")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "hash": hash})
 }
 
 // adminPrune handles POST /api/admin/prune. An empty body is treated as a dry

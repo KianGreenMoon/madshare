@@ -69,8 +69,8 @@ func TestOpen_RecordsMigrationVersion(t *testing.T) {
 	if err := db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&v); err != nil {
 		t.Fatalf("query version: %v", err)
 	}
-	if v != 6 {
-		t.Errorf("migration version = %d, want 6", v)
+	if v != 7 {
+		t.Errorf("migration version = %d, want 7", v)
 	}
 }
 
@@ -87,8 +87,8 @@ func TestOpen_IdempotentMigrations(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&rows); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if rows != 6 {
-		t.Errorf("schema_migrations row count = %d, want 6 after re-run", rows)
+	if rows != 7 {
+		t.Errorf("schema_migrations row count = %d, want 7 after re-run", rows)
 	}
 }
 
@@ -143,8 +143,8 @@ func TestOpen_FileDB_CascadeAcrossPooledConns(t *testing.T) {
 		t.Fatalf("InsertFile: %v", err)
 	}
 
-	if _, found, err := db.DeleteFileByHash(ctx, hash); err != nil || !found {
-		t.Fatalf("DeleteFileByHash: found=%v err=%v", found, err)
+	if _, found, err := db.HardDeleteFileByHash(ctx, hash); err != nil || !found {
+		t.Fatalf("HardDeleteFileByHash: found=%v err=%v", found, err)
 	}
 
 	var uploads, meta int

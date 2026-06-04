@@ -61,11 +61,23 @@ type Repository interface {
 	// Returns found=false (no error) when no image is stored.
 	GetAlbumImage(ctx context.Context, artist, album string) (objectKey, mimeType string, found bool, err error)
 
-	// DeleteFileByHash removes the files row for hash (cascading to its
-	// file_uploads and media_metadata rows). It returns the filenames that
-	// were recorded for the file before deletion. found is false (no error)
-	// when no row matches the hash.
-	DeleteFileByHash(ctx context.Context, hash string) (filenames []string, found bool, err error)
+	// SoftDeleteFileByHash marks the file as trashed (sets deleted_at). The
+	// blob and DB row are preserved. Returns the recorded filenames for audit.
+	// found is false (no error) when no live file matches the hash.
+	SoftDeleteFileByHash(ctx context.Context, hash string) (filenames []string, found bool, err error)
+
+	// HardDeleteFileByHash permanently removes the files row for hash (cascading
+	// to its file_uploads and media_metadata rows). Works on both live and
+	// trashed files. found is false (no error) when no row matches.
+	HardDeleteFileByHash(ctx context.Context, hash string) (filenames []string, found bool, err error)
+
+	// RestoreFileByHash clears deleted_at on a trashed file, returning it to
+	// the live library. found is false (no error) when no trashed row matches.
+	RestoreFileByHash(ctx context.Context, hash string) (found bool, err error)
+
+	// ListTrashedFiles returns all soft-deleted files ordered by deletion time
+	// descending, joined with the first filename and media_metadata tags.
+	ListTrashedFiles(ctx context.Context) ([]*FileListEntry, error)
 
 	// ListFileRefs returns one FileRef per files row, each carrying the
 	// content hash and the filenames recorded for it, ordered by file id.

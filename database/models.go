@@ -37,6 +37,9 @@ type File struct {
 	// UploadedBy is the id of the uploading user, or invalid for pre-auth /
 	// federated files.
 	UploadedBy sql.NullInt64
+	// DeletedAt is set when the file has been soft-deleted (moved to trash).
+	// NULL means the file is live.
+	DeletedAt sql.NullInt64
 }
 
 // FileUpload is a row in the file_uploads table — one record per
@@ -56,7 +59,8 @@ type FileRef struct {
 }
 
 // FileListEntry is a flattened view of a file row joined with its first
-// upload filename and media_metadata tags. Used for the library listing.
+// upload filename and media_metadata tags. Used for the library listing and
+// the trash listing (DeletedAt is populated only for the latter).
 type FileListEntry struct {
 	ID              int64
 	Hash            string
@@ -73,6 +77,7 @@ type FileListEntry struct {
 	DurationSeconds sql.NullFloat64
 	GuestPlayable   bool
 	License         sql.NullString
+	DeletedAt       sql.NullInt64
 }
 
 // ArtistEntry is a row returned by ListArtists.

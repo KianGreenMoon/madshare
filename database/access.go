@@ -38,15 +38,15 @@ const accessClause = `(
 
 // FileAccessibleByHash reports whether the user (invalid userID = anonymous)
 // may play/download the file with the given content hash. It returns false for
-// unknown hashes. Callers must short-circuit this for identities holding the
-// content.all permission.
+// unknown hashes and for soft-deleted (trashed) files. Callers must
+// short-circuit this for identities holding the content.all permission.
 func (db *DB) FileAccessibleByHash(ctx context.Context, hash string, userID sql.NullInt64) (bool, error) {
 	var ok bool
 	err := db.QueryRowContext(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM files f
 			LEFT JOIN media_metadata m ON m.file_id = f.id
-			WHERE f.hash = ? AND `+accessClause+`
+			WHERE f.hash = ? AND f.deleted_at IS NULL AND `+accessClause+`
 		)`, hash, userID).Scan(&ok)
 	return ok, err
 }

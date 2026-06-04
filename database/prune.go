@@ -100,7 +100,7 @@ func PruneDangling(ctx context.Context, repo Repository, probe blobProbe, confir
 		if !confirm {
 			continue
 		}
-		if _, _, err := repo.DeleteFileByHash(ctx, ref.Hash); err != nil {
+		if _, _, err := repo.HardDeleteFileByHash(ctx, ref.Hash); err != nil {
 			log.Printf("prune dangling: hash=%s err=%v", ref.Hash, err)
 			result.Failed = append(result.Failed, PruneFailure{Hash: ref.Hash, Err: err.Error()})
 			continue

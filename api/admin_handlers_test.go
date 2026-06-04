@@ -83,39 +83,42 @@ func TestAdminDeleteFile_Success(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
 	}
 	var resp struct {
-		OK          bool     `json:"ok"`
-		Hash        string   `json:"hash"`
-		BlobRemoved bool     `json:"blob_removed"`
-		Filenames   []string `json:"filenames"`
+		OK        bool     `json:"ok"`
+		Hash      string   `json:"hash"`
+		Filenames []string `json:"filenames"`
 	}
 	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !resp.OK || resp.Hash != hash || !resp.BlobRemoved {
-		t.Errorf("resp = %+v, want ok=true blob_removed=true hash=%s", resp, hash)
+	if !resp.OK || resp.Hash != hash {
+		t.Errorf("resp = %+v, want ok=true hash=%s", resp, hash)
 	}
 	if len(resp.Filenames) != 1 || resp.Filenames[0] != "song.mp3" {
 		t.Errorf("filenames = %v, want [song.mp3]", resp.Filenames)
 	}
 
-	// DB row gone.
-	if got, _ := db.GetFileByHash(context.Background(), hash); got != nil {
-		t.Error("files row still present after delete")
+	// DB row still present with deleted_at set (soft delete).
+	got, _ := db.GetFileByHash(context.Background(), hash)
+	if got == nil {
+		t.Fatal("files row should still exist after soft delete")
 	}
-	// Blob dir gone.
-	if _, err := os.Stat(filepath.Join(base, hash)); !os.IsNotExist(err) {
-		t.Errorf("blob dir still present: stat err = %v", err)
+	if !got.DeletedAt.Valid {
+		t.Error("files row should have deleted_at set after soft delete")
+	}
+	// Blob still on disk.
+	if _, err := os.Stat(filepath.Join(base, hash)); os.IsNotExist(err) {
+		t.Error("blob dir should still be present after soft delete")
 	}
 }
 
-// TestAdminDeleteFile_BlobAlreadyMissing verifies that when the DB row exists
-// but the blob is already gone, the handler still returns 200 with
-// blob_removed=false (the DB delete is the source of truth).
+// TestAdminDeleteFile_BlobAlreadyMissing verifies that soft-deleting a file
+// whose blob is already missing still returns 200 — the DB row is marked as
+// trashed regardless of blob presence.
 func TestAdminDeleteFile_BlobAlreadyMissing(t *testing.T) {
-	h, _, base := newTestHandler(t)
+	h, db, base := newTestHandler(t)
 	hash := uploadAudio(t, h, "song.mp3", []byte("blob will vanish"))
 
-	// Remove the blob out from under the handler before deleting.
+	// Remove the blob before soft-deleting.
 	if err := os.RemoveAll(filepath.Join(base, hash)); err != nil {
 		t.Fatal(err)
 	}
@@ -130,8 +133,11 @@ func TestAdminDeleteFile_BlobAlreadyMissing(t *testing.T) {
 	if resp["ok"] != true {
 		t.Errorf("ok = %v, want true", resp["ok"])
 	}
-	if resp["blob_removed"] != false {
-		t.Errorf("blob_removed = %v, want false (blob was already gone)", resp["blob_removed"])
+
+	// Row still present with deleted_at set.
+	got, _ := db.GetFileByHash(context.Background(), hash)
+	if got == nil || !got.DeletedAt.Valid {
+		t.Error("files row should exist and have deleted_at set after soft delete")
 	}
 }
 

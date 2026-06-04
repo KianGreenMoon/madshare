@@ -173,13 +173,13 @@ func TestInsertFile_UniqueHashConflict(t *testing.T) {
 	}
 }
 
-// ---- DeleteFileByHash --------------------------------------------------------
+// ---- HardDeleteFileByHash --------------------------------------------------------
 
-// TestDeleteFileByHash_CascadesToChildRows is the critical correctness check:
+// TestHardDeleteFileByHash_CascadesToChildRows is the critical correctness check:
 // deleting a files row must also remove its file_uploads AND media_metadata
 // rows via ON DELETE CASCADE. This only fires when foreign_keys is ON on the
 // executing connection (see Open).
-func TestDeleteFileByHash_CascadesToChildRows(t *testing.T) {
+func TestHardDeleteFileByHash_CascadesToChildRows(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
@@ -192,9 +192,9 @@ func TestDeleteFileByHash_CascadesToChildRows(t *testing.T) {
 		t.Fatalf("RecordUpload: %v", err)
 	}
 
-	filenames, found, err := db.DeleteFileByHash(ctx, hash)
+	filenames, found, err := db.HardDeleteFileByHash(ctx, hash)
 	if err != nil {
-		t.Fatalf("DeleteFileByHash: %v", err)
+		t.Fatalf("HardDeleteFileByHash: %v", err)
 	}
 	if !found {
 		t.Fatal("found = false, want true")
@@ -219,14 +219,14 @@ func TestDeleteFileByHash_CascadesToChildRows(t *testing.T) {
 	}
 }
 
-// TestDeleteFileByHash_NotFound returns found=false (no error) for an unknown hash.
-func TestDeleteFileByHash_NotFound(t *testing.T) {
+// TestHardDeleteFileByHash_NotFound returns found=false (no error) for an unknown hash.
+func TestHardDeleteFileByHash_NotFound(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
-	filenames, found, err := db.DeleteFileByHash(ctx, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+	filenames, found, err := db.HardDeleteFileByHash(ctx, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
 	if err != nil {
-		t.Fatalf("DeleteFileByHash on miss: %v", err)
+		t.Fatalf("HardDeleteFileByHash on miss: %v", err)
 	}
 	if found {
 		t.Error("found = true on miss, want false")
@@ -236,9 +236,9 @@ func TestDeleteFileByHash_NotFound(t *testing.T) {
 	}
 }
 
-// TestDeleteFileByHash_LeavesOtherFiles deletes one file and confirms a second,
+// TestHardDeleteFileByHash_LeavesOtherFiles deletes one file and confirms a second,
 // unrelated file is untouched.
-func TestDeleteFileByHash_LeavesOtherFiles(t *testing.T) {
+func TestHardDeleteFileByHash_LeavesOtherFiles(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
@@ -251,8 +251,8 @@ func TestDeleteFileByHash_LeavesOtherFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, found, err := db.DeleteFileByHash(ctx, hashA); err != nil || !found {
-		t.Fatalf("DeleteFileByHash(A): found=%v err=%v", found, err)
+	if _, found, err := db.HardDeleteFileByHash(ctx, hashA); err != nil || !found {
+		t.Fatalf("HardDeleteFileByHash(A): found=%v err=%v", found, err)
 	}
 
 	got, err := db.GetFileByHash(ctx, hashB)

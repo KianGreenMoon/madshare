@@ -135,6 +135,13 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if existing != nil {
+		if existing.DeletedAt.Valid {
+			// File was in the trash; restore it before recording the upload.
+			if _, err := h.repo.RestoreFileByHash(ctx, existing.Hash); err != nil {
+				http.Error(w, "storage error", http.StatusInternalServerError)
+				return
+			}
+		}
 		if err := h.repo.RecordUpload(ctx, existing.ID, filename); err != nil {
 			http.Error(w, "storage error", http.StatusInternalServerError)
 			return
