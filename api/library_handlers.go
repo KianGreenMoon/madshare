@@ -259,6 +259,11 @@ func (h *handler) saveImageUpload(r *http.Request) (objectKey, mimeType string, 
 
 func (h *handler) serveImageFile(w http.ResponseWriter, r *http.Request, objectKey, mimeType string) {
 	path := filepath.Join(h.imagesDir, objectKey)
+	// Defensive check: a corrupted or crafted objectKey must not escape imagesDir.
+	if !strings.HasPrefix(filepath.Clean(path), filepath.Clean(h.imagesDir)+string(os.PathSeparator)) {
+		http.NotFound(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", mimeType)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	http.ServeFile(w, r, path)

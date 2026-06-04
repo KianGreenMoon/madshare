@@ -57,7 +57,7 @@ func (db *DB) FileAccessibleByHash(ctx context.Context, hash string, userID sql.
 // false (no error) when no file matches.
 func (db *DB) SetGuestPlayable(ctx context.Context, hash string, guest bool) (found bool, err error) {
 	res, err := db.ExecContext(ctx,
-		`UPDATE files SET guest_playable = ?, guest_playable_manual = 1 WHERE hash = ?`,
+		`UPDATE files SET guest_playable = ?, guest_playable_manual = 1 WHERE hash = ? AND deleted_at IS NULL`,
 		boolToInt(guest), hash)
 	if err != nil {
 		return false, err
@@ -74,7 +74,7 @@ func (db *DB) SetLicense(ctx context.Context, hash, license string) (found bool,
 	if license != "" {
 		lic = sql.NullString{String: license, Valid: true}
 	}
-	res, err := db.ExecContext(ctx, `UPDATE files SET license = ? WHERE hash = ?`, lic, hash)
+	res, err := db.ExecContext(ctx, `UPDATE files SET license = ? WHERE hash = ? AND deleted_at IS NULL`, lic, hash)
 	if err != nil {
 		return false, err
 	}

@@ -136,17 +136,24 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	if existing != nil {
 		if existing.DeletedAt.Valid {
-			// File was in the trash; restore it before recording the upload.
+			// File is in the trash. Only identities with file.delete may restore
+			// it — an uploader must not be able to undo an admin's trash decision.
+			if h.authzEnabled && !auth.FromContext(ctx).Has(auth.PermFileDelete) {
+				http.Error(w, "file is in trash; restore requires file.delete permission", http.StatusConflict)
+				return
+			}
 			if _, err := h.repo.RestoreFileByHash(ctx, existing.Hash); err != nil {
 				http.Error(w, "storage error", http.StatusInternalServerError)
 				return
 			}
+			h.audit(ctx, "file.restore", hash, "restore-via-reupload: "+filename)
+		} else {
+			h.audit(ctx, "file.upload", hash, "dedup: "+filename)
 		}
 		if err := h.repo.RecordUpload(ctx, existing.ID, filename); err != nil {
 			http.Error(w, "storage error", http.StatusInternalServerError)
 			return
 		}
-		h.audit(ctx, "file.upload", hash, "dedup: "+filename)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":       true,
 			"existed":  true,

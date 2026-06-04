@@ -213,12 +213,24 @@ func (db *DB) SoftDeleteFileByHash(ctx context.Context, hash string) ([]string, 
 	return filenames, true, nil
 }
 
-// HardDeleteFileByHash permanently removes the files row identified by hash.
-// The recorded filenames are read before the delete so callers can report or
-// reconcile them. file_uploads and media_metadata rows are removed by ON
-// DELETE CASCADE. Works on both live and trashed files.
+// HardDeleteFileByHash permanently removes any files row identified by hash,
+// regardless of trash state. Used by PruneDangling, which must be able to
+// clean up both live and trashed rows whose blobs are gone.
 // Returns found=false (no error) when no row matches.
 func (db *DB) HardDeleteFileByHash(ctx context.Context, hash string) ([]string, bool, error) {
+	return db.hardDelete(ctx, `SELECT id FROM files WHERE hash = ?`, hash)
+}
+
+// HardDeleteTrashedFileByHash permanently removes a trashed files row. Live
+// (non-trashed) files return found=false, making the check and delete atomic
+// within the same transaction so a concurrent restore cannot race the delete.
+// Returns found=false (no error) when no trashed row matches.
+func (db *DB) HardDeleteTrashedFileByHash(ctx context.Context, hash string) ([]string, bool, error) {
+	return db.hardDelete(ctx, `SELECT id FROM files WHERE hash = ? AND deleted_at IS NOT NULL`, hash)
+}
+
+// hardDelete is the shared implementation for the two hard-delete variants.
+func (db *DB) hardDelete(ctx context.Context, selectQ, hash string) ([]string, bool, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, false, fmt.Errorf("begin tx: %w", err)
@@ -226,7 +238,7 @@ func (db *DB) HardDeleteFileByHash(ctx context.Context, hash string) ([]string, 
 	defer tx.Rollback()
 
 	var id int64
-	err = tx.QueryRowContext(ctx, `SELECT id FROM files WHERE hash = ?`, hash).Scan(&id)
+	err = tx.QueryRowContext(ctx, selectQ, hash).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -307,13 +319,16 @@ func (db *DB) ListTrashedFiles(ctx context.Context) ([]*FileListEntry, error) {
 	return out, nil
 }
 
-// ListFileRefs returns one FileRef per files row with the filenames recorded
-// for it, ordered by file id. Files with no upload rows carry an empty slice.
+// ListFileRefs returns one FileRef per live (non-trashed) files row with the
+// filenames recorded for it, ordered by file id. Files with no upload rows
+// carry an empty slice. Trashed files are excluded so PruneDangling does not
+// permanently delete files the admin placed in the trash intentionally.
 func (db *DB) ListFileRefs(ctx context.Context) ([]FileRef, error) {
 	const q = `
 		SELECT f.hash, COALESCE(GROUP_CONCAT(u.filename, char(10)), '')
 		FROM files f
 		LEFT JOIN file_uploads u ON u.file_id = f.id
+		WHERE f.deleted_at IS NULL
 		GROUP BY f.id
 		ORDER BY f.id`
 

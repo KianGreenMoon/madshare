@@ -68,8 +68,15 @@ type Repository interface {
 
 	// HardDeleteFileByHash permanently removes the files row for hash (cascading
 	// to its file_uploads and media_metadata rows). Works on both live and
-	// trashed files. found is false (no error) when no row matches.
+	// trashed files. Used by PruneDangling. found is false (no error) when no
+	// row matches.
 	HardDeleteFileByHash(ctx context.Context, hash string) (filenames []string, found bool, err error)
+
+	// HardDeleteTrashedFileByHash permanently removes a trashed files row.
+	// Live (non-trashed) files return found=false so the caller cannot bypass
+	// the soft-delete step. The check and delete are atomic within one
+	// transaction, preventing a concurrent restore from racing the delete.
+	HardDeleteTrashedFileByHash(ctx context.Context, hash string) (filenames []string, found bool, err error)
 
 	// RestoreFileByHash clears deleted_at on a trashed file, returning it to
 	// the live library. found is false (no error) when no trashed row matches.

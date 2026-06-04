@@ -89,8 +89,8 @@ func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
 }
 
 // adminTrashHardDelete handles DELETE /api/admin/trash/{hash}. It permanently
-// removes the DB row and the blob. The file must already be in the trash;
-// live (non-trashed) files return 404 to enforce the two-step safety model.
+// removes the DB row and the blob. HardDeleteFileByHash only matches trashed
+// files, so live files return 404 atomically — no TOCTOU window.
 func (h *handler) adminTrashHardDelete(w http.ResponseWriter, r *http.Request) {
 	hash := chi.URLParam(r, "hash")
 	if !adminHashPattern.MatchString(hash) {
@@ -98,18 +98,7 @@ func (h *handler) adminTrashHardDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the file is actually in the trash before permanently removing it.
-	existing, err := h.repo.GetFileByHash(r.Context(), hash)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
-		return
-	}
-	if existing == nil || !existing.DeletedAt.Valid {
-		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not found"})
-		return
-	}
-
-	filenames, found, err := h.repo.HardDeleteFileByHash(r.Context(), hash)
+	filenames, found, err := h.repo.HardDeleteTrashedFileByHash(r.Context(), hash)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
 		return

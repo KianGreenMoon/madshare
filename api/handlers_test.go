@@ -447,6 +447,10 @@ func (f *fakeRepo) HardDeleteFileByHash(_ context.Context, _ string) ([]string, 
 	return f.deleteFilenames, f.deleteFound, f.deleteErr
 }
 
+func (f *fakeRepo) HardDeleteTrashedFileByHash(_ context.Context, _ string) ([]string, bool, error) {
+	return f.deleteFilenames, f.deleteFound, f.deleteErr
+}
+
 func (f *fakeRepo) RestoreFileByHash(_ context.Context, _ string) (bool, error) {
 	return true, nil
 }
