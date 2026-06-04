@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/database"
@@ -382,7 +383,7 @@ func (h *manageHandler) setAutoDerive(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	h.mAudit(r.Context(), "access.autoderive", "", strconv.FormatBool(req.Enabled))
+	h.mAudit(r.Context(), "access.autoderive", "", strconv.FormatBool(req.Enabled)+": "+strings.Join(req.Licenses, ","))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "enabled": req.Enabled})
 }
 

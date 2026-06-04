@@ -8,7 +8,7 @@ import (
 )
 
 func (db *DB) ListArtists(ctx context.Context) ([]*ArtistEntry, error) {
-	const q = `
+	var q = `
 		SELECT
 		    COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') AS name,
 		    COUNT(*) AS track_count,
@@ -47,7 +47,7 @@ func (db *DB) ListArtists(ctx context.Context) ([]*ArtistEntry, error) {
 // userID = anonymous) can reach at least one track of, per the §5.3 access
 // predicate. Track counts reflect only reachable tracks.
 func (db *DB) ListArtistsFiltered(ctx context.Context, userID sql.NullInt64) ([]*ArtistEntry, error) {
-	const q = `
+	var q = `
 		SELECT
 		    COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') AS name,
 		    COUNT(*) AS track_count,
@@ -83,7 +83,7 @@ func (db *DB) ListArtistsFiltered(ctx context.Context, userID sql.NullInt64) ([]
 }
 
 func (db *DB) ListAlbumsByArtist(ctx context.Context, artist string) ([]*AlbumEntry, error) {
-	const q = `
+	var q = `
 		SELECT
 		    COALESCE(NULLIF(m.album, ''), '') AS title,
 		    COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') AS artist_name,
@@ -129,7 +129,7 @@ func (db *DB) ListAlbumsByArtist(ctx context.Context, artist string) ([]*AlbumEn
 // ListAlbumsByArtistFiltered is ListAlbumsByArtist restricted to albums the
 // user (invalid userID = anonymous) can reach at least one track of.
 func (db *DB) ListAlbumsByArtistFiltered(ctx context.Context, artist string, userID sql.NullInt64) ([]*AlbumEntry, error) {
-	const q = `
+	var q = `
 		SELECT
 		    COALESCE(NULLIF(m.album, ''), '') AS title,
 		    COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') AS artist_name,
@@ -178,7 +178,7 @@ func (db *DB) ListTracksByAlbumArtist(ctx context.Context, artist, album string)
 		return nil, nil
 	}
 
-	const q = `
+	var q = `
 		SELECT
 		    f.id,
 		    COALESCE(NULLIF(m.title, ''), fu.filename, '') AS title,
@@ -225,7 +225,7 @@ func (db *DB) ListTracksByAlbumArtistFiltered(ctx context.Context, artist, album
 		return nil, nil
 	}
 
-	const q = `
+	var q = `
 		SELECT
 		    f.id,
 		    COALESCE(NULLIF(m.title, ''), fu.filename, '') AS title,

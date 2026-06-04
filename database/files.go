@@ -123,7 +123,7 @@ func (db *DB) listFiles(ctx context.Context, where string, args ...any) ([]*File
 			COALESCE(m.album,  '') AS album,
 			COALESCE(m.year,    0) AS year,
 			m.duration_seconds,
-			f.guest_playable,
+			` + guestAccessibleExpr + ` AS guest_playable,
 			f.license
 		FROM files f
 		LEFT JOIN media_metadata m ON m.file_id = f.id`

@@ -58,17 +58,26 @@ func (db *DB) GetAutoDerivePolicy(ctx context.Context) (AutoDerivePolicy, error)
 	return p, nil
 }
 
-// SetAutoDerivePolicy persists the auto-derivation policy. Access derived from
-// the policy takes effect immediately at query time via accessClause.
+// SetAutoDerivePolicy persists the auto-derivation policy atomically. Access
+// derived from the policy takes effect immediately at query time via accessClause.
 func (db *DB) SetAutoDerivePolicy(ctx context.Context, p AutoDerivePolicy) error {
 	val := "0"
 	if p.Enabled {
 		val = "1"
 	}
-	if err := db.SetSetting(ctx, settingAutoDeriveEnabled, val); err != nil {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
-	return db.SetSetting(ctx, settingAutoDeriveLicenses, strings.Join(normalizeLicenses(p.Licenses), ","))
+	defer tx.Rollback()
+	upsert := `INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+	if _, err := tx.ExecContext(ctx, upsert, settingAutoDeriveEnabled, val); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, upsert, settingAutoDeriveLicenses, strings.Join(normalizeLicenses(p.Licenses), ",")); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // splitLicenses parses a stored comma-separated allow-list into a slice.

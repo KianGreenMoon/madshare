@@ -15,27 +15,32 @@ const (
 	ScopeFile   = "file"
 )
 
+// licenseClause is the SQL predicate (no bind args) that is true when a file's
+// license matches the live auto-derive policy. Uses INSTR for exact substring
+// matching — no LIKE wildcards, so license strings with '%' or '_' are safe.
+// guest_playable_manual = 0 guards it: an explicit admin decision always wins.
+var licenseClause = `(
+  f.guest_playable_manual = 0
+  AND f.license IS NOT NULL AND f.license != ''
+  AND EXISTS (SELECT 1 FROM settings WHERE key = '` + settingAutoDeriveEnabled + `' AND value = '1')
+  AND INSTR(',' || COALESCE((SELECT value FROM settings WHERE key = '` + settingAutoDeriveLicenses + `'), '') || ',',
+            ',' || f.license || ',') > 0
+)`
+
+// guestAccessibleExpr is the SQL expression (for SELECT lists) that reflects
+// whether a file is effectively guest-accessible — either explicitly granted or
+// via the live license policy. No bind args. Yields 0 or 1 in SQLite.
+var guestAccessibleExpr = `(f.guest_playable = 1 OR ` + licenseClause + `)`
+
 // accessClause is the SQL predicate (reused by listing filters) that decides
 // whether the file aliased `f` (joined to media_metadata `m`) is reachable by
 // the user bound to the first parameter. It does NOT account for the
 // content.all permission — callers holding that bypass access checks entirely.
 // Bind order: the user id (sql.NullInt64; invalid => anonymous, only guest
 // files match).
-//
-// The license branch checks the auto-derive policy live at query time so that
-// toggling the policy or its allow-list takes effect immediately without any
-// bulk UPDATE. guest_playable_manual = 0 guards the branch: if an admin
-// explicitly set the file's guest flag (to either value), that decision wins
-// over the license policy.
-const accessClause = `(
+var accessClause = `(
   f.guest_playable = 1
-  OR (
-    f.guest_playable_manual = 0
-    AND f.license IS NOT NULL AND f.license != ''
-    AND EXISTS (SELECT 1 FROM settings WHERE key = 'access.autoderive.enabled' AND value = '1')
-    AND ',' || COALESCE((SELECT value FROM settings WHERE key = 'access.autoderive.licenses'), '') || ','
-        LIKE '%,' || f.license || ',%'
-  )
+  OR ` + licenseClause + `
   OR EXISTS (
     SELECT 1 FROM access_group_members agm
     JOIN content_grants cg ON cg.group_id = agm.group_id
