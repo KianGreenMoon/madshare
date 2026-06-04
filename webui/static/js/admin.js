@@ -1354,7 +1354,6 @@ async function mutateGroup(path, method, body, okMsg) {
 const autoderiveForm    = document.getElementById('autoderiveForm');
 const autoderiveEnabled = document.getElementById('autoderiveEnabled');
 const autoderiveLicenses = document.getElementById('autoderiveLicenses');
-const autoderiveApply   = document.getElementById('autoderiveApply');
 
 // Build the allow-list checkboxes once.
 FREE_LICENSES.forEach(lic => {
@@ -1380,33 +1379,22 @@ async function loadAutoDerive() {
   }
 }
 
-function autoderivePayload(applyNow) {
+async function saveAutoDerive() {
   const licenses = Array.from(autoderiveLicenses.querySelectorAll('input:checked')).map(cb => cb.value);
-  return { enabled: autoderiveEnabled.checked, licenses, apply_now: applyNow };
-}
-
-async function saveAutoDerive(applyNow) {
   try {
     const res = await fetch(`${API}/api/admin/settings/autoderive`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(autoderivePayload(applyNow)),
+      body: JSON.stringify({ enabled: autoderiveEnabled.checked, licenses }),
     });
     if (handleAuthError(res)) return;
     if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
-    const data = await res.json().catch(() => ({}));
-    if (applyNow) {
-      toast(`Policy saved — ${data.applied || 0} file(s) newly published.`, 'success');
-      loadFiles();
-    } else {
-      toast('Auto-publish policy saved.', 'success');
-    }
+    toast('Auto-publish policy saved.', 'success');
   } catch (err) {
     toast(`Couldn't save policy: ${err.message}`, 'error');
   }
 }
 
-autoderiveForm.addEventListener('submit', e => { e.preventDefault(); saveAutoDerive(false); });
-autoderiveApply.addEventListener('click', () => saveAutoDerive(true));
+autoderiveForm.addEventListener('submit', e => { e.preventDefault(); saveAutoDerive(); });
 
 // ── Trash bucket ─────────────────────────────────────────────────────────────
 

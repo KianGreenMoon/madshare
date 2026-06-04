@@ -276,7 +276,7 @@ func TestManage_LicenseAutoDerive(t *testing.T) {
 
 	// Enable the auto-publish policy for CC0-1.0.
 	if code := doJSON(t, admin, http.MethodPost, srv.URL+"/api/admin/settings/autoderive",
-		map[string]any{"enabled": true, "licenses": []string{"CC0-1.0"}, "apply_now": true}, nil); code != http.StatusOK {
+		map[string]any{"enabled": true, "licenses": []string{"CC0-1.0"}}, nil); code != http.StatusOK {
 		t.Fatalf("set autoderive = %d, want 200", code)
 	}
 

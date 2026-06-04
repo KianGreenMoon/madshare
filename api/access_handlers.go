@@ -38,7 +38,6 @@ type ManageStore interface {
 
 	GetAutoDerivePolicy(ctx context.Context) (database.AutoDerivePolicy, error)
 	SetAutoDerivePolicy(ctx context.Context, p database.AutoDerivePolicy) error
-	ApplyAutoDerive(ctx context.Context) (int64, error)
 
 	RecordAudit(ctx context.Context, actorUserID sql.NullInt64, action, target, detail string) error
 }
@@ -369,7 +368,6 @@ func (h *manageHandler) setAutoDerive(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Enabled  bool     `json:"enabled"`
 		Licenses []string `json:"licenses"`
-		ApplyNow bool     `json:"apply_now"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -384,17 +382,8 @@ func (h *manageHandler) setAutoDerive(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	var applied int64
-	if req.ApplyNow {
-		n, err := h.store.ApplyAutoDerive(r.Context())
-		if err != nil {
-			http.Error(w, "storage error", http.StatusInternalServerError)
-			return
-		}
-		applied = n
-	}
 	h.mAudit(r.Context(), "access.autoderive", "", strconv.FormatBool(req.Enabled))
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "enabled": req.Enabled, "applied": applied})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "enabled": req.Enabled})
 }
 
 // decodeJSON decodes the request body into v, writing a 400 and returning false

@@ -21,8 +21,21 @@ const (
 // content.all permission — callers holding that bypass access checks entirely.
 // Bind order: the user id (sql.NullInt64; invalid => anonymous, only guest
 // files match).
+//
+// The license branch checks the auto-derive policy live at query time so that
+// toggling the policy or its allow-list takes effect immediately without any
+// bulk UPDATE. guest_playable_manual = 0 guards the branch: if an admin
+// explicitly set the file's guest flag (to either value), that decision wins
+// over the license policy.
 const accessClause = `(
   f.guest_playable = 1
+  OR (
+    f.guest_playable_manual = 0
+    AND f.license IS NOT NULL AND f.license != ''
+    AND EXISTS (SELECT 1 FROM settings WHERE key = 'access.autoderive.enabled' AND value = '1')
+    AND ',' || COALESCE((SELECT value FROM settings WHERE key = 'access.autoderive.licenses'), '') || ','
+        LIKE '%,' || f.license || ',%'
+  )
   OR EXISTS (
     SELECT 1 FROM access_group_members agm
     JOIN content_grants cg ON cg.group_id = agm.group_id
@@ -66,9 +79,9 @@ func (db *DB) SetGuestPlayable(ctx context.Context, hash string, guest bool) (fo
 	return n > 0, nil
 }
 
-// SetLicense sets (or clears, with "") the license metadata on a file. When the
-// auto-derivation policy is enabled and the new license is on the allow-list,
-// the file's guest_playable flag is granted (unless it was set manually).
+// SetLicense sets (or clears, with "") the license metadata on a file. Access
+// derived from the license is evaluated live at query time via accessClause;
+// this function only stores the metadata.
 func (db *DB) SetLicense(ctx context.Context, hash, license string) (found bool, err error) {
 	var lic sql.NullString
 	if license != "" {
@@ -79,13 +92,7 @@ func (db *DB) SetLicense(ctx context.Context, hash, license string) (found bool,
 		return false, err
 	}
 	n, _ := res.RowsAffected()
-	if n == 0 {
-		return false, nil
-	}
-	if _, err := db.autoDeriveGuest(ctx, hash); err != nil {
-		return true, err
-	}
-	return true, nil
+	return n > 0, nil
 }
 
 // AccessGroup is a row in access_groups.

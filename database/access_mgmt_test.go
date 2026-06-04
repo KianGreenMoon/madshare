@@ -125,7 +125,7 @@ func TestAutoDerive_GrantsAndRespectsManual(t *testing.T) {
 	insertAccessFile(t, db, autoHash)
 	insertAccessFile(t, db, manualHash)
 
-	// Manually mark the second file private — auto-derive must never override it.
+	// Manually mark the second file private — license policy must never override it.
 	setGuest(t, db, manualHash, false)
 
 	if err := db.SetAutoDerivePolicy(ctx, AutoDerivePolicy{Enabled: true, Licenses: []string{"CC0-1.0"}}); err != nil {
@@ -136,20 +136,20 @@ func TestAutoDerive_GrantsAndRespectsManual(t *testing.T) {
 		t.Fatalf("GetAutoDerivePolicy = %+v err=%v", p, err)
 	}
 
-	// Setting a matching license on the non-manual file grants guest access.
+	// Setting a matching license grants guest access via the live policy check.
 	if _, err := db.SetLicense(ctx, autoHash, "CC0-1.0"); err != nil {
 		t.Fatalf("SetLicense(auto): %v", err)
 	}
 	if !accessible(t, db, autoHash, anon()) {
-		t.Error("auto-derived file should be guest-playable after license set")
+		t.Error("license-match file should be guest-accessible when policy is enabled")
 	}
 
-	// The manually-private file is not granted even with a matching license.
+	// The manually-private file is not accessible even with a matching license.
 	if _, err := db.SetLicense(ctx, manualHash, "CC0-1.0"); err != nil {
 		t.Fatalf("SetLicense(manual): %v", err)
 	}
 	if accessible(t, db, manualHash, anon()) {
-		t.Error("manual override must survive auto-derivation")
+		t.Error("explicit manual override must win over license policy")
 	}
 
 	// A non-allow-listed license never grants.
@@ -159,37 +159,45 @@ func TestAutoDerive_GrantsAndRespectsManual(t *testing.T) {
 		t.Fatalf("SetLicense(other): %v", err)
 	}
 	if accessible(t, db, otherHash, anon()) {
-		t.Error("non-free license must not be auto-derived")
+		t.Error("non-free license must not grant guest access")
 	}
 
-	// ApplyAutoDerive is a no-op the second time (already granted).
-	if n, err := db.ApplyAutoDerive(ctx); err != nil || n != 0 {
-		t.Fatalf("ApplyAutoDerive re-run = %d err=%v, want 0", n, err)
+	// Disabling the policy immediately revokes license-based access.
+	if err := db.SetAutoDerivePolicy(ctx, AutoDerivePolicy{Enabled: false, Licenses: []string{"CC0-1.0"}}); err != nil {
+		t.Fatalf("SetAutoDerivePolicy(disable): %v", err)
+	}
+	if accessible(t, db, autoHash, anon()) {
+		t.Error("disabling policy must revoke license-based access immediately")
 	}
 }
 
-func TestApplyAutoDerive_SweepsExisting(t *testing.T) {
+func TestAutoDerive_LivePolicyCheck(t *testing.T) {
 	ctx := context.Background()
 	db := openMem(t)
 
 	h := hash64("sweep")
 	insertAccessFile(t, db, h)
-	// License set before the policy exists: no grant yet.
+	// License set before the policy is enabled: not yet accessible.
 	if _, err := db.SetLicense(ctx, h, "public-domain"); err != nil {
 		t.Fatalf("SetLicense: %v", err)
 	}
 	if accessible(t, db, h, anon()) {
-		t.Fatal("file should not be guest before policy enabled")
+		t.Fatal("file should not be guest-accessible before policy is enabled")
 	}
 
+	// Enabling the policy makes it accessible immediately — no flush step.
 	if err := db.SetAutoDerivePolicy(ctx, AutoDerivePolicy{Enabled: true, Licenses: []string{"public-domain"}}); err != nil {
 		t.Fatalf("SetAutoDerivePolicy: %v", err)
 	}
-	n, err := db.ApplyAutoDerive(ctx)
-	if err != nil || n != 1 {
-		t.Fatalf("ApplyAutoDerive = %d err=%v, want 1", n, err)
-	}
 	if !accessible(t, db, h, anon()) {
-		t.Error("sweep should have granted the public-domain file")
+		t.Error("enabling policy should immediately grant access to matching file")
+	}
+
+	// Removing the license from the allow-list revokes access immediately.
+	if err := db.SetAutoDerivePolicy(ctx, AutoDerivePolicy{Enabled: true, Licenses: []string{"CC0-1.0"}}); err != nil {
+		t.Fatalf("SetAutoDerivePolicy(change allowlist): %v", err)
+	}
+	if accessible(t, db, h, anon()) {
+		t.Error("removing license from allowlist should immediately revoke access")
 	}
 }

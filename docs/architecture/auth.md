@@ -141,10 +141,12 @@ New `files` columns (§6):
   `guest_playable`; may be pre-filled from tags (unverified) or set by an editor.
 
 **Auto-derivation policy (opt-in):** an admin setting names a free-license
-allowlist; when enabled, a file whose `license` is on the allowlist gets
-`guest_playable` set. Rules: only ever *grants* (never revokes); unknown/missing
-license stays private; a manual override always wins; the admin opts in and owns
-the legal risk (tag-sourced licenses are unverified).
+allowlist. When enabled, any file whose `license` is on the allowlist is
+guest-accessible. The check is live at query time — no writes to `guest_playable`
+occur. Toggling the policy or its allowlist takes effect immediately. A manual
+override (`guest_playable_manual = 1`) always wins regardless of the policy.
+The admin opts in and owns the legal risk (tag-sourced licenses are unverified).
+See `docs/architecture/license-access.md` for implementation details.
 
 ### 5.2 Access groups & grants (ACLs)
 
@@ -162,11 +164,14 @@ the metadata identifiers the library already uses; `file` targets one file id.
 
 For a request to play/download file *F*:
 
-- **Anonymous:** allowed iff `F.guest_playable = 1`.
+- **Anonymous:** allowed iff `F.guest_playable = 1` (explicit admin grant) **or**
+  the auto-derive policy is enabled and `F.license` is on the allowlist and no
+  explicit override is set (`guest_playable_manual = 0`).
 - **Authenticated user U:** allowed iff U has `content.play` (or `content.download`)
-  **and** one of: U holds `content.all`; *F* is `guest_playable`; or some group U
-  belongs to has a `content_grant` covering *F* (`all`, or matching artist/album,
-  or that file). Otherwise **deny** (404, not 403, to avoid leaking existence).
+  **and** one of: U holds `content.all`; *F* is guest-accessible (either branch
+  above); or some group U belongs to has a `content_grant` covering *F* (`all`,
+  or matching artist/album, or that file). Otherwise **deny** (404, not 403, to
+  avoid leaking existence).
 
 The same predicate filters library listings (`/api/artists|albums|tracks`) so
 users only see what they may reach.
