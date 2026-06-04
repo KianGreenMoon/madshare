@@ -171,6 +171,63 @@ func TestUploadFile_SameHashSameFilename(t *testing.T) {
 	}
 }
 
+// TestUploadFile_RestoresSoftDeletedFile verifies that re-uploading a file
+// whose hash is in the trash restores it to the library instead of being
+// treated as a new upload. The response is 200 existed=true, deleted_at is
+// cleared, and the file appears in ListFiles.
+func TestUploadFile_RestoresSoftDeletedFile(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	data := []byte("soft deleted audio")
+
+	// Initial upload.
+	first := httptest.NewRecorder()
+	h.uploadFile(first, buildUploadRequest(t, "file", "track.mp3", "audio/mpeg", data))
+	if first.Code != http.StatusCreated {
+		t.Fatalf("first upload status = %d", first.Code)
+	}
+	var firstResp map[string]any
+	json.NewDecoder(first.Body).Decode(&firstResp)
+	hash := firstResp["hash"].(string)
+
+	// Soft-delete the file directly in the DB (simulates admin "Move to Trash").
+	if _, _, err := db.SoftDeleteFileByHash(context.Background(), hash); err != nil {
+		t.Fatalf("SoftDeleteFileByHash: %v", err)
+	}
+
+	// Re-upload the same bytes; must restore, not error.
+	second := httptest.NewRecorder()
+	h.uploadFile(second, buildUploadRequest(t, "file", "track.mp3", "audio/mpeg", data))
+	if second.Code != http.StatusOK {
+		t.Fatalf("re-upload status = %d, want 200; body: %s", second.Code, second.Body.String())
+	}
+	var resp map[string]any
+	json.NewDecoder(second.Body).Decode(&resp)
+	if resp["existed"] != true {
+		t.Errorf("existed = %v, want true", resp["existed"])
+	}
+
+	// File must be live (deleted_at cleared).
+	got, _ := db.GetFileByHash(context.Background(), hash)
+	if got == nil {
+		t.Fatal("file row gone after restore-via-reupload")
+	}
+	if got.DeletedAt.Valid {
+		t.Errorf("DeletedAt still set after restore-via-reupload: %d", got.DeletedAt.Int64)
+	}
+
+	// File must appear in ListFiles.
+	entries, _ := db.ListFiles(context.Background())
+	var found bool
+	for _, e := range entries {
+		if e.Hash == hash {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("restored file not present in ListFiles after restore-via-reupload")
+	}
+}
+
 // TestUploadFile_SameHashDifferentFilename verifies that re-uploading the same
 // bytes under a new filename returns 200 existed=true and adds a second
 // file_uploads row.

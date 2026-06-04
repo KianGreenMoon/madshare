@@ -171,6 +171,12 @@ For a request to play/download file *F*:
 The same predicate filters library listings (`/api/artists|albums|tracks`) so
 users only see what they may reach.
 
+**Soft-deleted (trashed) files** are an additional invisible class: a file with
+`deleted_at IS NOT NULL` is excluded from all listings and blocked at
+`/files/*` for any identity that lacks `content.all`, regardless of the access
+group state. Identities holding `content.all` (admin, moderator) pass through
+so the Trash tab can preview them. See `docs/architecture/soft-delete.md`.
+
 ## 6. Schema (new migration)
 
 A new `database/migrations/003_auth.sql` (sketch; the migration runner still owns

@@ -160,6 +160,26 @@ func (db *DB) listFiles(ctx context.Context, where string, args ...any) ([]*File
 	return out, nil
 }
 
+// uploadFilenamesInTx returns the recorded filenames for a file (ordered by
+// upload id) within an open transaction. It is a shared helper for the two
+// delete variants that need to report filenames before mutating the row.
+func uploadFilenamesInTx(ctx context.Context, tx *sql.Tx, fileID int64) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT filename FROM file_uploads WHERE file_id = ? ORDER BY id`, fileID)
+	if err != nil {
+		return nil, fmt.Errorf("select filenames: %w", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan filename: %w", err)
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
+
 // SoftDeleteFileByHash marks the file as trashed by setting deleted_at. The
 // blob is left on disk. file_uploads and media_metadata rows are preserved.
 // Returns found=false (no error) when no live (non-trashed) row matches.
@@ -179,24 +199,10 @@ func (db *DB) SoftDeleteFileByHash(ctx context.Context, hash string) ([]string, 
 		return nil, false, fmt.Errorf("select file id: %w", err)
 	}
 
-	rows, err := tx.QueryContext(ctx, `SELECT filename FROM file_uploads WHERE file_id = ? ORDER BY id`, id)
+	filenames, err := uploadFilenamesInTx(ctx, tx, id)
 	if err != nil {
-		return nil, false, fmt.Errorf("select filenames: %w", err)
+		return nil, false, err
 	}
-	var filenames []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			rows.Close()
-			return nil, false, fmt.Errorf("scan filename: %w", err)
-		}
-		filenames = append(filenames, name)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, false, fmt.Errorf("filename rows: %w", err)
-	}
-	rows.Close()
 
 	if _, err := tx.ExecContext(ctx, `UPDATE files SET deleted_at = ? WHERE id = ?`, time.Now().Unix(), id); err != nil {
 		return nil, false, fmt.Errorf("soft delete file: %w", err)
@@ -228,24 +234,10 @@ func (db *DB) HardDeleteFileByHash(ctx context.Context, hash string) ([]string, 
 		return nil, false, fmt.Errorf("select file id: %w", err)
 	}
 
-	rows, err := tx.QueryContext(ctx, `SELECT filename FROM file_uploads WHERE file_id = ? ORDER BY id`, id)
+	filenames, err := uploadFilenamesInTx(ctx, tx, id)
 	if err != nil {
-		return nil, false, fmt.Errorf("select filenames: %w", err)
+		return nil, false, err
 	}
-	var filenames []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			rows.Close()
-			return nil, false, fmt.Errorf("scan filename: %w", err)
-		}
-		filenames = append(filenames, name)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, false, fmt.Errorf("filename rows: %w", err)
-	}
-	rows.Close()
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM files WHERE id = ?`, id); err != nil {
 		return nil, false, fmt.Errorf("delete file: %w", err)
