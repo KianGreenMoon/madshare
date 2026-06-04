@@ -136,12 +136,8 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	if existing != nil {
 		if existing.DeletedAt.Valid {
-			// File is in the trash. Only identities with file.delete may restore
-			// it — an uploader must not be able to undo an admin's trash decision.
-			if h.authzEnabled && !auth.FromContext(ctx).Has(auth.PermFileDelete) {
-				http.Error(w, "file is in trash; restore requires file.delete permission", http.StatusConflict)
-				return
-			}
+			// File is in the trash. Re-uploading the same bytes intentionally
+			// restores it — any uploader may do this by design (see open-issues.md).
 			if _, err := h.repo.RestoreFileByHash(ctx, existing.Hash); err != nil {
 				http.Error(w, "storage error", http.StatusInternalServerError)
 				return
