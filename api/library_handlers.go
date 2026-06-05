@@ -154,6 +154,10 @@ func (h *handler) listTracks(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) search(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
+	if len(q) > 200 {
+		http.Error(w, "query too long", http.StatusBadRequest)
+		return
+	}
 
 	var (
 		results *database.SearchResults

@@ -279,7 +279,9 @@ func (db *DB) search(ctx context.Context, q string, filtered bool, userID sql.Nu
 	if strings.TrimSpace(q) == "" {
 		return &SearchResults{}, nil
 	}
-	like := "%" + q + "%"
+	// Escape SQLite LIKE metacharacters so they are treated as literals.
+	escaped := strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(q)
+	like := "%" + escaped + "%"
 
 	// ── Artists ──────────────────────────────────────────────────────────────
 	artistWhere := "WHERE f.deleted_at IS NULL"
@@ -299,8 +301,9 @@ func (db *DB) search(ctx context.Context, q string, filtered bool, userID sql.Nu
 		    ON ai.artist_name = COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
 		` + artistWhere + `
 		GROUP BY name
-		HAVING LOWER(name) LIKE LOWER(?)
-		ORDER BY LOWER(name) ASC`
+		HAVING LOWER(name) LIKE LOWER(?) ESCAPE '\'
+		ORDER BY LOWER(name) ASC
+		LIMIT 50`
 
 	aRows, err := db.QueryContext(ctx, artistQ, artistArgs...)
 	if err != nil {
@@ -324,7 +327,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool, userID sql.Nu
 	// ── Albums ───────────────────────────────────────────────────────────────
 	// Use the full expression in WHERE (before GROUP BY); HAVING with a SELECT
 	// alias is unreliable in SQLite when GROUP BY uses the full expression.
-	albumWhere := "WHERE f.deleted_at IS NULL AND COALESCE(NULLIF(m.album, ''), '') != '' AND LOWER(COALESCE(NULLIF(m.album, ''), '')) LIKE LOWER(?)"
+	albumWhere := "WHERE f.deleted_at IS NULL AND COALESCE(NULLIF(m.album, ''), '') != '' AND LOWER(COALESCE(NULLIF(m.album, ''), '')) LIKE LOWER(?) ESCAPE '\\'"
 	albumArgs := []any{like}
 	if filtered {
 		albumWhere += " AND " + accessClause
@@ -344,7 +347,8 @@ func (db *DB) search(ctx context.Context, q string, filtered bool, userID sql.Nu
 		    AND ali.album_title = COALESCE(NULLIF(m.album, ''), '')
 		` + albumWhere + `
 		GROUP BY COALESCE(NULLIF(m.album, ''), ''), COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
-		ORDER BY LOWER(COALESCE(NULLIF(m.album, ''), '')) ASC`
+		ORDER BY LOWER(COALESCE(NULLIF(m.album, ''), '')) ASC
+		LIMIT 50`
 
 	alRows, err := db.QueryContext(ctx, albumQ, albumArgs...)
 	if err != nil {
@@ -370,7 +374,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool, userID sql.Nu
 	}
 
 	// ── Tracks ───────────────────────────────────────────────────────────────
-	trackWhere := "WHERE f.deleted_at IS NULL AND LOWER(COALESCE(NULLIF(m.title, ''), fu.filename, '')) LIKE LOWER(?)"
+	trackWhere := "WHERE f.deleted_at IS NULL AND LOWER(COALESCE(NULLIF(m.title, ''), fu.filename, '')) LIKE LOWER(?) ESCAPE '\\'"
 	trackArgs := []any{like}
 	if filtered {
 		trackWhere += " AND " + accessClause
