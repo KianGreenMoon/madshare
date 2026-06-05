@@ -37,11 +37,11 @@
 Phases depend on each other strictly in this order. Do **not** start a phase until the previous is complete and its tests pass.
 
 ```
-Phase 1 — Image variant system (library, config, DB, worker, status API)
+Phase 1 — Image variant system (library, config, DB, worker, status API)   ✅ done
     ↓
-Phase 2 — Embedded cover extraction during audio upload
+Phase 2 — Embedded cover extraction during audio upload                     ✅ done
     ↓
-Phase 3 — Manual cover upload extension (server-side)
+Phase 3 — Manual cover upload extension (server-side)                       ← next
     ↓
 Phase 4 — Upload concurrency & rate limiting
     ↓
@@ -677,6 +677,28 @@ requires, so it stays a known quantity:
 ---
 
 ## Phase 2 — Embedded Cover Extraction During Audio Upload
+
+> **Status: ✅ Implemented** (commits `17a96bd`, `edd5138`; architect + developer + tester reviewed).
+> Deviations from the plan as written below:
+> - **Concurrency hardening (new):** added `database.SetAlbumCoverIfAbsent` — an
+>   atomic `INSERT … ON CONFLICT(album_artist, album_title) DO NOTHING` returning
+>   whether *this* call won. `maybeSaveEmbeddedCover` writes the original **before**
+>   claiming and only enqueues if it won, so concurrent tracks of one album resolve
+>   to a single cover + single job with no overwrite (the plan's `HasAlbumCover`
+>   check alone was a TOCTOU race). `SetAlbumCover` (overwrite form) is reserved for
+>   the Phase 3 manual path.
+> - **`cover_found` scope fix:** the effective artist (`AlbumArtist`→`Artist`) is
+>   resolved once in `uploadFile` and passed into `maybeSaveEmbeddedCover(ctx, tags, artist)`,
+>   so `cover_found` is computable at the call site (the plan's snippet referenced an
+>   out-of-scope `artist`). The dedup path returns `cover_found:false, cover_processing:false`
+>   for a consistent response shape.
+> - **`imagePool` already wired in Phase 1** — not re-added (plan §2b line 808 was stale).
+> - **Embedded-cover size cap (new):** embedded art over `maxImageSize` (10 MB) is
+>   skipped before writing, matching the manual path — closes a disk-write
+>   amplification vector (tester finding).
+> - **Deferred non-blockers** logged in `.issues/open-issues.md`: stuck
+>   `variants_ready=0` on enqueue failure, un-GC'd orphan originals, and the
+>   dhowden MP4 implicit-JPEG limitation.
 
 ### Goal
 When an audio file is uploaded, extract any embedded cover art from its tags and automatically save it as the album cover if none exists yet.
