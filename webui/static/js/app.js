@@ -169,12 +169,8 @@ function renderArtistList(artists) {
   if (!artists || artists.length === 0) {
     panel.innerHTML =
       `<div class="panel-fade-in"><div class="panel-empty">` +
-      `No music yet. <a href="#" id="openUploadEmpty">Upload files →</a>` +
+      `No music yet. <a href="/upload" id="openUploadEmpty">Upload files →</a>` +
       `</div></div>`;
-    document.getElementById('openUploadEmpty')?.addEventListener('click', e => {
-      e.preventDefault();
-      openModal();
-    });
     return;
   }
 
@@ -776,8 +772,6 @@ const dropZone  = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
 const status    = document.getElementById('uploadStatus');
 
-document.getElementById('openUpload').addEventListener('click', openModal);
-document.getElementById('openUploadEmpty')?.addEventListener('click', openModal);
 document.getElementById('closeModal').addEventListener('click', closeModal);
 modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
