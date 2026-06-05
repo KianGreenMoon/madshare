@@ -75,15 +75,19 @@ Verify it appears in `go.mod` and `go.sum`.
 
 **File to modify:** `config/config.go`
 
-Extend `StorageConfig` with three new fields:
+**Append** three new fields to `StorageConfig`. Do **not** recopy the existing
+fields — `MaxUploadMB` is `int64` (its `MaxUploadBytes()` helper and the
+existing validation depend on that); retyping it to `int` is a regression. The
+struct after editing:
 
 ```go
 type StorageConfig struct {
-    FilesDir                 string `toml:"files_dir"`
-    MaxUploadMB              int    `toml:"max_upload_mb"`
-    ServerMaxParallelWorkers int    `toml:"server_max_parallel_workers"` // 0 = unlimited
-    UserMaxParallelWorkers   int    `toml:"user_max_parallel_workers"`   // 0 = unlimited; admins bypass
-    ImageProcessingWorkers   int    `toml:"image_processing_workers"`    // 0 = auto (runtime.NumCPU()); CPU-bound variant-resize pool
+    FilesDir    string `toml:"files_dir"`
+    MaxUploadMB int64  `toml:"max_upload_mb"` // unchanged — stays int64
+    // --- new fields below ---
+    ServerMaxParallelWorkers int `toml:"server_max_parallel_workers"` // 0 = unlimited
+    UserMaxParallelWorkers   int `toml:"user_max_parallel_workers"`   // 0 = unlimited (no admin bypass; see locked decisions)
+    ImageProcessingWorkers   int `toml:"image_processing_workers"`    // 0 = auto (runtime.NumCPU()); CPU-bound variant-resize pool
 }
 ```
 
@@ -98,28 +102,48 @@ Storage: StorageConfig{
 },
 ```
 
-Add validation in `config.Load` after existing storage validation:
+Add validation in `config.Load` after existing storage validation. Clamp
+out-of-range values and surface the adjustment via the existing **`Warnings()`**
+mechanism — **do not** call `log.Printf` here. The rest of the package keeps a
+deliberate split: `validate()` returns hard errors, soft advisories accrue in
+`Config.Warnings()`, and `main` logs them at startup (`config.go:253`,
+`madshare.go:35`). Inline `log.Printf` would bypass that and also emit noise from
+every test / programmatic `config.Load`.
+
+`Warnings()` is currently a pure method computing from `c.Listen`, so it can't
+observe a value that `Load` already clamped. Add a small unexported
+`warnings []string` field to `Config`, append clamp advisories to it during
+`Load`, and have `Warnings()` return that slice **plus** the listener-derived
+warnings it already computes:
 
 ```go
 // image_processing_workers: 0/unset → auto (number of CPUs); explicit ≥1 honored;
-// negative is invalid → auto + warn. runtime.NumCPU() always returns ≥1.
+// negative is invalid → clamp to auto + warn. runtime.NumCPU() always returns ≥1.
 if c.Storage.ImageProcessingWorkers == 0 {
     c.Storage.ImageProcessingWorkers = runtime.NumCPU()
 } else if c.Storage.ImageProcessingWorkers < 0 {
-    log.Printf("config: storage.image_processing_workers %d is invalid, using auto (NumCPU=%d)", c.Storage.ImageProcessingWorkers, runtime.NumCPU())
+    c.warnings = append(c.warnings, fmt.Sprintf(
+        "storage.image_processing_workers %d is invalid; using auto (NumCPU=%d)",
+        c.Storage.ImageProcessingWorkers, runtime.NumCPU()))
     c.Storage.ImageProcessingWorkers = runtime.NumCPU()
 }
 if c.Storage.ServerMaxParallelWorkers < 0 {
-    log.Printf("config: storage.server_max_parallel_workers %d is invalid, using 0 (unlimited)", c.Storage.ServerMaxParallelWorkers)
+    c.warnings = append(c.warnings, fmt.Sprintf(
+        "storage.server_max_parallel_workers %d is invalid; using 0 (unlimited)",
+        c.Storage.ServerMaxParallelWorkers))
     c.Storage.ServerMaxParallelWorkers = 0
 }
 if c.Storage.UserMaxParallelWorkers < 0 {
-    log.Printf("config: storage.user_max_parallel_workers %d is invalid, using 0 (unlimited)", c.Storage.UserMaxParallelWorkers)
+    c.warnings = append(c.warnings, fmt.Sprintf(
+        "storage.user_max_parallel_workers %d is invalid; using 0 (unlimited)",
+        c.Storage.UserMaxParallelWorkers))
     c.Storage.UserMaxParallelWorkers = 0
 }
 ```
 
-Add `"runtime"` to the imports in `config/config.go` (used by the auto-default above).
+In `Warnings()`, prepend/append `c.warnings` to the existing listener loop's
+output. `"runtime"` and `"fmt"` must be imported in `config/config.go` (`fmt` is
+already imported).
 
 Update `madshare.toml.example` `[storage]` block:
 
@@ -145,21 +169,31 @@ max_parallel_workers     = 10  # ceiling the user can raise the slider to in the
 
 **New file: `config/webui_config.go`**
 
+⚠️ **Name collision:** `config/config.go:81` already declares
+`type WebUIConfig struct { APIBase string }` (the `[webui]` section, read at
+`madshare.go:113`). Declaring a second `WebUIConfig` in the same package is a
+compile error. Name the new type **`UIConfig`** (and its nested type
+`UIUploadConfig`). Carry that name through `LoadWebUI`'s return type, the
+`handler` field, and `api.Deps` so nothing reads as the existing `[webui]`
+config.
+
 ```go
 package config
 
-type WebUIUploadConfig struct {
+type UIUploadConfig struct {
     DefaultParallelWorkers int `toml:"default_parallel_workers"`
     MaxParallelWorkers     int `toml:"max_parallel_workers"`
 }
 
-type WebUIConfig struct {
-    Upload WebUIUploadConfig `toml:"upload"`
+// UIConfig is the parsed webui.toml (distinct from WebUIConfig, which is the
+// [webui] section of the main config).
+type UIConfig struct {
+    Upload UIUploadConfig `toml:"upload"`
 }
 
 // LoadWebUI reads the webui.toml at path. If the file does not exist, built-in
 // defaults are returned with no error. Returns an error only on parse failure.
-func LoadWebUI(path string) (*WebUIConfig, error)
+func LoadWebUI(path string) (*UIConfig, error)
 ```
 
 Defaults when file is absent or field is zero:
@@ -171,11 +205,11 @@ Validation (non-fatal, log and clamp):
 - `MaxParallelWorkers < 1` → clamp to 1
 - `MaxParallelWorkers < DefaultParallelWorkers` → clamp `MaxParallelWorkers` up to `DefaultParallelWorkers`
 
-Add a `-webui-config` flag to `madshare.go` alongside the existing `-config` flag. Load `WebUIConfig` in `main` immediately after `config.Load`; pass it into `api.Deps`.
+Add a `-webui-config` flag to `madshare.go` alongside the existing `-config` flag. Load the `UIConfig` (via `LoadWebUI`) in `main` immediately after `config.Load`; pass it into `api.Deps`.
 
 **New API endpoint: `GET /api/ui/config`**
 
-Public — no auth required (the UI needs it before login). Returns `WebUIConfig` as JSON:
+Public — no auth required (the UI needs it before login). Returns the `UIConfig` as JSON:
 
 ```json
 {
@@ -192,7 +226,7 @@ Register in `api.RegisterAPI`:
 r.Get("/api/ui/config", h.getUIConfig)
 ```
 
-Add `webUIConfig *config.WebUIConfig` field to `handler` struct; wire from `Deps.WebUIConfig`.
+Add `uiConfig *config.UIConfig` field to the `handler` struct; wire from `Deps.UIConfig`.
 
 Update `CLAUDE.md` config section to document the three new `[storage]` fields and `webui.toml`.
 
@@ -233,16 +267,27 @@ CREATE TABLE image_processing_jobs (
 );
 
 CREATE INDEX idx_imgproc_status ON image_processing_jobs(status, created_at);
+
+-- Enforce enqueue idempotency at the DB level: at most one active (pending or
+-- running) job per base_key. EnqueueImageJob relies on this with ON CONFLICT
+-- DO NOTHING (see §1f) so concurrent uploads of the same cover can't double-queue.
+CREATE UNIQUE INDEX idx_imgproc_active ON image_processing_jobs(base_key)
+    WHERE status IN ('pending', 'running');
 ```
 
-**Startup reset query** (added to `database/database.go` or `database/images.go` — see §1f):
+`009` is the next free migration number (latest on disk is `008_live_license_access.sql`). Adding it bumps the latest-version assertion that `database/*_test.go` pins — see §1j.
+
+**Startup reset** is a method (`ResetStaleJobs`, §1f) called from `main`, **not**
+embedded in `DB.Open`. It runs the query:
 
 ```sql
 UPDATE image_processing_jobs SET status = 'pending', started_at = NULL
 WHERE status = 'running';
 ```
 
-Run this in `DB.Open` (or equivalent startup path) before returning the DB handle to the application.
+Call `db.ResetStaleJobs(ctx)` in `main` after `db.Open` succeeds and **before**
+`go pool.Start` (§1g). Do not put it inside `DB.Open` — that path is shared by
+every test's `:memory:` open and must not be coupled to one feature's schema.
 
 ---
 
@@ -320,12 +365,19 @@ Implementation notes:
 - Reject if `img.Bounds().Max.X > maxImageDimension || img.Bounds().Max.Y > maxImageDimension`
 - For each non-original variant:
   - If name ends in `_crop`: `imaging.Fill(img, size, size, imaging.Center, imaging.Lanczos)`
-  - If name ends in `_fit`: `imaging.Fit(img, size, size, imaging.Lanczos)` then pad to square: create a new `size×size` NRGBA image (white for JPEG output, transparent for PNG), draw the fit result centered on it
-- Encode each result:
-  - For JPEG source: `imaging.EncodeJPEG` quality 85
-  - For PNG source: `imaging.EncodePNG`
+  - If name ends in `_fit`: `imaging.Fit(img, size, size, imaging.Lanczos)` then pad
+    to square — build the canvas with `imaging.New(size, size, bg)` (`bg` =
+    `color.NRGBA{255,255,255,255}` for JPEG output, `color.NRGBA{0,0,0,0}` for
+    PNG) and composite the fit result with `imaging.PasteCenter(canvas, fit)`.
+    (Use the `imaging` helpers — do not hand-roll `image/draw`.)
+- Encode each result with the single `imaging.Encode(w io.Writer, img, format, ...opts)` API.
+  **`imaging.EncodeJPEG` / `imaging.EncodePNG` do not exist** — they will not compile.
+  - For JPEG source: `imaging.Encode(&buf, img, imaging.JPEG, imaging.JPEGQuality(85))`
+  - For PNG source: `imaging.Encode(&buf, img, imaging.PNG)`
 - Original variant: store raw `data` bytes unchanged
 - Extension rules: JPEG → `.jpg`; PNG → `.png`
+
+Imports: `bytes`, `image/color` (for the padding background).
 
 ---
 
@@ -336,6 +388,13 @@ Implementation notes:
 ```go
 // BaseKey computes the 16-character hex prefix of the SHA-256 of data.
 // Same image bytes always produce the same base_key.
+//
+// Collision posture (document this in the actual doc comment): 16 hex chars =
+// 64 bits, matching the existing image key (library_handlers.go's hashHex[:16]).
+// Birthday collision is ~50% only near 2^32 distinct covers — acceptable at this
+// scale. Two *different* images sharing a prefix would silently overwrite each
+// other's variant files and be treated as one job by EnqueueImageJob's
+// base_key-keyed idempotency. This is an accepted trade-off, not a bug.
 func BaseKey(data []byte) string
 
 // VariantPath returns the on-disk relative path for a variant.
@@ -353,15 +412,39 @@ func VariantURL(baseKey, variant, ext string) string
 
 **File to create:** `database/images.go`
 
-New methods on `*DB`. Also add them to the `Repository` interface in `database/repo.go`.
+New methods on `*DB`. Also add them to the `Repository` interface in
+`database/repo.go`. ⚠️ Adding interface methods breaks every `Repository` fake
+in the `api` tests (they no longer satisfy the interface) — the fakes must gain
+no-op/stub implementations of all seven new methods (`EnqueueImageJob`,
+`ClaimImageJob`, `FinishImageJob`, `ResetStaleJobs`, `SetAlbumCover`,
+`GetAlbumCoverStatus`, `HasAlbumCover`) as part of this step, before anything
+will compile. See §1j.
+
+⚠️ **Concurrency note (applies to the whole queue).** Do **not** rely on "SQLite
+is single-writer" for correctness here. `SetMaxOpenConns(1)` is applied **only**
+for `:memory:` DBs (`database/database.go:41`); the on-disk DB uses an unbounded
+connection pool, so the N worker goroutines run these methods on *different*
+connections concurrently. Claim and enqueue must therefore be atomic at the SQL
+level, not via Go-side SELECT-then-write.
 
 ```go
-// EnqueueImageJob inserts a new image_processing_jobs row with status=pending.
-// Idempotent: if a pending or running job already exists for the same base_key,
-// does nothing (returns nil).
+// EnqueueImageJob inserts a new pending image_processing_jobs row.
+// Idempotent at the DB level: relies on the partial unique index
+// idx_imgproc_active (§1c) via INSERT ... ON CONFLICT(base_key) DO NOTHING, so
+// concurrent enqueues for the same base_key collapse to one active job.
+// A plain SELECT-then-INSERT is NOT acceptable — it races.
 EnqueueImageJob(ctx context.Context, coverType, subjectKey, baseKey string, now int64) error
 
-// ClaimImageJob atomically sets one pending job to running and returns it.
+// ClaimImageJob atomically claims one pending job. Must be a single atomic
+// statement so two workers on different connections cannot grab the same row.
+// Use UPDATE ... RETURNING (modernc.org/sqlite supports it):
+//
+//   UPDATE image_processing_jobs SET status='running', started_at=?
+//   WHERE id = (SELECT id FROM image_processing_jobs WHERE status='pending'
+//               ORDER BY created_at, id LIMIT 1)
+//   RETURNING id, cover_type, subject_key, base_key, retry_count;
+//
+// (A BEGIN IMMEDIATE txn wrapping SELECT+UPDATE is an acceptable alternative.)
 // Returns nil job (no error) if the queue is empty.
 ClaimImageJob(ctx context.Context) (*ImageJob, error)
 
@@ -446,10 +529,24 @@ Worker loop per goroutine:
 Retry policy: implemented inside `FinishImageJob` (§1f). A job that fails 3 times is marked `status=failed` and not retried.
 
 **Wire up in `madshare.go`:**
-- After `db.Open`, call `db.ResetStaleJobs(ctx)`
-- Create `imageproc.NewPool(db, imagesDir, cfg.Storage.ImageProcessingWorkers)`
-- `go pool.Start(ctx)` — cancelled by the same context as the HTTP servers
-- Pass `pool` (or just `pool.Notify`) to the API handler deps so it can signal after enqueuing a job
+
+⚠️ `main` has **no long-lived context today** — servers are stopped via a signal
+channel and per-server `srv.Shutdown(shutdownCtx)` (`madshare.go:89`). The pool
+needs an explicit one. Add near the top of `main`:
+
+```go
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+```
+
+Then:
+- After `db.Open` succeeds, call `db.ResetStaleJobs(ctx)` (before launching the pool).
+- Create `imageproc.NewPool(db, imagesDir, cfg.Storage.ImageProcessingWorkers)`.
+- `go pool.Start(ctx)`.
+- In the shutdown path (where the signal is received, alongside the `srv.Shutdown`
+  calls), invoke `cancel()` so the pool's workers unblock and exit.
+- Pass `pool` (satisfying `interface{ Notify() }`) to the API handler deps so it
+  can signal after enqueuing a job.
 
 **`Deps` struct in `api/api.go`:** add `ImagePool interface { Notify() }` field. Nil-safe: if nil, skip notify (allows tests to omit it).
 
@@ -460,6 +557,16 @@ Retry policy: implemented inside `FinishImageJob` (§1f). A job that fails 3 tim
 **Route:** `GET /api/albums/{album}/image/status?artist=<artist>`  
 **Handler:** `(h *handler) getAlbumImageStatus`  
 **Auth:** none (same access as `GET /api/albums/{album}/image`)
+
+> **Known limitation (inherited, decide before building):** taking `album` from
+> the chi path segment means album titles containing `/` won't round-trip, and
+> the `album=""` ("Other") bucket can't be expressed as a path segment at all.
+> The existing `GET /api/albums/{album}/image` already has this, so the route
+> below is *consistent* with it — but Phase 5 calls `/status` for every detected
+> group, so the latent bug gets exercised much more. Option: take **both**
+> `artist` and `album` as query params on the new `/status` route (and
+> `getAlbumImage` too, longer term). Defaulting to the consistent path-param form
+> unless decided otherwise.
 
 Response shape:
 
@@ -498,9 +605,20 @@ r.Get("/api/albums/{album}/image/status", h.getAlbumImageStatus)
 
 The `/images/*` file server in `api.RegisterAPI` already serves `h.imagesDir` via `http.FileServer`. It will automatically serve the new `<base_key>/` subdirectories without changes. Verify the existing `noListFS` wrapper (which returns 404 for directory listings) also blocks listing of `<base_key>/` directories — it should, since `noListFS` intercepts all directory opens. No code change needed here.
 
+Note: the new `<base_key>/` variant dirs are also reachable under `/files/images/<base_key>/...` because `imagesDir` nests inside `filesDir` (the existing documented issue in `api.RegisterAPI`). This is not a Phase 1 regression — it just slightly widens that pre-existing surface. No action now; tracked with the original issue.
+
 ---
 
 ### 1j. Tests for Phase 1
+
+**Do this first — required for the package to compile/pass at all:**
+- `database/*_test.go`: bump the latest-migration-version assertion from `008` to `009`.
+- Every `Repository` fake in `api/*_test.go`: add stub implementations of the
+  seven new interface methods (§1f) so the fakes still satisfy `Repository`.
+  Without this the `api` package tests won't compile, which blocks the
+  `imageproc` integration test that depends on a real repo + migration.
+
+**New tests:**
 
 - `media/images_test.go`:
   - `TestProcessImage_JPEG`: load a small JPEG fixture, call `ProcessImage`, assert all 9 variant names present, all byte slices non-empty, output can be decoded by `imaging.Decode`
@@ -1117,18 +1235,18 @@ When the player loads a new track:
 
 | File | Action | Phase |
 |---|---|---|
-| `config/config.go` | Extend `StorageConfig` with 3 new fields; add `WebUIConfig` if in same file | 1b |
-| `config/webui_config.go` | New: `WebUIConfig`, `LoadWebUI` | 1b |
+| `config/config.go` | Append 3 `int` fields to `StorageConfig` (keep `MaxUploadMB int64`); add unexported `warnings` slice + surface clamp advisories via `Warnings()` | 1b |
+| `config/webui_config.go` | New: `UIConfig`/`UIUploadConfig` (NOT `WebUIConfig` — name taken), `LoadWebUI` | 1b |
 | `madshare.toml.example` | Add new `[storage]` fields | 1b |
 | `webui.toml.example` | New file | 1b |
-| `madshare.go` | Add `-webui-config` flag; wire limiter, imageproc pool, `ResetStaleJobs`, `WebUIConfig` | 1b, 1g, 4b |
+| `madshare.go` | Add `context.WithCancel` for pool lifecycle + `cancel()` on shutdown; add `-webui-config` flag; wire limiter, imageproc pool, `ResetStaleJobs`, `UIConfig` | 1b, 1g, 4b |
 | `database/migrations/009_image_variants.sql` | New migration | 1c |
 | `media/images.go` | `ProcessImage`, variant constants | 1d |
 | `media/imagestore.go` | `BaseKey`, `VariantPath`, `VariantURL` | 1e |
 | `database/images.go` | New DB methods for job queue and cover variants | 1f |
 | `database/repo.go` | Add new methods to `Repository` interface | 1f |
 | `imageproc/worker.go` | `Pool` type, worker goroutines | 1g |
-| `api/api.go` | Add `ImagePool`, `UploadLimiter`, `WebUIConfig` to `Deps`; register status + ui/config routes | 1h, 4b |
+| `api/api.go` | Add `ImagePool`, `UploadLimiter`, `UIConfig` to `Deps`; register status + ui/config routes | 1h, 4b |
 | `api/library_handlers.go` | Add `getAlbumImageStatus`, `getUIConfig`; rewrite `uploadAlbumImage` | 1h, 1b, 3a |
 | `media/extract.go` | Add `CoverData`, `Tags.CoverImage` | 2a |
 | `api/handlers.go` | Add `imagePool`/`limiter` fields to the `handler` struct | 2b, 4b |
