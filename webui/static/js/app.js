@@ -283,6 +283,10 @@ function renderTrackList(tracks) {
       dur,
     });
   });
+  // If currentIndex is out of range (e.g. stale from a search playlist), reset it
+  // so Next/Prev don't navigate into the wrong list. Keep it when it still points
+  // into this list (user was playing a library track and re-entered the same album).
+  if (currentIndex >= playlist.length) currentIndex = -1;
 
   const wrap = document.createElement('div');
   wrap.className = 'panel-fade-in';
@@ -538,6 +542,7 @@ const viewSearch  = document.getElementById('view-search');
 
 let lastQuery   = '';
 let searchTimer = null;
+let searchAbort = null;
 
 searchInput.addEventListener('input', () => {
   const q = searchInput.value.trim();
@@ -587,15 +592,23 @@ function showSearchView() {
 async function runSearch(q) {
   if (q === lastQuery) return;
   lastQuery = q;
+
+  // Cancel any in-flight request for an older query.
+  if (searchAbort) searchAbort.abort();
+  searchAbort = new AbortController();
+
   showSearchView();
   viewSearch.innerHTML = '<div class="search-loading-bar"></div>';
 
   let results;
   try {
-    const res = await fetch(`${API}/api/search?q=${encodeURIComponent(q)}`);
+    const res = await fetch(`${API}/api/search?q=${encodeURIComponent(q)}`, { signal: searchAbort.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     results = await res.json();
-  } catch {
+    searchAbort = null;
+  } catch (err) {
+    if (err.name === 'AbortError') return; // superseded by a newer query — discard silently
+    lastQuery = ''; // allow retry with the same query after a real error
     viewSearch.innerHTML =
       '<p style="color:var(--error);padding:16px;text-align:center">' +
       'Search failed — check your connection and try again.</p>';
