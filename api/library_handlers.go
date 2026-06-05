@@ -1,9 +1,9 @@
 package api
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"os"
@@ -19,17 +19,20 @@ import (
 
 const maxImageSize = 10 << 20 // 10 MB
 
+// allowedImageMIMETypes / allowedImageExtensions gate cover uploads. WebP is
+// intentionally excluded: the variant pipeline (media.ProcessImage) only decodes
+// JPEG and PNG, so accepting WebP here would store an original the worker can
+// never process. See docs/plans/upload-and-covers.md §1k for the (non-breaking)
+// path to add WebP later.
 var allowedImageMIMETypes = map[string]bool{
 	"image/jpeg": true,
 	"image/png":  true,
-	"image/webp": true,
 }
 
 var allowedImageExtensions = map[string]string{
 	".jpg":  "image/jpeg",
 	".jpeg": "image/jpeg",
 	".png":  "image/png",
-	".webp": "image/webp",
 }
 
 func (h *handler) listArtists(w http.ResponseWriter, r *http.Request) {
@@ -253,9 +256,21 @@ func (h *handler) getArtistImage(w http.ResponseWriter, r *http.Request) {
 func (h *handler) uploadArtistImage(w http.ResponseWriter, r *http.Request) {
 	artist := chi.URLParam(r, "artist")
 	r.Body = http.MaxBytesReader(w, r.Body, maxImageSize)
-	objectKey, mimeType, err := h.saveImageUpload(r)
+	data, mimeType, ext, err := h.readImageUpload(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// Artist covers have no variant pipeline yet (deferred — see the plan), so
+	// they keep the flat <base_key><ext> object key rather than a <base_key>/
+	// variant directory. The schema reserves variant columns for later.
+	objectKey := media.BaseKey(data) + ext
+	if err := os.MkdirAll(h.imagesDir, 0o755); err != nil {
+		http.Error(w, "cannot create images dir", http.StatusInternalServerError)
+		return
+	}
+	if err := os.WriteFile(filepath.Join(h.imagesDir, objectKey), data, 0o644); err != nil {
+		http.Error(w, "cannot save image", http.StatusInternalServerError)
 		return
 	}
 	if err := h.repo.UpsertArtistImage(r.Context(), artist, objectKey, mimeType, time.Now().Unix()); err != nil {
@@ -330,31 +345,70 @@ func (h *handler) getUIConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, cfg)
 }
 
+// uploadAlbumImage stores a manually uploaded album cover and triggers async
+// variant generation. Unlike the embedded-cover path (which fills only when no
+// cover exists), a manual upload always replaces the current cover —
+// "explicit beats embedded" — via SetAlbumCover.
 func (h *handler) uploadAlbumImage(w http.ResponseWriter, r *http.Request) {
 	album := chi.URLParam(r, "album")
 	artist := r.URL.Query().Get("artist")
 	r.Body = http.MaxBytesReader(w, r.Body, maxImageSize)
-	objectKey, mimeType, err := h.saveImageUpload(r)
+
+	data, mimeType, ext, err := h.readImageUpload(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := h.repo.UpsertAlbumImage(r.Context(), artist, album, objectKey, mimeType, time.Now().Unix()); err != nil {
+
+	baseKey := media.BaseKey(data)
+	objectKey := media.VariantPath(baseKey, media.VariantOriginal, ext)
+	destPath := filepath.Join(h.imagesDir, objectKey)
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		http.Error(w, "cannot create images dir", http.StatusInternalServerError)
+		return
+	}
+	if err := os.WriteFile(destPath, data, 0o644); err != nil {
+		http.Error(w, "cannot save image", http.StatusInternalServerError)
+		return
+	}
+
+	now := time.Now().Unix()
+	ctx := r.Context()
+	if err := h.repo.SetAlbumCover(ctx, artist, album, baseKey, ext, objectKey, mimeType, now); err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	h.audit(r.Context(), "metadata.image", "album:"+artist+"/"+album, "")
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	subjectKey := artist + "\x1f" + album
+	if err := h.repo.EnqueueImageJob(ctx, "album", subjectKey, baseKey, now); err != nil {
+		// Non-fatal: the original is saved; variants stay missing until the cover
+		// is re-uploaded (or a future reconciler re-enqueues the job).
+		log.Printf("enqueue image job: %v", err)
+	}
+	if h.imagePool != nil {
+		h.imagePool.Notify()
+	}
+
+	h.audit(ctx, "metadata.image", "album:"+artist+"/"+album, "manual upload")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "processing": true})
 }
 
-func (h *handler) saveImageUpload(r *http.Request) (objectKey, mimeType string, err error) {
+// readImageUpload parses and validates a multipart image upload (the "image"
+// form field), returning the raw bytes, the canonical MIME type, and the
+// canonical extension (".jpg"/".png" — never the raw uploaded ".jpeg"). Both the
+// declared Content-Type and the filename extension must pass the allow-lists.
+// It performs no disk writes; callers decide where the bytes land.
+//
+// The canonical extension matters: the status API, variant worker, and
+// media.VariantPath all assume original.jpg / original.png, so a ".jpeg" upload
+// must yield ext == ".jpg".
+func (h *handler) readImageUpload(r *http.Request) (data []byte, mimeType, ext string, err error) {
 	if err := r.ParseMultipartForm(maxImageSize); err != nil {
-		return "", "", fmt.Errorf("image too large or invalid form")
+		return nil, "", "", fmt.Errorf("image too large or invalid form")
 	}
 
 	file, header, err := r.FormFile("image")
 	if err != nil {
-		return "", "", fmt.Errorf("missing image field")
+		return nil, "", "", fmt.Errorf("missing image field")
 	}
 	defer file.Close()
 
@@ -362,32 +416,27 @@ func (h *handler) saveImageUpload(r *http.Request) (objectKey, mimeType string, 
 	// allow-list check, mirroring the audio upload path.
 	claimedMIME, _, parseErr := mime.ParseMediaType(header.Header.Get("Content-Type"))
 	if parseErr != nil || !allowedImageMIMETypes[claimedMIME] {
-		return "", "", fmt.Errorf("unsupported image type")
+		return nil, "", "", fmt.Errorf("unsupported image type")
 	}
-	ext := strings.ToLower(filepath.Ext(sanitizeFilename(header.Filename)))
-	canonicalMIME, ok := allowedImageExtensions[ext]
+	rawExt := strings.ToLower(filepath.Ext(sanitizeFilename(header.Filename)))
+	canonicalMIME, ok := allowedImageExtensions[rawExt]
 	if !ok {
-		return "", "", fmt.Errorf("unsupported image extension")
+		return nil, "", "", fmt.Errorf("unsupported image extension")
 	}
 
-	data, err := io.ReadAll(file)
+	data, err = io.ReadAll(file)
 	if err != nil {
-		return "", "", fmt.Errorf("read image: %w", err)
+		return nil, "", "", fmt.Errorf("read image: %w", err)
 	}
 
-	sum := sha256.Sum256(data)
-	hashHex := fmt.Sprintf("%x", sum)
-	key := hashHex[:16] + ext
-
-	if err := os.MkdirAll(h.imagesDir, 0o755); err != nil {
-		return "", "", fmt.Errorf("create images dir: %w", err)
+	canonicalExt, ok := mimeToExt(canonicalMIME)
+	if !ok {
+		// Unreachable: allowedImageExtensions only maps to jpeg/png, both of
+		// which mimeToExt knows. Guarded so a future allow-list edit can't
+		// silently produce an empty extension.
+		return nil, "", "", fmt.Errorf("unsupported image type")
 	}
-	dest := filepath.Join(h.imagesDir, key)
-	if err := os.WriteFile(dest, data, 0o644); err != nil {
-		return "", "", fmt.Errorf("write image: %w", err)
-	}
-
-	return key, canonicalMIME, nil
+	return data, canonicalMIME, canonicalExt, nil
 }
 
 func (h *handler) serveImageFile(w http.ResponseWriter, r *http.Request, objectKey, mimeType string) {

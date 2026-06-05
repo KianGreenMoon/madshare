@@ -1,0 +1,175 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"daemonlord.ygg/madshare/media"
+	"github.com/go-chi/chi/v5"
+)
+
+// withChiParams attaches chi URL params to a request so a handler reached via
+// chi.URLParam can be invoked directly (without spinning up a router).
+func withChiParams(req *http.Request, params map[string]string) *http.Request {
+	rctx := chi.NewRouteContext()
+	for k, v := range params {
+		rctx.URLParams.Add(k, v)
+	}
+	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+}
+
+// albumImageReq builds a POST album-cover request: an "image" multipart part,
+// the album as a chi path param, and the artist as a query param.
+func albumImageReq(t *testing.T, artist, album, filename, contentType string, body []byte) *http.Request {
+	t.Helper()
+	req := buildImageRequest(t, filename, contentType, body)
+	if artist != "" {
+		q := req.URL.Query()
+		q.Set("artist", artist)
+		req.URL.RawQuery = q.Encode()
+	}
+	return withChiParams(req, map[string]string{"album": album})
+}
+
+// ---- Phase 3: manual album cover upload -------------------------------------
+
+// TestUploadAlbumImage_EnqueuesJob posts a JPEG cover and asserts the original
+// lands under <imagesDir>/<base_key>/original.jpg, a single variant job is
+// enqueued, the album_images row carries base_key/source_ext, and the response
+// reports processing:true.
+func TestUploadAlbumImage_EnqueuesJob(t *testing.T) {
+	h, db, base := newTestHandler(t)
+	img := []byte("\xFF\xD8\xFF\xE0 jpeg cover bytes")
+
+	rr := httptest.NewRecorder()
+	h.uploadAlbumImage(rr, albumImageReq(t, "Pink Floyd", "Dark Side", "cover.jpg", "image/jpeg", img))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]any
+	json.NewDecoder(rr.Body).Decode(&resp)
+	if resp["ok"] != true || resp["processing"] != true {
+		t.Errorf("response = %v, want ok:true processing:true", resp)
+	}
+
+	baseKey := media.BaseKey(img)
+	wantPath := filepath.Join(base, "images", baseKey, "original.jpg")
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Errorf("original not stored at %s: %v", wantPath, err)
+	}
+
+	gotKey, gotExt, ready, found, err := db.GetAlbumCoverStatus(context.Background(), "Pink Floyd", "Dark Side")
+	if err != nil || !found {
+		t.Fatalf("GetAlbumCoverStatus: found=%v err=%v", found, err)
+	}
+	if gotKey != baseKey || gotExt != ".jpg" {
+		t.Errorf("stored cover = (%q,%q), want (%q,.jpg)", gotKey, gotExt, baseKey)
+	}
+	if ready {
+		t.Error("variants_ready = true before the worker ran, want false")
+	}
+	if got := countPendingImageJobs(t, h); got != 1 {
+		t.Errorf("pending image jobs = %d, want 1", got)
+	}
+}
+
+// TestUploadAlbumImage_OverwritesExisting verifies a manual upload replaces the
+// current cover (explicit beats embedded / earlier): the album_images base_key
+// is updated to the new image and the new original is written.
+func TestUploadAlbumImage_OverwritesExisting(t *testing.T) {
+	h, db, base := newTestHandler(t)
+	ctx := context.Background()
+	imgA := []byte("\xFF\xD8\xFF\xE0 first cover")
+	imgB := []byte("\xFF\xD8\xFF\xE0 second different cover")
+
+	first := httptest.NewRecorder()
+	h.uploadAlbumImage(first, albumImageReq(t, "Artist", "Album", "a.jpg", "image/jpeg", imgA))
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status = %d; body: %s", first.Code, first.Body.String())
+	}
+
+	second := httptest.NewRecorder()
+	h.uploadAlbumImage(second, albumImageReq(t, "Artist", "Album", "b.jpg", "image/jpeg", imgB))
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status = %d; body: %s", second.Code, second.Body.String())
+	}
+
+	// The cover row must now point at the second image.
+	gotKey, _, _, found, err := db.GetAlbumCoverStatus(ctx, "Artist", "Album")
+	if err != nil || !found {
+		t.Fatalf("GetAlbumCoverStatus: found=%v err=%v", found, err)
+	}
+	if want := media.BaseKey(imgB); gotKey != want {
+		t.Errorf("base_key = %q, want %q (cover should be overwritten)", gotKey, want)
+	}
+	// Both originals exist on disk (the old one becomes a harmless orphan).
+	if _, err := os.Stat(filepath.Join(base, "images", media.BaseKey(imgB), "original.jpg")); err != nil {
+		t.Errorf("new original missing: %v", err)
+	}
+}
+
+// TestUploadAlbumImage_SameImageTwiceIdempotentJob verifies re-uploading the
+// identical cover does not double-queue: the per-base_key enqueue is idempotent.
+func TestUploadAlbumImage_SameImageTwiceIdempotentJob(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	img := []byte("\xFF\xD8\xFF\xE0 same cover bytes")
+
+	for i := 0; i < 2; i++ {
+		rr := httptest.NewRecorder()
+		h.uploadAlbumImage(rr, albumImageReq(t, "Artist", "Album", "cover.jpg", "image/jpeg", img))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("upload %d status = %d; body: %s", i, rr.Code, rr.Body.String())
+		}
+	}
+	if got := countPendingImageJobs(t, h); got != 1 {
+		t.Errorf("pending image jobs = %d, want 1 (idempotent enqueue per base_key)", got)
+	}
+}
+
+// TestUploadAlbumImage_RejectsWebP verifies the manual album endpoint rejects
+// WebP up front (dropped from the allow-lists in Phase 3).
+func TestUploadAlbumImage_RejectsWebP(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	rr := httptest.NewRecorder()
+	h.uploadAlbumImage(rr, albumImageReq(t, "Artist", "Album", "cover.webp", "image/webp", []byte("RIFF....WEBP")))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for WebP cover", rr.Code)
+	}
+}
+
+// TestUploadArtistImage_StoresFlatKey verifies the artist cover path still uses
+// the flat <base_key><ext> object key (artist variants are deferred) and stores
+// it under imagesDir.
+func TestUploadArtistImage_StoresFlatKey(t *testing.T) {
+	h, db, base := newTestHandler(t)
+	img := []byte("\x89PNG\r\n artist image")
+
+	req := buildImageRequest(t, "artist.png", "image/png", img)
+	req = withChiParams(req, map[string]string{"artist": "Pink Floyd"})
+	rr := httptest.NewRecorder()
+	h.uploadArtistImage(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", rr.Code, rr.Body.String())
+	}
+
+	objectKey, mimeType, found, err := db.GetArtistImage(context.Background(), "Pink Floyd")
+	if err != nil || !found {
+		t.Fatalf("GetArtistImage: found=%v err=%v", found, err)
+	}
+	wantKey := media.BaseKey(img) + ".png"
+	if objectKey != wantKey {
+		t.Errorf("object_key = %q, want flat %q", objectKey, wantKey)
+	}
+	if mimeType != "image/png" {
+		t.Errorf("mime = %q, want image/png", mimeType)
+	}
+	if _, err := os.Stat(filepath.Join(base, "images", wantKey)); err != nil {
+		t.Errorf("artist image not stored at flat path: %v", err)
+	}
+}

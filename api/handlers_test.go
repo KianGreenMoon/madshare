@@ -1135,61 +1135,60 @@ func buildImageRequest(t *testing.T, filename, contentType string, body []byte) 
 	return req
 }
 
-// TestSaveImageUpload_MIMEWithParameters verifies a parameterized image
+// TestReadImageUpload_MIMEWithParameters verifies a parameterized image
 // Content-Type is accepted (mirrors the audio upload fix).
-func TestSaveImageUpload_MIMEWithParameters(t *testing.T) {
+func TestReadImageUpload_MIMEWithParameters(t *testing.T) {
 	h, _, _ := newTestHandler(t)
 	req := buildImageRequest(t, "cover.png", "image/png; charset=binary", []byte("img"))
-	key, mime, err := h.saveImageUpload(req)
+	_, mime, ext, err := h.readImageUpload(req)
 	if err != nil {
-		t.Fatalf("saveImageUpload rejected parameterized MIME: %v", err)
+		t.Fatalf("readImageUpload rejected parameterized MIME: %v", err)
 	}
 	if mime != "image/png" {
 		t.Errorf("mime = %q, want image/png", mime)
 	}
-	if !strings.HasSuffix(key, ".png") {
-		t.Errorf("key = %q, want .png suffix", key)
+	if ext != ".png" {
+		t.Errorf("ext = %q, want .png", ext)
 	}
 }
 
-// TestSaveImageUpload_UppercaseExtension verifies an uppercase extension is
-// accepted and normalized (cameras commonly produce ".JPG").
-func TestSaveImageUpload_UppercaseExtension(t *testing.T) {
-	h, _, _ := newTestHandler(t)
-	req := buildImageRequest(t, "PHOTO.JPG", "image/jpeg", []byte("img"))
-	key, mime, err := h.saveImageUpload(req)
-	if err != nil {
-		t.Fatalf("saveImageUpload rejected uppercase extension: %v", err)
-	}
-	if mime != "image/jpeg" {
-		t.Errorf("mime = %q, want image/jpeg", mime)
-	}
-	if !strings.HasSuffix(key, ".jpg") {
-		t.Errorf("key = %q, want normalized .jpg suffix", key)
-	}
-}
-
-// TestSaveImageUpload_RejectsBadType verifies a disallowed MIME type is rejected.
-// TestSaveImageUpload_StoresUnderImagesDir verifies the saved blob lands in the
-// handler's imagesDir (the "images" subdir of files_dir), not a hardcoded path.
-func TestSaveImageUpload_StoresUnderImagesDir(t *testing.T) {
-	h, _, base := newTestHandler(t)
-	req := buildImageRequest(t, "cover.png", "image/png", []byte("img"))
-	key, _, err := h.saveImageUpload(req)
-	if err != nil {
-		t.Fatalf("saveImageUpload: %v", err)
-	}
-	want := filepath.Join(base, "images", key)
-	if _, err := os.Stat(want); err != nil {
-		t.Errorf("image not stored under files_dir/images: stat %s: %v", want, err)
+// TestReadImageUpload_CanonicalizesExtension verifies an uppercase or alternate
+// extension (.JPG / .jpeg) is normalized to the canonical .jpg, since the worker
+// and status API assume original.jpg / original.png.
+func TestReadImageUpload_CanonicalizesExtension(t *testing.T) {
+	for _, name := range []string{"PHOTO.JPG", "cover.jpeg"} {
+		t.Run(name, func(t *testing.T) {
+			h, _, _ := newTestHandler(t)
+			req := buildImageRequest(t, name, "image/jpeg", []byte("img"))
+			_, mime, ext, err := h.readImageUpload(req)
+			if err != nil {
+				t.Fatalf("readImageUpload rejected %q: %v", name, err)
+			}
+			if mime != "image/jpeg" {
+				t.Errorf("mime = %q, want image/jpeg", mime)
+			}
+			if ext != ".jpg" {
+				t.Errorf("ext = %q, want canonical .jpg", ext)
+			}
+		})
 	}
 }
 
-func TestSaveImageUpload_RejectsBadType(t *testing.T) {
+func TestReadImageUpload_RejectsBadType(t *testing.T) {
 	h, _, _ := newTestHandler(t)
 	req := buildImageRequest(t, "evil.svg", "image/svg+xml", []byte("<svg/>"))
-	if _, _, err := h.saveImageUpload(req); err == nil {
-		t.Error("saveImageUpload accepted disallowed image type")
+	if _, _, _, err := h.readImageUpload(req); err == nil {
+		t.Error("readImageUpload accepted disallowed image type")
+	}
+}
+
+// TestReadImageUpload_RejectsWebP verifies WebP is rejected up front (dropped
+// from the allow-lists in Phase 3 because the variant worker cannot decode it).
+func TestReadImageUpload_RejectsWebP(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	req := buildImageRequest(t, "cover.webp", "image/webp", []byte("RIFF....WEBP"))
+	if _, _, _, err := h.readImageUpload(req); err == nil {
+		t.Error("readImageUpload accepted WebP; it must be rejected")
 	}
 }
 
@@ -1203,14 +1202,14 @@ func TestSanitizeFilename_RejectsControlChars(t *testing.T) {
 	}
 }
 
-// TestSaveImageUpload_DisallowedExtensionRejected verifies that an allowed MIME
+// TestReadImageUpload_DisallowedExtensionRejected verifies that an allowed MIME
 // type paired with a disallowed extension is rejected (image analogue of the
 // audio MIME-bypass guard).
-func TestSaveImageUpload_DisallowedExtensionRejected(t *testing.T) {
+func TestReadImageUpload_DisallowedExtensionRejected(t *testing.T) {
 	h, _, _ := newTestHandler(t)
 	req := buildImageRequest(t, "evil.svg", "image/png", []byte("not really png"))
-	if _, _, err := h.saveImageUpload(req); err == nil {
-		t.Error("saveImageUpload accepted disallowed extension with allowed MIME type")
+	if _, _, _, err := h.readImageUpload(req); err == nil {
+		t.Error("readImageUpload accepted disallowed extension with allowed MIME type")
 	}
 }
 

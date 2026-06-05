@@ -142,9 +142,82 @@ to `default_parallel_workers` if configured below it.
 
 ---
 
+## `POST /api/albums/{album}/image`
+
+Uploads (or replaces) an album cover and triggers asynchronous variant
+generation. Extended in Phase 3 of the upload & covers work.
+
+### Request
+
+```
+POST /api/albums/{album}/image?artist=<album_artist>
+Content-Type: multipart/form-data
+```
+
+| Part / param | In       | Required | Description |
+|--------------|----------|----------|-------------|
+| `image`      | body     | yes      | The cover file (`multipart/form-data`). Max 10 MB. |
+| `album`      | path     | yes      | Album title (same path-segment limitation as the status route). |
+| `artist`     | query    | no       | Album artist; empty string matches rows with an empty `album_artist`. |
+
+**Accepted formats: JPEG and PNG only.** WebP and any other type are rejected
+with `400`. The extension is canonicalised to `.jpg` / `.png` (a `.jpeg` upload
+is stored as `original.jpg`), since the worker and status route assume those
+names.
+
+### Access control
+
+Requires the `metadata.edit` permission (pass-through when auth is not
+configured).
+
+### Behaviour
+
+Unlike embedded cover extraction (which only fills a missing cover), a manual
+upload **always replaces** the current cover — *explicit beats embedded*. The
+original is written to `<files_dir>/images/<base_key>/original<ext>`, the
+`album_images` row is updated with the new `base_key`/`source_ext` (and
+`variants_ready` reset to 0), and a variant job is enqueued. The enqueue is
+idempotent per `base_key`, so re-uploading the same image does not double-queue.
+
+Replacing a cover with a *different* image leaves the previous original on disk
+as a harmless orphan (see `.issues/open-issues.md`).
+
+### Response
+
+`200 OK`:
+
+```json
+{ "ok": true, "processing": true }
+```
+
+`processing` is always `true` — poll
+`GET /api/albums/{album}/image/status` until `variants_ready` is `true`.
+
+### Error responses
+
+| Status | Condition |
+|--------|-----------|
+| 400    | Missing `image` part, body over 10 MB, or unsupported type/extension (incl. WebP). |
+| 500    | Storage or database error. |
+
+---
+
+## `POST /api/artists/{artist}/image`
+
+Uploads an artist image. Artist covers have **no variant pipeline yet**
+(deferred), so the original is stored under the flat key `<base_key><ext>` and no
+job is enqueued. Same JPEG/PNG-only validation and `metadata.edit` gate as the
+album endpoint. Returns `{ "ok": true }`.
+
+---
+
 ## Examples
 
 ```bash
+# Upload an album cover (triggers variant generation)
+curl -X POST -F "image=@./cover.jpg" \
+  "http://localhost:3000/api/albums/Dark%20Side/image?artist=Pink%20Floyd"
+
 # Poll an album cover's variant readiness
 curl "http://localhost:3000/api/albums/Album%20Title/image/status?artist=Some%20Artist"
 
@@ -157,5 +230,3 @@ curl "http://localhost:3000/api/ui/config"
 - `docs/api/upload.md` — file upload, deduplication, restore-on-reupload, and
   embedded cover-art extraction (the other way covers enter the system).
 - `docs/plans/upload-and-covers.md` — full design and phasing.
-- `POST /api/albums/{album}/image` — upload/replace a cover (extended in Phase 3
-  to enqueue a variant job).

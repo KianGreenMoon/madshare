@@ -41,9 +41,9 @@ Phase 1 — Image variant system (library, config, DB, worker, status API)   ✅
     ↓
 Phase 2 — Embedded cover extraction during audio upload                     ✅ done
     ↓
-Phase 3 — Manual cover upload extension (server-side)                       ← next
+Phase 3 — Manual cover upload extension (server-side)                        ✅ done
     ↓
-Phase 4 — Upload concurrency & rate limiting
+Phase 4 — Upload concurrency & rate limiting                                ← next
     ↓
 Phase 5 — Upload page (/upload, webui)
     ↓
@@ -864,6 +864,22 @@ For the dedup path: set both to `false` — embedded art is not re-processed for
 ---
 
 ## Phase 3 — Manual Cover Upload Extension
+
+> **Status: ✅ Implemented** (commit pending; follows Phase 1 & 2). Notes:
+> - `saveImageUpload` was split into `readImageUpload` (parse/validate/read,
+>   no disk write) so both `uploadAlbumImage` and `uploadArtistImage` share it.
+> - `uploadAlbumImage` now writes `<base_key>/original<ext>`, calls
+>   `SetAlbumCover` (overwrite — explicit beats embedded) + `EnqueueImageJob`,
+>   notifies the pool, and returns `{"ok":true,"processing":true}`.
+> - `uploadArtistImage` keeps the **flat** `<base_key><ext>` key (artist variants
+>   deferred); it was rewired onto `readImageUpload` so it also drops WebP and
+>   canonicalises the extension.
+> - **WebP dropped** from `allowedImageMIMETypes` / `allowedImageExtensions`;
+>   extensions canonicalised (`.jpeg` → `.jpg`).
+> - `UpsertAlbumImage` is now unused by handlers (kept on `*DB`/`Repository` for
+>   now per §1f; safe to remove in a later cleanup).
+> - Docs: `POST /api/albums/{album}/image` + `/api/artists/{artist}/image`
+>   documented in `docs/api/cover-images.md`.
 
 ### Goal
 The existing `POST /api/albums/{album}/image` handler saves a single original file. Extend it to also save with `base_key`/`source_ext`, and enqueue an async variant job.
