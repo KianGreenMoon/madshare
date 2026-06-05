@@ -360,6 +360,9 @@ type fakeRepo struct {
 	auditCalls   int
 	lastAudit    string // "action|target"
 	lastUploaded sql.NullInt64
+
+	searchResult *database.SearchResults
+	searchErr    error
 }
 
 func (f *fakeRepo) RecordAudit(_ context.Context, actor sql.NullInt64, action, target, _ string) error {
@@ -464,10 +467,22 @@ func (f *fakeRepo) ListFileRefs(_ context.Context) ([]database.FileRef, error) {
 }
 
 func (f *fakeRepo) Search(_ context.Context, _ string) (*database.SearchResults, error) {
+	if f.searchErr != nil {
+		return nil, f.searchErr
+	}
+	if f.searchResult != nil {
+		return f.searchResult, nil
+	}
 	return &database.SearchResults{}, nil
 }
 
 func (f *fakeRepo) SearchFiltered(_ context.Context, _ string, _ sql.NullInt64) (*database.SearchResults, error) {
+	if f.searchErr != nil {
+		return nil, f.searchErr
+	}
+	if f.searchResult != nil {
+		return f.searchResult, nil
+	}
 	return &database.SearchResults{}, nil
 }
 
@@ -1150,5 +1165,196 @@ func TestSaveImageUpload_DisallowedExtensionRejected(t *testing.T) {
 	req := buildImageRequest(t, "evil.svg", "image/png", []byte("not really png"))
 	if _, _, err := h.saveImageUpload(req); err == nil {
 		t.Error("saveImageUpload accepted disallowed extension with allowed MIME type")
+	}
+}
+
+// ---- search handler ---------------------------------------------------------
+
+// newSearchHandler returns a handler wired to a fakeRepo configured for search
+// tests, with authzEnabled=false so h.accessFilter always takes the unfiltered
+// path (calls repo.Search, not repo.SearchFiltered).
+func newSearchHandler(repo *fakeRepo) *handler {
+	return &handler{
+		storage:       storage.NewLocal(os.TempDir()),
+		repo:          repo,
+		cacheDir:      os.TempDir(),
+		maxUploadSize: testMaxUpload,
+		authzEnabled:  false, // no auth → Search (unfiltered) path
+	}
+}
+
+// TestSearch_EmptyQ_Returns200WithEmptyArrays exercises the handler's handling
+// of an absent or empty "q" param — the DB layer short-circuits to empty
+// results and the handler must encode three empty JSON arrays, never null.
+func TestSearch_EmptyQ_Returns200WithEmptyArrays(t *testing.T) {
+	repo := &fakeRepo{}
+	h := newSearchHandler(repo)
+
+	for _, url := range []string{"/api/search", "/api/search?q=", "/api/search?q=%20"} {
+		t.Run(url, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, url, nil)
+			rr := httptest.NewRecorder()
+			h.search(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+			}
+
+			var resp struct {
+				Artists []any `json:"artists"`
+				Albums  []any `json:"albums"`
+				Tracks  []any `json:"tracks"`
+			}
+			if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			// All three arrays must be present and empty (not null).
+			if resp.Artists == nil {
+				t.Error("artists is null, want []")
+			}
+			if resp.Albums == nil {
+				t.Error("albums is null, want []")
+			}
+			if resp.Tracks == nil {
+				t.Error("tracks is null, want []")
+			}
+		})
+	}
+}
+
+// TestSearch_ValidQ_Returns200WithResults verifies the JSON shape returned for a
+// non-empty search result: artists/albums/tracks arrays with the expected fields.
+func TestSearch_ValidQ_Returns200WithResults(t *testing.T) {
+	year := int64(1969)
+	repo := &fakeRepo{
+		searchResult: &database.SearchResults{
+			Artists: []*database.ArtistEntry{
+				{Name: "The Beatles", TrackCount: 3, HasImage: false},
+			},
+			Albums: []*database.AlbumEntry{
+				{Title: "Abbey Road", ArtistName: "The Beatles", TrackCount: 3},
+			},
+			Tracks: []*database.SearchTrackEntry{
+				{
+					ID:         1,
+					Title:      "Come Together",
+					ObjectKey:  "abc123/come_together.mp3",
+					MimeType:   "audio/mpeg",
+					ArtistName: "The Beatles",
+					AlbumTitle: "Abbey Road",
+				},
+			},
+		},
+	}
+	_ = year // silence unused-var lint; year used via AlbumEntry.Year below
+	h := newSearchHandler(repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=Beatles", nil)
+	rr := httptest.NewRecorder()
+	h.search(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+
+	var resp struct {
+		Artists []struct {
+			Name       string `json:"name"`
+			TrackCount int    `json:"track_count"`
+			HasImage   bool   `json:"has_image"`
+		} `json:"artists"`
+		Albums []struct {
+			Title      string `json:"title"`
+			ArtistName string `json:"artist_name"`
+			TrackCount int    `json:"track_count"`
+		} `json:"albums"`
+		Tracks []struct {
+			ID         int64  `json:"id"`
+			Title      string `json:"title"`
+			URL        string `json:"url"`
+			MimeType   string `json:"mime_type"`
+			ArtistName string `json:"artist_name"`
+			AlbumTitle string `json:"album_title"`
+		} `json:"tracks"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(resp.Artists) != 1 {
+		t.Fatalf("artists = %d, want 1", len(resp.Artists))
+	}
+	if resp.Artists[0].Name != "The Beatles" {
+		t.Errorf("artists[0].name = %q, want The Beatles", resp.Artists[0].Name)
+	}
+
+	if len(resp.Albums) != 1 {
+		t.Fatalf("albums = %d, want 1", len(resp.Albums))
+	}
+	if resp.Albums[0].Title != "Abbey Road" {
+		t.Errorf("albums[0].title = %q, want Abbey Road", resp.Albums[0].Title)
+	}
+
+	if len(resp.Tracks) != 1 {
+		t.Fatalf("tracks = %d, want 1", len(resp.Tracks))
+	}
+	tr := resp.Tracks[0]
+	if tr.Title != "Come Together" {
+		t.Errorf("tracks[0].title = %q, want Come Together", tr.Title)
+	}
+	if tr.URL != "/files/abc123/come_together.mp3" {
+		t.Errorf("tracks[0].url = %q, want /files/abc123/come_together.mp3", tr.URL)
+	}
+	if tr.ArtistName != "The Beatles" {
+		t.Errorf("tracks[0].artist_name = %q, want The Beatles", tr.ArtistName)
+	}
+	if tr.AlbumTitle != "Abbey Road" {
+		t.Errorf("tracks[0].album_title = %q, want Abbey Road", tr.AlbumTitle)
+	}
+}
+
+// TestSearch_QueryTooLong_Returns400 verifies the handler rejects queries longer
+// than 200 characters with HTTP 400 "query too long".
+func TestSearch_QueryTooLong_Returns400(t *testing.T) {
+	repo := &fakeRepo{}
+	h := newSearchHandler(repo)
+
+	// Exactly 200 chars: must succeed (boundary — allowed).
+	q200 := strings.Repeat("a", 200)
+	reqOK := httptest.NewRequest(http.MethodGet, "/api/search?q="+q200, nil)
+	rrOK := httptest.NewRecorder()
+	h.search(rrOK, reqOK)
+	if rrOK.Code != http.StatusOK {
+		t.Errorf("q=200 chars: status = %d, want 200 (boundary should be allowed)", rrOK.Code)
+	}
+
+	// 201 chars: must be rejected.
+	q201 := strings.Repeat("a", 201)
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q="+q201, nil)
+	rr := httptest.NewRecorder()
+	h.search(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("q=201 chars: status = %d, want 400", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "query too long") {
+		t.Errorf("body = %q, want it to mention query too long", rr.Body.String())
+	}
+}
+
+// TestSearch_DBError_Returns500 verifies the handler returns 500 when the
+// repository returns an error.
+func TestSearch_DBError_Returns500(t *testing.T) {
+	repo := &fakeRepo{searchErr: errors.New("simulated db failure")}
+	h := newSearchHandler(repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=anything", nil)
+	rr := httptest.NewRecorder()
+	h.search(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 on DB error", rr.Code)
 	}
 }
