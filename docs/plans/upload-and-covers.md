@@ -45,9 +45,9 @@ Phase 3 — Manual cover upload extension (server-side)                        �
     ↓
 Phase 4 — Upload concurrency & rate limiting                                 ✅ done (untested)
     ↓
-Phase 5 — Upload page (/upload, webui)                                      ← next
+Phase 5 — Upload page (/upload, webui)                                       ✅ done (untested)
     ↓
-Phase 6 — Aura effect (frontend, client-side)
+Phase 6 — Aura effect (frontend, client-side)                               ← next
 ```
 
 ---
@@ -1110,6 +1110,22 @@ limiter := api.NewUploadLimiter(
   - `TestUploadFile_UserLimitReturns429`: same for userMax=1, same-user second request
 
 ---
+
+> **Status: ✅ Implemented, ⚠️ not yet tester-verified** (designer spec + frontend
+> build, in parallel). Files: `webui/html/upload.html`, `webui/static/css/upload.css`,
+> `webui/static/js/upload.js` (ES module reusing the app.js theme + API-base
+> patterns), route `GET /upload` in `webui/webui.go`. Reuses the existing token
+> system (links both `app.css` and `upload.css`). Implements drop zone +
+> browse-files/folder, a live worker slider fed by `GET /api/ui/config`, an N-slot
+> queue with per-file `XHR` progress, 429 backoff (decrement workers, re-queue,
+> toast + SR announce), client-side album grouping by directory prefix, cover
+> cards with 2s status polling (stops on ready/404/hidden), and a `metadata.edit`-
+> gated Replace-cover (button omitted, not disabled, without the perm).
+> **Backend change:** `POST /files/upload` now echoes `album` + `artist`
+> (effective album artist) so the page can group tracks and target the cover
+> endpoints without a second metadata call (empty on the dedup/restore path).
+> Render-smoke-tested (`/upload`, `/api/ui/config`, assets all 200). A dedicated
+> tester pass is still pending.
 
 ## Phase 5 — Upload Page (`/upload`, webui)
 

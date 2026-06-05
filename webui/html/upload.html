@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Upload &middot; Madshare</title>
+  <meta name="api-url" content="{{.APIURL}}">
+  <!-- app.css carries the shared design tokens (:root[data-theme]) plus the
+       header / nav / theme-switcher styles this page reuses; upload.css adds the
+       page-specific layout on top. Each webui page links its own CSS, so the
+       tokens must come from app.css here too. -->
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/upload.css">
+</head>
+<body class="upload-page">
+
+<header>
+  <span class="logo"><span>Mad</span>share</span>
+  <nav class="main-nav" aria-label="Site navigation">
+    <a href="/" class="nav-link">Library</a>
+    <a href="/upload" class="nav-link nav-link--active" aria-current="page">Upload</a>
+  </nav>
+  <div class="header-actions">
+    <div class="theme-switcher" role="group" aria-label="Color theme">
+      <button class="theme-dot active" data-theme="dark"   title="Dark"   aria-label="Dark theme"   aria-pressed="true"></button>
+      <button class="theme-dot"        data-theme="light"  title="Light"  aria-label="Light theme"  aria-pressed="false"></button>
+      <button class="theme-dot"        data-theme="ocean"  title="Ocean"  aria-label="Ocean theme"  aria-pressed="false"></button>
+      <button class="theme-dot"        data-theme="sunset" title="Sunset" aria-label="Sunset theme" aria-pressed="false"></button>
+    </div>
+  </div>
+</header>
+
+<main class="upload-main">
+
+  <!-- Visually-hidden status region: announces queue progress and backoff. -->
+  <div class="visually-hidden" id="srStatus" aria-live="polite" role="status"></div>
+
+  <!-- Transient visible toast for backpressure (429) feedback. role="status"
+       so it is announced; the visually-hidden srStatus above carries the precise
+       "workers reduced to N" string in parallel. -->
+  <div class="toast-stack" id="toastStack" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- ── Drop zone ──────────────────────────────────────────────────────── -->
+  <section class="upload-section" aria-labelledby="dropHeading">
+    <h1 id="dropHeading" class="section-title">Upload music</h1>
+    <div class="drop-zone" id="dropZone" role="button" tabindex="0"
+         aria-label="Drop files or a folder here, or activate to browse files">
+      <div class="drop-zone__icon" aria-hidden="true">&#9835;</div>
+      <p class="drop-zone__lead">Drag files or a folder here</p>
+      <small class="drop-zone__hint">Any file type &mdash; the server keeps what it can read</small>
+      <div class="drop-zone__actions">
+        <button type="button" class="btn btn--accent" id="browseFiles">Browse files</button>
+        <button type="button" class="btn" id="browseFolder">Browse folder</button>
+      </div>
+      <!-- Hidden inputs drive the two browse buttons. Both accept all types. -->
+      <input type="file" id="fileInput"   class="visually-hidden" multiple aria-hidden="true" tabindex="-1">
+      <input type="file" id="folderInput" class="visually-hidden" multiple webkitdirectory directory aria-hidden="true" tabindex="-1">
+    </div>
+  </section>
+
+  <!-- ── Workers + actions ──────────────────────────────────────────────── -->
+  <section class="upload-section workers-bar" aria-labelledby="workersLabel">
+    <div class="workers-control">
+      <label class="workers-label" id="workersLabel" for="workersRange">
+        Workers: <span id="workersValue">3</span>
+      </label>
+      <input type="range" id="workersRange" class="workers-range"
+             min="1" max="10" step="1" value="3"
+             aria-describedby="workersHint">
+      <small id="workersHint" class="visually-hidden">Number of files uploaded in parallel</small>
+    </div>
+    <div class="workers-actions">
+      <button type="button" class="btn btn--accent" id="startUpload" disabled>Upload</button>
+      <button type="button" class="btn" id="clearQueue" disabled>Clear</button>
+    </div>
+  </section>
+
+  <!-- ── Upload queue ───────────────────────────────────────────────────── -->
+  <section class="upload-section" aria-labelledby="queueHeading">
+    <h2 id="queueHeading" class="section-title">Upload queue</h2>
+    <ul class="queue-list" id="queueList" aria-live="polite">
+      <!-- populated by JS -->
+    </ul>
+    <p class="empty-note" id="queueEmpty">Nothing queued yet. Add files above to begin.</p>
+  </section>
+
+  <!-- ── Album groups / cover cards ─────────────────────────────────────── -->
+  <section class="upload-section" aria-labelledby="albumsHeading">
+    <h2 id="albumsHeading" class="section-title">Album groups detected</h2>
+    <div class="cover-grid" id="coverGrid">
+      <!-- populated by JS -->
+    </div>
+    <p class="empty-note" id="albumsEmpty">Album groups appear here once you add a folder.</p>
+  </section>
+
+</main>
+
+<script type="module" src="/static/js/upload.js"></script>
+</body>
+</html>

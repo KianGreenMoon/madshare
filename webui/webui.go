@@ -42,6 +42,7 @@ func mustSub(f embed.FS, dir string) fs.FS {
 var (
 	cmusTmpl    = template.Must(template.ParseFS(htmlFS, "html/cmus.html"))
 	libraryTmpl = template.Must(template.ParseFS(htmlFS, "html/library.html"))
+	uploadTmpl  = template.Must(template.ParseFS(htmlFS, "html/upload.html"))
 	adminTmpl   = template.Must(template.ParseFS(htmlFS, "html/admin.html"))
 )
 
@@ -78,6 +79,7 @@ func Register(r chi.Router, apiBase string) {
 	static := noCacheStatic(http.FileServer(http.FS(staticRoot)))
 	r.Handle("/static/*", http.StripPrefix("/static/", static))
 	r.Get("/cmus", makeHandler(cmusTmpl, apiBase))
+	r.Get("/upload", makeHandler(uploadTmpl, apiBase))
 	r.Get("/", makeHandler(libraryTmpl, apiBase))
 }
 

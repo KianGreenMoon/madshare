@@ -1,0 +1,318 @@
+/* Upload page (/upload) styles.
+ *
+ * Design tokens (--bg, --surface, --accent, --space-*, --radius, …) and the
+ * shared header / nav / theme-switcher styles live in app.css, which this page
+ * also links. Everything below is upload-specific and references those tokens —
+ * it never redefines the theme palettes.
+ *
+ * Mobile-first: single column, then a two-zone workers bar and a responsive
+ * cover grid at wider viewports.
+ */
+
+/* The library uses the player bar; the upload page has none, so drop the
+   reserved bottom padding app.css adds to <body>. */
+body.upload-page { padding-bottom: var(--space-6); }
+
+.upload-main {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.upload-section { display: flex; flex-direction: column; gap: var(--space-3); }
+
+.section-title {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.empty-note {
+  color: var(--text-muted);
+  font-size: 14px;
+  padding: var(--space-3) 0;
+}
+
+/* Shared button base — mirrors app.css's .btn-upload look. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+.btn:hover { background: var(--surface-hover); }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn--accent {
+  background: var(--accent);
+  color: #fff;
+  border-color: transparent;
+}
+.btn--accent:hover { background: var(--accent-dim); }
+.btn--accent:disabled:hover { background: var(--accent); }
+
+/* ── Drop zone ─────────────────────────────────────────────────────────── */
+.drop-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-6) var(--space-5);
+  background: var(--surface);
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+.drop-zone:hover { border-color: var(--accent-dim); }
+.drop-zone:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.drop-zone.is-dragover {
+  border-color: var(--accent);
+  background: var(--accent-glow);
+}
+.drop-zone__icon { font-size: 40px; color: var(--accent); line-height: 1; }
+.drop-zone__lead { font-size: 16px; font-weight: 500; color: var(--text); }
+.drop-zone__hint { color: var(--text-muted); font-size: 13px; }
+.drop-zone__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  justify-content: center;
+  margin-top: var(--space-2);
+}
+
+/* ── Workers bar ───────────────────────────────────────────────────────── */
+.workers-bar {
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.workers-control { display: flex; align-items: center; gap: var(--space-4); }
+.workers-label { font-weight: 500; white-space: nowrap; }
+.workers-label span { color: var(--accent); font-variant-numeric: tabular-nums; }
+.workers-range {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+  height: 6px;
+}
+.workers-range:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.workers-actions { display: flex; gap: var(--space-3); }
+
+@media (min-width: 600px) {
+  .workers-bar { flex-direction: row; align-items: center; justify-content: space-between; }
+  .workers-control { flex: 1; }
+  .workers-actions { flex-shrink: 0; }
+}
+
+/* ── Upload queue ──────────────────────────────────────────────────────── */
+.queue-list { list-style: none; display: flex; flex-direction: column; gap: var(--space-2); }
+
+.queue-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas:
+    "name  size"
+    "bar   bar"
+    "msg   msg";
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.queue-item__name {
+  grid-area: name;
+  font-size: 14px;
+  font-weight: 500;
+  word-break: break-all;
+}
+.queue-item__size {
+  grid-area: size;
+  font-size: 13px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Progress bar — track + fill, mirrors the player's progress styling. */
+.queue-item__bar {
+  grid-area: bar;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--range-track);
+  overflow: hidden;
+}
+.queue-item__fill {
+  height: 100%;
+  width: 0;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 150ms ease;
+}
+
+.queue-item__msg {
+  grid-area: msg;
+  font-size: 13px;
+  display: none;
+  align-items: center;
+  gap: var(--space-3);
+}
+.queue-item__msg .retry-btn {
+  padding: var(--space-1) var(--space-3);
+  font-size: 12px;
+  background: var(--surface-hover);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.queue-item__msg .retry-btn:hover { background: var(--accent-glow); border-color: var(--accent); }
+.queue-item__msg .retry-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* State variants — color is always paired with a text label / icon. */
+.queue-item[data-state="done"]     .queue-item__fill { background: var(--success); }
+.queue-item[data-state="error"]    .queue-item__fill,
+.queue-item[data-state="rejected"] .queue-item__fill { background: var(--error); }
+.queue-item[data-state="error"]    .queue-item__msg,
+.queue-item[data-state="rejected"] .queue-item__msg { display: flex; color: var(--error); }
+.queue-item[data-state="done"]     .queue-item__msg { display: flex; color: var(--success); }
+.queue-item[data-state="waiting"]  .queue-item__msg { display: flex; color: var(--text-muted); }
+
+/* ── Cover cards ───────────────────────────────────────────────────────── */
+.cover-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--space-4);
+}
+
+.cover-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.cover-card__art {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  border-radius: calc(var(--radius) - 2px);
+  overflow: hidden;
+  background: var(--surface-hover);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cover-card__art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cover-card__placeholder { font-size: 30px; color: var(--text-muted); }
+
+/* Spinner overlay shown while variants are processing. */
+.cover-card__spinner {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+}
+.cover-card[data-processing="true"] .cover-card__spinner { display: flex; }
+.cover-card__spinner::after {
+  content: "";
+  width: 28px;
+  height: 28px;
+  border: 3px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: cover-spin 800ms linear infinite;
+}
+@keyframes cover-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  /* Drop the spinning ring entirely and show a static "Processing…" label so
+     the same state is conveyed without motion. */
+  .cover-card__spinner::after { display: none; animation: none; }
+  .cover-card__spinner::before {
+    content: "Processing…";
+    color: #fff;
+    font-size: 12px;
+    font-weight: 500;
+  }
+  /* Disable interactive/state transitions that imply motion. */
+  .queue-item__fill { transition: none; }
+  .toast { transition: none; }
+  .toast.is-visible { transform: none; }
+}
+
+.cover-card__title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cover-card__meta { font-size: 12px; color: var(--text-muted); }
+.cover-card__note { font-size: 12px; color: var(--text-muted); font-style: italic; }
+.cover-card__replace { margin-top: auto; }
+.cover-card__replace .btn { width: 100%; justify-content: center; padding: var(--space-1) var(--space-3); font-size: 13px; }
+
+/* ── Toast (transient backpressure feedback) ───────────────────────────── */
+.toast-stack {
+  position: fixed;
+  bottom: var(--space-5);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  pointer-events: none;            /* never block clicks underneath */
+  max-width: min(90vw, 420px);
+}
+.toast {
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  font-size: 13px;
+  text-align: center;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+.toast.is-visible { opacity: 1; transform: translateY(0); }
+
+/* ── Utility ───────────────────────────────────────────────────────────── */
+.visually-hidden {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

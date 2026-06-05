@@ -157,6 +157,14 @@ func TestUploadFile_ExtractsCover(t *testing.T) {
 	if _, err := os.Stat(want); err != nil {
 		t.Errorf("original cover not written at %s: %v", want, err)
 	}
+
+	// album / artist are echoed for the upload page's grouping & cover targeting.
+	if resp["album"] != "Dark Side" {
+		t.Errorf("album = %v, want Dark Side", resp["album"])
+	}
+	if resp["artist"] != "Pink Floyd" {
+		t.Errorf("artist = %v, want Pink Floyd (effective album artist)", resp["artist"])
+	}
 }
 
 // TestUploadFile_NoCoverOnDedup uploads the same file twice; the cover must be

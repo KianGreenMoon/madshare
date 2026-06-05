@@ -115,12 +115,16 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		}
 		// Embedded art is not re-processed for duplicate content — the cover (if
 		// any) was already handled when the bytes were first ingested.
+		// album/artist are left empty on dedup: tags aren't re-extracted for
+		// already-stored bytes, and any cover was handled at first ingest.
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":               true,
 			"existed":          true,
 			"hash":             hash,
 			"filename":         filename,
 			"size":             size,
+			"album":            "",
+			"artist":           "",
 			"cover_found":      false,
 			"cover_processing": false,
 		})
@@ -169,12 +173,17 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		coverProcessing = h.maybeSaveEmbeddedCover(ctx, tags, coverArtist)
 	}
 
+	// album / artist (effective album artist) are echoed so the upload page can
+	// group tracks and target the cover endpoints (POST/status) without a second
+	// metadata round-trip. Empty when the file carried no such tags.
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"ok":               true,
 		"existed":          false,
 		"hash":             hash,
 		"filename":         filename,
 		"size":             size,
+		"album":            tags.Album,
+		"artist":           coverArtist,
 		"cover_found":      coverFound,
 		"cover_processing": coverProcessing,
 	})

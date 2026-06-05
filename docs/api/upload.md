@@ -82,6 +82,8 @@ ingest of a given hash the server:
   "hash": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
   "filename": "song.mp3",
   "size": 4823192,
+  "album": "The Dark Side of the Moon",
+  "artist": "Pink Floyd",
   "cover_found": true,
   "cover_processing": true
 }
@@ -94,6 +96,8 @@ ingest of a given hash the server:
 | `hash`             | string  | SHA-256 of the file contents (the content address). |
 | `filename`         | string  | The sanitised filename recorded for this upload. |
 | `size`             | integer | File size in bytes. |
+| `album`            | string  | Album tag, echoed so the upload page can group tracks and target the cover endpoints. Empty when untagged or on the dedup/restore path (tags are not re-extracted for existing bytes). |
+| `artist`           | string  | Effective album artist (`album_artist`, falling back to `artist`); same emptiness rules as `album`. |
 | `cover_found`      | boolean | Embedded cover art with usable album + artist context was present in the tags. See [Embedded cover extraction](#embedded-cover-extraction). |
 | `cover_processing` | boolean | This upload actually claimed the album cover and queued variant generation. |
 
