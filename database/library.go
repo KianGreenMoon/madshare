@@ -284,11 +284,12 @@ func (db *DB) search(ctx context.Context, q string, filtered bool, userID sql.Nu
 	like := "%" + escaped + "%"
 
 	// ── Artists ──────────────────────────────────────────────────────────────
-	artistWhere := "WHERE f.deleted_at IS NULL"
+	// Filter in WHERE using the full expression, consistent with the album query.
+	artistWhere := "WHERE f.deleted_at IS NULL AND LOWER(COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')) LIKE LOWER(?) ESCAPE '\\'"
 	artistArgs := []any{like}
 	if filtered {
 		artistWhere += " AND " + accessClause
-		artistArgs = []any{userID, like}
+		artistArgs = []any{like, userID}
 	}
 	artistQ := `
 		SELECT
@@ -300,9 +301,8 @@ func (db *DB) search(ctx context.Context, q string, filtered bool, userID sql.Nu
 		LEFT JOIN artist_images ai
 		    ON ai.artist_name = COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
 		` + artistWhere + `
-		GROUP BY name
-		HAVING LOWER(name) LIKE LOWER(?) ESCAPE '\'
-		ORDER BY LOWER(name) ASC
+		GROUP BY COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
+		ORDER BY LOWER(COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')) ASC
 		LIMIT 50`
 
 	aRows, err := db.QueryContext(ctx, artistQ, artistArgs...)
