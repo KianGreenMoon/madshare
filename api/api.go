@@ -33,6 +33,9 @@ type Deps struct {
 	// an idle worker wakes immediately rather than waiting for its next poll.
 	// Optional; nil (e.g. in tests) simply skips the wake.
 	ImagePool interface{ Notify() }
+	// UploadLimiter, when set, gates concurrent uploads (global + per-user caps
+	// from [storage]). Optional; nil disables the gate.
+	UploadLimiter *UploadLimiter
 	// UIConfig is the parsed webui.toml served at GET /api/ui/config. When nil,
 	// the handler falls back to config.DefaultUIConfig().
 	UIConfig *config.UIConfig
@@ -65,6 +68,7 @@ func (d Deps) newHandler() *handler {
 		maxUploadSize: d.MaxUploadSize,
 		authzEnabled:  d.Auth != nil,
 		imagePool:     d.ImagePool,
+		limiter:       d.UploadLimiter,
 		uiConfig:      d.UIConfig,
 	}
 }

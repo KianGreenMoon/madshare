@@ -2,15 +2,19 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"log"
 	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"daemonlord.ygg/madshare/api/storage"
+	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/media"
 )
@@ -20,6 +24,23 @@ import (
 // genuinely new file carrying embedded cover art — fills the album cover when
 // the album has none yet (see maybeSaveEmbeddedCover).
 func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
+	// Concurrency gate (global + per-user). auth.FromContext returns nil when
+	// anonymous — only reachable with auth unconfigured, since /files/upload is
+	// otherwise gated by protect(auth.PermFileUpload); such requests collapse to
+	// the "" key. Identity.UserID is an int64 field, formatted as the limiter's
+	// string key. No admin bypass (see the plan's locked decisions).
+	if h.limiter != nil {
+		userID := ""
+		if id := auth.FromContext(r.Context()); id != nil {
+			userID = strconv.FormatInt(id.UserID, 10)
+		}
+		if err := h.limiter.Acquire(userID); err != nil {
+			writeUploadLimitError(w, err)
+			return
+		}
+		defer h.limiter.Release(userID)
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, h.maxUploadSize)
 	if err := r.ParseMultipartForm(h.maxUploadSize); err != nil {
 		http.Error(w, "file too large or invalid multipart form", http.StatusBadRequest)
@@ -234,6 +255,23 @@ func (h *handler) maybeSaveEmbeddedCover(ctx context.Context, tags *media.Tags, 
 		h.imagePool.Notify()
 	}
 	return true
+}
+
+// writeUploadLimitError responds 429 with the JSON contract the upload client
+// expects ({"error":…,"code":"upload_limit"}) and a Retry-After hint. The client
+// reduces its worker count and re-queues the file on this code.
+func writeUploadLimitError(w http.ResponseWriter, err error) {
+	msg := "server upload limit reached"
+	if errors.Is(err, ErrUserLimit) {
+		msg = "user upload limit reached"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", "1")
+	w.WriteHeader(http.StatusTooManyRequests)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error": msg,
+		"code":  "upload_limit",
+	})
 }
 
 // mimeToExt maps a canonical image MIME type to its file extension. Only the

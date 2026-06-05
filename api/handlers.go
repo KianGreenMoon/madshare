@@ -77,6 +77,9 @@ type handler struct {
 	// imagePool, when non-nil, is notified after a cover-variant job is enqueued
 	// so an idle worker wakes immediately. Nil in tests / open embeddings.
 	imagePool interface{ Notify() }
+	// limiter, when non-nil, gates concurrent uploads (global + per-user). Nil
+	// disables the gate (tests / unlimited config).
+	limiter *UploadLimiter
 	// uiConfig backs GET /api/ui/config (the upload page's worker controls).
 	// Nil-safe: getUIConfig falls back to config.DefaultUIConfig() when unset.
 	uiConfig *config.UIConfig

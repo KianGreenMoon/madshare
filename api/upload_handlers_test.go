@@ -493,3 +493,73 @@ func dirNames(es []os.DirEntry) []string {
 	}
 	return out
 }
+
+// ---- Phase 4: upload concurrency limit (429) --------------------------------
+
+// TestUploadFile_ServerLimitReturns429 pre-saturates the global cap, then asserts
+// the next upload is rejected with 429 and the upload_limit JSON contract.
+func TestUploadFile_ServerLimitReturns429(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	h.limiter = NewUploadLimiter(1, 0) // global cap 1
+	if err := h.limiter.Acquire("someone-else"); err != nil {
+		t.Fatalf("pre-saturate: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	h.uploadFile(rr, buildUploadRequest(t, "file", "song.mp3", "audio/mpeg", []byte("audio")))
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body: %s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Retry-After"); got == "" {
+		t.Error("missing Retry-After header on 429")
+	}
+	resp := jsonBody(t, rr)
+	if resp["code"] != "upload_limit" {
+		t.Errorf("code = %v, want upload_limit", resp["code"])
+	}
+	if resp["error"] != "server upload limit reached" {
+		t.Errorf("error = %v, want server upload limit reached", resp["error"])
+	}
+}
+
+// TestUploadFile_UserLimitReturns429 pre-saturates the per-user cap for the
+// anonymous ("") key (tests run without auth), then asserts the next upload from
+// the same identity is rejected with the user-limit message.
+func TestUploadFile_UserLimitReturns429(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	h.limiter = NewUploadLimiter(0, 1) // per-user cap 1
+	if err := h.limiter.Acquire(""); err != nil {
+		t.Fatalf("pre-saturate: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	h.uploadFile(rr, buildUploadRequest(t, "file", "song.mp3", "audio/mpeg", []byte("audio")))
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body: %s", rr.Code, rr.Body.String())
+	}
+	resp := jsonBody(t, rr)
+	if resp["code"] != "upload_limit" {
+		t.Errorf("code = %v, want upload_limit", resp["code"])
+	}
+	if resp["error"] != "user upload limit reached" {
+		t.Errorf("error = %v, want user upload limit reached", resp["error"])
+	}
+}
+
+// TestUploadFile_LimiterReleasedAfterUpload verifies the slot is released after a
+// successful upload, so a serverMax=1 limiter admits sequential uploads.
+func TestUploadFile_LimiterReleasedAfterUpload(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	h.limiter = NewUploadLimiter(1, 0)
+
+	for i := 0; i < 3; i++ {
+		rr := httptest.NewRecorder()
+		body := []byte(fmt.Sprintf("audio-%d", i)) // distinct bytes → not dedup
+		h.uploadFile(rr, buildUploadRequest(t, "file", fmt.Sprintf("s%d.mp3", i), "audio/mpeg", body))
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("upload %d status = %d, want 201 (slot must be released between uploads); body: %s", i, rr.Code, rr.Body.String())
+		}
+	}
+}

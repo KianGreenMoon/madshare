@@ -43,9 +43,9 @@ Phase 2 — Embedded cover extraction during audio upload                     �
     ↓
 Phase 3 — Manual cover upload extension (server-side)                        ✅ done
     ↓
-Phase 4 — Upload concurrency & rate limiting                                ← next
+Phase 4 — Upload concurrency & rate limiting                                 ✅ done (untested)
     ↓
-Phase 5 — Upload page (/upload, webui)
+Phase 5 — Upload page (/upload, webui)                                      ← next
     ↓
 Phase 6 — Aura effect (frontend, client-side)
 ```
@@ -974,6 +974,15 @@ New rows always use the subdirectory format. No migration of old image files is 
 ---
 
 ## Phase 4 — Upload Concurrency & Rate Limiting
+
+> **Status: ✅ Implemented, ⚠️ not yet tester-verified** (commit pending). Built
+> per the plan: `api/upload_limiter.go` (`UploadLimiter`, `Acquire`/`Release`,
+> `ErrServerLimit`/`ErrUserLimit`), `Deps.UploadLimiter` → `handler.limiter`,
+> the Acquire/Release gate + `writeUploadLimitError` (429, `code:"upload_limit"`,
+> `Retry-After:1`) in `uploadFile`, and wiring in `madshare.go`. No admin bypass.
+> `Release` guards against underflow and prunes zeroed per-user map entries.
+> Unit + handler tests pass under `-race`; documented in `docs/api/upload.md`.
+> **A dedicated tester pass is still pending** (deferred by request).
 
 ### Goal
 Enforce server-side upload slot limits: a global cap across all users (`server_max_parallel_workers`) and a per-user cap (`user_max_parallel_workers`). Both caps apply to everyone (no admin bypass — see locked decisions). Return 429 when any limit is exceeded; the client handles backoff by reducing its worker count and re-queuing.

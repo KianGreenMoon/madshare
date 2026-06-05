@@ -90,6 +90,11 @@ func main() {
 	pool := imageproc.NewPool(db, imagesDir, cfg.Storage.ImageProcessingWorkers)
 	go pool.Start(ctx)
 
+	limiter := api.NewUploadLimiter(
+		cfg.Storage.ServerMaxParallelWorkers,
+		cfg.Storage.UserMaxParallelWorkers,
+	)
+
 	deps := api.Deps{
 		Store:         storage.NewLocal(filesDir),
 		Repo:          db,
@@ -99,6 +104,7 @@ func main() {
 		Auth:          db,
 		Manage:        db,
 		ImagePool:     pool,
+		UploadLimiter: limiter,
 		UIConfig:      uiCfg,
 	}
 

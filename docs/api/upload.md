@@ -103,7 +103,38 @@ ingest of a given hash the server:
 |--------|-----------|
 | 400    | Body exceeds `max_upload_mb`, malformed multipart, missing `file` part, or invalid filename. |
 | 413/415| Disallowed MIME type or filename extension (`415 Unsupported Media Type`). |
+| 429    | A concurrency limit was reached — see [Concurrency limits](#concurrency-limits). |
 | 500    | Storage or database error. |
+
+---
+
+## Concurrency limits
+
+Uploads are gated by two server-side caps so a single client (or the whole
+fleet) cannot saturate the server:
+
+- `storage.server_max_parallel_workers` — total concurrent uploads across **all**
+  users.
+- `storage.user_max_parallel_workers` — concurrent uploads **per user**.
+
+`0` (the default) means that dimension is unlimited. Both caps apply to every
+user — **there is no admin bypass** (the identity model has no role signal to key
+one on). A slot is held only for the duration of a single `POST /files/upload`
+and released as soon as it completes (success or error).
+
+When a request would exceed either cap it is rejected **without blocking** with
+`429 Too Many Requests`, a `Retry-After: 1` header, and this body:
+
+```json
+{ "error": "server upload limit reached", "code": "upload_limit" }
+```
+
+`error` is `"user upload limit reached"` when the per-user cap is the one hit.
+The `code` is always `upload_limit`. The upload page (Phase 5) treats this code
+as backpressure: it reduces its parallel-worker count and re-queues the file
+rather than surfacing an error. The client-side worker ceiling itself comes from
+`GET /api/ui/config` (see `docs/api/cover-images.md`); the server caps above are
+independent and authoritative.
 
 ---
 
