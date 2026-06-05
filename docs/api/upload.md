@@ -1,0 +1,206 @@
+# File Upload API
+
+How files enter the library: the single-file upload endpoint, content
+deduplication, restore-on-reupload, and the embedded cover-art extraction added
+in Phase 2 of the upload & covers work (`docs/plans/upload-and-covers.md`).
+
+There is **no batch endpoint** — clients upload one file per request and manage
+their own queue/concurrency. The upload page (Phase 5) drives many of these
+requests in parallel.
+
+---
+
+## `POST /files/upload`
+
+Uploads a single file via `multipart/form-data`.
+
+### Request
+
+```
+POST /files/upload
+Content-Type: multipart/form-data
+```
+
+| Part   | Required | Description |
+|--------|----------|-------------|
+| `file` | yes      | The file to upload. The part's `Content-Type` and filename extension are both validated (see below). |
+
+```bash
+curl -X POST -F "file=@./song.mp3" http://localhost:3000/files/upload
+```
+
+### Access control
+
+Requires the `file.upload` permission **when authentication is configured**.
+With no auth backend (open embedding / tests) the gate is a pass-through. Default
+upload access and how it is granted are described in
+`docs/architecture/auth.md`.
+
+### Accepted types
+
+v0 accepts **audio only** (video is deferred). Two independent checks must both
+pass — this prevents a MIME-type spoof from being served back under a dangerous
+extension:
+
+- **MIME type** (parsed from the part's `Content-Type`, parameters ignored):
+  `audio/mpeg`, `audio/ogg`, `audio/flac`, `audio/wav`, `audio/x-wav`,
+  `audio/mp4`.
+- **Filename extension** (case-insensitive): `.mp3`, `.ogg`, `.flac`, `.wav`,
+  `.mp4`, `.m4a`, `.aac`, `.opus`.
+
+The filename is sanitised to a safe base name first (Windows and Unix path
+components stripped, control characters rejected), so a client-supplied path
+like `C:\Users\evil.mp3` or `../../etc/track.mp3` is stored as just `track.mp3`.
+
+### Size limits
+
+- `storage.max_upload_mb` (default 500 MiB) caps the request body. Exceeding it
+  returns `400`.
+- Uploads up to ~50 MB are hashed in memory; larger ones are spooled to the
+  cache directory while hashing. This threshold is internal and distinct from
+  `max_upload_mb`.
+
+### Content addressing & metadata
+
+The file is identified by the SHA-256 of its bytes (the `hash`). On first
+ingest of a given hash the server:
+
+1. extracts audio tags (ID3 / MP4 / FLAC / OGG via `dhowden/tag`),
+2. stores the blob at `<files_dir>/<hash>/<filename>`,
+3. inserts the `files` / `file_uploads` / `media_metadata` rows,
+4. extracts and processes any embedded cover art (see below).
+
+### Response
+
+`201 Created` for a newly stored file, `200 OK` when the bytes already existed
+(dedup or restore). Always `application/json`.
+
+```json
+{
+  "ok": true,
+  "existed": false,
+  "hash": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+  "filename": "song.mp3",
+  "size": 4823192,
+  "cover_found": true,
+  "cover_processing": true
+}
+```
+
+| Field              | Type    | Description |
+|--------------------|---------|-------------|
+| `ok`               | boolean | Always `true` on a 2xx response. |
+| `existed`          | boolean | `false` when the bytes were newly stored; `true` when they already existed (dedup or restore). |
+| `hash`             | string  | SHA-256 of the file contents (the content address). |
+| `filename`         | string  | The sanitised filename recorded for this upload. |
+| `size`             | integer | File size in bytes. |
+| `cover_found`      | boolean | Embedded cover art with usable album + artist context was present in the tags. See [Embedded cover extraction](#embedded-cover-extraction). |
+| `cover_processing` | boolean | This upload actually claimed the album cover and queued variant generation. |
+
+### Error responses
+
+| Status | Condition |
+|--------|-----------|
+| 400    | Body exceeds `max_upload_mb`, malformed multipart, missing `file` part, or invalid filename. |
+| 413/415| Disallowed MIME type or filename extension (`415 Unsupported Media Type`). |
+| 500    | Storage or database error. |
+
+---
+
+## Deduplication
+
+Files are content-addressed by hash, so **the same bytes are stored once**.
+Re-uploading identical content does not write a second blob — it returns
+`200` with `existed: true` and records the (possibly new) filename against the
+existing file, so the same audio can be known under multiple names.
+
+Embedded cover art is **not** re-processed on the dedup path: a duplicate upload
+returns `cover_found: false` and `cover_processing: false` regardless of what the
+file's tags contain, because the cover (if any) was already handled when the
+bytes were first ingested.
+
+---
+
+## Restore on re-upload (soft-deleted files)
+
+Madshare uses **soft delete**: an admin "delete" only marks a file as trashed
+(sets `deleted_at`); the blob and its rows are kept until a hard delete from the
+Trash tab. Full design: `docs/architecture/soft-delete.md`.
+
+> **Re-uploading a soft-deleted file does not re-upload anything.** Because the
+> bytes are already on disk, the server simply **clears the `deleted_at` mark**
+> (`RestoreFileByHash`) — the trashed file is restored to the library as-is. No
+> blob is rewritten and no content is transferred beyond what is needed to
+> compute the hash. The response is `200` with `existed: true`, and the action is
+> recorded in the audit log as `file.restore` with the detail
+> `restore-via-reupload: <filename>` (distinct from a plain dedup, which records
+> `file.upload` / `dedup:`).
+
+This is **intentional**, not a loophole: any uploader can bring a trashed file
+back by re-uploading its bytes. If an operator wants a file gone for good, they
+must **hard-delete** it from the Trash tab rather than relying on soft delete.
+
+---
+
+## Embedded cover extraction
+
+When a **new** audio file is ingested, Madshare reads any embedded cover art
+(e.g. an ID3 `APIC` frame) and uses it as the **album cover** — but only when the
+album does not already have one. This is the *fill-if-missing* rule.
+
+### Behaviour
+
+- **Fill-if-missing, never overwrite.** If the album already has a cover (from an
+  earlier track or a manual upload), the embedded art is ignored. An explicitly
+  uploaded cover therefore always beats embedded tag art.
+- **Album + artist required.** The cover is keyed on the album title and the
+  *effective album artist* — the album-artist tag (`TPE2`) when present,
+  otherwise the track artist (`TPE1`/`Artist`). A file with embedded art but no
+  album (or no artist) is skipped: `cover_found` is `false`.
+- **Supported formats only.** Only `image/jpeg` and `image/png` embedded covers
+  are accepted; any other embedded format (WebP, GIF, …) is skipped without
+  queuing a job. `cover_found` is still `true` (art was present), but
+  `cover_processing` is `false`.
+- **Size cap.** Embedded covers larger than 10 MB are skipped (matching the
+  manual-upload cap), guarding against oversized art inflating storage.
+- On a successful fill, the original is stored at
+  `<files_dir>/images/<base_key>/original<ext>`, an `image_processing_jobs` row
+  is enqueued, and the worker pool generates the square variants. Readiness is
+  polled via `GET /api/albums/{album}/image/status` — see
+  `docs/api/cover-images.md`.
+
+### `cover_found` vs `cover_processing`
+
+| `cover_found` | `cover_processing` | Meaning |
+|:-------------:|:------------------:|---------|
+| `true`  | `true`  | Embedded art present and **this upload set the album cover** (a variant job was queued). |
+| `true`  | `false` | Embedded art present but **not used** — the album already had a cover, the format was unsupported, the art exceeded the size cap, or a concurrent upload won the race. |
+| `false` | `false` | No usable embedded art (none present, or no album/artist context). Also the value on any dedup/restore response. |
+
+### Concurrency
+
+Several tracks of the same album are commonly uploaded at once, all carrying the
+embedded cover. The fill-if-missing decision is resolved **atomically** at the
+database level (`SetAlbumCoverIfAbsent` — an `INSERT … ON CONFLICT DO NOTHING`),
+so exactly one upload claims the cover and queues a single job; the rest report
+`cover_processing: false`. Tracks normally embed identical art, so the shared
+content address means no duplicate files are written.
+
+### Notes / limitations
+
+- **MP4/M4A:** the tag library only reports an MP4 cover when it can infer the
+  image MIME type. An MP4 with an implicit-flagged embedded **JPEG** may extract
+  no cover; such albums import without art. Use the manual cover upload
+  (`POST /api/albums/{album}/image`) as a fallback.
+- Embedded covers are written as-is without re-decoding at upload time; a corrupt
+  embedded image fails later in the variant worker (the job is retried then
+  marked failed) rather than failing the upload.
+
+---
+
+## See also
+
+- `docs/api/cover-images.md` — cover variant status and UI config endpoints.
+- `docs/architecture/soft-delete.md` — trash / restore model.
+- `docs/architecture/auth.md` — upload permission and access control.
+- `docs/plans/upload-and-covers.md` — full upload & covers design and phasing.

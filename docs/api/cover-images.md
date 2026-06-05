@@ -154,6 +154,8 @@ curl "http://localhost:3000/api/ui/config"
 
 ## See also
 
+- `docs/api/upload.md` — file upload, deduplication, restore-on-reupload, and
+  embedded cover-art extraction (the other way covers enter the system).
 - `docs/plans/upload-and-covers.md` — full design and phasing.
 - `POST /api/albums/{album}/image` — upload/replace a cover (extended in Phase 3
   to enqueue a variant job).
