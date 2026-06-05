@@ -6,11 +6,9 @@ import (
 	"encoding/json"
 	"io"
 	"log"
-	"mime"
 	"net/http"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"daemonlord.ygg/madshare/api/storage"
 	"daemonlord.ygg/madshare/auth"
@@ -82,129 +80,6 @@ type handler struct {
 	// uiConfig backs GET /api/ui/config (the upload page's worker controls).
 	// Nil-safe: getUIConfig falls back to config.DefaultUIConfig() when unset.
 	uiConfig *config.UIConfig
-}
-
-func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, h.maxUploadSize)
-	if err := r.ParseMultipartForm(h.maxUploadSize); err != nil {
-		http.Error(w, "file too large or invalid multipart form", http.StatusBadRequest)
-		return
-	}
-
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		http.Error(w, "missing file field", http.StatusBadRequest)
-		return
-	}
-	defer file.Close()
-
-	// Parse off any parameters (e.g. "audio/mpeg; charset=utf-8") so the
-	// allow-list check compares the bare media type.
-	mimeType, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
-	if err != nil || !allowedMIMETypes[mimeType] {
-		http.Error(w, "unsupported media type", http.StatusUnsupportedMediaType)
-		return
-	}
-
-	// Reduce the client-supplied name to a safe base name before it is used
-	// for the extension check, on-disk path, and download URL.
-	filename := sanitizeFilename(header.Filename)
-	if filename == "" {
-		http.Error(w, "invalid filename", http.StatusBadRequest)
-		return
-	}
-	ext := strings.ToLower(filepath.Ext(filename))
-	if !allowedExtensions[ext] {
-		http.Error(w, "unsupported file extension", http.StatusUnsupportedMediaType)
-		return
-	}
-
-	hash, content, size, cleanup, err := storage.HashUpload(file, header.Size, h.cacheDir)
-	if cleanup != nil {
-		defer cleanup()
-	}
-	if err != nil {
-		http.Error(w, "failed to process upload", http.StatusInternalServerError)
-		return
-	}
-	if hash == "" {
-		http.Error(w, "failed to hash upload", http.StatusInternalServerError)
-		return
-	}
-
-	ctx := r.Context()
-
-	// Dedupe via DB: same content hash means we already have the bytes
-	// on disk. Record the (possibly new) filename and short-circuit.
-	existing, err := h.repo.GetFileByHash(ctx, hash)
-	if err != nil {
-		http.Error(w, "storage error", http.StatusInternalServerError)
-		return
-	}
-	if existing != nil {
-		if existing.DeletedAt.Valid {
-			// File is in the trash. Re-uploading the same bytes intentionally
-			// restores it — any uploader may do this by design (see open-issues.md).
-			if _, err := h.repo.RestoreFileByHash(ctx, existing.Hash); err != nil {
-				http.Error(w, "storage error", http.StatusInternalServerError)
-				return
-			}
-			h.audit(ctx, "file.restore", hash, "restore-via-reupload: "+filename)
-		} else {
-			h.audit(ctx, "file.upload", hash, "dedup: "+filename)
-		}
-		if err := h.repo.RecordUpload(ctx, existing.ID, filename); err != nil {
-			http.Error(w, "storage error", http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":       true,
-			"existed":  true,
-			"hash":     hash,
-			"filename": filename,
-			"size":     size,
-		})
-		return
-	}
-
-	// New file: extract tags before writing so a parse failure doesn't
-	// leave an orphan blob.
-	tags := extractTagsOrEmpty(content, mimeType)
-
-	if err := h.storage.Put(hash, filename, content); err != nil {
-		http.Error(w, "cannot save file", http.StatusInternalServerError)
-		return
-	}
-
-	now := time.Now().Unix()
-	f := &database.File{
-		Hash:           hash,
-		ByteSize:       size,
-		MimeType:       mimeType,
-		StorageBackend: "local",
-		ObjectKey:      hash + "/" + filename,
-		CreatedAt:      now,
-		UploadedBy:     actorID(ctx),
-	}
-	upload := &database.FileUpload{Filename: filename, UploadedAt: now}
-	meta := tagsToMetadata(tags, now)
-
-	if err := h.repo.InsertFile(ctx, f, upload, meta); err != nil {
-		// The blob is on disk but the DB doesn't know about it. Log
-		// loudly so the reconciler (or an operator) can clean it up.
-		log.Printf("orphan blob: hash=%s err=%v", hash, err)
-		http.Error(w, "storage error", http.StatusInternalServerError)
-		return
-	}
-	h.audit(ctx, "file.upload", hash, filename)
-
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"ok":       true,
-		"existed":  false,
-		"hash":     hash,
-		"filename": filename,
-		"size":     size,
-	})
 }
 
 // sanitizeFilename reduces a client-supplied filename to a safe base name.

@@ -31,6 +31,17 @@ type Tags struct {
 	TrackNumber int
 	TrackTotal  int
 	DiscNumber  int
+
+	// CoverImage holds the embedded cover art extracted from the audio tags.
+	// Nil when the file carries no embedded art (or it could not be read).
+	CoverImage *CoverData
+}
+
+// CoverData is a single piece of embedded cover art: its declared MIME type and
+// raw bytes, as reported by the tag reader.
+type CoverData struct {
+	MIMEType string // e.g. "image/jpeg"
+	Data     []byte
 }
 
 // ExtractTags reads ID3/MP4/FLAC/OGG tags from r. The mimeType argument is
@@ -52,7 +63,7 @@ func ExtractTags(r io.ReadSeeker, mimeType string) (*Tags, error) {
 	trackNum, trackTotal := m.Track()
 	discNum, _ := m.Disc()
 
-	return &Tags{
+	t := &Tags{
 		Title:       m.Title(),
 		Artist:      m.Artist(),
 		Album:       m.Album(),
@@ -65,5 +76,15 @@ func ExtractTags(r io.ReadSeeker, mimeType string) (*Tags, error) {
 		TrackNumber: trackNum,
 		TrackTotal:  trackTotal,
 		DiscNumber:  discNum,
-	}, nil
+	}
+
+	// Embedded cover art is optional; only record it when present and non-empty.
+	// Note: for MP4/M4A the tag library only reports a cover when it can infer
+	// the MIME type (PNG, or an explicit-flagged atom), so some M4A files with
+	// embedded JPEG art may extract nothing here. See .issues/open-issues.md.
+	if pic := m.Picture(); pic != nil && len(pic.Data) > 0 {
+		t.CoverImage = &CoverData{MIMEType: pic.MIMEType, Data: pic.Data}
+	}
+
+	return t, nil
 }

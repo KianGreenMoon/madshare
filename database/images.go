@@ -146,6 +146,33 @@ func (db *DB) SetAlbumCover(ctx context.Context, artist, album, baseKey, sourceE
 	return nil
 }
 
+// SetAlbumCoverIfAbsent atomically inserts an album_images row for (artist,
+// album) only when none exists yet, returning inserted=true exactly when this
+// call created the row. It is the race-free form of the fill-if-missing rule:
+// when several tracks of the same album are uploaded concurrently they all see
+// "no cover" via HasAlbumCover, but only the single caller that wins this
+// INSERT ... ON CONFLICT DO NOTHING gets inserted=true and proceeds to enqueue
+// variant processing — the rest are no-ops. Unlike SetAlbumCover it never
+// overwrites an existing cover, so a previously stored (e.g. manually uploaded)
+// cover always wins over embedded art. variants_ready starts at 0.
+func (db *DB) SetAlbumCoverIfAbsent(ctx context.Context, artist, album, baseKey, sourceExt, objectKey, mimeType string, now int64) (bool, error) {
+	res, err := db.ExecContext(ctx,
+		`INSERT INTO album_images
+		     (album_artist, album_title, object_key, mime_type, updated_at, base_key, source_ext, variants_ready)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+		 ON CONFLICT(album_artist, album_title) DO NOTHING`,
+		artist, album, objectKey, mimeType, now, baseKey, sourceExt,
+	)
+	if err != nil {
+		return false, fmt.Errorf("set album cover if absent: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("set album cover if absent: rows affected: %w", err)
+	}
+	return n > 0, nil
+}
+
 // GetAlbumCoverStatus returns the variant-tracking state for an album cover.
 // found is false (no error) when no album_images row exists. base_key and
 // source_ext may be empty for legacy rows written before variants existed.

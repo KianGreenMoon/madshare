@@ -128,6 +128,11 @@ type Repository interface {
 	// fields (variants_ready reset to 0).
 	SetAlbumCover(ctx context.Context, artist, album, baseKey, sourceExt, objectKey, mimeType string, now int64) error
 
+	// SetAlbumCoverIfAbsent inserts an album cover row only when none exists,
+	// reporting inserted=true exactly when this call created it. Race-free
+	// fill-if-missing: it never overwrites an existing cover.
+	SetAlbumCoverIfAbsent(ctx context.Context, artist, album, baseKey, sourceExt, objectKey, mimeType string, now int64) (bool, error)
+
 	// GetAlbumCoverStatus returns the variant-tracking state for an album cover;
 	// found is false when no row exists.
 	GetAlbumCoverStatus(ctx context.Context, artist, album string) (baseKey, sourceExt string, variantsReady, found bool, err error)

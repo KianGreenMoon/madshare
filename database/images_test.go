@@ -34,6 +34,79 @@ func TestEnqueueImageJob_Idempotent(t *testing.T) {
 	}
 }
 
+func TestSetAlbumCoverIfAbsent(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	// First insert wins.
+	inserted, err := db.SetAlbumCoverIfAbsent(ctx, "Artist", "Album", "key1aaaaaaaaaaaa", ".jpg", "key1aaaaaaaaaaaa/original.jpg", "image/jpeg", 1000)
+	if err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+	if !inserted {
+		t.Fatal("first SetAlbumCoverIfAbsent returned inserted=false, want true")
+	}
+
+	// Second call for the same album is a no-op and must not overwrite.
+	inserted, err = db.SetAlbumCoverIfAbsent(ctx, "Artist", "Album", "key2bbbbbbbbbbbb", ".png", "key2bbbbbbbbbbbb/original.png", "image/png", 2000)
+	if err != nil {
+		t.Fatalf("second insert: %v", err)
+	}
+	if inserted {
+		t.Error("second SetAlbumCoverIfAbsent returned inserted=true, want false (row already exists)")
+	}
+
+	baseKey, sourceExt, _, found, err := db.GetAlbumCoverStatus(ctx, "Artist", "Album")
+	if err != nil || !found {
+		t.Fatalf("GetAlbumCoverStatus: found=%v err=%v", found, err)
+	}
+	if baseKey != "key1aaaaaaaaaaaa" || sourceExt != ".jpg" {
+		t.Errorf("stored cover = (%q,%q), want the first insert (key1…, .jpg) — must not be overwritten", baseKey, sourceExt)
+	}
+}
+
+// TestSetAlbumCoverIfAbsent_ConcurrentSingleWinner runs many concurrent claims
+// for the same album on an on-disk DB (real multi-connection pool) and asserts
+// exactly one reports inserted=true.
+func TestSetAlbumCoverIfAbsent_ConcurrentSingleWinner(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "claim.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	ctx := context.Background()
+
+	const n = 16
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	wins := 0
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			bk := fmt.Sprintf("base%012d", i)
+			<-start
+			ok, err := db.SetAlbumCoverIfAbsent(ctx, "A", "B", bk, ".jpg", bk+"/original.jpg", "image/jpeg", int64(i))
+			if err != nil {
+				t.Errorf("claim %d: %v", i, err)
+				return
+			}
+			if ok {
+				mu.Lock()
+				wins++
+				mu.Unlock()
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	if wins != 1 {
+		t.Errorf("concurrent winners = %d, want exactly 1", wins)
+	}
+}
+
 func TestResetStaleJobs(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
