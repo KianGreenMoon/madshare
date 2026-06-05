@@ -127,6 +127,10 @@ func (p *Pool) generate(job *database.ImageJob) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
+	// Track what this attempt wrote so a mid-loop failure (e.g. disk full) does
+	// not leave a partial set of variants behind. The original is never touched
+	// here — retries re-read it via resolveOriginal. We never remove the source.
+	var written []string
 	for _, name := range media.AllVariants {
 		if name == media.VariantOriginal {
 			continue // already on disk; never rewrite the source
@@ -134,8 +138,12 @@ func (p *Pool) generate(job *database.ImageJob) error {
 		rel := media.VariantPath(job.BaseKey, name, ext)
 		dest := filepath.Join(p.imagesDir, filepath.FromSlash(rel))
 		if err := os.WriteFile(dest, set[name], 0o644); err != nil {
+			for _, w := range written {
+				os.Remove(w) // best-effort cleanup of this attempt's partial output
+			}
 			return fmt.Errorf("write variant %s: %w", name, err)
 		}
+		written = append(written, dest)
 	}
 	return nil
 }

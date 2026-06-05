@@ -30,7 +30,7 @@ func Open(dsn string) (*DB, error) {
 	// its own private database, so we pin the pool to a single connection.
 	openDSN := dsn
 	if dsn != ":memory:" {
-		openDSN = withForeignKeysPragma(dsn)
+		openDSN = withConnectionPragmas(dsn)
 	}
 
 	sqlDB, err := sql.Open("sqlite", openDSN)
@@ -60,19 +60,28 @@ func Open(dsn string) (*DB, error) {
 	return db, nil
 }
 
-// withForeignKeysPragma appends the modernc.org/sqlite connection pragma that
-// turns on foreign-key enforcement for every connection in the pool. The driver
+// withConnectionPragmas appends the modernc.org/sqlite connection pragmas that
+// must apply to every connection in the pool: foreign-key enforcement and a
+// busy_timeout so a connection waits on a held write lock instead of failing
+// immediately with SQLITE_BUSY. The latter matters now that the image-variant
+// worker pool creates sustained concurrent write pressure on the on-disk DB
+// (the pool is multi-connection; only :memory: is pinned to one). The driver
 // reads _pragma query parameters from the DSN and issues them on each new
-// connection. If the dsn already names a foreign_keys pragma it is left as-is.
-func withForeignKeysPragma(dsn string) string {
-	if strings.Contains(dsn, "_pragma=foreign_keys") {
-		return dsn
+// connection. Pragmas already named in the dsn are left as-is.
+func withConnectionPragmas(dsn string) string {
+	sep := func(d string) string {
+		if strings.Contains(d, "?") {
+			return "&"
+		}
+		return "?"
 	}
-	sep := "?"
-	if strings.Contains(dsn, "?") {
-		sep = "&"
+	if !strings.Contains(dsn, "_pragma=foreign_keys") {
+		dsn += sep(dsn) + "_pragma=foreign_keys(1)"
 	}
-	return dsn + sep + "_pragma=foreign_keys(1)"
+	if !strings.Contains(dsn, "_pragma=busy_timeout") {
+		dsn += sep(dsn) + "_pragma=busy_timeout(5000)"
+	}
+	return dsn
 }
 
 // Close closes the underlying database handle.

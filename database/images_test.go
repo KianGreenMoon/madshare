@@ -2,6 +2,9 @@ package database
 
 import (
 	"context"
+	"fmt"
+	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -107,6 +110,64 @@ func TestFinishImageJob_SetsVariantsReady(t *testing.T) {
 	}
 	if status != "done" {
 		t.Fatalf("job status = %q, want done", status)
+	}
+}
+
+// TestClaimImageJob_Concurrent seeds a queue and has many goroutines drain it on
+// a real on-disk DB (multi-connection pool). It asserts no job is claimed twice
+// and all are claimed exactly once — locking in ClaimImageJob's atomic-claim
+// guarantee under genuine connection-level concurrency.
+func TestClaimImageJob_Concurrent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "claim.db")
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	ctx := context.Background()
+
+	const nJobs = 200
+	for i := 0; i < nJobs; i++ {
+		// Distinct base_key per job so the active-job unique index never collapses them.
+		if err := db.EnqueueImageJob(ctx, "album", fmt.Sprintf("a\x1f%d", i), fmt.Sprintf("key%04d", i), int64(i)); err != nil {
+			t.Fatalf("enqueue %d: %v", i, err)
+		}
+	}
+
+	const nWorkers = 8
+	var (
+		mu      sync.Mutex
+		claimed = make(map[int64]int)
+		wg      sync.WaitGroup
+	)
+	for w := 0; w < nWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				job, err := db.ClaimImageJob(ctx)
+				if err != nil {
+					t.Errorf("claim: %v", err)
+					return
+				}
+				if job == nil {
+					return // queue drained
+				}
+				mu.Lock()
+				claimed[job.ID]++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if len(claimed) != nJobs {
+		t.Errorf("claimed %d distinct jobs, want %d", len(claimed), nJobs)
+	}
+	for id, n := range claimed {
+		if n != 1 {
+			t.Errorf("job %d claimed %d times, want exactly 1", id, n)
+		}
 	}
 }
 

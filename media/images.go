@@ -80,13 +80,20 @@ func ProcessImage(data []byte, sourceMIME string) (ImageSet, string, error) {
 		return nil, "", fmt.Errorf("unsupported image type %q", sourceMIME)
 	}
 
+	// Read the header dimensions before the full decode so an over-large image
+	// (a decompression bomb: small compressed payload declaring huge dimensions)
+	// is rejected before imaging.Decode allocates width*height*4 bytes for it.
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, "", fmt.Errorf("decode image header: %w", err)
+	}
+	if cfg.Width > maxImageDimension || cfg.Height > maxImageDimension {
+		return nil, "", fmt.Errorf("image %dx%d exceeds max dimension %d", cfg.Width, cfg.Height, maxImageDimension)
+	}
+
 	img, err := imaging.Decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, "", fmt.Errorf("decode image: %w", err)
-	}
-	b := img.Bounds()
-	if b.Dx() > maxImageDimension || b.Dy() > maxImageDimension {
-		return nil, "", fmt.Errorf("image %dx%d exceeds max dimension %d", b.Dx(), b.Dy(), maxImageDimension)
 	}
 
 	set := ImageSet{VariantOriginal: data}
