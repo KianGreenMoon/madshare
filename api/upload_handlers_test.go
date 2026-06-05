@@ -51,15 +51,19 @@ func id3v23APICFrame(mimeType string, pic []byte) []byte {
 	return id3v23Frame("APIC", body)
 }
 
-// buildMP3WithCover assembles an ID3v2.3-tagged MP3. Empty album/artist or nil
-// pic omit the corresponding frame.
-func buildMP3WithCover(album, albumArtist, picMIME string, pic []byte) []byte {
+// buildMP3Tags assembles an ID3v2.3-tagged MP3 with the given album (TALB),
+// album artist (TPE2), track artist (TPE1), and cover (APIC). Empty strings or
+// a nil pic omit the corresponding frame.
+func buildMP3Tags(album, albumArtist, artist, picMIME string, pic []byte) []byte {
 	var frames []byte
 	if album != "" {
 		frames = append(frames, id3v23TextFrame("TALB", album)...)
 	}
 	if albumArtist != "" {
 		frames = append(frames, id3v23TextFrame("TPE2", albumArtist)...)
+	}
+	if artist != "" {
+		frames = append(frames, id3v23TextFrame("TPE1", artist)...)
 	}
 	if pic != nil {
 		frames = append(frames, id3v23APICFrame(picMIME, pic)...)
@@ -70,6 +74,11 @@ func buildMP3WithCover(album, albumArtist, picMIME string, pic []byte) []byte {
 	// Tag size is a 28-bit synchsafe integer (7 bits per byte).
 	hdr = append(hdr, byte((n>>21)&0x7f), byte((n>>14)&0x7f), byte((n>>7)&0x7f), byte(n&0x7f))
 	return append(hdr, frames...)
+}
+
+// buildMP3WithCover is the common case: album + album artist (TPE2) + cover.
+func buildMP3WithCover(album, albumArtist, picMIME string, pic []byte) []byte {
+	return buildMP3Tags(album, albumArtist, "", picMIME, pic)
 }
 
 // fakeJPEG is a stand-in cover blob. Phase 2 only stores the embedded bytes and
@@ -351,4 +360,136 @@ func TestUploadFile_UnsupportedEmbeddedFormatSkipped(t *testing.T) {
 	if got := countPendingImageJobs(t, h); got != 0 {
 		t.Errorf("pending jobs = %d, want 0", got)
 	}
+}
+
+// TestUploadFile_OversizedEmbeddedCoverSkipped verifies an embedded cover larger
+// than the manual-upload cap (maxImageSize) is skipped: no file written, no row,
+// no job. Guards against disk-write amplification via a crafted oversized APIC.
+func TestUploadFile_OversizedEmbeddedCoverSkipped(t *testing.T) {
+	h, db, base := newTestHandler(t)
+	// One byte over the cap; valid JPEG SOI prefix so MIME stays plausible.
+	huge := make([]byte, maxImageSize+1)
+	copy(huge, []byte{0xFF, 0xD8, 0xFF, 0xE0})
+	mp3 := buildMP3WithCover("Obscured", "Pink Floyd", "image/jpeg", huge)
+
+	rr := httptest.NewRecorder()
+	h.uploadFile(rr, buildUploadRequest(t, "file", "clouds.mp3", "audio/mpeg", mp3))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d; body: %s", rr.Code, rr.Body.String())
+	}
+	resp := jsonBody(t, rr)
+	if resp["cover_found"] != true {
+		t.Errorf("cover_found = %v, want true (art was present)", resp["cover_found"])
+	}
+	if resp["cover_processing"] != false {
+		t.Errorf("cover_processing = %v, want false (over size cap)", resp["cover_processing"])
+	}
+	if has, _ := db.HasAlbumCover(context.Background(), "Pink Floyd", "Obscured"); has {
+		t.Error("album cover row created for oversized embedded cover")
+	}
+	if got := countPendingImageJobs(t, h); got != 0 {
+		t.Errorf("pending jobs = %d, want 0", got)
+	}
+	// Nothing should have been written under imagesDir.
+	if entries, _ := os.ReadDir(filepath.Join(base, "images")); len(entries) != 0 {
+		t.Errorf("imagesDir has %d entries, want 0 (no oversized cover written)", len(entries))
+	}
+}
+
+// TestUploadFile_ArtistFallbackFromTPE1 verifies the cover is keyed on the track
+// artist (TPE1) when no album artist (TPE2) is present — exercising
+// effectiveAlbumArtist's fallback directly.
+func TestUploadFile_ArtistFallbackFromTPE1(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	// Album + track artist only; no album artist.
+	mp3 := buildMP3Tags("Summer", "", "Lone Artist", "image/jpeg", fakeJPEG)
+
+	rr := httptest.NewRecorder()
+	h.uploadFile(rr, buildUploadRequest(t, "file", "solo.mp3", "audio/mpeg", mp3))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d; body: %s", rr.Code, rr.Body.String())
+	}
+	resp := jsonBody(t, rr)
+	if resp["cover_processing"] != true {
+		t.Errorf("cover_processing = %v, want true", resp["cover_processing"])
+	}
+	// Cover must be keyed on the track artist (the TPE1 fallback), not "".
+	if has, _ := db.HasAlbumCover(context.Background(), "Lone Artist", "Summer"); !has {
+		t.Error("cover not keyed on track artist via TPE1 fallback")
+	}
+}
+
+// TestUploadFile_ConcurrentSameAlbumIdenticalArt_OneFile is the common real
+// case: all tracks of an album embed identical cover art (same base_key). The
+// concurrent fill-if-missing must still settle on one row + one job, and because
+// the bytes are identical there must be exactly one original file on disk (no
+// orphans).
+func TestUploadFile_ConcurrentSameAlbumIdenticalArt_OneFile(t *testing.T) {
+	base := t.TempDir()
+	db, err := database.Open(filepath.Join(t.TempDir(), "identical.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	h := &handler{
+		storage:       storage.NewLocal(base),
+		repo:          db,
+		cacheDir:      t.TempDir(),
+		imagesDir:     filepath.Join(base, "images"),
+		maxUploadSize: testMaxUpload,
+	}
+
+	const tracks = 8
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < tracks; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			// Same album AND same cover bytes across all tracks → one base_key.
+			// Append per-track trailing bytes so each file hashes distinctly
+			// (otherwise identical tags+cover would dedup to a single upload).
+			mp3 := append(buildMP3WithCover("Division Bell", "Pink Floyd", "image/jpeg", fakeJPEG),
+				[]byte(fmt.Sprintf("\x00audio-%d", i))...)
+			fn := fmt.Sprintf("track%02d.mp3", i)
+			rr := httptest.NewRecorder()
+			<-start
+			h.uploadFile(rr, buildUploadRequest(t, "file", fn, "audio/mpeg", mp3))
+			if rr.Code != http.StatusCreated {
+				t.Errorf("track %d: status = %d, want 201", i, rr.Code)
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	var rows int
+	db.QueryRow(`SELECT COUNT(*) FROM album_images WHERE album_artist='Pink Floyd' AND album_title='Division Bell'`).Scan(&rows)
+	if rows != 1 {
+		t.Errorf("album_images rows = %d, want 1", rows)
+	}
+	if got := countPendingImageJobs(t, h); got != 1 {
+		t.Errorf("pending image jobs = %d, want 1", got)
+	}
+	// Exactly one base_key dir holding exactly the one original file — identical
+	// art means no per-track orphans.
+	baseKey := media.BaseKey(fakeJPEG)
+	dirs, _ := os.ReadDir(filepath.Join(base, "images"))
+	if len(dirs) != 1 || dirs[0].Name() != baseKey {
+		t.Errorf("imagesDir dirs = %v, want exactly [%s]", dirNames(dirs), baseKey)
+	}
+	if len(dirs) == 1 {
+		files, _ := os.ReadDir(filepath.Join(base, "images", baseKey))
+		if len(files) != 1 {
+			t.Errorf("base_key dir has %d files, want 1 (original only)", len(files))
+		}
+	}
+}
+
+func dirNames(es []os.DirEntry) []string {
+	out := make([]string, len(es))
+	for i, e := range es {
+		out[i] = e.Name()
+	}
+	return out
 }

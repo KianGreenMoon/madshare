@@ -195,6 +195,14 @@ func (h *handler) maybeSaveEmbeddedCover(ctx context.Context, tags *media.Tags, 
 	if !ok {
 		return false // unsupported embedded format (e.g. webp/gif) — skip, do not enqueue
 	}
+	// Cap the embedded cover at the same ceiling the manual-upload path enforces
+	// (maxImageSize). Without this, a crafted audio file could carry a huge APIC
+	// frame and write it verbatim to disk (bounded only by max_upload_mb) —
+	// disk-write amplification, and orphan bloat under the distinct-art race.
+	if len(tags.CoverImage.Data) > maxImageSize {
+		log.Printf("embedded cover: %d bytes exceeds %d cap; skipping", len(tags.CoverImage.Data), maxImageSize)
+		return false
+	}
 	baseKey := media.BaseKey(tags.CoverImage.Data)
 	objectKey := media.VariantPath(baseKey, media.VariantOriginal, ext)
 	destPath := filepath.Join(h.imagesDir, objectKey)
