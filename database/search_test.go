@@ -154,12 +154,19 @@ func TestSearch_Underscore_TreatedAsLiteral(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	// "Short Title" must not be matched: "_" without escaping would match any
-	// single-character substring, but after escaping it only matches literal "_".
+	// After escaping, "_" matches only the literal underscore character.
+	// Positive: "Track_One" must appear (it contains a literal "_").
+	found := false
 	for _, tr := range res.Tracks {
+		if tr.Title == "Track_One" {
+			found = true
+		}
 		if tr.Title == "Short Title" {
 			t.Errorf("'_' query matched 'Short Title' — underscore not escaped")
 		}
+	}
+	if !found {
+		t.Errorf("'_' query did not return 'Track_One' — literal underscore not matched")
 	}
 }
 

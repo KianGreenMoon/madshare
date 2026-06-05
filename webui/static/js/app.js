@@ -259,10 +259,10 @@ function renderAlbumList(albums) {
 function renderTrackList(tracks) {
   const panel = document.getElementById('libraryPanel');
 
-  // Always reset playlist when entering a track list so player reflects current album.
-  playlist = [];
-
   if (!tracks || tracks.length === 0) {
+    playlist = [];
+    playingFromSearch = false;
+    currentIndex = -1;
     panel.innerHTML =
       `<div class="panel-fade-in"><div class="panel-empty">No tracks found.</div></div>`;
     return;
@@ -270,30 +270,36 @@ function renderTrackList(tracks) {
 
   const durCache = loadDurCache();
 
-  // Populate shared playlist array first so playIndex() works immediately.
+  // Build a local list for this library view. We don't immediately clobber the
+  // global playlist so that search-result playback continues uninterrupted while
+  // the user browses the library without clicking a track.
+  const libraryPlaylist = [];
   tracks.forEach(t => {
     const url = `${API}${t.url}`;
     const dur = t.duration_seconds
       ? fmtTime(t.duration_seconds)
       : (durCache[url] || '—');
-    playlist.push({
+    libraryPlaylist.push({
       url,
       title:  t.title  || t.filename || 'Unknown',
       artist: drill.artist || '',
       dur,
     });
   });
-  // If currentIndex is out of range (e.g. stale from a search playlist), reset it
-  // so Next/Prev don't navigate into the wrong list. Keep it when it still points
-  // into this list (user was playing a library track and re-entered the same album).
-  if (currentIndex >= playlist.length) currentIndex = -1;
+
+  // If not mid-search-playback, make this the active playlist immediately so
+  // Next/Prev and the playing highlight reflect the library view.
+  if (!playingFromSearch) {
+    playlist = libraryPlaylist;
+    if (currentIndex >= playlist.length) currentIndex = -1;
+  }
 
   const wrap = document.createElement('div');
   wrap.className = 'panel-fade-in';
 
   tracks.forEach((t, i) => {
     const displayNum = t.track_number || (i + 1);
-    const track      = playlist[i];
+    const track      = libraryPlaylist[i];
     const row        = document.createElement('div');
     row.className    = 'track-row';
     row.tabIndex     = 0;
@@ -310,9 +316,18 @@ function renderTrackList(tracks) {
         `<div class="track-meta">${esc(drill.artist || '')}</div>` +
       `</div>` +
       `<span class="track-dur">${esc(track.dur)}</span>`;
-    row.addEventListener('click', () => playIndex(i));
+    row.addEventListener('click', () => {
+      playingFromSearch = false;
+      playlist = libraryPlaylist;
+      playIndex(i);
+    });
     row.addEventListener('keydown', e => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); playIndex(i); }
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        playingFromSearch = false;
+        playlist = libraryPlaylist;
+        playIndex(i);
+      }
     });
     wrap.appendChild(row);
   });
@@ -320,23 +335,23 @@ function renderTrackList(tracks) {
   panel.innerHTML = '';
   panel.appendChild(wrap);
 
-  // Restore playing highlight if we're still on the same playlist.
-  if (currentIndex >= 0 && currentIndex < playlist.length) {
+  // Restore playing highlight only when in library playback mode.
+  if (!playingFromSearch && currentIndex >= 0 && currentIndex < playlist.length) {
     wrap.querySelectorAll('.track-row').forEach(row => {
       row.classList.toggle('playing', Number(row.dataset.idx) === currentIndex);
     });
   }
 
   // Background fetch for any tracks still showing '—'.
-  fetchMissingDurations();
+  fetchMissingDurations(libraryPlaylist);
 }
 
 // Fetch audio metadata headers in the background for tracks still showing '—'.
 // Runs 4 requests concurrently; saves results to localStorage so the next
 // page load shows durations immediately without any fetch.
-async function fetchMissingDurations() {
+async function fetchMissingDurations(list) {
   const cache   = loadDurCache();
-  const missing = playlist
+  const missing = list
     .map((track, i) => ({ track, i }))
     .filter(({ track }) => track.dur === '—');
 
@@ -381,9 +396,10 @@ async function reloadCurrentLevel() {
 // ── Player ───────────────────────────────────────────────────────────────
 
 // playlist is declared in the library section above — shared here.
-let currentIndex = -1;
-let stopped      = false;
-let shuffle      = false;
+let currentIndex     = -1;
+let stopped          = false;
+let shuffle          = false;
+let playingFromSearch = false; // true while a search-result track is the active source
 
 const audio        = document.getElementById('audio');
 const playerBar    = document.getElementById('player-bar');
@@ -732,12 +748,14 @@ function renderSearchResults(results, q) {
       });
 
       row.addEventListener('click', () => {
+        playingFromSearch = true;
         playlist = searchPlaylist;
         playIndex(i);
       });
       row.addEventListener('keydown', e => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
+          playingFromSearch = true;
           playlist = searchPlaylist;
           playIndex(i);
         }
