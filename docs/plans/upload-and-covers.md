@@ -1,4 +1,4 @@
-# Cover Images & Batch Upload — Implementation Plan
+# Upload & Covers — Implementation Plan
 
 **Status:** Ready to implement. All decisions are locked.  
 **Branch target:** `aidev` → merge to `develop`  
@@ -15,11 +15,18 @@
 | Fit padding | White for JPEG, transparent for PNG |
 | Cover priority | Explicit uploaded file **beats** embedded tag art. Fill-if-missing: never overwrite an existing cover |
 | Async processing | Yes — goroutine worker pool, DB-backed job queue |
-| Worker clamp | Any `max_parallel_workers < 1` or invalid → silently treated as 1; max accepted value = 32. Warn on clamp, never fatal |
+| Image worker clamp | Any `image_processing_workers < 1` → silently treated as 1; max accepted = 32. Warn on clamp, never fatal |
 | Artist covers | **Deferred** — schema reserves space but no implementation in this plan |
 | Upload page | `/upload` route in webui; one cover preview card per detected album group |
 | Aura effect | Client-side canvas only (Phase 6, last) |
 | Manual cover upload | API already exists (`POST /api/albums/{album}/image`); extend to trigger async job; also exposed in the upload page UI |
+| Upload mechanism | Parallel single-file `POST /files/upload` requests from client; no batch endpoint |
+| Server concurrency | `server_max_parallel_workers` (global, in `[storage]`) + `user_max_parallel_workers` (per-user, in `[storage]`); 0/unset = unlimited |
+| Admin exception | Admins bypass `user_max_parallel_workers`; `server_max_parallel_workers` applies to everyone |
+| Rate limit response | 429 with JSON `{"error":"…","code":"upload_limit"}`; client auto-decrements workers and re-queues |
+| UI config file | `webui.toml` — separate file, read once at startup; values served via `GET /api/ui/config` |
+| Client concurrency | Controlled by user via slider in upload UI; defaults/max come from `webui.toml` |
+| Batch file types | All file types accepted (audio, images, etc.); unsupported types rejected inline per file |
 
 ---
 
@@ -34,7 +41,7 @@ Phase 2 — Embedded cover extraction during audio upload
     ↓
 Phase 3 — Manual cover upload extension (server-side)
     ↓
-Phase 4 — Batch & folder upload (API)
+Phase 4 — Upload concurrency & rate limiting
     ↓
 Phase 5 — Upload page (/upload, webui)
     ↓
@@ -46,7 +53,7 @@ Phase 6 — Aura effect (frontend, client-side)
 ## Phase 1 — Image Variant System
 
 ### Goal
-Establish the full image processing pipeline: resize library, config section, DB schema, async worker pool, and a status query API. Everything else builds on top of this.
+Establish the full image processing pipeline: resize library, config, DB schema, async worker pool, and a status query API. Everything else builds on top of this.
 
 ---
 
@@ -60,64 +67,130 @@ Verify it appears in `go.mod` and `go.sum`.
 
 ---
 
-### 1b. Config: add `[images]` section
+### 1b. Config: extend `[storage]` and create `webui.toml`
+
+**Do not add an `[images]` section.** All new server-side params go in the existing `[storage]` section.
 
 **File to modify:** `config/config.go`
 
-Add a new struct after `StorageConfig`:
+Extend `StorageConfig` with three new fields:
 
 ```go
-type ImagesConfig struct {
-    // MaxParallelWorkers controls the goroutine pool for image variant generation.
-    // Any value < 1 is clamped to 1. Max accepted value is 32.
-    MaxParallelWorkers int `toml:"max_parallel_workers"`
+type StorageConfig struct {
+    FilesDir                 string `toml:"files_dir"`
+    MaxUploadMB              int    `toml:"max_upload_mb"`
+    ServerMaxParallelWorkers int    `toml:"server_max_parallel_workers"` // 0 = unlimited
+    UserMaxParallelWorkers   int    `toml:"user_max_parallel_workers"`   // 0 = unlimited; admins bypass
+    ImageProcessingWorkers   int    `toml:"image_processing_workers"`    // goroutines for variant generation
 }
 ```
 
-Add field to `Config`:
+Add defaults in `defaults()`:
 
 ```go
-type Config struct {
-    Listen   []ListenConfig `toml:"listen"`
-    WebUI    WebUIConfig    `toml:"webui"`
-    Database DatabaseConfig `toml:"database"`
-    Storage  StorageConfig  `toml:"storage"`
-    Auth     AuthConfig     `toml:"auth"`
-    Images   ImagesConfig   `toml:"images"`  // ← add this
-}
-```
-
-Add default in `defaults()`:
-
-```go
-Images: ImagesConfig{
-    MaxParallelWorkers: 2,
+Storage: StorageConfig{
+    // existing defaults unchanged …
+    ServerMaxParallelWorkers: 0,
+    UserMaxParallelWorkers:   0,
+    ImageProcessingWorkers:   2,
 },
 ```
 
-Add validation in `config.Load` (after existing storage validation, before `validateListeners`):
+Add validation in `config.Load` after existing storage validation:
 
 ```go
-if c.Images.MaxParallelWorkers < 1 {
-    log.Printf("config: images.max_parallel_workers %d is invalid, using 1", c.Images.MaxParallelWorkers)
-    c.Images.MaxParallelWorkers = 1
+if c.Storage.ImageProcessingWorkers < 1 {
+    log.Printf("config: storage.image_processing_workers %d is invalid, using 1", c.Storage.ImageProcessingWorkers)
+    c.Storage.ImageProcessingWorkers = 1
 }
-if c.Images.MaxParallelWorkers > 32 {
-    log.Printf("config: images.max_parallel_workers %d exceeds maximum, using 32", c.Images.MaxParallelWorkers)
-    c.Images.MaxParallelWorkers = 32
+if c.Storage.ImageProcessingWorkers > 32 {
+    log.Printf("config: storage.image_processing_workers %d exceeds maximum, using 32", c.Storage.ImageProcessingWorkers)
+    c.Storage.ImageProcessingWorkers = 32
+}
+if c.Storage.ServerMaxParallelWorkers < 0 {
+    log.Printf("config: storage.server_max_parallel_workers %d is invalid, using 0 (unlimited)", c.Storage.ServerMaxParallelWorkers)
+    c.Storage.ServerMaxParallelWorkers = 0
+}
+if c.Storage.UserMaxParallelWorkers < 0 {
+    log.Printf("config: storage.user_max_parallel_workers %d is invalid, using 0 (unlimited)", c.Storage.UserMaxParallelWorkers)
+    c.Storage.UserMaxParallelWorkers = 0
 }
 ```
 
-Use `log.Printf` (warning), not `return error` — worker count is non-fatal.
-
-Update `madshare.toml.example` with:
+Update `madshare.toml.example` `[storage]` block:
 
 ```toml
-[images]
-max_parallel_workers = 2   # concurrent image resize workers; invalid/low values clamp to 1
+[storage]
+files_dir     = "./data/files"
+max_upload_mb = 500
+# server_max_parallel_workers = 0   # total concurrent uploads from all users (0 = unlimited)
+# user_max_parallel_workers   = 0   # concurrent uploads per user (0 = unlimited; admins always exempt)
+# image_processing_workers    = 2   # goroutines for cover image variant generation (1–32)
 ```
 
-Update `CLAUDE.md` config section to document `[images]`.
+**New file: `webui.toml.example`** (copy to `webui.toml` to use; add `webui.toml` to `.gitignore`):
+
+```toml
+# webui.toml — UI-side upload configuration. Read once at startup.
+# Copy to webui.toml and edit as needed.
+
+[upload]
+default_parallel_workers = 3   # default concurrent upload connections shown to the user
+max_parallel_workers     = 10  # ceiling the user can raise the slider to in the upload UI
+```
+
+**New file: `config/webui_config.go`**
+
+```go
+package config
+
+type WebUIUploadConfig struct {
+    DefaultParallelWorkers int `toml:"default_parallel_workers"`
+    MaxParallelWorkers     int `toml:"max_parallel_workers"`
+}
+
+type WebUIConfig struct {
+    Upload WebUIUploadConfig `toml:"upload"`
+}
+
+// LoadWebUI reads the webui.toml at path. If the file does not exist, built-in
+// defaults are returned with no error. Returns an error only on parse failure.
+func LoadWebUI(path string) (*WebUIConfig, error)
+```
+
+Defaults when file is absent or field is zero:
+- `DefaultParallelWorkers = 3`
+- `MaxParallelWorkers = 10`
+
+Validation (non-fatal, log and clamp):
+- `DefaultParallelWorkers < 1` → clamp to 1
+- `MaxParallelWorkers < 1` → clamp to 1
+- `MaxParallelWorkers < DefaultParallelWorkers` → clamp `MaxParallelWorkers` up to `DefaultParallelWorkers`
+
+Add a `-webui-config` flag to `madshare.go` alongside the existing `-config` flag. Load `WebUIConfig` in `main` immediately after `config.Load`; pass it into `api.Deps`.
+
+**New API endpoint: `GET /api/ui/config`**
+
+Public — no auth required (the UI needs it before login). Returns `WebUIConfig` as JSON:
+
+```json
+{
+    "upload": {
+        "default_parallel_workers": 3,
+        "max_parallel_workers": 10
+    }
+}
+```
+
+Register in `api.RegisterAPI`:
+
+```go
+r.Get("/api/ui/config", h.getUIConfig)
+```
+
+Add `webUIConfig *config.WebUIConfig` field to `handler` struct; wire from `Deps.WebUIConfig`.
+
+Update `CLAUDE.md` config section to document the three new `[storage]` fields and `webui.toml`.
 
 ---
 
@@ -158,7 +231,7 @@ CREATE TABLE image_processing_jobs (
 CREATE INDEX idx_imgproc_status ON image_processing_jobs(status, created_at);
 ```
 
-**Startup reset query** (added to `database/database.go` or a new `database/images.go` — see §1f):
+**Startup reset query** (added to `database/database.go` or `database/images.go` — see §1f):
 
 ```sql
 UPDATE image_processing_jobs SET status = 'pending', started_at = NULL
@@ -233,7 +306,8 @@ type ImageSet map[string][]byte
 // Returns an error if the image cannot be decoded, exceeds maxImageDimension
 // in either dimension, or any variant cannot be encoded.
 func ProcessImage(data []byte, sourceMIME string) (ImageSet, string, error)
-// Second return value is the canonical extension: ".jpg", ".png", ".webp" (webp stays webp for original, png for variants).
+// Second return value is the canonical extension: ".jpg", ".png", or ".webp"
+// (webp stays webp for the original, png for all other variants).
 ```
 
 Implementation notes:
@@ -257,7 +331,7 @@ Implementation notes:
 
 ```go
 // BaseKey computes the 16-character hex prefix of the SHA-256 of data.
-// This is stable: same image bytes always produce the same base_key.
+// Same image bytes always produce the same base_key.
 func BaseKey(data []byte) string
 
 // VariantPath returns the on-disk relative path for a variant.
@@ -336,7 +410,7 @@ Package `imageproc`.
 type Pool struct { /* unexported */ }
 
 // NewPool creates (but does not start) a worker pool.
-// imagesDir is the absolute path to the images directory (same as handler.imagesDir).
+// imagesDir is the absolute path to the images directory.
 func NewPool(db database.Repository, imagesDir string, workers int) *Pool
 
 // Start launches the worker goroutines. Blocks until ctx is cancelled.
@@ -362,9 +436,9 @@ Retry policy: a job that fails 3 times is marked `status=failed` and not retried
 
 **Wire up in `madshare.go`:**
 - After `db.Open`, call `db.ResetStaleJobs(ctx)`
-- Create `imageproc.NewPool(db, imagesDir, cfg.Images.MaxParallelWorkers)`
+- Create `imageproc.NewPool(db, imagesDir, cfg.Storage.ImageProcessingWorkers)`
 - `go pool.Start(ctx)` — cancelled by the same context as the HTTP servers
-- Pass `pool` (or just `pool.Notify()`) to the API handler deps so it can signal after enqueuing a job
+- Pass `pool` (or just `pool.Notify`) to the API handler deps so it can signal after enqueuing a job
 
 **`Deps` struct in `api/api.go`:** add `ImagePool interface { Notify() }` field. Nil-safe: if nil, skip notify (allows tests to omit it).
 
@@ -432,6 +506,10 @@ The `/images/*` file server in `api.RegisterAPI` already serves `h.imagesDir` vi
   - `TestResetStaleJobs`: insert a running job, call reset, assert it becomes pending
   - `TestFinishImageJob_SetsVariantsReady`: finish a job for an album with status=done, assert `variants_ready = 1` in `album_images`
 
+- `config/webui_config_test.go`:
+  - `TestLoadWebUI_Defaults`: no file → defaults (3, 10)
+  - `TestLoadWebUI_MaxClamped`: `max_parallel_workers < default_parallel_workers` → max clamped up
+
 ---
 
 ## Phase 2 — Embedded Cover Extraction During Audio Upload
@@ -484,27 +562,22 @@ if pic := m.Picture(); pic != nil && len(pic.Data) > 0 {
 After the `h.repo.InsertFile` call succeeds, add cover extraction logic:
 
 ```go
-// Save embedded cover as album cover if we have album metadata and no cover exists.
-if tags.CoverImage != nil &&
-    tags.Album != "" &&
-    !isAllowedImageMIME(tags.CoverImage.MIMEType) == false {
-    h.maybeSaveEmbeddedCover(ctx, tags)
+if tags.CoverImage != nil && tags.Album != "" && isAllowedImageMIME(tags.CoverImage.MIMEType) {
+    h.maybySaveEmbeddedCover(ctx, tags)
 }
 ```
 
-Extract `maybeSaveEmbeddedCover` as a private method on `*handler`:
+Extract `maybySaveEmbeddedCover` as a private method on `*handler`:
 
 ```go
-func (h *handler) maybeSaveEmbeddedCover(ctx context.Context, tags *media.Tags) {
+func (h *handler) maybySaveEmbeddedCover(ctx context.Context, tags *media.Tags) {
     artist := tags.AlbumArtist
     if artist == "" {
         artist = tags.Artist
     }
-    // Skip if we can't identify the album or artist.
     if tags.Album == "" || artist == "" {
         return
     }
-    // Fill-if-missing: skip if a cover already exists.
     has, err := h.repo.HasAlbumCover(ctx, artist, tags.Album)
     if err != nil || has {
         return
@@ -561,7 +634,7 @@ Add `imagePool interface{ Notify() }` field to `handler` struct. Wire it from `D
 
 ### 2c. Upload response: include cover status
 
-Extend both upload response JSON objects (new file path and dedup path):
+Extend upload response JSON:
 
 ```json
 {
@@ -577,7 +650,7 @@ Extend both upload response JSON objects (new file path and dedup path):
 
 `cover_found`: `tags.CoverImage != nil && artist != "" && album != ""`  
 `cover_processing`: `cover_found && !has` (i.e., we just queued a new job)  
-For the dedup path: re-check `HasAlbumCover` only if you intend to fill-if-missing on re-upload. Simpler: set both to `false` on dedup — embedded art is not re-processed for duplicate files.
+For the dedup path: set both to `false` — embedded art is not re-processed for duplicate files.
 
 ---
 
@@ -670,124 +743,136 @@ New rows always use the subdirectory format. No migration of old image files is 
 
 ---
 
-## Phase 4 — Batch & Folder Upload (API)
+## Phase 4 — Upload Concurrency & Rate Limiting
 
 ### Goal
-Extend `POST /files/upload` to accept multiple audio files (and optional cover images) in a single request. Support folder upload via `webkitdirectory` browser attribute, which sends relative paths embedded in filenames.
+Enforce server-side upload slot limits: a global cap across all users (`server_max_parallel_workers`) and a per-user cap (`user_max_parallel_workers`). Admins bypass the per-user cap. Return 429 when any limit is exceeded; the client handles backoff by reducing its worker count and re-queuing.
 
 ---
 
-### 4a. New endpoint: `POST /files/upload-batch`
+### 4a. `UploadLimiter`
 
-Do **not** modify the existing `POST /files/upload` (single-file). Add a new route `POST /files/upload-batch` to keep backward compatibility.
-
-**Route registration** in `api.RegisterAPI`:
+**File to create:** `api/upload_limiter.go`
 
 ```go
-r.With(d.protect(auth.PermFileUpload)).Post("/files/upload-batch", h.uploadFileBatch)
-```
-
-**Request format:** multipart/form-data with any number of `file` fields. Each field may be an audio file or an image file (detected by extension/MIME). Filenames may contain a relative path prefix (from `webkitdirectory`): e.g. `MyAlbum/track01.mp3`, `MyAlbum/cover.jpg`.
-
-**Response:**
-
-```json
-{
-    "results": [
-        {
-            "filename": "MyAlbum/track01.mp3",
-            "ok": true,
-            "existed": false,
-            "hash": "...",
-            "size": 12345,
-            "cover_found": true,
-            "cover_processing": true
-        },
-        {
-            "filename": "MyAlbum/cover.jpg",
-            "ok": true,
-            "role": "cover",
-            "album": "MyAlbum",
-            "artist": ""
-        },
-        {
-            "filename": "MyAlbum/bad.exe",
-            "ok": false,
-            "error": "unsupported media type"
-        }
-    ],
-    "album_groups": [
-        {
-            "group": "MyAlbum",
-            "track_count": 1,
-            "cover_base_key": "a3f1c8d2e4b7f901",
-            "cover_source_ext": ".jpg",
-            "cover_variants_ready": false
-        }
-    ]
-}
-```
-
-**Server-side logic for `uploadFileBatch`:**
-
-1. Parse multipart form with `r.ParseMultipartForm(h.maxUploadSize * int64(maxBatchFiles))`. Define `maxBatchFiles = 500`.
-2. Iterate `r.MultipartForm.File["file"]` headers.
-3. For each file header:
-   a. Extract the relative path from the filename (preserve it in the result `filename` field; use `filepath.Base` for on-disk name).
-   b. Determine the top-level directory group: `strings.SplitN(relPath, "/", 2)[0]` — if the filename contains no `/`, the group is `""` (ungrouped).
-   c. Classify by extension:
-      - Audio extension → audio file; process via `processOneUpload` (extracted from `uploadFile` logic, reusable)
-      - Image extension (`cover`, `folder`, `front`, `albumart`, `artwork` filename stems, case-insensitive) → cover candidate for the group
-      - Anything else → reject with `ok: false, error: "unsupported media type"` — do not abort the whole batch
-4. After all audio files are processed, for each group:
-   a. Determine album/artist from the metadata extracted across tracks in the group (take the first non-empty album/album_artist seen)
-   b. If an explicit cover image was found for the group: call `SetAlbumCover` + `EnqueueImageJob` (overrides any embedded cover)
-   c. If no explicit cover but at least one track had embedded art: already handled in `processOneUpload` via `maybeSaveEmbeddedCover`
-
-**Cover file detection rules (step 3c above):**
-
-A file is treated as an album cover candidate if ALL of:
-- Its MIME type is in `allowedImageMIMETypes`
-- Its extension is in `allowedImageExtensions`
-- Its base filename stem (lowercased, no extension) is one of: `cover`, `folder`, `front`, `albumart`, `artwork`, `album`
-
-If multiple qualifying image files exist in one group, use the largest by byte size (highest quality assumption).
-
-**`processOneUpload` helper:** extract the core logic of `uploadFile` into a private function callable from both `uploadFile` and `uploadFileBatch`. Signature:
-
-```go
-type uploadResult struct {
-    OK           bool
-    Existed      bool
-    Hash         string
-    Filename     string
-    Size         int64
-    Error        string
-    CoverFound   bool
-    CoverProcessing bool
+// UploadLimiter is a concurrency gate for upload requests.
+// It tracks in-flight uploads globally and per user.
+// Zero values for serverMax/userMax mean unlimited.
+// Thread-safe.
+type UploadLimiter struct {
+    mu           sync.Mutex
+    serverMax    int
+    userMax      int
+    globalCount  int
+    perUser      map[string]int
 }
 
-func (h *handler) processOneUpload(ctx context.Context, file io.ReadSeeker, header *multipart.FileHeader) uploadResult
+func NewUploadLimiter(serverMax, userMax int) *UploadLimiter
+
+var (
+    ErrServerLimit = errors.New("server upload limit reached")
+    ErrUserLimit   = errors.New("user upload limit reached")
+)
+
+// Acquire attempts to claim an upload slot for the given user.
+// If isAdmin is true, the per-user limit is skipped.
+// Returns ErrServerLimit or ErrUserLimit without blocking.
+func (l *UploadLimiter) Acquire(userID string, isAdmin bool) error
+
+// Release returns an upload slot. Call exactly once after a successful Acquire.
+func (l *UploadLimiter) Release(userID string)
 ```
 
-`uploadFile` becomes a thin wrapper that calls `processOneUpload` and writes the JSON response.
+`Acquire` implementation:
+1. Lock
+2. If `serverMax > 0 && globalCount >= serverMax` → return `ErrServerLimit`
+3. If `!isAdmin && userMax > 0 && perUser[userID] >= userMax` → return `ErrUserLimit`
+4. Increment `globalCount` and `perUser[userID]`; unlock; return nil
+
+`Release`: decrement both counters under lock; guard against going below 0.
 
 ---
 
-### 4b. Tests for Phase 4
+### 4b. Wire into the upload handler
+
+**File to modify:** `api/api.go` — add `UploadLimiter *UploadLimiter` to `Deps`.  
+**File to modify:** `api/handlers.go` — add `limiter *UploadLimiter` to `handler` struct; wire from `Deps`.
+
+In `uploadFile`, before the multipart parse:
+
+```go
+id := auth.IdentityFromContext(r.Context())
+userID := ""
+isAdmin := false
+if id != nil {
+    userID = id.UserID()
+    isAdmin = id.HasPermission(auth.PermAdmin)
+}
+if h.limiter != nil {
+    if err := h.limiter.Acquire(userID, isAdmin); err != nil {
+        writeUploadLimitError(w, err)
+        return
+    }
+    defer h.limiter.Release(userID)
+}
+```
+
+`writeUploadLimitError`:
+
+```go
+func writeUploadLimitError(w http.ResponseWriter, err error) {
+    msg := "server upload limit reached"
+    if errors.Is(err, ErrUserLimit) {
+        msg = "user upload limit reached"
+    }
+    w.Header().Set("Content-Type", "application/json")
+    w.Header().Set("Retry-After", "1")
+    w.WriteHeader(http.StatusTooManyRequests)
+    _ = json.NewEncoder(w).Encode(map[string]any{
+        "error": msg,
+        "code":  "upload_limit",
+    })
+}
+```
+
+**Wire in `madshare.go`:**
+
+```go
+limiter := api.NewUploadLimiter(
+    cfg.Storage.ServerMaxParallelWorkers,
+    cfg.Storage.UserMaxParallelWorkers,
+)
+// pass to api.Deps.UploadLimiter
+```
+
+---
+
+### 4c. Admin identity check
+
+The `isAdmin` check uses `id.HasPermission(auth.PermAdmin)`. Confirm the constant name in the `auth` package. A user whose `isAdmin = true` must never receive `ErrUserLimit`, regardless of `userMax` config.
+
+---
+
+### 4d. Tests for Phase 4
+
+- `api/upload_limiter_test.go`:
+  - `TestUploadLimiter_ServerLimit`: serverMax=1, acquire twice, assert second returns `ErrServerLimit`
+  - `TestUploadLimiter_UserLimit`: userMax=1, acquire twice with same userID, assert second returns `ErrUserLimit`
+  - `TestUploadLimiter_AdminBypass`: userMax=1, acquire twice with `isAdmin=true`, assert no error
+  - `TestUploadLimiter_DifferentUsers`: userMax=1, acquire with different userIDs, assert no error
+  - `TestUploadLimiter_Release`: acquire then release, assert next acquire succeeds
+  - `TestUploadLimiter_Unlimited`: serverMax=0, userMax=0, many acquires, no errors
 
 - `api/handlers_test.go`:
-  - `TestUploadBatch_MixedFiles`: POST a batch with 2 MP3s + 1 cover.jpg + 1 .exe; assert 2 audio results ok, 1 cover result, 1 rejected, 1 album group
-  - `TestUploadBatch_CoverPriorityOverEmbedded`: batch with an audio file that has embedded cover AND an explicit `cover.jpg` for the same group; assert `SetAlbumCover` is called once and uses the explicit file's `base_key`
-  - `TestUploadBatch_UngroupedFiles`: files with no directory prefix land in group `""` with no cover auto-detection
-  - `TestUploadBatch_EmptyBatch`: POST with no files; return 200 with empty `results` and `album_groups`
+  - `TestUploadFile_ServerLimitReturns429`: pre-saturate limiter at serverMax=1, assert 429 with `code: "upload_limit"`
+  - `TestUploadFile_UserLimitReturns429`: same for userMax=1, same-user second request
 
 ---
 
 ## Phase 5 — Upload Page (`/upload`, webui)
 
 ### Goal
-A new web UI page at `/upload` where users can upload files and folders, see per-album cover previews, replace covers manually, and track async processing status.
+A new web UI page at `/upload` where users can upload files and folders of any type, see per-album cover previews, replace covers manually, and track async processing status. Client-side parallel workers are user-adjustable.
 
 ---
 
@@ -801,7 +886,7 @@ Register the new page in `Register`:
 r.Get("/upload", renderTemplate("upload.html"))
 ```
 
-Or a dedicated handler if it needs to inject data (prefer template with no server-side data injection — all state comes from API calls).
+Prefer template with no server-side data injection — all state comes from API calls.
 
 ---
 
@@ -821,13 +906,15 @@ Full vanilla HTML/CSS/JS. No external dependencies.
 │  │  [Browse files]  [Browse folder]     │   │
 │  └──────────────────────────────────────┘   │
 ├──────────────────────────────────────────────┤
+│  Workers: [———●———————] 3          [Upload]  │
+├──────────────────────────────────────────────┤
 │  Upload queue                                │
 │  ┌──────────────────────────────────────┐   │
 │  │ filename.mp3    3.2 MB   [========  ]│   │
 │  │ track02.mp3     4.1 MB   [====      ]│   │
 │  │ bad.exe         rejected             │   │
 │  └──────────────────────────────────────┘   │
-│  [Upload all]  [Clear]                       │
+│  [Clear]                                     │
 ├──────────────────────────────────────────────┤
 │  Album groups detected                       │
 │  ┌────────┐  ┌────────┐                     │
@@ -839,36 +926,60 @@ Full vanilla HTML/CSS/JS. No external dependencies.
 └──────────────────────────────────────────────┘
 ```
 
+**Parallel workers control:**
+- On page load, call `GET /api/ui/config` to obtain `default_parallel_workers` and `max_parallel_workers`
+- Render `<input type="range" min="1" max="{max}">` defaulting to `default_parallel_workers`
+- Label shows the current value live: "Workers: N"
+- The JS upload queue uses this value as the concurrency cap for outstanding `POST /files/upload` requests
+
+**Upload queue & worker logic:**
+- Files added to a JS array (the queue), rendered as a list
+- N concurrent "worker slots" — each picks the next pending file from the queue and calls `POST /files/upload`
+- Use `file.webkitRelativePath || file.name` as the filename in the request's `Content-Disposition`
+- On success or non-429 error: slot picks the next queued file
+- On 429 response:
+  - Decrement current worker count by 1 (floor at 1); update slider display
+  - Re-queue the failed file at the front of the queue
+  - Log: `"Server limit hit — workers reduced to N"`
+- Progress per file via `XMLHttpRequest` `upload.onprogress`
+
+**Client-side album grouping:**
+- Extract directory prefix from `file.webkitRelativePath`: `path.split('/').slice(0, -1).join('/')`; empty string for files with no directory
+- Files sharing the same prefix are one album group
+- Cover candidates within a group: files whose base name (no extension, lowercased) is one of `cover`, `folder`, `front`, `albumart`, `artwork`, `album` AND whose MIME type is an allowed image type (`image/jpeg`, `image/png`, `image/webp`)
+- When all audio files in a group have finished (succeeded or failed):
+  - If any upload succeeded and returned album+artist tags: use the first non-empty pair
+  - If a cover candidate exists for the group AND album+artist is known: POST it to `POST /api/albums/{album}/image?artist={artist}`
+  - If album+artist is not known (all audio errored or had no tags): skip cover upload; show "no album info" note in card
+- If multiple cover candidates exist in a group: use the largest by byte size
+
 **Cover preview card (per album group):**
+- Rendered when files are added to the queue (before upload starts), keyed by directory prefix
 - Shows `medium_crop` variant URL if `variants_ready: true`, else a grey placeholder with a spinner overlay
-- Album name + artist (derived from first track's metadata in the batch result)
+- Album name + artist (derived from first successful upload response in the group; falls back to directory name)
 - Track count
 - "Replace cover" button — opens `<input type="file" accept="image/jpeg,image/png,image/webp">` → POSTs to `POST /api/albums/{album}/image?artist={artist}`; refreshes card after response
 
 **Polling:**
 - When a card has `variants_ready: false`, poll `GET /api/albums/{album}/image/status?artist={artist}` every 2 seconds
-- Stop polling when `variants_ready: true`; replace placeholder with real image (use `small_crop` variant for the card thumbnail)
+- Stop polling when `variants_ready: true`; replace placeholder with real image
 - Stop polling if the page becomes hidden (`document.visibilitychange` → `document.hidden`)
+- Stop polling if the status endpoint returns 404 (album was deleted)
 
 **Drop zone JS:**
 - `dragover` / `drop` events — prevent default, read `e.dataTransfer.files`
-- `<input type="file" multiple>` for "Browse files"
+- `<input type="file" multiple>` for "Browse files"; accepts all file types
 - `<input type="file" webkitdirectory multiple>` for "Browse folder"; set `directory` + `mozdirectory` attributes for cross-browser
-- Client-side pre-filter before adding to queue: reject files whose extension is not in the allowed audio or image set; show inline rejection message per file
-- Store files in a JS array (the queue); render queue list
-- "Upload all" button: POST all files to `POST /files/upload-batch` as a single multipart request (use `FormData`, append each file as `file` field, use `file.webkitRelativePath || file.name` as filename)
-- Handle upload progress via `XMLHttpRequest` `upload.onprogress` per request (one request for the whole batch)
-- On response: parse `results` and `album_groups`; render album group cards
+- All file types are accepted into the queue; the server rejects unsupported ones and the result shows inline
 
 **Access control on "Replace cover" button:**
 - On page load, call `GET /api/auth/me`
-- If user has permission `metadata.edit` (check `permissions` array in response): show "Replace cover" buttons
+- If user has permission `metadata.edit`: show "Replace cover" buttons
 - If not (or if the call fails / user is anonymous): hide "Replace cover" buttons
 
 **Error handling:**
-- If the whole upload request fails (network, 500): show a banner error with a retry button
-- Per-file errors in `results[].error`: shown inline in the queue list
-- If polling returns 404 for the album status: stop polling (album was deleted)
+- If an upload request fails (network, 500): show inline error in the queue row with a retry button for that file
+- Per-file 429: handled automatically by the worker backoff (no manual retry needed)
 
 ---
 
@@ -882,11 +993,13 @@ No new static files needed. The upload page uses the same CSS variables and desi
 
 - [ ] Drop a single MP3 → appears in queue → Upload → appears in library
 - [ ] Drop a folder with 3 MP3s and a `cover.jpg` → 1 album group card appears → cover thumbnail shows after polling resolves
-- [ ] Drop a file with an unsupported extension → inline rejection, not added to queue
+- [ ] Drop a file with an unsupported extension → uploaded, server returns error inline in queue row
 - [ ] "Replace cover" uploads a new image → spinner appears → resolves to new image
 - [ ] Drop two separate album folders → two distinct cover cards, each with their own polling
-- [ ] `max_parallel_workers = 1` in config → variants still appear eventually
-- [ ] Page while upload in progress → visually clear progress bar
+- [ ] `image_processing_workers = 1` in config → variants still appear eventually
+- [ ] Set workers slider to 1 → uploads proceed strictly one at a time
+- [ ] Simulate 429 (`server_max_parallel_workers = 1`, two tabs uploading simultaneously) → slider auto-decrements in the tab that receives 429
+- [ ] Upload page while upload in progress → visually clear per-file progress bars
 
 ---
 
@@ -903,7 +1016,7 @@ When the player loads a new track:
 1. Read the track's album and album_artist from the file list JSON
 2. Fetch `GET /api/albums/{album}/image/status?artist={artist}` to get the `small_crop` variant URL
 3. If `variants_ready: false` or no cover: skip (no aura, no polling in the player — aura is decorative)
-4. Draw the `small_crop` image onto an offscreen `<canvas>` (CORS: `crossOrigin = "anonymous"` — works same-origin)
+4. Draw the `small_crop` image onto an offscreen `<canvas>` (`crossOrigin = "anonymous"` — works same-origin)
 5. Read pixel data via `ctx.getImageData`
 6. Sample a 10×10 grid across the image; collect all RGB values
 7. Find dominant color: bucket pixels into 8 hue regions (0°, 45°, 90°, 135°, 180°, 225°, 270°, 315°), pick the largest bucket; ignore pixels with saturation < 20% or luminance > 85% or < 10%
@@ -927,20 +1040,22 @@ When the player loads a new track:
 
 | File | Action | Phase |
 |---|---|---|
-| `config/config.go` | Add `ImagesConfig`, `Config.Images`, default, validation | 1b |
-| `madshare.toml.example` | Document `[images]` section | 1b |
-| `CLAUDE.md` | Document `[images]` config | 1b |
+| `config/config.go` | Extend `StorageConfig` with 3 new fields; add `WebUIConfig` if in same file | 1b |
+| `config/webui_config.go` | New: `WebUIConfig`, `LoadWebUI` | 1b |
+| `madshare.toml.example` | Add new `[storage]` fields | 1b |
+| `webui.toml.example` | New file | 1b |
+| `madshare.go` | Add `-webui-config` flag; wire limiter, imageproc pool, `ResetStaleJobs`, `WebUIConfig` | 1b, 1g, 4b |
 | `database/migrations/009_image_variants.sql` | New migration | 1c |
-| `media/images.go` | `ProcessImage`, variant constants, `BaseKey`, `VariantPath`, `VariantURL` | 1d–1e |
+| `media/images.go` | `ProcessImage`, variant constants | 1d |
+| `media/imagestore.go` | `BaseKey`, `VariantPath`, `VariantURL` | 1e |
 | `database/images.go` | New DB methods for job queue and cover variants | 1f |
 | `database/repo.go` | Add new methods to `Repository` interface | 1f |
 | `imageproc/worker.go` | `Pool` type, worker goroutines | 1g |
-| `madshare.go` | Wire pool, call `ResetStaleJobs` | 1g |
-| `api/api.go` | Add `ImagePool` to `Deps`, register status route | 1h |
-| `api/library_handlers.go` | Add `getAlbumImageStatus`; rewrite `uploadAlbumImage`; delete `saveImageUpload` | 1h, 3a |
+| `api/api.go` | Add `ImagePool`, `UploadLimiter`, `WebUIConfig` to `Deps`; register status + ui/config routes | 1h, 4b |
+| `api/library_handlers.go` | Add `getAlbumImageStatus`, `getUIConfig`; rewrite `uploadAlbumImage` | 1h, 1b, 3a |
 | `media/extract.go` | Add `CoverData`, `Tags.CoverImage` | 2a |
-| `api/handlers.go` | Add `maybeSaveEmbeddedCover`, `imagePool` field, extend upload response | 2b–2c |
-| `api/handlers.go` | Extract `processOneUpload`, add `uploadFileBatch` | 4a |
+| `api/handlers.go` | Add `maybySaveEmbeddedCover`, `imagePool`/`limiter` fields, extend upload response, limiter check | 2b–2c, 4b |
+| `api/upload_limiter.go` | New: `UploadLimiter` | 4a |
 | `webui/webui.go` | Register `/upload` route | 5a |
 | `webui/html/upload.html` | New upload page | 5b |
 | `webui/html/cmus.html` | Add aura effect JS and CSS | 6b |
@@ -951,10 +1066,10 @@ When the player loads a new track:
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `POST` | `/files/upload` | `file.upload` | Single file upload (unchanged) |
-| `POST` | `/files/upload-batch` | `file.upload` | Batch + folder upload |
+| `GET` | `/api/ui/config` | none | UI configuration (worker defaults/max) |
+| `POST` | `/files/upload` | `file.upload` | Single file upload (all types); subject to upload limiter |
 | `GET` | `/api/albums/{album}/image` | none | Serve original cover image |
-| `POST` | `/api/albums/{album}/image` | `metadata.edit` | Upload/replace cover; triggers async job |
+| `POST` | `/api/albums/{album}/image` | `metadata.edit` | Upload/replace cover; triggers async variant job |
 | `GET` | `/api/albums/{album}/image/status` | none | Variant readiness + all variant URLs |
 
 Query param for album endpoints: `?artist=<album_artist>` (empty string allowed — matches rows with empty album_artist).
