@@ -8,6 +8,7 @@ import (
 
 	"daemonlord.ygg/madshare/api/storage"
 	"daemonlord.ygg/madshare/auth"
+	"daemonlord.ygg/madshare/config"
 	"daemonlord.ygg/madshare/database"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -28,6 +29,13 @@ type Deps struct {
 	// Manage backs the content-access management endpoints (/api/admin/access/*,
 	// per-file guest/license, auto-derive). When nil, they are not registered.
 	Manage ManageStore
+	// ImagePool, when set, is notified after a cover-variant job is enqueued so
+	// an idle worker wakes immediately rather than waiting for its next poll.
+	// Optional; nil (e.g. in tests) simply skips the wake.
+	ImagePool interface{ Notify() }
+	// UIConfig is the parsed webui.toml served at GET /api/ui/config. When nil,
+	// the handler falls back to config.DefaultUIConfig().
+	UIConfig *config.UIConfig
 }
 
 // protect returns middleware enforcing perm, but only when auth is configured
@@ -56,6 +64,8 @@ func (d Deps) newHandler() *handler {
 		imagesDir:     filepath.Join(d.FilesDir, "images"),
 		maxUploadSize: d.MaxUploadSize,
 		authzEnabled:  d.Auth != nil,
+		imagePool:     d.ImagePool,
+		uiConfig:      d.UIConfig,
 	}
 }
 
@@ -75,8 +85,10 @@ func RegisterAPI(r chi.Router, d Deps) {
 	r.Get("/api/albums", h.listAlbums)
 	r.Get("/api/tracks", h.listTracks)
 	r.Get("/api/search", h.search)
+	r.Get("/api/ui/config", h.getUIConfig)
 	r.Get("/api/artists/{artist}/image", h.getArtistImage)
 	r.Get("/api/albums/{album}/image", h.getAlbumImage)
+	r.Get("/api/albums/{album}/image/status", h.getAlbumImageStatus)
 	// Editing cover images is a metadata.edit capability.
 	r.With(d.protect(auth.PermMetadataEdit)).Post("/api/artists/{artist}/image", h.uploadArtistImage)
 	r.With(d.protect(auth.PermMetadataEdit)).Post("/api/albums/{album}/image", h.uploadAlbumImage)

@@ -2,3 +2,4 @@ data/**
 CLAUDE.md
 .claude/
 madshare.toml
+webui.toml

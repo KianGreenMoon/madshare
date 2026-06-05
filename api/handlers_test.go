@@ -363,6 +363,14 @@ type fakeRepo struct {
 
 	searchResult *database.SearchResults
 	searchErr    error
+
+	// Cover-variant queue stubs (Phase 1). Drive GetAlbumCoverStatus / counters.
+	coverBaseKey  string
+	coverExt      string
+	coverReady    bool
+	coverFound    bool
+	enqueueCalls  int
+	setCoverCalls int
 }
 
 func (f *fakeRepo) RecordAudit(_ context.Context, actor sql.NullInt64, action, target, _ string) error {
@@ -439,6 +447,36 @@ func (f *fakeRepo) GetArtistImage(_ context.Context, _ string) (string, string, 
 
 func (f *fakeRepo) GetAlbumImage(_ context.Context, _, _ string) (string, string, bool, error) {
 	return "", "", false, nil
+}
+
+func (f *fakeRepo) EnqueueImageJob(_ context.Context, _, _, _ string, _ int64) error {
+	f.enqueueCalls++
+	return nil
+}
+
+func (f *fakeRepo) ClaimImageJob(_ context.Context) (*database.ImageJob, error) {
+	return nil, nil
+}
+
+func (f *fakeRepo) FinishImageJob(_ context.Context, _ int64, _ error) error {
+	return nil
+}
+
+func (f *fakeRepo) ResetStaleJobs(_ context.Context) error {
+	return nil
+}
+
+func (f *fakeRepo) SetAlbumCover(_ context.Context, _, _, _, _, _, _ string, _ int64) error {
+	f.setCoverCalls++
+	return nil
+}
+
+func (f *fakeRepo) GetAlbumCoverStatus(_ context.Context, _, _ string) (string, string, bool, bool, error) {
+	return f.coverBaseKey, f.coverExt, f.coverReady, f.coverFound, nil
+}
+
+func (f *fakeRepo) HasAlbumCover(_ context.Context, _, _ string) (bool, error) {
+	return f.coverFound, nil
 }
 
 func (f *fakeRepo) SoftDeleteFileByHash(_ context.Context, _ string) ([]string, bool, error) {

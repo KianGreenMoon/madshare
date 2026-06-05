@@ -14,6 +14,7 @@ import (
 
 	"daemonlord.ygg/madshare/api/storage"
 	"daemonlord.ygg/madshare/auth"
+	"daemonlord.ygg/madshare/config"
 	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/media"
 )
@@ -75,6 +76,12 @@ type handler struct {
 	// handled in the listing handlers). When false (open embedding / tests),
 	// listings are unfiltered, matching fileAccessGuard's pass-through.
 	authzEnabled bool
+	// imagePool, when non-nil, is notified after a cover-variant job is enqueued
+	// so an idle worker wakes immediately. Nil in tests / open embeddings.
+	imagePool interface{ Notify() }
+	// uiConfig backs GET /api/ui/config (the upload page's worker controls).
+	// Nil-safe: getUIConfig falls back to config.DefaultUIConfig() when unset.
+	uiConfig *config.UIConfig
 }
 
 func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {

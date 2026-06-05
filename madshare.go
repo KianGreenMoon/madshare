@@ -19,6 +19,7 @@ import (
 	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/config"
 	"daemonlord.ygg/madshare/database"
+	"daemonlord.ygg/madshare/imageproc"
 	"daemonlord.ygg/madshare/webui"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -26,11 +27,16 @@ import (
 
 func main() {
 	configPath := flag.String("config", "madshare.toml", "path to config file")
+	webuiConfigPath := flag.String("webui-config", "webui.toml", "path to web UI config file")
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		log.Fatalf("load config %s: %v", *configPath, err)
+	}
+	uiCfg, err := config.LoadWebUI(*webuiConfigPath)
+	if err != nil {
+		log.Fatalf("load webui config %s: %v", *webuiConfigPath, err)
 	}
 	for _, w := range cfg.Warnings() {
 		log.Printf("config warning: %s", w)
@@ -70,6 +76,20 @@ func main() {
 		log.Printf("warning: users already exist; the initial admin password is unused — unset %s / [auth].initial_admin_password", config.InitialAdminPasswordEnv)
 	}
 
+	// Long-lived context for background workers (the image-variant pool). It is
+	// cancelled in the shutdown path so the pool's goroutines unblock and exit.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Recover any jobs left 'running' by a previous crash, then launch the
+	// cover-variant worker pool. Done before listeners accept traffic.
+	if err := db.ResetStaleJobs(ctx); err != nil {
+		log.Printf("reset stale image jobs: %v", err)
+	}
+	imagesDir := filepath.Join(filesDir, "images")
+	pool := imageproc.NewPool(db, imagesDir, cfg.Storage.ImageProcessingWorkers)
+	go pool.Start(ctx)
+
 	deps := api.Deps{
 		Store:         storage.NewLocal(filesDir),
 		Repo:          db,
@@ -78,6 +98,8 @@ func main() {
 		MaxUploadSize: cfg.Storage.MaxUploadBytes(),
 		Auth:          db,
 		Manage:        db,
+		ImagePool:     pool,
+		UIConfig:      uiCfg,
 	}
 
 	servers, err := startListeners(cfg, deps)
@@ -90,8 +112,9 @@ func main() {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
 	log.Println("Shutting down...")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	cancel() // stop the image-variant worker pool
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
 	var wg sync.WaitGroup
 	for _, srv := range servers {
 		wg.Go(func() {

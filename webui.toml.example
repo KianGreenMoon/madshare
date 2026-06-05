@@ -1,0 +1,7 @@
+# webui.toml — UI-side upload configuration. Read once at startup and served
+# verbatim to the browser via GET /api/ui/config. Copy to webui.toml and edit.
+# If no webui.toml exists, the built-in defaults below apply.
+
+[upload]
+default_parallel_workers = 3   # default concurrent upload connections shown to the user
+max_parallel_workers     = 10  # ceiling the user can raise the slider to in the upload UI

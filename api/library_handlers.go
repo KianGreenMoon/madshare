@@ -11,7 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"daemonlord.ygg/madshare/config"
 	"daemonlord.ygg/madshare/database"
+	"daemonlord.ygg/madshare/media"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -277,6 +279,55 @@ func (h *handler) getAlbumImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.serveImageFile(w, r, objectKey, mimeType)
+}
+
+// albumImageStatusResponse is the JSON body of GET /api/albums/{album}/image/status.
+// When has_cover is false: variants_ready is false, base_key is "", variants is {}.
+// When variants_ready is false but a cover exists, the variant URLs are still
+// included (they are deterministic and may already exist partially) — the UI is
+// responsible for not displaying images until variants_ready is true.
+type albumImageStatusResponse struct {
+	HasCover      bool              `json:"has_cover"`
+	VariantsReady bool              `json:"variants_ready"`
+	BaseKey       string            `json:"base_key"`
+	SourceExt     string            `json:"source_ext"`
+	Variants      map[string]string `json:"variants"`
+}
+
+func (h *handler) getAlbumImageStatus(w http.ResponseWriter, r *http.Request) {
+	album := chi.URLParam(r, "album")
+	artist := r.URL.Query().Get("artist")
+	baseKey, sourceExt, ready, found, err := h.repo.GetAlbumCoverStatus(r.Context(), artist, album)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	resp := albumImageStatusResponse{
+		HasCover:      found,
+		VariantsReady: ready,
+		BaseKey:       baseKey,
+		SourceExt:     sourceExt,
+		Variants:      map[string]string{},
+	}
+	// base_key is empty for legacy rows written before variants existed; those
+	// have no deterministic variant paths, so report no variant URLs for them.
+	if found && baseKey != "" {
+		for _, name := range media.AllVariants {
+			resp.Variants[name] = media.VariantURL(baseKey, name, sourceExt)
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// getUIConfig serves the parsed webui.toml (upload-page worker controls). It is
+// public — the upload UI needs it before login. Falls back to built-in defaults
+// when no UIConfig was wired (e.g. tests).
+func (h *handler) getUIConfig(w http.ResponseWriter, r *http.Request) {
+	cfg := h.uiConfig
+	if cfg == nil {
+		cfg = config.DefaultUIConfig()
+	}
+	writeJSON(w, http.StatusOK, cfg)
 }
 
 func (h *handler) uploadAlbumImage(w http.ResponseWriter, r *http.Request) {

@@ -39,3 +39,6 @@ path = "./data/madshare.db"
 [storage]
 files_dir = "./data/files"   # uploaded blobs; cover images go in <files_dir>/images
 max_upload_mb = 500          # per-request upload cap, in MiB
+# server_max_parallel_workers = 0   # total concurrent uploads from all users (0 = unlimited)
+# user_max_parallel_workers   = 0   # concurrent uploads per user (0 = unlimited; no admin bypass)
+# image_processing_workers    = 0   # cover-image resize goroutines; 0 = auto (number of CPUs)

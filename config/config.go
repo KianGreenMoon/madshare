@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -33,6 +34,11 @@ type Config struct {
 	Database DatabaseConfig `toml:"database"`
 	Storage  StorageConfig  `toml:"storage"`
 	Auth     AuthConfig     `toml:"auth"`
+
+	// warnings accumulates non-fatal advisories produced while loading (e.g.
+	// clamped out-of-range worker counts). It is unexported so it is not a TOML
+	// field; Warnings() returns it alongside the listener-derived advisories.
+	warnings []string
 }
 
 // AuthConfig holds the first-run admin bootstrap credential. The password is
@@ -99,6 +105,16 @@ type StorageConfig struct {
 	// distinct from the in-memory hashing threshold (storage.memBufferLimit),
 	// above which an upload is spooled to the cache dir rather than buffered.
 	MaxUploadMB int64 `toml:"max_upload_mb"`
+	// ServerMaxParallelWorkers caps concurrent uploads across all users.
+	// 0 (the default) means unlimited. Negative values are clamped to 0.
+	ServerMaxParallelWorkers int `toml:"server_max_parallel_workers"`
+	// UserMaxParallelWorkers caps concurrent uploads per user. 0 means
+	// unlimited; negative is clamped to 0. There is no admin bypass.
+	UserMaxParallelWorkers int `toml:"user_max_parallel_workers"`
+	// ImageProcessingWorkers sizes the CPU-bound cover-variant resize pool.
+	// 0/unset resolves to runtime.NumCPU(); negative is treated as auto (warn).
+	// Decoupled from upload concurrency on purpose (resize is CPU-bound).
+	ImageProcessingWorkers int `toml:"image_processing_workers"`
 }
 
 // MaxUploadBytes returns the configured upload cap in bytes.
@@ -158,10 +174,39 @@ func Load(path string) (Config, error) {
 	if pw := os.Getenv(InitialAdminPasswordEnv); pw != "" {
 		cfg.Auth.InitialAdminPassword = pw
 	}
+	cfg.resolveStorageWorkers()
 	if err := cfg.validate(); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+// resolveStorageWorkers normalises the worker-count fields and records any
+// adjustment as a non-fatal warning (see Warnings). It runs on every load,
+// including the all-defaults case, so the returned config always carries usable
+// values. runtime.NumCPU() always returns >= 1.
+func (c *Config) resolveStorageWorkers() {
+	switch {
+	case c.Storage.ImageProcessingWorkers == 0:
+		c.Storage.ImageProcessingWorkers = runtime.NumCPU()
+	case c.Storage.ImageProcessingWorkers < 0:
+		c.warnings = append(c.warnings, fmt.Sprintf(
+			"storage.image_processing_workers %d is invalid; using auto (NumCPU=%d)",
+			c.Storage.ImageProcessingWorkers, runtime.NumCPU()))
+		c.Storage.ImageProcessingWorkers = runtime.NumCPU()
+	}
+	if c.Storage.ServerMaxParallelWorkers < 0 {
+		c.warnings = append(c.warnings, fmt.Sprintf(
+			"storage.server_max_parallel_workers %d is invalid; using 0 (unlimited)",
+			c.Storage.ServerMaxParallelWorkers))
+		c.Storage.ServerMaxParallelWorkers = 0
+	}
+	if c.Storage.UserMaxParallelWorkers < 0 {
+		c.warnings = append(c.warnings, fmt.Sprintf(
+			"storage.user_max_parallel_workers %d is invalid; using 0 (unlimited)",
+			c.Storage.UserMaxParallelWorkers))
+		c.Storage.UserMaxParallelWorkers = 0
+	}
 }
 
 // validate checks that the config holds usable values. It is run by Load on
@@ -254,7 +299,7 @@ func hasAnyOnPort(keys map[string]bool, port int) bool {
 // startup. A listener serving the web UI but not the API is the common case:
 // the page would load but its same-origin fetches would 404.
 func (c Config) Warnings() []string {
-	var w []string
+	w := append([]string(nil), c.warnings...)
 	for i, l := range c.Listen {
 		if l.Serves(GroupWebUI) && !l.Serves(GroupAPI) {
 			w = append(w, fmt.Sprintf("listen[%d] serves %q without %q; the web UI would load but its API calls would 404", i, GroupWebUI, GroupAPI))

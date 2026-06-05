@@ -106,4 +106,32 @@ type Repository interface {
 	// may play/download the file with the given hash. Callers holding the
 	// content.all permission bypass this. Unknown hashes return false.
 	FileAccessibleByHash(ctx context.Context, hash string, userID sql.NullInt64) (bool, error)
+
+	// --- Cover image variants & async job queue (Phase 1: upload & covers) ---
+
+	// EnqueueImageJob inserts a pending image-variant job. Idempotent per
+	// base_key (at most one active job); a duplicate enqueue is a no-op.
+	EnqueueImageJob(ctx context.Context, coverType, subjectKey, baseKey string, now int64) error
+
+	// ClaimImageJob atomically claims the oldest pending job (flipping it to
+	// running) and returns it, or (nil, nil) when the queue is empty.
+	ClaimImageJob(ctx context.Context) (*ImageJob, error)
+
+	// FinishImageJob records a claimed job's outcome, owning the
+	// done/retry/failed decision and flagging variants_ready on success.
+	FinishImageJob(ctx context.Context, id int64, jobErr error) error
+
+	// ResetStaleJobs returns all running jobs to pending (startup recovery).
+	ResetStaleJobs(ctx context.Context) error
+
+	// SetAlbumCover inserts/replaces an album cover row with variant-tracking
+	// fields (variants_ready reset to 0).
+	SetAlbumCover(ctx context.Context, artist, album, baseKey, sourceExt, objectKey, mimeType string, now int64) error
+
+	// GetAlbumCoverStatus returns the variant-tracking state for an album cover;
+	// found is false when no row exists.
+	GetAlbumCoverStatus(ctx context.Context, artist, album string) (baseKey, sourceExt string, variantsReady, found bool, err error)
+
+	// HasAlbumCover reports whether any album_images row exists for the album.
+	HasAlbumCover(ctx context.Context, artist, album string) (bool, error)
 }

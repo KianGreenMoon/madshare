@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -55,6 +56,48 @@ func TestLoad_FilePresentWithoutListen_KeepsDefaultListener(t *testing.T) {
 	}
 	if cfg.Storage.MaxUploadMB != 100 {
 		t.Errorf("Storage.MaxUploadMB = %d, want 100", cfg.Storage.MaxUploadMB)
+	}
+}
+
+func TestLoad_ImageWorkersAuto(t *testing.T) {
+	// Unset image_processing_workers resolves to runtime.NumCPU() (>= 1).
+	cfg, err := config.Load("/tmp/definitely_no_such_file_54321.toml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Storage.ImageProcessingWorkers != runtime.NumCPU() {
+		t.Errorf("ImageProcessingWorkers = %d, want NumCPU=%d", cfg.Storage.ImageProcessingWorkers, runtime.NumCPU())
+	}
+}
+
+func TestLoad_ImageWorkersExplicit(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "workers.toml")
+	os.WriteFile(f, []byte("[storage]\nimage_processing_workers = 4\n"), 0o600)
+	cfg, err := config.Load(f)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Storage.ImageProcessingWorkers != 4 {
+		t.Errorf("ImageProcessingWorkers = %d, want 4", cfg.Storage.ImageProcessingWorkers)
+	}
+}
+
+func TestLoad_ImageWorkersNegative(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "workers.toml")
+	os.WriteFile(f, []byte("[storage]\nimage_processing_workers = -1\nserver_max_parallel_workers = -3\n"), 0o600)
+	cfg, err := config.Load(f)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Storage.ImageProcessingWorkers != runtime.NumCPU() {
+		t.Errorf("ImageProcessingWorkers = %d, want NumCPU=%d (negative → auto)", cfg.Storage.ImageProcessingWorkers, runtime.NumCPU())
+	}
+	if cfg.Storage.ServerMaxParallelWorkers != 0 {
+		t.Errorf("ServerMaxParallelWorkers = %d, want 0 (negative → unlimited)", cfg.Storage.ServerMaxParallelWorkers)
+	}
+	// The clamps are surfaced as non-fatal warnings, not errors.
+	if len(cfg.Warnings()) == 0 {
+		t.Error("expected at least one warning for the clamped values, got none")
 	}
 }
 
