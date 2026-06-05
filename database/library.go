@@ -322,11 +322,13 @@ func (db *DB) search(ctx context.Context, q string, filtered bool, userID sql.Nu
 	}
 
 	// ── Albums ───────────────────────────────────────────────────────────────
-	albumWhere := "WHERE f.deleted_at IS NULL AND COALESCE(NULLIF(m.album, ''), '') != ''"
+	// Use the full expression in WHERE (before GROUP BY); HAVING with a SELECT
+	// alias is unreliable in SQLite when GROUP BY uses the full expression.
+	albumWhere := "WHERE f.deleted_at IS NULL AND COALESCE(NULLIF(m.album, ''), '') != '' AND LOWER(COALESCE(NULLIF(m.album, ''), '')) LIKE LOWER(?)"
 	albumArgs := []any{like}
 	if filtered {
 		albumWhere += " AND " + accessClause
-		albumArgs = []any{userID, like}
+		albumArgs = []any{like, userID}
 	}
 	albumQ := `
 		SELECT
@@ -342,8 +344,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool, userID sql.Nu
 		    AND ali.album_title = COALESCE(NULLIF(m.album, ''), '')
 		` + albumWhere + `
 		GROUP BY COALESCE(NULLIF(m.album, ''), ''), COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
-		HAVING LOWER(title) LIKE LOWER(?)
-		ORDER BY LOWER(title) ASC`
+		ORDER BY LOWER(COALESCE(NULLIF(m.album, ''), '')) ASC`
 
 	alRows, err := db.QueryContext(ctx, albumQ, albumArgs...)
 	if err != nil {
