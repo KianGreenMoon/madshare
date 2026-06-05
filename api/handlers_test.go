@@ -463,6 +463,14 @@ func (f *fakeRepo) ListFileRefs(_ context.Context) ([]database.FileRef, error) {
 	return f.fileRefs, f.fileRefsErr
 }
 
+func (f *fakeRepo) Search(_ context.Context, _ string) (*database.SearchResults, error) {
+	return &database.SearchResults{}, nil
+}
+
+func (f *fakeRepo) SearchFiltered(_ context.Context, _ string, _ sql.NullInt64) (*database.SearchResults, error) {
+	return &database.SearchResults{}, nil
+}
+
 // TestUploadFile_InsertFailureLeavesOrphan verifies that when storage.Put
 // succeeds but repo.InsertFile fails, the handler returns 500 and the blob
 // remains on disk (the reconciler removes it later).

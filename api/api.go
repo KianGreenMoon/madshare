@@ -74,6 +74,7 @@ func RegisterAPI(r chi.Router, d Deps) {
 	r.Get("/api/artists", h.listArtists)
 	r.Get("/api/albums", h.listAlbums)
 	r.Get("/api/tracks", h.listTracks)
+	r.Get("/api/search", h.search)
 	r.Get("/api/artists/{artist}/image", h.getArtistImage)
 	r.Get("/api/albums/{album}/image", h.getAlbumImage)
 	// Editing cover images is a metadata.edit capability.

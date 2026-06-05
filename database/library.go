@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 func (db *DB) ListArtists(ctx context.Context) ([]*ArtistEntry, error) {
@@ -264,6 +265,155 @@ func (db *DB) ListTracksByAlbumArtistFiltered(ctx context.Context, artist, album
 		return nil, fmt.Errorf("list tracks filtered rows: %w", err)
 	}
 	return out, nil
+}
+
+func (db *DB) Search(ctx context.Context, q string) (*SearchResults, error) {
+	return db.search(ctx, q, false, sql.NullInt64{})
+}
+
+func (db *DB) SearchFiltered(ctx context.Context, q string, userID sql.NullInt64) (*SearchResults, error) {
+	return db.search(ctx, q, true, userID)
+}
+
+func (db *DB) search(ctx context.Context, q string, filtered bool, userID sql.NullInt64) (*SearchResults, error) {
+	if strings.TrimSpace(q) == "" {
+		return &SearchResults{}, nil
+	}
+	like := "%" + q + "%"
+
+	// ── Artists ──────────────────────────────────────────────────────────────
+	artistWhere := "WHERE f.deleted_at IS NULL"
+	artistArgs := []any{like}
+	if filtered {
+		artistWhere += " AND " + accessClause
+		artistArgs = []any{userID, like}
+	}
+	artistQ := `
+		SELECT
+		    COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') AS name,
+		    COUNT(*) AS track_count,
+		    CASE WHEN ai.artist_name IS NOT NULL THEN 1 ELSE 0 END AS has_image
+		FROM media_metadata m
+		JOIN files f ON f.id = m.file_id
+		LEFT JOIN artist_images ai
+		    ON ai.artist_name = COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
+		` + artistWhere + `
+		GROUP BY name
+		HAVING LOWER(name) LIKE LOWER(?)
+		ORDER BY LOWER(name) ASC`
+
+	aRows, err := db.QueryContext(ctx, artistQ, artistArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("search artists: %w", err)
+	}
+	defer aRows.Close()
+	var artists []*ArtistEntry
+	for aRows.Next() {
+		var e ArtistEntry
+		var hasImage int
+		if err := aRows.Scan(&e.Name, &e.TrackCount, &hasImage); err != nil {
+			return nil, fmt.Errorf("scan search artist: %w", err)
+		}
+		e.HasImage = hasImage == 1
+		artists = append(artists, &e)
+	}
+	if err := aRows.Err(); err != nil {
+		return nil, fmt.Errorf("search artists rows: %w", err)
+	}
+
+	// ── Albums ───────────────────────────────────────────────────────────────
+	albumWhere := "WHERE f.deleted_at IS NULL AND COALESCE(NULLIF(m.album, ''), '') != ''"
+	albumArgs := []any{like}
+	if filtered {
+		albumWhere += " AND " + accessClause
+		albumArgs = []any{userID, like}
+	}
+	albumQ := `
+		SELECT
+		    COALESCE(NULLIF(m.album, ''), '') AS title,
+		    COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') AS artist_name,
+		    COALESCE(m.year, 0) AS year,
+		    COUNT(*) AS track_count,
+		    CASE WHEN ali.album_title IS NOT NULL THEN 1 ELSE 0 END AS has_image
+		FROM media_metadata m
+		JOIN files f ON f.id = m.file_id
+		LEFT JOIN album_images ali
+		    ON ali.album_artist = COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
+		    AND ali.album_title = COALESCE(NULLIF(m.album, ''), '')
+		` + albumWhere + `
+		GROUP BY COALESCE(NULLIF(m.album, ''), ''), COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
+		HAVING LOWER(title) LIKE LOWER(?)
+		ORDER BY LOWER(title) ASC`
+
+	alRows, err := db.QueryContext(ctx, albumQ, albumArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("search albums: %w", err)
+	}
+	defer alRows.Close()
+	var albums []*AlbumEntry
+	for alRows.Next() {
+		var e AlbumEntry
+		var year int64
+		var hasImage int
+		if err := alRows.Scan(&e.Title, &e.ArtistName, &year, &e.TrackCount, &hasImage); err != nil {
+			return nil, fmt.Errorf("scan search album: %w", err)
+		}
+		if year != 0 {
+			e.Year = sql.NullInt64{Int64: year, Valid: true}
+		}
+		e.HasImage = hasImage == 1
+		albums = append(albums, &e)
+	}
+	if err := alRows.Err(); err != nil {
+		return nil, fmt.Errorf("search albums rows: %w", err)
+	}
+
+	// ── Tracks ───────────────────────────────────────────────────────────────
+	trackWhere := "WHERE f.deleted_at IS NULL AND LOWER(COALESCE(NULLIF(m.title, ''), fu.filename, '')) LIKE LOWER(?)"
+	trackArgs := []any{like}
+	if filtered {
+		trackWhere += " AND " + accessClause
+		trackArgs = []any{like, userID}
+	}
+	trackQ := `
+		SELECT
+		    f.id,
+		    COALESCE(NULLIF(m.title, ''), fu.filename, '') AS title,
+		    m.track_number,
+		    m.duration_seconds,
+		    f.object_key,
+		    f.mime_type,
+		    COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') AS artist_name,
+		    COALESCE(NULLIF(m.album, ''), '') AS album_title
+		FROM files f
+		JOIN media_metadata m ON m.file_id = f.id
+		LEFT JOIN (
+		    SELECT file_id, MIN(filename) AS filename
+		    FROM file_uploads
+		    GROUP BY file_id
+		) fu ON fu.file_id = f.id
+		` + trackWhere + `
+		ORDER BY LOWER(COALESCE(NULLIF(m.title, ''), fu.filename, '')) ASC
+		LIMIT 50`
+
+	tRows, err := db.QueryContext(ctx, trackQ, trackArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("search tracks: %w", err)
+	}
+	defer tRows.Close()
+	var tracks []*SearchTrackEntry
+	for tRows.Next() {
+		var e SearchTrackEntry
+		if err := tRows.Scan(&e.ID, &e.Title, &e.TrackNumber, &e.DurationSeconds, &e.ObjectKey, &e.MimeType, &e.ArtistName, &e.AlbumTitle); err != nil {
+			return nil, fmt.Errorf("scan search track: %w", err)
+		}
+		tracks = append(tracks, &e)
+	}
+	if err := tRows.Err(); err != nil {
+		return nil, fmt.Errorf("search tracks rows: %w", err)
+	}
+
+	return &SearchResults{Artists: artists, Albums: albums, Tracks: tracks}, nil
 }
 
 func (db *DB) UpsertArtistImage(ctx context.Context, artist, objectKey, mimeType string, updatedAt int64) error {

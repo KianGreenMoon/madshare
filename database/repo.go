@@ -47,6 +47,14 @@ type Repository interface {
 	ListAlbumsByArtistFiltered(ctx context.Context, artist string, userID sql.NullInt64) ([]*AlbumEntry, error)
 	ListTracksByAlbumArtistFiltered(ctx context.Context, artist, album string, userID sql.NullInt64) ([]*TrackEntry, error)
 
+	// Search returns artists, albums, and tracks whose names/titles contain q
+	// (case-insensitive LIKE). q="" returns empty results immediately.
+	Search(ctx context.Context, q string) (*SearchResults, error)
+
+	// SearchFiltered is Search restricted to content the user (invalid userID =
+	// anonymous) can reach per the §5.3 access predicate.
+	SearchFiltered(ctx context.Context, q string, userID sql.NullInt64) (*SearchResults, error)
+
 	// UpsertArtistImage stores (or replaces) the image reference for an artist.
 	UpsertArtistImage(ctx context.Context, artist, objectKey, mimeType string, updatedAt int64) error
 

@@ -19,6 +19,20 @@
   --volume-level: 100%;
 }
 
+/* ── Paused notice ── */
+.cmus-paused-banner {
+  grid-column: 1 / -1;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  padding: 12px 20px;
+  font-size: 14px;
+  text-align: center;
+}
+.cmus-paused-banner strong { color: var(--color-text); }
+.cmus-paused-banner a { color: var(--color-accent-bright); text-decoration: none; margin-left: 8px; }
+.cmus-paused-banner a:hover { text-decoration: underline; }
+
 /* ── Reset ── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 

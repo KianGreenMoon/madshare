@@ -529,6 +529,215 @@ function fmtTime(s) {
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
 }
 
+// ── Search ───────────────────────────────────────────────────────────────
+
+const searchInput = document.querySelector('.header__search-input');
+const searchClear = document.querySelector('.header__search-clear');
+const viewLibrary = document.getElementById('view-library');
+const viewSearch  = document.getElementById('view-search');
+
+let lastQuery   = '';
+let searchTimer = null;
+
+searchInput.addEventListener('input', () => {
+  const q = searchInput.value.trim();
+  searchClear.style.display = searchInput.value ? '' : 'none';
+  if (q.length < 2) {
+    showLibraryView();
+    return;
+  }
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => runSearch(q), 300);
+});
+
+searchInput.addEventListener('keydown', e => {
+  if (e.key === 'Escape') clearSearch();
+});
+
+searchClear.addEventListener('click', clearSearch);
+
+// Clear search when Library nav is clicked — prevents a full page reload and
+// keeps SPA behaviour consistent with navigating back from search results.
+document.querySelector('.nav-link[href="/"]')?.addEventListener('click', e => {
+  e.preventDefault();
+  clearSearch();
+});
+
+function clearSearch() {
+  searchInput.value = '';
+  searchClear.style.display = 'none';
+  lastQuery = '';
+  showLibraryView();
+}
+
+function showLibraryView() {
+  viewLibrary.classList.add('view-panel--active');
+  viewLibrary.classList.remove('view-panel--hidden');
+  viewSearch.classList.add('view-panel--hidden');
+  viewSearch.classList.remove('view-panel--active');
+}
+
+function showSearchView() {
+  viewSearch.classList.add('view-panel--active');
+  viewSearch.classList.remove('view-panel--hidden');
+  viewLibrary.classList.add('view-panel--hidden');
+  viewLibrary.classList.remove('view-panel--active');
+}
+
+async function runSearch(q) {
+  if (q === lastQuery) return;
+  lastQuery = q;
+  showSearchView();
+  viewSearch.innerHTML = '<div class="search-loading-bar"></div>';
+
+  let results;
+  try {
+    const res = await fetch(`${API}/api/search?q=${encodeURIComponent(q)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    results = await res.json();
+  } catch {
+    viewSearch.innerHTML =
+      '<p style="color:var(--error);padding:16px;text-align:center">' +
+      'Search failed — check your connection and try again.</p>';
+    return;
+  }
+
+  renderSearchResults(results, q);
+}
+
+function renderSearchResults(results, q) {
+  const { artists = [], albums = [], tracks = [] } = results;
+
+  if (!artists.length && !albums.length && !tracks.length) {
+    const qEsc = esc(q.length > 40 ? q.slice(0, 40) + '…' : q);
+    viewSearch.innerHTML =
+      `<div class="search-empty-state">` +
+      `<div class="search-empty-state__query">No results for "<em>${qEsc}</em>"</div>` +
+      `<div class="search-empty-state__hint">Try a different search term</div>` +
+      `</div>`;
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+
+  if (artists.length) {
+    const sec = document.createElement('section');
+    sec.className = 'search-section';
+    sec.innerHTML = '<h2 class="search-section__header">Artists</h2>';
+    artists.forEach(a => {
+      const row = document.createElement('div');
+      row.className = 'search-row search-row--artist';
+      row.tabIndex  = 0;
+      row.setAttribute('role', 'button');
+      row.setAttribute('aria-label', `Browse artist ${a.name}`);
+      row.innerHTML =
+        `<div class="search-row__avatar">${esc((a.name || '?')[0].toUpperCase())}</div>` +
+        `<div class="search-row__title">${esc(a.name || 'Unknown Artist')}</div>`;
+      row.addEventListener('click', () => { clearSearch(); drillToAlbums(a.name); });
+      row.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); clearSearch(); drillToAlbums(a.name); }
+      });
+      sec.appendChild(row);
+    });
+    frag.appendChild(sec);
+  }
+
+  if (albums.length) {
+    const noteSvg =
+      `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">` +
+      `<path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>`;
+    const sec = document.createElement('section');
+    sec.className = 'search-section';
+    sec.innerHTML = '<h2 class="search-section__header">Albums</h2>';
+    albums.forEach(a => {
+      const artContent = a.has_image
+        ? `<img src="${API}/api/albums/${encodeURIComponent(a.title || '')}/image?artist=${encodeURIComponent(a.artist_name || '')}" alt="" loading="lazy">`
+        : noteSvg;
+      const row = document.createElement('div');
+      row.className = 'search-row search-row--album';
+      row.tabIndex  = 0;
+      row.setAttribute('role', 'button');
+      row.setAttribute('aria-label', `Browse album ${a.title}`);
+      row.innerHTML =
+        `<div class="search-row__thumb">${artContent}</div>` +
+        `<div class="search-row__body">` +
+          `<div class="search-row__title">${esc(a.title || 'Other')}</div>` +
+          `<div class="search-row__subtitle">${esc(a.artist_name || 'Unknown Artist')}</div>` +
+        `</div>`;
+      row.addEventListener('click', () => { clearSearch(); drillToTracks(a.artist_name, a.title); });
+      row.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); clearSearch(); drillToTracks(a.artist_name, a.title); }
+      });
+      sec.appendChild(row);
+    });
+    frag.appendChild(sec);
+  }
+
+  if (tracks.length) {
+    const noteSvg =
+      `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">` +
+      `<path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>`;
+    const playSvg =
+      `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">` +
+      `<path d="M8 5v14l11-7z"/></svg>`;
+    const sec = document.createElement('section');
+    sec.className = 'search-section';
+    sec.innerHTML = '<h2 class="search-section__header">Tracks</h2>';
+
+    // Build a playlist from search results so the player can advance track-by-track.
+    const searchPlaylist = tracks.map(t => ({
+      url:    `${API}${t.url}`,
+      title:  t.title       || 'Unknown',
+      artist: t.artist_name || '',
+    }));
+
+    tracks.forEach((t, i) => {
+      const dur      = t.duration_seconds ? fmtTime(t.duration_seconds) : '';
+      const subtitle = [t.artist_name, t.album_title].filter(Boolean).join(' · ');
+      const row      = document.createElement('div');
+      row.className  = 'search-row search-row--track';
+      row.tabIndex   = 0;
+      row.setAttribute('role', 'button');
+      row.setAttribute('aria-label', `Play ${t.title}`);
+      row.innerHTML =
+        `<div class="search-row__avatar search-row__avatar--note">${noteSvg}</div>` +
+        `<div class="search-row__body">` +
+          `<div class="search-row__title">${esc(t.title || 'Unknown')}</div>` +
+          `<div class="search-row__subtitle">${esc(subtitle)}</div>` +
+        `</div>` +
+        (dur ? `<div class="search-row__duration">${esc(dur)}</div>` : '');
+
+      // Swap note/play icon on hover to signal the row is playable.
+      const avatar = row.querySelector('.search-row__avatar--note');
+      row.addEventListener('mouseenter', () => {
+        avatar.innerHTML = playSvg;
+        avatar.style.color = 'var(--accent)';
+      });
+      row.addEventListener('mouseleave', () => {
+        avatar.innerHTML = noteSvg;
+        avatar.style.color = '';
+      });
+
+      row.addEventListener('click', () => {
+        playlist = searchPlaylist;
+        playIndex(i);
+      });
+      row.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          playlist = searchPlaylist;
+          playIndex(i);
+        }
+      });
+      sec.appendChild(row);
+    });
+    frag.appendChild(sec);
+  }
+
+  viewSearch.innerHTML = '';
+  viewSearch.appendChild(frag);
+}
+
 // ── Upload modal ─────────────────────────────────────────────────────────
 
 const modal     = document.getElementById('uploadModal');

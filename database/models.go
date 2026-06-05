@@ -107,6 +107,26 @@ type TrackEntry struct {
 	MimeType        string
 }
 
+// SearchResults is returned by Search and SearchFiltered.
+type SearchResults struct {
+	Artists []*ArtistEntry
+	Albums  []*AlbumEntry
+	Tracks  []*SearchTrackEntry
+}
+
+// SearchTrackEntry is like TrackEntry but also carries the artist and album
+// so the frontend can navigate to the right drill-down level.
+type SearchTrackEntry struct {
+	ID              int64
+	Title           string
+	TrackNumber     sql.NullInt64
+	DurationSeconds sql.NullFloat64
+	ObjectKey       string
+	MimeType        string
+	ArtistName      string
+	AlbumTitle      string
+}
+
 // MediaMetadata is a row in the media_metadata table. All tag fields are
 // nullable because uploads may carry incomplete (or no) tags.
 type MediaMetadata struct {

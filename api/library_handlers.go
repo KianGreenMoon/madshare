@@ -152,6 +152,84 @@ func (h *handler) listTracks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+func (h *handler) search(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+
+	var (
+		results *database.SearchResults
+		err     error
+	)
+	if uid, filter := h.accessFilter(r.Context()); filter {
+		results, err = h.repo.SearchFiltered(r.Context(), q, uid)
+	} else {
+		results, err = h.repo.Search(r.Context(), q)
+	}
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+
+	type artistItem struct {
+		Name       string `json:"name"`
+		TrackCount int    `json:"track_count"`
+		HasImage   bool   `json:"has_image"`
+	}
+	type albumItem struct {
+		Title      string `json:"title"`
+		ArtistName string `json:"artist_name"`
+		Year       *int64 `json:"year"`
+		TrackCount int    `json:"track_count"`
+		HasImage   bool   `json:"has_image"`
+	}
+	type trackItem struct {
+		ID          int64    `json:"id"`
+		Title       string   `json:"title"`
+		TrackNumber *int64   `json:"track_number"`
+		Duration    *float64 `json:"duration_seconds"`
+		URL         string   `json:"url"`
+		MimeType    string   `json:"mime_type"`
+		ArtistName  string   `json:"artist_name"`
+		AlbumTitle  string   `json:"album_title"`
+	}
+	type response struct {
+		Artists []artistItem `json:"artists"`
+		Albums  []albumItem  `json:"albums"`
+		Tracks  []trackItem  `json:"tracks"`
+	}
+
+	resp := response{
+		Artists: make([]artistItem, 0),
+		Albums:  make([]albumItem, 0),
+		Tracks:  make([]trackItem, 0),
+	}
+	for _, a := range results.Artists {
+		resp.Artists = append(resp.Artists, artistItem{Name: a.Name, TrackCount: a.TrackCount, HasImage: a.HasImage})
+	}
+	for _, a := range results.Albums {
+		var year *int64
+		if a.Year.Valid {
+			year = &a.Year.Int64
+		}
+		resp.Albums = append(resp.Albums, albumItem{Title: a.Title, ArtistName: a.ArtistName, Year: year, TrackCount: a.TrackCount, HasImage: a.HasImage})
+	}
+	for _, t := range results.Tracks {
+		var trackNum *int64
+		if t.TrackNumber.Valid {
+			trackNum = &t.TrackNumber.Int64
+		}
+		var dur *float64
+		if t.DurationSeconds.Valid {
+			dur = &t.DurationSeconds.Float64
+		}
+		resp.Tracks = append(resp.Tracks, trackItem{
+			ID: t.ID, Title: t.Title, TrackNumber: trackNum, Duration: dur,
+			URL: "/files/" + t.ObjectKey, MimeType: t.MimeType,
+			ArtistName: t.ArtistName, AlbumTitle: t.AlbumTitle,
+		})
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *handler) getArtistImage(w http.ResponseWriter, r *http.Request) {
 	artist := chi.URLParam(r, "artist")
 	objectKey, mimeType, found, err := h.repo.GetArtistImage(r.Context(), artist)
