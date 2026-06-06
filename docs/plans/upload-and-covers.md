@@ -45,7 +45,7 @@ Phase 3 — Manual cover upload extension (server-side)                        �
     ↓
 Phase 4 — Upload concurrency & rate limiting                                 ✅ done (untested)
     ↓
-Phase 5 — Upload page (/upload, webui)                                       ✅ done (untested)
+Phase 5 — Upload page (/upload, webui)                                       🔄 reopened (cover-grouping revision)
     ↓
 Phase 6 — Aura effect (frontend, client-side)                               ← next
 ```
@@ -1111,26 +1111,50 @@ limiter := api.NewUploadLimiter(
 
 ---
 
-> **Status: ✅ Implemented, ⚠️ not yet tester-verified** (designer spec + frontend
-> build, in parallel). Files: `webui/html/upload.html`, `webui/static/css/upload.css`,
-> `webui/static/js/upload.js` (ES module reusing the app.js theme + API-base
-> patterns), route `GET /upload` in `webui/webui.go`. Reuses the existing token
-> system (links both `app.css` and `upload.css`). Implements drop zone +
-> browse-files/folder, a live worker slider fed by `GET /api/ui/config`, an N-slot
-> queue with per-file `XHR` progress, 429 backoff (decrement workers, re-queue,
-> toast + SR announce), client-side album grouping by directory prefix, cover
-> cards with 2s status polling (stops on ready/404/hidden), and a `metadata.edit`-
-> gated Replace-cover (button omitted, not disabled, without the perm).
-> **Backend change:** `POST /files/upload` now echoes `album` + `artist`
-> (effective album artist) so the page can group tracks and target the cover
-> endpoints without a second metadata call (empty on the dedup/restore path).
-> Render-smoke-tested (`/upload`, `/api/ui/config`, assets all 200). A dedicated
-> tester pass is still pending.
+> **Status: 🔄 Reopened — revision in progress.** The first build shipped working
+> upload *mechanics* and they are retained: drop zone, browse files + folder
+> (`webkitdirectory` recursive scan), the worker slider fed by `GET /api/ui/config`,
+> an N-slot queue with per-file `XHR` progress, 429 backoff (decrement workers,
+> re-queue, toast + SR announce), and a `metadata.edit`-gated Replace-cover.
+> Files: `webui/html/upload.html`, `webui/static/css/upload.css`,
+> `webui/static/js/upload.js`, route `GET /upload` in `webui/webui.go`.
+>
+> **Why reopened — cover grouping is wrong.** Groups are keyed by *directory
+> prefix* (`upload.js:143,168`). Selecting loose files (no `webkitRelativePath`)
+> collapses every file into one `""` group, where "first album wins"
+> (`upload.js:435`) and the single largest cover-named image is POSTed onto that
+> one album. Result: a cover from one album bleeds onto a different album/artist.
+> (Server-side *embedded* covers stay correctly scoped per track — Phase 2 — so the
+> bleed is purely this client-side candidate logic.)
+>
+> **The revision (below):**
+> 1. Group tracks into albums by their **embedded tags** (`album` + effective
+>    album-artist), echoed by `POST /files/upload` — never by folder.
+> 2. Attach a loose cover image to an album by **folder co-location** with that
+>    album's tracks (an image carries no tags, so its folder is the only signal).
+> 3. Add an after-upload **verify & edit** panel for the base fields — album,
+>    artist, track name, cover — backed by one new minimal endpoint,
+>    `PATCH /api/files/{hash}/metadata`.
+>
+> **Deferred to `.issues/open-issues.md`** (out of scope this round): full/rich tag
+> editing (year, genre, disc, track #, composer, multi-field editor) and
+> placeholder default names for unknown artist / album / track.
+>
+> **Retained backend hook:** `POST /files/upload` already echoes `album` + `artist`
+> (effective album-artist) for new inserts (empty on the dedup/restore path); the
+> revision uses that as the grouping key in place of the directory prefix.
 
 ## Phase 5 — Upload Page (`/upload`, webui)
 
 ### Goal
-A new web UI page at `/upload` where users can upload files and folders of any type, see per-album cover previews, replace covers manually, and track async processing status. Client-side parallel workers are user-adjustable.
+A web UI page at `/upload` for uploading files or whole folders (recursive
+`webkitdirectory` scan). Tracks are grouped into albums **by their embedded tags**
+(album + effective album-artist), echoed back by `POST /files/upload`. Loose cover
+images are attached to the album whose tracks share their folder. After uploading,
+a **verify & edit** panel lets the user correct the base fields — album, artist,
+track name, and cover — per album group; changes persist through the existing cover
+endpoints plus one new base-metadata endpoint. Client-side parallel workers stay
+user-adjustable.
 
 ---
 
@@ -1201,28 +1225,58 @@ Full vanilla HTML/CSS/JS. No external dependencies.
   - Log: `"Server limit hit — workers reduced to N"`
 - Progress per file via `XMLHttpRequest` `upload.onprogress`
 
-**Client-side album grouping:**
-- Extract directory prefix from `file.webkitRelativePath`: `path.split('/').slice(0, -1).join('/')`; empty string for files with no directory
-- Files sharing the same prefix are one album group
-- Cover candidates within a group: files whose base name (no extension, lowercased) is one of `cover`, `folder`, `front`, `albumart`, `artwork`, `album` AND whose MIME type is `image/jpeg` or `image/png`
-- When all audio files in a group have finished (succeeded or failed):
-  - If any upload succeeded and returned album+artist tags: use the first non-empty pair
-  - If a cover candidate exists for the group AND album+artist is known AND the user has `metadata.edit` permission (from the `GET /api/auth/me` result loaded on page init): POST it to `POST /api/albums/{album}/image?artist={artist}`; if the user lacks that permission, skip silently — the card shows a grey placeholder with no error
-  - If album+artist is not known (all audio errored or had no tags): skip cover upload; show "no album info" note in card
-- If multiple cover candidates exist in a group: use the largest by byte size
+**Album grouping — by tags, not folders (the bleed fix):**
 
-**Cover preview card (per album group):**
-- Rendered when files are added to the queue (before upload starts), keyed by directory prefix
-- Shows `medium_crop` variant URL if `variants_ready: true`, else a grey placeholder with a spinner overlay
-- Album name + artist (derived from first successful upload response in the group; falls back to directory name)
-- Track count
-- "Replace cover" button — opens `<input type="file" accept="image/jpeg,image/png">` → POSTs to `POST /api/albums/{album}/image?artist={artist}`; refreshes card after response
+A track's album identity is **`(effective album-artist, album)` from its embedded
+tags**, not its directory. `POST /files/upload` already returns `{album, artist}`
+(effective album-artist) for every *new* insert, so the client keys each group by
+`artist + '\x1f' + album` **as upload responses arrive**. Two tracks land in the
+same group iff their tags agree, regardless of folder — loose-file selection can no
+longer collapse everything into one bucket.
+
+- Group key: `` `${album_artist}\x1f${album}` ``, learned from each new-file upload
+  response. A track that dedups (`existed:true`, empty album/artist) is shown in the
+  queue but contributes no group until its album is otherwise known.
+- A track whose tags carry no album (or no artist) is **ungrouped** — listed under
+  an "Unsorted / no album tag" section in the verify panel. (Placeholder default
+  names for these are deferred — see §5h.)
+- Folders are still read at intake (recursive `webkitdirectory` scan) but only to
+  (1) discover files and (2) link loose cover images to albums (next block) — never
+  to define album identity.
+
+**Cover image → album association (folder co-location):**
+
+A standalone image file (`cover.jpg`, `folder.png`, …) carries no tags, so it can't
+be tag-grouped. It is attached to an album by **co-location**: the album that the
+audio tracks **in the same directory** resolve to via *their* tags.
+
+- Cover candidate per directory: an `image/jpeg`/`image/png` file whose stem
+  (lowercased, no extension) is one of `cover`, `folder`, `front`, `albumart`,
+  `artwork`, `album`. If several, the largest by byte size wins.
+- Resolve the directory's album after that directory's audio uploads return tags:
+  - all same-directory tracks map to **one** album → attach the candidate to it;
+  - they map to **several** albums (mixed folder) → attach to the **majority**
+    album and flag the card "cover ambiguous — confirm in review";
+  - **no** track in the directory resolved an album → leave the candidate
+    unassigned; the verify panel offers it for manual assignment.
+- Auto-attach fires only with `metadata.edit`; otherwise the candidate is *offered*
+  (not posted) in the verify panel. Embedded cover art is still handled server-side
+  per track (Phase 2) and is unaffected.
+
+**Album cards (one per tag-derived group):**
+- Created/updated **as upload responses arrive** — no pre-upload directory-prefix
+  cards. Keyed by `artist + '\x1f' + album`.
+- Shows the `medium_crop` variant once `variants_ready: true`, else a grey
+  placeholder with a spinner.
+- Album title + artist from the group's tags; track count; track list (titles).
+- Doubles as the **verify & edit** card (§5d): inline-editable album, artist, and
+  per-track title, plus Replace-cover.
 
 **Polling:**
-- When a card has `variants_ready: false`, poll `GET /api/albums/{album}/image/status?artist={artist}` every 2 seconds
-- Stop polling when `variants_ready: true`; replace placeholder with real image
-- Stop polling if the page becomes hidden (`document.visibilitychange` → `document.hidden`)
-- Stop polling if the status endpoint returns 404 (album was deleted)
+- When a card's cover is `variants_ready: false`, poll
+  `GET /api/albums/{album}/image/status?artist={artist}` every 2 s.
+- Stop on `variants_ready: true` (swap in the image), on 404, or when the tab is
+  hidden (`document.hidden`). Re-key polling if the user edits album/artist.
 
 **Drop zone JS:**
 - `dragover` / `drop` events — prevent default, read `e.dataTransfer.files`
@@ -1247,17 +1301,151 @@ No new static files needed. The upload page uses the same CSS variables and desi
 
 ---
 
-### 5d. Manual testing checklist (for the verifying agent)
+### 5d. Verify & edit panel (after upload)
 
-- [ ] Drop a single MP3 → appears in queue → Upload → appears in library
-- [ ] Drop a folder with 3 MP3s and a `cover.jpg` → 1 album group card appears → cover thumbnail shows after polling resolves
-- [ ] Drop a file with an unsupported extension → uploaded, server returns error inline in queue row
-- [ ] "Replace cover" uploads a new image → spinner appears → resolves to new image
-- [ ] Drop two separate album folders → two distinct cover cards, each with their own polling
-- [ ] `image_processing_workers = 1` in config → variants still appear eventually
-- [ ] Set workers slider to 1 → uploads proceed strictly one at a time
-- [ ] Simulate 429 (`server_max_parallel_workers = 1`, two tabs uploading simultaneously) → slider auto-decrements in the tab that receives 429
-- [ ] Upload page while upload in progress → visually clear per-file progress bars
+The album cards (§5b) **are** the verify surface. Once a group's uploads settle, its
+card exposes the base fields for correction. Editing is gated on `metadata.edit`
+(same permission as cover upload, read from `GET /api/auth/me` on page init);
+without it the card is read-only (display + cover thumbnail, no edit controls).
+
+Editable base fields:
+- **Album title** — group-level; applies to every track in the group.
+- **Artist / album-artist** — group-level.
+- **Track title** — per track, in the card's track list.
+- **Cover** — Replace-cover (existing `POST /api/albums/{album}/image`) or assign the
+  folder-detected candidate (incl. the "unassigned" / "ambiguous" cases from §5b).
+
+Save flow per card (a "Save changes" button commits that card; an unedited card
+needs no action):
+1. For each track whose **title** changed → `PATCH /api/files/{hash}/metadata`
+   with `{title}`.
+2. If **album** and/or **artist** changed → `PATCH` every track in the group with
+   the new `{album, album_artist}` (and `artist` if the track had none), **then
+   re-target the cover**: if the group has a cover (candidate or already-set), POST
+   it to the *new* `?artist=…` + `{album}` identity so the cover follows the rename.
+   (`album_images` is keyed by album-artist+album string; a rename would otherwise
+   orphan it — see the caveat in §5e.)
+3. Refresh the card from the new identity and resume status polling.
+
+Editing is **corrective, not blocking** — files are already in the library
+(after-upload timing); the panel fixes what tag extraction got wrong.
+
+---
+
+### 5e. Base-metadata endpoint (server)
+
+**New route:** `PATCH /api/files/{hash}/metadata`
+**Auth:** `metadata.edit` — register with `d.protect(auth.PermMetadataEdit)` in
+`api.RegisterAPI`, alongside the existing cover routes.
+**Handler:** `(h *handler) updateFileMetadata` — new, in `api/library_handlers.go`.
+
+Request body (JSON; every field optional — only **present** keys are written):
+
+```json
+{ "album": "Nevermind", "album_artist": "Nirvana", "artist": "Nirvana", "title": "Breed" }
+```
+
+- `hash` is the file content hash (the existing `files` key). 404 if unknown.
+- Only the **base** fields are writable this round: `title`, `album`,
+  `album_artist`, `artist`. Any other key is ignored (full tag editing is deferred
+  — §5h). Distinguish "absent" (leave unchanged) from "empty string" (clear) with a
+  presence-aware decode (`map[string]*string` or per-field `*string`), **not** a
+  zero-value struct.
+- Persists via a new `UpdateFileMetadata` repo method (§5f). Returns the updated
+  `media_metadata` row as JSON.
+- Does **not** touch `album_images`; cover re-targeting on rename is the client's job
+  (§5d step 2). Document that coupling in the handler comment.
+- Audit the change (`h.audit(ctx, "metadata.edit", "file:"+hash, …)`) consistent with
+  the cover path.
+
+> **Album-rename caveat (document, accept for v0):** album/artist are not normalized
+> keys — they live as text on each `media_metadata` row and albums are grouped by
+> string match at query time. Renaming every track in a group therefore *is*
+> "renaming the album"; the client re-POSTs the cover to the new identity. There is
+> no separate album entity to migrate.
+
+---
+
+### 5f. DB method + Repository wiring
+
+**File:** `database/metadata.go` (or alongside the existing metadata queries).
+
+```go
+// MetadataPatch carries only the base fields editable in this round.
+// A nil pointer leaves that column unchanged; a non-nil pointer (incl. "") writes it.
+type MetadataPatch struct {
+    Title       *string
+    Album       *string
+    AlbumArtist *string
+    Artist      *string
+}
+
+// UpdateFileMetadata updates the provided base fields on the media_metadata row
+// for the given file hash. No-op if the patch is empty. Returns sql.ErrNoRows
+// (or a sentinel) if no file/metadata row matches the hash.
+UpdateFileMetadata(ctx context.Context, hash string, p MetadataPatch) error
+```
+
+- Build the `UPDATE media_metadata SET … WHERE file_id = (SELECT id FROM files
+  WHERE hash = ?)` dynamically from the non-nil fields.
+- Add `UpdateFileMetadata` to the `Repository` interface in `database/repo.go`.
+  ⚠️ **Gotcha (recurring):** a new `Repository` method breaks every fake in
+  `api/*_test.go` (they stop satisfying the interface). Add a stub to each fake in
+  the **same** change — same drill as the Phase 1 image methods.
+
+---
+
+### 5g. Tests
+
+- `database/metadata_test.go`:
+  - `TestUpdateFileMetadata_PartialPatch`: patch only `{title}`; assert other
+    columns untouched.
+  - `TestUpdateFileMetadata_ClearVsAbsent`: `""` clears, absent leaves unchanged.
+  - `TestUpdateFileMetadata_UnknownHash`: returns the not-found sentinel.
+- `api/library_handlers_test.go`:
+  - `TestUpdateFileMetadata_RequiresPermission`: without `metadata.edit` → 403.
+  - `TestUpdateFileMetadata_UpdatesRow`: PATCH a known hash → 200 + updated JSON;
+    DB row reflects the change.
+- Client grouping/cover association is exercised via the manual checklist (§5h);
+  the JS has no unit harness in this project.
+
+**Manual testing checklist (for the verifying agent):**
+
+- [ ] **Bleed regression:** Browse-files-select tracks from *two different artists*
+      at once → two distinct album cards by tags; neither cover lands on the other
+      album. (This is the bug being fixed.)
+- [ ] Choose a folder `Music/Nirvana/Nevermind/` with 3 MP3s + `cover.jpg` → one
+      album card (grouped by tags) → cover thumbnail shows after polling resolves.
+- [ ] A folder mixing two albums' tracks + one `cover.jpg` → cover attaches to the
+      majority album and the card shows the "ambiguous — confirm" flag.
+- [ ] Tracks with no album tag → appear under "Unsorted / no album tag", no cover
+      auto-set.
+- [ ] Edit a track **title** in a card → Save → `media_metadata` updated; library
+      reflects the new title.
+- [ ] Edit **album**/**artist** on a card → Save → all group tracks re-tagged and
+      the cover follows to the new identity (still visible after rename).
+- [ ] User without `metadata.edit` → cards are read-only; no edit controls, no auto
+      cover POST.
+- [ ] Drop a file with an unsupported extension → server returns error inline in the
+      queue row.
+- [ ] `image_processing_workers = 1` → variants still appear eventually.
+- [ ] Workers slider to 1 → uploads proceed strictly one at a time.
+- [ ] Simulate 429 (`server_max_parallel_workers = 1`, two tabs) → slider
+      auto-decrements in the tab that receives 429.
+
+---
+
+### 5h. Deferred — logged in `.issues/open-issues.md`
+
+Out of scope for this revision; recorded so they are not lost:
+
+- **Full / rich tag editing** — everything beyond the base four fields (track #,
+  disc #, year, genre, composer, comment, …) plus a dedicated metadata-editor UI.
+  The §5e endpoint is deliberately shaped to extend (add fields to `MetadataPatch`
+  + the writable allow-list) without a redesign.
+- **Default placeholder names for unknown artist / album / track** — configurable
+  fallbacks (e.g. "Unknown Artist", "Unknown Album", filename-as-title) for files
+  whose tags are missing, so they group sensibly instead of falling into "Unsorted".
 
 ---
 
@@ -1316,7 +1504,12 @@ When the player loads a new track:
 | `api/upload_handlers.go` | New: move `uploadFile` here; add `maybeSaveEmbeddedCover`, `mimeToExt`, extend upload response, limiter check | 2b–2c, 4b |
 | `api/upload_limiter.go` | New: `UploadLimiter` | 4a |
 | `webui/webui.go` | Register `/upload` route | 5a |
-| `webui/html/upload.html` | New upload page | 5b |
+| `webui/html/upload.html` | New upload page (revised: verify/edit panel markup) | 5b, 5d |
+| `webui/static/js/upload.js` | **Rewrite grouping**: key by tags not dir-prefix; cover-by-folder-colocation; verify/edit panel + base-metadata PATCH calls | 5b, 5d |
+| `api/library_handlers.go` | Add `updateFileMetadata` handler | 5e |
+| `api/api.go` | Register `PATCH /api/files/{hash}/metadata` under `metadata.edit` | 5e |
+| `database/metadata.go` | New `UpdateFileMetadata` + `MetadataPatch` | 5f |
+| `database/repo.go` | Add `UpdateFileMetadata` to `Repository`; stub in api test fakes | 5f |
 | `webui/html/cmus.html` | Add aura effect JS and CSS | 6b |
 
 ---
@@ -1330,5 +1523,6 @@ When the player loads a new track:
 | `GET` | `/api/albums/{album}/image` | none | Serve original cover image |
 | `POST` | `/api/albums/{album}/image` | `metadata.edit` | Upload/replace cover; triggers async variant job |
 | `GET` | `/api/albums/{album}/image/status` | none | Variant readiness + all variant URLs |
+| `PATCH` | `/api/files/{hash}/metadata` | `metadata.edit` | Edit base fields (title, album, album_artist, artist) of one file (Phase 5 revision) |
 
 Query param for album endpoints: `?artist=<album_artist>` (empty string allowed — matches rows with empty album_artist).
