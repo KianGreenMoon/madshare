@@ -52,6 +52,56 @@
 | Info | **No decode-before-write for embedded covers (by design).** Phase 2 trusts the tag's declared MIME to pick the extension and writes the raw bytes; it does **not** decode. A corrupt/mislabelled embedded image therefore fails later in the worker (`ProcessImage`), which retries 3× then marks the job `failed`, leaving the `album_images` row at `variants_ready=0`. The manual-upload path (Phase 3) decodes up front, so the two paths differ. Accepted: degrades to a failed job, never a crash. Unsupported embedded MIME (webp/gif/etc.) is skipped up front via `mimeToExt` and never written/enqueued. | **by design** |
 | Info | **MP4/M4A embedded JPEG may not extract.** `dhowden/tag` only reports an MP4 cover when it can infer the MIME (PNG, or an explicit-flagged atom); an implicit-flagged embedded JPEG yields no `Picture()`, so such files import with no cover. Documented in `media/extract.go`. Not a regression — purely a library limitation. Manual upload (Phase 3 UI) is the workaround. | **by design** |
 
+## Roles vs. access-groups — model unification (design, 2026-06-06)
+
+**Problem / open question (needs a decision before any code).** Madshare has
+**two separate authorization concepts** and it is not yet clear they should stay
+separate — the owner's original intent was for *roles to BE the access-groups*
+(one concept that says both "what a user may do" and "what content they may
+reach"). Today they are orthogonal (see `docs/architecture/auth.md`):
+
+- **Layer A — roles** = bundles of capability permissions (`content.play`,
+  `file.upload`, `user.manage`, …). Built-ins: admin / moderator / uploader /
+  listener. Answer "*what actions* may this user perform?".
+- **Layer B — access groups + content grants** = membership + content scopes
+  (`all` / artist / album / file) that decide "*which files* may this user
+  reach?" (`access_groups`, `access_group_members`, `content_grants`,
+  predicate in `database/access.go`).
+
+**Why it surfaced.** A newly created `listener` saw an empty library: the role
+granted the *capability* to play, but Layer-B default-deny exposed nothing
+without a group grant. As an interim fix, migration `010` gave the built-in
+`listener`/`uploader` roles `content.all` (full-library access). **Consequence:**
+access-group grants are now a **no-op for the built-in roles** — the two systems
+visibly overlap and the Layer-B machinery (groups UI, grants) is effectively
+dead for normal users, which is confusing.
+
+**The decision to make.** Pick one coherent model. Rough options:
+
+1. **Unify (owner's original idea):** a single "role/group" entity carries both
+   capabilities *and* a content scope. Creating "Jazz listeners" would mean
+   "may play, limited to the Jazz albums". Big change: merge `roles` and
+   `access_groups`, attach content scopes to roles, rewrite the access predicate
+   and the admin UI. Probably its own design doc.
+2. **Keep two layers, fix the overlap:** revert the listener→`content.all`
+   shortcut and instead make "give this user the whole library" a first-class,
+   one-click action (e.g. a built-in "Everyone/All-library" group, or a per-user
+   "full library" toggle that wires a `scope=all` grant). Roles stay
+   capability-only; groups stay content-only.
+3. **Roles only (drop Layer B):** delete access groups entirely; a role's
+   permission set is the whole story; per-content restriction is out of scope
+   for v0. Simplest, least flexible.
+
+**Current interim state:** option-1-ish by accident — built-in roles see
+everything (migration 010), anonymous stays default-deny, access groups linger
+but do nothing for built-ins. No further code until the model is chosen.
+Relevant: `docs/architecture/auth.md` §4–5, `database/access.go`,
+`database/migrations/{003,005,006,010}`, admin Users + Access-groups sections.
+
+| Priority | Item | Notes |
+|---|---|---|
+| **Med** | **Decide roles-vs-access-groups model** (unify / two-layer / roles-only) — see write-up above. Blocks meaningful further work on per-user content restriction. | open (needs owner decision) |
+
 ## Future federation items (design-time, not yet planned)
 
 | Priority | Item | Notes |
