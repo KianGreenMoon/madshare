@@ -345,6 +345,20 @@ will extend.
    delete-own rule (delete is currently `file.delete`-only — delete any), and
    login rate limiting + CSRF.
 
+   **Web-UI permission gating (UX, not a security boundary).** The browser hides
+   what the signed-in principal can't use; the API still enforces every
+   permission server-side, so this is purely cosmetic. In `webui/static/js/auth.js`:
+   `applyNavPermissions()` (run from `initAuth`, so it covers every page) removes
+   the **Upload** nav link without `file.upload` and the **Admin** nav link
+   without `file.delete`/`user.manage`; `gatePage(perms)` (exported with
+   `PAGE_PERMS`) is called by `upload.js`/`admin.js` after `initAuth` and, when
+   the principal lacks the rights, replaces `<main>` with an access-denied notice
+   (a "Sign in" prompt for anonymous, "Back to Library" otherwise) and aborts the
+   page boot. The admin page additionally hides its own Upload section without
+   `file.upload`. The standalone `/cmus` view doesn't use the shared auth module,
+   so `cmus.js` does a self-contained `GET /api/auth/me` check to drop its Admin
+   link. `.access-denied` styling lives in `app.css` + `admin.css`.
+
    **(2a) User administration** — **IMPLEMENTED** (`api/user_handlers.go`,
    gated by `user.manage`): full account lifecycle from the admin page's *Users*
    section.
