@@ -2,35 +2,35 @@
 #+author: Kian Seibel
 
 * Madshare
-Concept doc for federated audio service (primarily for music)
+Concept doc for a federated audio service (primarily for music)
 ** server side
-- Server should contain audio files on a server disk, optional with s3
-- Audio files and they metadata should be separated.
-- Server lets upload, download and playing audio files with and without decoding (by using ffmpeg)
-- Server has one admin account.
-- Server has user accounts.
-- A user could not to upload new audio files without admin permission.
-- By default server should not to allow download and play a media file for unathorized users to prevent a legal attack.
+- The server should store audio files on a server disk, optionally with S3.
+- Audio files and their metadata should be separated.
+- The server lets users upload, download and play audio files, with and without decoding (using ffmpeg).
+- The server has one admin account.
+- The server has user accounts.
+- A user cannot upload new audio files without admin permission.
+- By default, the server should not allow unauthorized users to download or play a media file, to prevent legal attacks.
 - Each media file has a flag whether it may be played/downloaded by unauthorized guests (for open / non-copyrighted music). This is just an access grant to the "anonymous public" principal; the default is deny.
 - Each media file may also store a /license/ as metadata (a controlled vocabulary / SPDX-style code, e.g. CC0, CC-BY, public-domain, all-rights-reserved, unknown), distinct from the guest-playable flag.
-- The admin may opt in to a policy that auto-derives the guest-playable flag from the license (e.g. auto-publish anything licensed CC0 or public-domain). Caveats: license read from uploaded file tags is unverified, so the admin opts in and owns the legal risk; auto-derivation only ever /grants/ for a recognized-free allowlist; unknown or missing license stays private; a manual override always wins.
-- Server can connecting with another servers by a federation protocol
-- To prevent any legal issues servers can connecting each others only by trusted system: Two admins exchange their keys for connecting. But every server has full access to all friend's network (madnetwork).
-- An admin may share his library to the madnetwork - all federated servers.
-- An admin may share his library only to his friends - servers, those he trusted.
-- An admin may prevent to share his library at all.
-- Connected servers could download and upload audio files to each other. Each audio file is verified by his hash sum.
-- Connected servers could be balancers for streaming music files if they have same audio files.
-- Servers can block spam servers those files are scam (untrusted servers). Each admin aprooves or disaprooves media files, that he can see in madnetwork. If server has critical mass of untrusted media, his files have low rating and clients don't see those media. Prevent spam attack on the madnetwork.
-  # But okay, that can give a weapon for war inside the madnetwork. But how to prevent the war? Individual for each servers another server's raiting? Something else? Manual blacklist servers without any raiting system. Give information with whem the spam server is friended to block them too? I should think about.
+- The admin may opt in to a policy that auto-derives the guest-playable flag from the license (e.g. auto-publish anything licensed CC0 or public-domain). Caveats: the license read from uploaded file tags is unverified, so the admin opts in and owns the legal risk; auto-derivation only ever /grants/ for a recognized-free allowlist; an unknown or missing license stays private; a manual override always wins.
+- The server can connect with other servers via a federation protocol.
+- To prevent any legal issues, servers can connect to each other only through a trust system: two admins exchange their keys to connect. But every server has full access to all of its friends' networks (madnetwork).
+- An admin may share their library with the madnetwork — all federated servers.
+- An admin may share their library only with their friends — servers they trust.
+- An admin may choose not to share their library at all.
+- Connected servers can download and upload audio files to each other. Each audio file is verified by its hash sum.
+- Connected servers can act as balancers for streaming music files if they have the same audio files.
+- Servers can block spam servers whose files are scams (untrusted servers). Each admin approves or disapproves the media files they can see in the madnetwork. If a server has a critical mass of untrusted media, its files get a low rating and clients don't see that media. This prevents spam attacks on the madnetwork.
+  # But okay, that could give a weapon for war inside the madnetwork. But how do we prevent the war? A separate rating of every other server, individual to each server? Something else? Manually blacklist servers without any rating system. Share information about whom the spam server is friended with, to block them too? I should think about this.
 *** AI features
-- Recommendation functional
-- Search music by hum
+- Recommendation functionality
+- Search for music by humming
 ** client side
-- Client should allow to discover audio files on the server
-- Client should allow to discover audio files on the server's friends and madnetwork
-- Client should allow to play audio files
-- Client should allow to download audio files
-- Client should allow to upload audio files
+- The client should let users discover audio files on the server.
+- The client should let users discover audio files on the server's friends and the madnetwork.
+- The client should let users play audio files.
+- The client should let users download audio files.
+- The client should let users upload audio files.
 *** Desktop/Mobile client
-- Client should work as a server (can connect to external servers and share his library) and local music player app.
+- The client should work both as a server (able to connect to external servers and share its library) and as a local music player app.
