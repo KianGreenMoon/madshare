@@ -26,3 +26,11 @@ Found by tester agent review of `webui/static/js/app.js` + `webui/html/upload.ht
 - [x] **BUG-11** `stopped` flag can desync `syncPlayIcon` from actual audio element state if audio plays externally (e.g. MediaSession). **Fixed:** `syncPlayIcon` now derives state from `audio.paused` only; `stopped` is used only by the play button's click handler.
 - [x] **BUG-12** Multi-file drag-and-drop silently discards all files after the first — only `files[0]` is uploaded. **Fixed:** `uploadFiles(files)` iterates all dropped/selected files sequentially.
 - [x] **BUG-13** No mechanism to re-show the empty state if the library becomes empty after first load. **Fixed:** same as BUG-08 — element is hidden/shown with `style.display`, never removed.
+
+## Refactoring (deferred — for the planned big UI refactor)
+
+- [ ] **BUG-15** Header/nav styling is duplicated and diverges across pages instead of being single-sourced. After the header *markup* was extracted into a shared partial (`webui/html/partials.html`, `{{template "header"}}`), the *CSS* was not consolidated:
+  - `app.css` carries the canonical header rules (`header`, `.logo`, `.main-nav`, `.nav-link`, `.theme-dot`, `.btn`, `.btn-neutral`) used by the library and upload pages.
+  - `admin.css` has its **own copy** of `header` and `.main-nav` (and related rules), so the admin page renders the shared header markup with a *separate, independently-maintained* stylesheet that can (and does) drift from `app.css`.
+  - `upload.css` redefines `.btn` (loaded after `app.css`), so the header's auth buttons pick up upload-page button styling rather than the shared `.btn`/`.btn-neutral` look on that page.
+  Net effect: the same header HTML looks subtly different per page, and a header change must be made in 2–3 places. **Plan:** during the big UI refactor, move all header/nav/theme-switcher/button styles into a single shared stylesheet (e.g. a `header.css` or a dedicated section of `app.css`) linked by every page, and delete the duplicate rules from `admin.css` and the `.btn` override from `upload.css`. Also consider giving `cmus.html` the shared header (it still has its own markup). Related: the nav-centering fix in commit `6317723` (`.main-nav { margin-right: auto }`) is a symptom of this scattered styling.
