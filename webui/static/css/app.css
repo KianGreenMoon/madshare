@@ -64,6 +64,7 @@
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+[hidden] { display: none !important; }
 
 body {
   font-family: system-ui, -apple-system, sans-serif;
@@ -797,6 +798,121 @@ input[type="range"]::-moz-range-thumb {
   0%   { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
+
+/* ── Button system ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius);
+  font-size: 14px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--text);
+  transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.btn:disabled { opacity: 0.6; cursor: default; }
+.btn-neutral {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
+}
+.btn-neutral:hover:not(:disabled) { background: var(--surface-hover); }
+
+/* ── Header auth area ── */
+.user-area {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-right: var(--space-2);
+}
+.user-name {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+/* ── Auth modals ── */
+.modal-body { font-size: 14px; color: var(--text); margin-bottom: var(--space-5); }
+.modal-actions { display: flex; justify-content: flex-end; gap: var(--space-3); margin-top: var(--space-3); }
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.login-form label {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+.login-form input {
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: inherit;
+}
+.login-form input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+.login-error {
+  color: var(--error);
+  font-size: 0.9rem;
+  margin: var(--space-1) 0 0;
+}
+
+/* ── Toasts ── */
+.toast-stack {
+  position: fixed;
+  bottom: var(--space-5);
+  right: var(--space-5);
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: min(360px, calc(100vw - 2 * var(--space-5)));
+  pointer-events: none;
+}
+#toastAlert { bottom: auto; top: var(--space-5); }
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  font-size: 13px;
+  color: var(--text);
+  pointer-events: auto;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+}
+.toast.is-success { border-left-color: var(--success); }
+.toast.is-error   { border-left-color: #e05c5c; }
+.toast-icon { flex-shrink: 0; }
+.toast.is-success .toast-icon { color: var(--success); }
+.toast.is-error .toast-icon   { color: #e05c5c; }
+.toast-msg { flex: 1; min-width: 0; }
+.toast-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+.toast-close:hover { color: var(--text); }
+.toast-close:focus-visible { outline: 2px solid var(--accent); }
 
 /* ── Narrow viewport: search drops to second row ── */
 @media (max-width: 599px) {
