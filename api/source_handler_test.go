@@ -86,3 +86,44 @@ func TestSourceArchiveNotConfigured(t *testing.T) {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
+
+func TestLicenseDoc(t *testing.T) {
+	root := t.TempDir()
+	body := "GNU AFFERO GENERAL PUBLIC LICENSE\nVersion 3\n"
+	if err := os.WriteFile(filepath.Join(root, "LICENSE.md"), []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &handler{source: &sourceArchiver{root: root}}
+	rec := httptest.NewRecorder()
+	h.licenseDoc(rec, httptest.NewRequest(http.MethodGet, "/license", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", ct)
+	}
+	if rec.Body.String() != body {
+		t.Errorf("body = %q, want %q", rec.Body.String(), body)
+	}
+}
+
+func TestLicenseDocNotConfigured(t *testing.T) {
+	h := &handler{}
+	rec := httptest.NewRecorder()
+	h.licenseDoc(rec, httptest.NewRequest(http.MethodGet, "/license", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestLicenseDocMissingFile(t *testing.T) {
+	// SourceRoot configured but no LICENSE.md on disk → 503, not a panic.
+	h := &handler{source: &sourceArchiver{root: t.TempDir()}}
+	rec := httptest.NewRecorder()
+	h.licenseDoc(rec, httptest.NewRequest(http.MethodGet, "/license", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}

@@ -18,6 +18,22 @@ type sourceArchiver struct {
 	once sync.Once
 	data []byte
 	err  error
+
+	// licenseOnce/licenseData cache the bundled LICENSE.md, read once from root
+	// and served at GET /license alongside the /source archive (both are AGPL
+	// compliance surfaces and share the source tree on disk).
+	licenseOnce sync.Once
+	licenseData []byte
+	licenseErr  error
+}
+
+// license returns the bytes of the bundled LICENSE.md, reading it from root
+// on first use and caching the result in memory.
+func (s *sourceArchiver) license() ([]byte, error) {
+	s.licenseOnce.Do(func() {
+		s.licenseData, s.licenseErr = os.ReadFile(filepath.Join(s.root, "LICENSE.md"))
+	})
+	return s.licenseData, s.licenseErr
 }
 
 func (s *sourceArchiver) get() ([]byte, error) {
@@ -89,5 +105,23 @@ func (h *handler) sourceArchive(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/gzip")
 	w.Header().Set("Content-Disposition", `attachment; filename="madshare-source.tar.gz"`)
+	w.Write(data)
+}
+
+// licenseDoc serves the bundled LICENSE.md (the AGPL-3.0 text) as inline plain
+// text. Shares the source-tree dependency with /source: nil source (no
+// SourceRoot configured) falls through to 404.
+func (h *handler) licenseDoc(w http.ResponseWriter, r *http.Request) {
+	if h.source == nil {
+		http.NotFound(w, r)
+		return
+	}
+	data, err := h.source.license()
+	if err != nil {
+		http.Error(w, "license unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Write(data)
 }

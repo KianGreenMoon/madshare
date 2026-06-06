@@ -48,3 +48,40 @@ curl -OJ http://localhost:3000/source
   be freely available to anyone interacting with the service.
 - A "Source" link pointing to `/source` (with the `download` attribute) appears
   in the navigation header of every web UI page.
+
+---
+
+## `GET /license`
+
+Serves the bundled `LICENSE.md` (the full AGPL-3.0 text) for the running server.
+
+### Response
+
+| Header                  | Value                       |
+|-------------------------|-----------------------------|
+| `Content-Type`          | `text/plain; charset=utf-8` |
+| `X-Content-Type-Options`| `nosniff`                   |
+
+The body is the verbatim `LICENSE.md` from the project root, served inline so a
+browser displays it as plain text rather than downloading it.
+
+```bash
+curl http://localhost:3000/license
+```
+
+### Error responses
+
+| Status | Meaning |
+|--------|---------|
+| `503 Service Unavailable` | `LICENSE.md` could not be read from `SourceRoot`. |
+| `404 Not Found` | `SourceRoot` was not configured (should not happen in a standard deployment). |
+
+### Implementation notes
+
+- Shares the `SourceRoot` dependency with `/source`: the file is read from
+  `<SourceRoot>/LICENSE.md` and cached in memory on first request. When
+  `SourceRoot` is empty (endpoint disabled), `/license` returns 404 just like
+  `/source`.
+- The endpoint is **public** — no authentication required.
+- A "License" link pointing to `/license` (opening in a new tab) appears in the
+  navigation header of every web UI page, next to "Source".

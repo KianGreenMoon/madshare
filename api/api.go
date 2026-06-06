@@ -91,6 +91,7 @@ func RegisterAPI(r chi.Router, d Deps) {
 		w.Write([]byte("ok"))
 	})
 	r.Get("/source", h.sourceArchive)
+	r.Get("/license", h.licenseDoc)
 
 	r.Get("/api/files", h.listFiles)
 	r.Get("/api/artists", h.listArtists)
