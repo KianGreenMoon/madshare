@@ -71,6 +71,131 @@ func (db *DB) ListUsers(ctx context.Context) ([]*User, error) {
 	return out, rows.Err()
 }
 
+// GetUserByID returns the user row for id, or (nil, nil) on miss.
+func (db *DB) GetUserByID(ctx context.Context, id int64) (*User, error) {
+	var u User
+	var changeReq, disabled int
+	err := db.QueryRowContext(ctx,
+		`SELECT id, username, password_hash, password_change_required, disabled, created_at
+		 FROM users WHERE id = ?`, id).
+		Scan(&u.ID, &u.Username, &u.PasswordHash, &changeReq, &disabled, &u.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	u.PasswordChangeRequired = changeReq != 0
+	u.Disabled = disabled != 0
+	return &u, nil
+}
+
+// ListRoles returns all roles ordered by name, used to populate the admin UI's
+// role picker.
+func (db *DB) ListRoles(ctx context.Context) ([]Role, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id, name, built_in FROM roles ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Role
+	for rows.Next() {
+		var r Role
+		var builtIn int
+		if err := rows.Scan(&r.ID, &r.Name, &builtIn); err != nil {
+			return nil, err
+		}
+		r.BuiltIn = builtIn != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// AllUserRoles returns a map of user id → role names, fetched in one query so
+// the user list does not issue a query per row.
+func (db *DB) AllUserRoles(ctx context.Context) (map[int64][]string, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT ur.user_id, r.name
+		 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+		 ORDER BY r.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64][]string{}
+	for rows.Next() {
+		var uid int64
+		var name string
+		if err := rows.Scan(&uid, &name); err != nil {
+			return nil, err
+		}
+		out[uid] = append(out[uid], name)
+	}
+	return out, rows.Err()
+}
+
+// SetUserRoles replaces a user's role set with exactly roleNames, in a single
+// transaction. An unknown role name aborts the change with an error.
+func (db *DB) SetUserRoles(ctx context.Context, userID int64, roleNames []string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM user_roles WHERE user_id = ?`, userID); err != nil {
+		return err
+	}
+	for _, name := range roleNames {
+		res, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO user_roles (user_id, role_id)
+			 SELECT ?, id FROM roles WHERE name = ?`, userID, name)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return fmt.Errorf("database: unknown role %q", name)
+		}
+	}
+	return tx.Commit()
+}
+
+// SetUserDisabled flips a user's disabled flag. found is false (no error) when
+// no such user exists.
+func (db *DB) SetUserDisabled(ctx context.Context, userID int64, disabled bool) (found bool, err error) {
+	res, err := db.ExecContext(ctx,
+		`UPDATE users SET disabled = ? WHERE id = ?`, boolToInt(disabled), userID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// DeleteUser removes a user. Sessions, API tokens and role assignments are
+// removed via ON DELETE CASCADE. found is false (no error) on a missing user.
+func (db *DB) DeleteUser(ctx context.Context, userID int64) (found bool, err error) {
+	res, err := db.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, userID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// CountEnabledUsersWithRole returns how many non-disabled users hold the named
+// role. Used to guard against locking out the last administrator.
+func (db *DB) CountEnabledUsersWithRole(ctx context.Context, roleName string) (int, error) {
+	var n int
+	err := db.QueryRowContext(ctx,
+		`SELECT COUNT(DISTINCT u.id)
+		 FROM users u
+		 JOIN user_roles ur ON ur.user_id = u.id
+		 JOIN roles r ON r.id = ur.role_id
+		 WHERE r.name = ? AND u.disabled = 0`, roleName).Scan(&n)
+	return n, err
+}
+
 // AssignRoleByName grants the named built-in role to a user. A duplicate
 // assignment is ignored.
 func (db *DB) AssignRoleByName(ctx context.Context, userID int64, roleName string) error {

@@ -12,6 +12,15 @@ type User struct {
 	CreatedAt              int64
 }
 
+// Role is a row in the roles table — a named bundle of permissions. BuiltIn
+// marks the seeded roles (admin/moderator/uploader/listener) that ship with the
+// schema and cannot be deleted.
+type Role struct {
+	ID      int64
+	Name    string
+	BuiltIn bool
+}
+
 // APIToken is a row in the api_tokens table. The raw token is never stored —
 // only its hash. RawToken is populated only at creation time, to show once.
 type APIToken struct {

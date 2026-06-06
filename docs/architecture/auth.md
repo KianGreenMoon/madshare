@@ -101,7 +101,7 @@ A fixed set of permission strings lives in code (so typos are compile-checked an
 the set is documented in one place):
 
 ```
-user.manage         create/disable users, assign roles
+user.manage         create/edit/disable/delete users, assign roles (IMPLEMENTED, §10.2a)
 role.manage         create/edit roles
 file.upload         upload new files
 file.delete         delete any file        (owners may always delete their own uploads)
@@ -334,6 +334,38 @@ will extend.
    on the Admin page" message. **Deferred within this phase:** the owner-can-
    delete-own rule (delete is currently `file.delete`-only — delete any), and
    login rate limiting + CSRF.
+
+   **(2a) User administration** — **IMPLEMENTED** (`api/user_handlers.go`,
+   gated by `user.manage`): full account lifecycle from the admin page's *Users*
+   section.
+   - `GET /api/admin/users` — list users with their roles, disabled flag, and
+     `password_change_required` (also feeds the access-group membership picker).
+   - `GET /api/admin/roles` — the assignable roles (the four seeded built-ins).
+   - `POST /api/admin/users` — create `{username, password, roles?,
+     require_password_change?}`. **Default role is `listener`** (play + download)
+     — the common "add a regular listening account" case. Username must match
+     `^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$`; password ≥ 8 chars; unknown role → 400;
+     duplicate username → 409.
+   - `PATCH /api/admin/users/{id}` — change role set and/or `disabled` (both
+     optional; pointer-decoded so "absent" ≠ "false").
+   - `POST /api/admin/users/{id}/password` — admin password reset.
+   - `DELETE /api/admin/users/{id}` — delete (sessions/tokens/roles cascade).
+
+   New DB methods on `*database.DB` (`database/auth.go`): `GetUserByID`,
+   `ListRoles`, `AllUserRoles` (one query for all memberships), `SetUserRoles`
+   (transactional replace), `SetUserDisabled`, `DeleteUser`,
+   `CountEnabledUsersWithRole`. The endpoints' store needs are added to
+   `api.ManageStore`.
+
+   **Lock-out guards** (server-enforced, mirrored in the UI): a caller cannot
+   delete or disable their **own** account, and the **last enabled `admin`**
+   cannot be deleted, disabled, or demoted (`CountEnabledUsersWithRole`).
+   Disabling a user and resetting a password both **revoke that user's active
+   sessions** immediately (`DeleteUserSessions`). Every action writes an
+   `audit_log` row (`user.create|roles|disabled|password|delete`).
+
+   **Deferred:** username rename (unique-constraint + live-session implications),
+   and custom roles via `role.manage` (still future).
 3. **Content access (Layer B)** — **IMPLEMENTED**:
    - **Done (3a, migration 005):** `access_groups`/`access_group_members`/
      `content_grants` tables, `files.guest_playable`/`license` columns, the §5.3

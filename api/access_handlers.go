@@ -23,6 +23,19 @@ import (
 type ManageStore interface {
 	ListUsers(ctx context.Context) ([]*database.User, error)
 
+	// User administration (user.manage). See user_handlers.go.
+	GetUserByUsername(ctx context.Context, username string) (*database.User, error)
+	GetUserByID(ctx context.Context, id int64) (*database.User, error)
+	CreateUser(ctx context.Context, username, passwordHash string, changeRequired bool) (int64, error)
+	SetPassword(ctx context.Context, userID int64, passwordHash string, changeRequired bool) error
+	SetUserDisabled(ctx context.Context, userID int64, disabled bool) (bool, error)
+	DeleteUser(ctx context.Context, userID int64) (bool, error)
+	DeleteUserSessions(ctx context.Context, userID int64) error
+	ListRoles(ctx context.Context) ([]database.Role, error)
+	AllUserRoles(ctx context.Context) (map[int64][]string, error)
+	SetUserRoles(ctx context.Context, userID int64, roleNames []string) error
+	CountEnabledUsersWithRole(ctx context.Context, roleName string) (int, error)
+
 	ListAccessGroups(ctx context.Context) ([]database.AccessGroup, error)
 	CreateAccessGroup(ctx context.Context, name string) (int64, error)
 	DeleteAccessGroup(ctx context.Context, groupID int64) (bool, error)
@@ -69,6 +82,11 @@ func registerManage(r chi.Router, d Deps) {
 	metaEdit := d.protect(auth.PermMetadataEdit)
 
 	r.With(userManage).Get("/users", h.listUsers)
+	r.With(userManage).Post("/users", h.createUser)
+	r.With(userManage).Patch("/users/{id}", h.updateUser)
+	r.With(userManage).Post("/users/{id}/password", h.resetUserPassword)
+	r.With(userManage).Delete("/users/{id}", h.deleteUser)
+	r.With(userManage).Get("/roles", h.listRoles)
 
 	r.With(userManage).Get("/access/groups", h.listGroups)
 	r.With(userManage).Post("/access/groups", h.createGroup)
@@ -99,9 +117,25 @@ func (h *manageHandler) listUsers(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
+	roles, err := h.store.AllUserRoles(r.Context())
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
 	out := make([]map[string]any, 0, len(users))
 	for _, u := range users {
-		out = append(out, map[string]any{"id": u.ID, "username": u.Username, "disabled": u.Disabled})
+		rs := roles[u.ID]
+		if rs == nil {
+			rs = []string{}
+		}
+		out = append(out, map[string]any{
+			"id":                       u.ID,
+			"username":                 u.Username,
+			"disabled":                 u.Disabled,
+			"roles":                    rs,
+			"password_change_required": u.PasswordChangeRequired,
+			"created_at":               u.CreatedAt,
+		})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
