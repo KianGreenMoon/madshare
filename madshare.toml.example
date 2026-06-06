@@ -33,6 +33,16 @@ serve = ["api", "webui", "admin"]
 #[webui]
 #api_base = "https://media.example.org"
 
+# First-run admin bootstrap. These are consumed ONLY when the users table is
+# empty (a fresh database): they create the first admin account, which is then
+# forced to change its password on first login. On a fresh DB the user is
+# required; afterwards both fields are ignored (and a warning is logged if set).
+# Prefer supplying the password via the MADSHARE_INITIAL_ADMIN_PASSWORD env var
+# rather than writing it into this file.
+[auth]
+initial_admin_user = "admin"
+# initial_admin_password = "change-me"   # better: export MADSHARE_INITIAL_ADMIN_PASSWORD
+
 [database]
 path = "./data/madshare.db"
 
