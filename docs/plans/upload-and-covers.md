@@ -45,7 +45,7 @@ Phase 3 — Manual cover upload extension (server-side)                        �
     ↓
 Phase 4 — Upload concurrency & rate limiting                                 ✅ done (untested)
     ↓
-Phase 5 — Upload page (/upload, webui)                                       🔄 reopened (cover-grouping revision)
+Phase 5 — Upload page (/upload, webui)                                       ✅ revision done (untested)
     ↓
 Phase 6 — Aura effect (frontend, client-side)                               ← next
 ```
@@ -1111,7 +1111,19 @@ limiter := api.NewUploadLimiter(
 
 ---
 
-> **Status: 🔄 Reopened — revision in progress.** The first build shipped working
+> **Status: ✅ Revision implemented, ⚠️ not yet tester-verified.** Built per the
+> design below: backend `PATCH /api/files/{hash}/metadata` (`updateFileMetadata`,
+> `database.UpdateFileMetadata` + `MetadataPatch`, gated on `metadata.edit`),
+> `POST /files/upload` now also echoes `title`, and `upload.js` was rewritten to
+> group by tags (not directory prefix), attach covers by folder co-location, and
+> drive the per-album verify/edit cards (album/artist/track-title edits + cover
+> re-target on rename). `go test -race ./...` green (incl. new
+> `database/metadata_test.go`, handler tests, and `TestUpdateFileMetadata_Gated`);
+> smoke-tested end-to-end (upload → PATCH → library reflects the new
+> artist/album/title grouping). A dedicated tester pass is still pending. The
+> design that was built follows.
+>
+> **Status (original reopen): 🔄 Reopened — revision in progress.** The first build shipped working
 > upload *mechanics* and they are retained: drop zone, browse files + folder
 > (`webkitdirectory` recursive scan), the worker slider fed by `GET /api/ui/config`,
 > an N-slot queue with per-file `XHR` progress, 429 backoff (decrement workers,

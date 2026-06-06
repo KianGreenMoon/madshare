@@ -372,6 +372,13 @@ type fakeRepo struct {
 	coverClaimLost bool // SetAlbumCoverIfAbsent reports the row already existed
 	enqueueCalls   int
 	setCoverCalls  int
+
+	// Base-metadata edit stubs (Phase 5).
+	metaCalls     int
+	lastMetaHash  string
+	lastMetaPatch database.MetadataPatch
+	metaResult    *database.MediaMetadata
+	metaErr       error
 }
 
 func (f *fakeRepo) RecordAudit(_ context.Context, actor sql.NullInt64, action, target, _ string) error {
@@ -485,6 +492,19 @@ func (f *fakeRepo) GetAlbumCoverStatus(_ context.Context, _, _ string) (string, 
 
 func (f *fakeRepo) HasAlbumCover(_ context.Context, _, _ string) (bool, error) {
 	return f.coverFound, nil
+}
+
+func (f *fakeRepo) UpdateFileMetadata(_ context.Context, hash string, p database.MetadataPatch) (*database.MediaMetadata, error) {
+	f.metaCalls++
+	f.lastMetaHash = hash
+	f.lastMetaPatch = p
+	if f.metaErr != nil {
+		return nil, f.metaErr
+	}
+	if f.metaResult != nil {
+		return f.metaResult, nil
+	}
+	return &database.MediaMetadata{}, nil
 }
 
 func (f *fakeRepo) SoftDeleteFileByHash(_ context.Context, _ string) ([]string, bool, error) {

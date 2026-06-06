@@ -139,4 +139,11 @@ type Repository interface {
 
 	// HasAlbumCover reports whether any album_images row exists for the album.
 	HasAlbumCover(ctx context.Context, artist, album string) (bool, error)
+
+	// --- Base metadata editing (Phase 5: upload & covers) ---
+
+	// UpdateFileMetadata writes the provided base fields (nil = leave unchanged)
+	// onto the media_metadata row of the file with the given content hash and
+	// returns the updated row. Returns ErrFileNotFound when no file matches.
+	UpdateFileMetadata(ctx context.Context, hash string, p MetadataPatch) (*MediaMetadata, error)
 }

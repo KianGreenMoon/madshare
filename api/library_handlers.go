@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -437,6 +439,64 @@ func (h *handler) readImageUpload(r *http.Request) (data []byte, mimeType, ext s
 		return nil, "", "", fmt.Errorf("unsupported image type")
 	}
 	return data, canonicalMIME, canonicalExt, nil
+}
+
+// metadataPatchRequest is the JSON body of PATCH /api/files/{hash}/metadata.
+// Pointers distinguish an absent key (leave the field unchanged) from a present
+// key (write it; "" clears the field). Only these base fields are accepted this
+// round; any other key in the body is ignored. Richer tag editing is deferred —
+// see docs/plans/upload-and-covers.md §5h.
+type metadataPatchRequest struct {
+	Title       *string `json:"title"`
+	Album       *string `json:"album"`
+	AlbumArtist *string `json:"album_artist"`
+	Artist      *string `json:"artist"`
+}
+
+// updateFileMetadata edits the base tags (title / album / album_artist / artist)
+// of a single file, addressed by content hash. Gated on metadata.edit.
+//
+// It does not touch album_images: album covers are keyed by the album_artist +
+// album strings, so when the album or artist changes the upload page re-POSTs the
+// cover to the new identity (see §5d of the plan). The endpoint only rewrites the
+// tags on the one file's media_metadata row.
+func (h *handler) updateFileMetadata(w http.ResponseWriter, r *http.Request) {
+	hash := chi.URLParam(r, "hash")
+
+	// Tags are tiny; cap the body so a malformed request can't stream forever.
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	var req metadataPatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	patch := database.MetadataPatch{
+		Title:       req.Title,
+		Album:       req.Album,
+		AlbumArtist: req.AlbumArtist,
+		Artist:      req.Artist,
+	}
+
+	meta, err := h.repo.UpdateFileMetadata(r.Context(), hash, patch)
+	if errors.Is(err, database.ErrFileNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+
+	h.audit(r.Context(), "metadata.edit", "file:"+hash, "base tags")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":           true,
+		"hash":         hash,
+		"title":        meta.Title.String,
+		"album":        meta.Album.String,
+		"album_artist": meta.AlbumArtist.String,
+		"artist":       meta.Artist.String,
+	})
 }
 
 func (h *handler) serveImageFile(w http.ResponseWriter, r *http.Request, objectKey, mimeType string) {

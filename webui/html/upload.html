@@ -46,8 +46,8 @@
     <div class="drop-zone" id="dropZone" role="button" tabindex="0"
          aria-label="Drop files or a folder here, or activate to browse files">
       <div class="drop-zone__icon" aria-hidden="true">&#9835;</div>
-      <p class="drop-zone__lead">Drag files or a folder here</p>
-      <small class="drop-zone__hint">Any file type &mdash; the server keeps what it can read</small>
+      <p class="drop-zone__lead">Drag a folder of music here</p>
+      <small class="drop-zone__hint">Audio is uploaded &amp; grouped into albums by its tags; cover images are matched to the album in their folder</small>
       <div class="drop-zone__actions">
         <button type="button" class="btn btn--accent" id="browseFiles">Browse files</button>
         <button type="button" class="btn" id="browseFolder">Browse folder</button>
@@ -84,13 +84,13 @@
     <p class="empty-note" id="queueEmpty">Nothing queued yet. Add files above to begin.</p>
   </section>
 
-  <!-- ── Album groups / cover cards ─────────────────────────────────────── -->
+  <!-- ── Albums — verify & edit ─────────────────────────────────────────── -->
   <section class="upload-section" aria-labelledby="albumsHeading">
-    <h2 id="albumsHeading" class="section-title">Album groups detected</h2>
+    <h2 id="albumsHeading" class="section-title">Albums &mdash; verify &amp; edit</h2>
     <div class="cover-grid" id="coverGrid">
-      <!-- populated by JS -->
+      <!-- populated by JS as uploads complete -->
     </div>
-    <p class="empty-note" id="albumsEmpty">Album groups appear here once you add a folder.</p>
+    <p class="empty-note" id="albumsEmpty">Albums appear here after you upload. You can then check covers and fix tags.</p>
   </section>
 
 </main>

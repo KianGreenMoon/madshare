@@ -158,6 +158,74 @@ func TestAuth_AdminGate(t *testing.T) {
 	resp2.Body.Close()
 }
 
+// TestUpdateFileMetadata_Gated verifies PATCH /api/files/{hash}/metadata requires
+// metadata.edit: anonymous -> 401, an uploader (no metadata.edit) -> 403, and an
+// admin -> 200 with the edited tags persisted.
+func TestUpdateFileMetadata_Gated(t *testing.T) {
+	srv, db := newAuthTestServer(t)
+	ctx := context.Background()
+
+	hash := "ed17000000000000000000000000000000000000000000000000000000000000"
+	f := &database.File{
+		Hash: hash, ByteSize: 1, MimeType: "audio/mpeg",
+		StorageBackend: "local", ObjectKey: hash + "/s.mp3", CreatedAt: 1,
+	}
+	meta := &database.MediaMetadata{ExtractedAt: 1}
+	meta.Album.String, meta.Album.Valid = "Old Album", true
+	if err := db.InsertFile(ctx, f, &database.FileUpload{Filename: "s.mp3", UploadedAt: 1}, meta); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	makeUser(t, db, "up", testAdminPassword, "uploader") // lacks metadata.edit
+
+	patch := func(client *http.Client) *http.Response {
+		body, _ := json.Marshal(map[string]any{"album": "New Album", "album_artist": "New Artist"})
+		req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/files/"+hash+"/metadata", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("patch request: %v", err)
+		}
+		return resp
+	}
+
+	// Anonymous -> 401.
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/files/"+hash+"/metadata", bytes.NewReader([]byte(`{"album":"x"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	if resp, _ := http.DefaultClient.Do(req); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("anonymous patch = %d, want 401", resp.StatusCode)
+	}
+
+	// Uploader (no metadata.edit) -> 403.
+	jarUp, _ := cookiejar.New(nil)
+	cUp := &http.Client{Jar: jarUp}
+	login(t, cUp, srv.URL, "up", testAdminPassword).Body.Close()
+	if resp := patch(cUp); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("uploader patch = %d, want 403", resp.StatusCode)
+	}
+
+	// Admin (has metadata.edit) -> 200 and persisted.
+	jarAd, _ := cookiejar.New(nil)
+	cAd := &http.Client{Jar: jarAd}
+	login(t, cAd, srv.URL, "admin", testAdminPassword).Body.Close()
+	resp := patch(cAd)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin patch = %d, want 200", resp.StatusCode)
+	}
+	var got map[string]any
+	json.NewDecoder(resp.Body).Decode(&got)
+	resp.Body.Close()
+	if got["album"] != "New Album" || got["album_artist"] != "New Artist" {
+		t.Errorf("response = %v, want album=New Album album_artist=New Artist", got)
+	}
+	back, err := db.UpdateFileMetadata(ctx, hash, database.MetadataPatch{})
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if back.Album.String != "New Album" || back.AlbumArtist.String != "New Artist" {
+		t.Errorf("persisted = (%q,%q), want (New Album,New Artist)", back.Album.String, back.AlbumArtist.String)
+	}
+}
+
 func TestAuth_TokenFlow(t *testing.T) {
 	srv, _ := newAuthTestServer(t)
 	jar, _ := cookiejar.New(nil)

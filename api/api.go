@@ -93,9 +93,10 @@ func RegisterAPI(r chi.Router, d Deps) {
 	r.Get("/api/artists/{artist}/image", h.getArtistImage)
 	r.Get("/api/albums/{album}/image", h.getAlbumImage)
 	r.Get("/api/albums/{album}/image/status", h.getAlbumImageStatus)
-	// Editing cover images is a metadata.edit capability.
+	// Editing cover images and base tags is a metadata.edit capability.
 	r.With(d.protect(auth.PermMetadataEdit)).Post("/api/artists/{artist}/image", h.uploadArtistImage)
 	r.With(d.protect(auth.PermMetadataEdit)).Post("/api/albums/{album}/image", h.uploadAlbumImage)
+	r.With(d.protect(auth.PermMetadataEdit)).Patch("/api/files/{hash}/metadata", h.updateFileMetadata)
 
 	// Uploading new files requires file.upload. The route is registered here
 	// (rather than inside fileServer) so the gate wraps only the write path; the
@@ -164,7 +165,7 @@ func NewRouter(store storage.Storage, repo database.Repository, cacheDir, filesD
 func CORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

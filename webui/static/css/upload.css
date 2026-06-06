@@ -198,6 +198,12 @@ body.upload-page { padding-bottom: var(--space-6); }
 .queue-item[data-state="done"]     .queue-item__msg { display: flex; color: var(--success); }
 .queue-item[data-state="waiting"]  .queue-item__msg { display: flex; color: var(--text-muted); }
 
+/* Cover-image and skipped rows are not uploaded: show the note, drop the bar. */
+.queue-item[data-state="cover"]    .queue-item__msg,
+.queue-item[data-state="skipped"]  .queue-item__msg { display: flex; color: var(--text-muted); }
+.queue-item[data-state="cover"]    .queue-item__bar,
+.queue-item[data-state="skipped"]  .queue-item__bar { visibility: hidden; }
+
 /* ── Cover cards ───────────────────────────────────────────────────────── */
 .cover-grid {
   display: grid;
@@ -265,6 +271,14 @@ body.upload-page { padding-bottom: var(--space-6); }
   .toast.is-visible { transform: none; }
 }
 
+/* Card body holds the (editable) album/artist/track fields below the art. */
+.cover-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  flex: 1;
+}
+
 .cover-card__title {
   font-size: 14px;
   font-weight: 600;
@@ -274,9 +288,58 @@ body.upload-page { padding-bottom: var(--space-6); }
   text-overflow: ellipsis;
 }
 .cover-card__meta { font-size: 12px; color: var(--text-muted); }
-.cover-card__note { font-size: 12px; color: var(--text-muted); font-style: italic; }
-.cover-card__replace { margin-top: auto; }
-.cover-card__replace .btn { width: 100%; justify-content: center; padding: var(--space-1) var(--space-3); font-size: 13px; }
+.cover-card__note { font-size: 12px; color: var(--accent); min-height: 1em; }
+
+/* Editable album / artist fields (shown only with metadata.edit). */
+.cover-card__field { display: flex; flex-direction: column; gap: 2px; }
+.cover-card__field-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.cover-card__field input,
+.cover-card__track-input {
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  font: inherit;
+  font-size: 13px;
+}
+.cover-card__field input:focus-visible,
+.cover-card__track-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Per-track title list inside a card. */
+.cover-card__tracks {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+}
+.cover-card__tracks li { font-size: 13px; color: var(--text); word-break: break-word; }
+
+/* Save / Replace buttons pinned to the bottom of the card. */
+.cover-card__actions {
+  margin-top: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.cover-card__actions .btn {
+  flex: 1;
+  justify-content: center;
+  padding: var(--space-1) var(--space-3);
+  font-size: 13px;
+}
 
 /* ── Toast (transient backpressure feedback) ───────────────────────────── */
 .toast-stack {

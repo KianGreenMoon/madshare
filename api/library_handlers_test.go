@@ -7,11 +7,73 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/media"
 	"github.com/go-chi/chi/v5"
 )
+
+// metadataReq builds a PATCH /api/files/{hash}/metadata request with a JSON body
+// and the hash as a chi path param, for invoking updateFileMetadata directly.
+func metadataReq(t *testing.T, hash, body string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPatch, "/api/files/"+hash+"/metadata", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	return withChiParams(req, map[string]string{"hash": hash})
+}
+
+func TestUpdateFileMetadata_NotFound(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	rr := httptest.NewRecorder()
+	h.updateFileMetadata(rr, metadataReq(t, "deadbeef", `{"title":"x"}`))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestUpdateFileMetadata_InvalidJSON(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	rr := httptest.NewRecorder()
+	h.updateFileMetadata(rr, metadataReq(t, "deadbeef", `{not json`))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestUpdateFileMetadata_UpdatesAndEchoes(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	ctx := context.Background()
+	hash := "ab12000000000000000000000000000000000000000000000000000000000000"
+	f := &database.File{
+		Hash: hash, ByteSize: 1, MimeType: "audio/mpeg",
+		StorageBackend: "local", ObjectKey: hash + "/s.mp3", CreatedAt: 1,
+	}
+	m := &database.MediaMetadata{ExtractedAt: 1}
+	m.Title.String, m.Title.Valid = "Old", true
+	if err := db.InsertFile(ctx, f, &database.FileUpload{Filename: "s.mp3", UploadedAt: 1}, m); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	h.updateFileMetadata(rr, metadataReq(t, hash, `{"title":"New Title","artist":"New Artist"}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	json.NewDecoder(rr.Body).Decode(&resp)
+	if resp["title"] != "New Title" || resp["artist"] != "New Artist" {
+		t.Errorf("echo = %v, want title=New Title artist=New Artist", resp)
+	}
+	back, err := db.UpdateFileMetadata(ctx, hash, database.MetadataPatch{})
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if back.Title.String != "New Title" {
+		t.Errorf("persisted title = %q, want New Title", back.Title.String)
+	}
+}
 
 // withChiParams attaches chi URL params to a request so a handler reached via
 // chi.URLParam can be invoked directly (without spinning up a router).
