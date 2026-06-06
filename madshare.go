@@ -95,6 +95,11 @@ func main() {
 		cfg.Storage.UserMaxParallelWorkers,
 	)
 
+	sourceRoot, err := os.Getwd()
+	if err != nil {
+		log.Printf("warning: cannot determine working directory for source archive: %v", err)
+	}
+
 	deps := api.Deps{
 		Store:         storage.NewLocal(filesDir),
 		Repo:          db,
@@ -106,6 +111,7 @@ func main() {
 		ImagePool:     pool,
 		UploadLimiter: limiter,
 		UIConfig:      uiCfg,
+		SourceRoot:    sourceRoot,
 	}
 
 	servers, err := startListeners(cfg, deps)

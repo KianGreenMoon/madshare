@@ -83,6 +83,9 @@ type handler struct {
 	// uiConfig backs GET /api/ui/config (the upload page's worker controls).
 	// Nil-safe: getUIConfig falls back to config.DefaultUIConfig() when unset.
 	uiConfig *config.UIConfig
+	// source, when non-nil, serves the AGPL-required source archive at GET /source.
+	// Nil when no SourceRoot was configured (e.g. in tests via NewRouter).
+	source *sourceArchiver
 }
 
 // sanitizeFilename reduces a client-supplied filename to a safe base name.

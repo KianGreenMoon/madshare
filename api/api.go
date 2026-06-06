@@ -39,6 +39,9 @@ type Deps struct {
 	// UIConfig is the parsed webui.toml served at GET /api/ui/config. When nil,
 	// the handler falls back to config.DefaultUIConfig().
 	UIConfig *config.UIConfig
+	// SourceRoot is the project root directory used to build the AGPL source
+	// archive served at GET /source. Empty string disables the endpoint.
+	SourceRoot string
 }
 
 // protect returns middleware enforcing perm, but only when auth is configured
@@ -60,7 +63,7 @@ func (d Deps) newHandler() *handler {
 	// the URL surface is wider than intended and would bypass any future
 	// access control applied only to /images/*. Revisit how this is laid out —
 	// e.g. store images outside the served files tree, or 404 /files/images.
-	return &handler{
+	h := &handler{
 		storage:       d.Store,
 		repo:          d.Repo,
 		cacheDir:      d.CacheDir,
@@ -71,6 +74,10 @@ func (d Deps) newHandler() *handler {
 		limiter:       d.UploadLimiter,
 		uiConfig:      d.UIConfig,
 	}
+	if d.SourceRoot != "" {
+		h.source = &sourceArchiver{root: d.SourceRoot}
+	}
+	return h
 }
 
 // RegisterAPI mounts the core API route group on r: the health check, the
@@ -83,6 +90,7 @@ func RegisterAPI(r chi.Router, d Deps) {
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 	})
+	r.Get("/source", h.sourceArchive)
 
 	r.Get("/api/files", h.listFiles)
 	r.Get("/api/artists", h.listArtists)
