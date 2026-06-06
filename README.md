@@ -55,6 +55,56 @@ go build -tags nowebui -o madshare ./
 
 A `nowebui` binary aborts startup if a listener still asks to `serve = ["webui"]`.
 
+### Splitting the web UI and the API (server-only / UI-only)
+
+> ⚠️ **Supported but not yet regularly tested.** The bundled, same-origin setup
+> (one process serving everything) is the well-trodden path. The split below is a
+> deliberate feature, but exercise it carefully and report issues.
+
+There are two independent axes — the **route groups** a listener serves (runtime)
+and the **`nowebui` build tag** (compile-time):
+
+**1. Server side only.** Two ways:
+
+- *Runtime:* run a normal binary whose listener serves only the API/admin groups —
+  no UI is exposed even though it's compiled in:
+
+  ```toml
+  [[listen]]
+  addr  = "0.0.0.0"
+  port  = 3000
+  serve = ["api", "admin"]   # no "webui"
+  ```
+
+- *Compile-time:* build with `-tags nowebui` for a smaller binary that physically
+  omits the embedded templates/assets (and the `html/template` dependency). This
+  is the right choice for an API-only deployment.
+
+**2. Web UI only.** Run a (full, non-`nowebui`) binary whose listener serves just
+the `webui` group, and point it at the API hosted elsewhere via `[webui].api_base`.
+The bundled UI normally uses *relative, same-origin* URLs; `api_base` makes the
+rendered pages target a remote API instead:
+
+```toml
+[[listen]]
+addr  = "0.0.0.0"
+port  = 8080
+serve = ["webui"]
+
+[webui]
+api_base = "https://api.example.org"   # the separately hosted API origin
+```
+
+Notes:
+
+- A `webui` listener with **no** `api` on the same origin *must* set `api_base`,
+  or the page loads but its API calls 404.
+- There is no UI-only *binary* build — the web UI is always part of the full
+  binary; "UI only" is the runtime configuration above.
+- Cross-origin UI→API calls work: the API sends permissive CORS headers. Put both
+  behind one hostname (e.g. via the reverse proxy) if you'd rather keep it
+  same-origin.
+
 ### First run — bootstrap the admin
 
 On a **fresh database** Madshare creates the first admin account from the
