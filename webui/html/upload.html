@@ -52,10 +52,14 @@
         <button type="button" class="btn btn--accent" id="browseFiles">Browse files</button>
         <button type="button" class="btn" id="browseFolder">Browse folder</button>
       </div>
-      <!-- Hidden inputs drive the two browse buttons. Both accept all types. -->
-      <input type="file" id="fileInput"   class="visually-hidden" multiple aria-hidden="true" tabindex="-1">
-      <input type="file" id="folderInput" class="visually-hidden" multiple webkitdirectory directory aria-hidden="true" tabindex="-1">
     </div>
+    <!-- Hidden inputs drive the two browse buttons. They live OUTSIDE .drop-zone
+         on purpose: a programmatic input.click() dispatches a click that bubbles,
+         and if the input were inside .drop-zone it would re-enter the drop-zone's
+         click handler and open the *other* picker (the folder picker would be
+         clobbered by the file picker). Keeping them as siblings stops that. -->
+    <input type="file" id="fileInput"   class="visually-hidden" multiple aria-hidden="true" tabindex="-1">
+    <input type="file" id="folderInput" class="visually-hidden" multiple webkitdirectory directory aria-hidden="true" tabindex="-1">
   </section>
 
   <!-- ── Workers + actions ──────────────────────────────────────────────── -->
