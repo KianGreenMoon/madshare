@@ -1,0 +1,67 @@
+# Madshare systemd service (example).
+#
+# Setup:
+#   1. Build and install the binary:
+#        go build -o /usr/local/bin/madshare ./
+#   2. Create a system user and state directory:
+#        sudo useradd --system --home /var/lib/madshare --shell /usr/sbin/nologin madshare
+#        sudo install -d -o madshare -g madshare /var/lib/madshare
+#   3. Place config under /etc/madshare/ (madshare.toml, optionally webui.toml).
+#      Data paths in madshare.toml are resolved relative to WorkingDirectory
+#      (/var/lib/madshare), so the defaults below land in /var/lib/madshare/data:
+#        [database]
+#        path = "./data/madshare.db"
+#        [storage]
+#        files_dir = "./data/files"
+#        [auth]
+#        initial_admin_user = "admin"
+#   4. Put the first-run admin password in an env file (root-only):
+#        echo 'MADSHARE_INITIAL_ADMIN_PASSWORD=choose-a-strong-password' \
+#          | sudo tee /etc/madshare/madshare.env >/dev/null
+#        sudo chmod 600 /etc/madshare/madshare.env
+#      (You can delete it after the first start; it is ignored once users exist.)
+#   5. Install and start:
+#        sudo cp contrib/systemd/madshare.service /etc/systemd/system/
+#        sudo systemctl daemon-reload
+#        sudo systemctl enable --now madshare
+#
+# Madshare speaks plain HTTP and is meant to sit behind a reverse proxy that
+# terminates TLS — see contrib/nginx/.
+
+[Unit]
+Description=Madshare media sharing server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=madshare
+Group=madshare
+WorkingDirectory=/var/lib/madshare
+
+# Optional: the "-" means "do not fail if the file is absent".
+EnvironmentFile=-/etc/madshare/madshare.env
+
+ExecStart=/usr/local/bin/madshare -config /etc/madshare/madshare.toml -webui-config /etc/madshare/webui.toml
+
+# Graceful shutdown on SIGINT/SIGTERM (Madshare handles both).
+Restart=on-failure
+RestartSec=5s
+
+# --- Hardening ---
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# The only path the service needs to write to (DB + uploaded blobs).
+ReadWritePaths=/var/lib/madshare
+
+[Install]
+WantedBy=multi-user.target

@@ -1,8 +1,15 @@
 # Madshare
 
-Madshare is a federated, self-hosted audio/media sharing server (primarily for
-music). A single Go process serves a JSON API, file storage/streaming, and a
-bundled web UI; federation between trusted servers is a planned later phase.
+Madshare is a self-hosted audio/media sharing server (primarily for music). A
+single Go process serves a JSON API, file storage/streaming, and a bundled web
+UI.
+
+> ⚠️ **Federation is not implemented yet — it is only a plan.** Server-to-server
+> federation (the "madnetwork": trusted-peer key exchange, cross-server
+> upload/download/streaming, library sharing) is a *future phase*, not part of the
+> current code. Today Madshare runs as a **standalone single-server instance**.
+> The federation concept is described in [`madshare.org`](madshare.org) for
+> reference only.
 
 > Concept and roadmap: [`madshare.org`](madshare.org). Architecture docs live in
 > [`docs/architecture/`](docs/architecture/).
@@ -174,6 +181,23 @@ Ready-to-edit reverse-proxy examples are in
 Key proxy concerns (covered in the examples): set `client_max_body_size` ≥
 `storage.max_upload_mb`, and disable response buffering + forward `Range` for
 audio streaming/seeking. See [`contrib/nginx/README.md`](contrib/nginx/README.md).
+
+**Run as a service (systemd).** An example unit is provided at
+[`contrib/systemd/madshare.service`](contrib/systemd/madshare.service). It runs
+Madshare as a dedicated `madshare` system user with `WorkingDirectory=/var/lib/madshare`
+(so the default relative data paths land there), reads config from
+`/etc/madshare/`, takes the first-run admin password from an optional
+`/etc/madshare/madshare.env`, and applies the usual sandboxing directives. The
+file header lists the full setup steps; in short:
+
+```bash
+go build -o /usr/local/bin/madshare ./
+sudo useradd --system --home /var/lib/madshare --shell /usr/sbin/nologin madshare
+sudo install -d -o madshare -g madshare /var/lib/madshare
+sudo cp contrib/systemd/madshare.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now madshare
+```
 
 **Data & backups.** Everything stateful lives under the paths in `[database]` and
 `[storage]` (by default `./data/`): the SQLite DB (`madshare.db*` — note the WAL
