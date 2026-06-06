@@ -41,7 +41,7 @@ Phase 1 — Image variant system (library, config, DB, worker, status API)   ✅
     ↓
 Phase 2 — Embedded cover extraction during audio upload                     ✅ done
     ↓
-Phase 3 — Manual cover upload extension (server-side)                        ✅ done
+Phase 3 — Manual cover upload extension (server-side)                        ✅ done, tester-verified
     ↓
 Phase 4 — Upload concurrency & rate limiting                                 ✅ done (untested)
     ↓
@@ -865,7 +865,7 @@ For the dedup path: set both to `false` — embedded art is not re-processed for
 
 ## Phase 3 — Manual Cover Upload Extension
 
-> **Status: ✅ Implemented** (commit pending; follows Phase 1 & 2). Notes:
+> **Status: ✅ Implemented, ✅ tester-verified** (follows Phase 1 & 2). Notes:
 > - `saveImageUpload` was split into `readImageUpload` (parse/validate/read,
 >   no disk write) so both `uploadAlbumImage` and `uploadArtistImage` share it.
 > - `uploadAlbumImage` now writes `<base_key>/original<ext>`, calls
