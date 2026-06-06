@@ -39,25 +39,41 @@ func mustSub(f embed.FS, dir string) fs.FS {
 	return sub
 }
 
+// partials is the base template set parsed from partials.html. Each page
+// template is built by cloning it so that page-specific {{define}} blocks
+// (e.g. "header-insert" for the library search bar) override the defaults
+// without leaking between pages.
+var partials = template.Must(template.ParseFS(htmlFS, "html/partials.html"))
+
+func buildPageTmpl(file string) *template.Template {
+	t, err := partials.Clone()
+	if err != nil {
+		panic(err)
+	}
+	return template.Must(t.ParseFS(htmlFS, file))
+}
+
 var (
 	cmusTmpl    = template.Must(template.ParseFS(htmlFS, "html/cmus.html"))
-	libraryTmpl = template.Must(template.ParseFS(htmlFS, "html/library.html"))
-	uploadTmpl  = template.Must(template.ParseFS(htmlFS, "html/upload.html"))
-	adminTmpl   = template.Must(template.ParseFS(htmlFS, "html/admin.html"))
+	libraryTmpl = buildPageTmpl("html/library.html")
+	uploadTmpl  = buildPageTmpl("html/upload.html")
+	adminTmpl   = buildPageTmpl("html/admin.html")
 )
 
 // pageData is the data injected into every page. APIURL is the absolute API
 // origin written into <meta name="api-url">; it is empty for the bundled,
 // same-origin server so the front-end falls back to relative URLs.
+// Page is the current page identifier used by the shared header partial to
+// mark the active nav link ("library", "upload", "admin", "cmus").
 type pageData struct {
 	APIURL string
+	Page   string
 }
 
-func makeHandler(tmpl *template.Template, apiBase string) http.HandlerFunc {
-	data := pageData{APIURL: apiBase}
+func makeHandler(tmpl *template.Template, tmplName string, data pageData) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := tmpl.Execute(w, data); err != nil {
+		if err := tmpl.ExecuteTemplate(w, tmplName, data); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	}
@@ -78,13 +94,13 @@ func noCacheStatic(next http.Handler) http.Handler {
 func Register(r chi.Router, apiBase string) {
 	static := noCacheStatic(http.FileServer(http.FS(staticRoot)))
 	r.Handle("/static/*", http.StripPrefix("/static/", static))
-	r.Get("/cmus", makeHandler(cmusTmpl, apiBase))
-	r.Get("/upload", makeHandler(uploadTmpl, apiBase))
-	r.Get("/", makeHandler(libraryTmpl, apiBase))
+	r.Get("/cmus", makeHandler(cmusTmpl, "cmus.html", pageData{APIURL: apiBase}))
+	r.Get("/upload", makeHandler(uploadTmpl, "upload.html", pageData{APIURL: apiBase, Page: "upload"}))
+	r.Get("/", makeHandler(libraryTmpl, "library.html", pageData{APIURL: apiBase, Page: "library"}))
 }
 
 // RegisterAdminPage mounts the /admin page. It belongs to the admin route
 // group (alongside the API's /api/admin/* endpoints), not the webui group.
 func RegisterAdminPage(r chi.Router, apiBase string) {
-	r.Get("/admin", makeHandler(adminTmpl, apiBase))
+	r.Get("/admin", makeHandler(adminTmpl, "admin.html", pageData{APIURL: apiBase, Page: "admin"}))
 }

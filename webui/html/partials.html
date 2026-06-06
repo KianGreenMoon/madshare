@@ -1,0 +1,80 @@
+{{define "header"}}
+<header>
+  <span class="logo"><span>Mad</span>share</span>
+  <nav class="main-nav" aria-label="Site navigation">
+    <a href="/" class="nav-link{{if eq .Page "library"}} nav-link--active{{end}}"{{if eq .Page "library"}} aria-current="page"{{end}}>Library</a>
+    <a href="/upload" class="nav-link{{if eq .Page "upload"}} nav-link--active{{end}}"{{if eq .Page "upload"}} aria-current="page"{{end}}>Upload</a>
+    <a href="/admin" class="nav-link{{if eq .Page "admin"}} nav-link--active{{end}}"{{if eq .Page "admin"}} aria-current="page"{{end}}>Admin</a>
+    <a href="/source" class="nav-link" download>Source</a>
+  </nav>
+  {{template "header-insert" .}}
+  <div class="header-actions">
+    <div class="user-area" id="userArea" hidden>
+      <span class="user-name" id="userName"></span>
+      <button class="btn btn-neutral" id="changePassBtn">Change password</button>
+      <button class="btn btn-neutral" id="logoutBtn">Log out</button>
+    </div>
+    <button class="btn btn-neutral" id="signInBtn">Sign in</button>
+    <div class="theme-switcher" role="group" aria-label="Color theme">
+      <button class="theme-dot active" data-theme="dark"   title="Dark"   aria-label="Dark theme"   aria-pressed="true"></button>
+      <button class="theme-dot"        data-theme="light"  title="Light"  aria-label="Light theme"  aria-pressed="false"></button>
+      <button class="theme-dot"        data-theme="ocean"  title="Ocean"  aria-label="Ocean theme"  aria-pressed="false"></button>
+      <button class="theme-dot"        data-theme="sunset" title="Sunset" aria-label="Sunset theme" aria-pressed="false"></button>
+    </div>
+    {{template "header-actions-extra" .}}
+  </div>
+</header>
+{{end}}
+
+{{define "auth-modals"}}
+<div class="modal-backdrop hidden" id="loginModal" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="loginTitle">Sign in</h2>
+      <button class="btn-close" id="loginClose" aria-label="Close">&times;</button>
+    </div>
+    <form class="login-form" id="loginForm">
+      <label for="loginUser">Username</label>
+      <input type="text" id="loginUser" autocomplete="username" required>
+      <label for="loginPass">Password</label>
+      <input type="password" id="loginPass" autocomplete="current-password" required>
+      <p class="login-error" id="loginError" role="alert" hidden></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-neutral" id="loginCancel">Cancel</button>
+        <button type="submit" class="btn btn-neutral" id="loginSubmit">Sign in</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="modal-backdrop hidden" id="passModal" role="dialog" aria-modal="true" aria-labelledby="passTitle">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="passTitle">Change password</h2>
+      <button class="btn-close" id="passClose" aria-label="Close">&times;</button>
+    </div>
+    <p class="modal-body" id="passForced" hidden>
+      Your password was set during first-run setup. Choose a new one to continue.
+    </p>
+    <form class="login-form" id="passForm">
+      <label for="oldPass">Current password</label>
+      <input type="password" id="oldPass" autocomplete="current-password" required>
+      <label for="newPass">New password</label>
+      <input type="password" id="newPass" autocomplete="new-password" minlength="8" required>
+      <label for="confirmPass">Confirm new password</label>
+      <input type="password" id="confirmPass" autocomplete="new-password" minlength="8" required>
+      <p class="login-error" id="passError" role="alert" hidden></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-neutral" id="passCancel">Cancel</button>
+        <button type="submit" class="btn btn-neutral" id="passSubmit">Change password</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="toast-stack" id="toastStatus" role="status" aria-live="polite"></div>
+<div class="toast-stack" id="toastAlert"  role="alert"  aria-live="assertive"></div>
+{{end}}
+
+{{define "header-insert"}}{{end}}
+{{define "header-actions-extra"}}{{end}}

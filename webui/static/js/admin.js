@@ -1,3 +1,5 @@
+import { initAuth, openLoginModal } from './auth.js';
+
 // Admin page — uploads (XHR w/ progress), files table (fetch/render/filter),
 // hash-based delete with inline confirm, prune dry-run → modal → commit, toasts.
 //
@@ -953,185 +955,16 @@ function renderPruneCommitResult(data) {
   pruneResults.appendChild(panel);
 }
 
-// ── Auth ────────────────────────────────────────────────────────────────────
-// Admin actions require a session. The session cookie is HttpOnly and rides
-// along on same-origin requests automatically, so we only manage the UI state.
-const loginModal  = document.getElementById('loginModal');
-const loginForm   = document.getElementById('loginForm');
-const loginUser   = document.getElementById('loginUser');
-const loginPass   = document.getElementById('loginPass');
-const loginError  = document.getElementById('loginError');
-const userArea    = document.getElementById('userArea');
-const userName    = document.getElementById('userName');
-const logoutBtn   = document.getElementById('logoutBtn');
-
-// currentUser holds the identity returned by /api/auth/me, or null if signed out.
-let currentUser = null;
-
-async function fetchIdentity() {
-  try {
-    const res = await fetch(`${API}/api/auth/me`);
-    if (res.status === 401) return null;
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-function showLogin() {
-  currentUser = null;
-  applyPermissions(null);
-  userArea.hidden = true;
-  loginModal.classList.remove('hidden');
-  loginError.hidden = true;
-  loginUser.focus();
-}
-
-function showSignedIn(identity) {
-  currentUser = identity;
-  loginModal.classList.add('hidden');
-  userArea.hidden = false;
-  userName.textContent = identity.username;
-  applyPermissions(identity);
-  if (canManageUsers) {
-    // Users feed the add-member pickers, so load them before the groups render.
-    loadUsers().then(loadGroups);
-    loadAutoDerive();
-  }
-  if (identity.password_change_required) {
-    // Forced flow: the modal can't be dismissed until the password is changed.
-    openPassModal(true);
-  }
-}
-
-// handleAuthError shows the login overlay when a response is a 401. Returns true
-// when it handled an auth failure (caller should stop).
+// handleAuthError opens the shared login modal when a response is 401.
+// Returns true when it handled an auth failure (caller should stop).
 function handleAuthError(res) {
   if (res && res.status === 401) {
     toast('Your session expired — please sign in again.', 'error');
-    showLogin();
+    openLoginModal();
     return true;
   }
   return false;
 }
-
-loginForm.addEventListener('submit', async e => {
-  e.preventDefault();
-  loginError.hidden = true;
-  try {
-    const res = await fetch(`${API}/api/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: loginUser.value, password: loginPass.value }),
-    });
-    if (!res.ok) {
-      loginError.textContent = res.status === 401 ? 'Invalid username or password.' : `Sign-in failed (HTTP ${res.status}).`;
-      loginError.hidden = false;
-      return;
-    }
-    loginPass.value = '';
-    const identity = await fetchIdentity();
-    if (!identity) { showLogin(); return; }
-    showSignedIn(identity);
-    loadFiles();
-  } catch (err) {
-    loginError.textContent = `Sign-in failed: ${err.message}`;
-    loginError.hidden = false;
-  }
-});
-
-logoutBtn.addEventListener('click', async () => {
-  try { await fetch(`${API}/api/auth/logout`, { method: 'POST' }); } catch {}
-  showLogin();
-});
-
-// ── Change password ───────────────────────────────────────────────────────
-const changePassBtn = document.getElementById('changePassBtn');
-const passModal     = document.getElementById('passModal');
-const passForm      = document.getElementById('passForm');
-const oldPass       = document.getElementById('oldPass');
-const newPass       = document.getElementById('newPass');
-const confirmPass   = document.getElementById('confirmPass');
-const passError     = document.getElementById('passError');
-const passForced    = document.getElementById('passForced');
-const passCancel    = document.getElementById('passCancel');
-const passClose     = document.getElementById('passClose');
-
-// passIsForced is true when the user must change a first-run password; the
-// modal then hides its dismiss controls and cannot be closed until success.
-let passIsForced = false;
-
-function openPassModal(forced) {
-  passIsForced = forced;
-  passForm.reset();
-  passError.hidden = true;
-  passForced.hidden = !forced;
-  passCancel.hidden = forced;
-  passClose.hidden = forced;
-  passModal.classList.remove('hidden');
-  oldPass.focus();
-}
-
-function closePassModal() {
-  if (passIsForced) return; // cannot dismiss a forced change
-  passModal.classList.add('hidden');
-}
-
-changePassBtn.addEventListener('click', () => openPassModal(false));
-passCancel.addEventListener('click', closePassModal);
-passClose.addEventListener('click', closePassModal);
-passModal.addEventListener('click', e => { if (e.target === passModal) closePassModal(); });
-passModal.addEventListener('keydown', e => { if (e.key === 'Escape') closePassModal(); });
-
-passForm.addEventListener('submit', async e => {
-  e.preventDefault();
-  passError.hidden = true;
-  if (newPass.value !== confirmPass.value) {
-    passError.textContent = 'New passwords do not match.';
-    passError.hidden = false;
-    return;
-  }
-  if (newPass.value.length < 8) {
-    passError.textContent = 'New password must be at least 8 characters.';
-    passError.hidden = false;
-    return;
-  }
-  try {
-    const res = await fetch(`${API}/api/auth/password`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ old_password: oldPass.value, new_password: newPass.value }),
-    });
-    if (!res.ok) {
-      const msg = (await res.text()).trim();
-      // A 401 is ambiguous: a missing session vs. a wrong current password.
-      // The session-missing case carries "authentication required".
-      if (res.status === 401 && /authentication required/i.test(msg)) {
-        passIsForced = false;
-        passModal.classList.add('hidden');
-        handleAuthError(res);
-        return;
-      }
-      if (res.status === 401) {
-        passError.textContent = 'Current password is incorrect.';
-      } else {
-        passError.textContent = `Couldn’t change password: ${msg || `HTTP ${res.status}`}`;
-      }
-      passError.hidden = false;
-      return;
-    }
-    // Success: clear the forced flag, refresh identity, close, and continue.
-    passIsForced = false;
-    passModal.classList.add('hidden');
-    toast('Password changed.', 'success');
-    const identity = await fetchIdentity();
-    if (identity) { currentUser = identity; }
-  } catch (err) {
-    passError.textContent = `Couldn’t change password: ${err.message}`;
-    passError.hidden = false;
-  }
-});
 
 // ── Access groups & grants (Phase 3c) ───────────────────────────────────────
 // All endpoints require user.manage; the section is hidden otherwise.
@@ -1621,9 +1454,14 @@ async function doTrashHardDelete(tr, f, wrap) {
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 (async function boot() {
-  const identity = await fetchIdentity();
-  if (!identity) { showLogin(); return; }
-  showSignedIn(identity);
+  const identity = await initAuth();
+  if (identity) {
+    applyPermissions(identity);
+    if (canManageUsers) {
+      loadUsers().then(loadGroups);
+      loadAutoDerive();
+    }
+  }
   loadFiles();
   loadTrash();
 })();

@@ -1,3 +1,5 @@
+import { initAuth } from './auth.js';
+
 // Upload page (/upload) controller.
 //
 // Vanilla ES module, no dependencies. Same-origin: all API calls are relative
@@ -77,11 +79,13 @@ const IMAGE_MIMES  = new Set(['image/jpeg', 'image/png']);
 // the server's allowedExtensions.
 const AUDIO_EXTS   = /\.(mp3|ogg|flac|wav|mp4|m4a|aac|opus)$/i;
 
-// ── Init: pull UI config + permissions ──────────────────────────────────────
+// ── Init: pull UI config + auth ─────────────────────────────────────────────
 init();
 
 async function init() {
-  await Promise.allSettled([loadUIConfig(), loadPermissions()]);
+  const [, identityResult] = await Promise.allSettled([loadUIConfig(), initAuth()]);
+  const identity = identityResult?.value;
+  canEditMeta = Array.isArray(identity?.permissions) && identity.permissions.includes('metadata.edit');
 }
 
 async function loadUIConfig() {
@@ -98,20 +102,6 @@ async function loadUIConfig() {
   }
   workerCap = Number(workersRange.value);
   workersValue.textContent = String(workerCap);
-}
-
-async function loadPermissions() {
-  // The verify/edit controls and auto-cover-upload require metadata.edit. If the
-  // call fails or the user is anonymous, leave canEditMeta false so cards render
-  // read-only.
-  try {
-    const res = await fetch(`${API}/api/auth/me`);
-    if (!res.ok) return;
-    const me = await res.json();
-    canEditMeta = Array.isArray(me?.permissions) && me.permissions.includes('metadata.edit');
-  } catch {
-    canEditMeta = false;
-  }
 }
 
 // ── Worker slider ───────────────────────────────────────────────────────────

@@ -1,21 +1,4 @@
-<!doctype html>
-<html lang="en" data-theme="dark">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Madshare</title>
-  <meta name="api-url" content="{{.APIURL}}">
-  <link rel="stylesheet" href="/static/css/app.css">
-</head>
-<body>
-
-<header>
-  <span class="logo"><span>Mad</span>share</span>
-  <nav class="main-nav" aria-label="Site navigation">
-    <a href="/" class="nav-link nav-link--active" aria-current="page">Library</a>
-    <a href="/admin" class="nav-link">Admin</a>
-    <a href="/source" class="nav-link" download>Source</a>
-  </nav>
+{{define "header-insert"}}
   <div class="header__search">
     <svg class="header__search-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
       <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
@@ -30,22 +13,24 @@
     >
     <button class="header__search-clear" aria-label="Clear search" style="display:none">&times;</button>
   </div>
-  <div class="header-actions">
-    <div class="user-area" id="userArea" hidden>
-      <span class="user-name" id="userName"></span>
-      <button class="btn btn-neutral" id="changePassBtn">Change password</button>
-      <button class="btn btn-neutral" id="logoutBtn">Log out</button>
-    </div>
-    <button class="btn btn-neutral" id="signInBtn">Sign in</button>
-    <div class="theme-switcher" role="group" aria-label="Color theme">
-      <button class="theme-dot active" data-theme="dark"   title="Dark"   aria-label="Dark theme"   aria-pressed="true"></button>
-      <button class="theme-dot"        data-theme="light"  title="Light"  aria-label="Light theme"  aria-pressed="false"></button>
-      <button class="theme-dot"        data-theme="ocean"  title="Ocean"  aria-label="Ocean theme"  aria-pressed="false"></button>
-      <button class="theme-dot"        data-theme="sunset" title="Sunset" aria-label="Sunset theme" aria-pressed="false"></button>
-    </div>
-    <a class="btn-upload" id="openUpload" href="/upload">&#x2B; Upload</a>
-  </div>
-</header>
+{{end}}
+
+{{define "header-actions-extra"}}
+  <a class="btn-upload" id="openUpload" href="/upload">&#x2B; Upload</a>
+{{end}}
+
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Madshare</title>
+  <meta name="api-url" content="{{.APIURL}}">
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+
+{{template "header" .}}
 
 <main>
   <div class="view-panel view-panel--active" id="view-library">
@@ -110,7 +95,7 @@
   </div>
 </div>
 
-<!-- Upload modal -->
+<!-- Upload modal (drag-and-drop from the library page) -->
 <div class="modal-backdrop hidden" id="uploadModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
   <div class="modal">
     <div class="modal-header">
@@ -127,55 +112,7 @@
   </div>
 </div>
 
-<!-- Login modal -->
-<div class="modal-backdrop hidden" id="loginModal" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
-  <div class="modal">
-    <div class="modal-header">
-      <h2 id="loginTitle">Sign in</h2>
-      <button class="btn-close" id="loginClose" aria-label="Close">&times;</button>
-    </div>
-    <form class="login-form" id="loginForm">
-      <label for="loginUser">Username</label>
-      <input type="text" id="loginUser" autocomplete="username" required>
-      <label for="loginPass">Password</label>
-      <input type="password" id="loginPass" autocomplete="current-password" required>
-      <p class="login-error" id="loginError" role="alert" hidden></p>
-      <div class="modal-actions">
-        <button type="button" class="btn btn-neutral" id="loginCancel">Cancel</button>
-        <button type="submit" class="btn btn-neutral" id="loginSubmit">Sign in</button>
-      </div>
-    </form>
-  </div>
-</div>
-
-<!-- Change-password modal -->
-<div class="modal-backdrop hidden" id="passModal" role="dialog" aria-modal="true" aria-labelledby="passTitle">
-  <div class="modal">
-    <div class="modal-header">
-      <h2 id="passTitle">Change password</h2>
-      <button class="btn-close" id="passClose" aria-label="Close">&times;</button>
-    </div>
-    <p class="modal-body" id="passForced" hidden>
-      Your password was set during first-run setup. Choose a new one to continue.
-    </p>
-    <form class="login-form" id="passForm">
-      <label for="oldPass">Current password</label>
-      <input type="password" id="oldPass" autocomplete="current-password" required>
-      <label for="newPass">New password</label>
-      <input type="password" id="newPass" autocomplete="new-password" minlength="8" required>
-      <label for="confirmPass">Confirm new password</label>
-      <input type="password" id="confirmPass" autocomplete="new-password" minlength="8" required>
-      <p class="login-error" id="passError" role="alert" hidden></p>
-      <div class="modal-actions">
-        <button type="button" class="btn btn-neutral" id="passCancel">Cancel</button>
-        <button type="submit" class="btn btn-neutral" id="passSubmit">Change password</button>
-      </div>
-    </form>
-  </div>
-</div>
-
-<div class="toast-stack" id="toastStatus" role="status" aria-live="polite"></div>
-<div class="toast-stack" id="toastAlert"  role="alert"  aria-live="assertive"></div>
+{{template "auth-modals" .}}
 
 <audio id="audio" preload="auto"></audio>
 
