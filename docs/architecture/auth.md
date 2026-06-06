@@ -122,10 +122,20 @@ custom roles are allowed later (`role.manage`).
 |---|---|
 | `admin` | all |
 | `moderator` | `file.delete`, `metadata.edit`, `content.play/download/all` (+ federation approvals later) |
-| `uploader` | `file.upload`, `content.play/download` |
-| `listener` | `content.play`, `content.download` (constrained by Layer B) |
+| `uploader` | `file.upload`, `content.play/download/all` |
+| `listener` | `content.play`, `content.download`, `content.all` |
 
 A user may hold multiple roles; effective permissions = union.
+
+**`listener` = "may listen to the whole library."** As of migration `010`, the
+built-in `listener` and `uploader` roles hold `content.all`, so any *authenticated*
+user sees, plays and downloads the entire library — Layer-B grants are not needed
+for them. This matches the owner's intent that "listener" is simply the
+full-library listening role. Default-deny still applies to **anonymous**
+(not-logged-in) requests, which see only guest-playable / free-licensed files.
+Access groups + content grants (§5) remain for **custom roles** that deliberately
+lack `content.all` (e.g. a future "restricted listener" who may reach only
+certain artists/albums).
 
 ## 5. Layer B — content access
 
@@ -391,6 +401,11 @@ will extend.
      `user.manage` for group administration).
    - **Note (still deferred):** a file's uploader is not auto-granted play access
      (only content.all / grant / guest) — revisit owner-play if desired.
+   - **(3d, migration 010):** the built-in `listener` and `uploader` roles were
+     granted `content.all`, so any authenticated user sees the full library
+     (§4.2). This makes access-group grants a no-op for the built-in roles;
+     they remain meaningful only for custom roles without `content.all` and for
+     constraining nobody else by default. Anonymous default-deny is unchanged.
 4. **Federation authn** (future).
 
 ## 11. Decisions (settled with the owner)

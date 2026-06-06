@@ -66,6 +66,27 @@ func makeUser(t *testing.T, db *database.DB, username, password, role string) in
 	return id
 }
 
+// makeRestrictedRole creates a non-built-in role with content.play +
+// content.download but NOT content.all, and returns its name. The built-in
+// listener/uploader roles now hold content.all (full-library access, migration
+// 010), so grant-based access tests use this role to exercise the Layer-B
+// access-group machinery for users who are deliberately not full-library.
+func makeRestrictedRole(t *testing.T, db *database.DB) string {
+	t.Helper()
+	const name = "restricted"
+	res, err := db.Exec(`INSERT INTO roles (name, built_in) VALUES (?, 0)`, name)
+	if err != nil {
+		t.Fatalf("create restricted role: %v", err)
+	}
+	rid, _ := res.LastInsertId()
+	for _, p := range []string{"content.play", "content.download"} {
+		if _, err := db.Exec(`INSERT INTO role_permissions (role_id, permission) VALUES (?, ?)`, rid, p); err != nil {
+			t.Fatalf("grant %s: %v", p, err)
+		}
+	}
+	return name
+}
+
 func login(t *testing.T, client *http.Client, base, user, pass string) *http.Response {
 	t.Helper()
 	body, _ := json.Marshal(map[string]string{"username": user, "password": pass})

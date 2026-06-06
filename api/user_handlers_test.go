@@ -66,6 +66,11 @@ func TestUsers_CreateListenerCanPlay(t *testing.T) {
 	if !hasRole(me.Permissions, auth.PermContentPlay) || !hasRole(me.Permissions, auth.PermContentDownload) {
 		t.Errorf("listener perms = %v, want play+download", me.Permissions)
 	}
+	// listener now also holds content.all (migration 010): a logged-in listener
+	// sees and can play the whole library, without any access-group grant.
+	if !hasRole(me.Permissions, auth.PermContentAll) {
+		t.Errorf("listener perms = %v, want content.all (full library)", me.Permissions)
+	}
 }
 
 // TestUsers_Validation rejects short passwords, bad usernames, duplicates, and

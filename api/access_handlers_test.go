@@ -88,7 +88,10 @@ func TestManage_GatedByUserManage(t *testing.T) {
 
 func TestManage_GrantUnlocksPlayback(t *testing.T) {
 	srv, db := newAuthTestServer(t)
-	lisID := makeUser(t, db, "lis", "listener-pass-1", auth.RoleListener)
+	// A restricted user (content.play/download but no content.all) is governed by
+	// Layer-B grants; the built-in listener role now sees the whole library.
+	restricted := makeRestrictedRole(t, db)
+	lisID := makeUser(t, db, "lis", "listener-pass-1", restricted)
 
 	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
 	hash, path := uploadAndHash(t, admin, srv.URL, "song.mp3")
