@@ -35,6 +35,9 @@ UI.
 
 ## Build & run
 
+> Full build reference (variants, build tags, cross-compilation, tests):
+> [`docs/building.md`](docs/building.md).
+
 ```bash
 # Build everything
 go build ./...
