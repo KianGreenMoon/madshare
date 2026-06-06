@@ -43,9 +43,9 @@ Phase 2 — Embedded cover extraction during audio upload                     �
     ↓
 Phase 3 — Manual cover upload extension (server-side)                        ✅ done, tester-verified
     ↓
-Phase 4 — Upload concurrency & rate limiting                                 ✅ done (untested)
+Phase 4 — Upload concurrency & rate limiting                                 ✅ done, tester-verified
     ↓
-Phase 5 — Upload page (/upload, webui)                                       ✅ revision done (untested)
+Phase 5 — Upload page (/upload, webui)                                       ✅ done, tester-verified (backend + static JS; browser checklist pending)
     ↓
 Phase 6 — Aura effect (frontend, client-side)                               ← next
 ```
@@ -975,7 +975,7 @@ New rows always use the subdirectory format. No migration of old image files is 
 
 ## Phase 4 — Upload Concurrency & Rate Limiting
 
-> **Status: ✅ Implemented, ⚠️ not yet tester-verified** (commit pending). Built
+> **Status: ✅ Implemented, ✅ tester-verified**. Built
 > per the plan: `api/upload_limiter.go` (`UploadLimiter`, `Acquire`/`Release`,
 > `ErrServerLimit`/`ErrUserLimit`), `Deps.UploadLimiter` → `handler.limiter`,
 > the Acquire/Release gate + `writeUploadLimitError` (429, `code:"upload_limit"`,
@@ -1111,7 +1111,7 @@ limiter := api.NewUploadLimiter(
 
 ---
 
-> **Status: ✅ Revision implemented, ⚠️ not yet tester-verified.** Built per the
+> **Status: ✅ Revision implemented, ✅ tester-verified (backend + static JS analysis; browser checklist §5g still pending — run manually before closing Phase 5).** Built per the
 > design below: backend `PATCH /api/files/{hash}/metadata` (`updateFileMetadata`,
 > `database.UpdateFileMetadata` + `MetadataPatch`, gated on `metadata.edit`),
 > `POST /files/upload` now also echoes `title`, and `upload.js` was rewritten to
