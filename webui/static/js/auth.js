@@ -9,6 +9,69 @@ let _identity = null;
 
 export function getIdentity() { return _identity; }
 
+// Privileged nav links / pages and the permission(s) that unlock them. A user
+// holding ANY listed permission may see the link and open the page. These mirror
+// the server-side gates (the API still enforces them — this is UX, not security).
+const UPLOAD_PERMS = ['file.upload'];
+const ADMIN_PERMS  = ['file.delete', 'user.manage'];
+
+function hasAnyPerm(needed) {
+  const perms = _identity?.permissions || [];
+  return needed.some(p => perms.includes(p));
+}
+
+// applyNavPermissions removes the Upload / Admin nav links when the current
+// principal (signed-in or anonymous) lacks the rights — they shouldn't see the
+// buttons for pages they cannot use.
+function applyNavPermissions() {
+  const gates = [['/upload', UPLOAD_PERMS], ['/admin', ADMIN_PERMS]];
+  for (const [href, needed] of gates) {
+    if (hasAnyPerm(needed)) continue;
+    document.querySelectorAll(`.main-nav a[href="${href}"]`).forEach(a => a.remove());
+  }
+}
+
+// gatePage guards a privileged page: returns true when the current identity
+// holds any of neededPerms; otherwise it replaces <main> with an access-denied
+// notice and returns false. Call it after initAuth() and bail out of the page
+// boot when it returns false. Helper exports UPLOAD_PERMS/ADMIN_PERMS below.
+export function gatePage(neededPerms) {
+  if (hasAnyPerm(neededPerms)) return true;
+  renderAccessDenied(!_identity);
+  return false;
+}
+
+export const PAGE_PERMS = { upload: UPLOAD_PERMS, admin: ADMIN_PERMS };
+
+function renderAccessDenied(anonymous) {
+  const main = document.querySelector('main');
+  if (!main) return;
+
+  const panel = document.createElement('div');
+  panel.className = 'access-denied';
+
+  const h = document.createElement('h1');
+  h.textContent = anonymous ? 'Sign in required' : 'Access denied';
+  const p = document.createElement('p');
+  p.textContent = anonymous
+    ? 'You need to sign in to view this page.'
+    : "You don't have permission to view this page.";
+  panel.append(h, p);
+
+  const action = document.createElement(anonymous ? 'button' : 'a');
+  action.className = 'btn btn-neutral';
+  if (anonymous) {
+    action.textContent = 'Sign in';
+    action.addEventListener('click', openLoginModal);
+  } else {
+    action.textContent = 'Back to Library';
+    action.href = '/';
+  }
+  panel.append(action);
+
+  main.replaceChildren(panel);
+}
+
 export function openLoginModal() {
   document.getElementById('loginForm').reset();
   document.getElementById('loginError').hidden = true;
@@ -58,6 +121,9 @@ function authToast(message, type) {
 
 export async function initAuth() {
   _identity = await fetchIdentity();
+
+  // Hide privileged nav links the current principal can't use.
+  applyNavPermissions();
 
   const userArea      = document.getElementById('userArea');
   const userName      = document.getElementById('userName');

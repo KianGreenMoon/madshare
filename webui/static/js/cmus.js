@@ -4,6 +4,19 @@
 // value points a separately hosted UI at a remote API origin.
 const API = document.querySelector('meta[name="api-url"]')?.content || '';
 
+// Hide the Admin nav link for principals without admin rights. This page is a
+// standalone view that doesn't use the shared auth module, so it checks /me
+// directly. UX only — the admin API still enforces the permissions server-side.
+(async function gateAdminLink() {
+  const removeAdmin = () =>
+    document.querySelectorAll('.main-nav a[href="/admin"]').forEach(a => a.remove());
+  try {
+    const res = await fetch(`${API}/api/auth/me`);
+    const perms = (res.ok ? await res.json() : null)?.permissions || [];
+    if (!['file.delete', 'user.manage'].some(p => perms.includes(p))) removeAdmin();
+  } catch { removeAdmin(); }
+})();
+
 // ── State ─────────────────────────────────────────────────────────────────
 
 const state = {

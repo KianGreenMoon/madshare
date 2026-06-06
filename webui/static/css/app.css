@@ -66,6 +66,22 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 [hidden] { display: none !important; }
 
+/* Access-denied / sign-in-required notice shown on privileged pages. */
+.access-denied {
+  max-width: 28rem;
+  margin: var(--space-7, 4rem) auto;
+  padding: var(--space-6, 2rem);
+  text-align: center;
+  display: grid;
+  gap: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.access-denied h1 { margin: 0; font-size: 1.4rem; }
+.access-denied p { margin: 0; color: var(--text-muted); }
+.access-denied .btn { justify-self: center; text-decoration: none; }
+
 body {
   font-family: system-ui, -apple-system, sans-serif;
   font-size: 15px;

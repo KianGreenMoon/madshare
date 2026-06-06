@@ -1,4 +1,4 @@
-import { initAuth, openLoginModal } from './auth.js';
+import { initAuth, openLoginModal, gatePage, PAGE_PERMS } from './auth.js';
 
 // Admin page — uploads (XHR w/ progress), files table (fetch/render/filter),
 // hash-based delete with inline confirm, prune dry-run → modal → commit, toasts.
@@ -23,7 +23,12 @@ function applyPermissions(identity) {
   const perms = (identity && identity.permissions) || [];
   canManageUsers = perms.includes('user.manage');
   canEditMeta    = perms.includes('metadata.edit');
+  const canUpload = perms.includes('file.upload');
   currentUsername = (identity && identity.username) || '';
+  // Hide the admin-page Upload section for admins who can't upload (e.g. a
+  // moderator); the server rejects /files/upload without file.upload anyway.
+  const uploadSection = document.querySelector('.admin-section[aria-labelledby="uploadHeading"]');
+  if (uploadSection) uploadSection.hidden = !canUpload;
   document.getElementById('usersSection').hidden      = !canManageUsers;
   document.getElementById('accessSection').hidden     = !canManageUsers;
   document.getElementById('autoderiveSection').hidden = !canManageUsers;
@@ -1627,14 +1632,14 @@ async function doTrashHardDelete(tr, f, wrap) {
 // ── Boot ──────────────────────────────────────────────────────────────────────
 (async function boot() {
   const identity = await initAuth();
-  if (identity) {
-    applyPermissions(identity);
-    if (canManageUsers) {
-      await loadRoles();
-      await loadUsersAdmin(); // populates allUsers (shared with the group picker)
-      loadGroups();
-      loadAutoDerive();
-    }
+  // Block the page for anyone without admin rights (the API enforces it too).
+  if (!gatePage(PAGE_PERMS.admin)) return;
+  applyPermissions(identity);
+  if (canManageUsers) {
+    await loadRoles();
+    await loadUsersAdmin(); // populates allUsers (shared with the group picker)
+    loadGroups();
+    loadAutoDerive();
   }
   loadFiles();
   loadTrash();

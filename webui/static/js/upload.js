@@ -1,4 +1,4 @@
-import { initAuth } from './auth.js';
+import { initAuth, gatePage, PAGE_PERMS } from './auth.js';
 
 // Upload page (/upload) controller.
 //
@@ -85,6 +85,8 @@ init();
 async function init() {
   const [, identityResult] = await Promise.allSettled([loadUIConfig(), initAuth()]);
   const identity = identityResult?.value;
+  // Block the page for anyone without upload rights (the API enforces it too).
+  if (!gatePage(PAGE_PERMS.upload)) return;
   canEditMeta = Array.isArray(identity?.permissions) && identity.permissions.includes('metadata.edit');
 }
 

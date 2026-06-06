@@ -797,6 +797,23 @@ main {
   gap: var(--space-2);
   font-size: 14px;
 }
+
+/* Access-denied / sign-in-required notice shown when a user without admin
+   rights opens this page. */
+.access-denied {
+  max-width: 28rem;
+  margin: var(--space-7, 4rem) auto;
+  padding: var(--space-6, 2rem);
+  text-align: center;
+  display: grid;
+  gap: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.access-denied h1 { margin: 0; font-size: 1.4rem; }
+.access-denied p { margin: 0; color: var(--text-muted); }
+.access-denied .btn { justify-self: center; text-decoration: none; }
 .group-card {
   background: var(--surface);
   border: 1px solid var(--border);
