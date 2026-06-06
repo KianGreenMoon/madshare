@@ -103,7 +103,12 @@ header {
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
-  margin-right: var(--space-3);
+  /* Push everything after the nav to the right so the logo + nav stay grouped
+     on the left on every page. On the library page the search bar's flex-grow
+     consumes the free space first, so this auto margin resolves to ~0 there;
+     on pages without a search bar (upload, admin) it keeps the nav from
+     drifting to the center under justify-content: space-between. */
+  margin-right: auto;
 }
 
 .nav-link {
