@@ -1,6 +1,6 @@
 # Upload & Covers — Implementation Plan
 
-**Status:** Ready to implement. All decisions are locked.  
+**Status:** Implemented (Phases 1–5, tester-verified; Phase 5 browser checklist §5g still to run manually). See the per-phase ✅ markers below.  
 **Branch target:** `aidev` → merge to `develop`  
 **Module path:** `daemonlord.ygg/madshare`
 
