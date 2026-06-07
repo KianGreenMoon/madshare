@@ -1,30 +1,18 @@
 # Listeners, route groups, and the single-origin web UI
 
 **Status:** implemented
-**Supersedes:** the `[api]`/`[webui]` `addr` + `public_url` config layout
 **Related:** the auth layer (`docs/architecture/auth.md`) is what actually
 protects routes; the listener/`serve` split is deployment topology, not access
 control.
 
 ## 1. Motivation
 
-The original layout ran two HTTP servers on two ports — the API (`:3000`) and the
-web UI (`:8080`) — and the browser was told the API's absolute address through
-the `public_url` config value, which the web UI injected into a
-`<meta name="api-url">` tag. That value was the base for every `fetch()` the
-front-end made.
-
-`public_url` existed *only* because the two ports were two separate origins, so
-the browser needed an absolute URL to cross from the page's origin to the API's.
-It was a hardcoded address that had to be re-set for every deployment (LAN IP,
-ygg address, behind TLS, …) — brittle, and a poor fit for a yggdrasil mesh +
-optional clearnet/TLS.
-
-The implemented design removes `public_url` from the normal path and replaces the
-two-fixed-ports layout with **one process that opens a list of listeners**, each
-of which serves a chosen set of **route groups**. The web UI is served
-**same-origin** with the API, so the front-end uses **relative URLs** and needs
-no address configuration at all.
+The server is **one process that opens a list of listeners**, each of which
+serves a chosen set of **route groups**. The web UI is served **same-origin**
+with the API, so the front-end uses **relative URLs** and needs no per-deployment
+address configuration — important for a yggdrasil mesh + optional clearnet/TLS,
+where a hardcoded absolute base would have to be re-set for every deployment
+(LAN IP, ygg address, behind TLS, …).
 
 ### What this is and isn't
 
@@ -39,8 +27,8 @@ no address configuration at all.
 
 ### Goals
 
-1. Drop `public_url` from the common case; the in-process web UI talks to the
-   API over relative, same-origin URLs.
+1. No per-deployment URL config in the common case; the in-process web UI talks
+   to the API over relative, same-origin URLs.
 2. One process, one config file, one or more listeners.
 3. Each listener independently chooses which route groups it serves.
 4. The web UI is **optional**: it can be turned off at runtime, and **compiled
@@ -86,19 +74,17 @@ Notes:
 ### 2.3 Same-origin, relative front-end
 
 Because the web UI and the API are served from the same listener (same origin),
-the front-end no longer needs an absolute base. The `meta[name="api-url"]`
-mechanism stays, but its default becomes **empty**:
+the front-end needs no absolute base. The `meta[name="api-url"]` tag defaults to
+**empty**, so calls resolve relative to the page origin:
 
 ```js
-// before: const API = meta?.content || 'http://localhost:3000';
 const API = document.querySelector('meta[name="api-url"]')?.content || '';
 fetch(`${API}/api/artists`);   // -> fetch('/api/artists'), resolved same-origin
 ```
 
-`public_url` is gone from the in-process path. The only remaining use of an
-absolute base is the **separately built** web UI talking to a remote backend,
-which sets the meta tag explicitly. That is exposed as an optional, empty-by-
-default `api_base` (§4.3), never required for the bundled server.
+The only use of an absolute base is the **separately built** web UI talking to a
+remote backend, which sets the meta tag explicitly via the optional, empty-by-
+default `api_base` (§4.3) — never required for the bundled server.
 
 ## 3. The exposure problem (why a *list* of listeners)
 
@@ -111,9 +97,9 @@ one listener. It needs two:
 - a public/ygg listener serving only `api`.
 
 The local user loads `http://127.0.0.1:3000/`, the page's relative `fetch`es hit
-the **same** loopback listener (which also serves `api`) — works, no
-`public_url`. Remote callers hit the public listener's `/api/...`; `/` and
-`/admin` 404 there because those groups were never mounted on it.
+the **same** loopback listener (which also serves `api`) — works, with no URL
+config. Remote callers hit the public listener's `/api/...`; `/` and `/admin`
+404 there because those groups were never mounted on it.
 
 This is independent of auth: even where `/api/admin/*` *is* mounted, the auth
 layer still gates it. The `serve` split decides reachability per socket; auth
@@ -121,8 +107,8 @@ decides who may call what.
 
 ## 4. Config schema
 
-The `[api]` and `[webui]` sections (with `addr` / `public_url`) are **replaced**
-by a `[[listen]]` array of tables. `[database]` and `[storage]` are unchanged.
+Listeners are configured with a `[[listen]]` array of tables; `[webui]`,
+`[database]`, and `[storage]` round out the file.
 
 ### 4.1 `[[listen]]`
 
@@ -152,7 +138,7 @@ in middleware, **not** a substitute for auth:
 - On **clearnet**, treat it as convenience/defense-in-depth, not security; source
   IPs can be spoofed or NAT'd and `X-Forwarded-*` is not consulted.
 
-See §9, decision 4.
+See §8, decision 4.
 
 ### 4.3 `api_base` (optional, rare)
 
@@ -164,8 +150,7 @@ api_base = ""   # default empty -> relative, same-origin URLs
 Only set this for a **separately deployed** web UI that must point at a remote
 API origin. For the normal bundled server, leave it empty. When non-empty it is
 injected into `meta[name="api-url"]`; when empty the meta tag is empty and the
-front-end uses relative URLs. (This is the spiritual successor to `public_url`,
-demoted from required to optional.)
+front-end uses relative URLs.
 
 ### 4.4 Defaults (no config file, or omitted keys)
 
@@ -283,15 +268,7 @@ The design above is implemented as follows:
 - **Compile-out web UI** — `-tags nowebui`; `webui.Available` is the sentinel the
   validator checks (§6 rule 5).
 
-## 8. Migration from the old layout
-
-The pre-`[[listen]]` layout (`[api].addr`, `[api].public_url`, `[webui].addr`,
-the separate `:8080` UI port) has been **removed**. `public_url` is replaced by
-relative same-origin URLs plus the optional `[webui].api_base`. Since the config
-file is gitignored and the project was pre-release at the time, no compatibility
-shim was kept — configs use the `[[listen]]` schema described here.
-
-## 9. Decisions
+## 8. Decisions
 
 Resolved with the project owner on 2026-05-29:
 

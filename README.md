@@ -182,7 +182,7 @@ initial_admin_user = "admin"
 **Listeners and route groups** are *deployment topology, not access control.* The
 listener/route split decides which URLs are reachable on which socket; it is not
 authentication. The bundled web UI is served same-origin with the API and uses
-relative URLs, so there is no `public_url`. Validation rejects an empty
+relative URLs, so it needs no configured base address. Validation rejects an empty
 `[[listen]]` list, bad ports, unknown `serve` groups, invalid `allow_from` CIDRs,
 and conflicting binds (a wildcard bind collides with anything else on the same
 port; identical specific binds are rejected; reusing a port across *different*
