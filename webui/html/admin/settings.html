@@ -7,6 +7,7 @@
   <meta name="api-url" content="{{.APIURL}}">
   <link rel="stylesheet" href="/static/css/app.css">
   <link rel="stylesheet" href="/static/css/admin-shell.css">
+  <link rel="stylesheet" href="/static/css/admin-settings.css">
 </head>
 <body>
 
@@ -14,10 +15,30 @@
 {{template "admin-shell" .}}
 
 <main class="admin-main">
-  <div class="admin-placeholder">
-    <h2>Settings</h2>
-    <p>Auto-publish policy and other settings will live here. (Phase 1 scaffold.)</p>
-  </div>
+  <section aria-labelledby="autoderiveHeading">
+    <h2 class="section-title" id="autoderiveHeading">Auto-publish by license</h2>
+    <p class="section-copy">
+      When enabled, any file whose license is on the allow-list below is
+      accessible to guests. Files you have manually set are not affected.
+      Tag-sourced licenses are unverified — you opt in and own the legal call.
+    </p>
+
+    <form class="autoderive-form" id="autoderiveForm">
+      <label class="check-row">
+        <input type="checkbox" id="autoderiveEnabled">
+        <span>Enable license-based auto-publish</span>
+      </label>
+
+      <fieldset class="license-allowlist" id="autoderiveLicenses">
+        <legend>Free-license allow-list</legend>
+        <!-- checkboxes injected by JS -->
+      </fieldset>
+
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-neutral" id="autoderiveSave">Save policy</button>
+      </div>
+    </form>
+  </section>
 </main>
 
 {{template "auth-modals" .}}

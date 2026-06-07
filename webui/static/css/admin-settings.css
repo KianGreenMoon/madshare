@@ -1,0 +1,17 @@
+/* admin-settings.css — the Settings page (auto-publish policy). Loaded with
+   app.css + admin-shell.css (which carries .check-row, buttons, section copy). */
+
+.autoderive-form { margin-top: var(--space-4); display: grid; gap: var(--space-4); }
+
+.license-allowlist {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-3) var(--space-4);
+  display: grid;
+  gap: var(--space-2);
+}
+.license-allowlist legend {
+  padding: 0 var(--space-2);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
