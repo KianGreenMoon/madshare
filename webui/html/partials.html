@@ -134,7 +134,7 @@
 
 {{/* admin-shell: the chrome shown above <main> on every admin sub-page — the
      persistent admin banner plus the secondary section nav. Active state comes
-     from .SubPage ("" = Overview, "files", "users", "access", "prune", "trash",
+     from .SubPage ("" = Overview, "files", "users", "prune", "trash",
      "settings"). Pages render their own <main> after this. */}}
 {{define "admin-shell"}}
 <div class="admin-banner" role="region" aria-label="Admin mode">
@@ -147,7 +147,6 @@
   <a href="/admin/files"    class="admin-nav-link{{if eq .SubPage "files"}} admin-nav-link--active{{end}}"{{if eq .SubPage "files"}} aria-current="page"{{end}}>Files</a>
   <a href="/upload"         class="admin-nav-link">Upload</a>
   <a href="/admin/users"    class="admin-nav-link{{if eq .SubPage "users"}} admin-nav-link--active{{end}}"{{if eq .SubPage "users"}} aria-current="page"{{end}}>Users</a>
-  <a href="/admin/access"   class="admin-nav-link{{if eq .SubPage "access"}} admin-nav-link--active{{end}}"{{if eq .SubPage "access"}} aria-current="page"{{end}}>Access</a>
   <a href="/admin/prune"    class="admin-nav-link{{if eq .SubPage "prune"}} admin-nav-link--active{{end}}"{{if eq .SubPage "prune"}} aria-current="page"{{end}}>Prune</a>
   <a href="/admin/trash"    class="admin-nav-link{{if eq .SubPage "trash"}} admin-nav-link--active{{end}}"{{if eq .SubPage "trash"}} aria-current="page"{{end}}>Trash</a>
   <a href="/admin/settings" class="admin-nav-link{{if eq .SubPage "settings"}} admin-nav-link--active{{end}}"{{if eq .SubPage "settings"}} aria-current="page"{{end}}>Settings</a>

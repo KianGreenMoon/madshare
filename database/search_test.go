@@ -237,9 +237,9 @@ func TestSearch_NoMatchReturnsEmptySlices(t *testing.T) {
 	}
 }
 
-// ---- DB.SearchFiltered -------------------------------------------------------
+// ---- DB.SearchGuest ----------------------------------------------------------
 
-func TestSearchFiltered_GuestFileVisibleToAnon(t *testing.T) {
+func TestSearchGuest_GuestFileVisibleToAnon(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
@@ -251,16 +251,16 @@ func TestSearchFiltered_GuestFileVisibleToAnon(t *testing.T) {
 		t.Fatalf("SetGuestPlayable: found=%v err=%v", found, err)
 	}
 
-	res, err := db.SearchFiltered(ctx, "Guest Track", anon())
+	res, err := db.SearchGuest(ctx, "Guest Track")
 	if err != nil {
-		t.Fatalf("SearchFiltered: %v", err)
+		t.Fatalf("SearchGuest: %v", err)
 	}
 	if len(res.Tracks) != 1 {
 		t.Errorf("tracks = %d, want 1 (guest file should be visible to anon)", len(res.Tracks))
 	}
 }
 
-func TestSearchFiltered_NonGuestFileHiddenFromAnon(t *testing.T) {
+func TestSearchGuest_NonGuestFileHiddenFromAnon(t *testing.T) {
 	// A file that is NOT guest-playable must not appear in anonymous searches.
 	db := openMem(t)
 	ctx := context.Background()
@@ -268,9 +268,9 @@ func TestSearchFiltered_NonGuestFileHiddenFromAnon(t *testing.T) {
 	// Default: guest_playable = 0.
 	insertSearchFile(t, db, hash64("ng1"), "Private Track", "Private Artist", "Private Album", "")
 
-	res, err := db.SearchFiltered(ctx, "Private", anon())
+	res, err := db.SearchGuest(ctx, "Private")
 	if err != nil {
-		t.Fatalf("SearchFiltered: %v", err)
+		t.Fatalf("SearchGuest: %v", err)
 	}
 	if len(res.Tracks) != 0 {
 		t.Errorf("tracks = %d, want 0 (non-guest file must be hidden from anonymous)", len(res.Tracks))
@@ -283,61 +283,13 @@ func TestSearchFiltered_NonGuestFileHiddenFromAnon(t *testing.T) {
 	}
 }
 
-func TestSearchFiltered_UserWithGrantCanSeeFile(t *testing.T) {
-	db := openMem(t)
-	ctx := context.Background()
-
-	h := hash64("gr1")
-	fileID := insertSearchFile(t, db, h, "Granted Track", "Granted Artist", "Granted Album", "")
-
-	userID := mkUser(t, db, "searcher")
-	groupID, err := db.CreateAccessGroup(ctx, "searchers")
-	if err != nil {
-		t.Fatalf("CreateAccessGroup: %v", err)
-	}
-	if err := db.AddGroupMember(ctx, groupID, userID); err != nil {
-		t.Fatalf("AddGroupMember: %v", err)
-	}
-	// Grant access to this specific file.
-	if _, err := db.AddContentGrant(ctx, groupID, ScopeFile, "", "", sql.NullInt64{Int64: fileID, Valid: true}); err != nil {
-		t.Fatalf("AddContentGrant: %v", err)
-	}
-
-	res, err := db.SearchFiltered(ctx, "Granted", uid(userID))
-	if err != nil {
-		t.Fatalf("SearchFiltered: %v", err)
-	}
-	if len(res.Tracks) != 1 {
-		t.Errorf("tracks = %d, want 1 (user with file grant should see the track)", len(res.Tracks))
-	}
-	if res.Tracks[0].Title != "Granted Track" {
-		t.Errorf("track title = %q, want Granted Track", res.Tracks[0].Title)
-	}
-}
-
-func TestSearchFiltered_UserWithoutGrantCannotSeeFile(t *testing.T) {
-	db := openMem(t)
-	ctx := context.Background()
-
-	insertSearchFile(t, db, hash64("ng2"), "Secret Track", "Secret Artist", "Secret Album", "")
-	userID := mkUser(t, db, "stranger")
-
-	res, err := db.SearchFiltered(ctx, "Secret", uid(userID))
-	if err != nil {
-		t.Fatalf("SearchFiltered: %v", err)
-	}
-	if len(res.Tracks) != 0 {
-		t.Errorf("tracks = %d, want 0 (user with no grant should not see the track)", len(res.Tracks))
-	}
-}
-
-func TestSearchFiltered_EmptyQuery_ReturnsEmpty(t *testing.T) {
+func TestSearchGuest_EmptyQuery_ReturnsEmpty(t *testing.T) {
 	db := openMem(t)
 	insertSearchFile(t, db, hash64("sf1"), "Some Track", "Some Artist", "Some Album", "")
 
-	res, err := db.SearchFiltered(context.Background(), "", anon())
+	res, err := db.SearchGuest(context.Background(), "")
 	if err != nil {
-		t.Fatalf("SearchFiltered: %v", err)
+		t.Fatalf("SearchGuest: %v", err)
 	}
 	if len(res.Artists) != 0 || len(res.Albums) != 0 || len(res.Tracks) != 0 {
 		t.Errorf("empty q should return zero results; got artists=%d albums=%d tracks=%d",

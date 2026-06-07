@@ -254,7 +254,7 @@ func (d Deps) fileAccessGuard() func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			ok, err := d.Repo.FileAccessibleByHash(r.Context(), seg, actorID(r.Context()))
+			ok, err := d.Repo.FileAccessibleByHash(r.Context(), seg)
 			if err != nil {
 				http.Error(w, "storage error", http.StatusInternalServerError)
 				return

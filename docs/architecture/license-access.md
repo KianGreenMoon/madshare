@@ -23,10 +23,12 @@ file for anonymous access** (set via `POST /api/admin/files/:hash/guest`).
 License-based access is never written to the database; it is evaluated at query
 time as an additional OR branch inside `accessClause`.
 
-The `accessClause` SQL predicate (in `database/access.go`) is shared by every
-access-filtered query (`FileAccessibleByHash`, `ListFilesFiltered`,
-`ListArtistsFiltered`, `ListAlbumsByArtistFiltered`,
-`ListTracksByAlbumArtistFiltered`). Its three branches now are:
+The `accessClause` SQL predicate (in `database/access.go`) is the **guest
+predicate**, shared by every guest-filtered query (`FileAccessibleByHash`,
+`ListFilesGuest`, `ListArtistsGuest`, `ListAlbumsByArtistGuest`,
+`ListTracksByAlbumArtistGuest`, `SearchGuest`). It decides what an anonymous /
+capability-less request may reach; callers holding `content.access` bypass it
+entirely. It takes no bind parameters and has two branches:
 
 ```sql
 (
@@ -43,19 +45,6 @@ access-filtered query (`FileAccessibleByHash`, `ListFilesFiltered`,
     AND EXISTS (SELECT 1 FROM settings WHERE key = 'access.autoderive.enabled' AND value = '1')
     AND ',' || COALESCE((SELECT value FROM settings WHERE key = 'access.autoderive.licenses'), '') || ','
         LIKE '%,' || f.license || ',%'
-  )
-
-  -- 3. User is a member of an access group with a grant covering this file.
-  OR EXISTS (
-    SELECT 1 FROM access_group_members agm
-    JOIN content_grants cg ON cg.group_id = agm.group_id
-    WHERE agm.user_id = ?
-    AND (
-      cg.scope_type = 'all'
-      OR (cg.scope_type = 'artist' AND ...)
-      OR (cg.scope_type = 'album'  AND ...)
-      OR (cg.scope_type = 'file'   AND cg.scope_file_id = f.id)
-    )
   )
 )
 ```

@@ -100,7 +100,7 @@ Relevant: `docs/architecture/auth.md` §4–5, `database/access.go`,
 
 | Priority | Item | Notes |
 |---|---|---|
-| **Med** | **Decide roles-vs-access-groups model** (unify / two-layer / roles-only) — see write-up above. Blocks meaningful further work on per-user content restriction. | **DECIDED (2026-06-07): roles-only — drop Layer B** (access groups + content grants). No per-content restriction in v0; anonymous guest/license access stays. Plan: `docs/plans/access-roles-only.md`. |
+| **Med** | **Decide roles-vs-access-groups model** (unify / two-layer / roles-only) — see write-up above. Blocks meaningful further work on per-user content restriction. | **DONE (2026-06-07): roles-only — Layer B removed** (migrations 011/012). content perms collapsed to `content.access`; access groups + content grants + Access UI deleted; anonymous guest/license access kept. Plan: `docs/plans/access-roles-only.md`. |
 
 ## Future federation items (design-time, not yet planned)
 

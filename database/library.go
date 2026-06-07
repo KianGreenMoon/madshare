@@ -44,10 +44,10 @@ func (db *DB) ListArtists(ctx context.Context) ([]*ArtistEntry, error) {
 	return out, nil
 }
 
-// ListArtistsFiltered is ListArtists restricted to artists the user (invalid
-// userID = anonymous) can reach at least one track of, per the §5.3 access
-// predicate. Track counts reflect only reachable tracks.
-func (db *DB) ListArtistsFiltered(ctx context.Context, userID sql.NullInt64) ([]*ArtistEntry, error) {
+// ListArtistsGuest is ListArtists restricted to artists an anonymous /
+// capability-less request can reach at least one track of (the guest-playable /
+// license policy). Track counts reflect only reachable tracks.
+func (db *DB) ListArtistsGuest(ctx context.Context) ([]*ArtistEntry, error) {
 	var q = `
 		SELECT
 		    COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') AS name,
@@ -61,9 +61,9 @@ func (db *DB) ListArtistsFiltered(ctx context.Context, userID sql.NullInt64) ([]
 		GROUP BY name
 		ORDER BY LOWER(name) ASC`
 
-	rows, err := db.QueryContext(ctx, q, userID)
+	rows, err := db.QueryContext(ctx, q)
 	if err != nil {
-		return nil, fmt.Errorf("list artists filtered: %w", err)
+		return nil, fmt.Errorf("list artists guest: %w", err)
 	}
 	defer rows.Close()
 
@@ -127,9 +127,9 @@ func (db *DB) ListAlbumsByArtist(ctx context.Context, artist string) ([]*AlbumEn
 	return out, nil
 }
 
-// ListAlbumsByArtistFiltered is ListAlbumsByArtist restricted to albums the
-// user (invalid userID = anonymous) can reach at least one track of.
-func (db *DB) ListAlbumsByArtistFiltered(ctx context.Context, artist string, userID sql.NullInt64) ([]*AlbumEntry, error) {
+// ListAlbumsByArtistGuest is ListAlbumsByArtist restricted to albums an
+// anonymous / capability-less request can reach at least one track of.
+func (db *DB) ListAlbumsByArtistGuest(ctx context.Context, artist string) ([]*AlbumEntry, error) {
 	var q = `
 		SELECT
 		    COALESCE(NULLIF(m.album, ''), '') AS title,
@@ -148,9 +148,9 @@ func (db *DB) ListAlbumsByArtistFiltered(ctx context.Context, artist string, use
 		GROUP BY COALESCE(NULLIF(m.album, ''), ''), COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
 		ORDER BY year ASC, LOWER(COALESCE(NULLIF(m.album, ''), '')) ASC`
 
-	rows, err := db.QueryContext(ctx, q, artist, artist, userID)
+	rows, err := db.QueryContext(ctx, q, artist, artist)
 	if err != nil {
-		return nil, fmt.Errorf("list albums by artist filtered: %w", err)
+		return nil, fmt.Errorf("list albums by artist guest: %w", err)
 	}
 	defer rows.Close()
 
@@ -219,9 +219,9 @@ func (db *DB) ListTracksByAlbumArtist(ctx context.Context, artist, album string)
 	return out, nil
 }
 
-// ListTracksByAlbumArtistFiltered is ListTracksByAlbumArtist restricted to the
-// tracks the user (invalid userID = anonymous) may play/download.
-func (db *DB) ListTracksByAlbumArtistFiltered(ctx context.Context, artist, album string, userID sql.NullInt64) ([]*TrackEntry, error) {
+// ListTracksByAlbumArtistGuest is ListTracksByAlbumArtist restricted to the
+// tracks an anonymous / capability-less request may play/download.
+func (db *DB) ListTracksByAlbumArtistGuest(ctx context.Context, artist, album string) ([]*TrackEntry, error) {
 	if artist == "" {
 		return nil, nil
 	}
@@ -247,9 +247,9 @@ func (db *DB) ListTracksByAlbumArtistFiltered(ctx context.Context, artist, album
 		  AND ` + accessClause + `
 		ORDER BY m.track_number ASC, LOWER(COALESCE(NULLIF(m.title, ''), fu.filename, '')) ASC`
 
-	rows, err := db.QueryContext(ctx, q, artist, album, userID)
+	rows, err := db.QueryContext(ctx, q, artist, album)
 	if err != nil {
-		return nil, fmt.Errorf("list tracks by album artist filtered: %w", err)
+		return nil, fmt.Errorf("list tracks by album artist guest: %w", err)
 	}
 	defer rows.Close()
 
@@ -268,14 +268,14 @@ func (db *DB) ListTracksByAlbumArtistFiltered(ctx context.Context, artist, album
 }
 
 func (db *DB) Search(ctx context.Context, q string) (*SearchResults, error) {
-	return db.search(ctx, q, false, sql.NullInt64{})
+	return db.search(ctx, q, false)
 }
 
-func (db *DB) SearchFiltered(ctx context.Context, q string, userID sql.NullInt64) (*SearchResults, error) {
-	return db.search(ctx, q, true, userID)
+func (db *DB) SearchGuest(ctx context.Context, q string) (*SearchResults, error) {
+	return db.search(ctx, q, true)
 }
 
-func (db *DB) search(ctx context.Context, q string, filtered bool, userID sql.NullInt64) (*SearchResults, error) {
+func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResults, error) {
 	if strings.TrimSpace(q) == "" {
 		return &SearchResults{}, nil
 	}
@@ -289,7 +289,6 @@ func (db *DB) search(ctx context.Context, q string, filtered bool, userID sql.Nu
 	artistArgs := []any{like}
 	if filtered {
 		artistWhere += " AND " + accessClause
-		artistArgs = []any{like, userID}
 	}
 	artistQ := `
 		SELECT
@@ -331,7 +330,6 @@ func (db *DB) search(ctx context.Context, q string, filtered bool, userID sql.Nu
 	albumArgs := []any{like}
 	if filtered {
 		albumWhere += " AND " + accessClause
-		albumArgs = []any{like, userID}
 	}
 	albumQ := `
 		SELECT
@@ -378,7 +376,6 @@ func (db *DB) search(ctx context.Context, q string, filtered bool, userID sql.Nu
 	trackArgs := []any{like}
 	if filtered {
 		trackWhere += " AND " + accessClause
-		trackArgs = []any{like, userID}
 	}
 	trackQ := `
 		SELECT

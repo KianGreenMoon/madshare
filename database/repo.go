@@ -37,23 +37,23 @@ type Repository interface {
 	// combination. album="" selects the Other bucket (no album tag).
 	ListTracksByAlbumArtist(ctx context.Context, artist, album string) ([]*TrackEntry, error)
 
-	// ListFilesFiltered, ListArtistsFiltered, ListAlbumsByArtistFiltered, and
-	// ListTracksByAlbumArtistFiltered are the access-filtered counterparts of the
-	// listings above: they return only what the user (invalid userID =
-	// anonymous) may reach per the §5.3 predicate. Callers holding content.access
+	// ListFilesGuest, ListArtistsGuest, ListAlbumsByArtistGuest, and
+	// ListTracksByAlbumArtistGuest are the guest counterparts of the listings
+	// above: they return only what an anonymous / capability-less request may
+	// reach (the guest-playable / license policy). Callers holding content.access
 	// use the unfiltered variants.
-	ListFilesFiltered(ctx context.Context, userID sql.NullInt64) ([]*FileListEntry, error)
-	ListArtistsFiltered(ctx context.Context, userID sql.NullInt64) ([]*ArtistEntry, error)
-	ListAlbumsByArtistFiltered(ctx context.Context, artist string, userID sql.NullInt64) ([]*AlbumEntry, error)
-	ListTracksByAlbumArtistFiltered(ctx context.Context, artist, album string, userID sql.NullInt64) ([]*TrackEntry, error)
+	ListFilesGuest(ctx context.Context) ([]*FileListEntry, error)
+	ListArtistsGuest(ctx context.Context) ([]*ArtistEntry, error)
+	ListAlbumsByArtistGuest(ctx context.Context, artist string) ([]*AlbumEntry, error)
+	ListTracksByAlbumArtistGuest(ctx context.Context, artist, album string) ([]*TrackEntry, error)
 
 	// Search returns artists, albums, and tracks whose names/titles contain q
 	// (case-insensitive LIKE). q="" returns empty results immediately.
 	Search(ctx context.Context, q string) (*SearchResults, error)
 
-	// SearchFiltered is Search restricted to content the user (invalid userID =
-	// anonymous) can reach per the §5.3 access predicate.
-	SearchFiltered(ctx context.Context, q string, userID sql.NullInt64) (*SearchResults, error)
+	// SearchGuest is Search restricted to content an anonymous / capability-less
+	// request can reach (the guest-playable / license policy).
+	SearchGuest(ctx context.Context, q string) (*SearchResults, error)
 
 	// UpsertArtistImage stores (or replaces) the image reference for an artist.
 	UpsertArtistImage(ctx context.Context, artist, objectKey, mimeType string, updatedAt int64) error
@@ -102,10 +102,11 @@ type Repository interface {
 	// system/anonymous actions.
 	RecordAudit(ctx context.Context, actorUserID sql.NullInt64, action, target, detail string) error
 
-	// FileAccessibleByHash reports whether the user (invalid userID = anonymous)
-	// may play/download the file with the given hash. Callers holding the
-	// content.access permission bypass this. Unknown hashes return false.
-	FileAccessibleByHash(ctx context.Context, hash string, userID sql.NullInt64) (bool, error)
+	// FileAccessibleByHash reports whether an anonymous / capability-less request
+	// may play/download the file with the given hash (the guest-playable /
+	// license policy). Callers holding the content.access permission bypass this.
+	// Unknown hashes return false.
+	FileAccessibleByHash(ctx context.Context, hash string) (bool, error)
 
 	// --- Cover image variants & async job queue (Phase 1: upload & covers) ---
 

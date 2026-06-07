@@ -14,7 +14,7 @@ func setGuest(t *testing.T, db *DB, hash string, guest bool) {
 	}
 }
 
-func TestFilteredListings_RespectAccess(t *testing.T) {
+func TestGuestListings_RespectAccess(t *testing.T) {
 	ctx := context.Background()
 	db := openMem(t)
 
@@ -24,95 +24,32 @@ func TestFilteredListings_RespectAccess(t *testing.T) {
 	insertAccessFile(t, db, privHash)
 	setGuest(t, db, guestHash, true)
 
-	// Anonymous sees only the guest file across every listing surface.
-	files, err := db.ListFilesFiltered(ctx, anon())
+	// The guest listings expose only the guest-playable file across every surface.
+	files, err := db.ListFilesGuest(ctx)
 	if err != nil {
-		t.Fatalf("ListFilesFiltered: %v", err)
+		t.Fatalf("ListFilesGuest: %v", err)
 	}
 	if len(files) != 1 || files[0].Hash != guestHash {
-		t.Fatalf("anon files = %d (%v), want 1 guest file", len(files), files)
+		t.Fatalf("guest files = %d (%v), want 1 guest file", len(files), files)
 	}
 	if !files[0].GuestPlayable {
 		t.Error("guest file should report GuestPlayable=true")
 	}
 
-	artists, err := db.ListArtistsFiltered(ctx, anon())
+	artists, err := db.ListArtistsGuest(ctx)
 	if err != nil {
-		t.Fatalf("ListArtistsFiltered: %v", err)
+		t.Fatalf("ListArtistsGuest: %v", err)
 	}
 	if len(artists) != 1 || artists[0].TrackCount != 1 {
-		t.Fatalf("anon artists = %v, want one artist with track_count 1", artists)
+		t.Fatalf("guest artists = %v, want one artist with track_count 1", artists)
 	}
 
-	tracks, err := db.ListTracksByAlbumArtistFiltered(ctx, "An Artist", "An Album", anon())
+	tracks, err := db.ListTracksByAlbumArtistGuest(ctx, "An Artist", "An Album")
 	if err != nil {
-		t.Fatalf("ListTracksByAlbumArtistFiltered: %v", err)
+		t.Fatalf("ListTracksByAlbumArtistGuest: %v", err)
 	}
 	if len(tracks) != 1 {
-		t.Fatalf("anon tracks = %d, want 1", len(tracks))
-	}
-
-	// A user granted the whole library sees both files.
-	u := mkUser(t, db, "u")
-	g, _ := db.CreateAccessGroup(ctx, "all")
-	if err := db.AddGroupMember(ctx, g, u); err != nil {
-		t.Fatalf("AddGroupMember: %v", err)
-	}
-	if _, err := db.AddContentGrant(ctx, g, ScopeAll, "", "", anon()); err != nil {
-		t.Fatalf("AddContentGrant: %v", err)
-	}
-	files, err = db.ListFilesFiltered(ctx, uid(u))
-	if err != nil {
-		t.Fatalf("ListFilesFiltered(user): %v", err)
-	}
-	if len(files) != 2 {
-		t.Fatalf("granted user files = %d, want 2", len(files))
-	}
-}
-
-func TestManagementQueries_GroupLifecycle(t *testing.T) {
-	ctx := context.Background()
-	db := openMem(t)
-
-	u := mkUser(t, db, "alice")
-	g, err := db.CreateAccessGroup(ctx, "friends")
-	if err != nil {
-		t.Fatalf("CreateAccessGroup: %v", err)
-	}
-	if err := db.AddGroupMember(ctx, g, u); err != nil {
-		t.Fatalf("AddGroupMember: %v", err)
-	}
-	members, err := db.ListGroupMembers(ctx, g)
-	if err != nil || len(members) != 1 || members[0].Username != "alice" {
-		t.Fatalf("ListGroupMembers = %v err=%v, want [alice]", members, err)
-	}
-
-	gid, err := db.AddContentGrant(ctx, g, ScopeArtist, "An Artist", "", anon())
-	if err != nil {
-		t.Fatalf("AddContentGrant: %v", err)
-	}
-	grants, err := db.ListContentGrants(ctx, g)
-	if err != nil || len(grants) != 1 || grants[0].ScopeType != ScopeArtist {
-		t.Fatalf("ListContentGrants = %v err=%v", grants, err)
-	}
-	if found, err := db.DeleteContentGrant(ctx, gid); err != nil || !found {
-		t.Fatalf("DeleteContentGrant: found=%v err=%v", found, err)
-	}
-
-	if err := db.RemoveGroupMember(ctx, g, u); err != nil {
-		t.Fatalf("RemoveGroupMember: %v", err)
-	}
-	members, _ = db.ListGroupMembers(ctx, g)
-	if len(members) != 0 {
-		t.Fatalf("members after remove = %d, want 0", len(members))
-	}
-
-	if found, err := db.DeleteAccessGroup(ctx, g); err != nil || !found {
-		t.Fatalf("DeleteAccessGroup: found=%v err=%v", found, err)
-	}
-	groups, _ := db.ListAccessGroups(ctx)
-	if len(groups) != 0 {
-		t.Fatalf("groups after delete = %d, want 0", len(groups))
+		t.Fatalf("guest tracks = %d, want 1", len(tracks))
 	}
 }
 
@@ -140,7 +77,7 @@ func TestAutoDerive_GrantsAndRespectsManual(t *testing.T) {
 	if _, err := db.SetLicense(ctx, autoHash, "CC0-1.0"); err != nil {
 		t.Fatalf("SetLicense(auto): %v", err)
 	}
-	if !accessible(t, db, autoHash, anon()) {
+	if !accessible(t, db, autoHash) {
 		t.Error("license-match file should be guest-accessible when policy is enabled")
 	}
 
@@ -148,7 +85,7 @@ func TestAutoDerive_GrantsAndRespectsManual(t *testing.T) {
 	if _, err := db.SetLicense(ctx, manualHash, "CC0-1.0"); err != nil {
 		t.Fatalf("SetLicense(manual): %v", err)
 	}
-	if accessible(t, db, manualHash, anon()) {
+	if accessible(t, db, manualHash) {
 		t.Error("explicit manual override must win over license policy")
 	}
 
@@ -158,7 +95,7 @@ func TestAutoDerive_GrantsAndRespectsManual(t *testing.T) {
 	if _, err := db.SetLicense(ctx, otherHash, "all-rights-reserved"); err != nil {
 		t.Fatalf("SetLicense(other): %v", err)
 	}
-	if accessible(t, db, otherHash, anon()) {
+	if accessible(t, db, otherHash) {
 		t.Error("non-free license must not grant guest access")
 	}
 
@@ -166,7 +103,7 @@ func TestAutoDerive_GrantsAndRespectsManual(t *testing.T) {
 	if err := db.SetAutoDerivePolicy(ctx, AutoDerivePolicy{Enabled: false, Licenses: []string{"CC0-1.0"}}); err != nil {
 		t.Fatalf("SetAutoDerivePolicy(disable): %v", err)
 	}
-	if accessible(t, db, autoHash, anon()) {
+	if accessible(t, db, autoHash) {
 		t.Error("disabling policy must revoke license-based access immediately")
 	}
 }
@@ -181,7 +118,7 @@ func TestAutoDerive_LivePolicyCheck(t *testing.T) {
 	if _, err := db.SetLicense(ctx, h, "public-domain"); err != nil {
 		t.Fatalf("SetLicense: %v", err)
 	}
-	if accessible(t, db, h, anon()) {
+	if accessible(t, db, h) {
 		t.Fatal("file should not be guest-accessible before policy is enabled")
 	}
 
@@ -189,7 +126,7 @@ func TestAutoDerive_LivePolicyCheck(t *testing.T) {
 	if err := db.SetAutoDerivePolicy(ctx, AutoDerivePolicy{Enabled: true, Licenses: []string{"public-domain"}}); err != nil {
 		t.Fatalf("SetAutoDerivePolicy: %v", err)
 	}
-	if !accessible(t, db, h, anon()) {
+	if !accessible(t, db, h) {
 		t.Error("enabling policy should immediately grant access to matching file")
 	}
 
@@ -197,7 +134,7 @@ func TestAutoDerive_LivePolicyCheck(t *testing.T) {
 	if err := db.SetAutoDerivePolicy(ctx, AutoDerivePolicy{Enabled: true, Licenses: []string{"CC0-1.0"}}); err != nil {
 		t.Fatalf("SetAutoDerivePolicy(change allowlist): %v", err)
 	}
-	if accessible(t, db, h, anon()) {
+	if accessible(t, db, h) {
 		t.Error("removing license from allowlist should immediately revoke access")
 	}
 }

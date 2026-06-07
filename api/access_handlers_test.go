@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"testing"
 
-	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/database"
 )
 
@@ -61,81 +60,6 @@ func uploadAndHash(t *testing.T, client *http.Client, base, name string) (hash, 
 	return body.Hash, "/files/" + body.Hash + "/" + body.Filename
 }
 
-func TestManage_GatedByUserManage(t *testing.T) {
-	srv, db := newAuthTestServer(t)
-	makeUser(t, db, "lis", "listener-pass-1", auth.RoleListener)
-
-	// Anonymous -> 401.
-	if code := doJSON(t, http.DefaultClient, http.MethodPost, srv.URL+"/api/admin/access/groups",
-		map[string]any{"name": "x"}, nil); code != http.StatusUnauthorized {
-		t.Errorf("anon create group = %d, want 401", code)
-	}
-
-	// Listener lacks user.manage -> 403.
-	lis := clientFor(t, srv.URL, "lis", "listener-pass-1")
-	if code := doJSON(t, lis, http.MethodPost, srv.URL+"/api/admin/access/groups",
-		map[string]any{"name": "x"}, nil); code != http.StatusForbidden {
-		t.Errorf("listener create group = %d, want 403", code)
-	}
-
-	// Admin holds user.manage -> 201.
-	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
-	if code := doJSON(t, admin, http.MethodPost, srv.URL+"/api/admin/access/groups",
-		map[string]any{"name": "friends"}, nil); code != http.StatusCreated {
-		t.Errorf("admin create group = %d, want 201", code)
-	}
-}
-
-func TestManage_GrantUnlocksPlayback(t *testing.T) {
-	srv, db := newAuthTestServer(t)
-	// A restricted user (no content.access) is governed by Layer-B grants; the
-	// built-in listener role sees the whole library.
-	restricted := makeRestrictedRole(t, db)
-	lisID := makeUser(t, db, "lis", "listener-pass-1", restricted)
-
-	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
-	hash, path := uploadAndHash(t, admin, srv.URL, "song.mp3")
-
-	lis := clientFor(t, srv.URL, "lis", "listener-pass-1")
-
-	// Before any grant: the listener cannot stream (404) nor see the file.
-	if code := doJSON(t, lis, http.MethodGet, srv.URL+path, nil, nil); code != http.StatusNotFound {
-		t.Fatalf("listener pre-grant GET = %d, want 404", code)
-	}
-	var files []map[string]any
-	doJSON(t, lis, http.MethodGet, srv.URL+"/api/files", nil, &files)
-	if len(files) != 0 {
-		t.Fatalf("listener pre-grant /api/files = %d, want 0", len(files))
-	}
-
-	// Admin creates a group, adds the listener, grants the whole library.
-	var grp struct {
-		ID int64 `json:"id"`
-	}
-	if code := doJSON(t, admin, http.MethodPost, srv.URL+"/api/admin/access/groups",
-		map[string]any{"name": "all"}, &grp); code != http.StatusCreated {
-		t.Fatalf("create group = %d", code)
-	}
-	if code := doJSON(t, admin, http.MethodPost,
-		srv.URL+"/api/admin/access/groups/1/members", map[string]any{"user_id": lisID}, nil); code != http.StatusNoContent {
-		t.Fatalf("add member = %d, want 204", code)
-	}
-	if code := doJSON(t, admin, http.MethodPost,
-		srv.URL+"/api/admin/access/groups/1/grants", map[string]any{"scope_type": "all"}, nil); code != http.StatusCreated {
-		t.Fatalf("add grant = %d, want 201", code)
-	}
-
-	// After the grant: the listener can stream and see the file.
-	if code := doJSON(t, lis, http.MethodGet, srv.URL+path, nil, nil); code != http.StatusOK {
-		t.Errorf("listener post-grant GET = %d, want 200", code)
-	}
-	files = nil
-	doJSON(t, lis, http.MethodGet, srv.URL+"/api/files", nil, &files)
-	if len(files) != 1 || files[0]["hash"] != hash {
-		t.Errorf("listener post-grant /api/files = %v, want the one file", files)
-	}
-}
-
 func TestManage_GuestPlayableEndpoint(t *testing.T) {
 	srv, _ := newAuthTestServer(t)
 	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
@@ -175,7 +99,7 @@ func TestListings_AnonymousCannotBrowsePrivate(t *testing.T) {
 	// The fixture upload carries no tags, so it groups under the empty
 	// artist/album buckets. /api/tracks needs a non-empty artist param
 	// (pre-existing behaviour), so track-level filtering is covered by the DB
-	// test TestFilteredListings_RespectAccess instead.
+	// test TestGuestListings_RespectAccess instead.
 	listings := []string{
 		"/api/files",
 		"/api/artists",
@@ -238,7 +162,7 @@ func insertTaggedFile(t *testing.T, db *database.DB, hash, artist, album, title 
 }
 
 // TestListings_TrackFilteringOverHTTP exercises the /api/tracks access filter on
-// the wire (handler accessFilter + content.access bypass + the *Filtered query),
+// the wire (handler guestListing + content.access bypass + the *Guest query),
 // which the DB-only test cannot reach.
 func TestListings_TrackFilteringOverHTTP(t *testing.T) {
 	srv, db := newAuthTestServer(t)

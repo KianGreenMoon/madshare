@@ -387,7 +387,7 @@ func (f *fakeRepo) RecordAudit(_ context.Context, actor sql.NullInt64, action, t
 	return nil
 }
 
-func (f *fakeRepo) FileAccessibleByHash(_ context.Context, _ string, _ sql.NullInt64) (bool, error) {
+func (f *fakeRepo) FileAccessibleByHash(_ context.Context, _ string) (bool, error) {
 	return true, nil
 }
 
@@ -425,19 +425,19 @@ func (f *fakeRepo) ListTracksByAlbumArtist(_ context.Context, _, _ string) ([]*d
 	return nil, nil
 }
 
-func (f *fakeRepo) ListFilesFiltered(_ context.Context, _ sql.NullInt64) ([]*database.FileListEntry, error) {
+func (f *fakeRepo) ListFilesGuest(_ context.Context) ([]*database.FileListEntry, error) {
 	return nil, f.listFilesErr
 }
 
-func (f *fakeRepo) ListArtistsFiltered(_ context.Context, _ sql.NullInt64) ([]*database.ArtistEntry, error) {
+func (f *fakeRepo) ListArtistsGuest(_ context.Context) ([]*database.ArtistEntry, error) {
 	return nil, nil
 }
 
-func (f *fakeRepo) ListAlbumsByArtistFiltered(_ context.Context, _ string, _ sql.NullInt64) ([]*database.AlbumEntry, error) {
+func (f *fakeRepo) ListAlbumsByArtistGuest(_ context.Context, _ string) ([]*database.AlbumEntry, error) {
 	return nil, nil
 }
 
-func (f *fakeRepo) ListTracksByAlbumArtistFiltered(_ context.Context, _, _ string, _ sql.NullInt64) ([]*database.TrackEntry, error) {
+func (f *fakeRepo) ListTracksByAlbumArtistGuest(_ context.Context, _, _ string) ([]*database.TrackEntry, error) {
 	return nil, nil
 }
 
@@ -542,7 +542,7 @@ func (f *fakeRepo) Search(_ context.Context, _ string) (*database.SearchResults,
 	return &database.SearchResults{}, nil
 }
 
-func (f *fakeRepo) SearchFiltered(_ context.Context, _ string, _ sql.NullInt64) (*database.SearchResults, error) {
+func (f *fakeRepo) SearchGuest(_ context.Context, _ string) (*database.SearchResults, error) {
 	if f.searchErr != nil {
 		return nil, f.searchErr
 	}
@@ -1237,7 +1237,7 @@ func TestReadImageUpload_DisallowedExtensionRejected(t *testing.T) {
 
 // newSearchHandler returns a handler wired to a fakeRepo configured for search
 // tests, with authzEnabled=false so h.accessFilter always takes the unfiltered
-// path (calls repo.Search, not repo.SearchFiltered).
+// path (calls repo.Search, not repo.SearchGuest).
 func newSearchHandler(repo *fakeRepo) *handler {
 	return &handler{
 		storage:       storage.NewLocal(os.TempDir()),

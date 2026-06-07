@@ -67,7 +67,6 @@ var (
 var adminSubPages = map[string]*template.Template{
 	"files":    buildPageTmpl("html/admin/files.html"),
 	"users":    buildPageTmpl("html/admin/users.html"),
-	"access":   buildPageTmpl("html/admin/access.html"),
 	"prune":    buildPageTmpl("html/admin/prune.html"),
 	"trash":    buildPageTmpl("html/admin/trash.html"),
 	"settings": buildPageTmpl("html/admin/settings.html"),
@@ -79,7 +78,7 @@ var adminSubPages = map[string]*template.Template{
 // Page is the current page identifier used by the shared header partial to
 // mark the active nav link ("library", "upload", "admin", "cmus").
 // SubPage marks the active link in the secondary admin nav ("" = Overview,
-// "files", "users", "access", "prune", "trash", "settings"); it is empty for
+// "files", "users", "prune", "trash", "settings"); it is empty for
 // non-admin pages.
 type pageData struct {
 	APIURL  string

@@ -102,11 +102,11 @@ func (db *DB) ListFiles(ctx context.Context) ([]*FileListEntry, error) {
 	return db.listFiles(ctx, "")
 }
 
-// ListFilesFiltered returns only the files the user (invalid userID = anonymous)
-// may play/download, applying the §5.3 access predicate. Callers holding the
+// ListFilesGuest returns only the files an anonymous / capability-less request
+// may play/download (the guest-playable / license policy). Callers holding the
 // content.access permission should use the unfiltered ListFiles instead.
-func (db *DB) ListFilesFiltered(ctx context.Context, userID sql.NullInt64) ([]*FileListEntry, error) {
-	return db.listFiles(ctx, accessClause, userID)
+func (db *DB) ListFilesGuest(ctx context.Context) ([]*FileListEntry, error) {
+	return db.listFiles(ctx, accessClause)
 }
 
 // listFiles is the shared query. When where is non-empty it is appended as an

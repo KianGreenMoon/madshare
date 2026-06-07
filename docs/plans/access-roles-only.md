@@ -1,8 +1,8 @@
 # Plan: roles-only access model (drop Layer B)
 
-**Status:** planned (owner-approved 2026-06-07). Decided ahead of the
-artist/album normalization because both touch the same access-control SQL; doing
-this first removes that entanglement entirely.
+**Status:** DONE (aidev, 2026-06-07) — both phases implemented and tested.
+Decided ahead of the artist/album normalization because both touch the same
+access-control SQL; doing this first removes that entanglement entirely.
 
 ## Decision
 
@@ -99,7 +99,7 @@ artist/album work shifts to `013`.
    `content.access`. Tests + comments updated; `database_test.go` migration
    version → 11.
 
-### Phase 2 — remove Layer B
+### Phase 2 — remove Layer B (DONE)
 
 3. **Migration `012_drop_access_groups.sql`** — `DROP TABLE content_grants;`
    `DROP TABLE access_group_members;` `DROP TABLE access_groups;` (lands together

@@ -1,15 +1,8 @@
 # Authentication & authorization
 
-**Status:** implemented through Phase 3 (content access); federation (Phase 4) deferred
+**Status:** implemented (roles-only access model); federation (Phase 4) deferred
 **Builds on:** the listener/route-group architecture (`docs/architecture/listeners-and-config.md`)
 **Concept source:** `madshare.org` (server-side access rules, default-deny, sharing scopes)
-
-> **⚠ Superseded in part (decided 2026-06-07): moving to a roles-only model.**
-> Layer B (access groups + content grants, §2/§4.2/§5.2/§5.3) is being **removed**
-> — see `docs/plans/access-roles-only.md`. The three content permissions collapse
-> into a single `content.access`. Anonymous guest/license access (§5.1) is kept.
-> This doc still describes the as-built two-layer code; it will be rewritten when
-> the plan is implemented. Read the plan for the target model.
 
 ## 1. Goals & scope
 
@@ -21,27 +14,28 @@ From `madshare.org` and the planning discussion:
   *except* files explicitly marked guest-playable (open / non-copyrighted).
 - Per-file **`license`** metadata and an opt-in policy to auto-derive the
   guest-playable flag from it.
-- **Custom access groups** deciding who may listen to what (artist / album / file).
+- An authenticated user with a content capability may reach the **whole**
+  library; there is no per-artist/album/file user restriction (a roles-only
+  model — see `docs/plans/access-roles-only.md`).
 - Federation (server-to-server trust) is acknowledged but **deferred** — the
   model must not preclude it.
 
 Two clients exist today (browser web UI, programmatic API callers) and a third
 later (peer servers). The design serves the first two now.
 
-## 2. The two-layer model
+## 2. The access model (roles-only)
 
-Keep these orthogonal — conflating them tangles the schema:
+Authorization is a single concept: **roles bundle capability permissions**, and
+holding a capability is all it takes to act. Permissions are *what actions you
+may perform* (upload, delete, edit metadata, manage users/roles, manage
+federation, and `content.access` = play/download the library).
 
-- **Layer A — Capabilities** (*what actions you may perform*, global): upload,
-  delete, edit metadata, manage users/roles, manage federation, play, download.
-  Modelled as **fine-grained permissions bundled into roles**.
-- **Layer B — Content access** (*what media you may see/play*, per-resource):
-  ACL grants from access-groups to content scopes, plus the guest-playable flag
-  (a grant to the "anonymous public" principal).
-
-A user with the `listener` role (Layer A: may play/download *in principle*) can
-still only reach the specific albums/artists/files that Layer B grants them.
-Both checks must pass.
+There is **no** per-content (artist / album / file) restriction for
+authenticated users: any user holding `content.access` may reach the whole
+library. The only separate axis is the **anonymous public** — a logged-out
+request may reach a file only when it is explicitly `guest_playable` or matches
+the opt-in license auto-derive policy (§5). That is a guest/license gate on the
+anonymous principal, not an ACL system.
 
 ## 3. Authentication
 
@@ -100,7 +94,7 @@ Startup logic:
 This keeps the secret from being a permanent at-rest credential: it matters for
 exactly one startup and is inert thereafter.
 
-## 4. Layer A — RBAC (capabilities)
+## 4. RBAC (capabilities)
 
 ### 4.1 Permissions (code-defined constants)
 
@@ -115,9 +109,7 @@ file.delete         delete any file        (owners may always delete their own u
 metadata.edit       edit media_metadata / license / guest_playable
 library.share       set library-wide sharing scope (madnetwork/friends/none)
 federation.manage   manage trusted peers (future)
-content.play        stream media
-content.download    download media
-content.all         bypass Layer-B ACLs (see entire library)
+content.access      play/download any file in the library
 ```
 
 ### 4.2 Roles = bundles (seed data, extensible)
@@ -128,23 +120,20 @@ custom roles are allowed later (`role.manage`).
 | Role | Permissions |
 |---|---|
 | `admin` | all |
-| `moderator` | `file.delete`, `metadata.edit`, `content.play/download/all` (+ federation approvals later) |
-| `uploader` | `file.upload`, `content.play/download/all` |
-| `listener` | `content.play`, `content.download`, `content.all` |
+| `moderator` | `file.delete`, `metadata.edit`, `content.access` (+ federation approvals later) |
+| `uploader` | `file.upload`, `content.access` |
+| `listener` | `content.access` |
 
 A user may hold multiple roles; effective permissions = union.
 
-**`listener` = "may listen to the whole library."** As of migration `010`, the
-built-in `listener` and `uploader` roles hold `content.all`, so any *authenticated*
-user sees, plays and downloads the entire library — Layer-B grants are not needed
-for them. This matches the owner's intent that "listener" is simply the
-full-library listening role. Default-deny still applies to **anonymous**
-(not-logged-in) requests, which see only guest-playable / free-licensed files.
-Access groups + content grants (§5) remain for **custom roles** that deliberately
-lack `content.all` (e.g. a future "restricted listener" who may reach only
-certain artists/albums).
+**`listener` = "may listen to the whole library."** Every built-in content role
+holds `content.access`, so any *authenticated* user sees, plays and downloads the
+entire library. Default-deny still applies to **anonymous** (not-logged-in)
+requests, which see only guest-playable / free-licensed files (§5). A custom
+role created without `content.access` falls back to that same anonymous/guest
+view.
 
-## 5. Layer B — content access
+## 5. Anonymous access: guest-playable & license
 
 ### 5.1 Guest-playable & license (per file)
 
@@ -165,39 +154,27 @@ override (`guest_playable_manual = 1`) always wins regardless of the policy.
 The admin opts in and owns the legal risk (tag-sourced licenses are unverified).
 See `docs/architecture/license-access.md` for implementation details.
 
-### 5.2 Access groups & grants (ACLs)
-
-```
-access_groups(id, name)
-access_group_members(group_id, user_id)
-content_grants(id, group_id, scope_type, scope_artist, scope_album, scope_file_id)
-   scope_type ∈ {all, artist, album, file}
-```
-
-`scope_type=all` grants the whole library to the group; `artist`/`album` match by
-the metadata identifiers the library already uses; `file` targets one file id.
-
-### 5.3 The access decision
+### 5.2 The access decision
 
 For a request to play/download file *F*:
 
-- **Anonymous:** allowed iff `F.guest_playable = 1` (explicit admin grant) **or**
-  the auto-derive policy is enabled and `F.license` is on the allowlist and no
-  explicit override is set (`guest_playable_manual = 0`).
-- **Authenticated user U:** allowed iff U has `content.play` (or `content.download`)
-  **and** one of: U holds `content.all`; *F* is guest-accessible (either branch
-  above); or some group U belongs to has a `content_grant` covering *F* (`all`,
-  or matching artist/album, or that file). Otherwise **deny** (404, not 403, to
-  avoid leaking existence).
+- **Authenticated user holding `content.access`:** allowed for any live file.
+- **Anonymous (or a user without `content.access`):** allowed iff
+  `F.guest_playable = 1` (explicit admin grant) **or** the auto-derive policy is
+  enabled and `F.license` is on the allowlist with no manual override
+  (`guest_playable_manual = 0`). Otherwise **deny** (404, not 403, to avoid
+  leaking existence).
 
-The same predicate filters library listings (`/api/artists|albums|tracks`) so
-users only see what they may reach.
+The same guest predicate (`accessClause`, no bind parameters) filters library
+listings (`/api/files|artists|albums|tracks`, via the `*Guest` repo queries) so
+the guest view only shows reachable files; holders of `content.access` use the
+unfiltered listings.
 
 **Soft-deleted (trashed) files** are an additional invisible class: a file with
 `deleted_at IS NOT NULL` is excluded from all listings and blocked at
-`/files/*` for any identity that lacks `content.all`, regardless of the access
-group state. Identities holding `content.all` (admin, moderator) pass through
-so the Trash tab can preview them. See `docs/architecture/soft-delete.md`.
+`/files/*` for any identity that lacks `content.access`. Identities holding
+`content.access` (admin, moderator, …) pass through so the Trash tab can preview
+them. See `docs/architecture/soft-delete.md`.
 
 ## 6. Schema (new migration)
 
@@ -250,32 +227,18 @@ CREATE TABLE user_roles (
   PRIMARY KEY (user_id, role_id)
 );
 
-CREATE TABLE access_groups (
-  id   INTEGER PRIMARY KEY,
-  name TEXT    NOT NULL UNIQUE
-);
-CREATE TABLE access_group_members (
-  group_id INTEGER NOT NULL REFERENCES access_groups(id) ON DELETE CASCADE,
-  user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  PRIMARY KEY (group_id, user_id)
-);
-CREATE TABLE content_grants (
-  id           INTEGER PRIMARY KEY,
-  group_id     INTEGER NOT NULL REFERENCES access_groups(id) ON DELETE CASCADE,
-  scope_type   TEXT    NOT NULL,                  -- all|artist|album|file
-  scope_artist TEXT,
-  scope_album  TEXT,
-  scope_file_id INTEGER REFERENCES files(id) ON DELETE CASCADE,
-  created_at   INTEGER NOT NULL
-);
-
--- Layer-B columns on the existing files table.
+-- Per-file ownership + anonymous-access columns on the existing files table.
 ALTER TABLE files ADD COLUMN uploaded_by    INTEGER REFERENCES users(id);
 ALTER TABLE files ADD COLUMN guest_playable INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE files ADD COLUMN license        TEXT;
 
 -- Seed built-in roles + their permissions (admin/moderator/uploader/listener).
 ```
+
+> The original `003_auth.sql` also created `access_groups` /
+> `access_group_members` / `content_grants` for a per-content ACL layer. That
+> layer was removed (migration `012_drop_access_groups.sql`) in favour of the
+> roles-only model; the tables no longer exist.
 
 `audit_log` (§9) is a candidate for the same migration.
 
@@ -292,7 +255,7 @@ inserted into the chain after `Recoverer`/`CORS` and before the route groups:
    TODO in `api.RegisterAdmin`, and wraps the upload (`file.upload`), delete
    (`file.delete`), and metadata (`metadata.edit`) handlers.
 3. **Content-access check**: per-resource, inside the read/stream/list handlers,
-   applying the §5.3 predicate.
+   applying the §5.2 decision (`content.access` bypass, else the guest predicate).
 4. **CSRF**: state-changing requests authenticated *by cookie* must carry a CSRF
    token (double-submit cookie, or a required custom header that simple
    cross-site form posts can't set). Bearer-token requests are exempt (the token
@@ -311,7 +274,7 @@ Login/logout/token endpoints (new, in the `api` group):
 Not designed here, but the model leaves room: a server identity keypair, a
 trusted-peer table, signed inter-server requests, and file **provenance**
 (`uploaded_by` null + an origin-server reference) feeding the org doc's
-approve/disapprove spam controls. Layer B's "anonymous public" and library
+approve/disapprove spam controls. The "anonymous public" guest gate and library
 sharing scope (madnetwork / friends / none) are the hooks federated visibility
 will extend.
 
@@ -339,7 +302,7 @@ will extend.
    gate uses a real permission rather than a throwaway flag — Phase 2 is then pure
    enforcement (no new schema). The change-password UI (incl. the forced
    first-run flow) is implemented.
-2. **RBAC (Layer A)** — **IMPLEMENTED** (enforcement; schema already seeded in
+2. **RBAC** — **IMPLEMENTED** (enforcement; schema already seeded in
    Phase 1). Migration `004_uploaded_by_audit.sql` adds `files.uploaded_by` and
    the `audit_log` table. Gating via `Deps.protect(perm)` (a pass-through when
    `Auth` is unset, so `NewRouter`/tests stay open; active in `buildHandler`
@@ -370,7 +333,7 @@ will extend.
    gated by `user.manage`): full account lifecycle from the admin page's *Users*
    section.
    - `GET /api/admin/users` — list users with their roles, disabled flag, and
-     `password_change_required` (also feeds the access-group membership picker).
+     `password_change_required`.
    - `GET /api/admin/roles` — the assignable roles (the four seeded built-ins).
    - `POST /api/admin/users` — create `{username, password, roles?,
      require_password_change?}`. **Default role is `listener`** (play + download)
@@ -397,36 +360,28 @@ will extend.
 
    **Deferred:** username rename (unique-constraint + live-session implications),
    and custom roles via `role.manage` (still future).
-3. **Content access (Layer B)** — **IMPLEMENTED**:
-   - **Done (3a, migration 005):** `access_groups`/`access_group_members`/
-     `content_grants` tables, `files.guest_playable`/`license` columns, the §5.3
-     access predicate (`database.FileAccessibleByHash`) + management DB methods.
-   - **Done (3b):** **default-deny flipped** on `/files/*` play/download via
-     `Deps.fileAccessGuard` (content.all bypass, guest_playable, or a group grant;
-     404 on denial; cover images not gated; pass-through when auth unconfigured).
-   - **Done (3c, migration 006):** management API under `/api/admin/access/*`
-     (groups/members/grants — gated by `user.manage`), per-file `/api/admin/files/
-     {hash}/{guest,license}` (gated by `metadata.edit`), and the auto-derive
-     policy at `/api/admin/settings/autoderive` (`user.manage`). **Listing
-     endpoints are now access-filtered**: `/api/files|artists|albums|tracks` use
-     `*Filtered` repo queries for non-`content.all` identities (anonymous sees
-     only guest-playable), pass-through when auth is unconfigured. The opt-in
-     license→guest **auto-derivation** is a DB-backed `settings` key/value policy
-     (`access.autoderive.*`); it only ever *grants*, skips files whose
-     `guest_playable` was set manually (`files.guest_playable_manual`), and runs
-     on a license change or via an explicit "apply now" sweep (`ApplyAutoDerive`).
-     The admin page gained an Access-groups section, per-file guest/license
-     controls in the files table, and an auto-publish policy panel (all gated by
-     the signed-in user's permissions). Auto-derivation storage/permission choices
-     were settled with the owner during implementation (DB setting + admin UI;
-     `user.manage` for group administration).
-   - **Note (still deferred):** a file's uploader is not auto-granted play access
-     (only content.all / grant / guest) — revisit owner-play if desired.
-   - **(3d, migration 010):** the built-in `listener` and `uploader` roles were
-     granted `content.all`, so any authenticated user sees the full library
-     (§4.2). This makes access-group grants a no-op for the built-in roles;
-     they remain meaningful only for custom roles without `content.all` and for
-     constraining nobody else by default. Anonymous default-deny is unchanged.
+3. **Content access** — **IMPLEMENTED** (roles-only):
+   - `files.guest_playable`/`license` columns + the access predicate
+     (`database.FileAccessibleByHash`).
+   - **Default-deny** on `/files/*` play/download via `Deps.fileAccessGuard`
+     (`content.access` bypass, else the guest/license predicate; 404 on denial;
+     cover images not gated; pass-through when auth unconfigured).
+   - Per-file `/api/admin/files/{hash}/{guest,license}` (gated by
+     `metadata.edit`) and the auto-derive policy at
+     `/api/admin/settings/autoderive` (`user.manage`). **Listing endpoints are
+     access-filtered**: `/api/files|artists|albums|tracks` use the `*Guest` repo
+     queries for identities without `content.access` (anonymous sees only
+     guest-playable / free-licensed), pass-through when auth is unconfigured. The
+     opt-in license→guest **auto-derivation** is a DB-backed `settings` key/value
+     policy (`access.autoderive.*`); it only ever *grants* and skips files whose
+     `guest_playable` was set manually (`files.guest_playable_manual`). The admin
+     files table carries per-file guest/license controls plus an auto-publish
+     policy panel.
+   - Every built-in content role holds `content.access` (the whole library);
+     a custom role without it falls back to the anonymous/guest view. Anonymous
+     default-deny is unchanged.
+   - **Note (still deferred):** a file's uploader is not auto-granted access
+     (only `content.access` / guest) — revisit owner-play if desired.
 4. **Federation authn** (future).
 
 ## 11. Decisions (settled with the owner)

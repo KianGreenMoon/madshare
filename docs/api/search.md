@@ -22,9 +22,8 @@ Returns artists, albums, and tracks whose names contain the query string as a ca
 
 The endpoint respects the caller's identity:
 
-- **Authenticated users** receive only content they are permitted to access (via access groups, content grants, or guest-playable flag). See `docs/architecture/auth.md` §5.
-- **Anonymous callers** receive only guest-playable content (files with `guest_playable = 1` or auto-derived from a guest license).
-- **Users holding `content.all`** (admins) bypass access filtering and see the full library.
+- **Users holding `content.access`** (admins and the built-in content roles) see the full library.
+- **Anonymous callers (and authenticated users without `content.access`)** receive only guest-playable content (files with `guest_playable = 1` or auto-derived from a guest license). See `docs/architecture/auth.md` §5.
 
 ---
 

@@ -109,18 +109,15 @@ func sanitizeFilename(name string) string {
 	return name
 }
 
-// accessFilter reports whether library listings should be access-filtered for
-// this request, and the actor id to filter by. Filtering applies only when
-// authz is configured and the identity lacks content.access (full-library users
-// see everything); when authz is off it mirrors fileAccessGuard's pass-through.
-func (h *handler) accessFilter(ctx context.Context) (userID sql.NullInt64, filter bool) {
+// guestListing reports whether library listings should be restricted to the
+// guest-visible subset for this request. That is the case only when authz is
+// configured and the identity lacks content.access (full-library users see
+// everything); when authz is off it mirrors fileAccessGuard's pass-through.
+func (h *handler) guestListing(ctx context.Context) bool {
 	if !h.authzEnabled {
-		return sql.NullInt64{}, false
+		return false
 	}
-	if auth.FromContext(ctx).Has(auth.PermContentAccess) {
-		return sql.NullInt64{}, false
-	}
-	return actorID(ctx), true
+	return !auth.FromContext(ctx).Has(auth.PermContentAccess)
 }
 
 func (h *handler) listFiles(w http.ResponseWriter, r *http.Request) {
@@ -128,8 +125,8 @@ func (h *handler) listFiles(w http.ResponseWriter, r *http.Request) {
 		entries []*database.FileListEntry
 		err     error
 	)
-	if uid, filter := h.accessFilter(r.Context()); filter {
-		entries, err = h.repo.ListFilesFiltered(r.Context(), uid)
+	if h.guestListing(r.Context()) {
+		entries, err = h.repo.ListFilesGuest(r.Context())
 	} else {
 		entries, err = h.repo.ListFiles(r.Context())
 	}

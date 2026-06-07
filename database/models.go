@@ -116,7 +116,7 @@ type TrackEntry struct {
 	MimeType        string
 }
 
-// SearchResults is returned by Search and SearchFiltered.
+// SearchResults is returned by Search and SearchGuest.
 type SearchResults struct {
 	Artists []*ArtistEntry
 	Albums  []*AlbumEntry

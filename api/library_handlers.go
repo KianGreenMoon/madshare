@@ -42,8 +42,8 @@ func (h *handler) listArtists(w http.ResponseWriter, r *http.Request) {
 		artists []*database.ArtistEntry
 		err     error
 	)
-	if uid, filter := h.accessFilter(r.Context()); filter {
-		artists, err = h.repo.ListArtistsFiltered(r.Context(), uid)
+	if h.guestListing(r.Context()) {
+		artists, err = h.repo.ListArtistsGuest(r.Context())
 	} else {
 		artists, err = h.repo.ListArtists(r.Context())
 	}
@@ -75,8 +75,8 @@ func (h *handler) listAlbums(w http.ResponseWriter, r *http.Request) {
 		albums []*database.AlbumEntry
 		err    error
 	)
-	if uid, filter := h.accessFilter(r.Context()); filter {
-		albums, err = h.repo.ListAlbumsByArtistFiltered(r.Context(), artist, uid)
+	if h.guestListing(r.Context()) {
+		albums, err = h.repo.ListAlbumsByArtistGuest(r.Context(), artist)
 	} else {
 		albums, err = h.repo.ListAlbumsByArtist(r.Context(), artist)
 	}
@@ -118,8 +118,8 @@ func (h *handler) listTracks(w http.ResponseWriter, r *http.Request) {
 		tracks []*database.TrackEntry
 		err    error
 	)
-	if uid, filter := h.accessFilter(r.Context()); filter {
-		tracks, err = h.repo.ListTracksByAlbumArtistFiltered(r.Context(), artist, album, uid)
+	if h.guestListing(r.Context()) {
+		tracks, err = h.repo.ListTracksByAlbumArtistGuest(r.Context(), artist, album)
 	} else {
 		tracks, err = h.repo.ListTracksByAlbumArtist(r.Context(), artist, album)
 	}
@@ -170,8 +170,8 @@ func (h *handler) search(w http.ResponseWriter, r *http.Request) {
 		results *database.SearchResults
 		err     error
 	)
-	if uid, filter := h.accessFilter(r.Context()); filter {
-		results, err = h.repo.SearchFiltered(r.Context(), q, uid)
+	if h.guestListing(r.Context()) {
+		results, err = h.repo.SearchGuest(r.Context(), q)
 	} else {
 		results, err = h.repo.Search(r.Context(), q)
 	}
