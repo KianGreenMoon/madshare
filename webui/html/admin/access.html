@@ -7,6 +7,7 @@
   <meta name="api-url" content="{{.APIURL}}">
   <link rel="stylesheet" href="/static/css/app.css">
   <link rel="stylesheet" href="/static/css/admin-shell.css">
+  <link rel="stylesheet" href="/static/css/admin-access.css">
 </head>
 <body>
 
@@ -14,10 +15,22 @@
 {{template "admin-shell" .}}
 
 <main class="admin-main">
-  <div class="admin-placeholder">
-    <h2>Access groups</h2>
-    <p>Groups, members and content grants will live here. (Phase 1 scaffold.)</p>
-  </div>
+  <section aria-labelledby="groupsHeading">
+    <h2 class="section-title" id="groupsHeading">Access groups</h2>
+    <p class="section-copy">
+      Groups bundle users and grant them access to content scopes (whole library,
+      an artist, an album, or a single file). A listener can only play what a
+      group they belong to is granted — plus anything marked guest-playable.
+    </p>
+
+    <form class="inline-form" id="groupCreateForm">
+      <label for="groupName" class="visually-hidden">New group name</label>
+      <input type="text" id="groupName" placeholder="New group name…" autocomplete="off" required>
+      <button type="submit" class="btn btn-neutral">Create group</button>
+    </form>
+
+    <div class="groups-list" id="groupsList" aria-live="polite"></div>
+  </section>
 </main>
 
 {{template "auth-modals" .}}

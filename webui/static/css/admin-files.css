@@ -115,15 +115,7 @@ tr.playing-row .play-btn { color: var(--accent); }
   font-size: 13px;
   white-space: nowrap;
 }
-.license-select {
-  padding: var(--space-1) var(--space-2);
-  background: var(--surface);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  font: inherit;
-  font-size: 13px;
-}
+/* .license-select is shared — defined in admin-shell.css */
 
 /* Inline delete confirm */
 .delete-confirm {

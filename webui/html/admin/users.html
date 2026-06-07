@@ -7,6 +7,7 @@
   <meta name="api-url" content="{{.APIURL}}">
   <link rel="stylesheet" href="/static/css/app.css">
   <link rel="stylesheet" href="/static/css/admin-shell.css">
+  <link rel="stylesheet" href="/static/css/admin-users.css">
 </head>
 <body>
 
@@ -14,10 +15,31 @@
 {{template "admin-shell" .}}
 
 <main class="admin-main">
-  <div class="admin-placeholder">
-    <h2>Users</h2>
-    <p>Account creation and management will live here. (Phase 1 scaffold.)</p>
-  </div>
+  <section aria-labelledby="usersHeading">
+    <h2 class="section-title" id="usersHeading">Users</h2>
+    <p class="section-copy">
+      Create and manage accounts. A <strong>Listener</strong> can play and
+      download music; an <strong>Uploader</strong> can also add files; an
+      <strong>Admin</strong> can do everything. What a listener may actually
+      reach is still governed by access groups.
+    </p>
+
+    <form class="inline-form" id="userCreateForm">
+      <label for="newUserName" class="visually-hidden">Username</label>
+      <input type="text" id="newUserName" placeholder="Username" autocomplete="off" required>
+      <label for="newUserPass" class="visually-hidden">Password</label>
+      <input type="password" id="newUserPass" placeholder="Password (min 8)" autocomplete="new-password" required>
+      <label for="newUserRole" class="visually-hidden">Role</label>
+      <select id="newUserRole" class="license-select" aria-label="Role"></select>
+      <label class="check-row">
+        <input type="checkbox" id="newUserForceChange">
+        <span>Require password change at first login</span>
+      </label>
+      <button type="submit" class="btn btn-neutral">Create user</button>
+    </form>
+
+    <div class="users-list" id="usersList" aria-live="polite"></div>
+  </section>
 </main>
 
 {{template "auth-modals" .}}

@@ -91,6 +91,85 @@
   gap: var(--space-7);
 }
 
+/* ── Section headings + copy (base .section-title is in app.css) ── */
+.section-title--danger { color: var(--danger); }
+.section-title--files {
+  margin-bottom: 0;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 16px;
+  color: var(--text);
+}
+.section-copy {
+  font-size: 14px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  max-width: 64ch;
+  margin: 0 0 var(--space-4);
+}
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* ── Shared form controls + cards (used by Files, Users, Access) ── */
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  margin-top: var(--space-3);
+}
+.inline-form input[type="text"],
+.inline-form input[type="password"] {
+  flex: 1 1 180px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: inherit;
+}
+.license-select,
+.grant-input {
+  padding: var(--space-1) var(--space-2);
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: inherit;
+  font-size: 13px;
+}
+.grant-input[hidden] { display: none; }
+
+.groups-list,
+.users-list {
+  display: grid;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+.group-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-4) var(--space-5);
+}
+.group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.group-name { margin: 0; font-size: 1.05rem; }
+.group-sub {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
 /* ── Placeholder card (scaffold; replaced as each page is built out) ── */
 .admin-placeholder {
   padding: var(--space-6);
