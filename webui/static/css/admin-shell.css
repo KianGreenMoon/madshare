@@ -9,7 +9,39 @@
   --danger:        var(--error);
   --danger-bg:     rgba(224, 92, 92, 0.10);
   --danger-border: rgba(224, 92, 92, 0.35);
+  --danger-solid:  #c0392b; /* solid danger: white text passes AA */
 }
+
+/* ── Destructive buttons + spinner (shared across admin pages) ──
+   app.css carries .btn / .btn-neutral; the destructive variants and the small
+   size live here because only the admin surface uses them. */
+.btn-destructive-outline {
+  background: transparent;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.btn-destructive-outline:hover:not(:disabled) { background: var(--danger-bg); }
+
+.btn-destructive-solid {
+  background: var(--danger-solid);
+  border-color: var(--danger-solid);
+  color: #fff;
+  font-weight: 600;
+}
+.btn-destructive-solid:hover:not(:disabled) { filter: brightness(1.1); }
+
+.btn-sm { padding: var(--space-1) var(--space-3); font-size: 13px; }
+
+.row-spinner {
+  display: inline-block;
+  width: 14px; height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .row-spinner { animation-duration: 2s; } }
 
 /* ── Persistent admin banner ── */
 .admin-banner {

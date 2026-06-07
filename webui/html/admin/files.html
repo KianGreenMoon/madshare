@@ -7,6 +7,8 @@
   <meta name="api-url" content="{{.APIURL}}">
   <link rel="stylesheet" href="/static/css/app.css">
   <link rel="stylesheet" href="/static/css/admin-shell.css">
+  <link rel="stylesheet" href="/static/css/admin-files.css">
+  <link rel="stylesheet" href="/static/css/player.css">
 </head>
 <body>
 
@@ -14,12 +16,68 @@
 {{template "admin-shell" .}}
 
 <main class="admin-main">
-  <div class="admin-placeholder">
-    <h2>Files</h2>
-    <p>File management and music editing will live here. (Phase 1 scaffold.)</p>
-  </div>
+  <section aria-labelledby="filesHeading">
+    <div class="files-bar">
+      <h2 class="section-title section-title--files" id="filesHeading">Files (<span id="fileCount">0</span>)</h2>
+      <div class="files-search">
+        <label for="fileFilter" class="visually-hidden">Filter files</label>
+        <input type="search" id="fileFilter" placeholder="Filter files…" autocomplete="off">
+      </div>
+    </div>
+
+    <div class="files-table-wrap">
+      <table class="files-table">
+        <thead>
+          <tr>
+            <th scope="col">Title</th>
+            <th scope="col">Artist</th>
+            <th scope="col">Album</th>
+            <th scope="col" class="col-size">Size</th>
+            <th scope="col" class="col-access">Access</th>
+            <th scope="col" class="col-actions">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="filesBody" aria-busy="true">
+          <!-- populated by JS -->
+        </tbody>
+      </table>
+    </div>
+  </section>
 </main>
 
+<!-- Metadata edit modal -->
+<div class="modal-backdrop hidden" id="editModal" role="dialog" aria-modal="true" aria-labelledby="editTitle">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="editTitle">Edit metadata</h2>
+      <button class="btn-close" id="editClose" aria-label="Close">&times;</button>
+    </div>
+    <form class="edit-form" id="editForm">
+      <label>Title
+        <input type="text" id="editTitleInput" autocomplete="off">
+      </label>
+      <label>Artist
+        <input type="text" id="editArtist" autocomplete="off">
+      </label>
+      <label>Album artist
+        <input type="text" id="editAlbumArtist" autocomplete="off">
+      </label>
+      <label>Album
+        <input type="text" id="editAlbum" autocomplete="off">
+      </label>
+      <p class="modal-body" id="editNote">
+        Renaming an album or artist may orphan its existing cover image
+        (covers are keyed by album&nbsp;+&nbsp;artist).
+      </p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-neutral" id="editCancel">Cancel</button>
+        <button type="submit" class="btn btn-neutral" id="editSubmit">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{{template "player-bar" .}}
 {{template "auth-modals" .}}
 
 <script type="module" src="/static/js/admin/files.js"></script>

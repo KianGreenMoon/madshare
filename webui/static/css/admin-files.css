@@ -1,0 +1,213 @@
+/* admin-files.css — the admin Files page: the files table, per-file access
+   controls, and the metadata-edit form. Loaded with app.css + admin-shell.css. */
+
+.files-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+  flex-wrap: wrap;
+}
+.files-search input[type="search"] {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+  padding: var(--space-2) var(--space-3);
+  min-width: 220px;
+}
+.files-search input[type="search"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.files-table-wrap {
+  max-height: 64vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.files-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.files-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.files-table .col-size,
+.files-table .col-actions { text-align: right; }
+
+.files-table tbody tr { transition: background 120ms ease; }
+.files-table tbody tr:hover { background: var(--surface-hover); }
+.files-table tbody tr.playing-row { background: var(--accent-glow); }
+.files-table tbody td {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.files-table tbody tr:last-child td { border-bottom: none; }
+
+.cell-title { font-weight: 500; }
+.cell-title.is-fallback { font-weight: 400; font-style: italic; color: var(--text-muted); }
+.cell-hash {
+  display: block;
+  font-size: 13px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, monospace;
+  margin-top: 2px;
+}
+.cell-muted { color: var(--text-muted); }
+.cell-size {
+  text-align: right;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.cell-actions { text-align: right; white-space: nowrap; }
+.cell-actions .btn + .btn { margin-left: var(--space-2); }
+
+/* Play button (per row, drives the shared preview player) */
+.play-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 50%;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 120ms ease, background 120ms ease;
+}
+.play-btn:hover { color: var(--accent); background: var(--surface-hover); }
+.play-btn:focus-visible { outline: 2px solid var(--accent); }
+tr.playing-row .play-btn { color: var(--accent); }
+
+/* Per-file access controls */
+.access-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+.guest-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.license-select {
+  padding: var(--space-1) var(--space-2);
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: inherit;
+  font-size: 13px;
+}
+
+/* Inline delete confirm */
+.delete-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+.delete-confirm-label { font-size: 13px; color: var(--text); }
+
+/* Table-level states */
+.table-state-row td {
+  text-align: center;
+  color: var(--text-muted);
+  padding: var(--space-6) var(--space-4);
+}
+.empty-state { color: var(--text-muted); }
+.empty-state .drop-icon { font-size: 40px; }
+.empty-state p { margin-top: var(--space-2); font-size: 14px; }
+
+/* Row removal animation */
+@keyframes rowOut { to { opacity: 0; } }
+.row-removing td { animation: rowOut 150ms ease forwards; }
+@media (prefers-reduced-motion: reduce) { .row-removing td { animation: none; opacity: 0; } }
+
+/* Metadata edit form (inside the shared modal) */
+.edit-form {
+  display: grid;
+  gap: var(--space-3);
+}
+.edit-form label {
+  display: grid;
+  gap: var(--space-1);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.edit-form input {
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: inherit;
+}
+.edit-form input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ── Responsive: collapse table to cards below 640px ── */
+@media (max-width: 640px) {
+  .files-table-wrap { border: none; max-height: none; overflow: visible; }
+  .files-table thead { display: none; }
+  .files-table,
+  .files-table tbody,
+  .files-table tr,
+  .files-table td { display: block; width: 100%; }
+
+  .files-table tbody tr {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: var(--space-3);
+    padding: var(--space-2);
+  }
+  .files-table tbody td {
+    border-bottom: none;
+    padding: var(--space-1) var(--space-2);
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-3);
+    text-align: left;
+  }
+  .files-table tbody td::before {
+    content: attr(data-label);
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+  .files-table td.cell-title-td::before { align-self: flex-start; }
+  .cell-size { text-align: right; }
+  .cell-actions { display: block; }
+  .cell-actions .btn,
+  .cell-actions .delete-confirm { width: 100%; }
+  .cell-actions .btn + .btn { margin-left: 0; margin-top: var(--space-2); }
+  .cell-actions .delete-confirm { justify-content: stretch; flex-wrap: wrap; }
+  .cell-actions .delete-confirm .btn { flex: 1; }
+}
