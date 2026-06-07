@@ -21,7 +21,7 @@ const Available = true
 // embeds exist only in the !nowebui build, so a -tags nowebui binary ships
 // without them.
 //
-//go:embed html/*.html
+//go:embed html/*.html html/admin/*.html
 var htmlFS embed.FS
 
 //go:embed static
@@ -60,14 +60,31 @@ var (
 	adminTmpl   = buildPageTmpl("html/admin.html")
 )
 
+// adminSubPages are the reworked admin sub-pages, each its own routed page under
+// /admin/* sharing the admin shell. The key is the route suffix and the .SubPage
+// value; the value is the template/file base name. The legacy /admin page
+// (adminTmpl) stays until the rework is complete (see docs/plans/admin-panel-rework.md).
+var adminSubPages = map[string]*template.Template{
+	"files":    buildPageTmpl("html/admin/files.html"),
+	"users":    buildPageTmpl("html/admin/users.html"),
+	"access":   buildPageTmpl("html/admin/access.html"),
+	"prune":    buildPageTmpl("html/admin/prune.html"),
+	"trash":    buildPageTmpl("html/admin/trash.html"),
+	"settings": buildPageTmpl("html/admin/settings.html"),
+}
+
 // pageData is the data injected into every page. APIURL is the absolute API
 // origin written into <meta name="api-url">; it is empty for the bundled,
 // same-origin server so the front-end falls back to relative URLs.
 // Page is the current page identifier used by the shared header partial to
 // mark the active nav link ("library", "upload", "admin", "cmus").
+// SubPage marks the active link in the secondary admin nav ("" = Overview,
+// "files", "users", "access", "prune", "trash", "settings"); it is empty for
+// non-admin pages.
 type pageData struct {
-	APIURL string
-	Page   string
+	APIURL  string
+	Page    string
+	SubPage string
 }
 
 func makeHandler(tmpl *template.Template, tmplName string, data pageData) http.HandlerFunc {
@@ -103,4 +120,8 @@ func Register(r chi.Router, apiBase string) {
 // group (alongside the API's /api/admin/* endpoints), not the webui group.
 func RegisterAdminPage(r chi.Router, apiBase string) {
 	r.Get("/admin", makeHandler(adminTmpl, "admin.html", pageData{APIURL: apiBase, Page: "admin"}))
+	for sub, tmpl := range adminSubPages {
+		file := sub + ".html" // template name = file base, e.g. "files.html"
+		r.Get("/admin/"+sub, makeHandler(tmpl, file, pageData{APIURL: apiBase, Page: "admin", SubPage: sub}))
+	}
 }

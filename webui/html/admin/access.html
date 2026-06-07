@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Madshare &mdash; Admin &middot; Access</title>
+  <meta name="api-url" content="{{.APIURL}}">
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/admin-shell.css">
+</head>
+<body>
+
+{{template "header" .}}
+{{template "admin-shell" .}}
+
+<main class="admin-main">
+  <div class="admin-placeholder">
+    <h2>Access groups</h2>
+    <p>Groups, members and content grants will live here. (Phase 1 scaffold.)</p>
+  </div>
+</main>
+
+{{template "auth-modals" .}}
+
+<script type="module" src="/static/js/admin/access.js"></script>
+</body>
+</html>
