@@ -7,6 +7,7 @@
   <meta name="api-url" content="{{.APIURL}}">
   <link rel="stylesheet" href="/static/css/app.css">
   <link rel="stylesheet" href="/static/css/admin-shell.css">
+  <link rel="stylesheet" href="/static/css/admin-prune.css">
 </head>
 <body>
 
@@ -14,11 +15,40 @@
 {{template "admin-shell" .}}
 
 <main class="admin-main">
-  <div class="admin-placeholder">
-    <h2>Verify &amp; Prune</h2>
-    <p>The verify/prune danger zone will live here. (Phase 1 scaffold.)</p>
-  </div>
+  <section class="danger-zone" aria-labelledby="pruneHeading">
+    <h2 class="section-title section-title--danger" id="pruneHeading">Verify &amp; Prune</h2>
+    <p class="danger-copy">
+      Verify that every database record still has its file on disk. Records whose
+      blob is missing are <strong>dangling</strong> and can be pruned. Preview is
+      non-destructive &mdash; it only scans and reports.
+    </p>
+    <label class="check-row deep-verify-row">
+      <input type="checkbox" id="deepVerify">
+      <span>
+        <strong>Deep verify</strong> &mdash; re-read and re-hash every file to also
+        catch <em>corrupted</em> blobs (slower; reads all content).
+      </span>
+    </label>
+    <button class="btn btn-destructive-outline" id="previewPrune">Preview prune</button>
+
+    <div class="prune-results" id="pruneResults" aria-live="polite"></div>
+  </section>
 </main>
+
+<!-- Prune confirmation modal -->
+<div class="modal-backdrop hidden" id="pruneModal" role="dialog" aria-modal="true" aria-labelledby="pruneModalTitle" aria-describedby="pruneModalBody">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="pruneModalTitle">Prune records?</h2>
+      <button class="btn-close" id="closePruneModal" aria-label="Close">&times;</button>
+    </div>
+    <p class="modal-body" id="pruneModalBody"></p>
+    <div class="modal-actions">
+      <button class="btn btn-neutral" id="cancelPrune">Cancel</button>
+      <button class="btn btn-destructive-solid" id="confirmPrune">Prune records</button>
+    </div>
+  </div>
+</div>
 
 {{template "auth-modals" .}}
 

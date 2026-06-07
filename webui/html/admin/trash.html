@@ -14,10 +14,34 @@
 {{template "admin-shell" .}}
 
 <main class="admin-main">
-  <div class="admin-placeholder">
-    <h2>Trash</h2>
-    <p>The trash bucket (restore / delete forever) will live here. (Phase 1 scaffold.)</p>
-  </div>
+  <section aria-labelledby="trashHeading">
+    <div class="files-bar">
+      <h2 class="section-title section-title--files" id="trashHeading">Trash (<span id="trashCount">0</span>)</h2>
+    </div>
+    <p class="section-copy">
+      Files moved to trash are hidden from the library but their blobs remain on disk.
+      Restore to bring a file back, or <em>Delete forever</em> to permanently remove
+      the blob and all records.
+    </p>
+
+    <div class="files-table-wrap">
+      <table class="files-table">
+        <thead>
+          <tr>
+            <th scope="col">Title</th>
+            <th scope="col">Artist</th>
+            <th scope="col">Album</th>
+            <th scope="col" class="col-size">Size</th>
+            <th scope="col">Deleted</th>
+            <th scope="col" class="col-actions">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="trashBody" aria-busy="true">
+          <!-- populated by JS -->
+        </tbody>
+      </table>
+    </div>
+  </section>
 </main>
 
 {{template "auth-modals" .}}

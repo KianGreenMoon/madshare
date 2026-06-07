@@ -1,0 +1,83 @@
+/* admin-prune.css — the Verify & Prune danger zone: result panels and the
+   dangling-record list. Loaded with app.css + admin-shell.css. */
+
+.danger-zone {
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius);
+  padding: var(--space-5);
+}
+.danger-copy {
+  font-size: 14px;
+  color: var(--text);
+  margin-bottom: var(--space-4);
+  max-width: 60ch;
+}
+.danger-copy strong { font-weight: 600; }
+
+.deep-verify-row {
+  margin: var(--space-3) 0 var(--space-4);
+  align-items: flex-start;
+  max-width: 60ch;
+}
+
+.prune-results { margin-top: var(--space-4); }
+.prune-results:empty { margin-top: 0; }
+
+.result-panel {
+  border-radius: var(--radius);
+  padding: var(--space-4);
+  font-size: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.result-panel.is-success { border-color: var(--success); }
+.result-panel.is-warning { border-color: var(--danger-border); }
+.result-panel.is-error   { border-color: var(--danger); }
+.result-panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 600;
+  margin-bottom: var(--space-2);
+}
+.result-panel.is-success .result-panel-icon { color: var(--success); }
+.result-panel.is-warning .result-panel-icon,
+.result-panel.is-error   .result-panel-icon { color: var(--danger); }
+
+.dangling-list {
+  list-style: none;
+  margin: var(--space-3) 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-1);
+  max-height: 240px;
+  overflow-y: auto;
+}
+.dangling-list li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  font-size: 13px;
+  padding: var(--space-1) 0;
+}
+.dangling-name { color: var(--text); }
+.dangling-hash {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, monospace;
+}
+.dangling-reason {
+  margin-left: auto;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--border);
+}
+.dangling-reason.is-missing { color: var(--text-muted); }
+.dangling-reason.is-corrupt {
+  color: var(--error);
+  border-color: var(--danger);
+}
