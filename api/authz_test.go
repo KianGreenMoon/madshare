@@ -108,19 +108,19 @@ func TestAuthz_FileAccessEnforced(t *testing.T) {
 	if code := get(http.DefaultClient); code != http.StatusNotFound {
 		t.Errorf("anonymous blob GET = %d, want 404 (default-deny)", code)
 	}
-	// Admin holds content.all -> 200.
+	// Admin holds content.access -> 200.
 	if code := get(admin); code != http.StatusOK {
 		t.Errorf("admin blob GET = %d, want 200", code)
 	}
-	// A restricted user (content.play/download, no content.all) with no grant
-	// -> 404. The built-in listener role now holds content.all (full library).
+	// A restricted user (no content.access) with no grant -> 404. The built-in
+	// listener role holds content.access (full library).
 	restricted := makeRestrictedRole(t, db)
 	makeUser(t, db, "res", "restricted-pass-1", restricted)
 	resClient := clientFor(t, srv.URL, "res", "restricted-pass-1")
 	if code := get(resClient); code != http.StatusNotFound {
 		t.Errorf("ungranted restricted blob GET = %d, want 404", code)
 	}
-	// A listener holds content.all (migration 010) -> 200, no grant needed.
+	// A listener holds content.access -> 200, no grant needed.
 	makeUser(t, db, "lis", "listener-pass-1", auth.RoleListener)
 	lis := clientFor(t, srv.URL, "lis", "listener-pass-1")
 	if code := get(lis); code != http.StatusOK {

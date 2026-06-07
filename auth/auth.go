@@ -19,9 +19,11 @@ const (
 	PermMetadataEdit     = "metadata.edit"
 	PermLibraryShare     = "library.share"
 	PermFederationManage = "federation.manage"
-	PermContentPlay      = "content.play"
-	PermContentDownload  = "content.download"
-	PermContentAll       = "content.all"
+	// PermContentAccess — may reach the whole library (play/download any file).
+	// Collapses the former content.play/content.download/content.all trio under
+	// the roles-only access model (docs/plans/access-roles-only.md). Anonymous
+	// access is still governed separately by the guest-playable/license policy.
+	PermContentAccess = "content.access"
 )
 
 // SessionCookieName is the cookie carrying the opaque session token.

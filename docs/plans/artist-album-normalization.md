@@ -6,7 +6,8 @@
 **Sequencing:** do `docs/plans/access-roles-only.md` **first**. Once Layer B is
 gone, `accessClause` no longer references artist/album strings, so the query
 rewrite here is a pure library/cover change with no access-control risk. Migration
-numbers below assume the access-drop migration took `011`.
+numbers below assume the access-drop took `011` (permission collapse) + `012`
+(table drop), so the artist/album entities land in `013`.
 
 ## Goal
 
@@ -36,7 +37,7 @@ on a read-then-write check.
 
 ## Phase 1 — schema + resolver + backfill
 
-1. **Migration `012_artist_album_entities.sql`:**
+1. **Migration `013_artist_album_entities.sql`:**
    - `CREATE TABLE artists (…)`, `CREATE TABLE albums (…)` (see design doc).
    - `ALTER TABLE media_metadata ADD COLUMN artist_id …; ADD COLUMN album_id …;`
      plus the two indexes.
@@ -109,7 +110,7 @@ queue and `<files_dir>/images/<base_key>/` layout are unaffected (keyed by
   (per the migration-gotchas note) — update them.
 - New `Repository` methods (or signature changes to existing ones) break the api
   `fakeRepo` in `api/handlers_test.go` — add the stubs.
-- Image-table rebuild in migration `012` must preserve `updated_at`/`object_key`;
+- Image-table rebuild in migration `013` must preserve `updated_at`/`object_key`;
   back it with a test that a pre-existing cover survives the backfill onto its new
   ID.
 

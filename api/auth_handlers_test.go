@@ -66,23 +66,15 @@ func makeUser(t *testing.T, db *database.DB, username, password, role string) in
 	return id
 }
 
-// makeRestrictedRole creates a non-built-in role with content.play +
-// content.download but NOT content.all, and returns its name. The built-in
-// listener/uploader roles now hold content.all (full-library access, migration
-// 010), so grant-based access tests use this role to exercise the Layer-B
-// access-group machinery for users who are deliberately not full-library.
+// makeRestrictedRole creates a non-built-in role that lacks content.access, and
+// returns its name. The built-in listener/uploader roles hold content.access
+// (full-library), so grant-based access tests use this role to exercise the
+// Layer-B access-group machinery for users who are deliberately not full-library.
 func makeRestrictedRole(t *testing.T, db *database.DB) string {
 	t.Helper()
 	const name = "restricted"
-	res, err := db.Exec(`INSERT INTO roles (name, built_in) VALUES (?, 0)`, name)
-	if err != nil {
+	if _, err := db.Exec(`INSERT INTO roles (name, built_in) VALUES (?, 0)`, name); err != nil {
 		t.Fatalf("create restricted role: %v", err)
-	}
-	rid, _ := res.LastInsertId()
-	for _, p := range []string{"content.play", "content.download"} {
-		if _, err := db.Exec(`INSERT INTO role_permissions (role_id, permission) VALUES (?, ?)`, rid, p); err != nil {
-			t.Fatalf("grant %s: %v", p, err)
-		}
 	}
 	return name
 }
@@ -130,8 +122,8 @@ func TestAuth_LoginMeLogout(t *testing.T) {
 	if me.Username != "admin" {
 		t.Errorf("me.username = %q, want admin", me.Username)
 	}
-	if !contains(me.Permissions, auth.PermFileDelete) || !contains(me.Permissions, auth.PermContentAll) {
-		t.Errorf("admin permissions = %v, missing file.delete/content.all", me.Permissions)
+	if !contains(me.Permissions, auth.PermFileDelete) || !contains(me.Permissions, auth.PermContentAccess) {
+		t.Errorf("admin permissions = %v, missing file.delete/content.access", me.Permissions)
 	}
 	if !me.PasswordChangeRequired {
 		t.Error("bootstrap admin should require a password change")

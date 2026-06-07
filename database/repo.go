@@ -40,7 +40,7 @@ type Repository interface {
 	// ListFilesFiltered, ListArtistsFiltered, ListAlbumsByArtistFiltered, and
 	// ListTracksByAlbumArtistFiltered are the access-filtered counterparts of the
 	// listings above: they return only what the user (invalid userID =
-	// anonymous) may reach per the §5.3 predicate. Callers holding content.all
+	// anonymous) may reach per the §5.3 predicate. Callers holding content.access
 	// use the unfiltered variants.
 	ListFilesFiltered(ctx context.Context, userID sql.NullInt64) ([]*FileListEntry, error)
 	ListArtistsFiltered(ctx context.Context, userID sql.NullInt64) ([]*ArtistEntry, error)
@@ -104,7 +104,7 @@ type Repository interface {
 
 	// FileAccessibleByHash reports whether the user (invalid userID = anonymous)
 	// may play/download the file with the given hash. Callers holding the
-	// content.all permission bypass this. Unknown hashes return false.
+	// content.access permission bypass this. Unknown hashes return false.
 	FileAccessibleByHash(ctx context.Context, hash string, userID sql.NullInt64) (bool, error)
 
 	// --- Cover image variants & async job queue (Phase 1: upload & covers) ---

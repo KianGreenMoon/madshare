@@ -33,7 +33,7 @@ func TestUsers_GatedByUserManage(t *testing.T) {
 
 // TestUsers_CreateListenerCanPlay covers the headline use case: an admin creates
 // a regular listener account, and that user can authenticate. The default role
-// (no roles given) is "listener" = content.play + content.download.
+// (no roles given) is "listener" = content.access.
 func TestUsers_CreateListenerCanPlay(t *testing.T) {
 	srv, _ := newAuthTestServer(t)
 	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
@@ -63,13 +63,10 @@ func TestUsers_CreateListenerCanPlay(t *testing.T) {
 	if me.Username != "music_fan" {
 		t.Errorf("me.username = %q, want music_fan", me.Username)
 	}
-	if !hasRole(me.Permissions, auth.PermContentPlay) || !hasRole(me.Permissions, auth.PermContentDownload) {
-		t.Errorf("listener perms = %v, want play+download", me.Permissions)
-	}
-	// listener now also holds content.all (migration 010): a logged-in listener
-	// sees and can play the whole library, without any access-group grant.
-	if !hasRole(me.Permissions, auth.PermContentAll) {
-		t.Errorf("listener perms = %v, want content.all (full library)", me.Permissions)
+	// listener holds content.access: a logged-in listener sees and can play the
+	// whole library (full-library access under the roles-only model).
+	if !hasRole(me.Permissions, auth.PermContentAccess) {
+		t.Errorf("listener perms = %v, want content.access (full library)", me.Permissions)
 	}
 }
 

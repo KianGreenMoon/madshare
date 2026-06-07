@@ -104,7 +104,7 @@ func (db *DB) ListFiles(ctx context.Context) ([]*FileListEntry, error) {
 
 // ListFilesFiltered returns only the files the user (invalid userID = anonymous)
 // may play/download, applying the §5.3 access predicate. Callers holding the
-// content.all permission should use the unfiltered ListFiles instead.
+// content.access permission should use the unfiltered ListFiles instead.
 func (db *DB) ListFilesFiltered(ctx context.Context, userID sql.NullInt64) ([]*FileListEntry, error) {
 	return db.listFiles(ctx, accessClause, userID)
 }

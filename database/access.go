@@ -35,7 +35,7 @@ var guestAccessibleExpr = `(f.guest_playable = 1 OR ` + licenseClause + `)`
 // accessClause is the SQL predicate (reused by listing filters) that decides
 // whether the file aliased `f` (joined to media_metadata `m`) is reachable by
 // the user bound to the first parameter. It does NOT account for the
-// content.all permission — callers holding that bypass access checks entirely.
+// content.access permission — callers holding that bypass access checks entirely.
 // Bind order: the user id (sql.NullInt64; invalid => anonymous, only guest
 // files match).
 var accessClause = `(
@@ -57,7 +57,7 @@ var accessClause = `(
 // FileAccessibleByHash reports whether the user (invalid userID = anonymous)
 // may play/download the file with the given content hash. It returns false for
 // unknown hashes and for soft-deleted (trashed) files. Callers must
-// short-circuit this for identities holding the content.all permission.
+// short-circuit this for identities holding the content.access permission.
 func (db *DB) FileAccessibleByHash(ctx context.Context, hash string, userID sql.NullInt64) (bool, error) {
 	var ok bool
 	err := db.QueryRowContext(ctx, `

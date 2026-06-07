@@ -80,39 +80,54 @@ user-id parameter (they only ever serve the anonymous/guest set now). Update the
 
 ## Phasing
 
-1. **Migration `011_drop_access_groups.sql`** — `DROP TABLE content_grants;`
-   `DROP TABLE access_group_members;` `DROP TABLE access_groups;` Re-seed/rewrite
-   role permissions: replace `content.play`/`content.download`/`content.all` rows
-   with `content.access` for the built-in roles (admin/moderator/uploader/
-   listener). *No data kept* — there are no real grants in use (migration 010
-   made them a no-op for built-ins).
-2. **`auth` package** — replace the three content-permission constants with
-   `PermContentAccess = "content.access"`; update `RequirePermission` call sites
-   and any capability checks in the library/file handlers.
-3. **`database/access.go`** — strip the `content_grants` branch from
+Split into two always-green commits. The table DROP can't land while code still
+queries those tables, so it moves into the second commit alongside the code/UI
+removal — the migration that drops tables is therefore `012`, and the
+artist/album work shifts to `013`.
+
+### Phase 1 — permission collapse (DONE, commit on `aidev`)
+
+1. **Migration `011_content_access_permission.sql`** — re-seed role permissions:
+   delete `content.play`/`content.download`/`content.all` rows, insert
+   `content.access` for the built-in roles 1–4. *Does not drop any table* (Layer B
+   still works for non-built-in roles until Phase 2). `content.play`/`download`
+   were never enforced as gates; only `content.all` was, at the file-access
+   bypass.
+2. **`auth` package** — the three content-permission constants collapse to
+   `PermContentAccess = "content.access"`; the two bypass sites
+   (`api/handlers.go` `accessFilter`, `api/api.go` file-access guard) now check
+   `content.access`. Tests + comments updated; `database_test.go` migration
+   version → 11.
+
+### Phase 2 — remove Layer B
+
+3. **Migration `012_drop_access_groups.sql`** — `DROP TABLE content_grants;`
+   `DROP TABLE access_group_members;` `DROP TABLE access_groups;` (lands together
+   with the code below so nothing queries a dropped table).
+5. **`database/access.go`** — strip the `content_grants` branch from
    `accessClause` and drop its bind param; delete the group/grant CRUD + types.
-4. **`database/library.go` + `repo.go`** — rename `*Filtered`→`*Guest`, drop the
+6. **`database/library.go` + `repo.go`** — rename `*Filtered`→`*Guest`, drop the
    `userID` param, simplify the queries (they no longer reference
    `access_group_members`/`content_grants`).
-5. **`api`** — delete the group/grant handlers + their store interface methods
-   from `access_handlers.go`; update path selection to use `content.access`.
-6. **Web UI** — delete the Access page (html/js/css) and its nav entry; verify
+7. **`api`** — delete the group/grant handlers + their store interface methods
+   from `access_handlers.go`.
+8. **Web UI** — delete the Access page (html/js/css) and its nav entry; verify
    the admin shell and dashboard no longer link it.
-7. **Docs** — rewrite `docs/architecture/auth.md` (collapse §2 to one layer,
+9. **Docs** — rewrite `docs/architecture/auth.md` (collapse §2 to one layer,
    delete §5.2/§5.3 Layer-B parts, update §4 permissions table and §6 schema,
    drop the access-group rows). Keep §5.1 (guest/license). Update
    `docs/architecture/license-access.md` cross-refs.
-8. **Tests** — remove Layer-B tests; adjust the migration-count assertions in
-   `database/database_test.go` (latest migration bumps); update `fakeRepo`.
+10. **Tests** — remove Layer-B tests; bump the migration-count assertions in
+    `database/database_test.go` (table-set + version change); update `fakeRepo`.
 
 ## Known test/inter-dependency gotchas
 
-- A new migration bumps the "latest migration" number asserted in
-  `database/database_test.go` (per the migration-gotchas note). The `011`
-  migration *drops* tables, so the schema snapshot tests change too.
-- Renaming `*Filtered`→`*Guest` and removing `content.all` ripples into the api
-  `fakeRepo` and any test that constructs grants. Grep `content.all`,
-  `content_grants`, `AccessGroup`, `*Filtered` before declaring done.
+- Each new migration bumps the "latest migration" number asserted in
+  `database/database_test.go` (per the migration-gotchas note). The Phase-2 `012`
+  migration *drops* tables, so the table-set snapshot test changes too.
+- Renaming `*Filtered`→`*Guest` and removing the group code ripples into the api
+  `fakeRepo` and any test that constructs grants. Grep `content_grants`,
+  `AccessGroup`, `*Filtered` before declaring Phase 2 done.
 - `auth.RequirePermission(file.delete)` on the admin group is unaffected.
 
 ## Out of scope / deferred

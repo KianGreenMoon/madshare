@@ -70,7 +70,7 @@ type handler struct {
 	// maxUploadSize caps the upload request body in bytes (from config).
 	maxUploadSize int64
 	// authzEnabled mirrors Deps.Auth != nil: when true, library listings are
-	// access-filtered for the requesting identity (content.all and anonymous
+	// access-filtered for the requesting identity (content.access and anonymous
 	// handled in the listing handlers). When false (open embedding / tests),
 	// listings are unfiltered, matching fileAccessGuard's pass-through.
 	authzEnabled bool
@@ -111,13 +111,13 @@ func sanitizeFilename(name string) string {
 
 // accessFilter reports whether library listings should be access-filtered for
 // this request, and the actor id to filter by. Filtering applies only when
-// authz is configured and the identity lacks content.all (admins/moderators see
-// everything); when authz is off it mirrors fileAccessGuard's pass-through.
+// authz is configured and the identity lacks content.access (full-library users
+// see everything); when authz is off it mirrors fileAccessGuard's pass-through.
 func (h *handler) accessFilter(ctx context.Context) (userID sql.NullInt64, filter bool) {
 	if !h.authzEnabled {
 		return sql.NullInt64{}, false
 	}
-	if auth.FromContext(ctx).Has(auth.PermContentAll) {
+	if auth.FromContext(ctx).Has(auth.PermContentAccess) {
 		return sql.NullInt64{}, false
 	}
 	return actorID(ctx), true

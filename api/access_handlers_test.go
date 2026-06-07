@@ -88,8 +88,8 @@ func TestManage_GatedByUserManage(t *testing.T) {
 
 func TestManage_GrantUnlocksPlayback(t *testing.T) {
 	srv, db := newAuthTestServer(t)
-	// A restricted user (content.play/download but no content.all) is governed by
-	// Layer-B grants; the built-in listener role now sees the whole library.
+	// A restricted user (no content.access) is governed by Layer-B grants; the
+	// built-in listener role sees the whole library.
 	restricted := makeRestrictedRole(t, db)
 	lisID := makeUser(t, db, "lis", "listener-pass-1", restricted)
 
@@ -195,7 +195,7 @@ func TestListings_AnonymousCannotBrowsePrivate(t *testing.T) {
 		t.Errorf("anon stream of private file = %d, want 404", code)
 	}
 
-	// Admin (content.all) always sees the full library.
+	// Admin (content.access) always sees the full library.
 	var adminFiles []map[string]any
 	doJSON(t, admin, http.MethodGet, srv.URL+"/api/files", nil, &adminFiles)
 	if len(adminFiles) != 1 {
@@ -238,7 +238,7 @@ func insertTaggedFile(t *testing.T, db *database.DB, hash, artist, album, title 
 }
 
 // TestListings_TrackFilteringOverHTTP exercises the /api/tracks access filter on
-// the wire (handler accessFilter + content.all bypass + the *Filtered query),
+// the wire (handler accessFilter + content.access bypass + the *Filtered query),
 // which the DB-only test cannot reach.
 func TestListings_TrackFilteringOverHTTP(t *testing.T) {
 	srv, db := newAuthTestServer(t)
@@ -258,10 +258,10 @@ func TestListings_TrackFilteringOverHTTP(t *testing.T) {
 	if n := count(http.DefaultClient); n != 0 {
 		t.Errorf("anon /api/tracks (private) = %d, want 0", n)
 	}
-	// Admin holds content.all and bypasses the filter entirely.
+	// Admin holds content.access and bypasses the filter entirely.
 	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
 	if n := count(admin); n != 1 {
-		t.Errorf("admin /api/tracks (content.all) = %d, want 1", n)
+		t.Errorf("admin /api/tracks (content.access) = %d, want 1", n)
 	}
 	// Once guest-playable, the anonymous track listing reveals it.
 	if _, err := db.SetGuestPlayable(context.Background(), hash, true); err != nil {

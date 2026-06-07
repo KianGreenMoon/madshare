@@ -250,7 +250,7 @@ func (d Deps) fileAccessGuard() func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			if id := auth.FromContext(r.Context()); id.Has(auth.PermContentAll) {
+			if id := auth.FromContext(r.Context()); id.Has(auth.PermContentAccess) {
 				next.ServeHTTP(w, r)
 				return
 			}
