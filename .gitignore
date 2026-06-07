@@ -1,4 +1,5 @@
 data/**
+exe/
 CLAUDE.md
 .claude/
 madshare.toml

@@ -324,10 +324,12 @@ All open questions are settled:
    subdir paths in `buildPageTmpl`.
 3. **CSS — shared `admin-shell.css` + a few page sheets.** Page-specific CSS only
    where a page genuinely needs it (`admin-files.css`, `admin-prune.css`).
-4. **Shared player retrofit — do it in this rework.** Build `player.js` /
-   `player.css` / `player-bar` partial and migrate **all three** consumers onto
-   it: admin Files, library, and cmus. Library/cmus migrations must preserve
-   current behavior exactly (playlist next/prev/shuffle, `.track-row` highlight,
-   duration write-back; cmus art/scrubber/mute) by keeping those concerns in each
-   page's thin caller over Player events. This is its own phase with focused
-   regression testing because it touches the working library player.
+4. **Shared player retrofit — library now, cmus deferred.** Build `player.js` /
+   `player.css` / `player-bar` partial and migrate the **library** page + the
+   admin **Files** page onto it. Library migration must preserve current behavior
+   exactly (playlist next/prev/shuffle, `.track-row` highlight, duration
+   write-back, search-mode playback) by keeping those concerns in the page's thin
+   caller over Player events. **cmus is deferred:** it is currently a paused/
+   disabled view ("temporarily unavailable") with a distinct player design and
+   its own (non-shared) header, so migrating it now is wasted, unverifiable work.
+   Migrate cmus when it is un-paused.

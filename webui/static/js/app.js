@@ -1,4 +1,5 @@
 import { initAuth, openLoginModal } from './auth.js';
+import { createPlayer, fmtTime } from './player.js';
 
 // Read API base from HTML meta. Empty default => relative, same-origin URLs
 // (the page and API share an origin in the bundled server). A non-empty value
@@ -391,39 +392,64 @@ async function reloadCurrentLevel() {
   else                               drillToTracks(drill.artist, drill.album);
 }
 
-// ── Player ───────────────────────────────────────────────────────────────
+// ── Player (thin caller over the shared player.js core) ────────────────────
+// player.js owns the audio element + bar UI and everything intrinsic to
+// playback; the playlist, row highlighting, and duration write-back stay here
+// and are driven through the player's callbacks.
 
 // playlist is declared in the library section above — shared here.
-let currentIndex     = -1;
-let stopped          = false;
-let shuffle          = false;
+let currentIndex      = -1;
 let playingFromSearch = false; // true while a search-result track is the active source
 
-const audio        = document.getElementById('audio');
-const playerBar    = document.getElementById('player-bar');
-const playerTitle  = document.getElementById('playerTitle');
-const playerArtist = document.getElementById('playerArtist');
-const playerTime   = document.getElementById('playerTime');
-const progressBar  = document.getElementById('progressBar');
-const progressFill = document.getElementById('progressFill');
-const btnPlay      = document.getElementById('btnPlay');
-const btnShuffle   = document.getElementById('btnShuffle');
-const iconPlay     = document.getElementById('iconPlay');
-const iconPause    = document.getElementById('iconPause');
-const volumeSlider = document.getElementById('volume-slider');
+// advance picks what plays after a track ends or fails: a random other track in
+// shuffle mode, else the next in order; at the end of the list it stops (the
+// player already shows the play icon because the audio element is paused).
+function advance() {
+  if (player.isShuffle() && playlist.length > 1) {
+    // BUG-05: pool of other indices — no infinite loop possible
+    const others = playlist.map((_, i) => i).filter(i => i !== currentIndex);
+    playIndex(others[Math.floor(Math.random() * others.length)]);
+  } else if (currentIndex < playlist.length - 1) {
+    playIndex(currentIndex + 1);
+  }
+}
+
+const player = createPlayer({
+  onPrev: () => {
+    if (currentIndex < 0) return; // BUG-04: nothing playing yet
+    playIndex(currentIndex > 0 ? currentIndex - 1 : playlist.length - 1);
+  },
+  onNext: () => {
+    if (currentIndex < 0) return; // BUG-04: nothing playing yet
+    playIndex(currentIndex < playlist.length - 1 ? currentIndex + 1 : 0);
+  },
+  onEnded: advance,
+  onError: () => {
+    const failedRow = document.querySelector(`.track-row[data-idx="${currentIndex}"]`);
+    if (failedRow) failedRow.classList.add('unavailable');
+    advance();
+  },
+  // When a track's duration becomes known, fill it into the list (and cache it).
+  onLoadedMetadata: dur => {
+    if (currentIndex < 0) return;
+    const track = playlist[currentIndex];
+    if (!track || track.dur !== '—') return; // already known
+    const s = fmtTime(dur);
+    track.dur = s;
+    const cache = loadDurCache();
+    cache[track.url] = s;
+    saveDurCache(cache);
+    document.querySelectorAll(`.track-row[data-idx="${currentIndex}"] .track-dur`)
+      .forEach(el => { el.textContent = s; });
+  },
+});
 
 function playIndex(idx) {
   if (idx < 0 || idx >= playlist.length) return;
   currentIndex = idx;
-  stopped      = false;
 
   const track = playlist[idx];
-  audio.src = track.url;
-  audio.play().catch(() => {});
-
-  playerTitle.textContent  = track.title;
-  playerArtist.textContent = track.artist;
-  playerBar.classList.remove('hidden');
+  player.load({ url: track.url, title: track.title, artist: track.artist });
 
   // Match by data-idx so grouped views (non-sequential DOM order) work correctly
   document.querySelectorAll('.track-row').forEach(row => {
@@ -431,120 +457,6 @@ function playIndex(idx) {
     row.classList.toggle('playing', rowIdx === idx);
     if (rowIdx === idx) row.classList.remove('unavailable');
   });
-}
-
-document.getElementById('btnPrev').addEventListener('click', () => {
-  if (currentIndex < 0) return; // BUG-04: nothing playing yet
-  playIndex(currentIndex > 0 ? currentIndex - 1 : playlist.length - 1);
-});
-
-document.getElementById('btnNext').addEventListener('click', () => {
-  if (currentIndex < 0) return; // BUG-04: nothing playing yet
-  playIndex(currentIndex < playlist.length - 1 ? currentIndex + 1 : 0);
-});
-
-btnPlay.addEventListener('click', () => {
-  if (stopped && currentIndex >= 0) {
-    // BUG-10: resume from seeked position — don't reassign audio.src
-    stopped = false;
-    audio.play().catch(() => {});
-    syncPlayIcon();
-    return;
-  }
-  if (audio.paused) audio.play().catch(() => {});
-  else              audio.pause();
-});
-
-btnShuffle.addEventListener('click', () => {
-  shuffle = !shuffle;
-  btnShuffle.classList.toggle('active', shuffle);
-  const label = shuffle ? 'Shuffle on' : 'Shuffle off';
-  btnShuffle.setAttribute('aria-label', label);
-  btnShuffle.title = label;
-});
-
-audio.addEventListener('play',  syncPlayIcon);
-audio.addEventListener('pause', syncPlayIcon);
-
-// When a track loads into the player, update its duration in the list immediately.
-audio.addEventListener('loadedmetadata', () => {
-  if (currentIndex < 0 || !isFinite(audio.duration) || audio.duration <= 0) return;
-  const track = playlist[currentIndex];
-  if (track.dur !== '—') return; // already known
-  const dur = fmtTime(audio.duration);
-  track.dur = dur;
-  const cache = loadDurCache();
-  cache[track.url] = dur;
-  saveDurCache(cache);
-  document.querySelectorAll(`.track-row[data-idx="${currentIndex}"] .track-dur`)
-    .forEach(el => { el.textContent = dur; });
-});
-audio.addEventListener('ended', () => {
-  if (shuffle && playlist.length > 1) {
-    // BUG-05: build pool of other indices — no infinite loop possible
-    const others = playlist.map((_, i) => i).filter(i => i !== currentIndex);
-    playIndex(others[Math.floor(Math.random() * others.length)]);
-  } else if (currentIndex < playlist.length - 1) {
-    playIndex(currentIndex + 1);
-  } else {
-    stopped = true;
-    syncPlayIcon();
-  }
-});
-
-audio.addEventListener('error', () => {
-  const failedRow = document.querySelector(`.track-row[data-idx="${currentIndex}"]`);
-  if (failedRow) failedRow.classList.add('unavailable');
-  if (shuffle && playlist.length > 1) {
-    const others = playlist.map((_, i) => i).filter(i => i !== currentIndex);
-    playIndex(others[Math.floor(Math.random() * others.length)]);
-  } else if (currentIndex < playlist.length - 1) {
-    playIndex(currentIndex + 1);
-  } else {
-    stopped = true;
-    syncPlayIcon();
-  }
-});
-
-function syncPlayIcon() {
-  // BUG-11: derive state from audio element only — stopped flag is for button logic only
-  const playing = !audio.paused;
-  iconPlay.style.display  = playing ? 'none' : '';
-  iconPause.style.display = playing ? ''     : 'none';
-  btnPlay.setAttribute('aria-label', playing ? 'Pause' : 'Play');
-  btnPlay.title = playing ? 'Pause' : 'Play';
-}
-
-// Progress
-audio.addEventListener('timeupdate', () => {
-  if (!audio.duration) return;
-  const pct = (audio.currentTime / audio.duration) * 100;
-  progressFill.style.width = pct + '%';
-  progressBar.setAttribute('aria-valuenow', Math.round(pct));
-  playerTime.textContent = fmtTime(audio.currentTime) + ' / ' + fmtTime(audio.duration);
-});
-
-progressBar.addEventListener('click', e => {
-  if (!audio.duration) return;
-  const r = progressBar.getBoundingClientRect();
-  audio.currentTime = ((e.clientX - r.left) / r.width) * audio.duration;
-});
-
-progressBar.addEventListener('keydown', e => {
-  if (!audio.duration) return;
-  if (e.key === 'ArrowRight') audio.currentTime = Math.min(audio.duration, audio.currentTime + 5);
-  if (e.key === 'ArrowLeft')  audio.currentTime = Math.max(0, audio.currentTime - 5);
-});
-
-// Volume
-volumeSlider.addEventListener('input', () => { audio.volume = volumeSlider.value; });
-
-function fmtTime(s) {
-  if (!isFinite(s)) return '0:00';
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = String(Math.floor(s % 60)).padStart(2, '0');
-  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
 }
 
 // ── Search ───────────────────────────────────────────────────────────────

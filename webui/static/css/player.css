@@ -1,0 +1,116 @@
+/* player.css — styles for the shared player bar (the {{define "player-bar"}}
+   partial driven by player.js). Lifted out of app.css so any page that includes
+   the player (library, admin Files, …) can load just this alongside app.css,
+   which still provides the design tokens, the --player-h spacing token, and the
+   generic input[type=range] styling. */
+
+#player-bar {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+}
+#player-bar.hidden { display: none; }
+
+/* Progress bar */
+.progress-wrap {
+  position: relative;
+  width: 100%;
+  height: 4px;
+  background: var(--range-track);
+  cursor: pointer;
+  transition: height 100ms ease;
+}
+.progress-wrap:hover { height: 6px; }
+.progress-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 0%;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+/* Three-column grid: track info | controls | time+volume */
+.player-main {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-5);
+  height: 80px;
+}
+
+.player-track { min-width: 0; }
+.player-title {
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.player-artist {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.player-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.ctrl-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 120ms ease, background 120ms ease;
+  padding: 0;
+  flex-shrink: 0;
+}
+.ctrl-btn:hover  { color: var(--text); background: var(--surface-hover); }
+.ctrl-btn.active { color: var(--accent); }
+.ctrl-btn:focus-visible { outline: 2px solid var(--accent); }
+
+.ctrl-btn.primary {
+  background: var(--accent);
+  color: #fff;
+  width: 42px;
+  height: 42px;
+}
+.ctrl-btn.primary:hover { background: var(--accent-dim); color: #fff; }
+
+.player-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+
+.player-time {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.player-volume {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-muted);
+}
+
+#volume-slider { width: 76px; }
