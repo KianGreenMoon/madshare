@@ -1,24 +1,26 @@
 # Listeners, route groups, and the single-origin web UI
 
-**Status:** design / proposal (not yet implemented)
+**Status:** implemented
 **Supersedes:** the `[api]`/`[webui]` `addr` + `public_url` config layout
-**Related:** future auth layer (out of scope here)
+**Related:** the auth layer (`docs/architecture/auth.md`) is what actually
+protects routes; the listener/`serve` split is deployment topology, not access
+control.
 
 ## 1. Motivation
 
-Today the server runs two HTTP servers on two ports — the API (`:3000`) and the
-web UI (`:8080`) — and the browser is told the API's absolute address through
-the `public_url` config value, which the web UI injects into a
-`<meta name="api-url">` tag. That value is then the base for every `fetch()` the
-front-end makes.
+The original layout ran two HTTP servers on two ports — the API (`:3000`) and the
+web UI (`:8080`) — and the browser was told the API's absolute address through
+the `public_url` config value, which the web UI injected into a
+`<meta name="api-url">` tag. That value was the base for every `fetch()` the
+front-end made.
 
-`public_url` exists *only* because the two ports are two separate origins, so the
-browser needs an absolute URL to cross from the page's origin to the API's. It is
-a hardcoded address that has to be re-set for every deployment (LAN IP, ygg
-address, behind TLS, …), which is brittle and does not survive the planned move
-to a yggdrasil mesh + optional clearnet/TLS.
+`public_url` existed *only* because the two ports were two separate origins, so
+the browser needed an absolute URL to cross from the page's origin to the API's.
+It was a hardcoded address that had to be re-set for every deployment (LAN IP,
+ygg address, behind TLS, …) — brittle, and a poor fit for a yggdrasil mesh +
+optional clearnet/TLS.
 
-This proposal removes `public_url` from the normal path and replaces the
+The implemented design removes `public_url` from the normal path and replaces the
 two-fixed-ports layout with **one process that opens a list of listeners**, each
 of which serves a chosen set of **route groups**. The web UI is served
 **same-origin** with the API, so the front-end uses **relative URLs** and needs
@@ -28,11 +30,12 @@ no address configuration at all.
 
 - It **is** a way to control, per network interface, *which surface of the
   server is reachable there* — e.g. expose the API broadly but keep the web UI
-  and the (currently destructive, unauthenticated) admin endpoints on loopback.
+  and the admin endpoints on loopback.
 - It is **not** an authentication or authorization mechanism. Binding the admin
   surface to loopback narrows where it is reachable; it does not protect it.
-  Real protection is the auth layer, which is deliberately deferred. Do not
-  treat `serve` lists as access control.
+  Real protection is the auth layer (`docs/architecture/auth.md`), which gates
+  the admin group via `auth.RequirePermission`. Do not treat `serve` lists as
+  access control.
 
 ### Goals
 
@@ -62,20 +65,21 @@ Every route the server exposes belongs to exactly one **group**. A listener's
 are simply never registered on that listener's handler (a request for them gets
 `404`).
 
-| Group   | Routes                                                                 | Purpose |
-|---------|------------------------------------------------------------------------|---------|
-| `api`   | `GET /` health, `/api/*` (library), `/files/*`, `/images/*`            | The machine-facing API. This is the product. |
-| `webui` | `/` (library page), `/cmus`, `/static/*`                               | The bundled reference browser UI. |
-| `admin` | `/api/admin/*` (delete, prune) and the `/admin` page                   | Destructive operations + their UI. Currently unauthenticated. |
+| Group   | Routes                                                                          | Purpose |
+|---------|---------------------------------------------------------------------------------|---------|
+| `api`   | `/healthz`, `/source`, `/license`, `/api/*` (library), `/files/*`, `/images/*`  | The machine-facing API. This is the product. |
+| `webui` | `/` (library page), `/cmus`, `/static/*`                                         | The bundled reference browser UI. |
+| `admin` | `/api/admin/*` (delete, prune) and the `/admin` page                             | Destructive operations + their UI. The API is gated by `auth.RequirePermission`. |
 
 Notes:
 
+- The web UI owns `/`, so the health check is `GET /healthz`, not `/`.
 - The bundled `webui` reaches the API with **relative** URLs, so a listener that
   serves `webui` should also serve `api` — otherwise the page loads but every
   `fetch` 404s. Validation warns on `webui` without `api` (see §6).
 - `admin` is its own group so it can be scoped independently of `api` (e.g.
-  loopback only) until auth exists. The destructive `/api/admin/*` endpoints and
-  the `/admin` page move together as one unit.
+  loopback only) on top of the auth gating. The destructive `/api/admin/*`
+  endpoints and the `/admin` page move together as one unit.
 - When the web UI is compiled out (§5), the `webui` and the `/admin` *page* part
   of `admin` do not exist; the `/api/admin/*` endpoints still do.
 
@@ -111,6 +115,10 @@ the **same** loopback listener (which also serves `api`) — works, no
 `public_url`. Remote callers hit the public listener's `/api/...`; `/` and
 `/admin` 404 there because those groups were never mounted on it.
 
+This is independent of auth: even where `/api/admin/*` *is* mounted, the auth
+layer still gates it. The `serve` split decides reachability per socket; auth
+decides who may call what.
+
 ## 4. Config schema
 
 The `[api]` and `[webui]` sections (with `addr` / `public_url`) are **replaced**
@@ -144,7 +152,7 @@ in middleware, **not** a substitute for auth:
 - On **clearnet**, treat it as convenience/defense-in-depth, not security; source
   IPs can be spoofed or NAT'd and `X-Forwarded-*` is not consulted.
 
-Included in the first cut (see §9, decision 4).
+See §9, decision 4.
 
 ### 4.3 `api_base` (optional, rare)
 
@@ -162,7 +170,7 @@ demoted from required to optional.)
 ### 4.4 Defaults (no config file, or omitted keys)
 
 If no `[[listen]]` is given, the default is a single loopback listener serving
-the full stack — the safe default while admin is unauthenticated:
+the full stack — the safe default:
 
 ```toml
 [[listen]]
@@ -255,115 +263,33 @@ checks:
 Existing `[storage]` checks are unchanged (`files_dir` non-empty;
 `max_upload_mb` in `[1, MaxUploadMBLimit]`).
 
-## 7. Implementation plan
+## 7. Where it lives in the code
 
-Ordered so each step compiles and tests green.
+The design above is implemented as follows:
 
-### Step 1 — config schema (`config/config.go`, `config/config_test.go`)
+- **Config schema** — `config/config.go`: `ListenConfig` (`addr`/`port`/`serve`/
+  `allow_from`), `WebUIConfig.APIBase`, the exported group-token constants, the
+  `defaults()` single-loopback listener, and the §6 validation in `validate()`
+  (with the `(ListenConfig) BindAddr()` helper). Tests in `config/config_test.go`.
+- **Mountable route groups** — `api/api.go` exposes `RegisterAPI` / `RegisterAdmin`
+  (bundling deps into `api.Deps`); `webui` exposes `Register` / `RegisterAdminPage`.
+- **Per-listener serving** — `madshare.go` `buildHandler` composes a `chi.Router`
+  per listener with shared middleware (Logger, Recoverer, `api.CORS`,
+  `auth.Identify`, and the `allow_from` filter), mounts only the requested groups,
+  and `startListeners` runs one `http.Server` per `[[listen]]` with graceful
+  SIGINT/SIGTERM shutdown.
+- **Same-origin front-end** — the web UI reads `meta[name="api-url"]`
+  (= `[webui].api_base`); empty → relative URLs.
+- **Compile-out web UI** — `-tags nowebui`; `webui.Available` is the sentinel the
+  validator checks (§6 rule 5).
 
-- Remove `APIConfig`, `WebUIConfig`, the `Addr`/`PublicURL` fields, and their
-  defaults.
-- Add:
-  ```go
-  type ListenConfig struct {
-      Addr      string   `toml:"addr"`
-      Port      int      `toml:"port"`
-      Serve     []string `toml:"serve"`
-      AllowFrom []string `toml:"allow_from"`
-  }
-  type WebUIConfig struct { APIBase string `toml:"api_base"` } // optional override
-  type Config struct {
-      Listen   []ListenConfig `toml:"listen"`
-      WebUI    WebUIConfig    `toml:"webui"`
-      Database DatabaseConfig `toml:"database"`
-      Storage  StorageConfig  `toml:"storage"`
-  }
-  ```
-- `defaults()` returns the single loopback full-stack listener (§4.4).
-- Extend `validate()` with the §6 rules. Add a `(ListenConfig) BindAddr() string`
-  helper returning `net.JoinHostPort(addr, port)`.
-- Define the group token set as exported constants so `main`/`api`/`webui` agree.
-- Update `config_test.go`: drop `public_url`/`addr` cases; add listener parsing,
-  the overlap rule, unknown-group, empty-`serve`, and webui-without-api warning.
+## 8. Migration from the old layout
 
-### Step 2 — make route groups mountable (`api/api.go`, `webui/webui.go`)
-
-The blocker today: `api.NewRouter` builds the whole tree (including `/`,
-`/files`, `/images`, and `/api/admin`) and `webui.Route` calls
-`http.ListenAndServe` itself. Both need to become *register onto a router I give
-you* functions so a per-listener handler can compose any subset.
-
-- `api` package — split registration by group:
-  ```go
-  func RegisterAPI(r chi.Router, deps Deps)    // /, /api/* (non-admin), /files/*, /images/*
-  func RegisterAdmin(r chi.Router, deps Deps)  // /api/admin/*
-  ```
-  Bundle `store, repo, cacheDir, filesDir, maxUploadSize` into a `Deps` struct to
-  avoid the long parameter list. Keep `corsMiddleware`; it becomes harmless
-  same-origin and still helps non-browser/CORS clients (revisit later — with
-  same-origin we may make CORS opt-in).
-- `webui` package — stop owning the listener:
-  ```go
-  func Register(r chi.Router, apiBase string)  // /, /cmus, /static/*
-  func RegisterAdminPage(r chi.Router, apiBase string) // /admin
-  ```
-  Templates/static stay disk-relative for now (see Step 5 for embedding).
-
-### Step 3 — per-listener handler + multi-listener serving (`madshare.go`)
-
-Replace the two fixed `wg.Go` blocks with:
-
-- A `buildHandler(groups, deps, apiBase) http.Handler` that creates a
-  `chi.NewRouter()`, applies shared middleware (logger, recoverer, and
-  `allowFrom` if set), then calls the `Register*` funcs for the groups in the
-  set. Register the more specific API prefixes so the web UI's `/` does not
-  shadow `/api`/`/files`/`/images` (chi pattern precedence handles this; verify
-  `/` is an exact route, not a catch-all).
-- For each `ListenConfig`: `net.Listen("tcp", lc.BindAddr())`, construct an
-  `http.Server{Handler: ...}`, and `wg.Go(func(){ srv.Serve(ln) })`.
-- Add graceful shutdown: trap SIGINT/SIGTERM, `srv.Shutdown(ctx)` each server.
-  (Current code has none; good time to add it.)
-
-### Step 4 — front-end relative URLs (`webui/static/js/{app,cmus,admin}.js`)
-
-- Change each `const API = … || 'http://localhost:3000'` to `|| ''`.
-- Confirm every call site is `` `${API}/...` `` with a leading slash so the empty
-  base yields a valid root-relative path. (Grep shows `/api/...`, `/files/upload`,
-  `/api/admin/...`, `/api/files` — all already root-anchored.)
-- The injected `meta[name="api-url"]` content becomes `{{.APIBase}}` (empty by
-  default).
-
-### Step 5 — embed templates & static (follow-up, optional but recommended)
-
-Move `webui/html/*` and `webui/static/*` to `embed.FS` so the compiled-in UI has
-no CWD dependency (removes the "must run from project root" constraint for the
-UI). Natural partner to the build-tag work.
-
-### Step 6 — compile-out build tag (webui)
-
-- Put the web-UI registration behind a build constraint. Two files exposing the
-  same symbols:
-  - `webui/register.go`        `//go:build !nowebui`  → real `Register`/`RegisterAdminPage`
-  - `webui/register_stub.go`   `//go:build nowebui`   → stubs; a sentinel
-    `Available = false` the config validator checks (§6 rule 5).
-- Default `go build` includes the UI; `go build -tags nowebui ./...` strips it,
-  the templates/static, and the `tag`/template deps from a pure-API binary.
-
-### Step 7 — docs & example config
-
-- Rewrite `madshare.toml.example` to the `[[listen]]` layout with the §5
-  examples as comments.
-- Update `CLAUDE.md` (Configuration + Architecture sections) and `README`/concept
-  doc references from "two ports / public_url" to "listeners + route groups".
-
-## 8. Breaking changes
-
-- `[api].addr`, `[api].public_url`, `[webui].addr` are **removed**. Existing
-  `madshare.toml` files must migrate to `[[listen]]`. Acceptable: pre-release v0,
-  config file is gitignored and local.
-- The web UI no longer has its own port (default `:8080` is gone); it shares a
-  listener with the API.
-- `public_url` behaviour is replaced by relative URLs + optional `[webui].api_base`.
+The pre-`[[listen]]` layout (`[api].addr`, `[api].public_url`, `[webui].addr`,
+the separate `:8080` UI port) has been **removed**. `public_url` is replaced by
+relative same-origin URLs plus the optional `[webui].api_base`. Since the config
+file is gitignored and the project was pre-release at the time, no compatibility
+shim was kept — configs use the `[[listen]]` schema described here.
 
 ## 9. Decisions
 
@@ -371,22 +297,19 @@ Resolved with the project owner on 2026-05-29:
 
 1. **Build-tag polarity:** UI **in** by default. Plain `go build` / `go run`
    includes the web UI; `go build -tags nowebui ./...` strips it (and the
-   templates/static/`tag` deps) for a pure-API binary. (Step 6 reflects this.)
+   templates/static/`tag` deps) for a pure-API binary.
 2. **`admin` group:** the `/admin` page and the destructive `/api/admin/*` API
-   stay **coupled** as one `admin` group and move together. Revisit only when
-   auth lands.
+   stay **coupled** as one `admin` group and move together.
 3. **Same port across listeners:** **allowed.** Reusing one port across listeners
    bound to *different specific addresses* (e.g. `127.0.0.1:3000` +
    `<ygg-addr>:3000`) is supported; validation still rejects the
    `0.0.0.0`/`[::]`-vs-loopback overlap (§5.2 gotcha, §6 rule 3).
-4. **`allow_from`:** **included in v1**, not deferred. Per-listener CIDR allowlist
+4. **`allow_from`:** **included**, not deferred. Per-listener CIDR allowlist
    middleware (`403` on non-match), meaningful over yggdrasil's unspoofable
-   addresses; convenience/defense-in-depth on clearnet. Folds into the Step 3
-   `buildHandler` middleware.
+   addresses; convenience/defense-in-depth on clearnet. Runs in the
+   `buildHandler` shared middleware.
 
-Still genuinely open (revisit alongside auth):
-
-- **CORS once same-origin.** Keep permissive CORS for non-browser/remote clients
-  for now, or make it opt-in per listener? Leaning keep; defer the call to the
-  auth work.
+5. **CORS once same-origin.** Kept: `api.CORS` runs as shared middleware on every
+   listener. It is harmless same-origin and still helps non-browser/remote
+   clients. (Whether to make it opt-in per listener can be revisited later.)
 ```
