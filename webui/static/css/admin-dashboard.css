@@ -1,0 +1,45 @@
+/* admin-dashboard.css — the /admin landing: a grid of section cards. Loaded
+   with app.css + admin-shell.css. */
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.dash-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  text-decoration: none;
+  color: var(--text);
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+.dash-card:hover {
+  background: var(--surface-hover);
+  border-color: var(--accent);
+  transform: translateY(-2px);
+}
+.dash-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.dash-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.dash-card-title { font-size: 1.05rem; font-weight: 600; }
+.dash-card-count {
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius);
+  background: var(--accent-glow);
+  color: var(--accent);
+}
+.dash-card-desc { font-size: 14px; color: var(--text-muted); line-height: 1.45; }

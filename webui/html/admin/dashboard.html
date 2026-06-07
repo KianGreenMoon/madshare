@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Madshare &mdash; Admin</title>
+  <meta name="api-url" content="{{.APIURL}}">
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/admin-shell.css">
+  <link rel="stylesheet" href="/static/css/admin-dashboard.css">
+</head>
+<body>
+
+{{template "header" .}}
+{{template "admin-shell" .}}
+
+<main class="admin-main">
+  <section aria-labelledby="dashHeading">
+    <h2 class="section-title" id="dashHeading">Overview</h2>
+
+    <div class="dashboard-grid">
+      <a class="dash-card" href="/admin/files">
+        <span class="dash-card-head">
+          <span class="dash-card-title">Files</span>
+          <span class="dash-card-count" id="countFiles" hidden></span>
+        </span>
+        <span class="dash-card-desc">Browse, edit metadata, set access, and remove library files.</span>
+      </a>
+
+      <a class="dash-card" href="/upload">
+        <span class="dash-card-head"><span class="dash-card-title">Upload</span></span>
+        <span class="dash-card-desc">Add new audio files to the library.</span>
+      </a>
+
+      <a class="dash-card" href="/admin/users">
+        <span class="dash-card-head">
+          <span class="dash-card-title">Users</span>
+          <span class="dash-card-count" id="countUsers" hidden></span>
+        </span>
+        <span class="dash-card-desc">Create accounts; manage roles, passwords, and access.</span>
+      </a>
+
+      <a class="dash-card" href="/admin/access">
+        <span class="dash-card-head"><span class="dash-card-title">Access groups</span></span>
+        <span class="dash-card-desc">Bundle users and grant them content scopes.</span>
+      </a>
+
+      <a class="dash-card" href="/admin/prune">
+        <span class="dash-card-head"><span class="dash-card-title">Verify &amp; Prune</span></span>
+        <span class="dash-card-desc">Scan for dangling records and prune them.</span>
+      </a>
+
+      <a class="dash-card" href="/admin/trash">
+        <span class="dash-card-head">
+          <span class="dash-card-title">Trash</span>
+          <span class="dash-card-count" id="countTrash" hidden></span>
+        </span>
+        <span class="dash-card-desc">Restore or permanently delete trashed files.</span>
+      </a>
+
+      <a class="dash-card" href="/admin/settings">
+        <span class="dash-card-head"><span class="dash-card-title">Settings</span></span>
+        <span class="dash-card-desc">License-based auto-publish policy.</span>
+      </a>
+    </div>
+  </section>
+</main>
+
+{{template "auth-modals" .}}
+
+<script type="module" src="/static/js/admin/dashboard.js"></script>
+</body>
+</html>

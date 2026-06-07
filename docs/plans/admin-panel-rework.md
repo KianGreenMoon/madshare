@@ -1,6 +1,6 @@
 # Admin Panel Rework
 
-Status: **planned** (not started)
+Status: **implemented** (Phases 1–7 done; cmus player migration deferred)
 Branch: aidev
 
 ## Why

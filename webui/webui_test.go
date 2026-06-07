@@ -18,6 +18,18 @@ func TestAdminSubPagesRender(t *testing.T) {
 	r := chi.NewRouter()
 	RegisterAdminPage(r, "")
 
+	// The /admin landing (dashboard) shares the shell; verify it renders.
+	t.Run("dashboard", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /admin = %d, want 200", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "dashboard-grid") {
+			t.Errorf("/admin: missing dashboard grid")
+		}
+	})
+
 	for sub := range adminSubPages {
 		t.Run(sub, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/admin/"+sub, nil)

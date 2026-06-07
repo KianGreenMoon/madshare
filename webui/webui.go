@@ -57,13 +57,13 @@ var (
 	cmusTmpl    = template.Must(template.ParseFS(htmlFS, "html/cmus.html"))
 	libraryTmpl = buildPageTmpl("html/library.html")
 	uploadTmpl  = buildPageTmpl("html/upload.html")
-	adminTmpl   = buildPageTmpl("html/admin.html")
+	adminTmpl   = buildPageTmpl("html/admin/dashboard.html") // /admin landing
 )
 
 // adminSubPages are the reworked admin sub-pages, each its own routed page under
 // /admin/* sharing the admin shell. The key is the route suffix and the .SubPage
-// value; the value is the template/file base name. The legacy /admin page
-// (adminTmpl) stays until the rework is complete (see docs/plans/admin-panel-rework.md).
+// value; the value is the template. The /admin landing is the dashboard
+// (adminTmpl, SubPage ""). See docs/plans/admin-panel-rework.md.
 var adminSubPages = map[string]*template.Template{
 	"files":    buildPageTmpl("html/admin/files.html"),
 	"users":    buildPageTmpl("html/admin/users.html"),
@@ -119,7 +119,7 @@ func Register(r chi.Router, apiBase string) {
 // RegisterAdminPage mounts the /admin page. It belongs to the admin route
 // group (alongside the API's /api/admin/* endpoints), not the webui group.
 func RegisterAdminPage(r chi.Router, apiBase string) {
-	r.Get("/admin", makeHandler(adminTmpl, "admin.html", pageData{APIURL: apiBase, Page: "admin"}))
+	r.Get("/admin", makeHandler(adminTmpl, "dashboard.html", pageData{APIURL: apiBase, Page: "admin"}))
 	for sub, tmpl := range adminSubPages {
 		file := sub + ".html" // template name = file base, e.g. "files.html"
 		r.Get("/admin/"+sub, makeHandler(tmpl, file, pageData{APIURL: apiBase, Page: "admin", SubPage: sub}))
