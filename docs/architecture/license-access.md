@@ -43,14 +43,17 @@ entirely. It takes no bind parameters and has two branches:
     f.guest_playable_manual = 0
     AND f.license IS NOT NULL AND f.license != ''
     AND EXISTS (SELECT 1 FROM settings WHERE key = 'access.autoderive.enabled' AND value = '1')
-    AND ',' || COALESCE((SELECT value FROM settings WHERE key = 'access.autoderive.licenses'), '') || ','
-        LIKE '%,' || f.license || ',%'
+    AND INSTR(',' || COALESCE((SELECT value FROM settings WHERE key = 'access.autoderive.licenses'), '') || ',',
+              ',' || f.license || ',') > 0
   )
 )
 ```
 
-The LIKE trick (`',' || list || ',' LIKE '%,' || value || ',%'`) is safe here
-because the license vocabulary contains no commas.
+The comma-fencing trick (`INSTR(',' || list || ',', ',' || value || ',')`) matches
+the license as a whole list element rather than a substring. `INSTR` is used
+instead of `LIKE` so the license string is treated literally — no `%`/`_`
+metacharacters — and it is safe here because the license vocabulary contains no
+commas.
 
 ## Consequences
 
