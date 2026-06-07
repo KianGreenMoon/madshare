@@ -4,6 +4,13 @@
 **Builds on:** the listener/route-group architecture (`docs/architecture/listeners-and-config.md`)
 **Concept source:** `madshare.org` (server-side access rules, default-deny, sharing scopes)
 
+> **⚠ Superseded in part (decided 2026-06-07): moving to a roles-only model.**
+> Layer B (access groups + content grants, §2/§4.2/§5.2/§5.3) is being **removed**
+> — see `docs/plans/access-roles-only.md`. The three content permissions collapse
+> into a single `content.access`. Anonymous guest/license access (§5.1) is kept.
+> This doc still describes the as-built two-layer code; it will be rewritten when
+> the plan is implemented. Read the plan for the target model.
+
 ## 1. Goals & scope
 
 From `madshare.org` and the planning discussion:
