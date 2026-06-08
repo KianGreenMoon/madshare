@@ -333,3 +333,31 @@ All open questions are settled:
    disabled view ("temporarily unavailable") with a distinct player design and
    its own (non-shared) header, so migrating it now is wasted, unverifiable work.
    Migrate cmus when it is un-paused.
+
+## Future UI work — artist/album entity management (added 2026-06-09)
+
+The artist/album normalization plan (`docs/plans/artist-album-normalization.md`,
+backend complete) shipped **rename** and **merge** endpoints that currently have
+**no UI**. These belong in the next admin/UI rework pass, not a backend session:
+
+- **Rename** — `POST /api/artists/{artist}/rename {name}` /
+  `POST /api/albums/{album}/rename?artist=<artist> {title}` (gated
+  `metadata.edit`). The proper way to rename an album/artist as a whole: tracks
+  and the cover follow the entity; no per-track tag edit, no cover re-upload.
+- **Merge** — `POST /api/artists/{artist}/merge {into}` /
+  `POST /api/albums/{album}/merge?artist=<artist> {into_artist,into_album}`
+  (gated `metadata.edit`, **destructive**: deletes the source entity). Fold
+  duplicate spellings together. A confirm step is warranted in the UI.
+- Both are documented in `docs/api/metadata.md`.
+- **Prerequisite to consider:** the library listing API does not yet surface the
+  entity `id` in its JSON DTOs (`artistItem`/`albumItem` are name-only). The
+  rename/merge endpoints are addressed by *current name* so the UI can call them
+  without ids, but surfacing ids (and `?artist_id=`/`?album_id=` browse params)
+  would make the UI more robust against names containing `/` and the
+  empty-string bucket. Decide in the UI rework.
+
+This also **supersedes** Decision #1's note above (cover-orphan-on-rename): since
+the Phase 4 cover re-key, covers are keyed by the album/artist entity id, so an
+entity rename keeps the cover attached. A *per-track* tag edit still reclassifies
+that one track (its cover stays with the original album) — the Files page note
+should point admins at the rename endpoint for whole-album/artist renames.
