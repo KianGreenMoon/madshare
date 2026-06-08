@@ -47,6 +47,18 @@ func effectiveArtist(albumArtist, artist string) string {
 	return ""
 }
 
+// tagsFromMeta extracts the resolver inputs from a media_metadata struct. NULL
+// fields read back as their zero value (empty string / 0), which the resolver
+// treats as the unknown buckets.
+func tagsFromMeta(m *MediaMetadata) AlbumArtistTags {
+	return AlbumArtistTags{
+		Artist:      m.Artist.String,
+		AlbumArtist: m.AlbumArtist.String,
+		Album:       m.Album.String,
+		Year:        int(m.Year.Int64),
+	}
+}
+
 // resolveAlbumArtist get-or-creates the artist and album entities for a track's
 // tags and returns their ids. It is idempotent and concurrency-safe: each entity
 // is an INSERT ... ON CONFLICT ... RETURNING on its UNIQUE key, so concurrent
@@ -61,12 +73,28 @@ func effectiveArtist(albumArtist, artist string) string {
 //   - year    = set on the album from the first track that supplies one; never
 //     overwritten once present.
 func (db *DB) resolveAlbumArtist(ctx context.Context, t AlbumArtistTags) (artistID, albumID int64, err error) {
-	now := time.Now().Unix()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, 0, fmt.Errorf("resolve album/artist: begin: %w", err)
 	}
 	defer tx.Rollback()
+
+	artistID, albumID, err = resolveAlbumArtistTx(ctx, tx, t)
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, fmt.Errorf("resolve album/artist: commit: %w", err)
+	}
+	return artistID, albumID, nil
+}
+
+// resolveAlbumArtistTx is the transaction-scoped core of resolveAlbumArtist, for
+// callers already inside a transaction (InsertFile, UpdateFileMetadata). They
+// must resolve within their existing tx rather than open a nested one: the pool
+// is pinned to a single connection (Open), so a nested BeginTx would deadlock.
+func resolveAlbumArtistTx(ctx context.Context, tx *sql.Tx, t AlbumArtistTags) (artistID, albumID int64, err error) {
+	now := time.Now().Unix()
 
 	artist := effectiveArtist(t.AlbumArtist, t.Artist)
 	if err := tx.QueryRowContext(ctx,
@@ -92,9 +120,6 @@ func (db *DB) resolveAlbumArtist(ctx context.Context, t AlbumArtistTags) (artist
 		return 0, 0, fmt.Errorf("resolve album: %w", err)
 	}
 
-	if err := tx.Commit(); err != nil {
-		return 0, 0, fmt.Errorf("resolve album/artist: commit: %w", err)
-	}
 	return artistID, albumID, nil
 }
 

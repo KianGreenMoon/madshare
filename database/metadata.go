@@ -36,15 +36,27 @@ func (p MetadataPatch) IsEmpty() bool {
 // still returns the current row, so callers get a consistent echo. Returns
 // ErrFileNotFound when no files row matches hash.
 //
-// It deliberately does not touch album_images: albums are keyed by their
-// (album_artist, album) strings, so renaming a track here can orphan a cover.
-// The caller (the upload page) re-POSTs the cover to the new identity — see
-// docs/plans/upload-and-covers.md §5d/§5e.
+// When the patch changes artist, album_artist, or album, the artist_id/album_id
+// entity FKs are re-resolved so the track follows its new artist/album. A rename
+// that empties an album/artist may leave the old entity row with no tracks; such
+// orphans are harmless (the library queries JOIN through media_metadata) and are
+// reclaimed by the merge/cleanup work in a later phase.
+//
+// It deliberately does not touch album_images: covers are still keyed by the
+// (album_artist, album) strings until the Phase 4 re-key, so renaming a track
+// here can orphan a cover. The caller (the upload page) re-POSTs the cover to
+// the new identity — see docs/plans/upload-and-covers.md §5d/§5e.
 func (db *DB) UpdateFileMetadata(ctx context.Context, hash string, p MetadataPatch) (*MediaMetadata, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("update metadata: begin: %w", err)
+	}
+	defer tx.Rollback()
+
 	// Resolve the file id first so an unknown hash is a clean ErrFileNotFound
 	// even for an empty patch (where no UPDATE would otherwise run).
 	var fileID int64
-	err := db.QueryRowContext(ctx, `SELECT id FROM files WHERE hash = ?`, hash).Scan(&fileID)
+	err = tx.QueryRowContext(ctx, `SELECT id FROM files WHERE hash = ?`, hash).Scan(&fileID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrFileNotFound
 	}
@@ -72,14 +84,46 @@ func (db *DB) UpdateFileMetadata(ctx context.Context, hash string, p MetadataPat
 			args = append(args, metaNullString(*p.Artist))
 		}
 		args = append(args, fileID)
-		if _, err := db.ExecContext(ctx,
+		if _, err := tx.ExecContext(ctx,
 			`UPDATE media_metadata SET `+strings.Join(sets, ", ")+` WHERE file_id = ?`,
 			args...,
 		); err != nil {
 			return nil, fmt.Errorf("update metadata: %w", err)
 		}
+
+		// Re-resolve entities only when an identity-affecting field changed.
+		if p.Artist != nil || p.AlbumArtist != nil || p.Album != nil {
+			var t AlbumArtistTags
+			var artist, albumArtist, album sql.NullString
+			var year sql.NullInt64
+			if err := tx.QueryRowContext(ctx,
+				`SELECT artist, album_artist, album, year FROM media_metadata WHERE file_id = ?`,
+				fileID,
+			).Scan(&artist, &albumArtist, &album, &year); err != nil {
+				return nil, fmt.Errorf("update metadata: reload tags: %w", err)
+			}
+			t = AlbumArtistTags{
+				Artist:      artist.String,
+				AlbumArtist: albumArtist.String,
+				Album:       album.String,
+				Year:        int(year.Int64),
+			}
+			artistID, albumID, err := resolveAlbumArtistTx(ctx, tx, t)
+			if err != nil {
+				return nil, fmt.Errorf("update metadata: resolve entities: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE media_metadata SET artist_id = ?, album_id = ? WHERE file_id = ?`,
+				artistID, albumID, fileID,
+			); err != nil {
+				return nil, fmt.Errorf("update metadata: set entity fks: %w", err)
+			}
+		}
 	}
 
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("update metadata: commit: %w", err)
+	}
 	return db.getMetadataByFileID(ctx, fileID)
 }
 

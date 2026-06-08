@@ -234,11 +234,24 @@ func TestBackfillEntities(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
-	// Seed pre-entity rows (InsertFile leaves artist_id/album_id NULL).
+	// Seed rows, then reset them to the legacy (pre-entity) state: InsertFile now
+	// resolves entities inline (Phase 2), so to exercise the backfill we have to
+	// strip the FKs and the entities it created, simulating rows imported before
+	// the overlay existed.
 	insertSearchFile(t, db, "hashaaa1", "T1", "Daft Punk", "Discovery", "")
 	insertSearchFile(t, db, "hashaaa2", "T2", "Daft Punk", "Discovery", "") // same album
 	insertSearchFile(t, db, "hashaaa3", "T3", "Performer", "Comp", "Various Artists")
 	insertSearchFile(t, db, "hashaaa4", "T4", "", "", "") // fully untagged
+
+	for _, stmt := range []string{
+		`UPDATE media_metadata SET artist_id = NULL, album_id = NULL`,
+		`DELETE FROM albums`,
+		`DELETE FROM artists`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("reset to legacy state (%q): %v", stmt, err)
+		}
+	}
 
 	n, err := db.BackfillEntities(ctx)
 	if err != nil {
@@ -275,5 +288,94 @@ func TestBackfillEntities(t *testing.T) {
 	}
 	if again != 0 {
 		t.Errorf("second backfill updated %d rows, want 0", again)
+	}
+}
+
+// fileEntityIDs reads the artist_id/album_id FKs of a file's metadata row.
+func fileEntityIDs(t *testing.T, db *DB, hash string) (artistID, albumID sql.NullInt64) {
+	t.Helper()
+	if err := db.QueryRow(
+		`SELECT m.artist_id, m.album_id FROM media_metadata m
+		 JOIN files f ON f.id = m.file_id WHERE f.hash = ?`, hash,
+	).Scan(&artistID, &albumID); err != nil {
+		t.Fatalf("read entity ids for %s: %v", hash, err)
+	}
+	return artistID, albumID
+}
+
+func TestInsertFile_ResolvesEntitiesInline(t *testing.T) {
+	db := openMem(t)
+
+	// Two tracks of the same album resolve to one shared album entity at import.
+	insertSearchFile(t, db, "phase2aa1", "T1", "Daft Punk", "Discovery", "")
+	insertSearchFile(t, db, "phase2aa2", "T2", "Daft Punk", "Discovery", "")
+
+	a1, al1 := fileEntityIDs(t, db, "phase2aa1")
+	a2, al2 := fileEntityIDs(t, db, "phase2aa2")
+	if !a1.Valid || !al1.Valid {
+		t.Fatalf("track 1 has NULL FKs: artist=%v album=%v", a1, al1)
+	}
+	if a1 != a2 || al1 != al2 {
+		t.Errorf("same album/artist not shared: (%v,%v) vs (%v,%v)", a1, al1, a2, al2)
+	}
+	if got := countRows(t, db, "artists"); got != 1 {
+		t.Errorf("artists count = %d, want 1", got)
+	}
+	if got := countRows(t, db, "albums"); got != 1 {
+		t.Errorf("albums count = %d, want 1", got)
+	}
+
+	// The artist FK points at the right entity.
+	var name string
+	if err := db.QueryRow(`SELECT name FROM artists WHERE id = ?`, a1.Int64).Scan(&name); err != nil {
+		t.Fatalf("read artist name: %v", err)
+	}
+	if name != "Daft Punk" {
+		t.Errorf("artist name = %q, want %q", name, "Daft Punk")
+	}
+}
+
+func TestUpdateFileMetadata_ReResolvesOnRename(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertSearchFile(t, db, "phase2bb1", "T1", "Artist X", "Album Y", "")
+	_, alBefore := fileEntityIDs(t, db, "phase2bb1")
+
+	// Rename the album → album_id should move to a new entity titled "Album Z".
+	if _, err := db.UpdateFileMetadata(ctx, "phase2bb1", MetadataPatch{Album: strPtr("Album Z")}); err != nil {
+		t.Fatalf("patch album: %v", err)
+	}
+	_, alAfter := fileEntityIDs(t, db, "phase2bb1")
+	if !alAfter.Valid {
+		t.Fatalf("album_id is NULL after rename")
+	}
+	if alAfter == alBefore {
+		t.Errorf("album_id did not change after rename (%v)", alAfter)
+	}
+	var title string
+	if err := db.QueryRow(`SELECT title FROM albums WHERE id = ?`, alAfter.Int64).Scan(&title); err != nil {
+		t.Fatalf("read album title: %v", err)
+	}
+	if title != "Album Z" {
+		t.Errorf("new album title = %q, want %q", title, "Album Z")
+	}
+}
+
+func TestUpdateFileMetadata_TitleOnlyKeepsEntities(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertSearchFile(t, db, "phase2cc1", "T1", "Artist X", "Album Y", "")
+	aBefore, alBefore := fileEntityIDs(t, db, "phase2cc1")
+
+	// Patching only the track title must not re-resolve artist/album entities.
+	if _, err := db.UpdateFileMetadata(ctx, "phase2cc1", MetadataPatch{Title: strPtr("Renamed Track")}); err != nil {
+		t.Fatalf("patch title: %v", err)
+	}
+	aAfter, alAfter := fileEntityIDs(t, db, "phase2cc1")
+	if aAfter != aBefore || alAfter != alBefore {
+		t.Errorf("entities changed on title-only patch: (%v,%v) → (%v,%v)",
+			aBefore, alBefore, aAfter, alAfter)
 	}
 }

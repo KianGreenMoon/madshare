@@ -67,13 +67,26 @@ on a read-then-write check.
 > After this phase the FKs exist and are populated but nothing reads them yet —
 > safe to ship incrementally.
 
-## Phase 2 — import path
+## Phase 2 — import path — **DONE (2026-06-09)**
 
 Wire `resolveAlbumArtist` into the upload/metadata-extract path so new inserts
 set `artist_id`/`album_id` inline (no reliance on the backfill for fresh
 uploads). The `PATCH /api/files/{hash}/metadata` edit path must **re-resolve**
 entities when `artist`/`album_artist`/`album` change (and leave covers attached
 to whatever entity the track now points at). Tests for both paths.
+
+Implemented entirely inside the `database` package — `InsertFile` and
+`UpdateFileMetadata` signatures are unchanged, so the `Repository` interface and
+the api `fakeRepo` were untouched. The resolver was split into a tx-scoped core
+`resolveAlbumArtistTx(ctx, tx, tags)` (the standalone `resolveAlbumArtist` wraps
+it) so the in-transaction callers resolve within their existing tx — a nested
+`BeginTx` would deadlock against the single-connection pool. `UpdateFileMetadata`
+is now tx-wrapped: after the text-column UPDATE it re-resolves only when
+`Artist`/`AlbumArtist`/`Album` changed (a title-only patch leaves the FKs alone).
+A rename that empties an album/artist may leave an orphan entity row; harmless
+(library queries JOIN through `media_metadata`), reclaimed by the Phase 5
+merge/cleanup. Covers stay string-keyed until Phase 4, so the cover re-POST
+workaround in `upload-and-covers.md` still applies for now.
 
 ## Phase 3 — query rewrite (library + search)
 

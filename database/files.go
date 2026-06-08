@@ -74,17 +74,24 @@ func (db *DB) InsertFile(ctx context.Context, f *File, upload *FileUpload, meta 
 		if meta.ExtractedAt == 0 {
 			meta.ExtractedAt = time.Now().Unix()
 		}
+		// Resolve the artist/album entities inline so a fresh upload carries its
+		// FKs immediately, without waiting for the startup backfill.
+		artistID, albumID, err := resolveAlbumArtistTx(ctx, tx, tagsFromMeta(meta))
+		if err != nil {
+			return fmt.Errorf("resolve entities: %w", err)
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO media_metadata (
 				file_id, title, artist, album, album_artist, genre, year,
 				track_number, track_total, disc_number, composer, comment,
 				duration_seconds, bitrate, sample_rate, channels, codec,
-				tag_format, extracted_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				tag_format, extracted_at, artist_id, album_id
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			meta.FileID, meta.Title, meta.Artist, meta.Album, meta.AlbumArtist,
 			meta.Genre, meta.Year, meta.TrackNumber, meta.TrackTotal, meta.DiscNumber,
 			meta.Composer, meta.Comment, meta.DurationSeconds, meta.Bitrate,
 			meta.SampleRate, meta.Channels, meta.Codec, meta.TagFormat, meta.ExtractedAt,
+			artistID, albumID,
 		); err != nil {
 			return fmt.Errorf("insert media_metadata: %w", err)
 		}
