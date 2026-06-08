@@ -12,6 +12,16 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
+// Errors returned by the rename operations.
+var (
+	// ErrEntityNotFound is returned when no artist/album entity has the given id.
+	ErrEntityNotFound = errors.New("entity not found")
+	// ErrNameConflict is returned when a rename would collide with an existing
+	// entity (the new normalized name/title is already taken). That is a merge,
+	// not a rename — a separate, deferred operation.
+	ErrNameConflict = errors.New("name already in use")
+)
+
 // AlbumArtistTags is the subset of a track's tags the entity resolver needs to
 // derive its artist/album entities. Year is 0 when unknown.
 type AlbumArtistTags struct {
@@ -167,6 +177,96 @@ func (db *DB) LookupAlbumID(ctx context.Context, artist, album string) (int64, b
 		return 0, false, fmt.Errorf("lookup album id: %w", err)
 	}
 	return id, true, nil
+}
+
+// RenameArtist changes the display name (and dedup key) of an artist entity in
+// place. Its tracks and cover follow via their FKs — no string rewrite. Returns
+// ErrEntityNotFound when no artist has the id, or ErrNameConflict when the new
+// normalized name already belongs to a *different* artist (that is a merge, not
+// a rename). Renaming to a different casing/spacing of the same name is allowed
+// (the norm key is unchanged, only the display name updates).
+func (db *DB) RenameArtist(ctx context.Context, artistID int64, newName string) error {
+	display := strings.TrimSpace(norm.NFC.String(newName))
+	newNorm := normalizeKey(newName)
+	if newNorm == "" {
+		// An empty key is the unknown-artist bucket; renaming into it is a merge.
+		return ErrNameConflict
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("rename artist: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	var existing int64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM artists WHERE norm_name = ?`, newNorm).Scan(&existing)
+	if err == nil && existing != artistID {
+		return ErrNameConflict
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("rename artist: check conflict: %w", err)
+	}
+
+	res, err := tx.ExecContext(ctx,
+		`UPDATE artists SET name = ?, norm_name = ? WHERE id = ?`, display, newNorm, artistID)
+	if err != nil {
+		return fmt.Errorf("rename artist: update: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrEntityNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("rename artist: commit: %w", err)
+	}
+	return nil
+}
+
+// RenameAlbum changes the title (and dedup key) of an album entity in place. Its
+// tracks and cover follow via their FKs. Returns ErrEntityNotFound when no album
+// has the id, or ErrNameConflict when the new normalized title already belongs
+// to a *different* album under the same artist (that is a merge).
+func (db *DB) RenameAlbum(ctx context.Context, albumID int64, newTitle string) error {
+	display := strings.TrimSpace(norm.NFC.String(newTitle))
+	newNorm := normalizeKey(newTitle)
+	if newNorm == "" {
+		// An empty key is the unknown-album bucket; renaming into it is a merge.
+		return ErrNameConflict
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("rename album: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	var artistID int64
+	err = tx.QueryRowContext(ctx, `SELECT artist_id FROM albums WHERE id = ?`, albumID).Scan(&artistID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrEntityNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("rename album: load: %w", err)
+	}
+
+	var existing int64
+	err = tx.QueryRowContext(ctx,
+		`SELECT id FROM albums WHERE artist_id = ? AND norm_title = ?`, artistID, newNorm).Scan(&existing)
+	if err == nil && existing != albumID {
+		return ErrNameConflict
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("rename album: check conflict: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE albums SET title = ?, norm_title = ? WHERE id = ?`, display, newNorm, albumID); err != nil {
+		return fmt.Errorf("rename album: update: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("rename album: commit: %w", err)
+	}
+	return nil
 }
 
 // resolveAlbumArtistTx is the transaction-scoped core of resolveAlbumArtist, for

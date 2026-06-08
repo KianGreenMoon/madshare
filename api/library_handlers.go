@@ -538,6 +538,101 @@ func (h *handler) updateFileMetadata(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// renameArtist handles POST /api/artists/{artist}/rename. The {artist} path
+// segment is the current display name (resolved to its entity); the JSON body
+// {"name": "..."} carries the new name. The artist entity is renamed in place,
+// so all its tracks and its cover follow via their FKs — the proper way to
+// rename an artist (vs. editing every track's tag). Gated on metadata.edit.
+func (h *handler) renameArtist(w http.ResponseWriter, r *http.Request) {
+	current := chi.URLParam(r, "artist")
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	newName := strings.TrimSpace(body.Name)
+	if newName == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+
+	id, found, err := h.repo.LookupArtistID(r.Context(), current)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+
+	switch err := h.repo.RenameArtist(r.Context(), id, newName); {
+	case errors.Is(err, database.ErrNameConflict):
+		writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": "an artist with that name already exists"})
+		return
+	case errors.Is(err, database.ErrEntityNotFound):
+		http.NotFound(w, r)
+		return
+	case err != nil:
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+
+	h.audit(r.Context(), "metadata.rename", "artist:"+current, "→ "+newName)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "name": newName})
+}
+
+// renameAlbum handles POST /api/albums/{album}/rename?artist=<artist>. The
+// album is addressed by its current title (path) plus its artist (query), same
+// as the cover routes; the JSON body {"title": "..."} carries the new title.
+// The album entity is renamed in place; tracks and cover follow via their FKs.
+// Gated on metadata.edit.
+func (h *handler) renameAlbum(w http.ResponseWriter, r *http.Request) {
+	album := chi.URLParam(r, "album")
+	artist := r.URL.Query().Get("artist")
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	var body struct {
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	newTitle := strings.TrimSpace(body.Title)
+	if newTitle == "" {
+		http.Error(w, "title is required", http.StatusBadRequest)
+		return
+	}
+
+	id, found, err := h.repo.LookupAlbumID(r.Context(), artist, album)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+
+	switch err := h.repo.RenameAlbum(r.Context(), id, newTitle); {
+	case errors.Is(err, database.ErrNameConflict):
+		writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": "an album with that title already exists for this artist"})
+		return
+	case errors.Is(err, database.ErrEntityNotFound):
+		http.NotFound(w, r)
+		return
+	case err != nil:
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+
+	h.audit(r.Context(), "metadata.rename", "album:"+artist+"/"+album, "→ "+newTitle)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "title": newTitle})
+}
+
 func (h *handler) serveImageFile(w http.ResponseWriter, r *http.Request, objectKey, mimeType string) {
 	path := filepath.Join(h.imagesDir, objectKey)
 	// Defensive check: a corrupted or crafted objectKey must not escape imagesDir.

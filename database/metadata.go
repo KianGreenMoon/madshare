@@ -37,15 +37,15 @@ func (p MetadataPatch) IsEmpty() bool {
 // ErrFileNotFound when no files row matches hash.
 //
 // When the patch changes artist, album_artist, or album, the artist_id/album_id
-// entity FKs are re-resolved so the track follows its new artist/album. A rename
-// that empties an album/artist may leave the old entity row with no tracks; such
-// orphans are harmless (the library queries JOIN through media_metadata) and are
-// reclaimed by the merge/cleanup work in a later phase.
-//
-// It deliberately does not touch album_images: covers are still keyed by the
-// (album_artist, album) strings until the Phase 4 re-key, so renaming a track
-// here can orphan a cover. The caller (the upload page) re-POSTs the cover to
-// the new identity — see docs/plans/upload-and-covers.md §5d/§5e.
+// entity FKs are re-resolved so the track follows its new artist/album — this is
+// a per-track *reclassification* (the track's own tags changed), which may move
+// it to a different (or new) album entity. The album's cover, keyed by the
+// album entity id, stays with the original album and does not follow the moved
+// track. To rename an album/artist while keeping all its tracks and its cover
+// attached, use the rename endpoints (RenameArtist/RenameAlbum) instead, which
+// edit the entity in place. A reclassification that empties an album/artist may
+// leave an orphan entity row; harmless (library queries JOIN through
+// media_metadata) and reclaimed by the deferred merge/cleanup work.
 func (db *DB) UpdateFileMetadata(ctx context.Context, hash string, p MetadataPatch) (*MediaMetadata, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {

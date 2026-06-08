@@ -127,6 +127,47 @@ curl -X PATCH -H "Content-Type: application/json" \
   "http://localhost:3000/api/files/<hash>/metadata"
 ```
 
+---
+
+## Renaming an artist or album entity
+
+The `PATCH …/metadata` route above edits **one track's** tags, which
+*reclassifies* that track (it moves to whichever artist/album its new tags
+resolve to). To rename an artist or album **as a whole** — keeping every track
+and its cover attached — edit the entity in place instead:
+
+```
+POST /api/artists/{artist}/rename
+POST /api/albums/{album}/rename?artist=<artist>
+```
+
+| Route | Body | Effect |
+|-------|------|--------|
+| `POST /api/artists/{artist}/rename` | `{"name": "New Name"}` | Renames the artist entity resolved from `{artist}`. |
+| `POST /api/albums/{album}/rename` | `{"title": "New Title"}` | Renames the album entity resolved from (`?artist=`, `{album}`). |
+
+The entity is addressed by its **current** display name (same path-segment
+scheme as the cover routes, with the same `/`-in-name limitation). The rename is
+a one-row update to the entity's display name and dedup key; the tracks and the
+cover follow via their foreign keys — no per-track tag rewrite, no cover
+re-upload.
+
+Both require the `metadata.edit` permission.
+
+| Status | Condition |
+|--------|-----------|
+| 200    | Renamed. Body: `{"ok": true, "id": <entity id>, "name"/"title": "<new>"}`. |
+| 400    | Missing/empty new name. |
+| 404    | No artist/album entity matches the current name. |
+| 409    | The new name is already taken by a different entity — that is a *merge*, not a rename (merge is not yet implemented). For an album the clash is scoped to the same artist. |
+
+```bash
+# Rename an album (cover and all tracks stay attached)
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"title":"The Dark Side of the Moon"}' \
+  "http://localhost:3000/api/albums/Dark%20Side/rename?artist=Pink+Floyd"
+```
+
 ## See also
 
 - `docs/api/upload.md` — file upload and the `{title, album, artist}` echo the

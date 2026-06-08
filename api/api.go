@@ -106,6 +106,10 @@ func RegisterAPI(r chi.Router, d Deps) {
 	r.With(d.protect(auth.PermMetadataEdit)).Post("/api/artists/{artist}/image", h.uploadArtistImage)
 	r.With(d.protect(auth.PermMetadataEdit)).Post("/api/albums/{album}/image", h.uploadAlbumImage)
 	r.With(d.protect(auth.PermMetadataEdit)).Patch("/api/files/{hash}/metadata", h.updateFileMetadata)
+	// Renaming an artist/album entity edits the entity in place; tracks and
+	// covers follow via their FKs. Addressed by current name like the cover routes.
+	r.With(d.protect(auth.PermMetadataEdit)).Post("/api/artists/{artist}/rename", h.renameArtist)
+	r.With(d.protect(auth.PermMetadataEdit)).Post("/api/albums/{album}/rename", h.renameAlbum)
 
 	// Uploading new files requires file.upload. The route is registered here
 	// (rather than inside fileServer) so the gate wraps only the write path; the

@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"sync"
 	"testing"
 )
@@ -600,5 +601,126 @@ func TestAlbumImage_RoundTripByID(t *testing.T) {
 	}
 	if _, _, found, _ := db.GetAlbumImage(ctx, other); found {
 		t.Error("unrelated album reported an image")
+	}
+}
+
+// ---- Phase 5: rename --------------------------------------------------------
+
+func TestRenameArtist_TracksAndCoverFollow(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertSearchFile(t, db, "ren00001", "T1", "Old Name", "Album", "")
+	artistID, _, err := db.LookupArtistID(ctx, "Old Name")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if err := db.UpsertArtistImage(ctx, artistID, "art.png", "image/png", 1); err != nil {
+		t.Fatalf("upsert artist image: %v", err)
+	}
+
+	if err := db.RenameArtist(ctx, artistID, "New Name"); err != nil {
+		t.Fatalf("RenameArtist: %v", err)
+	}
+
+	// Same id resolves under the new name; the old name no longer resolves.
+	if id, found, _ := db.LookupArtistID(ctx, "New Name"); !found || id != artistID {
+		t.Errorf("new name resolves to id=%d found=%v, want %d/true", id, found, artistID)
+	}
+	if _, found, _ := db.LookupArtistID(ctx, "Old Name"); found {
+		t.Error("old name still resolves after rename")
+	}
+	// The cover (keyed by artist id) is still attached.
+	if _, _, found, _ := db.GetArtistImage(ctx, artistID); !found {
+		t.Error("artist cover lost after rename")
+	}
+	// The listing shows the new display name with the track still attached.
+	artists, err := db.ListArtists(ctx)
+	if err != nil {
+		t.Fatalf("ListArtists: %v", err)
+	}
+	if len(artists) != 1 || artists[0].Name != "New Name" || artists[0].TrackCount != 1 {
+		t.Errorf("listing = %+v, want one [New Name, 1 track]", artists)
+	}
+}
+
+func TestRenameArtist_CasingOnlyAllowed(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertSearchFile(t, db, "ren00002", "T1", "the beatles", "Abbey Road", "")
+	id, _, _ := db.LookupArtistID(ctx, "the beatles")
+
+	// Same normalized key, different display — allowed (not a self-conflict).
+	if err := db.RenameArtist(ctx, id, "The Beatles"); err != nil {
+		t.Fatalf("casing rename: %v", err)
+	}
+	var name string
+	db.QueryRow(`SELECT name FROM artists WHERE id = ?`, id).Scan(&name)
+	if name != "The Beatles" {
+		t.Errorf("display name = %q, want The Beatles", name)
+	}
+}
+
+func TestRenameArtist_Conflict(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertSearchFile(t, db, "ren00003", "T1", "Artist A", "X", "")
+	insertSearchFile(t, db, "ren00004", "T2", "Artist B", "Y", "")
+	idA, _, _ := db.LookupArtistID(ctx, "Artist A")
+
+	if err := db.RenameArtist(ctx, idA, "Artist B"); !errors.Is(err, ErrNameConflict) {
+		t.Errorf("rename onto existing name = %v, want ErrNameConflict", err)
+	}
+}
+
+func TestRenameArtist_NotFound(t *testing.T) {
+	db := openMem(t)
+	if err := db.RenameArtist(context.Background(), 99999, "Whoever"); !errors.Is(err, ErrEntityNotFound) {
+		t.Errorf("rename missing id = %v, want ErrEntityNotFound", err)
+	}
+}
+
+func TestRenameAlbum_CoverFollowsAndConflictScoped(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertSearchFile(t, db, "ren00005", "T1", "Artist", "Old Title", "")
+	insertSearchFile(t, db, "ren00006", "T2", "Artist", "Other", "")
+	albumID, _, _ := db.LookupAlbumID(ctx, "Artist", "Old Title")
+	if err := db.UpsertAlbumImage(ctx, albumID, "cover.jpg", "image/jpeg", 1); err != nil {
+		t.Fatalf("upsert album image: %v", err)
+	}
+
+	// Rename succeeds; the cover (album_id keyed) follows.
+	if err := db.RenameAlbum(ctx, albumID, "New Title"); err != nil {
+		t.Fatalf("RenameAlbum: %v", err)
+	}
+	if id, found, _ := db.LookupAlbumID(ctx, "Artist", "New Title"); !found || id != albumID {
+		t.Errorf("new title resolves to %d/%v, want %d/true", id, found, albumID)
+	}
+	if _, _, found, _ := db.GetAlbumImage(ctx, albumID); !found {
+		t.Error("album cover lost after rename")
+	}
+
+	// Renaming onto a sibling album's title (same artist) conflicts.
+	if err := db.RenameAlbum(ctx, albumID, "Other"); !errors.Is(err, ErrNameConflict) {
+		t.Errorf("rename onto sibling title = %v, want ErrNameConflict", err)
+	}
+}
+
+func TestRenameAlbum_SameTitleDifferentArtistAllowed(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertSearchFile(t, db, "ren00007", "T1", "Artist One", "Greatest Hits", "")
+	insertSearchFile(t, db, "ren00008", "T2", "Artist Two", "Misc", "")
+	two, _, _ := db.LookupAlbumID(ctx, "Artist Two", "Misc")
+
+	// "Greatest Hits" exists under Artist One, but the conflict is scoped to the
+	// album's own artist, so renaming Artist Two's album to it is fine.
+	if err := db.RenameAlbum(ctx, two, "Greatest Hits"); err != nil {
+		t.Errorf("cross-artist same title rename = %v, want success", err)
 	}
 }

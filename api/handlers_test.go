@@ -476,6 +476,14 @@ func (f *fakeRepo) ResolveAlbumID(_ context.Context, _, _ string) (int64, error)
 	return 1, nil
 }
 
+func (f *fakeRepo) RenameArtist(_ context.Context, _ int64, _ string) error {
+	return nil
+}
+
+func (f *fakeRepo) RenameAlbum(_ context.Context, _ int64, _ string) error {
+	return nil
+}
+
 func (f *fakeRepo) EnqueueImageJob(_ context.Context, _, _, _ string, _ int64) error {
 	f.enqueueCalls++
 	return nil

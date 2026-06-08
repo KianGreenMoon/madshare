@@ -167,15 +167,30 @@ never disagree.
   `<files_dir>/images/<base_key>/` layout are unaffected (keyed by `base_key`,
   not by album identity). Update `docs/api/cover-images.md`.
 
-## Phase 5 — rename (and optionally merge)
+## Phase 5 — rename — **DONE (2026-06-09)** (merge deferred)
 
-- **Rename:** admin endpoint + UI to edit `artists.name` / `albums.title` (updates
-  `norm_*` too). One-row update; covers/tracks follow via FK. This is the payoff
-  of the whole change and the answer to the Phase-5 cover-rename workaround in
-  `upload-and-covers.md` (that workaround can then be removed).
-- **Merge** (own sub-phase, can defer): "B → A" — repoint `media_metadata` and
+- **Rename — DONE (backend):** `RenameArtist(artistID, newName)` /
+  `RenameAlbum(albumID, newTitle)` in `database/entities.go` edit the entity row
+  in place (display name + `norm_*` key); tracks and the id-keyed cover follow via
+  their FKs — no string rewrite. A rename whose new normalized key already belongs
+  to a *different* entity returns `ErrNameConflict` (that is a merge); the
+  album conflict is scoped to the album's own `artist_id`, so the same title under
+  a different artist is fine. Renaming to a different casing/spacing of the same
+  name is allowed (norm unchanged, display updates).
+  - **Endpoints** (gated `metadata.edit`, like the cover/metadata-edit routes):
+    `POST /api/artists/{artist}/rename` `{name}` and
+    `POST /api/albums/{album}/rename?artist=<artist>` `{title}`. Addressed by the
+    **current name** (same path-segment scheme as the cover routes) so no listing
+    DTO change was needed; the handler resolves name→id via `LookupArtistID`/
+    `LookupAlbumID`, then renames. Conflict → 409, unknown → 404, empty → 400.
+    Audited as `metadata.rename`.
+  - **UI deferred** to the admin-panel-rework effort. This is the payoff: the
+    per-track cover re-POST workaround is superseded — to rename an album/artist
+    keeping all tracks + cover, use these endpoints (the `UpdateFileMetadata`
+    doc comment now says so). New `Repository` methods + `fakeRepo` stubs added.
+- **Merge — DEFERRED** (own sub-phase): "B → A" — repoint `media_metadata` and
   `albums`, collapse colliding albums on `(A, norm_title)`, move covers if the
-  target lacks one, delete B. Audit-logged.
+  target lacks one, delete B. Audit-logged. Not built this round.
 
 ## Known test/inter-dependency gotchas
 

@@ -89,6 +89,16 @@ type Repository interface {
 	// album id. For cover-write paths.
 	ResolveAlbumID(ctx context.Context, artist, album string) (int64, error)
 
+	// RenameArtist changes an artist entity's display name (and dedup key) in
+	// place; tracks and cover follow via FKs. Returns ErrEntityNotFound or
+	// ErrNameConflict (the target name is already taken — that is a merge).
+	RenameArtist(ctx context.Context, artistID int64, newName string) error
+
+	// RenameAlbum changes an album entity's title (and dedup key) in place.
+	// Returns ErrEntityNotFound or ErrNameConflict (a different album under the
+	// same artist already has that title).
+	RenameAlbum(ctx context.Context, albumID int64, newTitle string) error
+
 	// SoftDeleteFileByHash marks the file as trashed (sets deleted_at). The
 	// blob and DB row are preserved. Returns the recorded filenames for audit.
 	// found is false (no error) when no live file matches the hash.

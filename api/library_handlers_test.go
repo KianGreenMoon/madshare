@@ -247,3 +247,93 @@ func TestUploadArtistImage_StoresFlatKey(t *testing.T) {
 		t.Errorf("artist image not stored at flat path: %v", err)
 	}
 }
+
+// ---- Phase 5: rename handlers -----------------------------------------------
+
+// renameArtistReq builds a POST /api/artists/{artist}/rename request with the
+// current name as a chi param and the new name in the JSON body.
+func renameArtistReq(current, newName string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/artists/x/rename",
+		strings.NewReader(`{"name":`+jsonString(newName)+`}`))
+	return withChiParams(req, map[string]string{"artist": current})
+}
+
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+func TestRenameArtist_Handler_HappyPath(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	ctx := context.Background()
+	if _, err := db.ResolveAlbumID(ctx, "Old Name", "Album"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	h.renameArtist(rr, renameArtistReq("Old Name", "New Name"))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	if _, found, _ := db.LookupArtistID(ctx, "New Name"); !found {
+		t.Error("artist not renamed")
+	}
+	if _, found, _ := db.LookupArtistID(ctx, "Old Name"); found {
+		t.Error("old name still resolves")
+	}
+}
+
+func TestRenameArtist_Handler_Conflict(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	ctx := context.Background()
+	if _, err := db.ResolveArtistID(ctx, "Artist A"); err != nil {
+		t.Fatalf("seed A: %v", err)
+	}
+	if _, err := db.ResolveArtistID(ctx, "Artist B"); err != nil {
+		t.Fatalf("seed B: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	h.renameArtist(rr, renameArtistReq("Artist A", "Artist B"))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRenameArtist_Handler_NotFound(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	rr := httptest.NewRecorder()
+	h.renameArtist(rr, renameArtistReq("Nobody", "Someone"))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRenameArtist_Handler_EmptyNameRejected(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	rr := httptest.NewRecorder()
+	h.renameArtist(rr, renameArtistReq("Whoever", "   "))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRenameAlbum_Handler_HappyPath(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	ctx := context.Background()
+	if _, err := db.ResolveAlbumID(ctx, "Pink Floyd", "Old Title"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/albums/Old%20Title/rename?artist=Pink+Floyd",
+		strings.NewReader(`{"title":"New Title"}`))
+	req = withChiParams(req, map[string]string{"album": "Old Title"})
+	rr := httptest.NewRecorder()
+	h.renameAlbum(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	if _, found, _ := db.LookupAlbumID(ctx, "Pink Floyd", "New Title"); !found {
+		t.Error("album not renamed")
+	}
+}
