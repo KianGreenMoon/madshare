@@ -379,3 +379,125 @@ func TestUpdateFileMetadata_TitleOnlyKeepsEntities(t *testing.T) {
 			aBefore, alBefore, aAfter, alAfter)
 	}
 }
+
+// ---- Phase 3: entity-backed listings ----------------------------------------
+
+func TestListArtists_StableIDsAndEntityBacked(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertSearchFile(t, db, "p3aa0001", "T1", "Daft Punk", "Discovery", "")
+	insertSearchFile(t, db, "p3aa0002", "T2", "Aphex Twin", "Drukqs", "")
+
+	first, err := db.ListArtists(ctx)
+	if err != nil {
+		t.Fatalf("ListArtists: %v", err)
+	}
+	if len(first) != 2 {
+		t.Fatalf("artists = %d, want 2", len(first))
+	}
+	// Every entry carries its entity id, and ordering is by lowercased name
+	// (Aphex Twin before Daft Punk).
+	if first[0].Name != "Aphex Twin" || first[1].Name != "Daft Punk" {
+		t.Fatalf("order = [%q,%q], want [Aphex Twin, Daft Punk]", first[0].Name, first[1].Name)
+	}
+	for _, a := range first {
+		if a.ID == 0 {
+			t.Errorf("artist %q has zero ID", a.Name)
+		}
+	}
+
+	// IDs are stable across calls.
+	second, err := db.ListArtists(ctx)
+	if err != nil {
+		t.Fatalf("ListArtists 2: %v", err)
+	}
+	for i := range first {
+		if first[i].ID != second[i].ID {
+			t.Errorf("artist %q ID changed: %d → %d", first[i].Name, first[i].ID, second[i].ID)
+		}
+	}
+}
+
+func TestListArtists_MergesCaseVariants(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	// Two spellings that differ only by case/whitespace collapse to one entity,
+	// so they list as a single artist with the combined track count.
+	insertSearchFile(t, db, "p3bb0001", "T1", "The Beatles", "Abbey Road", "")
+	insertSearchFile(t, db, "p3bb0002", "T2", "the  beatles", "Abbey Road", "")
+
+	artists, err := db.ListArtists(ctx)
+	if err != nil {
+		t.Fatalf("ListArtists: %v", err)
+	}
+	if len(artists) != 1 {
+		t.Fatalf("artists = %d, want 1 (case variants merged)", len(artists))
+	}
+	if artists[0].TrackCount != 2 {
+		t.Errorf("track_count = %d, want 2", artists[0].TrackCount)
+	}
+	if artists[0].Name != "The Beatles" {
+		t.Errorf("name = %q, want %q (first spelling)", artists[0].Name, "The Beatles")
+	}
+}
+
+func TestListArtists_ExcludesOrphanedByRename(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertSearchFile(t, db, "p3cc0001", "T1", "Old Name", "Album", "")
+	// Rename the artist; the old entity now has no tracks.
+	if _, err := db.UpdateFileMetadata(ctx, "p3cc0001", MetadataPatch{Artist: strPtr("New Name")}); err != nil {
+		t.Fatalf("patch artist: %v", err)
+	}
+
+	artists, err := db.ListArtists(ctx)
+	if err != nil {
+		t.Fatalf("ListArtists: %v", err)
+	}
+	if len(artists) != 1 || artists[0].Name != "New Name" {
+		t.Fatalf("artists = %v, want only [New Name] (orphan excluded)", artists)
+	}
+	// The orphan entity row still exists but is invisible to the listing.
+	if got := countRows(t, db, "artists"); got != 2 {
+		t.Errorf("artists table rows = %d, want 2 (orphan retained)", got)
+	}
+}
+
+func TestListAlbumsByArtist_FiltersByNameReturnsEntityID(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertSearchFile(t, db, "p3dd0001", "T1", "Boards of Canada", "Geogaddi", "")
+	insertSearchFile(t, db, "p3dd0002", "T2", "Boards of Canada", "Geogaddi", "")
+	insertSearchFile(t, db, "p3dd0003", "T3", "Someone Else", "Other Album", "")
+
+	// Filter is by artist name (resolved to the entity), case-insensitively.
+	albums, err := db.ListAlbumsByArtist(ctx, "boards of canada")
+	if err != nil {
+		t.Fatalf("ListAlbumsByArtist: %v", err)
+	}
+	if len(albums) != 1 {
+		t.Fatalf("albums = %d, want 1", len(albums))
+	}
+	if albums[0].Title != "Geogaddi" || albums[0].TrackCount != 2 {
+		t.Errorf("album = %q (%d tracks), want Geogaddi (2)", albums[0].Title, albums[0].TrackCount)
+	}
+	if albums[0].ID == 0 {
+		t.Error("album entry has zero ID")
+	}
+	if albums[0].ArtistName != "Boards of Canada" {
+		t.Errorf("artist_name = %q, want %q", albums[0].ArtistName, "Boards of Canada")
+	}
+
+	// Empty artist returns every album.
+	all, err := db.ListAlbumsByArtist(ctx, "")
+	if err != nil {
+		t.Fatalf("ListAlbumsByArtist(all): %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("all albums = %d, want 2", len(all))
+	}
+}

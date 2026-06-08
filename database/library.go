@@ -9,18 +9,36 @@ import (
 )
 
 func (db *DB) ListArtists(ctx context.Context) ([]*ArtistEntry, error) {
-	var q = `
-		SELECT
-		    COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') AS name,
-		    COUNT(*) AS track_count,
-		    CASE WHEN ai.artist_name IS NOT NULL THEN 1 ELSE 0 END AS has_image
-		FROM media_metadata m
+	return db.listArtists(ctx, false)
+}
+
+// ListArtistsGuest is ListArtists restricted to artists an anonymous /
+// capability-less request can reach at least one track of (the guest-playable /
+// license policy). Track counts reflect only reachable tracks.
+func (db *DB) ListArtistsGuest(ctx context.Context) ([]*ArtistEntry, error) {
+	return db.listArtists(ctx, true)
+}
+
+// listArtists is the shared artist listing over the entity overlay. One row per
+// artists entity that has at least one live (and, when guest, reachable) track;
+// the INNER JOIN on media_metadata means orphan entities with no tracks (e.g.
+// left behind by a rename) never appear. has_image still matches the
+// string-keyed artist_images by display name until the Phase 4 cover re-key.
+func (db *DB) listArtists(ctx context.Context, guest bool) ([]*ArtistEntry, error) {
+	where := "WHERE f.deleted_at IS NULL"
+	if guest {
+		where += " AND " + accessClause
+	}
+	q := `
+		SELECT a.id, a.name, COUNT(*) AS track_count,
+		       CASE WHEN ai.artist_name IS NOT NULL THEN 1 ELSE 0 END AS has_image
+		FROM artists a
+		JOIN media_metadata m ON m.artist_id = a.id
 		JOIN files f ON f.id = m.file_id
-		LEFT JOIN artist_images ai
-		    ON ai.artist_name = COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
-		WHERE f.deleted_at IS NULL
-		GROUP BY name
-		ORDER BY LOWER(name) ASC`
+		LEFT JOIN artist_images ai ON ai.artist_name = a.name
+		` + where + `
+		GROUP BY a.id
+		ORDER BY LOWER(a.name) ASC`
 
 	rows, err := db.QueryContext(ctx, q)
 	if err != nil {
@@ -32,7 +50,7 @@ func (db *DB) ListArtists(ctx context.Context) ([]*ArtistEntry, error) {
 	for rows.Next() {
 		var e ArtistEntry
 		var hasImage int
-		if err := rows.Scan(&e.Name, &e.TrackCount, &hasImage); err != nil {
+		if err := rows.Scan(&e.ID, &e.Name, &e.TrackCount, &hasImage); err != nil {
 			return nil, fmt.Errorf("scan artist entry: %w", err)
 		}
 		e.HasImage = hasImage == 1
@@ -44,64 +62,39 @@ func (db *DB) ListArtists(ctx context.Context) ([]*ArtistEntry, error) {
 	return out, nil
 }
 
-// ListArtistsGuest is ListArtists restricted to artists an anonymous /
-// capability-less request can reach at least one track of (the guest-playable /
-// license policy). Track counts reflect only reachable tracks.
-func (db *DB) ListArtistsGuest(ctx context.Context) ([]*ArtistEntry, error) {
-	var q = `
-		SELECT
-		    COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') AS name,
-		    COUNT(*) AS track_count,
-		    CASE WHEN ai.artist_name IS NOT NULL THEN 1 ELSE 0 END AS has_image
-		FROM media_metadata m
-		JOIN files f ON f.id = m.file_id
-		LEFT JOIN artist_images ai
-		    ON ai.artist_name = COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
-		WHERE f.deleted_at IS NULL AND ` + accessClause + `
-		GROUP BY name
-		ORDER BY LOWER(name) ASC`
-
-	rows, err := db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("list artists guest: %w", err)
-	}
-	defer rows.Close()
-
-	var out []*ArtistEntry
-	for rows.Next() {
-		var e ArtistEntry
-		var hasImage int
-		if err := rows.Scan(&e.Name, &e.TrackCount, &hasImage); err != nil {
-			return nil, fmt.Errorf("scan artist entry: %w", err)
-		}
-		e.HasImage = hasImage == 1
-		out = append(out, &e)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list artists filtered rows: %w", err)
-	}
-	return out, nil
+func (db *DB) ListAlbumsByArtist(ctx context.Context, artist string) ([]*AlbumEntry, error) {
+	return db.listAlbumsByArtist(ctx, artist, false)
 }
 
-func (db *DB) ListAlbumsByArtist(ctx context.Context, artist string) ([]*AlbumEntry, error) {
-	var q = `
-		SELECT
-		    COALESCE(NULLIF(m.album, ''), '') AS title,
-		    COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') AS artist_name,
-		    COALESCE(m.year, 0) AS year,
-		    COUNT(*) AS track_count,
-		    CASE WHEN ali.album_title IS NOT NULL THEN 1 ELSE 0 END AS has_image
-		FROM media_metadata m
-		JOIN files f ON f.id = m.file_id
-		LEFT JOIN album_images ali
-		    ON ali.album_artist = COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
-		    AND ali.album_title = COALESCE(NULLIF(m.album, ''), '')
-		WHERE f.deleted_at IS NULL
-		  AND (? = '' OR COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') = ?)
-		GROUP BY COALESCE(NULLIF(m.album, ''), ''), COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
-		ORDER BY year ASC, LOWER(COALESCE(NULLIF(m.album, ''), '')) ASC`
+// ListAlbumsByArtistGuest is ListAlbumsByArtist restricted to albums an
+// anonymous / capability-less request can reach at least one track of.
+func (db *DB) ListAlbumsByArtistGuest(ctx context.Context, artist string) ([]*AlbumEntry, error) {
+	return db.listAlbumsByArtist(ctx, artist, true)
+}
 
-	rows, err := db.QueryContext(ctx, q, artist, artist)
+// listAlbumsByArtist is the shared album listing over the entity overlay. An
+// empty artist returns every album; otherwise it filters by the artist entity
+// resolved from the name (normalized the same way the resolver keys it). One row
+// per albums entity with at least one live (and, when guest, reachable) track.
+func (db *DB) listAlbumsByArtist(ctx context.Context, artist string, guest bool) ([]*AlbumEntry, error) {
+	where := "WHERE f.deleted_at IS NULL AND (? = '' OR ar.norm_name = ?)"
+	if guest {
+		where += " AND " + accessClause
+	}
+	q := `
+		SELECT al.id, al.title, ar.name AS artist_name, COALESCE(al.year, 0) AS year,
+		       COUNT(*) AS track_count,
+		       CASE WHEN ali.album_title IS NOT NULL THEN 1 ELSE 0 END AS has_image
+		FROM albums al
+		JOIN artists ar ON ar.id = al.artist_id
+		JOIN media_metadata m ON m.album_id = al.id
+		JOIN files f ON f.id = m.file_id
+		LEFT JOIN album_images ali ON ali.album_artist = ar.name AND ali.album_title = al.title
+		` + where + `
+		GROUP BY al.id
+		ORDER BY year ASC, LOWER(al.title) ASC`
+
+	rows, err := db.QueryContext(ctx, q, artist, normalizeKey(artist))
 	if err != nil {
 		return nil, fmt.Errorf("list albums by artist: %w", err)
 	}
@@ -112,7 +105,7 @@ func (db *DB) ListAlbumsByArtist(ctx context.Context, artist string) ([]*AlbumEn
 		var e AlbumEntry
 		var year int64
 		var hasImage int
-		if err := rows.Scan(&e.Title, &e.ArtistName, &year, &e.TrackCount, &hasImage); err != nil {
+		if err := rows.Scan(&e.ID, &e.Title, &e.ArtistName, &year, &e.TrackCount, &hasImage); err != nil {
 			return nil, fmt.Errorf("scan album entry: %w", err)
 		}
 		if year != 0 {
@@ -127,59 +120,30 @@ func (db *DB) ListAlbumsByArtist(ctx context.Context, artist string) ([]*AlbumEn
 	return out, nil
 }
 
-// ListAlbumsByArtistGuest is ListAlbumsByArtist restricted to albums an
-// anonymous / capability-less request can reach at least one track of.
-func (db *DB) ListAlbumsByArtistGuest(ctx context.Context, artist string) ([]*AlbumEntry, error) {
-	var q = `
-		SELECT
-		    COALESCE(NULLIF(m.album, ''), '') AS title,
-		    COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') AS artist_name,
-		    COALESCE(m.year, 0) AS year,
-		    COUNT(*) AS track_count,
-		    CASE WHEN ali.album_title IS NOT NULL THEN 1 ELSE 0 END AS has_image
-		FROM media_metadata m
-		JOIN files f ON f.id = m.file_id
-		LEFT JOIN album_images ali
-		    ON ali.album_artist = COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
-		    AND ali.album_title = COALESCE(NULLIF(m.album, ''), '')
-		WHERE f.deleted_at IS NULL
-		  AND (? = '' OR COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') = ?)
-		  AND ` + accessClause + `
-		GROUP BY COALESCE(NULLIF(m.album, ''), ''), COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
-		ORDER BY year ASC, LOWER(COALESCE(NULLIF(m.album, ''), '')) ASC`
-
-	rows, err := db.QueryContext(ctx, q, artist, artist)
-	if err != nil {
-		return nil, fmt.Errorf("list albums by artist guest: %w", err)
-	}
-	defer rows.Close()
-
-	var out []*AlbumEntry
-	for rows.Next() {
-		var e AlbumEntry
-		var year int64
-		var hasImage int
-		if err := rows.Scan(&e.Title, &e.ArtistName, &year, &e.TrackCount, &hasImage); err != nil {
-			return nil, fmt.Errorf("scan album entry: %w", err)
-		}
-		if year != 0 {
-			e.Year = sql.NullInt64{Int64: year, Valid: true}
-		}
-		e.HasImage = hasImage == 1
-		out = append(out, &e)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list albums filtered rows: %w", err)
-	}
-	return out, nil
+func (db *DB) ListTracksByAlbumArtist(ctx context.Context, artist, album string) ([]*TrackEntry, error) {
+	return db.listTracksByAlbumArtist(ctx, artist, album, false)
 }
 
-func (db *DB) ListTracksByAlbumArtist(ctx context.Context, artist, album string) ([]*TrackEntry, error) {
+// ListTracksByAlbumArtistGuest is ListTracksByAlbumArtist restricted to the
+// tracks an anonymous / capability-less request may play/download.
+func (db *DB) ListTracksByAlbumArtistGuest(ctx context.Context, artist, album string) ([]*TrackEntry, error) {
+	return db.listTracksByAlbumArtist(ctx, artist, album, true)
+}
+
+// listTracksByAlbumArtist is the shared track listing for a single (artist,
+// album) entity, identified by the normalized name keys. An empty artist returns
+// nil — the no-artist bucket is not browsable as a drill-down (unchanged
+// behavior). The empty-string album resolves to the unknown-album entity, so the
+// "Other" bucket's tracks remain reachable under a named artist.
+func (db *DB) listTracksByAlbumArtist(ctx context.Context, artist, album string, guest bool) ([]*TrackEntry, error) {
 	if artist == "" {
 		return nil, nil
 	}
-
-	var q = `
+	where := "WHERE f.deleted_at IS NULL AND ar.norm_name = ? AND al.norm_title = ?"
+	if guest {
+		where += " AND " + accessClause
+	}
+	q := `
 		SELECT
 		    f.id,
 		    COALESCE(NULLIF(m.title, ''), fu.filename, '') AS title,
@@ -189,17 +153,17 @@ func (db *DB) ListTracksByAlbumArtist(ctx context.Context, artist, album string)
 		    f.mime_type
 		FROM files f
 		JOIN media_metadata m ON m.file_id = f.id
+		JOIN albums al ON al.id = m.album_id
+		JOIN artists ar ON ar.id = al.artist_id
 		LEFT JOIN (
 		    SELECT file_id, MIN(filename) AS filename
 		    FROM file_uploads
 		    GROUP BY file_id
 		) fu ON fu.file_id = f.id
-		WHERE f.deleted_at IS NULL
-		  AND COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') = ?
-		  AND COALESCE(NULLIF(m.album, ''), '') = ?
+		` + where + `
 		ORDER BY m.track_number ASC, LOWER(COALESCE(NULLIF(m.title, ''), fu.filename, '')) ASC`
 
-	rows, err := db.QueryContext(ctx, q, artist, album)
+	rows, err := db.QueryContext(ctx, q, normalizeKey(artist), normalizeKey(album))
 	if err != nil {
 		return nil, fmt.Errorf("list tracks by album artist: %w", err)
 	}
@@ -215,54 +179,6 @@ func (db *DB) ListTracksByAlbumArtist(ctx context.Context, artist, album string)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list tracks rows: %w", err)
-	}
-	return out, nil
-}
-
-// ListTracksByAlbumArtistGuest is ListTracksByAlbumArtist restricted to the
-// tracks an anonymous / capability-less request may play/download.
-func (db *DB) ListTracksByAlbumArtistGuest(ctx context.Context, artist, album string) ([]*TrackEntry, error) {
-	if artist == "" {
-		return nil, nil
-	}
-
-	var q = `
-		SELECT
-		    f.id,
-		    COALESCE(NULLIF(m.title, ''), fu.filename, '') AS title,
-		    m.track_number,
-		    m.duration_seconds,
-		    f.object_key,
-		    f.mime_type
-		FROM files f
-		JOIN media_metadata m ON m.file_id = f.id
-		LEFT JOIN (
-		    SELECT file_id, MIN(filename) AS filename
-		    FROM file_uploads
-		    GROUP BY file_id
-		) fu ON fu.file_id = f.id
-		WHERE f.deleted_at IS NULL
-		  AND COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') = ?
-		  AND COALESCE(NULLIF(m.album, ''), '') = ?
-		  AND ` + accessClause + `
-		ORDER BY m.track_number ASC, LOWER(COALESCE(NULLIF(m.title, ''), fu.filename, '')) ASC`
-
-	rows, err := db.QueryContext(ctx, q, artist, album)
-	if err != nil {
-		return nil, fmt.Errorf("list tracks by album artist guest: %w", err)
-	}
-	defer rows.Close()
-
-	var out []*TrackEntry
-	for rows.Next() {
-		var e TrackEntry
-		if err := rows.Scan(&e.ID, &e.Title, &e.TrackNumber, &e.DurationSeconds, &e.ObjectKey, &e.MimeType); err != nil {
-			return nil, fmt.Errorf("scan track entry: %w", err)
-		}
-		out = append(out, &e)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list tracks filtered rows: %w", err)
 	}
 	return out, nil
 }
@@ -284,24 +200,21 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 	like := "%" + escaped + "%"
 
 	// ── Artists ──────────────────────────────────────────────────────────────
-	// Filter in WHERE using the full expression, consistent with the album query.
-	artistWhere := "WHERE f.deleted_at IS NULL AND LOWER(COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')) LIKE LOWER(?) ESCAPE '\\'"
+	artistWhere := "WHERE f.deleted_at IS NULL AND LOWER(a.name) LIKE LOWER(?) ESCAPE '\\'"
 	artistArgs := []any{like}
 	if filtered {
 		artistWhere += " AND " + accessClause
 	}
 	artistQ := `
-		SELECT
-		    COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') AS name,
-		    COUNT(*) AS track_count,
-		    CASE WHEN ai.artist_name IS NOT NULL THEN 1 ELSE 0 END AS has_image
-		FROM media_metadata m
+		SELECT a.id, a.name, COUNT(*) AS track_count,
+		       CASE WHEN ai.artist_name IS NOT NULL THEN 1 ELSE 0 END AS has_image
+		FROM artists a
+		JOIN media_metadata m ON m.artist_id = a.id
 		JOIN files f ON f.id = m.file_id
-		LEFT JOIN artist_images ai
-		    ON ai.artist_name = COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
+		LEFT JOIN artist_images ai ON ai.artist_name = a.name
 		` + artistWhere + `
-		GROUP BY COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
-		ORDER BY LOWER(COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')) ASC
+		GROUP BY a.id
+		ORDER BY LOWER(a.name) ASC
 		LIMIT 50`
 
 	aRows, err := db.QueryContext(ctx, artistQ, artistArgs...)
@@ -313,7 +226,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 	for aRows.Next() {
 		var e ArtistEntry
 		var hasImage int
-		if err := aRows.Scan(&e.Name, &e.TrackCount, &hasImage); err != nil {
+		if err := aRows.Scan(&e.ID, &e.Name, &e.TrackCount, &hasImage); err != nil {
 			return nil, fmt.Errorf("scan search artist: %w", err)
 		}
 		e.HasImage = hasImage == 1
@@ -324,28 +237,23 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 	}
 
 	// ── Albums ───────────────────────────────────────────────────────────────
-	// Use the full expression in WHERE (before GROUP BY); HAVING with a SELECT
-	// alias is unreliable in SQLite when GROUP BY uses the full expression.
-	albumWhere := "WHERE f.deleted_at IS NULL AND COALESCE(NULLIF(m.album, ''), '') != '' AND LOWER(COALESCE(NULLIF(m.album, ''), '')) LIKE LOWER(?) ESCAPE '\\'"
+	albumWhere := "WHERE f.deleted_at IS NULL AND al.title != '' AND LOWER(al.title) LIKE LOWER(?) ESCAPE '\\'"
 	albumArgs := []any{like}
 	if filtered {
 		albumWhere += " AND " + accessClause
 	}
 	albumQ := `
-		SELECT
-		    COALESCE(NULLIF(m.album, ''), '') AS title,
-		    COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') AS artist_name,
-		    COALESCE(m.year, 0) AS year,
-		    COUNT(*) AS track_count,
-		    CASE WHEN ali.album_title IS NOT NULL THEN 1 ELSE 0 END AS has_image
-		FROM media_metadata m
+		SELECT al.id, al.title, ar.name AS artist_name, COALESCE(al.year, 0) AS year,
+		       COUNT(*) AS track_count,
+		       CASE WHEN ali.album_title IS NOT NULL THEN 1 ELSE 0 END AS has_image
+		FROM albums al
+		JOIN artists ar ON ar.id = al.artist_id
+		JOIN media_metadata m ON m.album_id = al.id
 		JOIN files f ON f.id = m.file_id
-		LEFT JOIN album_images ali
-		    ON ali.album_artist = COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
-		    AND ali.album_title = COALESCE(NULLIF(m.album, ''), '')
+		LEFT JOIN album_images ali ON ali.album_artist = ar.name AND ali.album_title = al.title
 		` + albumWhere + `
-		GROUP BY COALESCE(NULLIF(m.album, ''), ''), COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '')
-		ORDER BY LOWER(COALESCE(NULLIF(m.album, ''), '')) ASC
+		GROUP BY al.id
+		ORDER BY LOWER(al.title) ASC
 		LIMIT 50`
 
 	alRows, err := db.QueryContext(ctx, albumQ, albumArgs...)
@@ -358,7 +266,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 		var e AlbumEntry
 		var year int64
 		var hasImage int
-		if err := alRows.Scan(&e.Title, &e.ArtistName, &year, &e.TrackCount, &hasImage); err != nil {
+		if err := alRows.Scan(&e.ID, &e.Title, &e.ArtistName, &year, &e.TrackCount, &hasImage); err != nil {
 			return nil, fmt.Errorf("scan search album: %w", err)
 		}
 		if year != 0 {
@@ -385,10 +293,12 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 		    m.duration_seconds,
 		    f.object_key,
 		    f.mime_type,
-		    COALESCE(NULLIF(m.album_artist, ''), NULLIF(m.artist, ''), '') AS artist_name,
-		    COALESCE(NULLIF(m.album, ''), '') AS album_title
+		    ar.name AS artist_name,
+		    al.title AS album_title
 		FROM files f
 		JOIN media_metadata m ON m.file_id = f.id
+		JOIN albums al ON al.id = m.album_id
+		JOIN artists ar ON ar.id = al.artist_id
 		LEFT JOIN (
 		    SELECT file_id, MIN(filename) AS filename
 		    FROM file_uploads

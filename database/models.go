@@ -89,16 +89,20 @@ type FileListEntry struct {
 	DeletedAt       sql.NullInt64
 }
 
-// ArtistEntry is a row returned by ListArtists.
+// ArtistEntry is a row returned by ListArtists. ID is the stable artists.id
+// surrogate (added with the entity overlay); Name is its canonical display name.
 type ArtistEntry struct {
+	ID         int64
 	Name       string
 	TrackCount int
 	HasImage   bool
 }
 
-// AlbumEntry is a row returned by ListAlbumsByArtist.
-// Title="" represents the "Other" bucket (tracks with no album).
+// AlbumEntry is a row returned by ListAlbumsByArtist. ID is the stable albums.id
+// surrogate. Title="" represents the "Other" bucket (tracks with no album, i.e.
+// the unknown-album entity under that artist).
 type AlbumEntry struct {
+	ID         int64
 	ArtistName string
 	Title      string
 	Year       sql.NullInt64

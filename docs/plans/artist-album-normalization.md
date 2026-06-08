@@ -88,7 +88,7 @@ A rename that empties an album/artist may leave an orphan entity row; harmless
 merge/cleanup. Covers stay string-keyed until Phase 4, so the cover re-POST
 workaround in `upload-and-covers.md` still applies for now.
 
-## Phase 3 — query rewrite (library + search)
+## Phase 3 — query rewrite (library + search) — **DONE (2026-06-09)**
 
 Rewrite `database/library.go` to JOIN on `artists`/`albums` instead of `GROUP BY`
 over COALESCE expressions (see design doc query shape):
@@ -104,6 +104,22 @@ over COALESCE expressions (see design doc query shape):
 - Update `ArtistEntry`/`AlbumEntry` to carry the new `ID` (additive).
 - Tests: the library/search query tests assert the same results as before plus
   stable IDs across calls.
+
+**As implemented:** each full/guest pair now delegates to one shared helper
+(`listArtists`/`listAlbumsByArtist`/`listTracksByAlbumArtist`, `guest bool`),
+cutting the prior duplication; the guest variant just appends `accessClause`.
+Queries INNER JOIN `media_metadata` → `artists`/`albums`, so orphan entities (no
+live tracks, e.g. from a rename) never surface. The name-based filters resolve
+the incoming name via `normalizeKey()` and match `norm_name`/`norm_title`, so the
+method **signatures and the API response are unchanged** — the `?artist_id=`
+params + UI migration are **deferred** to a follow-up (the resolve-name→entity
+step happens inside the DB layer, not at the handler edge as the routing note
+imagined; same net effect, no handler churn). `ArtistEntry.ID`/`AlbumEntry.ID`
+are populated but not yet surfaced in the JSON DTOs (`artistItem`/`albumItem`
+still map name-only). `has_image` still matches the **string-keyed** cover tables
+by entity display name/title (correct in the common case; the Phase 4 re-key
+makes it exact). Bonus: case/whitespace-variant spellings now merge into one
+listed artist/album (the overlay payoff), covered by a new test.
 
 ## Phase 4 — re-key image tables + cover handlers on IDs
 
