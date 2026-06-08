@@ -65,6 +65,14 @@ func main() {
 		log.Printf("reconcile orphans: %v", err)
 	}
 
+	// Populate artist/album entity FKs for any media_metadata rows that predate
+	// the overlay (idempotent; new uploads resolve entities inline at import).
+	if n, err := db.BackfillEntities(context.Background()); err != nil {
+		log.Printf("backfill entities: %v", err)
+	} else if n > 0 {
+		log.Printf("backfilled artist/album entities for %d tracks", n)
+	}
+
 	// First-run admin bootstrap: create the admin only when no users exist.
 	created, err := auth.Bootstrap(context.Background(), db, cfg.Auth.InitialAdminUser, cfg.Auth.InitialAdminPassword)
 	if err != nil {
