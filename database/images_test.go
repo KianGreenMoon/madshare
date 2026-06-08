@@ -38,8 +38,13 @@ func TestSetAlbumCoverIfAbsent(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
+	albumID, err := db.ResolveAlbumID(ctx, "Artist", "Album")
+	if err != nil {
+		t.Fatalf("resolve album: %v", err)
+	}
+
 	// First insert wins.
-	inserted, err := db.SetAlbumCoverIfAbsent(ctx, "Artist", "Album", "key1aaaaaaaaaaaa", ".jpg", "key1aaaaaaaaaaaa/original.jpg", "image/jpeg", 1000)
+	inserted, err := db.SetAlbumCoverIfAbsent(ctx, albumID, "key1aaaaaaaaaaaa", ".jpg", "key1aaaaaaaaaaaa/original.jpg", "image/jpeg", 1000)
 	if err != nil {
 		t.Fatalf("first insert: %v", err)
 	}
@@ -48,7 +53,7 @@ func TestSetAlbumCoverIfAbsent(t *testing.T) {
 	}
 
 	// Second call for the same album is a no-op and must not overwrite.
-	inserted, err = db.SetAlbumCoverIfAbsent(ctx, "Artist", "Album", "key2bbbbbbbbbbbb", ".png", "key2bbbbbbbbbbbb/original.png", "image/png", 2000)
+	inserted, err = db.SetAlbumCoverIfAbsent(ctx, albumID, "key2bbbbbbbbbbbb", ".png", "key2bbbbbbbbbbbb/original.png", "image/png", 2000)
 	if err != nil {
 		t.Fatalf("second insert: %v", err)
 	}
@@ -56,7 +61,7 @@ func TestSetAlbumCoverIfAbsent(t *testing.T) {
 		t.Error("second SetAlbumCoverIfAbsent returned inserted=true, want false (row already exists)")
 	}
 
-	baseKey, sourceExt, _, found, err := db.GetAlbumCoverStatus(ctx, "Artist", "Album")
+	baseKey, sourceExt, _, found, err := db.GetAlbumCoverStatus(ctx, albumID)
 	if err != nil || !found {
 		t.Fatalf("GetAlbumCoverStatus: found=%v err=%v", found, err)
 	}
@@ -76,6 +81,11 @@ func TestSetAlbumCoverIfAbsent_ConcurrentSingleWinner(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 	ctx := context.Background()
 
+	albumID, err := db.ResolveAlbumID(ctx, "A", "B")
+	if err != nil {
+		t.Fatalf("resolve album: %v", err)
+	}
+
 	const n = 16
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -87,7 +97,7 @@ func TestSetAlbumCoverIfAbsent_ConcurrentSingleWinner(t *testing.T) {
 			defer wg.Done()
 			bk := fmt.Sprintf("base%012d", i)
 			<-start
-			ok, err := db.SetAlbumCoverIfAbsent(ctx, "A", "B", bk, ".jpg", bk+"/original.jpg", "image/jpeg", int64(i))
+			ok, err := db.SetAlbumCoverIfAbsent(ctx, albumID, bk, ".jpg", bk+"/original.jpg", "image/jpeg", int64(i))
 			if err != nil {
 				t.Errorf("claim %d: %v", i, err)
 				return
@@ -151,7 +161,11 @@ func TestFinishImageJob_SetsVariantsReady(t *testing.T) {
 		baseKey = "deadbeefcafe0001"
 	)
 	objectKey := baseKey + "/original.jpg"
-	if err := db.SetAlbumCover(ctx, artist, album, baseKey, ".jpg", objectKey, "image/jpeg", 1000); err != nil {
+	albumID, err := db.ResolveAlbumID(ctx, artist, album)
+	if err != nil {
+		t.Fatalf("resolve album: %v", err)
+	}
+	if err := db.SetAlbumCover(ctx, albumID, baseKey, ".jpg", objectKey, "image/jpeg", 1000); err != nil {
 		t.Fatalf("set album cover: %v", err)
 	}
 	if err := db.EnqueueImageJob(ctx, "album", artist+"\x1f"+album, baseKey, 1000); err != nil {
@@ -166,7 +180,7 @@ func TestFinishImageJob_SetsVariantsReady(t *testing.T) {
 		t.Fatalf("finish: %v", err)
 	}
 
-	_, _, ready, found, err := db.GetAlbumCoverStatus(ctx, artist, album)
+	_, _, ready, found, err := db.GetAlbumCoverStatus(ctx, albumID)
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}

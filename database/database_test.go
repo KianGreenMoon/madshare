@@ -44,6 +44,13 @@ func tableNames(t *testing.T, db *DB) []string {
 func TestOpen_CreatesExpectedTables(t *testing.T) {
 	db := openMem(t)
 
+	// Migration 014 renames the old string-keyed cover tables aside; the cover
+	// backfill (a startup pass) drains and drops the *_old leftovers. Run it so
+	// the asserted set is the steady-state schema.
+	if err := db.BackfillCoverEntities(context.Background()); err != nil {
+		t.Fatalf("BackfillCoverEntities: %v", err)
+	}
+
 	got := tableNames(t, db)
 	want := []string{
 		"album_images", "albums", "api_tokens",
@@ -69,8 +76,8 @@ func TestOpen_RecordsMigrationVersion(t *testing.T) {
 	if err := db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&v); err != nil {
 		t.Fatalf("query version: %v", err)
 	}
-	if v != 13 {
-		t.Errorf("migration version = %d, want 13", v)
+	if v != 14 {
+		t.Errorf("migration version = %d, want 14", v)
 	}
 }
 
@@ -87,8 +94,8 @@ func TestOpen_IdempotentMigrations(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&rows); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if rows != 13 {
-		t.Errorf("schema_migrations row count = %d, want 13 after re-run", rows)
+	if rows != 14 {
+		t.Errorf("schema_migrations row count = %d, want 14 after re-run", rows)
 	}
 }
 

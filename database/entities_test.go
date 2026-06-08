@@ -501,3 +501,104 @@ func TestListAlbumsByArtist_FiltersByNameReturnsEntityID(t *testing.T) {
 		t.Errorf("all albums = %d, want 2", len(all))
 	}
 }
+
+// ---- Phase 4: cover re-key + backfill ---------------------------------------
+
+func TestBackfillCoverEntities(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	// A track materializes the artist/album entities the covers resolve onto.
+	insertSearchFile(t, db, "cover001", "T1", "Pink Floyd", "Animals", "")
+	albumID, found, err := db.LookupAlbumID(ctx, "Pink Floyd", "Animals")
+	if err != nil || !found {
+		t.Fatalf("LookupAlbumID: found=%v err=%v", found, err)
+	}
+	artistID, found, err := db.LookupArtistID(ctx, "Pink Floyd")
+	if err != nil || !found {
+		t.Fatalf("LookupArtistID: found=%v err=%v", found, err)
+	}
+
+	// Seed legacy string-keyed cover rows into the *_old tables that migration
+	// 014 set aside (still present and empty after Open).
+	if _, err := db.Exec(
+		`INSERT INTO album_images_old (album_artist, album_title, object_key, mime_type, updated_at, base_key, source_ext, variants_ready)
+		 VALUES ('Pink Floyd', 'Animals', 'bk/original.jpg', 'image/jpeg', 1000, 'bk', '.jpg', 1)`,
+	); err != nil {
+		t.Fatalf("seed album_images_old: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO artist_images_old (artist_name, object_key, mime_type, updated_at, base_key, source_ext, variants_ready)
+		 VALUES ('Pink Floyd', 'art.png', 'image/png', 2000, NULL, NULL, 0)`,
+	); err != nil {
+		t.Fatalf("seed artist_images_old: %v", err)
+	}
+	// A cover whose album has no entity (no tracks) — must be dropped, not crash.
+	if _, err := db.Exec(
+		`INSERT INTO album_images_old (album_artist, album_title, object_key, mime_type, updated_at, base_key, source_ext, variants_ready)
+		 VALUES ('Ghost', 'Nobody', 'x/original.jpg', 'image/jpeg', 3000, 'x', '.jpg', 0)`,
+	); err != nil {
+		t.Fatalf("seed orphan cover: %v", err)
+	}
+
+	if err := db.BackfillCoverEntities(ctx); err != nil {
+		t.Fatalf("BackfillCoverEntities: %v", err)
+	}
+
+	// The album cover survived onto its entity id, preserving the variant fields.
+	bk, ext, ready, foundC, err := db.GetAlbumCoverStatus(ctx, albumID)
+	if err != nil || !foundC {
+		t.Fatalf("GetAlbumCoverStatus: found=%v err=%v", foundC, err)
+	}
+	if bk != "bk" || ext != ".jpg" || !ready {
+		t.Errorf("migrated album cover = (%q,%q,ready=%v), want (bk,.jpg,true)", bk, ext, ready)
+	}
+	// The artist cover survived onto its entity id.
+	if _, _, foundA, err := db.GetArtistImage(ctx, artistID); err != nil || !foundA {
+		t.Errorf("artist cover not migrated: found=%v err=%v", foundA, err)
+	}
+	// The unresolved (orphan) cover was dropped, not migrated.
+	if n := countRows(t, db, "album_images"); n != 1 {
+		t.Errorf("album_images rows = %d, want 1 (orphan dropped)", n)
+	}
+	// The *_old leftovers are gone.
+	if ok, _ := db.tableExists(ctx, "album_images_old"); ok {
+		t.Error("album_images_old not dropped after backfill")
+	}
+	if ok, _ := db.tableExists(ctx, "artist_images_old"); ok {
+		t.Error("artist_images_old not dropped after backfill")
+	}
+
+	// Idempotent: a second run is a clean no-op (tables already gone).
+	if err := db.BackfillCoverEntities(ctx); err != nil {
+		t.Fatalf("BackfillCoverEntities re-run: %v", err)
+	}
+}
+
+func TestAlbumImage_RoundTripByID(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	albumID, err := db.ResolveAlbumID(ctx, "Artist", "Album")
+	if err != nil {
+		t.Fatalf("resolve album: %v", err)
+	}
+	if err := db.UpsertAlbumImage(ctx, albumID, "obj.jpg", "image/jpeg", 1000); err != nil {
+		t.Fatalf("UpsertAlbumImage: %v", err)
+	}
+	key, mime, found, err := db.GetAlbumImage(ctx, albumID)
+	if err != nil || !found {
+		t.Fatalf("GetAlbumImage: found=%v err=%v", found, err)
+	}
+	if key != "obj.jpg" || mime != "image/jpeg" {
+		t.Errorf("got (%q,%q), want (obj.jpg, image/jpeg)", key, mime)
+	}
+	// A different album id has no image.
+	other, err := db.ResolveAlbumID(ctx, "Artist", "Other")
+	if err != nil {
+		t.Fatalf("resolve other: %v", err)
+	}
+	if _, _, found, _ := db.GetAlbumImage(ctx, other); found {
+		t.Error("unrelated album reported an image")
+	}
+}

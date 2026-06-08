@@ -218,9 +218,16 @@ func (h *handler) maybeSaveEmbeddedCover(ctx context.Context, tags *media.Tags, 
 	if tags.CoverImage == nil || tags.Album == "" || artist == "" {
 		return false
 	}
+	// Resolve the album entity (InsertFile already created it for this track, so
+	// this is effectively a lookup). The cover attaches to the stable album id.
+	albumID, err := h.repo.ResolveAlbumID(ctx, artist, tags.Album)
+	if err != nil {
+		log.Printf("embedded cover: resolve album: %v", err)
+		return false
+	}
 	// Cheap pre-check: skip the decode/write entirely once a cover exists. The
 	// atomic claim below is what actually guarantees fill-if-missing under races.
-	if has, err := h.repo.HasAlbumCover(ctx, artist, tags.Album); err != nil || has {
+	if has, err := h.repo.HasAlbumCover(ctx, albumID); err != nil || has {
 		return false
 	}
 	ext, ok := mimeToExt(tags.CoverImage.MIMEType)
@@ -247,7 +254,7 @@ func (h *handler) maybeSaveEmbeddedCover(ctx context.Context, tags *media.Tags, 
 		return false
 	}
 	now := time.Now().Unix()
-	inserted, err := h.repo.SetAlbumCoverIfAbsent(ctx, artist, tags.Album, baseKey, ext, objectKey, tags.CoverImage.MIMEType, now)
+	inserted, err := h.repo.SetAlbumCoverIfAbsent(ctx, albumID, baseKey, ext, objectKey, tags.CoverImage.MIMEType, now)
 	if err != nil {
 		log.Printf("embedded cover: claim album cover: %v", err)
 		return false

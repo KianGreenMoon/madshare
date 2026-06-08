@@ -10,6 +10,15 @@ enqueued, and a worker pool (`imageproc.Pool`) generates eight square variants
 (crop + fit at 64 / 150 / 300 / 600 px) into the same `<base_key>/` directory.
 The status endpoint reports whether that generation has finished.
 
+**Storage model.** These endpoints address albums/artists by name in the URL for
+backward compatibility, but covers are stored keyed by the **album/artist entity
+id** (`album_images.album_id` / `artist_images.artist_id`), not by the name
+strings — the handlers resolve the name to its entity (normalized) on each call.
+A cover therefore attaches to a stable id: an admin rename of the album/artist
+keeps the cover attached with no re-upload. The on-disk `<base_key>/` layout and
+the `image_processing_jobs` queue are unaffected (keyed by `base_key`). See
+`docs/plans/artist-album-normalization.md` (Phase 4).
+
 ---
 
 ## `GET /api/albums/{album}/image/status`
@@ -25,7 +34,7 @@ GET /api/albums/{album}/image/status?artist=<album_artist>
 | Parameter | In    | Required | Description |
 |-----------|-------|----------|-------------|
 | `album`   | path  | yes      | Album title. **Known limitation:** taken from the path segment, so titles containing `/` do not round-trip, and the empty-string ("Other") bucket cannot be expressed. This mirrors `GET /api/albums/{album}/image`. |
-| `artist`  | query | no       | Album artist (`album_artist`). Empty string matches rows with an empty `album_artist`. |
+| `artist`  | query | no       | Album artist. Resolved to the album-artist entity; empty string matches the unknown-artist bucket. |
 
 ### Access control
 
@@ -158,7 +167,7 @@ Content-Type: multipart/form-data
 |--------------|----------|----------|-------------|
 | `image`      | body     | yes      | The cover file (`multipart/form-data`). Max 10 MB. |
 | `album`      | path     | yes      | Album title (same path-segment limitation as the status route). |
-| `artist`     | query    | no       | Album artist; empty string matches rows with an empty `album_artist`. |
+| `artist`     | query    | no       | Album artist; resolved to the album-artist entity (empty = unknown-artist bucket). |
 
 **Accepted formats: JPEG and PNG only.** WebP and any other type are rejected
 with `400`. The extension is canonicalised to `.jpg` / `.png` (a `.jpeg` upload

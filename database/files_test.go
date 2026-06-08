@@ -725,7 +725,7 @@ func TestListTrashedFiles_ExcludesLiveFiles(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
-	hashLive  := "live0001000000000000000000000000000000000000000000000000000000000"
+	hashLive := "live0001000000000000000000000000000000000000000000000000000000000"
 	hashTrash := "trash001000000000000000000000000000000000000000000000000000000000"
 	if err := db.InsertFile(ctx, newFile(hashLive), newUpload("live.mp3"), newMeta()); err != nil {
 		t.Fatal(err)

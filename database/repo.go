@@ -55,19 +55,39 @@ type Repository interface {
 	// request can reach (the guest-playable / license policy).
 	SearchGuest(ctx context.Context, q string) (*SearchResults, error)
 
-	// UpsertArtistImage stores (or replaces) the image reference for an artist.
-	UpsertArtistImage(ctx context.Context, artist, objectKey, mimeType string, updatedAt int64) error
+	// UpsertArtistImage stores (or replaces) the image reference for an artist
+	// entity, keyed by artists.id.
+	UpsertArtistImage(ctx context.Context, artistID int64, objectKey, mimeType string, updatedAt int64) error
 
-	// UpsertAlbumImage stores (or replaces) the image reference for an album.
-	UpsertAlbumImage(ctx context.Context, artist, album, objectKey, mimeType string, updatedAt int64) error
+	// UpsertAlbumImage stores (or replaces) the image reference for an album
+	// entity, keyed by albums.id.
+	UpsertAlbumImage(ctx context.Context, albumID int64, objectKey, mimeType string, updatedAt int64) error
 
-	// GetArtistImage returns the image object key and MIME type for an artist.
-	// Returns found=false (no error) when no image is stored.
-	GetArtistImage(ctx context.Context, artist string) (objectKey, mimeType string, found bool, err error)
+	// GetArtistImage returns the image object key and MIME type for an artist
+	// entity. Returns found=false (no error) when no image is stored.
+	GetArtistImage(ctx context.Context, artistID int64) (objectKey, mimeType string, found bool, err error)
 
-	// GetAlbumImage returns the image object key and MIME type for an album.
-	// Returns found=false (no error) when no image is stored.
-	GetAlbumImage(ctx context.Context, artist, album string) (objectKey, mimeType string, found bool, err error)
+	// GetAlbumImage returns the image object key and MIME type for an album
+	// entity. Returns found=false (no error) when no image is stored.
+	GetAlbumImage(ctx context.Context, albumID int64) (objectKey, mimeType string, found bool, err error)
+
+	// LookupArtistID returns the artists.id for a display name (matched by its
+	// normalized key), or found=false. Lookup-only (never creates a row) — for
+	// read paths that must not materialize entities for unknown names.
+	LookupArtistID(ctx context.Context, name string) (id int64, found bool, err error)
+
+	// LookupAlbumID returns the albums.id for (artist, album) matched by their
+	// normalized keys, or found=false. Lookup-only.
+	LookupAlbumID(ctx context.Context, artist, album string) (id int64, found bool, err error)
+
+	// ResolveArtistID get-or-creates the artist entity for a display name and
+	// returns its id. For cover-write paths that may target an entity with no
+	// other attachment. Idempotent.
+	ResolveArtistID(ctx context.Context, name string) (int64, error)
+
+	// ResolveAlbumID get-or-creates the (artist, album) entity and returns the
+	// album id. For cover-write paths.
+	ResolveAlbumID(ctx context.Context, artist, album string) (int64, error)
 
 	// SoftDeleteFileByHash marks the file as trashed (sets deleted_at). The
 	// blob and DB row are preserved. Returns the recorded filenames for audit.
@@ -125,21 +145,21 @@ type Repository interface {
 	// ResetStaleJobs returns all running jobs to pending (startup recovery).
 	ResetStaleJobs(ctx context.Context) error
 
-	// SetAlbumCover inserts/replaces an album cover row with variant-tracking
-	// fields (variants_ready reset to 0).
-	SetAlbumCover(ctx context.Context, artist, album, baseKey, sourceExt, objectKey, mimeType string, now int64) error
+	// SetAlbumCover inserts/replaces an album cover row (keyed by albums.id) with
+	// variant-tracking fields (variants_ready reset to 0).
+	SetAlbumCover(ctx context.Context, albumID int64, baseKey, sourceExt, objectKey, mimeType string, now int64) error
 
-	// SetAlbumCoverIfAbsent inserts an album cover row only when none exists,
-	// reporting inserted=true exactly when this call created it. Race-free
-	// fill-if-missing: it never overwrites an existing cover.
-	SetAlbumCoverIfAbsent(ctx context.Context, artist, album, baseKey, sourceExt, objectKey, mimeType string, now int64) (bool, error)
+	// SetAlbumCoverIfAbsent inserts an album cover row (keyed by albums.id) only
+	// when none exists, reporting inserted=true exactly when this call created it.
+	// Race-free fill-if-missing: it never overwrites an existing cover.
+	SetAlbumCoverIfAbsent(ctx context.Context, albumID int64, baseKey, sourceExt, objectKey, mimeType string, now int64) (bool, error)
 
 	// GetAlbumCoverStatus returns the variant-tracking state for an album cover;
 	// found is false when no row exists.
-	GetAlbumCoverStatus(ctx context.Context, artist, album string) (baseKey, sourceExt string, variantsReady, found bool, err error)
+	GetAlbumCoverStatus(ctx context.Context, albumID int64) (baseKey, sourceExt string, variantsReady, found bool, err error)
 
-	// HasAlbumCover reports whether any album_images row exists for the album.
-	HasAlbumCover(ctx context.Context, artist, album string) (bool, error)
+	// HasAlbumCover reports whether an album_images row exists for the album entity.
+	HasAlbumCover(ctx context.Context, albumID int64) (bool, error)
 
 	// --- Base metadata editing (Phase 5: upload & covers) ---
 

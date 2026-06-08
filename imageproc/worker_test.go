@@ -56,7 +56,11 @@ func TestPool_ProcessesJob(t *testing.T) {
 	writeOriginalJPEG(t, imagesDir, baseKey)
 
 	objectKey := media.VariantPath(baseKey, media.VariantOriginal, ".jpg")
-	if err := db.SetAlbumCover(ctx, artist, album, baseKey, ".jpg", objectKey, "image/jpeg", time.Now().Unix()); err != nil {
+	albumID, err := db.ResolveAlbumID(ctx, artist, album)
+	if err != nil {
+		t.Fatalf("resolve album: %v", err)
+	}
+	if err := db.SetAlbumCover(ctx, albumID, baseKey, ".jpg", objectKey, "image/jpeg", time.Now().Unix()); err != nil {
 		t.Fatalf("set album cover: %v", err)
 	}
 	if err := db.EnqueueImageJob(ctx, "album", artist+"\x1f"+album, baseKey, time.Now().Unix()); err != nil {
@@ -73,7 +77,7 @@ func TestPool_ProcessesJob(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	var ready bool
 	for time.Now().Before(deadline) {
-		_, _, r, found, err := db.GetAlbumCoverStatus(ctx, artist, album)
+		_, _, r, found, err := db.GetAlbumCoverStatus(ctx, albumID)
 		if err != nil {
 			t.Fatalf("status: %v", err)
 		}

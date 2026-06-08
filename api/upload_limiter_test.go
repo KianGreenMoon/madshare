@@ -77,7 +77,7 @@ func TestUploadLimiter_Concurrent(t *testing.T) {
 	l := NewUploadLimiter(cap, 0)
 
 	var (
-		mu      sync.Mutex
+		mu       sync.Mutex
 		inFlight int
 		peak     int
 	)

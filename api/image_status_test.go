@@ -46,7 +46,11 @@ func TestGetAlbumImageStatus_WithCover(t *testing.T) {
 		baseKey = "abcdef0123456789"
 	)
 	objectKey := media.VariantPath(baseKey, media.VariantOriginal, ".jpg")
-	if err := db.SetAlbumCover(context.Background(), artist, album, baseKey, ".jpg", objectKey, "image/jpeg", 1000); err != nil {
+	albumID, err := db.ResolveAlbumID(context.Background(), artist, album)
+	if err != nil {
+		t.Fatalf("resolve album id: %v", err)
+	}
+	if err := db.SetAlbumCover(context.Background(), albumID, baseKey, ".jpg", objectKey, "image/jpeg", 1000); err != nil {
 		t.Fatalf("set album cover: %v", err)
 	}
 

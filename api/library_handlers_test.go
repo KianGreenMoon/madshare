@@ -126,7 +126,11 @@ func TestUploadAlbumImage_EnqueuesJob(t *testing.T) {
 		t.Errorf("original not stored at %s: %v", wantPath, err)
 	}
 
-	gotKey, gotExt, ready, found, err := db.GetAlbumCoverStatus(context.Background(), "Pink Floyd", "Dark Side")
+	albumID, ok, err := db.LookupAlbumID(context.Background(), "Pink Floyd", "Dark Side")
+	if err != nil || !ok {
+		t.Fatalf("LookupAlbumID: found=%v err=%v", ok, err)
+	}
+	gotKey, gotExt, ready, found, err := db.GetAlbumCoverStatus(context.Background(), albumID)
 	if err != nil || !found {
 		t.Fatalf("GetAlbumCoverStatus: found=%v err=%v", found, err)
 	}
@@ -163,7 +167,11 @@ func TestUploadAlbumImage_OverwritesExisting(t *testing.T) {
 	}
 
 	// The cover row must now point at the second image.
-	gotKey, _, _, found, err := db.GetAlbumCoverStatus(ctx, "Artist", "Album")
+	albumID, ok, err := db.LookupAlbumID(ctx, "Artist", "Album")
+	if err != nil || !ok {
+		t.Fatalf("LookupAlbumID: found=%v err=%v", ok, err)
+	}
+	gotKey, _, _, found, err := db.GetAlbumCoverStatus(ctx, albumID)
 	if err != nil || !found {
 		t.Fatalf("GetAlbumCoverStatus: found=%v err=%v", found, err)
 	}
@@ -220,7 +228,11 @@ func TestUploadArtistImage_StoresFlatKey(t *testing.T) {
 		t.Fatalf("status = %d; body: %s", rr.Code, rr.Body.String())
 	}
 
-	objectKey, mimeType, found, err := db.GetArtistImage(context.Background(), "Pink Floyd")
+	artistID, ok, err := db.LookupArtistID(context.Background(), "Pink Floyd")
+	if err != nil || !ok {
+		t.Fatalf("LookupArtistID: found=%v err=%v", ok, err)
+	}
+	objectKey, mimeType, found, err := db.GetArtistImage(context.Background(), artistID)
 	if err != nil || !found {
 		t.Fatalf("GetArtistImage: found=%v err=%v", found, err)
 	}

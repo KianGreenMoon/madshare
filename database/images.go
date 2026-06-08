@@ -130,15 +130,15 @@ func (db *DB) ResetStaleJobs(ctx context.Context) error {
 	return nil
 }
 
-// SetAlbumCover inserts or replaces the album_images row for (artist, album)
+// SetAlbumCover inserts or replaces the album_images row for the album entity
 // with the given variant-tracking fields. variants_ready is reset to 0 — the
 // async worker flips it to 1 via FinishImageJob once variants are generated.
-func (db *DB) SetAlbumCover(ctx context.Context, artist, album, baseKey, sourceExt, objectKey, mimeType string, now int64) error {
+func (db *DB) SetAlbumCover(ctx context.Context, albumID int64, baseKey, sourceExt, objectKey, mimeType string, now int64) error {
 	_, err := db.ExecContext(ctx,
 		`INSERT OR REPLACE INTO album_images
-		     (album_artist, album_title, object_key, mime_type, updated_at, base_key, source_ext, variants_ready)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
-		artist, album, objectKey, mimeType, now, baseKey, sourceExt,
+		     (album_id, object_key, mime_type, updated_at, base_key, source_ext, variants_ready)
+		 VALUES (?, ?, ?, ?, ?, ?, 0)`,
+		albumID, objectKey, mimeType, now, baseKey, sourceExt,
 	)
 	if err != nil {
 		return fmt.Errorf("set album cover: %w", err)
@@ -146,8 +146,8 @@ func (db *DB) SetAlbumCover(ctx context.Context, artist, album, baseKey, sourceE
 	return nil
 }
 
-// SetAlbumCoverIfAbsent atomically inserts an album_images row for (artist,
-// album) only when none exists yet, returning inserted=true exactly when this
+// SetAlbumCoverIfAbsent atomically inserts an album_images row for the album
+// entity only when none exists yet, returning inserted=true exactly when this
 // call created the row. It is the race-free form of the fill-if-missing rule:
 // when several tracks of the same album are uploaded concurrently they all see
 // "no cover" via HasAlbumCover, but only the single caller that wins this
@@ -155,13 +155,13 @@ func (db *DB) SetAlbumCover(ctx context.Context, artist, album, baseKey, sourceE
 // variant processing — the rest are no-ops. Unlike SetAlbumCover it never
 // overwrites an existing cover, so a previously stored (e.g. manually uploaded)
 // cover always wins over embedded art. variants_ready starts at 0.
-func (db *DB) SetAlbumCoverIfAbsent(ctx context.Context, artist, album, baseKey, sourceExt, objectKey, mimeType string, now int64) (bool, error) {
+func (db *DB) SetAlbumCoverIfAbsent(ctx context.Context, albumID int64, baseKey, sourceExt, objectKey, mimeType string, now int64) (bool, error) {
 	res, err := db.ExecContext(ctx,
 		`INSERT INTO album_images
-		     (album_artist, album_title, object_key, mime_type, updated_at, base_key, source_ext, variants_ready)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 0)
-		 ON CONFLICT(album_artist, album_title) DO NOTHING`,
-		artist, album, objectKey, mimeType, now, baseKey, sourceExt,
+		     (album_id, object_key, mime_type, updated_at, base_key, source_ext, variants_ready)
+		 VALUES (?, ?, ?, ?, ?, ?, 0)
+		 ON CONFLICT(album_id) DO NOTHING`,
+		albumID, objectKey, mimeType, now, baseKey, sourceExt,
 	)
 	if err != nil {
 		return false, fmt.Errorf("set album cover if absent: %w", err)
@@ -176,15 +176,14 @@ func (db *DB) SetAlbumCoverIfAbsent(ctx context.Context, artist, album, baseKey,
 // GetAlbumCoverStatus returns the variant-tracking state for an album cover.
 // found is false (no error) when no album_images row exists. base_key and
 // source_ext may be empty for legacy rows written before variants existed.
-func (db *DB) GetAlbumCoverStatus(ctx context.Context, artist, album string) (baseKey, sourceExt string, variantsReady, found bool, err error) {
+func (db *DB) GetAlbumCoverStatus(ctx context.Context, albumID int64) (baseKey, sourceExt string, variantsReady, found bool, err error) {
 	var (
 		bk, se sql.NullString
 		ready  int
 	)
 	row := db.QueryRowContext(ctx,
-		`SELECT base_key, source_ext, variants_ready FROM album_images
-		 WHERE album_artist = ? AND album_title = ?`,
-		artist, album,
+		`SELECT base_key, source_ext, variants_ready FROM album_images WHERE album_id = ?`,
+		albumID,
 	)
 	if err = row.Scan(&bk, &se, &ready); errors.Is(err, sql.ErrNoRows) {
 		return "", "", false, false, nil
@@ -195,13 +194,12 @@ func (db *DB) GetAlbumCoverStatus(ctx context.Context, artist, album string) (ba
 	return bk.String, se.String, ready == 1, true, nil
 }
 
-// HasAlbumCover reports whether an album_images row exists for the album,
+// HasAlbumCover reports whether an album_images row exists for the album entity,
 // regardless of variants_ready. Used by the fill-if-missing logic.
-func (db *DB) HasAlbumCover(ctx context.Context, artist, album string) (bool, error) {
+func (db *DB) HasAlbumCover(ctx context.Context, albumID int64) (bool, error) {
 	var one int
 	row := db.QueryRowContext(ctx,
-		`SELECT 1 FROM album_images WHERE album_artist = ? AND album_title = ?`,
-		artist, album,
+		`SELECT 1 FROM album_images WHERE album_id = ?`, albumID,
 	)
 	if err := row.Scan(&one); errors.Is(err, sql.ErrNoRows) {
 		return false, nil

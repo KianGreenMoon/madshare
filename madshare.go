@@ -73,6 +73,13 @@ func main() {
 		log.Printf("backfilled artist/album entities for %d tracks", n)
 	}
 
+	// Migrate any pre-entity, string-keyed cover rows (set aside by migration
+	// 014) onto the entity-id-keyed cover tables. Must run after the entity
+	// backfill above so the entities it resolves against exist.
+	if err := db.BackfillCoverEntities(context.Background()); err != nil {
+		log.Printf("backfill cover entities: %v", err)
+	}
+
 	// First-run admin bootstrap: create the admin only when no users exist.
 	created, err := auth.Bootstrap(context.Background(), db, cfg.Auth.InitialAdminUser, cfg.Auth.InitialAdminPassword)
 	if err != nil {

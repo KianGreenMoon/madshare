@@ -243,7 +243,16 @@ func (h *handler) search(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) getArtistImage(w http.ResponseWriter, r *http.Request) {
 	artist := chi.URLParam(r, "artist")
-	objectKey, mimeType, found, err := h.repo.GetArtistImage(r.Context(), artist)
+	artistID, found, err := h.repo.LookupArtistID(r.Context(), artist)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	objectKey, mimeType, found, err := h.repo.GetArtistImage(r.Context(), artistID)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -275,7 +284,12 @@ func (h *handler) uploadArtistImage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cannot save image", http.StatusInternalServerError)
 		return
 	}
-	if err := h.repo.UpsertArtistImage(r.Context(), artist, objectKey, mimeType, time.Now().Unix()); err != nil {
+	artistID, err := h.repo.ResolveArtistID(r.Context(), artist)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if err := h.repo.UpsertArtistImage(r.Context(), artistID, objectKey, mimeType, time.Now().Unix()); err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
@@ -286,7 +300,16 @@ func (h *handler) uploadArtistImage(w http.ResponseWriter, r *http.Request) {
 func (h *handler) getAlbumImage(w http.ResponseWriter, r *http.Request) {
 	album := chi.URLParam(r, "album")
 	artist := r.URL.Query().Get("artist")
-	objectKey, mimeType, found, err := h.repo.GetAlbumImage(r.Context(), artist, album)
+	albumID, found, err := h.repo.LookupAlbumID(r.Context(), artist, album)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	objectKey, mimeType, found, err := h.repo.GetAlbumImage(r.Context(), albumID)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -314,7 +337,18 @@ type albumImageStatusResponse struct {
 func (h *handler) getAlbumImageStatus(w http.ResponseWriter, r *http.Request) {
 	album := chi.URLParam(r, "album")
 	artist := r.URL.Query().Get("artist")
-	baseKey, sourceExt, ready, found, err := h.repo.GetAlbumCoverStatus(r.Context(), artist, album)
+	albumID, found, err := h.repo.LookupAlbumID(r.Context(), artist, album)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		// No such album entity → no cover; report the empty status (not a 404,
+		// the endpoint always returns a status body).
+		writeJSON(w, http.StatusOK, albumImageStatusResponse{Variants: map[string]string{}})
+		return
+	}
+	baseKey, sourceExt, ready, found, err := h.repo.GetAlbumCoverStatus(r.Context(), albumID)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -376,7 +410,12 @@ func (h *handler) uploadAlbumImage(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().Unix()
 	ctx := r.Context()
-	if err := h.repo.SetAlbumCover(ctx, artist, album, baseKey, ext, objectKey, mimeType, now); err != nil {
+	albumID, err := h.repo.ResolveAlbumID(ctx, artist, album)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if err := h.repo.SetAlbumCover(ctx, albumID, baseKey, ext, objectKey, mimeType, now); err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}

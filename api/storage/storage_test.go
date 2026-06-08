@@ -209,7 +209,7 @@ func TestHashUpload_HashIsActualSHA256(t *testing.T) {
 		declaredSize int64
 	}{
 		{"declared==actual small", []byte("abc"), 3},
-		{"declared>actual small", []byte("abc"), 9999},           // small path, excess declared
+		{"declared>actual small", []byte("abc"), 9999}, // small path, excess declared
 		{"declared==actual large", bytes.Repeat([]byte("z"), 8), memBufferLimit + 1},
 		{"declared<actual large", []byte("short"), memBufferLimit + 1}, // spool with small actual data
 	}

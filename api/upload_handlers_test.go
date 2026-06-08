@@ -136,11 +136,7 @@ func TestUploadFile_ExtractsCover(t *testing.T) {
 	}
 
 	// album_images row exists for the album.
-	has, err := db.HasAlbumCover(context.Background(), "Pink Floyd", "Dark Side")
-	if err != nil {
-		t.Fatalf("HasAlbumCover: %v", err)
-	}
-	if !has {
+	if !albumHasCover(t, db, "Pink Floyd", "Dark Side") {
 		t.Error("no album_images row created for the uploaded album")
 	}
 
@@ -199,6 +195,24 @@ func TestUploadFile_NoCoverOnDedup(t *testing.T) {
 	}
 }
 
+// albumHasCover reports whether the (artist, album) entity has a cover row,
+// resolving the name to its album id first. A missing entity means no cover.
+func albumHasCover(t *testing.T, db *database.DB, artist, album string) bool {
+	t.Helper()
+	id, found, err := db.LookupAlbumID(context.Background(), artist, album)
+	if err != nil {
+		t.Fatalf("LookupAlbumID: %v", err)
+	}
+	if !found {
+		return false
+	}
+	has, err := db.HasAlbumCover(context.Background(), id)
+	if err != nil {
+		t.Fatalf("HasAlbumCover: %v", err)
+	}
+	return has
+}
+
 // TestUploadFile_FillIfMissing_SkipsExisting pre-seeds an album cover, then
 // uploads a track with embedded art for the same album. The existing cover must
 // not be overwritten and no new job enqueued.
@@ -206,8 +220,13 @@ func TestUploadFile_FillIfMissing_SkipsExisting(t *testing.T) {
 	h, db, _ := newTestHandler(t)
 	ctx := context.Background()
 
-	// Pre-existing (e.g. manually uploaded) cover.
-	if err := db.SetAlbumCover(ctx, "Pink Floyd", "Animals", "deadbeefdeadbeef", ".png", "deadbeefdeadbeef/original.png", "image/png", 1); err != nil {
+	// Pre-existing (e.g. manually uploaded) cover. Create the album entity first
+	// (a manual cover upload would do this via ResolveAlbumID).
+	albumID, err := db.ResolveAlbumID(ctx, "Pink Floyd", "Animals")
+	if err != nil {
+		t.Fatalf("resolve album: %v", err)
+	}
+	if err := db.SetAlbumCover(ctx, albumID, "deadbeefdeadbeef", ".png", "deadbeefdeadbeef/original.png", "image/png", 1); err != nil {
 		t.Fatalf("seed cover: %v", err)
 	}
 
@@ -231,7 +250,7 @@ func TestUploadFile_FillIfMissing_SkipsExisting(t *testing.T) {
 	if got := countPendingImageJobs(t, h); got != 0 {
 		t.Errorf("pending jobs = %d, want 0 (fill-if-missing must not enqueue)", got)
 	}
-	baseKey, _, _, found, err := db.GetAlbumCoverStatus(ctx, "Pink Floyd", "Animals")
+	baseKey, _, _, found, err := db.GetAlbumCoverStatus(ctx, albumID)
 	if err != nil || !found {
 		t.Fatalf("GetAlbumCoverStatus: found=%v err=%v", found, err)
 	}
@@ -331,8 +350,12 @@ func TestUploadFile_ConcurrentSameAlbum_OneCover(t *testing.T) {
 	}
 
 	// Exactly one album_images row and one pending job survive the race.
+	albumID, found, err := db.LookupAlbumID(context.Background(), "Pink Floyd", "The Wall")
+	if err != nil || !found {
+		t.Fatalf("LookupAlbumID: found=%v err=%v", found, err)
+	}
 	var rows int
-	db.QueryRow(`SELECT COUNT(*) FROM album_images WHERE album_artist='Pink Floyd' AND album_title='The Wall'`).Scan(&rows)
+	db.QueryRow(`SELECT COUNT(*) FROM album_images WHERE album_id = ?`, albumID).Scan(&rows)
 	if rows != 1 {
 		t.Errorf("album_images rows = %d, want 1", rows)
 	}
@@ -362,7 +385,7 @@ func TestUploadFile_UnsupportedEmbeddedFormatSkipped(t *testing.T) {
 	if resp["cover_processing"] != false {
 		t.Errorf("cover_processing = %v, want false (unsupported format)", resp["cover_processing"])
 	}
-	if has, _ := db.HasAlbumCover(context.Background(), "Pink Floyd", "Meddle"); has {
+	if albumHasCover(t, db, "Pink Floyd", "Meddle") {
 		t.Error("album cover row created for unsupported embedded format")
 	}
 	if got := countPendingImageJobs(t, h); got != 0 {
@@ -392,7 +415,7 @@ func TestUploadFile_OversizedEmbeddedCoverSkipped(t *testing.T) {
 	if resp["cover_processing"] != false {
 		t.Errorf("cover_processing = %v, want false (over size cap)", resp["cover_processing"])
 	}
-	if has, _ := db.HasAlbumCover(context.Background(), "Pink Floyd", "Obscured"); has {
+	if albumHasCover(t, db, "Pink Floyd", "Obscured") {
 		t.Error("album cover row created for oversized embedded cover")
 	}
 	if got := countPendingImageJobs(t, h); got != 0 {
@@ -422,7 +445,7 @@ func TestUploadFile_ArtistFallbackFromTPE1(t *testing.T) {
 		t.Errorf("cover_processing = %v, want true", resp["cover_processing"])
 	}
 	// Cover must be keyed on the track artist (the TPE1 fallback), not "".
-	if has, _ := db.HasAlbumCover(context.Background(), "Lone Artist", "Summer"); !has {
+	if !albumHasCover(t, db, "Lone Artist", "Summer") {
 		t.Error("cover not keyed on track artist via TPE1 fallback")
 	}
 }
@@ -471,8 +494,12 @@ func TestUploadFile_ConcurrentSameAlbumIdenticalArt_OneFile(t *testing.T) {
 	close(start)
 	wg.Wait()
 
+	albumID, found, err := db.LookupAlbumID(context.Background(), "Pink Floyd", "Division Bell")
+	if err != nil || !found {
+		t.Fatalf("LookupAlbumID: found=%v err=%v", found, err)
+	}
 	var rows int
-	db.QueryRow(`SELECT COUNT(*) FROM album_images WHERE album_artist='Pink Floyd' AND album_title='Division Bell'`).Scan(&rows)
+	db.QueryRow(`SELECT COUNT(*) FROM album_images WHERE album_id = ?`, albumID).Scan(&rows)
 	if rows != 1 {
 		t.Errorf("album_images rows = %d, want 1", rows)
 	}

@@ -3,7 +3,9 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -89,6 +91,84 @@ func (db *DB) resolveAlbumArtist(ctx context.Context, t AlbumArtistTags) (artist
 	return artistID, albumID, nil
 }
 
+// resolveArtistTx get-or-creates the artist entity for a display name within an
+// open transaction, returning its id. The display string is stored as-is on
+// first insert (first spelling wins); norm_name is the dedup key.
+func resolveArtistTx(ctx context.Context, tx *sql.Tx, displayName string, now int64) (int64, error) {
+	var id int64
+	if err := tx.QueryRowContext(ctx,
+		`INSERT INTO artists (name, norm_name, created_at) VALUES (?, ?, ?)
+		 ON CONFLICT(norm_name) DO UPDATE SET name = artists.name
+		 RETURNING id`,
+		displayName, normalizeKey(displayName), now,
+	).Scan(&id); err != nil {
+		return 0, fmt.Errorf("resolve artist: %w", err)
+	}
+	return id, nil
+}
+
+// ResolveArtistID get-or-creates the artist entity for a display name and
+// returns its id. Used by cover-write paths, which may target an artist whose
+// only attachment is the cover. Idempotent.
+func (db *DB) ResolveArtistID(ctx context.Context, name string) (int64, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("resolve artist id: begin: %w", err)
+	}
+	defer tx.Rollback()
+	id, err := resolveArtistTx(ctx, tx, strings.TrimSpace(norm.NFC.String(name)), time.Now().Unix())
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("resolve artist id: commit: %w", err)
+	}
+	return id, nil
+}
+
+// ResolveAlbumID get-or-creates the (artist, album) entity and returns the album
+// id. The artist is treated as the album artist. Used by cover-write paths.
+func (db *DB) ResolveAlbumID(ctx context.Context, artist, album string) (int64, error) {
+	_, albumID, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{AlbumArtist: artist, Album: album})
+	return albumID, err
+}
+
+// LookupArtistID returns the artists.id for a display name (matched by
+// normalized key), or found=false when no such entity exists. It never creates a
+// row — read paths must not materialize entities for missing names.
+func (db *DB) LookupArtistID(ctx context.Context, name string) (int64, bool, error) {
+	var id int64
+	err := db.QueryRowContext(ctx,
+		`SELECT id FROM artists WHERE norm_name = ?`, normalizeKey(name),
+	).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("lookup artist id: %w", err)
+	}
+	return id, true, nil
+}
+
+// LookupAlbumID returns the albums.id for (artist, album) matched by their
+// normalized keys, or found=false. Lookup-only (never creates).
+func (db *DB) LookupAlbumID(ctx context.Context, artist, album string) (int64, bool, error) {
+	var id int64
+	err := db.QueryRowContext(ctx,
+		`SELECT al.id FROM albums al
+		 JOIN artists ar ON ar.id = al.artist_id
+		 WHERE ar.norm_name = ? AND al.norm_title = ?`,
+		normalizeKey(artist), normalizeKey(album),
+	).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("lookup album id: %w", err)
+	}
+	return id, true, nil
+}
+
 // resolveAlbumArtistTx is the transaction-scoped core of resolveAlbumArtist, for
 // callers already inside a transaction (InsertFile, UpdateFileMetadata). They
 // must resolve within their existing tx rather than open a nested one: the pool
@@ -96,14 +176,9 @@ func (db *DB) resolveAlbumArtist(ctx context.Context, t AlbumArtistTags) (artist
 func resolveAlbumArtistTx(ctx context.Context, tx *sql.Tx, t AlbumArtistTags) (artistID, albumID int64, err error) {
 	now := time.Now().Unix()
 
-	artist := effectiveArtist(t.AlbumArtist, t.Artist)
-	if err := tx.QueryRowContext(ctx,
-		`INSERT INTO artists (name, norm_name, created_at) VALUES (?, ?, ?)
-		 ON CONFLICT(norm_name) DO UPDATE SET name = artists.name
-		 RETURNING id`,
-		artist, normalizeKey(artist), now,
-	).Scan(&artistID); err != nil {
-		return 0, 0, fmt.Errorf("resolve artist: %w", err)
+	artistID, err = resolveArtistTx(ctx, tx, effectiveArtist(t.AlbumArtist, t.Artist), now)
+	if err != nil {
+		return 0, 0, err
 	}
 
 	var year any
@@ -187,4 +262,159 @@ func (db *DB) BackfillEntities(ctx context.Context) (int, error) {
 		done++
 	}
 	return done, nil
+}
+
+// tableExists reports whether a table of the given name is present.
+func (db *DB) tableExists(ctx context.Context, name string) (bool, error) {
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name,
+	).Scan(&n); err != nil {
+		return false, fmt.Errorf("table exists %s: %w", name, err)
+	}
+	return n > 0, nil
+}
+
+// BackfillCoverEntities migrates the pre-entity, string-keyed cover rows that
+// migration 014 set aside (album_images_old / artist_images_old) onto the new
+// entity-id-keyed tables, then drops the leftovers. It must run after
+// BackfillEntities so the artists/albums entities it resolves against exist.
+//
+// Idempotent: when the *_old tables are already gone (drained on an earlier
+// start, or a fresh DB) it is a no-op. A cover whose string identity no longer
+// resolves to an entity (e.g. an album that lost all its tracks) is dropped — a
+// cover with no album is dead weight and unreachable.
+func (db *DB) BackfillCoverEntities(ctx context.Context) error {
+	if err := db.backfillAlbumCovers(ctx); err != nil {
+		return err
+	}
+	return db.backfillArtistCovers(ctx)
+}
+
+func (db *DB) backfillAlbumCovers(ctx context.Context) error {
+	ok, err := db.tableExists(ctx, "album_images_old")
+	if err != nil || !ok {
+		return err
+	}
+
+	rows, err := db.QueryContext(ctx,
+		`SELECT album_artist, album_title, object_key, mime_type, updated_at, base_key, source_ext, variants_ready
+		 FROM album_images_old`)
+	if err != nil {
+		return fmt.Errorf("backfill album covers: query: %w", err)
+	}
+	type oldCover struct {
+		artist, title       string
+		objectKey, mimeType string
+		updatedAt           int64
+		baseKey, sourceExt  sql.NullString
+		variantsReady       int
+	}
+	var olds []oldCover
+	for rows.Next() {
+		var o oldCover
+		if err := rows.Scan(&o.artist, &o.title, &o.objectKey, &o.mimeType, &o.updatedAt,
+			&o.baseKey, &o.sourceExt, &o.variantsReady); err != nil {
+			rows.Close()
+			return fmt.Errorf("backfill album covers: scan: %w", err)
+		}
+		olds = append(olds, o)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("backfill album covers: rows: %w", err)
+	}
+	rows.Close()
+
+	var migrated, dropped int
+	for _, o := range olds {
+		albumID, found, err := db.LookupAlbumID(ctx, o.artist, o.title)
+		if err != nil {
+			return err
+		}
+		if !found {
+			dropped++
+			continue
+		}
+		if _, err := db.ExecContext(ctx,
+			`INSERT OR IGNORE INTO album_images
+			     (album_id, object_key, mime_type, updated_at, base_key, source_ext, variants_ready)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			albumID, o.objectKey, o.mimeType, o.updatedAt, o.baseKey, o.sourceExt, o.variantsReady,
+		); err != nil {
+			return fmt.Errorf("backfill album covers: insert: %w", err)
+		}
+		migrated++
+	}
+	if _, err := db.ExecContext(ctx, `DROP TABLE album_images_old`); err != nil {
+		return fmt.Errorf("backfill album covers: drop old: %w", err)
+	}
+	if migrated > 0 || dropped > 0 {
+		log.Printf("migrated %d album covers to entity ids (%d unresolved dropped)", migrated, dropped)
+	}
+	return nil
+}
+
+func (db *DB) backfillArtistCovers(ctx context.Context) error {
+	ok, err := db.tableExists(ctx, "artist_images_old")
+	if err != nil || !ok {
+		return err
+	}
+
+	rows, err := db.QueryContext(ctx,
+		`SELECT artist_name, object_key, mime_type, updated_at, base_key, source_ext, variants_ready
+		 FROM artist_images_old`)
+	if err != nil {
+		return fmt.Errorf("backfill artist covers: query: %w", err)
+	}
+	type oldCover struct {
+		name                string
+		objectKey, mimeType string
+		updatedAt           int64
+		baseKey, sourceExt  sql.NullString
+		variantsReady       int
+	}
+	var olds []oldCover
+	for rows.Next() {
+		var o oldCover
+		if err := rows.Scan(&o.name, &o.objectKey, &o.mimeType, &o.updatedAt,
+			&o.baseKey, &o.sourceExt, &o.variantsReady); err != nil {
+			rows.Close()
+			return fmt.Errorf("backfill artist covers: scan: %w", err)
+		}
+		olds = append(olds, o)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("backfill artist covers: rows: %w", err)
+	}
+	rows.Close()
+
+	var migrated, dropped int
+	for _, o := range olds {
+		artistID, found, err := db.LookupArtistID(ctx, o.name)
+		if err != nil {
+			return err
+		}
+		if !found {
+			dropped++
+			continue
+		}
+		if _, err := db.ExecContext(ctx,
+			`INSERT OR IGNORE INTO artist_images
+			     (artist_id, object_key, mime_type, updated_at, base_key, source_ext, variants_ready)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			artistID, o.objectKey, o.mimeType, o.updatedAt, o.baseKey, o.sourceExt, o.variantsReady,
+		); err != nil {
+			return fmt.Errorf("backfill artist covers: insert: %w", err)
+		}
+		migrated++
+	}
+	if _, err := db.ExecContext(ctx, `DROP TABLE artist_images_old`); err != nil {
+		return fmt.Errorf("backfill artist covers: drop old: %w", err)
+	}
+	if migrated > 0 || dropped > 0 {
+		log.Printf("migrated %d artist covers to entity ids (%d unresolved dropped)", migrated, dropped)
+	}
+	return nil
 }

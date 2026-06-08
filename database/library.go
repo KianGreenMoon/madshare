@@ -22,8 +22,8 @@ func (db *DB) ListArtistsGuest(ctx context.Context) ([]*ArtistEntry, error) {
 // listArtists is the shared artist listing over the entity overlay. One row per
 // artists entity that has at least one live (and, when guest, reachable) track;
 // the INNER JOIN on media_metadata means orphan entities with no tracks (e.g.
-// left behind by a rename) never appear. has_image still matches the
-// string-keyed artist_images by display name until the Phase 4 cover re-key.
+// left behind by a rename) never appear. has_image joins the now id-keyed
+// artist_images directly on artist_id (exact).
 func (db *DB) listArtists(ctx context.Context, guest bool) ([]*ArtistEntry, error) {
 	where := "WHERE f.deleted_at IS NULL"
 	if guest {
@@ -31,11 +31,11 @@ func (db *DB) listArtists(ctx context.Context, guest bool) ([]*ArtistEntry, erro
 	}
 	q := `
 		SELECT a.id, a.name, COUNT(*) AS track_count,
-		       CASE WHEN ai.artist_name IS NOT NULL THEN 1 ELSE 0 END AS has_image
+		       CASE WHEN ai.artist_id IS NOT NULL THEN 1 ELSE 0 END AS has_image
 		FROM artists a
 		JOIN media_metadata m ON m.artist_id = a.id
 		JOIN files f ON f.id = m.file_id
-		LEFT JOIN artist_images ai ON ai.artist_name = a.name
+		LEFT JOIN artist_images ai ON ai.artist_id = a.id
 		` + where + `
 		GROUP BY a.id
 		ORDER BY LOWER(a.name) ASC`
@@ -84,12 +84,12 @@ func (db *DB) listAlbumsByArtist(ctx context.Context, artist string, guest bool)
 	q := `
 		SELECT al.id, al.title, ar.name AS artist_name, COALESCE(al.year, 0) AS year,
 		       COUNT(*) AS track_count,
-		       CASE WHEN ali.album_title IS NOT NULL THEN 1 ELSE 0 END AS has_image
+		       CASE WHEN ali.album_id IS NOT NULL THEN 1 ELSE 0 END AS has_image
 		FROM albums al
 		JOIN artists ar ON ar.id = al.artist_id
 		JOIN media_metadata m ON m.album_id = al.id
 		JOIN files f ON f.id = m.file_id
-		LEFT JOIN album_images ali ON ali.album_artist = ar.name AND ali.album_title = al.title
+		LEFT JOIN album_images ali ON ali.album_id = al.id
 		` + where + `
 		GROUP BY al.id
 		ORDER BY year ASC, LOWER(al.title) ASC`
@@ -207,11 +207,11 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 	}
 	artistQ := `
 		SELECT a.id, a.name, COUNT(*) AS track_count,
-		       CASE WHEN ai.artist_name IS NOT NULL THEN 1 ELSE 0 END AS has_image
+		       CASE WHEN ai.artist_id IS NOT NULL THEN 1 ELSE 0 END AS has_image
 		FROM artists a
 		JOIN media_metadata m ON m.artist_id = a.id
 		JOIN files f ON f.id = m.file_id
-		LEFT JOIN artist_images ai ON ai.artist_name = a.name
+		LEFT JOIN artist_images ai ON ai.artist_id = a.id
 		` + artistWhere + `
 		GROUP BY a.id
 		ORDER BY LOWER(a.name) ASC
@@ -245,12 +245,12 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 	albumQ := `
 		SELECT al.id, al.title, ar.name AS artist_name, COALESCE(al.year, 0) AS year,
 		       COUNT(*) AS track_count,
-		       CASE WHEN ali.album_title IS NOT NULL THEN 1 ELSE 0 END AS has_image
+		       CASE WHEN ali.album_id IS NOT NULL THEN 1 ELSE 0 END AS has_image
 		FROM albums al
 		JOIN artists ar ON ar.id = al.artist_id
 		JOIN media_metadata m ON m.album_id = al.id
 		JOIN files f ON f.id = m.file_id
-		LEFT JOIN album_images ali ON ali.album_artist = ar.name AND ali.album_title = al.title
+		LEFT JOIN album_images ali ON ali.album_id = al.id
 		` + albumWhere + `
 		GROUP BY al.id
 		ORDER BY LOWER(al.title) ASC
@@ -328,10 +328,10 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 	return &SearchResults{Artists: artists, Albums: albums, Tracks: tracks}, nil
 }
 
-func (db *DB) UpsertArtistImage(ctx context.Context, artist, objectKey, mimeType string, updatedAt int64) error {
+func (db *DB) UpsertArtistImage(ctx context.Context, artistID int64, objectKey, mimeType string, updatedAt int64) error {
 	_, err := db.ExecContext(ctx,
-		`INSERT OR REPLACE INTO artist_images (artist_name, object_key, mime_type, updated_at) VALUES (?, ?, ?, ?)`,
-		artist, objectKey, mimeType, updatedAt,
+		`INSERT OR REPLACE INTO artist_images (artist_id, object_key, mime_type, updated_at) VALUES (?, ?, ?, ?)`,
+		artistID, objectKey, mimeType, updatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert artist image: %w", err)
@@ -339,10 +339,10 @@ func (db *DB) UpsertArtistImage(ctx context.Context, artist, objectKey, mimeType
 	return nil
 }
 
-func (db *DB) UpsertAlbumImage(ctx context.Context, artist, album, objectKey, mimeType string, updatedAt int64) error {
+func (db *DB) UpsertAlbumImage(ctx context.Context, albumID int64, objectKey, mimeType string, updatedAt int64) error {
 	_, err := db.ExecContext(ctx,
-		`INSERT OR REPLACE INTO album_images (album_artist, album_title, object_key, mime_type, updated_at) VALUES (?, ?, ?, ?, ?)`,
-		artist, album, objectKey, mimeType, updatedAt,
+		`INSERT OR REPLACE INTO album_images (album_id, object_key, mime_type, updated_at) VALUES (?, ?, ?, ?)`,
+		albumID, objectKey, mimeType, updatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert album image: %w", err)
@@ -350,10 +350,10 @@ func (db *DB) UpsertAlbumImage(ctx context.Context, artist, album, objectKey, mi
 	return nil
 }
 
-func (db *DB) GetArtistImage(ctx context.Context, artist string) (objectKey, mimeType string, found bool, err error) {
+func (db *DB) GetArtistImage(ctx context.Context, artistID int64) (objectKey, mimeType string, found bool, err error) {
 	row := db.QueryRowContext(ctx,
-		`SELECT object_key, mime_type FROM artist_images WHERE artist_name = ?`,
-		artist,
+		`SELECT object_key, mime_type FROM artist_images WHERE artist_id = ?`,
+		artistID,
 	)
 	if err = row.Scan(&objectKey, &mimeType); errors.Is(err, sql.ErrNoRows) {
 		return "", "", false, nil
@@ -364,10 +364,10 @@ func (db *DB) GetArtistImage(ctx context.Context, artist string) (objectKey, mim
 	return objectKey, mimeType, true, nil
 }
 
-func (db *DB) GetAlbumImage(ctx context.Context, artist, album string) (objectKey, mimeType string, found bool, err error) {
+func (db *DB) GetAlbumImage(ctx context.Context, albumID int64) (objectKey, mimeType string, found bool, err error) {
 	row := db.QueryRowContext(ctx,
-		`SELECT object_key, mime_type FROM album_images WHERE album_artist = ? AND album_title = ?`,
-		artist, album,
+		`SELECT object_key, mime_type FROM album_images WHERE album_id = ?`,
+		albumID,
 	)
 	if err = row.Scan(&objectKey, &mimeType); errors.Is(err, sql.ErrNoRows) {
 		return "", "", false, nil

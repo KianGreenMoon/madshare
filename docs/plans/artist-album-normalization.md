@@ -121,11 +121,37 @@ by entity display name/title (correct in the common case; the Phase 4 re-key
 makes it exact). Bonus: case/whitespace-variant spellings now merge into one
 listed artist/album (the overlay payoff), covered by a new test.
 
-## Phase 4 — re-key image tables + cover handlers on IDs
+## Phase 4 — re-key image tables + cover handlers on IDs — **DONE (2026-06-09)**
 
 Owns the image-table re-key moved out of Phase 1 (see the Phase 1 decision note),
 done in lockstep with the accessor rewrite so the schema and the code reading it
-never disagree:
+never disagree.
+
+**As implemented (owner chose id-based accessor signatures):**
+
+- **Migration `014`** renames the old string-keyed tables to `*_old` and creates
+  new `album_images(album_id PK …)` / `artist_images(artist_id PK …)` (preserving
+  `object_key`/`mime_type`/`updated_at` + `base_key`/`source_ext`/`variants_ready`,
+  with `ON DELETE CASCADE` to the entity). It is **structural only** — the row
+  copy can't be SQL because the entities don't exist at migration time (they're
+  populated by the Go entity-backfill, which runs *after* migrations).
+- **`BackfillCoverEntities`** (startup pass in `madshare.go`, after
+  `BackfillEntities`) drains `*_old` → resolves each old string key to its entity
+  id via `normalizeKey` lookup → `INSERT OR IGNORE` into the new table → drops
+  `*_old`. Idempotent (no-op once `*_old` is gone). Covers whose string identity
+  no longer resolves to an entity are dropped (dead weight). The schema-snapshot
+  test runs this pass so the asserted set is the steady state.
+- **Accessor signatures changed to ids:** `Upsert/GetArtistImage(artistID)`,
+  `Upsert/GetAlbumImage(albumID)`, `SetAlbumCover{,IfAbsent}(albumID,…)`,
+  `Get/HasAlbumCover…(albumID)`. Added lookup-only `LookupArtistID`/`LookupAlbumID`
+  (reads — never create) and get-or-create `ResolveArtistID`/`ResolveAlbumID`
+  (cover writes) to `Repository`. The HTTP endpoints keep their name-based URL
+  params; handlers resolve name→id at the edge (reads use Lookup → 404/empty on
+  miss; writes use Resolve). `fakeRepo` updated; its lookups resolve transparently.
+- `has_image` joins in `library.go` now match on `artist_id`/`album_id` (exact).
+- `image_processing_jobs.subject_key` (still the `"<artist>\x1f<album>"` string)
+  and the `<files_dir>/images/<base_key>/` layout are unaffected. Updated
+  `docs/api/cover-images.md`.
 
 - **Migration (Phase 4):** rebuild `artist_images`/`album_images` keyed by
   `artist_id PK` / `album_id PK`. SQLite can't drop/rename a PK column in place,

@@ -365,8 +365,8 @@ type fakeRepo struct {
 	searchErr    error
 
 	// Cover-variant queue stubs (Phase 1). Drive GetAlbumCoverStatus / counters.
-	coverBaseKey  string
-	coverExt      string
+	coverBaseKey   string
+	coverExt       string
 	coverReady     bool
 	coverFound     bool
 	coverClaimLost bool // SetAlbumCoverIfAbsent reports the row already existed
@@ -441,20 +441,39 @@ func (f *fakeRepo) ListTracksByAlbumArtistGuest(_ context.Context, _, _ string) 
 	return nil, nil
 }
 
-func (f *fakeRepo) UpsertArtistImage(_ context.Context, _, _, _ string, _ int64) error {
+func (f *fakeRepo) UpsertArtistImage(_ context.Context, _ int64, _, _ string, _ int64) error {
 	return nil
 }
 
-func (f *fakeRepo) UpsertAlbumImage(_ context.Context, _, _, _, _ string, _ int64) error {
+func (f *fakeRepo) UpsertAlbumImage(_ context.Context, _ int64, _, _ string, _ int64) error {
 	return nil
 }
 
-func (f *fakeRepo) GetArtistImage(_ context.Context, _ string) (string, string, bool, error) {
+func (f *fakeRepo) GetArtistImage(_ context.Context, _ int64) (string, string, bool, error) {
 	return "", "", false, nil
 }
 
-func (f *fakeRepo) GetAlbumImage(_ context.Context, _, _ string) (string, string, bool, error) {
+func (f *fakeRepo) GetAlbumImage(_ context.Context, _ int64) (string, string, bool, error) {
 	return "", "", false, nil
+}
+
+// Lookups resolve transparently (always found) so the Get*/cover fakes below
+// remain the single knob for presence — the handler's not-found branch is
+// exercised separately via those.
+func (f *fakeRepo) LookupArtistID(_ context.Context, _ string) (int64, bool, error) {
+	return 1, true, nil
+}
+
+func (f *fakeRepo) LookupAlbumID(_ context.Context, _, _ string) (int64, bool, error) {
+	return 1, true, nil
+}
+
+func (f *fakeRepo) ResolveArtistID(_ context.Context, _ string) (int64, error) {
+	return 1, nil
+}
+
+func (f *fakeRepo) ResolveAlbumID(_ context.Context, _, _ string) (int64, error) {
+	return 1, nil
 }
 
 func (f *fakeRepo) EnqueueImageJob(_ context.Context, _, _, _ string, _ int64) error {
@@ -474,23 +493,23 @@ func (f *fakeRepo) ResetStaleJobs(_ context.Context) error {
 	return nil
 }
 
-func (f *fakeRepo) SetAlbumCover(_ context.Context, _, _, _, _, _, _ string, _ int64) error {
+func (f *fakeRepo) SetAlbumCover(_ context.Context, _ int64, _, _, _, _ string, _ int64) error {
 	f.setCoverCalls++
 	return nil
 }
 
-func (f *fakeRepo) SetAlbumCoverIfAbsent(_ context.Context, _, _, _, _, _, _ string, _ int64) (bool, error) {
+func (f *fakeRepo) SetAlbumCoverIfAbsent(_ context.Context, _ int64, _, _, _, _ string, _ int64) (bool, error) {
 	f.setCoverCalls++
 	// Default: the claim succeeds (no existing cover). Tests exercising the
 	// "lost the race / cover already present" path set coverClaimLost.
 	return !f.coverClaimLost, nil
 }
 
-func (f *fakeRepo) GetAlbumCoverStatus(_ context.Context, _, _ string) (string, string, bool, bool, error) {
+func (f *fakeRepo) GetAlbumCoverStatus(_ context.Context, _ int64) (string, string, bool, bool, error) {
 	return f.coverBaseKey, f.coverExt, f.coverReady, f.coverFound, nil
 }
 
-func (f *fakeRepo) HasAlbumCover(_ context.Context, _, _ string) (bool, error) {
+func (f *fakeRepo) HasAlbumCover(_ context.Context, _ int64) (bool, error) {
 	return f.coverFound, nil
 }
 
