@@ -633,6 +633,121 @@ func (h *handler) renameAlbum(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "title": newTitle})
 }
 
+// mergeArtists handles POST /api/artists/{artist}/merge. The {artist} path
+// segment names the source ("from") artist to be merged away; the JSON body
+// {"into": "..."} names the target ("into") artist that absorbs it. All of the
+// source's tracks, albums, and covers move onto the target (colliding albums
+// collapse), then the source entity is deleted. Gated on metadata.edit.
+func (h *handler) mergeArtists(w http.ResponseWriter, r *http.Request) {
+	from := chi.URLParam(r, "artist")
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	var body struct {
+		Into string `json:"into"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	into := strings.TrimSpace(body.Into)
+	if into == "" {
+		http.Error(w, "into is required", http.StatusBadRequest)
+		return
+	}
+
+	fromID, found, err := h.repo.LookupArtistID(r.Context(), from)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	intoID, found, err := h.repo.LookupArtistID(r.Context(), into)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "target artist not found"})
+		return
+	}
+
+	switch err := h.repo.MergeArtists(r.Context(), fromID, intoID); {
+	case errors.Is(err, database.ErrMergeSelf):
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "cannot merge an artist into itself"})
+		return
+	case errors.Is(err, database.ErrEntityNotFound):
+		http.NotFound(w, r)
+		return
+	case err != nil:
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+
+	h.audit(r.Context(), "metadata.merge", "artist:"+from, "→ "+into)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "from_id": fromID, "into_id": intoID, "into": into})
+}
+
+// mergeAlbums handles POST /api/albums/{album}/merge?artist=<artist>. The path
+// album + ?artist query name the source; the body {"into_artist","into_album"}
+// names the target album. The source's tracks (and their artist) repoint onto
+// the target, its cover moves if the target lacks one, then the source album is
+// deleted. Gated on metadata.edit.
+func (h *handler) mergeAlbums(w http.ResponseWriter, r *http.Request) {
+	fromAlbum := chi.URLParam(r, "album")
+	fromArtist := r.URL.Query().Get("artist")
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	var body struct {
+		IntoArtist string `json:"into_artist"`
+		IntoAlbum  string `json:"into_album"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	intoArtist := strings.TrimSpace(body.IntoArtist)
+	intoAlbum := strings.TrimSpace(body.IntoAlbum)
+	if intoAlbum == "" {
+		http.Error(w, "into_album is required", http.StatusBadRequest)
+		return
+	}
+
+	fromID, found, err := h.repo.LookupAlbumID(r.Context(), fromArtist, fromAlbum)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	intoID, found, err := h.repo.LookupAlbumID(r.Context(), intoArtist, intoAlbum)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "target album not found"})
+		return
+	}
+
+	switch err := h.repo.MergeAlbums(r.Context(), fromID, intoID); {
+	case errors.Is(err, database.ErrMergeSelf):
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "cannot merge an album into itself"})
+		return
+	case errors.Is(err, database.ErrEntityNotFound):
+		http.NotFound(w, r)
+		return
+	case err != nil:
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+
+	h.audit(r.Context(), "metadata.merge", "album:"+fromArtist+"/"+fromAlbum, "→ "+intoArtist+"/"+intoAlbum)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "from_id": fromID, "into_id": intoID})
+}
+
 func (h *handler) serveImageFile(w http.ResponseWriter, r *http.Request, objectKey, mimeType string) {
 	path := filepath.Join(h.imagesDir, objectKey)
 	// Defensive check: a corrupted or crafted objectKey must not escape imagesDir.

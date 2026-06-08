@@ -167,7 +167,7 @@ never disagree.
   `<files_dir>/images/<base_key>/` layout are unaffected (keyed by `base_key`,
   not by album identity). Update `docs/api/cover-images.md`.
 
-## Phase 5 — rename — **DONE (2026-06-09)** (merge deferred)
+## Phase 5 — rename + merge — **DONE (2026-06-09)**
 
 - **Rename — DONE (backend):** `RenameArtist(artistID, newName)` /
   `RenameAlbum(albumID, newTitle)` in `database/entities.go` edit the entity row
@@ -188,9 +188,27 @@ never disagree.
     per-track cover re-POST workaround is superseded — to rename an album/artist
     keeping all tracks + cover, use these endpoints (the `UpdateFileMetadata`
     doc comment now says so). New `Repository` methods + `fakeRepo` stubs added.
-- **Merge — DEFERRED** (own sub-phase): "B → A" — repoint `media_metadata` and
-  `albums`, collapse colliding albums on `(A, norm_title)`, move covers if the
-  target lacks one, delete B. Audit-logged. Not built this round.
+- **Merge — DONE (backend):** `MergeArtists(fromID, intoID)` and
+  `MergeAlbums(fromID, intoID)` in `database/entities.go`.
+  - *Artist merge:* collapse from-albums colliding with an into-album on
+    `norm_title` (repoint their tracks, move the album cover only if the target
+    lacks one, delete the emptied album), move the remaining from-albums onto
+    into, repoint the rest of from's tracks, give into from's artist cover only
+    if it has none, then delete from. One transaction. Because
+    `media_metadata.{artist,album}_id` are RESTRICT (no cascade), every track is
+    repointed before its entity is deleted; deleting an artist/album cascades
+    only the cover rows.
+  - *Album merge:* repoint from's tracks onto into **and into's artist** (keeps
+    `artist_id`/`album_id` consistent), move the cover if into lacks one, delete
+    from. Handles same-artist different-title duplicates; a cross-artist merge
+    leaves from's old artist as a harmless orphan.
+  - **Endpoints** (gated `metadata.edit`): `POST /api/artists/{artist}/merge`
+    `{into}` and `POST /api/albums/{album}/merge?artist=<artist>`
+    `{into_artist, into_album}` — path/query name the *source*, body names the
+    *target*; handler resolves both names→ids via `Lookup*`. `ErrMergeSelf` → 400,
+    unknown target → 400, unknown source → 404. Audited `metadata.merge`. New
+    `Repository` methods + `fakeRepo` stubs. New error `ErrMergeSelf`.
+  - **UI deferred** (→ admin-panel-rework). No dry-run in v0.
 
 ## Known test/inter-dependency gotchas
 

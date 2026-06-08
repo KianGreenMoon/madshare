@@ -484,6 +484,14 @@ func (f *fakeRepo) RenameAlbum(_ context.Context, _ int64, _ string) error {
 	return nil
 }
 
+func (f *fakeRepo) MergeArtists(_ context.Context, _, _ int64) error {
+	return nil
+}
+
+func (f *fakeRepo) MergeAlbums(_ context.Context, _, _ int64) error {
+	return nil
+}
+
 func (f *fakeRepo) EnqueueImageJob(_ context.Context, _, _, _ string, _ int64) error {
 	f.enqueueCalls++
 	return nil

@@ -18,8 +18,11 @@ var (
 	ErrEntityNotFound = errors.New("entity not found")
 	// ErrNameConflict is returned when a rename would collide with an existing
 	// entity (the new normalized name/title is already taken). That is a merge,
-	// not a rename — a separate, deferred operation.
+	// not a rename.
 	ErrNameConflict = errors.New("name already in use")
+	// ErrMergeSelf is returned when a merge names the same entity as both source
+	// and target.
+	ErrMergeSelf = errors.New("cannot merge an entity into itself")
 )
 
 // AlbumArtistTags is the subset of a track's tags the entity resolver needs to
@@ -265,6 +268,169 @@ func (db *DB) RenameAlbum(ctx context.Context, albumID int64, newTitle string) e
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("rename album: commit: %w", err)
+	}
+	return nil
+}
+
+// MergeArtists merges artist `fromID` into `intoID` ("from is the same as
+// into"): all of from's tracks and albums move onto into, albums that collide on
+// norm_title collapse into into's album (tracks repointed, cover moved only if
+// into's album lacks one), into gains from's artist cover only if it has none,
+// then from is deleted. The raw tags on the files are left untouched (overlay).
+// Returns ErrMergeSelf when the ids are equal, ErrEntityNotFound when either id
+// is unknown. Runs in one transaction so a failure leaves both entities intact.
+//
+// media_metadata.{artist,album}_id are RESTRICT (no cascade), so every track is
+// repointed off from before from (and any collapsed album) is deleted; deleting
+// an artist/album cascades only its cover rows.
+func (db *DB) MergeArtists(ctx context.Context, fromID, intoID int64) error {
+	if fromID == intoID {
+		return ErrMergeSelf
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("merge artists: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, id := range []int64{fromID, intoID} {
+		var one int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM artists WHERE id = ?`, id).Scan(&one); errors.Is(err, sql.ErrNoRows) {
+			return ErrEntityNotFound
+		} else if err != nil {
+			return fmt.Errorf("merge artists: verify: %w", err)
+		}
+	}
+
+	// 1. Collapse from-albums that collide with an into-album on norm_title.
+	//    Read the collisions fully before mutating (single-conn pool: a tx can't
+	//    run a statement while its own Rows is open).
+	type collision struct{ fromAlbum, intoAlbum int64 }
+	rows, err := tx.QueryContext(ctx,
+		`SELECT bf.id, ba.id
+		 FROM albums bf
+		 JOIN albums ba ON ba.artist_id = ? AND ba.norm_title = bf.norm_title
+		 WHERE bf.artist_id = ?`, intoID, fromID)
+	if err != nil {
+		return fmt.Errorf("merge artists: find collisions: %w", err)
+	}
+	var collisions []collision
+	for rows.Next() {
+		var c collision
+		if err := rows.Scan(&c.fromAlbum, &c.intoAlbum); err != nil {
+			rows.Close()
+			return fmt.Errorf("merge artists: scan collision: %w", err)
+		}
+		collisions = append(collisions, c)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("merge artists: collisions: %w", err)
+	}
+	rows.Close()
+
+	for _, c := range collisions {
+		if err := moveAlbumCoverIfAbsentTx(ctx, tx, c.fromAlbum, c.intoAlbum); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE media_metadata SET album_id = ?, artist_id = ? WHERE album_id = ?`,
+			c.intoAlbum, intoID, c.fromAlbum); err != nil {
+			return fmt.Errorf("merge artists: repoint collapsed tracks: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM albums WHERE id = ?`, c.fromAlbum); err != nil {
+			return fmt.Errorf("merge artists: delete collapsed album: %w", err)
+		}
+	}
+
+	// 2. Move from's remaining (non-colliding) albums onto into.
+	if _, err := tx.ExecContext(ctx, `UPDATE albums SET artist_id = ? WHERE artist_id = ?`, intoID, fromID); err != nil {
+		return fmt.Errorf("merge artists: move albums: %w", err)
+	}
+	// 3. Repoint from's remaining tracks (those of the moved albums).
+	if _, err := tx.ExecContext(ctx, `UPDATE media_metadata SET artist_id = ? WHERE artist_id = ?`, intoID, fromID); err != nil {
+		return fmt.Errorf("merge artists: repoint tracks: %w", err)
+	}
+	// 4. Give into from's artist cover only if into has none.
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO artist_images (artist_id, object_key, mime_type, updated_at, base_key, source_ext, variants_ready)
+		 SELECT ?, object_key, mime_type, updated_at, base_key, source_ext, variants_ready
+		 FROM artist_images WHERE artist_id = ?
+		   AND NOT EXISTS (SELECT 1 FROM artist_images WHERE artist_id = ?)`,
+		intoID, fromID, intoID); err != nil {
+		return fmt.Errorf("merge artists: move artist cover: %w", err)
+	}
+	// 5. Delete from (cascade removes its now-orphan artist_images; it has no
+	//    albums or tracks left referencing it).
+	if _, err := tx.ExecContext(ctx, `DELETE FROM artists WHERE id = ?`, fromID); err != nil {
+		return fmt.Errorf("merge artists: delete source: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("merge artists: commit: %w", err)
+	}
+	return nil
+}
+
+// MergeAlbums merges album `fromID` into `intoID`: from's tracks are repointed
+// onto into (and into's artist, keeping artist_id/album_id consistent), into
+// gains from's cover only if it has none, then from is deleted. Useful for two
+// albums of one artist that are really the same release under different titles.
+// Returns ErrMergeSelf / ErrEntityNotFound. from's artist, if left with nothing,
+// becomes a harmless orphan (invisible to listings).
+func (db *DB) MergeAlbums(ctx context.Context, fromID, intoID int64) error {
+	if fromID == intoID {
+		return ErrMergeSelf
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("merge albums: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	var intoArtist int64
+	if err := tx.QueryRowContext(ctx, `SELECT artist_id FROM albums WHERE id = ?`, intoID).Scan(&intoArtist); errors.Is(err, sql.ErrNoRows) {
+		return ErrEntityNotFound
+	} else if err != nil {
+		return fmt.Errorf("merge albums: load target: %w", err)
+	}
+	var one int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM albums WHERE id = ?`, fromID).Scan(&one); errors.Is(err, sql.ErrNoRows) {
+		return ErrEntityNotFound
+	} else if err != nil {
+		return fmt.Errorf("merge albums: verify source: %w", err)
+	}
+
+	if err := moveAlbumCoverIfAbsentTx(ctx, tx, fromID, intoID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE media_metadata SET album_id = ?, artist_id = ? WHERE album_id = ?`,
+		intoID, intoArtist, fromID); err != nil {
+		return fmt.Errorf("merge albums: repoint tracks: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM albums WHERE id = ?`, fromID); err != nil {
+		return fmt.Errorf("merge albums: delete source: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("merge albums: commit: %w", err)
+	}
+	return nil
+}
+
+// moveAlbumCoverIfAbsentTx copies the source album's cover row onto the target
+// album only when the target has none — the "move covers if the target lacks
+// one" rule shared by both merges. The source row is left as-is; it is removed
+// by the caller's subsequent DELETE of the source album (cascade).
+func moveAlbumCoverIfAbsentTx(ctx context.Context, tx *sql.Tx, fromAlbum, intoAlbum int64) error {
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO album_images (album_id, object_key, mime_type, updated_at, base_key, source_ext, variants_ready)
+		 SELECT ?, object_key, mime_type, updated_at, base_key, source_ext, variants_ready
+		 FROM album_images WHERE album_id = ?
+		   AND NOT EXISTS (SELECT 1 FROM album_images WHERE album_id = ?)`,
+		intoAlbum, fromAlbum, intoAlbum); err != nil {
+		return fmt.Errorf("move album cover: %w", err)
 	}
 	return nil
 }

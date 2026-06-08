@@ -168,6 +168,44 @@ curl -X POST -H "Content-Type: application/json" \
   "http://localhost:3000/api/albums/Dark%20Side/rename?artist=Pink+Floyd"
 ```
 
+---
+
+## Merging two artists or albums
+
+When the same artist or album exists under two spellings that normalization did
+not unify (e.g. "Beatles" vs "The Beatles"), merge one entity (the **source**)
+into another (the **target**). The source's tracks, albums, and covers move onto
+the target, then the source is deleted. **This is destructive** (the source
+entity is removed) — it is audited as `metadata.merge`.
+
+```
+POST /api/artists/{artist}/merge
+POST /api/albums/{album}/merge?artist=<artist>
+```
+
+The path (and `?artist=` for albums) names the **source**; the body names the
+**target**:
+
+| Route | Body | Effect |
+|-------|------|--------|
+| `POST /api/artists/{artist}/merge` | `{"into": "Target Artist"}` | Moves all of the source artist's tracks/albums onto the target, collapsing albums that share a title (the target's cover wins; the source's fills only a gap), then deletes the source artist. |
+| `POST /api/albums/{album}/merge` | `{"into_artist": "...", "into_album": "..."}` | Repoints the source album's tracks onto the target album and its artist, moves the cover only if the target lacks one, then deletes the source album. |
+
+Both require `metadata.edit`. The file's raw tags are left untouched (overlay).
+
+| Status | Condition |
+|--------|-----------|
+| 200    | Merged. Body: `{"ok": true, "from_id": …, "into_id": …}`. |
+| 400    | Missing target, source == target, or the named target does not exist. |
+| 404    | The source entity does not exist. |
+
+```bash
+# Fold "Beatles" into the canonical "The Beatles"
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"into":"The Beatles"}' \
+  "http://localhost:3000/api/artists/Beatles/merge"
+```
+
 ## See also
 
 - `docs/api/upload.md` — file upload and the `{title, album, artist}` echo the

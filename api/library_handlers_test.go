@@ -337,3 +337,90 @@ func TestRenameAlbum_Handler_HappyPath(t *testing.T) {
 		t.Error("album not renamed")
 	}
 }
+
+// ---- Phase 5: merge handlers ------------------------------------------------
+
+func mergeArtistsReq(from, into string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/artists/x/merge",
+		strings.NewReader(`{"into":`+jsonString(into)+`}`))
+	return withChiParams(req, map[string]string{"artist": from})
+}
+
+func TestMergeArtists_Handler_HappyPath(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	ctx := context.Background()
+	if _, err := db.ResolveAlbumID(ctx, "Artist B", "B Album"); err != nil {
+		t.Fatalf("seed B: %v", err)
+	}
+	if _, err := db.ResolveAlbumID(ctx, "Artist A", "A Album"); err != nil {
+		t.Fatalf("seed A: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	h.mergeArtists(rr, mergeArtistsReq("Artist B", "Artist A"))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	if _, found, _ := db.LookupArtistID(ctx, "Artist B"); found {
+		t.Error("source artist not merged away")
+	}
+}
+
+func TestMergeArtists_Handler_SelfRejected(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	if _, err := db.ResolveArtistID(context.Background(), "Solo"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	rr := httptest.NewRecorder()
+	h.mergeArtists(rr, mergeArtistsReq("Solo", "Solo"))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestMergeArtists_Handler_TargetNotFound(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	if _, err := db.ResolveArtistID(context.Background(), "Real"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	rr := httptest.NewRecorder()
+	h.mergeArtists(rr, mergeArtistsReq("Real", "Ghost"))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (target not found); body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestMergeArtists_Handler_SourceNotFound(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	if _, err := db.ResolveArtistID(context.Background(), "Real"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	rr := httptest.NewRecorder()
+	h.mergeArtists(rr, mergeArtistsReq("Nobody", "Real"))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (source not found); body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestMergeAlbums_Handler_HappyPath(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	ctx := context.Background()
+	if _, err := db.ResolveAlbumID(ctx, "Artist", "Old"); err != nil {
+		t.Fatalf("seed old: %v", err)
+	}
+	if _, err := db.ResolveAlbumID(ctx, "Artist", "New"); err != nil {
+		t.Fatalf("seed new: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/albums/Old/merge?artist=Artist",
+		strings.NewReader(`{"into_artist":"Artist","into_album":"New"}`))
+	req = withChiParams(req, map[string]string{"album": "Old"})
+	rr := httptest.NewRecorder()
+	h.mergeAlbums(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	if _, found, _ := db.LookupAlbumID(ctx, "Artist", "Old"); found {
+		t.Error("source album not merged away")
+	}
+}

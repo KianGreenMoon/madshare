@@ -99,6 +99,16 @@ type Repository interface {
 	// same artist already has that title).
 	RenameAlbum(ctx context.Context, albumID int64, newTitle string) error
 
+	// MergeArtists merges artist fromID into intoID (tracks/albums repointed,
+	// colliding albums collapsed, covers moved if the target lacks one, source
+	// deleted). Returns ErrMergeSelf / ErrEntityNotFound.
+	MergeArtists(ctx context.Context, fromID, intoID int64) error
+
+	// MergeAlbums merges album fromID into intoID (tracks repointed onto the
+	// target and its artist, cover moved if absent, source deleted). Returns
+	// ErrMergeSelf / ErrEntityNotFound.
+	MergeAlbums(ctx context.Context, fromID, intoID int64) error
+
 	// SoftDeleteFileByHash marks the file as trashed (sets deleted_at). The
 	// blob and DB row are preserved. Returns the recorded filenames for audit.
 	// found is false (no error) when no live file matches the hash.

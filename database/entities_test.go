@@ -724,3 +724,206 @@ func TestRenameAlbum_SameTitleDifferentArtistAllowed(t *testing.T) {
 		t.Errorf("cross-artist same title rename = %v, want success", err)
 	}
 }
+
+// ---- Phase 5: merge ---------------------------------------------------------
+
+func tracksUnderAlbum(t *testing.T, db *DB, albumID int64) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM media_metadata WHERE album_id = ?`, albumID).Scan(&n); err != nil {
+		t.Fatalf("count tracks under album: %v", err)
+	}
+	return n
+}
+
+func TestMergeArtists_NonCollidingMovesEverything(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertSearchFile(t, db, "mg00a001", "T1", "Artist B", "B Album", "")
+	insertSearchFile(t, db, "mg00a002", "T2", "Artist A", "A Album", "")
+	bID, _, _ := db.LookupArtistID(ctx, "Artist B")
+	aID, _, _ := db.LookupArtistID(ctx, "Artist A")
+
+	if err := db.MergeArtists(ctx, bID, aID); err != nil {
+		t.Fatalf("MergeArtists: %v", err)
+	}
+
+	if _, found, _ := db.LookupArtistID(ctx, "Artist B"); found {
+		t.Error("source artist survived the merge")
+	}
+	if n := countRows(t, db, "artists"); n != 1 {
+		t.Errorf("artists = %d, want 1", n)
+	}
+	// No track or album still references the deleted source.
+	var dangling int
+	db.QueryRow(`SELECT COUNT(*) FROM media_metadata WHERE artist_id = ?`, bID).Scan(&dangling)
+	db.QueryRow(`SELECT COUNT(*) FROM albums WHERE artist_id = ?`, bID).Scan(&dangling)
+	if dangling != 0 {
+		t.Errorf("%d rows still reference the source artist", dangling)
+	}
+	// Target now owns both albums and both tracks.
+	albums, _ := db.ListAlbumsByArtist(ctx, "Artist A")
+	if len(albums) != 2 {
+		t.Errorf("target albums = %d, want 2", len(albums))
+	}
+	artists, _ := db.ListArtists(ctx)
+	if len(artists) != 1 || artists[0].TrackCount != 2 {
+		t.Errorf("listing = %+v, want one artist with 2 tracks", artists)
+	}
+}
+
+func TestMergeArtists_CollidingAlbumsCollapse(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertSearchFile(t, db, "mg00b001", "TA", "Artist A", "Greatest Hits", "")
+	insertSearchFile(t, db, "mg00b002", "TB", "Artist B", "greatest hits", "") // collides (norm)
+	insertSearchFile(t, db, "mg00b003", "TC", "Artist B", "Other", "")         // non-colliding
+	aID, _, _ := db.LookupArtistID(ctx, "Artist A")
+	bID, _, _ := db.LookupArtistID(ctx, "Artist B")
+	aHits, _, _ := db.LookupAlbumID(ctx, "Artist A", "Greatest Hits")
+
+	if err := db.MergeArtists(ctx, bID, aID); err != nil {
+		t.Fatalf("MergeArtists: %v", err)
+	}
+
+	// Two albums under A: the collapsed "Greatest Hits" (2 tracks) + moved "Other".
+	albums, _ := db.ListAlbumsByArtist(ctx, "Artist A")
+	if len(albums) != 2 {
+		t.Fatalf("target albums = %d, want 2 (collapsed + moved)", len(albums))
+	}
+	if got := tracksUnderAlbum(t, db, aHits); got != 2 {
+		t.Errorf("Greatest Hits tracks = %d, want 2 (collapsed)", got)
+	}
+	artists, _ := db.ListArtists(ctx)
+	if len(artists) != 1 || artists[0].TrackCount != 3 {
+		t.Errorf("listing = %+v, want one artist with 3 tracks", artists)
+	}
+}
+
+func TestMergeArtists_MovesCoversWhenTargetLacks(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertSearchFile(t, db, "mg00c001", "TA", "Artist A", "Shared", "")
+	insertSearchFile(t, db, "mg00c002", "TB", "Artist B", "shared", "") // colliding album
+	aID, _, _ := db.LookupArtistID(ctx, "Artist A")
+	bID, _, _ := db.LookupArtistID(ctx, "Artist B")
+	aShared, _, _ := db.LookupAlbumID(ctx, "Artist A", "Shared")
+	bShared, _, _ := db.LookupAlbumID(ctx, "Artist B", "shared")
+
+	// Source has covers; target has none.
+	db.UpsertArtistImage(ctx, bID, "bart.png", "image/png", 1)
+	db.UpsertAlbumImage(ctx, bShared, "balb.jpg", "image/jpeg", 1)
+
+	if err := db.MergeArtists(ctx, bID, aID); err != nil {
+		t.Fatalf("MergeArtists: %v", err)
+	}
+	if _, _, found, _ := db.GetArtistImage(ctx, aID); !found {
+		t.Error("target did not inherit the source artist cover")
+	}
+	if _, _, found, _ := db.GetAlbumImage(ctx, aShared); !found {
+		t.Error("collapsed target album did not inherit the source album cover")
+	}
+}
+
+func TestMergeArtists_TargetCoverWins(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertSearchFile(t, db, "mg00d001", "TA", "Artist A", "X", "")
+	insertSearchFile(t, db, "mg00d002", "TB", "Artist B", "Y", "")
+	aID, _, _ := db.LookupArtistID(ctx, "Artist A")
+	bID, _, _ := db.LookupArtistID(ctx, "Artist B")
+	db.UpsertArtistImage(ctx, aID, "aart.png", "image/png", 1)
+	db.UpsertArtistImage(ctx, bID, "bart.png", "image/png", 1)
+
+	if err := db.MergeArtists(ctx, bID, aID); err != nil {
+		t.Fatalf("MergeArtists: %v", err)
+	}
+	key, _, found, _ := db.GetArtistImage(ctx, aID)
+	if !found || key != "aart.png" {
+		t.Errorf("artist cover = (%q, found=%v), want the target's own (aart.png)", key, found)
+	}
+}
+
+func TestMergeArtists_SelfAndNotFound(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	insertSearchFile(t, db, "mg00e001", "T1", "Artist A", "X", "")
+	aID, _, _ := db.LookupArtistID(ctx, "Artist A")
+
+	if err := db.MergeArtists(ctx, aID, aID); !errors.Is(err, ErrMergeSelf) {
+		t.Errorf("self-merge = %v, want ErrMergeSelf", err)
+	}
+	if err := db.MergeArtists(ctx, aID, 99999); !errors.Is(err, ErrEntityNotFound) {
+		t.Errorf("missing target = %v, want ErrEntityNotFound", err)
+	}
+	if err := db.MergeArtists(ctx, 88888, aID); !errors.Is(err, ErrEntityNotFound) {
+		t.Errorf("missing source = %v, want ErrEntityNotFound", err)
+	}
+}
+
+func TestMergeAlbums_SameArtist(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertSearchFile(t, db, "mg00f001", "T1", "Artist", "Old Edition", "")
+	insertSearchFile(t, db, "mg00f002", "T2", "Artist", "New Edition", "")
+	oldID, _, _ := db.LookupAlbumID(ctx, "Artist", "Old Edition")
+	newID, _, _ := db.LookupAlbumID(ctx, "Artist", "New Edition")
+	db.UpsertAlbumImage(ctx, oldID, "old.jpg", "image/jpeg", 1) // source cover; target lacks
+
+	if err := db.MergeAlbums(ctx, oldID, newID); err != nil {
+		t.Fatalf("MergeAlbums: %v", err)
+	}
+	if _, found, _ := db.LookupAlbumID(ctx, "Artist", "Old Edition"); found {
+		t.Error("source album survived")
+	}
+	if got := tracksUnderAlbum(t, db, newID); got != 2 {
+		t.Errorf("target tracks = %d, want 2", got)
+	}
+	if _, _, found, _ := db.GetAlbumImage(ctx, newID); !found {
+		t.Error("target did not inherit the source cover")
+	}
+}
+
+func TestMergeAlbums_CrossArtistRepointsArtist(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertSearchFile(t, db, "mg00g001", "T1", "Artist Y", "Dup", "")
+	insertSearchFile(t, db, "mg00g002", "T2", "Artist Z", "Real", "")
+	yDup, _, _ := db.LookupAlbumID(ctx, "Artist Y", "Dup")
+	zReal, _, _ := db.LookupAlbumID(ctx, "Artist Z", "Real")
+	zID, _, _ := db.LookupArtistID(ctx, "Artist Z")
+
+	if err := db.MergeAlbums(ctx, yDup, zReal); err != nil {
+		t.Fatalf("MergeAlbums: %v", err)
+	}
+	// The moved track now points at the target album *and* its artist.
+	var aid, alid int64
+	if err := db.QueryRow(
+		`SELECT m.artist_id, m.album_id FROM media_metadata m
+		 JOIN files f ON f.id = m.file_id WHERE f.hash = ?`, "mg00g001").Scan(&aid, &alid); err != nil {
+		t.Fatalf("read moved track: %v", err)
+	}
+	if aid != zID || alid != zReal {
+		t.Errorf("moved track = (artist %d, album %d), want (%d, %d)", aid, alid, zID, zReal)
+	}
+}
+
+func TestMergeAlbums_SelfAndNotFound(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	insertSearchFile(t, db, "mg00h001", "T1", "Artist", "A", "")
+	id, _, _ := db.LookupAlbumID(ctx, "Artist", "A")
+
+	if err := db.MergeAlbums(ctx, id, id); !errors.Is(err, ErrMergeSelf) {
+		t.Errorf("self-merge = %v, want ErrMergeSelf", err)
+	}
+	if err := db.MergeAlbums(ctx, id, 99999); !errors.Is(err, ErrEntityNotFound) {
+		t.Errorf("missing target = %v, want ErrEntityNotFound", err)
+	}
+}
