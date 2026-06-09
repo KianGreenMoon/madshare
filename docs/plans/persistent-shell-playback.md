@@ -461,10 +461,12 @@ Decisions made:
   silently became the Next/Prev queue" behavior is gone (it fought continuity).
 - `app.js` still boots via its IIFE for now; the `{ init, teardown }` conversion
   happens in **step 2** (the router), where it's actually needed.
-- **Deferred to later step-1 sub-work** (kept out to keep the parity diff clean):
-  Media Session, repeat mode, and audio-`error`→re-auth (note: a `<audio>` error
-  doesn't expose HTTP status, so auth-expiry detection needs a probe — design when
-  we add it).
+- ~~Deferred controller niceties~~ — **DONE** (polish pass): **Media Session**
+  (metadata + playbackState + play/pause/next/prev action handlers), **repeat
+  mode** (off/all/one button in the player-bar; `advance()` honours it), and
+  **auth-expiry handling** (an `<audio>` error doesn't expose the HTTP status, so
+  the controller probes the URL with `Range: bytes=0-0`; 401/403 → open the login
+  modal, else mark-unavailable + advance).
 
 ## Step-2 status (shell + router, library-only)
 
