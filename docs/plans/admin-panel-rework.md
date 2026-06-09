@@ -336,6 +336,9 @@ All open questions are settled:
 
 ## Future UI work — artist/album entity management (added 2026-06-09)
 
+**Addressed by `docs/plans/admin-files-rework.md`** (Phase 4 of the UI roadmap —
+entity-aware library management). The summary below is retained for context.
+
 The artist/album normalization plan (`docs/plans/artist-album-normalization.md`,
 backend complete) shipped **rename** and **merge** endpoints that currently have
 **no UI**. These belong in the next admin/UI rework pass, not a backend session:
