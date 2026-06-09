@@ -1,6 +1,7 @@
 # Upload Rework — Client Hash-Precheck + Page Rewrite
 
-Status: **planned** (design; no code yet)
+Status: **3a implemented** (shell-native upload page + one-button file/folder +
+BUG-15 scope fix, on `aidev`, pending browser verification); 3b (precheck) planned
 Branch: aidev
 Depends on: `docs/plans/persistent-shell-playback.md` (the new upload page is a
 shell-native listening page)
