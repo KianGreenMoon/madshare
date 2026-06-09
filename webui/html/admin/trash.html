@@ -24,10 +24,23 @@
       the blob and all records.
     </p>
 
+    <div class="bulk-toolbar" id="trashToolbar" hidden>
+      <span class="bulk-selcount" id="trashSelCount">0 selected</span>
+      <span class="bulk-spacer"></span>
+      <button class="btn btn-neutral btn-sm" id="restoreSelected" disabled>Restore selected</button>
+      <button class="btn btn-destructive-outline btn-sm" id="deleteSelected" disabled>Delete selected</button>
+      <span class="bulk-divider" aria-hidden="true"></span>
+      <button class="btn btn-neutral btn-sm" id="restoreAll" disabled>Restore all</button>
+      <button class="btn btn-destructive-outline btn-sm" id="deleteAll" disabled>Delete all</button>
+    </div>
+
     <div class="files-table-wrap">
       <table class="files-table">
         <thead>
           <tr>
+            <th scope="col" class="col-check">
+              <input type="checkbox" id="trashSelectAll" aria-label="Select all">
+            </th>
             <th scope="col">Title</th>
             <th scope="col">Artist</th>
             <th scope="col">Album</th>
@@ -43,6 +56,23 @@
     </div>
   </section>
 </main>
+
+<!-- Permanent-delete confirm (bulk) -->
+<div class="modal-backdrop hidden" id="trashDeleteModal" role="dialog" aria-modal="true" aria-labelledby="trashDeleteTitle">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="trashDeleteTitle">Delete forever</h2>
+      <button class="btn-close" id="trashDeleteClose" aria-label="Close">&times;</button>
+    </div>
+    <p class="modal-body" id="trashDeleteBody"></p>
+    <p class="modal-body modal-danger">This removes the blobs and all records — it cannot be undone.</p>
+    <p class="login-error" id="trashDeleteError" role="alert" hidden></p>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-neutral" id="trashDeleteCancel">Cancel</button>
+      <button type="button" class="btn btn-destructive-solid" id="trashDeleteConfirm">Delete forever</button>
+    </div>
+  </div>
+</div>
 
 {{template "auth-modals" .}}
 

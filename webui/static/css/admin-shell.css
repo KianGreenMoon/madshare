@@ -250,6 +250,32 @@
 .cell-actions { text-align: right; white-space: nowrap; }
 .cell-actions .btn + .btn { margin-left: var(--space-2); }
 
+/* Selection checkbox column (Trash bulk actions) */
+.files-table .col-check,
+.files-table .cell-check { width: 1%; text-align: center; padding-right: 0; }
+.cell-check input,
+.col-check input { cursor: pointer; }
+
+/* Bulk-action toolbar (Trash) */
+.bulk-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.bulk-selcount { color: var(--text-muted); font-size: 13px; }
+.bulk-spacer { flex: 1; }
+.bulk-divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border);
+  margin: 0 var(--space-1);
+}
+
+/* Destructive warning line inside admin modals */
+.modal-danger { color: var(--error); font-weight: 500; }
+
 /* Inline delete confirm */
 .delete-confirm {
   display: inline-flex;

@@ -67,9 +67,6 @@ tr.playing-row .play-btn { color: var(--accent); }
 }
 .edit-form select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-/* Destructive warning line inside the merge modal */
-.modal-danger { color: var(--error); font-weight: 500; }
-
 /* ── View tabs (entity ⇄ all files) ─────────────────────────────────────────── */
 /* `.hidden` is not a global utility here (it's defined only as
    .modal-backdrop.hidden / #player-bar.hidden), so the inactive view section
