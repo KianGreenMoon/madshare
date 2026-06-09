@@ -1,10 +1,11 @@
 # Upload Rework — Client Hash-Precheck + Page Rewrite
 
-Status: **3a + 3b-i + 3b-ii implemented** on `aidev` (3a: shell-native upload +
-one-button; 3b-i: `POST /api/files/check`; 3b-ii: client WASM-ready SHA-256 in a
-worker pool + precheck skip + off-switch). 3b-iii (trash-restore admin setting) is
-optional — the sensible default (`reupload_restores`) is already the shipped
-server behavior. Pending browser verification of the client precheck.
+Status: **3a + 3b (i/ii/iii) implemented** on `aidev`. 3a: shell-native upload +
+one-button. 3b-i: `POST /api/files/check`. 3b-ii: client WASM-ready SHA-256 in a
+worker pool + precheck skip + off-switch. 3b-iii: trash-restore policy (admin
+setting + enforcement + uploader-restore endpoint + upload-UI handling), default
+`reupload_restores` (no behavior change). Pending browser verification of the
+client precheck + policy UI.
 Branch: aidev
 Depends on: `docs/plans/persistent-shell-playback.md` (the new upload page is a
 shell-native listening page)
@@ -107,7 +108,16 @@ permission as upload (`file.upload`) so only would-be uploaders can probe.
 every received file (`storage.HashUpload`) and dedupes on the server-computed
 value.
 
-#### Trash-restore policy — an admin setting (3b-iii, optional)
+#### Trash-restore policy — an admin setting (3b-iii — IMPLEMENTED)
+
+Implemented: setting stored in the generic `settings` table
+(`upload.trash_restore_policy`, default `reupload_restores`);
+`GET/POST /api/admin/settings/trash-policy` (user.manage); the upload handler
+restores on reupload only under `reupload_restores`; `uploader_restore` mode is
+served by `POST /api/files/{hash}/restore` (gated `file.upload`, enforced to only
+work in that mode); `/api/ui/config` returns `trash_restore_policy`; the upload UI
+skips+informs (`inform`) or shows an inline Restore button (`uploader_restore`).
+The settings page has a dropdown. Design notes retained below.
 
 **Important — the current shipped behavior is already `reupload_restores`:** the
 upload handler restores a trashed file when it receives matching content ("any

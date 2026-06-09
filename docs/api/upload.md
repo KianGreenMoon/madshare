@@ -276,6 +276,26 @@ duplicate or a wrong dedupe.
 
 ---
 
+## Trash-restore policy
+
+What happens when uploaded content matches a **trashed** file is an admin policy:
+
+| Mode | On a trashed match… |
+|------|---------------------|
+| `reupload_restores` **(default)** | `POST /files/upload` restores the file from the re-sent bytes (the dedup response carries `"restored": true`). |
+| `inform` | the file stays trashed (`"trashed": true, "restored": false`); the UI tells the uploader to ask an admin. |
+| `uploader_restore` | the file stays trashed on reupload, but the uploader may restore it directly via the endpoint below. |
+
+- **Read/set (admin):** `GET` / `POST /api/admin/settings/trash-policy`
+  (`user.manage`). Body: `{ "policy": "reupload_restores" | "inform" |
+  "uploader_restore" }`. The current policy is also returned in
+  `GET /api/ui/config` as `trash_restore_policy` so the upload UI can act on it.
+- **Uploader restore:** `POST /api/files/{hash}/restore` (`file.upload`). Succeeds
+  (`{ "ok": true }`) **only** when the policy is `uploader_restore` — otherwise
+  `403`. 404 if no trashed file matches.
+
+---
+
 ## See also
 
 - `docs/api/cover-images.md` — cover variant status and UI config endpoints.
