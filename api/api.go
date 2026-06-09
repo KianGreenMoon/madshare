@@ -114,6 +114,11 @@ func RegisterAPI(r chi.Router, d Deps) {
 	// the target and deletes the source entity.
 	r.With(d.protect(auth.PermMetadataEdit)).Post("/api/artists/{artist}/merge", h.mergeArtists)
 	r.With(d.protect(auth.PermMetadataEdit)).Post("/api/albums/{album}/merge", h.mergeAlbums)
+	// Id-addressed merge: both source and target by stable entity id (robust
+	// against name collisions and the empty-name bucket). Preferred by the admin
+	// UI. Distinct path depth from the name-addressed routes above, so no clash.
+	r.With(d.protect(auth.PermMetadataEdit)).Post("/api/artists/merge", h.mergeArtistsByID)
+	r.With(d.protect(auth.PermMetadataEdit)).Post("/api/albums/merge", h.mergeAlbumsByID)
 
 	// Uploading new files requires file.upload. The route is registered here
 	// (rather than inside fileServer) so the gate wraps only the write path; the

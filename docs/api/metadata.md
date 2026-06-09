@@ -206,6 +206,35 @@ curl -X POST -H "Content-Type: application/json" \
   "http://localhost:3000/api/artists/Beatles/merge"
 ```
 
+### Merging by entity id (preferred for clients)
+
+The name-addressed routes above are convenient for ad-hoc use, but names can
+collide and the empty-name/empty-title bucket has no addressable path segment.
+Clients (e.g. the admin UI) should use the **id-addressed** variants, which name
+both the source and the target by their stable surrogate id from the listing
+DTOs (`GET /api/artists` and `GET /api/albums?artist=` both expose `id`):
+
+```
+POST /api/artists/merge   {"from_id": 12, "into_id": 4}
+POST /api/albums/merge    {"from_id": 87, "into_id": 90}
+```
+
+Same effect, gating (`metadata.edit`), and destructiveness as the name-addressed
+forms; the source entity is deleted and the merge is audited as `metadata.merge`.
+
+| Status | Condition |
+|--------|-----------|
+| 200    | Merged. Body: `{"ok": true, "from_id": …, "into_id": …}`. |
+| 400    | `from_id`/`into_id` missing or non-positive, or source == target. |
+| 404    | An entity id does not exist. |
+
+```bash
+# Fold artist #12 into artist #4
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"from_id":12,"into_id":4}' \
+  "http://localhost:3000/api/artists/merge"
+```
+
 ## See also
 
 - `docs/api/upload.md` — file upload and the `{title, album, artist}` echo the

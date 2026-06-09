@@ -424,3 +424,79 @@ func TestMergeAlbums_Handler_HappyPath(t *testing.T) {
 		t.Error("source album not merged away")
 	}
 }
+
+// mergeIDsReq builds a POST .../merge request with a {from_id,into_id} body, for
+// invoking the id-addressed merge handlers directly.
+func mergeIDsReq(t *testing.T, path string, fromID, intoID int64) *http.Request {
+	t.Helper()
+	b, _ := json.Marshal(map[string]int64{"from_id": fromID, "into_id": intoID})
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(b)))
+	req.Header.Set("Content-Type", "application/json")
+	return req
+}
+
+func TestMergeArtistsByID_HappyPath(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	ctx := context.Background()
+	if _, err := db.ResolveAlbumID(ctx, "Artist B", "B Album"); err != nil {
+		t.Fatalf("seed B: %v", err)
+	}
+	if _, err := db.ResolveAlbumID(ctx, "Artist A", "A Album"); err != nil {
+		t.Fatalf("seed A: %v", err)
+	}
+	fromID, _, _ := db.LookupArtistID(ctx, "Artist B")
+	intoID, _, _ := db.LookupArtistID(ctx, "Artist A")
+
+	rr := httptest.NewRecorder()
+	h.mergeArtistsByID(rr, mergeIDsReq(t, "/api/artists/merge", fromID, intoID))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	if _, found, _ := db.LookupArtistID(ctx, "Artist B"); found {
+		t.Error("source artist not merged away")
+	}
+}
+
+func TestMergeArtistsByID_SelfRejected(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	id, err := db.ResolveArtistID(context.Background(), "Solo")
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	rr := httptest.NewRecorder()
+	h.mergeArtistsByID(rr, mergeIDsReq(t, "/api/artists/merge", id, id))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestMergeArtistsByID_MissingIDs(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	rr := httptest.NewRecorder()
+	h.mergeArtistsByID(rr, mergeIDsReq(t, "/api/artists/merge", 0, 5))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (missing from_id); body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestMergeAlbumsByID_HappyPath(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	ctx := context.Background()
+	if _, err := db.ResolveAlbumID(ctx, "Artist", "Old"); err != nil {
+		t.Fatalf("seed old: %v", err)
+	}
+	if _, err := db.ResolveAlbumID(ctx, "Artist", "New"); err != nil {
+		t.Fatalf("seed new: %v", err)
+	}
+	fromID, _, _ := db.LookupAlbumID(ctx, "Artist", "Old")
+	intoID, _, _ := db.LookupAlbumID(ctx, "Artist", "New")
+
+	rr := httptest.NewRecorder()
+	h.mergeAlbumsByID(rr, mergeIDsReq(t, "/api/albums/merge", fromID, intoID))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	if _, found, _ := db.LookupAlbumID(ctx, "Artist", "Old"); found {
+		t.Error("source album not merged away")
+	}
+}

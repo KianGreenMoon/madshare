@@ -53,6 +53,7 @@ func (h *handler) listArtists(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type artistItem struct {
+		ID         int64  `json:"id"`
 		Name       string `json:"name"`
 		TrackCount int    `json:"track_count"`
 		HasImage   bool   `json:"has_image"`
@@ -61,6 +62,7 @@ func (h *handler) listArtists(w http.ResponseWriter, r *http.Request) {
 	items := make([]artistItem, 0, len(artists))
 	for _, a := range artists {
 		items = append(items, artistItem{
+			ID:         a.ID,
 			Name:       a.Name,
 			TrackCount: a.TrackCount,
 			HasImage:   a.HasImage,
@@ -86,6 +88,7 @@ func (h *handler) listAlbums(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type albumItem struct {
+		ID         int64  `json:"id"`
 		Title      string `json:"title"`
 		ArtistName string `json:"artist_name"`
 		Year       *int64 `json:"year"`
@@ -100,6 +103,7 @@ func (h *handler) listAlbums(w http.ResponseWriter, r *http.Request) {
 			year = &a.Year.Int64
 		}
 		items = append(items, albumItem{
+			ID:         a.ID,
 			Title:      a.Title,
 			ArtistName: a.ArtistName,
 			Year:       year,
@@ -746,6 +750,75 @@ func (h *handler) mergeAlbums(w http.ResponseWriter, r *http.Request) {
 
 	h.audit(r.Context(), "metadata.merge", "album:"+fromArtist+"/"+fromAlbum, "→ "+intoArtist+"/"+intoAlbum)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "from_id": fromID, "into_id": intoID})
+}
+
+// mergeIDsRequest is the body of the id-addressed merge endpoints. Both entities
+// are named by their stable surrogate id, so the merge is unambiguous even when
+// names collide or one side is the empty-name bucket.
+type mergeIDsRequest struct {
+	FromID int64 `json:"from_id"`
+	IntoID int64 `json:"into_id"`
+}
+
+func decodeMergeIDs(w http.ResponseWriter, r *http.Request) (mergeIDsRequest, bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	var body mergeIDsRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return body, false
+	}
+	if body.FromID <= 0 || body.IntoID <= 0 {
+		http.Error(w, "from_id and into_id are required", http.StatusBadRequest)
+		return body, false
+	}
+	return body, true
+}
+
+// mergeArtistsByID handles POST /api/artists/merge with {from_id, into_id}. It
+// folds the source artist into the target (moving tracks/albums/covers, collapsing
+// colliding albums) and deletes the source. Gated on metadata.edit.
+func (h *handler) mergeArtistsByID(w http.ResponseWriter, r *http.Request) {
+	body, ok := decodeMergeIDs(w, r)
+	if !ok {
+		return
+	}
+	switch err := h.repo.MergeArtists(r.Context(), body.FromID, body.IntoID); {
+	case errors.Is(err, database.ErrMergeSelf):
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "cannot merge an artist into itself"})
+		return
+	case errors.Is(err, database.ErrEntityNotFound):
+		http.NotFound(w, r)
+		return
+	case err != nil:
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	h.audit(r.Context(), "metadata.merge", fmt.Sprintf("artist#%d", body.FromID), fmt.Sprintf("→ #%d", body.IntoID))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "from_id": body.FromID, "into_id": body.IntoID})
+}
+
+// mergeAlbumsByID handles POST /api/albums/merge with {from_id, into_id}. The
+// source album's tracks repoint onto the target album (and its artist); the cover
+// moves only if the target lacks one; the source album is deleted. Gated on
+// metadata.edit.
+func (h *handler) mergeAlbumsByID(w http.ResponseWriter, r *http.Request) {
+	body, ok := decodeMergeIDs(w, r)
+	if !ok {
+		return
+	}
+	switch err := h.repo.MergeAlbums(r.Context(), body.FromID, body.IntoID); {
+	case errors.Is(err, database.ErrMergeSelf):
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "cannot merge an album into itself"})
+		return
+	case errors.Is(err, database.ErrEntityNotFound):
+		http.NotFound(w, r)
+		return
+	case err != nil:
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	h.audit(r.Context(), "metadata.merge", fmt.Sprintf("album#%d", body.FromID), fmt.Sprintf("→ #%d", body.IntoID))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "from_id": body.FromID, "into_id": body.IntoID})
 }
 
 func (h *handler) serveImageFile(w http.ResponseWriter, r *http.Request, objectKey, mimeType string) {

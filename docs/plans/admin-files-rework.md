@@ -125,18 +125,20 @@ drill-down but with management affordances:
 - **Preview**: the existing page-local player — play any track while editing.
   Unchanged.
 
-### Addressing entities: by name vs. by id (OPEN)
+### Addressing entities: by name vs. by id (DECIDED — split)
 
-The rename/merge endpoints address entities by **current name**
-(`/api/artists/{artist}/…`, `?artist=`), and the listing DTOs
-(`artistItem`/`albumItem`) are **name-only** today. That's workable, but names
-containing `/` and the empty-string bucket are fragile. Two paths:
+- **Rename** uses the existing **name-addressed** routes (path a). Low risk for a
+  single entity; the empty-name bucket is simply not renamable. Implemented.
+- **Merge** uses **id addressing** (path b): the listing DTOs now expose `id`
+  (`artistItem`/`albumItem`), and two new id-addressed endpoints take both source
+  and target by id — `POST /api/artists/merge` and `POST /api/albums/merge` with
+  `{from_id, into_id}`. This is robust against name collisions and lets even the
+  empty-name/empty-title bucket be merged. The old name-addressed merge routes
+  remain (documented) but the UI does not use them. Implemented.
 
-- **(a) Use names as-is** (no backend change). Encode carefully; handle the
-  empty-name bucket explicitly. Fastest.
-- **(b) Surface entity `id` in the listing DTOs** and add `?artist_id=` /
-  `?album_id=` browse params, then drive the UI by id. More robust, small backend
-  addition. The normalization plan flagged this as "decide in the UI rework."
+The `?artist_id=`/`?album_id=` **browse** params were *not* added — the UI already
+holds the current level's full item list (with ids) client-side, so browse stays
+name-addressed and merge targets are picked from that in-memory list.
 
 **Recommendation:** start with **(a)** for rename (low risk, single entity) but do
 **(b)** before wiring **merge**, since merge is destructive and must target an
@@ -191,12 +193,17 @@ unambiguous entity. Confirm at impl.
 3. **Cover editing is in scope** (implemented; see "Cover editing" above) —
    artist/album cover upload via the existing `POST …/image` endpoints. Cover
    *removal*, cropping, and variant-progress UI remain out of scope.
-4. **Merge is destructive → typed/two-step confirm** with an N-tracks/target
-   summary.
+4. **Merge is destructive → two-step confirm** (implemented): a modal that picks
+   the target from the current level's other entities and shows a "moves tracks
+   into X, then deletes Y — can't be undone" summary behind a destructive-styled
+   button. **Id-addressed** (see addressing decision above). Album merge targets
+   the current artist's other albums.
 
 ## Open questions
 
-- **Name vs. id addressing** (path a/b above) — recommend id-based before merge.
+- ~~**Name vs. id addressing**~~ — **decided**: rename is name-addressed, merge is
+  id-addressed (`POST /api/artists|albums/merge {from_id,into_id}`). See the
+  addressing section above. Implemented.
 - **Entity delete semantics** — "delete album" = trash all its files (loop the
   existing per-file delete) vs. a new entity-level convenience. Lean: reuse the
   per-file path (no new endpoint) and just batch it client-side.

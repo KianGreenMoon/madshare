@@ -57,6 +57,18 @@ tr.playing-row .play-btn { color: var(--accent); }
   font: inherit;
 }
 .edit-form input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.edit-form select {
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: inherit;
+}
+.edit-form select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Destructive warning line inside the merge modal */
+.modal-danger { color: var(--error); font-weight: 500; }
 
 /* ── View tabs (entity ⇄ all files) ─────────────────────────────────────────── */
 /* `.hidden` is not a global utility here (it's defined only as

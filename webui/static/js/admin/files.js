@@ -543,12 +543,22 @@ function artistRow(a) {
     el('span', { class: 'entity-meta', text: trackCount(a.track_count) }),
   ]);
   const row = el('div', { class: 'entity-row' }, [thumb, main]);
-  if (canEditMeta && a.name) {
-    row.appendChild(el('div', { class: 'entity-actions' }, [
-      el('button', { class: 'btn btn-neutral btn-sm', text: a.has_image ? 'Cover…' : 'Add cover',
-        onclick: () => pickCover({ kind: 'artist', name: a.name }) }),
-      el('button', { class: 'btn btn-neutral btn-sm', text: 'Rename', onclick: () => openRenameArtist(a) }),
-    ]));
+  if (canEditMeta) {
+    const actions = el('div', { class: 'entity-actions' });
+    if (a.name) {
+      actions.append(
+        el('button', { class: 'btn btn-neutral btn-sm', text: a.has_image ? 'Cover…' : 'Add cover',
+          onclick: () => pickCover({ kind: 'artist', name: a.name }) }),
+        el('button', { class: 'btn btn-neutral btn-sm', text: 'Rename', onclick: () => openRenameArtist(a) }),
+      );
+    }
+    // Merge is id-addressed, so it works even for the empty-name bucket; it needs
+    // at least one other artist to merge into.
+    if (entItems.length > 1) {
+      actions.append(el('button', { class: 'btn btn-neutral btn-sm', text: 'Merge…',
+        onclick: () => openMergeArtist(a) }));
+    }
+    if (actions.childElementCount) row.appendChild(actions);
   }
   return row;
 }
@@ -571,12 +581,21 @@ function albumRow(a) {
     el('span', { class: 'entity-meta', text: meta.join(' · ') }),
   ]);
   const row = el('div', { class: 'entity-row' }, [thumb, main]);
-  if (canEditMeta && a.title) {
-    row.appendChild(el('div', { class: 'entity-actions' }, [
-      el('button', { class: 'btn btn-neutral btn-sm', text: a.has_image ? 'Cover…' : 'Add cover',
-        onclick: () => pickCover({ kind: 'album', title: a.title, artist: entityDrill.artist }) }),
-      el('button', { class: 'btn btn-neutral btn-sm', text: 'Rename', onclick: () => openRenameAlbum(a) }),
-    ]));
+  if (canEditMeta) {
+    const actions = el('div', { class: 'entity-actions' });
+    if (a.title) {
+      actions.append(
+        el('button', { class: 'btn btn-neutral btn-sm', text: a.has_image ? 'Cover…' : 'Add cover',
+          onclick: () => pickCover({ kind: 'album', title: a.title, artist: entityDrill.artist }) }),
+        el('button', { class: 'btn btn-neutral btn-sm', text: 'Rename', onclick: () => openRenameAlbum(a) }),
+      );
+    }
+    // Album merge targets the current artist's other albums (id-addressed).
+    if (entItems.length > 1) {
+      actions.append(el('button', { class: 'btn btn-neutral btn-sm', text: 'Merge…',
+        onclick: () => openMergeAlbum(a) }));
+    }
+    if (actions.childElementCount) row.appendChild(actions);
   }
   return row;
 }
@@ -765,6 +784,91 @@ renameForm.addEventListener('submit', async e => {
     showRenameError(`Couldn't rename: ${err.message}`);
   } finally {
     renameSubmit.disabled = false;
+  }
+});
+
+// ── Merge modal (fold one entity into another — destructive, id-addressed) ───
+const mergeModal    = document.getElementById('mergeModal');
+const mergeForm     = document.getElementById('mergeForm');
+const mergeTitleEl  = document.getElementById('mergeTitle');
+const mergeSourceEl = document.getElementById('mergeSource');
+const mergeTarget   = document.getElementById('mergeTarget');
+const mergeTargetLabel = document.getElementById('mergeTargetLabel');
+const mergeWarn     = document.getElementById('mergeWarn');
+const mergeError    = document.getElementById('mergeError');
+const mergeSubmit   = document.getElementById('mergeSubmit');
+let mergeSource     = null; // { kind, id, label, candidates: [{id,label,count}] }
+
+function openMergeArtist(a) {
+  openMerge({
+    kind: 'artist', id: a.id, label: a.name || '(no artist)', targetLabel: 'Merge into artist',
+    candidates: entItems.filter(x => x.id !== a.id)
+      .map(x => ({ id: x.id, label: x.name || '(no artist)', count: x.track_count })),
+  });
+}
+function openMergeAlbum(a) {
+  openMerge({
+    kind: 'album', id: a.id, label: a.title || '(no album)', targetLabel: 'Merge into album',
+    candidates: entItems.filter(x => x.id !== a.id)
+      .map(x => ({ id: x.id, label: x.title || '(no album)', count: x.track_count })),
+  });
+}
+function openMerge(src) {
+  if (!src.candidates.length) { toast('Nothing here to merge into.', 'error'); return; }
+  mergeSource = src;
+  mergeTitleEl.textContent = src.kind === 'artist' ? 'Merge artist' : 'Merge album';
+  mergeTargetLabel.textContent = src.targetLabel;
+  mergeSourceEl.textContent = src.label;
+  mergeTarget.replaceChildren(...src.candidates.map(c =>
+    el('option', { value: String(c.id), text: `${c.label} · ${trackCount(c.count)}` })));
+  updateMergeWarn();
+  mergeError.hidden = true; mergeError.textContent = '';
+  mergeModal.classList.remove('hidden');
+  mergeTarget.focus();
+}
+function updateMergeWarn() {
+  const c = mergeSource?.candidates.find(x => x.id === Number(mergeTarget.value));
+  mergeWarn.textContent = c
+    ? `Moves all tracks into “${c.label}”, then deletes “${mergeSource.label}”. This can’t be undone.`
+    : '';
+}
+function closeMerge() { mergeModal.classList.add('hidden'); mergeSource = null; }
+
+mergeTarget.addEventListener('change', updateMergeWarn);
+document.getElementById('mergeClose').addEventListener('click', closeMerge);
+document.getElementById('mergeCancel').addEventListener('click', closeMerge);
+mergeModal.addEventListener('click', e => { if (e.target === mergeModal) closeMerge(); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !mergeModal.classList.contains('hidden')) closeMerge();
+});
+
+mergeForm.addEventListener('submit', async e => {
+  e.preventDefault();
+  if (!mergeSource) return;
+  const intoID = Number(mergeTarget.value);
+  if (!intoID) return;
+  const path = mergeSource.kind === 'artist' ? '/api/artists/merge' : '/api/albums/merge';
+
+  mergeSubmit.disabled = true;
+  mergeError.hidden = true;
+  try {
+    const res = await fetch(`${API}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from_id: mergeSource.id, into_id: intoID }),
+    });
+    if (handleAuthError(res)) return;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    toast('Merged.', 'success');
+    closeMerge();
+    filesLoaded = false;       // flat table + index now stale
+    reloadEntityLevel();
+  } catch (err) {
+    mergeError.textContent = `Couldn't merge: ${err.message}`;
+    mergeError.hidden = false;
+  } finally {
+    mergeSubmit.disabled = false;
   }
 });
 
