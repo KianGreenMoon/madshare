@@ -215,7 +215,11 @@ unambiguous entity. Confirm at impl.
   the per-file `DELETE …/files/{hash}` (move to Trash), batched client-side for
   album/artist; no new endpoint. *Possible follow-up:* a server-side batch/entity
   delete endpoint if the client-side N-request loop proves too slow for very large
-  artists (ties into the pagination open question below).
+  artists (ties into the pagination open question below). **The Trash page's bulk
+  restore/delete (checkbox selection + restore/delete selected/all) loops the
+  per-file trash endpoints the same way** (`POST …/trash/{hash}/restore`,
+  `DELETE …/trash/{hash}`) — a server-side batch endpoint, if built, should cover
+  both the entity-delete and the Trash bulk paths.
 - Whether the **All files** flat view is still worth keeping once the entity view
   lands, or becomes a pure "search by hash" utility.
 - **Scaling the browse endpoints (very large libraries).** The UI now loads
