@@ -84,6 +84,21 @@
 .ctrl-btn.active { color: var(--accent); }
 .ctrl-btn:focus-visible { outline: 2px solid var(--accent); }
 
+/* "1" badge on the repeat button when in repeat-one mode */
+#btnRepeat { position: relative; }
+.repeat-one {
+  position: absolute;
+  bottom: 3px;
+  right: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--accent);
+  background: var(--surface);
+  border-radius: 4px;
+  padding: 0 1px;
+}
+
 .ctrl-btn.primary {
   background: var(--accent);
   color: #fff;

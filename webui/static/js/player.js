@@ -25,17 +25,22 @@ export function fmtTime(s) {
 //   onPrev()            — Previous button pressed
 //   onNext()            — Next button pressed
 //   onShuffleToggle(on) — Shuffle button toggled (on = new boolean state)
+//   onRepeatToggle(mode)— Repeat button cycled ('off' | 'all' | 'one')
 //   onEnded()           — current track finished
 //   onError()           — current track failed to load/play
 //   onLoadedMetadata(d) — duration (seconds) became known for the current track
+//   onPlay() / onPause()— the audio element started / paused (for Media Session)
 export function createPlayer(callbacks = {}) {
   const {
     onPrev = () => {},
     onNext = () => {},
     onShuffleToggle = () => {},
+    onRepeatToggle = () => {},
     onEnded = () => {},
     onError = () => {},
     onLoadedMetadata = () => {},
+    onPlay = () => {},
+    onPause = () => {},
   } = callbacks;
 
   const audio        = document.getElementById('audio');
@@ -47,6 +52,8 @@ export function createPlayer(callbacks = {}) {
   const progressFill = document.getElementById('progressFill');
   const btnPlay      = document.getElementById('btnPlay');
   const btnShuffle   = document.getElementById('btnShuffle');
+  const btnRepeat    = document.getElementById('btnRepeat');
+  const repeatBadge  = document.getElementById('repeatOneBadge');
   const btnPrev      = document.getElementById('btnPrev');
   const btnNext      = document.getElementById('btnNext');
   const iconPlay     = document.getElementById('iconPlay');
@@ -54,6 +61,8 @@ export function createPlayer(callbacks = {}) {
   const volumeSlider = document.getElementById('volume-slider');
 
   let shuffle = false;
+  let repeat  = 'off';                 // 'off' | 'all' | 'one'
+  const REPEAT_MODES = ['off', 'all', 'one'];
 
   // load points the player at a new track and starts it, revealing the bar.
   function load({ url, title, artist }) {
@@ -98,8 +107,22 @@ export function createPlayer(callbacks = {}) {
     onShuffleToggle(shuffle);
   });
 
-  audio.addEventListener('play',  syncPlayIcon);
-  audio.addEventListener('pause', syncPlayIcon);
+  function applyRepeatUI() {
+    if (!btnRepeat) return;
+    btnRepeat.classList.toggle('active', repeat !== 'off');
+    if (repeatBadge) repeatBadge.style.display = repeat === 'one' ? '' : 'none';
+    const label = repeat === 'off' ? 'Repeat off' : repeat === 'all' ? 'Repeat all' : 'Repeat one';
+    btnRepeat.setAttribute('aria-label', label);
+    btnRepeat.title = label;
+  }
+  btnRepeat?.addEventListener('click', () => {
+    repeat = REPEAT_MODES[(REPEAT_MODES.indexOf(repeat) + 1) % REPEAT_MODES.length];
+    applyRepeatUI();
+    onRepeatToggle(repeat);
+  });
+
+  audio.addEventListener('play',  () => { syncPlayIcon(); onPlay(); });
+  audio.addEventListener('pause', () => { syncPlayIcon(); onPause(); });
   // On end/error the native element doesn't fire 'pause', so sync the icon here
   // before the caller decides whether to advance. If it loads a new track, the
   // subsequent 'play' event flips the icon back.
@@ -139,6 +162,7 @@ export function createPlayer(callbacks = {}) {
     seekTo,
     nudge,
     isShuffle: () => shuffle,
+    getRepeat: () => repeat,
     get paused()      { return audio.paused; },
     get duration()    { return audio.duration; },
     get currentTime() { return audio.currentTime; },

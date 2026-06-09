@@ -366,6 +366,7 @@ const controller = createController({
   onTrackChange: track => highlightPlaying(track.url),
   onDuration:    writeDuration,
   onError:       track => markUnavailable(track.url),
+  onAuthError:   () => openLoginModal(),   // session expired mid-playback
 });
 
 // highlightPlaying marks the track row whose URL is playing (and clears the rest).
