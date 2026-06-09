@@ -150,6 +150,10 @@ header {
 }
 
 /* ── Header search ── */
+/* The shell swaps this wrapper to change the header-insert per page; keep it
+   transparent to layout so .header__search stays a direct header flex child. */
+#header-insert { display: contents; }
+
 .header__search {
   position: relative;
   flex: 1;

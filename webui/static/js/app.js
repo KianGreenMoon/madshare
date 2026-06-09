@@ -1,4 +1,4 @@
-import { initAuth, openLoginModal } from './auth.js';
+import { openLoginModal } from './auth.js';
 import { createController } from './player-controller.js';
 import { fmtTime } from './player.js';
 
@@ -7,26 +7,7 @@ import { fmtTime } from './player.js';
 // points a separately hosted UI at a remote API origin.
 const API = document.querySelector('meta[name="api-url"]')?.content || '';
 
-// ── Theme ─────────────────────────────────────────────────────────────────
-
-const VALID_THEMES = new Set(['dark', 'light', 'ocean', 'sunset']); // BUG-07
-const html      = document.documentElement;
-const themeDots = document.querySelectorAll('.theme-dot');
-
-applyTheme(localStorage.getItem('madshare-theme') || 'dark');
-
-themeDots.forEach(dot => dot.addEventListener('click', () => applyTheme(dot.dataset.theme)));
-
-function applyTheme(name) {
-  if (!VALID_THEMES.has(name)) name = 'dark'; // BUG-07: reject unknown values
-  html.dataset.theme = name;
-  localStorage.setItem('madshare-theme', name);
-  themeDots.forEach(d => {
-    const on = d.dataset.theme === name;
-    d.classList.toggle('active', on);
-    d.setAttribute('aria-pressed', String(on));
-  });
-}
+// Theme is owned by shell.js (persistent header, applied once across pages).
 
 // ── Duration cache ────────────────────────────────────────────────────────
 // Persists fetched durations across page loads so headers aren't re-fetched.
@@ -65,6 +46,7 @@ async function loadArtists() {
     return;
   }
 
+  if (!active) return; // navigated away while loading
   renderBreadcrumb();
   renderArtistList(artists);
 }
@@ -89,6 +71,7 @@ async function drillToAlbums(artistName) {
     return;
   }
 
+  if (!active) return;
   renderBreadcrumb();
   renderAlbumList(albums);
 }
@@ -115,6 +98,7 @@ async function drillToTracks(artistName, albumTitle) {
     return;
   }
 
+  if (!active) return;
   renderBreadcrumb();
   renderTrackList(tracks);
 }
@@ -417,47 +401,51 @@ function writeDuration(track, durSeconds) {
 
 // ── Search ───────────────────────────────────────────────────────────────
 
-const searchInput = document.querySelector('.header__search-input');
-const searchClear = document.querySelector('.header__search-clear');
-const viewLibrary = document.getElementById('view-library');
-const viewSearch  = document.getElementById('view-search');
+// These elements live in swappable DOM (the header-insert region and <main>), so
+// they're re-queried and re-wired by wireSearch() on each init() and removed via
+// the AbortController on teardown(). Nav is owned by shell.js now — the old
+// "clear search on Library click" hack is gone (re-entering the library is a
+// shell swap, which resets to the artists view).
+let searchInput = null;
+let searchClear = null;
+let viewLibrary = null;
+let viewSearch  = null;
 
 let lastQuery   = '';
 let searchTimer = null;
 let searchAbort = null;
 
-searchInput.addEventListener('input', () => {
-  const q = searchInput.value.trim();
-  searchClear.style.display = searchInput.value ? '' : 'none';
-  if (q.length < 2) {
-    showLibraryView();
-    return;
-  }
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => runSearch(q), 300);
-});
+function wireSearch(signal) {
+  searchInput = document.querySelector('.header__search-input');
+  searchClear = document.querySelector('.header__search-clear');
+  viewLibrary = document.getElementById('view-library');
+  viewSearch  = document.getElementById('view-search');
+  if (!searchInput) return;
 
-searchInput.addEventListener('keydown', e => {
-  if (e.key === 'Escape') clearSearch();
-});
+  searchInput.addEventListener('input', () => {
+    const q = searchInput.value.trim();
+    searchClear.style.display = searchInput.value ? '' : 'none';
+    if (q.length < 2) { showLibraryView(); return; }
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => runSearch(q), 300);
+  }, { signal });
 
-searchClear.addEventListener('click', clearSearch);
+  searchInput.addEventListener('keydown', e => {
+    if (e.key === 'Escape') clearSearch();
+  }, { signal });
 
-// Clear search when Library nav is clicked — prevents a full page reload and
-// keeps SPA behaviour consistent with navigating back from search results.
-document.querySelector('.nav-link[href="/"]')?.addEventListener('click', e => {
-  e.preventDefault();
-  clearSearch();
-});
+  searchClear.addEventListener('click', clearSearch, { signal });
+}
 
 function clearSearch() {
-  searchInput.value = '';
-  searchClear.style.display = 'none';
+  if (searchInput) searchInput.value = '';
+  if (searchClear) searchClear.style.display = 'none';
   lastQuery = '';
   showLibraryView();
 }
 
 function showLibraryView() {
+  if (!viewLibrary || !viewSearch) return;
   viewLibrary.classList.add('view-panel--active');
   viewLibrary.classList.remove('view-panel--hidden');
   viewSearch.classList.add('view-panel--hidden');
@@ -465,6 +453,7 @@ function showLibraryView() {
 }
 
 function showSearchView() {
+  if (!viewLibrary || !viewSearch) return;
   viewSearch.classList.add('view-panel--active');
   viewSearch.classList.remove('view-panel--hidden');
   viewLibrary.classList.add('view-panel--hidden');
@@ -491,12 +480,13 @@ async function runSearch(q) {
   } catch (err) {
     if (err.name === 'AbortError') return; // superseded by a newer query — discard silently
     lastQuery = ''; // allow retry with the same query after a real error
-    viewSearch.innerHTML =
+    if (viewSearch) viewSearch.innerHTML =
       '<p style="color:var(--error);padding:16px;text-align:center">' +
       'Search failed — check your connection and try again.</p>';
     return;
   }
 
+  if (!active) return; // navigated away while searching
   renderSearchResults(results, q);
 }
 
@@ -704,8 +694,26 @@ function esc(s) {
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-// ── Boot ─────────────────────────────────────────────────────────────────
-(async function boot() {
-  await initAuth();
+// ── Lifecycle (driven by shell.js) ─────────────────────────────────────────
+// init() runs on first load and on every navigation back to the library; it
+// re-wires the swappable DOM (search bar, views) and (re)loads the artists.
+// teardown() runs before navigating away: it removes those listeners, cancels
+// timers and aborts in-flight fetches. The player/controller is NOT torn down —
+// it lives in the persistent shell so playback survives navigation.
+let abort  = null;     // AbortController for this activation's listeners
+let active = false;    // guards late async renders after teardown
+
+export function init() {
+  active = true;
+  abort = new AbortController();
+  wireSearch(abort.signal);
   loadArtists();
-})();
+}
+
+export function teardown() {
+  active = false;
+  abort?.abort();
+  abort = null;
+  clearTimeout(searchTimer);
+  if (searchAbort) { searchAbort.abort(); searchAbort = null; }
+}

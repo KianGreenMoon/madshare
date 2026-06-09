@@ -466,6 +466,34 @@ Decisions made:
   doesn't expose HTTP status, so auth-expiry detection needs a probe — design when
   we add it).
 
+## Step-2 status (shell + router, library-only)
+
+Done on `aidev` (pending browser verification). New `shell.js` is the persistent
+shell + client router; `library.html` loads it (`<body data-page data-module>`)
+instead of `app.js` directly.
+
+- **Swap contract:** intercept same-origin nav `<a>` clicks → `fetch` → swap
+  `<main>` + the `#header-insert` wrapper + active nav + `<title>`; `pushState`
+  (replace for same-URL). Header, player-bar and `<audio>` (all outside `<main>`)
+  are never touched, so playback survives. `popstate` mirrors the swap.
+- **Lifecycle:** the page module is `import()`ed from `body[data-module]`; `app.js`
+  now exports `{ init, teardown }`. `init` re-wires the swappable DOM (search bar +
+  views) under an `AbortController` and (re)loads artists; `teardown` aborts those
+  listeners + timers + in-flight fetches. The controller/player is created once at
+  module top level and persists. An `active` flag guards late renders.
+- **Theme + `initAuth` moved to `shell.js`** (applied once for the document);
+  removed from `app.js`.
+- **`#header-insert` wrapper** added in `partials.html` (the header template),
+  `display:contents` so it doesn't disturb header layout — it's the swap slot for
+  the per-page header insert (the library search bar).
+- **Not shell-native yet:** `/upload` and admin. Cross-path clicks to them fall
+  back to a **full browser load** (the router detects no `data-module` and
+  `location.assign`s). Bringing `/upload` into the shell — and thus real
+  cross-page continuity — is **step 3**.
+- **Behavior change:** clicking **Library** now re-swaps the page (resets to the
+  artists view) instead of only clearing the search; the old clear-search-on-nav
+  hack is gone (the shell owns nav). a11y: focus moves to `<main>` on swap.
+
 ## Open questions
 
 - **Duration cache vs. controller.** `DUR_CACHE` stays in `app.js` (page-side);

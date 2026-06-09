@@ -25,7 +25,7 @@
   <link rel="stylesheet" href="/static/css/app.css">
   <link rel="stylesheet" href="/static/css/player.css">
 </head>
-<body>
+<body data-page="library" data-module="/static/js/app.js">
 
 {{template "header" .}}
 
@@ -66,6 +66,6 @@
 
 {{template "auth-modals" .}}
 
-<script type="module" src="/static/js/app.js"></script>
+<script type="module" src="/static/js/shell.js"></script>
 </body>
 </html>
