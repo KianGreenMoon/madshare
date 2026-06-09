@@ -120,6 +120,24 @@ tr.playing-row .play-btn { color: var(--accent); }
   border-bottom: 1px solid var(--border);
 }
 .entity-row:hover { background: var(--surface-hover); }
+
+/* Cover thumbnail (artist / album rows) */
+.entity-cover {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: var(--radius);
+  object-fit: cover;
+  background: var(--surface);
+}
+.entity-cover--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  font-size: 18px;
+}
 .entity-row.playing-row { background: var(--accent-glow); }
 .entity-row.playing-row .play-btn { color: var(--accent); }
 

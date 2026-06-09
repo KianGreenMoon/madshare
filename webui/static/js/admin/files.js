@@ -534,6 +534,7 @@ function renderArtists(items) {
   entityPanel.replaceChildren(frag);
 }
 function artistRow(a) {
+  const thumb = coverThumb(a.has_image, artistImageURL(a.name));
   const main = el('button', {
     class: 'entity-main', onclick: () => drillAlbums(a.name),
     'aria-label': `Open ${a.name || 'unnamed artist'}`,
@@ -541,9 +542,11 @@ function artistRow(a) {
     el('span', { class: 'entity-name' + (a.name ? '' : ' is-fallback'), text: a.name || '(no artist)' }),
     el('span', { class: 'entity-meta', text: trackCount(a.track_count) }),
   ]);
-  const row = el('div', { class: 'entity-row' }, [main]);
+  const row = el('div', { class: 'entity-row' }, [thumb, main]);
   if (canEditMeta && a.name) {
     row.appendChild(el('div', { class: 'entity-actions' }, [
+      el('button', { class: 'btn btn-neutral btn-sm', text: a.has_image ? 'Cover…' : 'Add cover',
+        onclick: () => pickCover({ kind: 'artist', name: a.name }) }),
       el('button', { class: 'btn btn-neutral btn-sm', text: 'Rename', onclick: () => openRenameArtist(a) }),
     ]));
   }
@@ -559,6 +562,7 @@ function renderAlbums(items) {
 function albumRow(a) {
   const meta = [trackCount(a.track_count)];
   if (a.year != null) meta.unshift(String(a.year));
+  const thumb = coverThumb(a.has_image, albumImageURL(entityDrill.artist, a.title));
   const main = el('button', {
     class: 'entity-main', onclick: () => drillTracks(entityDrill.artist, a.title),
     'aria-label': `Open ${a.title || 'unnamed album'}`,
@@ -566,13 +570,68 @@ function albumRow(a) {
     el('span', { class: 'entity-name' + (a.title ? '' : ' is-fallback'), text: a.title || '(no album)' }),
     el('span', { class: 'entity-meta', text: meta.join(' · ') }),
   ]);
-  const row = el('div', { class: 'entity-row' }, [main]);
+  const row = el('div', { class: 'entity-row' }, [thumb, main]);
   if (canEditMeta && a.title) {
     row.appendChild(el('div', { class: 'entity-actions' }, [
+      el('button', { class: 'btn btn-neutral btn-sm', text: a.has_image ? 'Cover…' : 'Add cover',
+        onclick: () => pickCover({ kind: 'album', title: a.title, artist: entityDrill.artist }) }),
       el('button', { class: 'btn btn-neutral btn-sm', text: 'Rename', onclick: () => openRenameAlbum(a) }),
     ]));
   }
   return row;
+}
+
+// ── Cover images (artist / album) ────────────────────────────────────────────
+// has_image comes from the browse DTOs. The GET .../image endpoints serve the
+// original directly, so a thumbnail updates the moment an upload finishes (album
+// variants are generated async, but they only feed the responsive public UI).
+// coverBust busts the browser cache after an upload so a replaced cover shows.
+let coverBust = 0;
+function artistImageURL(name) { return `/api/artists/${encodeURIComponent(name)}/image`; }
+function albumImageURL(artist, title) {
+  return `/api/albums/${encodeURIComponent(title)}/image?artist=${encodeURIComponent(artist || '')}`;
+}
+function coverThumb(hasImage, url) {
+  if (!hasImage) return el('div', { class: 'entity-cover entity-cover--empty', 'aria-hidden': 'true', text: '♪' });
+  const sep = url.includes('?') ? '&' : '?';
+  return el('img', { class: 'entity-cover', alt: '', loading: 'lazy', src: `${API}${url}${sep}cb=${coverBust}` });
+}
+
+const coverInput = document.getElementById('coverInput');
+let coverTarget = null; // { kind:'artist'|'album', name? , title?, artist? }
+
+function pickCover(target) {
+  coverTarget = target;
+  coverInput.value = '';   // allow re-picking the same file
+  coverInput.click();
+}
+coverInput.addEventListener('change', () => {
+  const file = coverInput.files[0];
+  if (file && coverTarget) uploadCover(coverTarget, file);
+});
+
+async function uploadCover(target, file) {
+  if (!['image/jpeg', 'image/png'].includes(file.type)) { toast('Cover must be a JPEG or PNG.', 'error'); return; }
+  if (file.size > 10 * 1024 * 1024) { toast('Cover must be 10 MB or smaller.', 'error'); return; }
+
+  const path = target.kind === 'artist'
+    ? `/api/artists/${encodeURIComponent(target.name)}/image`
+    : `/api/albums/${encodeURIComponent(target.title)}/image?artist=${encodeURIComponent(target.artist || '')}`;
+  const fd = new FormData();
+  fd.append('image', file);
+
+  try {
+    const res = await fetch(`${API}${path}`, { method: 'POST', body: fd });
+    if (handleAuthError(res)) return;
+    if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
+    coverBust = Date.now();   // force thumbnails to refetch the replaced image
+    toast('Cover updated.', 'success');
+    reloadEntityLevel();
+  } catch (err) {
+    toast(`Couldn't upload cover: ${err.message}`, 'error');
+  } finally {
+    coverTarget = null;
+  }
 }
 
 function renderTracks(items) {

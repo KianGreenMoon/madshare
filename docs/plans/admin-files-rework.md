@@ -66,10 +66,29 @@ admin-panel-rework.md Decision §1.)
 ## Non-goals
 
 - No backend changes (endpoints exist; confirm `metadata.edit` on admin role).
-- Cover **re-upload/editing** stays out of scope (deferred, as in the admin-panel
-  rework).
 - Not part of the persistent shell — `/admin/*` remains separate full-load pages
   with the page-local preview player.
+
+## Cover editing (now in scope — implemented)
+
+Originally deferred; pulled in by request. The backend already shipped the
+endpoints (no backend change needed), so this is UI-only:
+
+- **Album cover:** `POST /api/albums/{album}/image?artist=<artist>` — multipart
+  field `image`, JPEG/PNG only, ≤ 10 MB. Replaces the current cover ("explicit
+  beats embedded") and enqueues async variant generation.
+- **Artist cover:** `POST /api/artists/{artist}/image` — same multipart contract.
+  **No variant pipeline** (flat `<base_key><ext>` object key); the responsive
+  variants exist for albums only.
+- **Display:** the browse DTOs already carry `has_image`; `GET …/image` serves the
+  original directly, so an entity-row thumbnail updates immediately on upload
+  (album variants only feed the public responsive UI). A `cb=` cache-bust forces
+  a replaced cover to refetch.
+- Artist/album rows show a 40px cover thumbnail (or a ♪ placeholder) and an
+  **Add cover / Cover…** action (gated `metadata.edit`); the empty-name bucket is
+  not uploadable (addressed by name, like rename).
+- **Still out of scope:** cover *removal/clear*, cropping, and a processing/“variants
+  ready” progress indicator (the thumbnail uses the original, so it’s not needed).
 
 ---
 
@@ -169,7 +188,9 @@ unambiguous entity. Confirm at impl.
 1. **Entity-aware default view** (artists/albums/tracks drill-down) with the
    existing flat **All files** table kept as a fallback.
 2. **Page-local preview player stays** — admin is out of the persistent shell.
-3. **No cover editing** (deferred).
+3. **Cover editing is in scope** (implemented; see "Cover editing" above) —
+   artist/album cover upload via the existing `POST …/image` endpoints. Cover
+   *removal*, cropping, and variant-progress UI remain out of scope.
 4. **Merge is destructive → typed/two-step confirm** with an N-tracks/target
    summary.
 
