@@ -494,6 +494,22 @@ instead of `app.js` directly.
   artists view) instead of only clearing the search; the old clear-search-on-nav
   hack is gone (the shell owns nav). a11y: focus moves to `<main>` on swap.
 
+## Steps 3 + 4 status — Phase 1 listening shell COMPLETE
+
+- **Step 3 (upload shell-native):** done — see `docs/plans/upload-rework.md` §3a.
+  `/upload` is now shell-native (`shell.js`, player-bar, `init`/`teardown`), so
+  playback continues across Library⇄Upload. Real cross-page continuity verified.
+- **Step 4 (admin out of the shell):** done — the header **Admin** link is
+  `target="_blank" rel="noopener"`, so entering admin opens a separate tab and the
+  listening tab keeps playing. The shell already skips `target="_blank"` links, so
+  admin is never swapped in; admin pages stay full-load with their page-local
+  preview player.
+
+Phase 1's listening shell (library + upload + persistent continuous playback) is
+done and user-verified. **Remaining for the broader plan:** the deferred
+controller niceties (Media Session, repeat, auth-expiry probe), and the upload
+**precheck** (`upload-rework.md` §3b). cmus stays out (paused).
+
 ## Open questions
 
 - **Duration cache vs. controller.** `DUR_CACHE` stays in `app.js` (page-side);

@@ -4,7 +4,7 @@
   <nav class="main-nav" aria-label="Site navigation">
     <a href="/" class="nav-link{{if eq .Page "library"}} nav-link--active{{end}}"{{if eq .Page "library"}} aria-current="page"{{end}}>Library</a>
     <a href="/upload" class="nav-link{{if eq .Page "upload"}} nav-link--active{{end}}"{{if eq .Page "upload"}} aria-current="page"{{end}}>Upload</a>
-    <a href="/admin" class="nav-link{{if eq .Page "admin"}} nav-link--active{{end}}"{{if eq .Page "admin"}} aria-current="page"{{end}}>Admin</a>
+    <a href="/admin" class="nav-link{{if eq .Page "admin"}} nav-link--active{{end}}"{{if eq .Page "admin"}} aria-current="page"{{end}} target="_blank" rel="noopener" title="Opens in a new tab">Admin</a>
     <a href="/source" class="nav-link" download>Source</a>
     <a href="/license" class="nav-link" target="_blank" rel="license">License</a>
   </nav>
