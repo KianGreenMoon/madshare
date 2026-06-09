@@ -9,6 +9,16 @@ This covers roadmap **Phase 2** (hash-precheck backend) and **Phase 3** (upload
 page rewrite). Phase 2 is backend-only and independently testable; Phase 3 needs
 both the shell (Phase 1) and the Phase 2 endpoint.
 
+**Staging (decided 2026-06-09):** Phase 3 is split so the riskiest part (client
+hashing) is isolated:
+
+- **3a — upload page rewrite:** make `/upload` **shell-native** (continuity:
+  music keeps playing across Library⇄Upload) + **one-button file/folder upload**
+  + close the BUG-15 `.btn` remnant. **No hashing/precheck.** Verifiable on its
+  own. *(This is the part being built now.)*
+- **3b — precheck:** the `/api/files/check` endpoint (Phase 2), client-side WASM
+  hashing in a worker pool, the trash-restore policy wiring, and the off-switch.
+
 ## Why
 
 Two things:
@@ -45,16 +55,16 @@ below.)
 
 ## Goals
 
-1. `POST /api/files/check` (auth'd): given a content hash, report whether the
-   content exists and whether it is trashed/restorable. Advisory only.
-2. Client computes the **same** hash the server does (SHA-256 hex of raw bytes)
-   and uses the endpoint to (a) skip a duplicate upload, (b) offer restore for a
-   trashed match.
-3. A user-visible **toggle to disable the precheck**, defaulting **ON**, placed
-   **below the fold / not prominent**, with a short explanation of what turning it
-   off means (you'll re-upload duplicates; the server still dedupes on receipt).
-4. Rewrite the upload page as a shell-native listening page; drop the `upload.css`
-   `.btn` override (BUG-15 remnant) in favor of the shared `app.css` button.
+1. Rewrite the upload page as a **shell-native** listening page (continuity) with
+   **one-button file/folder upload**; drop the `upload.css` `.btn` override
+   (BUG-15 remnant) in favor of the shared `app.css` button. *(3a)*
+2. `POST /api/files/check` (auth'd): given a content hash, report a single
+   `status` (`absent`/`present`/`trashed`). Advisory only. *(3b)*
+3. Client computes the **same** hash the server does (SHA-256 hex of raw bytes,
+   via a WASM hasher in a worker pool) and uses the endpoint to skip duplicates
+   and handle trashed content per the admin policy. *(3b)*
+4. A user-visible **toggle to disable the precheck**, defaulting **ON**, placed
+   **below the fold / not prominent**, with a short explanation. *(3b)*
 
 ## Non-goals
 
@@ -70,12 +80,19 @@ below.)
 **Endpoint.** `POST /api/files/check` with `{ "hash": "<sha256-hex>" }` →
 
 ```json
-{ "exists": true, "trashed": false, "restorable": false }
+{ "status": "absent" | "present" | "trashed" }
 ```
 
-- `exists` — content with this hash is present (active) in `files`.
-- `trashed` — the content exists but is soft-deleted.
-- `restorable` — whether *this identity* may restore it (see permission decision).
+A **single enum**, not three booleans (decided 2026-06-09 — booleans could encode
+contradictions like `exists:false,trashed:true`, and the old `restorable` was a
+*permission* concern wrongly folded into an *existence* check):
+
+- `absent` — no content with this hash on the server → the client should upload.
+- `present` — content exists and is live → skip (duplicate).
+- `trashed` — content exists but is soft-deleted → see the **trash policy** below.
+
+There is intentionally **no `restorable` field** — whether/how a trashed file
+comes back is governed by the admin trash-restore policy, not reported per-check.
 
 **Auth.** Require authentication (a logged-in uploader). Rationale: this is a
 by-hash existence oracle; do not expose it anonymously. Gate at least on the same
@@ -86,33 +103,26 @@ permission as upload (`file.upload`) so only would-be uploaders can probe.
 every received file (`storage.HashUpload`) and dedupes on the server-computed
 value.
 
-**Permission decision — uploader restore (OPEN, needs sign-off).** Today
-trash-restore is admin-only (`/api/admin/trash/{id}/restore`). For the precheck
-flow a regular uploader who re-presents the exact content of a trashed file may
-want to restore it. Options:
+#### Trash-restore policy — an admin setting (decided)
 
-- **(a) Restore allowed for an uploader who could upload that content.** Re-adding
-  content you're allowed to upload is equivalent to uploading it; restore just
-  avoids re-sending bytes. Lean: allow, via a *new* uploader-facing restore path
-  scoped to "I can prove I have this content" — but proving possession without
-  uploading is the crux (a hash is not proof of possession). Safer variant: the
-  client uploads normally and the **server**, on receiving content whose hash
-  matches a trashed file, restores-instead-of-creating. That keeps possession
-  proof intact (you sent the bytes) and needs no new uploader restore endpoint.
-- **(b) Restore stays admin-only.** The precheck reports `trashed: true,
-  restorable: false`; the UI tells the uploader the content exists but is trashed
-  and to ask an admin. Simplest, most conservative.
+When a precheck returns `trashed`, what the uploader can do is **configurable by
+the admin** (all three behaviors are legitimate, so it's a policy, not a
+hardcoded choice). A setting on **`/admin/settings`** (alongside auto-publish),
+e.g. `[upload].trash_restore_policy`, with three modes:
 
-**Recommendation:** ship **(b)** for Phase 2 (report trashed, restore stays
-admin), and treat the "server restores trashed file when matching content is
-actually uploaded" half of **(a)** as a follow-up — it's the only variant that
-preserves possession proof, and it lives in the upload handler, not a new
-uploader restore endpoint. Decide before building.
+| Mode | On `status: trashed` the uploader… | Notes |
+|------|-----------------------------------|-------|
+| `inform` **(default)** | is told "already on the server, in Trash — an admin can restore it"; no upload | Safest; restore stays admin-only (today's model). No new endpoint/permission. |
+| `reupload_restores` | may upload anyway; the **server un-trashes** the file when it receives the matching content (proves possession by sending the bytes) | Lives in the upload handler, not a new restore endpoint; preserves possession proof. |
+| `uploader_restore` | gets a **Restore** action that restores without re-sending bytes | Needs a new uploader-restore permission/endpoint — the largest access-control surface. |
 
-**Testing (Phase 2).** Unit-test the endpoint: unknown hash → `exists:false`;
-active file → `exists:true,trashed:false`; trashed file → `exists:true,
-trashed:true`; bad/empty hash → 400; unauthenticated → 401. Confirm it never
-mutates state.
+The default is `inform`. The upload UI reads the policy (served with the other
+public UI config) and behaves accordingly.
+
+**Testing (Phase 2).** Unit-test the endpoint: unknown hash → `status:"absent"`;
+active file → `"present"`; trashed file → `"trashed"`; bad/empty hash → 400;
+unauthenticated → 401. Confirm it never mutates state. Per-policy upload behavior
+is tested with Phase 3b.
 
 ---
 
@@ -128,29 +138,51 @@ whole file to hash it is a non-starter.
 
 **Therefore: incremental SHA-256 over `File.stream()`.** Read the file in chunks
 (`Blob.stream()` → `ReadableStream` reader, or sliced `arrayBuffer()` windows) and
-feed an incremental hasher. `crypto.subtle` can't do this, so use a small
-streaming SHA-256 implementation:
+feed an incremental hasher block-by-block — never buffer the whole file. An
+incremental SHA-256 produces a **byte-identical digest** to a one-shot hash (the
+algorithm processes 64-byte blocks internally regardless), and matches the
+server, which itself streams the upload through `sha256` (`io.Copy`,
+`api/storage/hash.go`). So client hex == server hex for the same bytes.
 
-- a tiny pure-JS incremental SHA-256 (no deps, slowest), or
-- a WASM SHA-256 (fast, one small asset).
+**Hasher = WASM SHA-256 (decided 2026-06-09)**, with a tiny **pure-JS
+incremental SHA-256 kept behind the same interface** as a fallback. WASM is
+near-native fast — chosen to future-proof for video / multi-GB uploads, where it
+matters; for typical audio either would be imperceptible.
 
-Decide during impl; either way it must hash **block-by-block off the stream**, not
-buffer the file. Show progress (it's a full read of a large file). This is the
-only non-trivial engineering in the upload rework.
+**Run hashing in a Web Worker pool (off the main thread).** Hashing is CPU-bound;
+doing it on the main thread freezes the UI (rendering + clicks), especially for a
+dropped folder of many files. A worker pool keeps the UI smooth. **Pool size is
+adaptive** to the client, capped to stay polite:
+
+```js
+const cores = navigator.hardwareConcurrency || 4;   // logical cores; fallback 4
+let workers = Math.min(4, Math.max(1, cores >> 1));  // half the cores, clamp 1..4
+if ((navigator.deviceMemory || 4) <= 2) workers = 1; // back off on tiny devices
+```
+
+Rationale: **half, not all** (leave cores for the OS/main thread/other apps);
+**floor 1** (always progress); **ceiling 4** (past ~4 you hit diminishing returns
+because **upload bandwidth, not hashing, is the real bottleneck** — and 4 keeps a
+32-core box from spinning every fan for no faster uploads). One tunable constant;
+could later be surfaced like the existing upload-worker slider
+(`webui.toml` `default_parallel_workers`/`max_parallel_workers`) but starts
+**auto**. Hash (CPU) and upload (network) don't compete, so they can pipeline.
+Show progress (a full read of a large file takes time).
 
 ### Upload flow with precheck
 
 ```
-user selects file(s)
-  for each file:
+user selects file(s)  (one file, several files, or a whole folder)
+  for each file (hashed in the worker pool, limited concurrency):
     if precheck ON:
-      hash = streaming-sha256(file)        (with progress)
-      { exists, trashed, restorable } = POST /api/files/check { hash }
-      exists && !trashed   → skip upload, mark "already in library"
-      exists && trashed    → prompt: restore?  (per permission decision)
-                               (b): inform "exists but trashed — ask an admin"
-                               (a)-follow-up: upload anyway; server restores
-      !exists              → upload normally
+      hash = streaming-sha256(file)        (WASM, in a worker, with progress)
+      { status } = POST /api/files/check { hash }
+      "present"  → skip upload, mark "already in library"
+      "trashed"  → per the admin trash-restore policy:
+                     inform            → "already on the server (in Trash) — ask an admin"
+                     reupload_restores → upload anyway; server un-trashes on match
+                     uploader_restore  → offer a Restore action
+      "absent"   → upload normally
     else (precheck OFF):
       upload normally  (server hashes + dedupes on receipt as today)
 ```
@@ -168,7 +200,7 @@ The server side of every "upload normally" is unchanged and authoritative.
   bandwidth."*
 - Persist the choice client-side (localStorage) so it sticks per browser.
 
-### Page rewrite
+### Page rewrite (3a)
 
 - Make the upload page a **shell-native listening page**: `<body data-page="upload"
   data-module="/static/js/upload.js">`, `{{template "player-bar" .}}` after
@@ -176,26 +208,43 @@ The server side of every "upload normally" is unchanged and authoritative.
   uploading, and uploading is reachable without losing the queue.
 - Convert the upload JS to the `{ init, teardown }` module contract (abort any
   in-flight hashing/upload on `teardown`).
+- **One-button file/folder upload (decided 2026-06-09).** A native file dialog
+  can't offer "files *or* a folder" in one picker (`<input webkitdirectory>` is
+  folder-only). So: **one "Add music" button → a small menu** ("Choose files…" /
+  "Choose folder…"), backed by two hidden inputs (one plain, one
+  `webkitdirectory`). The **drop zone accepts both** files and a dropped folder
+  (folder drops are read via `DataTransferItem.webkitGetAsEntry()` recursion).
+  Folder picks/drops flatten to the set of audio files (filter by type), then
+  upload like any multi-file batch.
 - **BUG-15 remnant:** drop `upload.css`'s `.btn` override and use the shared
   `app.css` `.btn` / `.btn-neutral`; rename upload's own accent button to a
   page-local class so it stops shadowing the shared header buttons.
 - Reuse existing helpers (`auth.js`, the toast/`shared.js` helpers) rather than
   re-implementing.
 
-### Testing (Phase 3)
+The precheck UX (hashing, status handling, off-switch) is **3b** and lands on top
+of this page later.
+
+### Testing — 3a (page rewrite)
+
+- Shell-native: start playback on library → go to `/upload` → playback continues;
+  navigate back → library is intact; upload page `teardown` aborts in-flight
+  uploads.
+- One-button: the menu's "Choose files…" and "Choose folder…" both work; a
+  dropped folder recurses and uploads its audio files; non-audio is skipped.
+- BUG-15: header auth buttons on the upload page match the shared look (no
+  `upload.css` `.btn` shadowing).
+
+### Testing — 3b (precheck)
 
 - Hash correctness: client hash of a file **equals** the server's stored hash for
   the same content (round-trip a known file).
-- Large file: hashing a multi-hundred-MB file does not blow memory (streaming
-  works) and shows progress.
-- Precheck branches: brand-new file uploads; exact duplicate is skipped; trashed
-  match shows the right prompt/info per the permission decision.
+- Large file: hashing a multi-hundred-MB file does not blow memory (streaming +
+  worker) and shows progress; the UI stays responsive during a big batch.
+- Precheck branches: `absent` uploads; `present` is skipped; `trashed` behaves per
+  the active admin policy (`inform` / `reupload_restores` / `uploader_restore`).
 - Off-switch: disabled → always uploads; server still dedupes on receipt; choice
   persists across reloads.
-- Shell-native: start playback on library → go to upload → playback continues;
-  upload page `teardown` aborts in-flight hashing/upload.
-- BUG-15: header auth buttons on the upload page match the shared look (no
-  `upload.css` `.btn` shadowing).
 
 ---
 
@@ -258,16 +307,23 @@ real. Flagged here so it isn't forgotten.
    is what makes the client-supplied hash safe. Owner-approved.
 2. **`/api/files/check` is auth'd** (≥ `file.upload`), not public — avoid an
    anonymous existence oracle.
-3. **Phase 2 ships restore-reporting only; uploader restore is deferred** to the
-   "server restores on actual matching upload" variant (preserves possession
-   proof). Confirm before building.
-4. **Off-switch defaults ON, lives below the fold** with an explanation.
-5. **Upload page becomes shell-native** and sheds the `upload.css` `.btn` override
+3. **Response is a single `status` enum** (`absent`/`present`/`trashed`), not
+   three booleans; no `restorable` field.
+4. **Trash-restore is an admin policy** (`inform` default / `reupload_restores` /
+   `uploader_restore`) on `/admin/settings`, not a hardcoded behavior.
+5. **Hasher = WASM SHA-256** (pure-JS incremental fallback behind the same
+   interface), run in a **Web-Worker pool sized `clamp(cores/2, 1, 4)`** (auto;
+   back off to 1 on ≤2 GB devices).
+6. **Off-switch defaults ON, lives below the fold** with an explanation.
+7. **Upload page becomes shell-native** and sheds the `upload.css` `.btn` override
    (closes the last BUG-15 remnant).
+8. **One-button file/folder upload** via a button + menu (two hidden inputs) and a
+   drop zone that accepts folders.
+9. **Staged: 3a (page rewrite, no hashing) then 3b (precheck).**
 
 ## Open questions
 
-- Streaming SHA-256: pure-JS vs. WASM (size vs. speed). Decide at impl.
-- Uploader-restore permission: confirm Decision §3 (report-only now) vs. enabling
-  the server-restores-on-upload variant in this pass.
-- Per-file vs. whole-batch precheck UI when multiple files are selected.
+- Per-file vs. whole-batch precheck UI when many files/a folder are selected (3b).
+- Whether to surface the hash-worker count manually later (starts auto).
+- Exact `webui.toml`/settings keys for the trash-restore policy and worker counts
+  (decide at impl).
