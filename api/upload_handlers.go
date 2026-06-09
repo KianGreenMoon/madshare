@@ -17,6 +17,7 @@ import (
 	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/media"
+	"github.com/go-chi/chi/v5"
 )
 
 // uploadFile handles POST /files/upload: a single multipart file upload. It
@@ -98,20 +99,37 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if existing != nil {
+		restored := false
 		if existing.DeletedAt.Valid {
-			// File is in the trash. Re-uploading the same bytes intentionally
-			// restores it — any uploader may do this by design (see open-issues.md).
-			if _, err := h.repo.RestoreFileByHash(ctx, existing.Hash); err != nil {
+			// File is in the trash. Whether re-uploading the bytes restores it is
+			// governed by the admin trash-restore policy (default reupload_restores,
+			// the historical behavior). Under inform/uploader_restore it stays
+			// trashed. See docs/plans/upload-rework.md §3b.
+			policy, err := h.repo.GetTrashRestorePolicy(ctx)
+			if err != nil {
 				http.Error(w, "storage error", http.StatusInternalServerError)
 				return
 			}
-			h.audit(ctx, "file.restore", hash, "restore-via-reupload: "+filename)
+			if policy == database.TrashReuploadRestores {
+				if _, err := h.repo.RestoreFileByHash(ctx, existing.Hash); err != nil {
+					http.Error(w, "storage error", http.StatusInternalServerError)
+					return
+				}
+				restored = true
+				h.audit(ctx, "file.restore", hash, "restore-via-reupload: "+filename)
+			} else {
+				h.audit(ctx, "file.upload", hash, "dedup-trashed (policy="+policy+", not restored): "+filename)
+			}
 		} else {
 			h.audit(ctx, "file.upload", hash, "dedup: "+filename)
 		}
-		if err := h.repo.RecordUpload(ctx, existing.ID, filename); err != nil {
-			http.Error(w, "storage error", http.StatusInternalServerError)
-			return
+		// Record the (new) filename only for a live or just-restored file; a file
+		// left trashed gets no new upload record.
+		if (!existing.DeletedAt.Valid || restored) && filename != "" {
+			if err := h.repo.RecordUpload(ctx, existing.ID, filename); err != nil {
+				http.Error(w, "storage error", http.StatusInternalServerError)
+				return
+			}
 		}
 		// Embedded art is not re-processed for duplicate content — the cover (if
 		// any) was already handled when the bytes were first ingested.
@@ -120,6 +138,8 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":               true,
 			"existed":          true,
+			"restored":         restored,
+			"trashed":          existing.DeletedAt.Valid && !restored,
 			"hash":             hash,
 			"filename":         filename,
 			"size":             size,
@@ -341,6 +361,38 @@ func (h *handler) checkFile(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": status})
+}
+
+// restoreFileForUploader lets a non-admin uploader restore a trashed file —
+// but only when the admin trash-restore policy is "uploader_restore" (else 403).
+// Gated on file.upload (restoring content you may upload is equivalent). See
+// docs/plans/upload-rework.md §3b.
+func (h *handler) restoreFileForUploader(w http.ResponseWriter, r *http.Request) {
+	hash := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "hash")))
+	if !isSHA256Hex(hash) {
+		http.Error(w, "invalid hash", http.StatusBadRequest)
+		return
+	}
+	policy, err := h.repo.GetTrashRestorePolicy(r.Context())
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if policy != database.TrashUploaderRestore {
+		writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "uploader restore is not enabled"})
+		return
+	}
+	found, err := h.repo.RestoreFileByHash(r.Context(), hash)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	h.audit(r.Context(), "file.restore", hash, "uploader-restore")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // isSHA256Hex reports whether s is exactly 64 lowercase hex characters.

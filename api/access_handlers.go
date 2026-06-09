@@ -42,6 +42,9 @@ type ManageStore interface {
 	GetAutoDerivePolicy(ctx context.Context) (database.AutoDerivePolicy, error)
 	SetAutoDerivePolicy(ctx context.Context, p database.AutoDerivePolicy) error
 
+	GetTrashRestorePolicy(ctx context.Context) (string, error)
+	SetTrashRestorePolicy(ctx context.Context, mode string) error
+
 	RecordAudit(ctx context.Context, actorUserID sql.NullInt64, action, target, detail string) error
 }
 
@@ -82,6 +85,8 @@ func registerManage(r chi.Router, d Deps) {
 
 	r.With(userManage).Get("/settings/autoderive", h.getAutoDerive)
 	r.With(userManage).Post("/settings/autoderive", h.setAutoDerive)
+	r.With(userManage).Get("/settings/trash-policy", h.getTrashPolicy)
+	r.With(userManage).Post("/settings/trash-policy", h.setTrashPolicy)
 }
 
 // mAudit records a privileged management action, logging (never failing) on
@@ -208,6 +213,34 @@ func (h *manageHandler) setAutoDerive(w http.ResponseWriter, r *http.Request) {
 	}
 	h.mAudit(r.Context(), "access.autoderive", "", strconv.FormatBool(req.Enabled)+": "+strings.Join(req.Licenses, ","))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "enabled": req.Enabled})
+}
+
+func (h *manageHandler) getTrashPolicy(w http.ResponseWriter, r *http.Request) {
+	p, err := h.store.GetTrashRestorePolicy(r.Context())
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"policy": p})
+}
+
+func (h *manageHandler) setTrashPolicy(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Policy string `json:"policy"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if !database.ValidTrashRestorePolicy(req.Policy) {
+		http.Error(w, "unknown trash-restore policy", http.StatusBadRequest)
+		return
+	}
+	if err := h.store.SetTrashRestorePolicy(r.Context(), req.Policy); err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	h.mAudit(r.Context(), "upload.trash_policy", "", req.Policy)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "policy": req.Policy})
 }
 
 // decodeJSON decodes the request body into v, writing a 400 and returning false

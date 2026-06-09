@@ -559,6 +559,10 @@ func (f *fakeRepo) RestoreFileByHash(_ context.Context, _ string) (bool, error) 
 	return true, nil
 }
 
+func (f *fakeRepo) GetTrashRestorePolicy(_ context.Context) (string, error) {
+	return database.TrashReuploadRestores, nil
+}
+
 func (f *fakeRepo) ListTrashedFiles(_ context.Context) ([]*database.FileListEntry, error) {
 	return nil, nil
 }

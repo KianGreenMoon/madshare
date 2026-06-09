@@ -127,6 +127,9 @@ func RegisterAPI(r chi.Router, d Deps) {
 	// Advisory pre-upload existence check (status: absent/present/trashed). Same
 	// gate as upload — a by-hash existence oracle must not be anonymous.
 	r.With(d.protect(auth.PermFileUpload)).Post("/api/files/check", h.checkFile)
+	// Uploader-facing restore — only succeeds when the trash-restore policy is
+	// "uploader_restore" (the handler enforces it); gated on file.upload.
+	r.With(d.protect(auth.PermFileUpload)).Post("/api/files/{hash}/restore", h.restoreFileForUploader)
 	fileServer(r, "/files", noListFS{http.Dir(d.FilesDir)}, d.fileAccessGuard())
 
 	imagesFS := noListFS{http.Dir(h.imagesDir)}

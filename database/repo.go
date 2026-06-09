@@ -130,6 +130,10 @@ type Repository interface {
 	// the live library. found is false (no error) when no trashed row matches.
 	RestoreFileByHash(ctx context.Context, hash string) (found bool, err error)
 
+	// GetTrashRestorePolicy reads the trash-restore policy (reupload_restores /
+	// inform / uploader_restore); defaults to reupload_restores when unset.
+	GetTrashRestorePolicy(ctx context.Context) (string, error)
+
 	// ListTrashedFiles returns all soft-deleted files ordered by deletion time
 	// descending, joined with the first filename and media_metadata tags.
 	ListTrashedFiles(ctx context.Context) ([]*FileListEntry, error)

@@ -7,11 +7,51 @@ import (
 	"strings"
 )
 
-// Settings keys (see migration 006_access_mgmt.sql).
+// Settings keys (see migration 006_access_mgmt.sql; settings is a generic
+// key/value table, so new keys need no migration).
 const (
 	settingAutoDeriveEnabled  = "access.autoderive.enabled"
 	settingAutoDeriveLicenses = "access.autoderive.licenses"
+	settingTrashRestorePolicy = "upload.trash_restore_policy"
 )
+
+// Trash-restore policy modes — what may happen to a trashed file whose content
+// is uploaded again. See docs/plans/upload-rework.md §3b.
+const (
+	TrashReuploadRestores = "reupload_restores" // default: re-uploading the bytes restores it (historical behavior)
+	TrashInform           = "inform"            // don't restore; tell the uploader to ask an admin
+	TrashUploaderRestore  = "uploader_restore"  // an uploader may restore via POST /api/files/{hash}/restore
+)
+
+// ValidTrashRestorePolicy reports whether m is a known policy mode.
+func ValidTrashRestorePolicy(m string) bool {
+	switch m {
+	case TrashReuploadRestores, TrashInform, TrashUploaderRestore:
+		return true
+	}
+	return false
+}
+
+// GetTrashRestorePolicy reads the trash-restore policy. A missing or unrecognised
+// value reads as the default (reupload_restores — the historical behavior).
+func (db *DB) GetTrashRestorePolicy(ctx context.Context) (string, error) {
+	v, ok, err := db.GetSetting(ctx, settingTrashRestorePolicy)
+	if err != nil {
+		return TrashReuploadRestores, err
+	}
+	if !ok || !ValidTrashRestorePolicy(v) {
+		return TrashReuploadRestores, nil
+	}
+	return v, nil
+}
+
+// SetTrashRestorePolicy persists the trash-restore policy.
+func (db *DB) SetTrashRestorePolicy(ctx context.Context, mode string) error {
+	if !ValidTrashRestorePolicy(mode) {
+		return errors.New("invalid trash restore policy")
+	}
+	return db.SetSetting(ctx, settingTrashRestorePolicy, mode)
+}
 
 // GetSetting returns the value for key. ok is false (no error) when unset.
 func (db *DB) GetSetting(ctx context.Context, key string) (value string, ok bool, err error) {

@@ -382,7 +382,16 @@ func (h *handler) getUIConfig(w http.ResponseWriter, r *http.Request) {
 	if cfg == nil {
 		cfg = config.DefaultUIConfig()
 	}
-	writeJSON(w, http.StatusOK, cfg)
+	// Surface the trash-restore policy so the upload UI knows how to handle a
+	// "trashed" precheck result. Non-fatal: fall back to the default on error.
+	policy, err := h.repo.GetTrashRestorePolicy(r.Context())
+	if err != nil {
+		policy = database.TrashReuploadRestores
+	}
+	writeJSON(w, http.StatusOK, struct {
+		*config.UIConfig
+		TrashRestorePolicy string `json:"trash_restore_policy"`
+	}{cfg, policy})
 }
 
 // uploadAlbumImage stores a manually uploaded album cover and triggers async

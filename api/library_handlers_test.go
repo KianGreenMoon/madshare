@@ -572,3 +572,42 @@ func TestCheckFile_BadHash(t *testing.T) {
 		}
 	}
 }
+
+func restoreReq(t *testing.T, hash string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/files/"+hash+"/restore", nil)
+	return withChiParams(req, map[string]string{"hash": hash})
+}
+
+func TestRestoreForUploader_PolicyGate(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	ctx := context.Background()
+	hash := strings.Repeat("d", 64)
+	seedFileHash(t, db, hash)
+	if _, _, err := db.SoftDeleteFileByHash(ctx, hash); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+
+	// Default policy (reupload_restores) → uploader restore is forbidden.
+	rr := httptest.NewRecorder()
+	h.restoreFileForUploader(rr, restoreReq(t, hash))
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("default policy: status = %d, want 403", rr.Code)
+	}
+	if f, _ := db.GetFileByHash(ctx, hash); f == nil || !f.DeletedAt.Valid {
+		t.Fatal("file should still be trashed under the default policy")
+	}
+
+	// Switch to uploader_restore → restore succeeds.
+	if err := db.SetTrashRestorePolicy(ctx, database.TrashUploaderRestore); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
+	rr = httptest.NewRecorder()
+	h.restoreFileForUploader(rr, restoreReq(t, hash))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("uploader_restore: status = %d, want 200; body %s", rr.Code, rr.Body.String())
+	}
+	if f, _ := db.GetFileByHash(ctx, hash); f == nil || f.DeletedAt.Valid {
+		t.Fatal("file should be restored under uploader_restore")
+	}
+}
