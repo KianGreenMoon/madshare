@@ -602,12 +602,13 @@ function trackRow(t, navItems, idx) {
   return el('div', { class: 'entity-row entity-row--track', 'data-track-id': String(t.id) }, children);
 }
 
-// editTrack opens the per-track metadata modal from the entity view. It resolves
-// the track to its file record (for the hash) at click time, so it works even if
-// /api/files finished loading after this row was rendered.
-function editTrack(t) {
+// editTrack opens the per-track metadata modal from the entity view. The browse
+// track carries no hash, so it lazily loads /api/files on first need and resolves
+// the track to its file record there.
+async function editTrack(t) {
+  await ensureFilesLoaded();
   const f = fileForTrack(t);
-  if (!f) { toast('File details are still loading — try again in a moment.', 'error'); return; }
+  if (!f) { toast('Couldn’t find this file’s details.', 'error'); return; }
   openEditModal(f, true);
 }
 
@@ -700,7 +701,7 @@ renameForm.addEventListener('submit', async e => {
     // If we renamed the artist whose albums we're viewing, keep the crumb in sync.
     if (t.kind === 'artist' && entityDrill.artist === t.oldName) entityDrill.artist = val;
     reloadEntityLevel();
-    loadFiles();           // the flat table + url→file index now show stale tags
+    filesLoaded = false;   // flat table + url→file index are now stale; reload on next need
   } catch (err) {
     showRenameError(`Couldn't rename: ${err.message}`);
   } finally {
@@ -713,6 +714,15 @@ const tabEntity  = document.getElementById('tabEntity');
 const tabFiles   = document.getElementById('tabFiles');
 const entityView = document.getElementById('entityView');
 const filesView  = document.getElementById('filesView');
+let filesLoaded  = false;   // the flat table + url→file index load lazily
+
+// ensureFilesLoaded fetches /api/files once, on first need — when the All-files
+// tab is opened or when the entity view needs a track's hash to edit it.
+async function ensureFilesLoaded() {
+  if (filesLoaded) return;
+  filesLoaded = true;
+  await loadFiles();
+}
 
 function showEntityView() {
   tabEntity.classList.add('view-tab--active'); tabEntity.setAttribute('aria-selected', 'true');
@@ -723,6 +733,7 @@ function showFilesView() {
   tabFiles.classList.add('view-tab--active'); tabFiles.setAttribute('aria-selected', 'true');
   tabEntity.classList.remove('view-tab--active'); tabEntity.setAttribute('aria-selected', 'false');
   filesView.classList.remove('hidden'); entityView.classList.add('hidden');
+  ensureFilesLoaded();
 }
 tabEntity.addEventListener('click', showEntityView);
 tabFiles.addEventListener('click', showFilesView);
@@ -734,6 +745,5 @@ tabFiles.addEventListener('click', showFilesView);
   const perms = identity.permissions || [];
   canEditMeta = perms.includes('metadata.edit');
   canDelete   = perms.includes('file.delete');
-  loadFiles();           // eager: populates the All-files tab + the url→file index
-  loadEntityArtists();   // entity view is the default
+  loadEntityArtists();   // entity view is the default; files load lazily on demand
 })();

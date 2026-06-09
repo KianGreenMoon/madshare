@@ -59,6 +59,12 @@ tr.playing-row .play-btn { color: var(--accent); }
 .edit-form input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* ── View tabs (entity ⇄ all files) ─────────────────────────────────────────── */
+/* `.hidden` is not a global utility here (it's defined only as
+   .modal-backdrop.hidden / #player-bar.hidden), so the inactive view section
+   needs its own hide rule — otherwise both views stack. */
+#entityView.hidden,
+#filesView.hidden { display: none; }
+
 .view-tabs {
   display: flex;
   gap: var(--space-1);
