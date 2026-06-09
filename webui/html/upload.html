@@ -89,6 +89,21 @@
     <p class="empty-note" id="albumsEmpty">Albums appear here after you upload. You can then check covers and fix tags.</p>
   </section>
 
+  <!-- ── Advanced ───────────────────────────────────────────────────────── -->
+  <section class="upload-section upload-advanced" aria-labelledby="advancedHeading">
+    <h2 id="advancedHeading" class="section-title section-title--sub">Advanced</h2>
+    <label class="precheck-toggle">
+      <input type="checkbox" id="precheckToggle" checked>
+      <span>Skip files already on the server</span>
+    </label>
+    <p class="upload-advanced__hint">
+      Each file is hashed in your browser and skipped if the server already has it.
+      Turning this off re-uploads duplicates over the network &mdash; the server still
+      de-duplicates them on arrival, so nothing is stored twice; you just spend the
+      bandwidth.
+    </p>
+  </section>
+
 </main>
 
 {{template "player-bar" .}}

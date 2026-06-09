@@ -1,4 +1,5 @@
 import { gatePage, PAGE_PERMS, getIdentity } from './auth.js';
+import { createHashPool } from './hash-pool.js';
 
 // Upload page (/upload) controller.
 //
@@ -29,7 +30,7 @@ const API = document.querySelector('meta[name="api-url"]')?.content || '';
 // ── DOM refs (assigned by queryRefs() in init — they live in <main>) ─────────
 let dropZone, fileInput, folderInput, addMusicBtn, addMenu, chooseFilesBtn, chooseFolderBtn;
 let workersRange, workersValue, startBtn, clearBtn, queueList, queueEmpty;
-let coverGrid, albumsEmpty, srStatus, toastStack;
+let coverGrid, albumsEmpty, srStatus, toastStack, precheckToggle;
 
 function queryRefs() {
   dropZone        = document.getElementById('dropZone');
@@ -49,6 +50,7 @@ function queryRefs() {
   albumsEmpty     = document.getElementById('albumsEmpty');
   srStatus        = document.getElementById('srStatus');
   toastStack      = document.getElementById('toastStack');
+  precheckToggle  = document.getElementById('precheckToggle');
 }
 
 // ── State ───────────────────────────────────────────────────────────────────
@@ -65,6 +67,15 @@ let running = false;
 let canEditMeta = false;      // metadata.edit permission (set after /auth/me)
 const activeXhrs = new Set(); // in-flight uploads, aborted on teardown
 let wireAbort = null;         // AbortController for this activation's listeners
+
+// ── Pre-upload hash-precheck (3b) ────────────────────────────────────────────
+// When enabled (default), each file is SHA-256'd in a worker pool and checked
+// against the server; an already-present file is skipped instead of re-uploaded.
+// Advisory only — the server re-hashes and dedupes on receipt regardless.
+const PRECHECK_KEY = 'madshare-upload-precheck';
+const precheckEnabled = () => localStorage.getItem(PRECHECK_KEY) !== 'off'; // default ON
+let hashPool = null;
+const getHashPool = () => (hashPool ||= createHashPool());
 
 const UNSORTED_KEY = '\u0000unsorted';
 const COVER_STEMS  = new Set(['cover', 'folder', 'front', 'albumart', 'artwork', 'album']);
@@ -95,6 +106,7 @@ export function teardown() {
   for (const g of groups.values()) stopPolling(g);
   for (const xhr of activeXhrs) { try { xhr.abort(); } catch { /* ignore */ } }
   activeXhrs.clear();
+  if (hashPool) { hashPool.terminate(); hashPool = null; }
   // Reset for a clean next entry (the <main> is re-rendered fresh by the shell).
   queue.length = 0;
   groups.clear();
@@ -151,6 +163,14 @@ function wire(signal) {
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) for (const g of groups.values()) if (g.poll) pollStatus(g);
   }, { signal });
+
+  // Pre-upload precheck toggle (persisted, default on)
+  if (precheckToggle) {
+    precheckToggle.checked = precheckEnabled();
+    precheckToggle.addEventListener('change', () => {
+      localStorage.setItem(PRECHECK_KEY, precheckToggle.checked ? 'on' : 'off');
+    }, { signal });
+  }
 }
 
 function toggleAddMenu() {
@@ -413,7 +433,36 @@ function finishRun() {
   announce('Uploads finished. Review the albums below.');
 }
 
-function uploadItem(item) {
+// uploadItem runs the advisory precheck (hash in a worker → /api/files/check)
+// and skips an already-present file; otherwise it uploads. A "trashed" match is
+// uploaded normally — the server restores it on receipt (existing behavior).
+// Any precheck failure falls through to a plain upload (the server dedupes).
+async function uploadItem(item) {
+  if (precheckEnabled()) {
+    try {
+      setItemState(item, 'checking', 'Checking…');
+      const hash = await getHashPool().hashFile(item.file);
+      item.hash = hash;
+      const res = await fetch(`${API}/api/files/check`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hash }),
+      });
+      if (res.ok) {
+        const { status } = await res.json();
+        if (status === 'present') {
+          setProgress(item, 100);
+          setItemState(item, 'done', 'Already in library — skipped');
+          return;                                  // skip the upload
+        }
+        // 'absent' or 'trashed' → upload (a trashed file is restored server-side)
+      }
+    } catch { /* hashing/check failed → upload normally */ }
+  }
+  return uploadXhr(item);
+}
+
+function uploadXhr(item) {
   return new Promise((resolve) => {
     setItemState(item, 'uploading');
     setProgress(item, 0);
