@@ -305,3 +305,54 @@ func mimeToExt(mimeType string) (string, bool) {
 	}
 	return "", false
 }
+
+// checkFile reports whether content with the given SHA-256 hash is already on the
+// server: "absent" (no such content), "present" (live), or "trashed" (soft-
+// deleted). Advisory only — the client uses it to skip duplicate uploads; the
+// upload path re-hashes and dedupes on receipt regardless. Gated on file.upload
+// (a by-hash existence oracle must not be anonymous). See docs/plans/upload-rework.md §3b.
+func (h *handler) checkFile(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	var body struct {
+		Hash string `json:"hash"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	hash := strings.ToLower(strings.TrimSpace(body.Hash))
+	if !isSHA256Hex(hash) {
+		http.Error(w, "invalid hash (want 64 hex chars)", http.StatusBadRequest)
+		return
+	}
+
+	f, err := h.repo.GetFileByHash(r.Context(), hash)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+
+	status := "absent"
+	if f != nil {
+		if f.DeletedAt.Valid {
+			status = "trashed"
+		} else {
+			status = "present"
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": status})
+}
+
+// isSHA256Hex reports whether s is exactly 64 lowercase hex characters.
+func isSHA256Hex(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}

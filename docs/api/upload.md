@@ -235,6 +235,47 @@ content address means no duplicate files are written.
 
 ---
 
+## `POST /api/files/check` — pre-upload existence check
+
+An **advisory** check so a client can skip uploading content the server already
+has. Gated on `file.upload` (same as upload — a by-hash existence oracle must not
+be anonymous).
+
+### Request
+
+```
+POST /api/files/check
+Content-Type: application/json
+
+{ "hash": "<sha256-hex>" }     # 64 lowercase hex chars (SHA-256 of the raw bytes)
+```
+
+### Response
+
+```json
+{ "status": "absent" | "present" | "trashed" }
+```
+
+| `status`  | Meaning | Client action |
+|-----------|---------|---------------|
+| `absent`  | No content with this hash | upload it |
+| `present` | Content exists and is live | skip (duplicate) |
+| `trashed` | Content exists but is soft-deleted | per the trash-restore policy (see `docs/plans/upload-rework.md` §3b) |
+
+| Status | Condition |
+|--------|-----------|
+| 200    | `{ "status": … }` |
+| 400    | missing/empty hash, or not 64 hex chars |
+| 401/403| not authenticated / lacks `file.upload` |
+
+**Advisory only.** The endpoint only *reads*; it never mutates state and is **not**
+the dedupe authority. `POST /files/upload` always re-hashes every received file
+(`storage.HashUpload`) and dedupes on the server-computed value, so a wrong or
+malicious client hash can at worst skip its own upload — it can never cause a
+duplicate or a wrong dedupe.
+
+---
+
 ## See also
 
 - `docs/api/cover-images.md` — cover variant status and UI config endpoints.

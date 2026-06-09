@@ -124,6 +124,9 @@ func RegisterAPI(r chi.Router, d Deps) {
 	// (rather than inside fileServer) so the gate wraps only the write path; the
 	// GET file server is guarded separately by the content-access check.
 	r.With(d.protect(auth.PermFileUpload)).Post("/files/upload", h.uploadFile)
+	// Advisory pre-upload existence check (status: absent/present/trashed). Same
+	// gate as upload — a by-hash existence oracle must not be anonymous.
+	r.With(d.protect(auth.PermFileUpload)).Post("/api/files/check", h.checkFile)
 	fileServer(r, "/files", noListFS{http.Dir(d.FilesDir)}, d.fileAccessGuard())
 
 	imagesFS := noListFS{http.Dir(h.imagesDir)}

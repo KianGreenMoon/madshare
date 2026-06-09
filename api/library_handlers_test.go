@@ -500,3 +500,75 @@ func TestMergeAlbumsByID_HappyPath(t *testing.T) {
 		t.Error("source album not merged away")
 	}
 }
+
+// checkReq builds a POST /api/files/check request with a {hash} body.
+func checkReq(t *testing.T, hash string) *http.Request {
+	t.Helper()
+	b, _ := json.Marshal(map[string]string{"hash": hash})
+	req := httptest.NewRequest(http.MethodPost, "/api/files/check", strings.NewReader(string(b)))
+	req.Header.Set("Content-Type", "application/json")
+	return req
+}
+
+// seedFileHash inserts a minimal live file row with the given hash.
+func seedFileHash(t *testing.T, db *database.DB, hash string) {
+	t.Helper()
+	f := &database.File{
+		Hash: hash, ByteSize: 1, MimeType: "audio/mpeg", StorageBackend: "local",
+		ObjectKey: hash + "/t.mp3", CreatedAt: 1700000000,
+	}
+	if err := db.InsertFile(context.Background(), f,
+		&database.FileUpload{Filename: "t.mp3", UploadedAt: 1700000000}, &database.MediaMetadata{ExtractedAt: 1700000000}); err != nil {
+		t.Fatalf("InsertFile: %v", err)
+	}
+}
+
+func checkStatus(t *testing.T, h *handler, hash string) (int, string) {
+	t.Helper()
+	rr := httptest.NewRecorder()
+	h.checkFile(rr, checkReq(t, hash))
+	var body struct {
+		Status string `json:"status"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &body)
+	return rr.Code, body.Status
+}
+
+func TestCheckFile_Absent(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	if code, st := checkStatus(t, h, strings.Repeat("a", 64)); code != http.StatusOK || st != "absent" {
+		t.Fatalf("got (%d, %q), want (200, absent)", code, st)
+	}
+}
+
+func TestCheckFile_Present(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	hash := strings.Repeat("b", 64)
+	seedFileHash(t, db, hash)
+	if code, st := checkStatus(t, h, hash); code != http.StatusOK || st != "present" {
+		t.Fatalf("got (%d, %q), want (200, present)", code, st)
+	}
+}
+
+func TestCheckFile_Trashed(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	hash := strings.Repeat("c", 64)
+	seedFileHash(t, db, hash)
+	if _, _, err := db.SoftDeleteFileByHash(context.Background(), hash); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+	if code, st := checkStatus(t, h, hash); code != http.StatusOK || st != "trashed" {
+		t.Fatalf("got (%d, %q), want (200, trashed)", code, st)
+	}
+}
+
+func TestCheckFile_BadHash(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	for _, bad := range []string{"", "nothex", strings.Repeat("a", 63), strings.Repeat("Z", 64)} {
+		rr := httptest.NewRecorder()
+		h.checkFile(rr, checkReq(t, bad))
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("hash %q: status = %d, want 400", bad, rr.Code)
+		}
+	}
+}
