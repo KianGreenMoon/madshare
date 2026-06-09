@@ -181,3 +181,12 @@ unambiguous entity. Confirm at impl.
   per-file path (no new endpoint) and just batch it client-side.
 - Whether the **All files** flat view is still worth keeping once the entity view
   lands, or becomes a pure "search by hash" utility.
+- **Scaling the browse endpoints (very large libraries).** The UI now loads
+  lazily — only `/api/artists` on entry, then `/api/albums?artist=` /
+  `/api/tracks?…` per drill-in, and the full `/api/files` list only on first need
+  (All-files tab or an entity-view track Edit). But each browse endpoint still
+  returns the **entire** list for its level in one response, and the filter boxes
+  are **client-side**. Fine for hundreds–low-thousands; a library with tens of
+  thousands of artists/tracks would want **server-side pagination + search** on
+  `/api/artists|albums|tracks` (and `/api/files`). That's a backend change, out of
+  scope for this UI slice — noted so it isn't forgotten if the library grows.
