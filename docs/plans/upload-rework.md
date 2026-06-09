@@ -1,7 +1,10 @@
 # Upload Rework — Client Hash-Precheck + Page Rewrite
 
-Status: **3a implemented** (shell-native upload page + one-button file/folder +
-BUG-15 scope fix, on `aidev`, pending browser verification); 3b (precheck) planned
+Status: **3a + 3b-i + 3b-ii implemented** on `aidev` (3a: shell-native upload +
+one-button; 3b-i: `POST /api/files/check`; 3b-ii: client WASM-ready SHA-256 in a
+worker pool + precheck skip + off-switch). 3b-iii (trash-restore admin setting) is
+optional — the sensible default (`reupload_restores`) is already the shipped
+server behavior. Pending browser verification of the client precheck.
 Branch: aidev
 Depends on: `docs/plans/persistent-shell-playback.md` (the new upload page is a
 shell-native listening page)
@@ -104,21 +107,27 @@ permission as upload (`file.upload`) so only would-be uploaders can probe.
 every received file (`storage.HashUpload`) and dedupes on the server-computed
 value.
 
-#### Trash-restore policy — an admin setting (decided)
+#### Trash-restore policy — an admin setting (3b-iii, optional)
 
-When a precheck returns `trashed`, what the uploader can do is **configurable by
-the admin** (all three behaviors are legitimate, so it's a policy, not a
-hardcoded choice). A setting on **`/admin/settings`** (alongside auto-publish),
-e.g. `[upload].trash_restore_policy`, with three modes:
+**Important — the current shipped behavior is already `reupload_restores`:** the
+upload handler restores a trashed file when it receives matching content ("any
+uploader may do this by design" — `api/upload_handlers.go:101-108`). So the
+sensible default already exists, and **3b-ii treats `trashed` like `absent`
+(upload → server restores)** — no skip, no behavior change.
 
-| Mode | On `status: trashed` the uploader… | Notes |
-|------|-----------------------------------|-------|
-| `inform` **(default)** | is told "already on the server, in Trash — an admin can restore it"; no upload | Safest; restore stays admin-only (today's model). No new endpoint/permission. |
-| `reupload_restores` | may upload anyway; the **server un-trashes** the file when it receives the matching content (proves possession by sending the bytes) | Lives in the upload handler, not a new restore endpoint; preserves possession proof. |
-| `uploader_restore` | gets a **Restore** action that restores without re-sending bytes | Needs a new uploader-restore permission/endpoint — the largest access-control surface. |
+Making it an admin setting on **`/admin/settings`** (e.g.
+`[upload].trash_restore_policy`) is therefore an *optional enhancement* — it lets
+an operator change the default rather than enabling something missing:
 
-The default is `inform`. The upload UI reads the policy (served with the other
-public UI config) and behaves accordingly.
+| Mode | On `status: trashed` the uploader… | Server work needed |
+|------|-----------------------------------|--------------------|
+| `reupload_restores` **(default — current behavior)** | uploads; the server un-trashes the matching content on receipt | none (already shipped) |
+| `inform` | is told "in Trash — ask an admin"; no upload | upload handler must **stop** auto-restoring on reupload + UI skips |
+| `uploader_restore` | gets a **Restore** action (no re-sent bytes) | new uploader-restore endpoint/permission |
+
+Because the default is already live and reasonable, building the setting is
+deferred unless the operator actually wants `inform`/`uploader_restore`. Decide
+before building 3b-iii.
 
 **Testing (Phase 2).** Unit-test the endpoint: unknown hash → `status:"absent"`;
 active file → `"present"`; trashed file → `"trashed"`; bad/empty hash → 400;
