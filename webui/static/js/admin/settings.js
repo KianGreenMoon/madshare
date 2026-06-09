@@ -47,9 +47,43 @@ async function saveAutoDerive() {
 
 autoderiveForm.addEventListener('submit', e => { e.preventDefault(); saveAutoDerive(); });
 
+// ── Trash-restore policy ──────────────────────────────────────────────────────
+const trashPolicyForm   = document.getElementById('trashPolicyForm');
+const trashPolicySelect = document.getElementById('trashPolicySelect');
+
+async function loadTrashPolicy() {
+  try {
+    const res = await fetch(`${API}/api/admin/settings/trash-policy`);
+    if (handleAuthError(res)) return;
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const { policy } = await res.json();
+    if (policy) trashPolicySelect.value = policy;
+  } catch (err) {
+    console.error('load trash policy:', err);
+    toast(`Couldn't load trash policy: ${err.message}`, 'error');
+  }
+}
+
+async function saveTrashPolicy() {
+  try {
+    const res = await fetch(`${API}/api/admin/settings/trash-policy`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ policy: trashPolicySelect.value }),
+    });
+    if (handleAuthError(res)) return;
+    if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
+    toast('Trash-restore policy saved.', 'success');
+  } catch (err) {
+    toast(`Couldn't save trash policy: ${err.message}`, 'error');
+  }
+}
+
+trashPolicyForm.addEventListener('submit', e => { e.preventDefault(); saveTrashPolicy(); });
+
 // ── Boot ────────────────────────────────────────────────────────────────────
 (async function boot() {
   const identity = await bootAdmin({ require: 'user.manage' });
   if (!identity) return;
   loadAutoDerive();
+  loadTrashPolicy();
 })();

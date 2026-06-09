@@ -39,6 +39,28 @@
       </div>
     </form>
   </section>
+
+  <section aria-labelledby="trashPolicyHeading">
+    <h2 class="section-title" id="trashPolicyHeading">Trash &amp; restore</h2>
+    <p class="section-copy">
+      What happens when someone uploads content that already exists but is in the
+      trash. The default re-creates it from the uploaded bytes (the historical
+      behavior).
+    </p>
+    <form class="trash-policy-form" id="trashPolicyForm">
+      <label class="field-row">
+        <span>On a trashed match</span>
+        <select id="trashPolicySelect">
+          <option value="reupload_restores">Re-uploading restores it (default)</option>
+          <option value="inform">Don&rsquo;t restore &mdash; tell the uploader to ask an admin</option>
+          <option value="uploader_restore">Let the uploader restore it</option>
+        </select>
+      </label>
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-neutral" id="trashPolicySave">Save</button>
+      </div>
+    </form>
+  </section>
 </main>
 
 {{template "auth-modals" .}}

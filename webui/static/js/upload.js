@@ -76,6 +76,7 @@ const PRECHECK_KEY = 'madshare-upload-precheck';
 const precheckEnabled = () => localStorage.getItem(PRECHECK_KEY) !== 'off'; // default ON
 let hashPool = null;
 const getHashPool = () => (hashPool ||= createHashPool());
+let trashPolicy = 'reupload_restores'; // from /api/ui/config; how a trashed match is handled
 
 const UNSORTED_KEY = '\u0000unsorted';
 const COVER_STEMS  = new Set(['cover', 'folder', 'front', 'albumart', 'artwork', 'album']);
@@ -192,6 +193,7 @@ async function loadUIConfig() {
     const max = cfg?.upload?.max_parallel_workers ?? 10;
     workersRange.max = String(Math.max(1, max));
     workersRange.value = String(Math.min(Math.max(1, def), Math.max(1, max)));
+    if (cfg?.trash_restore_policy) trashPolicy = cfg.trash_restore_policy;
   } catch (err) {
     console.warn('UI config unavailable, using defaults:', err);
   }
@@ -455,11 +457,46 @@ async function uploadItem(item) {
           setItemState(item, 'done', 'Already in library — skipped');
           return;                                  // skip the upload
         }
-        // 'absent' or 'trashed' → upload (a trashed file is restored server-side)
+        if (status === 'trashed') {
+          if (trashPolicy === 'inform') {
+            setItemState(item, 'waiting', 'Already on the server (in Trash) — ask an admin to restore.');
+            return;                                // don't upload
+          }
+          if (trashPolicy === 'uploader_restore') {
+            setItemState(item, 'waiting', 'In Trash. ');
+            addRestoreButton(item);
+            return;                                // user restores via the button
+          }
+          // reupload_restores → fall through and upload (server restores it)
+        }
+        // 'absent' (or reupload_restores trashed) → upload normally
       }
     } catch { /* hashing/check failed → upload normally */ }
   }
   return uploadXhr(item);
+}
+
+// addRestoreButton offers an inline Restore (uploader_restore policy) that
+// un-trashes the file by hash instead of re-uploading the bytes.
+function addRestoreButton(item) {
+  if (!item.el) return;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'retry-btn';
+  btn.textContent = 'Restore';
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    try {
+      const res = await fetch(`${API}/api/files/${encodeURIComponent(item.hash)}/restore`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setItemState(item, 'done', 'Restored to library');
+    } catch (err) {
+      btn.disabled = false;
+      announce(`Restore failed: ${err.message}`);
+    }
+  });
+  item.el.msg.appendChild(btn);
 }
 
 function uploadXhr(item) {
