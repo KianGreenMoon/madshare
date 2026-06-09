@@ -9,9 +9,10 @@
  * cover grid at wider viewports.
  */
 
-/* The library uses the player bar; the upload page has none, so drop the
-   reserved bottom padding app.css adds to <body>. */
-body.upload-page { padding-bottom: var(--space-6); }
+/* Bottom breathing room under the upload content. Scoped to .upload-main (not
+   body.upload-page) because the shell swaps <main> but keeps the body class of
+   whichever page loaded first. */
+.upload-main { padding-bottom: var(--space-6); }
 
 .upload-main {
   max-width: 860px;
@@ -37,8 +38,10 @@ body.upload-page { padding-bottom: var(--space-6); }
   padding: var(--space-3) 0;
 }
 
-/* Shared button base — mirrors app.css's .btn-upload look. */
-.btn {
+/* Upload-page buttons. SCOPED to .upload-main so they never shadow the shared
+   header .btn (BUG-15): the shell keep-injects this sheet, and the header is
+   persistent, so an unscoped `.btn` here would restyle the header on every page. */
+.upload-main .btn {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
@@ -52,17 +55,48 @@ body.upload-page { padding-bottom: var(--space-6); }
   cursor: pointer;
   transition: background 150ms ease, border-color 150ms ease;
 }
-.btn:hover { background: var(--surface-hover); }
-.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.upload-main .btn:hover { background: var(--surface-hover); }
+.upload-main .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.upload-main .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-.btn--accent {
+.upload-main .btn--accent {
   background: var(--accent);
   color: #fff;
   border-color: transparent;
 }
-.btn--accent:hover { background: var(--accent-dim); }
-.btn--accent:disabled:hover { background: var(--accent); }
+.upload-main .btn--accent:hover { background: var(--accent-dim); }
+.upload-main .btn--accent:disabled:hover { background: var(--accent); }
+
+/* One-button "Add music" dropdown menu */
+.add-menu { position: relative; display: inline-block; }
+.add-menu__list {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  min-width: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+  padding: var(--space-1);
+  z-index: 20;
+}
+.add-menu__list[hidden] { display: none; }
+.add-menu__item {
+  background: none;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.add-menu__item:hover { background: var(--surface-hover); }
+.add-menu__item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* ── Drop zone ─────────────────────────────────────────────────────────── */
 .drop-zone {

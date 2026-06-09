@@ -11,8 +11,9 @@
        tokens must come from app.css here too. -->
   <link rel="stylesheet" href="/static/css/app.css">
   <link rel="stylesheet" href="/static/css/upload.css">
+  <link rel="stylesheet" href="/static/css/player.css">
 </head>
-<body class="upload-page">
+<body class="upload-page" data-page="upload" data-module="/static/js/upload.js">
 
 {{template "header" .}}
 
@@ -35,8 +36,13 @@
       <p class="drop-zone__lead">Drag a folder of music here</p>
       <small class="drop-zone__hint">Audio is uploaded &amp; grouped into albums by its tags; cover images are matched to the album in their folder</small>
       <div class="drop-zone__actions">
-        <button type="button" class="btn btn--accent" id="browseFiles">Browse files</button>
-        <button type="button" class="btn" id="browseFolder">Browse folder</button>
+        <div class="add-menu">
+          <button type="button" class="btn btn--accent" id="addMusic" aria-haspopup="true" aria-expanded="false">Add music &#9662;</button>
+          <div class="add-menu__list" id="addMenu" role="menu" hidden>
+            <button type="button" class="add-menu__item" role="menuitem" id="chooseFiles">Choose files&hellip;</button>
+            <button type="button" class="add-menu__item" role="menuitem" id="chooseFolder">Choose folder&hellip;</button>
+          </div>
+        </div>
       </div>
     </div>
     <!-- Hidden inputs drive the two browse buttons. They live OUTSIDE .drop-zone
@@ -85,8 +91,9 @@
 
 </main>
 
+{{template "player-bar" .}}
 {{template "auth-modals" .}}
 
-<script type="module" src="/static/js/upload.js"></script>
+<script type="module" src="/static/js/shell.js"></script>
 </body>
 </html>

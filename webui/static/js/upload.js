@@ -1,4 +1,4 @@
-import { initAuth, gatePage, PAGE_PERMS } from './auth.js';
+import { gatePage, PAGE_PERMS, getIdentity } from './auth.js';
 
 // Upload page (/upload) controller.
 //
@@ -22,41 +22,34 @@ import { initAuth, gatePage, PAGE_PERMS } from './auth.js';
 
 const API = document.querySelector('meta[name="api-url"]')?.content || '';
 
-// ── Theme (same pattern as app.js) ──────────────────────────────────────────
-const VALID_THEMES = new Set(['dark', 'light', 'ocean', 'sunset']);
-const html = document.documentElement;
-const themeDots = document.querySelectorAll('.theme-dot');
+// Theme + auth are owned by shell.js (this is a shell-native page). This module
+// exports init()/teardown(); the shell calls them on entry/exit. Everything that
+// touches the swappable <main> is (re)wired in init() under an AbortController.
 
-applyTheme(localStorage.getItem('madshare-theme') || 'dark');
-themeDots.forEach(dot => dot.addEventListener('click', () => applyTheme(dot.dataset.theme)));
+// ── DOM refs (assigned by queryRefs() in init — they live in <main>) ─────────
+let dropZone, fileInput, folderInput, addMusicBtn, addMenu, chooseFilesBtn, chooseFolderBtn;
+let workersRange, workersValue, startBtn, clearBtn, queueList, queueEmpty;
+let coverGrid, albumsEmpty, srStatus, toastStack;
 
-function applyTheme(name) {
-  if (!VALID_THEMES.has(name)) name = 'dark';
-  html.dataset.theme = name;
-  localStorage.setItem('madshare-theme', name);
-  themeDots.forEach(d => {
-    const on = d.dataset.theme === name;
-    d.classList.toggle('active', on);
-    d.setAttribute('aria-pressed', String(on));
-  });
+function queryRefs() {
+  dropZone        = document.getElementById('dropZone');
+  fileInput       = document.getElementById('fileInput');
+  folderInput     = document.getElementById('folderInput');
+  addMusicBtn     = document.getElementById('addMusic');
+  addMenu         = document.getElementById('addMenu');
+  chooseFilesBtn  = document.getElementById('chooseFiles');
+  chooseFolderBtn = document.getElementById('chooseFolder');
+  workersRange    = document.getElementById('workersRange');
+  workersValue    = document.getElementById('workersValue');
+  startBtn        = document.getElementById('startUpload');
+  clearBtn        = document.getElementById('clearQueue');
+  queueList       = document.getElementById('queueList');
+  queueEmpty      = document.getElementById('queueEmpty');
+  coverGrid       = document.getElementById('coverGrid');
+  albumsEmpty     = document.getElementById('albumsEmpty');
+  srStatus        = document.getElementById('srStatus');
+  toastStack      = document.getElementById('toastStack');
 }
-
-// ── DOM refs ────────────────────────────────────────────────────────────────
-const dropZone     = document.getElementById('dropZone');
-const fileInput    = document.getElementById('fileInput');
-const folderInput  = document.getElementById('folderInput');
-const browseFiles  = document.getElementById('browseFiles');
-const browseFolder = document.getElementById('browseFolder');
-const workersRange = document.getElementById('workersRange');
-const workersValue = document.getElementById('workersValue');
-const startBtn     = document.getElementById('startUpload');
-const clearBtn     = document.getElementById('clearQueue');
-const queueList    = document.getElementById('queueList');
-const queueEmpty   = document.getElementById('queueEmpty');
-const coverGrid    = document.getElementById('coverGrid');
-const albumsEmpty  = document.getElementById('albumsEmpty');
-const srStatus     = document.getElementById('srStatus');
-const toastStack   = document.getElementById('toastStack');
 
 // ── State ───────────────────────────────────────────────────────────────────
 // queue:   every intake file (audio uploaded, image = cover candidate, other = skipped)
@@ -70,6 +63,8 @@ let activeWorkers = 0;
 let workerCap = 3;
 let running = false;
 let canEditMeta = false;      // metadata.edit permission (set after /auth/me)
+const activeXhrs = new Set(); // in-flight uploads, aborted on teardown
+let wireAbort = null;         // AbortController for this activation's listeners
 
 const UNSORTED_KEY = '\u0000unsorted';
 const COVER_STEMS  = new Set(['cover', 'folder', 'front', 'albumart', 'artwork', 'album']);
@@ -79,15 +74,93 @@ const IMAGE_MIMES  = new Set(['image/jpeg', 'image/png']);
 // the server's allowedExtensions.
 const AUDIO_EXTS   = /\.(mp3|ogg|flac|wav|mp4|m4a|aac|opus)$/i;
 
-// ── Init: pull UI config + auth ─────────────────────────────────────────────
-init();
-
-async function init() {
-  const [, identityResult] = await Promise.allSettled([loadUIConfig(), initAuth()]);
-  const identity = identityResult?.value;
+// ── Lifecycle (driven by shell.js) ──────────────────────────────────────────
+export async function init() {
+  queryRefs();
+  wireAbort = new AbortController();
+  wire(wireAbort.signal);
+  syncEmptyStates();
+  updateButtons();
+  await loadUIConfig();
   // Block the page for anyone without upload rights (the API enforces it too).
+  // initAuth already ran in the shell, so the identity is available now.
   if (!gatePage(PAGE_PERMS.upload)) return;
+  const identity = getIdentity();
   canEditMeta = Array.isArray(identity?.permissions) && identity.permissions.includes('metadata.edit');
+}
+
+export function teardown() {
+  wireAbort?.abort();
+  wireAbort = null;
+  for (const g of groups.values()) stopPolling(g);
+  for (const xhr of activeXhrs) { try { xhr.abort(); } catch { /* ignore */ } }
+  activeXhrs.clear();
+  // Reset for a clean next entry (the <main> is re-rendered fresh by the shell).
+  queue.length = 0;
+  groups.clear();
+  folders.clear();
+  nextId = 1;
+  activeWorkers = 0;
+  running = false;
+}
+
+// wire attaches every listener that targets the swappable <main>, under the
+// activation's AbortController so teardown() removes them all at once.
+function wire(signal) {
+  // Worker slider
+  workersRange.addEventListener('input', () => {
+    workerCap = Number(workersRange.value);
+    workersValue.textContent = String(workerCap);
+    if (running) pump();
+  }, { signal });
+
+  // One-button "Add music" → menu (Choose files… / Choose folder…)
+  addMusicBtn.addEventListener('click', () => toggleAddMenu(), { signal });
+  chooseFilesBtn.addEventListener('click', () => { closeAddMenu(); fileInput.click(); }, { signal });
+  chooseFolderBtn.addEventListener('click', () => { closeAddMenu(); folderInput.click(); }, { signal });
+  document.addEventListener('click', (e) => {
+    if (!addMenu.hidden && !e.target.closest('.add-menu')) closeAddMenu();
+  }, { signal });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAddMenu(); }, { signal });
+
+  fileInput.addEventListener('change', () => { addFileList(fileInput.files); fileInput.value = ''; }, { signal });
+  folderInput.addEventListener('change', () => { addFileList(folderInput.files); folderInput.value = ''; }, { signal });
+
+  // Drop zone (click opens the files picker; drag/drop accepts files OR a folder)
+  dropZone.addEventListener('click', (e) => {
+    if (e.target.closest('button')) return;
+    fileInput.click();
+  }, { signal });
+  dropZone.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
+  }, { signal });
+  ['dragenter', 'dragover'].forEach(evt =>
+    dropZone.addEventListener(evt, (e) => { e.preventDefault(); dropZone.classList.add('is-dragover'); }, { signal }));
+  ['dragleave', 'dragend'].forEach(evt =>
+    dropZone.addEventListener(evt, (e) => {
+      if (evt === 'dragleave' && dropZone.contains(e.relatedTarget)) return;
+      dropZone.classList.remove('is-dragover');
+    }, { signal }));
+  dropZone.addEventListener('drop', onDrop, { signal });
+
+  // Run controls
+  startBtn.addEventListener('click', () => { running = true; startBtn.disabled = true; pump(); }, { signal });
+  clearBtn.addEventListener('click', clearQueue, { signal });
+
+  // Resume cover polling when the tab becomes visible again.
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) for (const g of groups.values()) if (g.poll) pollStatus(g);
+  }, { signal });
+}
+
+function toggleAddMenu() {
+  const open = addMenu.hidden;
+  addMenu.hidden = !open;
+  addMusicBtn.setAttribute('aria-expanded', String(open));
+}
+function closeAddMenu() {
+  addMenu.hidden = true;
+  addMusicBtn.setAttribute('aria-expanded', 'false');
 }
 
 async function loadUIConfig() {
@@ -106,39 +179,12 @@ async function loadUIConfig() {
   workersValue.textContent = String(workerCap);
 }
 
-// ── Worker slider ───────────────────────────────────────────────────────────
-workersRange.addEventListener('input', () => {
-  workerCap = Number(workersRange.value);
-  workersValue.textContent = String(workerCap);
-  if (running) pump();
-});
-
 // ── File intake ─────────────────────────────────────────────────────────────
-browseFiles.addEventListener('click', () => fileInput.click());
-browseFolder.addEventListener('click', () => folderInput.click());
-fileInput.addEventListener('change', () => { addFileList(fileInput.files); fileInput.value = ''; });
-folderInput.addEventListener('change', () => { addFileList(folderInput.files); folderInput.value = ''; });
-
-dropZone.addEventListener('click', (e) => {
-  if (e.target.closest('button')) return;
-  fileInput.click();
-});
-dropZone.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
-});
-['dragenter', 'dragover'].forEach(evt =>
-  dropZone.addEventListener(evt, (e) => { e.preventDefault(); dropZone.classList.add('is-dragover'); }));
-['dragleave', 'dragend'].forEach(evt =>
-  dropZone.addEventListener(evt, (e) => {
-    if (evt === 'dragleave' && dropZone.contains(e.relatedTarget)) return;
-    dropZone.classList.remove('is-dragover');
-  }));
-
 // Drop must traverse DROPPED FOLDERS. dataTransfer.files only contains top-level
 // entries — never a directory's contents — so a dropped folder would otherwise
 // add nothing. We use the webkitGetAsEntry() filesystem API to walk directories
 // recursively, falling back to dataTransfer.files when the entries API is absent.
-dropZone.addEventListener('drop', async (e) => {
+async function onDrop(e) {
   e.preventDefault();
   dropZone.classList.remove('is-dragover');
   const dt = e.dataTransfer;
@@ -163,7 +209,7 @@ dropZone.addEventListener('drop', async (e) => {
   }
   // Fallback: no directory entries — plain files only.
   addEntries(flat.map(f => ({ file: f, relPath: f.webkitRelativePath || f.name })));
-});
+}
 
 // readEntry walks a FileSystemEntry, collecting { file, relPath } pairs. relPath
 // preserves the dropped folder structure so grouping + cover co-location work
@@ -326,13 +372,8 @@ function addRetry(item) {
 }
 
 // ── Upload run ──────────────────────────────────────────────────────────────
-startBtn.addEventListener('click', () => {
-  running = true;
-  startBtn.disabled = true;
-  pump();
-});
-
-clearBtn.addEventListener('click', () => {
+// (start/clear listeners are wired in wire(); clearQueue is the handler.)
+function clearQueue() {
   // Remove everything not currently uploading; stop all polling.
   for (let i = queue.length - 1; i >= 0; i--) {
     if (queue[i].state !== 'uploading') {
@@ -346,7 +387,7 @@ clearBtn.addEventListener('click', () => {
   coverGrid.replaceChildren();
   syncEmptyStates();
   updateButtons();
-});
+}
 
 // pump fills available worker slots with pending AUDIO files, up to workerCap.
 // Images/other never enter the upload loop (they are not pending).
@@ -381,20 +422,23 @@ function uploadItem(item) {
     form.append('file', item.file, item.relPath);
 
     const xhr = new XMLHttpRequest();
+    activeXhrs.add(xhr);
+    const done = () => { activeXhrs.delete(xhr); resolve(); };
     xhr.open('POST', `${API}/files/upload`);
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) setProgress(item, (e.loaded / e.total) * 100); };
+    xhr.onabort = done;
 
     xhr.onload = () => {
       let body = null;
       try { body = JSON.parse(xhr.responseText); } catch { /* non-JSON */ }
 
-      if (xhr.status === 429) { handleBackoff(item); resolve(); return; }
+      if (xhr.status === 429) { handleBackoff(item); done(); return; }
 
       if (xhr.status >= 200 && xhr.status < 300 && body?.ok !== false) {
         setProgress(item, 100);
         setItemState(item, 'done', body?.existed ? 'Already present' : 'Uploaded');
         onUploaded(item, body || {});
-        resolve();
+        done();
         return;
       }
 
@@ -404,9 +448,9 @@ function uploadItem(item) {
         setItemState(item, 'error', body?.error || `Upload failed (HTTP ${xhr.status})`);
         addRetry(item);
       }
-      resolve();
+      done();
     };
-    xhr.onerror = () => { setItemState(item, 'error', 'Network error'); addRetry(item); resolve(); };
+    xhr.onerror = () => { setItemState(item, 'error', 'Network error'); addRetry(item); done(); };
     xhr.send(form);
   });
 }
@@ -813,11 +857,5 @@ function showToast(msg) {
     setTimeout(() => toast.remove(), 300);
   }, 4000);
 }
-
-// Resume polling when the tab becomes visible again.
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) for (const g of groups.values()) if (g.poll) pollStatus(g);
-});
-
-syncEmptyStates();
-updateButtons();
+// (init() runs syncEmptyStates()/updateButtons(); the visibilitychange listener
+// is wired in wire(). Lifecycle is driven by shell.js.)
