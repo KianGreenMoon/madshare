@@ -437,18 +437,39 @@ work server-side today (see §9 for the invariant to protect).
     manifest + service worker) for installable, background-capable playback — and
     this persistent-shell architecture is its prerequisite. Not now; noted because
     the shell is what makes it possible later.
+11. **Theme FOUC (deferred to a user-settings page).** `<html data-theme="dark">`
+    is hardcoded and JS swaps to the saved theme after load, so on a slow
+    connection the user sees a flash from dark → their theme. Fix is a tiny inline
+    `<script>` in `<head>` that reads the saved theme and sets `data-theme` before
+    CSS paints (a no-FOUC guard). Owner's call (2026-06-09): minor, handle it when
+    the **user-settings page** is built. Noted so it isn't lost.
+
+## Step-1 status (controller extraction)
+
+Done on `aidev` (pending browser verification): `player-controller.js` owns the
+queue + wraps `player.js`; `app.js` is a thin caller that builds queues
+(`controller.setQueue` on a track click) and reflects state via callbacks.
+Decisions made:
+
+- **Track identity key = track URL** (decided). Rows carry `data-url`; the
+  highlight matches by URL across the library and search views and survives a
+  re-render. (We keep the full `${API}${t.url}` string as the key, not the bare
+  hash — it's already unique and is what the row/queue use.) This replaced the old
+  position-index + `playingFromSearch` scheme, which is now deleted.
+- **Stable queue** (decided, owner-approved): browsing never changes the queue —
+  only an explicit track click (`setQueue`) does. The old "browsing a new album
+  silently became the Next/Prev queue" behavior is gone (it fought continuity).
+- `app.js` still boots via its IIFE for now; the `{ init, teardown }` conversion
+  happens in **step 2** (the router), where it's actually needed.
+- **Deferred to later step-1 sub-work** (kept out to keep the parity diff clean):
+  Media Session, repeat mode, and audio-`error`→re-auth (note: a `<audio>` error
+  doesn't expose HTTP status, so auth-expiry detection needs a probe — design when
+  we add it).
 
 ## Open questions
 
-- **Track identity key.** Using the content `hash` as the stable per-track key for
-  row↔queue mapping assumes every rendered track row carries its hash. Confirm the
-  library row markup exposes it (it should — playback already targets `/files/*`
-  by hash); if not, add a `data-hash`.
-- **Duration cache vs. controller.** `DUR_CACHE` currently lives in `app.js`.
-  Decide whether durations ride on the track objects in the queue (so they're
-  known without re-fetch on re-entry) or stay a page-side cache. Lean: put
-  `durationSec` on the track object once known, keep `DUR_CACHE` as the
-  cross-load persistence layer.
+- **Duration cache vs. controller.** `DUR_CACHE` stays in `app.js` (page-side);
+  durations also ride on the queue's track objects (`track.dur`) once known.
+  Good enough for now; revisit if step 2 re-entry needs more.
 - **Scroll restoration** on back/forward — nice-to-have; Turbo-style per-URL
-  scroll memory. Defer unless it feels bad in testing.
-```
+  scroll memory. Defer unless it feels bad in testing (step 2).

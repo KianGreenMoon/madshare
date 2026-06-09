@@ -1,5 +1,6 @@
 import { initAuth, openLoginModal } from './auth.js';
-import { createPlayer, fmtTime } from './player.js';
+import { createController } from './player-controller.js';
+import { fmtTime } from './player.js';
 
 // Read API base from HTML meta. Empty default => relative, same-origin URLs
 // (the page and API share an origin in the bundled server). A non-empty value
@@ -42,9 +43,7 @@ function saveDurCache(c) {
 // ── Library — drill-down state ────────────────────────────────────────────
 
 // drill tracks which panel level is currently shown and what was selected.
-// playlist is shared with the player — playIndex() reads it directly.
 const drill = { level: 'artists', artist: null, album: null };
-let playlist = [];
 
 // Fetch and render the top-level artists panel.
 async function loadArtists() {
@@ -254,14 +253,13 @@ function renderAlbumList(albums) {
   panel.appendChild(wrap);
 }
 
-// Render a list of track rows into #libraryPanel and populate playlist[].
+// Render a list of track rows into #libraryPanel. Builds the queue this view
+// would play, but does not touch the controller's active queue — that changes
+// only when the user clicks a track (controller.setQueue).
 function renderTrackList(tracks) {
   const panel = document.getElementById('libraryPanel');
 
   if (!tracks || tracks.length === 0) {
-    playlist = [];
-    playingFromSearch = false;
-    currentIndex = -1;
     panel.innerHTML =
       `<div class="panel-fade-in"><div class="panel-empty">No tracks found.</div></div>`;
     return;
@@ -269,9 +267,6 @@ function renderTrackList(tracks) {
 
   const durCache = loadDurCache();
 
-  // Build a local list for this library view. We don't immediately clobber the
-  // global playlist so that search-result playback continues uninterrupted while
-  // the user browses the library without clicking a track.
   const libraryPlaylist = [];
   tracks.forEach(t => {
     const url = `${API}${t.url}`;
@@ -286,13 +281,6 @@ function renderTrackList(tracks) {
     });
   });
 
-  // If not mid-search-playback, make this the active playlist immediately so
-  // Next/Prev and the playing highlight reflect the library view.
-  if (!playingFromSearch) {
-    playlist = libraryPlaylist;
-    if (currentIndex >= playlist.length) currentIndex = -1;
-  }
-
   const wrap = document.createElement('div');
   wrap.className = 'panel-fade-in';
 
@@ -302,7 +290,8 @@ function renderTrackList(tracks) {
     const row        = document.createElement('div');
     row.className    = 'track-row';
     row.tabIndex     = 0;
-    row.dataset.idx  = i;
+    row.dataset.idx  = i;          // used by the background duration fetch
+    row.dataset.url  = track.url;  // stable key for the playing highlight
     row.setAttribute('role', 'button');
     row.setAttribute('aria-label', `Play ${track.title}`);
     row.innerHTML =
@@ -315,18 +304,10 @@ function renderTrackList(tracks) {
         `<div class="track-meta">${esc(drill.artist || '')}</div>` +
       `</div>` +
       `<span class="track-dur">${esc(track.dur)}</span>`;
-    row.addEventListener('click', () => {
-      playingFromSearch = false;
-      playlist = libraryPlaylist;
-      playIndex(i);
-    });
+    const play = () => controller.setQueue(libraryPlaylist, i);
+    row.addEventListener('click', play);
     row.addEventListener('keydown', e => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        playingFromSearch = false;
-        playlist = libraryPlaylist;
-        playIndex(i);
-      }
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); play(); }
     });
     wrap.appendChild(row);
   });
@@ -334,12 +315,9 @@ function renderTrackList(tracks) {
   panel.innerHTML = '';
   panel.appendChild(wrap);
 
-  // Restore playing highlight only when in library playback mode.
-  if (!playingFromSearch && currentIndex >= 0 && currentIndex < playlist.length) {
-    wrap.querySelectorAll('.track-row').forEach(row => {
-      row.classList.toggle('playing', Number(row.dataset.idx) === currentIndex);
-    });
-  }
+  // Re-highlight whatever is currently playing if its row is in this view.
+  const cur = controller.current();
+  if (cur) highlightPlaying(cur.track.url);
 
   // Background fetch for any tracks still showing '—'.
   fetchMissingDurations(libraryPlaylist);
@@ -392,70 +370,48 @@ async function reloadCurrentLevel() {
   else                               drillToTracks(drill.artist, drill.album);
 }
 
-// ── Player (thin caller over the shared player.js core) ────────────────────
-// player.js owns the audio element + bar UI and everything intrinsic to
-// playback; the playlist, row highlighting, and duration write-back stay here
-// and are driven through the player's callbacks.
+// ── Player (thin caller over player-controller.js) ─────────────────────────
+// The controller owns the <audio>, the player-bar, and the play QUEUE; the page
+// builds queues (controller.setQueue on a track click) and reflects state — row
+// highlighting and duration write-back — through the callbacks below. The queue
+// is stable: browsing never changes it, only an explicit play does. Rows are
+// matched by their track URL (data-url) so the highlight is correct across the
+// library and search views and survives a re-render.
 
-// playlist is declared in the library section above — shared here.
-let currentIndex      = -1;
-let playingFromSearch = false; // true while a search-result track is the active source
-
-// advance picks what plays after a track ends or fails: a random other track in
-// shuffle mode, else the next in order; at the end of the list it stops (the
-// player already shows the play icon because the audio element is paused).
-function advance() {
-  if (player.isShuffle() && playlist.length > 1) {
-    // BUG-05: pool of other indices — no infinite loop possible
-    const others = playlist.map((_, i) => i).filter(i => i !== currentIndex);
-    playIndex(others[Math.floor(Math.random() * others.length)]);
-  } else if (currentIndex < playlist.length - 1) {
-    playIndex(currentIndex + 1);
-  }
-}
-
-const player = createPlayer({
-  onPrev: () => {
-    if (currentIndex < 0) return; // BUG-04: nothing playing yet
-    playIndex(currentIndex > 0 ? currentIndex - 1 : playlist.length - 1);
-  },
-  onNext: () => {
-    if (currentIndex < 0) return; // BUG-04: nothing playing yet
-    playIndex(currentIndex < playlist.length - 1 ? currentIndex + 1 : 0);
-  },
-  onEnded: advance,
-  onError: () => {
-    const failedRow = document.querySelector(`.track-row[data-idx="${currentIndex}"]`);
-    if (failedRow) failedRow.classList.add('unavailable');
-    advance();
-  },
-  // When a track's duration becomes known, fill it into the list (and cache it).
-  onLoadedMetadata: dur => {
-    if (currentIndex < 0) return;
-    const track = playlist[currentIndex];
-    if (!track || track.dur !== '—') return; // already known
-    const s = fmtTime(dur);
-    track.dur = s;
-    const cache = loadDurCache();
-    cache[track.url] = s;
-    saveDurCache(cache);
-    document.querySelectorAll(`.track-row[data-idx="${currentIndex}"] .track-dur`)
-      .forEach(el => { el.textContent = s; });
-  },
+const controller = createController({
+  onTrackChange: track => highlightPlaying(track.url),
+  onDuration:    writeDuration,
+  onError:       track => markUnavailable(track.url),
 });
 
-function playIndex(idx) {
-  if (idx < 0 || idx >= playlist.length) return;
-  currentIndex = idx;
-
-  const track = playlist[idx];
-  player.load({ url: track.url, title: track.title, artist: track.artist });
-
-  // Match by data-idx so grouped views (non-sequential DOM order) work correctly
+// highlightPlaying marks the track row whose URL is playing (and clears the rest).
+function highlightPlaying(url) {
   document.querySelectorAll('.track-row').forEach(row => {
-    const rowIdx = Number(row.dataset.idx);
-    row.classList.toggle('playing', rowIdx === idx);
-    if (rowIdx === idx) row.classList.remove('unavailable');
+    const on = row.dataset.url === url;
+    row.classList.toggle('playing', on);
+    if (on) row.classList.remove('unavailable');
+  });
+}
+
+function markUnavailable(url) {
+  document.querySelectorAll('.track-row').forEach(row => {
+    if (row.dataset.url === url) row.classList.add('unavailable');
+  });
+}
+
+// writeDuration fills a newly-known duration into the track object, the cache,
+// and every rendered row for that URL (library .track-dur or search duration).
+function writeDuration(track, durSeconds) {
+  if (!track || (track.dur && track.dur !== '—')) return; // already known
+  const s = fmtTime(durSeconds);
+  track.dur = s;
+  const cache = loadDurCache();
+  cache[track.url] = s;
+  saveDurCache(cache);
+  document.querySelectorAll('[data-url]').forEach(row => {
+    if (row.dataset.url !== track.url) return;
+    const el = row.querySelector('.track-dur') || row.querySelector('.search-row__duration');
+    if (el) el.textContent = s;
   });
 }
 
@@ -623,7 +579,7 @@ function renderSearchResults(results, q) {
     sec.className = 'search-section';
     sec.innerHTML = '<h2 class="search-section__header">Tracks</h2>';
 
-    // Build a playlist from search results so the player can advance track-by-track.
+    // Build the queue a search-result click would play (controller.setQueue).
     const searchPlaylist = tracks.map(t => ({
       url:    `${API}${t.url}`,
       title:  t.title       || 'Unknown',
@@ -636,6 +592,7 @@ function renderSearchResults(results, q) {
       const row      = document.createElement('div');
       row.className  = 'search-row search-row--track';
       row.tabIndex   = 0;
+      row.dataset.url = searchPlaylist[i].url; // stable key for the playing highlight
       row.setAttribute('role', 'button');
       row.setAttribute('aria-label', `Play ${t.title}`);
       row.innerHTML =
@@ -657,18 +614,10 @@ function renderSearchResults(results, q) {
         avatar.style.color = '';
       });
 
-      row.addEventListener('click', () => {
-        playingFromSearch = true;
-        playlist = searchPlaylist;
-        playIndex(i);
-      });
+      const play = () => controller.setQueue(searchPlaylist, i);
+      row.addEventListener('click', play);
       row.addEventListener('keydown', e => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          playingFromSearch = true;
-          playlist = searchPlaylist;
-          playIndex(i);
-        }
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); play(); }
       });
       sec.appendChild(row);
     });
