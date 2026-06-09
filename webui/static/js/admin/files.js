@@ -2,7 +2,7 @@
 // editing, two-step delete, and a preview player (the shared player.js).
 import {
   bootAdmin, API, LICENSE_OPTIONS,
-  fmtBytes, shortHash, toast, handleAuthError, el,
+  fmtBytes, fmtTime, shortHash, toast, handleAuthError, el,
 } from './shared.js';
 import { createPlayer } from '../player.js';
 
@@ -11,43 +11,67 @@ const fileCountEl = document.getElementById('fileCount');
 const fileFilter  = document.getElementById('fileFilter');
 
 let allFiles    = [];     // last fetched list
+let fileByURL   = new Map(); // url → file record, so the entity view can resolve
+                             // a browse track (id/url only) to its hash for edit
 let filterText  = '';
-let canEditMeta = false;  // metadata.edit → access controls + metadata edit
+let canEditMeta = false;  // metadata.edit → access controls + metadata edit + rename
 let canDelete   = false;  // file.delete → move-to-trash
 
-// ── Preview player (single list snapshot, navigable) ─────────────────────────
-let previewList  = [];
-let previewIndex = -1;
+// ── Preview player (shared by both views via a single play context) ──────────
+// playCtx.items are normalised { url, title, artist, key }; kind picks which
+// view's rows carry the playing highlight ('files' → data-hash, 'entity' →
+// data-track-id). One <audio>, navigable next/prev within the current context.
+let playCtx = null;
 
 const player = createPlayer({
-  onPrev:  () => { if (previewIndex >= 0) playAt(previewIndex > 0 ? previewIndex - 1 : previewList.length - 1); },
-  onNext:  () => { if (previewIndex >= 0) playAt(previewIndex < previewList.length - 1 ? previewIndex + 1 : 0); },
-  onEnded: () => { if (previewIndex >= 0 && previewIndex < previewList.length - 1) playAt(previewIndex + 1); },
+  onPrev:  () => { if (playCtx) playAtCtx(playCtx.index > 0 ? playCtx.index - 1 : playCtx.items.length - 1); },
+  onNext:  () => { if (playCtx) playAtCtx(playCtx.index < playCtx.items.length - 1 ? playCtx.index + 1 : 0); },
+  onEnded: () => { if (playCtx && playCtx.index < playCtx.items.length - 1) playAtCtx(playCtx.index + 1); },
   onError: () => {
     toast('Couldn’t play this file.', 'error');
-    if (previewIndex >= 0 && previewIndex < previewList.length - 1) playAt(previewIndex + 1);
+    if (playCtx && playCtx.index < playCtx.items.length - 1) playAtCtx(playCtx.index + 1);
   },
 });
 
-function playFile(f) {
-  previewList  = visibleFiles();
-  previewIndex = previewList.findIndex(x => x.hash === f.hash);
-  if (previewIndex < 0) { previewList = [f]; previewIndex = 0; }
-  playAt(previewIndex);
+function playFrom(items, index, kind) {
+  if (!items.length) return;
+  playCtx = { items, index, kind };
+  playAtCtx(index < 0 ? 0 : index);
 }
 
-function playAt(i) {
-  if (i < 0 || i >= previewList.length) return;
-  previewIndex = i;
-  const f = previewList[i];
-  player.load({ url: `${API}${f.url}`, title: displayTitle(f), artist: f.artist || '' });
-  highlightPlaying(f.hash);
+function playAtCtx(i) {
+  if (!playCtx || i < 0 || i >= playCtx.items.length) return;
+  playCtx.index = i;
+  const it = playCtx.items[i];
+  const url = /^https?:/.test(it.url) ? it.url : `${API}${it.url}`;
+  player.load({ url, title: it.title, artist: it.artist || '' });
+  highlightCtx();
 }
 
-function highlightPlaying(hash) {
+// highlightCtx repaints the playing-row marker. Both panels persist in the DOM
+// (the inactive view is just hidden), so we clear both and mark the current one.
+function highlightCtx() {
   filesBody.querySelectorAll('tr.playing-row').forEach(tr => tr.classList.remove('playing-row'));
-  const row = filesBody.querySelector(`tr[data-hash="${CSS.escape(hash)}"]`);
-  if (row) row.classList.add('playing-row');
+  entityPanel.querySelectorAll('.playing-row').forEach(r => r.classList.remove('playing-row'));
+  if (!playCtx) return;
+  const it = playCtx.items[playCtx.index];
+  if (playCtx.kind === 'files') {
+    filesBody.querySelector(`tr[data-hash="${CSS.escape(it.key)}"]`)?.classList.add('playing-row');
+  } else {
+    entityPanel.querySelector(`[data-track-id="${CSS.escape(it.key)}"]`)?.classList.add('playing-row');
+  }
+}
+
+// playFile previews a row in the All-files table, navigable across the visible
+// files. fileToItem normalises a file record into a play-context item.
+function fileToItem(f) {
+  return { url: f.url, title: displayTitle(f), artist: f.artist || '', key: f.hash };
+}
+function playFile(f) {
+  const items = visibleFiles().map(fileToItem);
+  let idx = items.findIndex(x => x.key === f.hash);
+  if (idx < 0) { items.length = 0; items.push(fileToItem(f)); idx = 0; }
+  playFrom(items, idx, 'files');
 }
 
 // ── Loading + rendering ──────────────────────────────────────────────────────
@@ -68,9 +92,15 @@ async function loadFiles() {
   }
 
   allFiles = Array.isArray(files) ? files : [];
+  fileByURL = new Map(allFiles.map(f => [f.url, f]));
   filesBody.setAttribute('aria-busy', 'false');
   renderFiles();
 }
+
+// fileForTrack resolves an entity-view browse track (which carries only id/url)
+// back to its full file record (with the hash the edit endpoint needs). Returns
+// undefined until /api/files has loaded or if the listings disagree.
+function fileForTrack(t) { return fileByURL.get(t.url); }
 
 function renderStateRow(text) {
   filesBody.replaceChildren(
@@ -132,9 +162,7 @@ function renderFiles() {
   filesBody.replaceChildren(frag);
 
   // Keep the playing highlight after a re-render.
-  if (previewIndex >= 0 && previewList[previewIndex]) {
-    highlightPlaying(previewList[previewIndex].hash);
-  }
+  if (playCtx && playCtx.kind === 'files') highlightCtx();
 }
 
 function buildRow(f) {
@@ -269,9 +297,11 @@ const editAlbumAr = document.getElementById('editAlbumArtist');
 const editAlbum   = document.getElementById('editAlbum');
 const editSubmit  = document.getElementById('editSubmit');
 let editingFile   = null;
+let editFromEntity = false;  // edit opened from the entity view → refresh it on save
 
-function openEditModal(f) {
+function openEditModal(f, fromEntity = false) {
   editingFile = f;
+  editFromEntity = fromEntity;
   editTitleIn.value = f.title || '';
   editArtist.value  = f.artist || '';
   editAlbumAr.value = f.album_artist || '';
@@ -316,6 +346,9 @@ editForm.addEventListener('submit', async e => {
     f.title = data.title; f.artist = data.artist;
     f.album = data.album; f.album_artist = data.album_artist;
     renderFiles();
+    // A tag edit can move the track between artist/album groupings, so refresh
+    // the entity view too when the edit came from there.
+    if (editFromEntity) reloadEntityLevel();
     toast(`Metadata saved for "${displayTitle(f)}".`, 'success');
     closeEditModal();
   } catch (err) {
@@ -404,6 +437,296 @@ fileFilter.addEventListener('input', () => {
   }, 150);
 });
 
+// ── Entity view: artists → albums → tracks (with rename) ─────────────────────
+// Drives off the public browse endpoints (/api/artists, /api/albums?artist=,
+// /api/tracks?artist=&album=) so it reflects the resolved artist/album entities,
+// not raw per-file tags. Entities are addressed by current name (the rename
+// endpoints resolve by name); the empty-name bucket is shown but not renamable.
+const entityPanel  = document.getElementById('entityPanel');
+const entityCrumb  = document.getElementById('entityCrumb');
+const entityFilter = document.getElementById('entityFilter');
+
+const entityDrill = { level: 'artists', artist: null, album: null };
+let entItems       = [];   // raw items for the current level
+let entFilterText  = '';
+
+async function entFetch(path) {
+  const res = await fetch(`${API}${path}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return (await res.json()) || [];
+}
+
+function loadEntityArtists() {
+  entityDrill.level = 'artists'; entityDrill.artist = null; entityDrill.album = null;
+  return loadEntityLevel(() => entFetch('/api/artists'));
+}
+function drillAlbums(artist) {
+  entityDrill.level = 'albums'; entityDrill.artist = artist; entityDrill.album = null;
+  return loadEntityLevel(() => entFetch(`/api/albums?artist=${encodeURIComponent(artist)}`));
+}
+function drillTracks(artist, album) {
+  entityDrill.level = 'tracks'; entityDrill.artist = artist; entityDrill.album = album;
+  return loadEntityLevel(() => entFetch(`/api/tracks?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`));
+}
+function reloadEntityLevel() {
+  if (entityDrill.level === 'albums') return drillAlbums(entityDrill.artist);
+  if (entityDrill.level === 'tracks') return drillTracks(entityDrill.artist, entityDrill.album);
+  return loadEntityArtists();
+}
+
+async function loadEntityLevel(fetcher) {
+  entityPanel.setAttribute('aria-busy', 'true');
+  entityPanel.replaceChildren(el('div', { class: 'table-state-row', text: 'Loading…' }));
+  renderCrumb();
+  try {
+    entItems = await fetcher();
+  } catch (err) {
+    console.error('Failed to load library level:', err);
+    entityPanel.setAttribute('aria-busy', 'false');
+    const retry = el('button', { class: 'btn btn-neutral btn-sm', text: 'Retry', onclick: reloadEntityLevel });
+    entityPanel.replaceChildren(el('div', { class: 'table-state-row', role: 'alert' }, [
+      el('div', { text: 'Failed to load.' }), retry,
+    ]));
+    return;
+  }
+  entityPanel.setAttribute('aria-busy', 'false');
+  renderEntity();
+}
+
+function renderCrumb() {
+  const parts = [crumbNode('Artists', entityDrill.level === 'artists' ? null : loadEntityArtists)];
+  if (entityDrill.artist !== null) {
+    parts.push(crumbSep());
+    const label = entityDrill.artist || '(no artist)';
+    parts.push(crumbNode(label, entityDrill.level === 'albums' ? null : () => drillAlbums(entityDrill.artist)));
+  }
+  if (entityDrill.album !== null) {
+    parts.push(crumbSep());
+    parts.push(crumbNode(entityDrill.album || '(no album)', null));
+  }
+  entityCrumb.replaceChildren(...parts);
+}
+function crumbNode(label, onClick) {
+  return onClick
+    ? el('button', { class: 'crumb-link', text: label, onclick: onClick })
+    : el('span', { class: 'crumb-current', text: label });
+}
+function crumbSep() {
+  return el('span', { class: 'crumb-sep', 'aria-hidden': 'true', text: '›' });
+}
+
+function renderEntity() {
+  const q = entFilterText.trim().toLowerCase();
+  if (entityDrill.level === 'artists') return renderArtists(entItems.filter(a => match(a.name, q)));
+  if (entityDrill.level === 'albums')  return renderAlbums(entItems.filter(a => match(a.title, q)));
+  return renderTracks(entItems.filter(t => match(t.title, q)));
+}
+function match(s, q) { return !q || (s || '').toLowerCase().includes(q); }
+
+function entEmpty(text) {
+  return el('div', { class: 'table-state-row', text });
+}
+
+function renderArtists(items) {
+  if (!items.length) { entityPanel.replaceChildren(entEmpty(entFilterText ? 'No matching artists.' : 'No artists yet.')); return; }
+  const frag = document.createDocumentFragment();
+  items.forEach(a => frag.appendChild(artistRow(a)));
+  entityPanel.replaceChildren(frag);
+}
+function artistRow(a) {
+  const main = el('button', {
+    class: 'entity-main', onclick: () => drillAlbums(a.name),
+    'aria-label': `Open ${a.name || 'unnamed artist'}`,
+  }, [
+    el('span', { class: 'entity-name' + (a.name ? '' : ' is-fallback'), text: a.name || '(no artist)' }),
+    el('span', { class: 'entity-meta', text: trackCount(a.track_count) }),
+  ]);
+  const row = el('div', { class: 'entity-row' }, [main]);
+  if (canEditMeta && a.name) {
+    row.appendChild(el('div', { class: 'entity-actions' }, [
+      el('button', { class: 'btn btn-neutral btn-sm', text: 'Rename', onclick: () => openRenameArtist(a) }),
+    ]));
+  }
+  return row;
+}
+
+function renderAlbums(items) {
+  if (!items.length) { entityPanel.replaceChildren(entEmpty(entFilterText ? 'No matching albums.' : 'No albums for this artist.')); return; }
+  const frag = document.createDocumentFragment();
+  items.forEach(a => frag.appendChild(albumRow(a)));
+  entityPanel.replaceChildren(frag);
+}
+function albumRow(a) {
+  const meta = [trackCount(a.track_count)];
+  if (a.year != null) meta.unshift(String(a.year));
+  const main = el('button', {
+    class: 'entity-main', onclick: () => drillTracks(entityDrill.artist, a.title),
+    'aria-label': `Open ${a.title || 'unnamed album'}`,
+  }, [
+    el('span', { class: 'entity-name' + (a.title ? '' : ' is-fallback'), text: a.title || '(no album)' }),
+    el('span', { class: 'entity-meta', text: meta.join(' · ') }),
+  ]);
+  const row = el('div', { class: 'entity-row' }, [main]);
+  if (canEditMeta && a.title) {
+    row.appendChild(el('div', { class: 'entity-actions' }, [
+      el('button', { class: 'btn btn-neutral btn-sm', text: 'Rename', onclick: () => openRenameAlbum(a) }),
+    ]));
+  }
+  return row;
+}
+
+function renderTracks(items) {
+  if (!items.length) { entityPanel.replaceChildren(entEmpty(entFilterText ? 'No matching tracks.' : 'No tracks in this album.')); return; }
+  const navItems = items.map(trackToItem);
+  const frag = document.createDocumentFragment();
+  items.forEach((t, i) => frag.appendChild(trackRow(t, navItems, i)));
+  entityPanel.replaceChildren(frag);
+  if (playCtx && playCtx.kind === 'entity') highlightCtx();
+}
+function trackToItem(t) {
+  return { url: t.url, title: t.title || 'Untitled', artist: entityDrill.artist || '', key: String(t.id) };
+}
+function trackRow(t, navItems, idx) {
+  const play = el('button', { class: 'play-btn', title: 'Preview', 'aria-label': `Preview ${t.title || 'track'}`,
+    onclick: () => playFrom(navItems, idx, 'entity') });
+  play.innerHTML = PLAY_ICON;
+  const num = el('span', { class: 'entity-tracknum', text: t.track_number != null ? String(t.track_number) : '' });
+  const title = el('span', { class: 'entity-name' + (t.title ? '' : ' is-fallback'), text: t.title || 'Untitled' });
+  const dur = el('span', { class: 'entity-meta', text: t.duration_seconds != null ? fmtTime(t.duration_seconds) : '' });
+  const children = [play, num, title, dur];
+  if (canEditMeta) {
+    const edit = el('button', { class: 'btn btn-neutral btn-sm', text: 'Edit',
+      'aria-label': `Edit ${t.title || 'track'}`, onclick: () => editTrack(t) });
+    children.push(el('div', { class: 'entity-actions' }, [edit]));
+  }
+  return el('div', { class: 'entity-row entity-row--track', 'data-track-id': String(t.id) }, children);
+}
+
+// editTrack opens the per-track metadata modal from the entity view. It resolves
+// the track to its file record (for the hash) at click time, so it works even if
+// /api/files finished loading after this row was rendered.
+function editTrack(t) {
+  const f = fileForTrack(t);
+  if (!f) { toast('File details are still loading — try again in a moment.', 'error'); return; }
+  openEditModal(f, true);
+}
+
+function trackCount(n) { return `${n} track${n === 1 ? '' : 's'}`; }
+
+let entFilterTimer;
+entityFilter.addEventListener('input', () => {
+  clearTimeout(entFilterTimer);
+  entFilterTimer = setTimeout(() => { entFilterText = entityFilter.value; renderEntity(); }, 150);
+});
+
+// ── Rename modal (whole artist / album entity) ───────────────────────────────
+const renameModal     = document.getElementById('renameModal');
+const renameForm      = document.getElementById('renameForm');
+const renameInput     = document.getElementById('renameInput');
+const renameError     = document.getElementById('renameError');
+const renameTitleEl   = document.getElementById('renameTitle');
+const renameFieldText = document.getElementById('renameFieldText');
+const renameNote      = document.getElementById('renameNote');
+const renameSubmit    = document.getElementById('renameSubmit');
+let renameTarget      = null; // { kind, oldName? , oldTitle?, artist? }
+
+function openRenameArtist(a) {
+  renameTarget = { kind: 'artist', oldName: a.name };
+  renameTitleEl.textContent = 'Rename artist';
+  renameFieldText.textContent = 'Artist name';
+  renameNote.textContent = 'Renames the whole artist — its cover and all its tracks stay attached.';
+  showRename(a.name);
+}
+function openRenameAlbum(a) {
+  renameTarget = { kind: 'album', oldTitle: a.title, artist: a.artist_name ?? entityDrill.artist ?? '' };
+  renameTitleEl.textContent = 'Rename album';
+  renameFieldText.textContent = 'Album title';
+  renameNote.textContent = 'Renames the whole album — its cover and all its tracks stay attached.';
+  showRename(a.title);
+}
+function showRename(current) {
+  renameError.hidden = true; renameError.textContent = '';
+  renameInput.value = current || '';
+  renameModal.classList.remove('hidden');
+  renameInput.focus(); renameInput.select();
+}
+function closeRename() {
+  renameModal.classList.add('hidden');
+  renameTarget = null;
+}
+function showRenameError(msg) {
+  renameError.textContent = msg;
+  renameError.hidden = false;
+}
+
+document.getElementById('renameClose').addEventListener('click', closeRename);
+document.getElementById('renameCancel').addEventListener('click', closeRename);
+renameModal.addEventListener('click', e => { if (e.target === renameModal) closeRename(); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !renameModal.classList.contains('hidden')) closeRename();
+});
+
+renameForm.addEventListener('submit', async e => {
+  e.preventDefault();
+  if (!renameTarget) return;
+  const val = renameInput.value.trim();
+  if (!val) { showRenameError('A name is required.'); return; }
+
+  const t = renameTarget;
+  let path, body;
+  if (t.kind === 'artist') {
+    path = `/api/artists/${encodeURIComponent(t.oldName)}/rename`;
+    body = { name: val };
+  } else {
+    path = `/api/albums/${encodeURIComponent(t.oldTitle)}/rename?artist=${encodeURIComponent(t.artist || '')}`;
+    body = { title: val };
+  }
+
+  renameSubmit.disabled = true;
+  renameError.hidden = true;
+  try {
+    const res = await fetch(`${API}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (handleAuthError(res)) return;
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 409) { showRenameError(data.error || 'That name is already taken.'); return; }
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+    toast(`Renamed to “${val}”.`, 'success');
+    closeRename();
+    // If we renamed the artist whose albums we're viewing, keep the crumb in sync.
+    if (t.kind === 'artist' && entityDrill.artist === t.oldName) entityDrill.artist = val;
+    reloadEntityLevel();
+    loadFiles();           // the flat table + url→file index now show stale tags
+  } catch (err) {
+    showRenameError(`Couldn't rename: ${err.message}`);
+  } finally {
+    renameSubmit.disabled = false;
+  }
+});
+
+// ── View tabs (entity ⇄ all files) ───────────────────────────────────────────
+const tabEntity  = document.getElementById('tabEntity');
+const tabFiles   = document.getElementById('tabFiles');
+const entityView = document.getElementById('entityView');
+const filesView  = document.getElementById('filesView');
+
+function showEntityView() {
+  tabEntity.classList.add('view-tab--active'); tabEntity.setAttribute('aria-selected', 'true');
+  tabFiles.classList.remove('view-tab--active'); tabFiles.setAttribute('aria-selected', 'false');
+  entityView.classList.remove('hidden'); filesView.classList.add('hidden');
+}
+function showFilesView() {
+  tabFiles.classList.add('view-tab--active'); tabFiles.setAttribute('aria-selected', 'true');
+  tabEntity.classList.remove('view-tab--active'); tabEntity.setAttribute('aria-selected', 'false');
+  filesView.classList.remove('hidden'); entityView.classList.add('hidden');
+}
+tabEntity.addEventListener('click', showEntityView);
+tabFiles.addEventListener('click', showFilesView);
+
 // ── Boot ────────────────────────────────────────────────────────────────────
 (async function boot() {
   const identity = await bootAdmin();
@@ -411,5 +734,6 @@ fileFilter.addEventListener('input', () => {
   const perms = identity.permissions || [];
   canEditMeta = perms.includes('metadata.edit');
   canDelete   = perms.includes('file.delete');
-  loadFiles();
+  loadFiles();           // eager: populates the All-files tab + the url→file index
+  loadEntityArtists();   // entity view is the default
 })();

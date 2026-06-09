@@ -16,7 +16,30 @@
 {{template "admin-shell" .}}
 
 <main class="admin-main">
-  <section aria-labelledby="filesHeading">
+  <div class="view-tabs" role="tablist" aria-label="Library view">
+    <button class="view-tab view-tab--active" id="tabEntity" role="tab" aria-selected="true" aria-controls="entityView">By entity</button>
+    <button class="view-tab" id="tabFiles" role="tab" aria-selected="false" aria-controls="filesView">All files</button>
+  </div>
+
+  <!-- ── Entity view: artists → albums → tracks, with rename ── -->
+  <section id="entityView" aria-labelledby="entityHeading">
+    <div class="files-bar">
+      <h2 class="section-title" id="entityHeading">Library</h2>
+      <div class="files-search">
+        <label for="entityFilter" class="visually-hidden">Filter the current list</label>
+        <input type="search" id="entityFilter" placeholder="Filter…" autocomplete="off">
+      </div>
+    </div>
+    <nav class="entity-breadcrumb" id="entityCrumb" aria-label="Library navigation">
+      <!-- populated by JS -->
+    </nav>
+    <div class="entity-panel" id="entityPanel" aria-busy="true" aria-live="polite">
+      <!-- populated by JS: artists / albums / tracks -->
+    </div>
+  </section>
+
+  <!-- ── All-files view: the flat table with per-file edit/delete/access ── -->
+  <section id="filesView" class="hidden" aria-labelledby="filesHeading">
     <div class="files-bar">
       <h2 class="section-title section-title--files" id="filesHeading">Files (<span id="fileCount">0</span>)</h2>
       <div class="files-search">
@@ -45,7 +68,7 @@
   </section>
 </main>
 
-<!-- Metadata edit modal -->
+<!-- Metadata edit modal (per-track tag edit) -->
 <div class="modal-backdrop hidden" id="editModal" role="dialog" aria-modal="true" aria-labelledby="editTitle">
   <div class="modal">
     <div class="modal-header">
@@ -66,12 +89,36 @@
         <input type="text" id="editAlbum" autocomplete="off">
       </label>
       <p class="modal-body" id="editNote">
-        Renaming an album or artist may orphan its existing cover image
-        (covers are keyed by album&nbsp;+&nbsp;artist).
+        This edits <strong>one track's</strong> tags and reclassifies just that
+        track. To rename a whole album or artist (cover and all tracks stay
+        attached), use <strong>Rename</strong> in the “By entity” view instead.
       </p>
       <div class="modal-actions">
         <button type="button" class="btn btn-neutral" id="editCancel">Cancel</button>
         <button type="submit" class="btn btn-neutral" id="editSubmit">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Rename modal (whole artist / album entity) -->
+<div class="modal-backdrop hidden" id="renameModal" role="dialog" aria-modal="true" aria-labelledby="renameTitle">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="renameTitle">Rename</h2>
+      <button class="btn-close" id="renameClose" aria-label="Close">&times;</button>
+    </div>
+    <form class="edit-form" id="renameForm">
+      <label><span id="renameFieldText">New name</span>
+        <input type="text" id="renameInput" autocomplete="off" required>
+      </label>
+      <p class="login-error" id="renameError" role="alert" hidden></p>
+      <p class="modal-body" id="renameNote">
+        Renames the whole entity — its cover and all tracks stay attached.
+      </p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-neutral" id="renameCancel">Cancel</button>
+        <button type="submit" class="btn btn-neutral" id="renameSubmit">Rename</button>
       </div>
     </form>
   </div>

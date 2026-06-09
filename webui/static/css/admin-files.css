@@ -57,3 +57,96 @@ tr.playing-row .play-btn { color: var(--accent); }
   font: inherit;
 }
 .edit-form input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ── View tabs (entity ⇄ all files) ─────────────────────────────────────────── */
+.view-tabs {
+  display: flex;
+  gap: var(--space-1);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.view-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 500;
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: -1px;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.view-tab:hover { color: var(--text); }
+.view-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.view-tab--active { color: var(--text); border-bottom-color: var(--accent); }
+
+/* ── Entity breadcrumb ──────────────────────────────────────────────────────── */
+.entity-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  margin-bottom: var(--space-3);
+  font-size: 14px;
+}
+.crumb-link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  padding: 2px 4px;
+  border-radius: var(--radius);
+}
+.crumb-link:hover { background: var(--surface-hover); }
+.crumb-link:focus-visible { outline: 2px solid var(--accent); }
+.crumb-current { color: var(--text); font-weight: 600; padding: 2px 4px; }
+.crumb-sep { color: var(--text-muted); }
+
+/* ── Entity rows (artists / albums / tracks) ────────────────────────────────── */
+.entity-panel { display: flex; flex-direction: column; }
+.entity-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+.entity-row:hover { background: var(--surface-hover); }
+.entity-row.playing-row { background: var(--accent-glow); }
+.entity-row.playing-row .play-btn { color: var(--accent); }
+
+.entity-main {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  min-width: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  padding: var(--space-1) 0;
+}
+.entity-row--track .entity-main { cursor: default; } /* tracks use the play button */
+.entity-name {
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.entity-name.is-fallback { color: var(--text-muted); font-style: italic; }
+.entity-meta { color: var(--text-muted); font-size: 13px; white-space: nowrap; flex-shrink: 0; }
+.entity-actions { flex-shrink: 0; display: flex; gap: var(--space-2); }
+.entity-tracknum {
+  width: 2ch;
+  text-align: right;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.entity-row--track .entity-name { flex: 1; }
