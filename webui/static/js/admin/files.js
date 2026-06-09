@@ -543,9 +543,9 @@ function artistRow(a) {
     el('span', { class: 'entity-meta', text: trackCount(a.track_count) }),
   ]);
   const row = el('div', { class: 'entity-row' }, [thumb, main]);
-  if (canEditMeta) {
+  if (canEditMeta || canDelete) {
     const actions = el('div', { class: 'entity-actions' });
-    if (a.name) {
+    if (canEditMeta && a.name) {
       actions.append(
         el('button', { class: 'btn btn-neutral btn-sm', text: a.has_image ? 'Cover…' : 'Add cover',
           onclick: () => pickCover({ kind: 'artist', name: a.name }) }),
@@ -554,9 +554,13 @@ function artistRow(a) {
     }
     // Merge is id-addressed, so it works even for the empty-name bucket; it needs
     // at least one other artist to merge into.
-    if (entItems.length > 1) {
+    if (canEditMeta && entItems.length > 1) {
       actions.append(el('button', { class: 'btn btn-neutral btn-sm', text: 'Merge…',
         onclick: () => openMergeArtist(a) }));
+    }
+    if (canDelete) {
+      actions.append(el('button', { class: 'btn btn-destructive-outline btn-sm', text: 'Delete',
+        onclick: () => deleteArtist(a) }));
     }
     if (actions.childElementCount) row.appendChild(actions);
   }
@@ -581,9 +585,9 @@ function albumRow(a) {
     el('span', { class: 'entity-meta', text: meta.join(' · ') }),
   ]);
   const row = el('div', { class: 'entity-row' }, [thumb, main]);
-  if (canEditMeta) {
+  if (canEditMeta || canDelete) {
     const actions = el('div', { class: 'entity-actions' });
-    if (a.title) {
+    if (canEditMeta && a.title) {
       actions.append(
         el('button', { class: 'btn btn-neutral btn-sm', text: a.has_image ? 'Cover…' : 'Add cover',
           onclick: () => pickCover({ kind: 'album', title: a.title, artist: entityDrill.artist }) }),
@@ -591,9 +595,13 @@ function albumRow(a) {
       );
     }
     // Album merge targets the current artist's other albums (id-addressed).
-    if (entItems.length > 1) {
+    if (canEditMeta && entItems.length > 1) {
       actions.append(el('button', { class: 'btn btn-neutral btn-sm', text: 'Merge…',
         onclick: () => openMergeAlbum(a) }));
+    }
+    if (canDelete) {
+      actions.append(el('button', { class: 'btn btn-destructive-outline btn-sm', text: 'Delete',
+        onclick: () => deleteAlbum(a) }));
     }
     if (actions.childElementCount) row.appendChild(actions);
   }
@@ -672,10 +680,17 @@ function trackRow(t, navItems, idx) {
   const title = el('span', { class: 'entity-name' + (t.title ? '' : ' is-fallback'), text: t.title || 'Untitled' });
   const dur = el('span', { class: 'entity-meta', text: t.duration_seconds != null ? fmtTime(t.duration_seconds) : '' });
   const children = [play, num, title, dur];
-  if (canEditMeta) {
-    const edit = el('button', { class: 'btn btn-neutral btn-sm', text: 'Edit',
-      'aria-label': `Edit ${t.title || 'track'}`, onclick: () => editTrack(t) });
-    children.push(el('div', { class: 'entity-actions' }, [edit]));
+  if (canEditMeta || canDelete) {
+    const actions = el('div', { class: 'entity-actions' });
+    if (canEditMeta) {
+      actions.append(el('button', { class: 'btn btn-neutral btn-sm', text: 'Edit',
+        'aria-label': `Edit ${t.title || 'track'}`, onclick: () => editTrack(t) }));
+    }
+    if (canDelete) {
+      actions.append(el('button', { class: 'btn btn-destructive-outline btn-sm', text: 'Delete',
+        'aria-label': `Delete ${t.title || 'track'}`, onclick: () => deleteTrack(t) }));
+    }
+    children.push(actions);
   }
   return el('div', { class: 'entity-row entity-row--track', 'data-track-id': String(t.id) }, children);
 }
@@ -871,6 +886,126 @@ mergeForm.addEventListener('submit', async e => {
     mergeSubmit.disabled = false;
   }
 });
+
+// ── Delete (track / album / artist) — move files to Trash, batched ───────────
+// Reuses the per-file endpoint DELETE /api/admin/files/{hash} (move to Trash,
+// reversible from the Trash page). Entity deletes gather their tracks' hashes via
+// the browse endpoints (so they match exactly what's shown) + the url→file index.
+const deleteModal     = document.getElementById('deleteModal');
+const deleteTitleEl   = document.getElementById('deleteTitle');
+const deleteBodyEl    = document.getElementById('deleteBody');
+const deleteError     = document.getElementById('deleteError');
+const deleteConfirmBtn = document.getElementById('deleteConfirm');
+let deleteRun = null;
+
+function confirmDelete({ title, body, confirmLabel = 'Move to Trash', run }) {
+  deleteRun = run;
+  deleteTitleEl.textContent = title;
+  deleteBodyEl.textContent = body;
+  deleteConfirmBtn.textContent = confirmLabel;
+  deleteError.hidden = true; deleteError.textContent = '';
+  deleteModal.classList.remove('hidden');
+  deleteConfirmBtn.focus();
+}
+function closeDelete() { deleteModal.classList.add('hidden'); deleteRun = null; }
+
+deleteConfirmBtn.addEventListener('click', async () => {
+  if (!deleteRun) return;
+  deleteConfirmBtn.disabled = true;
+  deleteError.hidden = true;
+  try {
+    await deleteRun();
+    closeDelete();
+  } catch (err) {
+    deleteError.textContent = err.message;
+    deleteError.hidden = false;
+  } finally {
+    deleteConfirmBtn.disabled = false;
+  }
+});
+document.getElementById('deleteClose').addEventListener('click', closeDelete);
+document.getElementById('deleteCancel').addEventListener('click', closeDelete);
+deleteModal.addEventListener('click', e => { if (e.target === deleteModal) closeDelete(); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !deleteModal.classList.contains('hidden')) closeDelete();
+});
+
+function resolveHashes(tracks) {
+  return tracks.map(t => fileByURL.get(t.url)).filter(Boolean).map(f => f.hash);
+}
+async function albumTrackHashes(artist, title) {
+  await ensureFilesLoaded();
+  const tracks = await entFetch(`/api/tracks?artist=${encodeURIComponent(artist || '')}&album=${encodeURIComponent(title || '')}`);
+  return resolveHashes(tracks);
+}
+async function artistTrackHashes(name) {
+  await ensureFilesLoaded();
+  const albums = await entFetch(`/api/albums?artist=${encodeURIComponent(name || '')}`);
+  const hashes = [];
+  for (const al of albums) {
+    const tracks = await entFetch(`/api/tracks?artist=${encodeURIComponent(name || '')}&album=${encodeURIComponent(al.title || '')}`);
+    hashes.push(...resolveHashes(tracks));
+  }
+  return hashes;
+}
+
+// deleteHashes moves each file to Trash sequentially and reports the tally. It
+// never throws — it owns its own success/error toasts — so the modal closes.
+async function deleteHashes(hashes) {
+  let ok = 0, fail = 0, authFailed = false;
+  for (const hash of hashes) {
+    let res;
+    try {
+      res = await fetch(`${API}/api/admin/files/${encodeURIComponent(hash)}`, { method: 'DELETE' });
+    } catch { fail++; continue; }
+    if (res.status === 401) { handleAuthError(res); authFailed = true; break; }
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.ok) ok++; else fail++;
+  }
+  filesLoaded = false;          // flat table + url→file index now stale
+  reloadEntityLevel();
+  if (authFailed) {
+    if (ok) toast(`Moved ${ok} to Trash before the session expired.`, 'error');
+    return;
+  }
+  if (fail) toast(`Moved ${ok} to Trash; ${fail} failed.`, 'error');
+  else if (ok) toast(`Moved ${ok} ${ok === 1 ? 'track' : 'tracks'} to Trash.`, 'success');
+}
+
+async function deleteTrack(t) {
+  await ensureFilesLoaded();
+  const f = fileForTrack(t);
+  if (!f) { toast('Couldn’t find this file’s details.', 'error'); return; }
+  confirmDelete({
+    title: 'Move track to Trash',
+    body: `Move “${t.title || 'this track'}” to Trash?`,
+    run: () => deleteHashes([f.hash]),
+  });
+}
+async function deleteAlbum(a) {
+  let hashes;
+  try { hashes = await albumTrackHashes(entityDrill.artist, a.title); }
+  catch (err) { toast(`Couldn’t load the album’s tracks: ${err.message}`, 'error'); return; }
+  if (!hashes.length) { toast('No deletable files found for this album.', 'error'); return; }
+  confirmDelete({
+    title: 'Delete album',
+    body: `Move all ${hashes.length} ${hashes.length === 1 ? 'track' : 'tracks'} in “${a.title || '(no album)'}” to Trash?`,
+    confirmLabel: `Move ${hashes.length} to Trash`,
+    run: () => deleteHashes(hashes),
+  });
+}
+async function deleteArtist(a) {
+  let hashes;
+  try { hashes = await artistTrackHashes(a.name); }
+  catch (err) { toast(`Couldn’t load the artist’s tracks: ${err.message}`, 'error'); return; }
+  if (!hashes.length) { toast('No deletable files found for this artist.', 'error'); return; }
+  confirmDelete({
+    title: 'Delete artist',
+    body: `Move all ${hashes.length} ${hashes.length === 1 ? 'track' : 'tracks'} by “${a.name || '(no artist)'}” to Trash?`,
+    confirmLabel: `Move ${hashes.length} to Trash`,
+    run: () => deleteHashes(hashes),
+  });
+}
 
 // ── View tabs (entity ⇄ all files) ───────────────────────────────────────────
 const tabEntity  = document.getElementById('tabEntity');

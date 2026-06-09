@@ -124,6 +124,25 @@
   </div>
 </div>
 
+<!-- Delete confirm modal (track / album / artist → Trash) -->
+<div class="modal-backdrop hidden" id="deleteModal" role="dialog" aria-modal="true" aria-labelledby="deleteTitle">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="deleteTitle">Move to Trash</h2>
+      <button class="btn-close" id="deleteClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="edit-form">
+      <p class="modal-body" id="deleteBody"></p>
+      <p class="modal-body modal-danger">Files move to Trash — you can restore them from the Trash page.</p>
+      <p class="login-error" id="deleteError" role="alert" hidden></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-neutral" id="deleteCancel">Cancel</button>
+        <button type="button" class="btn btn-destructive-solid" id="deleteConfirm">Move to Trash</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Merge modal (fold one artist/album entity into another — destructive) -->
 <div class="modal-backdrop hidden" id="mergeModal" role="dialog" aria-modal="true" aria-labelledby="mergeTitle">
   <div class="modal">

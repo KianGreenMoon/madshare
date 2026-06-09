@@ -198,15 +198,24 @@ unambiguous entity. Confirm at impl.
    into X, then deletes Y — can't be undone" summary behind a destructive-styled
    button. **Id-addressed** (see addressing decision above). Album merge targets
    the current artist's other albums.
+5. **Delete = move to Trash, reusing the per-file endpoint** (implemented):
+   `DELETE /api/admin/files/{hash}` (gated `file.delete`). Track delete is one
+   call; **album/artist delete batches** their tracks' deletes client-side (no new
+   endpoint), gathering the exact hash set from the browse endpoints + the
+   url→file index. A confirm modal shows the track count; files go to **Trash**
+   (restorable), which keeps the batch operation low-risk. Works for the
+   empty-name/empty-title buckets too.
 
 ## Open questions
 
 - ~~**Name vs. id addressing**~~ — **decided**: rename is name-addressed, merge is
   id-addressed (`POST /api/artists|albums/merge {from_id,into_id}`). See the
   addressing section above. Implemented.
-- **Entity delete semantics** — "delete album" = trash all its files (loop the
-  existing per-file delete) vs. a new entity-level convenience. Lean: reuse the
-  per-file path (no new endpoint) and just batch it client-side.
+- ~~**Entity delete semantics**~~ — **decided & implemented** (Decision §5): reuse
+  the per-file `DELETE …/files/{hash}` (move to Trash), batched client-side for
+  album/artist; no new endpoint. *Possible follow-up:* a server-side batch/entity
+  delete endpoint if the client-side N-request loop proves too slow for very large
+  artists (ties into the pagination open question below).
 - Whether the **All files** flat view is still worth keeping once the entity view
   lands, or becomes a pure "search by hash" utility.
 - **Scaling the browse endpoints (very large libraries).** The UI now loads
