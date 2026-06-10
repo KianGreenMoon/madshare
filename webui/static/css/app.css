@@ -205,14 +205,6 @@ header {
 .about__item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* ── About modal body (reuses .modal-backdrop / .modal / .btn-close) ── */
-/* Hug the content instead of the shared modal's fixed 420px: as narrow as the
-   "About" header (or whatever the widest row needs, e.g. the commit hash),
-   capped to the viewport. The compound selector beats .modal's later width. */
-.modal.modal--about {
-  width: fit-content;
-  max-width: calc(100vw - 2 * var(--space-5));
-}
-
 .about-card { text-align: center; }
 .about-name {
   margin: 0 0 var(--space-4);
