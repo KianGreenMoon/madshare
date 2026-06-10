@@ -1,7 +1,8 @@
 # Playlists, Favorites & Queue Editing
 
 Status: **DONE — all 4 steps implemented & user-verified** on `aidev`
-(2026-06-10). Endpoint reference: `docs/api/playlists.md`. Post-verification
+(2026-06-10). Endpoint reference: `docs/api/playlists.md`; current player/queue
+behavior reference: `docs/ui/player-and-queue.md`. Post-verification
 polish: the queue panel auto-closes on outside click (player bar exempt;
 `composedPath()` because row clicks re-render and detach the target); the
 queue panel + playlists page read the shared duration cache (`dur-cache.js`)

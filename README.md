@@ -24,7 +24,9 @@ UI.
   pages share a persistent shell, so playback continues across navigation.
 - Per-user playlists and favorites (`/playlists`): like tracks from the
   library or the player bar, edit the play queue in place (reorder / remove /
-  play-next), save it as a playlist, and resume it after a reload.
+  play-next), save it as a playlist, and resume it after a reload. Player and
+  queue behavior (shuffle, repeat, persistence):
+  [`docs/ui/player-and-queue.md`](docs/ui/player-and-queue.md).
 - Authentication (session cookies + API tokens), role-based permissions, and
   per-file/-group content access control (default-deny for anonymous visitors).
 - One process, one HTTP listener per configured socket; the web UI can be
