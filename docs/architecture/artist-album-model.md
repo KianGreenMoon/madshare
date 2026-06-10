@@ -1,6 +1,7 @@
 # Artist & album entities
 
-**Status:** design (owner-approved 2026-06-07). Implementation plan:
+**Status:** implemented (entities P1–P5 done 2026-06-09; grouping model
+reaffirmed 2026-06-10). Implementation plan:
 `docs/plans/artist-album-normalization.md`. Assumes the roles-only access model
 (`docs/plans/access-roles-only.md`) — artist/album strings carry **no**
 access-control meaning, so this is a pure library/cover/grouping change.
@@ -67,8 +68,10 @@ These must be applied **identically** at import time and in the backfill, in Go
    `normalizeKey()` helper so import and backfill cannot drift.
 3. **Album identity** = `(artist_id, norm_title)`. An empty album title resolves
    to the "unknown album" placeholder under that artist (so untagged tracks group
-   sensibly rather than each becoming its own album). The placeholder strings are
-   configurable later (see the deferred "default placeholder names" idea).
+   sensibly rather than each becoming its own album). The placeholder strings
+   (`Unknown artist` / `Other`, plus filename-derived track titles) are made
+   required and non-empty — at the DB level and in the resolver — by
+   `docs/plans/required-name-defaults.md` (planned).
 4. **`media_metadata.artist_id`** = the effective-artist entity (same one
    `albums.artist_id` points to for that track's album).
 5. **Representative `year`** = the album row's year is set from the first track
@@ -83,6 +86,27 @@ artist entity via rule 1 (the `album_artist` text wins). Each track keeps its ow
 performer in the `artist` text column. v0 does **not** create a separate
 track-level performer entity — `media_metadata.artist_id` is the album-artist
 entity. A future `track_artist_id` can be added without breaking this (deferred).
+
+### Where the grouping decision lives (settled 2026-06-10)
+
+The album-artist-vs-track-artist choice is made **server-side**, in the entity
+resolver (`effectiveArtist`, `database/entities.go`) — *not* in the clients. Two
+alternatives were considered and rejected:
+
+- **A separate `album_artist` table** — unnecessary. "Album artist" is just *the
+  artist an album belongs to*, already modeled by `albums.artist_id`. The
+  per-track performer survives as the raw `media_metadata.artist` tag; nothing is
+  lost. Adding a table would duplicate a relationship the FK already expresses.
+- **Moving the grouping into each UI** ("if album_artist present, the client uses
+  it as the artist") — rejected. The artist is a stable backend **entity** (id,
+  cover, dedup, rename/merge). Deriving the grouping ad-hoc per client would lose
+  the stable entity + cover and force the library view, `/cmus`, admin, and
+  future federation to re-implement and stay in sync on the same rule.
+
+Browsing by a *performing/featured* artist who is never an `album_artist` is the
+one capability this model intentionally does not provide; it would need a
+track↔artist credits model (the deferred `track_artist_id` non-goal) and its own
+plan — independent of the library grouping above.
 
 ### Cover re-keying
 
