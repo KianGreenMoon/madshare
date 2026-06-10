@@ -56,6 +56,20 @@ go build -o madshare ./
 go run madshare.go
 ```
 
+The [`Makefile`](Makefile) wraps these and bakes in the version stamp so the web
+UI's **About** box (header → *About* → *Version*) shows the release tag:
+
+```bash
+make build   # -> ./madshare, with `git describe --tags --always --dirty` injected
+make run     # go run from source, version stamped
+make test    # go test ./...
+```
+
+A plain `go build` / `go run madshare.go` still works — the About box just falls
+back to the commit hash the Go toolchain embeds automatically (or nothing if VCS
+info is unavailable). Cross-compiling honors the usual `GOOS`/`GOARCH` env vars
+(pure Go, no cgo). Full reference: [`docs/building.md`](docs/building.md).
+
 Pure-API build (no web UI):
 
 ```bash
