@@ -12,8 +12,16 @@ session can't pop the login modal pre-gesture); queue panel (`queue-panel.js` +
 player-bar queue button, hidden on admin) with click-to-play, remove, drag +
 Ctrl/Alt+Arrow reorder, Clear, Save-as-playlist; index arithmetic extracted to
 DOM-free `queue-ops.js` with node tests (`node --test
-tests/js/queue-ops.test.mjs`). Steps 3–4 (/playlists page, favorites/quick-add)
-pending; browser verification of step 2 pending.
+tests/js/queue-ops.test.mjs`). Step 2 user-verified.
+Step 3 (/playlists page): shell-native third listening page — `playlists.html`
+(`Page: "playlists"`, nav link gated client-side on `content.access` via
+auth.js + `gatePage`), `playlists.js` (list → detail; play-all / play-from-row
+over the live items via the shared controller; rename/delete with a two-step
+confirm, regular playlists only; per-row remove; drag + Ctrl/Alt+Arrow reorder
+with optimistic PUT; trashed rows grayed "— in Trash", unplayable),
+`playlists.css` (reuses the panel-row/track-row systems).
+Step 4 (favorites hearts + quick-add menus) pending; browser verification of
+step 3 pending.
 Branch: aidev
 Builds on: `docs/plans/persistent-shell-playback.md` (the shell-owned queue and
 the `PlayerController`'s reserved mutation API — this phase is the payoff that

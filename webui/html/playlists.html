@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Playlists &mdash; Madshare</title>
+  <meta name="api-url" content="{{.APIURL}}">
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/player.css">
+  <link rel="stylesheet" href="/static/css/playlists.css">
+</head>
+<body data-page="playlists" data-module="/static/js/playlists.js">
+
+{{template "header" .}}
+
+<main>
+  <div class="view-panel view-panel--active" id="view-playlists">
+    <div class="library-bar">
+      <nav class="breadcrumb" id="plBreadcrumb" aria-label="Playlists navigation">
+        <!-- populated by JS -->
+      </nav>
+      <div class="pl-head-actions" id="plHeadActions">
+        <!-- detail-view actions (Play all / Rename / Delete) populated by JS -->
+      </div>
+    </div>
+    <div class="library-panel" id="plPanel" aria-live="polite">
+      <!-- populated by JS: playlist list or playlist detail -->
+    </div>
+  </div>
+</main>
+
+{{template "player-bar" .}}
+{{template "auth-modals" .}}
+
+<script type="module" src="/static/js/shell.js"></script>
+</body>
+</html>

@@ -1,0 +1,75 @@
+/* playlists.css — the /playlists page (playlists.js). Reuses app.css's
+   panel-row / track-row / breadcrumb systems; this file only adds the
+   playlist-specific affordances: kind badge, header actions, rename form,
+   row remove button, drag-reorder indicators, and the trashed-row state. */
+
+.pl-kind {
+  color: var(--accent);
+  margin-right: var(--space-2);
+  font-size: 13px;
+}
+
+.pl-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+.pl-btn { font-size: 13px; padding: 4px 12px; }
+.pl-btn-danger {
+  border-color: #e05c5c;
+  color: #e05c5c;
+}
+
+.pl-rename-form {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.pl-rename-form input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 13px;
+  padding: 4px 8px;
+  width: 220px;
+}
+.pl-rename-form input:focus-visible { outline: 2px solid var(--accent); }
+
+/* Per-row remove — hidden until the row is hovered/focused, like the queue panel. */
+.pl-remove {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: var(--radius);
+  visibility: hidden;
+}
+.track-row:hover .pl-remove,
+.track-row:focus-within .pl-remove { visibility: visible; }
+.pl-remove:hover { color: var(--text); background: var(--surface-hover); }
+.pl-remove:focus-visible { outline: 2px solid var(--accent); visibility: visible; }
+
+/* Drag reorder indicators (same visual language as the queue panel). */
+#plPanel .track-row {
+  border-top: 2px solid transparent;
+  border-bottom: 2px solid transparent;
+}
+#plPanel .track-row.dragging   { opacity: 0.4; }
+#plPanel .track-row.drop-above { border-top-color: var(--accent); }
+#plPanel .track-row.drop-below { border-bottom-color: var(--accent); }
+
+/* Trashed playlist entries: metadata visible, not playable (Decision §3).
+   Distinct copy from the library's generic .unavailable ("not found"). */
+.track-row.trashed { opacity: 0.45; cursor: default; }
+.track-row.trashed .track-title { color: var(--text-muted); }
+.track-row.trashed .track-title::after {
+  content: ' — in Trash';
+  font-style: italic;
+  font-weight: 400;
+}

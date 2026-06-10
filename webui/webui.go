@@ -54,10 +54,11 @@ func buildPageTmpl(file string) *template.Template {
 }
 
 var (
-	cmusTmpl    = template.Must(template.ParseFS(htmlFS, "html/cmus.html"))
-	libraryTmpl = buildPageTmpl("html/library.html")
-	uploadTmpl  = buildPageTmpl("html/upload.html")
-	adminTmpl   = buildPageTmpl("html/admin/dashboard.html") // /admin landing
+	cmusTmpl      = template.Must(template.ParseFS(htmlFS, "html/cmus.html"))
+	libraryTmpl   = buildPageTmpl("html/library.html")
+	uploadTmpl    = buildPageTmpl("html/upload.html")
+	playlistsTmpl = buildPageTmpl("html/playlists.html")
+	adminTmpl     = buildPageTmpl("html/admin/dashboard.html") // /admin landing
 )
 
 // adminSubPages are the reworked admin sub-pages, each its own routed page under
@@ -112,6 +113,7 @@ func Register(r chi.Router, apiBase string) {
 	r.Handle("/static/*", http.StripPrefix("/static/", static))
 	r.Get("/cmus", makeHandler(cmusTmpl, "cmus.html", pageData{APIURL: apiBase}))
 	r.Get("/upload", makeHandler(uploadTmpl, "upload.html", pageData{APIURL: apiBase, Page: "upload"}))
+	r.Get("/playlists", makeHandler(playlistsTmpl, "playlists.html", pageData{APIURL: apiBase, Page: "playlists"}))
 	r.Get("/", makeHandler(libraryTmpl, "library.html", pageData{APIURL: apiBase, Page: "library"}))
 }
 

@@ -12,8 +12,9 @@ export function getIdentity() { return _identity; }
 // Privileged nav links / pages and the permission(s) that unlock them. A user
 // holding ANY listed permission may see the link and open the page. These mirror
 // the server-side gates (the API still enforces them — this is UX, not security).
-const UPLOAD_PERMS = ['file.upload'];
-const ADMIN_PERMS  = ['file.delete', 'user.manage'];
+const UPLOAD_PERMS    = ['file.upload'];
+const ADMIN_PERMS     = ['file.delete', 'user.manage'];
+const PLAYLISTS_PERMS = ['content.access']; // playlists are per-user, full-library
 
 function hasAnyPerm(needed) {
   const perms = _identity?.permissions || [];
@@ -24,7 +25,7 @@ function hasAnyPerm(needed) {
 // principal (signed-in or anonymous) lacks the rights — they shouldn't see the
 // buttons for pages they cannot use.
 function applyNavPermissions() {
-  const gates = [['/upload', UPLOAD_PERMS], ['/admin', ADMIN_PERMS]];
+  const gates = [['/upload', UPLOAD_PERMS], ['/admin', ADMIN_PERMS], ['/playlists', PLAYLISTS_PERMS]];
   for (const [href, needed] of gates) {
     if (hasAnyPerm(needed)) continue;
     document.querySelectorAll(`.main-nav a[href="${href}"]`).forEach(a => a.remove());
@@ -41,7 +42,7 @@ export function gatePage(neededPerms) {
   return false;
 }
 
-export const PAGE_PERMS = { upload: UPLOAD_PERMS, admin: ADMIN_PERMS };
+export const PAGE_PERMS = { upload: UPLOAD_PERMS, admin: ADMIN_PERMS, playlists: PLAYLISTS_PERMS };
 
 function renderAccessDenied(anonymous) {
   const main = document.querySelector('main');
