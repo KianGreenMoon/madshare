@@ -21,7 +21,7 @@ Phase 3  Upload page rewrite              → docs/plans/upload-rework.md
 Phase 4  Admin files rework (metadata /   → docs/plans/admin-files-rework.md
             rename / merge / delete)         (DONE)
 Phase 5  Playlists + favorites + queue     → docs/plans/playlists.md
-            editing                          (next; builds on this doc's queue model)
+            editing                          (DONE)
 ```
 
 The critical path is **1 → (2 → 3)**. Phase 4 is independent of the shell and
@@ -508,14 +508,16 @@ instead of `app.js` directly.
   preview player.
 
 Phase 1's listening shell (library + upload + persistent continuous playback) is
-done and user-verified. **Remaining for the broader plan:** the deferred
-controller niceties (Media Session, repeat, auth-expiry probe), and the upload
-**precheck** (`upload-rework.md` §3b). cmus stays out (paused).
+done and user-verified, including the controller polish (Media Session, repeat,
+auth-expiry probe). The whole roadmap above is now complete — Phases 2–3
+(`upload-rework.md`), Phase 4 (`admin-files-rework.md`), and Phase 5
+(`playlists.md`, which also made the controller a true shell-owned singleton
+with queue mutations and localStorage resume). cmus stays out (paused).
 
 ## Open questions
 
-- **Duration cache vs. controller.** `DUR_CACHE` stays in `app.js` (page-side);
-  durations also ride on the queue's track objects (`track.dur`) once known.
-  Good enough for now; revisit if step 2 re-entry needs more.
+- ~~**Duration cache vs. controller.**~~ Resolved in Phase 5: the cache is a
+  shared module (`dur-cache.js`) read by the library, the queue panel, and the
+  playlists page; durations also ride on the queue's track objects (`track.dur`).
 - **Scroll restoration** on back/forward — nice-to-have; Turbo-style per-URL
   scroll memory. Defer unless it feels bad in testing (step 2).

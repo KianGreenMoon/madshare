@@ -20,7 +20,11 @@ UI.
   / AAC / OPUS), de-duplicated by content hash, with ID3/MP4/FLAC/OGG tag
   extraction and async cover-art variant generation.
 - Two bundled web UIs: a Jellyfin-style drill-down browser at `/` and a
-  cmus-style 3-panel view at `/cmus`, plus an `/admin` page.
+  cmus-style 3-panel view at `/cmus`, plus an `/admin` page. The listening
+  pages share a persistent shell, so playback continues across navigation.
+- Per-user playlists and favorites (`/playlists`): like tracks from the
+  library or the player bar, edit the play queue in place (reorder / remove /
+  play-next), save it as a playlist, and resume it after a reload.
 - Authentication (session cookies + API tokens), role-based permissions, and
   per-file/-group content access control (default-deny for anonymous visitors).
 - One process, one HTTP listener per configured socket; the web UI can be

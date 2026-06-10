@@ -1,7 +1,11 @@
 # Playlists, Favorites & Queue Editing
 
-Status: **all 4 steps implemented** on `aidev` (2026-06-10); steps 3–4 pending
-browser verification.
+Status: **DONE — all 4 steps implemented & user-verified** on `aidev`
+(2026-06-10). Endpoint reference: `docs/api/playlists.md`. Post-verification
+polish: the queue panel auto-closes on outside click (player bar exempt;
+`composedPath()` because row clicks re-render and detach the target), and the
+queue panel + playlists page read the shared duration cache (`dur-cache.js`)
+so known track lengths show before playback.
 Step 1 (backend): migration 015, `database/playlists.go`, `/api/playlists` +
 `/api/favorites` endpoints, Go tests.
 Step 2 (queue editing): controller is now a true singleton (`getController()`,
