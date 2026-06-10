@@ -83,16 +83,33 @@ function createController() {
     updateMediaSession(track);
   }
 
+  // shuffleIndex picks a random queue position other than the current one.
+  function shuffleIndex() {
+    const others = queue.map((_, i) => i).filter(i => i !== index);
+    return others[Math.floor(Math.random() * others.length)];
+  }
+
+  // goNext / goPrev are the MANUAL navigation paths (Next/Prev buttons, media
+  // keys, controller.next/prev). Next honours shuffle — that's what makes the
+  // shuffle button observable — and wraps at the end; Prev is sequential (no
+  // play history yet) and wraps at the front.
+  function goNext() {
+    if (index < 0 || !queue.length) return;
+    if (player.isShuffle() && queue.length > 1) { go(shuffleIndex()); return; }
+    go(index < queue.length - 1 ? index + 1 : 0);
+  }
+  function goPrev() {
+    if (index < 0 || !queue.length) return;
+    go(index > 0 ? index - 1 : queue.length - 1);
+  }
+
   // advance picks what plays after a track ends or fails, honouring repeat/shuffle.
-  // fromError suppresses repeat-one (don't loop a broken track forever).
+  // fromError suppresses repeat-one (don't loop a broken track forever). Unlike
+  // goNext it does NOT wrap at the end of the queue unless repeat-all is on.
   function advance({ fromError = false } = {}) {
     const repeat = player.getRepeat();
     if (repeat === 'one' && !fromError) { go(index); return; }
-    if (player.isShuffle() && queue.length > 1) {
-      const others = queue.map((_, i) => i).filter(i => i !== index);
-      go(others[Math.floor(Math.random() * others.length)]);
-      return;
-    }
+    if (player.isShuffle() && queue.length > 1) { go(shuffleIndex()); return; }
     if (index < queue.length - 1) { go(index + 1); return; }
     if (repeat === 'all' && queue.length) { go(0); return; }
     // else: end of queue, stop (audio is paused, bar shows the play icon).
@@ -116,8 +133,8 @@ function createController() {
   }
 
   const player = createPlayer({
-    onPrev: () => { if (index >= 0) go(index > 0 ? index - 1 : queue.length - 1); },
-    onNext: () => { if (index >= 0) go(index < queue.length - 1 ? index + 1 : 0); },
+    onPrev: goPrev,
+    onNext: goNext,
     onEnded: () => advance(),
     onError: handleAudioError,
     onLoadedMetadata: dur => { if (index >= 0) emit('duration', queue[index], dur); },
@@ -144,8 +161,8 @@ function createController() {
     const set = (action, fn) => { try { ms.setActionHandler(action, fn); } catch { /* unsupported */ } };
     set('play',  () => player.play());
     set('pause', () => player.pause());
-    set('previoustrack', () => { if (index >= 0) go(index > 0 ? index - 1 : queue.length - 1); });
-    set('nexttrack',     () => { if (index >= 0) go(index < queue.length - 1 ? index + 1 : 0); });
+    set('previoustrack', goPrev);
+    set('nexttrack',     goNext);
   }
 
   // restoreFromStorage resumes the persisted queue PAUSED: the player is pointed
@@ -249,8 +266,8 @@ function createController() {
     },
 
     playAt: i => go(i),
-    next: () => { if (index >= 0) go(index < queue.length - 1 ? index + 1 : 0); },
-    prev: () => { if (index >= 0) go(index > 0 ? index - 1 : queue.length - 1); },
+    next: goNext,
+    prev: goPrev,
     // current returns the playing track + index (or null), so a freshly rendered
     // view can re-highlight whatever is already playing.
     current: () => (index < 0 ? null : { track: queue[index], index }),
