@@ -27,6 +27,18 @@
        "workers reduced to N" string in parallel. -->
   <div class="toast-stack" id="toastStack" role="status" aria-live="polite" aria-atomic="true"></div>
 
+  <!-- ── Tabs: Upload ⇄ My uploads (the staging / review bucket) ─────────── -->
+  <div class="upload-tabs" role="tablist" aria-label="Upload views">
+    <button type="button" class="upload-tab is-active" id="tabBtnUpload" role="tab"
+            aria-selected="true" aria-controls="uploadPane">Upload</button>
+    <button type="button" class="upload-tab" id="tabBtnMine" role="tab"
+            aria-selected="false" aria-controls="minePane">
+      My uploads <span class="upload-tab__count" id="mineCount" hidden>0</span>
+    </button>
+  </div>
+
+  <div id="uploadPane" role="tabpanel" aria-labelledby="tabBtnUpload">
+
   <!-- ── Drop zone ──────────────────────────────────────────────────────── -->
   <section class="upload-section" aria-labelledby="dropHeading">
     <h1 id="dropHeading" class="section-title">Upload music</h1>
@@ -103,6 +115,31 @@
       bandwidth.
     </p>
   </section>
+
+  </div><!-- /uploadPane -->
+
+  <!-- ── My uploads — the staging list (review bucket) ──────────────────── -->
+  <div id="minePane" role="tabpanel" aria-labelledby="tabBtnMine" hidden>
+    <section class="upload-section" aria-labelledby="mineHeading">
+      <h1 id="mineHeading" class="section-title">My uploads</h1>
+      <p class="mine-intro">
+        Files you uploaded that aren&rsquo;t in the library yet. Check their tags
+        (Edit), then send them to approval. A moderator reviews them &mdash; or, if
+        you have moderation rights, they publish immediately.
+      </p>
+      <div class="mine-actions">
+        <button type="button" class="btn btn--accent" id="sendApproval" disabled>Send to approval</button>
+        <span class="mine-selinfo" id="mineSelInfo"></span>
+      </div>
+      <div id="mineReturned"></div>
+      <div id="mineDrafts"></div>
+      <div id="mineSubmitted"></div>
+      <p class="empty-note" id="mineEmpty">
+        Nothing staged. Files you upload appear here for a metadata check before
+        they reach the library.
+      </p>
+    </section>
+  </div><!-- /minePane -->
 
 </main>
 

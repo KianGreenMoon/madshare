@@ -5,6 +5,7 @@ import {
   fmtBytes, fmtTime, shortHash, toast, handleAuthError, el,
 } from './shared.js';
 import { createPlayer } from '../player.js';
+import { createTrackEditor } from '../track-edit.js';
 
 const filesBody   = document.getElementById('filesBody');
 const fileCountEl = document.getElementById('fileCount');
@@ -288,75 +289,29 @@ function displayTitle(f) {
   return f.title || f.filename || 'this file';
 }
 
-// ── Metadata edit modal ──────────────────────────────────────────────────────
-const editModal   = document.getElementById('editModal');
-const editForm    = document.getElementById('editForm');
-const editTitleIn = document.getElementById('editTitleInput');
-const editArtist  = document.getElementById('editArtist');
-const editAlbumAr = document.getElementById('editAlbumArtist');
-const editAlbum   = document.getElementById('editAlbum');
-const editSubmit  = document.getElementById('editSubmit');
-let editingFile   = null;
-let editFromEntity = false;  // edit opened from the entity view → refresh it on save
-
-function openEditModal(f, fromEntity = false) {
-  editingFile = f;
-  editFromEntity = fromEntity;
-  editTitleIn.value = f.title || '';
-  editArtist.value  = f.artist || '';
-  editAlbumAr.value = f.album_artist || '';
-  editAlbum.value   = f.album || '';
-  editModal.classList.remove('hidden');
-  editTitleIn.focus();
-}
-
-function closeEditModal() {
-  editModal.classList.add('hidden');
-  editingFile = null;
-}
-
-document.getElementById('editClose').addEventListener('click', closeEditModal);
-document.getElementById('editCancel').addEventListener('click', closeEditModal);
-editModal.addEventListener('click', e => { if (e.target === editModal) closeEditModal(); });
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape' && !editModal.classList.contains('hidden')) closeEditModal();
-});
-
-editForm.addEventListener('submit', async e => {
-  e.preventDefault();
-  if (!editingFile) return;
-  const f = editingFile;
-  const body = {
-    title:        editTitleIn.value,
-    artist:       editArtist.value,
-    album_artist: editAlbumAr.value,
-    album:        editAlbum.value,
-  };
-  editSubmit.disabled = true;
-  try {
-    const res = await fetch(`${API}/api/files/${encodeURIComponent(f.hash)}/metadata`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (handleAuthError(res)) return;
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+// ── Metadata edit modal (the shared track-edit.js component) ─────────────────
+const trackEditor = createTrackEditor({
+  patchURL: f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`,
+  note: 'This edits one track’s tags and reclassifies just that track. ' +
+        'To rename a whole album or artist (cover and all tracks stay attached), ' +
+        'use Rename in the “By entity” view instead.',
+  checkAuth: handleAuthError,
+  onSaved: (f, data, fromEntity) => {
     // Reflect the authoritative values returned by the server.
     f.title = data.title; f.artist = data.artist;
     f.album = data.album; f.album_artist = data.album_artist;
     renderFiles();
     // A tag edit can move the track between artist/album groupings, so refresh
     // the entity view too when the edit came from there.
-    if (editFromEntity) reloadEntityLevel();
+    if (fromEntity) reloadEntityLevel();
     toast(`Metadata saved for "${displayTitle(f)}".`, 'success');
-    closeEditModal();
-  } catch (err) {
-    toast(`Couldn't save metadata: ${err.message}`, 'error');
-  } finally {
-    editSubmit.disabled = false;
-  }
+  },
+  onError: err => toast(`Couldn't save metadata: ${err.message}`, 'error'),
 });
+
+function openEditModal(f, fromEntity = false) {
+  trackEditor.open(f, fromEntity);
+}
 
 // ── Two-step delete (move to trash) ──────────────────────────────────────────
 function makeDeleteButton(tr, f) {

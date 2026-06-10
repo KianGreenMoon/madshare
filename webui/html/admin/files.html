@@ -68,38 +68,8 @@
   </section>
 </main>
 
-<!-- Metadata edit modal (per-track tag edit) -->
-<div class="modal-backdrop hidden" id="editModal" role="dialog" aria-modal="true" aria-labelledby="editTitle">
-  <div class="modal">
-    <div class="modal-header">
-      <h2 id="editTitle">Edit metadata</h2>
-      <button class="btn-close" id="editClose" aria-label="Close">&times;</button>
-    </div>
-    <form class="edit-form" id="editForm">
-      <label>Title
-        <input type="text" id="editTitleInput" autocomplete="off">
-      </label>
-      <label>Artist
-        <input type="text" id="editArtist" autocomplete="off">
-      </label>
-      <label>Album artist
-        <input type="text" id="editAlbumArtist" autocomplete="off">
-      </label>
-      <label>Album
-        <input type="text" id="editAlbum" autocomplete="off">
-      </label>
-      <p class="modal-body" id="editNote">
-        This edits <strong>one track's</strong> tags and reclassifies just that
-        track. To rename a whole album or artist (cover and all tracks stay
-        attached), use <strong>Rename</strong> in the “By entity” view instead.
-      </p>
-      <div class="modal-actions">
-        <button type="button" class="btn btn-neutral" id="editCancel">Cancel</button>
-        <button type="submit" class="btn btn-neutral" id="editSubmit">Save</button>
-      </div>
-    </form>
-  </div>
-</div>
+<!-- The per-track metadata edit modal is the shared track-edit.js component
+     (it builds its own DOM); see webui/static/js/track-edit.js. -->
 
 <!-- Rename modal (whole artist / album entity) -->
 <div class="modal-backdrop hidden" id="renameModal" role="dialog" aria-modal="true" aria-labelledby="renameTitle">

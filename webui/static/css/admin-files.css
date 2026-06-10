@@ -37,35 +37,8 @@ tr.playing-row .play-btn { color: var(--accent); }
   white-space: nowrap;
 }
 
-/* Metadata edit form (inside the shared modal) */
-.edit-form {
-  display: grid;
-  gap: var(--space-3);
-}
-.edit-form label {
-  display: grid;
-  gap: var(--space-1);
-  font-size: 13px;
-  color: var(--text-muted);
-}
-.edit-form input {
-  padding: var(--space-2) var(--space-3);
-  background: var(--bg);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  font: inherit;
-}
-.edit-form input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.edit-form select {
-  padding: var(--space-2) var(--space-3);
-  background: var(--bg);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  font: inherit;
-}
-.edit-form select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* The .edit-form styles moved to app.css — they serve the shared track-edit.js
+   component (also used outside /admin) plus this page's rename/merge modals. */
 
 /* ── View tabs (entity ⇄ all files) ─────────────────────────────────────────── */
 /* `.hidden` is not a global utility here (it's defined only as

@@ -1,7 +1,8 @@
 # Moderation Review Bucket — Staged Uploads + Approval Queue
 
-Status: **Phase 1 (backend) implemented**; Phases 2–3 (uploader UI, moderation
-UI) pending; the Phase-4 auth.md notes shipped with Phase 1.
+Status: **Phases 1–2 implemented** (backend; track-edit.js extraction + the
+"My uploads" tab on /upload, browser-verified). Phase 3 (the /admin/moderation
+page) pending; the Phase-4 auth.md notes shipped with Phase 1.
 Branch: aidev
 Builds on: `docs/architecture/soft-delete.md` (Trash), `docs/architecture/auth.md`
 (roles-only access model), `docs/plans/admin-files-rework.md` (the entity/track

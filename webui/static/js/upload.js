@@ -1,5 +1,7 @@
 import { gatePage, PAGE_PERMS, getIdentity } from './auth.js';
 import { createHashPool } from './hash-pool.js';
+import { createTrackEditor } from './track-edit.js';
+import { getController } from './player-controller.js';
 
 // Upload page (/upload) controller.
 //
@@ -31,6 +33,8 @@ const API = document.querySelector('meta[name="api-url"]')?.content || '';
 let dropZone, fileInput, folderInput, addMusicBtn, addMenu, chooseFilesBtn, chooseFolderBtn;
 let workersRange, workersValue, startBtn, clearBtn, queueList, queueEmpty;
 let coverGrid, albumsEmpty, srStatus, toastStack, precheckToggle;
+let tabBtnUpload, tabBtnMine, uploadPane, minePane, mineCountEl;
+let sendApprovalBtn, mineSelInfo, mineReturned, mineDrafts, mineSubmitted, mineEmpty;
 
 function queryRefs() {
   dropZone        = document.getElementById('dropZone');
@@ -51,6 +55,17 @@ function queryRefs() {
   srStatus        = document.getElementById('srStatus');
   toastStack      = document.getElementById('toastStack');
   precheckToggle  = document.getElementById('precheckToggle');
+  tabBtnUpload    = document.getElementById('tabBtnUpload');
+  tabBtnMine      = document.getElementById('tabBtnMine');
+  uploadPane      = document.getElementById('uploadPane');
+  minePane        = document.getElementById('minePane');
+  mineCountEl     = document.getElementById('mineCount');
+  sendApprovalBtn = document.getElementById('sendApproval');
+  mineSelInfo     = document.getElementById('mineSelInfo');
+  mineReturned    = document.getElementById('mineReturned');
+  mineDrafts      = document.getElementById('mineDrafts');
+  mineSubmitted   = document.getElementById('mineSubmitted');
+  mineEmpty       = document.getElementById('mineEmpty');
 }
 
 // ── State ───────────────────────────────────────────────────────────────────
@@ -67,6 +82,12 @@ let running = false;
 let canEditMeta = false;      // metadata.edit permission (set after /auth/me)
 const activeXhrs = new Set(); // in-flight uploads, aborted on teardown
 let wireAbort = null;         // AbortController for this activation's listeners
+
+// ── My uploads (staging / review bucket) state ──────────────────────────────
+let mine = [];                // staged files from GET /api/my/uploads
+const mineSel = new Set();    // hashes selected for "Send to approval"
+let trackEditor = null;       // shared track-edit.js modal (lazy, destroyed on teardown)
+let stagedThisRun = 0;        // freshly staged uploads in the current run (for the nudge)
 
 // ── Pre-upload hash-precheck (3b) ────────────────────────────────────────────
 // When enabled (default), each file is SHA-256'd in a worker pool and checked
@@ -99,6 +120,7 @@ export async function init() {
   if (!gatePage(PAGE_PERMS.upload)) return;
   const identity = getIdentity();
   canEditMeta = Array.isArray(identity?.permissions) && identity.permissions.includes('metadata.edit');
+  loadMine();
 }
 
 export function teardown() {
@@ -108,6 +130,8 @@ export function teardown() {
   for (const xhr of activeXhrs) { try { xhr.abort(); } catch { /* ignore */ } }
   activeXhrs.clear();
   if (hashPool) { hashPool.terminate(); hashPool = null; }
+  trackEditor?.destroy();
+  trackEditor = null;
   // Reset for a clean next entry (the <main> is re-rendered fresh by the shell).
   queue.length = 0;
   groups.clear();
@@ -115,6 +139,9 @@ export function teardown() {
   nextId = 1;
   activeWorkers = 0;
   running = false;
+  mine = [];
+  mineSel.clear();
+  stagedThisRun = 0;
 }
 
 // wire attaches every listener that targets the swappable <main>, under the
@@ -172,6 +199,22 @@ function wire(signal) {
       localStorage.setItem(PRECHECK_KEY, precheckToggle.checked ? 'on' : 'off');
     }, { signal });
   }
+
+  // Upload ⇄ My uploads tabs
+  tabBtnUpload.addEventListener('click', () => selectTab('upload'), { signal });
+  tabBtnMine.addEventListener('click', () => selectTab('mine'), { signal });
+  sendApprovalBtn.addEventListener('click', sendForApproval, { signal });
+}
+
+function selectTab(which) {
+  const mineActive = which === 'mine';
+  uploadPane.hidden = mineActive;
+  minePane.hidden = !mineActive;
+  tabBtnUpload.classList.toggle('is-active', !mineActive);
+  tabBtnMine.classList.toggle('is-active', mineActive);
+  tabBtnUpload.setAttribute('aria-selected', String(!mineActive));
+  tabBtnMine.setAttribute('aria-selected', String(mineActive));
+  if (mineActive) loadMine();                    // refresh on entry
 }
 
 function toggleAddMenu() {
@@ -433,6 +476,14 @@ function finishRun() {
   updateButtons();
   resolveFolderCovers();                       // attach covers by co-location
   announce('Uploads finished. Review the albums below.');
+  // Staged uploads need a second step: nudge towards the My uploads tab.
+  if (stagedThisRun > 0) {
+    const n = stagedThisRun;
+    stagedThisRun = 0;
+    loadMine();
+    showToast(`${n} file${n === 1 ? '' : 's'} staged — open “My uploads” to check tags and send to approval.`);
+    announce(`${n} file${n === 1 ? '' : 's'} staged in My uploads.`);
+  }
 }
 
 // uploadItem runs the advisory precheck (hash in a worker → /api/files/check)
@@ -455,6 +506,11 @@ async function uploadItem(item) {
         if (status === 'present') {
           setProgress(item, 100);
           setItemState(item, 'done', 'Already in library — skipped');
+          return;                                  // skip the upload
+        }
+        if (status === 'pending') {
+          setProgress(item, 100);
+          setItemState(item, 'done', 'Already uploaded — awaiting review');
           return;                                  // skip the upload
         }
         if (status === 'trashed') {
@@ -522,7 +578,10 @@ function uploadXhr(item) {
 
       if (xhr.status >= 200 && xhr.status < 300 && body?.ok !== false) {
         setProgress(item, 100);
-        setItemState(item, 'done', body?.existed ? 'Already present' : 'Uploaded');
+        let msg = 'Uploaded';
+        if (body?.existed) msg = body?.pending ? 'Already uploaded — awaiting review' : 'Already present';
+        else if (body?.pending) msg = 'Uploaded — staged in My uploads';
+        setItemState(item, 'done', msg);
         onUploaded(item, body || {});
         done();
         return;
@@ -564,6 +623,7 @@ function handleBackoff(item) {
 // grouped — it stays in the queue marked "already present".
 function onUploaded(item, body) {
   item.hash = body.hash || '';
+  if (body.pending && !body.existed) stagedThisRun++;
   if (body.existed) return;
 
   item.title = body.title || '';
@@ -907,6 +967,204 @@ function showCover(g, variantUrl) {
   img.loading = 'lazy';
   img.src = variantUrl.startsWith('http') ? variantUrl : `${API}${variantUrl}`;
   g.el.art.replaceChildren(img);
+}
+
+// ── My uploads tab (staging / review bucket) ────────────────────────────────
+// Lists the caller's non-approved files (GET /api/my/uploads): returned files
+// (grouped under the moderator's note), editable drafts, and locked submitted
+// rows. Draft/returned rows can be edited (shared track-edit.js, owner-scoped
+// endpoint) and sent to approval; every row can be previewed via the shell
+// player (the blob gate lets uploaders fetch staged files).
+
+async function loadMine() {
+  try {
+    const res = await fetch(`${API}/api/my/uploads`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    mine = await res.json();
+  } catch (err) {
+    console.warn('My uploads unavailable:', err);
+    mine = [];
+  }
+  renderMine();
+}
+
+function getTrackEditor() {
+  trackEditor ||= createTrackEditor({
+    patchURL: f => `${API}/api/my/uploads/${encodeURIComponent(f.hash)}/metadata`,
+    note: 'Fix the tags before sending to approval — title, artist and album decide ' +
+          'where the track lands in the library.',
+    onSaved: (f, data) => {
+      const e = mine.find(x => x.hash === f.hash);
+      if (e) {
+        e.title = data.title; e.artist = data.artist;
+        e.album = data.album; e.album_artist = data.album_artist;
+      }
+      renderMine();
+      showToast(`Saved "${data.title || f.hash.slice(0, 8)}".`);
+    },
+    onError: err => showToast(`Couldn't save metadata: ${err.message}`),
+  });
+  return trackEditor;
+}
+
+function renderMine() {
+  // Selection defaults to everything editable — "Send to approval" submits the
+  // lot unless the user unticks rows.
+  mineSel.clear();
+  for (const e of mine) if (e.state === 'draft' || e.state === 'returned') mineSel.add(e.hash);
+
+  const returned  = mine.filter(e => e.state === 'returned');
+  const drafts    = mine.filter(e => e.state === 'draft');
+  const submitted = mine.filter(e => e.state === 'submitted');
+
+  // Returned files group under their moderator note (one message box per note).
+  mineReturned.replaceChildren();
+  if (returned.length) {
+    mineReturned.appendChild(mineHeading(`Returned by a moderator (${returned.length})`));
+    const byNote = new Map();
+    for (const e of returned) {
+      const key = e.note || '';
+      if (!byNote.has(key)) byNote.set(key, []);
+      byNote.get(key).push(e);
+    }
+    for (const [note, entries] of byNote) {
+      if (note) {
+        const box = document.createElement('p');
+        box.className = 'mine-note';
+        box.textContent = `Moderator: ${note}`;
+        mineReturned.appendChild(box);
+      }
+      mineReturned.appendChild(mineList(entries, true));
+    }
+  }
+
+  mineDrafts.replaceChildren();
+  if (drafts.length) {
+    mineDrafts.appendChild(mineHeading(`Drafts (${drafts.length})`));
+    mineDrafts.appendChild(mineList(drafts, true));
+  }
+
+  mineSubmitted.replaceChildren();
+  if (submitted.length) {
+    mineSubmitted.appendChild(mineHeading(`Awaiting review (${submitted.length})`));
+    mineSubmitted.appendChild(mineList(submitted, false));
+  }
+
+  mineEmpty.style.display = mine.length ? 'none' : '';
+  mineCountEl.textContent = String(mine.length);
+  mineCountEl.hidden = mine.length === 0;
+  updateMineControls();
+}
+
+function mineHeading(text) {
+  const h = document.createElement('h2');
+  h.className = 'section-title section-title--sub';
+  h.textContent = text;
+  return h;
+}
+
+function mineList(entries, editable) {
+  const ul = document.createElement('ul');
+  ul.className = 'mine-list';
+  for (const e of entries) ul.appendChild(mineRow(e, editable));
+  return ul;
+}
+
+function mineRow(e, editable) {
+  const li = document.createElement('li');
+  li.className = 'mine-item';
+  li.dataset.state = e.state;
+
+  if (editable) {
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    check.className = 'mine-item__check';
+    check.checked = mineSel.has(e.hash);
+    check.setAttribute('aria-label', `Select ${e.title || e.filename} for approval`);
+    check.addEventListener('change', () => {
+      if (check.checked) mineSel.add(e.hash); else mineSel.delete(e.hash);
+      updateMineControls();
+    });
+    li.appendChild(check);
+  }
+
+  const main = document.createElement('div');
+  main.className = 'mine-item__main';
+  const title = document.createElement('span');
+  title.className = 'mine-item__title';
+  title.textContent = e.title || e.filename;
+  const meta = document.createElement('span');
+  meta.className = 'mine-item__meta';
+  const parts = [e.artist, e.album].filter(Boolean);
+  parts.push(`${e.filename} · ${formatBytes(e.byte_size)}`);
+  meta.textContent = parts.join(' — ');
+  main.append(title, meta);
+  li.appendChild(main);
+
+  const actions = document.createElement('div');
+  actions.className = 'mine-item__actions';
+
+  const play = document.createElement('button');
+  play.type = 'button';
+  play.className = 'btn';
+  play.textContent = 'Play';
+  play.addEventListener('click', () => playMine(e));
+  actions.appendChild(play);
+
+  if (editable) {
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'btn';
+    edit.textContent = 'Edit';
+    edit.addEventListener('click', () => getTrackEditor().open(e));
+    actions.appendChild(edit);
+  }
+
+  li.appendChild(actions);
+  return li;
+}
+
+// playMine queues the whole staging list into the shared shell player, starting
+// at the clicked row — same continuity behavior as the library pages.
+function playMine(entry) {
+  const tracks = mine.map(e => ({
+    url: `${API}${e.url}`,
+    hash: e.hash,
+    title: e.title || e.filename,
+    artist: e.artist || '',
+    dur: e.duration || undefined,
+  }));
+  const idx = mine.findIndex(e => e.hash === entry.hash);
+  if (idx !== -1) getController().setQueue(tracks, idx);
+}
+
+function updateMineControls() {
+  const n = mineSel.size;
+  sendApprovalBtn.disabled = n === 0;
+  mineSelInfo.textContent = n ? `${n} file${n === 1 ? '' : 's'} selected` : '';
+}
+
+async function sendForApproval() {
+  const hashes = [...mineSel];
+  if (!hashes.length) return;
+  sendApprovalBtn.disabled = true;
+  try {
+    const res = await fetch(`${API}/api/my/uploads/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hashes }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const n = data.submitted ?? hashes.length;
+    showToast(data.approved
+      ? `Published ${n} file${n === 1 ? '' : 's'} to the library.`
+      : `Sent ${n} file${n === 1 ? '' : 's'} for review.`);
+    announce(data.approved ? 'Published to the library.' : 'Sent for review.');
+  } catch (err) {
+    showToast(`Send to approval failed: ${err.message}`);
+  }
+  await loadMine();                              // re-renders + re-enables controls
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
