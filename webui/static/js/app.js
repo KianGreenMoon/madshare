@@ -527,13 +527,6 @@ async function fetchMissingDurations(list) {
   }
 }
 
-// Reload whichever drill level is currently shown — called after a successful upload.
-async function reloadCurrentLevel() {
-  if (drill.level === 'artists')     loadArtists();
-  else if (drill.level === 'albums') drillToAlbums(drill.artist);
-  else                               drillToTracks(drill.artist, drill.album);
-}
-
 // ── Player (thin caller over player-controller.js) ─────────────────────────
 // The controller is the SHARED singleton (created by shell.js, same instance
 // here); it owns the <audio>, the player-bar, and the play QUEUE. The page
@@ -804,74 +797,6 @@ function renderSearchResults(results, q) {
   viewSearch.innerHTML = '';
   viewSearch.appendChild(frag);
   repaintHearts();
-}
-
-// ── Upload modal ─────────────────────────────────────────────────────────
-
-const modal     = document.getElementById('uploadModal');
-const dropZone  = document.getElementById('dropZone');
-const fileInput = document.getElementById('fileInput');
-const status    = document.getElementById('uploadStatus');
-
-document.getElementById('closeModal').addEventListener('click', closeModal);
-modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
-
-function openModal()  { modal.classList.remove('hidden'); fileInput.focus(); }
-function closeModal() { modal.classList.add('hidden'); setStatus('', ''); }
-
-dropZone.addEventListener('dragover',  e  => { e.preventDefault(); dropZone.classList.add('dragover'); });
-dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
-dropZone.addEventListener('drop', e => {
-  e.preventDefault();
-  dropZone.classList.remove('dragover');
-  const files = Array.from(e.dataTransfer.files); // BUG-12: handle all dropped files
-  if (files.length) uploadFiles(files);
-});
-
-fileInput.addEventListener('change', () => {
-  const files = Array.from(fileInput.files); // BUG-12
-  if (files.length) uploadFiles(files);
-  fileInput.value = '';
-});
-
-async function uploadFiles(files) { // BUG-12: upload sequentially, one reload at the end
-  for (const file of files) {
-    await uploadFile(file);
-  }
-}
-
-async function uploadFile(file) {
-  setStatus('Uploading "' + file.name + '"…', ''); // uses textContent — safe (BUG-06)
-  const fd = new FormData();
-  fd.append('file', file);
-
-  let data;
-  try {
-    const res = await fetch(`${API}/files/upload`, { method: 'POST', body: fd });
-    if (res.status === 401 || res.status === 403) {
-      setStatus('Uploading requires signing in.', 'error');
-      openLoginModal();
-      return;
-    }
-    if (!res.ok) {
-      const msg = await res.text().catch(() => res.statusText);
-      setStatus('Upload failed: ' + msg, 'error');
-      return;
-    }
-    data = await res.json();
-  } catch (err) {
-    setStatus('Upload error: ' + err.message, 'error');
-    return;
-  }
-
-  setStatus((data.existed ? 'Already in library' : 'Uploaded') + ': ' + file.name, 'success');
-  await reloadCurrentLevel();
-}
-
-function setStatus(msg, type) {
-  status.textContent = msg;
-  status.className   = 'upload-status' + (type ? ' ' + type : '');
 }
 
 // ── Utilities ────────────────────────────────────────────────────────────

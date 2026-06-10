@@ -47,23 +47,6 @@
 
 {{template "player-bar" .}}
 
-<!-- Upload modal (drag-and-drop from the library page) -->
-<div class="modal-backdrop hidden" id="uploadModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
-  <div class="modal">
-    <div class="modal-header">
-      <h2 id="modalTitle">Upload Music</h2>
-      <button class="btn-close" id="closeModal" aria-label="Close">&times;</button>
-    </div>
-    <div class="drop-zone" id="dropZone">
-      <input type="file" id="fileInput" accept="audio/*" aria-label="Choose audio file">
-      <div class="drop-icon">&#9835;</div>
-      <p>Drop an audio file here</p>
-      <small>or click to browse &mdash; MP3, FLAC, OGG, WAV</small>
-    </div>
-    <div class="upload-status" id="uploadStatus" aria-live="polite"></div>
-  </div>
-</div>
-
 {{template "auth-modals" .}}
 
 <script type="module" src="/static/js/shell.js"></script>
