@@ -3,9 +3,17 @@
 Status: **DONE — all 4 steps implemented & user-verified** on `aidev`
 (2026-06-10). Endpoint reference: `docs/api/playlists.md`. Post-verification
 polish: the queue panel auto-closes on outside click (player bar exempt;
-`composedPath()` because row clicks re-render and detach the target), and the
+`composedPath()` because row clicks re-render and detach the target); the
 queue panel + playlists page read the shared duration cache (`dur-cache.js`)
-so known track lengths show before playback.
+so known track lengths show before playback; and **shuffle reorders the queue
+itself** (owner-decided): toggling on snapshots the original order, pins the
+current track first and shuffles the rest (the panel shows the real play
+order; Next/Prev walk it); toggling off restores the original order with the
+current track still current. Both orders + the shuffle state persist across a
+reload (`relinkTracks` re-links object identity after JSON revival); queue
+edits while shuffled are mirrored into the original order (inserts land after
+the current track; `move` is a temporary-order edit by design). A queue set
+while shuffle is on is shuffled immediately, clicked track first.
 Step 1 (backend): migration 015, `database/playlists.go`, `/api/playlists` +
 `/api/favorites` endpoints, Go tests.
 Step 2 (queue editing): controller is now a true singleton (`getController()`,

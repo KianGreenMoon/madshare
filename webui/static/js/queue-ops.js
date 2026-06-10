@@ -36,3 +36,31 @@ export function clampIndex(i, length) {
   if (length <= 0) return -1;
   return Math.min(Math.max(0, i | 0), length - 1);
 }
+
+// shufflePerm returns a play-order permutation of [0..n): the current position
+// (if any) first, the rest Fisher-Yates shuffled. rand is injectable for tests.
+export function shufflePerm(n, current, rand = Math.random) {
+  const rest = [];
+  for (let i = 0; i < n; i++) if (i !== current) rest.push(i);
+  for (let i = rest.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [rest[i], rest[j]] = [rest[j], rest[i]];
+  }
+  return current >= 0 && current < n ? [current, ...rest] : rest;
+}
+
+// relinkTracks rebuilds the original-order array to SHARE object references
+// with the (shuffled) queue after both were revived from JSON — identity-based
+// operations (un-shuffle, remove) depend on shared references. Duplicate URLs
+// are matched by occurrence; unmatched entries are kept as-is.
+export function relinkTracks(original, queue) {
+  const pool = new Map();
+  for (const t of queue) {
+    if (!pool.has(t.url)) pool.set(t.url, []);
+    pool.get(t.url).push(t);
+  }
+  return original.map(o => {
+    const candidates = pool.get(o.url);
+    return candidates && candidates.length ? candidates.shift() : o;
+  });
+}

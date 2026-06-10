@@ -102,12 +102,16 @@ export function createPlayer(callbacks = {}) {
   btnPlay.addEventListener('click', toggle);
   btnPrev?.addEventListener('click', () => onPrev());
   btnNext?.addEventListener('click', () => onNext());
-  btnShuffle?.addEventListener('click', () => {
-    shuffle = !shuffle;
+  function applyShuffleUI() {
+    if (!btnShuffle) return;
     btnShuffle.classList.toggle('active', shuffle);
     const label = shuffle ? 'Shuffle on' : 'Shuffle off';
     btnShuffle.setAttribute('aria-label', label);
     btnShuffle.title = label;
+  }
+  btnShuffle?.addEventListener('click', () => {
+    shuffle = !shuffle;
+    applyShuffleUI();
     onShuffleToggle(shuffle);
   });
 
@@ -166,6 +170,10 @@ export function createPlayer(callbacks = {}) {
     seekTo,
     nudge,
     isShuffle: () => shuffle,
+    // setShuffle restores shuffle state programmatically (e.g. after a reload).
+    // It updates the button UI but does NOT fire onShuffleToggle — the caller
+    // is re-establishing state, not requesting a re-shuffle.
+    setShuffle: on => { shuffle = !!on; applyShuffleUI(); },
     getRepeat: () => repeat,
     get paused()      { return audio.paused; },
     get duration()    { return audio.duration; },
