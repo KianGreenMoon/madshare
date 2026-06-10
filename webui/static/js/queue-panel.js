@@ -38,6 +38,19 @@ export function initQueuePanel(controller, showToast) {
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && open) setOpen(false);
   });
+  // Auto-close on outside click. The player bar is exempt so play/pause/seek
+  // (and the toggle button itself) don't snap the panel shut while you're
+  // watching the queue. composedPath() — not contains() — because clicking a
+  // queue row re-renders the list, detaching the clicked node before this
+  // bubble-phase listener runs.
+  document.addEventListener('click', e => {
+    if (!open) return;
+    const path = e.composedPath();
+    if (path.includes(panel)) return;
+    const bar = document.getElementById('player-bar');
+    if (bar && path.includes(bar)) return;
+    setOpen(false);
+  });
 
   clearBtn.addEventListener('click', () => controller.clear());
 
