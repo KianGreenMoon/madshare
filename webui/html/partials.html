@@ -125,6 +125,14 @@
     </div>
 
     <div class="player-right">
+      {{if ne .Page "admin"}}
+      <button class="ctrl-btn" id="btnQueue" aria-label="Show queue" title="Queue"
+              aria-expanded="false" aria-controls="queue-panel">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M3 10h11v2H3zm0-4h11v2H3zm0 8h7v2H3zm13-1v8l6-4z"/>
+        </svg>
+      </button>
+      {{end}}
       <span class="player-time" id="playerTime" aria-live="off">0:00 / 0:00</span>
       <div class="player-volume">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -135,6 +143,28 @@
     </div>
   </div>
 </div>
+{{if ne .Page "admin"}}
+{{/* queue-panel: the current queue as an editable list (Phase 5 step 2 of
+     docs/plans/playlists.md). Shell chrome — lives outside <main>, wired by
+     queue-panel.js via shell.js, survives page swaps like the player bar. */}}
+<div id="queue-panel" class="hidden" role="region" aria-label="Play queue">
+  <div class="queue-head">
+    <span class="queue-title">Queue <span class="queue-count" id="queueCount"></span></span>
+    <div class="queue-actions">
+      <button class="btn btn-neutral queue-btn-sm" id="queueSaveBtn">Save as playlist&hellip;</button>
+      <button class="btn btn-neutral queue-btn-sm" id="queueClearBtn">Clear</button>
+      <button class="btn-close" id="queueCloseBtn" aria-label="Close queue">&times;</button>
+    </div>
+  </div>
+  <form class="queue-save-form" id="queueSaveForm" hidden>
+    <input type="text" id="queueSaveName" placeholder="Playlist name" maxlength="200" required
+           aria-label="Playlist name">
+    <button type="submit" class="btn btn-neutral queue-btn-sm">Save</button>
+    <button type="button" class="btn btn-neutral queue-btn-sm" id="queueSaveCancel">Cancel</button>
+  </form>
+  <div class="queue-list" id="queueList" role="list" aria-label="Queued tracks"></div>
+</div>
+{{end}}
 <audio id="audio" preload="auto"></audio>
 {{end}}
 

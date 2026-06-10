@@ -1,8 +1,19 @@
 # Playlists, Favorites & Queue Editing
 
-Status: **step 1 (backend) implemented** on `aidev` (2026-06-10) — migration 015,
-`database/playlists.go`, `/api/playlists` + `/api/favorites` endpoints, Go tests.
-Steps 2–4 (queue editing UI, `/playlists` page, favorites/quick-add) pending.
+Status: **steps 1–2 implemented** on `aidev` (2026-06-10).
+Step 1 (backend): migration 015, `database/playlists.go`, `/api/playlists` +
+`/api/favorites` endpoints, Go tests.
+Step 2 (queue editing): controller is now a true singleton (`getController()`,
+created by `shell.js`) with an event API (`on('trackchange'|'duration'|'error'|
+'autherror'|'queuechange'|'queuereplaced')`); mutations implemented
+(`enqueue`/`insertAt`/`playNext`/`removeAt`/`move`/`clear`); dirty-queue
+replace-with-undo toast; localStorage resume (paused, `preload=none` so a stale
+session can't pop the login modal pre-gesture); queue panel (`queue-panel.js` +
+player-bar queue button, hidden on admin) with click-to-play, remove, drag +
+Ctrl/Alt+Arrow reorder, Clear, Save-as-playlist; index arithmetic extracted to
+DOM-free `queue-ops.js` with node tests (`node --test
+tests/js/queue-ops.test.mjs`). Steps 3–4 (/playlists page, favorites/quick-add)
+pending; browser verification of step 2 pending.
 Branch: aidev
 Builds on: `docs/plans/persistent-shell-playback.md` (the shell-owned queue and
 the `PlayerController`'s reserved mutation API — this phase is the payoff that

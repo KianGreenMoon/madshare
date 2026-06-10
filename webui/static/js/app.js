@@ -1,5 +1,5 @@
 import { openLoginModal } from './auth.js';
-import { createController } from './player-controller.js';
+import { getController } from './player-controller.js';
 import { fmtTime } from './player.js';
 
 // Read API base from HTML meta. Empty default => relative, same-origin URLs
@@ -259,6 +259,9 @@ function renderTrackList(tracks) {
       : (durCache[url] || '—');
     libraryPlaylist.push({
       url,
+      // hash rides on the track for the queue panel's "Save as playlist"
+      // (t.url is /files/<hash>/<filename>).
+      hash:   t.url.split('/')[2] || null,
       title:  t.title  || t.filename || 'Unknown',
       artist: drill.artist || '',
       dur,
@@ -355,19 +358,19 @@ async function reloadCurrentLevel() {
 }
 
 // ── Player (thin caller over player-controller.js) ─────────────────────────
-// The controller owns the <audio>, the player-bar, and the play QUEUE; the page
+// The controller is the SHARED singleton (created by shell.js, same instance
+// here); it owns the <audio>, the player-bar, and the play QUEUE. The page
 // builds queues (controller.setQueue on a track click) and reflects state — row
-// highlighting and duration write-back — through the callbacks below. The queue
-// is stable: browsing never changes it, only an explicit play does. Rows are
-// matched by their track URL (data-url) so the highlight is correct across the
-// library and search views and survives a re-render.
+// highlighting and duration write-back — through the subscriptions below
+// (module-scoped: they run once and persist, and are harmless on other pages
+// since they match rows by data-url). Auth-expiry and the queue-replaced undo
+// toast are shell concerns, wired in shell.js. The queue is stable: browsing
+// never changes it, only an explicit play or a manual queue edit does.
 
-const controller = createController({
-  onTrackChange: track => highlightPlaying(track.url),
-  onDuration:    writeDuration,
-  onError:       track => markUnavailable(track.url),
-  onAuthError:   () => openLoginModal(),   // session expired mid-playback
-});
+const controller = getController();
+controller.on('trackchange', track => highlightPlaying(track.url));
+controller.on('duration', writeDuration);
+controller.on('error', track => markUnavailable(track.url));
 
 // highlightPlaying marks the track row whose URL is playing (and clears the rest).
 function highlightPlaying(url) {
@@ -573,6 +576,7 @@ function renderSearchResults(results, q) {
     // Build the queue a search-result click would play (controller.setQueue).
     const searchPlaylist = tracks.map(t => ({
       url:    `${API}${t.url}`,
+      hash:   t.url.split('/')[2] || null,
       title:  t.title       || 'Unknown',
       artist: t.artist_name || '',
     }));

@@ -9,7 +9,9 @@
 // Each page ships `<body data-page=… data-module=/static/js/x.js>`; the shell
 // imports that module and runs its exported init()/teardown(). Anything that is
 // not shell-native (no data-module) falls back to a full browser navigation.
-import { initAuth } from './auth.js';
+import { initAuth, openLoginModal } from './auth.js';
+import { getController } from './player-controller.js';
+import { initQueuePanel } from './queue-panel.js';
 
 // ── Theme (persistent header — applied once for every shell page) ────────────
 const VALID_THEMES = new Set(['dark', 'light', 'ocean', 'sunset']);
@@ -142,9 +144,70 @@ window.addEventListener('popstate', () => {
   navigate(location.pathname + location.search, { push: false });
 });
 
+// ── Toasts (shared with shell features that need an action button) ───────────
+// Mirrors auth.js's toast markup/styles, plus an optional inline action — used
+// for the queue replace-with-undo flow.
+export function showToast(message, { type = 'status', actionLabel, onAction, timeout = 5000 } = {}) {
+  const stack = document.getElementById(type === 'error' ? 'toastAlert' : 'toastStatus');
+  if (!stack) return;
+
+  const el = document.createElement('div');
+  el.className = 'toast' + (type === 'success' ? ' is-success' : type === 'error' ? ' is-error' : '');
+
+  const icon = document.createElement('span');
+  icon.className = 'toast-icon';
+  icon.setAttribute('aria-hidden', 'true');
+  icon.textContent = type === 'success' ? '✓' : type === 'error' ? '✕' : 'ℹ';
+
+  const msg = document.createElement('span');
+  msg.className = 'toast-msg';
+  msg.textContent = message;
+
+  el.append(icon, msg);
+
+  if (actionLabel && onAction) {
+    const action = document.createElement('button');
+    action.className = 'toast-action';
+    action.textContent = actionLabel;
+    action.addEventListener('click', () => { el.remove(); onAction(); });
+    el.appendChild(action);
+  }
+
+  const close = document.createElement('button');
+  close.className = 'toast-close';
+  close.setAttribute('aria-label', 'Dismiss');
+  close.textContent = '×';
+  close.addEventListener('click', () => el.remove());
+  el.appendChild(close);
+
+  stack.appendChild(el);
+  if (type !== 'error') setTimeout(() => el.remove(), timeout);
+}
+
+// ── Player / queue (shell-owned: survives every swap) ────────────────────────
+// The controller singleton is created here so the queue, the panel, and the
+// localStorage resume work on every listening page — not just the library.
+function wirePlayer() {
+  const controller = getController();
+  // Session expired mid-playback: the <audio> fetch bypasses the router, so the
+  // controller probes and reports it here — surface the login modal.
+  controller.on('autherror', openLoginModal);
+  // A manually edited queue was replaced by a track click (Decision §5):
+  // uniform replace, with an undo toast instead of silent loss.
+  controller.on('queuereplaced', restore => {
+    showToast('Queue replaced.', {
+      actionLabel: 'Undo — restore my queue',
+      onAction: restore,
+      timeout: 8000,
+    });
+  });
+  initQueuePanel(controller, showToast);
+}
+
 // ── Boot ─────────────────────────────────────────────────────────────────────
 (async function boot() {
   wireTheme();
+  wirePlayer();
   await initAuth();        // once for the document's lifetime
   await runModule();       // the server already rendered this page; just init it
 })();

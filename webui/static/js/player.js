@@ -64,10 +64,14 @@ export function createPlayer(callbacks = {}) {
   let repeat  = 'off';                 // 'off' | 'all' | 'one'
   const REPEAT_MODES = ['off', 'all', 'one'];
 
-  // load points the player at a new track and starts it, revealing the bar.
-  function load({ url, title, artist }) {
+  // load points the player at a new track and (by default) starts it, revealing
+  // the bar. autoplay:false is the queue-resume path: it sets preload=none so
+  // the browser doesn't even fetch the file until the user presses play — a
+  // stale session must not trigger an error (and a login prompt) on page load.
+  function load({ url, title, artist }, { autoplay = true } = {}) {
+    audio.preload = autoplay ? 'auto' : 'none';
     audio.src = url;
-    audio.play().catch(() => {});
+    if (autoplay) audio.play().catch(() => {});
     titleEl.textContent = title || '';
     if (artistEl) artistEl.textContent = artist || '';
     bar.classList.remove('hidden');

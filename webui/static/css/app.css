@@ -813,6 +813,19 @@ input[type="range"]::-moz-range-thumb {
 }
 .toast-close:hover { color: var(--text); }
 .toast-close:focus-visible { outline: 2px solid var(--accent); }
+.toast-action {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 0 2px;
+  text-decoration: underline;
+}
+.toast-action:hover { color: var(--accent-dim); }
+.toast-action:focus-visible { outline: 2px solid var(--accent); }
 
 /* ── Narrow viewport: search drops to second row ── */
 @media (max-width: 599px) {
