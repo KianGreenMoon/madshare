@@ -150,7 +150,9 @@ header {
 }
 
 /* ── About mini-menu (header) ── */
-.about { position: relative; }
+/* A flex container (not the default block) so the inline-flex button has no line
+   box and centres against the sibling .nav-link anchors instead of sitting low. */
+.about { position: relative; display: inline-flex; align-items: center; }
 
 /* The trigger reuses .nav-link sizing/colour; reset the <button> chrome. */
 .about__btn {
@@ -185,8 +187,6 @@ header {
 .about__item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
   width: 100%;
   padding: 6px 10px;
   font-family: inherit;
@@ -201,12 +201,6 @@ header {
 }
 .about__item:hover { color: var(--text); background: var(--surface-hover); }
 .about__item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-
-.about__ver {
-  font-size: 11px;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-}
 
 /* ── About modal body (reuses .modal-backdrop / .modal / .btn-close) ── */
 .about-card { text-align: center; }
