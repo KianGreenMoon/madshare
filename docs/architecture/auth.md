@@ -110,6 +110,8 @@ metadata.edit       edit media_metadata / license / guest_playable
 library.share       set library-wide sharing scope (madnetwork/friends/none)
 federation.manage   manage trusted peers (future)
 content.access      play/download any file in the library
+content.moderate    act on staged uploads: approve / return / discard; holders'
+                    own submits self-approve (docs/plans/moderation-review-bucket.md)
 ```
 
 ### 4.2 Roles = bundles (seed data, extensible)
@@ -120,9 +122,14 @@ custom roles are allowed later (`role.manage`).
 | Role | Permissions |
 |---|---|
 | `admin` | all |
-| `moderator` | `file.delete`, `metadata.edit`, `content.access` (+ federation approvals later) |
+| `moderator` | `file.upload`, `file.delete`, `metadata.edit`, `content.access`, `content.moderate` (+ federation approvals later) |
 | `uploader` | `file.upload`, `content.access` |
 | `listener` | `content.access` |
+
+Migration 017 added `content.moderate` (admin + moderator) and gave the
+moderator role `file.upload`: **moderators are the trusted uploaders** — their
+own uploads still stage in "My uploads", but their *Send to approval*
+publishes immediately instead of queueing for another moderator.
 
 A user may hold multiple roles; effective permissions = union.
 
@@ -175,6 +182,21 @@ unfiltered listings.
 `/files/*` for any identity that lacks `content.access`. Identities holding
 `content.access` (admin, moderator, …) pass through so the Trash tab can preview
 them. See `docs/architecture/soft-delete.md`.
+
+**Staged (pending-review) files** (`review_state <> 'approved'`, migration 017)
+are likewise excluded from every listing, search, playlist and the guest
+predicate. At `/files/*` their blobs serve only to identities holding
+`file.upload` or `content.moderate` (uploaders, moderators, admins) and 404
+for everyone else, including `content.access`-only listeners.
+
+> **⚠ Potentially dangerous, may be tightened later (owner-accepted,
+> 2026-06-11):** the pending-blob check is *not owner-scoped*. Any identity
+> with `file.upload` can fetch **any** user's staged blob if it knows the
+> 64-hex content hash — hashes are unguessable but are not capability tokens
+> (they leak via the `/api/files/check` oracle for content you already
+> possess, via logs, or via sharing). If uploader-vs-uploader confidentiality
+> of staged content ever matters, scope the gate to the owner
+> (`uploaded_by`) plus `content.moderate` in `api.fileAccessGuard`.
 
 ## 6. Schema (new migration)
 

@@ -99,6 +99,11 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if existing != nil {
+		// A staged (pending-review) duplicate is reported so the UI can say
+		// "already uploaded, awaiting moderation" instead of "in the library".
+		// Ownership stays with the first uploader. An empty state (fakes /
+		// pre-017 rows can't occur, but cheap to guard) counts as approved.
+		pending := existing.ReviewState != "" && existing.ReviewState != database.ReviewApproved
 		restored := false
 		if existing.DeletedAt.Valid {
 			// File is in the trash. Whether re-uploading the bytes restores it is
@@ -140,6 +145,7 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 			"existed":          true,
 			"restored":         restored,
 			"trashed":          existing.DeletedAt.Valid && !restored,
+			"pending":          pending && !existing.DeletedAt.Valid,
 			"hash":             hash,
 			"filename":         filename,
 			"size":             size,
@@ -161,6 +167,15 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// With auth configured, new uploads stage as drafts (the uploader fixes
+	// metadata in "My uploads" and submits for review); without auth there is
+	// no staging flow and inserts stay immediately approved.
+	// See docs/plans/moderation-review-bucket.md.
+	reviewState := database.ReviewApproved
+	if h.authzEnabled {
+		reviewState = database.ReviewDraft
+	}
+
 	now := time.Now().Unix()
 	f := &database.File{
 		Hash:           hash,
@@ -170,6 +185,7 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		ObjectKey:      hash + "/" + filename,
 		CreatedAt:      now,
 		UploadedBy:     actorID(ctx),
+		ReviewState:    reviewState,
 	}
 	upload := &database.FileUpload{Filename: filename, UploadedAt: now}
 	meta := tagsToMetadata(tags, now)
@@ -200,6 +216,7 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"ok":               true,
 		"existed":          false,
+		"pending":          reviewState != database.ReviewApproved,
 		"hash":             hash,
 		"filename":         filename,
 		"size":             size,
@@ -327,10 +344,11 @@ func mimeToExt(mimeType string) (string, bool) {
 }
 
 // checkFile reports whether content with the given SHA-256 hash is already on the
-// server: "absent" (no such content), "present" (live), or "trashed" (soft-
-// deleted). Advisory only — the client uses it to skip duplicate uploads; the
-// upload path re-hashes and dedupes on receipt regardless. Gated on file.upload
-// (a by-hash existence oracle must not be anonymous). See docs/plans/upload-rework.md §3b.
+// server: "absent" (no such content), "present" (live in the library), "pending"
+// (staged, awaiting review), or "trashed" (soft-deleted). Advisory only — the
+// client uses it to skip duplicate uploads; the upload path re-hashes and dedupes
+// on receipt regardless. Gated on file.upload (a by-hash existence oracle must
+// not be anonymous). See docs/plans/upload-rework.md §3b.
 func (h *handler) checkFile(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
 	var body struct {
@@ -354,9 +372,12 @@ func (h *handler) checkFile(w http.ResponseWriter, r *http.Request) {
 
 	status := "absent"
 	if f != nil {
-		if f.DeletedAt.Valid {
+		switch {
+		case f.DeletedAt.Valid:
 			status = "trashed"
-		} else {
+		case f.ReviewState != "" && f.ReviewState != database.ReviewApproved:
+			status = "pending"
+		default:
 			status = "present"
 		}
 	}

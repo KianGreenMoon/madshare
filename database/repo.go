@@ -152,6 +152,25 @@ type Repository interface {
 	// Unknown hashes return false.
 	FileAccessibleByHash(ctx context.Context, hash string) (bool, error)
 
+	// --- Moderation review bucket (docs/plans/moderation-review-bucket.md) ---
+
+	// ListUploadsByUser returns the user's staged files (non-trashed, review
+	// state other than approved), newest first. Backs the "My uploads" tab.
+	ListUploadsByUser(ctx context.Context, userID int64) ([]*ReviewEntry, error)
+
+	// ListPendingReview returns every staged file with its uploader's name,
+	// ordered for by-uploader grouping in the moderation queue.
+	ListPendingReview(ctx context.Context) ([]*ReviewEntry, error)
+
+	// UpdateReviewState applies a guarded review-state transition (single
+	// UPDATE: state must be in From, file non-trashed, owner matching when
+	// OwnerID is set). found is false when no row satisfies the guard.
+	UpdateReviewState(ctx context.Context, hash string, t ReviewTransition) (found bool, err error)
+
+	// FileReviewInfo is the narrow (state, uploader, trashed) lookup used by
+	// the blob-access gate and ownership checks. found is false on unknown hash.
+	FileReviewInfo(ctx context.Context, hash string) (state string, uploadedBy sql.NullInt64, deleted bool, found bool, err error)
+
 	// --- Cover image variants & async job queue (Phase 1: upload & covers) ---
 
 	// EnqueueImageJob inserts a pending image-variant job. Idempotent per

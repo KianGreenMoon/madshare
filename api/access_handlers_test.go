@@ -42,7 +42,10 @@ func doJSON(t *testing.T, client *http.Client, method, url string, body any, out
 }
 
 // uploadAndHash uploads a file as the given client and returns its content hash
-// and download path (/files/<hash>/<filename>).
+// and download path (/files/<hash>/<filename>). With moderation (migration 017)
+// an authenticated upload stages as a draft, so the helper submits it right
+// away — the callers here are admin clients, whose submit self-approves — to
+// yield a published library file like before.
 func uploadAndHash(t *testing.T, client *http.Client, base, name string) (hash, path string) {
 	t.Helper()
 	resp := uploadViaClient(t, client, base, name)
@@ -57,7 +60,25 @@ func uploadAndHash(t *testing.T, client *http.Client, base, name string) (hash, 
 	if body.Hash == "" {
 		t.Fatalf("upload returned no hash (status %d)", resp.StatusCode)
 	}
+	approveUpload(t, client, base, body.Hash)
 	return body.Hash, "/files/" + body.Hash + "/" + body.Filename
+}
+
+// approveUpload publishes a staged upload via the submit endpoint. The client
+// must hold content.moderate (e.g. the admin) so the submit self-approves.
+func approveUpload(t *testing.T, client *http.Client, base, hash string) {
+	t.Helper()
+	var out struct {
+		Approved  bool `json:"approved"`
+		Submitted int  `json:"submitted"`
+	}
+	if code := doJSON(t, client, http.MethodPost, base+"/api/my/uploads/submit",
+		map[string]any{"hashes": []string{hash}}, &out); code != http.StatusOK {
+		t.Fatalf("submit upload = %d, want 200", code)
+	}
+	if !out.Approved || out.Submitted != 1 {
+		t.Fatalf("submit upload: approved=%v submitted=%d, want self-approve of 1", out.Approved, out.Submitted)
+	}
 }
 
 func TestManage_GuestPlayableEndpoint(t *testing.T) {

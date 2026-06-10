@@ -160,7 +160,7 @@ func (db *DB) GetPlaylist(ctx context.Context, userID, playlistID int64) (*Playl
 	rows, err := db.QueryContext(ctx, `
 		SELECT i.id, f.id, f.hash, f.object_key, f.mime_type,
 		       m.title, m.artist, m.album, m.duration_seconds,
-		       f.deleted_at IS NOT NULL
+		       (f.deleted_at IS NOT NULL OR f.review_state <> 'approved')
 		FROM playlist_items i
 		JOIN files f          ON f.id = i.file_id
 		LEFT JOIN media_metadata m ON m.file_id = f.id
@@ -252,7 +252,7 @@ func addItemsTx(ctx context.Context, tx *sql.Tx, playlistID int64, hashes []stri
 	for _, hash := range hashes {
 		var fileID int64
 		err := tx.QueryRowContext(ctx,
-			`SELECT id FROM files WHERE hash = ? AND deleted_at IS NULL`, hash).Scan(&fileID)
+			`SELECT f.id FROM files f WHERE f.hash = ? AND `+visibleFile, hash).Scan(&fileID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, ErrFileNotFound
 		}
@@ -374,7 +374,7 @@ func (db *DB) ToggleFavorite(ctx context.Context, userID int64, hash string) (li
 	}
 	var fileID int64
 	err = db.QueryRowContext(ctx,
-		`SELECT id FROM files WHERE hash = ? AND deleted_at IS NULL`, hash).Scan(&fileID)
+		`SELECT f.id FROM files f WHERE f.hash = ? AND `+visibleFile, hash).Scan(&fileID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, ErrFileNotFound
 	}
@@ -412,7 +412,7 @@ func (db *DB) ListFavoriteHashes(ctx context.Context, userID int64) ([]string, e
 		FROM playlists p
 		JOIN playlist_items i ON i.playlist_id = p.id
 		JOIN files f          ON f.id = i.file_id
-		WHERE p.user_id = ? AND p.kind = 'favorites' AND f.deleted_at IS NULL
+		WHERE p.user_id = ? AND p.kind = 'favorites' AND `+visibleFile+`
 		ORDER BY i.position`, userID)
 	if err != nil {
 		return nil, err

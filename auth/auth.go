@@ -24,6 +24,10 @@ const (
 	// the roles-only access model (docs/plans/access-roles-only.md). Anonymous
 	// access is still governed separately by the guest-playable/license policy.
 	PermContentAccess = "content.access"
+	// PermContentModerate — may act on staged uploads (approve / return /
+	// discard). Holders' own submissions self-approve: moderators are the
+	// trusted uploaders (docs/plans/moderation-review-bucket.md).
+	PermContentModerate = "content.moderate"
 )
 
 // SessionCookieName is the cookie carrying the opaque session token.

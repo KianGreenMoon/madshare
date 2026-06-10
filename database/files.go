@@ -9,18 +9,26 @@ import (
 	"time"
 )
 
+// visibleFile is the predicate every user-facing listing / access query must
+// apply (aliased table f): a file is publicly visible only when it is neither
+// trashed nor pending review (docs/plans/moderation-review-bucket.md). Trash
+// and review/staging queries intentionally do not use it.
+const visibleFile = "f.deleted_at IS NULL AND f.review_state = 'approved'"
+
 // GetFileByHash looks up a files row by content hash. Returns (nil, nil) if
 // no row matches — callers treat that as "new upload". Soft-deleted files are
 // returned with DeletedAt set so the upload handler can restore them.
 func (db *DB) GetFileByHash(ctx context.Context, hash string) (*File, error) {
 	const q = `
-		SELECT id, hash, byte_size, mime_type, storage_backend, object_key, created_at, deleted_at
+		SELECT id, hash, byte_size, mime_type, storage_backend, object_key, created_at, deleted_at,
+		       review_state, review_note, submitted_at
 		FROM files
 		WHERE hash = ?`
 
 	var f File
 	err := db.QueryRowContext(ctx, q, hash).Scan(
 		&f.ID, &f.Hash, &f.ByteSize, &f.MimeType, &f.StorageBackend, &f.ObjectKey, &f.CreatedAt, &f.DeletedAt,
+		&f.ReviewState, &f.ReviewNote, &f.SubmittedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -41,10 +49,15 @@ func (db *DB) InsertFile(ctx context.Context, f *File, upload *FileUpload, meta 
 	}
 	defer tx.Rollback()
 
+	// An unset ReviewState collapses to approved — the pre-moderation behavior
+	// kept by auth-less embedding and existing tests.
+	if f.ReviewState == "" {
+		f.ReviewState = ReviewApproved
+	}
 	res, err := tx.ExecContext(ctx, `
-		INSERT INTO files (hash, byte_size, mime_type, storage_backend, object_key, created_at, uploaded_by)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		f.Hash, f.ByteSize, f.MimeType, f.StorageBackend, f.ObjectKey, f.CreatedAt, f.UploadedBy,
+		INSERT INTO files (hash, byte_size, mime_type, storage_backend, object_key, created_at, uploaded_by, review_state)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		f.Hash, f.ByteSize, f.MimeType, f.StorageBackend, f.ObjectKey, f.CreatedAt, f.UploadedBy, f.ReviewState,
 	)
 	if err != nil {
 		return fmt.Errorf("insert files: %w", err)
@@ -145,9 +158,9 @@ func (db *DB) listFiles(ctx context.Context, where string, args ...any) ([]*File
 		FROM files f
 		LEFT JOIN media_metadata m ON m.file_id = f.id`
 	if where != "" {
-		q += "\n\t\tWHERE f.deleted_at IS NULL AND " + where
+		q += "\n\t\tWHERE " + visibleFile + " AND " + where
 	} else {
-		q += "\n\t\tWHERE f.deleted_at IS NULL"
+		q += "\n\t\tWHERE " + visibleFile
 	}
 	q += "\n\t\tORDER BY f.created_at DESC"
 
@@ -304,7 +317,8 @@ func (db *DB) ListTrashedFiles(ctx context.Context) ([]*FileListEntry, error) {
 			m.duration_seconds,
 			f.guest_playable,
 			f.license,
-			f.deleted_at
+			f.deleted_at,
+			f.review_state
 		FROM files f
 		LEFT JOIN media_metadata m ON m.file_id = f.id
 		WHERE f.deleted_at IS NOT NULL
@@ -323,7 +337,7 @@ func (db *DB) ListTrashedFiles(ctx context.Context) ([]*FileListEntry, error) {
 		if err := rows.Scan(
 			&e.ID, &e.Hash, &e.MimeType, &e.ByteSize, &e.ObjectKey, &e.CreatedAt,
 			&e.Filename, &e.Title, &e.Artist, &e.AlbumArtist, &e.Album, &e.Year, &e.DurationSeconds,
-			&guest, &e.License, &e.DeletedAt,
+			&guest, &e.License, &e.DeletedAt, &e.ReviewState,
 		); err != nil {
 			return nil, fmt.Errorf("scan trashed file: %w", err)
 		}

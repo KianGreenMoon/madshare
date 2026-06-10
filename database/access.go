@@ -34,15 +34,16 @@ var accessClause = `(
 
 // FileAccessibleByHash reports whether an anonymous / capability-less request
 // may play/download the file with the given content hash (the guest-playable /
-// license policy). It returns false for unknown hashes and for soft-deleted
-// (trashed) files. Callers must short-circuit this for identities holding the
-// content.access permission, which may reach any live file.
+// license policy). It returns false for unknown hashes, for soft-deleted
+// (trashed) files, and for files pending review. Callers must short-circuit
+// this for identities holding the content.access permission, which may reach
+// any live approved file.
 func (db *DB) FileAccessibleByHash(ctx context.Context, hash string) (bool, error) {
 	var ok bool
 	err := db.QueryRowContext(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM files f
-			WHERE f.hash = ? AND f.deleted_at IS NULL AND `+accessClause+`
+			WHERE f.hash = ? AND `+visibleFile+` AND `+accessClause+`
 		)`, hash).Scan(&ok)
 	return ok, err
 }

@@ -513,8 +513,14 @@ type metadataPatchRequest struct {
 // cover to the new identity (see §5d of the plan). The endpoint only rewrites the
 // tags on the one file's media_metadata row.
 func (h *handler) updateFileMetadata(w http.ResponseWriter, r *http.Request) {
-	hash := chi.URLParam(r, "hash")
+	h.applyMetadataPatch(w, r, chi.URLParam(r, "hash"), "base tags")
+}
 
+// applyMetadataPatch is the shared core of the two tag-edit endpoints: the
+// metadata.edit-gated PATCH /api/files/{hash}/metadata above and the
+// owner-scoped PATCH /api/my/uploads/{hash}/metadata (review_handlers.go),
+// whose authorization checks run before this is called.
+func (h *handler) applyMetadataPatch(w http.ResponseWriter, r *http.Request, hash, auditDetail string) {
 	// Tags are tiny; cap the body so a malformed request can't stream forever.
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var req metadataPatchRequest
@@ -540,7 +546,7 @@ func (h *handler) updateFileMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.audit(r.Context(), "metadata.edit", "file:"+hash, "base tags")
+	h.audit(r.Context(), "metadata.edit", "file:"+hash, auditDetail)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":           true,
 		"hash":         hash,

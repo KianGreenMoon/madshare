@@ -25,7 +25,7 @@ func (db *DB) ListArtistsGuest(ctx context.Context) ([]*ArtistEntry, error) {
 // left behind by a rename) never appear. has_image joins the now id-keyed
 // artist_images directly on artist_id (exact).
 func (db *DB) listArtists(ctx context.Context, guest bool) ([]*ArtistEntry, error) {
-	where := "WHERE f.deleted_at IS NULL"
+	where := "WHERE " + visibleFile
 	if guest {
 		where += " AND " + accessClause
 	}
@@ -77,7 +77,7 @@ func (db *DB) ListAlbumsByArtistGuest(ctx context.Context, artist string) ([]*Al
 // resolved from the name (normalized the same way the resolver keys it). One row
 // per albums entity with at least one live (and, when guest, reachable) track.
 func (db *DB) listAlbumsByArtist(ctx context.Context, artist string, guest bool) ([]*AlbumEntry, error) {
-	where := "WHERE f.deleted_at IS NULL AND (? = '' OR ar.norm_name = ?)"
+	where := "WHERE " + visibleFile + " AND (? = '' OR ar.norm_name = ?)"
 	if guest {
 		where += " AND " + accessClause
 	}
@@ -139,7 +139,7 @@ func (db *DB) listTracksByAlbumArtist(ctx context.Context, artist, album string,
 	if artist == "" {
 		return nil, nil
 	}
-	where := "WHERE f.deleted_at IS NULL AND ar.norm_name = ? AND al.norm_title = ?"
+	where := "WHERE " + visibleFile + " AND ar.norm_name = ? AND al.norm_title = ?"
 	if guest {
 		where += " AND " + accessClause
 	}
@@ -195,7 +195,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 	like := "%" + escaped + "%"
 
 	// ── Artists ──────────────────────────────────────────────────────────────
-	artistWhere := "WHERE f.deleted_at IS NULL AND LOWER(a.name) LIKE LOWER(?) ESCAPE '\\'"
+	artistWhere := "WHERE " + visibleFile + " AND LOWER(a.name) LIKE LOWER(?) ESCAPE '\\'"
 	artistArgs := []any{like}
 	if filtered {
 		artistWhere += " AND " + accessClause
@@ -232,7 +232,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 	}
 
 	// ── Albums ───────────────────────────────────────────────────────────────
-	albumWhere := "WHERE f.deleted_at IS NULL AND LOWER(al.title) LIKE LOWER(?) ESCAPE '\\'"
+	albumWhere := "WHERE " + visibleFile + " AND LOWER(al.title) LIKE LOWER(?) ESCAPE '\\'"
 	albumArgs := []any{like}
 	if filtered {
 		albumWhere += " AND " + accessClause
@@ -275,7 +275,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 	}
 
 	// ── Tracks ───────────────────────────────────────────────────────────────
-	trackWhere := "WHERE f.deleted_at IS NULL AND LOWER(m.title) LIKE LOWER(?) ESCAPE '\\'"
+	trackWhere := "WHERE " + visibleFile + " AND LOWER(m.title) LIKE LOWER(?) ESCAPE '\\'"
 	trackArgs := []any{like}
 	if filtered {
 		trackWhere += " AND " + accessClause

@@ -34,6 +34,17 @@ type APIToken struct {
 	RawToken   string `json:"-"`
 }
 
+// Review states for files.review_state (migration 017). Draft and returned are
+// editable by the uploader; submitted awaits a moderator; only approved files
+// are visible in the library. The state is orthogonal to DeletedAt: a trashed
+// file keeps its review state and re-enters it on restore.
+const (
+	ReviewDraft     = "draft"
+	ReviewSubmitted = "submitted"
+	ReviewReturned  = "returned"
+	ReviewApproved  = "approved"
+)
+
 // File is a row in the files table — one record per unique content hash.
 type File struct {
 	ID             int64
@@ -49,6 +60,13 @@ type File struct {
 	// DeletedAt is set when the file has been soft-deleted (moved to trash).
 	// NULL means the file is live.
 	DeletedAt sql.NullInt64
+	// ReviewState is one of the Review* constants.
+	ReviewState string
+	// ReviewNote carries the moderator's message on a returned file; cleared
+	// on submit and approve.
+	ReviewNote sql.NullString
+	// SubmittedAt is the time of the last transition to submitted.
+	SubmittedAt sql.NullInt64
 }
 
 // FileUpload is a row in the file_uploads table — one record per
@@ -87,6 +105,31 @@ type FileListEntry struct {
 	GuestPlayable   bool
 	License         sql.NullString
 	DeletedAt       sql.NullInt64
+	// ReviewState is populated by the trash listing so the UI can badge a
+	// discarded submission (it re-enters the review queue on restore).
+	ReviewState string
+}
+
+// ReviewEntry is a staged (non-approved, non-trashed) file as listed by the
+// review flows: the uploader's "My uploads" staging list and the moderation
+// queue. UploaderName is populated only by ListPendingReview.
+type ReviewEntry struct {
+	Hash            string
+	Filename        string
+	MimeType        string
+	ByteSize        int64
+	ObjectKey       string
+	CreatedAt       int64
+	Title           string
+	Artist          sql.NullString
+	Album           sql.NullString
+	AlbumArtist     sql.NullString
+	DurationSeconds sql.NullFloat64
+	ReviewState     string
+	ReviewNote      sql.NullString
+	SubmittedAt     sql.NullInt64
+	UploaderID      sql.NullInt64
+	UploaderName    sql.NullString
 }
 
 // ArtistEntry is a row returned by ListArtists. ID is the stable artists.id

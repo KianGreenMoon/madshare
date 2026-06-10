@@ -142,10 +142,16 @@ func RegisterAPI(r chi.Router, d Deps) {
 
 	// Authentication endpoints (login/logout/me/password/tokens) live in the
 	// api group so they are reachable wherever the API is served. Playlists are
-	// per-user, so they too exist only when auth is configured.
+	// per-user, so they too exist only when auth is configured — as is the
+	// uploader-facing review/staging flow (it is owner-scoped, meaningless
+	// without identities; without auth, uploads insert approved directly).
 	if d.Auth != nil {
 		registerAuth(r, d.Auth)
 		registerPlaylists(r, d, h)
+		fileUpload := d.protect(auth.PermFileUpload)
+		r.With(fileUpload).Get("/api/my/uploads", h.myUploads)
+		r.With(fileUpload).Patch("/api/my/uploads/{hash}/metadata", h.myUploadMetadata)
+		r.With(fileUpload).Post("/api/my/uploads/submit", h.submitMyUploads)
 	}
 }
 
@@ -163,6 +169,13 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(fileDelete).Get("/trash", h.adminTrashList)
 		r.With(fileDelete).Delete("/trash/{hash}", h.adminTrashHardDelete)
 		r.With(fileDelete).Post("/trash/{hash}/restore", h.adminTrashRestore)
+
+		// Moderation queue (review bucket). Discard is not a distinct endpoint —
+		// it is the soft delete above (moderators hold file.delete).
+		moderate := d.protect(auth.PermContentModerate)
+		r.With(moderate).Get("/moderation", h.moderationList)
+		r.With(moderate).Post("/moderation/{hash}/approve", h.moderationApprove)
+		r.With(moderate).Post("/moderation/{hash}/return", h.moderationReturn)
 
 		// Content-access management (Phase 3c). Only registered when a store is
 		// configured; its routes carry their own permission gates.
@@ -259,6 +272,12 @@ func fileServer(r chi.Router, path string, root http.FileSystem, guard func(http
 // tests / open embedding). Cover images (served under <files>/images) are not
 // gated. A denied request gets 404 — not 403 — so it does not reveal that a
 // file exists.
+//
+// Staged (pending-review) blobs serve only to identities holding file.upload or
+// content.moderate — uploaders, moderators, admins — and 404 for everyone else.
+// Deliberately not owner-scoped (owner decision, 2026-06-11): any uploader can
+// fetch any pending blob by its unguessable hash. Documented as potentially
+// dangerous, may be tightened — see docs/architecture/auth.md.
 func (d Deps) fileAccessGuard() func(http.Handler) http.Handler {
 	if d.Auth == nil {
 		return func(next http.Handler) http.Handler { return next }
@@ -271,7 +290,21 @@ func (d Deps) fileAccessGuard() func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			if id := auth.FromContext(r.Context()); id.Has(auth.PermContentAccess) {
+			id := auth.FromContext(r.Context())
+			state, _, _, found, err := d.Repo.FileReviewInfo(r.Context(), seg)
+			if err != nil {
+				http.Error(w, "storage error", http.StatusInternalServerError)
+				return
+			}
+			if found && state != database.ReviewApproved {
+				if id.Has(auth.PermFileUpload) || id.Has(auth.PermContentModerate) {
+					next.ServeHTTP(w, r)
+					return
+				}
+				http.NotFound(w, r)
+				return
+			}
+			if id.Has(auth.PermContentAccess) {
 				next.ServeHTTP(w, r)
 				return
 			}

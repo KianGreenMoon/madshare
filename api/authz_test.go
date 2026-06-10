@@ -93,6 +93,9 @@ func TestAuthz_FileAccessEnforced(t *testing.T) {
 	}
 	json.NewDecoder(resp.Body).Decode(&up)
 	resp.Body.Close()
+	// Publish the staged draft (admin submit self-approves) so the assertions
+	// below exercise approved-file access, not the pending-review gate.
+	approveUpload(t, admin, srv.URL, up.Hash)
 	blobPath := srv.URL + "/files/" + up.Hash + "/tune.mp3"
 
 	get := func(c *http.Client) int {

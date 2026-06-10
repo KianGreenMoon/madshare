@@ -389,6 +389,42 @@ type fakeRepo struct {
 	playlistItemFound bool
 	favoriteLiked     bool
 	favoriteHashes    []string
+
+	// Review-bucket stubs (moderation review). lastReviewState captures the
+	// state InsertFile received; reviewInfoFound=false means "unknown hash"
+	// (the blob gate passes unknowns through to the file server).
+	lastReviewState   string
+	reviewEntries     []*database.ReviewEntry
+	reviewErr         error
+	reviewUpdateFound bool
+	reviewUpdateErr   error
+	reviewUpdateCalls int
+	lastReviewHash    string
+	lastReviewTrans   database.ReviewTransition
+	reviewInfoState   string
+	reviewInfoOwner   sql.NullInt64
+	reviewInfoDeleted bool
+	reviewInfoFound   bool
+	reviewInfoErr     error
+}
+
+func (f *fakeRepo) ListUploadsByUser(_ context.Context, _ int64) ([]*database.ReviewEntry, error) {
+	return f.reviewEntries, f.reviewErr
+}
+
+func (f *fakeRepo) ListPendingReview(_ context.Context) ([]*database.ReviewEntry, error) {
+	return f.reviewEntries, f.reviewErr
+}
+
+func (f *fakeRepo) UpdateReviewState(_ context.Context, hash string, t database.ReviewTransition) (bool, error) {
+	f.reviewUpdateCalls++
+	f.lastReviewHash = hash
+	f.lastReviewTrans = t
+	return f.reviewUpdateFound, f.reviewUpdateErr
+}
+
+func (f *fakeRepo) FileReviewInfo(_ context.Context, _ string) (string, sql.NullInt64, bool, bool, error) {
+	return f.reviewInfoState, f.reviewInfoOwner, f.reviewInfoDeleted, f.reviewInfoFound, f.reviewInfoErr
 }
 
 func (f *fakeRepo) RecordAudit(_ context.Context, actor sql.NullInt64, action, target, _ string) error {
@@ -411,6 +447,7 @@ func (f *fakeRepo) InsertFile(_ context.Context, file *database.File, _ *databas
 		return f.insertErr
 	}
 	f.lastUploaded = file.UploadedBy
+	f.lastReviewState = file.ReviewState
 	file.ID = 1
 	return nil
 }
