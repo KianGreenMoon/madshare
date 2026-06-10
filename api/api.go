@@ -141,9 +141,11 @@ func RegisterAPI(r chi.Router, d Deps) {
 	})
 
 	// Authentication endpoints (login/logout/me/password/tokens) live in the
-	// api group so they are reachable wherever the API is served.
+	// api group so they are reachable wherever the API is served. Playlists are
+	// per-user, so they too exist only when auth is configured.
 	if d.Auth != nil {
 		registerAuth(r, d.Auth)
+		registerPlaylists(r, d, h)
 	}
 }
 

@@ -379,6 +379,16 @@ type fakeRepo struct {
 	lastMetaPatch database.MetadataPatch
 	metaResult    *database.MediaMetadata
 	metaErr       error
+
+	// Playlist stubs (UI roadmap Phase 5). playlistErr is returned by every
+	// playlist method, so each error branch is one knob away.
+	playlistErr       error
+	playlistList      []*database.Playlist
+	playlistGet       *database.Playlist
+	playlistItems     []*database.PlaylistItemEntry
+	playlistItemFound bool
+	favoriteLiked     bool
+	favoriteHashes    []string
 }
 
 func (f *fakeRepo) RecordAudit(_ context.Context, actor sql.NullInt64, action, target, _ string) error {
@@ -589,6 +599,62 @@ func (f *fakeRepo) SearchGuest(_ context.Context, _ string) (*database.SearchRes
 		return f.searchResult, nil
 	}
 	return &database.SearchResults{}, nil
+}
+
+// Playlist stubs (Phase 5). Handler-level playlist behavior is exercised in
+// playlists_test.go via the playlist* knobs; the real logic is tested against
+// SQLite in database/playlists_test.go.
+func (f *fakeRepo) ListPlaylists(_ context.Context, _ int64) ([]*database.Playlist, error) {
+	return f.playlistList, f.playlistErr
+}
+
+func (f *fakeRepo) EnsureFavoritesPlaylist(_ context.Context, _ int64) (int64, error) {
+	return 1, f.playlistErr
+}
+
+func (f *fakeRepo) CreatePlaylist(_ context.Context, userID int64, name string, hashes []string) (*database.Playlist, error) {
+	if f.playlistErr != nil {
+		return nil, f.playlistErr
+	}
+	return &database.Playlist{ID: 2, UserID: userID, Name: name, Kind: database.PlaylistRegular, TrackCount: len(hashes)}, nil
+}
+
+func (f *fakeRepo) GetPlaylist(_ context.Context, _, _ int64) (*database.Playlist, []*database.PlaylistItemEntry, error) {
+	if f.playlistErr != nil {
+		return nil, nil, f.playlistErr
+	}
+	return f.playlistGet, f.playlistItems, nil
+}
+
+func (f *fakeRepo) RenamePlaylist(_ context.Context, _, _ int64, _ string) error {
+	return f.playlistErr
+}
+
+func (f *fakeRepo) DeletePlaylist(_ context.Context, _, _ int64) error {
+	return f.playlistErr
+}
+
+func (f *fakeRepo) AddPlaylistItemsByHash(_ context.Context, _, _ int64, hashes []string) (int, error) {
+	if f.playlistErr != nil {
+		return 0, f.playlistErr
+	}
+	return len(hashes), nil
+}
+
+func (f *fakeRepo) RemovePlaylistItem(_ context.Context, _, _, _ int64) (bool, error) {
+	return f.playlistItemFound, f.playlistErr
+}
+
+func (f *fakeRepo) ReorderPlaylist(_ context.Context, _, _ int64, _ []int64) error {
+	return f.playlistErr
+}
+
+func (f *fakeRepo) ToggleFavorite(_ context.Context, _ int64, _ string) (bool, error) {
+	return f.favoriteLiked, f.playlistErr
+}
+
+func (f *fakeRepo) ListFavoriteHashes(_ context.Context, _ int64) ([]string, error) {
+	return f.favoriteHashes, f.playlistErr
 }
 
 // TestUploadFile_InsertFailureLeavesOrphan verifies that when storage.Put

@@ -1,6 +1,8 @@
 # Playlists, Favorites & Queue Editing
 
-Status: **planned** (design agreed with owner 2026-06-10; no code yet)
+Status: **step 1 (backend) implemented** on `aidev` (2026-06-10) — migration 015,
+`database/playlists.go`, `/api/playlists` + `/api/favorites` endpoints, Go tests.
+Steps 2–4 (queue editing UI, `/playlists` page, favorites/quick-add) pending.
 Branch: aidev
 Builds on: `docs/plans/persistent-shell-playback.md` (the shell-owned queue and
 the `PlayerController`'s reserved mutation API — this phase is the payoff that
@@ -53,6 +55,10 @@ favorites, or even see/reorder what's coming up next. This phase adds:
 7. **Quick-add everywhere:** a player-bar button opens the current queue; the
    library rows can add a **song, album, or whole artist** to the queue (and to
    playlists/favorites) without replacing what's playing.
+8. **The player bar gets its own Like button** (owner, 2026-06-10): a heart in
+   the player bar toggles favorites for the **currently playing** track, synced
+   with the row hearts. It lives in shell chrome (the player-bar partial), so it
+   works on every listening page regardless of which view built the queue.
 
 ## Goals
 
@@ -179,8 +185,9 @@ user row → no playlists (404/403 on the whole group). Another user's playlist 
 ### Library page (`app.js`)
 
 - **Heart** on track rows (painted from `GET /api/favorites`, toggled via
-  `POST /api/favorites/{hash}`) and a heart in the player bar for the current
-  track.
+  `POST /api/favorites/{hash}`). The player-bar heart (Decision §8) is shell
+  chrome — it follows `'trackchange'` and shares the same liked-set cache so
+  row hearts and the player heart never disagree.
 - Row-level **add menu** (track / album / artist rows): *Play next* (insertAt
   after current), *Add to queue* (enqueue), *Add to playlist…* (picker over
   `GET /api/playlists` + "New playlist…"), *Like* (track rows). Album/artist

@@ -191,4 +191,51 @@ type Repository interface {
 	// onto the media_metadata row of the file with the given content hash and
 	// returns the updated row. Returns ErrFileNotFound when no file matches.
 	UpdateFileMetadata(ctx context.Context, hash string, p MetadataPatch) (*MediaMetadata, error)
+
+	// --- Playlists & favorites (docs/plans/playlists.md) ---
+	// All playlist methods are scoped to userID; a playlist id belonging to a
+	// different user yields ErrPlaylistNotFound (mapped to 404, never 403).
+
+	// ListPlaylists returns the user's playlists with item counts (favorites
+	// first). Does not create the favorites row.
+	ListPlaylists(ctx context.Context, userID int64) ([]*Playlist, error)
+
+	// EnsureFavoritesPlaylist returns the user's favorites playlist id,
+	// creating it if absent. Idempotent.
+	EnsureFavoritesPlaylist(ctx context.Context, userID int64) (int64, error)
+
+	// CreatePlaylist creates a regular playlist, optionally seeded with items
+	// (content hashes, in order). Any unknown/trashed hash fails the whole
+	// create with ErrFileNotFound.
+	CreatePlaylist(ctx context.Context, userID int64, name string, hashes []string) (*Playlist, error)
+
+	// GetPlaylist returns the playlist and its items in order. Trashed files
+	// stay listed (Trashed=true); hard-deleted files vanish via FK cascade.
+	GetPlaylist(ctx context.Context, userID, playlistID int64) (*Playlist, []*PlaylistItemEntry, error)
+
+	// RenamePlaylist / DeletePlaylist operate on regular playlists only;
+	// favorites returns ErrPlaylistSystem.
+	RenamePlaylist(ctx context.Context, userID, playlistID int64, name string) error
+	DeletePlaylist(ctx context.Context, userID, playlistID int64) error
+
+	// AddPlaylistItemsByHash atomically appends tracks by content hash; any
+	// unknown/trashed hash fails the batch with ErrFileNotFound. On the
+	// favorites playlist, already-present files are skipped.
+	AddPlaylistItemsByHash(ctx context.Context, userID, playlistID int64, hashes []string) (added int, err error)
+
+	// RemovePlaylistItem removes one item by its id; found is false (no error)
+	// when the item is not in that playlist.
+	RemovePlaylistItem(ctx context.Context, userID, playlistID, itemID int64) (found bool, err error)
+
+	// ReorderPlaylist rewrites the item order; itemIDs must be a permutation of
+	// the playlist's current item ids (ErrBadReorder otherwise).
+	ReorderPlaylist(ctx context.Context, userID, playlistID int64, itemIDs []int64) error
+
+	// ToggleFavorite flips the file's membership in the user's favorites
+	// playlist (created on first use) and returns the resulting state.
+	// Unknown or trashed hashes return ErrFileNotFound.
+	ToggleFavorite(ctx context.Context, userID int64, hash string) (liked bool, err error)
+
+	// ListFavoriteHashes returns the user's live favorite hashes in order.
+	ListFavoriteHashes(ctx context.Context, userID int64) ([]string, error)
 }
