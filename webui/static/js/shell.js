@@ -198,10 +198,15 @@ function wirePlayer() {
   // controller probes and reports it here — surface the login modal.
   controller.on('autherror', openLoginModal);
   // A manually edited queue was replaced by a track click (Decision §5): a brief
-  // notice only. The un-replace lives on as the queue panel's Restore button
-  // (controller.canRestore/restoreQueue) — independent of this toast's lifetime.
+  // notice. The un-replace also lives on as the queue panel's Restore button
+  // (controller.canRestore/restoreQueue), so this toast's lifetime doesn't gate
+  // it — but offer a one-click restore inline too. restoreQueue() no-ops safely
+  // if the stash was already cleared (e.g. the new queue was edited meanwhile).
   controller.on('queuereplaced', () => {
-    showToast('Queue replaced — Restore is in the queue panel.');
+    showToast('Queue replaced — restore from the queue panel,', {
+      actionLabel: 'or click here',
+      onAction: () => controller.restoreQueue(),
+    });
   });
   initQueuePanel(controller, showToast);
   wireLikeButton(controller);
