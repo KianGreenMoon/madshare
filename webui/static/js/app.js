@@ -9,17 +9,9 @@ const API = document.querySelector('meta[name="api-url"]')?.content || '';
 
 // Theme is owned by shell.js (persistent header, applied once across pages).
 
-// ── Duration cache ────────────────────────────────────────────────────────
-// Persists fetched durations across page loads so headers aren't re-fetched.
-const DUR_CACHE_KEY = 'madshare-durations';
-function loadDurCache() {
-  try { return JSON.parse(localStorage.getItem(DUR_CACHE_KEY) || '{}'); }
-  catch { return {}; }
-}
-function saveDurCache(c) {
-  try { localStorage.setItem(DUR_CACHE_KEY, JSON.stringify(c)); }
-  catch {} // quota exceeded — not fatal
-}
+// Duration cache: shared with the queue panel and the playlists page so
+// already-known durations show everywhere (dur-cache.js).
+import { loadDurCache, saveDurCache } from './dur-cache.js';
 
 // ── Library — drill-down state ────────────────────────────────────────────
 

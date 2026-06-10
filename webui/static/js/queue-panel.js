@@ -6,6 +6,7 @@
 // once by shell.js, it survives page swaps like the player bar itself.
 import { fmtTime } from './player.js';
 import { openLoginModal } from './auth.js';
+import { loadDurCache } from './dur-cache.js';
 
 const API = document.querySelector('meta[name="api-url"]')?.content || '';
 
@@ -92,6 +93,16 @@ export function initQueuePanel(controller, showToast) {
       return;
     }
 
+    // Durations: prefer what the track already carries, else the shared cache
+    // (filled by the library's background metadata fetch) — so known durations
+    // show up front, not only after a track has played.
+    const durCache = loadDurCache();
+    const durText = t => {
+      if (typeof t.dur === 'number') return fmtTime(t.dur);
+      if (typeof t.dur === 'string' && t.dur && t.dur !== '—') return t.dur;
+      return durCache[t.url] || '';
+    };
+
     const frag = document.createDocumentFragment();
     tracks.forEach((t, i) => {
       const row = document.createElement('div');
@@ -120,8 +131,7 @@ export function initQueuePanel(controller, showToast) {
 
       const dur = document.createElement('span');
       dur.className = 'queue-dur';
-      dur.textContent = typeof t.dur === 'string' ? t.dur
-        : (typeof t.dur === 'number' ? fmtTime(t.dur) : '');
+      dur.textContent = durText(t);
 
       const rm = document.createElement('button');
       rm.className = 'queue-remove';

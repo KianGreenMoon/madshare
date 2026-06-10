@@ -7,6 +7,7 @@
 import { openLoginModal, gatePage, PAGE_PERMS } from './auth.js';
 import { getController } from './player-controller.js';
 import { fmtTime } from './player.js';
+import { loadDurCache } from './dur-cache.js';
 
 const API = document.querySelector('meta[name="api-url"]')?.content || '';
 
@@ -263,6 +264,7 @@ let dragIndex = -1;
 
 function renderItems() {
   const { tracks, queueIndexOf } = playableQueue();
+  const durCache = loadDurCache();
 
   const wrap = document.createElement('div');
   wrap.className = 'panel-fade-in';
@@ -309,7 +311,9 @@ function renderItems() {
 
     const dur = document.createElement('span');
     dur.className = 'track-dur';
-    dur.textContent = it.duration_seconds ? fmtTime(it.duration_seconds) : '';
+    dur.textContent = it.duration_seconds
+      ? fmtTime(it.duration_seconds)
+      : (durCache[`${API}${it.url}`] || '');
 
     const rm = document.createElement('button');
     rm.className = 'pl-remove';
