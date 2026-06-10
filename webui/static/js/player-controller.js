@@ -67,10 +67,23 @@ function createController() {
     });
   }
 
-  function persist() {
+  // pendingSeek holds the playback position to resume at. The restored track
+  // is loaded with preload=none (no fetch before a user gesture), so seeking
+  // must wait until the user presses play and the metadata arrives.
+  let pendingSeek = null;
+
+  // persist saves the whole resumable state. time defaults to the live
+  // playback position; go() overrides it (0 for a fresh track, the saved
+  // position on the restore path) because right after switching src the
+  // audio element may still report the previous track's time.
+  function persist(time) {
+    if (time == null) {
+      const t = player.currentTime;
+      time = isFinite(t) && t > 0 ? t : 0;
+    }
     try {
       localStorage.setItem(QUEUE_KEY, JSON.stringify({
-        tracks: queue, index, dirty, original, shuffle: player.isShuffle(),
+        tracks: queue, index, dirty, original, shuffle: player.isShuffle(), time,
       }));
     } catch { /* quota exceeded — not fatal */ }
   }
@@ -81,13 +94,15 @@ function createController() {
 
   // go loads queue[i] and notifies listeners. The single place "current" moves.
   // autoplay=false is the resume path: point the player at the track without
-  // starting (or even fetching) it.
-  function go(i, { autoplay = true } = {}) {
+  // starting (or even fetching) it; resumeAt is the position to seek to once
+  // its metadata loads.
+  function go(i, { autoplay = true, resumeAt = null } = {}) {
     if (i < 0 || i >= queue.length) return;
     index = i;
     const track = queue[i];
+    pendingSeek = resumeAt;
     player.load({ url: track.url, title: track.title, artist: track.artist }, { autoplay });
-    persist();
+    persist(resumeAt ?? 0);
     emit('trackchange', track, i);
     updateMediaSession(track);
   }
@@ -166,10 +181,24 @@ function createController() {
     onShuffleToggle: on => (on ? shuffleOn() : shuffleOff()),
     onEnded: () => advance(),
     onError: handleAudioError,
-    onLoadedMetadata: dur => { if (index >= 0) emit('duration', queue[index], dur); },
+    onLoadedMetadata: dur => {
+      // The deferred resume seek: metadata is in (the user pressed play on a
+      // restored track), so the saved position can finally be applied.
+      if (pendingSeek != null) {
+        if (pendingSeek > 0 && pendingSeek < dur) player.seekTo(pendingSeek);
+        pendingSeek = null;
+      }
+      if (index >= 0) emit('duration', queue[index], dur);
+    },
     onPlay:  () => setPlaybackState('playing'),
-    onPause: () => setPlaybackState('paused'),
+    onPause: () => { setPlaybackState('paused'); persist(); }, // exact position on pause
   });
+
+  // Keep the saved playback position fresh: a light heartbeat while playing
+  // (timeupdate fires ~4×/s — far too chatty for localStorage) and a final
+  // write when the page is left or closed.
+  setInterval(() => { if (index >= 0 && !player.paused) persist(); }, 5000);
+  window.addEventListener('pagehide', () => { if (index >= 0) persist(); });
 
   // ── Media Session ───────────────────────────────────────────────────────────
   const hasMediaSession = 'mediaSession' in navigator;
@@ -209,7 +238,8 @@ function createController() {
     // switching shuffle off later still restores the pre-shuffle order.
     original = Array.isArray(saved.original) ? relinkTracks(saved.original, queue) : null;
     if (saved.shuffle && original) player.setShuffle(true);
-    go(clampIndex(saved.index, queue.length), { autoplay: false });
+    const resumeAt = typeof saved.time === 'number' && saved.time > 0 ? saved.time : null;
+    go(clampIndex(saved.index, queue.length), { autoplay: false, resumeAt });
     emit('queuechange');
   }
 

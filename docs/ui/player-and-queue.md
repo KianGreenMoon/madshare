@@ -67,13 +67,20 @@ always wrap** regardless of repeat.
 
 ## Persistence & resume
 
-The queue persists to `localStorage` (`madshare-queue`) on every change:
-visible order, current index, dirty flag, **the original (un-shuffled) order,
-and the shuffle state**. On the next load:
+The queue persists to `localStorage` (`madshare-queue`): visible order, current
+index, dirty flag, **the original (un-shuffled) order, the shuffle state, and
+the playback position within the current track**. It is written on every queue
+change, on pause (exact position), every ~5 s while playing (a heartbeat —
+`timeupdate` itself is far too chatty for localStorage), and on `pagehide`.
+On the next load:
 
 - The queue and position are restored **paused** — the player points at the
   track with `preload=none`, so nothing is fetched (and a stale session can't
   pop the login modal) until the user presses play.
+- **Pressing play resumes mid-track**: the saved position can't be seeked
+  before any data exists, so it is applied the moment the track's metadata
+  arrives (`loadedmetadata`) after the play gesture. Explicitly clicking a
+  track row instead starts it from the beginning, as usual.
 - The shuffle button is re-lit if shuffle was on, and toggling it off still
   restores the true original order (object identity between the two revived
   arrays is re-linked by URL, duplicate-aware — `relinkTracks`).
