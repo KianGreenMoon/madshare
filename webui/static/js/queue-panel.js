@@ -17,6 +17,7 @@ export function initQueuePanel(controller, showToast) {
   if (!panel || !btn) return; // page without the queue UI (e.g. admin preview player)
   const list     = document.getElementById('queueList');
   const countEl  = document.getElementById('queueCount');
+  const restoreBtn = document.getElementById('queueRestoreBtn');
   const saveBtn  = document.getElementById('queueSaveBtn');
   const clearBtn = document.getElementById('queueClearBtn');
   const closeBtn = document.getElementById('queueCloseBtn');
@@ -30,8 +31,19 @@ export function initQueuePanel(controller, showToast) {
     panel.classList.toggle('hidden', !on);
     btn.classList.toggle('active', on);
     btn.setAttribute('aria-expanded', String(on));
-    if (on) render();
+    // queue-open lifts the status-toast stack clear of the open panel (BUG-16).
+    document.body.classList.toggle('queue-open', on);
+    if (on) { syncRestore(); render(); }
   }
+
+  // Restore (one-level un-replace): visible only when the controller holds a
+  // stashed previous queue. Hidden again once restored or the new queue is edited.
+  function syncRestore() {
+    if (restoreBtn) restoreBtn.hidden = !controller.canRestore();
+  }
+  restoreBtn?.addEventListener('click', () => controller.restoreQueue());
+  controller.on('stashchange', syncRestore);
+  syncRestore();
 
   btn.addEventListener('click', () => setOpen(!open));
   closeBtn.addEventListener('click', () => setOpen(false));

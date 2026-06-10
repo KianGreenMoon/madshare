@@ -21,8 +21,11 @@
 //   'error'         (track, index) — the current track failed (genuine media error)
 //   'autherror'     ()             — playback failed with 401/403 → prompt re-auth
 //   'queuechange'   ()             — the queue's contents/order/current changed
-//   'queuereplaced' (restore)      — a manually edited queue was replaced by
-//                                    setQueue; restore() puts it back (undo toast)
+//   'queuereplaced' ()             — a manually edited queue was replaced by
+//                                    setQueue (a brief informational toast; the
+//                                    actual un-replace is the panel Restore button)
+//   'stashchange'   ()             — the restorable (stashed) queue appeared or
+//                                    went away; the queue panel shows/hides Restore
 import { createPlayer } from './player.js';
 import { insertAdjust, removeAdjust, moveAdjust, clampIndex, shufflePerm, relinkTracks } from './queue-ops.js';
 
@@ -45,8 +48,15 @@ function createController() {
   let index = -1;
   // dirty marks a queue the user has manually edited (panel reorder/remove,
   // quick-add). A dirty queue is never silently replaced: setQueue stashes it
-  // and emits 'queuereplaced' so the shell can offer Undo.
+  // (see stashed) so the queue panel can offer a one-level Restore.
   let dirty = false;
+  // stashed holds the single previous queue a setQueue replaced, kept as live
+  // state (not a closure) so the panel's Restore button can bring it back at any
+  // time — not just while a toast is up. One level only: it is overwritten by the
+  // next replace and CLEARED on the first manual edit of the new queue (Decision:
+  // "if we already changed the new queue, there's nothing to restore"). null =
+  // nothing to restore. Session-scoped (not persisted).
+  let stashed = null; // { queue, index, original } | null
   // original holds the unshuffled order while shuffle is ON: toggling shuffle
   // reorders the queue itself (current track first) and toggling it off
   // restores this. Track objects are SHARED between the two arrays, so
@@ -90,6 +100,11 @@ function createController() {
   function queueChanged() {
     persist();
     emit('queuechange');
+  }
+  // clearStash drops a pending Restore. Called from every manual edit (the user
+  // is now building the new queue) and on a fresh non-stashing setQueue.
+  function clearStash() {
+    if (stashed) { stashed = null; emit('stashchange'); }
   }
 
   // go loads queue[i] and notifies listeners. The single place "current" moves.
@@ -247,21 +262,16 @@ function createController() {
     on,
 
     // setQueue replaces the queue and starts playing at startIndex — the
-    // browse-and-click path. A manually edited (dirty) queue is stashed first
-    // and offered back through 'queuereplaced' (the Undo toast).
+    // browse-and-click path. A manually edited (dirty) queue is stashed first so
+    // the panel's Restore button can bring it back, plus a brief 'queuereplaced'
+    // notice. A non-stashing replace drops any stale Restore.
     setQueue(tracks, startIndex = 0) {
       if (dirty && queue.length) {
-        const stashedQueue = queue;
-        const stashedIndex = index;
-        const stashedOriginal = original;
-        emit('queuereplaced', () => {
-          queue = stashedQueue;
-          original = stashedOriginal;
-          dirty = true;
-          index = -1;
-          go(Math.max(0, Math.min(stashedIndex, queue.length - 1)));
-          queueChanged();
-        });
+        stashed = { queue, index, original }; // the old arrays survive the reassign below
+        emit('stashchange');
+        emit('queuereplaced');
+      } else {
+        clearStash();
       }
       queue = tracks.slice();
       original = null;
@@ -279,6 +289,7 @@ function createController() {
     // playback, not dirty — there was nothing to protect).
     enqueue(tracks) {
       if (!tracks.length) return;
+      clearStash();
       const wasEmpty = queue.length === 0;
       queue.push(...tracks);
       if (original) original.push(...tracks);
@@ -289,6 +300,7 @@ function createController() {
 
     insertAt(i, tracks) {
       if (!tracks.length) return;
+      clearStash();
       const current = index >= 0 ? queue[index] : null; // before the splice shifts positions
       const at = Math.max(0, Math.min(i, queue.length));
       queue.splice(at, 0, ...tracks);
@@ -311,6 +323,7 @@ function createController() {
 
     removeAt(i) {
       if (i < 0 || i >= queue.length) return;
+      clearStash();
       const removingCurrent = i === index;
       const wasPlaying = !player.paused;
       const [removed] = queue.splice(i, 1);
@@ -333,6 +346,7 @@ function createController() {
 
     move(from, to) {
       if (from === to || from < 0 || from >= queue.length || to < 0 || to >= queue.length) return;
+      clearStash();
       const [t] = queue.splice(from, 1);
       queue.splice(to, 0, t);
       index = moveAdjust(index, from, to);
@@ -341,12 +355,28 @@ function createController() {
     },
 
     clear() {
+      clearStash();
       queue = [];
       original = null; // nothing left to un-shuffle back to
       index = -1;
       dirty = false;
       player.pause();
       queueChanged();
+    },
+
+    // restoreQueue brings back the single stashed queue a setQueue replaced
+    // (the panel Restore button). One level: the stash is consumed.
+    restoreQueue() {
+      if (!stashed) return;
+      const { queue: q, index: i, original: o } = stashed;
+      stashed = null;
+      queue = q;
+      original = o;
+      dirty = true;
+      index = -1;
+      go(Math.max(0, Math.min(i, queue.length - 1)));
+      queueChanged();
+      emit('stashchange');
     },
 
     playAt: i => go(i),
@@ -356,6 +386,7 @@ function createController() {
     // view can re-highlight whatever is already playing.
     current: () => (index < 0 ? null : { track: queue[index], index }),
     getQueue: () => ({ tracks: queue.slice(), index }),
+    canRestore: () => stashed !== null,
     isDirty: () => dirty,
     isShuffle: () => player.isShuffle(),
     get paused() { return player.paused; },

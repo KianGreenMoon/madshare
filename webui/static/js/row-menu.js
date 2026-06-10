@@ -79,7 +79,16 @@ export function openRowMenu(anchor, items) {
   const onKey = e => {
     if (e.key === 'Escape') { closeRowMenu(); anchor.focus(); }
   };
-  const onScroll = () => closeRowMenu();
+  // Don't close on scroll/resize while focus is inside the menu. On mobile,
+  // tapping the inline "New playlist…" input opens the virtual keyboard, which
+  // fires a viewport resize (and often a scroll to reveal the field); closing
+  // here would destroy the focused input and drop the keyboard (BUG-18). With
+  // no focus inside the menu (the desktop case) a deliberate scroll/resize still
+  // closes it as before.
+  const onScroll = () => {
+    if (menuEl?.contains(document.activeElement)) return;
+    closeRowMenu();
+  };
   // Defer the click listener so the opening click doesn't immediately close it.
   setTimeout(() => document.addEventListener('click', onDocClick), 0);
   document.addEventListener('keydown', onKey);

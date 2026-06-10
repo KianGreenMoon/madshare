@@ -197,14 +197,11 @@ function wirePlayer() {
   // Session expired mid-playback: the <audio> fetch bypasses the router, so the
   // controller probes and reports it here — surface the login modal.
   controller.on('autherror', openLoginModal);
-  // A manually edited queue was replaced by a track click (Decision §5):
-  // uniform replace, with an undo toast instead of silent loss.
-  controller.on('queuereplaced', restore => {
-    showToast('Queue replaced.', {
-      actionLabel: 'Undo — restore my queue',
-      onAction: restore,
-      timeout: 8000,
-    });
+  // A manually edited queue was replaced by a track click (Decision §5): a brief
+  // notice only. The un-replace lives on as the queue panel's Restore button
+  // (controller.canRestore/restoreQueue) — independent of this toast's lifetime.
+  controller.on('queuereplaced', () => {
+    showToast('Queue replaced — Restore is in the queue panel.');
   });
   initQueuePanel(controller, showToast);
   wireLikeButton(controller);

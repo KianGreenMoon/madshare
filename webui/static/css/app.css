@@ -781,6 +781,13 @@ input[type="range"]::-moz-range-thumb {
   pointer-events: none;
 }
 #toastAlert { bottom: auto; top: var(--space-5); }
+/* On shell pages the fixed player bar (and the queue panel) own the bottom-right
+   corner; lift the status stack clear of both so toasts never cover the player
+   controls or the open queue (BUG-16). Errors (#toastAlert) stay top-anchored. */
+#toastStatus { bottom: calc(var(--player-h) + var(--space-3)); }
+body.queue-open #toastStatus {
+  bottom: calc(var(--player-h) + min(60vh, 480px) + var(--space-4));
+}
 .toast {
   display: flex;
   align-items: flex-start;

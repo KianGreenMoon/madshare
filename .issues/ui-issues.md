@@ -27,6 +27,81 @@ Found by tester agent review of `webui/static/js/app.js` + `webui/html/upload.ht
 - [x] **BUG-12** Multi-file drag-and-drop silently discards all files after the first — only `files[0]` is uploaded. **Fixed:** `uploadFiles(files)` iterates all dropped/selected files sequentially.
 - [x] **BUG-13** No mechanism to re-show the empty state if the library becomes empty after first load. **Fixed:** same as BUG-08 — element is hidden/shown with `style.display`, never removed.
 
+## Shell UI — found 2026-06-10 (user review)
+
+Reported after the shell-native UI shipped (library/playlists pages, shell-owned
+player + queue). These are about the queue/toast chrome and the row-menu dialog,
+not the old `app.js`.
+
+**All three implemented 2026-06-10 (aidev)** — `go build ./...` clean, `node
+--test tests/js/queue-ops.test.mjs` 6/6, embedded assets verified served. Browser
+spot-check still recommended (especially the mobile keyboard, BUG-18).
+
+- [x] **BUG-16** Toast bubbles overlap the player controls (and the queue panel).
+  The status toast stack is pinned bottom-right (`app.css:772`, `.toast-stack`
+  → `bottom: var(--space-5); right: var(--space-5)`) at `z-index: 200`, i.e. the
+  same corner as the player-bar volume/queue buttons and where `#queue-panel`
+  opens (`player.css:140`). So "Added to queue" / "Saved playlist" / "Queue
+  replaced" toasts cover the controls and the open queue window.
+  **Decision:** keep toasts on the **right**, just lift them clear (user pref).
+  **Plan:**
+  1. Lift the *status* stack (`#toastStatus`) above the player bar: `bottom:
+     calc(var(--player-h) + var(--space-3))` (player bar is `--player-h` = 84px).
+     `#toastAlert` is already top-anchored, so errors are unaffected.
+  2. When the queue panel is open it occupies that same right-above-player slot,
+     so raise the status stack to clear it: `queue-panel.js` `setOpen()` toggles
+     a state class (e.g. `document.body.classList.toggle('queue-open', on)`); CSS
+     `body.queue-open #toastStatus { bottom: calc(var(--player-h) +
+     min(60vh, 480px) + var(--space-4)); }` (panel max-height), staying right.
+  3. Synergy with BUG-17: the persistent *"Queue replaced — Undo"* toast goes
+     away (becomes the panel Restore button), so the only toasts left near the
+     player are short transient ones.
+
+- [x] **BUG-17** Restore (un-replace) is hidden in a disappearing toast — make it
+  a permanent queue-panel button. Today there is **no history**: when a *dirty*
+  (manually edited) queue is replaced by a browse-and-click, `setQueue`
+  (`player-controller.js:252`) stashes the old queue in a **temporary closure**
+  and fires `queuereplaced`; `shell.js:202` shows an 8 s *"Undo — restore my
+  queue"* toast. Miss/dismiss it and the stash is gone.
+  **Decision (user):** **one-level Restore** (no redo), and the stash is **cleared
+  on the first manual edit of the new queue** ("if we already changed the new
+  queue, there's nothing to restore").
+  **Plan:**
+  1. `player-controller.js`: promote the closure stash to controller state
+     `stashed = { queue, original, index } | null`. In `setQueue`, when replacing
+     a dirty queue, capture `stashed` **before** reassigning `queue`, and
+     `emit('stashchange')`. Add `canRestore()` (`stashed !== null`) and
+     `restoreQueue()` (re-applies the stash, then `stashed = null` +
+     `emit('stashchange')`). **Clear `stashed = null` + emit on any manual edit**
+     (`enqueue`/`insertAt`/`removeAt`/`move`/`clear`) and on a fresh `setQueue`.
+  2. Drop the action-toast: `shell.js` no longer wires `queuereplaced` to an Undo
+     toast (optionally keep a brief plain "Queue replaced." status toast, no
+     action button). Remove the now-unused `queuereplaced` emit if nothing else
+     uses it.
+  3. `partials.html` (queue head, ~line 170): add `<button id="queueRestoreBtn"
+     class="btn btn-neutral queue-btn-sm" hidden>⟲ Restore</button>` to
+     `.queue-actions`.
+  4. `queue-panel.js`: show/hide the Restore button from `controller.canRestore()`
+     on `stashchange` (and on open/render); click → `controller.restoreQueue()`.
+  5. `player.css`: minor styling for the restore button if needed.
+
+- [x] **BUG-18** Mobile virtual keyboard dismisses the "New playlist…" dialog.
+  Tapping the inline name input (`row-menu.js`, used by the library "⋯ → Add to…
+  → New playlist…" flow, `app.js:244`) opens the on-screen keyboard, which
+  **resizes the visual viewport** (and often scrolls to reveal the input). The
+  row-menu closes itself on **any** scroll/resize (`row-menu.js:82-87`:
+  `onScroll = () => closeRowMenu()` on `window` `scroll`(capture)+`resize`), so
+  the menu — and the focused input — is destroyed and the keyboard drops.
+  **Plan:** in the scroll/resize close handler, **skip closing while focus is
+  inside the menu**: `if (menuEl && menuEl.contains(document.activeElement))
+  return;`. This keeps deliberate page scroll/resize closing the menu on desktop
+  (no focus inside the menu there) while ignoring keyboard-driven viewport
+  changes. Optionally also switch resize detection to `visualViewport`'s
+  `resize`. Verify desktop drill-down + the menu's existing scroll-to-close still
+  work.
+
+---
+
 ## Refactoring (deferred — for the planned big UI refactor)
 
 - [ ] **BUG-15** Header/nav styling is duplicated and diverges across pages instead of being single-sourced. After the header *markup* was extracted into a shared partial (`webui/html/partials.html`, `{{template "header"}}`), the *CSS* was not consolidated:
