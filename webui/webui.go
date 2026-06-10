@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net/http"
 
+	"daemonlord.ygg/madshare/internal/version"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -83,14 +84,24 @@ var adminSubPages = map[string]*template.Template{
 // non-admin pages.
 // GitRepo is the URL behind the header's GitRepo nav button
 // (config.WebUIConfig.GitRepoURL()); empty hides the button.
+// Version and Commit feed the header's About box: Version is the release tag
+// (or short commit hash, or "" when unknown at build time) and Commit is the
+// full commit hash; both come from internal/version and are constant per build.
 type pageData struct {
 	APIURL  string
 	Page    string
 	SubPage string
 	GitRepo string
+	Version string
+	Commit  string
 }
 
+// verInfo is resolved once: the build metadata is constant for the process.
+var verInfo = version.Get()
+
 func makeHandler(tmpl *template.Template, tmplName string, data pageData) http.HandlerFunc {
+	data.Version = verInfo.Version
+	data.Commit = verInfo.Commit
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := tmpl.ExecuteTemplate(w, tmplName, data); err != nil {

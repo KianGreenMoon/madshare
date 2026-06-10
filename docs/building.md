@@ -49,6 +49,37 @@ source tree at runtime. Note the distinction:
   that endpoint only produces output when the process is started inside a git
   checkout. It is disabled (404) otherwise; it does not affect the build.
 
+## Version stamping
+
+The web UI's **About** box (header → *About* → *Version*) shows the build's
+version and commit. Two pieces of data feed it:
+
+- **Commit hash** — embedded automatically by the Go toolchain (`runtime/debug`
+  build info, the `vcs.revision`/`vcs.modified` settings) on any ordinary
+  `go build`/`go run` inside the checkout. Nothing extra is required.
+- **Release tag** — *not* embedded automatically; it must be injected at build
+  time via `-ldflags` into `internal/version.Tag`. The
+  [`Makefile`](../Makefile) does this for you:
+
+  ```bash
+  make build          # full stack, version baked in   → ./madshare
+  make build-nowebui  # pure-API variant, version baked in
+  make run            # go run from source, version baked in
+  ```
+
+  `make build` resolves the version with `git describe --tags --always --dirty`,
+  so it shows the tag on a tagged commit (`v0.2.1`), a short commit hash
+  otherwise, and a `-dirty` suffix for an unclean tree. Equivalent manual
+  command:
+
+  ```bash
+  go build -ldflags "-X 'daemonlord.ygg/madshare/internal/version.Tag=$(git describe --tags --always --dirty)'" -o madshare ./
+  ```
+
+A plain `go build ./` / `go run madshare.go` is still fine for development — the
+About box just falls back to the embedded commit hash (and to an em-dash when
+even that is unavailable, e.g. a `-buildvcs=false` build).
+
 ## Build variants
 
 There is exactly one build tag (`nowebui`); the server-only / UI-only split is

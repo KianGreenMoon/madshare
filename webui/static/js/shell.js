@@ -13,6 +13,7 @@ import { initAuth, openLoginModal } from './auth.js';
 import { getController } from './player-controller.js';
 import { initQueuePanel } from './queue-panel.js';
 import { ensureLiked, isLiked, toggleLike, trackHash, onLikedChange } from './favorites.js';
+import { initAboutMenu } from './about-menu.js';
 
 // ── Theme (persistent header — applied once for every shell page) ────────────
 const VALID_THEMES = new Set(['dark', 'light', 'ocean', 'sunset']);
@@ -241,6 +242,7 @@ function wireLikeButton(controller) {
 // ── Boot ─────────────────────────────────────────────────────────────────────
 (async function boot() {
   wireTheme();
+  initAboutMenu();         // persistent header — wired once for the document
   wirePlayer();
   await initAuth();        // once for the document's lifetime
   await runModule();       // the server already rendered this page; just init it

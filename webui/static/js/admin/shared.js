@@ -4,6 +4,7 @@
 //
 // Path note: this module sits in static/js/admin/, so auth.js is one level up.
 import { initAuth, openLoginModal, gatePage, PAGE_PERMS } from '../auth.js';
+import { initAboutMenu } from '../about-menu.js';
 
 // API base from <meta name="api-url">. Empty => relative, same-origin URLs.
 export const API = document.querySelector('meta[name="api-url"]')?.content || '';
@@ -125,6 +126,7 @@ export function initTheme() {
 // already rendered the appropriate notice).
 export async function bootAdmin({ require } = {}) {
   initTheme();
+  initAboutMenu();
   const identity = await initAuth();
   if (!gatePage(PAGE_PERMS.admin)) return null;
 

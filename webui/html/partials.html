@@ -10,14 +10,24 @@
          is a full page load — playback in this tab stops on entry. The shell
          router handles it via its non-shell-page fallback (location.assign). */}}
     <a href="/admin" class="nav-link{{if eq .Page "admin"}} nav-link--active{{end}}"{{if eq .Page "admin"}} aria-current="page"{{end}}>Admin</a>
-    {{/* Source download link — hidden for now (owner decision 2026-06-10): the
-         tar.gz next to the executable wasn't convenient. The GET /source
-         endpoint stays live (AGPL §13 corresponding-source offer; see
-         docs/api/source.md). Restore by un-commenting:
-    <a href="/source" class="nav-link" download>Source</a>
-    */}}
-    {{if .GitRepo}}<a href="{{.GitRepo}}" class="nav-link" target="_blank" rel="noopener">GitRepo</a>{{end}}
-    <a href="/license" class="nav-link" target="_blank" rel="license">License</a>
+    {{/* About: a mini-menu gathering the project links (GitRepo, the AGPL §13
+         Source archive, the License) plus a Version entry that opens the About
+         modal. Wired by about-menu.js (initAboutMenu), loaded on both the shell
+         pages and the admin pages. */}}
+    <div class="about" id="about">
+      <button type="button" class="nav-link about__btn" id="aboutBtn"
+              aria-haspopup="true" aria-expanded="false" aria-controls="aboutMenu">
+        About <span class="about__caret" aria-hidden="true">&#9662;</span>
+      </button>
+      <div class="about__menu" id="aboutMenu" role="menu" aria-labelledby="aboutBtn" hidden>
+        {{if .GitRepo}}<a href="{{.GitRepo}}" class="about__item" role="menuitem" target="_blank" rel="noopener">GitRepo</a>{{end}}
+        <a href="/source" class="about__item" role="menuitem" download>Source</a>
+        <a href="/license" class="about__item" role="menuitem" target="_blank" rel="license">License</a>
+        <button type="button" class="about__item about__version" id="aboutVersion" role="menuitem">
+          <span>Version</span>{{if .Version}}<span class="about__ver">{{.Version}}</span>{{end}}
+        </button>
+      </div>
+    </div>
   </nav>
   <div id="header-insert">{{template "header-insert" .}}</div>
   <div class="header-actions">
@@ -36,6 +46,27 @@
     {{template "header-actions-extra" .}}
   </div>
 </header>
+
+{{/* About modal — opened from the About menu's Version entry (about-menu.js).
+     Lives in the header partial so it ships on every page that has the header,
+     with no per-page include. Version/Commit come from internal/version; an
+     em-dash shows when the value was unknown at build time. */}}
+<div class="modal-backdrop hidden" id="aboutModal" role="dialog" aria-modal="true" aria-labelledby="aboutTitle">
+  <div class="modal modal--about">
+    <div class="modal-header">
+      <h2 id="aboutTitle">About</h2>
+      <button class="btn-close" id="aboutClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="about-card">
+      <p class="about-name"><span>Mad</span>share</p>
+      <dl class="about-meta">
+        <dt>Version</dt><dd>{{if .Version}}{{.Version}}{{else}}&mdash;{{end}}</dd>
+        <dt>Commit</dt><dd class="about-commit">{{if .Commit}}{{.Commit}}{{else}}&mdash;{{end}}</dd>
+        <dt>Author</dt><dd>Kian Eugen Seibel</dd>
+      </dl>
+    </div>
+  </div>
+</div>
 {{end}}
 
 {{define "auth-modals"}}

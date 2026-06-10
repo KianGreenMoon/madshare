@@ -4,3 +4,6 @@ CLAUDE.md
 .claude/
 madshare.toml
 webui.toml
+
+# Compiled binary (e.g. `make build` / `go build -o madshare`)
+/madshare

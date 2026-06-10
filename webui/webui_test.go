@@ -56,11 +56,10 @@ func TestAdminSubPagesRender(t *testing.T) {
 	}
 }
 
-// TestGitRepoNavButton checks the header GitRepo link: rendered with the
-// configured URL, absent when the URL is empty — and that the old Source
-// download link no longer renders (the markup is kept commented in the
-// partial; the GET /source endpoint itself stays live).
-func TestGitRepoNavButton(t *testing.T) {
+// TestAboutMenu checks the header About mini-menu: the GitRepo entry renders
+// with the configured URL and is absent when the URL is empty, while the Source
+// and License entries always render inside the menu.
+func TestAboutMenu(t *testing.T) {
 	render := func(gitRepo string) string {
 		r := chi.NewRouter()
 		Register(r, "", gitRepo)
@@ -75,14 +74,22 @@ func TestGitRepoNavButton(t *testing.T) {
 	withRepo := render("https://git.example.org/me/madshare")
 	if !strings.Contains(withRepo, `href="https://git.example.org/me/madshare"`) ||
 		!strings.Contains(withRepo, ">GitRepo</a>") {
-		t.Errorf("expected the GitRepo nav link in the rendered header")
+		t.Errorf("expected the GitRepo entry in the About menu")
 	}
-	if strings.Contains(withRepo, `href="/source"`) {
-		t.Errorf("the Source nav link should be hidden (endpoint stays live)")
+	// Source and License moved into the About menu (Source was previously hidden).
+	if !strings.Contains(withRepo, `href="/source"`) {
+		t.Errorf("expected the Source entry in the About menu")
+	}
+	if !strings.Contains(withRepo, `href="/license"`) {
+		t.Errorf("expected the License entry in the About menu")
+	}
+	// The Version entry opens the About modal.
+	if !strings.Contains(withRepo, `id="aboutVersion"`) || !strings.Contains(withRepo, `id="aboutModal"`) {
+		t.Errorf("expected the Version entry and the About modal in the header")
 	}
 
 	hidden := render("")
 	if strings.Contains(hidden, ">GitRepo</a>") {
-		t.Errorf("GitRepo button should be hidden for an empty URL")
+		t.Errorf("GitRepo entry should be hidden for an empty URL")
 	}
 }
