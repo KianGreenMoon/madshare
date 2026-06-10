@@ -19,8 +19,8 @@ Phase 1  Persistent shell + continuous playback (LISTENING side)   ← THIS DOC
 Phase 2  Hash-precheck backend            → docs/plans/upload-rework.md
 Phase 3  Upload page rewrite              → docs/plans/upload-rework.md
 Phase 4  Admin files rework (metadata /   → docs/plans/admin-files-rework.md
-            rename / merge / delete)         (decoupled — parallelizable)
-Phase 5  Playlists + favorites + likes + queue editing  (future; builds
+            rename / merge / delete)         (DONE)
+Phase 5  Playlists + favorites + likes + queue editing  (next; builds
             directly on this doc's queue model)
 ```
 

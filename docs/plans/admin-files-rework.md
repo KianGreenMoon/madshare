@@ -1,6 +1,10 @@
 # Admin Files Rework — Entity-Aware Library Management
 
-Status: **planned** (design; no code yet)
+Status: **implemented** on `aidev` (2026-06, user-verified). Shipped: entity-aware
+drill-down view with rename + per-track edit (`0bd7372`), artist/album cover
+upload (`e997041`), id-addressed merge (`2539062`), entity/track delete to Trash
+(`95b0d57`), Trash bulk restore/delete (`952faec`). Remaining: only the open
+questions below (server-side batch endpoint, pagination, All-files view fate).
 Branch: aidev
 Builds on: `docs/plans/admin-panel-rework.md` (the admin shell + the existing
 `/admin/files` page) and the artist/album normalization backend
@@ -139,10 +143,6 @@ drill-down but with management affordances:
 The `?artist_id=`/`?album_id=` **browse** params were *not* added — the UI already
 holds the current level's full item list (with ids) client-side, so browse stays
 name-addressed and merge targets are picked from that in-memory list.
-
-**Recommendation:** start with **(a)** for rename (low risk, single entity) but do
-**(b)** before wiring **merge**, since merge is destructive and must target an
-unambiguous entity. Confirm at impl.
 
 ---
 
