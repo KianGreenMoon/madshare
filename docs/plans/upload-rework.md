@@ -270,54 +270,12 @@ of this page later.
 
 ---
 
-## Review bucket (moderation queue) for non-admin uploads — policy, planned
+## Review bucket (moderation queue)
 
-A separate, **policy-configurable** idea (owner's thought, 2026-06-09): what
-happens to content a **non-admin** uploads?
-
-Two stances, selectable by config:
-
-- **Trust uploaders absolutely (default, = today's behavior).** A non-admin
-  upload goes live in the library immediately. No review. Simplest; fine when all
-  uploaders are trusted.
-- **Review bucket.** When the operator does *not* fully trust uploaders, a
-  non-admin upload lands in a **pending-review** state — stored, but **not visible
-  or playable** in the public library — until an admin **approves** (publish) or
-  **rejects** (→ trash/delete). **Admin uploads bypass review.**
-
-This is a content-**moderation** layer, distinct from the hash-precheck above.
-It fits naturally on top of the existing model:
-
-- It reuses the **content-access / default-deny** model (auth Phase 3): a
-  pending-review file is simply not granted visibility yet — the gate already
-  exists, the upload just enters in an ungranted/quarantined state.
-- The admin **review queue UI** is a sibling of the existing **Trash** page
-  (list → approve / reject, two-step on reject). Could live as a new
-  `/admin/review` page or a tab on the files/trash pages.
-- It is adjacent to the existing **auto-publish / autoderive** setting (the
-  free-license allow-list on `/admin/settings`): auto-publish decides *licensing*
-  of uploads; the review bucket decides *visibility pending approval*. Keep them
-  as separate, composable policies (e.g. an upload could auto-derive a license yet
-  still await review).
-
-**Config sketch:** a policy flag such as `[upload].review_non_admin_uploads`
-(default `false` = trust). When `true`, non-admin uploads enter pending-review.
-
-**Interactions to think through:**
-
-- **Hash-precheck vs. pending files.** Should `POST /api/files/check` report a
-  pending-review file as `exists`? Probably yes (the content *is* stored, so a
-  second upload of it is still redundant), but it must not leak it as *playable*.
-  Decide the exact reporting.
-- **Per-uploader trust.** A coarser/finer knob later: trust by role or per-user
-  (a "trusted uploader" flag) rather than a single global switch. Out of scope for
-  the first cut; note it.
-- **Storage/dedupe.** A pending file still dedupes by hash; approval flips
-  visibility, it doesn't re-store bytes.
-
-**Status:** planned/optional — not part of Phases 2–3's critical path. Build the
-trust-by-default path first; add the review bucket when the moderation need is
-real. Flagged here so it isn't forgotten.
+Designed in full in **`docs/plans/moderation-review-bucket.md`** (staged
+uploads + approval queue; trust expressed through roles — `content.moderate`
+holders self-approve — rather than a config switch). The early sketch that
+lived here is superseded by that doc.
 
 ---
 
