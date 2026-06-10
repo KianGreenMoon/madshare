@@ -317,3 +317,62 @@ func TestLoad_DatabasePathRelative_MkdirAllSafeCheck(t *testing.T) {
 		t.Logf("INFO: config.Load sanitized the path (unexpected but fine): %q", cfg.Database.Path)
 	}
 }
+
+// ── [webui].git_repo (the header GitRepo button) ─────────────────────────────
+
+func TestLoad_GitRepoAbsent_UsesDefault(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "norepo.toml")
+	os.WriteFile(f, []byte("[webui]\napi_base = \"\"\n"), 0o600)
+	cfg, err := config.Load(f)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.WebUI.GitRepoURL(); got != config.DefaultGitRepoURL {
+		t.Errorf("GitRepoURL() = %q, want default %q", got, config.DefaultGitRepoURL)
+	}
+}
+
+func TestLoad_GitRepoEmpty_HidesButton(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "norepo.toml")
+	os.WriteFile(f, []byte("[webui]\ngit_repo = \"\"\n"), 0o600)
+	cfg, err := config.Load(f)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.WebUI.GitRepoURL(); got != "" {
+		t.Errorf("GitRepoURL() = %q, want empty (button hidden)", got)
+	}
+}
+
+func TestLoad_GitRepoCustom(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "repo.toml")
+	os.WriteFile(f, []byte("[webui]\ngit_repo = \"https://git.example.org/me/fork\"\n"), 0o600)
+	cfg, err := config.Load(f)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.WebUI.GitRepoURL(); got != "https://git.example.org/me/fork" {
+		t.Errorf("GitRepoURL() = %q", got)
+	}
+	if len(cfg.Warnings()) != 0 {
+		t.Errorf("unexpected warnings for an https URL: %v", cfg.Warnings())
+	}
+}
+
+func TestLoad_GitRepoNonHTTP_Warns(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "repo.toml")
+	os.WriteFile(f, []byte("[webui]\ngit_repo = \"git@github.com:me/fork.git\"\n"), 0o600)
+	cfg, err := config.Load(f)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	warned := false
+	for _, w := range cfg.Warnings() {
+		if strings.Contains(w, "git_repo") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("expected a git_repo warning, got %v", cfg.Warnings())
+	}
+}

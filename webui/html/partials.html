@@ -6,7 +6,13 @@
     <a href="/playlists" class="nav-link{{if eq .Page "playlists"}} nav-link--active{{end}}"{{if eq .Page "playlists"}} aria-current="page"{{end}}>Playlists</a>
     <a href="/upload" class="nav-link{{if eq .Page "upload"}} nav-link--active{{end}}"{{if eq .Page "upload"}} aria-current="page"{{end}}>Upload</a>
     <a href="/admin" class="nav-link{{if eq .Page "admin"}} nav-link--active{{end}}"{{if eq .Page "admin"}} aria-current="page"{{end}} target="_blank" rel="noopener" title="Opens in a new tab">Admin</a>
+    {{/* Source download link — hidden for now (owner decision 2026-06-10): the
+         tar.gz next to the executable wasn't convenient. The GET /source
+         endpoint stays live (AGPL §13 corresponding-source offer; see
+         docs/api/source.md). Restore by un-commenting:
     <a href="/source" class="nav-link" download>Source</a>
+    */}}
+    {{if .GitRepo}}<a href="{{.GitRepo}}" class="nav-link" target="_blank" rel="noopener">GitRepo</a>{{end}}
     <a href="/license" class="nav-link" target="_blank" rel="license">License</a>
   </nav>
   <div id="header-insert">{{template "header-insert" .}}</div>

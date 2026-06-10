@@ -86,6 +86,23 @@ func (l ListenConfig) Serves(group string) bool {
 // for a separately deployed UI pointing at a remote backend.
 type WebUIConfig struct {
 	APIBase string `toml:"api_base"`
+	// GitRepo is the URL behind the web UI's "GitRepo" nav button. A pointer so
+	// the three states are distinguishable: absent (nil) → DefaultGitRepoURL,
+	// empty string → the button is hidden, anything else → used as-is.
+	GitRepo *string `toml:"git_repo"`
+}
+
+// DefaultGitRepoURL is the project's upstream repository, linked from the web
+// UI's GitRepo nav button when [webui].git_repo is not set.
+const DefaultGitRepoURL = "https://github.com/KianGreenMoon/madshare"
+
+// GitRepoURL resolves [webui].git_repo per the WebUIConfig.GitRepo contract.
+// An empty return value means "hide the button".
+func (w WebUIConfig) GitRepoURL() string {
+	if w.GitRepo == nil {
+		return DefaultGitRepoURL
+	}
+	return strings.TrimSpace(*w.GitRepo)
 }
 
 type DatabaseConfig struct {
@@ -175,10 +192,25 @@ func Load(path string) (Config, error) {
 		cfg.Auth.InitialAdminPassword = pw
 	}
 	cfg.resolveStorageWorkers()
+	cfg.resolveGitRepo()
 	if err := cfg.validate(); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+// resolveGitRepo trims [webui].git_repo and warns (non-fatal) when a non-empty
+// value doesn't look like an http(s) URL — the UI links to it verbatim.
+func (c *Config) resolveGitRepo() {
+	if c.WebUI.GitRepo == nil {
+		return
+	}
+	v := strings.TrimSpace(*c.WebUI.GitRepo)
+	*c.WebUI.GitRepo = v
+	if v != "" && !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") {
+		c.warnings = append(c.warnings, fmt.Sprintf(
+			"webui.git_repo %q does not look like an http(s) URL; the GitRepo button will link to it as-is", v))
+	}
 }
 
 // resolveStorageWorkers normalises the worker-count fields and records any

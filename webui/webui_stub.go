@@ -13,7 +13,7 @@ import "github.com/go-chi/chi/v5"
 const Available = false
 
 // Register is a no-op in nowebui builds.
-func Register(r chi.Router, apiBase string) {}
+func Register(r chi.Router, apiBase, gitRepo string) {}
 
 // RegisterAdminPage is a no-op in nowebui builds.
-func RegisterAdminPage(r chi.Router, apiBase string) {}
+func RegisterAdminPage(r chi.Router, apiBase, gitRepo string) {}

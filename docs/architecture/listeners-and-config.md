@@ -152,6 +152,27 @@ API origin. For the normal bundled server, leave it empty. When non-empty it is
 injected into `meta[name="api-url"]`; when empty the meta tag is empty and the
 front-end uses relative URLs.
 
+### 4.3a `git_repo` (optional)
+
+```toml
+[webui]
+git_repo = "https://github.com/KianGreenMoon/madshare"
+```
+
+The URL behind the header's **GitRepo** nav button, rendered server-side into
+every page (no API involved). Three states:
+
+| Value | Effect |
+|-------|--------|
+| key omitted | the upstream default, `https://github.com/KianGreenMoon/madshare` |
+| `git_repo = ""` | the button is hidden |
+| any other URL | linked as-is (point it at your fork if you changed the code) |
+
+A non-`http(s)` value is accepted with a startup warning. This only controls
+the nav button: `GET /source` (the AGPL §13 corresponding-source download)
+stays available regardless — its own nav link is currently hidden, see
+`docs/api/source.md`.
+
 ### 4.4 Defaults (no config file, or omitted keys)
 
 If no `[[listen]]` is given, the default is a single loopback listener serving

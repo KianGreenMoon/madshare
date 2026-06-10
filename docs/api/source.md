@@ -46,8 +46,13 @@ curl -OJ http://localhost:3000/source
   `webui.toml`) and runtime data (`data/`) are gitignored and therefore absent.
 - The endpoint is **public** — no authentication required. AGPL demands source
   be freely available to anyone interacting with the service.
-- A "Source" link pointing to `/source` (with the `download` attribute) appears
-  in the navigation header of every web UI page.
+- The web UI's "Source" nav link is currently **hidden** (its markup is kept
+  commented in the header templates): downloading a tar.gz next to a running
+  deployment proved inconvenient, and the header now carries a **GitRepo**
+  button instead (`[webui].git_repo`, see
+  `docs/architecture/listeners-and-config.md` §4.3a). The endpoint itself
+  remains live and public — it, not the GitHub link, is the binding
+  corresponding-source offer for a modified deployment.
 
 ---
 
@@ -84,4 +89,4 @@ curl http://localhost:3000/license
   `/source`.
 - The endpoint is **public** — no authentication required.
 - A "License" link pointing to `/license` (opening in a new tab) appears in the
-  navigation header of every web UI page, next to "Source".
+  navigation header of every web UI page.

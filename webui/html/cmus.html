@@ -25,7 +25,10 @@
       <a href="/" class="nav-link">Library</a>
       <a href="/cmus" class="nav-link nav-link--active" aria-current="page">cmus</a>
       <a href="/admin" class="nav-link">Admin</a>
+      {{/* Source link hidden (see partials.html header) — endpoint stays live:
       <a href="/source" class="nav-link" download>Source</a>
+      */}}
+      {{if .GitRepo}}<a href="{{.GitRepo}}" class="nav-link" target="_blank" rel="noopener">GitRepo</a>{{end}}
     </nav>
   </header>
 

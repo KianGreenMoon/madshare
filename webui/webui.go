@@ -77,14 +77,17 @@ var adminSubPages = map[string]*template.Template{
 // origin written into <meta name="api-url">; it is empty for the bundled,
 // same-origin server so the front-end falls back to relative URLs.
 // Page is the current page identifier used by the shared header partial to
-// mark the active nav link ("library", "upload", "admin", "cmus").
+// mark the active nav link ("library", "playlists", "upload", "admin", "cmus").
 // SubPage marks the active link in the secondary admin nav ("" = Overview,
 // "files", "users", "prune", "trash", "settings"); it is empty for
 // non-admin pages.
+// GitRepo is the URL behind the header's GitRepo nav button
+// (config.WebUIConfig.GitRepoURL()); empty hides the button.
 type pageData struct {
 	APIURL  string
 	Page    string
 	SubPage string
+	GitRepo string
 }
 
 func makeHandler(tmpl *template.Template, tmplName string, data pageData) http.HandlerFunc {
@@ -104,25 +107,26 @@ func noCacheStatic(next http.Handler) http.Handler {
 }
 
 // Register mounts the web UI route group on r: the library page at "/", the
-// cmus view at "/cmus", and the static assets under "/static/". apiBase is the
-// API origin for the page (empty = relative, same-origin). Templates and static
-// assets are served from the embedded filesystem, so the binary needs no
-// access to webui/ on disk.
-func Register(r chi.Router, apiBase string) {
+// listening pages, the cmus view at "/cmus", and the static assets under
+// "/static/". apiBase is the API origin for the page (empty = relative,
+// same-origin); gitRepo is the header GitRepo button's URL (empty = hidden).
+// Templates and static assets are served from the embedded filesystem, so the
+// binary needs no access to webui/ on disk.
+func Register(r chi.Router, apiBase, gitRepo string) {
 	static := noCacheStatic(http.FileServer(http.FS(staticRoot)))
 	r.Handle("/static/*", http.StripPrefix("/static/", static))
-	r.Get("/cmus", makeHandler(cmusTmpl, "cmus.html", pageData{APIURL: apiBase}))
-	r.Get("/upload", makeHandler(uploadTmpl, "upload.html", pageData{APIURL: apiBase, Page: "upload"}))
-	r.Get("/playlists", makeHandler(playlistsTmpl, "playlists.html", pageData{APIURL: apiBase, Page: "playlists"}))
-	r.Get("/", makeHandler(libraryTmpl, "library.html", pageData{APIURL: apiBase, Page: "library"}))
+	r.Get("/cmus", makeHandler(cmusTmpl, "cmus.html", pageData{APIURL: apiBase, GitRepo: gitRepo}))
+	r.Get("/upload", makeHandler(uploadTmpl, "upload.html", pageData{APIURL: apiBase, Page: "upload", GitRepo: gitRepo}))
+	r.Get("/playlists", makeHandler(playlistsTmpl, "playlists.html", pageData{APIURL: apiBase, Page: "playlists", GitRepo: gitRepo}))
+	r.Get("/", makeHandler(libraryTmpl, "library.html", pageData{APIURL: apiBase, Page: "library", GitRepo: gitRepo}))
 }
 
 // RegisterAdminPage mounts the /admin page. It belongs to the admin route
 // group (alongside the API's /api/admin/* endpoints), not the webui group.
-func RegisterAdminPage(r chi.Router, apiBase string) {
-	r.Get("/admin", makeHandler(adminTmpl, "dashboard.html", pageData{APIURL: apiBase, Page: "admin"}))
+func RegisterAdminPage(r chi.Router, apiBase, gitRepo string) {
+	r.Get("/admin", makeHandler(adminTmpl, "dashboard.html", pageData{APIURL: apiBase, Page: "admin", GitRepo: gitRepo}))
 	for sub, tmpl := range adminSubPages {
 		file := sub + ".html" // template name = file base, e.g. "files.html"
-		r.Get("/admin/"+sub, makeHandler(tmpl, file, pageData{APIURL: apiBase, Page: "admin", SubPage: sub}))
+		r.Get("/admin/"+sub, makeHandler(tmpl, file, pageData{APIURL: apiBase, Page: "admin", SubPage: sub, GitRepo: gitRepo}))
 	}
 }

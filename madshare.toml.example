@@ -30,8 +30,16 @@ serve = ["api", "webui", "admin"]
 
 # Only set api_base for a SEPARATELY hosted web UI pointing at a remote backend.
 # Leave empty (or omit) for the bundled server so the UI uses relative URLs.
+#
+# git_repo is the URL behind the header's "GitRepo" nav button:
+#   omitted        -> the upstream default (https://github.com/KianGreenMoon/madshare)
+#   git_repo = ""  -> the button is hidden
+#   any other URL  -> linked as-is (point it at your fork if you changed the code)
+# Note: GET /source (the AGPL corresponding-source download) stays available
+# regardless of this setting — only the nav button changed.
 #[webui]
 #api_base = "https://media.example.org"
+#git_repo = "https://github.com/KianGreenMoon/madshare"
 
 # First-run admin bootstrap. These are consumed ONLY when the users table is
 # empty (a fresh database): they create the first admin account, which is then
