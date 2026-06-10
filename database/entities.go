@@ -12,6 +12,16 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
+// Default display names for the "unknown" buckets. Untagged tracks resolve to
+// these canonical entities instead of empty strings: artists.name / albums.title
+// and media_metadata.title are required non-empty (migration 016). normalizeKey
+// of each is the bucket's dedup key ("unknown artist" / "other"), so a track
+// tagged literally this way converges on the same bucket.
+const (
+	DefaultArtistName = "Unknown artist"
+	DefaultAlbumTitle = "Other"
+)
+
 // Errors returned by the rename operations.
 var (
 	// ErrEntityNotFound is returned when no artist/album entity has the given id.
@@ -49,7 +59,7 @@ func normalizeKey(s string) string {
 
 // effectiveArtist is the album-level artist used for browse-by-artist grouping:
 // the first of album_artist, then artist, whose normalized key is non-empty,
-// else "" (the unknown-artist bucket). Mirrors today's
+// else DefaultArtistName (the unknown-artist bucket). Mirrors today's
 // COALESCE(NULLIF(album_artist,”), NULLIF(artist,”)) but also skips
 // whitespace-only tags, which normalize to the same empty bucket anyway. The
 // returned display string keeps the original casing (trimmed).
@@ -59,7 +69,18 @@ func effectiveArtist(albumArtist, artist string) string {
 			return strings.TrimSpace(norm.NFC.String(s))
 		}
 	}
-	return ""
+	return DefaultArtistName
+}
+
+// effectiveAlbum is the album display title used for the album entity: the
+// track's album tag trimmed, or DefaultAlbumTitle ("Other") when the tag is
+// empty/whitespace. Mirrors effectiveArtist so untagged tracks land in one named
+// bucket per artist rather than an empty-titled row.
+func effectiveAlbum(album string) string {
+	if normalizeKey(album) == "" {
+		return DefaultAlbumTitle
+	}
+	return strings.TrimSpace(norm.NFC.String(album))
 }
 
 // tagsFromMeta extracts the resolver inputs from a media_metadata struct. NULL
@@ -82,9 +103,10 @@ func tagsFromMeta(m *MediaMetadata) AlbumArtistTags {
 // album's artist_id FK is always consistent.
 //
 // Identity rules (docs/architecture/artist-album-model.md §"Identity rules"):
-//   - artist  = effectiveArtist(album_artist, artist), "" → unknown-artist bucket.
-//   - album   = (artist_id, normalizeKey(title)); empty title → unknown-album
-//     bucket under that artist.
+//   - artist  = effectiveArtist(album_artist, artist); empty tags →
+//     DefaultArtistName ("Unknown artist") bucket.
+//   - album   = (artist_id, normalizeKey(effectiveAlbum(title))); empty title →
+//     DefaultAlbumTitle ("Other") bucket under that artist.
 //   - year    = set on the album from the first track that supplies one; never
 //     overwritten once present.
 func (db *DB) resolveAlbumArtist(ctx context.Context, t AlbumArtistTags) (artistID, albumID int64, err error) {
@@ -192,7 +214,9 @@ func (db *DB) RenameArtist(ctx context.Context, artistID int64, newName string) 
 	display := strings.TrimSpace(norm.NFC.String(newName))
 	newNorm := normalizeKey(newName)
 	if newNorm == "" {
-		// An empty key is the unknown-artist bucket; renaming into it is a merge.
+		// A name can't be empty (artists.name is required non-empty). Renaming to
+		// the bucket's own name ("Unknown artist") instead collides with it below
+		// as a normal merge.
 		return ErrNameConflict
 	}
 
@@ -233,7 +257,9 @@ func (db *DB) RenameAlbum(ctx context.Context, albumID int64, newTitle string) e
 	display := strings.TrimSpace(norm.NFC.String(newTitle))
 	newNorm := normalizeKey(newTitle)
 	if newNorm == "" {
-		// An empty key is the unknown-album bucket; renaming into it is a merge.
+		// A title can't be empty (albums.title is required non-empty). Renaming to
+		// the bucket's own title ("Other") instead collides with it below as a
+		// normal merge.
 		return ErrNameConflict
 	}
 
@@ -451,12 +477,13 @@ func resolveAlbumArtistTx(ctx context.Context, tx *sql.Tx, t AlbumArtistTags) (a
 	if t.Year > 0 {
 		year = t.Year
 	}
+	albumTitle := effectiveAlbum(t.Album)
 	if err := tx.QueryRowContext(ctx,
 		`INSERT INTO albums (artist_id, title, norm_title, year, created_at)
 		 VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(artist_id, norm_title) DO UPDATE SET year = COALESCE(albums.year, excluded.year)
 		 RETURNING id`,
-		artistID, strings.TrimSpace(norm.NFC.String(t.Album)), normalizeKey(t.Album), year, now,
+		artistID, albumTitle, normalizeKey(albumTitle), year, now,
 	).Scan(&albumID); err != nil {
 		return 0, 0, fmt.Errorf("resolve album: %w", err)
 	}
@@ -528,6 +555,106 @@ func (db *DB) BackfillEntities(ctx context.Context) (int, error) {
 		done++
 	}
 	return done, nil
+}
+
+// FoldUnknownBuckets folds the unknown-artist / unknown-album buckets — whose
+// dedup keys migration 016 left at ” — onto their canonical keys
+// (normalizeKey(DefaultArtistName) / normalizeKey(DefaultAlbumTitle)), so a track
+// later tagged literally "Unknown artist" / "Other" converges on the same bucket
+// the resolver now produces. When a real entity already holds the target key
+// (a file was tagged that way before this change), the literal is merged into the
+// bucket via the tested MergeArtists/MergeAlbums paths, keeping the bucket's
+// canonical display name.
+//
+// Run at startup after BackfillEntities and BackfillCoverEntities (covers must
+// already sit on the entity tables before a merge moves them). Idempotent: once
+// no ” key remains it is a no-op.
+func (db *DB) FoldUnknownBuckets(ctx context.Context) error {
+	if err := db.foldUnknownArtist(ctx); err != nil {
+		return err
+	}
+	return db.foldUnknownAlbums(ctx)
+}
+
+// foldUnknownArtist relabels the single unknown-artist bucket (norm_name = ”)
+// onto normalizeKey(DefaultArtistName), merging any pre-existing literal first.
+func (db *DB) foldUnknownArtist(ctx context.Context) error {
+	targetNorm := normalizeKey(DefaultArtistName)
+
+	var bucketID int64
+	err := db.QueryRowContext(ctx, `SELECT id FROM artists WHERE norm_name = ''`).Scan(&bucketID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // no untagged-artist bucket exists
+	}
+	if err != nil {
+		return fmt.Errorf("fold unknown artist: find bucket: %w", err)
+	}
+
+	var literalID int64
+	err = db.QueryRowContext(ctx, `SELECT id FROM artists WHERE norm_name = ?`, targetNorm).Scan(&literalID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("fold unknown artist: find literal: %w", err)
+	}
+	if err == nil && literalID != bucketID {
+		// Collapse the literal onto the bucket; MergeArtists handles its albums and
+		// cover, and frees the target key by deleting the literal.
+		if err := db.MergeArtists(ctx, literalID, bucketID); err != nil {
+			return fmt.Errorf("fold unknown artist: merge literal: %w", err)
+		}
+	}
+	if _, err := db.ExecContext(ctx,
+		`UPDATE artists SET norm_name = ? WHERE id = ?`, targetNorm, bucketID); err != nil {
+		return fmt.Errorf("fold unknown artist: relabel key: %w", err)
+	}
+	return nil
+}
+
+// foldUnknownAlbums relabels each artist's unknown-album bucket (norm_title = ”)
+// onto normalizeKey(DefaultAlbumTitle), merging any pre-existing literal under the
+// same artist first. Buckets are buffered before mutating: the pool is pinned to
+// one connection, so a merge/update can't run while a Rows iterator is open.
+func (db *DB) foldUnknownAlbums(ctx context.Context) error {
+	targetNorm := normalizeKey(DefaultAlbumTitle)
+
+	rows, err := db.QueryContext(ctx, `SELECT id, artist_id FROM albums WHERE norm_title = ''`)
+	if err != nil {
+		return fmt.Errorf("fold unknown albums: query buckets: %w", err)
+	}
+	type bucket struct{ id, artistID int64 }
+	var buckets []bucket
+	for rows.Next() {
+		var b bucket
+		if err := rows.Scan(&b.id, &b.artistID); err != nil {
+			rows.Close()
+			return fmt.Errorf("fold unknown albums: scan: %w", err)
+		}
+		buckets = append(buckets, b)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("fold unknown albums: rows: %w", err)
+	}
+	rows.Close()
+
+	for _, b := range buckets {
+		var literalID int64
+		err := db.QueryRowContext(ctx,
+			`SELECT id FROM albums WHERE artist_id = ? AND norm_title = ?`,
+			b.artistID, targetNorm).Scan(&literalID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("fold unknown albums: find literal: %w", err)
+		}
+		if err == nil && literalID != b.id {
+			if err := db.MergeAlbums(ctx, literalID, b.id); err != nil {
+				return fmt.Errorf("fold unknown albums: merge literal: %w", err)
+			}
+		}
+		if _, err := db.ExecContext(ctx,
+			`UPDATE albums SET norm_title = ? WHERE id = ?`, targetNorm, b.id); err != nil {
+			return fmt.Errorf("fold unknown albums: relabel key: %w", err)
+		}
+	}
+	return nil
 }
 
 // tableExists reports whether a table of the given name is present.

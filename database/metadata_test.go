@@ -21,8 +21,8 @@ func TestUpdateFileMetadata_PartialPatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateFileMetadata: %v", err)
 	}
-	if got.Title.String != "Renamed" {
-		t.Errorf("title = %q, want %q", got.Title.String, "Renamed")
+	if got.Title != "Renamed" {
+		t.Errorf("title = %q, want %q", got.Title, "Renamed")
 	}
 	if got.Artist.String != "An Artist" {
 		t.Errorf("artist = %q, want unchanged %q", got.Artist.String, "An Artist")
@@ -63,8 +63,24 @@ func TestUpdateFileMetadata_EmptyPatchEchoes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateFileMetadata: %v", err)
 	}
-	if got.Title.String != "A Song" {
-		t.Errorf("title = %q, want %q", got.Title.String, "A Song")
+	if got.Title != "A Song" {
+		t.Errorf("title = %q, want %q", got.Title, "A Song")
+	}
+}
+
+// TestUpdateFileMetadata_ClearTitleRederivesFilename verifies that clearing the
+// title (required non-empty) re-derives it from the filename instead of NULL/”.
+func TestUpdateFileMetadata_ClearTitleRederivesFilename(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	seedFile(t, db, metaHash, "My Song.mp3") // newMeta sets Title="A Song"
+
+	got, err := db.UpdateFileMetadata(ctx, metaHash, MetadataPatch{Title: strPtr("")})
+	if err != nil {
+		t.Fatalf("UpdateFileMetadata: %v", err)
+	}
+	if got.Title != "My Song" {
+		t.Errorf("cleared title = %q, want %q (filename default)", got.Title, "My Song")
 	}
 }
 

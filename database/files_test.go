@@ -24,7 +24,7 @@ func newUpload(filename string) *FileUpload {
 
 func newMeta() *MediaMetadata {
 	return &MediaMetadata{
-		Title:       sql.NullString{String: "A Song", Valid: true},
+		Title:       "A Song",
 		Artist:      sql.NullString{String: "An Artist", Valid: true},
 		Album:       sql.NullString{String: "An Album", Valid: true},
 		TagFormat:   sql.NullString{String: "ID3v2.4", Valid: true},
@@ -446,7 +446,9 @@ func TestListFiles_OrderByCreatedAtDesc(t *testing.T) {
 }
 
 // TestListFiles_NullMetadataCoalesces verifies that a file with no media tags
-// returns empty strings (not an error) for title/artist/album and 0 for year.
+// returns empty strings (not an error) for artist/album and 0 for year. Title is
+// required non-empty (migration 016): a file with no metadata row at all
+// coalesces to ”, while an all-null meta row defaults its title to the filename.
 func TestListFiles_NullMetadataCoalesces(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
@@ -480,9 +482,6 @@ func TestListFiles_NullMetadataCoalesces(t *testing.T) {
 	}
 
 	for _, e := range entries {
-		if e.Title != "" {
-			t.Errorf("hash %s: Title = %q, want empty string for null tag", e.Hash, e.Title)
-		}
 		if e.Artist != "" {
 			t.Errorf("hash %s: Artist = %q, want empty string", e.Hash, e.Artist)
 		}
@@ -491,6 +490,16 @@ func TestListFiles_NullMetadataCoalesces(t *testing.T) {
 		}
 		if e.Year != 0 {
 			t.Errorf("hash %s: Year = %d, want 0", e.Hash, e.Year)
+		}
+		switch e.Hash {
+		case hash: // nil meta → no media_metadata row → coalesced to ''
+			if e.Title != "" {
+				t.Errorf("nil-meta file: Title = %q, want empty string", e.Title)
+			}
+		case hash2: // all-null meta → title defaulted from filename "y.ogg"
+			if e.Title != "y" {
+				t.Errorf("empty-meta file: Title = %q, want %q (filename default)", e.Title, "y")
+			}
 		}
 	}
 }

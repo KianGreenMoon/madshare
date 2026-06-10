@@ -156,6 +156,135 @@ func TestResolveAlbumArtist_EmptyBuckets(t *testing.T) {
 	}
 }
 
+// mustExec runs a statement and fails the test on error.
+func mustExec(t *testing.T, db *DB, q string, args ...any) {
+	t.Helper()
+	if _, err := db.Exec(q, args...); err != nil {
+		t.Fatalf("exec %q: %v", q, err)
+	}
+}
+
+// TestResolveAlbumArtist_UnknownDefaults checks that untagged tracks resolve to
+// the named default buckets ("Unknown artist" / "Other") with folded dedup keys,
+// and that a track tagged literally that way converges on the same entities.
+func TestResolveAlbumArtist_UnknownDefaults(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	aID, alID, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{})
+	if err != nil {
+		t.Fatalf("resolve untagged: %v", err)
+	}
+	var name, norm string
+	if err := db.QueryRow(`SELECT name, norm_name FROM artists WHERE id = ?`, aID).Scan(&name, &norm); err != nil {
+		t.Fatalf("read artist: %v", err)
+	}
+	if name != DefaultArtistName || norm != "unknown artist" {
+		t.Errorf("artist = (%q,%q), want (%q,%q)", name, norm, DefaultArtistName, "unknown artist")
+	}
+	var title, ntitle string
+	if err := db.QueryRow(`SELECT title, norm_title FROM albums WHERE id = ?`, alID).Scan(&title, &ntitle); err != nil {
+		t.Fatalf("read album: %v", err)
+	}
+	if title != DefaultAlbumTitle || ntitle != "other" {
+		t.Errorf("album = (%q,%q), want (%q,%q)", title, ntitle, DefaultAlbumTitle, "other")
+	}
+
+	// Literal "Unknown Artist" / "OTHER" normalize onto the same bucket keys.
+	aID2, alID2, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{Artist: "Unknown Artist", Album: "OTHER"})
+	if err != nil {
+		t.Fatalf("resolve literal: %v", err)
+	}
+	if aID2 != aID || alID2 != alID {
+		t.Errorf("literal did not converge: artist (%d vs %d), album (%d vs %d)", aID2, aID, alID2, alID)
+	}
+	if n := countRows(t, db, "artists"); n != 1 {
+		t.Errorf("artists count = %d, want 1", n)
+	}
+}
+
+// TestFoldUnknownBuckets simulates the post-migration-016, pre-fold state (bucket
+// keys still ”) with a pre-existing literal that already holds the target key,
+// and checks the fold relabels the bucket and merges the literal into it.
+func TestFoldUnknownBuckets(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	mustExec(t, db, `INSERT INTO artists (id, name, norm_name, created_at) VALUES
+		(1, 'Unknown artist', '', 1),
+		(2, 'Unknown Artist', 'unknown artist', 1)`)
+	mustExec(t, db, `INSERT INTO albums (id, artist_id, title, norm_title, created_at) VALUES
+		(10, 1, 'Other', '', 1),
+		(11, 2, 'Other', 'other', 1)`)
+
+	if err := db.FoldUnknownBuckets(ctx); err != nil {
+		t.Fatalf("FoldUnknownBuckets: %v", err)
+	}
+
+	if n := countRows(t, db, "artists"); n != 1 {
+		t.Fatalf("artists count = %d, want 1 after fold", n)
+	}
+	var name, norm string
+	if err := db.QueryRow(`SELECT name, norm_name FROM artists`).Scan(&name, &norm); err != nil {
+		t.Fatalf("read artist: %v", err)
+	}
+	if name != "Unknown artist" || norm != "unknown artist" {
+		t.Errorf("folded artist = (%q,%q), want (Unknown artist, unknown artist)", name, norm)
+	}
+	if n := countRows(t, db, "albums"); n != 1 {
+		t.Fatalf("albums count = %d, want 1 after fold", n)
+	}
+	var ntitle string
+	if err := db.QueryRow(`SELECT norm_title FROM albums`).Scan(&ntitle); err != nil {
+		t.Fatalf("read album: %v", err)
+	}
+	if ntitle != "other" {
+		t.Errorf("folded album norm_title = %q, want other", ntitle)
+	}
+
+	// Idempotent: a second run finds no '' keys and is a no-op.
+	if err := db.FoldUnknownBuckets(ctx); err != nil {
+		t.Fatalf("FoldUnknownBuckets re-run: %v", err)
+	}
+	if n := countRows(t, db, "artists"); n != 1 {
+		t.Errorf("artists count = %d after re-run, want 1", n)
+	}
+}
+
+// TestRequiredNames_RejectEmpty checks the migration-016 enforcement: the
+// artists/albums triggers reject ” names, and media_metadata.title rejects
+// ” and NULL.
+func TestRequiredNames_RejectEmpty(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	if _, err := db.Exec(`INSERT INTO artists (name, norm_name, created_at) VALUES ('', 'x', 1)`); err == nil {
+		t.Error("empty artists.name insert: want error, got nil")
+	}
+	mustExec(t, db, `INSERT INTO artists (name, norm_name, created_at) VALUES ('A', 'a', 1)`)
+	if _, err := db.Exec(`UPDATE artists SET name = '' WHERE norm_name = 'a'`); err == nil {
+		t.Error("empty artists.name update: want error, got nil")
+	}
+	if _, err := db.Exec(
+		`INSERT INTO albums (artist_id, title, norm_title, created_at)
+		 SELECT id, '', 'x', 1 FROM artists WHERE norm_name = 'a'`); err == nil {
+		t.Error("empty albums.title insert: want error, got nil")
+	}
+
+	// media_metadata.title CHECK / NOT NULL (needs a files row; nil meta leaves
+	// no media_metadata row to collide with).
+	f := newFile("ee00000000000000000000000000000000000000000000000000000000000000")
+	if err := db.InsertFile(ctx, f, newUpload("z.mp3"), nil); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO media_metadata (file_id, title, extracted_at) VALUES (?, '', 1)`, f.ID); err == nil {
+		t.Error("empty media_metadata.title: want CHECK error, got nil")
+	}
+	if _, err := db.Exec(`INSERT INTO media_metadata (file_id, title, extracted_at) VALUES (?, NULL, 1)`, f.ID); err == nil {
+		t.Error("null media_metadata.title: want NOT NULL error, got nil")
+	}
+}
+
 // albumYear reads the (nullable) representative year of an album row.
 func albumYear(t *testing.T, db *DB, albumID int64) sql.NullInt64 {
 	t.Helper()

@@ -544,7 +544,7 @@ func (h *handler) updateFileMetadata(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":           true,
 		"hash":         hash,
-		"title":        meta.Title.String,
+		"title":        meta.Title,
 		"album":        meta.Album.String,
 		"album_artist": meta.AlbumArtist.String,
 		"artist":       meta.Artist.String,

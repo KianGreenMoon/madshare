@@ -14,10 +14,8 @@ func insertSearchFile(t *testing.T, db *DB, hash, title, artist, album, albumArt
 	t.Helper()
 	f := newFile(hash)
 	meta := &MediaMetadata{
+		Title:       title,
 		ExtractedAt: 1700000000,
-	}
-	if title != "" {
-		meta.Title = sql.NullString{String: title, Valid: true}
 	}
 	if artist != "" {
 		meta.Artist = sql.NullString{String: artist, Valid: true}

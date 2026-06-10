@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -68,8 +69,19 @@ func (db *DB) UpdateFileMetadata(ctx context.Context, hash string, p MetadataPat
 		var sets []string
 		var args []any
 		if p.Title != nil {
+			// Title is required non-empty (migration 016). Clearing it (or a
+			// whitespace-only value) re-derives from the filename, the same default
+			// the upload path uses, rather than storing NULL/''.
+			title := *p.Title
+			if strings.TrimSpace(title) == "" {
+				fn, err := firstFilenameTx(ctx, tx, fileID)
+				if err != nil {
+					return nil, err
+				}
+				title = titleFromFilename(fn)
+			}
 			sets = append(sets, "title = ?")
-			args = append(args, metaNullString(*p.Title))
+			args = append(args, title)
 		}
 		if p.Album != nil {
 			sets = append(sets, "album = ?")
@@ -157,4 +169,35 @@ func (db *DB) getMetadataByFileID(ctx context.Context, fileID int64) (*MediaMeta
 // edited-then-cleared field is indistinguishable from a never-set one.
 func metaNullString(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}
+}
+
+// titleFromFilename derives a display title from an upload filename: the base
+// name with its extension stripped. It is the default media_metadata.title when a
+// file carries no title tag (upload) or its title is cleared (PATCH), so the
+// column is never empty. Falls back to "Untitled" for an all-extension/blank
+// name, matching migration 016's backfill.
+func titleFromFilename(name string) string {
+	base := strings.TrimSpace(strings.TrimSuffix(name, filepath.Ext(name)))
+	if base == "" {
+		base = strings.TrimSpace(name)
+	}
+	if base == "" {
+		base = "Untitled"
+	}
+	return base
+}
+
+// firstFilenameTx returns the earliest-recorded filename for a file within an
+// open transaction, or "" when none was recorded.
+func firstFilenameTx(ctx context.Context, tx *sql.Tx, fileID int64) (string, error) {
+	var name sql.NullString
+	err := tx.QueryRowContext(ctx,
+		`SELECT filename FROM file_uploads WHERE file_id = ? ORDER BY id LIMIT 1`, fileID).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("first filename: %w", err)
+	}
+	return name.String, nil
 }

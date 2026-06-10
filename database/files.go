@@ -74,6 +74,16 @@ func (db *DB) InsertFile(ctx context.Context, f *File, upload *FileUpload, meta 
 		if meta.ExtractedAt == 0 {
 			meta.ExtractedAt = time.Now().Unix()
 		}
+		// title is required non-empty (migration 016): default it to the upload
+		// filename with its extension stripped when no title tag was supplied, so
+		// the CHECK is satisfied for every caller.
+		if strings.TrimSpace(meta.Title) == "" {
+			fname := ""
+			if upload != nil {
+				fname = upload.Filename
+			}
+			meta.Title = titleFromFilename(fname)
+		}
 		// Resolve the artist/album entities inline so a fresh upload carries its
 		// FKs immediately, without waiting for the startup backfill.
 		artistID, albumID, err := resolveAlbumArtistTx(ctx, tx, tagsFromMeta(meta))

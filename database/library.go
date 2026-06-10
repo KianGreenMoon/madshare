@@ -146,7 +146,7 @@ func (db *DB) listTracksByAlbumArtist(ctx context.Context, artist, album string,
 	q := `
 		SELECT
 		    f.id,
-		    COALESCE(NULLIF(m.title, ''), fu.filename, '') AS title,
+		    m.title,
 		    m.track_number,
 		    m.duration_seconds,
 		    f.object_key,
@@ -155,13 +155,8 @@ func (db *DB) listTracksByAlbumArtist(ctx context.Context, artist, album string,
 		JOIN media_metadata m ON m.file_id = f.id
 		JOIN albums al ON al.id = m.album_id
 		JOIN artists ar ON ar.id = al.artist_id
-		LEFT JOIN (
-		    SELECT file_id, MIN(filename) AS filename
-		    FROM file_uploads
-		    GROUP BY file_id
-		) fu ON fu.file_id = f.id
 		` + where + `
-		ORDER BY m.track_number ASC, LOWER(COALESCE(NULLIF(m.title, ''), fu.filename, '')) ASC`
+		ORDER BY m.track_number ASC, LOWER(m.title) ASC`
 
 	rows, err := db.QueryContext(ctx, q, normalizeKey(artist), normalizeKey(album))
 	if err != nil {
@@ -237,7 +232,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 	}
 
 	// ── Albums ───────────────────────────────────────────────────────────────
-	albumWhere := "WHERE f.deleted_at IS NULL AND al.title != '' AND LOWER(al.title) LIKE LOWER(?) ESCAPE '\\'"
+	albumWhere := "WHERE f.deleted_at IS NULL AND LOWER(al.title) LIKE LOWER(?) ESCAPE '\\'"
 	albumArgs := []any{like}
 	if filtered {
 		albumWhere += " AND " + accessClause
@@ -280,7 +275,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 	}
 
 	// ── Tracks ───────────────────────────────────────────────────────────────
-	trackWhere := "WHERE f.deleted_at IS NULL AND LOWER(COALESCE(NULLIF(m.title, ''), fu.filename, '')) LIKE LOWER(?) ESCAPE '\\'"
+	trackWhere := "WHERE f.deleted_at IS NULL AND LOWER(m.title) LIKE LOWER(?) ESCAPE '\\'"
 	trackArgs := []any{like}
 	if filtered {
 		trackWhere += " AND " + accessClause
@@ -288,7 +283,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 	trackQ := `
 		SELECT
 		    f.id,
-		    COALESCE(NULLIF(m.title, ''), fu.filename, '') AS title,
+		    m.title,
 		    m.track_number,
 		    m.duration_seconds,
 		    f.object_key,
@@ -299,13 +294,8 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 		JOIN media_metadata m ON m.file_id = f.id
 		JOIN albums al ON al.id = m.album_id
 		JOIN artists ar ON ar.id = al.artist_id
-		LEFT JOIN (
-		    SELECT file_id, MIN(filename) AS filename
-		    FROM file_uploads
-		    GROUP BY file_id
-		) fu ON fu.file_id = f.id
 		` + trackWhere + `
-		ORDER BY LOWER(COALESCE(NULLIF(m.title, ''), fu.filename, '')) ASC
+		ORDER BY LOWER(m.title) ASC
 		LIMIT 50`
 
 	tRows, err := db.QueryContext(ctx, trackQ, trackArgs...)

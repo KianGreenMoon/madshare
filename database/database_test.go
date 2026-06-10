@@ -77,13 +77,117 @@ func TestOpen_RecordsMigrationVersion(t *testing.T) {
 	if err := db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&v); err != nil {
 		t.Fatalf("query version: %v", err)
 	}
-	if v != 15 {
-		t.Errorf("migration version = %d, want 15", v)
+	if v != 16 {
+		t.Errorf("migration version = %d, want 16", v)
 	}
 }
 
 // TestOpen_IdempotentMigrations runs migrate() a second time on an
 // already-migrated DB and checks nothing changes / nothing errors.
+// TestMigration016_UpgradesLegacyData exercises migration 016 on a pre-existing
+// (v15) database, the path the fresh-DB tests don't reach: it relabels the
+// empty-key buckets, backfills required titles from filenames, and installs the
+// empty-guard triggers. It builds a DB manually and applies migrations 1..15,
+// seeds legacy rows, then applies 016.
+func TestMigration016_UpgradesLegacyData(t *testing.T) {
+	sqlDB, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB.SetMaxOpenConns(1)
+	for _, p := range []string{"PRAGMA foreign_keys = ON", "PRAGMA journal_mode = WAL"} {
+		if _, err := sqlDB.Exec(p); err != nil {
+			t.Fatalf("pragma %q: %v", p, err)
+		}
+	}
+	db := &DB{DB: sqlDB}
+
+	migs, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("bootstrap schema_migrations: %v", err)
+	}
+	var m016 migration
+	for _, m := range migs {
+		switch {
+		case m.version <= 15:
+			if err := db.applyMigration(m); err != nil {
+				t.Fatalf("apply migration %d: %v", m.version, err)
+			}
+		case m.version == 16:
+			m016 = m
+		}
+	}
+	if m016.version != 16 {
+		t.Fatal("migration 016 not found")
+	}
+
+	// Legacy v15 state: an unknown-artist bucket (empty keys), its unknown-album
+	// bucket, and three tracks — untitled (→ filename), a real title (preserved),
+	// and a multi-dot filename (only the final extension stripped).
+	mustExec(t, db, `INSERT INTO artists (id, name, norm_name, created_at) VALUES (1, '', '', 1)`)
+	mustExec(t, db, `INSERT INTO albums (id, artist_id, title, norm_title, created_at) VALUES (1, 1, '', '', 1)`)
+	seedLegacyTrack := func(id int64, hash, filename string, title any) {
+		mustExec(t, db, `INSERT INTO files (id, hash, byte_size, mime_type, storage_backend, object_key, created_at)
+			VALUES (?, ?, 1, 'audio/flac', 'local', ?, 100)`, id, hash, hash+"/"+filename)
+		mustExec(t, db, `INSERT INTO file_uploads (file_id, filename, uploaded_at) VALUES (?, ?, 100)`, id, filename)
+		mustExec(t, db, `INSERT INTO media_metadata (file_id, title, extracted_at, artist_id, album_id) VALUES (?, ?, 100, 1, 1)`, id, title)
+	}
+	seedLegacyTrack(1, "h1", "Track 01.flac", nil)
+	seedLegacyTrack(2, "h2", "whatever.mp3", "Real Title")
+	seedLegacyTrack(3, "h3", "Album.Disc.2.mp3", nil)
+
+	if err := db.applyMigration(m016); err != nil {
+		t.Fatalf("apply migration 016: %v", err)
+	}
+
+	// Bucket display columns relabeled (dedup keys stay '' until the Go fold pass).
+	var name, norm string
+	if err := db.QueryRow(`SELECT name, norm_name FROM artists WHERE id = 1`).Scan(&name, &norm); err != nil {
+		t.Fatalf("read artist: %v", err)
+	}
+	if name != "Unknown artist" || norm != "" {
+		t.Errorf("artist = (%q,%q), want (Unknown artist, \"\")", name, norm)
+	}
+	var title, ntitle string
+	if err := db.QueryRow(`SELECT title, norm_title FROM albums WHERE id = 1`).Scan(&title, &ntitle); err != nil {
+		t.Fatalf("read album: %v", err)
+	}
+	if title != "Other" || ntitle != "" {
+		t.Errorf("album = (%q,%q), want (Other, \"\")", title, ntitle)
+	}
+
+	// Titles backfilled per rule.
+	for _, tc := range []struct {
+		fileID int64
+		want   string
+	}{
+		{1, "Track 01"},     // untitled → filename, extension stripped
+		{2, "Real Title"},   // real tag preserved
+		{3, "Album.Disc.2"}, // only the final .mp3 stripped
+	} {
+		var got string
+		if err := db.QueryRow(`SELECT title FROM media_metadata WHERE file_id = ?`, tc.fileID).Scan(&got); err != nil {
+			t.Fatalf("read title %d: %v", tc.fileID, err)
+		}
+		if got != tc.want {
+			t.Errorf("file %d title = %q, want %q", tc.fileID, got, tc.want)
+		}
+	}
+
+	// Empty-guard triggers installed.
+	var nTriggers int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name LIKE '%_nonempty_%'`).Scan(&nTriggers); err != nil {
+		t.Fatalf("count triggers: %v", err)
+	}
+	if nTriggers != 4 {
+		t.Errorf("nonempty triggers = %d, want 4", nTriggers)
+	}
+}
+
 func TestOpen_IdempotentMigrations(t *testing.T) {
 	db := openMem(t)
 
@@ -95,8 +199,8 @@ func TestOpen_IdempotentMigrations(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&rows); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if rows != 15 {
-		t.Errorf("schema_migrations row count = %d, want 15 after re-run", rows)
+	if rows != 16 {
+		t.Errorf("schema_migrations row count = %d, want 16 after re-run", rows)
 	}
 }
 

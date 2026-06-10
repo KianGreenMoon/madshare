@@ -203,11 +203,13 @@ func extractTagsOrEmpty(content io.Reader, mimeType string) *media.Tags {
 	return tags
 }
 
-// tagsToMetadata maps the in-process Tags struct onto the nullable
-// database.MediaMetadata struct. Empty strings and zero ints become NULL.
+// tagsToMetadata maps the in-process Tags struct onto the database.MediaMetadata
+// struct. Empty strings and zero ints become NULL. Title may be empty here; the
+// required non-empty value (filename with extension stripped) is filled by
+// InsertFile, which has the upload filename (migration 016).
 func tagsToMetadata(t *media.Tags, extractedAt int64) *database.MediaMetadata {
 	return &database.MediaMetadata{
-		Title:       nullString(t.Title),
+		Title:       t.Title,
 		Artist:      nullString(t.Artist),
 		Album:       nullString(t.Album),
 		AlbumArtist: nullString(t.AlbumArtist),

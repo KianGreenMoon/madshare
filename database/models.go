@@ -140,11 +140,13 @@ type SearchTrackEntry struct {
 	AlbumTitle      string
 }
 
-// MediaMetadata is a row in the media_metadata table. All tag fields are
-// nullable because uploads may carry incomplete (or no) tags.
+// MediaMetadata is a row in the media_metadata table. Tag fields are nullable
+// because uploads may carry incomplete (or no) tags — except Title, which is
+// required non-empty (migration 016): it defaults to the filename (extension
+// stripped) when the file has no title tag.
 type MediaMetadata struct {
 	FileID          int64
-	Title           sql.NullString
+	Title           string
 	Artist          sql.NullString
 	Album           sql.NullString
 	AlbumArtist     sql.NullString

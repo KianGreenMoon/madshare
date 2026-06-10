@@ -80,6 +80,13 @@ func main() {
 		log.Printf("backfill cover entities: %v", err)
 	}
 
+	// Fold the unknown-artist/-album buckets (whose dedup keys migration 016 left
+	// empty) onto their canonical keys, merging any pre-existing literal
+	// "Unknown artist"/"Other" entities. Must run after the cover backfill above.
+	if err := db.FoldUnknownBuckets(context.Background()); err != nil {
+		log.Printf("fold unknown buckets: %v", err)
+	}
+
 	// First-run admin bootstrap: create the admin only when no users exist.
 	created, err := auth.Bootstrap(context.Background(), db, cfg.Auth.InitialAdminUser, cfg.Auth.InitialAdminPassword)
 	if err != nil {

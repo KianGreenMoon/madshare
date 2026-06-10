@@ -50,8 +50,7 @@ func TestUpdateFileMetadata_UpdatesAndEchoes(t *testing.T) {
 		Hash: hash, ByteSize: 1, MimeType: "audio/mpeg",
 		StorageBackend: "local", ObjectKey: hash + "/s.mp3", CreatedAt: 1,
 	}
-	m := &database.MediaMetadata{ExtractedAt: 1}
-	m.Title.String, m.Title.Valid = "Old", true
+	m := &database.MediaMetadata{ExtractedAt: 1, Title: "Old"}
 	if err := db.InsertFile(ctx, f, &database.FileUpload{Filename: "s.mp3", UploadedAt: 1}, m); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -70,8 +69,8 @@ func TestUpdateFileMetadata_UpdatesAndEchoes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}
-	if back.Title.String != "New Title" {
-		t.Errorf("persisted title = %q, want New Title", back.Title.String)
+	if back.Title != "New Title" {
+		t.Errorf("persisted title = %q, want New Title", back.Title)
 	}
 }
 

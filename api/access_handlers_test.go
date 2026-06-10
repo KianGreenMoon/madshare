@@ -150,7 +150,7 @@ func insertTaggedFile(t *testing.T, db *database.DB, hash, artist, album, title 
 		ObjectKey: hash + "/t.mp3", CreatedAt: 1700000000,
 	}
 	meta := &database.MediaMetadata{
-		Title:       sql.NullString{String: title, Valid: true},
+		Title:       title,
 		Artist:      sql.NullString{String: artist, Valid: true},
 		Album:       sql.NullString{String: album, Valid: true},
 		ExtractedAt: 1700000000,
