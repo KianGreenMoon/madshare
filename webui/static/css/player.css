@@ -130,6 +130,12 @@
 
 #volume-slider { width: 76px; }
 
+/* Player-bar Like button (playlists.md Decision §8) */
+#btnLike:disabled { opacity: 0.35; cursor: default; }
+#btnLike:disabled:hover { color: var(--text-muted); background: none; }
+#btnLike.liked { color: #e0526e; }
+#btnLike.liked:hover { color: #e87b91; }
+
 /* ── Queue panel (queue-panel.js — shell chrome, opens from #btnQueue) ── */
 #queue-panel {
   position: fixed;

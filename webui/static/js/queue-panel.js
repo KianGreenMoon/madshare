@@ -7,17 +7,9 @@
 import { fmtTime } from './player.js';
 import { openLoginModal } from './auth.js';
 import { loadDurCache } from './dur-cache.js';
+import { trackHash } from './favorites.js';
 
 const API = document.querySelector('meta[name="api-url"]')?.content || '';
-
-// trackHash returns the content hash for a queue track: either the hash the
-// page attached when building the queue, or parsed from the /files/<hash>/…
-// URL (every locally served track URL has that shape).
-function trackHash(track) {
-  if (track.hash) return track.hash;
-  const m = new URL(track.url, location.origin).pathname.match(/^\/files\/([^/]+)\//);
-  return m ? m[1] : null;
-}
 
 export function initQueuePanel(controller, showToast) {
   const panel    = document.getElementById('queue-panel');

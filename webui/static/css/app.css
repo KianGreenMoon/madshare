@@ -827,6 +827,93 @@ input[type="range"]::-moz-range-thumb {
 .toast-action:hover { color: var(--accent-dim); }
 .toast-action:focus-visible { outline: 2px solid var(--accent); }
 
+/* ── Row hearts & quick-add menus (Phase 5: favorites + quick-add) ── */
+.row-heart, .row-more {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  visibility: hidden;
+}
+.row-more { font-size: 16px; line-height: 1; font-weight: 700; }
+.track-row:hover .row-heart,  .track-row:focus-within .row-heart,
+.track-row:hover .row-more,   .track-row:focus-within .row-more,
+.panel-row:hover .row-more,   .panel-row:focus-within .row-more,
+.search-row:hover .row-heart, .search-row:focus-within .row-heart,
+.row-heart.liked { visibility: visible; }
+.row-heart:hover, .row-more:hover { color: var(--text); background: var(--surface-hover); }
+.row-heart.liked { color: #e0526e; }
+.row-heart.liked:hover { color: #e87b91; background: var(--surface-hover); }
+.row-heart:focus-visible, .row-more:focus-visible {
+  outline: 2px solid var(--accent);
+  visibility: visible;
+}
+
+.row-menu {
+  position: fixed;
+  z-index: 300;
+  min-width: 190px;
+  max-width: 280px;
+  padding: 4px 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+}
+.row-menu > button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 14px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.row-menu > button:hover:not(:disabled) { background: var(--surface-hover); }
+.row-menu > button:disabled { color: var(--text-muted); cursor: default; }
+.row-menu > button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.row-menu-input {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px;
+}
+.row-menu-input input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 13px;
+  padding: 4px 8px;
+}
+.row-menu-input input:focus-visible { outline: 2px solid var(--accent); }
+.row-menu-input button {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.row-menu-input button:hover { background: var(--surface-hover); }
+
 /* ── Narrow viewport: search drops to second row ── */
 @media (max-width: 599px) {
   header { flex-wrap: wrap; }

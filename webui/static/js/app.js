@@ -1,6 +1,9 @@
 import { openLoginModal } from './auth.js';
 import { getController } from './player-controller.js';
 import { fmtTime } from './player.js';
+import { ensureLiked, isLiked, toggleLike, onLikedChange } from './favorites.js';
+import { openRowMenu } from './row-menu.js';
+import { showToast } from './shell.js';
 
 // Read API base from HTML meta. Empty default => relative, same-origin URLs
 // (the page and API share an origin in the bundled server). A non-empty value
@@ -140,6 +143,170 @@ function renderBreadcrumb() {
   }
 }
 
+// ── Favorites & quick-add (Phase 5 step 4, docs/plans/playlists.md) ─────────
+
+const heartSvg =
+  `<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">` +
+  `<path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 ` +
+  `3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 ` +
+  `6.86-8.55 11.54L12 21.35z"/></svg>`;
+
+// repaintHearts syncs every rendered heart with the shared liked set; runs on
+// each render and whenever the set changes (any heart, any page, player bar).
+function repaintHearts() {
+  document.querySelectorAll('.row-heart[data-hash]').forEach(b => {
+    const on = isLiked(b.dataset.hash);
+    b.classList.toggle('liked', on);
+    b.setAttribute('aria-pressed', String(on));
+    const label = on ? 'Remove from Favorites' : 'Add to Favorites';
+    b.setAttribute('aria-label', label);
+    b.title = label;
+  });
+}
+onLikedChange(repaintHearts);
+
+// trackObjFromApi maps a browse-endpoint track to a controller track object.
+function trackObjFromApi(t, artistName, durCache) {
+  const url = `${API}${t.url}`;
+  return {
+    url,
+    hash:   t.url.split('/')[2] || null,
+    title:  t.title || 'Unknown',
+    artist: artistName || '',
+    dur:    t.duration_seconds ? fmtTime(t.duration_seconds) : (durCache[url] || '—'),
+  };
+}
+
+// entityTracks collects the controller tracks for a whole album — or a whole
+// artist (albumTitle === undefined → every album, in browse order).
+async function entityTracks(artistName, albumTitle) {
+  const durCache = loadDurCache();
+  const fetchAlbum = async title => {
+    const res = await fetch(
+      `${API}/api/tracks?artist=${encodeURIComponent(artistName || '')}&album=${encodeURIComponent(title || '')}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return (await res.json()).map(t => trackObjFromApi(t, artistName, durCache));
+  };
+  if (albumTitle !== undefined) return fetchAlbum(albumTitle);
+  const res = await fetch(`${API}/api/albums?artist=${encodeURIComponent(artistName || '')}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const albums = await res.json();
+  const lists = await Promise.all(albums.map(a => fetchAlbum(a.title)));
+  return lists.flat();
+}
+
+// queueAdd runs a (possibly async) track collector and applies a queue action.
+async function queueAdd(collect, how) {
+  let tracks;
+  try { tracks = await collect(); }
+  catch { showToast('Failed to load tracks.', { type: 'error' }); return; }
+  if (!tracks.length) return;
+  if (how === 'next') controller.playNext(tracks);
+  else controller.enqueue(tracks);
+  showToast(`${tracks.length} track${tracks.length !== 1 ? 's' : ''} ${how === 'next' ? 'will play next' : 'added to queue'}.`,
+    { type: 'success' });
+}
+
+// addToPlaylistMenu replaces the open row menu with a playlist picker (plus
+// "New playlist…"), then posts the collected tracks' hashes.
+async function addToPlaylistMenu(anchor, collect) {
+  let lists, tracks;
+  try {
+    const res = await fetch(`${API}/api/playlists`);
+    if (res.status === 401 || res.status === 403) { openLoginModal(); return; }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    lists = await res.json();
+    tracks = await collect();
+  } catch { showToast('Failed to load playlists.', { type: 'error' }); return; }
+  const hashes = tracks.map(t => t.hash).filter(Boolean);
+  if (!hashes.length) return;
+
+  const add = async (id, name) => {
+    try {
+      const res = await fetch(`${API}/api/playlists/${id}/items`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hashes }),
+      });
+      if (!res.ok) throw new Error((await res.text().catch(() => '')).trim() || `HTTP ${res.status}`);
+      const { added } = await res.json();
+      showToast(`Added ${added} track${added !== 1 ? 's' : ''} to "${name}".`, { type: 'success' });
+      if (added === 0 && hashes.length) showToast(`Already in "${name}".`, { type: 'status' });
+    } catch (err) {
+      showToast(`Couldn't add to "${name}": ${err.message}`, { type: 'error' });
+    }
+  };
+  const items = lists.map(p => ({
+    label: (p.kind === 'favorites' ? '♥ ' : '') + p.name,
+    onClick: () => add(p.id, p.name),
+  }));
+  items.push({
+    input: 'New playlist…',
+    onSubmit: async name => {
+      try {
+        const res = await fetch(`${API}/api/playlists`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, hashes }),
+        });
+        if (!res.ok) throw new Error((await res.text().catch(() => '')).trim() || `HTTP ${res.status}`);
+        showToast(`Created "${name}" with ${hashes.length} track${hashes.length !== 1 ? 's' : ''}.`, { type: 'success' });
+      } catch (err) {
+        showToast(`Couldn't create playlist: ${err.message}`, { type: 'error' });
+      }
+    },
+  });
+  openRowMenu(anchor, items);
+}
+
+// quickAddItems builds the "⋯" menu for a row. collect yields the row's tracks
+// (a single track, an album, or a whole artist).
+function quickAddItems(anchor, collect, { likeHash } = {}) {
+  const items = [
+    { label: 'Play next',       onClick: () => queueAdd(collect, 'next') },
+    { label: 'Add to queue',    onClick: () => queueAdd(collect, 'queue') },
+    { label: 'Add to playlist…', keepOpen: true, onClick: () => addToPlaylistMenu(anchor, collect) },
+  ];
+  if (likeHash) {
+    items.push({
+      label: isLiked(likeHash) ? 'Remove from Favorites' : 'Add to Favorites',
+      onClick: () => toggleLike(likeHash),
+    });
+  }
+  return items;
+}
+
+// mkMoreBtn returns the "⋯" row button wired to the quick-add menu.
+function mkMoreBtn(label, makeItems) {
+  const btn = document.createElement('button');
+  btn.className = 'row-more';
+  btn.setAttribute('aria-label', label);
+  btn.setAttribute('aria-haspopup', 'menu');
+  btn.title = 'More actions';
+  btn.textContent = '⋯';
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    openRowMenu(btn, makeItems(btn));
+  });
+  return btn;
+}
+
+// mkHeartBtn returns a heart button for a track row (state via repaintHearts).
+function mkHeartBtn(hash) {
+  const btn = document.createElement('button');
+  btn.className = 'row-heart';
+  btn.dataset.hash = hash || '';
+  btn.setAttribute('aria-pressed', 'false');
+  btn.setAttribute('aria-label', 'Add to Favorites');
+  btn.title = 'Add to Favorites';
+  btn.innerHTML = heartSvg;
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    if (hash) toggleLike(hash);
+  });
+  return btn;
+}
+
 // Render a list of artist rows into #libraryPanel.
 function renderArtistList(artists) {
   const panel = document.getElementById('libraryPanel');
@@ -168,8 +335,13 @@ function renderArtistList(artists) {
       `<span class="row-name">${esc(displayName)}</span>` +
       `<span class="row-meta">${count} track${count !== 1 ? 's' : ''}</span>` +
       `<span class="row-chevron" aria-hidden="true">›</span>`;
+    row.insertBefore(
+      mkMoreBtn(`More actions for ${displayName}`,
+        btn => quickAddItems(btn, () => entityTracks(artist.name, undefined))),
+      row.querySelector('.row-chevron'));
     row.addEventListener('click', () => drillToAlbums(artist.name));
     row.addEventListener('keydown', e => {
+      if (e.target !== row) return; // buttons inside the row handle their own keys
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); drillToAlbums(artist.name); }
     });
     wrap.appendChild(row);
@@ -218,8 +390,13 @@ function renderAlbumList(albums) {
         `<div class="row-meta">${esc(yearPrefix)}${count} track${count !== 1 ? 's' : ''}</div>` +
       `</div>` +
       `<span class="row-chevron" aria-hidden="true">›</span>`;
+    row.insertBefore(
+      mkMoreBtn(`More actions for ${title}`,
+        btn => quickAddItems(btn, () => entityTracks(album.artist_name, album.title))),
+      row.querySelector('.row-chevron'));
     row.addEventListener('click', () => drillToTracks(album.artist_name, album.title));
     row.addEventListener('keydown', e => {
+      if (e.target !== row) return;
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); drillToTracks(album.artist_name, album.title); }
     });
     wrap.appendChild(row);
@@ -283,9 +460,16 @@ function renderTrackList(tracks) {
         `<div class="track-meta">${esc(drill.artist || '')}</div>` +
       `</div>` +
       `<span class="track-dur">${esc(track.dur)}</span>`;
+    const durEl = row.querySelector('.track-dur');
+    row.insertBefore(mkHeartBtn(track.hash), durEl);
+    row.insertBefore(
+      mkMoreBtn(`More actions for ${track.title}`,
+        btn => quickAddItems(btn, () => [track], { likeHash: track.hash })),
+      durEl);
     const play = () => controller.setQueue(libraryPlaylist, i);
     row.addEventListener('click', play);
     row.addEventListener('keydown', e => {
+      if (e.target !== row) return;
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); play(); }
     });
     wrap.appendChild(row);
@@ -297,6 +481,7 @@ function renderTrackList(tracks) {
   // Re-highlight whatever is currently playing if its row is in this view.
   const cur = controller.current();
   if (cur) highlightPlaying(cur.track.url);
+  repaintHearts();
 
   // Background fetch for any tracks still showing '—'.
   fetchMissingDurations(libraryPlaylist);
@@ -601,9 +786,14 @@ function renderSearchResults(results, q) {
         avatar.style.color = '';
       });
 
+      // Heart between the row body and the duration (matches the library rows).
+      row.insertBefore(mkHeartBtn(searchPlaylist[i].hash),
+        row.querySelector('.search-row__duration'));
+
       const play = () => controller.setQueue(searchPlaylist, i);
       row.addEventListener('click', play);
       row.addEventListener('keydown', e => {
+        if (e.target !== row) return;
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); play(); }
       });
       sec.appendChild(row);
@@ -613,6 +803,7 @@ function renderSearchResults(results, q) {
 
   viewSearch.innerHTML = '';
   viewSearch.appendChild(frag);
+  repaintHearts();
 }
 
 // ── Upload modal ─────────────────────────────────────────────────────────
@@ -704,6 +895,7 @@ export function init() {
   active = true;
   abort = new AbortController();
   wireSearch(abort.signal);
+  ensureLiked(); // hearts repaint via onLikedChange once the set arrives
   loadArtists();
 }
 

@@ -12,6 +12,7 @@
 import { initAuth, openLoginModal } from './auth.js';
 import { getController } from './player-controller.js';
 import { initQueuePanel } from './queue-panel.js';
+import { ensureLiked, isLiked, toggleLike, trackHash, onLikedChange } from './favorites.js';
 
 // ── Theme (persistent header — applied once for every shell page) ────────────
 const VALID_THEMES = new Set(['dark', 'light', 'ocean', 'sunset']);
@@ -202,6 +203,33 @@ function wirePlayer() {
     });
   });
   initQueuePanel(controller, showToast);
+  wireLikeButton(controller);
+}
+
+// The player-bar heart (playlists.md Decision §8): likes the CURRENT track,
+// synced with the row hearts through the shared liked-set in favorites.js.
+function wireLikeButton(controller) {
+  const btn = document.getElementById('btnLike');
+  if (!btn) return; // page without the listening player chrome
+  const sync = () => {
+    const cur = controller.current();
+    const hash = cur ? trackHash(cur.track) : null;
+    const on = isLiked(hash);
+    btn.disabled = !hash;
+    btn.classList.toggle('liked', on);
+    btn.setAttribute('aria-pressed', String(on));
+    const label = on ? 'Remove from Favorites' : 'Add to Favorites';
+    btn.setAttribute('aria-label', label);
+    btn.title = label;
+  };
+  controller.on('trackchange', sync);
+  onLikedChange(sync);
+  btn.addEventListener('click', () => {
+    const cur = controller.current();
+    if (cur) toggleLike(trackHash(cur.track)); // sync runs via onLikedChange
+  });
+  ensureLiked(); // resolves to an empty set for anonymous users — no prompt
+  sync();
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────────────

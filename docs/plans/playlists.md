@@ -1,6 +1,7 @@
 # Playlists, Favorites & Queue Editing
 
-Status: **steps 1–2 implemented** on `aidev` (2026-06-10).
+Status: **all 4 steps implemented** on `aidev` (2026-06-10); steps 3–4 pending
+browser verification.
 Step 1 (backend): migration 015, `database/playlists.go`, `/api/playlists` +
 `/api/favorites` endpoints, Go tests.
 Step 2 (queue editing): controller is now a true singleton (`getController()`,
@@ -20,8 +21,16 @@ over the live items via the shared controller; rename/delete with a two-step
 confirm, regular playlists only; per-row remove; drag + Ctrl/Alt+Arrow reorder
 with optimistic PUT; trashed rows grayed "— in Trash", unplayable),
 `playlists.css` (reuses the panel-row/track-row systems).
-Step 4 (favorites hearts + quick-add menus) pending; browser verification of
-step 3 pending.
+Step 4 (favorites + quick-add): shared liked-set cache `favorites.js`
+(one Set behind every heart; also owns `trackHash`), player-bar **Like**
+button (Decision §8, wired in shell.js, disabled with no track, login modal
+for anonymous clicks), hearts on library + search track rows (hover-reveal,
+always visible when liked), `row-menu.js` "⋯" quick-add popup on
+artist/album/track rows — *Play next / Add to queue / Add to playlist…*
+(picker + inline "New playlist…") and *Add/Remove Favorites* on tracks;
+album/artist menus collect tracks from the browse endpoints. Toast feedback
+throughout. Known-duration fix: queue panel + playlists page read the shared
+`dur-cache.js` so lengths show before a track ever plays.
 Branch: aidev
 Builds on: `docs/plans/persistent-shell-playback.md` (the shell-owned queue and
 the `PlayerController`'s reserved mutation API — this phase is the payoff that
