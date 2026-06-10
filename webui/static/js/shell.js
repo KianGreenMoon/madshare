@@ -134,6 +134,10 @@ document.addEventListener('click', e => {
   if (!a || a.target === '_blank' || a.hasAttribute('download')) return;
   const url = new URL(a.href, location.origin);
   if (url.origin !== location.origin) return;
+  // Admin pages are never shell-native; navigate() would fetch the document
+  // only to fall back to a full load. Skip interception and let the browser
+  // navigate directly (this is where the same-tab admin entry happens).
+  if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) return;
   // Let true in-page anchors (same path + a #hash) behave normally; a same-path
   // link without a hash (e.g. the active "Library" nav) still re-swaps the page.
   if (url.hash && url.pathname === location.pathname && url.search === location.search) return;

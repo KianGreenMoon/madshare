@@ -240,18 +240,20 @@ Minimal. The server keeps rendering full pages. Changes:
 
 ### Admin separation
 
-The header's **Admin** nav link gets `target="_blank"` so opening admin from the
-listening shell launches a **separate tab** — the listening tab (and its
-playback) stays alive. Admin pages are full-load pages with their own page-local
+Admin pages stay **out of the shell**: full-load pages with their own page-local
 preview player (a private `createPlayer()` instance, no shared queue). Server-side
 auth (`auth.RequirePermission` on the whole `/admin/*` group) is unchanged and is
 the real boundary; the shell never weakens it. Keeping admin out of the shell also
 keeps admin JS off the always-loaded surface (defense-in-depth) and dissolves the
 "admin preview vs. live queue" question — they are simply different players.
 
-Accepted tradeoff: entering admin is a full load, so library playback **stops**
-when you open an admin page in that tab. Admin is a rare, distinct mode; this is
-acceptable.
+The **Admin** nav link opens in the **same tab** (owner decision 2026-06-10,
+reversing the Phase-1 `target="_blank"` default once admin visits became
+routine). The shell's click interceptor skips `/admin*` paths so the browser
+navigates directly (no fetch-then-fallback double load). Accepted tradeoff:
+entering admin is a full load, so playback **stops** in that tab; open the link
+in a new tab manually (middle-click / Ctrl+click — never intercepted) to keep
+the music going.
 
 ### Auth during swap
 
@@ -361,8 +363,8 @@ gate — everything else is additive.
    real boundary and is unchanged, but separating keeps admin JS off the
    always-loaded surface, dissolves the admin-preview-vs-queue question (admin
    uses a page-local preview player), and matches the conventional admin/app
-   split. The Admin nav link is `target="_blank"`. Accepted cost: entering admin
-   stops playback in that tab.
+   split. The Admin nav link opens in the **same tab** (2026-06-10; originally
+   `target="_blank"`). Accepted cost: entering admin stops playback in that tab.
 2. **CSS = inject-and-keep**, driven off the fetched document's `<head>` links.
    No per-page CSS consolidation required here.
 3. **cmus deferred.** Paused view with its own player design and non-shared
@@ -501,11 +503,11 @@ instead of `app.js` directly.
 - **Step 3 (upload shell-native):** done — see `docs/plans/upload-rework.md` §3a.
   `/upload` is now shell-native (`shell.js`, player-bar, `init`/`teardown`), so
   playback continues across Library⇄Upload. Real cross-page continuity verified.
-- **Step 4 (admin out of the shell):** done — the header **Admin** link is
-  `target="_blank" rel="noopener"`, so entering admin opens a separate tab and the
-  listening tab keeps playing. The shell already skips `target="_blank"` links, so
-  admin is never swapped in; admin pages stay full-load with their page-local
-  preview player.
+- **Step 4 (admin out of the shell):** done. Originally the **Admin** link was
+  `target="_blank"` (separate tab, listening tab kept playing); since 2026-06-10
+  it opens in the **same tab** (full load — see "Admin separation" above). The
+  shell never swaps admin in either way; admin pages stay full-load with their
+  page-local preview player.
 
 Phase 1's listening shell (library + upload + persistent continuous playback) is
 done and user-verified, including the controller polish (Media Session, repeat,
