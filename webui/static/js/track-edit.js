@@ -25,11 +25,19 @@ let nextEditorId = 1;
  * @param {Function} opts.onSaved   (file, data, ctx) => void — called with the
  *                                  server's authoritative values on success.
  * @param {Function} [opts.onError] (err, file) => void — save failure.
+ * @param {Object}   [opts.access]  Optional access section (License + Guest),
+ *                                  shown only when supplied (admin scopes):
+ *                                  { licenses: string[],
+ *                                    save: async (file, {guest, license}) => void }.
+ *                                  The tag PATCH runs first; `save` is awaited
+ *                                  after it, so access writes hit their own
+ *                                  endpoints (POST …/guest, …/license).
  * @returns {{ open(file, ctx?): void, close(): void, destroy(): void }}
- *   open()'s `file` needs { hash, title, artist, album_artist, album }; `ctx`
- *   is passed through to onSaved untouched (e.g. "which view opened me").
+ *   open()'s `file` needs { hash, title, artist, album_artist, album }; with
+ *   `access` it also reads { guest_playable, license }. `ctx` is passed through
+ *   to onSaved untouched (e.g. "which view opened me").
  */
-export function createTrackEditor({ patchURL, note = '', checkAuth = null, onSaved, onError }) {
+export function createTrackEditor({ patchURL, note = '', checkAuth = null, onSaved, onError, access = null }) {
   const titleId = `trackEditTitle${nextEditorId++}`;
 
   const backdrop = document.createElement('div');
@@ -73,6 +81,36 @@ export function createTrackEditor({ patchURL, note = '', checkAuth = null, onSav
     form.appendChild(wrap);
   }
 
+  // Optional access section (admin scopes only). Saved via access.save() after
+  // the tag PATCH, since guest/license have their own endpoints.
+  let licenseSel = null, guestCb = null;
+  if (access) {
+    const split = document.createElement('div');
+    split.className = 'field-split';
+
+    const licWrap = document.createElement('label');
+    licWrap.append(document.createTextNode('License'));
+    licenseSel = document.createElement('select');
+    for (const lic of access.licenses || []) {
+      const opt = document.createElement('option');
+      opt.value = lic;
+      opt.textContent = lic || '— none —';
+      licenseSel.appendChild(opt);
+    }
+    licWrap.appendChild(licenseSel);
+
+    const guestWrap = document.createElement('label');
+    guestWrap.className = 'field-check';
+    guestCb = document.createElement('input');
+    guestCb.type = 'checkbox';
+    const guestText = document.createElement('span');
+    guestText.textContent = 'Guest-playable';
+    guestWrap.append(guestCb, guestText);
+
+    split.append(licWrap, guestWrap);
+    form.appendChild(split);
+  }
+
   if (note) {
     const p = document.createElement('p');
     p.className = 'modal-body';
@@ -106,6 +144,10 @@ export function createTrackEditor({ patchURL, note = '', checkAuth = null, onSav
     inputs.artist.value       = file.artist || '';
     inputs.album_artist.value = file.album_artist || '';
     inputs.album.value        = file.album || '';
+    if (access) {
+      licenseSel.value = file.license || '';
+      guestCb.checked  = !!file.guest_playable;
+    }
     backdrop.classList.remove('hidden');
     inputs.title.focus();
   }
@@ -141,6 +183,8 @@ export function createTrackEditor({ patchURL, note = '', checkAuth = null, onSav
       if (checkAuth && checkAuth(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      // Access writes hit their own endpoints; run them after the tag PATCH.
+      if (access) await access.save(file, { guest: guestCb.checked, license: licenseSel.value });
       close();
       onSaved(file, data, ctx);
     } catch (err) {

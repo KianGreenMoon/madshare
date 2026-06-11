@@ -1,0 +1,564 @@
+// file-list.js — the one file-management view. A single component renders every
+// surface that lists files with title/artist/album + a metadata editor: the
+// admin Library scopes (All / Review / Trash) and the uploader's My-uploads.
+// Design + contract: docs/plans/file-management-view.md.
+//
+// It is parameterised by a SCOPE descriptor and owns only presentation:
+// rendering (flat list, grouped list, or artist/album browse), selection, the
+// bulk toolbar, badges, inline two-step confirms, and wiring to the shared
+// track-edit.js + bulk-edit.js modals. Everything domain-specific — what to
+// load, which endpoints an action hits, how to play a row — is injected by the
+// scope, so the component is reusable from both the admin pages and the
+// (shell-native) upload page without importing either's helpers.
+
+import { createTrackEditor } from './track-edit.js';
+import { createBulkEditor } from './bulk-edit.js';
+
+// Local DOM builder + formatter so this module has no page-specific imports.
+// el('button', {class:'btn', onclick: fn}, ['Label'])
+function el(tag, props = {}, children = []) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (v == null) continue;
+    if (k === 'class') node.className = v;
+    else if (k === 'text') node.textContent = v;
+    else if (k === 'html') node.innerHTML = v;            // trusted markup only (icons)
+    else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
+  }
+  (Array.isArray(children) ? children : [children]).forEach(c => {
+    if (c != null) node.append(c.nodeType ? c : document.createTextNode(c));
+  });
+  return node;
+}
+
+function fmtBytes(n) {
+  if (!Number.isFinite(n) || n < 0) return '—';
+  if (n < 1024) return n + ' B';
+  const kb = n / 1024;
+  if (kb < 1024) return kb.toFixed(kb < 10 ? 1 : 0) + ' KB';
+  const mb = kb / 1024;
+  if (mb < 1024) return mb.toFixed(mb < 10 ? 1 : 0) + ' MB';
+  return (mb / 1024).toFixed(1) + ' GB';
+}
+
+const PLAY_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
+
+/**
+ * createFileList builds a file-management view from a scope descriptor.
+ *
+ * Scope (all optional unless noted):
+ *   title            heading text (required)
+ *   desc             one-line description under the heading
+ *   emptyText        message when the scope has no files
+ *   columns          ['check','title','artist','album','size','access','meta','actions'] (required)
+ *   metaLabel        header for the 'meta' column
+ *   metaValue(file)  → string for the 'meta' cell
+ *   badge(file)      → { text, cls } | null  (the title-cell pill)
+ *   accessEditable   show License+Guest in the editors (admin scopes)
+ *   licenses         license vocabulary for the pickers
+ *   load()           async → file[]   (required for list presentation)
+ *   selectable(file) → bool — which rows enter bulk selection (default: none)
+ *   rowActions       [{ id,label,kind:'neutral'|'danger',confirm?:'inline',
+ *                       confirmPrompt?,confirmLabel?, run:async(file)=>void|false }]
+ *   bulkActions      [{ id,label,kind, run:async(hashes)=>void }]
+ *   editPatchURL(file) → url        (enables the built-in Edit action)
+ *   editNote         note shown in the edit modal
+ *   saveAccess(file,{guest,license})→Promise  (when accessEditable)
+ *   bulkApply(hashes,patch)→Promise (enables the built-in "Edit tags…" bulk action)
+ *   grouping         null | {kind:'collapsible', by, label, counts}
+ *                         | {kind:'sections', sections:[{key,label,match}]}
+ *   browse           null | { loaders:{artists(),albums(a),tracks(a,al)},
+ *                             coverURL(level,item,artist)?, groupHashes(level,item,artist),
+ *                             trackHash(track) }
+ *   onPlay(file, files)  play a row within the visible set (page owns the player)
+ *   toast(msg,type)      notifier
+ *   handleAuthError(res) → bool
+ *
+ * @returns {{ mount(el), reload(), setPlaying(hash), getVisible(), destroy() }}
+ */
+export function createFileList(scope) {
+  const toast = scope.toast || (() => {});
+  const hasBrowse = !!scope.browse;
+
+  let mountEl = null;
+  let rows = [];                 // current list rows
+  let loading = false, loadError = false;
+  let filterText = '';
+  let view = hasBrowse ? 'browse' : 'list';
+  let playingHash = null;
+
+  const selected = new Set();    // selected file hashes (shared list ⇄ browse)
+  const collapsed = new Set();   // collapsed group keys (collapsible grouping)
+  const br = { level: 'artists', artist: null, album: null, items: [] };
+
+  let _editor = null, _bulk = null;
+
+  const displayTitle = f => f.title || f.filename || 'this file';
+
+  // ── Shared modals (lazy) ───────────────────────────────────────────────────
+  function editor() {
+    if (_editor) return _editor;
+    _editor = createTrackEditor({
+      patchURL: scope.editPatchURL,
+      note: scope.editNote || '',
+      checkAuth: scope.handleAuthError,
+      access: scope.accessEditable
+        ? { licenses: scope.licenses || [], save: scope.saveAccess }
+        : null,
+      onSaved: (file) => { toast(`Metadata saved for “${displayTitle(file)}”.`, 'success'); reload(); },
+      onError: (err) => toast(`Couldn’t save metadata: ${err.message}`, 'error'),
+    });
+    return _editor;
+  }
+  function bulkEditor() {
+    if (_bulk) return _bulk;
+    _bulk = createBulkEditor({
+      access: scope.accessEditable ? { licenses: scope.licenses || [] } : null,
+      onApply: async (hashes, patch) => {
+        await scope.bulkApply(hashes, patch);
+        selected.clear();
+        toast(`Updated ${hashes.length} file${hashes.length === 1 ? '' : 's'}.`, 'success');
+        await reload();
+      },
+    });
+    return _bulk;
+  }
+
+  // ── Loading ─────────────────────────────────────────────────────────────────
+  async function reload() {
+    if (view === 'browse' && hasBrowse) return loadBrowse();
+    return loadList();
+  }
+  async function loadList() {
+    loading = true; loadError = false; render();
+    try { rows = (await scope.load()) || []; }
+    catch (err) { loadError = true; console.error('file-list load failed:', err); }
+    loading = false; render();
+  }
+  async function loadBrowse() {
+    loading = true; loadError = false; render();
+    try {
+      const L = scope.browse.loaders;
+      if (br.level === 'albums') br.items = await L.albums(br.artist);
+      else if (br.level === 'tracks') br.items = await L.tracks(br.artist, br.album);
+      else br.items = await L.artists();
+    } catch (err) { loadError = true; console.error('file-list browse failed:', err); }
+    loading = false; render();
+  }
+
+  // ── Filtering ────────────────────────────────────────────────────────────────
+  function matches(s) {
+    const q = filterText.trim().toLowerCase();
+    return !q || (s || '').toLowerCase().includes(q);
+  }
+  function visibleFiles() {
+    const q = filterText.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter(f => [f.title, f.artist, f.album, f.filename].filter(Boolean).join(' ').toLowerCase().includes(q));
+  }
+  function getVisible() { return visibleFiles(); }
+
+  // ── Cells ──────────────────────────────────────────────────────────────────
+  function accessSummary(f) {
+    const parts = [f.guest_playable ? 'Guest' : 'Private'];
+    if (f.license) parts.push(f.license);
+    return el('span', { class: 'cell-muted', text: parts.join(' · ') });
+  }
+
+  function titleCell(f) {
+    const titleSpan = f.title
+      ? el('span', { class: 'cell-title', text: f.title })
+      : el('span', { class: 'cell-title is-fallback', text: f.filename || 'Untitled' });
+    const kids = [titleSpan];
+    const b = scope.badge ? scope.badge(f) : null;
+    if (b) kids.push(document.createTextNode(' '), el('span', { class: `state-badge ${b.cls || ''}`, title: b.title || null, text: b.text }));
+    kids.push(el('span', { class: 'cell-hash', title: f.hash || '', text: shortHash(f.hash) }));
+    if (f.note) kids.push(el('span', { class: 'mod-note', text: `Note: ${f.note}` }));
+    return el('td', { class: 'cell-title-td', 'data-label': 'Title' }, kids);
+  }
+
+  function bodyCell(col, f, actionsHolder) {
+    switch (col) {
+      case 'check':
+        if (!isSelectable(f)) return el('td', { class: 'cell-check' });
+        return el('td', { class: 'cell-check' }, [rowCheckbox(f)]);
+      case 'title':  return titleCell(f);
+      case 'artist': return f.artist ? el('td', { 'data-label': 'Artist', text: f.artist }) : el('td', { class: 'cell-muted', 'data-label': 'Artist', text: '—' });
+      case 'album':  return f.album ? el('td', { 'data-label': 'Album', text: f.album }) : el('td', { class: 'cell-muted', 'data-label': 'Album', text: '—' });
+      case 'size':   return el('td', { class: 'cell-size', 'data-label': 'Size', text: fmtBytes(f.byte_size) });
+      case 'access': return el('td', { class: 'cell-access', 'data-label': 'Access' }, [accessSummary(f)]);
+      case 'meta': {
+        const v = scope.metaValue ? scope.metaValue(f) : '';
+        return v ? el('td', { 'data-label': scope.metaLabel || 'Meta', text: v }) : el('td', { class: 'cell-muted', 'data-label': scope.metaLabel || 'Meta', text: '—' });
+      }
+      case 'actions': {
+        const wrap = el('div', { class: 'trash-actions' });
+        wrap.append(...actionButtons(f, wrap));
+        actionsHolder.wrap = wrap;
+        return el('td', { class: 'cell-actions', 'data-label': 'Actions' }, [wrap]);
+      }
+    }
+  }
+
+  // ── Row actions (built-in play/edit + scope actions, with inline confirm) ───
+  function actionButtons(f, wrap) {
+    const out = [];
+    if (scope.onPlay) {
+      out.push(el('button', { class: 'play-btn', title: 'Preview', 'aria-label': `Preview ${displayTitle(f)}`, html: PLAY_ICON,
+        onclick: () => scope.onPlay(f, visibleFiles()) }));
+    }
+    if (scope.editPatchURL) {
+      out.push(el('button', { class: 'btn btn-neutral btn-sm btn-edit', text: 'Edit', onclick: () => editor().open(f) }));
+    }
+    for (const a of scope.rowActions || []) {
+      const cls = a.kind === 'danger' ? 'btn btn-destructive-outline btn-sm' : 'btn btn-neutral btn-sm';
+      out.push(el('button', { class: cls, text: a.label, onclick: () => a.confirm === 'inline' ? enterInlineConfirm(a, f, wrap) : runRowAction(a, f) }));
+    }
+    return out;
+  }
+
+  function enterInlineConfirm(action, f, wrap) {
+    const restore = () => { wrap.replaceChildren(...actionButtons(f, wrap)); wrap.querySelector('button')?.focus(); };
+    const cancel = el('button', { class: 'btn btn-neutral btn-sm', text: 'Cancel', onclick: restore });
+    const confirm = el('button', {
+      class: action.kind === 'danger' ? 'btn btn-destructive-solid btn-sm' : 'btn btn-neutral btn-sm',
+      text: action.confirmLabel || action.label, onclick: () => runRowAction(action, f),
+    });
+    wrap.replaceChildren(el('span', { class: 'delete-confirm-label', text: action.confirmPrompt || `${action.label}?` }), cancel, confirm);
+    wrap.addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); restore(); } });
+    cancel.focus();
+  }
+
+  async function runRowAction(action, f) {
+    try {
+      const changed = await action.run(f);
+      if (changed !== false) await reload();
+    } catch (err) {
+      toast(`${action.label} failed: ${err.message}`, 'error');
+    }
+  }
+
+  // ── Selection ───────────────────────────────────────────────────────────────
+  function isSelectable(f) { return scope.selectable ? scope.selectable(f) : false; }
+  function rowCheckbox(f) {
+    const cb = el('input', { type: 'checkbox', class: 'fl-rowcheck', 'aria-label': `Select ${displayTitle(f)}` });
+    cb.checked = selected.has(f.hash);
+    cb.addEventListener('change', () => { cb.checked ? selected.add(f.hash) : selected.delete(f.hash); syncSelectionUI(); });
+    return cb;
+  }
+
+  function syncSelectionUI() {
+    if (!mountEl) return;
+    const sel = selected.size;
+    mountEl.querySelectorAll('.fl-selcount').forEach(n => (n.textContent = `${sel} selected`));
+    mountEl.querySelectorAll('.fl-bulk-btn').forEach(b => (b.disabled = sel === 0));
+
+    const checks = [...mountEl.querySelectorAll('.fl-rowcheck')];
+    const visSel = checks.filter(c => c.checked).length;
+    const selectAll = mountEl.querySelector('.fl-selectall');
+    if (selectAll) { selectAll.checked = checks.length > 0 && visSel === checks.length; selectAll.indeterminate = visSel > 0 && visSel < checks.length; }
+
+    mountEl.querySelectorAll('.fl-group').forEach(g => {
+      const gc = g.querySelector('.fl-groupcheck'); if (!gc) return;
+      const cs = [...g.querySelectorAll('.fl-rowcheck')];
+      const n = cs.filter(c => c.checked).length;
+      gc.checked = cs.length > 0 && n === cs.length;
+      gc.indeterminate = n > 0 && n < cs.length;
+    });
+  }
+
+  function selectAllVisible(on) {
+    visibleFiles().filter(isSelectable).forEach(f => on ? selected.add(f.hash) : selected.delete(f.hash));
+    render();
+  }
+
+  // ── Table + grouping ─────────────────────────────────────────────────────────
+  function headRow(withSelectAll) {
+    const ths = scope.columns.map(c => {
+      if (c === 'check') {
+        if (!withSelectAll) return el('th', { class: 'col-check' });
+        const sa = el('input', { type: 'checkbox', class: 'fl-selectall', 'aria-label': 'Select all' });
+        sa.addEventListener('change', () => selectAllVisible(sa.checked));
+        return el('th', { class: 'col-check' }, [sa]);
+      }
+      const label = { title: 'Title', artist: 'Artist', album: 'Album', size: 'Size', access: 'Access', meta: scope.metaLabel || 'Meta', actions: 'Actions' }[c] || '';
+      const cls = c === 'size' ? 'col-size' : c === 'access' ? 'col-access' : c === 'actions' ? 'col-actions' : null;
+      return el('th', { scope: 'col', class: cls, text: label });
+    });
+    return el('tr', {}, ths);
+  }
+
+  function table(files, withSelectAll = true) {
+    const body = el('tbody');
+    files.forEach(f => {
+      const holder = {};
+      const tr = el('tr', { 'data-hash': f.hash }, scope.columns.map(c => bodyCell(c, f, holder)));
+      body.appendChild(tr);
+    });
+    return el('div', { class: 'files-table-wrap' }, [
+      el('table', { class: 'files-table' }, [el('thead', {}, [headRow(withSelectAll)]), body]),
+    ]);
+  }
+
+  function uploaderGroups(files) {
+    const g = scope.grouping;
+    const byKey = new Map();
+    for (const f of files) {
+      const k = String(g.by(f));
+      if (!byKey.has(k)) byKey.set(k, { key: k, label: g.label(f), items: [] });
+      byKey.get(k).items.push(f);
+    }
+    const frag = document.createDocumentFragment();
+    for (const grp of byKey.values()) {
+      const section = el('section', { class: 'mod-group fl-group' + (collapsed.has(grp.key) ? ' is-collapsed' : '') });
+      const bodyId = `flGroup-${grp.key}`;
+
+      const groupCheck = el('input', { type: 'checkbox', class: 'mod-group-check fl-groupcheck', 'aria-label': `Select all from ${grp.label}` });
+      const selectableItems = grp.items.filter(isSelectable);
+      if (!selectableItems.length) groupCheck.disabled = true;
+      groupCheck.addEventListener('change', () => {
+        selectableItems.forEach(f => groupCheck.checked ? selected.add(f.hash) : selected.delete(f.hash));
+        render();
+      });
+
+      const toggle = el('button', { class: 'mod-group-toggle', 'aria-expanded': String(!collapsed.has(grp.key)), 'aria-controls': bodyId }, [
+        el('span', { class: 'mod-group-chevron', 'aria-hidden': 'true', text: '▾' }),
+        el('span', { text: grp.label }),
+        el('span', { class: 'mod-group-counts', text: g.counts ? g.counts(grp.items) : `${grp.items.length}` }),
+      ]);
+      toggle.addEventListener('click', () => {
+        const c = section.classList.toggle('is-collapsed');
+        if (c) collapsed.add(grp.key); else collapsed.delete(grp.key);
+        toggle.setAttribute('aria-expanded', String(!c));
+      });
+
+      section.append(
+        el('div', { class: 'mod-group-header' }, [groupCheck, toggle]),
+        el('div', { class: 'mod-group-body', id: bodyId }, [table(grp.items, false)]),
+      );
+      frag.appendChild(section);
+    }
+    return frag;
+  }
+
+  function sectionGroups(files) {
+    const frag = document.createDocumentFragment();
+    for (const sec of scope.grouping.sections) {
+      const items = files.filter(sec.match);
+      if (!items.length) continue;
+      frag.append(
+        el('h3', { class: 'section-title section-title--sub', text: `${sec.label} (${items.length})` }),
+        table(items, false),
+      );
+    }
+    return frag;
+  }
+
+  // ── Browse (artist → album → track) ──────────────────────────────────────────
+  function trackCount(n) { return `${n} track${n === 1 ? '' : 's'}`; }
+  function cover(level, item) {
+    const url = scope.browse.coverURL ? scope.browse.coverURL(level, item, br.artist) : null;
+    if (!url) return el('div', { class: 'entity-cover entity-cover--empty', 'aria-hidden': 'true', text: '♪' });
+    return el('img', { class: 'entity-cover', alt: '', loading: 'lazy', src: url });
+  }
+  function crumb() {
+    const parts = [crumbNode('Artists', br.level === 'artists' ? null : () => { br.level = 'artists'; br.artist = null; br.album = null; loadBrowse(); })];
+    if (br.artist != null) {
+      parts.push(el('span', { class: 'crumb-sep', 'aria-hidden': 'true', text: '›' }));
+      parts.push(crumbNode(br.artist || '(no artist)', br.level === 'albums' ? null : () => { br.level = 'albums'; br.album = null; loadBrowse(); }));
+    }
+    if (br.album != null && br.level === 'tracks') {
+      parts.push(el('span', { class: 'crumb-sep', 'aria-hidden': 'true', text: '›' }));
+      parts.push(crumbNode(br.album || '(no album)', null));
+    }
+    return el('nav', { class: 'entity-breadcrumb', 'aria-label': 'Library navigation' }, parts);
+  }
+  function crumbNode(label, onClick) {
+    return onClick ? el('button', { class: 'crumb-link', text: label, onclick: onClick }) : el('span', { class: 'crumb-current', text: label });
+  }
+
+  function browseTree() {
+    const panel = el('div', { class: 'entity-panel' });
+    const items = (br.items || []).filter(it => matches(it.name ?? it.title));
+    if (!items.length) { panel.appendChild(el('div', { class: 'table-state-row', text: filterText ? 'No matches.' : 'Nothing here.' })); return panel; }
+
+    if (br.level === 'artists') {
+      items.forEach(a => panel.appendChild(entityRow({
+        name: a.name, fallback: '(no artist)', item: a, level: 'artist',
+        meta: `${a.album_count != null ? a.album_count + ' albums · ' : ''}${trackCount(a.track_count ?? 0)}`,
+        onOpen: () => { br.level = 'albums'; br.artist = a.name; br.album = null; loadBrowse(); },
+      })));
+    } else if (br.level === 'albums') {
+      items.forEach(a => {
+        const meta = [a.year, trackCount(a.track_count ?? 0)].filter(v => v != null).join(' · ');
+        panel.appendChild(entityRow({
+          name: a.title, fallback: '(no album)', item: a, level: 'album', meta,
+          onOpen: () => { br.level = 'tracks'; br.album = a.title; loadBrowse(); },
+        }));
+      });
+    } else {
+      items.forEach(t => panel.appendChild(trackRow(t)));
+    }
+    return panel;
+  }
+
+  function entityRow({ name, fallback, item, level, meta, onOpen }) {
+    const main = el('button', { class: 'entity-main', onclick: onOpen, 'aria-label': `Open ${name || fallback}` }, [
+      el('span', { class: 'entity-name' + (name ? '' : ' is-fallback'), text: name || fallback }),
+      el('span', { class: 'entity-meta', text: meta }),
+    ]);
+    const row = el('div', { class: 'entity-row' }, [cover(level, item), main]);
+    if (scope.bulkApply && name) {
+      const actions = el('div', { class: 'entity-actions' }, [
+        el('button', { class: 'btn btn-neutral btn-sm', text: 'Edit tags…', onclick: () => editGroupTags(level, item) }),
+      ]);
+      row.appendChild(actions);
+    }
+    return row;
+  }
+
+  function trackRow(t) {
+    const hash = scope.browse.trackHash ? scope.browse.trackHash(t) : t.hash;
+    const kids = [];
+    if (hash && isSelectableTrack()) {
+      const cb = el('input', { type: 'checkbox', class: 'fl-rowcheck', 'aria-label': `Select ${t.title || 'track'}` });
+      cb.checked = selected.has(hash);
+      cb.addEventListener('change', () => { cb.checked ? selected.add(hash) : selected.delete(hash); syncSelectionUI(); });
+      kids.push(cb);
+    }
+    if (scope.onPlay) kids.push(el('button', { class: 'play-btn', title: 'Preview', 'aria-label': `Preview ${t.title || 'track'}`, html: PLAY_ICON, onclick: () => scope.onPlay({ ...t, hash }, []) }));
+    kids.push(el('span', { class: 'entity-tracknum', text: t.track_number != null ? String(t.track_number) : '' }));
+    kids.push(el('span', { class: 'entity-name' + (t.title ? '' : ' is-fallback'), text: t.title || 'Untitled' }));
+    if (scope.editPatchURL) {
+      kids.push(el('div', { class: 'entity-actions' }, [
+        el('button', { class: 'btn btn-neutral btn-sm btn-edit', text: 'Edit', onclick: () => editBrowseTrack(t) }),
+      ]));
+    }
+    return el('div', { class: 'entity-row entity-row--track', 'data-hash': hash || '' }, kids);
+  }
+  function isSelectableTrack() { return !!scope.bulkApply; }
+
+  async function editBrowseTrack(t) {
+    const f = scope.browse.resolveTrackFile ? await scope.browse.resolveTrackFile(t) : t;
+    if (!f) { toast('Couldn’t find this file’s details.', 'error'); return; }
+    editor().open(f);
+  }
+  async function editGroupTags(level, item) {
+    try {
+      const hashes = await scope.browse.groupHashes(level, item, br.artist);
+      if (!hashes.length) { toast('No files found for this group.', 'error'); return; }
+      bulkEditor().open(hashes);
+    } catch (err) { toast(`Couldn’t gather the group: ${err.message}`, 'error'); }
+  }
+
+  // ── Chrome ──────────────────────────────────────────────────────────────────
+  let filterTimer;
+  function headerBar() {
+    const search = el('input', { type: 'search', placeholder: 'Filter…', autocomplete: 'off', 'aria-label': 'Filter files' });
+    search.value = filterText;
+    search.addEventListener('input', () => {
+      clearTimeout(filterTimer);
+      filterTimer = setTimeout(() => { filterText = search.value; render(); }, 150);
+    });
+    const heading = el('h2', { class: 'section-title section-title--files' });
+    heading.append(scope.title);
+    if (view === 'list') heading.append(` (${rows.length})`);
+    return el('div', { class: 'files-bar' }, [heading, el('div', { class: 'files-search' }, [search])]);
+  }
+
+  function viewSwitch() {
+    const mk = (id, label) => {
+      const b = el('button', { class: 'vm-btn' + (view === id ? ' is-active' : ''), 'aria-pressed': String(view === id), text: label });
+      b.addEventListener('click', () => { if (view !== id) { view = id; reload(); } });
+      return b;
+    };
+    return el('div', { class: 'vm-switch', role: 'group', 'aria-label': 'View' }, [mk('browse', 'Browse'), mk('list', 'List')]);
+  }
+
+  function bulkToolbar() {
+    const buttons = [];
+    if (scope.bulkApply) buttons.push(el('button', { class: 'btn btn-neutral btn-sm fl-bulk-btn', text: 'Edit tags…', disabled: 'true', onclick: () => bulkEditor().open([...selected]) }));
+    for (const a of scope.bulkActions || []) {
+      const cls = (a.kind === 'danger' ? 'btn btn-destructive-outline btn-sm' : 'btn btn-neutral btn-sm') + ' fl-bulk-btn';
+      buttons.push(el('button', { class: cls, text: a.label, disabled: 'true', onclick: () => runBulkAction(a) }));
+    }
+    if (!buttons.length) return null;
+    return el('div', { class: 'bulk-toolbar' }, [
+      el('span', { class: 'bulk-selcount fl-selcount', text: '0 selected' }),
+      el('span', { class: 'bulk-spacer' }),
+      ...buttons,
+    ]);
+  }
+  async function runBulkAction(a) {
+    const hashes = [...selected];
+    if (!hashes.length) return;
+    try {
+      const changed = await a.run(hashes);
+      if (changed === false) return;     // e.g. a cancelled confirm — keep selection
+      selected.clear();
+      await reload();
+    } catch (err) { toast(`${a.label} failed: ${err.message}`, 'error'); }
+  }
+
+  function stateBlock(text) { return el('div', { class: 'table-state-row', text }); }
+  function emptyBlock() {
+    return el('div', { class: 'empty-state' }, [
+      el('div', { class: 'drop-icon', 'aria-hidden': 'true', text: '♪' }),
+      el('p', { text: scope.emptyText || 'Nothing here.' }),
+    ]);
+  }
+  function errorBlock() {
+    const retry = el('button', { class: 'btn btn-neutral btn-sm', text: 'Retry', onclick: reload });
+    return el('div', { role: 'alert' }, [el('p', { class: 'section-copy', text: 'Failed to load.' }), retry]);
+  }
+
+  function content() {
+    if (loading) return stateBlock('Loading…');
+    if (loadError) return errorBlock();
+    if (view === 'browse' && hasBrowse) return el('div', {}, [crumb(), browseTree()]);
+    if (!rows.length) return emptyBlock();
+    const files = visibleFiles();
+    if (!files.length) return stateBlock(`No files match “${filterText.trim()}”`);
+    if (scope.grouping?.kind === 'collapsible') return uploaderGroups(files);
+    if (scope.grouping?.kind === 'sections') return sectionGroups(files);
+    return table(files, true);
+  }
+
+  function render() {
+    if (!mountEl) return;
+    const kids = [headerBar()];
+    if (hasBrowse) kids.push(viewSwitch());
+    if (scope.desc) kids.push(el('p', { class: 'scope-desc', text: scope.desc }));
+    const tb = (view === 'list') ? bulkToolbar() : (hasBrowse ? bulkToolbar() : null);
+    if (tb) kids.push(tb);
+    kids.push(content());
+    mountEl.replaceChildren(...kids);
+    syncSelectionUI();
+    applyPlayingHighlight();
+  }
+
+  // ── Playing-row highlight (page drives it via setPlaying) ───────────────────
+  function applyPlayingHighlight() {
+    if (!mountEl) return;
+    mountEl.querySelectorAll('.playing-row').forEach(r => r.classList.remove('playing-row'));
+    if (!playingHash) return;
+    mountEl.querySelector(`[data-hash="${CSS.escape(playingHash)}"]`)?.classList.add('playing-row');
+  }
+  function setPlaying(hash) { playingHash = hash || null; applyPlayingHighlight(); }
+
+  // ── Public surface ────────────────────────────────────────────────────────────
+  function mount(node) { mountEl = node; reload(); }
+  function destroy() {
+    _editor?.destroy(); _editor = null;
+    _bulk?.destroy(); _bulk = null;
+    mountEl = null;
+  }
+
+  return { mount, reload, setPlaying, getVisible, destroy };
+}
+
+function shortHash(h) {
+  if (!h) return '';
+  return h.length > 12 ? h.slice(0, 12) + '…' : h;
+}
