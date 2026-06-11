@@ -177,6 +177,10 @@ type Repository interface {
 	// were trashed while pending.
 	StageRestoredFile(ctx context.Context, hash string, ownerID sql.NullInt64) (bool, error)
 
+	// DiscardOwnUpload soft-deletes the owner's editable (draft/returned)
+	// staged file; found=false for submitted, foreign, or unknown files.
+	DiscardOwnUpload(ctx context.Context, hash string, ownerID int64) (bool, error)
+
 	// --- Cover image variants & async job queue (Phase 1: upload & covers) ---
 
 	// EnqueueImageJob inserts a pending image-variant job. Idempotent per

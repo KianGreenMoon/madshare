@@ -111,6 +111,35 @@ func (h *handler) myUploadMetadata(w http.ResponseWriter, r *http.Request) {
 	h.applyMetadataPatch(w, r, hash, "own staged file")
 }
 
+// myUploadDiscard handles DELETE /api/my/uploads/{hash} — the owner removes
+// one of his own staged files (draft or returned → Trash, the regular soft
+// delete; an admin can still restore it). Submitted files cannot be removed
+// (no withdraw once sent to approval). 404 on anything the caller may not
+// remove, revealing nothing about other users' files.
+func (h *handler) myUploadDiscard(w http.ResponseWriter, r *http.Request) {
+	id := auth.FromContext(r.Context())
+	if id == nil {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	hash := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "hash")))
+	if !isSHA256Hex(hash) {
+		http.Error(w, "invalid hash", http.StatusBadRequest)
+		return
+	}
+	found, err := h.repo.DiscardOwnUpload(r.Context(), hash, id.UserID)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	h.audit(r.Context(), "file.trash", hash, "owner-discard")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "hash": hash})
+}
+
 // submitMyUploads handles POST /api/my/uploads/submit {hashes:[...]} — the
 // "Send to approval" action. Each owned draft/returned file transitions to
 // submitted; for content.moderate holders it goes straight to approved

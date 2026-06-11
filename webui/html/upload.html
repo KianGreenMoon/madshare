@@ -92,15 +92,6 @@
     <p class="empty-note" id="queueEmpty">Nothing queued yet. Add files above to begin.</p>
   </section>
 
-  <!-- ── Albums — verify & edit ─────────────────────────────────────────── -->
-  <section class="upload-section" aria-labelledby="albumsHeading">
-    <h2 id="albumsHeading" class="section-title">Albums &mdash; verify &amp; edit</h2>
-    <div class="cover-grid" id="coverGrid">
-      <!-- populated by JS as uploads complete -->
-    </div>
-    <p class="empty-note" id="albumsEmpty">Albums appear here after you upload. You can then check covers and fix tags.</p>
-  </section>
-
   <!-- ── Advanced ───────────────────────────────────────────────────────── -->
   <section class="upload-section upload-advanced" aria-labelledby="advancedHeading">
     <h2 id="advancedHeading" class="section-title section-title--sub">Advanced</h2>
@@ -124,11 +115,14 @@
       <h1 id="mineHeading" class="section-title">My uploads</h1>
       <p class="mine-intro">
         Files you uploaded that aren&rsquo;t in the library yet. Check their tags
-        (Edit), then send them to approval. A moderator reviews them &mdash; or, if
-        you have moderation rights, they publish immediately.
+        (Edit), then send them to approval &mdash; a moderator reviews them, or, if
+        you have moderation rights, they publish immediately. Files a moderator
+        sent back show the note explaining what to fix. Remove discards a file
+        you don&rsquo;t want to publish after all.
       </p>
       <div class="mine-actions">
         <button type="button" class="btn btn--accent" id="sendApproval" disabled>Send to approval</button>
+        <button type="button" class="btn btn--danger" id="removeSelected" disabled>Remove selected</button>
         <span class="mine-selinfo" id="mineSelInfo"></span>
       </div>
       <div id="mineReturned"></div>

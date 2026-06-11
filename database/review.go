@@ -151,6 +151,24 @@ func (db *DB) UpdateReviewState(ctx context.Context, hash string, t ReviewTransi
 	return n > 0, nil
 }
 
+// DiscardOwnUpload soft-deletes one of the owner's *editable* staged files
+// (draft or returned) — the "Remove" action on the My-uploads tab. Submitted
+// files are excluded (no withdraw once sent to approval) and so is anything
+// the caller doesn't own; both report found=false. Guard and delete are one
+// UPDATE, so a concurrent submit cannot slip through.
+func (db *DB) DiscardOwnUpload(ctx context.Context, hash string, ownerID int64) (bool, error) {
+	res, err := db.ExecContext(ctx, `
+		UPDATE files SET deleted_at = ?
+		WHERE hash = ? AND deleted_at IS NULL AND uploaded_by = ?
+		  AND review_state IN (?, ?)`,
+		time.Now().Unix(), hash, ownerID, ReviewDraft, ReviewReturned)
+	if err != nil {
+		return false, fmt.Errorf("discard own upload: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
 // StageRestoredFile re-stages a just-restored file as the restorer's draft:
 // an approved-then-trashed file brought back by a re-upload (or an uploader
 // restore) must re-enter the staging pipeline, not the live library — anyone

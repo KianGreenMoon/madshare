@@ -435,6 +435,10 @@ func (f *fakeRepo) StageRestoredFile(_ context.Context, _ string, _ sql.NullInt6
 	return f.stageRestored, f.stageRestoredErr
 }
 
+func (f *fakeRepo) DiscardOwnUpload(_ context.Context, _ string, _ int64) (bool, error) {
+	return f.reviewUpdateFound, f.reviewUpdateErr
+}
+
 func (f *fakeRepo) RecordAudit(_ context.Context, actor sql.NullInt64, action, target, _ string) error {
 	f.auditCalls++
 	f.lastAudit = action + "|" + target

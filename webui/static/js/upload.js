@@ -32,9 +32,9 @@ const API = document.querySelector('meta[name="api-url"]')?.content || '';
 // ── DOM refs (assigned by queryRefs() in init — they live in <main>) ─────────
 let dropZone, fileInput, folderInput, addMusicBtn, addMenu, chooseFilesBtn, chooseFolderBtn;
 let workersRange, workersValue, startBtn, clearBtn, queueList, queueEmpty;
-let coverGrid, albumsEmpty, srStatus, toastStack, precheckToggle;
+let srStatus, toastStack, precheckToggle;
 let tabBtnUpload, tabBtnMine, uploadPane, minePane, mineCountEl;
-let sendApprovalBtn, mineSelInfo, mineReturned, mineDrafts, mineSubmitted, mineEmpty;
+let sendApprovalBtn, removeSelectedBtn, mineSelInfo, mineReturned, mineDrafts, mineSubmitted, mineEmpty;
 
 function queryRefs() {
   dropZone        = document.getElementById('dropZone');
@@ -50,8 +50,6 @@ function queryRefs() {
   clearBtn        = document.getElementById('clearQueue');
   queueList       = document.getElementById('queueList');
   queueEmpty      = document.getElementById('queueEmpty');
-  coverGrid       = document.getElementById('coverGrid');
-  albumsEmpty     = document.getElementById('albumsEmpty');
   srStatus        = document.getElementById('srStatus');
   toastStack      = document.getElementById('toastStack');
   precheckToggle  = document.getElementById('precheckToggle');
@@ -60,7 +58,8 @@ function queryRefs() {
   uploadPane      = document.getElementById('uploadPane');
   minePane        = document.getElementById('minePane');
   mineCountEl     = document.getElementById('mineCount');
-  sendApprovalBtn = document.getElementById('sendApproval');
+  sendApprovalBtn   = document.getElementById('sendApproval');
+  removeSelectedBtn = document.getElementById('removeSelected');
   mineSelInfo     = document.getElementById('mineSelInfo');
   mineReturned    = document.getElementById('mineReturned');
   mineDrafts      = document.getElementById('mineDrafts');
@@ -70,7 +69,8 @@ function queryRefs() {
 
 // ── State ───────────────────────────────────────────────────────────────────
 // queue:   every intake file (audio uploaded, image = cover candidate, other = skipped)
-// groups:  album cards keyed by `artist \x1f album` (formed from upload responses)
+// groups:  album identities keyed by `artist \x1f album` (formed from upload
+//          responses; headless — only feeds folder-cover co-location)
 // folders: per-directory bookkeeping for cover co-location
 let nextId = 1;
 const queue   = [];           // QueueItem[]
@@ -126,7 +126,6 @@ export async function init() {
 export function teardown() {
   wireAbort?.abort();
   wireAbort = null;
-  for (const g of groups.values()) stopPolling(g);
   for (const xhr of activeXhrs) { try { xhr.abort(); } catch { /* ignore */ } }
   activeXhrs.clear();
   if (hashPool) { hashPool.terminate(); hashPool = null; }
@@ -187,11 +186,6 @@ function wire(signal) {
   startBtn.addEventListener('click', () => { running = true; startBtn.disabled = true; pump(); }, { signal });
   clearBtn.addEventListener('click', clearQueue, { signal });
 
-  // Resume cover polling when the tab becomes visible again.
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) for (const g of groups.values()) if (g.poll) pollStatus(g);
-  }, { signal });
-
   // Pre-upload precheck toggle (persisted, default on)
   if (precheckToggle) {
     precheckToggle.checked = precheckEnabled();
@@ -204,6 +198,7 @@ function wire(signal) {
   tabBtnUpload.addEventListener('click', () => selectTab('upload'), { signal });
   tabBtnMine.addEventListener('click', () => selectTab('mine'), { signal });
   sendApprovalBtn.addEventListener('click', sendForApproval, { signal });
+  removeSelectedBtn.addEventListener('click', removeSelectedClick, { signal });
 }
 
 function selectTab(which) {
@@ -400,7 +395,10 @@ function renderQueueItem(item) {
   queueList.appendChild(li);
 
   // Non-audio rows carry an explanatory note instead of a progress lifecycle.
-  if (item.kind === 'image') setItemState(item, 'cover', 'Cover image — applied to its album after upload.');
+  // Folder cover images are co-located server-side only with metadata.edit
+  // (the cover endpoint is gated on it) — say so instead of pretending.
+  if (item.kind === 'image' && canEditMeta) setItemState(item, 'cover', 'Cover image — applied to its album after upload.');
+  else if (item.kind === 'image') setItemState(item, 'skipped', 'Cover image — needs the metadata permission; skipped.');
   else if (item.kind === 'other') setItemState(item, 'skipped', 'Skipped — only audio files are stored.');
 }
 
@@ -446,10 +444,8 @@ function clearQueue() {
       queue.splice(i, 1);
     }
   }
-  for (const g of groups.values()) stopPolling(g);
   groups.clear();
   folders.clear();
-  coverGrid.replaceChildren();
   syncEmptyStates();
   updateButtons();
 }
@@ -637,223 +633,23 @@ function onUploaded(item, body) {
   item.groupKey = groupKeyFor(item.album, item.artist);
   const g = ensureGroup(item.groupKey, item.album, item.artist);
   g.items.push(item);
-  updateCard(g);
-  if (body.cover_found || body.cover_processing) g.embeddedCover = true;
 }
 
 function groupKeyFor(album, artist) {
   return album ? `${artist}\u001f${album}` : UNSORTED_KEY;
 }
 
-// ── Album groups / verify cards ─────────────────────────────────────────────
+// ── Album groups ─────────────────────────────────────────────────────────────
+// Headless bookkeeping: which album identity each uploaded track resolved to.
+// Its only consumer is folder-cover co-location (resolveFolderCovers below) —
+// tag verification/editing lives on the "My uploads" tab, and there is no
+// album-card UI on this page anymore.
 function ensureGroup(key, album, artist) {
   let g = groups.get(key);
   if (g) return g;
-  g = {
-    key,
-    album: album || '',
-    artist: artist || '',
-    unsorted: key === UNSORTED_KEY,
-    items: [],              // audio QueueItem[] in this album
-    coverFile: null,        // a client-side cover image (candidate or replacement)
-    coverAmbiguous: false,  // co-located cover spanned >1 album
-    embeddedCover: false,   // server extracted an embedded cover for this album
-    poll: null,
-    el: null,
-  };
+  g = { key, album: album || '', artist: artist || '', items: [] };
   groups.set(key, g);
-  renderCard(g);
-  syncEmptyStates();
   return g;
-}
-
-function renderCard(g) {
-  const card = document.createElement('article');
-  card.className = 'cover-card';
-  card.dataset.processing = 'false';
-
-  const art = document.createElement('div');
-  art.className = 'cover-card__art';
-  const ph = document.createElement('span');
-  ph.className = 'cover-card__placeholder';
-  ph.textContent = '♫';                  // ♫
-  ph.setAttribute('aria-hidden', 'true');
-  const spinner = document.createElement('div');
-  spinner.className = 'cover-card__spinner';
-  spinner.setAttribute('aria-hidden', 'true');
-  art.append(ph, spinner);
-
-  const body = document.createElement('div');
-  body.className = 'cover-card__body';
-
-  card.append(art, body);
-  coverGrid.appendChild(card);
-  g.el = { card, art, body };
-  updateCard(g);
-}
-
-// updateCard rebuilds the card body (titles, track list, controls) in place,
-// leaving the art element untouched so a loaded cover / spinner survives.
-function updateCard(g) {
-  if (!g.el) return;
-  const body = g.el.body;
-  body.replaceChildren();
-
-  // --- album + artist (editable with metadata.edit) ---
-  if (g.unsorted) {
-    const h = document.createElement('h3');
-    h.className = 'cover-card__title';
-    h.textContent = 'Unsorted / no album tag';
-    body.appendChild(h);
-    const note = document.createElement('p');
-    note.className = 'cover-card__meta';
-    note.textContent = `${g.items.length} track${g.items.length === 1 ? '' : 's'} with no album tag.`;
-    body.appendChild(note);
-  } else if (canEditMeta) {
-    body.appendChild(field('Album', g.album, (el) => { g.el.albumInput = el; }));
-    body.appendChild(field('Artist', g.artist, (el) => { g.el.artistInput = el; }));
-  } else {
-    const h = document.createElement('h3');
-    h.className = 'cover-card__title';
-    h.textContent = g.album || 'Untitled album';
-    h.title = h.textContent;
-    body.appendChild(h);
-    const meta = document.createElement('p');
-    meta.className = 'cover-card__meta';
-    meta.textContent = g.artist || 'Unknown artist';
-    body.appendChild(meta);
-  }
-
-  // --- track list ---
-  const count = document.createElement('p');
-  count.className = 'cover-card__meta';
-  count.textContent = `${g.items.length} track${g.items.length === 1 ? '' : 's'}`;
-  body.appendChild(count);
-
-  if (g.items.length) {
-    const list = document.createElement('ul');
-    list.className = 'cover-card__tracks';
-    for (const it of g.items) {
-      const row = document.createElement('li');
-      if (canEditMeta && !g.unsorted) {
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.className = 'cover-card__track-input';
-        input.value = it.title || baseName(it.relPath);
-        input.setAttribute('aria-label', `Title for ${baseName(it.relPath)}`);
-        it.titleInput = input;
-        row.appendChild(input);
-      } else {
-        row.textContent = it.title || baseName(it.relPath);
-      }
-      list.appendChild(row);
-    }
-    body.appendChild(list);
-  }
-
-  // --- note (ambiguity / permission hints) ---
-  const note = document.createElement('p');
-  note.className = 'cover-card__note';
-  g.el.note = note;
-  if (g.coverAmbiguous) note.textContent = 'Cover ambiguous — this folder spanned several albums; confirm it is right.';
-  body.appendChild(note);
-
-  // --- actions ---
-  if (canEditMeta && !g.unsorted) {
-    const actions = document.createElement('div');
-    actions.className = 'cover-card__actions';
-
-    const save = document.createElement('button');
-    save.type = 'button';
-    save.className = 'btn btn--accent';
-    save.textContent = 'Save changes';
-    save.addEventListener('click', () => saveCard(g));
-    actions.appendChild(save);
-
-    const replace = document.createElement('button');
-    replace.type = 'button';
-    replace.className = 'btn';
-    replace.textContent = 'Replace cover';
-    replace.addEventListener('click', () => pickReplacement(g));
-    actions.appendChild(replace);
-
-    body.appendChild(actions);
-  }
-}
-
-// field builds a labelled text input and hands the element back via `keep`.
-function field(label, value, keep) {
-  const wrap = document.createElement('label');
-  wrap.className = 'cover-card__field';
-  const span = document.createElement('span');
-  span.className = 'cover-card__field-label';
-  span.textContent = label;
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.value = value || '';
-  input.placeholder = label === 'Album' ? 'Album title' : 'Artist';
-  wrap.append(span, input);
-  keep(input);
-  return wrap;
-}
-
-// ── Verify/edit save ────────────────────────────────────────────────────────
-// Applies the card's edits: per-track title changes, then (if album/artist
-// changed) re-tags every track and re-targets the cover to the new identity.
-async function saveCard(g) {
-  if (!canEditMeta || g.unsorted) return;
-  const newAlbum  = (g.el.albumInput?.value ?? g.album).trim();
-  const newArtist = (g.el.artistInput?.value ?? g.artist).trim();
-  const renamed = newAlbum !== g.album || newArtist !== g.artist;
-
-  g.el.note.textContent = 'Saving…';
-  try {
-    // 1) Per-track title edits (+ album/artist when renamed).
-    for (const it of g.items) {
-      if (!it.hash) continue;
-      const patch = {};
-      const newTitle = (it.titleInput?.value ?? it.title).trim();
-      if (newTitle !== it.title) { patch.title = newTitle; it.title = newTitle; }
-      if (renamed) { patch.album = newAlbum; patch.album_artist = newArtist; }
-      if (Object.keys(patch).length === 0) continue;
-      const res = await fetch(`${API}/api/files/${encodeURIComponent(it.hash)}/metadata`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(patch),
-      });
-      if (!res.ok) throw new Error(`PATCH ${it.hash}: HTTP ${res.status}`);
-    }
-
-    if (renamed) {
-      // 2) Re-key the group to its new identity and re-target the cover. Album
-      //    covers are keyed by the album_artist+album strings, so a rename would
-      //    orphan the cover unless we re-POST it (only possible when we hold the
-      //    image bytes — i.e. a client-side cover file). An embedded-only cover
-      //    cannot be moved here; the user can Replace it.
-      stopPolling(g);
-      groups.delete(g.key);
-      g.album = newAlbum;
-      g.artist = newArtist;
-      g.key = groupKeyFor(newAlbum, newArtist);
-      groups.set(g.key, g);
-      for (const it of g.items) { it.album = newAlbum; it.artist = newArtist; it.groupKey = g.key; }
-
-      if (g.coverFile) {
-        await postCover(g, g.coverFile);       // re-POSTs + restarts polling
-      } else {
-        startPolling(g);                        // the cover may already exist under the new name
-        if (g.embeddedCover) g.el.note.textContent = 'Renamed. If the cover is missing, use Replace cover.';
-        else g.el.note.textContent = 'Saved.';
-      }
-    } else {
-      g.el.note.textContent = 'Saved.';
-    }
-    updateCard(g);
-    announce('Changes saved.');
-  } catch (err) {
-    console.error('Save failed:', err);
-    g.el.note.textContent = 'Save failed — see console.';
-  }
 }
 
 // ── Cover co-location ───────────────────────────────────────────────────────
@@ -878,13 +674,9 @@ function resolveFolderCovers() {
     for (const [k, n] of tally) if (n > bestN) { bestKey = k; bestN = n; }
     const g = groups.get(bestKey);
     if (!g) continue;
-    g.coverFile = cover;
-    g.coverAmbiguous = tally.size > 1;
-    updateCard(g);
-
     if (canEditMeta) postCover(g, cover);       // explicit file beats embedded art
-    // Without permission: the candidate is offered via Replace (button hidden,
-    // so it simply stays as a grey placeholder unless an embedded cover exists).
+    // Without metadata.edit the cover endpoint would 403 — the image was
+    // marked "skipped" at intake (see renderQueueItem).
   }
 }
 
@@ -903,75 +695,22 @@ function pickCoverFile(folder) {
   return imgs.length === 1 ? imgs[0].file : null;
 }
 
-// postCover POSTs an image to the album cover endpoint, then polls for variants.
+// postCover POSTs an image to the album cover endpoint. Variants are generated
+// asynchronously server-side; without the album cards there is nothing to poll
+// for here — the cover shows up in the library/admin views when ready.
 async function postCover(g, file) {
-  if (!g.album) { if (g.el?.note) g.el.note.textContent = 'No album — cannot set a cover.'; return; }
-  g.el.card.dataset.processing = 'true';
-  if (g.el.note) g.el.note.textContent = 'Uploading cover…';
+  if (!g.album) return;
   try {
     const form = new FormData();
     form.append('image', file, file.name || 'cover.jpg');
     const url = `${API}/api/albums/${encodeURIComponent(g.album)}/image?artist=${encodeURIComponent(g.artist)}`;
     const res = await fetch(url, { method: 'POST', body: form });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    g.coverFile = file;
-    if (g.el.note) g.el.note.textContent = '';
-    startPolling(g);
+    showToast(`Cover uploaded for “${g.album}”.`);
   } catch (err) {
     console.error('Cover upload failed:', err);
-    g.el.card.dataset.processing = 'false';
-    if (g.el.note) g.el.note.textContent = 'Cover upload failed.';
+    showToast(`Cover upload failed for “${g.album}”.`);
   }
-}
-
-function pickReplacement(g) {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = 'image/jpeg,image/png';
-  input.addEventListener('change', () => { if (input.files?.length) postCover(g, input.files[0]); });
-  input.click();
-}
-
-// ── Status polling ──────────────────────────────────────────────────────────
-function startPolling(g) {
-  if (!g.album) return;
-  stopPolling(g);
-  g.el.card.dataset.processing = 'true';
-  const tick = () => pollStatus(g);
-  tick();
-  g.poll = setInterval(tick, 2000);
-}
-
-function stopPolling(g) {
-  if (g.poll) { clearInterval(g.poll); g.poll = null; }
-}
-
-async function pollStatus(g) {
-  if (document.hidden) return;
-  if (!g.album) { stopPolling(g); return; }
-  try {
-    const url = `${API}/api/albums/${encodeURIComponent(g.album)}/image/status?artist=${encodeURIComponent(g.artist)}`;
-    const res = await fetch(url);
-    if (res.status === 404) { stopPolling(g); g.el.card.dataset.processing = 'false'; return; }
-    if (!res.ok) return;                        // transient; retry next tick
-    const status = await res.json();
-    if (status?.variants_ready) {
-      stopPolling(g);
-      showCover(g, status?.variants?.medium_crop);
-    }
-  } catch (err) {
-    console.warn('Status poll failed:', err);
-  }
-}
-
-function showCover(g, variantUrl) {
-  g.el.card.dataset.processing = 'false';
-  if (!variantUrl) return;
-  const img = document.createElement('img');
-  img.alt = '';                                 // decorative — the title conveys the album
-  img.loading = 'lazy';
-  img.src = variantUrl.startsWith('http') ? variantUrl : `${API}${variantUrl}`;
-  g.el.art.replaceChildren(img);
 }
 
 // ── My uploads tab (staging / review bucket) ────────────────────────────────
@@ -1022,25 +761,11 @@ function renderMine() {
   const drafts    = mine.filter(e => e.state === 'draft');
   const submitted = mine.filter(e => e.state === 'submitted');
 
-  // Returned files group under their moderator note (one message box per note).
+  // Returned files carry the moderator's note as a per-row comment (mineRow).
   mineReturned.replaceChildren();
   if (returned.length) {
     mineReturned.appendChild(mineHeading(`Returned by a moderator (${returned.length})`));
-    const byNote = new Map();
-    for (const e of returned) {
-      const key = e.note || '';
-      if (!byNote.has(key)) byNote.set(key, []);
-      byNote.get(key).push(e);
-    }
-    for (const [note, entries] of byNote) {
-      if (note) {
-        const box = document.createElement('p');
-        box.className = 'mine-note';
-        box.textContent = `Moderator: ${note}`;
-        mineReturned.appendChild(box);
-      }
-      mineReturned.appendChild(mineList(entries, true));
-    }
+    mineReturned.appendChild(mineList(returned, true));
   }
 
   mineDrafts.replaceChildren();
@@ -1104,6 +829,12 @@ function mineRow(e, editable) {
   parts.push(`${e.filename} · ${formatBytes(e.byte_size)}`);
   meta.textContent = parts.join(' — ');
   main.append(title, meta);
+  if (e.state === 'returned' && e.note) {
+    const note = document.createElement('span');
+    note.className = 'mine-note';
+    note.textContent = `Moderator: ${e.note}`;
+    main.appendChild(note);
+  }
   li.appendChild(main);
 
   const actions = document.createElement('div');
@@ -1123,10 +854,75 @@ function mineRow(e, editable) {
     edit.textContent = 'Edit';
     edit.addEventListener('click', () => getTrackEditor().open(e));
     actions.appendChild(edit);
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'btn btn--danger';
+    remove.textContent = 'Remove';
+    remove.addEventListener('click', () => enterMineRemoveConfirm(e, actions, [play, edit, remove]));
+    actions.appendChild(remove);
   }
 
   li.appendChild(actions);
   return li;
+}
+
+// enterMineRemoveConfirm swaps a row's actions for an inline Cancel/Confirm
+// pair (the established two-step), restoring them on cancel.
+function enterMineRemoveConfirm(e, actions, original) {
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'btn';
+  cancel.textContent = 'Cancel';
+  cancel.addEventListener('click', () => {
+    actions.replaceChildren(...original);
+    original[0]?.focus();
+  });
+  const confirm = document.createElement('button');
+  confirm.type = 'button';
+  confirm.className = 'btn btn--danger';
+  confirm.textContent = 'Remove?';
+  confirm.addEventListener('click', () => removeMine([e.hash]));
+  actions.replaceChildren(cancel, confirm);
+  cancel.focus();
+}
+
+// removeMine discards the given staged files (DELETE per hash → Trash) and
+// reloads the list. Used by the per-row Remove and "Remove selected".
+async function removeMine(hashes) {
+  if (!hashes.length) return;
+  sendApprovalBtn.disabled = true;
+  removeSelectedBtn.disabled = true;
+  let ok = 0, fail = 0;
+  for (const hash of hashes) {
+    try {
+      const res = await fetch(`${API}/api/my/uploads/${encodeURIComponent(hash)}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) ok++; else fail++;
+    } catch { fail++; }
+  }
+  if (fail) showToast(`Removed ${ok}; ${fail} failed.`);
+  else if (ok) showToast(`Removed ${ok} file${ok === 1 ? '' : 's'}.`);
+  announce(`Removed ${ok} file${ok === 1 ? '' : 's'}.`);
+  await loadMine();                              // re-renders + re-enables controls
+}
+
+// removeSelectedClick arms on the first press ("Remove N files?") and executes
+// on the second — a modal-free two-step. Re-rendering or reselecting disarms.
+function removeSelectedClick() {
+  if (!mineSel.size) return;
+  if (removeSelectedBtn.dataset.armed === '1') {
+    disarmRemoveSelected();
+    removeMine([...mineSel]);
+    return;
+  }
+  removeSelectedBtn.dataset.armed = '1';
+  removeSelectedBtn.textContent = `Remove ${mineSel.size} file${mineSel.size === 1 ? '' : 's'}?`;
+}
+
+function disarmRemoveSelected() {
+  delete removeSelectedBtn.dataset.armed;
+  removeSelectedBtn.textContent = 'Remove selected';
 }
 
 // playMine queues the whole staging list into the shared shell player, starting
@@ -1146,6 +942,8 @@ function playMine(entry) {
 function updateMineControls() {
   const n = mineSel.size;
   sendApprovalBtn.disabled = n === 0;
+  removeSelectedBtn.disabled = n === 0;
+  disarmRemoveSelected();
   mineSelInfo.textContent = n ? `${n} file${n === 1 ? '' : 's'} selected` : '';
 }
 
@@ -1175,12 +973,11 @@ async function sendForApproval() {
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function updateButtons() {
   startBtn.disabled = running || !queue.some(it => it.state === 'pending');
-  clearBtn.disabled = queue.length === 0 && groups.size === 0;
+  clearBtn.disabled = queue.length === 0;
 }
 
 function syncEmptyStates() {
   queueEmpty.style.display = queue.length ? 'none' : '';
-  albumsEmpty.style.display = groups.size ? 'none' : '';
 }
 
 function formatBytes(n) {

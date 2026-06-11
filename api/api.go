@@ -152,6 +152,7 @@ func RegisterAPI(r chi.Router, d Deps) {
 		r.With(fileUpload).Get("/api/my/uploads", h.myUploads)
 		r.With(fileUpload).Patch("/api/my/uploads/{hash}/metadata", h.myUploadMetadata)
 		r.With(fileUpload).Post("/api/my/uploads/submit", h.submitMyUploads)
+		r.With(fileUpload).Delete("/api/my/uploads/{hash}", h.myUploadDiscard)
 	}
 }
 

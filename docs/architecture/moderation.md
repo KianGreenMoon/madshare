@@ -107,6 +107,7 @@ through the queue. Tables: `docs/architecture/auth.md` §4.
 | `GET /api/my/uploads` | The caller's staged files (any state but `approved`, non-trashed), newest first: hash, filename, tags, `state`, `note`, timestamps. |
 | `PATCH /api/my/uploads/{hash}/metadata` | Tag edit with the same body/pointer semantics as `PATCH /api/files/{hash}/metadata`, but authorized by **ownership + editable state** (`draft`/`returned`) instead of `metadata.edit`. 404 on anything the caller may not edit (reveals nothing about other users' staged files). |
 | `POST /api/my/uploads/submit` | Body `{"hashes": [...]}`. Each owned `draft`/`returned` file → `submitted` (clears the note, stamps `submitted_at`); for `content.moderate` holders → straight to `approved`. Per-hash `results`; a non-eligible hash reports `ok: false` without failing the batch. Response `approved: true` signals self-approve. |
+| `DELETE /api/my/uploads/{hash}` | The owner removes one of his own **editable** staged files (`draft`/`returned` → Trash, the regular soft delete; an admin can restore it). `submitted` files cannot be removed — no withdraw once sent to approval. 404 on anything the caller may not remove. Audit: `file.trash` / `owner-discard`. |
 
 ### Moderator side (gated `content.moderate`, under `/api/admin`)
 
@@ -156,12 +157,16 @@ therefore matters:
 
 ## Web UI
 
-- **`/upload` → "My uploads" tab** (shell-native): sections **Returned** (each
-  group headed by the moderator's note), **Drafts**, **Awaiting review**
-  (read-only). Draft/returned rows edit via the shared `track-edit.js` modal
-  (pointed at the owner-scoped PATCH), preview through the shell player, and
-  a *Send to approval* button submits the selection (toast says "published"
-  for self-approvers).
+- **`/upload` → "My uploads" tab** (shell-native): sections **Returned**
+  (each row carries the moderator's note as an inline comment), **Drafts**,
+  **Awaiting review** (read-only). Draft/returned rows edit via the shared
+  `track-edit.js` modal (pointed at the owner-scoped PATCH), preview through
+  the shell player, and can be **removed** (per-row inline confirm, or
+  "Remove selected" with an armed two-step) → Trash via the owner-scoped
+  DELETE. A *Send to approval* button submits the selection (toast says
+  "published" for self-approvers). The upload pane itself has no album
+  verify/edit cards — tag fixing happens here; folder cover images are still
+  co-located and posted server-side for `metadata.edit` holders (headless).
 - **`/admin/moderation`** (admin shell, page-local player, client-gated
   `content.moderate`): the queue grouped by uploader in collapsible sections,
   state badges, per-row preview / Edit (shared `track-edit.js` →
@@ -178,5 +183,6 @@ therefore matters:
 
 `ListUploadsByUser`, `ListPendingReview`, `UpdateReviewState` (+
 `ReviewTransition`), `FileReviewInfo` (narrow state/owner/trash lookup for
-the blob gate), `StageRestoredFile` (restore demotion). Adding to
-`database.Repository` breaks the api package's `fakeRepo` — the usual gotcha.
+the blob gate), `StageRestoredFile` (restore demotion), `DiscardOwnUpload`
+(owner remove). Adding to `database.Repository` breaks the api package's
+`fakeRepo` — the usual gotcha.

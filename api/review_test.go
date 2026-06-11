@@ -317,6 +317,59 @@ func TestReview_UploaderRestoreRestages(t *testing.T) {
 	}
 }
 
+// The owner may remove his own draft/returned files from the staging area
+// (DELETE /api/my/uploads/{hash} → Trash) — but not submitted ones (no
+// withdraw) and never another user's.
+func TestReview_OwnerRemovesStagedFile(t *testing.T) {
+	srv, db := newAuthTestServer(t)
+	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
+	makeUser(t, db, "up", "uploader-pass-1", auth.RoleUploader)
+	up := clientFor(t, srv.URL, "up", "uploader-pass-1")
+	makeUser(t, db, "up2", "uploader-pass-2", auth.RoleUploader)
+	up2 := clientFor(t, srv.URL, "up2", "uploader-pass-2")
+
+	hash, _ := uploadStaged(t, up, srv.URL, "song.mp3")
+
+	// Another uploader cannot remove it.
+	if code := doJSON(t, up2, http.MethodDelete, srv.URL+"/api/my/uploads/"+hash, nil, nil); code != http.StatusNotFound {
+		t.Errorf("foreign remove = %d, want 404", code)
+	}
+	// The owner removes the draft → it leaves staging and lands in Trash.
+	if code := doJSON(t, up, http.MethodDelete, srv.URL+"/api/my/uploads/"+hash, nil, nil); code != http.StatusOK {
+		t.Fatalf("owner remove = %d, want 200", code)
+	}
+	var mine []map[string]any
+	doJSON(t, up, http.MethodGet, srv.URL+"/api/my/uploads", nil, &mine)
+	if len(mine) != 0 {
+		t.Errorf("my uploads after remove = %d, want 0", len(mine))
+	}
+	var trash []map[string]any
+	doJSON(t, admin, http.MethodGet, srv.URL+"/api/admin/trash", nil, &trash)
+	if len(trash) != 1 {
+		t.Errorf("trash after owner remove = %d, want 1", len(trash))
+	}
+
+	// A submitted file cannot be removed (no withdraw). Distinct bytes — the
+	// shared helper's fixed content would dedupe against the file just trashed.
+	req := buildUploadRequest(t, "file", "song2.mp3", "audio/mpeg", []byte("different bytes for the second staged file"))
+	resp, err := up.Post(srv.URL+"/files/upload", req.Header.Get("Content-Type"), req.Body)
+	if err != nil || resp.StatusCode != http.StatusCreated {
+		t.Fatalf("second upload: err=%v code=%v", err, resp.StatusCode)
+	}
+	var body2 struct {
+		Hash string `json:"hash"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body2); err != nil {
+		t.Fatalf("decode second upload: %v", err)
+	}
+	resp.Body.Close()
+	doJSON(t, up, http.MethodPost, srv.URL+"/api/my/uploads/submit",
+		map[string]any{"hashes": []string{body2.Hash}}, nil)
+	if code := doJSON(t, up, http.MethodDelete, srv.URL+"/api/my/uploads/"+body2.Hash, nil, nil); code != http.StatusNotFound {
+		t.Errorf("remove of submitted file = %d, want 404 (no withdraw)", code)
+	}
+}
+
 // A file trashed while *pending* keeps its state and owner across a
 // restore-via-reupload — it re-enters the queue where it was, no re-staging.
 func TestReview_ReuploadOfTrashedPendingFileKeepsState(t *testing.T) {
