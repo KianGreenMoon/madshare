@@ -29,6 +29,10 @@ UI.
   [`docs/ui/player-and-queue.md`](docs/ui/player-and-queue.md).
 - Authentication (session cookies + API tokens), role-based permissions, and
   per-file/-group content access control (default-deny for anonymous visitors).
+- Upload moderation: every upload stages privately in the uploader's
+  "My uploads" area until a moderator approves it into the library (or returns
+  it with a note, or discards it to Trash); moderators' own uploads
+  self-approve. [`docs/architecture/moderation.md`](docs/architecture/moderation.md).
 - One process, one HTTP listener per configured socket; the web UI can be
   compiled out for a pure-API binary.
 
@@ -224,12 +228,15 @@ before login.
 ## Roles & content access (in brief)
 
 Four built-in roles bundle capabilities: **admin** (everything), **moderator**
-(delete/edit + full library), **uploader** (upload + full library), **listener**
-(play/download the full library). Any *authenticated* user therefore sees the
-whole library; **anonymous** (not-logged-in) visitors are **default-deny** and
-see only files explicitly marked guest-playable (or free-licensed). Per-group /
-per-file grants exist for custom restricted roles. Manage users and access from
-the `/admin` page. Details: [`docs/architecture/auth.md`](docs/architecture/auth.md).
+(upload/delete/edit + moderation + full library), **uploader** (upload + full
+library), **listener** (play/download the full library). Any *authenticated*
+user therefore sees the whole library; **anonymous** (not-logged-in) visitors
+are **default-deny** and see only files explicitly marked guest-playable (or
+free-licensed). Per-group / per-file grants exist for custom restricted roles.
+Manage users and access from the `/admin` page; review staged uploads on
+`/admin/moderation`. Details:
+[`docs/architecture/auth.md`](docs/architecture/auth.md),
+[`docs/architecture/moderation.md`](docs/architecture/moderation.md).
 
 ## Deployment
 

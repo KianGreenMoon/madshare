@@ -75,10 +75,16 @@ ingest of a given hash the server:
 `201 Created` for a newly stored file, `200 OK` when the bytes already existed
 (dedup or restore). Always `application/json`.
 
+With authentication configured, a **new upload stages as a draft** in the
+uploader's "My uploads" area (`"pending": true`) instead of entering the
+library directly — see `docs/architecture/moderation.md`. Without auth there
+is no staging and inserts are immediately approved.
+
 ```json
 {
   "ok": true,
   "existed": false,
+  "pending": true,
   "hash": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
   "filename": "song.mp3",
   "size": 4823192,
@@ -94,6 +100,9 @@ ingest of a given hash the server:
 |--------------------|---------|-------------|
 | `ok`               | boolean | Always `true` on a 2xx response. |
 | `existed`          | boolean | `false` when the bytes were newly stored; `true` when they already existed (dedup or restore). |
+| `pending`          | boolean | The file is staged (awaiting review) after this request — a fresh draft, a dedup against someone's staged file, or a restore that re-staged. `false` for library-live or still-trashed content. |
+| `restored`         | boolean | Dedup/restore path only: this request restored a trashed file (see [Trash-restore policy](#trash-restore-policy)). |
+| `trashed`          | boolean | Dedup path only: the content exists but stays soft-deleted (policy did not restore it). |
 | `hash`             | string  | SHA-256 of the file contents (the content address). |
 | `filename`         | string  | The sanitised filename recorded for this upload. |
 | `size`             | integer | File size in bytes. |
@@ -166,16 +175,25 @@ Trash tab. Full design: `docs/architecture/soft-delete.md`.
 
 > **Re-uploading a soft-deleted file does not re-upload anything.** Because the
 > bytes are already on disk, the server simply **clears the `deleted_at` mark**
-> (`RestoreFileByHash`) — the trashed file is restored to the library as-is. No
-> blob is rewritten and no content is transferred beyond what is needed to
-> compute the hash. The response is `200` with `existed: true`, and the action is
-> recorded in the audit log as `file.restore` with the detail
-> `restore-via-reupload: <filename>` (distinct from a plain dedup, which records
-> `file.upload` / `dedup:`).
+> (`RestoreFileByHash`). No blob is rewritten and no content is transferred
+> beyond what is needed to compute the hash. The response is `200` with
+> `existed: true, restored: true`, and the action is recorded in the audit log
+> as `file.restore` (distinct from a plain dedup, which records `file.upload`
+> / `dedup:`).
 
-This is **intentional**, not a loophole: any uploader can bring a trashed file
-back by re-uploading its bytes. If an operator wants a file gone for good, they
-must **hard-delete** it from the Trash tab rather than relying on soft delete.
+Where the restored file lands depends on its pre-trash review state
+(`docs/architecture/moderation.md`):
+
+- **Previously approved** (with auth configured): the restore is demoted to
+  the **restorer's draft** — it lands in their "My uploads" staging area
+  (`"pending": true`), not the library. A re-upload must not let any
+  `file.upload` holder republish trashed content past the review queue.
+- **Trashed while pending**: state and owner survive — the file re-enters the
+  queue (or the original owner's staging) where it was.
+- **Auth unconfigured**: restored to the library as-is (no staging exists).
+
+If an operator wants a file gone for good, they must **hard-delete** it from
+the Trash tab rather than relying on soft delete.
 
 ---
 
@@ -253,14 +271,15 @@ Content-Type: application/json
 ### Response
 
 ```json
-{ "status": "absent" | "present" | "trashed" }
+{ "status": "absent" | "present" | "pending" | "trashed" }
 ```
 
 | `status`  | Meaning | Client action |
 |-----------|---------|---------------|
 | `absent`  | No content with this hash | upload it |
 | `present` | Content exists and is live | skip (duplicate) |
-| `trashed` | Content exists but is soft-deleted | per the trash-restore policy (see `docs/plans/upload-rework.md` §3b) |
+| `pending` | Content exists but is staged, awaiting review (`docs/architecture/moderation.md`) | skip ("already uploaded — awaiting review") |
+| `trashed` | Content exists but is soft-deleted | per the [trash-restore policy](#trash-restore-policy) |
 
 | Status | Condition |
 |--------|-----------|
@@ -286,19 +305,25 @@ What happens when uploaded content matches a **trashed** file is an admin policy
 | `inform` | the file stays trashed (`"trashed": true, "restored": false`); the UI tells the uploader to ask an admin. |
 | `uploader_restore` | the file stays trashed on reupload, but the uploader may restore it directly via the endpoint below. |
 
+Either restore route re-stages a previously approved file as the restorer's
+draft when auth is configured — see [Restore on
+re-upload](#restore-on-re-upload-soft-deleted-files).
+
 - **Read/set (admin):** `GET` / `POST /api/admin/settings/trash-policy`
   (`user.manage`). Body: `{ "policy": "reupload_restores" | "inform" |
   "uploader_restore" }`. The current policy is also returned in
   `GET /api/ui/config` as `trash_restore_policy` so the upload UI can act on it.
 - **Uploader restore:** `POST /api/files/{hash}/restore` (`file.upload`). Succeeds
-  (`{ "ok": true }`) **only** when the policy is `uploader_restore` — otherwise
-  `403`. 404 if no trashed file matches.
+  **only** when the policy is `uploader_restore` — otherwise `403`; 404 if no
+  trashed file matches. Response `{ "ok": true, "staged": bool }` — `staged`
+  reports that the restore was demoted to the restorer's draft.
 
 ---
 
 ## See also
 
 - `docs/api/cover-images.md` — cover variant status and UI config endpoints.
+- `docs/architecture/moderation.md` — staging / review queue (where uploads land).
 - `docs/architecture/soft-delete.md` — trash / restore model.
 - `docs/architecture/auth.md` — upload permission and access control.
 - `docs/plans/upload-and-covers.md` — full upload & covers design and phasing.

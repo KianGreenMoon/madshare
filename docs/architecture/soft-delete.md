@@ -9,7 +9,12 @@ files in a dedicated Trash tab, restore them to the library, or permanently
 remove them (blob + DB row).
 
 A re-upload of a trashed file automatically restores it instead of creating a
-duplicate.
+duplicate (subject to the trash-restore policy, `docs/api/upload.md`). With
+moderation configured, an upload-initiated restore of a previously *approved*
+file is demoted to the restorer's draft instead of republishing — restores
+must not bypass the review queue (`docs/architecture/moderation.md`). The
+admin Trash-page restore brings a file back with whatever `review_state` it
+had, so a discarded submission re-enters the queue, not the library.
 
 ---
 
@@ -57,8 +62,10 @@ fields diverge further.
 
 After `GetFileByHash` returns a match, branch on `existing.DeletedAt.Valid`:
 
-- **Soft-deleted**: call `RestoreFileByHash`, then `RecordUpload` with the new
-  filename. Respond as a normal successful upload.
+- **Soft-deleted**: call `RestoreFileByHash` (policy permitting), then
+  `RecordUpload` with the new filename. With auth configured, a restored
+  *approved* file is then re-staged as the restorer's draft
+  (`StageRestoredFile`, see `docs/architecture/moderation.md`).
 - **Live**: existing dedup path — just `RecordUpload`.
 
 ---

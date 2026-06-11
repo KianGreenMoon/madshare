@@ -1,10 +1,11 @@
 # Moderation Review Bucket — Staged Uploads + Approval Queue
 
-Status: **Phases 1–3 implemented** (backend; track-edit.js extraction + the
-"My uploads" tab on /upload, browser-verified; the /admin/moderation page +
-admin nav/dashboard card + Trash pending-review badge). The Phase-4 auth.md
-notes and the upload-rework.md pointer shipped earlier; the Phase-3 browser
-pass (approve / return / discard as moderator) still needs a manual run.
+Status: **All phases implemented (1–4).** Backend; track-edit.js extraction +
+the "My uploads" tab on /upload; the /admin/moderation page + admin
+nav/dashboard card + Trash pending-review badge; plus an owner bug-fix round
+(restore re-staging, global bulk selection, returned rows out of bulk — see
+the amended sections below). **The shipped system is documented in
+`docs/architecture/moderation.md` — this plan is the design history.**
 Branch: aidev
 Builds on: `docs/architecture/soft-delete.md` (Trash), `docs/architecture/auth.md`
 (roles-only access model), `docs/plans/admin-files-rework.md` (the entity/track

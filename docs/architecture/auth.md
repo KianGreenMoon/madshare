@@ -111,7 +111,7 @@ library.share       set library-wide sharing scope (madnetwork/friends/none)
 federation.manage   manage trusted peers (future)
 content.access      play/download any file in the library
 content.moderate    act on staged uploads: approve / return / discard; holders'
-                    own submits self-approve (docs/plans/moderation-review-bucket.md)
+                    own submits self-approve (docs/architecture/moderation.md)
 ```
 
 ### 4.2 Roles = bundles (seed data, extensible)
