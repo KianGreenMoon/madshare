@@ -298,9 +298,21 @@ shortcut into Browse is a possible follow-up, not part of this rework.
      cells, selection, bulk toolbar, the access-bearing component edit modal vs
      the tags-only entity modal — no console errors) plus API checks of the
      access-save order (explicit guest wins over license auto-derive) and trash.
-4. **Re-home navigation (Hybrid):** Admin `Library` page with the scope switch;
-   retire the `Files` / `Moderation` / `Trash` nav entries; `My uploads` stays
-   on `/upload`.
+4. **Re-home navigation (Hybrid) — ✅ done.** One admin **Library** page
+   (`/admin/library`, `html/admin/library.html` + `library.js`) with a client-side
+   scope switch (All files · Review · Trash); the `Files` / `Moderation` / `Trash`
+   nav entries are retired (one `Library` entry), the dashboard cards deep-link
+   into it (`#review` / `#trash`), and `My uploads` stays on `/upload`. Each scope
+   is now an exported **factory** — `createFilesScope` / `createReviewScope` /
+   `createTrashScope` (the old `files.js` / `moderation.js` / `trash.js`, no longer
+   self-booting) — over the one component; `library.js` boots auth once, owns the
+   single shared preview player (injected into each scope as `play(items, idx,
+   highlight)` so next/prev is generic), and all modals coexist in `library.html`.
+   The three standalone page templates are deleted; `webui.go`'s `adminSubPages`
+   swaps them for `library`. Verified end-to-end via a headless render: three
+   pills, instant panel swap, every scope renders its data, the shared player loads
+   across scopes, the edit modal opens, and the `#trash` deep-link lands on Trash —
+   no console errors. (Backend: none.)
 5. **Cleanup:** delete superseded CSS/JS (the per-page renderers, the inline
    access controls), reconcile `docs/architecture/moderation.md` and the upload
    docs, and supersede `docs/plans/admin-files-rework.md`. Add the

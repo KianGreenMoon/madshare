@@ -3,76 +3,44 @@
 // (artist → album → track with rename / merge / cover / delete, kept here as a
 // separate entity-management axis). A page-local preview player serves both.
 import {
-  bootAdmin, API, LICENSE_OPTIONS,
+  API, LICENSE_OPTIONS,
   fmtTime, toast, handleAuthError, el,
 } from './shared.js';
-import { createPlayer } from '../player.js';
 import { createTrackEditor } from '../track-edit.js';
 import { createFileList } from '../file-list.js';
 
+// createFilesScope builds the "All files" Library scope: the flat list (shared
+// component) plus the By-entity drill-down (rename / merge / cover / delete).
+// The shared preview player is injected as `play`; `perms` gates the actions.
+export function createFilesScope({ play, perms }) {
 let allFiles    = [];     // last /api/files fetch (also feeds the url→hash index)
 let fileByURL   = new Map(); // url → file record, so the entity view can resolve
                              // a browse track (id/url only) to its hash for edit
-let canEditMeta = false;  // metadata.edit → metadata + access edit + rename/merge
-let canDelete   = false;  // file.delete → move-to-trash
+let canEditMeta = perms.includes('metadata.edit');  // metadata + access edit + rename/merge
+let canDelete   = perms.includes('file.delete');    // move-to-trash
 let filesLoaded = false;  // /api/files loaded at least once (index freshness)
 
-// The All-files flat table is the shared component, mounted lazily into #fileList.
+// The flat table is the shared component, mounted lazily into #fileList.
 let fileList     = null;
 let filesMounted = false;
+let entityPlayingKey = null;   // track-id of the entity row currently previewing
 
-// ── Preview player (shared by both views via a single play context) ──────────
-// playCtx.items are normalised { url, title, artist, key }; kind picks which
-// view's rows carry the playing highlight ('files' → data-hash, 'entity' →
-// data-track-id). One <audio>, navigable next/prev within the current context.
-let playCtx = null;
-
-const player = createPlayer({
-  onPrev:  () => { if (playCtx) playAtCtx(playCtx.index > 0 ? playCtx.index - 1 : playCtx.items.length - 1); },
-  onNext:  () => { if (playCtx) playAtCtx(playCtx.index < playCtx.items.length - 1 ? playCtx.index + 1 : 0); },
-  onEnded: () => { if (playCtx && playCtx.index < playCtx.items.length - 1) playAtCtx(playCtx.index + 1); },
-  onError: () => {
-    toast('Couldn’t play this file.', 'error');
-    if (playCtx && playCtx.index < playCtx.items.length - 1) playAtCtx(playCtx.index + 1);
-  },
-});
-
-function playFrom(items, index, kind) {
-  if (!items.length) return;
-  playCtx = { items, index, kind };
-  playAtCtx(index < 0 ? 0 : index);
-}
-
-function playAtCtx(i) {
-  if (!playCtx || i < 0 || i >= playCtx.items.length) return;
-  playCtx.index = i;
-  const it = playCtx.items[i];
-  const url = /^https?:/.test(it.url) ? it.url : `${API}${it.url}`;
-  player.load({ url, title: it.title, artist: it.artist || '' });
-  highlightCtx();
-}
-
-// highlightCtx repaints the playing-row marker. The All-files panel is owned by
-// the component (highlight via fileList.setPlaying); the entity panel is ours.
-function highlightCtx() {
+// ── Preview (via the shared player) ──────────────────────────────────────────
+// entityHighlight marks the playing track row in the entity panel; the flat
+// component tracks its own highlight (fileList.setPlaying). Each play source's
+// closure clears the other panel.
+function entityHighlight(key) {
   entityPanel.querySelectorAll('.playing-row').forEach(r => r.classList.remove('playing-row'));
-  if (!playCtx) { fileList?.setPlaying(null); return; }
-  const it = playCtx.items[playCtx.index];
-  if (playCtx.kind === 'files') {
-    fileList?.setPlaying(it.key);
-  } else {
-    fileList?.setPlaying(null);
-    entityPanel.querySelector(`[data-track-id="${CSS.escape(it.key)}"]`)?.classList.add('playing-row');
-  }
+  if (key != null) entityPanel.querySelector(`[data-track-id="${CSS.escape(key)}"]`)?.classList.add('playing-row');
 }
-
-// playFile previews a row from the All-files component, navigable across the
-// rows it currently shows (the component passes its visible list).
+function playEntity(navItems, idx) {
+  play(navItems, idx, k => { entityPlayingKey = k; entityHighlight(k); fileList?.setPlaying(null); });
+}
 function playFile(f, visible) {
   const items = (visible || []).map(x => ({ url: x.url, title: displayTitle(x), artist: x.artist || '', key: x.hash }));
   let idx = items.findIndex(x => x.key === f.hash);
   if (idx < 0) { items.length = 0; items.push({ url: f.url, title: displayTitle(f), artist: f.artist || '', key: f.hash }); idx = 0; }
-  playFrom(items, idx, 'files');
+  play(items, idx, k => { entityPlayingKey = null; entityHighlight(null); fileList?.setPlaying(k); });
 }
 
 // ── Shared bits (used by the All-files scope + the entity view) ──────────────
@@ -448,14 +416,14 @@ function renderTracks(items) {
   const frag = document.createDocumentFragment();
   items.forEach((t, i) => frag.appendChild(trackRow(t, navItems, i)));
   entityPanel.replaceChildren(frag);
-  if (playCtx && playCtx.kind === 'entity') highlightCtx();
+  if (entityPlayingKey != null) entityHighlight(entityPlayingKey);
 }
 function trackToItem(t) {
   return { url: t.url, title: t.title || 'Untitled', artist: entityDrill.artist || '', key: String(t.id) };
 }
 function trackRow(t, navItems, idx) {
   const play = el('button', { class: 'play-btn', title: 'Preview', 'aria-label': `Preview ${t.title || 'track'}`,
-    onclick: () => playFrom(navItems, idx, 'entity') });
+    onclick: () => playEntity(navItems, idx) });
   play.innerHTML = PLAY_ICON;
   const num = el('span', { class: 'entity-tracknum', text: t.track_number != null ? String(t.track_number) : '' });
   const title = el('span', { class: 'entity-name' + (t.title ? '' : ' is-fallback'), text: t.title || 'Untitled' });
@@ -811,13 +779,14 @@ function showFilesView() {
 tabEntity.addEventListener('click', showEntityView);
 tabFiles.addEventListener('click', showFilesView);
 
-// ── Boot ────────────────────────────────────────────────────────────────────
-(async function boot() {
-  const identity = await bootAdmin();
-  if (!identity) return; // gate already rendered the notice
-  const perms = identity.permissions || [];
-  canEditMeta = perms.includes('metadata.edit');
-  canDelete   = perms.includes('file.delete');
-  fileList = createFileList(filesScope());   // mounted lazily on the All-files tab
-  loadEntityArtists();                       // entity view is the default
-})();
+// ── Controller (mounted by library.js) ───────────────────────────────────────
+fileList = createFileList(filesScope());     // flat list; mounted on the All-files sub-tab
+
+return {
+  id: 'all',
+  label: 'All files',
+  available: true,
+  mount() { loadEntityArtists(); },          // By-entity is the default sub-view
+  reload() { reloadEntityLevel(); if (filesMounted) fileList.reload(); },
+};
+}
