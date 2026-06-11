@@ -23,7 +23,9 @@ func (db *DB) ListArtistsGuest(ctx context.Context) ([]*ArtistEntry, error) {
 // artists entity that has at least one live (and, when guest, reachable) track;
 // the INNER JOIN on media_metadata means orphan entities with no tracks (e.g.
 // left behind by a rename) never appear. has_image joins the now id-keyed
-// artist_images directly on artist_id (exact).
+// artist_images directly on artist_id (exact). The unknown-artist bucket
+// (norm_name = normalizeKey(DefaultArtistName)) sorts last, after the named
+// artists, via the leading ORDER BY key.
 func (db *DB) listArtists(ctx context.Context, guest bool) ([]*ArtistEntry, error) {
 	where := "WHERE " + visibleFile
 	if guest {
@@ -38,9 +40,9 @@ func (db *DB) listArtists(ctx context.Context, guest bool) ([]*ArtistEntry, erro
 		LEFT JOIN artist_images ai ON ai.artist_id = a.id
 		` + where + `
 		GROUP BY a.id
-		ORDER BY LOWER(a.name) ASC`
+		ORDER BY a.norm_name = ? ASC, LOWER(a.name) ASC`
 
-	rows, err := db.QueryContext(ctx, q)
+	rows, err := db.QueryContext(ctx, q, normalizeKey(DefaultArtistName))
 	if err != nil {
 		return nil, fmt.Errorf("list artists: %w", err)
 	}
@@ -76,6 +78,8 @@ func (db *DB) ListAlbumsByArtistGuest(ctx context.Context, artist string) ([]*Al
 // empty artist returns every album; otherwise it filters by the artist entity
 // resolved from the name (normalized the same way the resolver keys it). One row
 // per albums entity with at least one live (and, when guest, reachable) track.
+// The unknown-album bucket (norm_title = normalizeKey(DefaultAlbumTitle)) sorts
+// last, after the named albums, via the leading ORDER BY key.
 func (db *DB) listAlbumsByArtist(ctx context.Context, artist string, guest bool) ([]*AlbumEntry, error) {
 	where := "WHERE " + visibleFile + " AND (? = '' OR ar.norm_name = ?)"
 	if guest {
@@ -92,9 +96,9 @@ func (db *DB) listAlbumsByArtist(ctx context.Context, artist string, guest bool)
 		LEFT JOIN album_images ali ON ali.album_id = al.id
 		` + where + `
 		GROUP BY al.id
-		ORDER BY year ASC, LOWER(al.title) ASC`
+		ORDER BY al.norm_title = ? ASC, year ASC, LOWER(al.title) ASC`
 
-	rows, err := db.QueryContext(ctx, q, artist, normalizeKey(artist))
+	rows, err := db.QueryContext(ctx, q, artist, normalizeKey(artist), normalizeKey(DefaultAlbumTitle))
 	if err != nil {
 		return nil, fmt.Errorf("list albums by artist: %w", err)
 	}

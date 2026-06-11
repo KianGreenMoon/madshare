@@ -148,12 +148,33 @@ JOIN media_metadata m ON m.artist_id = a.id
 JOIN files f ON f.id = m.file_id AND f.deleted_at IS NULL
 LEFT JOIN artist_images ai ON ai.artist_id = a.id
 GROUP BY a.id
-ORDER BY LOWER(a.name);
+ORDER BY a.norm_name = ? ASC, LOWER(a.name);  -- ? = normalizeKey(DefaultArtistName)
 ```
 
 Browse endpoints can move to `?artist_id=`/`?album_id=` params. v0 may keep the
 name-based routes working by resolving name→id first, to avoid a simultaneous
 front-end rewrite (decided in the plan).
+
+### Unknown buckets sort last
+
+The browse listings pin the two placeholder buckets to the **bottom** of their
+lists, after the named entities: `ListArtists` sends the "Unknown artist" bucket
+last, and `ListAlbumsByArtist` sends "Other" last (before that, named albums sort
+by year then title). Implemented as a leading `ORDER BY` key — a boolean
+comparing the row's dedup key to the bucket's reserved key
+(`norm_name = normalizeKey(DefaultArtistName)` / `norm_title =
+normalizeKey(DefaultAlbumTitle)`), passed as a bound parameter so the SQL carries
+no magic strings. It is a second key folded into the sort the query already runs
+(the listing sorts on `LOWER(name)` regardless), so it adds no scan, join, or
+extra pass.
+
+The bucket is identified by its **reserved normalized key**, not by an empty
+string or by matching the display text. Per the identity rules above, an untagged
+track and one literally tagged `Other`/`Unknown artist` resolve to the *same*
+entity (`effectiveAlbum`/`effectiveArtist` map empty tags onto the placeholder,
+and `FoldUnknownBuckets` merges any pre-existing literal into it at startup). So
+keying off the reserved key is exact: there is no separate "real `Other`" entity
+to confuse it with — by design they are one and the same.
 
 ## Backfill strategy
 
