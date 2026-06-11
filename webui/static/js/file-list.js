@@ -90,6 +90,7 @@ export function createFileList(scope) {
   let filterText = '';
   let view = hasBrowse ? 'browse' : 'list';
   let playingHash = null;
+  let contentEl = null;          // the rows container; re-rendered alone on filter
 
   // Default ⇄ artist/album sort (scope.artistAlbumSort). Persisted so the choice
   // sticks across visits.
@@ -557,7 +558,7 @@ export function createFileList(scope) {
     search.value = filterText;
     search.addEventListener('input', () => {
       clearTimeout(filterTimer);
-      filterTimer = setTimeout(() => { filterText = search.value; render(); }, 150);
+      filterTimer = setTimeout(() => { filterText = search.value; renderContent(); }, 150);
     });
     const heading = el('h2', { class: 'section-title section-title--files' });
     heading.append(scope.title);
@@ -650,8 +651,20 @@ export function createFileList(scope) {
     if (scope.desc) kids.push(el('p', { class: 'scope-desc', text: scope.desc }));
     const tb = (view === 'list') ? bulkToolbar() : (hasBrowse ? bulkToolbar() : null);
     if (tb) kids.push(tb);
-    kids.push(content());
+    contentEl = el('div', { class: 'fl-content' });
+    contentEl.appendChild(content());
+    kids.push(contentEl);
     mountEl.replaceChildren(...kids);
+    syncSelectionUI();
+    applyPlayingHighlight();
+  }
+
+  // renderContent re-renders only the rows, leaving the header (search box + its
+  // focus/caret) and the bulk toolbar in place — used by the filter input so
+  // typing doesn't rebuild and blur the search field.
+  function renderContent() {
+    if (!mountEl || !contentEl) { render(); return; }
+    contentEl.replaceChildren(content());
     syncSelectionUI();
     applyPlayingHighlight();
   }
