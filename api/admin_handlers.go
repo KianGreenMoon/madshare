@@ -70,6 +70,9 @@ func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
 		// silently clear album_artist on save.
 		AlbumArtist string `json:"album_artist"`
 		Album       string `json:"album"`
+		// TrackNumber + Year feed the grouped "By artist / album" sort.
+		TrackNumber *int64 `json:"track_number"`
+		Year        int64  `json:"year,omitempty"`
 		ByteSize    int64  `json:"byte_size"`
 		URL         string `json:"url"`
 		DeletedAt   int64  `json:"deleted_at"`
@@ -80,6 +83,10 @@ func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]trashItem, 0, len(entries))
 	for _, e := range entries {
+		var trackNum *int64
+		if e.TrackNumber.Valid {
+			trackNum = &e.TrackNumber.Int64
+		}
 		items = append(items, trashItem{
 			ID:          e.ID,
 			Hash:        e.Hash,
@@ -88,6 +95,8 @@ func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
 			Artist:      e.Artist,
 			AlbumArtist: e.AlbumArtist.String,
 			Album:       e.Album,
+			TrackNumber: trackNum,
+			Year:        e.Year,
 			ByteSize:    e.ByteSize,
 			URL:         "/files/" + e.ObjectKey,
 			DeletedAt:   e.DeletedAt.Int64,

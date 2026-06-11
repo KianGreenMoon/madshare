@@ -720,6 +720,7 @@ function mineScope() {
         + 'you don’t want to publish.',
     emptyText: 'Nothing staged. Files you upload appear here for a metadata check before they reach the library.',
     columns: ['check', 'title', 'artist', 'album', 'size', 'actions'],
+    artistAlbumSort: true,
     grouping: {
       kind: 'sections',
       sections: [

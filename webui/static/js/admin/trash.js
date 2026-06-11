@@ -95,6 +95,7 @@ export function createTrashScope({ play, perms }) {
         + 'Fix a tag before restoring, restore to bring a file back, or delete forever to remove it permanently.',
     emptyText: 'Trash is empty.',
     columns: ['check', 'title', 'artist', 'album', 'size', 'meta', 'actions'],
+    artistAlbumSort: true,
     metaLabel: 'Deleted',
     metaValue: f => fmtDate(f.deleted_at),
     badge: f => (f.review_state && f.review_state !== 'approved')

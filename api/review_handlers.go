@@ -27,6 +27,8 @@ type reviewItem struct {
 	Artist      string   `json:"artist"`
 	AlbumArtist string   `json:"album_artist"`
 	Album       string   `json:"album"`
+	TrackNumber *int64   `json:"track_number"` // null when untagged (sorts the grouped view)
+	Year        int64    `json:"year,omitempty"`
 	Duration    *float64 `json:"duration"` // seconds; null when not extracted
 	State       string   `json:"state"`
 	Note        string   `json:"note,omitempty"`
@@ -41,6 +43,10 @@ func toReviewItem(e *database.ReviewEntry) reviewItem {
 	if e.DurationSeconds.Valid {
 		dur = &e.DurationSeconds.Float64
 	}
+	var trackNum *int64
+	if e.TrackNumber.Valid {
+		trackNum = &e.TrackNumber.Int64
+	}
 	return reviewItem{
 		Hash:        e.Hash,
 		Filename:    e.Filename,
@@ -51,6 +57,8 @@ func toReviewItem(e *database.ReviewEntry) reviewItem {
 		Artist:      e.Artist.String,
 		AlbumArtist: e.AlbumArtist.String,
 		Album:       e.Album.String,
+		TrackNumber: trackNum,
+		Year:        e.Year.Int64,
 		Duration:    dur,
 		State:       e.ReviewState,
 		Note:        e.ReviewNote.String,

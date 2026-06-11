@@ -64,17 +64,23 @@ fields. Every editable list DTO carries `album_artist` (the editor writes all
 four base tags, so an absent prefill would silently clear it — the trash DTO was
 extended for this).
 
-### Grouped sort (All files)
+### Grouped sort + needs-metadata flag
 
-`scope.artistAlbumSort` adds a **Default ⇄ "By artist / album"** toggle to the
-flat list (persisted in `localStorage`). In grouped mode the same `.files-table`
-is sorted **album-artist → album → track# (then title)** with **separator rows**
-woven in — a tinted band per artist, a thin indented line per album — each
-carrying a **group-select checkbox** wired into the selection Set, so a whole
-artist/album can be bulk-edited. Grouping is by `album_artist ?? artist` (a
-Various-Artists compilation stays under one band); empty artist/album fall into
-Unknown / Other buckets, sorted last. The sort needs the track number, so
-`track_number` is on the `/api/files` DTO.
+`scope.artistAlbumSort` adds a **Default ⇄ "By artist / album"** toggle (persisted
+in `localStorage`). In grouped mode the same `.files-table` is sorted
+**album-artist → album → track# (then title)** with **separator rows** woven in —
+a tinted band per artist, a thin indented line per album — each carrying a
+**group-select checkbox** wired into the selection Set, so a whole artist/album
+can be bulk-edited. Grouping is by `album_artist ?? artist` (a Various-Artists
+compilation stays under one band); empty artist/album fall into Unknown / Other
+buckets, sorted last. Enabled on **All files, Review, Trash, and My uploads** (in
+grouped mode it overrides a scope's native uploader/state grouping). The sort
+needs the track number, so `track_number` (+ `year`) is on the `/api/files`,
+`reviewItem`, and `trashItem` DTOs.
+
+A file with **neither an artist nor an album-artist** tag gets a calm amber
+flag (`.fl-needs-meta` — tint + left accent) in every scope and both sort modes,
+so moderators / admins / uploaders can see which rows want metadata first.
 
 ## The Library page (Hybrid nav)
 

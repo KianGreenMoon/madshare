@@ -125,6 +125,8 @@ type ReviewEntry struct {
 	Artist          sql.NullString
 	Album           sql.NullString
 	AlbumArtist     sql.NullString
+	TrackNumber     sql.NullInt64
+	Year            sql.NullInt64
 	DurationSeconds sql.NullFloat64
 	ReviewState     string
 	ReviewNote      sql.NullString

@@ -15,14 +15,14 @@ const reviewEntryColumns = `
 	f.hash, f.mime_type, f.byte_size, f.object_key, f.created_at,
 	COALESCE((SELECT filename FROM file_uploads WHERE file_id = f.id ORDER BY id LIMIT 1), f.hash) AS filename,
 	COALESCE(m.title, '') AS title,
-	m.artist, m.album, m.album_artist, m.duration_seconds,
+	m.artist, m.album, m.album_artist, m.track_number, m.year, m.duration_seconds,
 	f.review_state, f.review_note, f.submitted_at, f.uploaded_by`
 
 func scanReviewEntry(rows *sql.Rows, withUploader bool) (*ReviewEntry, error) {
 	var e ReviewEntry
 	dest := []any{
 		&e.Hash, &e.MimeType, &e.ByteSize, &e.ObjectKey, &e.CreatedAt,
-		&e.Filename, &e.Title, &e.Artist, &e.Album, &e.AlbumArtist, &e.DurationSeconds,
+		&e.Filename, &e.Title, &e.Artist, &e.Album, &e.AlbumArtist, &e.TrackNumber, &e.Year, &e.DurationSeconds,
 		&e.ReviewState, &e.ReviewNote, &e.SubmittedAt, &e.UploaderID,
 	}
 	if withUploader {

@@ -172,6 +172,7 @@ export function createReviewScope({ play, perms }) {
         + 'files act per row; drafts are shown for awareness only.',
     emptyText: 'Nothing awaiting review',
     columns: ['check', 'title', 'artist', 'album', 'size', 'meta', 'actions'],
+    artistAlbumSort: true,
     metaLabel: 'Submitted',
     metaValue: f => (f.submitted_at ? fmtDate(f.submitted_at) : ''),
     badge: f => ({ text: STATE_LABEL[f.state] || f.state, cls: 'is-' + f.state }),

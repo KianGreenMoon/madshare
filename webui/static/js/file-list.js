@@ -298,6 +298,11 @@ export function createFileList(scope) {
   }
 
   // ── Table + grouping ─────────────────────────────────────────────────────────
+  // needsMeta flags a file with neither an artist nor an album-artist tag, so
+  // editors can see at a glance which rows want metadata first.
+  function needsMeta(f) { return !(f.artist || '').trim() && !(f.album_artist || '').trim(); }
+  function rowAttrs(f) { return { 'data-hash': f.hash, class: needsMeta(f) ? 'fl-needs-meta' : null }; }
+
   function headRow(withSelectAll) {
     const ths = scope.columns.map(c => {
       if (c === 'check') {
@@ -317,7 +322,7 @@ export function createFileList(scope) {
     const body = el('tbody');
     files.forEach(f => {
       const holder = {};
-      const tr = el('tr', { 'data-hash': f.hash }, scope.columns.map(c => bodyCell(c, f, holder)));
+      const tr = el('tr', rowAttrs(f), scope.columns.map(c => bodyCell(c, f, holder)));
       body.appendChild(tr);
     });
     return el('div', { class: 'files-table-wrap' }, [
@@ -374,7 +379,7 @@ export function createFileList(scope) {
 
   function groupedTrack(f) {
     const holder = {};
-    const tr = el('tr', { 'data-hash': f.hash }, scope.columns.map(c => bodyCell(c, f, holder)));
+    const tr = el('tr', rowAttrs(f), scope.columns.map(c => bodyCell(c, f, holder)));
     const titleTd = tr.querySelector('.cell-title-td');
     if (titleTd) titleTd.insertBefore(el('span', { class: 'tracknum', text: f.track_number != null ? String(f.track_number) : '' }), titleTd.firstChild);
     return tr;

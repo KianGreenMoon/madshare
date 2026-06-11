@@ -314,6 +314,7 @@ func (db *DB) ListTrashedFiles(ctx context.Context) ([]*FileListEntry, error) {
 			COALESCE(m.artist, '') AS artist,
 			m.album_artist,
 			COALESCE(m.album,  '') AS album,
+			m.track_number,
 			COALESCE(m.year,    0) AS year,
 			m.duration_seconds,
 			f.guest_playable,
@@ -337,7 +338,7 @@ func (db *DB) ListTrashedFiles(ctx context.Context) ([]*FileListEntry, error) {
 		var guest int
 		if err := rows.Scan(
 			&e.ID, &e.Hash, &e.MimeType, &e.ByteSize, &e.ObjectKey, &e.CreatedAt,
-			&e.Filename, &e.Title, &e.Artist, &e.AlbumArtist, &e.Album, &e.Year, &e.DurationSeconds,
+			&e.Filename, &e.Title, &e.Artist, &e.AlbumArtist, &e.Album, &e.TrackNumber, &e.Year, &e.DurationSeconds,
 			&guest, &e.License, &e.DeletedAt, &e.ReviewState,
 		); err != nil {
 			return nil, fmt.Errorf("scan trashed file: %w", err)

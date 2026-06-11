@@ -344,7 +344,15 @@ checkbox** (selects every selectable file in that artist/album), wired into the
 component's selection Set — so a whole artist or album can be bulk-edited.
 Grouping is by **album artist** (`album_artist ?? artist`) so a Various-Artists
 compilation stays under one band; the empty artist/album fall into Unknown /
-Other buckets, sorted last; un-numbered tracks sort by name. The one backend bit:
-`track_number` added to the `/api/files` DTO (the sort needs it). Mockup:
-`webui/static/dev/grouped-list.html`. Verified via a headless render (sort order,
-the compilation under one band, group-select count, no console errors).
+Other buckets, sorted last; un-numbered tracks sort by name. Mockup:
+`webui/static/dev/grouped-list.html`.
+
+Then extended to **every list scope** — Review, Trash, and My uploads also set
+`artistAlbumSort` (in grouped mode it overrides their native uploader/state
+grouping). That needed `track_number` (+ `year`) on the `reviewItem` and
+`trashItem` DTOs as well as `/api/files`. Shipped alongside a **needs-metadata
+flag**: a file with neither artist nor album-artist tag gets a calm amber row
+treatment (`.fl-needs-meta`) in every scope and both sort modes, so editors see
+which rows want metadata first. Verified via headless renders (grouped structure
++ compilation under one band + group-select; the flag in flat and grouped on
+Trash and My uploads — no console errors).

@@ -170,6 +170,14 @@
   font-size: 13px; font-variant-numeric: tabular-nums;
 }
 
+/* ── Needs-metadata flag ──
+   A file with neither an artist nor an album-artist tag gets a calm amber tint
+   + left accent (not an error) so moderators / admins / uploaders can see which
+   rows want metadata first. Applies in every scope and both sort modes. */
+.files-table tbody tr.fl-needs-meta td { background: rgba(217, 161, 65, 0.09); }
+.files-table tbody tr.fl-needs-meta td:first-child { box-shadow: inset 3px 0 0 #d9a141; }
+.files-table tbody tr.fl-needs-meta:hover td { background: rgba(217, 161, 65, 0.16); }
+
 /* ════════════════════════════════════════════════════════════════════════════
    Component table chrome. Mirrors admin-shell.css / admin-moderation.css so the
    component renders correctly on pages that DON'T load the admin sheets (the
