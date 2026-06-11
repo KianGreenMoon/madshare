@@ -18,6 +18,7 @@ async function fillCount(id, url) {
   const identity = await bootAdmin();
   if (!identity) return;
   fillCount('countFiles', '/api/files');
+  fillCount('countModeration', '/api/admin/moderation');
   fillCount('countTrash', '/api/admin/trash');
   fillCount('countUsers', '/api/admin/users');
 })();

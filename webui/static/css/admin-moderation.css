@@ -1,0 +1,89 @@
+/* admin-moderation.css — the /admin/moderation review queue: collapsible
+   per-uploader groups around the shared files-table chrome (admin-shell.css),
+   review-state badges, and the return-note modal's textarea. */
+
+/* ── Per-uploader group ─────────────────────────────────────────────────────── */
+.mod-group { margin-bottom: var(--space-5); }
+
+.mod-group-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+.mod-group-header:hover { background: var(--surface-hover); }
+.mod-group-header:focus-visible { outline: 2px solid var(--accent); }
+
+.mod-group-chevron {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  transition: transform 120ms ease;
+}
+.mod-group.is-collapsed .mod-group-chevron { transform: rotate(-90deg); }
+@media (prefers-reduced-motion: reduce) { .mod-group-chevron { transition: none; } }
+
+.mod-group-counts {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.mod-group-body { margin-top: var(--space-2); }
+.mod-group.is-collapsed .mod-group-body { display: none; }
+
+/* The review-state badge (.state-badge) is shared with the Trash page and
+   lives in admin-shell.css. */
+
+/* The moderator's pending return note, shown under the row title. */
+.mod-note {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: italic;
+  white-space: normal;
+}
+
+/* Preview-playing row highlight + play button colors come from admin-shell's
+   table styles plus these (same rules as the Files page). */
+.files-table tbody tr.playing-row { background: var(--accent-glow); }
+.play-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 50%;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 120ms ease, background 120ms ease;
+}
+.play-btn:hover { color: var(--accent); background: var(--surface-hover); }
+.play-btn:focus-visible { outline: 2px solid var(--accent); }
+tr.playing-row .play-btn { color: var(--accent); }
+
+/* ── Return-note modal textarea (app.css only styles input/select) ─────────── */
+.edit-form textarea {
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: inherit;
+  resize: vertical;
+}
+.edit-form textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

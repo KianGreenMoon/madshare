@@ -67,11 +67,12 @@ var (
 // value; the value is the template. The /admin landing is the dashboard
 // (adminTmpl, SubPage ""). See docs/plans/admin-panel-rework.md.
 var adminSubPages = map[string]*template.Template{
-	"files":    buildPageTmpl("html/admin/files.html"),
-	"users":    buildPageTmpl("html/admin/users.html"),
-	"prune":    buildPageTmpl("html/admin/prune.html"),
-	"trash":    buildPageTmpl("html/admin/trash.html"),
-	"settings": buildPageTmpl("html/admin/settings.html"),
+	"files":      buildPageTmpl("html/admin/files.html"),
+	"moderation": buildPageTmpl("html/admin/moderation.html"),
+	"users":      buildPageTmpl("html/admin/users.html"),
+	"prune":      buildPageTmpl("html/admin/prune.html"),
+	"trash":      buildPageTmpl("html/admin/trash.html"),
+	"settings":   buildPageTmpl("html/admin/settings.html"),
 }
 
 // pageData is the data injected into every page. APIURL is the absolute API
@@ -80,8 +81,8 @@ var adminSubPages = map[string]*template.Template{
 // Page is the current page identifier used by the shared header partial to
 // mark the active nav link ("library", "playlists", "upload", "admin", "cmus").
 // SubPage marks the active link in the secondary admin nav ("" = Overview,
-// "files", "users", "prune", "trash", "settings"); it is empty for
-// non-admin pages.
+// "files", "moderation", "users", "prune", "trash", "settings"); it is empty
+// for non-admin pages.
 // GitRepo is the URL behind the header's GitRepo nav button
 // (config.WebUIConfig.GitRepoURL()); empty hides the button.
 // Version and Commit feed the header's About box: Version is the release tag

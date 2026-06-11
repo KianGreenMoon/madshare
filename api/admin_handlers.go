@@ -69,20 +69,24 @@ func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
 		ByteSize  int64  `json:"byte_size"`
 		URL       string `json:"url"`
 		DeletedAt int64  `json:"deleted_at"`
+		// ReviewState lets the Trash page badge rows that re-enter the
+		// moderation queue (not the library) when restored.
+		ReviewState string `json:"review_state"`
 	}
 
 	items := make([]trashItem, 0, len(entries))
 	for _, e := range entries {
 		items = append(items, trashItem{
-			ID:        e.ID,
-			Hash:      e.Hash,
-			Filename:  e.Filename,
-			Title:     e.Title,
-			Artist:    e.Artist,
-			Album:     e.Album,
-			ByteSize:  e.ByteSize,
-			URL:       "/files/" + e.ObjectKey,
-			DeletedAt: e.DeletedAt.Int64,
+			ID:          e.ID,
+			Hash:        e.Hash,
+			Filename:    e.Filename,
+			Title:       e.Title,
+			Artist:      e.Artist,
+			Album:       e.Album,
+			ByteSize:    e.ByteSize,
+			URL:         "/files/" + e.ObjectKey,
+			DeletedAt:   e.DeletedAt.Int64,
+			ReviewState: e.ReviewState,
 		})
 	}
 	writeJSON(w, http.StatusOK, items)

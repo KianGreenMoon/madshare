@@ -344,6 +344,23 @@
   .cell-actions .delete-confirm .btn { flex: 1; }
 }
 
+/* ── Review-state badge (Moderation queue rows; Trash rows that re-enter the
+      queue when restored) ── */
+.state-badge {
+  display: inline-block;
+  padding: 1px var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.state-badge.is-submitted { color: var(--accent); border-color: var(--accent); }
+.state-badge.is-returned  { color: var(--error);  border-color: var(--error); }
+
 /* ── Placeholder card (scaffold; replaced as each page is built out) ── */
 .admin-placeholder {
   padding: var(--space-6);

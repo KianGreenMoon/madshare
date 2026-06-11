@@ -63,7 +63,16 @@ function buildTrashRow(f) {
     ? el('span', { class: 'cell-title', text: f.title })
     : el('span', { class: 'cell-title is-fallback', text: f.filename || 'Untitled' });
   const hashSpan = el('span', { class: 'cell-hash', title: f.hash || '', text: shortHash(f.hash) });
-  const tdTitle = el('td', { class: 'cell-title-td', 'data-label': 'Title' }, [titleSpan, hashSpan]);
+  const titleKids = [titleSpan, hashSpan];
+  // A non-approved file restores into the moderation queue, not the library.
+  if (f.review_state && f.review_state !== 'approved') {
+    titleKids.push(el('span', {
+      class: 'state-badge is-' + f.review_state,
+      title: 'Restore returns this file to the moderation queue',
+      text: 'pending review',
+    }));
+  }
+  const tdTitle = el('td', { class: 'cell-title-td', 'data-label': 'Title' }, titleKids);
 
   const tdArtist = f.artist
     ? el('td', { 'data-label': 'Artist', text: f.artist })
@@ -103,7 +112,8 @@ async function doTrashRestore(tr, f, wrap) {
     return;
   }
   removeRow(tr);
-  toast(`"${displayTitle(f)}" restored to library.`, 'success');
+  const pending = f.review_state && f.review_state !== 'approved';
+  toast(`"${displayTitle(f)}" restored to ${pending ? 'the moderation queue' : 'library'}.`, 'success');
 }
 
 function enterTrashDeleteConfirm(tr, f, actionsWrap) {
