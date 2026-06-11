@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Madshare — Unified files (mockup v2 · Hybrid)</title>
+  <link rel="stylesheet" href="../css/app.css">
+  <link rel="stylesheet" href="../css/admin-shell.css">
+  <link rel="stylesheet" href="../css/admin-files.css">
+  <link rel="stylesheet" href="../css/admin-moderation.css">
+  <link rel="stylesheet" href="../css/player.css">
+  <style>
+    /* Mockup-only chrome (not shipped). */
+    .ctx-toggle {
+      position: sticky; top: 0; z-index: 50; display: flex; gap: var(--space-2);
+      align-items: center; justify-content: center; padding: var(--space-2);
+      background: var(--bg); border-bottom: 1px dashed var(--border); font-size: 12px;
+    }
+    .ctx-toggle b { color: var(--text-muted); margin-right: var(--space-2); }
+    .ctx-btn { font: inherit; font-size: 12px; cursor: pointer; padding: var(--space-1) var(--space-3);
+      border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--text-muted); }
+    .ctx-btn.is-active { border-color: var(--accent); color: var(--accent); background: var(--accent-glow); }
+
+    .mock-flag { max-width: 960px; margin: var(--space-4) auto 0; padding: var(--space-2) var(--space-4);
+      font-size: 12px; color: var(--text-muted); border: 1px dashed var(--border);
+      border-radius: var(--radius); background: var(--surface); }
+    .mock-flag b { color: var(--accent); }
+
+    .scope-bar { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; margin-bottom: var(--space-4); }
+    .scope-switch { display: inline-flex; gap: 2px; padding: 3px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 999px; }
+    .scope-btn { border: none; background: none; color: var(--text-muted); cursor: pointer; font: inherit;
+      font-weight: 500; font-size: 13px; padding: var(--space-1) var(--space-4); border-radius: 999px;
+      display: inline-flex; align-items: center; gap: var(--space-2); transition: background 120ms ease, color 120ms ease; }
+    .scope-btn:hover { color: var(--text); }
+    .scope-btn.is-active { background: var(--accent-glow); color: var(--accent); }
+    .scope-count { font-size: 11px; font-variant-numeric: tabular-nums; padding: 0 6px; border-radius: 999px; background: var(--bg); color: var(--text-muted); }
+    .scope-btn.is-active .scope-count { background: var(--accent); color: #fff; }
+
+    .scope-desc { font-size: 13px; color: var(--text-muted); margin: 0 0 var(--space-4); max-width: 70ch; }
+    .cell-actions .btn-edit, .entity-actions .btn-edit { border-color: var(--accent); color: var(--accent); }
+    .cell-actions .btn-edit:hover, .entity-actions .btn-edit:hover { background: var(--accent-glow); }
+    .upload-main { max-width: 960px; margin: 0 auto; padding: var(--space-5); }
+    [hidden] { display: none !important; }
+
+    /* View-mode switch (Browse ⇄ List) inside the All-files scope */
+    .vm-switch { display: inline-flex; gap: 2px; padding: 3px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: var(--space-4); }
+    .vm-btn { border: none; background: none; color: var(--text-muted); cursor: pointer; font: inherit;
+      font-size: 13px; font-weight: 500; padding: var(--space-1) var(--space-3); border-radius: 5px; }
+    .vm-btn.is-active { background: var(--accent-glow); color: var(--accent); }
+
+    /* Modal: two controls side by side; checkbox row */
+    .field-split { display: grid; grid-template-columns: 1fr auto; gap: var(--space-3); align-items: end; }
+    .field-check { display: flex !important; flex-direction: row !important; align-items: center; gap: var(--space-2); white-space: nowrap; }
+    .field-check input { width: auto; }
+  </style>
+</head>
+<body>
+
+<div class="ctx-toggle">
+  <b>Mockup nav (demo only):</b>
+  <button class="ctx-btn is-active" data-ctx="admin">Admin ▸ Library</button>
+  <button class="ctx-btn" data-ctx="upload">Upload ▸ My uploads</button>
+</div>
+
+<!-- ════════════ CONTEXT A — Admin ▸ Library ════════════ -->
+<div id="ctx-admin">
+  <header>
+    <span class="logo"><span>Mad</span>share</span>
+    <nav class="main-nav" aria-label="Site navigation">
+      <a href="#" class="nav-link">Library</a>
+      <a href="#" class="nav-link">Playlists</a>
+      <a href="#" class="nav-link">Upload</a>
+      <a href="#" class="nav-link nav-link--active" aria-current="page">Admin</a>
+    </nav>
+    <div class="header-actions">
+      <div class="user-area"><span class="user-name">admin</span><button class="btn btn-neutral">Log out</button></div>
+      <div class="theme-switcher" role="group" aria-label="Color theme">
+        <button class="theme-dot active" data-theme="dark" aria-pressed="true"></button>
+        <button class="theme-dot" data-theme="light" aria-pressed="false"></button>
+        <button class="theme-dot" data-theme="ocean" aria-pressed="false"></button>
+        <button class="theme-dot" data-theme="sunset" aria-pressed="false"></button>
+      </div>
+    </div>
+  </header>
+
+  <div class="admin-banner" role="region" aria-label="Admin mode">
+    <span class="admin-banner-icon" aria-hidden="true">🛡</span>
+    <span>Admin — changes here affect the live library.</span>
+  </div>
+
+  <nav class="admin-nav" aria-label="Admin sections">
+    <a href="#" class="admin-nav-link">Overview</a>
+    <a href="#" class="admin-nav-link admin-nav-link--active" aria-current="page">Library</a>
+    <a href="#" class="admin-nav-link">Users</a>
+    <a href="#" class="admin-nav-link">Prune</a>
+    <a href="#" class="admin-nav-link">Settings</a>
+  </nav>
+
+  <p class="mock-flag">
+    <b>v2 — Hybrid.</b> One admin <b>Library</b> page folds the old Files + Moderation + Trash
+    nav items into a scope switch (All · Review · Trash). <b>My uploads stays on the Upload page</b>
+    (flip the demo nav above) but renders through the exact same component — admin vs owner contexts
+    stay apart; everything else is unified. Edit is in every scope.
+  </p>
+
+  <main class="admin-main">
+    <section>
+      <div class="scope-bar" role="tablist" aria-label="Library scope">
+        <div class="scope-switch">
+          <button class="scope-btn is-active" data-scope="all" role="tab" aria-selected="true">All files <span class="scope-count">128</span></button>
+          <button class="scope-btn" data-scope="review" role="tab" aria-selected="false">Review <span class="scope-count">3</span></button>
+          <button class="scope-btn" data-scope="trash" role="tab" aria-selected="false">Trash <span class="scope-count">2</span></button>
+        </div>
+      </div>
+      <div id="adminContent"></div>
+    </section>
+  </main>
+</div>
+
+<!-- ════════════ CONTEXT B — Upload ▸ My uploads ════════════ -->
+<div id="ctx-upload" hidden>
+  <header>
+    <span class="logo"><span>Mad</span>share</span>
+    <nav class="main-nav" aria-label="Site navigation">
+      <a href="#" class="nav-link">Library</a>
+      <a href="#" class="nav-link">Playlists</a>
+      <a href="#" class="nav-link nav-link--active" aria-current="page">Upload</a>
+      <a href="#" class="nav-link">Admin</a>
+    </nav>
+    <div class="header-actions">
+      <div class="user-area"><span class="user-name">jdoe</span><button class="btn btn-neutral">Log out</button></div>
+      <div class="theme-switcher" role="group" aria-label="Color theme">
+        <button class="theme-dot active" data-theme="dark" aria-pressed="true"></button>
+        <button class="theme-dot" data-theme="light" aria-pressed="false"></button>
+        <button class="theme-dot" data-theme="ocean" aria-pressed="false"></button>
+        <button class="theme-dot" data-theme="sunset" aria-pressed="false"></button>
+      </div>
+    </div>
+  </header>
+
+  <p class="mock-flag">
+    <b>v2 — Hybrid (owner side).</b> Same component, owner-scoped endpoints, grouped by state.
+    No admin banner — this is the uploader’s own staging surface, reached from the Upload page tab.
+  </p>
+
+  <main class="upload-main">
+    <div class="upload-tabs view-tabs" role="tablist" aria-label="Upload views" style="margin-bottom:var(--space-4)">
+      <button class="view-tab" role="tab">Upload</button>
+      <button class="view-tab view-tab--active" role="tab" aria-selected="true">My uploads</button>
+    </div>
+    <section><div id="uploadContent"></div></section>
+  </main>
+</div>
+
+<!-- ── Shared per-file edit modal (production = track-edit.js). Now carries the
+     access fields too (Guest + License), so access is edited as a tag here. ── -->
+<div class="modal-backdrop hidden" id="editModal" role="dialog" aria-modal="true" aria-labelledby="editTitle">
+  <div class="modal">
+    <div class="modal-header"><h2 id="editTitle">Edit metadata</h2><button class="btn-close" id="editClose" aria-label="Close">&times;</button></div>
+    <form class="edit-form" onsubmit="return false">
+      <label>Title<input type="text" id="edTitle" autocomplete="off"></label>
+      <label>Artist<input type="text" id="edArtist" autocomplete="off"></label>
+      <label>Album artist<input type="text" id="edAlbumArtist" autocomplete="off"></label>
+      <label>Album<input type="text" id="edAlbum" autocomplete="off"></label>
+      <div class="field-split">
+        <label>License<select id="edLicense"></select></label>
+        <label class="field-check"><input type="checkbox" id="edGuest"><span>Guest&#8209;playable</span></label>
+      </div>
+      <p class="modal-body" id="edNote"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-neutral" id="editCancel">Cancel</button>
+        <button type="submit" class="btn btn-neutral">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── Bulk edit modal: set tags + access across a selection. Blank = keep. ── -->
+<div class="modal-backdrop hidden" id="bulkModal" role="dialog" aria-modal="true" aria-labelledby="bulkTitle">
+  <div class="modal">
+    <div class="modal-header"><h2 id="bulkTitle">Edit tags for selection</h2><button class="btn-close" id="bulkClose" aria-label="Close">&times;</button></div>
+    <form class="edit-form" onsubmit="return false">
+      <p class="modal-body" id="bulkCount" style="margin-bottom:var(--space-2)"></p>
+      <label>Artist<input type="text" id="bkArtist" placeholder="Leave blank to keep each file’s value"></label>
+      <label>Album artist<input type="text" id="bkAlbumArtist" placeholder="Leave blank to keep"></label>
+      <label>Album<input type="text" id="bkAlbum" placeholder="Leave blank to keep"></label>
+      <div class="field-split">
+        <label>License<select id="bkLicense"></select></label>
+        <label>Guest access<select id="bkGuest">
+          <option value="">— keep —</option><option value="on">Guest-playable</option><option value="off">Private</option>
+        </select></label>
+      </div>
+      <p class="modal-body" style="color:var(--text-muted)">Only the fields you fill are written; the rest stay as they are on each file. Title isn’t bulk-edited (it’s per-track).</p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-neutral" id="bulkCancel">Cancel</button>
+        <button type="submit" class="btn btn-neutral">Apply to selection</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── Static preview player ── -->
+<div id="player-bar" aria-label="Now playing">
+  <div class="progress-wrap" role="slider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="38" tabindex="0"><div class="progress-fill" style="width:38%"></div></div>
+  <div class="player-main">
+    <div class="player-track"><div class="player-title">Solar Fields — Cobalt 2.5</div><div class="player-artist">Solar Fields</div></div>
+    <div class="player-controls">
+      <button class="ctrl-btn" aria-label="Previous"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg></button>
+      <button class="ctrl-btn primary" aria-label="Play"><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
+      <button class="ctrl-btn" aria-label="Next"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg></button>
+    </div>
+    <div class="player-right"><span class="player-time">1:14 / 3:12</span></div>
+  </div>
+</div>
+
+<script src="./_demo-core.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+
+// Populate the license pickers from the shared list.
+function fillLicenses(sel, withKeep) {
+  sel.innerHTML = (withKeep ? '<option value=" ">— keep —</option>' : '') +
+    window.Demo.LICENSES.map(l => `<option value="${l}">${l || '— none —'}</option>`).join('');
+}
+fillLicenses($('edLicense'), false);
+fillLicenses($('bkLicense'), true);
+
+// ── Per-file edit modal (now incl. access: License + Guest) ──
+const editModal = $('editModal');
+window.Demo.openEdit = function (d = {}) {
+  $('edTitle').value = d.title || '';
+  $('edArtist').value = d.artist || '';
+  $('edAlbumArtist').value = d.album_artist || '';
+  $('edAlbum').value = d.album || '';
+  $('edLicense').value = d.license || '';
+  $('edGuest').checked = !!d.guest;
+  const s = d.scope;
+  $('edNote').textContent =
+    s === 'mine'   ? 'Fix the tags + access before sending to approval — they decide where the track lands.'
+    : s === 'trash' ? 'Editing a trashed file’s tags. It stays in Trash until you restore it.'
+    : s === 'review'? 'Edits this submission’s tags + access before approval.'
+    : 'Edits one track’s tags and access, and reclassifies just that track.';
+  editModal.classList.remove('hidden');
+  $('edTitle').focus();
+};
+const closeEdit = () => editModal.classList.add('hidden');
+$('editClose').addEventListener('click', closeEdit);
+$('editCancel').addEventListener('click', closeEdit);
+editModal.addEventListener('click', e => { if (e.target === editModal) closeEdit(); });
+
+// ── Bulk edit modal (tags + access across a selection; blank = keep) ──
+const bulkModal = $('bulkModal');
+window.Demo.openBulkEdit = function (n) {
+  $('bulkCount').textContent = `Applies to ${n} selected file${n === 1 ? '' : 's'}. Leave a field blank to keep each file’s current value.`;
+  ['bkArtist', 'bkAlbumArtist', 'bkAlbum'].forEach(i => ($(i).value = ''));
+  $('bkLicense').value = ' ';
+  $('bkGuest').value = '';
+  bulkModal.classList.remove('hidden');
+  $('bkArtist').focus();
+};
+const closeBulk = () => bulkModal.classList.add('hidden');
+$('bulkClose').addEventListener('click', closeBulk);
+$('bulkCancel').addEventListener('click', closeBulk);
+bulkModal.addEventListener('click', e => { if (e.target === bulkModal) closeBulk(); });
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeEdit(); closeBulk(); } });
+
+// ── Admin scope switch (All has Browse/List; All-files edits access too) ──
+let allView = 'browse';
+function renderAdmin(scope) {
+  const mount = $('adminContent');
+  if (scope !== 'all') { mount.innerHTML = window.Demo.contentHTML(scope); window.Demo.wireContent(mount); return; }
+  mount.innerHTML =
+    window.Demo.filesBar('all') +
+    `<p class="scope-desc">${window.Demo.SCOPES.all.desc}</p>` +
+    `<div class="vm-switch" role="tablist" aria-label="View">
+       <button class="vm-btn${allView === 'browse' ? ' is-active' : ''}" data-vm="browse">Browse</button>
+       <button class="vm-btn${allView === 'list' ? ' is-active' : ''}" data-vm="list">List</button>
+     </div><div id="allBody"></div>`;
+  mount.querySelectorAll('[data-vm]').forEach(b => b.addEventListener('click', () => { allView = b.dataset.vm; renderAdmin('all'); }));
+  renderAllBody();
+}
+function renderAllBody() {
+  const body = $('allBody');
+  if (allView === 'browse') { window.Demo.mountBrowse(body); }
+  else { body.innerHTML = window.Demo.bulkBar('all') + window.Demo.listTableHTML('all'); window.Demo.wireContent(body); }
+}
+document.querySelectorAll('#ctx-admin .scope-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#ctx-admin .scope-btn').forEach(b => {
+      const on = b === btn; b.classList.toggle('is-active', on); b.setAttribute('aria-selected', String(on));
+    });
+    renderAdmin(btn.dataset.scope);
+  });
+});
+
+// ── Owner (My uploads) ──
+function renderUpload() {
+  const mount = $('uploadContent');
+  mount.innerHTML = window.Demo.contentHTML('mine');
+  window.Demo.wireContent(mount);
+}
+
+// ── Context toggle (demo only) ──
+document.querySelectorAll('.ctx-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const ctx = btn.dataset.ctx;
+    document.querySelectorAll('.ctx-btn').forEach(b => b.classList.toggle('is-active', b === btn));
+    document.getElementById('ctx-admin').hidden = ctx !== 'admin';
+    document.getElementById('ctx-upload').hidden = ctx !== 'upload';
+    if (ctx === 'admin') renderAdmin(document.querySelector('#ctx-admin .scope-btn.is-active').dataset.scope);
+    else renderUpload();
+  });
+});
+
+// ── Theme dots ──
+document.addEventListener('click', e => {
+  const dot = e.target.closest('.theme-dot'); if (!dot) return;
+  document.documentElement.dataset.theme = dot.dataset.theme;
+  document.querySelectorAll('.theme-dot').forEach(d => {
+    d.classList.toggle('active', d.dataset.theme === dot.dataset.theme);
+    d.setAttribute('aria-pressed', String(d.dataset.theme === dot.dataset.theme));
+  });
+});
+
+renderAdmin('all');
+renderUpload();
+</script>
+</body>
+</html>

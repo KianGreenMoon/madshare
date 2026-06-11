@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Madshare — Unified file management (mockup v1)</title>
+  <!-- Relative links so the file opens straight from disk (file://) with no
+       server rebuild. Reuses the production tokens + table chrome verbatim. -->
+  <link rel="stylesheet" href="../css/app.css">
+  <link rel="stylesheet" href="../css/admin-shell.css">
+  <link rel="stylesheet" href="../css/admin-files.css">
+  <link rel="stylesheet" href="../css/admin-moderation.css">
+  <link rel="stylesheet" href="../css/player.css">
+  <style>
+    /* Mockup-only chrome (NOT shipped — lives in this file). The real build
+       would fold the scope switch into admin-shell.css / a new file-view.css. */
+    .mock-flag {
+      max-width: 960px; margin: var(--space-4) auto 0; padding: var(--space-2) var(--space-4);
+      font-size: 12px; color: var(--text-muted); border: 1px dashed var(--border);
+      border-radius: var(--radius); background: var(--surface);
+    }
+    .mock-flag b { color: var(--accent); }
+
+    /* Scope switch: a segmented control sitting above the toolbar. Reuses the
+       .view-tab look but rendered as a pill row. */
+    .scope-bar {
+      display: flex; align-items: center; gap: var(--space-3);
+      flex-wrap: wrap; margin-bottom: var(--space-4);
+    }
+    .scope-switch { display: inline-flex; gap: 2px; padding: 3px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 999px; }
+    .scope-btn {
+      border: none; background: none; color: var(--text-muted); cursor: pointer;
+      font: inherit; font-weight: 500; font-size: 13px; padding: var(--space-1) var(--space-4);
+      border-radius: 999px; display: inline-flex; align-items: center; gap: var(--space-2);
+      transition: background 120ms ease, color 120ms ease;
+    }
+    .scope-btn:hover { color: var(--text); }
+    .scope-btn.is-active { background: var(--accent-glow); color: var(--accent); }
+    .scope-count {
+      font-size: 11px; font-variant-numeric: tabular-nums; padding: 0 6px;
+      border-radius: 999px; background: var(--bg); color: var(--text-muted);
+    }
+    .scope-btn.is-active .scope-count { background: var(--accent); color: #fff; }
+
+    .scope-desc { font-size: 13px; color: var(--text-muted); margin: 0 0 var(--space-4); max-width: 70ch; }
+
+    /* Access cell controls reused from the Files page (guest toggle + license) */
+    .access-controls { justify-content: flex-start; }
+
+    /* "Edit everywhere" — make the Edit button read as the through-line */
+    .cell-actions .btn-edit { border-color: var(--accent); color: var(--accent); }
+    .cell-actions .btn-edit:hover { background: var(--accent-glow); }
+  </style>
+</head>
+<body>
+
+<!-- ── Static header (production uses the {{template "header"}} partial) ── -->
+<header>
+  <span class="logo"><span>Mad</span>share</span>
+  <nav class="main-nav" aria-label="Site navigation">
+    <a href="#" class="nav-link">Library</a>
+    <a href="#" class="nav-link">Playlists</a>
+    <a href="#" class="nav-link">Upload</a>
+    <a href="#" class="nav-link nav-link--active" aria-current="page">Admin</a>
+  </nav>
+  <div class="header-actions">
+    <div class="user-area">
+      <span class="user-name">admin</span>
+      <button class="btn btn-neutral">Log out</button>
+    </div>
+    <div class="theme-switcher" role="group" aria-label="Color theme">
+      <button class="theme-dot active" data-theme="dark"   title="Dark"   aria-pressed="true"></button>
+      <button class="theme-dot"        data-theme="light"  title="Light"  aria-pressed="false"></button>
+      <button class="theme-dot"        data-theme="ocean"  title="Ocean"  aria-pressed="false"></button>
+      <button class="theme-dot"        data-theme="sunset" title="Sunset" aria-pressed="false"></button>
+    </div>
+  </div>
+</header>
+
+<div class="admin-banner" role="region" aria-label="Admin mode">
+  <span class="admin-banner-icon" aria-hidden="true">🛡</span>
+  <span>Admin — changes here affect the live library.</span>
+</div>
+
+<nav class="admin-nav" aria-label="Admin sections">
+  <a href="#" class="admin-nav-link">Overview</a>
+  <a href="#" class="admin-nav-link admin-nav-link--active" aria-current="page">Files</a>
+  <a href="#" class="admin-nav-link">Users</a>
+  <a href="#" class="admin-nav-link">Prune</a>
+  <a href="#" class="admin-nav-link">Settings</a>
+</nav>
+
+<p class="mock-flag">
+  <b>Mockup v1 — single unified page.</b> One “Files” surface with a scope switch
+  (All&nbsp;·&nbsp;Review&nbsp;·&nbsp;Trash&nbsp;·&nbsp;My&nbsp;uploads). The table, selection,
+  bulk toolbar and the <b>Edit modal are identical in every scope</b> — only the action
+  set changes. Trash gains Edit. Click the scopes; click any <b>Edit</b> to see the shared modal.
+</p>
+
+<main class="admin-main">
+  <section aria-labelledby="filesHeading">
+
+    <!-- ── Scope switch ── -->
+    <div class="scope-bar" role="tablist" aria-label="File scope">
+      <div class="scope-switch">
+        <button class="scope-btn is-active" data-scope="all"    role="tab" aria-selected="true">All files <span class="scope-count">128</span></button>
+        <button class="scope-btn"           data-scope="review" role="tab" aria-selected="false">Review <span class="scope-count">3</span></button>
+        <button class="scope-btn"           data-scope="trash"  role="tab" aria-selected="false">Trash <span class="scope-count">2</span></button>
+        <button class="scope-btn"           data-scope="mine"   role="tab" aria-selected="false">My uploads <span class="scope-count">3</span></button>
+      </div>
+    </div>
+
+    <p class="scope-desc" id="scopeDesc"></p>
+
+    <!-- ── Toolbar: search + bulk ── -->
+    <div class="files-bar">
+      <h2 class="section-title section-title--files" id="filesHeading">Files (<span id="fileCount">128</span>)</h2>
+      <div class="files-search">
+        <label for="fileFilter" class="visually-hidden">Filter files</label>
+        <input type="search" id="fileFilter" placeholder="Filter files…" autocomplete="off">
+      </div>
+    </div>
+
+    <div class="bulk-toolbar" id="bulkToolbar">
+      <span class="bulk-selcount" id="selCount">0 selected</span>
+      <span class="bulk-spacer"></span>
+      <span id="bulkActions"></span>
+    </div>
+
+    <!-- ── The table (one renderer, scope-driven columns + actions) ── -->
+    <div class="files-table-wrap">
+      <table class="files-table">
+        <thead id="filesHead"></thead>
+        <tbody id="filesBody" aria-live="polite"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<!-- ── Shared edit modal (the production track-edit.js builds this same DOM) ── -->
+<div class="modal-backdrop hidden" id="editModal" role="dialog" aria-modal="true" aria-labelledby="editTitle">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="editTitle">Edit metadata</h2>
+      <button class="btn-close" id="editClose" aria-label="Close">&times;</button>
+    </div>
+    <form class="edit-form" id="editForm" onsubmit="return false">
+      <label>Title<input type="text" id="edTitle" autocomplete="off"></label>
+      <label>Artist<input type="text" id="edArtist" autocomplete="off"></label>
+      <label>Album artist<input type="text" id="edAlbumArtist" autocomplete="off"></label>
+      <label>Album<input type="text" id="edAlbum" autocomplete="off"></label>
+      <p class="modal-body" id="edNote"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-neutral" id="editCancel">Cancel</button>
+        <button type="submit" class="btn btn-neutral">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── Static preview player bar (real pages mount player.js here) ── -->
+<div id="player-bar" aria-label="Now playing">
+  <div class="progress-wrap" id="progressBar" role="slider" aria-label="Playback position"
+       aria-valuemin="0" aria-valuemax="100" aria-valuenow="38" tabindex="0">
+    <div class="progress-fill" style="width:38%"></div>
+  </div>
+  <div class="player-main">
+    <div class="player-track">
+      <div class="player-title">Solar Fields — Cobalt 2.5</div>
+      <div class="player-artist">Solar Fields</div>
+    </div>
+    <div class="player-controls">
+      <button class="ctrl-btn" aria-label="Previous"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg></button>
+      <button class="ctrl-btn primary" aria-label="Play"><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
+      <button class="ctrl-btn" aria-label="Next"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg></button>
+    </div>
+    <div class="player-right">
+      <span class="player-time">1:14 / 3:12</span>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// Mockup driver. This is throwaway demo code — its only job is to prove the
+// shape: ONE row renderer + ONE edit modal, parameterised by scope. The real
+// build extracts this into webui/static/js/file-list.js and wires it to the
+// existing endpoints + track-edit.js + player.js.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Per-scope config: columns, bulk actions, row actions, badge, intro copy.
+const SCOPES = {
+  all: {
+    label: 'All files', count: 128,
+    desc: 'Every published track. Edit tags, set guest access + license, or move to Trash.',
+    columns: ['check', 'title', 'artist', 'album', 'size', 'access', 'actions'],
+    bulk: [{ label: 'Move to Trash', danger: true }],
+    rowActions: ['play', 'edit', 'trash'],
+  },
+  review: {
+    label: 'Review queue', count: 3,
+    desc: 'Uploads staged for review. Fix tags before approving, approve to publish, return with a note, or discard to Trash.',
+    columns: ['check', 'title', 'artist', 'album', 'size', 'meta', 'actions'],
+    bulk: [{ label: 'Approve' }, { label: 'Return…' }, { label: 'Discard', danger: true }],
+    rowActions: ['play', 'edit', 'approve', 'return', 'discard'],
+    metaLabel: 'Submitted', badge: true,
+  },
+  trash: {
+    label: 'Trash', count: 2,
+    desc: 'Files hidden from the library; their blobs remain on disk. Edit is now available here too — fix a tag before restoring. Restore, or delete forever.',
+    columns: ['check', 'title', 'artist', 'album', 'size', 'meta', 'actions'],
+    bulk: [{ label: 'Restore' }, { label: 'Delete forever', danger: true }],
+    rowActions: ['play', 'edit', 'restore', 'delete'],
+    metaLabel: 'Deleted', badge: true,
+  },
+  mine: {
+    label: 'My uploads', count: 3,
+    desc: 'Your own staged files (owner view — same component, owner-scoped endpoints). Check the tags, then send to approval.',
+    columns: ['check', 'title', 'artist', 'album', 'size', 'meta', 'actions'],
+    bulk: [{ label: 'Send to approval' }, { label: 'Remove', danger: true }],
+    rowActions: ['play', 'edit', 'send', 'remove'],
+    metaLabel: 'State', badge: true,
+  },
+};
+
+// One demo dataset; each row tagged with the scopes it appears in.
+const DATA = {
+  all: [
+    { title: 'Cobalt 2.5', artist: 'Solar Fields', album: 'Movements', hash: '9f3a1c77', size: '8.4 MB' },
+    { title: 'Leaving Home', artist: 'Carbon Based Lifeforms', album: 'World of Sleepers', hash: '2b7e0d41', size: '11.2 MB' },
+    { title: 'Untitled', artist: '', album: '', hash: '0aa4f9c2', size: '3.1 MB', fallback: '04 - take.flac' },
+  ],
+  review: [
+    { title: 'Night Drive', artist: 'H.U.V.A. Network', album: 'Distances', hash: 'c41d9a08', size: '9.7 MB', state: 'submitted', meta: '2026-06-10 14:02', uploader: 'jdoe' },
+    { title: 'Side B (rough)', artist: 'jdoe', album: 'demos', hash: 'e8820b1f', size: '6.0 MB', state: 'returned', meta: '2026-06-10 09:15', uploader: 'jdoe', note: 'Fix the artist tag — this is tagged with your username.' },
+    { title: 'sketch', artist: '', album: '', hash: '771fab90', size: '2.4 MB', state: 'draft', meta: '—', uploader: 'mara', fallback: 'sketch.m4a' },
+  ],
+  trash: [
+    { title: 'Old Master', artist: 'Aes Dana', album: 'Leylines', hash: '5d0c33ab', size: '10.1 MB', meta: '2026-06-09', pending: false },
+    { title: 'Rejected take', artist: 'jdoe', album: 'demos', hash: 'a90b22ce', size: '5.5 MB', meta: '2026-06-08', pending: true },
+  ],
+  mine: [
+    { title: 'Night Drive', artist: 'H.U.V.A. Network', album: 'Distances', hash: 'c41d9a08', size: '9.7 MB', state: 'submitted', meta: 'Awaiting review' },
+    { title: 'Side B (rough)', artist: 'jdoe', album: 'demos', hash: 'e8820b1f', size: '6.0 MB', state: 'returned', meta: 'Returned', note: 'Fix the artist tag — this is tagged with your username.' },
+    { title: 'New idea', artist: 'jdoe', album: 'demos', hash: '4417cd92', size: '4.2 MB', state: 'draft', meta: 'Draft' },
+  ],
+};
+
+const STATE_LABEL = { submitted: 'Awaiting review', returned: 'Returned', draft: 'Draft' };
+const PLAY = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+const LICENSES = ['', 'CC BY', 'CC BY-SA', 'CC0', 'All rights reserved'];
+
+const COLS = {
+  check:   () => '<th class="col-check"><input type="checkbox" aria-label="Select all"></th>',
+  title:   () => '<th>Title</th>',
+  artist:  () => '<th>Artist</th>',
+  album:   () => '<th>Album</th>',
+  size:    () => '<th class="col-size">Size</th>',
+  access:  () => '<th class="col-access">Access</th>',
+  meta:    (s) => `<th>${s.metaLabel || 'Meta'}</th>`,
+  actions: () => '<th class="col-actions">Actions</th>',
+};
+
+let scope = 'all';
+
+function el(html) { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; }
+
+function badge(row) {
+  if (scope === 'trash') {
+    return row.pending
+      ? '<span class="state-badge is-returned" title="Restores into the review queue">pending review</span>' : '';
+  }
+  if (row.state) return `<span class="state-badge is-${row.state}">${STATE_LABEL[row.state] || row.state}</span>`;
+  return '';
+}
+
+function actionButtons(row) {
+  const cfg = SCOPES[scope];
+  const out = [];
+  for (const a of cfg.rowActions) {
+    if (a === 'play')    out.push(`<button class="play-btn" title="Preview" aria-label="Preview">${PLAY}</button>`);
+    if (a === 'edit')    out.push(`<button class="btn btn-neutral btn-sm btn-edit" data-edit>Edit</button>`);
+    if (a === 'trash')   out.push(`<button class="btn btn-destructive-outline btn-sm">Move to Trash</button>`);
+    if (a === 'approve') out.push(`<button class="btn btn-neutral btn-sm">Approve</button>`);
+    if (a === 'return')  out.push(`<button class="btn btn-neutral btn-sm">Return…</button>`);
+    if (a === 'discard') out.push(`<button class="btn btn-destructive-outline btn-sm">Discard</button>`);
+    if (a === 'restore') out.push(`<button class="btn btn-neutral btn-sm">Restore</button>`);
+    if (a === 'delete')  out.push(`<button class="btn btn-destructive-outline btn-sm">Delete forever</button>`);
+    if (a === 'send')    out.push(`<button class="btn btn-neutral btn-sm">Send</button>`);
+    if (a === 'remove')  out.push(`<button class="btn btn-destructive-outline btn-sm">Remove</button>`);
+  }
+  return `<div class="trash-actions">${out.join('')}</div>`;
+}
+
+function accessCell() {
+  const opts = LICENSES.map(l => `<option>${l || '— license —'}</option>`).join('');
+  return `<div class="access-controls">
+    <label class="guest-toggle"><input type="checkbox"><span>Guest</span></label>
+    <select class="license-select" aria-label="License">${opts}</select>
+  </div>`;
+}
+
+function cell(col, row, cfg) {
+  switch (col) {
+    case 'check':  return '<td class="cell-check"><input type="checkbox" class="row-check"></td>';
+    case 'title': {
+      const t = row.title
+        ? `<span class="cell-title">${row.title}</span>`
+        : `<span class="cell-title is-fallback">${row.fallback || 'Untitled'}</span>`;
+      const b = badge(row);
+      const note = row.note ? `<span class="mod-note">Note: ${row.note}</span>` : '';
+      return `<td class="cell-title-td" data-label="Title">${t}${b ? ' ' + b : ''}<span class="cell-hash">${row.hash}</span>${note}</td>`;
+    }
+    case 'artist': return row.artist ? `<td data-label="Artist">${row.artist}</td>` : '<td class="cell-muted" data-label="Artist">—</td>';
+    case 'album':  return row.album  ? `<td data-label="Album">${row.album}</td>`  : '<td class="cell-muted" data-label="Album">—</td>';
+    case 'size':   return `<td class="cell-size" data-label="Size">${row.size}</td>`;
+    case 'access': return `<td class="cell-access" data-label="Access">${accessCell()}</td>`;
+    case 'meta': {
+      const v = row.meta || '—';
+      const uploader = row.uploader ? `<span class="cell-hash">by ${row.uploader}</span>` : '';
+      return `<td data-label="${cfg.metaLabel}">${v}${uploader}</td>`;
+    }
+    case 'actions': return `<td class="cell-actions" data-label="Actions">${actionButtons(row)}</td>`;
+  }
+}
+
+function render() {
+  const cfg = SCOPES[scope];
+  document.getElementById('scopeDesc').textContent = cfg.desc;
+  document.getElementById('fileCount').textContent = cfg.count;
+  document.querySelector('#filesHeading').childNodes[0].nodeValue =
+    cfg.label === 'All files' ? 'Files (' : cfg.label + ' (';
+
+  document.getElementById('filesHead').innerHTML =
+    '<tr>' + cfg.columns.map(c => COLS[c](cfg)).join('') + '</tr>';
+
+  const body = document.getElementById('filesBody');
+  body.innerHTML = '';
+  for (const row of DATA[scope]) {
+    body.appendChild(el('<tr>' + cfg.columns.map(c => cell(c, row, cfg)).join('') + '</tr>'));
+  }
+
+  // Bulk actions row
+  const bulk = document.getElementById('bulkActions');
+  bulk.innerHTML = cfg.bulk.map(b =>
+    `<button class="btn ${b.danger ? 'btn-destructive-outline' : 'btn-neutral'} btn-sm">${b.label}</button>`).join(' ');
+
+  // Wire Edit buttons → shared modal
+  body.querySelectorAll('[data-edit]').forEach(btn => {
+    btn.addEventListener('click', () => openEdit(btn.closest('tr')));
+  });
+}
+
+// ── Scope switching ──
+document.querySelectorAll('.scope-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    scope = btn.dataset.scope;
+    document.querySelectorAll('.scope-btn').forEach(b => {
+      const on = b === btn;
+      b.classList.toggle('is-active', on);
+      b.setAttribute('aria-selected', String(on));
+    });
+    render();
+  });
+});
+
+// ── Shared edit modal (stand-in for track-edit.js) ──
+const editModal = document.getElementById('editModal');
+function openEdit(tr) {
+  const cells = tr.querySelectorAll('td');
+  // title cell text without the hash/badge
+  document.getElementById('edTitle').value = tr.querySelector('.cell-title')?.textContent || '';
+  document.getElementById('edArtist').value = tr.querySelector('[data-label="Artist"]')?.textContent.replace('—','') || '';
+  document.getElementById('edAlbumArtist').value = '';
+  document.getElementById('edAlbum').value = tr.querySelector('[data-label="Album"]')?.textContent.replace('—','') || '';
+  document.getElementById('edNote').textContent =
+    scope === 'mine'   ? 'Fix the tags before sending to approval — they decide where the track lands.'
+    : scope === 'trash' ? 'Editing a trashed file’s tags. It stays in Trash until you restore it.'
+    : scope === 'review'? 'Edits this submission’s tags before approval.'
+    : 'Edits one track’s tags and reclassifies just that track.';
+  editModal.classList.remove('hidden');
+  document.getElementById('edTitle').focus();
+}
+function closeEdit() { editModal.classList.add('hidden'); }
+document.getElementById('editClose').addEventListener('click', closeEdit);
+document.getElementById('editCancel').addEventListener('click', closeEdit);
+editModal.addEventListener('click', e => { if (e.target === editModal) closeEdit(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeEdit(); });
+
+// ── Theme dots (so the mockup honours the switcher) ──
+document.querySelectorAll('.theme-dot').forEach(dot => {
+  dot.addEventListener('click', () => {
+    document.documentElement.dataset.theme = dot.dataset.theme;
+    document.querySelectorAll('.theme-dot').forEach(d => {
+      d.classList.toggle('active', d === dot);
+      d.setAttribute('aria-pressed', String(d === dot));
+    });
+  });
+});
+
+render();
+</script>
+</body>
+</html>
