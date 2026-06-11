@@ -1,22 +1,25 @@
-// Admin · Files — the files table with per-file access controls, metadata
-// editing, two-step delete, and a preview player (the shared player.js).
+// Admin · Files — two views: the flat "All files" list (the shared
+// file-management component, file-list.js) and the "By entity" drill-down
+// (artist → album → track with rename / merge / cover / delete, kept here as a
+// separate entity-management axis). A page-local preview player serves both.
 import {
   bootAdmin, API, LICENSE_OPTIONS,
-  fmtBytes, fmtTime, shortHash, toast, handleAuthError, el,
+  fmtTime, toast, handleAuthError, el,
 } from './shared.js';
 import { createPlayer } from '../player.js';
 import { createTrackEditor } from '../track-edit.js';
+import { createFileList } from '../file-list.js';
 
-const filesBody   = document.getElementById('filesBody');
-const fileCountEl = document.getElementById('fileCount');
-const fileFilter  = document.getElementById('fileFilter');
-
-let allFiles    = [];     // last fetched list
+let allFiles    = [];     // last /api/files fetch (also feeds the url→hash index)
 let fileByURL   = new Map(); // url → file record, so the entity view can resolve
                              // a browse track (id/url only) to its hash for edit
-let filterText  = '';
-let canEditMeta = false;  // metadata.edit → access controls + metadata edit + rename
+let canEditMeta = false;  // metadata.edit → metadata + access edit + rename/merge
 let canDelete   = false;  // file.delete → move-to-trash
+let filesLoaded = false;  // /api/files loaded at least once (index freshness)
+
+// The All-files flat table is the shared component, mounted lazily into #fileList.
+let fileList     = null;
+let filesMounted = false;
 
 // ── Preview player (shared by both views via a single play context) ──────────
 // playCtx.items are normalised { url, title, artist, key }; kind picks which
@@ -49,347 +52,170 @@ function playAtCtx(i) {
   highlightCtx();
 }
 
-// highlightCtx repaints the playing-row marker. Both panels persist in the DOM
-// (the inactive view is just hidden), so we clear both and mark the current one.
+// highlightCtx repaints the playing-row marker. The All-files panel is owned by
+// the component (highlight via fileList.setPlaying); the entity panel is ours.
 function highlightCtx() {
-  filesBody.querySelectorAll('tr.playing-row').forEach(tr => tr.classList.remove('playing-row'));
   entityPanel.querySelectorAll('.playing-row').forEach(r => r.classList.remove('playing-row'));
-  if (!playCtx) return;
+  if (!playCtx) { fileList?.setPlaying(null); return; }
   const it = playCtx.items[playCtx.index];
   if (playCtx.kind === 'files') {
-    filesBody.querySelector(`tr[data-hash="${CSS.escape(it.key)}"]`)?.classList.add('playing-row');
+    fileList?.setPlaying(it.key);
   } else {
+    fileList?.setPlaying(null);
     entityPanel.querySelector(`[data-track-id="${CSS.escape(it.key)}"]`)?.classList.add('playing-row');
   }
 }
 
-// playFile previews a row in the All-files table, navigable across the visible
-// files. fileToItem normalises a file record into a play-context item.
-function fileToItem(f) {
-  return { url: f.url, title: displayTitle(f), artist: f.artist || '', key: f.hash };
-}
-function playFile(f) {
-  const items = visibleFiles().map(fileToItem);
+// playFile previews a row from the All-files component, navigable across the
+// rows it currently shows (the component passes its visible list).
+function playFile(f, visible) {
+  const items = (visible || []).map(x => ({ url: x.url, title: displayTitle(x), artist: x.artist || '', key: x.hash }));
   let idx = items.findIndex(x => x.key === f.hash);
-  if (idx < 0) { items.length = 0; items.push(fileToItem(f)); idx = 0; }
+  if (idx < 0) { items.length = 0; items.push({ url: f.url, title: displayTitle(f), artist: f.artist || '', key: f.hash }); idx = 0; }
   playFrom(items, idx, 'files');
 }
 
-// ── Loading + rendering ──────────────────────────────────────────────────────
-async function loadFiles() {
-  filesBody.setAttribute('aria-busy', 'true');
-  renderStateRow('Loading files…');
+// ── Shared bits (used by the All-files scope + the entity view) ──────────────
+const PLAY_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
+const displayTitle = f => f.title || f.filename || 'this file';
 
-  let files;
-  try {
-    const res = await fetch(`${API}/api/files`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    files = await res.json();
-  } catch (err) {
-    console.error('Failed to load files:', err);
-    filesBody.setAttribute('aria-busy', 'false');
-    renderErrorRow();
-    return;
-  }
-
-  allFiles = Array.isArray(files) ? files : [];
-  fileByURL = new Map(allFiles.map(f => [f.url, f]));
-  filesBody.setAttribute('aria-busy', 'false');
-  renderFiles();
-}
-
-// fileForTrack resolves an entity-view browse track (which carries only id/url)
-// back to its full file record (with the hash the edit endpoint needs). Returns
-// undefined until /api/files has loaded or if the listings disagree.
+// fileForTrack resolves an entity-view browse track (id/url only) back to its
+// full file record (with the hash the edit endpoint needs).
 function fileForTrack(t) { return fileByURL.get(t.url); }
 
-function renderStateRow(text) {
-  filesBody.replaceChildren(
-    el('tr', { class: 'table-state-row' }, [el('td', { colspan: '6', text })]),
-  );
+// loadFilesList backs the All-files component AND refreshes the url→file index
+// the entity view resolves browse tracks through.
+async function loadFilesList() {
+  const res = await fetch(`${API}/api/files`);
+  if (handleAuthError(res)) throw new Error('Your session expired.');
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  allFiles = (await res.json()) || [];
+  fileByURL = new Map(allFiles.map(f => [f.url, f]));
+  filesLoaded = true;
+  return allFiles;
 }
+// ensureFilesLoaded guarantees the url→file index before an entity-view edit or
+// delete, even if the All-files tab has never been opened.
+async function ensureFilesLoaded() { if (!filesLoaded) await loadFilesList(); }
 
-function renderErrorRow() {
-  const retry = el('button', { class: 'btn btn-neutral btn-sm', onclick: loadFiles, text: 'Retry' });
-  retry.style.marginTop = 'var(--space-3)';
-  filesBody.replaceChildren(
-    el('tr', { class: 'table-state-row' }, [
-      el('td', { colspan: '6' }, [
-        el('div', { role: 'alert', text: 'Failed to load files.' }),
-        retry,
-      ]),
-    ]),
-  );
-}
-
-function renderEmptyRow() {
-  filesBody.replaceChildren(
-    el('tr', { class: 'table-state-row' }, [
-      el('td', { colspan: '6' }, [
-        el('div', { class: 'empty-state' }, [
-          el('div', { class: 'drop-icon', 'aria-hidden': 'true', text: '♪' }),
-          el('p', { text: 'No files yet' }),
-          el('p', { text: 'Add music from the Upload page.' }),
-        ]),
-      ]),
-    ]),
-  );
-}
-
-function matchesFilter(f, q) {
-  if (!q) return true;
-  const hay = [f.title, f.artist, f.album, f.filename].filter(Boolean).join(' ').toLowerCase();
-  return hay.includes(q);
-}
-
-function visibleFiles() {
-  const q = filterText.trim().toLowerCase();
-  return allFiles.filter(f => matchesFilter(f, q));
-}
-
-function renderFiles() {
-  fileCountEl.textContent = String(allFiles.length);
-
-  if (allFiles.length === 0) { renderEmptyRow(); return; }
-
-  const visible = visibleFiles();
-  if (visible.length === 0) {
-    renderStateRow(`No files match “${filterText.trim()}”`);
-    return;
-  }
-
-  const frag = document.createDocumentFragment();
-  visible.forEach(f => frag.appendChild(buildRow(f)));
-  filesBody.replaceChildren(frag);
-
-  // Keep the playing highlight after a re-render.
-  if (playCtx && playCtx.kind === 'files') highlightCtx();
-}
-
-function buildRow(f) {
-  const tr = el('tr', { 'data-hash': f.hash });
-
-  // Title (+ hash)
-  const titleSpan = f.title
-    ? el('span', { class: 'cell-title', text: f.title })
-    : el('span', { class: 'cell-title is-fallback', text: f.filename || 'Untitled' });
-  const hashSpan = el('span', { class: 'cell-hash', title: f.hash || '', text: shortHash(f.hash) });
-  const tdTitle = el('td', { class: 'cell-title-td', 'data-label': 'Title' }, [titleSpan, hashSpan]);
-
-  const tdArtist = f.artist
-    ? el('td', { 'data-label': 'Artist', text: f.artist })
-    : el('td', { class: 'cell-muted', 'data-label': 'Artist', text: '—' });
-
-  const tdAlbum = f.album
-    ? el('td', { 'data-label': 'Album', text: f.album })
-    : el('td', { class: 'cell-muted', 'data-label': 'Album', text: '—' });
-
-  const tdSize = el('td', { class: 'cell-size', 'data-label': 'Size', text: fmtBytes(f.byte_size) });
-
-  const tdAccess = el('td', { class: 'cell-access', 'data-label': 'Access' }, [buildAccessControls(f)]);
-
-  const tdActions = el('td', { class: 'cell-actions', 'data-label': 'Actions' }, buildActions(tr, f));
-
-  tr.append(tdTitle, tdArtist, tdAlbum, tdSize, tdAccess, tdActions);
-  return tr;
-}
-
-// ── Per-row actions: play, edit, delete ──────────────────────────────────────
-const PLAY_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
-
-function buildActions(tr, f) {
-  const play = el('button', {
-    class: 'play-btn', title: 'Preview', 'aria-label': `Preview ${displayTitle(f)}`,
-    onclick: () => playFile(f),
+// ── Access writes (per file). License first, then guest, so the explicit guest
+//    wins over any auto-derive the license change triggers. ────────────────────
+async function saveFileAccess(f, { guest, license }) {
+  const r1 = await fetch(`${API}/api/admin/files/${encodeURIComponent(f.hash)}/license`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ license }),
   });
-  play.innerHTML = PLAY_ICON;
-
-  const actions = [play];
-  if (canEditMeta) {
-    actions.push(el('button', {
-      class: 'btn btn-neutral btn-sm', text: 'Edit',
-      onclick: () => openEditModal(f),
-    }));
-  }
-  if (canDelete) {
-    actions.push(makeDeleteButton(tr, f));
-  }
-  return actions;
-}
-
-// ── Access controls (guest toggle + license) ─────────────────────────────────
-function buildAccessControls(f) {
-  if (!canEditMeta) {
-    const summary = (f.guest_playable ? 'Guest' : 'Private') + (f.license ? ` · ${f.license}` : '');
-    return el('div', { class: 'access-controls' }, [el('span', { class: 'cell-muted', text: summary })]);
-  }
-
-  const cb = el('input', { type: 'checkbox' });
-  cb.checked = !!f.guest_playable;
-  cb.addEventListener('change', () => setGuest(f, cb));
-  const label = el('label', { class: 'guest-toggle' }, [cb, el('span', { text: 'Guest' })]);
-
-  const sel = el('select', { class: 'license-select', 'aria-label': 'License' });
-  LICENSE_OPTIONS.forEach(lic => {
-    const opt = el('option', { value: lic, text: lic || '— license —' });
-    if ((f.license || '') === lic) opt.selected = true;
-    sel.appendChild(opt);
+  if (!r1.ok) throw new Error((await r1.text()).trim() || `HTTP ${r1.status}`);
+  const r2 = await fetch(`${API}/api/admin/files/${encodeURIComponent(f.hash)}/guest`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ guest_playable: guest }),
   });
-  sel.addEventListener('change', () => setLicense(f, sel));
-
-  return el('div', { class: 'access-controls' }, [label, sel]);
+  if (!r2.ok) throw new Error((await r2.text()).trim() || `HTTP ${r2.status}`);
 }
 
-async function setGuest(f, cb) {
-  const desired = cb.checked;
-  cb.disabled = true;
-  try {
-    const res = await fetch(`${API}/api/admin/files/${encodeURIComponent(f.hash)}/guest`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ guest_playable: desired }),
-    });
-    if (handleAuthError(res)) { cb.checked = !desired; return; }
-    if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
-    f.guest_playable = desired;
-    toast(`"${displayTitle(f)}" is now ${desired ? 'guest-playable' : 'private'}.`, 'success');
-  } catch (err) {
-    cb.checked = !desired;
-    toast(`Couldn't update access: ${err.message}`, 'error');
-  } finally {
-    cb.disabled = false;
+// runBulk loops one request per hash and tallies; never throws.
+async function runBulk(hashes, makeRequest) {
+  let ok = 0, fail = 0, authFailed = false;
+  for (const hash of hashes) {
+    let res;
+    try { res = await makeRequest(hash); } catch { fail++; continue; }
+    if (res.status === 401) { handleAuthError(res); authFailed = true; break; }
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.ok) ok++; else fail++;
   }
+  return { ok, fail, authFailed };
 }
 
-async function setLicense(f, sel) {
-  const desired = sel.value;
-  const previous = f.license || '';
-  sel.disabled = true;
-  try {
-    const res = await fetch(`${API}/api/admin/files/${encodeURIComponent(f.hash)}/license`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ license: desired }),
-    });
-    if (handleAuthError(res)) { sel.value = previous; return; }
-    if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
-    f.license = desired;
-    toast(`License set to ${desired || 'none'} for "${displayTitle(f)}".`, 'success');
-    // Auto-derive may have flipped guest-playable; reload to stay authoritative.
-    loadFiles();
-  } catch (err) {
-    sel.value = previous;
-    toast(`Couldn't update license: ${err.message}`, 'error');
-  } finally {
-    sel.disabled = false;
+// filesBulkApply writes the bulk-edit patch across a selection: tag keys via
+// PATCH metadata, then access via the guest/license endpoints — only the fields
+// the user actually filled.
+async function filesBulkApply(hashes, patch) {
+  const tag = {};
+  for (const k of ['title', 'artist', 'album_artist', 'album']) if (k in patch) tag[k] = patch[k];
+  let ok = 0, fail = 0;
+  for (const hash of hashes) {
+    let good = true;
+    try {
+      if (Object.keys(tag).length) {
+        const r = await fetch(`${API}/api/files/${encodeURIComponent(hash)}/metadata`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tag),
+        });
+        good = good && r.ok && (await r.json().catch(() => ({}))).ok !== false;
+      }
+      if ('license' in patch) {
+        const r = await fetch(`${API}/api/admin/files/${encodeURIComponent(hash)}/license`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ license: patch.license }),
+        });
+        good = good && r.ok;
+      }
+      if ('guest' in patch) {
+        const r = await fetch(`${API}/api/admin/files/${encodeURIComponent(hash)}/guest`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ guest_playable: patch.guest }),
+        });
+        good = good && r.ok;
+      }
+    } catch { good = false; }
+    if (good) ok++; else fail++;
   }
+  if (fail) throw new Error(`updated ${ok}, ${fail} failed`);
 }
 
-function displayTitle(f) {
-  return f.title || f.filename || 'this file';
+async function trashOne(f) {
+  const res = await fetch(`${API}/api/admin/files/${encodeURIComponent(f.hash)}`, { method: 'DELETE' });
+  if (handleAuthError(res)) throw new Error('Your session expired.');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  toast(`“${displayTitle(f)}” moved to Trash.`, 'success');
+}
+async function bulkTrashHashes(hashes) {
+  const { ok, fail, authFailed } = await runBulk(hashes, h => fetch(`${API}/api/admin/files/${encodeURIComponent(h)}`, { method: 'DELETE' }));
+  if (authFailed) { if (ok) toast(`Moved ${ok} to Trash before the session expired.`, 'error'); return; }
+  if (fail) toast(`Moved ${ok} to Trash; ${fail} failed.`, 'error');
+  else if (ok) toast(`Moved ${ok} ${ok === 1 ? 'file' : 'files'} to Trash.`, 'success');
 }
 
-// ── Metadata edit modal (the shared track-edit.js component) ─────────────────
-const trackEditor = createTrackEditor({
+// ── The All-files scope (the flat list, via the shared component) ────────────
+// Access is a read-only summary column; editing tags + access happens in the
+// per-file Edit modal and the bulk Edit-tags modal. Selection + bulk actions
+// (Move to Trash, Edit tags…) are gated on the relevant permission.
+function filesScope() {
+  return {
+    title: 'Files',
+    emptyText: 'No files yet. Add music from the Upload page.',
+    columns: ['check', 'title', 'artist', 'album', 'size', 'access', 'actions'],
+    accessEditable: canEditMeta,
+    licenses: LICENSE_OPTIONS,
+    load: loadFilesList,
+    selectable: () => canEditMeta || canDelete,
+    editPatchURL: canEditMeta ? (f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`) : undefined,
+    editNote: 'Edits one track’s tags + access, and reclassifies just that track. ' +
+              'To rename a whole album or artist (cover and tracks stay attached), use Rename in the By-entity view.',
+    saveAccess: canEditMeta ? saveFileAccess : undefined,
+    bulkApply: canEditMeta ? filesBulkApply : undefined,
+    rowActions: canDelete ? [{
+      id: 'trash', label: 'Move to Trash', kind: 'danger',
+      confirm: 'inline', confirmPrompt: 'Move to Trash?', confirmLabel: 'Confirm',
+      run: f => trashOne(f),
+    }] : [],
+    bulkActions: canDelete ? [{ id: 'trash', label: 'Move to Trash', kind: 'danger', run: hashes => bulkTrashHashes(hashes) }] : [],
+    onPlay: playFile,
+    toast, handleAuthError,
+  };
+}
+
+// ── Entity-view per-track editor (tags-only; reuses track-edit.js) ───────────
+// The flat list's editor lives inside the component (with access). This one is
+// opened by editTrack() in the drill-down, where access isn't surfaced.
+const entityEditor = createTrackEditor({
   patchURL: f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`,
   note: 'This edits one track’s tags and reclassifies just that track. ' +
         'To rename a whole album or artist (cover and all tracks stay attached), ' +
         'use Rename in the “By entity” view instead.',
   checkAuth: handleAuthError,
-  onSaved: (f, data, fromEntity) => {
-    // Reflect the authoritative values returned by the server.
-    f.title = data.title; f.artist = data.artist;
-    f.album = data.album; f.album_artist = data.album_artist;
-    renderFiles();
-    // A tag edit can move the track between artist/album groupings, so refresh
-    // the entity view too when the edit came from there.
-    if (fromEntity) reloadEntityLevel();
+  onSaved: (f) => {
     toast(`Metadata saved for "${displayTitle(f)}".`, 'success');
+    reloadEntityLevel();    // a tag edit can move the track between groupings
+    fileList?.reload();     // keep the All-files list + url→file index fresh
   },
   onError: err => toast(`Couldn't save metadata: ${err.message}`, 'error'),
-});
-
-function openEditModal(f, fromEntity = false) {
-  trackEditor.open(f, fromEntity);
-}
-
-// ── Two-step delete (move to trash) ──────────────────────────────────────────
-function makeDeleteButton(tr, f) {
-  return el('button', {
-    class: 'btn btn-destructive-outline btn-sm', text: 'Move to Trash',
-    onclick: e => enterDeleteConfirm(tr, f, e.currentTarget),
-  });
-}
-
-function enterDeleteConfirm(tr, f, deleteBtn) {
-  const cell = deleteBtn.parentElement;
-
-  const restore = () => {
-    cell.replaceChildren(...buildActions(tr, f));
-    cell.querySelector('button')?.focus();
-  };
-
-  const cancel  = el('button', { class: 'btn btn-neutral btn-sm', text: 'Cancel', onclick: restore });
-  const confirm = el('button', { class: 'btn btn-destructive-solid btn-sm', text: 'Confirm' });
-  const wrap = el('div', { class: 'delete-confirm' }, [
-    el('span', { class: 'delete-confirm-label', text: 'Move to Trash?' }),
-    cancel, confirm,
-  ]);
-  confirm.addEventListener('click', () => doDelete(tr, f, wrap));
-  wrap.addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); restore(); } });
-
-  cell.replaceChildren(wrap);
-  cancel.focus();
-}
-
-async function doDelete(tr, f, wrap) {
-  tr.setAttribute('aria-busy', 'true');
-  wrap.querySelectorAll('button').forEach(b => (b.disabled = true));
-  wrap.appendChild(el('span', { class: 'row-spinner', 'aria-hidden': 'true' }));
-
-  const nextRow = tr.nextElementSibling;
-
-  let data;
-  try {
-    const res = await fetch(`${API}/api/admin/files/${encodeURIComponent(f.hash)}`, { method: 'DELETE' });
-    if (handleAuthError(res)) { tr.removeAttribute('aria-busy'); return; }
-    data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  } catch (err) {
-    tr.removeAttribute('aria-busy');
-    const cell = wrap.parentElement;
-    cell.replaceChildren(...buildActions(tr, f));
-    toast(`Couldn’t delete “${displayTitle(f)}”: ${err.message}`, 'error');
-    cell.querySelector('button')?.focus();
-    return;
-  }
-
-  allFiles = allFiles.filter(x => x.hash !== f.hash);
-  fileCountEl.textContent = String(allFiles.length);
-
-  tr.classList.add('row-removing');
-  const finish = () => {
-    tr.remove();
-    const target = nextRow && nextRow.isConnected
-      ? nextRow.querySelector('.cell-actions button')
-      : document.getElementById('filesHeading');
-    target?.focus?.();
-    if (allFiles.length === 0) renderEmptyRow();
-  };
-  tr.addEventListener('animationend', finish, { once: true });
-  setTimeout(() => { if (tr.isConnected) finish(); }, 220);
-
-  toast(`”${displayTitle(f)}” moved to Trash`, 'success');
-}
-
-// ── Filter ────────────────────────────────────────────────────────────────────
-let filterTimer;
-fileFilter.addEventListener('input', () => {
-  clearTimeout(filterTimer);
-  filterTimer = setTimeout(() => {
-    filterText = fileFilter.value;
-    renderFiles();
-  }, 150);
 });
 
 // ── Entity view: artists → albums → tracks (with rename) ─────────────────────
@@ -657,7 +483,7 @@ async function editTrack(t) {
   await ensureFilesLoaded();
   const f = fileForTrack(t);
   if (!f) { toast('Couldn’t find this file’s details.', 'error'); return; }
-  openEditModal(f, true);
+  entityEditor.open(f);
 }
 
 function trackCount(n) { return `${n} track${n === 1 ? '' : 's'}`; }
@@ -749,7 +575,7 @@ renameForm.addEventListener('submit', async e => {
     // If we renamed the artist whose albums we're viewing, keep the crumb in sync.
     if (t.kind === 'artist' && entityDrill.artist === t.oldName) entityDrill.artist = val;
     reloadEntityLevel();
-    filesLoaded = false;   // flat table + url→file index are now stale; reload on next need
+    fileList?.reload();   // refresh the All-files list + url→file index
   } catch (err) {
     showRenameError(`Couldn't rename: ${err.message}`);
   } finally {
@@ -832,7 +658,7 @@ mergeForm.addEventListener('submit', async e => {
     if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
     toast('Merged.', 'success');
     closeMerge();
-    filesLoaded = false;       // flat table + index now stale
+    fileList?.reload();       // refresh the All-files list + index
     reloadEntityLevel();
   } catch (err) {
     mergeError.textContent = `Couldn't merge: ${err.message}`;
@@ -917,7 +743,7 @@ async function deleteHashes(hashes) {
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.ok) ok++; else fail++;
   }
-  filesLoaded = false;          // flat table + url→file index now stale
+  fileList?.reload();          // refresh the All-files list + url→file index
   reloadEntityLevel();
   if (authFailed) {
     if (ok) toast(`Moved ${ok} to Trash before the session expired.`, 'error');
@@ -967,15 +793,7 @@ const tabEntity  = document.getElementById('tabEntity');
 const tabFiles   = document.getElementById('tabFiles');
 const entityView = document.getElementById('entityView');
 const filesView  = document.getElementById('filesView');
-let filesLoaded  = false;   // the flat table + url→file index load lazily
-
-// ensureFilesLoaded fetches /api/files once, on first need — when the All-files
-// tab is opened or when the entity view needs a track's hash to edit it.
-async function ensureFilesLoaded() {
-  if (filesLoaded) return;
-  filesLoaded = true;
-  await loadFiles();
-}
+const fileListEl = document.getElementById('fileList');
 
 function showEntityView() {
   tabEntity.classList.add('view-tab--active'); tabEntity.setAttribute('aria-selected', 'true');
@@ -986,7 +804,9 @@ function showFilesView() {
   tabFiles.classList.add('view-tab--active'); tabFiles.setAttribute('aria-selected', 'true');
   tabEntity.classList.remove('view-tab--active'); tabEntity.setAttribute('aria-selected', 'false');
   filesView.classList.remove('hidden'); entityView.classList.add('hidden');
-  ensureFilesLoaded();
+  // Mount the component on first open; refresh on subsequent visits.
+  if (!filesMounted) { filesMounted = true; fileList.mount(fileListEl); }
+  else fileList.reload();
 }
 tabEntity.addEventListener('click', showEntityView);
 tabFiles.addEventListener('click', showFilesView);
@@ -998,5 +818,6 @@ tabFiles.addEventListener('click', showFilesView);
   const perms = identity.permissions || [];
   canEditMeta = perms.includes('metadata.edit');
   canDelete   = perms.includes('file.delete');
-  loadEntityArtists();   // entity view is the default; files load lazily on demand
+  fileList = createFileList(filesScope());   // mounted lazily on the All-files tab
+  loadEntityArtists();                       // entity view is the default
 })();

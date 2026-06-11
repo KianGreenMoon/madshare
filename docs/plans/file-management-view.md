@@ -279,6 +279,25 @@ shortcut into Browse is a possible follow-up, not part of this rework.
      Files migration will add). Verified end-to-end via a headless render (2
      groups + counts, badges, 2 selectable, editable/show gates, both modals
      open — no console errors; approve/return endpoints confirmed).
+   - **Admin Files — ✅ done (flat list).** The "All files" flat table is now the
+     component (`files.html` mounts `#fileList`, loads `file-view.css`); the
+     bespoke flat renderer + the inline guest/license controls are deleted.
+     **Access is now a read-only column**, edited in the per-file modal (the
+     `track-edit.js` access section — this is the first scope to use it,
+     `accessEditable:true` + `saveAccess` POSTing license then guest) and the
+     bulk **Edit tags…** (the first `bulkApply` to do the **tag+access split**:
+     PATCH metadata, then the guest/license endpoints, only the filled fields).
+     The flat list also **gains selection + bulk Move to Trash** (per the
+     catalog). The **By-entity drill-down stays its own renderer** — rename /
+     merge / cover / delete are entity-level (the design's separate axis), so the
+     existing "By entity / All files" tabs remain the toggle and the component is
+     List-only here (its browse mode is unused for now). The shared page-local
+     player coordinates both panels (component highlight via `setPlaying`, entity
+     panel by `data-track-id`); the entity per-track editor stays tags-only.
+     Verified end-to-end via a headless render of both views (read-only access
+     cells, selection, bulk toolbar, the access-bearing component edit modal vs
+     the tags-only entity modal — no console errors) plus API checks of the
+     access-save order (explicit guest wins over license auto-derive) and trash.
 4. **Re-home navigation (Hybrid):** Admin `Library` page with the scope switch;
    retire the `Files` / `Moderation` / `Trash` nav entries; `My uploads` stays
    on `/upload`.

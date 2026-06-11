@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/static/css/app.css">
   <link rel="stylesheet" href="/static/css/admin-shell.css">
   <link rel="stylesheet" href="/static/css/admin-files.css">
+  <link rel="stylesheet" href="/static/css/file-view.css">
   <link rel="stylesheet" href="/static/css/player.css">
 </head>
 <body>
@@ -38,33 +39,11 @@
     </div>
   </section>
 
-  <!-- ── All-files view: the flat table with per-file edit/delete/access ── -->
-  <section id="filesView" class="hidden" aria-labelledby="filesHeading">
-    <div class="files-bar">
-      <h2 class="section-title section-title--files" id="filesHeading">Files (<span id="fileCount">0</span>)</h2>
-      <div class="files-search">
-        <label for="fileFilter" class="visually-hidden">Filter files</label>
-        <input type="search" id="fileFilter" placeholder="Filter files…" autocomplete="off">
-      </div>
-    </div>
-
-    <div class="files-table-wrap">
-      <table class="files-table">
-        <thead>
-          <tr>
-            <th scope="col">Title</th>
-            <th scope="col">Artist</th>
-            <th scope="col">Album</th>
-            <th scope="col" class="col-size">Size</th>
-            <th scope="col" class="col-access">Access</th>
-            <th scope="col" class="col-actions">Actions</th>
-          </tr>
-        </thead>
-        <tbody id="filesBody" aria-busy="true">
-          <!-- populated by JS -->
-        </tbody>
-      </table>
-    </div>
+  <!-- ── All-files view: the shared file-management component (file-list.js) ──
+       renders the heading, filter, bulk toolbar, table, read-only access
+       summary, preview Play, and the per-file Edit (tags + access). -->
+  <section id="filesView" class="hidden" aria-label="All files">
+    <div id="fileList" aria-busy="true" aria-live="polite"></div>
   </section>
 </main>
 
