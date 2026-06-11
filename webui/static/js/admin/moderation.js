@@ -1,8 +1,14 @@
 // Admin · Moderation — the review queue (docs/plans/moderation-review-bucket.md
-// phase 3). Staged uploads grouped by uploader in collapsible sections;
-// submitted/returned rows are actionable (approve / return-with-note / discard),
-// drafts are info-only. Bulk actions loop the per-file endpoints client-side,
-// matching the trash/entity-delete convention. Requires content.moderate.
+// phase 3). Staged uploads grouped by uploader in collapsible sections.
+//
+// Selection model: only files *awaiting review* (submitted) are selectable —
+// per row, per uploader (the group-header checkbox), or globally — and the one
+// bulk toolbar acts across groups. Returned files deliberately carry no
+// checkbox: a bulk approve right after a return must not republish the very
+// files just sent back (they keep per-row actions for a deliberate change of
+// mind). Drafts are info-only. Bulk actions loop the per-file endpoints
+// client-side, matching the trash/entity-delete convention. Requires
+// content.moderate.
 import { bootAdmin, API, fmtBytes, fmtDate, shortHash, toast, handleAuthError, el } from './shared.js';
 import { createPlayer } from '../player.js';
 import { createTrackEditor } from '../track-edit.js';
@@ -10,11 +16,20 @@ import { createTrackEditor } from '../track-edit.js';
 const queueEl    = document.getElementById('modQueue');
 const modCountEl = document.getElementById('modCount');
 
+// Global bulk toolbar (static markup in moderation.html)
+const modToolbar    = document.getElementById('modToolbar');
+const modSelectAll  = document.getElementById('modSelectAll');
+const modSelCount   = document.getElementById('modSelCount');
+const btnApproveSel = document.getElementById('modApproveSel');
+const btnReturnSel  = document.getElementById('modReturnSel');
+const btnDiscardSel = document.getElementById('modDiscardSel');
+
 let allItems  = [];          // last loaded /api/admin/moderation list
 let canEdit   = false;       // metadata.edit → the per-row Edit button
 const collapsed = new Set(); // uploader keys collapsed by the user (survives re-render)
 
-const ACTIONABLE = new Set(['submitted', 'returned']);
+const ACTIONABLE  = new Set(['submitted', 'returned']); // per-row actions
+const selectable  = f => f.state === 'submitted';       // bulk selection
 const STATE_LABEL = { submitted: 'Awaiting review', returned: 'Returned', draft: 'Draft' };
 
 const displayTitle = f => f.title || f.filename || 'this file';
@@ -104,6 +119,7 @@ function renderQueue() {
         el('p', { text: 'New uploads appear here once their uploaders send them to approval.' }),
       ]),
     );
+    updateSelection();
     return;
   }
 
@@ -111,6 +127,7 @@ function renderQueue() {
   groups().forEach(g => frag.appendChild(buildGroup(g)));
   queueEl.replaceChildren(frag);
   highlightPlaying();
+  updateSelection();
 }
 
 function groupCounts(items) {
@@ -126,12 +143,24 @@ function buildGroup(g) {
   const section = el('section', { class: 'mod-group' + (collapsed.has(g.key) ? ' is-collapsed' : '') });
   const bodyId = `modGroupBody-${g.key}`;
 
-  const header = el('button', {
-    class: 'mod-group-header', 'aria-expanded': String(!collapsed.has(g.key)), 'aria-controls': bodyId,
+  // The group checkbox selects this uploader's whole awaiting-review batch —
+  // it works even while the group is collapsed ("approve all of this user").
+  const groupCheck = el('input', {
+    type: 'checkbox', class: 'mod-group-check',
+    'aria-label': `Select all files awaiting review from ${g.name}`,
+  });
+  groupCheck.addEventListener('change', () => {
+    section.querySelectorAll('input.mod-check').forEach(c => (c.checked = groupCheck.checked));
+    updateSelection();
+  });
+  if (!g.items.some(selectable)) groupCheck.disabled = true;
+
+  const toggle = el('button', {
+    class: 'mod-group-toggle', 'aria-expanded': String(!collapsed.has(g.key)), 'aria-controls': bodyId,
     onclick: () => {
       const isCollapsed = section.classList.toggle('is-collapsed');
       if (isCollapsed) collapsed.add(g.key); else collapsed.delete(g.key);
-      header.setAttribute('aria-expanded', String(!isCollapsed));
+      toggle.setAttribute('aria-expanded', String(!isCollapsed));
     },
   }, [
     el('span', { class: 'mod-group-chevron', 'aria-hidden': 'true', text: '▾' }),
@@ -139,85 +168,41 @@ function buildGroup(g) {
     el('span', { class: 'mod-group-counts', text: groupCounts(g.items) }),
   ]);
 
-  const body = el('div', { class: 'mod-group-body', id: bodyId });
-  const actionable = g.items.filter(f => ACTIONABLE.has(f.state));
-
-  // Group bulk bar — only when there is something to act on.
-  let toolbar = null;
-  if (actionable.length) {
-    toolbar = buildGroupToolbar(body);
-    body.appendChild(toolbar.bar);
-  }
+  const header = el('div', { class: 'mod-group-header' }, [groupCheck, toggle]);
 
   const tbody = el('tbody');
-  g.items.forEach(f => tbody.appendChild(buildRow(f, toolbar)));
+  g.items.forEach(f => tbody.appendChild(buildRow(f)));
 
-  body.appendChild(el('div', { class: 'files-table-wrap' }, [
-    el('table', { class: 'files-table' }, [
-      el('thead', {}, [el('tr', {}, [
-        el('th', { scope: 'col', class: 'col-check' }, [toolbar ? toolbar.selectAll : '']),
-        el('th', { scope: 'col', text: 'Title' }),
-        el('th', { scope: 'col', text: 'Artist' }),
-        el('th', { scope: 'col', text: 'Album' }),
-        el('th', { scope: 'col', class: 'col-size', text: 'Size' }),
-        el('th', { scope: 'col', text: 'State' }),
-        el('th', { scope: 'col', text: 'Submitted' }),
-        el('th', { scope: 'col', class: 'col-actions', text: 'Actions' }),
-      ])]),
-      tbody,
+  const body = el('div', { class: 'mod-group-body', id: bodyId }, [
+    el('div', { class: 'files-table-wrap' }, [
+      el('table', { class: 'files-table' }, [
+        el('thead', {}, [el('tr', {}, [
+          el('th', { scope: 'col', class: 'col-check' }),
+          el('th', { scope: 'col', text: 'Title' }),
+          el('th', { scope: 'col', text: 'Artist' }),
+          el('th', { scope: 'col', text: 'Album' }),
+          el('th', { scope: 'col', class: 'col-size', text: 'Size' }),
+          el('th', { scope: 'col', text: 'State' }),
+          el('th', { scope: 'col', text: 'Submitted' }),
+          el('th', { scope: 'col', class: 'col-actions', text: 'Actions' }),
+        ])]),
+        tbody,
+      ]),
     ]),
-  ]));
+  ]);
 
   section.append(header, body);
   return section;
 }
 
-// buildGroupToolbar wires the per-group select-all + bulk buttons. The checks
-// live in the rows; the toolbar reads them via the group body it belongs to.
-function buildGroupToolbar(body) {
-  const selectAll = el('input', { type: 'checkbox', 'aria-label': 'Select all in this group' });
-  const selCount  = el('span', { class: 'bulk-selcount', text: '0 selected' });
-  const btnApprove = el('button', { class: 'btn btn-neutral btn-sm', text: 'Approve selected', disabled: '' });
-  const btnReturn  = el('button', { class: 'btn btn-neutral btn-sm', text: 'Return selected…', disabled: '' });
-  const btnDiscard = el('button', { class: 'btn btn-destructive-outline btn-sm', text: 'Discard selected', disabled: '' });
-
-  const checks = () => [...body.querySelectorAll('input.mod-check')];
-  const selected = () => checks().filter(c => c.checked).map(c => c.closest('tr').dataset.hash);
-
-  const update = () => {
-    const cs = checks();
-    const sel = cs.filter(c => c.checked).length;
-    selCount.textContent = `${sel} selected`;
-    [btnApprove, btnReturn, btnDiscard].forEach(b => (b.disabled = sel === 0));
-    selectAll.checked = cs.length > 0 && sel === cs.length;
-    selectAll.indeterminate = sel > 0 && sel < cs.length;
-  };
-
-  selectAll.addEventListener('change', () => {
-    checks().forEach(c => (c.checked = selectAll.checked));
-    update();
-  });
-  btnApprove.addEventListener('click', () => approveHashes(selected()));
-  btnReturn.addEventListener('click', () => openReturnModal(selected()));
-  btnDiscard.addEventListener('click', () => confirmBulkDiscard(selected()));
-
-  const bar = el('div', { class: 'bulk-toolbar' }, [
-    selCount,
-    el('span', { class: 'bulk-spacer' }),
-    btnApprove, btnReturn, btnDiscard,
-  ]);
-  return { bar, selectAll, update };
-}
-
-function buildRow(f, toolbar) {
+function buildRow(f) {
   const tr = el('tr', { 'data-hash': f.hash });
-  const actionable = ACTIONABLE.has(f.state);
 
-  // Selection (actionable rows only — drafts can't be acted on).
+  // Selection: awaiting-review rows only (returned/drafts stay out of bulk).
   let check = '';
-  if (actionable && toolbar) {
+  if (selectable(f)) {
     check = el('input', { type: 'checkbox', class: 'mod-check', 'aria-label': `Select ${displayTitle(f)}` });
-    check.addEventListener('change', toolbar.update);
+    check.addEventListener('change', updateSelection);
   }
   const tdCheck = el('td', { class: 'cell-check' }, [check]);
 
@@ -279,6 +264,43 @@ function buildActions(tr, f) {
   return actions;
 }
 
+// ── Selection (cross-group) + global toolbar ────────────────────────────────
+function rowChecks() { return [...queueEl.querySelectorAll('input.mod-check')]; }
+function selectedHashes() {
+  return rowChecks().filter(c => c.checked).map(c => c.closest('tr').dataset.hash);
+}
+
+// updateSelection recomputes the toolbar and syncs the global and per-group
+// select-all checkboxes against the row checks.
+function updateSelection() {
+  const checks = rowChecks();
+  const total = checks.length;
+  const sel = checks.filter(c => c.checked).length;
+
+  modToolbar.hidden = total === 0;
+  modSelCount.textContent = `${sel} selected`;
+  [btnApproveSel, btnReturnSel, btnDiscardSel].forEach(b => (b.disabled = sel === 0));
+  modSelectAll.checked = total > 0 && sel === total;
+  modSelectAll.indeterminate = sel > 0 && sel < total;
+
+  queueEl.querySelectorAll('.mod-group').forEach(section => {
+    const gc = section.querySelector('input.mod-group-check');
+    if (!gc) return;
+    const cs = [...section.querySelectorAll('input.mod-check')];
+    const gSel = cs.filter(c => c.checked).length;
+    gc.checked = cs.length > 0 && gSel === cs.length;
+    gc.indeterminate = gSel > 0 && gSel < cs.length;
+  });
+}
+
+modSelectAll.addEventListener('change', () => {
+  rowChecks().forEach(c => (c.checked = modSelectAll.checked));
+  updateSelection();
+});
+btnApproveSel.addEventListener('click', () => approveHashes(selectedHashes()));
+btnReturnSel.addEventListener('click', () => openReturnModal(selectedHashes()));
+btnDiscardSel.addEventListener('click', () => confirmBulkDiscard(selectedHashes()));
+
 // ── Metadata edit (the shared track-edit.js component, metadata.edit gated) ──
 const trackEditor = createTrackEditor({
   patchURL: f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`,
@@ -311,6 +333,7 @@ async function runBulk(hashes, makeRequest) {
 }
 
 function setQueueBusy(busy) {
+  [modSelectAll, btnApproveSel, btnReturnSel, btnDiscardSel].forEach(n => (n.disabled = busy));
   queueEl.querySelectorAll('button, input[type="checkbox"]').forEach(n => (n.disabled = busy));
 }
 

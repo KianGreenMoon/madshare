@@ -151,6 +151,28 @@ func (db *DB) UpdateReviewState(ctx context.Context, hash string, t ReviewTransi
 	return n > 0, nil
 }
 
+// StageRestoredFile re-stages a just-restored file as the restorer's draft:
+// an approved-then-trashed file brought back by a re-upload (or an uploader
+// restore) must re-enter the staging pipeline, not the live library — anyone
+// with file.upload could otherwise republish any trashed file by re-sending
+// its bytes. Ownership moves to the restorer so the file lands in *their*
+// "My uploads" tab. Files trashed while pending are left untouched (their
+// state already re-enters the queue) — hence the review_state guard. Returns
+// whether a row was re-staged.
+func (db *DB) StageRestoredFile(ctx context.Context, hash string, ownerID sql.NullInt64) (bool, error) {
+	res, err := db.ExecContext(ctx, `
+		UPDATE files
+		SET review_state = ?, review_note = NULL, submitted_at = NULL,
+		    uploaded_by = COALESCE(?, uploaded_by)
+		WHERE hash = ? AND deleted_at IS NULL AND review_state = ?`,
+		ReviewDraft, ownerID, hash, ReviewApproved)
+	if err != nil {
+		return false, fmt.Errorf("stage restored file: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
 // FileReviewInfo returns the review state, uploader, and trash flag for the
 // file with the given content hash — the narrow lookup used by the blob-access
 // gate and ownership checks. found is false (no error) on unknown hashes.

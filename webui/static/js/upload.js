@@ -546,7 +546,8 @@ function addRestoreButton(item) {
       const res = await fetch(`${API}/api/files/${encodeURIComponent(item.hash)}/restore`, { method: 'POST' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      setItemState(item, 'done', 'Restored to library');
+      if (data.staged) { setItemState(item, 'done', 'Restored — staged in My uploads'); loadMine(); }
+      else setItemState(item, 'done', 'Restored to library');
     } catch (err) {
       btn.disabled = false;
       announce(`Restore failed: ${err.message}`);
@@ -579,8 +580,10 @@ function uploadXhr(item) {
       if (xhr.status >= 200 && xhr.status < 300 && body?.ok !== false) {
         setProgress(item, 100);
         let msg = 'Uploaded';
-        if (body?.existed) msg = body?.pending ? 'Already uploaded — awaiting review' : 'Already present';
-        else if (body?.pending) msg = 'Uploaded — staged in My uploads';
+        if (body?.existed) {
+          if (body?.restored) msg = body?.pending ? 'Restored — staged in My uploads' : 'Restored to library';
+          else msg = body?.pending ? 'Already uploaded — awaiting review' : 'Already present';
+        } else if (body?.pending) msg = 'Uploaded — staged in My uploads';
         setItemState(item, 'done', msg);
         onUploaded(item, body || {});
         done();
@@ -623,7 +626,9 @@ function handleBackoff(item) {
 // grouped — it stays in the queue marked "already present".
 function onUploaded(item, body) {
   item.hash = body.hash || '';
-  if (body.pending && !body.existed) stagedThisRun++;
+  // Staged: a fresh pending upload, or a trashed file the re-upload restored
+  // into the staging area (the server re-stages approved-then-trashed files).
+  if (body.pending && (!body.existed || body.restored)) stagedThisRun++;
   if (body.existed) return;
 
   item.title = body.title || '';

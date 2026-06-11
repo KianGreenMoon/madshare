@@ -121,7 +121,24 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				restored = true
-				h.audit(ctx, "file.restore", hash, "restore-via-reupload: "+filename)
+				// With moderation configured, an upload-initiated restore must not
+				// silently republish: an approved-then-trashed file re-enters the
+				// re-uploader's staging area as a draft instead of the library.
+				// Files trashed while pending keep their state/owner (restore
+				// already re-enters the queue for those).
+				detail := "restore-via-reupload: " + filename
+				if h.authzEnabled {
+					staged, err := h.repo.StageRestoredFile(ctx, existing.Hash, actorID(ctx))
+					if err != nil {
+						http.Error(w, "storage error", http.StatusInternalServerError)
+						return
+					}
+					if staged {
+						detail = "restore-via-reupload (re-staged as draft): " + filename
+					}
+					pending = true // staged now, or was already pending pre-trash
+				}
+				h.audit(ctx, "file.restore", hash, detail)
 			} else {
 				h.audit(ctx, "file.upload", hash, "dedup-trashed (policy="+policy+", not restored): "+filename)
 			}
@@ -145,7 +162,7 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 			"existed":          true,
 			"restored":         restored,
 			"trashed":          existing.DeletedAt.Valid && !restored,
-			"pending":          pending && !existing.DeletedAt.Valid,
+			"pending":          pending && (!existing.DeletedAt.Valid || restored),
 			"hash":             hash,
 			"filename":         filename,
 			"size":             size,
@@ -412,8 +429,23 @@ func (h *handler) restoreFileForUploader(w http.ResponseWriter, r *http.Request)
 		http.NotFound(w, r)
 		return
 	}
-	h.audit(r.Context(), "file.restore", hash, "uploader-restore")
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	// Same moderation rule as restore-via-reupload: an uploader-initiated
+	// restore of an approved file re-enters staging as the restorer's draft
+	// rather than republishing into the library.
+	staged := false
+	detail := "uploader-restore"
+	if h.authzEnabled {
+		staged, err = h.repo.StageRestoredFile(r.Context(), hash, actorID(r.Context()))
+		if err != nil {
+			http.Error(w, "storage error", http.StatusInternalServerError)
+			return
+		}
+		if staged {
+			detail = "uploader-restore (re-staged as draft)"
+		}
+	}
+	h.audit(r.Context(), "file.restore", hash, detail)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "staged": staged})
 }
 
 // isSHA256Hex reports whether s is exactly 64 lowercase hex characters.

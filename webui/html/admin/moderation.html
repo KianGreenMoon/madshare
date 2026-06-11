@@ -23,9 +23,20 @@
     <p class="section-copy">
       Uploads staged for review, grouped by uploader. Approve to publish into the
       library, return with a note so the uploader can fix the metadata, or discard
-      to Trash. Drafts are shown for awareness only &mdash; their uploaders haven't
-      submitted them yet.
+      to Trash. Selection and the bulk actions cover files <em>awaiting review</em>
+      &mdash; across uploaders, the group checkbox selects one uploader's whole batch.
+      Returned files stay listed with their note until the uploader resubmits (act
+      on them per row); drafts are shown for awareness only.
     </p>
+
+    <div class="bulk-toolbar" id="modToolbar" hidden>
+      <input type="checkbox" id="modSelectAll" aria-label="Select all files awaiting review">
+      <span class="bulk-selcount" id="modSelCount">0 selected</span>
+      <span class="bulk-spacer"></span>
+      <button class="btn btn-neutral btn-sm" id="modApproveSel" disabled>Approve selected</button>
+      <button class="btn btn-neutral btn-sm" id="modReturnSel" disabled>Return selected&hellip;</button>
+      <button class="btn btn-destructive-outline btn-sm" id="modDiscardSel" disabled>Discard selected</button>
+    </div>
 
     <div id="modQueue" aria-busy="true" aria-live="polite">
       <!-- populated by JS: one collapsible group per uploader -->

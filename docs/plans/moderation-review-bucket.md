@@ -267,8 +267,14 @@ visible/usable only with `content.moderate` (server enforces regardless).
   admin pages staying outside the shell), **Edit** (shared track-edit module →
   existing `PATCH /api/files/{hash}/metadata`), **Approve**, **Return…** (modal
   with a required short note), **Discard** (two-step, → Trash).
-- Group-level bulk bar: approve selected/all, return selected with one note,
-  discard selected (client-side loops, as decided).
+- **Selection & bulk (revised after owner feedback 2026-06-11):** one global
+  bulk toolbar (approve / return-with-one-note / discard selected, client-side
+  loops) acting on a cross-group selection; a group-header checkbox selects an
+  uploader's whole batch (works while collapsed), and a global select-all
+  covers every uploader. Only `submitted` rows are selectable — **`returned`
+  rows carry no checkbox**, so a bulk approve right after a return cannot
+  republish the very files just sent back (they keep per-row actions for a
+  deliberate change of mind).
 - The Trash page rows gain a small "pending review" badge when a trashed row's
   `review_state <> 'approved'`, so a restored discard visibly re-enters the
   queue.
@@ -289,8 +295,18 @@ existing `admin/shared.js` / shared helpers — no re-implementation.
   pending file may already carry a derived license/guest flag, but nothing is
   reachable until `approved` because every listing/access path filters on the
   shared predicate. (Exactly the composition the original sketch wanted.)
-- **Trash-restore policy** (`reupload_restores` etc.) — unchanged; restore
-  brings back the row with whatever `review_state` it had.
+- **Trash-restore policy** (`reupload_restores` etc.) — **amended after an
+  owner bug report (2026-06-11):** an *upload-initiated* restore (re-upload of
+  trashed bytes under `reupload_restores`, or the explicit uploader-restore
+  endpoint under `uploader_restore`) must not silently republish. When the
+  restored file was `approved`, it is re-staged as the **restorer's draft**
+  (`StageRestoredFile`: state → `draft`, note/submitted_at cleared,
+  `uploaded_by` → restorer) so it lands in their My-uploads tab and passes
+  review again — otherwise any `file.upload` holder could push any trashed
+  file straight into the library by re-sending its bytes. Files trashed while
+  *pending* keep their state/owner (they already re-enter the queue). The
+  admin **Trash-page restore is unchanged** (prior-state restore, Decision
+  #3) — that one is an explicit moderator action.
 - **Prune** — `ListFileRefs` is intentionally state-blind; pending blobs are
   never "dangling". No change.
 - **Playlists/favorites** — pending files can't be added (lookup now requires

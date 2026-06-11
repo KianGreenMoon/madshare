@@ -171,6 +171,12 @@ type Repository interface {
 	// the blob-access gate and ownership checks. found is false on unknown hash.
 	FileReviewInfo(ctx context.Context, hash string) (state string, uploadedBy sql.NullInt64, deleted bool, found bool, err error)
 
+	// StageRestoredFile demotes a just-restored approved file to the
+	// restorer's draft so an upload-initiated restore re-enters the staging
+	// pipeline instead of silently republishing. No-op (false) for files that
+	// were trashed while pending.
+	StageRestoredFile(ctx context.Context, hash string, ownerID sql.NullInt64) (bool, error)
+
 	// --- Cover image variants & async job queue (Phase 1: upload & covers) ---
 
 	// EnqueueImageJob inserts a pending image-variant job. Idempotent per

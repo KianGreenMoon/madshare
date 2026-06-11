@@ -5,15 +5,27 @@
 /* ── Per-uploader group ─────────────────────────────────────────────────────── */
 .mod-group { margin-bottom: var(--space-5); }
 
+/* Header = [group checkbox][collapse-toggle button]. The checkbox selects the
+   uploader's whole awaiting-review batch and works while collapsed. */
 .mod-group-header {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  width: 100%;
-  padding: var(--space-2) var(--space-3);
+  padding-left: var(--space-3);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+}
+.mod-group-check { flex: none; cursor: pointer; accent-color: var(--accent); }
+.mod-group-toggle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3) var(--space-2) 0;
+  background: none;
+  border: none;
   color: var(--text);
   font: inherit;
   font-weight: 600;
@@ -21,7 +33,7 @@
   text-align: left;
 }
 .mod-group-header:hover { background: var(--surface-hover); }
-.mod-group-header:focus-visible { outline: 2px solid var(--accent); }
+.mod-group-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 .mod-group-chevron {
   flex: none;

@@ -406,6 +406,9 @@ type fakeRepo struct {
 	reviewInfoDeleted bool
 	reviewInfoFound   bool
 	reviewInfoErr     error
+	stageRestored     bool
+	stageRestoredErr  error
+	stageRestoreCalls int
 }
 
 func (f *fakeRepo) ListUploadsByUser(_ context.Context, _ int64) ([]*database.ReviewEntry, error) {
@@ -425,6 +428,11 @@ func (f *fakeRepo) UpdateReviewState(_ context.Context, hash string, t database.
 
 func (f *fakeRepo) FileReviewInfo(_ context.Context, _ string) (string, sql.NullInt64, bool, bool, error) {
 	return f.reviewInfoState, f.reviewInfoOwner, f.reviewInfoDeleted, f.reviewInfoFound, f.reviewInfoErr
+}
+
+func (f *fakeRepo) StageRestoredFile(_ context.Context, _ string, _ sql.NullInt64) (bool, error) {
+	f.stageRestoreCalls++
+	return f.stageRestored, f.stageRestoredErr
 }
 
 func (f *fakeRepo) RecordAudit(_ context.Context, actor sql.NullInt64, action, target, _ string) error {
