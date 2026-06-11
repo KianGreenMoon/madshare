@@ -264,6 +264,21 @@ shortcut into Browse is a possible follow-up, not part of this rework.
      (sections, gating, autoSelect=2, note, tags-only modal — no console errors;
      owner PATCH + submit confirmed, `album_artist` preserved). No backend change
      (the `reviewItem` DTO already carries `album_artist`).
+   - **Moderation — ✅ done.** `admin/moderation.js` is a scope descriptor over
+     the component (old renderer deleted); `admin/moderation.html` mounts
+     `#fileList`, loads `file-view.css`, and keeps the return-note + bulk-discard
+     modals (driven via promise-returning `run`s). Collapsible per-uploader
+     grouping (`grouping.kind:'collapsible'` with `by`/`label`/`counts`), the
+     review-state badges, selection limited to `submitted` (`selectable`),
+     state-specific row actions via `show()` (Approve/Return/Discard on
+     submitted+returned only; drafts preview-only) and `editable()` (Edit on
+     submitted+returned when `metadata.edit`). **Tags-only** for now
+     (behaviour-preserving) though the catalog marks it access-editable — the
+     access endpoints are `metadata.edit`-gated and the files aren't deleted, so
+     enabling it later is purely additive (it needs the bulk tag/access split the
+     Files migration will add). Verified end-to-end via a headless render (2
+     groups + counts, badges, 2 selectable, editable/show gates, both modals
+     open — no console errors; approve/return endpoints confirmed).
 4. **Re-home navigation (Hybrid):** Admin `Library` page with the scope switch;
    retire the `Files` / `Moderation` / `Trash` nav entries; `My uploads` stays
    on `/upload`.

@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/static/css/app.css">
   <link rel="stylesheet" href="/static/css/admin-shell.css">
   <link rel="stylesheet" href="/static/css/admin-moderation.css">
+  <link rel="stylesheet" href="/static/css/file-view.css">
   <link rel="stylesheet" href="/static/css/player.css">
 </head>
 <body>
@@ -16,31 +17,11 @@
 {{template "admin-shell" .}}
 
 <main class="admin-main">
-  <section aria-labelledby="modHeading">
-    <div class="files-bar">
-      <h2 class="section-title section-title--files" id="modHeading">Moderation (<span id="modCount">0</span>)</h2>
-    </div>
-    <p class="section-copy">
-      Uploads staged for review, grouped by uploader. Approve to publish into the
-      library, return with a note so the uploader can fix the metadata, or discard
-      to Trash. Selection and the bulk actions cover files <em>awaiting review</em>
-      &mdash; across uploaders, the group checkbox selects one uploader's whole batch.
-      Returned files stay listed with their note until the uploader resubmits (act
-      on them per row); drafts are shown for awareness only.
-    </p>
-
-    <div class="bulk-toolbar" id="modToolbar" hidden>
-      <input type="checkbox" id="modSelectAll" aria-label="Select all files awaiting review">
-      <span class="bulk-selcount" id="modSelCount">0 selected</span>
-      <span class="bulk-spacer"></span>
-      <button class="btn btn-neutral btn-sm" id="modApproveSel" disabled>Approve selected</button>
-      <button class="btn btn-neutral btn-sm" id="modReturnSel" disabled>Return selected&hellip;</button>
-      <button class="btn btn-destructive-outline btn-sm" id="modDiscardSel" disabled>Discard selected</button>
-    </div>
-
-    <div id="modQueue" aria-busy="true" aria-live="polite">
-      <!-- populated by JS: one collapsible group per uploader -->
-    </div>
+  <!-- The shared file-management component (file-list.js) renders the queue:
+       heading, filter, bulk toolbar, per-uploader collapsible groups, the
+       review-state badges, preview Play, and per-file Edit. -->
+  <section aria-label="Moderation">
+    <div id="fileList" aria-busy="true" aria-live="polite"></div>
   </section>
 </main>
 
