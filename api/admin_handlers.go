@@ -60,15 +60,19 @@ func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type trashItem struct {
-		ID        int64  `json:"id"`
-		Hash      string `json:"hash"`
-		Filename  string `json:"filename"`
-		Title     string `json:"title"`
-		Artist    string `json:"artist"`
-		Album     string `json:"album"`
-		ByteSize  int64  `json:"byte_size"`
-		URL       string `json:"url"`
-		DeletedAt int64  `json:"deleted_at"`
+		ID       int64  `json:"id"`
+		Hash     string `json:"hash"`
+		Filename string `json:"filename"`
+		Title    string `json:"title"`
+		Artist   string `json:"artist"`
+		// AlbumArtist is needed so the Trash page's metadata editor can prefill
+		// it — the editor writes all four base tags, so an absent prefill would
+		// silently clear album_artist on save.
+		AlbumArtist string `json:"album_artist"`
+		Album       string `json:"album"`
+		ByteSize    int64  `json:"byte_size"`
+		URL         string `json:"url"`
+		DeletedAt   int64  `json:"deleted_at"`
 		// ReviewState lets the Trash page badge rows that re-enter the
 		// moderation queue (not the library) when restored.
 		ReviewState string `json:"review_state"`
@@ -82,6 +86,7 @@ func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
 			Filename:    e.Filename,
 			Title:       e.Title,
 			Artist:      e.Artist,
+			AlbumArtist: e.AlbumArtist.String,
 			Album:       e.Album,
 			ByteSize:    e.ByteSize,
 			URL:         "/files/" + e.ObjectKey,

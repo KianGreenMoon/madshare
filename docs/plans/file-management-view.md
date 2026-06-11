@@ -146,12 +146,19 @@ above, gated by `accessEditable`.
 |---|---|---|---|---|---|---|
 | **All** (admin) | ✓ | list **+ browse** | – | all | Play · Edit · Move to Trash | Edit tags… · Move to Trash |
 | **Review** (admin) | ✓ | list | uploader | `submitted` | Play · Edit · Approve · Return… · Discard | Edit tags… · Approve · Return… · Discard |
-| **Trash** (admin) | ✓ | list | – | all | Play · Edit · Restore · Delete forever | Edit tags… · Restore · Delete forever |
+| **Trash** (admin) | tags only¹ | list | – | all | Play · Edit · Restore · Delete forever | Edit tags… · Restore · Delete forever |
 | **My uploads** (owner) | ✗ | list | state | draft/returned | Play · Edit · Send · Remove | Edit tags… · Send to approval · Remove |
 
 The **review-state badge** renders for Review/Mine; the **pending-review badge**
 renders for Trash rows whose `review_state <> 'approved'` (a restore returns
 them to the queue, not the library) — both already exist in `admin-shell.css`.
+
+¹ **Trash edits tags only.** `UpdateFileMetadata` resolves by hash with no
+`deleted_at` filter, so a trashed file's tags *can* be corrected before restore.
+The access routes (`SetGuestPlayable`/`SetLicense`) deliberately filter
+`deleted_at IS NULL`, and access is meaningless on a file that isn't served — so
+the Trash editors omit the License/Guest section. (The mockup showed it editable;
+this is the reconciliation with backend reality.)
 
 ---
 
@@ -170,8 +177,12 @@ them to the queue, not the library) — both already exist in `admin-shell.css`.
 | Submit / Remove (owner) | `POST /api/my/uploads/submit` · `DELETE /api/my/uploads/{hash}` |
 
 Bulk tag/access edits loop the per-file routes above. The access routes are
-admin-only, which is exactly why **My uploads is `accessEditable: ✗`** — an
-uploader sets tags on their drafts, not guest/license.
+admin-only **and reject soft-deleted rows**, which is exactly why **My uploads
+is `accessEditable: ✗`** (an uploader sets tags on their drafts, not
+guest/license) and **Trash is tags-only** (note ¹). One additive backend tweak
+shipped with the Trash migration: `album_artist` was added to the trash list DTO
+— the editor writes all four base tags, so an absent prefill would have silently
+cleared it.
 
 **DTO note:** the Browse track DTO (`/api/tracks`) carries no `hash`,
 `guest_playable`, or `license`. The component already resolves a browse track to
@@ -208,16 +219,36 @@ shortcut into Browse is a possible follow-up, not part of this rework.
 
 ## Phasing
 
-0. **Mockups + this doc** — done. (`webui/static/dev/unified-v2-hybrid.html`.)
-1. **Extract the component** → `webui/static/js/file-list.js` + `file-view.css`:
-   rendering (list + browse), selection, bulk toolbar, grouping, badges, inline
-   confirms, wiring to the extended `track-edit.js` + the new bulk-edit modal +
-   `player.js`. Drive it from the scope catalog above.
+0. **Mockups + this doc** — ✅ done. (`webui/static/dev/unified-v2-hybrid.html`.)
+1. **Extract the component** → `webui/static/js/file-list.js` + `file-view.css` —
+   ✅ done. `createFileList(scope)` renders list (flat / collapsible-by-uploader /
+   fixed sections) + browse (artist→album→track), owns selection, the bulk
+   toolbar, badges, inline two-step confirms, and the empty/loading/error states;
+   it imports no page-specific helpers (own `el`/format; the consumer injects
+   `load`, action `run`s, `onPlay`, `toast`, `handleAuthError`). Built-in
+   play/edit row actions + an "Edit tags…" bulk action are added automatically
+   from scope capabilities. Browse cover/group-hash/track-resolve specifics are
+   injected via `scope.browse` (filled in when the Files site migrates).
 2. **Extend `track-edit.js`** with the optional access section; add the
-   **bulk-edit** modal component.
+   **bulk-edit** modal component — ✅ done. `track-edit.js` gained an optional
+   `access` ({licenses, save}) section (backward-compatible — its existing
+   callers pass none); `bulk-edit.js` is the new selection-wide editor
+   (blank = keep, Title excluded). Both styled by `file-view.css`.
+
+   *Verified:* `node --check` on all three modules, `go build ./...` (asset
+   embed), `go test ./webui/...`. End-to-end browser verification lands with the
+   first migration (step 3, Trash).
 3. **Migrate call sites onto it, one at a time, deleting the old renderer:**
    Trash → My uploads → Moderation → Admin Files. Each migration is behaviour-
    preserving except Trash, which *gains* Edit.
+   - **Trash — ✅ done.** `admin/trash.js` is now a scope descriptor over the
+     component (old renderer deleted); `admin/trash.html` mounts `#fileList` and
+     loads `file-view.css` + the player bar. Trash gained per-file **Edit**
+     (tags) + **Play**, an **Edit tags…** bulk action, and a filter box; the
+     explicit "Restore all / Delete all" buttons are replaced by select-all +
+     the selected-bulk actions (per the scope catalog). Verified end-to-end with
+     a headless render (no console errors; Edit opens + persists; `album_artist`
+     preserved; restore works).
 4. **Re-home navigation (Hybrid):** Admin `Library` page with the scope switch;
    retire the `Files` / `Moderation` / `Trash` nav entries; `My uploads` stays
    on `/upload`.
