@@ -735,6 +735,11 @@ function mineScope() {
     editPatchURL: f => `${API}/api/my/uploads/${encodeURIComponent(f.hash)}/metadata`,
     editNote: 'Fix the tags before sending to approval — title, artist and album decide where the track lands in the library.',
     accessEditable: false,            // an uploader sets tags on drafts, not access
+    // In grouped sort the per-state sections are gone, so badge draft/returned
+    // (submitted is locked anyway — no badge).
+    badge: (f, grouped) => grouped && f.state !== 'submitted'
+      ? { text: f.state === 'returned' ? 'Returned' : 'Draft', cls: 'is-' + f.state }
+      : null,
 
     rowActions: [
       {

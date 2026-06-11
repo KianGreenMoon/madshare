@@ -185,7 +185,9 @@ export function createFileList(scope) {
       ? el('span', { class: 'cell-title', text: f.title })
       : el('span', { class: 'cell-title is-fallback', text: f.filename || 'Untitled' });
     const kids = [titleSpan];
-    const b = scope.badge ? scope.badge(f) : null;
+    // The badge fn gets whether the list is in grouped sort, so a scope can show
+    // a state badge only when its native (sectioned) grouping is hidden.
+    const b = scope.badge ? scope.badge(f, scope.artistAlbumSort && sortMode === 'grouped') : null;
     if (b) kids.push(document.createTextNode(' '), el('span', { class: `state-badge ${b.cls || ''}`, title: b.title || null, text: b.text }));
     kids.push(el('span', { class: 'cell-hash', title: f.hash || '', text: shortHash(f.hash) }));
     if (f.note) kids.push(el('span', { class: 'mod-note', text: `Note: ${f.note}` }));
