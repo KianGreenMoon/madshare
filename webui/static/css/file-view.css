@@ -130,3 +130,218 @@
 @media (max-width: 520px) {
   .edit-form .field-split { grid-template-columns: 1fr; }
 }
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Component table chrome. Mirrors admin-shell.css / admin-moderation.css so the
+   component renders correctly on pages that DON'T load the admin sheets (the
+   shell upload page, for "My uploads"). On admin pages both load; file-view.css
+   is loaded last with identical values, so nothing changes visually. The
+   duplicates are removed from the admin sheets in the plan's cleanup phase
+   (docs/plans/file-management-view.md), once every consumer loads this file.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/* Danger tokens + destructive buttons + the small size (admin-shell.css). */
+:root {
+  --danger:        var(--error);
+  --danger-bg:     rgba(224, 92, 92, 0.10);
+  --danger-border: rgba(224, 92, 92, 0.35);
+  --danger-solid:  #c0392b;
+}
+.btn-destructive-outline { background: transparent; border-color: var(--danger); color: var(--danger); }
+.btn-destructive-outline:hover:not(:disabled) { background: var(--danger-bg); }
+.btn-destructive-solid {
+  background: var(--danger-solid);
+  border-color: var(--danger-solid);
+  color: #fff;
+  font-weight: 600;
+}
+.btn-destructive-solid:hover:not(:disabled) { filter: brightness(1.1); }
+.btn-sm { padding: var(--space-1) var(--space-3); font-size: 13px; }
+
+/* Scope heading (compact, like the admin Files/Trash headings). */
+.section-title--files {
+  margin-bottom: 0;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 16px;
+  color: var(--text);
+}
+
+/* Heading + search row. */
+.files-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+  flex-wrap: wrap;
+}
+.files-search input[type="search"] {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+  padding: var(--space-2) var(--space-3);
+  min-width: 220px;
+}
+.files-search input[type="search"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* The table. */
+.files-table-wrap {
+  max-height: 64vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.files-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.files-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.files-table .col-size,
+.files-table .col-actions { text-align: right; }
+.files-table tbody tr { transition: background 120ms ease; }
+.files-table tbody tr:hover { background: var(--surface-hover); }
+.files-table tbody td {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.files-table tbody tr:last-child td { border-bottom: none; }
+
+.cell-title { font-weight: 500; }
+.cell-title.is-fallback { font-weight: 400; font-style: italic; color: var(--text-muted); }
+.cell-hash {
+  display: block;
+  font-size: 13px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, monospace;
+  margin-top: 2px;
+}
+.cell-muted { color: var(--text-muted); }
+.cell-size {
+  text-align: right;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.cell-actions { text-align: right; white-space: nowrap; }
+.cell-actions .btn + .btn { margin-left: var(--space-2); }
+
+.files-table .col-check,
+.files-table .cell-check { width: 1%; text-align: center; padding-right: 0; }
+.cell-check input,
+.col-check input { cursor: pointer; }
+
+/* Bulk-action toolbar. */
+.bulk-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.bulk-selcount { color: var(--text-muted); font-size: 13px; }
+.bulk-spacer { flex: 1; }
+
+/* Inline two-step confirm + the row action wrapper. */
+.delete-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+.delete-confirm-label { font-size: 13px; color: var(--text); }
+.trash-actions { display: flex; gap: var(--space-2); justify-content: flex-end; }
+
+/* The moderator's return note, shown under a row title (admin-moderation.css). */
+.mod-note {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: italic;
+  white-space: normal;
+}
+
+/* Review-state badge (admin-shell.css). */
+.state-badge {
+  display: inline-block;
+  padding: 1px var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.state-badge.is-submitted { color: var(--accent); border-color: var(--accent); }
+.state-badge.is-returned  { color: var(--error);  border-color: var(--error); }
+
+/* Table-level states. */
+.table-state-row {
+  text-align: center;
+  color: var(--text-muted);
+  padding: var(--space-6) var(--space-4);
+}
+.table-state-row td { text-align: center; color: var(--text-muted); padding: var(--space-6) var(--space-4); }
+.empty-state { color: var(--text-muted); text-align: center; padding: var(--space-6) var(--space-4); }
+.empty-state .drop-icon { font-size: 40px; }
+.empty-state p { margin-top: var(--space-2); font-size: 14px; }
+
+/* Responsive: collapse the table to cards below 640px. */
+@media (max-width: 640px) {
+  .files-table-wrap { border: none; max-height: none; overflow: visible; }
+  .files-table thead { display: none; }
+  .files-table,
+  .files-table tbody,
+  .files-table tr,
+  .files-table td { display: block; width: 100%; }
+
+  .files-table tbody tr {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: var(--space-3);
+    padding: var(--space-2);
+  }
+  .files-table tbody td {
+    border-bottom: none;
+    padding: var(--space-1) var(--space-2);
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-3);
+    text-align: left;
+  }
+  .files-table tbody td::before {
+    content: attr(data-label);
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+  .files-table td.cell-title-td::before { align-self: flex-start; }
+  .cell-size { text-align: right; }
+  .cell-actions { display: block; }
+  .cell-actions .btn,
+  .cell-actions .delete-confirm { width: 100%; }
+  .cell-actions .btn + .btn { margin-left: 0; margin-top: var(--space-2); }
+  .cell-actions .delete-confirm { justify-content: stretch; flex-wrap: wrap; }
+  .cell-actions .delete-confirm .btn { flex: 1; }
+}

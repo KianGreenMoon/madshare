@@ -1,6 +1,6 @@
 import { gatePage, PAGE_PERMS, getIdentity } from './auth.js';
 import { createHashPool } from './hash-pool.js';
-import { createTrackEditor } from './track-edit.js';
+import { createFileList } from './file-list.js';
 import { getController } from './player-controller.js';
 
 // Upload page (/upload) controller.
@@ -33,8 +33,7 @@ const API = document.querySelector('meta[name="api-url"]')?.content || '';
 let dropZone, fileInput, folderInput, addMusicBtn, addMenu, chooseFilesBtn, chooseFolderBtn;
 let workersRange, workersValue, startBtn, clearBtn, queueList, queueEmpty;
 let srStatus, toastStack, precheckToggle;
-let tabBtnUpload, tabBtnMine, uploadPane, minePane, mineCountEl;
-let sendApprovalBtn, removeSelectedBtn, mineSelInfo, mineReturned, mineDrafts, mineSubmitted, mineEmpty;
+let tabBtnUpload, tabBtnMine, uploadPane, minePane, mineCountEl, mineFileListEl;
 
 function queryRefs() {
   dropZone        = document.getElementById('dropZone');
@@ -58,13 +57,7 @@ function queryRefs() {
   uploadPane      = document.getElementById('uploadPane');
   minePane        = document.getElementById('minePane');
   mineCountEl     = document.getElementById('mineCount');
-  sendApprovalBtn   = document.getElementById('sendApproval');
-  removeSelectedBtn = document.getElementById('removeSelected');
-  mineSelInfo     = document.getElementById('mineSelInfo');
-  mineReturned    = document.getElementById('mineReturned');
-  mineDrafts      = document.getElementById('mineDrafts');
-  mineSubmitted   = document.getElementById('mineSubmitted');
-  mineEmpty       = document.getElementById('mineEmpty');
+  mineFileListEl  = document.getElementById('mineFileList');
 }
 
 // ── State ───────────────────────────────────────────────────────────────────
@@ -83,10 +76,8 @@ let canEditMeta = false;      // metadata.edit permission (set after /auth/me)
 const activeXhrs = new Set(); // in-flight uploads, aborted on teardown
 let wireAbort = null;         // AbortController for this activation's listeners
 
-// ── My uploads (staging / review bucket) state ──────────────────────────────
-let mine = [];                // staged files from GET /api/my/uploads
-const mineSel = new Set();    // hashes selected for "Send to approval"
-let trackEditor = null;       // shared track-edit.js modal (lazy, destroyed on teardown)
+// ── My uploads (staging / review bucket) ────────────────────────────────────
+let fileList = null;          // the shared file-management component (file-list.js)
 let stagedThisRun = 0;        // freshly staged uploads in the current run (for the nudge)
 
 // ── Pre-upload hash-precheck (3b) ────────────────────────────────────────────
@@ -120,7 +111,8 @@ export async function init() {
   if (!gatePage(PAGE_PERMS.upload)) return;
   const identity = getIdentity();
   canEditMeta = Array.isArray(identity?.permissions) && identity.permissions.includes('metadata.edit');
-  loadMine();
+  fileList = createFileList(mineScope());
+  fileList.mount(mineFileListEl);
 }
 
 export function teardown() {
@@ -129,8 +121,8 @@ export function teardown() {
   for (const xhr of activeXhrs) { try { xhr.abort(); } catch { /* ignore */ } }
   activeXhrs.clear();
   if (hashPool) { hashPool.terminate(); hashPool = null; }
-  trackEditor?.destroy();
-  trackEditor = null;
+  fileList?.destroy();
+  fileList = null;
   // Reset for a clean next entry (the <main> is re-rendered fresh by the shell).
   queue.length = 0;
   groups.clear();
@@ -138,8 +130,6 @@ export function teardown() {
   nextId = 1;
   activeWorkers = 0;
   running = false;
-  mine = [];
-  mineSel.clear();
   stagedThisRun = 0;
 }
 
@@ -197,8 +187,6 @@ function wire(signal) {
   // Upload ⇄ My uploads tabs
   tabBtnUpload.addEventListener('click', () => selectTab('upload'), { signal });
   tabBtnMine.addEventListener('click', () => selectTab('mine'), { signal });
-  sendApprovalBtn.addEventListener('click', sendForApproval, { signal });
-  removeSelectedBtn.addEventListener('click', removeSelectedClick, { signal });
 }
 
 function selectTab(which) {
@@ -209,7 +197,7 @@ function selectTab(which) {
   tabBtnMine.classList.toggle('is-active', mineActive);
   tabBtnUpload.setAttribute('aria-selected', String(!mineActive));
   tabBtnMine.setAttribute('aria-selected', String(mineActive));
-  if (mineActive) loadMine();                    // refresh on entry
+  if (mineActive) fileList?.reload();             // refresh on entry
 }
 
 function toggleAddMenu() {
@@ -476,7 +464,7 @@ function finishRun() {
   if (stagedThisRun > 0) {
     const n = stagedThisRun;
     stagedThisRun = 0;
-    loadMine();
+    fileList?.reload();
     showToast(`${n} file${n === 1 ? '' : 's'} staged — open “My uploads” to check tags and send to approval.`);
     announce(`${n} file${n === 1 ? '' : 's'} staged in My uploads.`);
   }
@@ -542,7 +530,7 @@ function addRestoreButton(item) {
       const res = await fetch(`${API}/api/files/${encodeURIComponent(item.hash)}/restore`, { method: 'POST' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      if (data.staged) { setItemState(item, 'done', 'Restored — staged in My uploads'); loadMine(); }
+      if (data.staged) { setItemState(item, 'done', 'Restored — staged in My uploads'); fileList?.reload(); }
       else setItemState(item, 'done', 'Restored to library');
     } catch (err) {
       btn.disabled = false;
@@ -714,260 +702,128 @@ async function postCover(g, file) {
 }
 
 // ── My uploads tab (staging / review bucket) ────────────────────────────────
-// Lists the caller's non-approved files (GET /api/my/uploads): returned files
-// (grouped under the moderator's note), editable drafts, and locked submitted
-// rows. Draft/returned rows can be edited (shared track-edit.js, owner-scoped
-// endpoint) and sent to approval; every row can be previewed via the shell
-// player (the blob gate lets uploaders fetch staged files).
+// The owner's non-approved files (GET /api/my/uploads), rendered through the
+// shared file-management component (file-list.js) grouped by review state:
+// returned files (with the moderator's note), editable drafts, and locked
+// submitted rows. Draft/returned rows edit via the owner-scoped endpoint and
+// send to approval; every row previews through the shared shell player.
 
-async function loadMine() {
-  try {
-    const res = await fetch(`${API}/api/my/uploads`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    mine = await res.json();
-  } catch (err) {
-    console.warn('My uploads unavailable:', err);
-    mine = [];
-  }
-  renderMine();
-}
+const MINE_EDITABLE = f => f.state === 'draft' || f.state === 'returned';
+const mineTitle = f => f.title || f.filename || 'this file';
 
-function getTrackEditor() {
-  trackEditor ||= createTrackEditor({
-    patchURL: f => `${API}/api/my/uploads/${encodeURIComponent(f.hash)}/metadata`,
-    note: 'Fix the tags before sending to approval — title, artist and album decide ' +
-          'where the track lands in the library.',
-    onSaved: (f, data) => {
-      const e = mine.find(x => x.hash === f.hash);
-      if (e) {
-        e.title = data.title; e.artist = data.artist;
-        e.album = data.album; e.album_artist = data.album_artist;
-      }
-      renderMine();
-      showToast(`Saved "${data.title || f.hash.slice(0, 8)}".`);
+function mineScope() {
+  return {
+    title: 'My uploads',
+    desc: 'Files you uploaded that aren’t in the library yet. Check their tags (Edit), then send '
+        + 'them to approval — a moderator reviews them, or, if you have moderation rights, they '
+        + 'publish immediately. A file sent back shows the moderator’s note; Remove discards one '
+        + 'you don’t want to publish.',
+    emptyText: 'Nothing staged. Files you upload appear here for a metadata check before they reach the library.',
+    columns: ['check', 'title', 'artist', 'album', 'size', 'actions'],
+    grouping: {
+      kind: 'sections',
+      sections: [
+        { key: 'returned',  label: 'Returned by a moderator', match: f => f.state === 'returned' },
+        { key: 'draft',     label: 'Drafts',                  match: f => f.state === 'draft' },
+        { key: 'submitted', label: 'Awaiting review',         match: f => f.state === 'submitted' },
+      ],
     },
-    onError: err => showToast(`Couldn't save metadata: ${err.message}`),
-  });
-  return trackEditor;
+    selectable: MINE_EDITABLE,
+    autoSelect: true,                 // "send the lot unless you untick"
+    editable: MINE_EDITABLE,
+    editPatchURL: f => `${API}/api/my/uploads/${encodeURIComponent(f.hash)}/metadata`,
+    editNote: 'Fix the tags before sending to approval — title, artist and album decide where the track lands in the library.',
+    accessEditable: false,            // an uploader sets tags on drafts, not access
+
+    rowActions: [
+      {
+        id: 'remove', label: 'Remove', kind: 'danger',
+        confirm: 'inline', confirmPrompt: 'Remove?', confirmLabel: 'Remove',
+        show: MINE_EDITABLE,
+        run: async f => { await mineDelete(f.hash); showToast(`Removed “${mineTitle(f)}”.`); },
+      },
+    ],
+    bulkActions: [
+      { id: 'send',   label: 'Send to approval', kind: 'neutral', run: hashes => mineSend(hashes) },
+      { id: 'remove', label: 'Remove selected',  kind: 'danger',  run: hashes => mineRemoveMany(hashes) },
+    ],
+    bulkApply: (hashes, patch) => mineBulkPatch(hashes, patch),
+
+    onPlay: playMine,
+    toast: msg => showToast(msg),
+
+    load: async () => {
+      const res = await fetch(`${API}/api/my/uploads`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      updateMineCount(Array.isArray(data) ? data.length : 0);
+      return data;
+    },
+  };
 }
 
-function renderMine() {
-  // Selection defaults to everything editable — "Send to approval" submits the
-  // lot unless the user unticks rows.
-  mineSel.clear();
-  for (const e of mine) if (e.state === 'draft' || e.state === 'returned') mineSel.add(e.hash);
-
-  const returned  = mine.filter(e => e.state === 'returned');
-  const drafts    = mine.filter(e => e.state === 'draft');
-  const submitted = mine.filter(e => e.state === 'submitted');
-
-  // Returned files carry the moderator's note as a per-row comment (mineRow).
-  mineReturned.replaceChildren();
-  if (returned.length) {
-    mineReturned.appendChild(mineHeading(`Returned by a moderator (${returned.length})`));
-    mineReturned.appendChild(mineList(returned, true));
-  }
-
-  mineDrafts.replaceChildren();
-  if (drafts.length) {
-    mineDrafts.appendChild(mineHeading(`Drafts (${drafts.length})`));
-    mineDrafts.appendChild(mineList(drafts, true));
-  }
-
-  mineSubmitted.replaceChildren();
-  if (submitted.length) {
-    mineSubmitted.appendChild(mineHeading(`Awaiting review (${submitted.length})`));
-    mineSubmitted.appendChild(mineList(submitted, false));
-  }
-
-  mineEmpty.style.display = mine.length ? 'none' : '';
-  mineCountEl.textContent = String(mine.length);
-  mineCountEl.hidden = mine.length === 0;
-  updateMineControls();
+function updateMineCount(n) {
+  if (!mineCountEl) return;
+  mineCountEl.textContent = String(n);
+  mineCountEl.hidden = n === 0;
 }
 
-function mineHeading(text) {
-  const h = document.createElement('h2');
-  h.className = 'section-title section-title--sub';
-  h.textContent = text;
-  return h;
+async function mineDelete(hash) {
+  const res = await fetch(`${API}/api/my/uploads/${encodeURIComponent(hash)}`, { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
 }
 
-function mineList(entries, editable) {
-  const ul = document.createElement('ul');
-  ul.className = 'mine-list';
-  for (const e of entries) ul.appendChild(mineRow(e, editable));
-  return ul;
-}
-
-function mineRow(e, editable) {
-  const li = document.createElement('li');
-  li.className = 'mine-item';
-  li.dataset.state = e.state;
-
-  if (editable) {
-    const check = document.createElement('input');
-    check.type = 'checkbox';
-    check.className = 'mine-item__check';
-    check.checked = mineSel.has(e.hash);
-    check.setAttribute('aria-label', `Select ${e.title || e.filename} for approval`);
-    check.addEventListener('change', () => {
-      if (check.checked) mineSel.add(e.hash); else mineSel.delete(e.hash);
-      updateMineControls();
-    });
-    li.appendChild(check);
-  }
-
-  const main = document.createElement('div');
-  main.className = 'mine-item__main';
-  const title = document.createElement('span');
-  title.className = 'mine-item__title';
-  title.textContent = e.title || e.filename;
-  const meta = document.createElement('span');
-  meta.className = 'mine-item__meta';
-  const parts = [e.artist, e.album].filter(Boolean);
-  parts.push(`${e.filename} · ${formatBytes(e.byte_size)}`);
-  meta.textContent = parts.join(' — ');
-  main.append(title, meta);
-  if (e.state === 'returned' && e.note) {
-    const note = document.createElement('span');
-    note.className = 'mine-note';
-    note.textContent = `Moderator: ${e.note}`;
-    main.appendChild(note);
-  }
-  li.appendChild(main);
-
-  const actions = document.createElement('div');
-  actions.className = 'mine-item__actions';
-
-  const play = document.createElement('button');
-  play.type = 'button';
-  play.className = 'btn';
-  play.textContent = 'Play';
-  play.addEventListener('click', () => playMine(e));
-  actions.appendChild(play);
-
-  if (editable) {
-    const edit = document.createElement('button');
-    edit.type = 'button';
-    edit.className = 'btn';
-    edit.textContent = 'Edit';
-    edit.addEventListener('click', () => getTrackEditor().open(e));
-    actions.appendChild(edit);
-
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'btn btn--danger';
-    remove.textContent = 'Remove';
-    remove.addEventListener('click', () => enterMineRemoveConfirm(e, actions, [play, edit, remove]));
-    actions.appendChild(remove);
-  }
-
-  li.appendChild(actions);
-  return li;
-}
-
-// enterMineRemoveConfirm swaps a row's actions for an inline Cancel/Confirm
-// pair (the established two-step), restoring them on cancel.
-function enterMineRemoveConfirm(e, actions, original) {
-  const cancel = document.createElement('button');
-  cancel.type = 'button';
-  cancel.className = 'btn';
-  cancel.textContent = 'Cancel';
-  cancel.addEventListener('click', () => {
-    actions.replaceChildren(...original);
-    original[0]?.focus();
-  });
-  const confirm = document.createElement('button');
-  confirm.type = 'button';
-  confirm.className = 'btn btn--danger';
-  confirm.textContent = 'Remove?';
-  confirm.addEventListener('click', () => removeMine([e.hash]));
-  actions.replaceChildren(cancel, confirm);
-  cancel.focus();
-}
-
-// removeMine discards the given staged files (DELETE per hash → Trash) and
-// reloads the list. Used by the per-row Remove and "Remove selected".
-async function removeMine(hashes) {
-  if (!hashes.length) return;
-  sendApprovalBtn.disabled = true;
-  removeSelectedBtn.disabled = true;
+async function mineRemoveMany(hashes) {
   let ok = 0, fail = 0;
   for (const hash of hashes) {
-    try {
-      const res = await fetch(`${API}/api/my/uploads/${encodeURIComponent(hash)}`, { method: 'DELETE' });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.ok) ok++; else fail++;
-    } catch { fail++; }
+    try { await mineDelete(hash); ok++; } catch { fail++; }
   }
   if (fail) showToast(`Removed ${ok}; ${fail} failed.`);
   else if (ok) showToast(`Removed ${ok} file${ok === 1 ? '' : 's'}.`);
   announce(`Removed ${ok} file${ok === 1 ? '' : 's'}.`);
-  await loadMine();                              // re-renders + re-enables controls
 }
 
-// removeSelectedClick arms on the first press ("Remove N files?") and executes
-// on the second — a modal-free two-step. Re-rendering or reselecting disarms.
-function removeSelectedClick() {
-  if (!mineSel.size) return;
-  if (removeSelectedBtn.dataset.armed === '1') {
-    disarmRemoveSelected();
-    removeMine([...mineSel]);
-    return;
+async function mineSend(hashes) {
+  const res = await fetch(`${API}/api/my/uploads/submit`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hashes }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  const n = data.submitted ?? hashes.length;
+  showToast(data.approved
+    ? `Published ${n} file${n === 1 ? '' : 's'} to the library.`
+    : `Sent ${n} file${n === 1 ? '' : 's'} for review.`);
+  announce(data.approved ? 'Published to the library.' : 'Sent for review.');
+}
+
+async function mineBulkPatch(hashes, patch) {
+  let ok = 0, fail = 0;
+  for (const hash of hashes) {
+    try {
+      const res = await fetch(`${API}/api/my/uploads/${encodeURIComponent(hash)}/metadata`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) ok++; else fail++;
+    } catch { fail++; }
   }
-  removeSelectedBtn.dataset.armed = '1';
-  removeSelectedBtn.textContent = `Remove ${mineSel.size} file${mineSel.size === 1 ? '' : 's'}?`;
+  if (fail) throw new Error(`updated ${ok}, ${fail} failed`);
 }
 
-function disarmRemoveSelected() {
-  delete removeSelectedBtn.dataset.armed;
-  removeSelectedBtn.textContent = 'Remove selected';
-}
-
-// playMine queues the whole staging list into the shared shell player, starting
-// at the clicked row — same continuity behavior as the library pages.
-function playMine(entry) {
-  const tracks = mine.map(e => ({
+// playMine queues the visible staging list into the shared shell player,
+// starting at the clicked row — same continuity behavior as the library pages.
+function playMine(entry, visible) {
+  const list = (visible && visible.length) ? visible : [entry];
+  const tracks = list.map(e => ({
     url: `${API}${e.url}`,
     hash: e.hash,
     title: e.title || e.filename,
     artist: e.artist || '',
     dur: e.duration || undefined,
   }));
-  const idx = mine.findIndex(e => e.hash === entry.hash);
-  if (idx !== -1) getController().setQueue(tracks, idx);
-}
-
-function updateMineControls() {
-  const n = mineSel.size;
-  sendApprovalBtn.disabled = n === 0;
-  removeSelectedBtn.disabled = n === 0;
-  disarmRemoveSelected();
-  mineSelInfo.textContent = n ? `${n} file${n === 1 ? '' : 's'} selected` : '';
-}
-
-async function sendForApproval() {
-  const hashes = [...mineSel];
-  if (!hashes.length) return;
-  sendApprovalBtn.disabled = true;
-  try {
-    const res = await fetch(`${API}/api/my/uploads/submit`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hashes }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    const n = data.submitted ?? hashes.length;
-    showToast(data.approved
-      ? `Published ${n} file${n === 1 ? '' : 's'} to the library.`
-      : `Sent ${n} file${n === 1 ? '' : 's'} for review.`);
-    announce(data.approved ? 'Published to the library.' : 'Sent for review.');
-  } catch (err) {
-    showToast(`Send to approval failed: ${err.message}`);
-  }
-  await loadMine();                              // re-renders + re-enables controls
+  const idx = list.findIndex(e => e.hash === entry.hash);
+  getController().setQueue(tracks, idx < 0 ? 0 : idx);
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

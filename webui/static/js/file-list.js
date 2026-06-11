@@ -59,8 +59,11 @@ const PLAY_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="current
  *   licenses         license vocabulary for the pickers
  *   load()           async → file[]   (required for list presentation)
  *   selectable(file) → bool — which rows enter bulk selection (default: none)
+ *   autoSelect       pre-check every selectable row after each load
+ *   editable(file)   → bool — gate the built-in Edit per row (default: all)
  *   rowActions       [{ id,label,kind:'neutral'|'danger',confirm?:'inline',
- *                       confirmPrompt?,confirmLabel?, run:async(file)=>void|false }]
+ *                       confirmPrompt?,confirmLabel?, show?(file)=>bool,
+ *                       run:async(file)=>void|false }]
  *   bulkActions      [{ id,label,kind, run:async(hashes)=>void }]
  *   editPatchURL(file) → url        (enables the built-in Edit action)
  *   editNote         note shown in the edit modal
@@ -134,7 +137,11 @@ export function createFileList(scope) {
     loading = true; loadError = false; render();
     try { rows = (await scope.load()) || []; }
     catch (err) { loadError = true; console.error('file-list load failed:', err); }
-    loading = false; render();
+    loading = false;
+    // autoSelect pre-checks every selectable row after a load (the My-uploads
+    // convention: "send the lot unless you untick").
+    if (scope.autoSelect) { selected.clear(); rows.filter(isSelectable).forEach(f => selected.add(f.hash)); }
+    render();
   }
   async function loadBrowse() {
     loading = true; loadError = false; render();
@@ -208,10 +215,11 @@ export function createFileList(scope) {
       out.push(el('button', { class: 'play-btn', title: 'Preview', 'aria-label': `Preview ${displayTitle(f)}`, html: PLAY_ICON,
         onclick: () => scope.onPlay(f, visibleFiles()) }));
     }
-    if (scope.editPatchURL) {
+    if (scope.editPatchURL && (!scope.editable || scope.editable(f))) {
       out.push(el('button', { class: 'btn btn-neutral btn-sm btn-edit', text: 'Edit', onclick: () => editor().open(f) }));
     }
     for (const a of scope.rowActions || []) {
+      if (a.show && !a.show(f)) continue;
       const cls = a.kind === 'danger' ? 'btn btn-destructive-outline btn-sm' : 'btn btn-neutral btn-sm';
       out.push(el('button', { class: cls, text: a.label, onclick: () => a.confirm === 'inline' ? enterInlineConfirm(a, f, wrap) : runRowAction(a, f) }));
     }

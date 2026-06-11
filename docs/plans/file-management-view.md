@@ -249,6 +249,21 @@ shortcut into Browse is a possible follow-up, not part of this rework.
      the selected-bulk actions (per the scope catalog). Verified end-to-end with
      a headless render (no console errors; Edit opens + persists; `album_artist`
      preserved; restore works).
+   - **My uploads — ✅ done.** The upload page's tab now mounts the component
+     (`#mineFileList`) instead of its bespoke `.mine-*` list; that markup, the
+     `.mine-*` CSS, and ~250 lines of `upload.js` renderer are deleted. Grouped
+     by review state (Returned / Drafts / Awaiting review); the owner editor is
+     tags-only (`accessEditable:false`); bulk **Send to approval** / **Remove** /
+     **Edit tags…**. Drove three small generic component additions: an
+     `editable(file)` gate (submitted rows get no Edit/Remove), per-action
+     `show(file)`, and `autoSelect` (pre-check the editable rows — the
+     "send the lot unless you untick" UX). Since the upload page loads no admin
+     CSS, **`file-view.css` was made self-sufficient** (the component table
+     chrome was copied in from `admin-shell.css`; the duplicates are removed from
+     the admin sheet in cleanup). Verified end-to-end via a headless shell render
+     (sections, gating, autoSelect=2, note, tags-only modal — no console errors;
+     owner PATCH + submit confirmed, `album_artist` preserved). No backend change
+     (the `reviewItem` DTO already carries `album_artist`).
 4. **Re-home navigation (Hybrid):** Admin `Library` page with the scope switch;
    retire the `Files` / `Moderation` / `Trash` nav entries; `My uploads` stays
    on `/upload`.

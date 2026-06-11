@@ -11,6 +11,7 @@
        tokens must come from app.css here too. -->
   <link rel="stylesheet" href="/static/css/app.css">
   <link rel="stylesheet" href="/static/css/upload.css">
+  <link rel="stylesheet" href="/static/css/file-view.css">
   <link rel="stylesheet" href="/static/css/player.css">
 </head>
 <body class="upload-page" data-page="upload" data-module="/static/js/upload.js">
@@ -110,28 +111,11 @@
   </div><!-- /uploadPane -->
 
   <!-- ── My uploads — the staging list (review bucket) ──────────────────── -->
+  <!-- Rendered by the shared file-management component (file-list.js): heading,
+       filter, bulk toolbar, per-state sections, Edit/Play/Remove, send-to-approval. -->
   <div id="minePane" role="tabpanel" aria-labelledby="tabBtnMine" hidden>
-    <section class="upload-section" aria-labelledby="mineHeading">
-      <h1 id="mineHeading" class="section-title">My uploads</h1>
-      <p class="mine-intro">
-        Files you uploaded that aren&rsquo;t in the library yet. Check their tags
-        (Edit), then send them to approval &mdash; a moderator reviews them, or, if
-        you have moderation rights, they publish immediately. Files a moderator
-        sent back show the note explaining what to fix. Remove discards a file
-        you don&rsquo;t want to publish after all.
-      </p>
-      <div class="mine-actions">
-        <button type="button" class="btn btn--accent" id="sendApproval" disabled>Send to approval</button>
-        <button type="button" class="btn btn--danger" id="removeSelected" disabled>Remove selected</button>
-        <span class="mine-selinfo" id="mineSelInfo"></span>
-      </div>
-      <div id="mineReturned"></div>
-      <div id="mineDrafts"></div>
-      <div id="mineSubmitted"></div>
-      <p class="empty-note" id="mineEmpty">
-        Nothing staged. Files you upload appear here for a metadata check before
-        they reach the library.
-      </p>
+    <section class="upload-section" aria-label="My uploads">
+      <div id="mineFileList" aria-busy="true" aria-live="polite"></div>
     </section>
   </div><!-- /minePane -->
 
