@@ -91,6 +91,12 @@ export function createFileList(scope) {
   let view = hasBrowse ? 'browse' : 'list';
   let playingHash = null;
 
+  // Default ⇄ artist/album sort (scope.artistAlbumSort). Persisted so the choice
+  // sticks across visits.
+  const SORT_KEY = 'madshare-files-sort';
+  let sortMode = 'default';
+  if (scope.artistAlbumSort) { try { if (localStorage.getItem(SORT_KEY) === 'grouped') sortMode = 'grouped'; } catch { /* ignore */ } }
+
   const selected = new Set();    // selected file hashes (shared list ⇄ browse)
   const collapsed = new Set();   // collapsed group keys (collapsible grouping)
   const br = { level: 'artists', artist: null, album: null, items: [] };
@@ -274,6 +280,15 @@ export function createFileList(scope) {
       gc.checked = cs.length > 0 && n === cs.length;
       gc.indeterminate = n > 0 && n < cs.length;
     });
+
+    // Artist/album separator checkboxes (grouped sort): checked when all governed
+    // hashes are selected, indeterminate when some.
+    mountEl.querySelectorAll('.grp-check').forEach(cb => {
+      const hs = cb.dataset.hashes ? cb.dataset.hashes.split(',').filter(Boolean) : [];
+      const n = hs.filter(h => selected.has(h)).length;
+      cb.checked = hs.length > 0 && n === hs.length;
+      cb.indeterminate = n > 0 && n < hs.length;
+    });
   }
 
   function selectAllVisible(on) {
@@ -306,6 +321,81 @@ export function createFileList(scope) {
     });
     return el('div', { class: 'files-table-wrap' }, [
       el('table', { class: 'files-table' }, [el('thead', {}, [headRow(withSelectAll)]), body]),
+    ]);
+  }
+
+  // ── Artist → album → track grouped sort (scope.artistAlbumSort, grouped mode) ──
+  // Still one flat .files-table; artist/album separator rows carry a group-select
+  // checkbox, and tracks sort by track# (then title). Group by the ALBUM artist
+  // (album_artist ?? artist) so a compilation stays under one band. Empty
+  // artist/album fall into the Unknown / Other buckets, sorted last.
+  const lc = s => (s || '').toLowerCase();
+  function albumYear(files) { for (const f of files) if (f.year) return f.year; return 9999; }
+
+  function buildArtistGroups(files) {
+    const arts = new Map();
+    for (const f of files) {
+      const aKey = (f.album_artist || f.artist || '').trim();
+      const alKey = (f.album || '').trim();
+      if (!arts.has(aKey)) arts.set(aKey, { key: aKey, albums: new Map() });
+      const art = arts.get(aKey);
+      if (!art.albums.has(alKey)) art.albums.set(alKey, { key: alKey, files: [] });
+      art.albums.get(alKey).files.push(f);
+    }
+    const artList = [...arts.values()].sort((a, b) => (!a.key - !b.key) || lc(a.key).localeCompare(lc(b.key)));
+    for (const art of artList) {
+      art.albumList = [...art.albums.values()].sort((a, b) =>
+        (!a.key - !b.key) || (albumYear(a.files) - albumYear(b.files)) || lc(a.key).localeCompare(lc(b.key)));
+      for (const al of art.albumList) {
+        al.files.sort((a, b) =>
+          ((a.track_number == null) - (b.track_number == null)) ||
+          ((a.track_number ?? 0) - (b.track_number ?? 0)) ||
+          lc(a.title || a.filename).localeCompare(lc(b.title || b.filename)));
+      }
+    }
+    return artList;
+  }
+
+  function grpSepRow(kind, label, meta, hashes, fallback) {
+    const kids = [];
+    if (hashes.length) {
+      const cb = el('input', { type: 'checkbox', class: 'grp-check', 'aria-label': `Select all in ${label}` });
+      cb.dataset.hashes = hashes.join(',');
+      cb.addEventListener('change', () => { hashes.forEach(h => cb.checked ? selected.add(h) : selected.delete(h)); syncSelectionUI(); });
+      kids.push(cb);
+    }
+    return el('tr', { class: 'grp grp-' + kind }, [
+      el('td', { class: 'cell-check' }, kids),
+      el('td', { colspan: String(scope.columns.length - 1), class: 'grp-label' + (fallback ? ' is-fallback' : '') },
+        [label, meta ? el('span', { class: 'grp-meta', text: meta }) : null]),
+    ]);
+  }
+
+  function groupedTrack(f) {
+    const holder = {};
+    const tr = el('tr', { 'data-hash': f.hash }, scope.columns.map(c => bodyCell(c, f, holder)));
+    const titleTd = tr.querySelector('.cell-title-td');
+    if (titleTd) titleTd.insertBefore(el('span', { class: 'tracknum', text: f.track_number != null ? String(f.track_number) : '' }), titleTd.firstChild);
+    return tr;
+  }
+
+  function groupedTable(files) {
+    const body = el('tbody', { class: 'is-grouped' });
+    for (const art of buildArtistGroups(files)) {
+      const artFiles = art.albumList.flatMap(al => al.files);
+      const artHashes = artFiles.filter(isSelectable).map(f => f.hash);
+      body.appendChild(grpSepRow('artist', art.key || 'Unknown artist',
+        `${art.albumList.length} album${art.albumList.length === 1 ? '' : 's'} · ${artFiles.length} track${artFiles.length === 1 ? '' : 's'}`,
+        artHashes, !art.key));
+      for (const al of art.albumList) {
+        const y = albumYear(al.files);
+        body.appendChild(grpSepRow('album', al.key || 'Other', y < 9999 ? String(y) : '',
+          al.files.filter(isSelectable).map(f => f.hash), !al.key));
+        al.files.forEach(f => body.appendChild(groupedTrack(f)));
+      }
+    }
+    return el('div', { class: 'files-table-wrap' }, [
+      el('table', { class: 'files-table' }, [el('thead', {}, [headRow(true)]), body]),
     ]);
   }
 
@@ -472,7 +562,26 @@ export function createFileList(scope) {
     const heading = el('h2', { class: 'section-title section-title--files' });
     heading.append(scope.title);
     if (view === 'list') heading.append(` (${rows.length})`);
-    return el('div', { class: 'files-bar' }, [heading, el('div', { class: 'files-search' }, [search])]);
+    const controls = [];
+    if (scope.artistAlbumSort && view === 'list') controls.push(sortSwitch());
+    controls.push(el('div', { class: 'files-search' }, [search]));
+    return el('div', { class: 'files-bar' }, [heading, el('div', { class: 'files-bar-controls' }, controls)]);
+  }
+
+  // sortSwitch toggles the flat list between its default order and the
+  // artist → album → track# grouped sort (scope.artistAlbumSort).
+  function sortSwitch() {
+    const mk = (m, label) => {
+      const b = el('button', { type: 'button', class: 'vm-btn' + (sortMode === m ? ' is-active' : ''), 'aria-pressed': String(sortMode === m), text: label });
+      b.addEventListener('click', () => {
+        if (sortMode === m) return;
+        sortMode = m;
+        try { localStorage.setItem(SORT_KEY, m); } catch { /* ignore */ }
+        render();
+      });
+      return b;
+    };
+    return el('div', { class: 'sort-switch', role: 'group', 'aria-label': 'Sort' }, [mk('default', 'Default'), mk('grouped', 'By artist / album')]);
   }
 
   function viewSwitch() {
@@ -528,6 +637,7 @@ export function createFileList(scope) {
     if (!rows.length) return emptyBlock();
     const files = visibleFiles();
     if (!files.length) return stateBlock(`No files match “${filterText.trim()}”`);
+    if (scope.artistAlbumSort && sortMode === 'grouped') return groupedTable(files);
     if (scope.grouping?.kind === 'collapsible') return uploaderGroups(files);
     if (scope.grouping?.kind === 'sections') return sectionGroups(files);
     return table(files, true);

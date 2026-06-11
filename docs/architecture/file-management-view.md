@@ -44,7 +44,7 @@ correctly; the admin pages load it too.
 
 | Scope | Endpoint | Group | Selectable | Access edit | Notes |
 |---|---|---|---|---|---|
-| **All files** (admin) | `GET /api/files` | – | all | ✓ (modal + bulk) | flat list; access is a **read-only column**, edited in the modals. Bulk Move to Trash + Edit tags…. The By-entity drill-down is a separate sub-view (below). |
+| **All files** (admin) | `GET /api/files` | – (opt.) | all | ✓ (modal + bulk) | flat list; access is a **read-only column**, edited in the modals. Bulk Move to Trash + Edit tags…. A **Default ⇄ artist/album** sort toggle groups the same flat table (see below). The By-entity drill-down is a separate sub-view (below). |
 | **Review** (admin) | `GET /api/admin/moderation` | by uploader (collapsible) | `submitted` | ✗ (tags only) | Approve / Return-with-note / Discard; `show()` gates per state (drafts preview-only), `editable()` gates Edit. |
 | **Trash** (admin) | `GET /api/admin/trash` | – | all | ✗ (tags only)¹ | Restore / Delete forever; gained Edit + Play. |
 | **My uploads** (owner, `/upload`) | `GET /api/my/uploads` | by state | draft/returned | ✗ (tags only) | state sections, `autoSelect`, Send to approval / Remove; owner-scoped edit endpoint. |
@@ -63,6 +63,18 @@ applier loops PATCH-metadata + the access endpoints, writing only the filled
 fields. Every editable list DTO carries `album_artist` (the editor writes all
 four base tags, so an absent prefill would silently clear it — the trash DTO was
 extended for this).
+
+### Grouped sort (All files)
+
+`scope.artistAlbumSort` adds a **Default ⇄ "By artist / album"** toggle to the
+flat list (persisted in `localStorage`). In grouped mode the same `.files-table`
+is sorted **album-artist → album → track# (then title)** with **separator rows**
+woven in — a tinted band per artist, a thin indented line per album — each
+carrying a **group-select checkbox** wired into the selection Set, so a whole
+artist/album can be bulk-edited. Grouping is by `album_artist ?? artist` (a
+Various-Artists compilation stays under one band); empty artist/album fall into
+Unknown / Other buckets, sorted last. The sort needs the track number, so
+`track_number` is on the `/api/files` DTO.
 
 ## The Library page (Hybrid nav)
 

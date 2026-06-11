@@ -149,6 +149,7 @@ function filesScope() {
     title: 'Files',
     emptyText: 'No files yet. Add music from the Upload page.',
     columns: ['check', 'title', 'artist', 'album', 'size', 'access', 'actions'],
+    artistAlbumSort: true,   // offer the Default ⇄ artist/album sort toggle
     accessEditable: canEditMeta,
     licenses: LICENSE_OPTIONS,
     load: loadFilesList,

@@ -331,3 +331,20 @@ round; change requests are expected. The **scope catalog is the extension
 point** — new columns, actions, or a new scope are descriptor edits, not
 re-renders — so the contract is deliberately the thing kept stable while the
 particulars flex.
+
+## Follow-up: grouped sort (All files)
+
+First post-ship change request, shipped as one descriptor flag. The All-files
+list gained a **Default ⇄ "By artist / album"** sort toggle (`scope.artistAlbumSort`,
+persisted in `localStorage`; the toggle reuses the `.vm-btn` look). In grouped
+mode the *same flat table* is sorted **album-artist → album → track# (then title)**
+and **separator rows** are woven in: a calm tinted band per artist (brighter top
+line), a thin indented line per album. Each separator carries a **group-select
+checkbox** (selects every selectable file in that artist/album), wired into the
+component's selection Set — so a whole artist or album can be bulk-edited.
+Grouping is by **album artist** (`album_artist ?? artist`) so a Various-Artists
+compilation stays under one band; the empty artist/album fall into Unknown /
+Other buckets, sorted last; un-numbered tracks sort by name. The one backend bit:
+`track_number` added to the `/api/files` DTO (the sort needs it). Mockup:
+`webui/static/dev/grouped-list.html`. Verified via a headless render (sort order,
+the compilation under one band, group-select count, no console errors).

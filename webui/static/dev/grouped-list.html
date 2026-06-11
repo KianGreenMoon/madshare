@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Madshare — All files: Default ⇄ Grouped (mockup)</title>
+  <link rel="stylesheet" href="../css/app.css">
+  <link rel="stylesheet" href="../css/admin-shell.css">
+  <link rel="stylesheet" href="../css/file-view.css">
+  <style>
+    /* ── Mockup-only chrome ──────────────────────────────────────────────────── */
+    .mock-flag { max-width: 960px; margin: var(--space-4) auto 0; padding: var(--space-2) var(--space-4);
+      font-size: 12px; color: var(--text-muted); border: 1px dashed var(--border); border-radius: var(--radius); background: var(--surface); }
+    .mock-flag b { color: var(--accent); }
+    .access-controls { justify-content: flex-start; }
+    .btn-edit { border-color: var(--accent); color: var(--accent); }
+
+    /* ── Sort/view toggle ──────────────────────────────────────────────────── */
+    .sort-switch { display: inline-flex; gap: 2px; padding: 3px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: var(--radius); }
+    .sort-btn { border: none; background: none; color: var(--text-muted); cursor: pointer; font: inherit;
+      font-size: 13px; font-weight: 500; padding: var(--space-1) var(--space-3); border-radius: 5px; }
+    .sort-btn.is-active { background: var(--accent-glow); color: var(--accent); }
+
+    /* ── Grouped separators (woven into the flat .files-table) ──────────────── */
+    .files-table tr.grp td { padding-top: var(--space-1); padding-bottom: var(--space-1); }
+    .files-table tr.grp:hover { background: inherit; }
+
+    /* Artist = a calm tinted band, a brighter top line, and extra air above. */
+    .files-table tr.grp-artist td {
+      background: var(--surface);
+      border-top: 1px solid var(--text-muted);
+      padding-top: var(--space-3); padding-bottom: var(--space-2);
+    }
+    .files-table tr.grp-artist:first-child td { border-top: none; }
+    .grp-artist .grp-label { font-weight: 600; color: var(--text); letter-spacing: .02em; }
+
+    /* Album = a thin faint line, indented under the artist. */
+    .files-table tr.grp-album td { border-top: 1px solid var(--border); }
+    .grp-album .grp-label { padding-left: 22px; }
+
+    .grp-label { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+    .grp-label .grp-meta { opacity: .7; margin-left: var(--space-2); }
+    .grp-label.is-fallback { font-style: italic; }
+    .grp-check { cursor: pointer; accent-color: var(--accent); }
+
+    /* Track rows under a group: aligned track number + indented title. */
+    .is-grouped .cell-title-td { padding-left: 22px; }
+    .tracknum { display: inline-block; width: 2ch; margin-right: var(--space-2); text-align: right;
+      color: var(--text-muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+
+<header>
+  <span class="logo"><span>Mad</span>share</span>
+  <nav class="main-nav" aria-label="Site navigation">
+    <a href="#" class="nav-link">Library</a><a href="#" class="nav-link">Playlists</a>
+    <a href="#" class="nav-link">Upload</a><a href="#" class="nav-link nav-link--active">Admin</a>
+  </nav>
+  <div class="header-actions"><div class="user-area"><span class="user-name">admin</span></div></div>
+</header>
+<div class="admin-banner"><span class="admin-banner-icon" aria-hidden="true">🛡</span><span>Admin — Library · All files</span></div>
+
+<p class="mock-flag">
+  <b>Mockup — sort/view toggle.</b> <b>Default</b> is today's flat list (unchanged).
+  <b>By artist / album</b> sorts the same flat table artist → album → track# (then
+  name) and weaves in separators: a calm tinted band per artist (brighter line), a
+  thin indented line per album — each with a <b>checkbox that selects the whole
+  group</b>. Refined since the first draft: indentation, aligned track numbers, more
+  air above artists. (“Encrypted (bonus)” has no number → sorts last by name; the
+  Unknown / Other bucket sinks to the bottom.)
+</p>
+
+<main class="admin-main">
+  <section aria-label="All files">
+    <div class="files-bar">
+      <h2 class="section-title section-title--files">Files (<span id="count">0</span>)</h2>
+      <div style="display:flex; gap:var(--space-3); align-items:center">
+        <div class="sort-switch" role="tablist" aria-label="Sort">
+          <button class="sort-btn is-active" data-mode="default" role="tab">Default</button>
+          <button class="sort-btn" data-mode="grouped" role="tab">By artist / album</button>
+        </div>
+        <div class="files-search"><input type="search" placeholder="Filter…" autocomplete="off"></div>
+      </div>
+    </div>
+    <div class="bulk-toolbar">
+      <span class="bulk-selcount" id="selcount">0 selected</span>
+      <span class="bulk-spacer"></span>
+      <button class="btn btn-neutral btn-sm" id="bulkEdit" disabled>Edit tags…</button>
+      <button class="btn btn-destructive-outline btn-sm" id="bulkTrash" disabled>Move to Trash</button>
+    </div>
+
+    <div class="files-table-wrap">
+      <table class="files-table">
+        <thead>
+          <tr>
+            <th class="col-check"><input type="checkbox" id="selAll" aria-label="Select all"></th>
+            <th>Title</th><th>Artist</th><th>Album</th>
+            <th class="col-size">Size</th><th class="col-access">Access</th><th class="col-actions">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="body" class="is-default"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+// ── Mock library (intentionally unsorted; "grouped" sorts it) ─────────────────
+const LIB = [
+  { artist:'Solar Fields', albums:[
+    { title:'Movements', year:2009, tracks:[
+      {n:2, title:'Sing', hash:'1a2b3c4d', size:'9.1 MB', guest:true, license:'CC BY'},
+      {n:1, title:'Cobalt 2.5', hash:'9f3a1c77', size:'8.4 MB', guest:true, license:'CC BY'},
+    ]},
+    { title:'Reflective Frequencies', year:2001, tracks:[
+      {n:null, title:'Encrypted (bonus)', hash:'aa99bb22', size:'9.0 MB', guest:false, license:''},
+      {n:1, title:'Pulse', hash:'88cc77aa', size:'14.0 MB', guest:false, license:''},
+    ]},
+  ]},
+  { artist:'Carbon Based Lifeforms', albums:[
+    { title:'World of Sleepers', year:2006, tracks:[
+      {n:1, title:'Proton/Electron', hash:'77aa11bb', size:'12.2 MB', guest:false, license:''},
+      {n:2, title:'Leaving Home', hash:'2b7e0d41', size:'11.2 MB', guest:true, license:'CC BY-SA'},
+    ]},
+  ]},
+  { artist:'', fallback:'Unknown artist', albums:[
+    { title:'', fallback:'Other', year:null, tracks:[
+      {n:null, title:'', fallback:'04 - take.flac', hash:'0aa4f9c2', size:'3.1 MB', guest:false, license:''},
+    ]},
+  ]},
+];
+
+const el = (t,p={},k=[]) => { const n=document.createElement(t); for(const[a,v]of Object.entries(p)){ if(v==null)continue; if(a==='class')n.className=v; else if(a==='html')n.innerHTML=v; else if(a==='text')n.textContent=v; else n.setAttribute(a,v);} (Array.isArray(k)?k:[k]).forEach(c=>c!=null&&n.append(c.nodeType?c:document.createTextNode(c))); return n; };
+const PLAY = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+const norm = s => (s||'').toLowerCase();
+
+const body = document.getElementById('body');
+const selected = new Set();
+let mode = 'default';
+let total = 0;
+
+function accessCell(t){ const p=[t.guest?'Guest':'Private']; if(t.license)p.push(t.license); return el('td',{class:'cell-access','data-label':'Access'},[el('span',{class:'cell-muted',text:p.join(' · ')})]); }
+function actions(){ return el('td',{class:'cell-actions','data-label':'Actions'},[el('div',{class:'trash-actions'},[
+  el('button',{class:'play-btn',title:'Preview',html:PLAY}),
+  el('button',{class:'btn btn-neutral btn-sm btn-edit',text:'Edit'}),
+  el('button',{class:'btn btn-destructive-outline btn-sm',text:'Move to Trash'}),
+])]); }
+
+function dataRow(t, artistName, albumTitle, grouped){
+  const cb = el('input',{type:'checkbox',class:'row-check'}); cb.dataset.hash=t.hash;
+  cb.addEventListener('change',()=>{ cb.checked?selected.add(t.hash):selected.delete(t.hash); sync(); });
+  const num = grouped ? el('span',{class:'tracknum',text:t.n!=null?String(t.n):''}) : null;
+  const title = t.title ? el('span',{class:'cell-title',text:t.title}) : el('span',{class:'cell-title is-fallback',text:t.fallback||'Untitled'});
+  return el('tr',{'data-hash':t.hash},[
+    el('td',{class:'cell-check'},[cb]),
+    el('td',{class:'cell-title-td','data-label':'Title'},[num, title, el('span',{class:'cell-hash',text:t.hash})]),
+    artistName ? el('td',{'data-label':'Artist',text:artistName}) : el('td',{class:'cell-muted','data-label':'Artist',text:'—'}),
+    albumTitle ? el('td',{'data-label':'Album',text:albumTitle}) : el('td',{class:'cell-muted','data-label':'Album',text:'—'}),
+    el('td',{class:'cell-size','data-label':'Size',text:t.size}),
+    accessCell(t),
+    actions(),
+  ]);
+}
+function sepRow(kind, label, meta, hashes, fallback){
+  const cb = el('input',{type:'checkbox',class:'grp-check','aria-label':`Select all ${label}`}); cb.dataset.hashes=hashes.join(',');
+  cb.addEventListener('change',()=>{ hashes.forEach(h=>cb.checked?selected.add(h):selected.delete(h)); sync(); });
+  return el('tr',{class:'grp grp-'+kind},[
+    el('td',{class:'cell-check'},[cb]),
+    el('td',{colspan:'6',class:'grp-label'+(fallback?' is-fallback':'')},[label, meta?el('span',{class:'grp-meta',text:meta}):null]),
+  ]);
+}
+
+function render(){
+  body.replaceChildren();
+  total = 0;
+  body.className = mode==='grouped' ? 'is-grouped' : 'is-default';
+
+  if (mode==='default'){
+    for (const ar of LIB) for (const al of ar.albums) for (const t of al.tracks){ total++; body.appendChild(dataRow(t, ar.artist, al.title, false)); }
+  } else {
+    const lib = LIB.map(ar=>({...ar, albums: ar.albums.map(al=>({...al, tracks:[...al.tracks].sort((a,b)=>(a.n==null)-(b.n==null)||((a.n??0)-(b.n??0))||norm(a.title||a.fallback).localeCompare(norm(b.title||b.fallback)))}))
+      .sort((a,b)=>(!a.title - !b.title)||((a.year||9999)-(b.year||9999))||norm(a.title).localeCompare(norm(b.title)))}))
+      .sort((a,b)=>(!a.artist - !b.artist)||norm(a.artist).localeCompare(norm(b.artist)));
+    for (const ar of lib){
+      const artistHashes = ar.albums.flatMap(al=>al.tracks.map(t=>t.hash));
+      body.appendChild(sepRow('artist', ar.artist||ar.fallback, `${ar.albums.length} album${ar.albums.length>1?'s':''} · ${artistHashes.length} tracks`, artistHashes, !ar.artist));
+      for (const al of ar.albums){
+        const albumHashes = al.tracks.map(t=>t.hash);
+        body.appendChild(sepRow('album', al.title||al.fallback, al.year?String(al.year):'', albumHashes, !al.title));
+        al.tracks.forEach(t=>{ total++; body.appendChild(dataRow(t, ar.artist, al.title, true)); });
+      }
+    }
+  }
+  document.getElementById('count').textContent = total;
+  sync();
+}
+
+function sync(){
+  body.querySelectorAll('.row-check').forEach(cb=>cb.checked=selected.has(cb.dataset.hash));
+  body.querySelectorAll('.grp-check').forEach(cb=>{
+    const hs = cb.dataset.hashes? cb.dataset.hashes.split(','):[];
+    const n = hs.filter(h=>selected.has(h)).length;
+    cb.checked = hs.length>0 && n===hs.length;
+    cb.indeterminate = n>0 && n<hs.length;
+  });
+  const all = document.getElementById('selAll');
+  all.checked = total>0 && selected.size===total;
+  all.indeterminate = selected.size>0 && selected.size<total;
+  document.getElementById('selcount').textContent = `${selected.size} selected`;
+  document.getElementById('bulkEdit').disabled = selected.size===0;
+  document.getElementById('bulkTrash').disabled = selected.size===0;
+}
+
+document.getElementById('selAll').addEventListener('change', e=>{
+  body.querySelectorAll('.row-check').forEach(cb=> e.target.checked?selected.add(cb.dataset.hash):selected.delete(cb.dataset.hash));
+  sync();
+});
+document.querySelectorAll('.sort-btn').forEach(b=>b.addEventListener('click',()=>{
+  document.querySelectorAll('.sort-btn').forEach(x=>x.classList.toggle('is-active', x===b));
+  mode = b.dataset.mode; render();
+}));
+
+render();
+</script>
+</body>
+</html>

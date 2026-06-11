@@ -100,6 +100,7 @@ type FileListEntry struct {
 	Artist          string
 	AlbumArtist     sql.NullString
 	Album           string
+	TrackNumber     sql.NullInt64
 	Year            int64
 	DurationSeconds sql.NullFloat64
 	GuestPlayable   bool

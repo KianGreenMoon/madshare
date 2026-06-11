@@ -131,6 +131,45 @@
   .edit-form .field-split { grid-template-columns: 1fr; }
 }
 
+/* ── Grouped sort (Default ⇄ artist/album) ──
+   Still one flat .files-table, sorted artist → album → track#, with separator
+   rows that carry a group-select checkbox. Driven by scope.artistAlbumSort + the
+   sort switch (its buttons reuse .vm-btn above). */
+.files-bar-controls { display: flex; gap: var(--space-3); align-items: center; flex-wrap: wrap; }
+.sort-switch {
+  display: inline-flex; gap: 2px; padding: 3px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+}
+
+.files-table tr.grp td { padding-top: var(--space-1); padding-bottom: var(--space-1); }
+.files-table tbody tr.grp:hover { background: transparent; }   /* separators aren't data rows */
+
+/* Artist = a calm tinted band with a brighter top line + a bit more air above. */
+.files-table tr.grp-artist td {
+  background: var(--surface);
+  border-top: 1px solid var(--text-muted);
+  padding-top: var(--space-3); padding-bottom: var(--space-2);
+}
+.files-table tbody tr.grp-artist:first-child td { border-top: none; }
+.grp-artist .grp-label { font-weight: 600; color: var(--text); letter-spacing: .02em; }
+
+/* Album = a thin faint line, indented under the artist. */
+.files-table tr.grp-album td { border-top: 1px solid var(--border); }
+.grp-album .grp-label { padding-left: 22px; }
+
+.grp-label { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.grp-label .grp-meta { opacity: .7; margin-left: var(--space-2); }
+.grp-label.is-fallback { font-style: italic; }
+.grp-check { cursor: pointer; accent-color: var(--accent); }
+
+/* Track rows under a group: aligned track number + indented title. */
+.files-table tbody.is-grouped .cell-title-td { padding-left: 22px; }
+.tracknum {
+  display: inline-block; width: 2ch; margin-right: var(--space-2);
+  text-align: right; color: var(--text-muted);
+  font-size: 13px; font-variant-numeric: tabular-nums;
+}
+
 /* ════════════════════════════════════════════════════════════════════════════
    Component table chrome. Mirrors admin-shell.css / admin-moderation.css so the
    component renders correctly on pages that DON'T load the admin sheets (the

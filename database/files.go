@@ -151,6 +151,7 @@ func (db *DB) listFiles(ctx context.Context, where string, args ...any) ([]*File
 			COALESCE(m.artist, '') AS artist,
 			m.album_artist,
 			COALESCE(m.album,  '') AS album,
+			m.track_number,
 			COALESCE(m.year,    0) AS year,
 			m.duration_seconds,
 			` + guestAccessibleExpr + ` AS guest_playable,
@@ -176,7 +177,7 @@ func (db *DB) listFiles(ctx context.Context, where string, args ...any) ([]*File
 		var guest int
 		if err := rows.Scan(
 			&e.ID, &e.Hash, &e.MimeType, &e.ByteSize, &e.ObjectKey, &e.CreatedAt,
-			&e.Filename, &e.Title, &e.Artist, &e.AlbumArtist, &e.Album, &e.Year, &e.DurationSeconds,
+			&e.Filename, &e.Title, &e.Artist, &e.AlbumArtist, &e.Album, &e.TrackNumber, &e.Year, &e.DurationSeconds,
 			&guest, &e.License,
 		); err != nil {
 			return nil, fmt.Errorf("scan file list entry: %w", err)
