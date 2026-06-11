@@ -43,6 +43,14 @@
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .row-spinner { animation-duration: 2s; } }
 
+/* ── Preview-player controls ──
+   The admin player (Library scopes) is a single-context preview player with no
+   playlist, so Shuffle and Repeat do nothing — hide them. This sheet loads only
+   on admin pages, so the public shell player keeps them. (Like/Queue are already
+   hidden via the player-bar partial's {{if ne .Page "admin"}}.) */
+#btnShuffle,
+#btnRepeat { display: none; }
+
 /* ── Persistent admin banner ── */
 .admin-banner {
   display: flex;
