@@ -1,26 +1,8 @@
 /* admin-files.css — Files-page-only bits. The files-table chrome it shares with
    the Trash page lives in admin-shell.css. Loaded with app.css + admin-shell.css. */
 
-/* Preview-playing row highlight */
-.files-table tbody tr.playing-row { background: var(--accent-glow); }
-
-/* Play button (per row, drives the shared preview player) */
-.play-btn {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  border-radius: 50%;
-  width: 30px;
-  height: 30px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 120ms ease, background 120ms ease;
-}
-.play-btn:hover { color: var(--accent); background: var(--surface-hover); }
-.play-btn:focus-visible { outline: 2px solid var(--accent); }
-tr.playing-row .play-btn { color: var(--accent); }
+/* The .play-btn / .playing-row highlight now lives in file-view.css (loaded on
+   this page with the component). */
 
 /* Per-file access controls (.license-select is shared, in admin-shell.css) */
 .access-controls {

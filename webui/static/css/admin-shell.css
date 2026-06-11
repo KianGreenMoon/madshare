@@ -91,15 +91,9 @@
   gap: var(--space-7);
 }
 
-/* ── Section headings + copy (base .section-title is in app.css) ── */
+/* ── Section headings + copy (base .section-title is in app.css;
+      .section-title--files moved to file-view.css with the component chrome) ── */
 .section-title--danger { color: var(--danger); }
-.section-title--files {
-  margin-bottom: 0;
-  text-transform: none;
-  letter-spacing: normal;
-  font-size: 16px;
-  color: var(--text);
-}
 .section-copy {
   font-size: 14px;
   color: var(--text-muted);
@@ -170,196 +164,22 @@
   color: var(--text-muted);
 }
 
-/* ── Files-style table (shared by the Files and Trash pages) ── */
-.files-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  margin-bottom: var(--space-4);
-  flex-wrap: wrap;
-}
-.files-search input[type="search"] {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  font-size: 14px;
-  font-family: inherit;
-  padding: var(--space-2) var(--space-3);
-  min-width: 220px;
-}
-.files-search input[type="search"]:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-.files-table-wrap {
-  max-height: 64vh;
-  overflow-y: auto;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-}
-.files-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 14px;
-}
-.files-table thead th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: var(--surface);
-  text-align: left;
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted);
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--border);
-}
-.files-table .col-size,
-.files-table .col-actions { text-align: right; }
-.files-table tbody tr { transition: background 120ms ease; }
-.files-table tbody tr:hover { background: var(--surface-hover); }
-.files-table tbody td {
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--border);
-  vertical-align: middle;
-}
-.files-table tbody tr:last-child td { border-bottom: none; }
-
-.cell-title { font-weight: 500; }
-.cell-title.is-fallback { font-weight: 400; font-style: italic; color: var(--text-muted); }
-.cell-hash {
-  display: block;
-  font-size: 13px;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-  font-family: ui-monospace, monospace;
-  margin-top: 2px;
-}
+/* ── File-management component chrome moved to file-view.css ──
+   The .files-table / .bulk-toolbar / inline-confirm / .trash-actions /
+   .table-state-row / .state-badge / responsive-collapse / .section-title--files
+   rules now live in file-view.css, the single source for the file-list
+   component (loaded by the admin Library page and the Upload page). These three
+   rules stay here because OTHER admin pages (users, settings) use them and don't
+   load file-view.css. (docs/plans/file-management-view.md, cleanup.) */
 .cell-muted { color: var(--text-muted); }
-.cell-size {
-  text-align: right;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.cell-actions { text-align: right; white-space: nowrap; }
-.cell-actions .btn + .btn { margin-left: var(--space-2); }
 
-/* Selection checkbox column (Trash bulk actions) */
-.files-table .col-check,
-.files-table .cell-check { width: 1%; text-align: center; padding-right: 0; }
-.cell-check input,
-.col-check input { cursor: pointer; }
-
-/* Bulk-action toolbar (Trash) */
-.bulk-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  margin-bottom: var(--space-3);
-}
-.bulk-selcount { color: var(--text-muted); font-size: 13px; }
-.bulk-spacer { flex: 1; }
-.bulk-divider {
-  width: 1px;
-  align-self: stretch;
-  background: var(--border);
-  margin: 0 var(--space-1);
-}
-
-/* Destructive warning line inside admin modals */
+/* Destructive warning line inside admin modals (Library delete/merge/discard). */
 .modal-danger { color: var(--error); font-weight: 500; }
 
-/* Inline delete confirm */
-.delete-confirm {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  justify-content: flex-end;
-}
-.delete-confirm-label { font-size: 13px; color: var(--text); }
-
-.trash-actions { display: flex; gap: var(--space-2); justify-content: flex-end; }
-
-/* Table-level states */
-.table-state-row td {
-  text-align: center;
-  color: var(--text-muted);
-  padding: var(--space-6) var(--space-4);
-}
+/* Empty-state block (users / settings empty lists). */
 .empty-state { color: var(--text-muted); }
 .empty-state .drop-icon { font-size: 40px; }
 .empty-state p { margin-top: var(--space-2); font-size: 14px; }
-
-/* Row removal animation */
-@keyframes rowOut { to { opacity: 0; } }
-.row-removing td { animation: rowOut 150ms ease forwards; }
-@media (prefers-reduced-motion: reduce) { .row-removing td { animation: none; opacity: 0; } }
-
-/* Responsive: collapse the table to cards below 640px */
-@media (max-width: 640px) {
-  .files-table-wrap { border: none; max-height: none; overflow: visible; }
-  .files-table thead { display: none; }
-  .files-table,
-  .files-table tbody,
-  .files-table tr,
-  .files-table td { display: block; width: 100%; }
-
-  .files-table tbody tr {
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    margin-bottom: var(--space-3);
-    padding: var(--space-2);
-  }
-  .files-table tbody td {
-    border-bottom: none;
-    padding: var(--space-1) var(--space-2);
-    display: flex;
-    justify-content: space-between;
-    gap: var(--space-3);
-    text-align: left;
-  }
-  .files-table tbody td::before {
-    content: attr(data-label);
-    font-size: 12px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-muted);
-    flex-shrink: 0;
-  }
-  .files-table td.cell-title-td::before { align-self: flex-start; }
-  .cell-size { text-align: right; }
-  .cell-actions { display: block; }
-  .cell-actions .btn,
-  .cell-actions .delete-confirm { width: 100%; }
-  .cell-actions .btn + .btn { margin-left: 0; margin-top: var(--space-2); }
-  .cell-actions .delete-confirm { justify-content: stretch; flex-wrap: wrap; }
-  .cell-actions .delete-confirm .btn { flex: 1; }
-}
-
-/* ── Review-state badge (Moderation queue rows; Trash rows that re-enter the
-      queue when restored) ── */
-.state-badge {
-  display: inline-block;
-  padding: 1px var(--space-2);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-.state-badge.is-submitted { color: var(--accent); border-color: var(--accent); }
-.state-badge.is-returned  { color: var(--error);  border-color: var(--error); }
 
 /* ── Placeholder card (scaffold; replaced as each page is built out) ── */
 .admin-placeholder {

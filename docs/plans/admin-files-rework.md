@@ -1,5 +1,12 @@
 # Admin Files Rework — Entity-Aware Library Management
 
+> **Superseded (2026-06) by the unified file-management view.** The standalone
+> `/admin/files` page described here is gone: the flat list is now the **All
+> files** scope of the shared component on `/admin/library`, and the entity
+> drill-down (rename / merge / cover / delete) it added survives as that scope's
+> **By-entity** sub-view. See `docs/architecture/file-management-view.md` (and
+> `docs/plans/file-management-view.md` for the design). Kept for history.
+
 Status: **implemented** on `aidev` (2026-06, user-verified). Shipped: entity-aware
 drill-down view with rename + per-track edit (`0bd7372`), artist/album cover
 upload (`e997041`), id-addressed merge (`2539062`), entity/track delete to Trash

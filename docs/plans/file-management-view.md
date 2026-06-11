@@ -313,10 +313,16 @@ shortcut into Browse is a possible follow-up, not part of this rework.
    pills, instant panel swap, every scope renders its data, the shared player loads
    across scopes, the edit modal opens, and the `#trash` deep-link lands on Trash —
    no console errors. (Backend: none.)
-5. **Cleanup:** delete superseded CSS/JS (the per-page renderers, the inline
-   access controls), reconcile `docs/architecture/moderation.md` and the upload
-   docs, and supersede `docs/plans/admin-files-rework.md`. Add the
-   `docs/architecture/` reference for the shipped component.
+5. **Cleanup — ✅ done.** The per-page renderers + inline access controls were
+   deleted with each migration; the component table chrome was consolidated into
+   `file-view.css` and removed from `admin-shell.css` / `admin-files.css` /
+   `admin-moderation.css` (keeping the rules other admin pages share — `.cell-muted`,
+   `.modal-danger`, `.empty-state`, `.btn-sm`, the destructive buttons + danger
+   tokens). Verified via computed-style check (the library page still gets the
+   table chrome from `file-view.css`; the kept rules still apply on other admin
+   pages). `docs/architecture/file-management-view.md` added as the shipped
+   reference; `docs/plans/admin-files-rework.md` marked superseded;
+   `docs/architecture/moderation.md` UI section repointed to the Library scopes.
 
 ## Rollout
 

@@ -131,10 +131,10 @@ Restoring a trashed file brings back whatever `review_state` it had — which
 for a previously approved file means *live*. Who initiates the restore
 therefore matters:
 
-- **Admin Trash page** (`POST /api/admin/trash/{hash}/restore`) — prior-state
-  restore, unchanged. An explicit moderator action; a discarded submission
-  visibly re-enters the queue (the Trash page badges such rows
-  "pending review").
+- **Library → Trash scope** (`POST /api/admin/trash/{hash}/restore`) —
+  prior-state restore, unchanged. An explicit moderator action; a discarded
+  submission visibly re-enters the queue (Trash badges such rows "pending
+  review").
 - **Upload-initiated restores** — a re-upload of trashed bytes under the
   `reupload_restores` policy, or `POST /api/files/{hash}/restore` under
   `uploader_restore` — would otherwise let **any `file.upload` holder publish
@@ -157,25 +157,26 @@ therefore matters:
 
 ## Web UI
 
-- **`/upload` → "My uploads" tab** (shell-native): sections **Returned**
-  (each row carries the moderator's note as an inline comment), **Drafts**,
-  **Awaiting review** (read-only). Draft/returned rows edit via the shared
-  `track-edit.js` modal (pointed at the owner-scoped PATCH), preview through
-  the shell player, and can be **removed** (per-row inline confirm, or
-  "Remove selected" with an armed two-step) → Trash via the owner-scoped
-  DELETE. A *Send to approval* button submits the selection (toast says
+- **`/upload` → "My uploads" tab** (shell-native, the shared file-management
+  component in owner mode — `docs/architecture/file-management-view.md`):
+  state sections **Returned** (each row carries the moderator's note),
+  **Drafts**, **Awaiting review** (read-only). Draft/returned rows edit via the
+  shared `track-edit.js` modal (pointed at the owner-scoped PATCH), preview
+  through the shell player, and can be **removed** (per-row inline confirm, or
+  **Remove selected** in the bulk toolbar) → Trash via the owner-scoped DELETE. A *Send to approval* button submits the selection (toast says
   "published" for self-approvers). The upload pane itself has no album
   verify/edit cards — tag fixing happens here; folder cover images are still
   co-located and posted server-side for `metadata.edit` holders (headless).
-- **`/admin/moderation`** (admin shell, page-local player, client-gated
-  `content.moderate`): the queue grouped by uploader in collapsible sections,
-  state badges, per-row preview / Edit (shared `track-edit.js` →
+- **`/admin/library` → "Review" scope** (the unified file-management view —
+  `docs/architecture/file-management-view.md`; client-gated `content.moderate`,
+  page-local shared player): the queue grouped by uploader in collapsible
+  sections, state badges, per-row preview / Edit (shared `track-edit.js` →
   `metadata.edit` PATCH) / Approve / Return… / Discard. **Selection model:**
-  one global bulk toolbar (approve / return-with-one-note / discard selected)
-  over a cross-group selection; a group-header checkbox selects an uploader's
-  whole batch (works while collapsed) and a global select-all covers every
-  uploader. Only `submitted` rows are selectable.
-- **Dashboard** card with the pending count; **Trash** rows whose
+  one bulk toolbar (approve / return-with-one-note / discard selected) over a
+  cross-group selection; a group-header checkbox selects an uploader's whole
+  batch (works while collapsed). Only `submitted` rows are selectable. (The
+  dashboard "Review" card deep-links here via `#review`.)
+- **Dashboard** card with the pending count; **Library → Trash scope** rows whose
   `review_state <> 'approved'` carry a "pending review" badge (restore
   re-enters the queue).
 

@@ -55,38 +55,9 @@
 .mod-group-body { margin-top: var(--space-2); }
 .mod-group.is-collapsed .mod-group-body { display: none; }
 
-/* The review-state badge (.state-badge) is shared with the Trash page and
-   lives in admin-shell.css. */
-
-/* The moderator's pending return note, shown under the row title. */
-.mod-note {
-  display: block;
-  margin-top: 2px;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-style: italic;
-  white-space: normal;
-}
-
-/* Preview-playing row highlight + play button colors come from admin-shell's
-   table styles plus these (same rules as the Files page). */
-.files-table tbody tr.playing-row { background: var(--accent-glow); }
-.play-btn {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  border-radius: 50%;
-  width: 30px;
-  height: 30px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 120ms ease, background 120ms ease;
-}
-.play-btn:hover { color: var(--accent); background: var(--surface-hover); }
-.play-btn:focus-visible { outline: 2px solid var(--accent); }
-tr.playing-row .play-btn { color: var(--accent); }
+/* The review-state badge (.state-badge), the moderator's return note
+   (.mod-note), and the .play-btn / .playing-row highlight now all live in
+   file-view.css (loaded on this page with the component). */
 
 /* ── Return-note modal textarea (app.css only styles input/select) ─────────── */
 .edit-form textarea {
