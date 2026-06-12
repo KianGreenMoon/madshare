@@ -185,7 +185,8 @@ the listening CSS.
 - Point the admin-shell nav link and the dashboard dash-card at `/admin/upload`;
   add the `.SubPage == "upload"` active state to the admin nav link.
 
-**Phase 5 — Verify (manual browser checklist).**
+**Phase 5 — Verify (manual browser checklist).** *(Done — user-verified
+2026-06-13.)*
 - From `/admin` → Upload: stays in the admin shell (admin banner + nav), no
   player-bar; drop/queue/upload a file; "My uploads" tab lists it; preview plays
   via the page-local player.
