@@ -168,11 +168,11 @@
 
 .queue-item {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 1fr auto auto;
   grid-template-areas:
-    "name  size"
-    "bar   bar"
-    "msg   msg";
+    "name  size  close"
+    "bar   bar   close"
+    "msg   msg   close";
   align-items: center;
   gap: var(--space-2) var(--space-4);
   padding: var(--space-3) var(--space-4);
@@ -217,6 +217,27 @@
   align-items: center;
   gap: var(--space-3);
 }
+
+/* Per-row remove/cancel button — a quiet × that brightens on hover. */
+.queue-item__close {
+  grid-area: close;
+  align-self: center;
+  justify-self: end;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  line-height: 1;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.queue-item__close:hover { color: var(--text); background: var(--surface-hover); border-color: var(--border); }
+.queue-item__close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .queue-item__msg .retry-btn {
   padding: var(--space-1) var(--space-3);
   font-size: 12px;

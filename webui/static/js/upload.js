@@ -410,9 +410,19 @@ function renderQueueItem(item) {
   msg.className = 'queue-item__msg';
   msg.setAttribute('role', 'status');
 
-  li.append(name, size, bar, msg);
-  item.el = { li, bar, fill, msg };
+  // Per-row remove/cancel: aborts an in-flight upload, drops a still-pending
+  // file before it starts, or dismisses a finished row. The label tracks state
+  // (updateCloseLabel, driven by setItemState).
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'queue-item__close';
+  close.textContent = '×';                 // ×
+  close.addEventListener('click', () => removeItem(item));
+
+  li.append(name, size, bar, msg, close);
+  item.el = { li, bar, fill, msg, close };
   queueList.appendChild(li);
+  updateCloseLabel(item);
 
   // Non-audio rows carry an explanatory note instead of a progress lifecycle.
   // Folder cover images are co-located server-side only with metadata.edit
@@ -428,6 +438,45 @@ function setItemState(item, state, message) {
   item.el.li.dataset.state = state;
   item.el.msg.textContent = '';
   if (message) item.el.msg.append(document.createTextNode(message));
+  updateCloseLabel(item);
+}
+
+// updateCloseLabel keeps the per-row close button's label honest as the row
+// moves pending → uploading → done: it reads "Cancel" while the upload can still
+// be stopped, "Remove" once it is terminal.
+function updateCloseLabel(item) {
+  const btn = item.el?.close;
+  if (!btn) return;
+  const abortable = item.state === 'pending' || item.state === 'checking' || item.state === 'uploading';
+  btn.title = abortable ? 'Cancel' : 'Remove';
+  btn.setAttribute('aria-label',
+    abortable ? `Cancel upload of ${item.relPath}` : `Remove ${item.relPath} from the list`);
+}
+
+// removeItem cancels or dismisses a single queue row: it aborts an in-flight
+// upload, drops a still-pending file before it uploads, or clears a finished
+// row. It manages only the local queue view — an already-uploaded file is NOT
+// deleted from the server.
+function removeItem(item) {
+  item.canceled = true;
+  try { item.xhr?.abort(); } catch { /* already settled */ }   // uploading → abort
+  const qi = queue.indexOf(item);
+  if (qi !== -1) queue.splice(qi, 1);
+  // Pull it from the cover co-location bookkeeping so a removed track/cover is
+  // not matched when the run resolves folder covers.
+  for (const f of folders.values()) {
+    const a = f.audio.indexOf(item);  if (a !== -1) f.audio.splice(a, 1);
+    const im = f.images.indexOf(item); if (im !== -1) f.images.splice(im, 1);
+  }
+  if (item.groupKey) {
+    const g = groups.get(item.groupKey);
+    const k = g ? g.items.indexOf(item) : -1;
+    if (k !== -1) g.items.splice(k, 1);
+  }
+  item.el?.li.remove();
+  item.el = null;
+  syncEmptyStates();
+  updateButtons();
 }
 
 function setProgress(item, pct) {
@@ -545,6 +594,7 @@ async function uploadItem(item) {
       }
     } catch { /* hashing/check failed → upload normally */ }
   }
+  if (item.canceled) return;                    // removed while prechecking
   return uploadXhr(item);
 }
 
@@ -574,6 +624,7 @@ function addRestoreButton(item) {
 
 function uploadXhr(item) {
   return new Promise((resolve) => {
+    if (item.canceled) { resolve(); return; }   // removed during the precheck
     setItemState(item, 'uploading');
     setProgress(item, 0);
 
@@ -590,8 +641,9 @@ function uploadXhr(item) {
     form.append('file', blob, item.relPath);
 
     const xhr = new XMLHttpRequest();
+    item.xhr = xhr;                             // so removeItem can abort it
     activeXhrs.add(xhr);
-    const done = () => { activeXhrs.delete(xhr); resolve(); };
+    const done = () => { activeXhrs.delete(xhr); item.xhr = null; resolve(); };
     xhr.open('POST', `${API}/files/upload`);
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) setProgress(item, (e.loaded / e.total) * 100); };
     xhr.onabort = done;
