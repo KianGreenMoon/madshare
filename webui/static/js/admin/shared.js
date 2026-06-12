@@ -5,6 +5,7 @@
 // Path note: this module sits in static/js/admin/, so auth.js is one level up.
 import { initAuth, openLoginModal, gatePage, PAGE_PERMS } from '../auth.js';
 import { initAboutMenu } from '../about-menu.js';
+import { showToast } from '../toast.js';
 
 // API base from <meta name="api-url">. Empty => relative, same-origin URLs.
 export const API = document.querySelector('meta[name="api-url"]')?.content || '';
@@ -67,21 +68,12 @@ export function el(tag, props = {}, children = []) {
 }
 
 // ── Toasts ───────────────────────────────────────────────────────────────────
-// Success/info → polite status region; errors → assertive alert region.
-// The stacks (#toastStatus / #toastAlert) come from the auth-modals partial.
+// Thin wrapper over the shared toast system (toast.js) keeping the admin call
+// convention `toast(message, type)` so every admin/*.js importer is untouched.
+// 'info' (the admin default) and 'status' both render to #toastStatus with the ℹ
+// icon; errors → #toastAlert and persist. Auto-dismiss is now the shared 5s.
 export function toast(message, type = 'info') {
-  const stack = document.getElementById(type === 'error' ? 'toastAlert' : 'toastStatus');
-  if (!stack) return;
-
-  const node = el('div', { class: 'toast' + (type === 'success' ? ' is-success' : type === 'error' ? ' is-error' : '') }, [
-    el('span', { class: 'toast-icon', 'aria-hidden': 'true', text: type === 'success' ? '✓' : type === 'error' ? '✕' : 'ℹ' }),
-    el('span', { class: 'toast-msg', text: message }),
-  ]);
-  const close = el('button', { class: 'toast-close', 'aria-label': 'Dismiss', text: '×', onclick: () => node.remove() });
-  node.append(close);
-  stack.appendChild(node);
-
-  if (type !== 'error') setTimeout(() => node.remove(), 4000);
+  showToast(message, { type });
 }
 
 // handleAuthError turns a 401 into a re-login prompt; returns true if handled.

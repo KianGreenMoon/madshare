@@ -2,6 +2,7 @@
 // Import initAuth() in each page's boot; it wires all header auth elements
 // and returns the signed-in identity (or null).  openLoginModal() is exported
 // for pages that need to surface it on a 401 response.
+import { showToast } from './toast.js';
 
 const API = document.querySelector('meta[name="api-url"]')?.content || '';
 
@@ -90,34 +91,6 @@ async function fetchIdentity() {
     if (!res.ok) return null;
     return await res.json();
   } catch { return null; }
-}
-
-function authToast(message, type) {
-  const stackId = type === 'error' ? 'toastAlert' : 'toastStatus';
-  const stack = document.getElementById(stackId);
-  if (!stack) return;
-
-  const el = document.createElement('div');
-  el.className = 'toast' + (type === 'success' ? ' is-success' : type === 'error' ? ' is-error' : '');
-
-  const icon = document.createElement('span');
-  icon.className = 'toast-icon';
-  icon.setAttribute('aria-hidden', 'true');
-  icon.textContent = type === 'success' ? '✓' : type === 'error' ? '✕' : 'ℹ';
-
-  const msg = document.createElement('span');
-  msg.className = 'toast-msg';
-  msg.textContent = message;
-
-  const close = document.createElement('button');
-  close.className = 'toast-close';
-  close.setAttribute('aria-label', 'Dismiss');
-  close.textContent = '×';
-  close.addEventListener('click', () => el.remove());
-
-  el.append(icon, msg, close);
-  stack.appendChild(el);
-  if (type !== 'error') setTimeout(() => el.remove(), 4000);
 }
 
 export async function initAuth() {
@@ -253,7 +226,7 @@ export async function initAuth() {
       }
       passIsForced = false;
       passModal.classList.add('hidden');
-      authToast('Password changed.', 'success');
+      showToast('Password changed.', { type: 'success' });
       _identity = await fetchIdentity();
     } catch (err) {
       passError.textContent = `Couldn't change password: ${err.message}`;
