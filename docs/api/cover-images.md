@@ -176,8 +176,13 @@ names.
 
 ### Access control
 
-Requires the `metadata.edit` permission (pass-through when auth is not
-configured).
+Requires **`metadata.edit` OR `file.upload`** (`RequireAnyPermission`;
+pass-through when auth is not configured). A caller holding only `file.upload`
+(an uploader) may set a cover **only when none exists** — trying to overwrite an
+existing cover returns **403** (`coverReplaceBlocked`), so replacing stays a
+`metadata.edit` action. This lets an uploader add art to a staged draft from the
+grouped "Add cover" affordance ([file-management view](../architecture/file-management-view.md))
+without granting them the power to change covers already on the library.
 
 ### Behaviour
 
@@ -207,6 +212,8 @@ as a harmless orphan (see `.issues/open-issues.md`).
 | Status | Condition |
 |--------|-----------|
 | 400    | Missing `image` part, body over 10 MB, or unsupported type/extension (incl. WebP). |
+| 401    | Anonymous (auth configured). |
+| 403    | Authenticated but holding neither `metadata.edit` nor `file.upload`; or a `file.upload`-only caller trying to **replace** an existing cover. |
 | 500    | Storage or database error. |
 
 ---
@@ -215,8 +222,9 @@ as a harmless orphan (see `.issues/open-issues.md`).
 
 Uploads an artist image. Artist covers have **no variant pipeline yet**
 (deferred), so the original is stored under the flat key `<base_key><ext>` and no
-job is enqueued. Same JPEG/PNG-only validation and `metadata.edit` gate as the
-album endpoint. Returns `{ "ok": true }`.
+job is enqueued. Same JPEG/PNG-only validation and the same
+`metadata.edit`-OR-`file.upload` gate (with the add-only rule for an
+upload-only caller) as the album endpoint. Returns `{ "ok": true }`.
 
 ---
 

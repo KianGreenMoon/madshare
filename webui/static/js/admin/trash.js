@@ -96,6 +96,8 @@ export function createTrashScope({ play, perms }) {
     emptyText: 'Trash is empty.',
     columns: ['check', 'title', 'artist', 'album', 'size', 'meta', 'actions'],
     artistAlbumSort: true,
+    allowCoverAdd: perms.includes('metadata.edit'),  // grouped "Add cover" on coverless separators
+    apiBase: API,
     metaLabel: 'Deleted',
     metaValue: f => fmtDate(f.deleted_at),
     badge: f => (f.review_state && f.review_state !== 'approved')

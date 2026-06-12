@@ -11,19 +11,30 @@ import (
 
 // reviewEntryColumns is the shared SELECT list for the two staging listings.
 // Keep in sync with scanReviewEntry.
+// reviewJoins adds the artist/album cover-presence joins reviewEntryColumns
+// depends on. Appended to each staging query's FROM (after the media_metadata
+// join) so the shared column list can reference aimg/alimg.
+const reviewJoins = `
+	LEFT JOIN artist_images aimg ON aimg.artist_id = m.artist_id
+	LEFT JOIN album_images  alimg ON alimg.album_id  = m.album_id`
+
 const reviewEntryColumns = `
 	f.hash, f.mime_type, f.byte_size, f.object_key, f.created_at,
 	COALESCE((SELECT filename FROM file_uploads WHERE file_id = f.id ORDER BY id LIMIT 1), f.hash) AS filename,
 	COALESCE(m.title, '') AS title,
 	m.artist, m.album, m.album_artist, m.track_number, m.year, m.duration_seconds,
-	f.review_state, f.review_note, f.submitted_at, f.uploaded_by`
+	f.review_state, f.review_note, f.submitted_at, f.uploaded_by,
+	CASE WHEN aimg.artist_id IS NOT NULL THEN 1 ELSE 0 END AS artist_has_image,
+	CASE WHEN alimg.album_id  IS NOT NULL THEN 1 ELSE 0 END AS album_has_image`
 
 func scanReviewEntry(rows *sql.Rows, withUploader bool) (*ReviewEntry, error) {
 	var e ReviewEntry
+	var artistImg, albumImg int
 	dest := []any{
 		&e.Hash, &e.MimeType, &e.ByteSize, &e.ObjectKey, &e.CreatedAt,
 		&e.Filename, &e.Title, &e.Artist, &e.Album, &e.AlbumArtist, &e.TrackNumber, &e.Year, &e.DurationSeconds,
 		&e.ReviewState, &e.ReviewNote, &e.SubmittedAt, &e.UploaderID,
+		&artistImg, &albumImg,
 	}
 	if withUploader {
 		dest = append(dest, &e.UploaderName)
@@ -31,6 +42,8 @@ func scanReviewEntry(rows *sql.Rows, withUploader bool) (*ReviewEntry, error) {
 	if err := rows.Scan(dest...); err != nil {
 		return nil, fmt.Errorf("scan review entry: %w", err)
 	}
+	e.ArtistHasImage = artistImg == 1
+	e.AlbumHasImage = albumImg == 1
 	return &e, nil
 }
 
@@ -40,7 +53,7 @@ func (db *DB) ListUploadsByUser(ctx context.Context, userID int64) ([]*ReviewEnt
 	q := `
 		SELECT ` + reviewEntryColumns + `
 		FROM files f
-		LEFT JOIN media_metadata m ON m.file_id = f.id
+		LEFT JOIN media_metadata m ON m.file_id = f.id` + reviewJoins + `
 		WHERE f.uploaded_by = ? AND f.deleted_at IS NULL AND f.review_state <> 'approved'
 		ORDER BY f.created_at DESC`
 
@@ -71,7 +84,7 @@ func (db *DB) ListPendingReview(ctx context.Context) ([]*ReviewEntry, error) {
 	q := `
 		SELECT ` + reviewEntryColumns + `, u.username
 		FROM files f
-		LEFT JOIN media_metadata m ON m.file_id = f.id
+		LEFT JOIN media_metadata m ON m.file_id = f.id` + reviewJoins + `
 		LEFT JOIN users u ON u.id = f.uploaded_by
 		WHERE f.deleted_at IS NULL AND f.review_state <> 'approved'
 		ORDER BY u.username IS NULL, LOWER(u.username), f.created_at DESC`

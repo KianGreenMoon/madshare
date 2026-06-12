@@ -157,10 +157,14 @@
 .files-table tr.grp-album td { border-top: 1px solid var(--border); }
 .grp-album .grp-label { padding-left: 22px; }
 
-.grp-label { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.grp-label { display: flex; align-items: center; font-size: 12px; color: var(--text-muted); white-space: nowrap; }
 .grp-label .grp-meta { opacity: .7; margin-left: var(--space-2); }
 .grp-label.is-fallback { font-style: italic; }
 .grp-check { cursor: pointer; accent-color: var(--accent); }
+
+/* "Add cover" sits unobtrusively at the right edge of a coverless separator,
+   shown only when the artist/album has no cover yet (add-only by design). */
+.grp-cover-btn { margin-left: auto; font-weight: 400; }
 
 /* Track rows under a group: aligned track number + indented title. */
 .files-table tbody.is-grouped .cell-title-td { padding-left: 22px; }

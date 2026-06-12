@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/config"
 	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/media"
@@ -270,6 +271,24 @@ func (h *handler) getArtistImage(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) uploadArtistImage(w http.ResponseWriter, r *http.Request) {
 	artist := chi.URLParam(r, "artist")
+	ctx := r.Context()
+
+	// Resolve + add-only guard before reading the body so an uploader replacing a
+	// cover is rejected early (no wasted upload).
+	artistID, err := h.repo.ResolveArtistID(ctx, artist)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	_, _, hasCover, err := h.repo.GetArtistImage(ctx, artistID)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if h.coverReplaceBlocked(w, r, hasCover) {
+		return
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, maxImageSize)
 	data, mimeType, ext, err := h.readImageUpload(r)
 	if err != nil {
@@ -288,17 +307,26 @@ func (h *handler) uploadArtistImage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cannot save image", http.StatusInternalServerError)
 		return
 	}
-	artistID, err := h.repo.ResolveArtistID(r.Context(), artist)
-	if err != nil {
+	if err := h.repo.UpsertArtistImage(ctx, artistID, objectKey, mimeType, time.Now().Unix()); err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	if err := h.repo.UpsertArtistImage(r.Context(), artistID, objectKey, mimeType, time.Now().Unix()); err != nil {
-		http.Error(w, "storage error", http.StatusInternalServerError)
-		return
-	}
-	h.audit(r.Context(), "metadata.image", "artist:"+artist, "")
+	h.audit(ctx, "metadata.image", "artist:"+artist, "")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// coverReplaceBlocked rejects (and returns true) when an authenticated caller
+// without metadata.edit tries to overwrite an existing cover: a file.upload-only
+// uploader may set a missing cover but never replace one. Anonymous callers were
+// already stopped by the route gate; auth-unconfigured callers (id == nil) are
+// unrestricted, as elsewhere.
+func (h *handler) coverReplaceBlocked(w http.ResponseWriter, r *http.Request, hasCover bool) bool {
+	id := auth.FromContext(r.Context())
+	if id != nil && hasCover && !id.Has(auth.PermMetadataEdit) {
+		http.Error(w, "a cover is already set — only a metadata editor can replace it", http.StatusForbidden)
+		return true
+	}
+	return false
 }
 
 func (h *handler) getAlbumImage(w http.ResponseWriter, r *http.Request) {
@@ -401,8 +429,23 @@ func (h *handler) getUIConfig(w http.ResponseWriter, r *http.Request) {
 func (h *handler) uploadAlbumImage(w http.ResponseWriter, r *http.Request) {
 	album := chi.URLParam(r, "album")
 	artist := r.URL.Query().Get("artist")
-	r.Body = http.MaxBytesReader(w, r.Body, maxImageSize)
+	ctx := r.Context()
 
+	albumID, err := h.repo.ResolveAlbumID(ctx, artist, album)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	_, _, hasCover, err := h.repo.GetAlbumImage(ctx, albumID)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if h.coverReplaceBlocked(w, r, hasCover) {
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxImageSize)
 	data, mimeType, ext, err := h.readImageUpload(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -422,12 +465,6 @@ func (h *handler) uploadAlbumImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().Unix()
-	ctx := r.Context()
-	albumID, err := h.repo.ResolveAlbumID(ctx, artist, album)
-	if err != nil {
-		http.Error(w, "storage error", http.StatusInternalServerError)
-		return
-	}
 	if err := h.repo.SetAlbumCover(ctx, albumID, baseKey, ext, objectKey, mimeType, now); err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return

@@ -105,7 +105,11 @@ type FileListEntry struct {
 	DurationSeconds sql.NullFloat64
 	GuestPlayable   bool
 	License         sql.NullString
-	DeletedAt       sql.NullInt64
+	// ArtistHasImage / AlbumHasImage: whether the resolved artist/album entity has
+	// a cover — feeds the grouped view's "Add cover" affordance (offer only when missing).
+	ArtistHasImage bool
+	AlbumHasImage  bool
+	DeletedAt      sql.NullInt64
 	// ReviewState is populated by the trash listing so the UI can badge a
 	// discarded submission (it re-enters the review queue on restore).
 	ReviewState string
@@ -127,6 +131,8 @@ type ReviewEntry struct {
 	AlbumArtist     sql.NullString
 	TrackNumber     sql.NullInt64
 	Year            sql.NullInt64
+	ArtistHasImage  bool
+	AlbumHasImage   bool
 	DurationSeconds sql.NullFloat64
 	ReviewState     string
 	ReviewNote      sql.NullString

@@ -55,6 +55,16 @@ func (d Deps) protect(perm string) func(http.Handler) http.Handler {
 	return auth.RequirePermission(perm)
 }
 
+// protectAny gates on holding ANY of perms (pass-through when auth is not
+// configured). Used by the cover-upload routes, which the handler then narrows
+// for file.upload-only callers (add-only, never replace).
+func (d Deps) protectAny(perms ...string) func(http.Handler) http.Handler {
+	if d.Auth == nil {
+		return func(next http.Handler) http.Handler { return next }
+	}
+	return auth.RequireAnyPermission(perms...)
+}
+
 func (d Deps) newHandler() *handler {
 	// KNOWN ISSUE (TODO): imagesDir nests inside filesDir, and the /files/*
 	// file server serves the whole filesDir tree. As a side effect cover images
@@ -103,8 +113,11 @@ func RegisterAPI(r chi.Router, d Deps) {
 	r.Get("/api/albums/{album}/image", h.getAlbumImage)
 	r.Get("/api/albums/{album}/image/status", h.getAlbumImageStatus)
 	// Editing cover images and base tags is a metadata.edit capability.
-	r.With(d.protect(auth.PermMetadataEdit)).Post("/api/artists/{artist}/image", h.uploadArtistImage)
-	r.With(d.protect(auth.PermMetadataEdit)).Post("/api/albums/{album}/image", h.uploadAlbumImage)
+	// Cover uploads accept metadata.edit OR file.upload; the handlers add-only
+	// for file.upload-only callers (an uploader fills a missing cover; replacing
+	// stays a metadata.edit capability).
+	r.With(d.protectAny(auth.PermMetadataEdit, auth.PermFileUpload)).Post("/api/artists/{artist}/image", h.uploadArtistImage)
+	r.With(d.protectAny(auth.PermMetadataEdit, auth.PermFileUpload)).Post("/api/albums/{album}/image", h.uploadAlbumImage)
 	r.With(d.protect(auth.PermMetadataEdit)).Patch("/api/files/{hash}/metadata", h.updateFileMetadata)
 	// Renaming an artist/album entity edits the entity in place; tracks and
 	// covers follow via their FKs. Addressed by current name like the cover routes.

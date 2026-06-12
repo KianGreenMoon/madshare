@@ -13,6 +13,7 @@
 
 import { createTrackEditor } from './track-edit.js';
 import { createBulkEditor } from './bulk-edit.js';
+import { createCoverPicker } from './cover-edit.js';
 
 // Local DOM builder + formatter so this module has no page-specific imports.
 // el('button', {class:'btn', onclick: fn}, ['Label'])
@@ -102,7 +103,7 @@ export function createFileList(scope) {
   const collapsed = new Set();   // collapsed group keys (collapsible grouping)
   const br = { level: 'artists', artist: null, album: null, items: [] };
 
-  let _editor = null, _bulk = null;
+  let _editor = null, _bulk = null, _cover = null;
 
   const displayTitle = f => f.title || f.filename || 'this file';
 
@@ -133,6 +134,16 @@ export function createFileList(scope) {
       },
     });
     return _bulk;
+  }
+  function coverPicker() {
+    if (_cover) return _cover;
+    _cover = createCoverPicker({
+      apiBase: scope.apiBase || '',
+      toast,
+      checkAuth: scope.handleAuthError,
+      onUploaded: () => reload(),   // refresh so the now-covered group drops the button
+    });
+    return _cover;
   }
 
   // ── Loading ─────────────────────────────────────────────────────────────────
@@ -364,7 +375,7 @@ export function createFileList(scope) {
     return artList;
   }
 
-  function grpSepRow(kind, label, meta, hashes, fallback) {
+  function grpSepRow(kind, label, meta, hashes, fallback, extra) {
     const kids = [];
     if (hashes.length) {
       const cb = el('input', { type: 'checkbox', class: 'grp-check', 'aria-label': `Select all in ${label}` });
@@ -375,8 +386,19 @@ export function createFileList(scope) {
     return el('tr', { class: 'grp grp-' + kind }, [
       el('td', { class: 'cell-check' }, kids),
       el('td', { colspan: String(scope.columns.length - 1), class: 'grp-label' + (fallback ? ' is-fallback' : '') },
-        [label, meta ? el('span', { class: 'grp-meta', text: meta }) : null]),
+        [label, meta ? el('span', { class: 'grp-meta', text: meta }) : null, extra || null]),
     ]);
+  }
+
+  // coverAddBtn returns the grouped-separator "Add cover" affordance, or null
+  // when it shouldn't show (no allowCoverAdd, the Unknown/Other fallback bucket,
+  // or the entity already has a cover). Add-only: replacing stays in By-entity.
+  function coverAddBtn(kind, target, fallback, hasImage) {
+    if (!scope.allowCoverAdd || fallback || hasImage) return null;
+    return el('button', {
+      type: 'button', class: 'btn btn-neutral btn-sm grp-cover-btn', text: 'Add cover',
+      onclick: () => coverPicker().pick({ kind, ...target }),
+    });
   }
 
   function groupedTrack(f) {
@@ -392,13 +414,17 @@ export function createFileList(scope) {
     for (const art of buildArtistGroups(files)) {
       const artFiles = art.albumList.flatMap(al => al.files);
       const artHashes = artFiles.filter(isSelectable).map(f => f.hash);
+      // All files in a group share one artist_id / album_id (resolved from the
+      // same effectiveArtist/album), so the representative row's has_image flag
+      // reflects the whole group's entity.
       body.appendChild(grpSepRow('artist', art.key || 'Unknown artist',
         `${art.albumList.length} album${art.albumList.length === 1 ? '' : 's'} · ${artFiles.length} track${artFiles.length === 1 ? '' : 's'}`,
-        artHashes, !art.key));
+        artHashes, !art.key, coverAddBtn('artist', { artist: art.key }, !art.key, artFiles[0]?.artist_has_image)));
       for (const al of art.albumList) {
         const y = albumYear(al.files);
         body.appendChild(grpSepRow('album', al.key || 'Other', y < 9999 ? String(y) : '',
-          al.files.filter(isSelectable).map(f => f.hash), !al.key));
+          al.files.filter(isSelectable).map(f => f.hash), !al.key,
+          coverAddBtn('album', { artist: art.key, album: al.key }, !al.key, al.files[0]?.album_has_image)));
         al.files.forEach(f => body.appendChild(groupedTrack(f)));
       }
     }
@@ -690,6 +716,7 @@ export function createFileList(scope) {
   function destroy() {
     _editor?.destroy(); _editor = null;
     _bulk?.destroy(); _bulk = null;
+    _cover?.destroy(); _cover = null;
     mountEl = null;
   }
 

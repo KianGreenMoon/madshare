@@ -36,6 +36,10 @@ type reviewItem struct {
 	SubmittedAt int64    `json:"submitted_at,omitempty"`
 	UploaderID  int64    `json:"uploader_id,omitempty"`
 	Uploader    string   `json:"uploader,omitempty"`
+	// ArtistHasImage / AlbumHasImage drive the grouped view's "Add cover"
+	// affordance (offered only when the entity has no cover yet).
+	ArtistHasImage bool `json:"artist_has_image"`
+	AlbumHasImage  bool `json:"album_has_image"`
 }
 
 func toReviewItem(e *database.ReviewEntry) reviewItem {
@@ -48,24 +52,26 @@ func toReviewItem(e *database.ReviewEntry) reviewItem {
 		trackNum = &e.TrackNumber.Int64
 	}
 	return reviewItem{
-		Hash:        e.Hash,
-		Filename:    e.Filename,
-		MimeType:    e.MimeType,
-		ByteSize:    e.ByteSize,
-		URL:         "/files/" + e.ObjectKey,
-		Title:       e.Title,
-		Artist:      e.Artist.String,
-		AlbumArtist: e.AlbumArtist.String,
-		Album:       e.Album.String,
-		TrackNumber: trackNum,
-		Year:        e.Year.Int64,
-		Duration:    dur,
-		State:       e.ReviewState,
-		Note:        e.ReviewNote.String,
-		CreatedAt:   e.CreatedAt,
-		SubmittedAt: e.SubmittedAt.Int64,
-		UploaderID:  e.UploaderID.Int64,
-		Uploader:    e.UploaderName.String,
+		Hash:           e.Hash,
+		Filename:       e.Filename,
+		MimeType:       e.MimeType,
+		ByteSize:       e.ByteSize,
+		URL:            "/files/" + e.ObjectKey,
+		Title:          e.Title,
+		Artist:         e.Artist.String,
+		AlbumArtist:    e.AlbumArtist.String,
+		Album:          e.Album.String,
+		TrackNumber:    trackNum,
+		Year:           e.Year.Int64,
+		Duration:       dur,
+		State:          e.ReviewState,
+		Note:           e.ReviewNote.String,
+		CreatedAt:      e.CreatedAt,
+		SubmittedAt:    e.SubmittedAt.Int64,
+		UploaderID:     e.UploaderID.Int64,
+		Uploader:       e.UploaderName.String,
+		ArtistHasImage: e.ArtistHasImage,
+		AlbumHasImage:  e.AlbumHasImage,
 	}
 }
 

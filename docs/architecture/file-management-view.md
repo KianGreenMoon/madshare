@@ -82,6 +82,25 @@ A file with **neither an artist nor an album-artist** tag gets a calm amber
 flag (`.fl-needs-meta` — tint + left accent) in every scope and both sort modes,
 so moderators / admins / uploaders can see which rows want metadata first.
 
+### Grouped "Add cover" (add-only)
+
+When `scope.allowCoverAdd` is set, each grouped separator whose entity has **no
+cover yet** sprouts an unobtrusive **Add cover** button (`cover-edit.js`, a
+self-contained JPEG/PNG ≤10 MB picker that POSTs to the artist/album cover
+endpoints). It is **add-only**: the button is hidden once a cover exists (and on
+the Unknown/Other fallback buckets), so replacing a cover stays in the By-entity
+view. Whether a group already has a cover comes from `artist_has_image` /
+`album_has_image` on every list DTO — the grouping key (`album_artist ?? artist`,
+album) is exactly the entity those flags join on (`media_metadata.artist_id` /
+`album_id` resolve from the same `effectiveArtist`/album), so the
+representative row's flag governs the whole group. Enabled on **All files,
+Review, Trash** (gated `metadata.edit`) and **My uploads** (every uploader holds
+`file.upload`). The cover routes accept **`metadata.edit` OR `file.upload`**
+(`RequireAnyPermission`); the handler then enforces add-only for a
+`file.upload`-only caller — uploading a missing cover is allowed, overwriting one
+returns **403** (`coverReplaceBlocked`). So an uploader can dress a staged draft
+that has no art, but cannot touch an existing cover.
+
 ## The Library page (Hybrid nav)
 
 `/admin/library` (`webui/html/admin/library.html` + `library.js`) folds the
@@ -97,13 +116,14 @@ scope modals coexist in `library.html`. The dashboard cards deep-link via
 
 ## Out of scope (the entity axis)
 
-Artist/album **rename**, **merge**, and **cover upload** operate on entities, not
+Artist/album **rename**, **merge**, and **cover replace** operate on entities, not
 per-file tags. They stay in the **By-entity** drill-down inside the All-files
 scope (`admin/files.js`, its own renderer over `/api/artists`,
 `/api/albums?artist=`, `/api/tracks?…` + the rename/merge/cover/delete endpoints
 in `docs/api/metadata.md` and `docs/api/cover-images.md`). The component's own
 browse presentation is not used there; folding the entity affordances into it is
-an optional future step.
+an optional future step. (The one entity action the list does carry is the
+grouped **add-only** cover above — adding a *missing* cover, never replacing.)
 
 ## Permissions
 

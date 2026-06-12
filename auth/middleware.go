@@ -74,3 +74,26 @@ func RequirePermission(perm string) func(http.Handler) http.Handler {
 		})
 	}
 }
+
+// RequireAnyPermission allows the request if the identity holds ANY of perms:
+// 401 when anonymous, 403 when authenticated but holding none of them. (Used by
+// the cover-upload routes, which accept either metadata.edit or file.upload; the
+// handler then enforces the finer add-only rule for file.upload-only callers.)
+func RequireAnyPermission(perms ...string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			id := FromContext(r.Context())
+			if id == nil {
+				http.Error(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			for _, p := range perms {
+				if id.Has(p) {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+			http.Error(w, "forbidden", http.StatusForbidden)
+		})
+	}
+}

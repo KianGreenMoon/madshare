@@ -151,6 +151,10 @@ func (h *handler) listFiles(w http.ResponseWriter, r *http.Request) {
 		Duration      *float64 `json:"duration"` // seconds; null when not yet extracted
 		GuestPlayable bool     `json:"guest_playable"`
 		License       string   `json:"license"`
+		// ArtistHasImage / AlbumHasImage drive the grouped view's "Add cover"
+		// affordance (offered only when the entity has no cover yet).
+		ArtistHasImage bool `json:"artist_has_image"`
+		AlbumHasImage  bool `json:"album_has_image"`
 	}
 
 	items := make([]fileItem, 0, len(entries))
@@ -164,21 +168,23 @@ func (h *handler) listFiles(w http.ResponseWriter, r *http.Request) {
 			trackNum = &e.TrackNumber.Int64
 		}
 		items = append(items, fileItem{
-			ID:            e.ID,
-			Hash:          e.Hash,
-			Filename:      e.Filename,
-			MimeType:      e.MimeType,
-			ByteSize:      e.ByteSize,
-			URL:           "/files/" + e.ObjectKey,
-			Title:         e.Title,
-			Artist:        e.Artist,
-			AlbumArtist:   e.AlbumArtist.String,
-			Album:         e.Album,
-			TrackNumber:   trackNum,
-			Year:          e.Year,
-			Duration:      dur,
-			GuestPlayable: e.GuestPlayable,
-			License:       e.License.String,
+			ID:             e.ID,
+			Hash:           e.Hash,
+			Filename:       e.Filename,
+			MimeType:       e.MimeType,
+			ByteSize:       e.ByteSize,
+			URL:            "/files/" + e.ObjectKey,
+			Title:          e.Title,
+			Artist:         e.Artist,
+			AlbumArtist:    e.AlbumArtist.String,
+			Album:          e.Album,
+			TrackNumber:    trackNum,
+			Year:           e.Year,
+			Duration:       dur,
+			GuestPlayable:  e.GuestPlayable,
+			License:        e.License.String,
+			ArtistHasImage: e.ArtistHasImage,
+			AlbumHasImage:  e.AlbumHasImage,
 		})
 	}
 	writeJSON(w, http.StatusOK, items)

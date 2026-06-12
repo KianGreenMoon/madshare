@@ -173,6 +173,8 @@ export function createReviewScope({ play, perms }) {
     emptyText: 'Nothing awaiting review',
     columns: ['check', 'title', 'artist', 'album', 'size', 'meta', 'actions'],
     artistAlbumSort: true,
+    allowCoverAdd: canEdit,  // grouped "Add cover" on coverless artist/album separators
+    apiBase: API,
     metaLabel: 'Submitted',
     metaValue: f => (f.submitted_at ? fmtDate(f.submitted_at) : ''),
     badge: f => ({ text: STATE_LABEL[f.state] || f.state, cls: 'is-' + f.state }),

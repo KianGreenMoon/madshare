@@ -79,6 +79,10 @@ func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
 		// ReviewState lets the Trash page badge rows that re-enter the
 		// moderation queue (not the library) when restored.
 		ReviewState string `json:"review_state"`
+		// ArtistHasImage / AlbumHasImage drive the grouped view's "Add cover"
+		// affordance (offered only when the entity has no cover yet).
+		ArtistHasImage bool `json:"artist_has_image"`
+		AlbumHasImage  bool `json:"album_has_image"`
 	}
 
 	items := make([]trashItem, 0, len(entries))
@@ -88,19 +92,21 @@ func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
 			trackNum = &e.TrackNumber.Int64
 		}
 		items = append(items, trashItem{
-			ID:          e.ID,
-			Hash:        e.Hash,
-			Filename:    e.Filename,
-			Title:       e.Title,
-			Artist:      e.Artist,
-			AlbumArtist: e.AlbumArtist.String,
-			Album:       e.Album,
-			TrackNumber: trackNum,
-			Year:        e.Year,
-			ByteSize:    e.ByteSize,
-			URL:         "/files/" + e.ObjectKey,
-			DeletedAt:   e.DeletedAt.Int64,
-			ReviewState: e.ReviewState,
+			ID:             e.ID,
+			Hash:           e.Hash,
+			Filename:       e.Filename,
+			Title:          e.Title,
+			Artist:         e.Artist,
+			AlbumArtist:    e.AlbumArtist.String,
+			Album:          e.Album,
+			TrackNumber:    trackNum,
+			Year:           e.Year,
+			ByteSize:       e.ByteSize,
+			URL:            "/files/" + e.ObjectKey,
+			DeletedAt:      e.DeletedAt.Int64,
+			ReviewState:    e.ReviewState,
+			ArtistHasImage: e.ArtistHasImage,
+			AlbumHasImage:  e.AlbumHasImage,
 		})
 	}
 	writeJSON(w, http.StatusOK, items)

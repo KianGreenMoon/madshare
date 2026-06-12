@@ -155,9 +155,13 @@ func (db *DB) listFiles(ctx context.Context, where string, args ...any) ([]*File
 			COALESCE(m.year,    0) AS year,
 			m.duration_seconds,
 			` + guestAccessibleExpr + ` AS guest_playable,
-			f.license
+			f.license,
+			CASE WHEN aimg.artist_id IS NOT NULL THEN 1 ELSE 0 END AS artist_has_image,
+			CASE WHEN alimg.album_id  IS NOT NULL THEN 1 ELSE 0 END AS album_has_image
 		FROM files f
-		LEFT JOIN media_metadata m ON m.file_id = f.id`
+		LEFT JOIN media_metadata m ON m.file_id = f.id
+		LEFT JOIN artist_images aimg ON aimg.artist_id = m.artist_id
+		LEFT JOIN album_images  alimg ON alimg.album_id  = m.album_id`
 	if where != "" {
 		q += "\n\t\tWHERE " + visibleFile + " AND " + where
 	} else {
@@ -174,15 +178,17 @@ func (db *DB) listFiles(ctx context.Context, where string, args ...any) ([]*File
 	out := make([]*FileListEntry, 0)
 	for rows.Next() {
 		var e FileListEntry
-		var guest int
+		var guest, artistImg, albumImg int
 		if err := rows.Scan(
 			&e.ID, &e.Hash, &e.MimeType, &e.ByteSize, &e.ObjectKey, &e.CreatedAt,
 			&e.Filename, &e.Title, &e.Artist, &e.AlbumArtist, &e.Album, &e.TrackNumber, &e.Year, &e.DurationSeconds,
-			&guest, &e.License,
+			&guest, &e.License, &artistImg, &albumImg,
 		); err != nil {
 			return nil, fmt.Errorf("scan file list entry: %w", err)
 		}
 		e.GuestPlayable = guest == 1
+		e.ArtistHasImage = artistImg == 1
+		e.AlbumHasImage = albumImg == 1
 		out = append(out, &e)
 	}
 	if err := rows.Err(); err != nil {
@@ -320,9 +326,13 @@ func (db *DB) ListTrashedFiles(ctx context.Context) ([]*FileListEntry, error) {
 			f.guest_playable,
 			f.license,
 			f.deleted_at,
-			f.review_state
+			f.review_state,
+			CASE WHEN aimg.artist_id IS NOT NULL THEN 1 ELSE 0 END AS artist_has_image,
+			CASE WHEN alimg.album_id  IS NOT NULL THEN 1 ELSE 0 END AS album_has_image
 		FROM files f
 		LEFT JOIN media_metadata m ON m.file_id = f.id
+		LEFT JOIN artist_images aimg ON aimg.artist_id = m.artist_id
+		LEFT JOIN album_images  alimg ON alimg.album_id  = m.album_id
 		WHERE f.deleted_at IS NOT NULL
 		ORDER BY f.deleted_at DESC`
 
@@ -335,15 +345,17 @@ func (db *DB) ListTrashedFiles(ctx context.Context) ([]*FileListEntry, error) {
 	out := make([]*FileListEntry, 0)
 	for rows.Next() {
 		var e FileListEntry
-		var guest int
+		var guest, artistImg, albumImg int
 		if err := rows.Scan(
 			&e.ID, &e.Hash, &e.MimeType, &e.ByteSize, &e.ObjectKey, &e.CreatedAt,
 			&e.Filename, &e.Title, &e.Artist, &e.AlbumArtist, &e.Album, &e.TrackNumber, &e.Year, &e.DurationSeconds,
-			&guest, &e.License, &e.DeletedAt, &e.ReviewState,
+			&guest, &e.License, &e.DeletedAt, &e.ReviewState, &artistImg, &albumImg,
 		); err != nil {
 			return nil, fmt.Errorf("scan trashed file: %w", err)
 		}
 		e.GuestPlayable = guest == 1
+		e.ArtistHasImage = artistImg == 1
+		e.AlbumHasImage = albumImg == 1
 		out = append(out, &e)
 	}
 	if err := rows.Err(); err != nil {
