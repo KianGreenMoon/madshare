@@ -1,12 +1,13 @@
-// cover-edit.js — the shared "Add cover" picker used by the grouped file view.
+// cover-edit.js — the shared cover picker used by the grouped file view, behind
+// both "Add cover" (no cover yet) and "Edit cover" (replace an existing one).
 // Self-contained: it owns a hidden <input type=file>, validates JPEG/PNG ≤10MB,
 // and POSTs to the artist/album cover endpoints. No page DOM dependency, so the
 // same picker works on the admin pages and the (shell-native) upload page.
 //
-// Add-only by design: the affordance is offered only when the artist/album has
-// no cover yet (the grouped separator hides the button otherwise). Replacing an
-// existing cover stays in the admin By-entity view; the server also enforces
-// this — a file.upload-only caller gets 403 trying to overwrite.
+// The POST is identical for add vs. replace; which button shows is gated client-
+// side by the scope (allowCoverAdd / allowCoverEdit). The server also enforces
+// it — a file.upload-only caller may add a missing cover but gets 403 trying to
+// overwrite, so "Edit cover" is offered only where the caller has metadata.edit.
 
 const MAX_BYTES = 10 * 1024 * 1024;
 

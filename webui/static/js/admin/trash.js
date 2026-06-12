@@ -96,7 +96,8 @@ export function createTrashScope({ play, perms }) {
     emptyText: 'Trash is empty.',
     columns: ['check', 'title', 'artist', 'album', 'size', 'meta', 'actions'],
     artistAlbumSort: true,
-    allowCoverAdd: perms.includes('metadata.edit'),  // grouped "Add cover" on coverless separators
+    allowCoverAdd: perms.includes('metadata.edit'),   // grouped "Add cover" on coverless separators
+    allowCoverEdit: perms.includes('metadata.edit'),  // "Edit cover" on separators that already have one
     apiBase: API,
     metaLabel: 'Deleted',
     metaValue: f => fmtDate(f.deleted_at),

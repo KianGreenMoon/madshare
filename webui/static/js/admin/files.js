@@ -150,7 +150,8 @@ function filesScope() {
     emptyText: 'No files yet. Add music from the Upload page.',
     columns: ['check', 'title', 'artist', 'album', 'size', 'access', 'actions'],
     artistAlbumSort: true,   // offer the Default ⇄ artist/album sort toggle
-    allowCoverAdd: canEditMeta,  // grouped "Add cover" on coverless artist/album separators
+    allowCoverAdd: canEditMeta,   // grouped "Add cover" on coverless artist/album separators
+    allowCoverEdit: canEditMeta,  // "Edit cover" on separators that already have one
     apiBase: API,
     accessEditable: canEditMeta,
     licenses: LICENSE_OPTIONS,

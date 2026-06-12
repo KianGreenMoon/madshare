@@ -383,20 +383,31 @@ export function createFileList(scope) {
       cb.addEventListener('change', () => { hashes.forEach(h => cb.checked ? selected.add(h) : selected.delete(h)); syncSelectionUI(); });
       kids.push(cb);
     }
+    // The label/meta/cover button live in an inner flex row; the <td> stays a
+    // plain table cell so it still spans the full colspan width (a flex <td>
+    // collapses to its content, cutting the separator line short).
+    const labelRow = el('div', { class: 'grp-label-row' },
+      [label, meta ? el('span', { class: 'grp-meta', text: meta }) : null, extra || null]);
     return el('tr', { class: 'grp grp-' + kind }, [
       el('td', { class: 'cell-check' }, kids),
       el('td', { colspan: String(scope.columns.length - 1), class: 'grp-label' + (fallback ? ' is-fallback' : '') },
-        [label, meta ? el('span', { class: 'grp-meta', text: meta }) : null, extra || null]),
+        [labelRow]),
     ]);
   }
 
-  // coverAddBtn returns the grouped-separator "Add cover" affordance, or null
-  // when it shouldn't show (no allowCoverAdd, the Unknown/Other fallback bucket,
-  // or the entity already has a cover). Add-only: replacing stays in By-entity.
-  function coverAddBtn(kind, target, fallback, hasImage) {
-    if (!scope.allowCoverAdd || fallback || hasImage) return null;
+  // coverBtn returns the grouped-separator cover affordance for an artist/album:
+  //   - "Add cover"  when the entity has none yet      (gated by allowCoverAdd)
+  //   - "Edit cover" when it already has one           (gated by allowCoverEdit)
+  // Replacing an existing cover needs metadata.edit (the server enforces it too),
+  // so only scopes that grant it set allowCoverEdit. Never shown on the
+  // Unknown/Other fallback bucket (no real entity to attach a cover to).
+  function coverBtn(kind, target, fallback, hasImage) {
+    if (fallback) return null;
+    const add = !hasImage && scope.allowCoverAdd;
+    const edit = hasImage && scope.allowCoverEdit;
+    if (!add && !edit) return null;
     return el('button', {
-      type: 'button', class: 'btn btn-neutral btn-sm grp-cover-btn', text: 'Add cover',
+      type: 'button', class: 'btn btn-neutral btn-sm grp-cover-btn', text: edit ? 'Edit cover' : 'Add cover',
       onclick: () => coverPicker().pick({ kind, ...target }),
     });
   }
@@ -419,12 +430,12 @@ export function createFileList(scope) {
       // reflects the whole group's entity.
       body.appendChild(grpSepRow('artist', art.key || 'Unknown artist',
         `${art.albumList.length} album${art.albumList.length === 1 ? '' : 's'} · ${artFiles.length} track${artFiles.length === 1 ? '' : 's'}`,
-        artHashes, !art.key, coverAddBtn('artist', { artist: art.key }, !art.key, artFiles[0]?.artist_has_image)));
+        artHashes, !art.key, coverBtn('artist', { artist: art.key }, !art.key, artFiles[0]?.artist_has_image)));
       for (const al of art.albumList) {
         const y = albumYear(al.files);
         body.appendChild(grpSepRow('album', al.key || 'Other', y < 9999 ? String(y) : '',
           al.files.filter(isSelectable).map(f => f.hash), !al.key,
-          coverAddBtn('album', { artist: art.key, album: al.key }, !al.key, al.files[0]?.album_has_image)));
+          coverBtn('album', { artist: art.key, album: al.key }, !al.key, al.files[0]?.album_has_image)));
         al.files.forEach(f => body.appendChild(groupedTrack(f)));
       }
     }

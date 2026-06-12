@@ -173,7 +173,8 @@ export function createReviewScope({ play, perms }) {
     emptyText: 'Nothing awaiting review',
     columns: ['check', 'title', 'artist', 'album', 'size', 'meta', 'actions'],
     artistAlbumSort: true,
-    allowCoverAdd: canEdit,  // grouped "Add cover" on coverless artist/album separators
+    allowCoverAdd: canEdit,   // grouped "Add cover" on coverless artist/album separators
+    allowCoverEdit: canEdit,  // "Edit cover" on separators that already have one
     apiBase: API,
     metaLabel: 'Submitted',
     metaValue: f => (f.submitted_at ? fmtDate(f.submitted_at) : ''),

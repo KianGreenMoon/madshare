@@ -721,7 +721,8 @@ function mineScope() {
     emptyText: 'Nothing staged. Files you upload appear here for a metadata check before they reach the library.',
     columns: ['check', 'title', 'artist', 'album', 'size', 'actions'],
     artistAlbumSort: true,
-    allowCoverAdd: true,   // uploaders may add a missing artist/album cover (server enforces add-only)
+    allowCoverAdd: true,            // uploaders may add a missing artist/album cover (server enforces add-only)
+    allowCoverEdit: canEditMeta,    // replacing an existing cover needs metadata.edit (server enforces it too)
     apiBase: API,
     grouping: {
       kind: 'sections',
