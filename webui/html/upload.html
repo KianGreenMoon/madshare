@@ -23,10 +23,8 @@
   <!-- Visually-hidden status region: announces queue progress and backoff. -->
   <div class="visually-hidden" id="srStatus" aria-live="polite" role="status"></div>
 
-  <!-- Transient visible toast for backpressure (429) feedback. role="status"
-       so it is announced; the visually-hidden srStatus above carries the precise
-       "workers reduced to N" string in parallel. -->
-  <div class="toast-stack" id="toastStack" role="status" aria-live="polite" aria-atomic="true"></div>
+  <!-- Visible toasts render into the shared #toastStatus/#toastAlert stacks from
+       the auth-modals partial (see toast.js); this page no longer ships its own. -->
 
   <!-- ── Tabs: Upload ⇄ My uploads (the staging / review bucket) ─────────── -->
   <div class="upload-tabs" role="tablist" aria-label="Upload views">

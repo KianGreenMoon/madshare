@@ -2,6 +2,7 @@ import { gatePage, PAGE_PERMS, getIdentity } from './auth.js';
 import { createHashPool } from './hash-pool.js';
 import { createFileList } from './file-list.js';
 import { getController } from './player-controller.js';
+import { showToast } from './toast.js';
 
 // Upload page (/upload) controller.
 //
@@ -32,7 +33,7 @@ const API = document.querySelector('meta[name="api-url"]')?.content || '';
 // ── DOM refs (assigned by queryRefs() in init — they live in <main>) ─────────
 let dropZone, fileInput, folderInput, addMusicBtn, addMenu, chooseFilesBtn, chooseFolderBtn;
 let workersRange, workersValue, startBtn, clearBtn, queueList, queueEmpty;
-let srStatus, toastStack, precheckToggle;
+let srStatus, precheckToggle;
 let tabBtnUpload, tabBtnMine, uploadPane, minePane, mineCountEl, mineFileListEl;
 
 function queryRefs() {
@@ -50,7 +51,6 @@ function queryRefs() {
   queueList       = document.getElementById('queueList');
   queueEmpty      = document.getElementById('queueEmpty');
   srStatus        = document.getElementById('srStatus');
-  toastStack      = document.getElementById('toastStack');
   precheckToggle  = document.getElementById('precheckToggle');
   tabBtnUpload    = document.getElementById('tabBtnUpload');
   tabBtnMine      = document.getElementById('tabBtnMine');
@@ -465,7 +465,7 @@ function finishRun() {
     const n = stagedThisRun;
     stagedThisRun = 0;
     fileList?.reload();
-    showToast(`${n} file${n === 1 ? '' : 's'} staged — open “My uploads” to check tags and send to approval.`);
+    showToast(`${n} file${n === 1 ? '' : 's'} staged — open “My uploads” to check tags and send to approval.`, { type: 'success' });
     announce(`${n} file${n === 1 ? '' : 's'} staged in My uploads.`);
   }
 }
@@ -595,7 +595,7 @@ function handleBackoff(item) {
     workersValue.textContent = String(workerCap);
   }
   console.log(`Server limit hit — workers reduced to ${workerCap}`);
-  showToast(`Server busy — workers reduced to ${workerCap}.`);
+  showToast(`Server busy — workers reduced to ${workerCap}.`, { type: 'status' });
   announce(`Workers reduced to ${workerCap}.`);
 
   setItemState(item, 'pending');
@@ -694,10 +694,10 @@ async function postCover(g, file) {
     const url = `${API}/api/albums/${encodeURIComponent(g.album)}/image?artist=${encodeURIComponent(g.artist)}`;
     const res = await fetch(url, { method: 'POST', body: form });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    showToast(`Cover uploaded for “${g.album}”.`);
+    showToast(`Cover uploaded for “${g.album}”.`, { type: 'success' });
   } catch (err) {
     console.error('Cover upload failed:', err);
-    showToast(`Cover upload failed for “${g.album}”.`);
+    showToast(`Cover upload failed for “${g.album}”.`, { type: 'error' });
   }
 }
 
@@ -749,7 +749,7 @@ function mineScope() {
         id: 'remove', label: 'Remove', kind: 'danger',
         confirm: 'inline', confirmPrompt: 'Remove?', confirmLabel: 'Remove',
         show: MINE_EDITABLE,
-        run: async f => { await mineDelete(f.hash); showToast(`Removed “${mineTitle(f)}”.`); },
+        run: async f => { await mineDelete(f.hash); showToast(`Removed “${mineTitle(f)}”.`, { type: 'success' }); },
       },
     ],
     bulkActions: [
@@ -788,8 +788,8 @@ async function mineRemoveMany(hashes) {
   for (const hash of hashes) {
     try { await mineDelete(hash); ok++; } catch { fail++; }
   }
-  if (fail) showToast(`Removed ${ok}; ${fail} failed.`);
-  else if (ok) showToast(`Removed ${ok} file${ok === 1 ? '' : 's'}.`);
+  if (fail) showToast(`Removed ${ok}; ${fail} failed.`, { type: 'error' });
+  else if (ok) showToast(`Removed ${ok} file${ok === 1 ? '' : 's'}.`, { type: 'success' });
   announce(`Removed ${ok} file${ok === 1 ? '' : 's'}.`);
 }
 
@@ -802,7 +802,7 @@ async function mineSend(hashes) {
   const n = data.submitted ?? hashes.length;
   showToast(data.approved
     ? `Published ${n} file${n === 1 ? '' : 's'} to the library.`
-    : `Sent ${n} file${n === 1 ? '' : 's'} for review.`);
+    : `Sent ${n} file${n === 1 ? '' : 's'} for review.`, { type: 'success' });
   announce(data.approved ? 'Published to the library.' : 'Sent for review.');
 }
 
@@ -855,18 +855,9 @@ function formatBytes(n) {
 
 function announce(msg) { srStatus.textContent = msg; }
 
-function showToast(msg) {
-  if (!toastStack) return;
-  const toast = document.createElement('div');
-  toast.className = 'toast';
-  toast.textContent = msg;                      // textContent — no untrusted markup
-  toastStack.appendChild(toast);
-  requestAnimationFrame(() => toast.classList.add('is-visible'));
-  setTimeout(() => {
-    toast.classList.remove('is-visible');
-    toast.addEventListener('transitionend', () => toast.remove(), { once: true });
-    setTimeout(() => toast.remove(), 300);
-  }, 4000);
-}
+// showToast is the shared toast system (toast.js), rendering into the
+// #toastStatus/#toastAlert stacks from the auth-modals partial. The separate
+// srStatus aria-live region above stays — it narrates upload progress to screen
+// readers, which is a different concern from the visible toasts.
 // (init() runs syncEmptyStates()/updateButtons(); the visibilitychange listener
 // is wired in wire(). Lifecycle is driven by shell.js.)
