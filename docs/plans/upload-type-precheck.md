@@ -170,7 +170,8 @@ toggle and minus a round-trip (the allow-list is static).
   authoritative) and confirm the documented `curl -F` example now works for non-
   MP3 audio.
 
-**Phase 4 — Verify.**
+**Phase 4 — Verify.** *(Done — build/tests green; `/api/ui/config` live-checked;
+browser behavior user-verified 2026-06-13.)*
 - `go build ./...`, `go test ./...`, `node --test tests/js/queue-ops.test.mjs`.
 - Manual browser: drop a `.flac` (uploads, no 415), a `.txt` (skipped with
   reason), a `.aac`/`.opus` (uploads). `curl -F "file=@x.flac" …/files/upload`
