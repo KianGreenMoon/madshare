@@ -3,26 +3,28 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Upload &middot; Madshare</title>
+  <title>Madshare &mdash; Admin &middot; Upload</title>
   <meta name="api-url" content="{{.APIURL}}">
-  <!-- app.css carries the shared design tokens (:root[data-theme]) plus the
-       header / nav / theme-switcher styles this page reuses; upload.css adds the
-       page-specific layout on top. Each webui page links its own CSS, so the
-       tokens must come from app.css here too. -->
+  <!-- Same upload body as /upload, wrapped in the admin shell. CSS is the union
+       of what both shells need: admin-shell chrome + the upload layout + the
+       file-view component (self-sufficient) + player.css for the page-local
+       preview player. See docs/plans/cross-shell-upload.md. -->
   <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/admin-shell.css">
   <link rel="stylesheet" href="/static/css/upload.css">
   <link rel="stylesheet" href="/static/css/file-view.css">
   <link rel="stylesheet" href="/static/css/player.css">
 </head>
-<body class="upload-page" data-page="upload" data-module="/static/js/upload.js">
+<body>
 
 {{template "header" .}}
+{{template "admin-shell" .}}
 
 <main class="upload-main">{{template "upload-main" .}}</main>
 
 {{template "player-bar" .}}
 {{template "auth-modals" .}}
 
-<script type="module" src="/static/js/shell.js"></script>
+<script type="module" src="/static/js/admin/upload.js"></script>
 </body>
 </html>

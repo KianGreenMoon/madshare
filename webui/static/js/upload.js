@@ -30,6 +30,12 @@ const API = document.querySelector('meta[name="api-url"]')?.content || '';
 // exports init()/teardown(); the shell calls them on entry/exit. Everything that
 // touches the swappable <main> is (re)wired in init() under an AbortController.
 
+// previewPlay is the "My uploads" preview sink. Default = the listening shell's
+// persistent player (this page lives in that shell). The admin-shell host
+// (/admin/upload) has no shell player, so it passes its own page-local player
+// via init({ preview }). See docs/plans/cross-shell-upload.md.
+let previewPlay = (tracks, idx) => getController().setQueue(tracks, idx);
+
 // ── DOM refs (assigned by queryRefs() in init — they live in <main>) ─────────
 let dropZone, fileInput, folderInput, addMusicBtn, addMenu, chooseFilesBtn, chooseFolderBtn;
 let workersRange, workersValue, startBtn, clearBtn, queueList, queueEmpty;
@@ -99,7 +105,8 @@ const IMAGE_MIMES  = new Set(['image/jpeg', 'image/png']);
 const AUDIO_EXTS   = /\.(mp3|ogg|flac|wav|mp4|m4a|aac|opus)$/i;
 
 // ── Lifecycle (driven by shell.js) ──────────────────────────────────────────
-export async function init() {
+export async function init(opts = {}) {
+  if (opts.preview) previewPlay = opts.preview;
   queryRefs();
   wireAbort = new AbortController();
   wire(wireAbort.signal);
@@ -820,8 +827,9 @@ async function mineBulkPatch(hashes, patch) {
   if (fail) throw new Error(`updated ${ok}, ${fail} failed`);
 }
 
-// playMine queues the visible staging list into the shared shell player,
-// starting at the clicked row — same continuity behavior as the library pages.
+// playMine queues the visible staging list into the preview sink (the shell
+// player by default; a page-local one under the admin shell), starting at the
+// clicked row — same continuity behavior as the library pages.
 function playMine(entry, visible) {
   const list = (visible && visible.length) ? visible : [entry];
   const tracks = list.map(e => ({
@@ -832,7 +840,7 @@ function playMine(entry, visible) {
     dur: e.duration || undefined,
   }));
   const idx = list.findIndex(e => e.hash === entry.hash);
-  getController().setQueue(tracks, idx < 0 ? 0 : idx);
+  previewPlay(tracks, idx < 0 ? 0 : idx);
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

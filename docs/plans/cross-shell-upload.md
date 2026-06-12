@@ -64,21 +64,29 @@ The two requirements that make this clean rather than a fork:
 
 ### Routing & gating
 
-`/admin/upload` is registered in `RegisterAdminPage` (webui.go), so it joins the
-**admin route group** — already gated at the listener mount by
-`auth.RequirePermission(file.delete)`. The page boots through `bootAdmin()` like
-every other admin page. Net effect: **no new attack surface, strictly more
-restrictive** than `/upload`. The actual work still POSTs to the same
-already-gated endpoints (`/api/my/uploads`, `/files/upload`, `file.upload`
-permission); same `upload.js`, same API.
+`/admin/upload` is registered in `RegisterAdminPage` (webui.go). Crucially, the
+admin **pages** are *ungated server-side* — `RegisterAdminPage` is mounted
+without `RequirePermission`, by design, so an admin page can render its own login
+prompt (only the destructive `/api/admin/*` API from `RegisterAdmin` is
+`file.delete`-gated). So `/admin/upload` returns its HTML to anyone, exactly like
+`/admin/library` etc. That is safe because the page is a static upload UI with no
+sensitive data, and **every mutating action is enforced server-side**: the
+upload POST hits `/files/upload` / `/api/my/uploads` (gated `file.upload`), and
+metadata/access edits hit `/api/admin/*` (gated `file.delete`). Same `upload.js`,
+same gated API as `/upload`.
 
-No extra `file.upload` guard is needed. Roles are cumulative in practice: the
-only roles that pass the admin `file.delete` gate are **admin** (holds every
-permission, incl. `file.upload` — `003_auth.sql`) and **moderator** (granted
-`file.upload` in `017_review_bucket.sql`). So anyone who can reach
-`/admin/upload` already has upload rights, and non-admins are blocked by the
-admin gate before the page renders. The boot is a plain `bootAdmin()`, like the
-other admin pages.
+The visible content is gated **client-side**, in two layers, and no extra
+`file.upload` guard is needed:
+
+1. `bootAdmin()` runs `gatePage(['file.delete','user.manage'])` — admin-access.
+   A principal without it (anonymous, or a plain uploader) gets the access-denied
+   / login notice and `init()` never runs.
+2. `upload.js`'s `init()` then runs `gatePage(['file.upload'])`.
+
+The only admin-access roles are **admin** (holds every permission incl.
+`file.upload` — `003_auth.sql`) and **moderator** (granted `file.upload` in
+`017_review_bucket.sql`), so both clear layer 2 too. A plain uploader who hand-
+navigates to `/admin/upload` is stopped at layer 1 and uses `/upload` instead.
 
 ### Markup partial
 
@@ -113,11 +121,13 @@ export async function init(opts = {}) {
 `getController().setQueue` directly. The admin host passes a page-local player
 via `opts.preview`.
 
-The page-local player is a **minimal one inlined in the admin upload boot
-module** — a single `<audio>` driven by `previewPlay(tracks, idx)` (load the
-indexed track, play; advance on `ended`). No shared extraction: the "My uploads"
-preview only needs play/stop of one row at a time, so a few lines in the boot
-beats coupling to `library.js`'s richer player.
+The page-local player is wired **inline in the admin upload boot module** by
+reusing `createPlayer` from `static/js/player.js` and the `player-bar` partial —
+exactly the page-local player `admin/library.js` already uses. The boot keeps a
+small play context (`items`/`index`) so prev/next/ended walk the previewed list,
+and exposes `previewPlay(tracks, idx)` matching the shell controller's
+`setQueue` signature. No new player module and no shell controller; just a few
+lines of context wiring around the existing `createPlayer`.
 
 ### Admin boot module
 
@@ -126,8 +136,9 @@ New `webui/static/js/admin/upload.js` (distinct from the core
 
 ```js
 import { bootAdmin } from './shared.js';
+import { createPlayer } from '../player.js';
 import { init } from '../upload.js';
-// + minimal inline preview player (one <audio>)
+// previewPlay drives createPlayer over a small play context (see library.js)
 
 const identity = await bootAdmin();
 if (identity) await init({ preview: previewPlay });
@@ -197,7 +208,9 @@ the listening CSS.
 
 ## Security summary
 
-No new permission surface. `/admin/upload` sits behind the admin group's
-`file.delete` mount gate (which only admin/moderator pass, both of whom hold
-`file.upload`), and the upload itself hits the same gated API as `/upload`. The
-change is chrome + a preview sink, not auth.
+No new permission surface. `/admin/upload` is served ungated like every other
+admin page (it renders the login prompt for anonymous users), but it is a static
+upload UI with no sensitive data, the visible content is client-gated by
+`bootAdmin()` + `init()`'s `gatePage`, and **all writes are enforced
+server-side** through the same `file.upload` / `file.delete`-gated endpoints
+`/upload` already uses. The change is chrome + a preview sink, not auth.

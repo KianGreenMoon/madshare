@@ -229,9 +229,114 @@
 <nav class="admin-nav" aria-label="Admin sections">
   <a href="/admin"          class="admin-nav-link{{if eq .SubPage ""}} admin-nav-link--active{{end}}"{{if eq .SubPage ""}} aria-current="page"{{end}}>Overview</a>
   <a href="/admin/library"  class="admin-nav-link{{if eq .SubPage "library"}} admin-nav-link--active{{end}}"{{if eq .SubPage "library"}} aria-current="page"{{end}}>Library</a>
-  <a href="/upload"         class="admin-nav-link">Upload</a>
+  <a href="/admin/upload"   class="admin-nav-link{{if eq .SubPage "upload"}} admin-nav-link--active{{end}}"{{if eq .SubPage "upload"}} aria-current="page"{{end}}>Upload</a>
   <a href="/admin/users"    class="admin-nav-link{{if eq .SubPage "users"}} admin-nav-link--active{{end}}"{{if eq .SubPage "users"}} aria-current="page"{{end}}>Users</a>
   <a href="/admin/prune"    class="admin-nav-link{{if eq .SubPage "prune"}} admin-nav-link--active{{end}}"{{if eq .SubPage "prune"}} aria-current="page"{{end}}>Prune</a>
   <a href="/admin/settings" class="admin-nav-link{{if eq .SubPage "settings"}} admin-nav-link--active{{end}}"{{if eq .SubPage "settings"}} aria-current="page"{{end}}>Settings</a>
 </nav>
+{{end}}
+
+{{/* upload-main: the upload page body (drop-zone, worker bar, queue,
+     Advanced, and the "My uploads" staging pane). Shared verbatim by the
+     listening-shell page (/upload, html/upload.html) and the admin-shell
+     page (/admin/upload, html/admin/upload.html); each wraps it in its own
+     <main class="upload-main">. See docs/plans/cross-shell-upload.md. */}}
+{{define "upload-main"}}
+
+  <!-- Visually-hidden status region: announces queue progress and backoff. -->
+  <div class="visually-hidden" id="srStatus" aria-live="polite" role="status"></div>
+
+  <!-- Visible toasts render into the shared #toastStatus/#toastAlert stacks from
+       the auth-modals partial (see toast.js); this page no longer ships its own. -->
+
+  <!-- ── Tabs: Upload ⇄ My uploads (the staging / review bucket) ─────────── -->
+  <div class="upload-tabs" role="tablist" aria-label="Upload views">
+    <button type="button" class="upload-tab is-active" id="tabBtnUpload" role="tab"
+            aria-selected="true" aria-controls="uploadPane">Upload</button>
+    <button type="button" class="upload-tab" id="tabBtnMine" role="tab"
+            aria-selected="false" aria-controls="minePane">
+      My uploads <span class="upload-tab__count" id="mineCount" hidden>0</span>
+    </button>
+  </div>
+
+  <div id="uploadPane" role="tabpanel" aria-labelledby="tabBtnUpload">
+
+  <!-- ── Drop zone ──────────────────────────────────────────────────────── -->
+  <section class="upload-section" aria-labelledby="dropHeading">
+    <h1 id="dropHeading" class="section-title">Upload music</h1>
+    <div class="drop-zone" id="dropZone" role="button" tabindex="0"
+         aria-label="Drop files or a folder here, or activate to browse files">
+      <div class="drop-zone__icon" aria-hidden="true">&#9835;</div>
+      <p class="drop-zone__lead">Drag a folder of music here</p>
+      <small class="drop-zone__hint">Audio is uploaded &amp; grouped into albums by its tags; cover images are matched to the album in their folder</small>
+      <div class="drop-zone__actions">
+        <div class="add-menu">
+          <button type="button" class="btn btn--accent" id="addMusic" aria-haspopup="true" aria-expanded="false">Add music &#9662;</button>
+          <div class="add-menu__list" id="addMenu" role="menu" hidden>
+            <button type="button" class="add-menu__item" role="menuitem" id="chooseFiles">Choose files&hellip;</button>
+            <button type="button" class="add-menu__item" role="menuitem" id="chooseFolder">Choose folder&hellip;</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- Hidden inputs drive the two browse buttons. They live OUTSIDE .drop-zone
+         on purpose: a programmatic input.click() dispatches a click that bubbles,
+         and if the input were inside .drop-zone it would re-enter the drop-zone's
+         click handler and open the *other* picker (the folder picker would be
+         clobbered by the file picker). Keeping them as siblings stops that. -->
+    <input type="file" id="fileInput"   class="visually-hidden" multiple aria-hidden="true" tabindex="-1">
+    <input type="file" id="folderInput" class="visually-hidden" multiple webkitdirectory directory aria-hidden="true" tabindex="-1">
+  </section>
+
+  <!-- ── Workers + actions ──────────────────────────────────────────────── -->
+  <section class="upload-section workers-bar" aria-labelledby="workersLabel">
+    <div class="workers-control">
+      <label class="workers-label" id="workersLabel" for="workersRange">
+        Workers: <span id="workersValue">3</span>
+      </label>
+      <input type="range" id="workersRange" class="workers-range"
+             min="1" max="10" step="1" value="3"
+             aria-describedby="workersHint">
+      <small id="workersHint" class="visually-hidden">Number of files uploaded in parallel</small>
+    </div>
+    <div class="workers-actions">
+      <button type="button" class="btn btn--accent" id="startUpload" disabled>Upload</button>
+      <button type="button" class="btn" id="clearQueue" disabled>Clear</button>
+    </div>
+  </section>
+
+  <!-- ── Upload queue ───────────────────────────────────────────────────── -->
+  <section class="upload-section" aria-labelledby="queueHeading">
+    <h2 id="queueHeading" class="section-title">Upload queue</h2>
+    <ul class="queue-list" id="queueList" aria-live="polite">
+      <!-- populated by JS -->
+    </ul>
+    <p class="empty-note" id="queueEmpty">Nothing queued yet. Add files above to begin.</p>
+  </section>
+
+  <!-- ── Advanced ───────────────────────────────────────────────────────── -->
+  <section class="upload-section upload-advanced" aria-labelledby="advancedHeading">
+    <h2 id="advancedHeading" class="section-title section-title--sub">Advanced</h2>
+    <label class="precheck-toggle">
+      <input type="checkbox" id="precheckToggle" checked>
+      <span>Skip files already on the server</span>
+    </label>
+    <p class="upload-advanced__hint">
+      Each file is hashed in your browser and skipped if the server already has it.
+      Turning this off re-uploads duplicates over the network &mdash; the server still
+      de-duplicates them on arrival, so nothing is stored twice; you just spend the
+      bandwidth.
+    </p>
+  </section>
+
+  </div><!-- /uploadPane -->
+
+  <!-- ── My uploads — the staging list (review bucket) ──────────────────── -->
+  <!-- Rendered by the shared file-management component (file-list.js): heading,
+       filter, bulk toolbar, per-state sections, Edit/Play/Remove, send-to-approval. -->
+  <div id="minePane" role="tabpanel" aria-labelledby="tabBtnMine" hidden>
+    <section class="upload-section" aria-label="My uploads">
+      <div id="mineFileList" aria-busy="true" aria-live="polite"></div>
+    </section>
+  </div><!-- /minePane -->
 {{end}}

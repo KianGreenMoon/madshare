@@ -69,7 +69,11 @@ var (
 var adminSubPages = map[string]*template.Template{
 	// "library" is the unified file-management page (the All files / Review /
 	// Trash scopes folded together — docs/plans/file-management-view.md).
-	"library":  buildPageTmpl("html/admin/library.html"),
+	"library": buildPageTmpl("html/admin/library.html"),
+	// "upload" is the same upload body as /upload wrapped in the admin shell, so
+	// the upload page renders in whichever shell it was reached from
+	// (docs/plans/cross-shell-upload.md).
+	"upload":   buildPageTmpl("html/admin/upload.html"),
 	"users":    buildPageTmpl("html/admin/users.html"),
 	"prune":    buildPageTmpl("html/admin/prune.html"),
 	"settings": buildPageTmpl("html/admin/settings.html"),
