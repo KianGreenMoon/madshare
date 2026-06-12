@@ -99,10 +99,27 @@ let trashPolicy = 'reupload_restores'; // from /api/ui/config; how a trashed mat
 const UNSORTED_KEY = '\u0000unsorted';
 const COVER_STEMS  = new Set(['cover', 'folder', 'front', 'albumart', 'artwork', 'album']);
 const IMAGE_MIMES  = new Set(['image/jpeg', 'image/png']);
-// Audio is detected by extension as well as MIME: browsers often leave file.type
-// empty for non-MP3 formats, so MIME alone would wrongly skip real music. Mirrors
-// the server's allowedExtensions.
-const AUDIO_EXTS   = /\.(mp3|ogg|flac|wav|mp4|m4a|aac|opus)$/i;
+
+// acceptedAudio maps an accepted extension to its canonical MIME. It is the
+// client side of the server's acceptedAudioTypes (api/handlers.go), fetched from
+// /api/ui/config in loadUIConfig() so the two never drift; this built-in copy is
+// the fallback when the config is unavailable (older server / offline). The
+// allow-check is extension-based (browsers leave file.type empty for FLAC/M4A/
+// OPUS, so MIME alone is unreliable); the MIME value is what we send as the
+// upload's Content-Type so the server stores it correctly.
+// Advisory only — the server re-validates every upload. No UI toggle.
+// See docs/plans/upload-type-precheck.md.
+let acceptedAudio = {
+  '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.flac': 'audio/flac',
+  '.wav': 'audio/wav', '.mp4': 'audio/mp4', '.m4a': 'audio/mp4',
+  '.aac': 'audio/aac', '.opus': 'audio/opus',
+};
+// extOf returns the lowercased dotted extension of a path ("" if none).
+const extOf = (path) => {
+  const m = /\.[^./\\]+$/.exec((path || '').toLowerCase());
+  return m ? m[0] : '';
+};
+const audioMimeFor = (path) => acceptedAudio[extOf(path)];
 
 // ── Lifecycle (driven by shell.js) ──────────────────────────────────────────
 export async function init(opts = {}) {
@@ -227,6 +244,12 @@ async function loadUIConfig() {
     workersRange.max = String(Math.max(1, max));
     workersRange.value = String(Math.min(Math.max(1, def), Math.max(1, max)));
     if (cfg?.trash_restore_policy) trashPolicy = cfg.trash_restore_policy;
+    // Adopt the server's accepted-audio allow-list verbatim (keeps the client's
+    // skip decision and outgoing Content-Type in lockstep with the server).
+    if (cfg?.accepted_audio && typeof cfg.accepted_audio === 'object'
+        && Object.keys(cfg.accepted_audio).length) {
+      acceptedAudio = cfg.accepted_audio;
+    }
   } catch (err) {
     console.warn('UI config unavailable, using defaults:', err);
   }
@@ -329,13 +352,15 @@ function addEntries(entries) {
   announce(`${audioCount} audio file${audioCount === 1 ? '' : 's'} ready to upload.`);
 }
 
-// classify decides how a file is handled. Browsers frequently leave file.type
-// EMPTY for non-MP3 audio (.flac/.m4a/.opus/.ogg/.wav…), so extension is the
-// reliable signal — MIME alone would mislabel real music as "other" and skip it.
+// classify decides how a file is handled. Audio is gated by EXTENSION against
+// the server's accepted-audio allow-list (acceptedAudio) — browsers leave
+// file.type empty for FLAC/M4A/OPUS, and accepting any audio/* MIME would queue
+// files the server then rejects (e.g. .weba). Matching the server here means a
+// queued audio file is one the server will actually accept.
 function classify(file, relPath) {
   const name = (relPath || file.name || '').toLowerCase();
   const type = file.type || '';
-  if (type.startsWith('audio/') || AUDIO_EXTS.test(name)) return 'audio';
+  if (audioMimeFor(name)) return 'audio';
   if (IMAGE_MIMES.has(type) || /\.(jpe?g|png)$/i.test(name)) return 'image';
   return 'other';
 }
@@ -394,7 +419,7 @@ function renderQueueItem(item) {
   // (the cover endpoint is gated on it) — say so instead of pretending.
   if (item.kind === 'image' && canEditMeta) setItemState(item, 'cover', 'Cover image — applied to its album after upload.');
   else if (item.kind === 'image') setItemState(item, 'skipped', 'Cover image — needs the metadata permission; skipped.');
-  else if (item.kind === 'other') setItemState(item, 'skipped', 'Skipped — only audio files are stored.');
+  else if (item.kind === 'other') setItemState(item, 'skipped', 'Skipped — not an accepted audio format.');
 }
 
 function setItemState(item, state, message) {
@@ -552,8 +577,17 @@ function uploadXhr(item) {
     setItemState(item, 'uploading');
     setProgress(item, 0);
 
+    // Send the canonical audio MIME as the part's Content-Type. Browsers leave
+    // File.type empty for FLAC/M4A/OPUS, which would otherwise go out as
+    // application/octet-stream; the server keys on the extension regardless, but
+    // an accurate type means it stores the right MIME. Wrap in a retyped File
+    // only when needed. See docs/plans/upload-type-precheck.md.
+    const want = audioMimeFor(item.relPath);
+    const blob = (want && item.file.type !== want)
+      ? new File([item.file], item.file.name, { type: want })
+      : item.file;
     const form = new FormData();
-    form.append('file', item.file, item.relPath);
+    form.append('file', blob, item.relPath);
 
     const xhr = new XMLHttpRequest();
     activeXhrs.add(xhr);

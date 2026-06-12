@@ -319,6 +319,42 @@ func TestUploadFile_VideoRejected(t *testing.T) {
 	}
 }
 
+// TestUploadFile_ExtensionAuthoritative verifies the gate keys on the filename
+// extension and persists the canonical MIME, so allowed audio whose declared
+// part Content-Type is empty or application/octet-stream (common for FLAC/M4A/
+// OPUS in browsers, and curl -F's default) is accepted, not 415'd, and stored
+// with the right MIME. See docs/plans/upload-type-precheck.md.
+func TestUploadFile_ExtensionAuthoritative(t *testing.T) {
+	cases := []struct {
+		filename    string
+		contentType string
+		wantMIME    string
+	}{
+		{"track.flac", "", "audio/flac"},
+		{"track.m4a", "application/octet-stream", "audio/mp4"},
+		{"track.opus", "application/octet-stream", "audio/opus"},
+		{"track.aac", "", "audio/aac"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.filename, func(t *testing.T) {
+			h, db, _ := newTestHandler(t)
+			req := buildUploadRequest(t, "file", tc.filename, tc.contentType, []byte("fake "+tc.filename))
+			rr := httptest.NewRecorder()
+			h.uploadFile(rr, req)
+			if rr.Code != http.StatusCreated {
+				t.Fatalf("status = %d, want 201; body: %s", rr.Code, rr.Body.String())
+			}
+			var got string
+			if err := db.QueryRow(`SELECT mime_type FROM files`).Scan(&got); err != nil {
+				t.Fatalf("read mime_type: %v", err)
+			}
+			if got != tc.wantMIME {
+				t.Errorf("stored mime_type = %q, want %q", got, tc.wantMIME)
+			}
+		})
+	}
+}
+
 // TestUploadFile_PathTraversalFilename sends a filename with path separators.
 // The stored blob must land inside baseDir.
 func TestUploadFile_PathTraversalFilename(t *testing.T) {

@@ -34,29 +34,26 @@ func (h *handler) audit(ctx context.Context, action, target, detail string) {
 	}
 }
 
-// allowedMIMETypes is the set of media types accepted for upload.
-// v0 is audio only; video support is deferred.
-var allowedMIMETypes = map[string]bool{
-	"audio/mpeg":  true,
-	"audio/ogg":   true,
-	"audio/flac":  true,
-	"audio/wav":   true,
-	"audio/x-wav": true,
-	"audio/mp4":   true,
-}
-
-// allowedExtensions guards against MIME bypass: an attacker can declare any
-// Content-Type, but the stored filename's extension determines what the file
-// server advertises to browsers. Both checks must pass.
-var allowedExtensions = map[string]bool{
-	".mp3":  true,
-	".ogg":  true,
-	".flac": true,
-	".wav":  true,
-	".mp4":  true,
-	".m4a":  true,
-	".aac":  true,
-	".opus": true,
+// acceptedAudioTypes maps an accepted upload extension to its canonical audio
+// MIME type. v0 is audio only; video support is deferred.
+//
+// The extension is the security-relevant guard: it determines what the file
+// server later advertises to browsers (defended further by X-Content-Type-
+// Options: nosniff on the file routes). The browser-declared part Content-Type
+// is unreliable — empty for FLAC/M4A/OPUS, application/octet-stream from
+// curl -F — so it is not used to gate; the canonical MIME here is persisted and
+// served instead. This single map is also surfaced to the upload page at
+// GET /api/ui/config (accepted_audio) so client and server share one source of
+// truth. See docs/plans/upload-type-precheck.md.
+var acceptedAudioTypes = map[string]string{
+	".mp3":  "audio/mpeg",
+	".ogg":  "audio/ogg",
+	".flac": "audio/flac",
+	".wav":  "audio/wav",
+	".mp4":  "audio/mp4",
+	".m4a":  "audio/mp4",
+	".aac":  "audio/aac",
+	".opus": "audio/opus",
 }
 
 // handler holds the dependencies for the API HTTP handlers.

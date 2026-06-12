@@ -154,3 +154,30 @@ func TestGetUIConfig_FallsBackToDefaults(t *testing.T) {
 		t.Errorf("default upload config = %+v, want {3, 10}", body.Upload)
 	}
 }
+
+// TestGetUIConfig_AcceptedAudio verifies the endpoint surfaces the server's
+// accepted-audio allow-list (acceptedAudioTypes) so the upload page's type
+// precheck and outgoing Content-Type stay in lockstep with the server.
+func TestGetUIConfig_AcceptedAudio(t *testing.T) {
+	srv, _ := newImageTestServer(t, nil)
+	resp, err := http.Get(srv.URL + "/api/ui/config")
+	if err != nil {
+		t.Fatalf("GET ui config: %v", err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		AcceptedAudio map[string]string `json:"accepted_audio"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.AcceptedAudio) != len(acceptedAudioTypes) {
+		t.Errorf("accepted_audio has %d entries, want %d", len(body.AcceptedAudio), len(acceptedAudioTypes))
+	}
+	if body.AcceptedAudio[".flac"] != "audio/flac" {
+		t.Errorf(".flac => %q, want audio/flac", body.AcceptedAudio[".flac"])
+	}
+	if body.AcceptedAudio[".m4a"] != "audio/mp4" {
+		t.Errorf(".m4a => %q, want audio/mp4", body.AcceptedAudio[".m4a"])
+	}
+}

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
-	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -55,14 +54,6 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// Parse off any parameters (e.g. "audio/mpeg; charset=utf-8") so the
-	// allow-list check compares the bare media type.
-	mimeType, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
-	if err != nil || !allowedMIMETypes[mimeType] {
-		http.Error(w, "unsupported media type", http.StatusUnsupportedMediaType)
-		return
-	}
-
 	// Reduce the client-supplied name to a safe base name before it is used
 	// for the extension check, on-disk path, and download URL.
 	filename := sanitizeFilename(header.Filename)
@@ -70,8 +61,12 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid filename", http.StatusBadRequest)
 		return
 	}
+	// The extension is the accepted-type guard; it maps to the canonical MIME we
+	// persist and serve. The browser-declared part Content-Type is not consulted
+	// (unreliable — see acceptedAudioTypes). docs/plans/upload-type-precheck.md.
 	ext := strings.ToLower(filepath.Ext(filename))
-	if !allowedExtensions[ext] {
+	mimeType, ok := acceptedAudioTypes[ext]
+	if !ok {
 		http.Error(w, "unsupported file extension", http.StatusUnsupportedMediaType)
 		return
 	}

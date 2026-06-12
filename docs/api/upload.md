@@ -23,7 +23,7 @@ Content-Type: multipart/form-data
 
 | Part   | Required | Description |
 |--------|----------|-------------|
-| `file` | yes      | The file to upload. The part's `Content-Type` and filename extension are both validated (see below). |
+| `file` | yes      | The file to upload. Accepted by its **filename extension** (see below); the part's `Content-Type` is not used to gate. |
 
 ```bash
 curl -X POST -F "file=@./song.mp3" http://localhost:3000/files/upload
@@ -38,15 +38,28 @@ upload access and how it is granted are described in
 
 ### Accepted types
 
-v0 accepts **audio only** (video is deferred). Two independent checks must both
-pass — this prevents a MIME-type spoof from being served back under a dangerous
-extension:
+v0 accepts **audio only** (video is deferred). The **filename extension** is the
+gate (case-insensitive); each accepted extension maps to a canonical MIME type
+that the server persists and serves:
 
-- **MIME type** (parsed from the part's `Content-Type`, parameters ignored):
-  `audio/mpeg`, `audio/ogg`, `audio/flac`, `audio/wav`, `audio/x-wav`,
-  `audio/mp4`.
-- **Filename extension** (case-insensitive): `.mp3`, `.ogg`, `.flac`, `.wav`,
-  `.mp4`, `.m4a`, `.aac`, `.opus`.
+| Extension | Canonical MIME |
+|-----------|----------------|
+| `.mp3`    | `audio/mpeg`   |
+| `.ogg`    | `audio/ogg`    |
+| `.flac`   | `audio/flac`   |
+| `.wav`    | `audio/wav`    |
+| `.mp4`, `.m4a` | `audio/mp4` |
+| `.aac`    | `audio/aac`    |
+| `.opus`   | `audio/opus`   |
+
+The extension is the security-relevant guard — it determines what the file
+server later advertises (reinforced by `X-Content-Type-Options: nosniff` on the
+file routes). The part's declared `Content-Type` is **not** consulted: browsers
+leave it empty for FLAC/M4A/OPUS (sent as `application/octet-stream`), and
+`curl -F` defaults to `application/octet-stream` — gating on it would reject
+valid audio. The canonical MIME above is stored instead. The same allow-list is
+served to the upload page at `GET /api/ui/config` (`accepted_audio`) so the
+browser can flag disallowed files before upload.
 
 The filename is sanitised to a safe base name first (Windows and Unix path
 components stripped, control characters rejected), so a client-supplied path
@@ -117,7 +130,7 @@ is no staging and inserts are immediately approved.
 | Status | Condition |
 |--------|-----------|
 | 400    | Body exceeds `max_upload_mb`, malformed multipart, missing `file` part, or invalid filename. |
-| 413/415| Disallowed MIME type or filename extension (`415 Unsupported Media Type`). |
+| 413/415| Filename extension not on the accepted-audio allow-list (`415 Unsupported Media Type`). |
 | 429    | A concurrency limit was reached — see [Concurrency limits](#concurrency-limits). |
 | 500    | Storage or database error. |
 

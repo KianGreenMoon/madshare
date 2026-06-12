@@ -416,10 +416,14 @@ func (h *handler) getUIConfig(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		policy = database.TrashReuploadRestores
 	}
+	// accepted_audio is the canonical extension→MIME allow-list (acceptedAudioTypes)
+	// so the upload page can flag disallowed files and send the right Content-Type
+	// without drifting from the server. See docs/plans/upload-type-precheck.md.
 	writeJSON(w, http.StatusOK, struct {
 		*config.UIConfig
-		TrashRestorePolicy string `json:"trash_restore_policy"`
-	}{cfg, policy})
+		TrashRestorePolicy string            `json:"trash_restore_policy"`
+		AcceptedAudio      map[string]string `json:"accepted_audio"`
+	}{cfg, policy, acceptedAudioTypes})
 }
 
 // uploadAlbumImage stores a manually uploaded album cover and triggers async
