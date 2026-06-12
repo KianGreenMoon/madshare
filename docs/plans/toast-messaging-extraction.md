@@ -1,7 +1,7 @@
 # Toast Messaging — Extraction & Reuse Plan
 
-**Status:** Implemented — Phases 1–4 done (build + Go/JS tests green). Phase 5
-manual browser checklist still to run (esp. the cross-page regression).
+**Status:** Done — Phases 1–4 implemented (build + Go/JS tests green) and Phase 5
+manual browser verification passed (incl. the cross-page regression).
 **Branch target:** `aidev` → merge to `develop`.
 **Module path:** `daemonlord.ygg/madshare`.
 **Scope driver:** the upload page's pop-up messages "work not right"; the library's
@@ -170,7 +170,7 @@ identical `.toast` markup, so this adds **no** new coupling.
 - Result: a single toast code path across shell, library, upload, auth, admin.
   `/cmus` stays excluded by design (no stacks → silent no-op, unchanged).
 
-### Phase 5 — Verify
+### Phase 5 — Verify ✅ passed
 
 - `go build ./...` and `go test ./...` (asset embed compiles; no Go logic
   touched).
