@@ -5,10 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Upload &middot; Madshare</title>
   <meta name="api-url" content="{{.APIURL}}">
+  {{template "theme-guard" .}}
   <!-- app.css carries the shared design tokens (:root[data-theme]) plus the
-       header / nav / theme-switcher styles this page reuses; upload.css adds the
-       page-specific layout on top. Each webui page links its own CSS, so the
-       tokens must come from app.css here too. -->
+       header / nav styles this page reuses; upload.css adds the page-specific
+       layout on top. Each webui page links its own CSS, so the tokens must come
+       from app.css here too. -->
   <link rel="stylesheet" href="/static/css/app.css">
   <link rel="stylesheet" href="/static/css/upload.css">
   <link rel="stylesheet" href="/static/css/file-view.css">

@@ -59,6 +59,7 @@ var (
 	libraryTmpl   = buildPageTmpl("html/library.html")
 	uploadTmpl    = buildPageTmpl("html/upload.html")
 	playlistsTmpl = buildPageTmpl("html/playlists.html")
+	settingsTmpl  = buildPageTmpl("html/settings.html")
 	adminTmpl     = buildPageTmpl("html/admin/dashboard.html") // /admin landing
 )
 
@@ -141,6 +142,9 @@ func Register(r chi.Router, apiBase, gitRepo string) {
 	r.Get("/cmus", makeHandler(cmusTmpl, "cmus.html", pageData{APIURL: apiBase, GitRepo: gitRepo}))
 	r.Get("/upload", makeHandler(uploadTmpl, "upload.html", pageData{APIURL: apiBase, Page: "upload", GitRepo: gitRepo}))
 	r.Get("/playlists", makeHandler(playlistsTmpl, "playlists.html", pageData{APIURL: apiBase, Page: "playlists", Section: "library", GitRepo: gitRepo}))
+	// Settings is its own page (not part of the Library section) reached from the
+	// header's right-side user area; see docs/ui/user-settings.md.
+	r.Get("/settings", makeHandler(settingsTmpl, "settings.html", pageData{APIURL: apiBase, Page: "settings", GitRepo: gitRepo}))
 	r.Get("/", makeHandler(libraryTmpl, "library.html", pageData{APIURL: apiBase, Page: "library", Section: "library", GitRepo: gitRepo}))
 }
 

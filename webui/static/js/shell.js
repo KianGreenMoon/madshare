@@ -15,24 +15,15 @@ import { initQueuePanel } from './queue-panel.js';
 import { ensureLiked, isLiked, toggleLike, trackHash, onLikedChange } from './favorites.js';
 import { initAboutMenu } from './about-menu.js';
 import { showToast } from './toast.js';
+import { applyTheme, currentTheme } from './theme.js';
 
-// ── Theme (persistent header — applied once for every shell page) ────────────
-const VALID_THEMES = new Set(['dark', 'light', 'ocean', 'sunset']);
-function applyTheme(name) {
-  if (!VALID_THEMES.has(name)) name = 'dark';
-  document.documentElement.dataset.theme = name;
-  localStorage.setItem('madshare-theme', name);
-  document.querySelectorAll('.theme-dot').forEach(d => {
-    const on = d.dataset.theme === name;
-    d.classList.toggle('active', on);
-    d.setAttribute('aria-pressed', String(on));
-  });
-}
+// ── Theme ────────────────────────────────────────────────────────────────────
+// Theme is single-sourced in theme.js and CHANGED on the Settings page
+// (settings.js) — the header no longer carries the switcher dots. The inline
+// <head> guard already set data-theme before first paint; this re-applies the
+// saved value defensively on boot.
 function wireTheme() {
-  applyTheme(localStorage.getItem('madshare-theme') || 'dark');
-  // The theme switcher lives in the persistent header, so wire it once.
-  document.querySelectorAll('.theme-dot').forEach(dot =>
-    dot.addEventListener('click', () => applyTheme(dot.dataset.theme)));
+  applyTheme(currentTheme());
 }
 
 // ── Page-module lifecycle ────────────────────────────────────────────────────

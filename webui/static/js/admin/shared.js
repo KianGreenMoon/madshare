@@ -6,6 +6,7 @@
 import { initAuth, openLoginModal, gatePage, PAGE_PERMS } from '../auth.js';
 import { initAboutMenu } from '../about-menu.js';
 import { showToast } from '../toast.js';
+import { applyTheme, currentTheme } from '../theme.js';
 
 // API base from <meta name="api-url">. Empty => relative, same-origin URLs.
 export const API = document.querySelector('meta[name="api-url"]')?.content || '';
@@ -87,29 +88,16 @@ export function handleAuthError(res) {
 }
 
 // ── Theme ────────────────────────────────────────────────────────────────────
-const VALID_THEMES = new Set(['dark', 'light', 'ocean', 'sunset']);
-
+// The header no longer carries the theme switcher (it moved to /settings); admin
+// pages just apply the saved per-device theme on boot. The inline <head> guard
+// already set it before paint — this re-applies defensively. Single-sourced in
+// theme.js.
 export function initTheme() {
-  const htmlEl = document.documentElement;
-  const themeDots = document.querySelectorAll('.theme-dot');
-
-  const apply = (name) => {
-    if (!VALID_THEMES.has(name)) name = 'dark';
-    htmlEl.dataset.theme = name;
-    localStorage.setItem('madshare-theme', name);
-    themeDots.forEach(d => {
-      const on = d.dataset.theme === name;
-      d.classList.toggle('active', on);
-      d.setAttribute('aria-pressed', String(on));
-    });
-  };
-
-  apply(localStorage.getItem('madshare-theme') || 'dark');
-  themeDots.forEach(dot => dot.addEventListener('click', () => apply(dot.dataset.theme)));
+  applyTheme(currentTheme());
 }
 
 // ── Page boot ─────────────────────────────────────────────────────────────────
-// Shared boot for every admin sub-page: wire the theme switcher, run auth, and
+// Shared boot for every admin sub-page: apply the saved theme, run auth, and
 // gate the page on admin access. `require` is an optional finer permission (e.g.
 // 'user.manage') the sub-page additionally needs; when the identity lacks it,
 // the page content is replaced with a notice and boot returns null.

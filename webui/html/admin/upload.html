@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Madshare &mdash; Admin &middot; Upload</title>
   <meta name="api-url" content="{{.APIURL}}">
+  {{template "theme-guard" .}}
   <!-- Same upload body as /upload, wrapped in the admin shell. CSS is the union
        of what both shells need: admin-shell chrome + the upload layout + the
        file-view component (self-sufficient) + player.css for the page-local

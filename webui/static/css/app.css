@@ -300,15 +300,8 @@ header {
   flex-shrink: 0;
 }
 
-.theme-switcher {
-  display: flex;
-  gap: 3px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  padding: 3px;
-}
-
+/* .theme-dot is the color swatch — formerly the header switcher dots, now reused
+   as the swatches in the Settings page theme picker (settings.css). */
 .theme-dot {
   width: 20px;
   height: 20px;

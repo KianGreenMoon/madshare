@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Settings &mdash; Madshare</title>
+  <meta name="api-url" content="{{.APIURL}}">
+  {{template "theme-guard" .}}
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/player.css">
+  <link rel="stylesheet" href="/static/css/settings.css">
+</head>
+<body data-page="settings" data-module="/static/js/settings.js">
+
+{{template "header" .}}
+
+<main id="settingsMain">
+  <h1 class="settings-heading">Settings</h1>
+
+  <!-- ── Account ─────────────────────────────────────────────────────────── -->
+  <section class="settings-card" aria-labelledby="accountTitle">
+    <h2 id="accountTitle" class="settings-card__title">Account</h2>
+    <form class="login-form settings-form" id="passSettingsForm" autocomplete="off">
+      <label for="setOldPass">Current password</label>
+      <input type="password" id="setOldPass" autocomplete="current-password" required>
+      <label for="setNewPass">New password</label>
+      <input type="password" id="setNewPass" autocomplete="new-password" minlength="8" required>
+      <label for="setConfirmPass">Confirm new password</label>
+      <input type="password" id="setConfirmPass" autocomplete="new-password" minlength="8" required>
+      <p class="login-error" id="setPassError" role="alert" hidden></p>
+      <div class="settings-form__actions">
+        <button type="submit" class="btn btn-neutral" id="setPassSubmit">Change password</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- ── API tokens ──────────────────────────────────────────────────────── -->
+  <section class="settings-card" aria-labelledby="tokensTitle">
+    <h2 id="tokensTitle" class="settings-card__title">API tokens</h2>
+    <p class="settings-card__hint">
+      Personal access tokens authenticate non-browser clients with
+      <code>Authorization: Bearer &lt;token&gt;</code>. The token is shown once at
+      creation &mdash; copy it then.
+    </p>
+
+    <form class="settings-form settings-token-form" id="tokenForm" autocomplete="off">
+      <div class="settings-token-form__fields">
+        <label class="settings-field">
+          <span>Name</span>
+          <input type="text" id="tokenName" maxlength="100" required placeholder="e.g. laptop cmus">
+        </label>
+        <label class="settings-field">
+          <span>Expires <small>(optional)</small></span>
+          <input type="date" id="tokenExpiry">
+        </label>
+      </div>
+      <p class="login-error" id="tokenError" role="alert" hidden></p>
+      <div class="settings-form__actions">
+        <button type="submit" class="btn btn-neutral" id="tokenCreate">Create token</button>
+      </div>
+    </form>
+
+    <!-- One-time reveal of a freshly created token. -->
+    <div class="token-reveal" id="tokenReveal" hidden>
+      <p class="token-reveal__note">
+        Copy this token now &mdash; you won't be able to see it again.
+      </p>
+      <div class="token-reveal__row">
+        <code class="token-reveal__value" id="tokenRevealValue"></code>
+        <button type="button" class="btn btn-neutral" id="tokenCopy">Copy</button>
+        <button type="button" class="btn btn-neutral" id="tokenRevealDone">Done</button>
+      </div>
+    </div>
+
+    <div class="token-list" id="tokenList" aria-live="polite" aria-busy="true">
+      <!-- populated by settings.js -->
+    </div>
+  </section>
+
+  <!-- ── Appearance ──────────────────────────────────────────────────────── -->
+  <section class="settings-card" aria-labelledby="appearanceTitle">
+    <h2 id="appearanceTitle" class="settings-card__title">Appearance</h2>
+    <fieldset class="theme-choices" id="themeChoices">
+      <legend class="settings-card__hint">Theme (saved on this device)</legend>
+      <label class="theme-choice" data-theme="dark">
+        <input type="radio" name="theme" value="dark">
+        <span class="theme-choice__swatch theme-dot" data-theme="dark" aria-hidden="true"></span>
+        <span class="theme-choice__label">Dark</span>
+      </label>
+      <label class="theme-choice" data-theme="light">
+        <input type="radio" name="theme" value="light">
+        <span class="theme-choice__swatch theme-dot" data-theme="light" aria-hidden="true"></span>
+        <span class="theme-choice__label">Light</span>
+      </label>
+      <label class="theme-choice" data-theme="ocean">
+        <input type="radio" name="theme" value="ocean">
+        <span class="theme-choice__swatch theme-dot" data-theme="ocean" aria-hidden="true"></span>
+        <span class="theme-choice__label">Ocean</span>
+      </label>
+      <label class="theme-choice" data-theme="sunset">
+        <input type="radio" name="theme" value="sunset">
+        <span class="theme-choice__swatch theme-dot" data-theme="sunset" aria-hidden="true"></span>
+        <span class="theme-choice__label">Sunset</span>
+      </label>
+    </fieldset>
+  </section>
+</main>
+
+{{template "player-bar" .}}
+{{template "auth-modals" .}}
+
+<script type="module" src="/static/js/shell.js"></script>
+</body>
+</html>

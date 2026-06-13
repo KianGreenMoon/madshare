@@ -1,7 +1,7 @@
 /* Upload page (/upload) styles.
  *
  * Design tokens (--bg, --surface, --accent, --space-*, --radius, …) and the
- * shared header / nav / theme-switcher styles live in app.css, which this page
+ * shared header / nav styles live in app.css, which this page
  * also links. Everything below is upload-specific and references those tokens —
  * it never redefines the theme palettes.
  *

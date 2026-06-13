@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"testing"
+	"time"
 
 	"daemonlord.ygg/madshare/api/storage"
 	"daemonlord.ygg/madshare/auth"
@@ -284,6 +285,53 @@ func TestAuth_TokenFlow(t *testing.T) {
 		t.Errorf("revoked bearer /me = %d, want 401", meResp2.StatusCode)
 	}
 	meResp2.Body.Close()
+}
+
+// TestAuth_TokenExpiresAt covers the absolute-expiry branch the web UI's date
+// picker uses: a past timestamp is rejected, a future one is accepted and
+// surfaced by the list endpoint.
+func TestAuth_TokenExpiresAt(t *testing.T) {
+	srv, _ := newAuthTestServer(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
+	login(t, client, srv.URL, "admin", testAdminPassword).Body.Close()
+
+	// A past expiry is rejected.
+	past, _ := json.Marshal(map[string]any{"name": "stale", "expires_at": time.Now().Add(-time.Hour).Unix()})
+	resp, _ := client.Post(srv.URL+"/api/auth/tokens", "application/json", bytes.NewReader(past))
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("past expires_at = %d, want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// A future expiry is accepted and echoed back by the list endpoint.
+	future := time.Now().Add(48 * time.Hour).Unix()
+	body, _ := json.Marshal(map[string]any{"name": "dated", "expires_at": future})
+	resp2, _ := client.Post(srv.URL+"/api/auth/tokens", "application/json", bytes.NewReader(body))
+	if resp2.StatusCode != http.StatusCreated {
+		t.Fatalf("future expires_at = %d, want 201", resp2.StatusCode)
+	}
+	resp2.Body.Close()
+
+	listResp, _ := client.Get(srv.URL + "/api/auth/tokens")
+	var tokens []struct {
+		Name      string `json:"name"`
+		ExpiresAt int64  `json:"expires_at"`
+	}
+	json.NewDecoder(listResp.Body).Decode(&tokens)
+	listResp.Body.Close()
+	var found bool
+	for _, tk := range tokens {
+		if tk.Name == "dated" {
+			found = true
+			if tk.ExpiresAt != future {
+				t.Errorf("listed expires_at = %d, want %d", tk.ExpiresAt, future)
+			}
+		}
+	}
+	if !found {
+		t.Error("created token not present in list")
+	}
 }
 
 func contains(s []string, want string) bool {

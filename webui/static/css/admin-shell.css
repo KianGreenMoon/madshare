@@ -1,6 +1,6 @@
 /* admin-shell.css — chrome shared by every admin sub-page (banner, secondary
    nav, page layout). Loaded alongside app.css, which provides the design tokens,
-   header, buttons, and theme switcher. Only admin-specific styling lives here. */
+   header, and buttons. Only admin-specific styling lives here. */
 
 /* Danger tokens are not defined in app.css; the admin surface needs them for the
    banner and destructive controls. Fixed across themes (a red wash reads as

@@ -32,18 +32,19 @@
   </nav>
   <div id="header-insert">{{template "header-insert" .}}</div>
   <div class="header-actions">
+    {{/* Signed-in user area: username · Settings · Sign out. The voluntary
+         change-password control and the theme switcher moved to the Settings
+         page (/settings, docs/ui/user-settings.md); the forced first-run password
+         change still uses #passModal below. Settings is a plain <a> so the shell
+         router treats it as in-shell navigation. */}}
     <div class="user-area" id="userArea" hidden>
       <span class="user-name" id="userName"></span>
-      <button class="btn btn-neutral" id="changePassBtn">Change password</button>
+      <a href="/settings" class="btn btn-neutral" id="settingsLink">
+        <span aria-hidden="true">&#9881;</span> Settings
+      </a>
       <button class="btn btn-neutral" id="logoutBtn">Log out</button>
     </div>
     <button class="btn btn-neutral" id="signInBtn">Sign in</button>
-    <div class="theme-switcher" role="group" aria-label="Color theme">
-      <button class="theme-dot active" data-theme="dark"   title="Dark"   aria-label="Dark theme"   aria-pressed="true"></button>
-      <button class="theme-dot"        data-theme="light"  title="Light"  aria-label="Light theme"  aria-pressed="false"></button>
-      <button class="theme-dot"        data-theme="ocean"  title="Ocean"  aria-label="Ocean theme"  aria-pressed="false"></button>
-      <button class="theme-dot"        data-theme="sunset" title="Sunset" aria-label="Sunset theme" aria-pressed="false"></button>
-    </div>
     {{template "header-actions-extra" .}}
   </div>
 </header>
@@ -356,3 +357,15 @@
     </section>
   </div><!-- /minePane -->
 {{end}}
+
+{{/* theme-guard: the no-FOUC guard. An inline CLASSIC script (not a module —
+     modules are deferred and run after first paint) placed in <head> before the
+     stylesheets. It applies the saved per-device theme to <html data-theme>
+     before CSS paints, so the page never flashes the hardcoded default first.
+     localStorage key is shared with theme.js / settings.js. */}}
+{{define "theme-guard"}}<script>
+  try {
+    var t = localStorage.getItem('madshare-theme');
+    if (t) document.documentElement.dataset.theme = t;
+  } catch (e) {}
+</script>{{end}}

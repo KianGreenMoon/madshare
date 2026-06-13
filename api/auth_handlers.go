@@ -189,8 +189,13 @@ func (h *authHandler) createToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name          string `json:"name"`
-		ExpiresInDays int    `json:"expires_in_days"`
+		Name string `json:"name"`
+		// ExpiresAt is an absolute unix timestamp (seconds); the web UI's date
+		// picker posts this. ExpiresInDays is the duration form kept for
+		// non-browser API clients. 0/absent in both means the token never expires;
+		// ExpiresAt wins when both are sent.
+		ExpiresAt     int64 `json:"expires_at"`
+		ExpiresInDays int   `json:"expires_in_days"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -201,7 +206,14 @@ func (h *authHandler) createToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var expires int64
-	if req.ExpiresInDays > 0 {
+	switch {
+	case req.ExpiresAt > 0:
+		if req.ExpiresAt <= time.Now().Unix() {
+			http.Error(w, "expiry must be in the future", http.StatusBadRequest)
+			return
+		}
+		expires = req.ExpiresAt
+	case req.ExpiresInDays > 0:
 		expires = time.Now().Add(time.Duration(req.ExpiresInDays) * 24 * time.Hour).Unix()
 	}
 	raw, err := auth.GenerateSecret()

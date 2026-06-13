@@ -290,7 +290,12 @@ protection.
 
 Login/logout/token endpoints (new, in the `api` group):
 `POST /api/auth/login`, `POST /api/auth/logout`, `POST /api/auth/password`,
-`GET/POST/DELETE /api/auth/tokens`. The web UI gains a login page.
+`GET/POST/DELETE /api/auth/tokens`. The web UI gains a login page. Token
+creation (`POST /api/auth/tokens`) takes `name` plus an optional expiry: either
+`expires_at` (absolute unix seconds — the web UI's date picker; rejected if not
+in the future) or `expires_in_days` (duration, for non-browser clients);
+`expires_at` wins when both are present, and absent/zero means it never expires.
+The raw token is returned exactly once.
 
 ## 8. Federation (deferred)
 

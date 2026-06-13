@@ -56,6 +56,50 @@ func TestAdminSubPagesRender(t *testing.T) {
 	}
 }
 
+// TestSettingsPageRenders checks the user settings page executes its template
+// and carries its three sections plus the no-FOUC head guard.
+func TestSettingsPageRenders(t *testing.T) {
+	r := chi.NewRouter()
+	Register(r, "", "")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/settings", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /settings = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`data-module="/static/js/settings.js"`,
+		`id="passSettingsForm"`, // Account
+		`id="tokenForm"`,        // API tokens
+		`id="tokenExpiry"`,      // optional expiry date
+		`id="themeChoices"`,     // Appearance
+		"madshare-theme",        // theme-guard inline script
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/settings: missing %q", want)
+		}
+	}
+}
+
+// TestHeaderUserArea guards the header rework: the Settings link replaced the
+// voluntary change-password button and the theme-switcher dots were removed.
+func TestHeaderUserArea(t *testing.T) {
+	r := chi.NewRouter()
+	Register(r, "", "")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="settingsLink"`) {
+		t.Errorf("header: missing Settings link")
+	}
+	if strings.Contains(body, `id="changePassBtn"`) {
+		t.Errorf("header: voluntary change-password button should be gone")
+	}
+	if strings.Contains(body, "theme-switcher") {
+		t.Errorf("header: theme switcher dots should be gone")
+	}
+}
+
 // TestAboutMenu checks the header About mini-menu: the GitRepo entry renders
 // with the configured URL and is absent when the URL is empty, while the Source
 // and License entries always render inside the menu.

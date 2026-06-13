@@ -106,7 +106,6 @@ export async function initAuth() {
   const userName      = document.getElementById('userName');
   const signInBtn     = document.getElementById('signInBtn');
   const logoutBtn     = document.getElementById('logoutBtn');
-  const changePassBtn = document.getElementById('changePassBtn');
   const loginModal    = document.getElementById('loginModal');
   const loginForm     = document.getElementById('loginForm');
   const loginPass     = document.getElementById('loginPass');
@@ -158,7 +157,11 @@ export async function initAuth() {
     location.reload();
   });
 
-  // ── Change password ──────────────────────────────────────────────────────
+  // ── Forced password change ────────────────────────────────────────────────
+  // The voluntary change-password UI moved to the Settings page (settings.js).
+  // This path is now only the first-run / forced change: the bootstrap gate that
+  // must appear before the user can do anything, so it stays a modal here and is
+  // auto-opened below when the identity carries password_change_required.
 
   const passModal   = document.getElementById('passModal');
   const passForm    = document.getElementById('passForm');
@@ -188,7 +191,6 @@ export async function initAuth() {
     passModal.classList.add('hidden');
   }
 
-  changePassBtn.addEventListener('click', () => openPassModal(false));
   passCancel.addEventListener('click', closePassModal);
   passClose.addEventListener('click', closePassModal);
   passModal.addEventListener('click', e => { if (e.target === passModal) closePassModal(); });
