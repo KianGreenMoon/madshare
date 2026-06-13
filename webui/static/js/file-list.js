@@ -1,7 +1,7 @@
 // file-list.js — the one file-management view. A single component renders every
 // surface that lists files with title/artist/album + a metadata editor: the
 // admin Library scopes (All / Review / Trash) and the uploader's My-uploads.
-// Design + contract: docs/plans/file-management-view.md.
+// Design + contract: docs/architecture/file-management-view.md.
 //
 // It is parameterised by a SCOPE descriptor and owns only presentation:
 // rendering (flat list, grouped list, or artist/album browse), selection, the

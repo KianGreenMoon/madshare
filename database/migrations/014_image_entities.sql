@@ -1,5 +1,5 @@
 -- Re-key the cover tables from string identities to the artist/album entity ids
--- (Phase 4 of docs/plans/artist-album-normalization.md). A cover now attaches to
+-- (docs/architecture/artist-album-model.md (cover re-keying)). A cover now attaches to
 -- a stable id, so a rename is a one-row update to the entity and the cover
 -- follows automatically — no string rewrite, no orphaned cover row.
 --

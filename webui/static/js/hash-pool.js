@@ -1,6 +1,6 @@
 // hash-pool.js — a small pool of hash-workers with adaptive, polite concurrency.
 // hashFile(file) → Promise<sha256-hex>. Workers are spawned lazily on first use
-// and torn down with terminate(). See docs/plans/upload-rework.md §3b.
+// and torn down with terminate(). See docs/api/upload.md.
 
 // poolSize: half the logical cores, clamped to [1, 4] (past ~4 the bottleneck is
 // upload bandwidth, not hashing), backing off to 1 on low-memory devices.

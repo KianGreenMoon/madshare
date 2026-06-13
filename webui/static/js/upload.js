@@ -22,7 +22,7 @@ import { showToast } from './toast.js';
 //     where a cover bled onto an unrelated album.
 //   - Each album card doubles as a verify/edit panel: with metadata.edit the user
 //     can fix the album, artist, and per-track titles, and replace the cover. See
-//     docs/plans/upload-and-covers.md §5.
+//     docs/api/upload.md.
 
 const API = document.querySelector('meta[name="api-url"]')?.content || '';
 
@@ -33,7 +33,7 @@ const API = document.querySelector('meta[name="api-url"]')?.content || '';
 // previewPlay is the "My uploads" preview sink. Default = the listening shell's
 // persistent player (this page lives in that shell). The admin-shell host
 // (/admin/upload) has no shell player, so it passes its own page-local player
-// via init({ preview }). See docs/plans/cross-shell-upload.md.
+// via init({ preview }). See docs/ui/shells.md.
 let previewPlay = (tracks, idx) => getController().setQueue(tracks, idx);
 
 // ── DOM refs (assigned by queryRefs() in init — they live in <main>) ─────────
@@ -108,7 +108,7 @@ const IMAGE_MIMES  = new Set(['image/jpeg', 'image/png']);
 // OPUS, so MIME alone is unreliable); the MIME value is what we send as the
 // upload's Content-Type so the server stores it correctly.
 // Advisory only — the server re-validates every upload. No UI toggle.
-// See docs/plans/upload-type-precheck.md.
+// See docs/api/upload.md.
 let acceptedAudio = {
   '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.flac': 'audio/flac',
   '.wav': 'audio/wav', '.mp4': 'audio/mp4', '.m4a': 'audio/mp4',
@@ -632,7 +632,7 @@ function uploadXhr(item) {
     // File.type empty for FLAC/M4A/OPUS, which would otherwise go out as
     // application/octet-stream; the server keys on the extension regardless, but
     // an accurate type means it stores the right MIME. Wrap in a retyped File
-    // only when needed. See docs/plans/upload-type-precheck.md.
+    // only when needed. See docs/api/upload.md.
     const want = audioMimeFor(item.relPath);
     const blob = (want && item.file.type !== want)
       ? new File([item.file], item.file.name, { type: want })

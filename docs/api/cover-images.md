@@ -1,8 +1,7 @@
 # Cover Image API
 
 Endpoints for querying album cover variant readiness and the UI upload
-configuration. Added in Phase 1 of the upload & covers work
-(`docs/plans/upload-and-covers.md`).
+configuration.
 
 Cover images are processed asynchronously: a JPEG/PNG original is stored under
 `<files_dir>/images/<base_key>/original<ext>`, an `image_processing_jobs` row is
@@ -17,7 +16,7 @@ strings — the handlers resolve the name to its entity (normalized) on each cal
 A cover therefore attaches to a stable id: an admin rename of the album/artist
 keeps the cover attached with no re-upload. The on-disk `<base_key>/` layout and
 the `image_processing_jobs` queue are unaffected (keyed by `base_key`). See
-`docs/plans/artist-album-normalization.md` (Phase 4).
+`docs/architecture/artist-album-model.md` (cover re-keying).
 
 ---
 
@@ -246,4 +245,5 @@ curl "http://localhost:3000/api/ui/config"
 
 - `docs/api/upload.md` — file upload, deduplication, restore-on-reupload, and
   embedded cover-art extraction (the other way covers enter the system).
-- `docs/plans/upload-and-covers.md` — full design and phasing.
+- `docs/architecture/artist-album-model.md` — the entity model covers are keyed
+  to; WebP and artist-cover variants are deferred (`docs/plans/roadmap.md`).

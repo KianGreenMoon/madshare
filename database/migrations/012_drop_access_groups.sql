@@ -1,4 +1,4 @@
--- Roles-only access model, step 2 (docs/plans/access-roles-only.md): remove
+-- Roles-only access model, step 2 (docs/architecture/auth.md): remove
 -- Layer B entirely. Access is now decided by role capabilities (content.access,
 -- migration 011) for authenticated users and by the guest-playable / license
 -- policy for anonymous requests; there are no per-content grants.

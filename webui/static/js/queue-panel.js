@@ -1,5 +1,5 @@
 // queue-panel.js — the current-queue panel (Phase 5 step 2 of
-// docs/plans/playlists.md). Opens from the player-bar queue button and shows
+// docs/ui/player-and-queue.md). Opens from the player-bar queue button and shows
 // the controller's queue as an editable list: click to play, × to remove,
 // drag (or Ctrl/Alt+Arrow) to reorder, Clear, and "Save as playlist…" (POST
 // /api/playlists with the queue's hashes). The panel is shell chrome — wired

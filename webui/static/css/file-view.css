@@ -1,6 +1,6 @@
 /* file-view.css — styling owned by the unified file-management component
    (webui/static/js/file-list.js). Load it on any page that mounts the
-   component. Design: docs/plans/file-management-view.md.
+   component. Design: docs/architecture/file-management-view.md.
 
    It carries only what the component INTRODUCES or what isn't guaranteed on
    every consuming page. The files-table / bulk-toolbar / state-badge /
@@ -191,7 +191,7 @@
    shell upload page, for "My uploads"). On admin pages both load; file-view.css
    is loaded last with identical values, so nothing changes visually. The
    duplicates are removed from the admin sheets in the plan's cleanup phase
-   (docs/plans/file-management-view.md), once every consumer loads this file.
+   (docs/architecture/file-management-view.md), once every consumer loads this file.
    ════════════════════════════════════════════════════════════════════════════ */
 
 /* Danger tokens + destructive buttons + the small size (admin-shell.css). */

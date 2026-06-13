@@ -44,7 +44,7 @@ func (h *handler) audit(ctx context.Context, action, target, detail string) {
 // curl -F — so it is not used to gate; the canonical MIME here is persisted and
 // served instead. This single map is also surfaced to the upload page at
 // GET /api/ui/config (accepted_audio) so client and server share one source of
-// truth. See docs/plans/upload-type-precheck.md.
+// truth. See docs/api/upload.md (Accepted types).
 var acceptedAudioTypes = map[string]string{
 	".mp3":  "audio/mpeg",
 	".ogg":  "audio/ogg",

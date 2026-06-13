@@ -1,5 +1,5 @@
 // favorites.js — the shared liked-tracks cache (Phase 5 step 4 of
-// docs/plans/playlists.md). One module-level Set of liked hashes backs every
+// docs/api/playlists.md). One module-level Set of liked hashes backs every
 // heart in the UI — library rows, search rows, and the player-bar Like button
 // (Decision §8) — so they can never disagree. Favorites are just a system
 // playlist server-side; this is only the client-side view of its membership.

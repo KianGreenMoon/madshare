@@ -3,7 +3,7 @@
 // "what's queued and what's playing"; pages are thin callers that build queues
 // (setQueue) and reflect state through the events below.
 //
-// Phase 5 of the UI roadmap (docs/plans/playlists.md) made this a true
+// Phase 5 of the UI roadmap (docs/ui/player-and-queue.md) made this a true
 // ES-module SINGLETON (getController()) shared by the shell and every listening
 // page, and added the queue-mutation API (enqueue/insertAt/removeAt/move/clear),
 // the dirty-queue replace-with-undo contract, and localStorage resume. The queue

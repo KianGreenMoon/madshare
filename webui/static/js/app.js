@@ -143,7 +143,7 @@ function renderBreadcrumb() {
   }
 }
 
-// ── Favorites & quick-add (Phase 5 step 4, docs/plans/playlists.md) ─────────
+// ── Favorites & quick-add (Phase 5 step 4, docs/api/playlists.md) ─────────
 
 const heartSvg =
   `<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">` +

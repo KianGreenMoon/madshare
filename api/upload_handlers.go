@@ -63,7 +63,7 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	// The extension is the accepted-type guard; it maps to the canonical MIME we
 	// persist and serve. The browser-declared part Content-Type is not consulted
-	// (unreliable — see acceptedAudioTypes). docs/plans/upload-type-precheck.md.
+	// (unreliable — see acceptedAudioTypes). docs/api/upload.md (Accepted types).
 	ext := strings.ToLower(filepath.Ext(filename))
 	mimeType, ok := acceptedAudioTypes[ext]
 	if !ok {
@@ -104,7 +104,7 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 			// File is in the trash. Whether re-uploading the bytes restores it is
 			// governed by the admin trash-restore policy (default reupload_restores,
 			// the historical behavior). Under inform/uploader_restore it stays
-			// trashed. See docs/plans/upload-rework.md §3b.
+			// trashed. See docs/api/upload.md (Trash-restore policy).
 			policy, err := h.repo.GetTrashRestorePolicy(ctx)
 			if err != nil {
 				http.Error(w, "storage error", http.StatusInternalServerError)
@@ -182,7 +182,7 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 	// With auth configured, new uploads stage as drafts (the uploader fixes
 	// metadata in "My uploads" and submits for review); without auth there is
 	// no staging flow and inserts stay immediately approved.
-	// See docs/plans/moderation-review-bucket.md.
+	// See docs/architecture/moderation.md.
 	reviewState := database.ReviewApproved
 	if h.authzEnabled {
 		reviewState = database.ReviewDraft
@@ -360,7 +360,7 @@ func mimeToExt(mimeType string) (string, bool) {
 // (staged, awaiting review), or "trashed" (soft-deleted). Advisory only — the
 // client uses it to skip duplicate uploads; the upload path re-hashes and dedupes
 // on receipt regardless. Gated on file.upload (a by-hash existence oracle must
-// not be anonymous). See docs/plans/upload-rework.md §3b.
+// not be anonymous). See docs/api/upload.md (pre-upload existence check).
 func (h *handler) checkFile(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
 	var body struct {
@@ -399,7 +399,7 @@ func (h *handler) checkFile(w http.ResponseWriter, r *http.Request) {
 // restoreFileForUploader lets a non-admin uploader restore a trashed file —
 // but only when the admin trash-restore policy is "uploader_restore" (else 403).
 // Gated on file.upload (restoring content you may upload is equivalent). See
-// docs/plans/upload-rework.md §3b.
+// docs/api/upload.md (Trash-restore policy).
 func (h *handler) restoreFileForUploader(w http.ResponseWriter, r *http.Request) {
 	hash := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "hash")))
 	if !isSHA256Hex(hash) {

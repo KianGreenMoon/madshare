@@ -4,7 +4,7 @@
 // it boots auth once, creates the shared player, builds the available scopes,
 // and swaps panels in place (no reload). My uploads stays on /upload.
 //
-// Design: docs/plans/file-management-view.md (Hybrid).
+// Design: docs/architecture/file-management-view.md (Hybrid).
 import { bootAdmin, API, toast } from './shared.js';
 import { createPlayer } from '../player.js';
 import { createFilesScope } from './files.js';

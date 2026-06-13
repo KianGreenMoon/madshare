@@ -323,7 +323,7 @@ func TestUploadFile_VideoRejected(t *testing.T) {
 // extension and persists the canonical MIME, so allowed audio whose declared
 // part Content-Type is empty or application/octet-stream (common for FLAC/M4A/
 // OPUS in browsers, and curl -F's default) is accepted, not 415'd, and stored
-// with the right MIME. See docs/plans/upload-type-precheck.md.
+// with the right MIME. See docs/api/upload.md (Accepted types).
 func TestUploadFile_ExtensionAuthoritative(t *testing.T) {
 	cases := []struct {
 		filename    string

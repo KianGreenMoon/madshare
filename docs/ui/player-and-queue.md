@@ -2,8 +2,7 @@
 
 The behavior reference for the web UI's playback layer: the persistent player,
 the play queue, shuffle/repeat semantics, and how state survives navigation and
-reloads. Design history lives in `docs/plans/persistent-shell-playback.md` and
-`docs/plans/playlists.md`; this doc describes the **current behavior**.
+reloads. The persistent shell this rides on is described in `docs/ui/shells.md`.
 
 ## The pieces
 
@@ -85,8 +84,7 @@ On the next load:
   restores the true original order (object identity between the two revived
   arrays is re-linked by URL, duplicate-aware — `relinkTracks`).
 
-localStorage only — per-browser, no cross-device sync (a deliberate v1 decision
-in `docs/plans/playlists.md`).
+localStorage only — per-browser, no cross-device sync (a deliberate v1 decision).
 
 ## Failure handling
 

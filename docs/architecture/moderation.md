@@ -7,8 +7,7 @@ uploader with a note), or **discards** (→ Trash) each submission. Trust is
 expressed through roles, not a global switch — `content.moderate` holders'
 own submissions publish immediately (self-approve).
 
-This is the reference for the shipped system. Design history and the original
-decision record: `docs/plans/moderation-review-bucket.md`.
+This is the reference for the shipped system.
 
 ---
 

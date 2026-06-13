@@ -16,7 +16,8 @@ From `madshare.org` and the planning discussion:
   guest-playable flag from it.
 - An authenticated user with a content capability may reach the **whole**
   library; there is no per-artist/album/file user restriction (a roles-only
-  model — see `docs/plans/access-roles-only.md`).
+  model — §2). Per-content restriction could return later as an additive feature
+  (`docs/plans/roadmap.md`); it is a future idea, not planned.
 - Federation (server-to-server trust) is acknowledged but **deferred** — the
   model must not preclude it.
 

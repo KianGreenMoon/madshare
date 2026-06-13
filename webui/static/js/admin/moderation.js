@@ -5,7 +5,7 @@
 // injected as `play`. Available when the caller has content.moderate; Edit
 // needs metadata.edit.
 //
-// Design: docs/plans/file-management-view.md.
+// Design: docs/architecture/file-management-view.md.
 import { API, fmtDate, toast, handleAuthError } from './shared.js';
 import { createFileList } from '../file-list.js';
 

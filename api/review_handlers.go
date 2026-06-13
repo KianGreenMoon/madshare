@@ -10,7 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// Review-bucket handlers (docs/plans/moderation-review-bucket.md): the
+// Review-bucket handlers (docs/architecture/moderation.md): the
 // uploader-facing staging flow under /api/my/uploads and the moderator queue
 // under /api/admin/moderation. States: draft -> submitted -> approved, with
 // returned for "fix and resubmit".

@@ -152,7 +152,7 @@ type Repository interface {
 	// Unknown hashes return false.
 	FileAccessibleByHash(ctx context.Context, hash string) (bool, error)
 
-	// --- Moderation review bucket (docs/plans/moderation-review-bucket.md) ---
+	// --- Moderation review bucket (docs/architecture/moderation.md) ---
 
 	// ListUploadsByUser returns the user's staged files (non-trashed, review
 	// state other than approved), newest first. Backs the "My uploads" tab.
@@ -221,7 +221,7 @@ type Repository interface {
 	// returns the updated row. Returns ErrFileNotFound when no file matches.
 	UpdateFileMetadata(ctx context.Context, hash string, p MetadataPatch) (*MediaMetadata, error)
 
-	// --- Playlists & favorites (docs/plans/playlists.md) ---
+	// --- Playlists & favorites (docs/api/playlists.md) ---
 	// All playlist methods are scoped to userID; a playlist id belonging to a
 	// different user yields ErrPlaylistNotFound (mapped to 404, never 403).
 

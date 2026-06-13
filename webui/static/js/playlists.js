@@ -1,5 +1,5 @@
 // playlists.js — the /playlists listening page (Phase 5 step 3 of
-// docs/plans/playlists.md). Shell-native ({ init, teardown }): a list of the
+// docs/api/playlists.md). Shell-native ({ init, teardown }): a list of the
 // user's playlists (favorites first) drilling into an editable detail view —
 // play-all / play-from-row via the shared controller, rename/delete (regular
 // playlists only), per-row remove, drag or Ctrl/Alt+Arrow reorder. Trashed

@@ -16,7 +16,7 @@ const (
 )
 
 // Trash-restore policy modes — what may happen to a trashed file whose content
-// is uploaded again. See docs/plans/upload-rework.md §3b.
+// is uploaded again. See docs/api/upload.md (Trash-restore policy).
 const (
 	TrashReuploadRestores = "reupload_restores" // default: re-uploading the bytes restores it (historical behavior)
 	TrashInform           = "inform"            // don't restore; tell the uploader to ask an admin

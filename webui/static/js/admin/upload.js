@@ -4,7 +4,7 @@
 // shared core (../upload.js); this boot only supplies what differs between the
 // shells: the admin gate (bootAdmin) and a page-local preview player. The
 // listening-shell /upload page is booted by shell.js instead, which previews
-// through its persistent player. Design: docs/plans/cross-shell-upload.md.
+// through its persistent player. Design: docs/ui/shells.md.
 //
 // Gating: like every admin page, the HTML is ungated server-side (so it can
 // render the login prompt); bootAdmin() gates the content to admin-access

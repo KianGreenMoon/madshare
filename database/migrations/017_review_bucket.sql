@@ -1,4 +1,4 @@
--- Moderation review bucket (docs/plans/moderation-review-bucket.md).
+-- Moderation review bucket (docs/architecture/moderation.md).
 --
 -- Uploads now stage before they reach the library: files carry a review_state
 -- (draft -> submitted -> approved, with returned for "fix and resubmit").

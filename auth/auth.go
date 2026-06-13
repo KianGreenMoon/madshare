@@ -21,12 +21,12 @@ const (
 	PermFederationManage = "federation.manage"
 	// PermContentAccess — may reach the whole library (play/download any file).
 	// Collapses the former content.play/content.download/content.all trio under
-	// the roles-only access model (docs/plans/access-roles-only.md). Anonymous
+	// the roles-only access model (docs/architecture/auth.md). Anonymous
 	// access is still governed separately by the guest-playable/license policy.
 	PermContentAccess = "content.access"
 	// PermContentModerate — may act on staged uploads (approve / return /
 	// discard). Holders' own submissions self-approve: moderators are the
-	// trusted uploaders (docs/plans/moderation-review-bucket.md).
+	// trusted uploaders (docs/architecture/moderation.md).
 	PermContentModerate = "content.moderate"
 )
 

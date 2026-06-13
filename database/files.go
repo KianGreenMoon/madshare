@@ -11,7 +11,7 @@ import (
 
 // visibleFile is the predicate every user-facing listing / access query must
 // apply (aliased table f): a file is publicly visible only when it is neither
-// trashed nor pending review (docs/plans/moderation-review-bucket.md). Trash
+// trashed nor pending review (docs/architecture/moderation.md). Trash
 // and review/staging queries intentionally do not use it.
 const visibleFile = "f.deleted_at IS NULL AND f.review_state = 'approved'"
 

@@ -1,6 +1,6 @@
 // shell.js — the persistent app shell + client router for the listening pages.
 //
-// Phase 1 step 2 of docs/plans/persistent-shell-playback.md. The server still
+// Phase 1 step 2 of docs/ui/shells.md. The server still
 // renders complete pages; this intercepts same-origin nav clicks, fetches the
 // target, and swaps only the page-content slots (<main>, the header-insert
 // region, the active nav link, <title>) — the header, player-bar and <audio>

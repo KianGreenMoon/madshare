@@ -6,10 +6,9 @@ Every place that lists files and edits their metadata is one component
 switch — **All files · Review · Trash** — sharing one preview player; the
 uploader's **My uploads** (on `/upload`) is the same component in owner mode.
 
-This is the reference for the shipped system. Design, alternatives, and phase
-history: `docs/plans/file-management-view.md`. It **supersedes**
-`docs/plans/admin-files-rework.md` (the old standalone `/admin/files` page) and
-the Files/Moderation/Trash split in `docs/plans/admin-panel-rework.md`.
+This is the reference for the shipped system. It unified the former standalone
+`/admin/files` page and the separate Files / Moderation / Trash admin pages into
+this one scope-driven component.
 
 ---
 
@@ -145,6 +144,5 @@ gates server-side.
 
 ## See also
 
-- `docs/plans/file-management-view.md` — design + phase history + the review mockups.
 - `docs/architecture/moderation.md` — the review state machine the Review scope drives.
 - `docs/api/metadata.md` — the per-file tag edit + entity rename/merge endpoints.

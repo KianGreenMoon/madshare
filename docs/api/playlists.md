@@ -1,7 +1,7 @@
 # Playlists & Favorites API
 
-Per-user, private playlists plus a per-user **favorites** system playlist
-(design: `docs/plans/playlists.md`). Favorites is just a playlist with
+Per-user, private playlists plus a per-user **favorites** system playlist.
+Favorites is just a playlist with
 `kind: "favorites"` — one per user, created lazily, not renamable or deletable;
 the Like endpoints below toggle its membership.
 

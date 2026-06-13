@@ -2,7 +2,7 @@
 -- on media_metadata resolves to, so albums/artists can be renamed and (later)
 -- merged without orphaning covers or rewriting file tags.
 -- Design: docs/architecture/artist-album-model.md
--- Plan:   docs/plans/artist-album-normalization.md (Phase 1)
+-- Plan:   docs/architecture/artist-album-model.md
 --
 -- This migration is structure only. The entities are populated by the Go-side
 -- resolver (normalizeKey/resolveAlbumArtist) via a startup backfill pass and the

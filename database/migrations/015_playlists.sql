@@ -1,4 +1,4 @@
--- Playlists & favorites (docs/plans/playlists.md). Per-user, private-only in
+-- Playlists & favorites (docs/api/playlists.md). Per-user, private-only in
 -- v1 (no visibility column — sharing later is an additive migration).
 -- Favorites is a per-user system playlist (kind='favorites').
 CREATE TABLE playlists (

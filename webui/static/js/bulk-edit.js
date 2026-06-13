@@ -3,7 +3,7 @@
 // where that edits one file's every field, this writes the same chosen field(s)
 // to many files, leaving the rest untouched.
 //
-// Semantics (see docs/plans/file-management-view.md):
+// Semantics (see docs/architecture/file-management-view.md):
 //   - A blank text field is LEFT UNCHANGED on each file (no clearing in bulk).
 //   - License "— keep —" / Guest "— keep —" leave that file's value alone.
 //   - Title is intentionally NOT bulk-editable (it is unique per track).

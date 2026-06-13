@@ -4,7 +4,7 @@
 // bytes, fed any way (one-shot or chunk-by-chunk), so the upload precheck hash
 // matches what the server stores. This is the pure-JS implementation that runs
 // behind the hash-worker; a WASM hasher can later replace it behind the same
-// hashBlob() interface (see docs/plans/upload-rework.md §3b).
+// hashBlob() interface (see docs/api/upload.md).
 
 const K = new Uint32Array([
   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,

@@ -25,7 +25,7 @@ const maxImageSize = 10 << 20 // 10 MB
 // allowedImageMIMETypes / allowedImageExtensions gate cover uploads. WebP is
 // intentionally excluded: the variant pipeline (media.ProcessImage) only decodes
 // JPEG and PNG, so accepting WebP here would store an original the worker can
-// never process. See docs/plans/upload-and-covers.md §1k for the (non-breaking)
+// never process. See docs/plans/roadmap.md (Covers) for the (non-breaking)
 // path to add WebP later.
 var allowedImageMIMETypes = map[string]bool{
 	"image/jpeg": true,
@@ -418,7 +418,7 @@ func (h *handler) getUIConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	// accepted_audio is the canonical extension→MIME allow-list (acceptedAudioTypes)
 	// so the upload page can flag disallowed files and send the right Content-Type
-	// without drifting from the server. See docs/plans/upload-type-precheck.md.
+	// without drifting from the server. See docs/api/upload.md (Accepted types).
 	writeJSON(w, http.StatusOK, struct {
 		*config.UIConfig
 		TrashRestorePolicy string            `json:"trash_restore_policy"`
@@ -538,7 +538,7 @@ func (h *handler) readImageUpload(r *http.Request) (data []byte, mimeType, ext s
 // Pointers distinguish an absent key (leave the field unchanged) from a present
 // key (write it; "" clears the field). Only these base fields are accepted this
 // round; any other key in the body is ignored. Richer tag editing is deferred —
-// see docs/plans/upload-and-covers.md §5h.
+// see .issues/open-issues.md.
 type metadataPatchRequest struct {
 	Title       *string `json:"title"`
 	Album       *string `json:"album"`

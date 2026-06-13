@@ -42,7 +42,7 @@ type Playlist struct {
 
 // PlaylistItemEntry is a playlist item joined with its file and tags. Trashed
 // reports the underlying file is soft-deleted: metadata stays visible but the
-// track is not playable (docs/plans/playlists.md Decision §3).
+// track is not playable (docs/api/playlists.md).
 type PlaylistItemEntry struct {
 	ItemID          int64
 	FileID          int64

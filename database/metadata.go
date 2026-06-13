@@ -17,7 +17,7 @@ var ErrFileNotFound = errors.New("file not found")
 // a non-nil pointer writes its value, so a pointer to "" clears the field.
 // Only these base fields are writable in this round — richer tag editing
 // (track #, disc, year, genre, …) is deferred (see
-// docs/plans/upload-and-covers.md §5h).
+// .issues/open-issues.md).
 type MetadataPatch struct {
 	Title       *string
 	Album       *string

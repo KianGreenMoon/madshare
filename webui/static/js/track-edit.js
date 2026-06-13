@@ -5,7 +5,7 @@
 // comes from app.css (.modal-backdrop / .modal / .btn-close / .edit-form), so
 // any page that links app.css can use it without extra markup or CSS.
 //
-// Consumers (docs/plans/moderation-review-bucket.md, "Code reuse"):
+// Consumers (docs/architecture/moderation.md, "Code reuse"):
 //   - the admin Files page  → PATCH /api/files/{hash}/metadata (metadata.edit)
 //   - the upload page's "My uploads" tab → PATCH /api/my/uploads/{hash}/metadata
 //     (owner-scoped; drafts and returned files only)

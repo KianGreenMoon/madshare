@@ -14,7 +14,7 @@ import (
 )
 
 // registerPlaylists mounts the playlist + favorites endpoints
-// (docs/plans/playlists.md). They are only registered when auth is configured
+// (docs/api/playlists.md). They are only registered when auth is configured
 // (playlists are per-user, meaningless without identities) and every route
 // requires content.access — RequirePermission already 401s anonymous requests,
 // so a reachable handler always has a user id in context.

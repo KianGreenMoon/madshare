@@ -65,14 +65,14 @@ var (
 // adminSubPages are the reworked admin sub-pages, each its own routed page under
 // /admin/* sharing the admin shell. The key is the route suffix and the .SubPage
 // value; the value is the template. The /admin landing is the dashboard
-// (adminTmpl, SubPage ""). See docs/plans/admin-panel-rework.md.
+// (adminTmpl, SubPage ""). See docs/ui/shells.md.
 var adminSubPages = map[string]*template.Template{
 	// "library" is the unified file-management page (the All files / Review /
-	// Trash scopes folded together — docs/plans/file-management-view.md).
+	// Trash scopes folded together — docs/architecture/file-management-view.md).
 	"library": buildPageTmpl("html/admin/library.html"),
 	// "upload" is the same upload body as /upload wrapped in the admin shell, so
 	// the upload page renders in whichever shell it was reached from
-	// (docs/plans/cross-shell-upload.md).
+	// (docs/ui/shells.md).
 	"upload":   buildPageTmpl("html/admin/upload.html"),
 	"users":    buildPageTmpl("html/admin/users.html"),
 	"prune":    buildPageTmpl("html/admin/prune.html"),

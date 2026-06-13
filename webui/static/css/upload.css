@@ -337,4 +337,4 @@
 
 /* The "My uploads" tab is now rendered by the shared file-management component
    (file-list.js) styled via file-view.css; the old .mine-* list styles were
-   removed with the migration (docs/plans/file-management-view.md). */
+   removed with the migration (docs/architecture/file-management-view.md). */

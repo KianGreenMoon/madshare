@@ -191,7 +191,7 @@
 </div>
 {{if ne .Page "admin"}}
 {{/* queue-panel: the current queue as an editable list (Phase 5 step 2 of
-     docs/plans/playlists.md). Shell chrome — lives outside <main>, wired by
+     docs/ui/player-and-queue.md). Shell chrome — lives outside <main>, wired by
      queue-panel.js via shell.js, survives page swaps like the player bar. */}}
 <div id="queue-panel" class="hidden" role="region" aria-label="Play queue">
   <div class="queue-head">
@@ -240,7 +240,7 @@
      Advanced, and the "My uploads" staging pane). Shared verbatim by the
      listening-shell page (/upload, html/upload.html) and the admin-shell
      page (/admin/upload, html/admin/upload.html); each wraps it in its own
-     <main class="upload-main">. See docs/plans/cross-shell-upload.md. */}}
+     <main class="upload-main">. See docs/ui/shells.md. */}}
 {{define "upload-main"}}
 
   <!-- Visually-hidden status region: announces queue progress and backoff. -->

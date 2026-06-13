@@ -1,8 +1,7 @@
 # File Upload API
 
 How files enter the library: the single-file upload endpoint, content
-deduplication, restore-on-reupload, and the embedded cover-art extraction added
-in Phase 2 of the upload & covers work (`docs/plans/upload-and-covers.md`).
+deduplication, restore-on-reupload, and embedded cover-art extraction.
 
 There is **no batch endpoint** — clients upload one file per request and manage
 their own queue/concurrency. The upload page (Phase 5) drives many of these
@@ -339,4 +338,3 @@ re-upload](#restore-on-re-upload-soft-deleted-files).
 - `docs/architecture/moderation.md` — staging / review queue (where uploads land).
 - `docs/architecture/soft-delete.md` — trash / restore model.
 - `docs/architecture/auth.md` — upload permission and access control.
-- `docs/plans/upload-and-covers.md` — full upload & covers design and phasing.

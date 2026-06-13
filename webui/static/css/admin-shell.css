@@ -178,7 +178,7 @@
    rules now live in file-view.css, the single source for the file-list
    component (loaded by the admin Library page and the Upload page). These three
    rules stay here because OTHER admin pages (users, settings) use them and don't
-   load file-view.css. (docs/plans/file-management-view.md, cleanup.) */
+   load file-view.css. (docs/architecture/file-management-view.md, cleanup.) */
 .cell-muted { color: var(--text-muted); }
 
 /* Destructive warning line inside admin modals (Library delete/merge/discard). */

@@ -1,10 +1,8 @@
 # Artist & album entities
 
-**Status:** implemented (entities P1–P5 done 2026-06-09; grouping model
-reaffirmed 2026-06-10). Implementation plan:
-`docs/plans/artist-album-normalization.md`. Assumes the roles-only access model
-(`docs/plans/access-roles-only.md`) — artist/album strings carry **no**
-access-control meaning, so this is a pure library/cover/grouping change.
+**Status:** implemented (entities P1–P5; grouping model reaffirmed). Assumes the
+roles-only access model (`docs/architecture/auth.md`) — artist/album strings carry
+**no** access-control meaning, so this is a pure library/cover/grouping change.
 
 ## Problem
 
@@ -69,9 +67,9 @@ These must be applied **identically** at import time and in the backfill, in Go
 3. **Album identity** = `(artist_id, norm_title)`. An empty album title resolves
    to the "unknown album" placeholder under that artist (so untagged tracks group
    sensibly rather than each becoming its own album). The placeholder strings
-   (`Unknown artist` / `Other`, plus filename-derived track titles) are made
-   required and non-empty — at the DB level and in the resolver — by
-   `docs/plans/required-name-defaults.md` (planned).
+   (`Unknown artist` / `Other`, plus filename-derived track titles) are
+   **required and non-empty** at both the DB level and in the resolver — see
+   [Required name defaults](#required-name-defaults).
 4. **`media_metadata.artist_id`** = the effective-artist entity (same one
    `albums.artist_id` points to for that track's album).
 5. **Representative `year`** = the album row's year is set from the first track
@@ -86,6 +84,33 @@ artist entity via rule 1 (the `album_artist` text wins). Each track keeps its ow
 performer in the `artist` text column. v0 does **not** create a separate
 track-level performer entity — `media_metadata.artist_id` is the album-artist
 entity. A future `track_artist_id` can be added without breaking this (deferred).
+
+### Required name defaults
+
+Three display columns are **never NULL and never empty**, with a canonical default
+when the source data has nothing:
+
+| Column | Default when missing |
+|--------|----------------------|
+| `artists.name` | `Unknown artist` |
+| `albums.title` | `Other` |
+| `media_metadata.title` | the filename with its audio extension stripped |
+
+The defaults are folded into the dedup keys, not just the display text:
+`normalizeKey("Unknown artist")` / `normalizeKey("Other")` are the buckets'
+reserved keys (`DefaultArtistName` / `DefaultAlbumTitle` in
+`database/entities.go`), so a track literally tagged `Unknown Artist` / `Other`
+merges **into** the bucket rather than forming a separate entity (the startup
+`FoldUnknownBuckets` pass collapses any pre-existing literal). Enforcement:
+`media_metadata.title` is `NOT NULL CHECK(title <> '')` and is written at
+upload/edit time (filename-derived when untagged, re-derived if a PATCH clears
+it); `artists.name` / `albums.title` keep their `NOT NULL` plus empty-string-guard
+triggers. This moves the fallback labels out of the (inconsistent) display layer
+into the data, with one canonical value each.
+
+Because identity is per-artist (rule 3), **every** artist gets its own `Other`
+album — two different artists' `Other` albums never unite; only the single
+`Unknown artist` entity has the one shared `Other`.
 
 ### Where the grouping decision lives (settled 2026-06-10)
 

@@ -1,4 +1,4 @@
--- Roles-only access model, step 1 (docs/plans/access-roles-only.md):
+-- Roles-only access model, step 1 (docs/architecture/auth.md):
 -- collapse the three content permissions (content.play / content.download /
 -- content.all) into a single content.access capability — "may reach the whole
 -- library". content.play/download were never enforced as gates (only

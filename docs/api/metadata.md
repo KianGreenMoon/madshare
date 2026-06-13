@@ -1,7 +1,6 @@
 # Metadata Editing API
 
-Editing the base tags of an already-uploaded file. Added in the Phase 5 revision
-of the upload & covers work (`docs/plans/upload-and-covers.md`).
+Editing the base tags of an already-uploaded file.
 
 This is the server side of the upload page's **verify & edit** panel: after files
 are uploaded and grouped into albums (by their embedded tags), the user can
@@ -65,16 +64,18 @@ Anonymous requests get `401`; an authenticated user lacking the permission gets
 - Writes the supplied fields to the file's `media_metadata` row and returns the
   resulting base fields. An empty body (no fields) is a no-op that still echoes
   the current values.
-- **Albums are not a stored entity** — the library groups tracks by their
-  `(album_artist, album)` strings at query time. So editing those strings on a
-  track *is* moving the track between albums; no separate album row is migrated.
-- This endpoint **does not touch `album_images`.** Album covers are keyed by the
-  `album_artist + album` strings, so renaming an album/artist can orphan its
-  cover. The upload page handles this by re-POSTing the cover (`POST
-  /api/albums/{album}/image`) to the new identity after a rename — but only when
-  it still holds the image bytes (a folder cover or a manual replacement). A
-  cover that came **only** from embedded art cannot be moved this way; re-upload
-  it with *Replace cover*.
+- **Editing a track's tags reclassifies that track.** The `album_artist`/`album`
+  strings resolve to artist/album entities, so changing them moves the track to
+  whichever artist/album its new tags resolve to (its `artist_id`/`album_id` are
+  re-resolved in the same transaction). The file's raw tag text is the overlay's
+  input — it is not silently migrated. To rename an artist/album *as a whole*
+  (keeping every track), use the entity rename below instead.
+- This endpoint **does not touch `album_images`.** Covers attach to the stable
+  album/artist **entity id**, not to tag strings, so a re-tagged track simply
+  joins its new album's existing cover (if any), and an entity *rename* keeps its
+  cover with no re-upload. (Pre-entity, covers were string-keyed and a rename
+  orphaned them; that re-POST dance is gone — see
+  `docs/architecture/artist-album-model.md`.)
 - The change is recorded in the audit log as action `metadata.edit`, target
   `file:<hash>`.
 
@@ -159,7 +160,7 @@ Both require the `metadata.edit` permission.
 | 200    | Renamed. Body: `{"ok": true, "id": <entity id>, "name"/"title": "<new>"}`. |
 | 400    | Missing/empty new name. |
 | 404    | No artist/album entity matches the current name. |
-| 409    | The new name is already taken by a different entity — that is a *merge*, not a rename (merge is not yet implemented). For an album the clash is scoped to the same artist. |
+| 409    | The new name is already taken by a different entity — that is a *merge*, not a rename (see [Merging](#merging-two-artists-or-albums)). For an album the clash is scoped to the same artist. |
 
 ```bash
 # Rename an album (cover and all tracks stay attached)
@@ -239,7 +240,7 @@ curl -X POST -H "Content-Type: application/json" \
 
 - `docs/api/upload.md` — file upload and the `{title, album, artist}` echo the
   verify panel groups on.
-- `docs/api/cover-images.md` — cover upload + variant status (covers are
-  re-targeted here on an album/artist rename).
-- `docs/plans/upload-and-covers.md` §5 — full design of the upload page and the
-  verify/edit flow.
+- `docs/api/cover-images.md` — cover upload + variant status (covers follow an
+  album/artist rename automatically, via the entity id).
+- `docs/architecture/artist-album-model.md` — the artist/album entity model that
+  rename/merge and entity-keyed covers build on.

@@ -4,7 +4,7 @@
 // soft-deleted rows), Play, Restore, Delete forever, and bulk actions. The
 // shared preview player is injected as `play`. Requires file.delete.
 //
-// Design: docs/plans/file-management-view.md.
+// Design: docs/architecture/file-management-view.md.
 import { API, fmtDate, toast, handleAuthError } from './shared.js';
 import { createFileList } from '../file-list.js';
 

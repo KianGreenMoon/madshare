@@ -2,7 +2,7 @@
 -- media_metadata.title may no longer be NULL or empty. Missing values fall back
 -- to canonical defaults: "Unknown artist" / "Other" / the upload filename with
 -- its extension stripped.
--- Design: docs/plans/required-name-defaults.md
+-- Design: docs/architecture/artist-album-model.md (Required name defaults)
 --
 -- Two enforcement mechanisms, chosen per table because of foreign keys:
 --   * media_metadata has NO inbound FKs, so it is rebuilt in place to add
