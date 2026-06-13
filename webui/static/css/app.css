@@ -120,10 +120,10 @@ header {
   gap: 4px;
   flex-shrink: 0;
   /* Push everything after the nav to the right so the logo + nav stay grouped
-     on the left on every page. On the library page the search bar's flex-grow
-     consumes the free space first, so this auto margin resolves to ~0 there;
-     on pages without a search bar (upload, admin) it keeps the nav from
-     drifting to the center under justify-content: space-between. */
+     on the left and the header-actions sit at the far right on every page —
+     otherwise justify-content: space-between would drift the nav toward the
+     centre. The header carries no search box now, so this is the layout on
+     all pages. */
   margin-right: auto;
 }
 
@@ -230,20 +230,22 @@ header {
   word-break: break-all;
 }
 
-/* ── Header search ── */
-/* The shell swaps this wrapper to change the header-insert per page; keep it
-   transparent to layout so .header__search stays a direct header flex child. */
+/* ── Library search ── */
+/* #header-insert is a per-page header slot the shell swaps; today it's empty on
+   every page (the library search moved into the Music page body so the header
+   looks identical everywhere), but keep it transparent to layout so any future
+   insert stays a direct header flex child. */
 #header-insert { display: contents; }
 
-.header__search {
+/* The search box lives at the top of the Music page's <main>, above the view
+   panels — a left-aligned row under the section tabs, not a header element. */
+.library-search {
   position: relative;
-  flex: 1;
-  min-width: 120px;
-  max-width: 400px;
-  margin: 0 16px;
+  max-width: 360px;
+  margin-bottom: var(--space-4);
 }
 
-.header__search-icon {
+.library-search__icon {
   position: absolute;
   left: 12px;
   top: 50%;
@@ -252,7 +254,7 @@ header {
   pointer-events: none;
 }
 
-.header__search-input {
+.library-search__input {
   width: 100%;
   height: 36px;
   padding: 0 36px 0 36px;
@@ -264,16 +266,16 @@ header {
   font-family: inherit;
   transition: border-color 150ms ease, box-shadow 150ms ease;
 }
-.header__search-input::placeholder { color: var(--text-muted); }
-.header__search-input:focus {
+.library-search__input::placeholder { color: var(--text-muted); }
+.library-search__input:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-glow);
 }
 /* Hide the browser's native clear button — we render our own */
-.header__search-input::-webkit-search-cancel-button { display: none; }
+.library-search__input::-webkit-search-cancel-button { display: none; }
 
-.header__search-clear {
+.library-search__clear {
   position: absolute;
   right: 10px;
   top: 50%;
@@ -288,8 +290,8 @@ header {
   border-radius: 50%;
   transition: color 120ms ease, background 120ms ease;
 }
-.header__search-clear:hover { color: var(--text); background: var(--surface-hover); }
-.header__search-clear:focus-visible { outline: 2px solid var(--accent); }
+.library-search__clear:hover { color: var(--text); background: var(--surface-hover); }
+.library-search__clear:focus-visible { outline: 2px solid var(--accent); }
 
 .header-actions {
   display: flex;
@@ -1052,13 +1054,7 @@ body.queue-open #toastStatus {
 }
 .row-menu-input button:hover { background: var(--surface-hover); }
 
-/* ── Narrow viewport: search drops to second row ── */
+/* ── Narrow viewport: in-page library search spans the content width ── */
 @media (max-width: 599px) {
-  header { flex-wrap: wrap; }
-  .header__search {
-    width: 100%;
-    max-width: none;
-    margin: var(--space-2) 0 0 0;
-    order: 10;
-  }
+  .library-search { max-width: none; }
 }

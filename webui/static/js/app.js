@@ -589,7 +589,7 @@ function writeDuration(track, durSeconds) {
 
 // ── Search ───────────────────────────────────────────────────────────────
 
-// These elements live in swappable DOM (the header-insert region and <main>), so
+// These elements live in swappable DOM (inside <main>, above the view panels), so
 // they're re-queried and re-wired by wireSearch() on each init() and removed via
 // the AbortController on teardown(). Nav is owned by shell.js now — the old
 // "clear search on Library click" hack is gone (re-entering the library is a
@@ -604,8 +604,8 @@ let searchTimer = null;
 let searchAbort = null;
 
 function wireSearch(signal) {
-  searchInput = document.querySelector('.header__search-input');
-  searchClear = document.querySelector('.header__search-clear');
+  searchInput = document.querySelector('.library-search__input');
+  searchClear = document.querySelector('.library-search__clear');
   viewLibrary = document.getElementById('view-library');
   viewSearch  = document.getElementById('view-search');
   if (!searchInput) return;
