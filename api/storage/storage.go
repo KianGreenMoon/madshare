@@ -27,4 +27,34 @@ type Storage interface {
 	// the blob is missing or its content has been corrupted (digest mismatch).
 	// Expensive — it reads file content — so callers gate it behind an opt-in.
 	VerifyBlob(hash string) (bool, error)
+
+	// Stats reports the backend's capacity and usage for the admin panel. A
+	// local-disk backend fills the byte fields from the filesystem holding its
+	// base directory; an object store (future S3) has no fixed capacity and
+	// reports HasVolume=false (the app's own footprint is then the meaningful
+	// figure, computed by the caller from the database).
+	Stats() (Stats, error)
+}
+
+// Stats describes a storage backend's capacity. It is deliberately backend-
+// neutral so the future S3 implementation reports the same shape: a disk has a
+// bounded volume; an object store sets HasVolume=false and leaves the byte
+// fields zero.
+type Stats struct {
+	// Backend identifies the implementation: "local" today, "s3" later.
+	Backend string
+	// Location is the base directory (local) or bucket (object store).
+	Location string
+	// HasVolume is true when TotalBytes/FreeBytes/UsedBytes reflect a real,
+	// fixed-capacity filesystem. Object stores set it false.
+	HasVolume bool
+	// TotalBytes is the filesystem capacity. Valid only when HasVolume.
+	TotalBytes uint64
+	// FreeBytes is the space available to an unprivileged user (df "Avail").
+	// Valid only when HasVolume.
+	FreeBytes uint64
+	// UsedBytes is df-style usage: capacity minus all free blocks (including
+	// the root-reserved ones), so it matches what `df` prints. Valid only when
+	// HasVolume.
+	UsedBytes uint64
 }

@@ -126,6 +126,28 @@ func sha256File(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// errNoStatfs is returned by diskUsage on platforms without a statfs syscall.
+// Stats treats it as "capacity unknown" (HasVolume=false), not a failure.
+var errNoStatfs = errors.New("storage: filesystem usage unsupported on this platform")
+
+// Stats reports the capacity of the filesystem holding baseDir. The byte
+// figures come from a statfs of baseDir (see diskUsage, which is build-tagged
+// per OS); on a platform without statfs support it reports HasVolume=false
+// rather than failing.
+func (s *Local) Stats() (Stats, error) {
+	st := Stats{Backend: "local", Location: s.baseDir}
+	total, free, used, err := diskUsage(s.baseDir)
+	if errors.Is(err, errNoStatfs) {
+		return st, nil // HasVolume stays false
+	}
+	if err != nil {
+		return st, fmt.Errorf("storage: disk usage for %s: %w", s.baseDir, err)
+	}
+	st.HasVolume = true
+	st.TotalBytes, st.FreeBytes, st.UsedBytes = total, free, used
+	return st, nil
+}
+
 // Put writes r to <baseDir>/<hash>/<filename>, creating the hash directory if
 // needed. Path traversal in filename is neutralised by filepath.Base.
 func (s *Local) Put(hash, filename string, r io.Reader) error {

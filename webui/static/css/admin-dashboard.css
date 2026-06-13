@@ -43,3 +43,77 @@
   color: var(--accent);
 }
 .dash-card-desc { font-size: 14px; color: var(--text-muted); line-height: 1.45; }
+
+/* ── Storage panel ── */
+.storage-card {
+  margin-top: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+/* Usage meter: a single track with two filled segments (Madshare library, then
+   the rest of the disk's used space); the remaining track is free space. */
+.storage-bar {
+  display: flex;
+  height: 12px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+.storage-bar-seg { height: 100%; transition: width 200ms ease; }
+.storage-bar-lib { background: var(--accent); }
+.storage-bar-other { background: var(--text-muted); opacity: 0.55; }
+
+.storage-headline {
+  margin: var(--space-3) 0 0;
+  font-size: 15px;
+  color: var(--text);
+}
+.storage-headline strong { font-weight: 600; }
+.storage-headline span { color: var(--text-muted); }
+
+.storage-note {
+  margin: 0 0 var(--space-3);
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+/* Detail rows: label (with a colour swatch keyed to the bar) + value. */
+.storage-detail {
+  margin: var(--space-4) 0 0;
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: var(--space-2) var(--space-5);
+  justify-content: start;
+}
+.storage-detail-row { display: contents; }
+.storage-detail dt {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.storage-detail dd {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.storage-loc {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.storage-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.storage-swatch--lib { background: var(--accent); }
+.storage-swatch--other { background: var(--text-muted); opacity: 0.55; }

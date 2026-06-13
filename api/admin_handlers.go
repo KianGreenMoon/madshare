@@ -221,6 +221,58 @@ func (h *handler) adminPrune(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// volumeStats is the disk-capacity portion of the storage response. It is
+// present only for backends backed by a real filesystem (local disk); an
+// object store (future S3) omits it (storageStatsResp.Volume is nil/null).
+type volumeStats struct {
+	TotalBytes  uint64  `json:"total_bytes"`
+	FreeBytes   uint64  `json:"free_bytes"`
+	UsedBytes   uint64  `json:"used_bytes"`
+	UsedPercent float64 `json:"used_percent"`
+}
+
+// storageStatsResp is the body of GET /api/admin/storage. LibraryBytes (the
+// app's own footprint, from the DB) is meaningful for every backend; Volume is
+// the whole-disk capacity and is null when the backend has no fixed capacity.
+type storageStatsResp struct {
+	Backend      string       `json:"backend"`
+	Location     string       `json:"location"`
+	LibraryBytes int64        `json:"library_bytes"`
+	Volume       *volumeStats `json:"volume"`
+}
+
+// adminStorageStats handles GET /api/admin/storage. It merges the backend's
+// capacity (storage.Stats — disk statfs today) with the library's on-disk
+// footprint (DB SUM of byte_size) so the admin dashboard can show free/used
+// disk space and how much of it Madshare occupies.
+func (h *handler) adminStorageStats(w http.ResponseWriter, r *http.Request) {
+	st, err := h.storage.Stats()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+		return
+	}
+	libBytes, err := h.repo.LibraryByteSize(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+		return
+	}
+
+	resp := storageStatsResp{Backend: st.Backend, Location: st.Location, LibraryBytes: libBytes}
+	if st.HasVolume {
+		var pct float64
+		if st.TotalBytes > 0 {
+			pct = float64(st.UsedBytes) / float64(st.TotalBytes) * 100
+		}
+		resp.Volume = &volumeStats{
+			TotalBytes:  st.TotalBytes,
+			FreeBytes:   st.FreeBytes,
+			UsedBytes:   st.UsedBytes,
+			UsedPercent: pct,
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // danglingJSON shapes DanglingRefs into {hash, filenames, reason} objects,
 // ensuring filenames is always a JSON array (never null).
 func danglingJSON(refs []database.DanglingRef) []map[string]any {

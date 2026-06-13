@@ -610,6 +610,37 @@ func TestLocalVerifyBlob_InvalidHash(t *testing.T) {
 	}
 }
 
+// ---- Local.Stats -------------------------------------------------------------
+
+// On the unix CI/dev target, Stats reports a real volume: a non-zero total and
+// a used+free that doesn't exceed it. (On a hypothetical non-unix build the
+// backend reports HasVolume=false; we don't assert that path here.)
+func TestLocalStats(t *testing.T) {
+	s := newLocal(t)
+	st, err := s.Stats()
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if st.Backend != "local" {
+		t.Errorf("Backend = %q, want local", st.Backend)
+	}
+	if st.Location != s.baseDir {
+		t.Errorf("Location = %q, want %q", st.Location, s.baseDir)
+	}
+	if !st.HasVolume {
+		t.Skip("filesystem usage unsupported on this platform")
+	}
+	if st.TotalBytes == 0 {
+		t.Error("TotalBytes = 0 on a real volume, want > 0")
+	}
+	if st.FreeBytes > st.TotalBytes {
+		t.Errorf("FreeBytes %d > TotalBytes %d", st.FreeBytes, st.TotalBytes)
+	}
+	if st.UsedBytes > st.TotalBytes {
+		t.Errorf("UsedBytes %d > TotalBytes %d", st.UsedBytes, st.TotalBytes)
+	}
+}
+
 // ---- errorReader helper -----------------------------------------------------
 
 type errorReader struct{ err error }

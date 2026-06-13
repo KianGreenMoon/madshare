@@ -189,6 +189,7 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		fileDelete := d.protect(auth.PermFileDelete)
 		r.With(fileDelete).Delete("/files/{hash}", h.adminDeleteFile)
 		r.With(fileDelete).Post("/prune", h.adminPrune)
+		r.With(fileDelete).Get("/storage", h.adminStorageStats)
 		r.With(fileDelete).Get("/trash", h.adminTrashList)
 		r.With(fileDelete).Delete("/trash/{hash}", h.adminTrashHardDelete)
 		r.With(fileDelete).Post("/trash/{hash}/restore", h.adminTrashRestore)

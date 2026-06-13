@@ -169,6 +169,61 @@ func TestAdminDeleteFile_DBErrorReturns500(t *testing.T) {
 	}
 }
 
+// ---- adminStorageStats -------------------------------------------------------
+
+func TestAdminStorageStats(t *testing.T) {
+	repo := &fakeRepo{libraryBytes: 4096}
+	dir := t.TempDir()
+	h := &handler{storage: storage.NewLocal(dir), repo: repo, cacheDir: t.TempDir(), maxUploadSize: testMaxUpload}
+
+	rr := httptest.NewRecorder()
+	h.adminStorageStats(rr, httptest.NewRequest(http.MethodGet, "/api/admin/storage", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Backend      string `json:"backend"`
+		Location     string `json:"location"`
+		LibraryBytes int64  `json:"library_bytes"`
+		Volume       *struct {
+			TotalBytes  uint64  `json:"total_bytes"`
+			FreeBytes   uint64  `json:"free_bytes"`
+			UsedBytes   uint64  `json:"used_bytes"`
+			UsedPercent float64 `json:"used_percent"`
+		} `json:"volume"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v; body: %s", err, rr.Body.String())
+	}
+	if resp.Backend != "local" {
+		t.Errorf("backend = %q, want local", resp.Backend)
+	}
+	if resp.LibraryBytes != 4096 {
+		t.Errorf("library_bytes = %d, want 4096", resp.LibraryBytes)
+	}
+	if resp.Volume == nil {
+		t.Skip("no volume reported on this platform")
+	}
+	if resp.Volume.TotalBytes == 0 {
+		t.Error("volume.total_bytes = 0 on a real disk, want > 0")
+	}
+	if resp.Volume.UsedPercent < 0 || resp.Volume.UsedPercent > 100 {
+		t.Errorf("used_percent = %v, want [0,100]", resp.Volume.UsedPercent)
+	}
+}
+
+// TestAdminStorageStats_DBErrorReturns500 forces the library-size query to fail.
+func TestAdminStorageStats_DBErrorReturns500(t *testing.T) {
+	repo := &fakeRepo{libraryBytesErr: context.DeadlineExceeded}
+	h := &handler{storage: storage.NewLocal(t.TempDir()), repo: repo, cacheDir: t.TempDir(), maxUploadSize: testMaxUpload}
+
+	rr := httptest.NewRecorder()
+	h.adminStorageStats(rr, httptest.NewRequest(http.MethodGet, "/api/admin/storage", nil))
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rr.Code)
+	}
+}
+
 // ---- adminPrune --------------------------------------------------------------
 
 // pruneReq builds a POST /api/admin/prune request with the given JSON body

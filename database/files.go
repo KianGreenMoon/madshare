@@ -15,6 +15,21 @@ import (
 // and review/staging queries intentionally do not use it.
 const visibleFile = "f.deleted_at IS NULL AND f.review_state = 'approved'"
 
+// LibraryByteSize returns the total on-disk footprint of stored blobs: the sum
+// of byte_size over every files row. Files are content-addressed (one row per
+// hash), so this is the deduplicated blob total. Trashed-but-not-yet-pruned
+// rows are included — their blobs still occupy the disk until a hard delete.
+func (db *DB) LibraryByteSize(ctx context.Context) (int64, error) {
+	var total int64
+	err := db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(byte_size), 0) FROM files`,
+	).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("sum library byte size: %w", err)
+	}
+	return total, nil
+}
+
 // GetFileByHash looks up a files row by content hash. Returns (nil, nil) if
 // no row matches — callers treat that as "new upload". Soft-deleted files are
 // returned with DeletedAt set so the upload handler can restore them.
