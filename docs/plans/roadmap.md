@@ -26,17 +26,14 @@ bug/cleanup items live in `.issues/open-issues.md` and `.issues/ui-issues.md`.
 
 ## Artist / album entities
 
-- **Browse by entity id.** Library listings still resolve artist/album by name
-  (`?artist=`/`{album}` path segments); covers and *merge* already address the
-  stable surrogate id. Move the browse endpoints to `?artist_id=`/`?album_id=`
-  (and migrate the UI) to drop the name-resolution step and address the
-  empty-name buckets cleanly. See `docs/architecture/artist-album-model.md`.
 - **Track-level performer entity (`track_artist_id`).** `media_metadata.artist_id`
   is the *album* artist; the per-track performer survives only as raw tag text.
   Browsing by a featured/performing artist who is never an `album_artist` needs a
   track↔artist credits model and its own design.
-- **Merge dry-run.** Artist/album merge is immediate and destructive; a preview
-  ("what will move / collapse") is not built.
+
+(Browse-by-entity-id and the merge dry-run shipped — see
+`docs/architecture/artist-album-model.md` §"Browse by entity id" / §"Merge
+dry-run".)
 
 ## Listening shell & player
 

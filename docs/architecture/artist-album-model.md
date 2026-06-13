@@ -211,9 +211,97 @@ a **startup reconcile pass** (same pattern as the existing orphan-blob pass in
 existing `artist_images`/`album_images` rows onto the new IDs by re-running the
 same name→entity resolution. New uploads resolve entities inline during import.
 
+## Browse by entity id
+
+The read path originally addressed entities by **name** (`/api/albums?artist=`,
+`/api/tracks?artist=&album=`, and the cover GETs by name), re-running
+`normalizeKey` → entity on every request even though the listing DTOs already
+carry the stable `id`. The browse + cover-read endpoints move to id addressing:
+
+| Endpoint | Before | After |
+|----------|--------|-------|
+| albums of an artist | `GET /api/albums?artist=<name>` | `GET /api/albums?artist_id=<id>` |
+| tracks of an album | `GET /api/tracks?artist=<name>&album=<title>` | `GET /api/tracks?album_id=<id>` |
+| album cover (read) | `GET /api/albums/{name}/image?artist=<name>` | `GET /api/albums/{album_id}/image` |
+| album cover status | `GET /api/albums/{name}/image/status?artist=<name>` | `GET /api/albums/{album_id}/image/status` |
+| artist cover (read) | `GET /api/artists/{name}/image` | `GET /api/artists/{artist_id}/image` |
+
+`artist_id` / `album_id` are **required** and must parse to a positive integer
+(`400` otherwise); the old empty-`artist` "list every album" mode and the
+empty-`artist` "tracks → nil" guard are dropped (no client used them). The
+unknown-bucket sorting and guest-filtering are unchanged — only the WHERE key
+moves from `norm_name`/`norm_title` to `id`. A valid-but-unknown id yields an
+empty list / `404` image / empty status body (same contract as a missing entity
+today).
+
+### Covers: read by id, write by name
+
+The cover **write** path stays name-addressed —
+`POST /api/albums/{name}/image?artist=<name>` and
+`POST /api/artists/{name}/image` — because it *resolve-or-creates* the entity
+(`ResolveAlbumID`/`ResolveArtistID`) when a cover is attached at upload time,
+before the entity has a browsable id. chi routes a name-param `POST` and an
+id-param `GET` on the same path node independently (verified), so the two
+coexist without a separate path. `LookupArtistID`/`LookupAlbumID` therefore stay
+(used by the write, rename, and name-based merge endpoints); only the
+browse/cover-read handlers stop calling them.
+
+### What this removes
+
+The name-keyed browse DB methods (`ListAlbumsByArtist[Guest]`,
+`ListTracksByAlbumArtist[Guest]`) and their `Repository` entries are deleted, not
+kept as back-compat shims (pre-release, and every caller is migrated in the same
+change). New id-keyed siblings replace them:
+`ListAlbumsByArtistID[Guest](artistID)`, `ListTracksByAlbumID[Guest](albumID)`.
+
+### Front-end migration
+
+Three browse clients move to ids: the library drill-down (`app.js`), the admin
+By-entity drill-down (`admin/files.js`), and the standalone cmus view
+(`cmus.js`) — the last only because it shares the now-removed name routes, not
+because it gains anything. Each already holds the entity `id` in its rendered
+DTOs; the drill state carries `{id, name}` so the breadcrumb still shows the
+display name while fetches use the id. **Search** result artist/album items gain
+an `id` field (the DB already selects it into `ArtistEntry`/`AlbumEntry`; only
+the search JSON omitted it) so a search hit can drill in and render its cover by
+id. The cover **edit** component (`cover-edit.js`) and the upload-page cover
+attach (`upload.js`) are unchanged — they only POST, which stays by name.
+
+## Merge dry-run
+
+Merge is destructive and immediate. A non-mutating **preview** lets the UI show
+exactly what a merge will do before the user commits:
+
+- `POST /api/artists/merge/preview` and `POST /api/albums/merge/preview`, same
+  `{from_id, into_id}` body and `metadata.edit` gate as the real merges. A
+  separate route (not a `dry_run` flag on the merge endpoint) keeps any chance of
+  an accidental real merge off the table.
+- Backed by `MergeArtistsPreview` / `MergeAlbumsPreview` in `database/entities.go`
+  — read-only queries that reuse the exact collision/cover rules of
+  `MergeArtists`/`MergeAlbums` (so the preview can't drift from the act). They
+  return `ErrMergeSelf` / `ErrEntityNotFound` identically.
+
+The preview payload (`MergePreview` in `models.go`):
+
+| Field | Artist merge | Album merge |
+|-------|-------------|-------------|
+| `tracks_moved` | tracks repointed off the source | same |
+| `albums_moved` | source albums with no title collision | — (0) |
+| `albums_collapsed` + `collapsed_titles` | source albums folding into an existing target album | — |
+| `source_has_cover` / `target_has_cover` | drives "cover moves" vs "target's cover kept" | same |
+| `source_artist_orphaned` | — | source's artist left with nothing |
+
+The admin merge modal (`admin/files.js`) already posts the id-addressed merge;
+its static warning ("Moves all tracks into X, then deletes Y") is replaced by the
+live preview numbers, fetched when the merge target changes (falling back to the
+static text on a preview error).
+
 ## Non-goals (v0)
 
-- Track-level performer entities (`track_artist_id`).
+- Track-level performer entities (`track_artist_id`) — still deferred; needs its
+  own track↔artist credits design.
+- A merge preview is **read-only** advisory, not a lock: a concurrent edit
+  between preview and commit is not guarded against (single-admin assumption).
 - Fuzzy / "the "-stripping normalization, MusicBrainz IDs, external matching.
 - Re-deriving access control from entities (Layer B is gone; if per-content
   restriction returns it will key off `album_id`/`artist_id`).

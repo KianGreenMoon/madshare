@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"daemonlord.ygg/madshare/api/storage"
@@ -54,7 +55,7 @@ func TestGetAlbumImageStatus_WithCover(t *testing.T) {
 		t.Fatalf("set album cover: %v", err)
 	}
 
-	resp, err := http.Get(srv.URL + "/api/albums/" + album + "/image/status?artist=" + artist)
+	resp, err := http.Get(srv.URL + "/api/albums/" + strconv.FormatInt(albumID, 10) + "/image/status")
 	if err != nil {
 		t.Fatalf("GET status: %v", err)
 	}
@@ -92,7 +93,8 @@ func TestGetAlbumImageStatus_WithCover(t *testing.T) {
 
 func TestGetAlbumImageStatus_NoCover(t *testing.T) {
 	srv, _ := newImageTestServer(t, nil)
-	resp, err := http.Get(srv.URL + "/api/albums/Nope/image/status?artist=Nobody")
+	// A valid-but-unknown album id yields the empty status body (200), not a 404.
+	resp, err := http.Get(srv.URL + "/api/albums/999999/image/status")
 	if err != nil {
 		t.Fatalf("GET status: %v", err)
 	}

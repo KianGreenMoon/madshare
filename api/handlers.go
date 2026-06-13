@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"daemonlord.ygg/madshare/api/storage"
@@ -240,6 +241,18 @@ func nullString(s string) sql.NullString {
 
 func nullInt(i int) sql.NullInt64 {
 	return sql.NullInt64{Int64: int64(i), Valid: i != 0}
+}
+
+// parsePositiveID parses a required positive int64 entity id from a query/path
+// value, writing a 400 and returning ok=false on a missing, malformed, or
+// non-positive value. Used by the id-addressed browse and cover endpoints.
+func parsePositiveID(w http.ResponseWriter, raw, name string) (int64, bool) {
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 {
+		http.Error(w, name+" must be a positive integer", http.StatusBadRequest)
+		return 0, false
+	}
+	return id, true
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -21,9 +21,11 @@ const API = document.querySelector('meta[name="api-url"]')?.content || '';
 
 const state = {
   artists: [],
-  selectedArtist: null,   // artist name string ('' = Unknown Artist)
+  selectedArtist: null,   // artist name string ('' = Unknown Artist) — display + aria
+  selectedArtistId: null, // artists.id — drives the id-addressed browse fetches
   albums: [],
   selectedAlbum: null,    // album title string (null = none selected; '' = "Other" bucket)
+  selectedAlbumId: null,  // albums.id — drives the id-addressed track fetch
   tracks: [],
   currentTrackIndex: -1,  // index into state.tracks
   isPlaying: false,
@@ -185,18 +187,20 @@ function makeArtistItem(artist) {
   item.appendChild(chevron);
 
   // Select on click
-  item.addEventListener('click', () => selectArtist(artist.name));
+  item.addEventListener('click', () => selectArtist(artist.id, artist.name));
   item.addEventListener('keydown', e => {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectArtist(artist.name); }
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectArtist(artist.id, artist.name); }
     handleColumnKeyNav(e, artistsList, '.artist-item');
   });
 
   return item;
 }
 
-function selectArtist(name) {
-  state.selectedArtist = name;
-  state.selectedAlbum  = null;
+function selectArtist(artistId, name) {
+  state.selectedArtist   = name;
+  state.selectedArtistId = artistId;
+  state.selectedAlbum    = null;
+  state.selectedAlbumId  = null;
 
   // Update artist selection UI
   artistsList.querySelectorAll('.artist-item').forEach(el => {
@@ -208,7 +212,7 @@ function selectArtist(name) {
   renderTracksEmpty('Select an album');
 
   // Load albums
-  loadAlbums(name);
+  loadAlbums(artistId);
 }
 
 // Mark the artist item that contains the currently playing track with has-playing
@@ -224,13 +228,13 @@ function updateArtistPlayingIndicator() {
 
 // ── Albums ────────────────────────────────────────────────────────────────
 
-async function loadAlbums(artistName) {
+async function loadAlbums(artistId) {
   buildSkeletons(albumsList, 'skeleton-row--album');
   setText(albumsCount, '');
 
   let albums;
   try {
-    const res = await fetch(`${API}/api/albums?artist=${encodeParam(artistName)}`);
+    const res = await fetch(`${API}/api/albums?artist_id=${encodeParam(artistId)}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     albums = await res.json();
   } catch (err) {
@@ -286,7 +290,7 @@ function makeAlbumItem(album) {
   art.setAttribute('title', 'Click to upload album art');
   if (album.has_image) {
     const img = document.createElement('img');
-    img.src = `${API}/api/albums/${encodeParam(album.title)}/image?artist=${encodeParam(album.artist_name)}`;
+    img.src = `${API}/api/albums/${encodeParam(album.id)}/image`;
     img.alt = `${displayTitle} album art`;
     art.appendChild(img);
   } else {
@@ -337,37 +341,36 @@ function makeAlbumItem(album) {
   item.appendChild(text);
   item.appendChild(chevron);
 
-  item.addEventListener('click', () => selectAlbum(album.artist_name, album.title));
+  item.addEventListener('click', () => selectAlbum(album.id, album.artist_name, album.title));
   item.addEventListener('keydown', e => {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectAlbum(album.artist_name, album.title); }
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectAlbum(album.id, album.artist_name, album.title); }
     handleColumnKeyNav(e, albumsList, '.album-item');
   });
 
   return item;
 }
 
-function selectAlbum(artistName, albumTitle) {
-  state.selectedAlbum = albumTitle;
+function selectAlbum(albumId, artistName, albumTitle) {
+  state.selectedAlbum   = albumTitle;
+  state.selectedAlbumId = albumId;
 
   albumsList.querySelectorAll('.album-item').forEach(el => {
     const selected = el.dataset.artistName === artistName && el.dataset.albumTitle === albumTitle;
     el.setAttribute('aria-selected', String(selected));
   });
 
-  loadTracks(artistName, albumTitle);
+  loadTracks(albumId);
 }
 
 // ── Tracks ────────────────────────────────────────────────────────────────
 
-async function loadTracks(artistName, albumTitle) {
+async function loadTracks(albumId) {
   buildSkeletons(tracksList, 'skeleton-row--track');
   setText(tracksCount, '');
 
   let tracks;
   try {
-    const res = await fetch(
-      `${API}/api/tracks?artist=${encodeParam(artistName)}&album=${encodeParam(albumTitle)}`
-    );
+    const res = await fetch(`${API}/api/tracks?album_id=${encodeParam(albumId)}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     tracks = await res.json();
   } catch (err) {
@@ -668,7 +671,7 @@ artistImageInput.addEventListener('change', async () => {
     // Refresh artists to pick up has_image change
     await loadArtists();
     // Re-select the artist so albums column stays in sync
-    if (state.selectedArtist !== null) selectArtist(state.selectedArtist);
+    if (state.selectedArtistId !== null) selectArtist(state.selectedArtistId, state.selectedArtist);
   } catch (err) {
     console.error('Failed to upload artist image:', err);
   }
@@ -692,9 +695,9 @@ albumImageInput.addEventListener('change', async () => {
     );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     // Refresh albums for selected artist
-    if (state.selectedArtist !== null) await loadAlbums(state.selectedArtist);
+    if (state.selectedArtistId !== null) await loadAlbums(state.selectedArtistId);
     // Re-select album so tracks stay visible
-    if (state.selectedAlbum !== null) selectAlbum(artist, state.selectedAlbum);
+    if (state.selectedAlbumId !== null) selectAlbum(state.selectedAlbumId, artist, state.selectedAlbum);
   } catch (err) {
     console.error('Failed to upload album image:', err);
   }

@@ -6,7 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
-	"net/url"
+	"strconv"
 	"testing"
 
 	"daemonlord.ygg/madshare/database"
@@ -113,18 +113,22 @@ func TestManage_GuestPlayableEndpoint(t *testing.T) {
 // listing API. Every browse surface must be empty for an anonymous client when
 // no file is guest-playable, and must reveal the file only once it is.
 func TestListings_AnonymousCannotBrowsePrivate(t *testing.T) {
-	srv, _ := newAuthTestServer(t)
+	srv, db := newAuthTestServer(t)
 	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
 	hash, path := uploadAndHash(t, admin, srv.URL, "private.mp3")
 
-	// The fixture upload carries no tags, so it groups under the empty
-	// artist/album buckets. /api/tracks needs a non-empty artist param
-	// (pre-existing behaviour), so track-level filtering is covered by the DB
-	// test TestGuestListings_RespectAccess instead.
+	// The fixture upload carries no tags, so it groups under the unknown
+	// artist/album buckets. The id-addressed album listing is reached via that
+	// bucket's artist id (resolved unfiltered through the DB).
+	artists, err := db.ListArtists(context.Background())
+	if err != nil || len(artists) != 1 {
+		t.Fatalf("ListArtists: %d artists, err=%v", len(artists), err)
+	}
+	albumsURL := "/api/albums?artist_id=" + strconv.FormatInt(artists[0].ID, 10)
 	listings := []string{
 		"/api/files",
 		"/api/artists",
-		"/api/albums",
+		albumsURL,
 	}
 
 	// Anonymous: no file is guest-playable, so every listing is empty and the
@@ -190,8 +194,11 @@ func TestListings_TrackFilteringOverHTTP(t *testing.T) {
 	const hash = "aa11bb22cc33dd44ee55ff66aa77bb88cc99dd00ee11ff22aa33bb44cc55dd66"
 	insertTaggedFile(t, db, hash, "An Artist", "An Album", "Track One")
 
-	tracksURL := srv.URL + "/api/tracks?artist=" + url.QueryEscape("An Artist") +
-		"&album=" + url.QueryEscape("An Album")
+	albumID, found, err := db.LookupAlbumID(context.Background(), "An Artist", "An Album")
+	if err != nil || !found {
+		t.Fatalf("LookupAlbumID: found=%v err=%v", found, err)
+	}
+	tracksURL := srv.URL + "/api/tracks?album_id=" + strconv.FormatInt(albumID, 10)
 
 	count := func(client *http.Client) int {
 		var tracks []map[string]any

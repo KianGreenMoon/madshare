@@ -19,13 +19,18 @@ import { loadDurCache, saveDurCache } from './dur-cache.js';
 // ── Library — drill-down state ────────────────────────────────────────────
 
 // drill tracks which panel level is currently shown and what was selected.
-const drill = { level: 'artists', artist: null, album: null };
+// Browse fetches address entities by their stable id (artistId / albumId); the
+// display names (artist / album) ride alongside only for the breadcrumb + track
+// metadata text.
+const drill = { level: 'artists', artist: null, album: null, artistId: null, albumId: null };
 
 // Fetch and render the top-level artists panel.
 async function loadArtists() {
-  drill.level  = 'artists';
-  drill.artist = null;
-  drill.album  = null;
+  drill.level    = 'artists';
+  drill.artist   = null;
+  drill.album    = null;
+  drill.artistId = null;
+  drill.albumId  = null;
 
   const panel = document.getElementById('libraryPanel');
   panel.innerHTML = '<div class="panel-loading" aria-live="polite" role="status"></div>';
@@ -46,18 +51,20 @@ async function loadArtists() {
   renderArtistList(artists);
 }
 
-// Fetch and render the albums panel for a given artist.
-async function drillToAlbums(artistName) {
-  drill.level  = 'albums';
-  drill.artist = artistName;
-  drill.album  = null;
+// Fetch and render the albums panel for a given artist (addressed by id).
+async function drillToAlbums(artistId, artistName) {
+  drill.level    = 'albums';
+  drill.artist   = artistName;
+  drill.artistId = artistId;
+  drill.album    = null;
+  drill.albumId  = null;
 
   const panel = document.getElementById('libraryPanel');
   panel.innerHTML = '';
 
   let albums;
   try {
-    const res = await fetch(`${API}/api/albums?artist=${encodeURIComponent(artistName || '')}`);
+    const res = await fetch(`${API}/api/albums?artist_id=${encodeURIComponent(artistId)}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     albums = await res.json();
   } catch (err) {
@@ -71,20 +78,21 @@ async function drillToAlbums(artistName) {
   renderAlbumList(albums);
 }
 
-// Fetch and render the tracks panel for a given artist + album.
-async function drillToTracks(artistName, albumTitle) {
-  drill.level  = 'tracks';
-  drill.artist = artistName;
-  drill.album  = albumTitle;
+// Fetch and render the tracks panel for a given album (addressed by id). The
+// artist id/name ride along so the breadcrumb can step back up to the albums.
+async function drillToTracks(albumId, artistId, artistName, albumTitle) {
+  drill.level    = 'tracks';
+  drill.artist   = artistName;
+  drill.artistId = artistId;
+  drill.album    = albumTitle;
+  drill.albumId  = albumId;
 
   const panel = document.getElementById('libraryPanel');
   panel.innerHTML = '';
 
   let tracks;
   try {
-    const res = await fetch(
-      `${API}/api/tracks?artist=${encodeURIComponent(artistName || '')}&album=${encodeURIComponent(albumTitle || '')}`
-    );
+    const res = await fetch(`${API}/api/tracks?album_id=${encodeURIComponent(albumId)}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     tracks = await res.json();
   } catch (err) {
@@ -134,10 +142,11 @@ function renderBreadcrumb() {
     bc.appendChild(mkSep());
     bc.appendChild(mkCurrent(displayArtist));
   } else {
-    const capturedArtist = drill.artist;
+    const capturedArtistId = drill.artistId;
+    const capturedArtist   = drill.artist;
     bc.appendChild(mkLink('Library', loadArtists));
     bc.appendChild(mkSep());
-    bc.appendChild(mkLink(displayArtist, () => drillToAlbums(capturedArtist)));
+    bc.appendChild(mkLink(displayArtist, () => drillToAlbums(capturedArtistId, capturedArtist)));
     bc.appendChild(mkSep());
     bc.appendChild(mkCurrent(displayAlbum));
   }
@@ -177,21 +186,21 @@ function trackObjFromApi(t, artistName, durCache) {
   };
 }
 
-// entityTracks collects the controller tracks for a whole album — or a whole
-// artist (albumTitle === undefined → every album, in browse order).
-async function entityTracks(artistName, albumTitle) {
+// entityTracks collects the controller tracks for a whole album (albumId given)
+// — or a whole artist (albumId == null → every album of artistId, in browse
+// order). artistName is used only for the track objects' display text.
+async function entityTracks(artistId, albumId, artistName) {
   const durCache = loadDurCache();
-  const fetchAlbum = async title => {
-    const res = await fetch(
-      `${API}/api/tracks?artist=${encodeURIComponent(artistName || '')}&album=${encodeURIComponent(title || '')}`);
+  const fetchAlbum = async id => {
+    const res = await fetch(`${API}/api/tracks?album_id=${encodeURIComponent(id)}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return (await res.json()).map(t => trackObjFromApi(t, artistName, durCache));
   };
-  if (albumTitle !== undefined) return fetchAlbum(albumTitle);
-  const res = await fetch(`${API}/api/albums?artist=${encodeURIComponent(artistName || '')}`);
+  if (albumId != null) return fetchAlbum(albumId);
+  const res = await fetch(`${API}/api/albums?artist_id=${encodeURIComponent(artistId)}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const albums = await res.json();
-  const lists = await Promise.all(albums.map(a => fetchAlbum(a.title)));
+  const lists = await Promise.all(albums.map(a => fetchAlbum(a.id)));
   return lists.flat();
 }
 
@@ -337,12 +346,12 @@ function renderArtistList(artists) {
       `<span class="row-chevron" aria-hidden="true">›</span>`;
     row.insertBefore(
       mkMoreBtn(`More actions for ${displayName}`,
-        btn => quickAddItems(btn, () => entityTracks(artist.name, undefined))),
+        btn => quickAddItems(btn, () => entityTracks(artist.id, null, artist.name))),
       row.querySelector('.row-chevron'));
-    row.addEventListener('click', () => drillToAlbums(artist.name));
+    row.addEventListener('click', () => drillToAlbums(artist.id, artist.name));
     row.addEventListener('keydown', e => {
       if (e.target !== row) return; // buttons inside the row handle their own keys
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); drillToAlbums(artist.name); }
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); drillToAlbums(artist.id, artist.name); }
     });
     wrap.appendChild(row);
   });
@@ -375,7 +384,7 @@ function renderAlbumList(albums) {
     const count      = album.track_count ?? 0;
     const yearPrefix = album.year        ? `${album.year} · ` : '';
     const artContent = album.has_image
-      ? `<img src="${API}/api/albums/${encodeURIComponent(album.title || '')}/image?artist=${encodeURIComponent(album.artist_name || '')}" alt="" loading="lazy">`
+      ? `<img src="${API}/api/albums/${encodeURIComponent(album.id)}/image" alt="" loading="lazy">`
       : noteSvg;
 
     const row = document.createElement('div');
@@ -392,12 +401,12 @@ function renderAlbumList(albums) {
       `<span class="row-chevron" aria-hidden="true">›</span>`;
     row.insertBefore(
       mkMoreBtn(`More actions for ${title}`,
-        btn => quickAddItems(btn, () => entityTracks(album.artist_name, album.title))),
+        btn => quickAddItems(btn, () => entityTracks(null, album.id, album.artist_name))),
       row.querySelector('.row-chevron'));
-    row.addEventListener('click', () => drillToTracks(album.artist_name, album.title));
+    row.addEventListener('click', () => drillToTracks(album.id, album.artist_id, album.artist_name, album.title));
     row.addEventListener('keydown', e => {
       if (e.target !== row) return;
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); drillToTracks(album.artist_name, album.title); }
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); drillToTracks(album.id, album.artist_id, album.artist_name, album.title); }
     });
     wrap.appendChild(row);
   });
@@ -692,9 +701,9 @@ function renderSearchResults(results, q) {
       row.innerHTML =
         `<div class="search-row__avatar">${esc((a.name || '?')[0].toUpperCase())}</div>` +
         `<div class="search-row__title">${esc(a.name || 'Unknown Artist')}</div>`;
-      row.addEventListener('click', () => { clearSearch(); drillToAlbums(a.name); });
+      row.addEventListener('click', () => { clearSearch(); drillToAlbums(a.id, a.name); });
       row.addEventListener('keydown', e => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); clearSearch(); drillToAlbums(a.name); }
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); clearSearch(); drillToAlbums(a.id, a.name); }
       });
       sec.appendChild(row);
     });
@@ -710,7 +719,7 @@ function renderSearchResults(results, q) {
     sec.innerHTML = '<h2 class="search-section__header">Albums</h2>';
     albums.forEach(a => {
       const artContent = a.has_image
-        ? `<img src="${API}/api/albums/${encodeURIComponent(a.title || '')}/image?artist=${encodeURIComponent(a.artist_name || '')}" alt="" loading="lazy">`
+        ? `<img src="${API}/api/albums/${encodeURIComponent(a.id)}/image" alt="" loading="lazy">`
         : noteSvg;
       const row = document.createElement('div');
       row.className = 'search-row search-row--album';
@@ -723,9 +732,9 @@ function renderSearchResults(results, q) {
           `<div class="search-row__title">${esc(a.title || 'Other')}</div>` +
           `<div class="search-row__subtitle">${esc(a.artist_name || 'Unknown Artist')}</div>` +
         `</div>`;
-      row.addEventListener('click', () => { clearSearch(); drillToTracks(a.artist_name, a.title); });
+      row.addEventListener('click', () => { clearSearch(); drillToTracks(a.id, a.artist_id, a.artist_name, a.title); });
       row.addEventListener('keydown', e => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); clearSearch(); drillToTracks(a.artist_name, a.title); }
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); clearSearch(); drillToTracks(a.id, a.artist_id, a.artist_name, a.title); }
       });
       sec.appendChild(row);
     });

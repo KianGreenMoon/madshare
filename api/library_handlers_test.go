@@ -500,6 +500,66 @@ func TestMergeAlbumsByID_HappyPath(t *testing.T) {
 	}
 }
 
+func TestMergeArtistsPreview_Handler(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	ctx := context.Background()
+	if _, err := db.ResolveArtistID(ctx, "Artist B"); err != nil {
+		t.Fatalf("seed B: %v", err)
+	}
+	if _, err := db.ResolveArtistID(ctx, "Artist A"); err != nil {
+		t.Fatalf("seed A: %v", err)
+	}
+	fromID, _, _ := db.LookupArtistID(ctx, "Artist B")
+	intoID, _, _ := db.LookupArtistID(ctx, "Artist A")
+
+	rr := httptest.NewRecorder()
+	h.mergeArtistsPreview(rr, mergeIDsReq(t, "/api/artists/merge/preview", fromID, intoID))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		OK        bool   `json:"ok"`
+		FromLabel string `json:"from_label"`
+		IntoLabel string `json:"into_label"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !body.OK || body.FromLabel != "Artist B" || body.IntoLabel != "Artist A" {
+		t.Errorf("body = %+v, want ok + Artist B→Artist A", body)
+	}
+	// Preview must not mutate: both artists still exist.
+	if _, found, _ := db.LookupArtistID(ctx, "Artist B"); !found {
+		t.Error("source artist merged away by a preview")
+	}
+}
+
+func TestMergeArtistsPreview_SelfRejected(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	id, err := db.ResolveArtistID(context.Background(), "Solo")
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	rr := httptest.NewRecorder()
+	h.mergeArtistsPreview(rr, mergeIDsReq(t, "/api/artists/merge/preview", id, id))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestMergeAlbumsPreview_NotFound(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	id, err := db.ResolveAlbumID(context.Background(), "Artist", "Real")
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	rr := httptest.NewRecorder()
+	h.mergeAlbumsPreview(rr, mergeIDsReq(t, "/api/albums/merge/preview", id, 99999))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
 // checkReq builds a POST /api/files/check request with a {hash} body.
 func checkReq(t *testing.T, hash string) *http.Request {
 	t.Helper()

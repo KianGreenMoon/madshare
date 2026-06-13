@@ -445,6 +445,141 @@ func (db *DB) MergeAlbums(ctx context.Context, fromID, intoID int64) error {
 	return nil
 }
 
+// MergeArtistsPreview reports what MergeArtists(fromID, intoID) would do without
+// mutating anything: how many tracks move, how many of from's albums move as-is
+// vs. collapse into a colliding target album (and which), and which side's cover
+// would win. It applies the exact collision/cover rules of MergeArtists so the
+// preview cannot drift from the act. Returns ErrMergeSelf / ErrEntityNotFound
+// identically.
+func (db *DB) MergeArtistsPreview(ctx context.Context, fromID, intoID int64) (*MergePreview, error) {
+	if fromID == intoID {
+		return nil, ErrMergeSelf
+	}
+	p := &MergePreview{FromID: fromID, IntoID: intoID}
+	if err := db.QueryRowContext(ctx, `SELECT name FROM artists WHERE id = ?`, fromID).Scan(&p.FromLabel); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrEntityNotFound
+	} else if err != nil {
+		return nil, fmt.Errorf("merge artists preview: source: %w", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT name FROM artists WHERE id = ?`, intoID).Scan(&p.IntoLabel); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrEntityNotFound
+	} else if err != nil {
+		return nil, fmt.Errorf("merge artists preview: target: %w", err)
+	}
+
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM media_metadata WHERE artist_id = ?`, fromID).Scan(&p.TracksMoved); err != nil {
+		return nil, fmt.Errorf("merge artists preview: tracks: %w", err)
+	}
+
+	// Colliding albums: from-albums whose norm_title already exists under into.
+	rows, err := db.QueryContext(ctx,
+		`SELECT bf.title
+		 FROM albums bf
+		 JOIN albums ba ON ba.artist_id = ? AND ba.norm_title = bf.norm_title
+		 WHERE bf.artist_id = ?
+		 ORDER BY LOWER(bf.title)`, intoID, fromID)
+	if err != nil {
+		return nil, fmt.Errorf("merge artists preview: collisions: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var title string
+		if err := rows.Scan(&title); err != nil {
+			return nil, fmt.Errorf("merge artists preview: scan collision: %w", err)
+		}
+		p.CollapsedTitles = append(p.CollapsedTitles, title)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("merge artists preview: collisions rows: %w", err)
+	}
+	p.AlbumsCollapsed = len(p.CollapsedTitles)
+
+	var totalAlbums int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM albums WHERE artist_id = ?`, fromID).Scan(&totalAlbums); err != nil {
+		return nil, fmt.Errorf("merge artists preview: albums: %w", err)
+	}
+	p.AlbumsMoved = totalAlbums - p.AlbumsCollapsed
+
+	p.SourceHasCover, err = db.exists(ctx, `SELECT 1 FROM artist_images WHERE artist_id = ?`, fromID)
+	if err != nil {
+		return nil, fmt.Errorf("merge artists preview: source cover: %w", err)
+	}
+	p.TargetHasCover, err = db.exists(ctx, `SELECT 1 FROM artist_images WHERE artist_id = ?`, intoID)
+	if err != nil {
+		return nil, fmt.Errorf("merge artists preview: target cover: %w", err)
+	}
+	return p, nil
+}
+
+// MergeAlbumsPreview reports what MergeAlbums(fromID, intoID) would do without
+// mutating anything: how many tracks repoint onto the target, which side's cover
+// would win, and whether the source album's artist would be left orphaned (no
+// other albums or tracks). Returns ErrMergeSelf / ErrEntityNotFound identically.
+func (db *DB) MergeAlbumsPreview(ctx context.Context, fromID, intoID int64) (*MergePreview, error) {
+	if fromID == intoID {
+		return nil, ErrMergeSelf
+	}
+	p := &MergePreview{FromID: fromID, IntoID: intoID}
+	var fromArtist int64
+	if err := db.QueryRowContext(ctx, `SELECT title, artist_id FROM albums WHERE id = ?`, fromID).Scan(&p.FromLabel, &fromArtist); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrEntityNotFound
+	} else if err != nil {
+		return nil, fmt.Errorf("merge albums preview: source: %w", err)
+	}
+	var intoArtist int64
+	if err := db.QueryRowContext(ctx, `SELECT title, artist_id FROM albums WHERE id = ?`, intoID).Scan(&p.IntoLabel, &intoArtist); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrEntityNotFound
+	} else if err != nil {
+		return nil, fmt.Errorf("merge albums preview: target: %w", err)
+	}
+
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM media_metadata WHERE album_id = ?`, fromID).Scan(&p.TracksMoved); err != nil {
+		return nil, fmt.Errorf("merge albums preview: tracks: %w", err)
+	}
+
+	var err error
+	p.SourceHasCover, err = db.exists(ctx, `SELECT 1 FROM album_images WHERE album_id = ?`, fromID)
+	if err != nil {
+		return nil, fmt.Errorf("merge albums preview: source cover: %w", err)
+	}
+	p.TargetHasCover, err = db.exists(ctx, `SELECT 1 FROM album_images WHERE album_id = ?`, intoID)
+	if err != nil {
+		return nil, fmt.Errorf("merge albums preview: target cover: %w", err)
+	}
+
+	// The source's artist is orphaned when it differs from the target's and, once
+	// from's album+tracks move away, it has no other album and no other track.
+	if fromArtist != intoArtist {
+		otherAlbums, err := db.exists(ctx, `SELECT 1 FROM albums WHERE artist_id = ? AND id <> ?`, fromArtist, fromID)
+		if err != nil {
+			return nil, fmt.Errorf("merge albums preview: other albums: %w", err)
+		}
+		otherTracks, err := db.exists(ctx, `SELECT 1 FROM media_metadata WHERE artist_id = ? AND album_id <> ?`, fromArtist, fromID)
+		if err != nil {
+			return nil, fmt.Errorf("merge albums preview: other tracks: %w", err)
+		}
+		p.SourceArtistOrphaned = !otherAlbums && !otherTracks
+	}
+	return p, nil
+}
+
+// exists runs a `SELECT 1 ...` existence probe, returning true when it yields a
+// row. Used by the merge-preview readers.
+func (db *DB) exists(ctx context.Context, query string, args ...any) (bool, error) {
+	var one int
+	err := db.QueryRowContext(ctx, query, args...).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // moveAlbumCoverIfAbsentTx copies the source album's cover row onto the target
 // album only when the target has none — the "move covers if the target lacks
 // one" rule shared by both merges. The source row is left as-is; it is removed

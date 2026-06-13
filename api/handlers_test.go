@@ -512,11 +512,11 @@ func (f *fakeRepo) ListArtists(_ context.Context) ([]*database.ArtistEntry, erro
 	return nil, nil
 }
 
-func (f *fakeRepo) ListAlbumsByArtist(_ context.Context, _ string) ([]*database.AlbumEntry, error) {
+func (f *fakeRepo) ListAlbumsByArtistID(_ context.Context, _ int64) ([]*database.AlbumEntry, error) {
 	return nil, nil
 }
 
-func (f *fakeRepo) ListTracksByAlbumArtist(_ context.Context, _, _ string) ([]*database.TrackEntry, error) {
+func (f *fakeRepo) ListTracksByAlbumID(_ context.Context, _ int64) ([]*database.TrackEntry, error) {
 	return nil, nil
 }
 
@@ -528,11 +528,11 @@ func (f *fakeRepo) ListArtistsGuest(_ context.Context) ([]*database.ArtistEntry,
 	return nil, nil
 }
 
-func (f *fakeRepo) ListAlbumsByArtistGuest(_ context.Context, _ string) ([]*database.AlbumEntry, error) {
+func (f *fakeRepo) ListAlbumsByArtistIDGuest(_ context.Context, _ int64) ([]*database.AlbumEntry, error) {
 	return nil, nil
 }
 
-func (f *fakeRepo) ListTracksByAlbumArtistGuest(_ context.Context, _, _ string) ([]*database.TrackEntry, error) {
+func (f *fakeRepo) ListTracksByAlbumIDGuest(_ context.Context, _ int64) ([]*database.TrackEntry, error) {
 	return nil, nil
 }
 
@@ -585,6 +585,14 @@ func (f *fakeRepo) MergeArtists(_ context.Context, _, _ int64) error {
 
 func (f *fakeRepo) MergeAlbums(_ context.Context, _, _ int64) error {
 	return nil
+}
+
+func (f *fakeRepo) MergeArtistsPreview(_ context.Context, fromID, intoID int64) (*database.MergePreview, error) {
+	return &database.MergePreview{FromID: fromID, IntoID: intoID}, nil
+}
+
+func (f *fakeRepo) MergeAlbumsPreview(_ context.Context, fromID, intoID int64) (*database.MergePreview, error) {
+	return &database.MergePreview{FromID: fromID, IntoID: intoID}, nil
 }
 
 func (f *fakeRepo) EnqueueImageJob(_ context.Context, _, _, _ string, _ int64) error {

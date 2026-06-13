@@ -191,15 +191,19 @@ const entityEditor = createTrackEditor({
 });
 
 // ── Entity view: artists → albums → tracks (with rename) ─────────────────────
-// Drives off the public browse endpoints (/api/artists, /api/albums?artist=,
-// /api/tracks?artist=&album=) so it reflects the resolved artist/album entities,
-// not raw per-file tags. Entities are addressed by current name (the rename
-// endpoints resolve by name); the empty-name bucket is shown but not renamable.
+// Drives off the public browse endpoints (/api/artists, /api/albums?artist_id=,
+// /api/tracks?album_id=) so it reflects the resolved artist/album entities, not
+// raw per-file tags. Browse + cover reads are id-addressed; the cover-upload and
+// rename endpoints still resolve by name (the display name rides in entityDrill);
+// the empty-name bucket is shown but not renamable.
 const entityPanel  = document.getElementById('entityPanel');
 const entityCrumb  = document.getElementById('entityCrumb');
 const entityFilter = document.getElementById('entityFilter');
 
-const entityDrill = { level: 'artists', artist: null, album: null };
+// Browse fetches address entities by id (artistId / albumId); artist / album
+// hold the display names, still used by the crumb and the name-addressed cover
+// upload + rename endpoints.
+const entityDrill = { level: 'artists', artist: null, album: null, artistId: null, albumId: null };
 let entItems       = [];   // raw items for the current level
 let entFilterText  = '';
 
@@ -210,20 +214,26 @@ async function entFetch(path) {
 }
 
 function loadEntityArtists() {
-  entityDrill.level = 'artists'; entityDrill.artist = null; entityDrill.album = null;
+  entityDrill.level = 'artists';
+  entityDrill.artist = null; entityDrill.artistId = null;
+  entityDrill.album = null; entityDrill.albumId = null;
   return loadEntityLevel(() => entFetch('/api/artists'));
 }
-function drillAlbums(artist) {
-  entityDrill.level = 'albums'; entityDrill.artist = artist; entityDrill.album = null;
-  return loadEntityLevel(() => entFetch(`/api/albums?artist=${encodeURIComponent(artist)}`));
+function drillAlbums(artistId, artistName) {
+  entityDrill.level = 'albums';
+  entityDrill.artist = artistName; entityDrill.artistId = artistId;
+  entityDrill.album = null; entityDrill.albumId = null;
+  return loadEntityLevel(() => entFetch(`/api/albums?artist_id=${encodeURIComponent(artistId)}`));
 }
-function drillTracks(artist, album) {
-  entityDrill.level = 'tracks'; entityDrill.artist = artist; entityDrill.album = album;
-  return loadEntityLevel(() => entFetch(`/api/tracks?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`));
+function drillTracks(albumId, artistId, artistName, albumTitle) {
+  entityDrill.level = 'tracks';
+  entityDrill.artist = artistName; entityDrill.artistId = artistId;
+  entityDrill.album = albumTitle; entityDrill.albumId = albumId;
+  return loadEntityLevel(() => entFetch(`/api/tracks?album_id=${encodeURIComponent(albumId)}`));
 }
 function reloadEntityLevel() {
-  if (entityDrill.level === 'albums') return drillAlbums(entityDrill.artist);
-  if (entityDrill.level === 'tracks') return drillTracks(entityDrill.artist, entityDrill.album);
+  if (entityDrill.level === 'albums') return drillAlbums(entityDrill.artistId, entityDrill.artist);
+  if (entityDrill.level === 'tracks') return drillTracks(entityDrill.albumId, entityDrill.artistId, entityDrill.artist, entityDrill.album);
   return loadEntityArtists();
 }
 
@@ -251,7 +261,7 @@ function renderCrumb() {
   if (entityDrill.artist !== null) {
     parts.push(crumbSep());
     const label = entityDrill.artist || '(no artist)';
-    parts.push(crumbNode(label, entityDrill.level === 'albums' ? null : () => drillAlbums(entityDrill.artist)));
+    parts.push(crumbNode(label, entityDrill.level === 'albums' ? null : () => drillAlbums(entityDrill.artistId, entityDrill.artist)));
   }
   if (entityDrill.album !== null) {
     parts.push(crumbSep());
@@ -287,9 +297,9 @@ function renderArtists(items) {
   entityPanel.replaceChildren(frag);
 }
 function artistRow(a) {
-  const thumb = coverThumb(a.has_image, artistImageURL(a.name));
+  const thumb = coverThumb(a.has_image, artistImageURL(a.id));
   const main = el('button', {
-    class: 'entity-main', onclick: () => drillAlbums(a.name),
+    class: 'entity-main', onclick: () => drillAlbums(a.id, a.name),
     'aria-label': `Open ${a.name || 'unnamed artist'}`,
   }, [
     el('span', { class: 'entity-name' + (a.name ? '' : ' is-fallback'), text: a.name || '(no artist)' }),
@@ -329,9 +339,9 @@ function renderAlbums(items) {
 function albumRow(a) {
   const meta = [trackCount(a.track_count)];
   if (a.year != null) meta.unshift(String(a.year));
-  const thumb = coverThumb(a.has_image, albumImageURL(entityDrill.artist, a.title));
+  const thumb = coverThumb(a.has_image, albumImageURL(a.id));
   const main = el('button', {
-    class: 'entity-main', onclick: () => drillTracks(entityDrill.artist, a.title),
+    class: 'entity-main', onclick: () => drillTracks(a.id, a.artist_id, a.artist_name ?? entityDrill.artist, a.title),
     'aria-label': `Open ${a.title || 'unnamed album'}`,
   }, [
     el('span', { class: 'entity-name' + (a.title ? '' : ' is-fallback'), text: a.title || '(no album)' }),
@@ -367,10 +377,8 @@ function albumRow(a) {
 // variants are generated async, but they only feed the responsive public UI).
 // coverBust busts the browser cache after an upload so a replaced cover shows.
 let coverBust = 0;
-function artistImageURL(name) { return `/api/artists/${encodeURIComponent(name)}/image`; }
-function albumImageURL(artist, title) {
-  return `/api/albums/${encodeURIComponent(title)}/image?artist=${encodeURIComponent(artist || '')}`;
-}
+function artistImageURL(id) { return `/api/artists/${encodeURIComponent(id)}/image`; }
+function albumImageURL(id)  { return `/api/albums/${encodeURIComponent(id)}/image`; }
 function coverThumb(hasImage, url) {
   if (!hasImage) return el('div', { class: 'entity-cover entity-cover--empty', 'aria-hidden': 'true', text: '♪' });
   const sep = url.includes('?') ? '&' : '?';
@@ -594,11 +602,51 @@ function openMerge(src) {
   mergeModal.classList.remove('hidden');
   mergeTarget.focus();
 }
-function updateMergeWarn() {
-  const c = mergeSource?.candidates.find(x => x.id === Number(mergeTarget.value));
-  mergeWarn.textContent = c
-    ? `Moves all tracks into “${c.label}”, then deletes “${mergeSource.label}”. This can’t be undone.`
-    : '';
+// updateMergeWarn shows a live dry-run of the selected merge: it posts to the
+// read-only preview endpoint and renders the real move/collapse/cover effects.
+// The static one-liner is shown immediately as a fallback while the preview
+// loads (and stays if it fails). A sequence guard discards out-of-order replies
+// from rapid target changes.
+let mergeWarnSeq = 0;
+async function updateMergeWarn() {
+  const intoId = Number(mergeTarget.value);
+  const c = mergeSource?.candidates.find(x => x.id === intoId);
+  if (!mergeSource || !c) { mergeWarn.textContent = ''; return; }
+
+  mergeWarn.textContent =
+    `Moves all tracks into “${c.label}”, then deletes “${mergeSource.label}”. This can’t be undone.`;
+
+  const seq = ++mergeWarnSeq;
+  const path = mergeSource.kind === 'artist' ? '/api/artists/merge/preview' : '/api/albums/merge/preview';
+  try {
+    const res = await fetch(`${API}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from_id: mergeSource.id, into_id: intoId }),
+    });
+    if (!res.ok) return;             // keep the static fallback
+    const p = await res.json();
+    if (seq !== mergeWarnSeq) return; // a newer target was picked
+    mergeWarn.textContent = describeMerge(mergeSource.kind, p);
+  } catch { /* network error — keep the static fallback */ }
+}
+
+// describeMerge turns a merge-preview payload into the modal's plain-text warning.
+function describeMerge(kind, p) {
+  const into = `“${p.into_label}”`;
+  const parts = [`Moves ${trackCount(p.tracks_moved)} into ${into}.`];
+  if (kind === 'artist' && p.albums_collapsed > 0) {
+    const titles = (p.collapsed_titles || []).map(t => `“${t}”`).join(', ');
+    parts.push(`${p.albums_collapsed} album${p.albums_collapsed === 1 ? '' : 's'} merge into ${into}’s existing ones${titles ? ` (${titles})` : ''}.`);
+  }
+  if (p.source_has_cover) {
+    parts.push(p.target_has_cover ? `${into} keeps its own cover.` : `Its cover becomes ${into}’s.`);
+  }
+  if (kind === 'album' && p.source_artist_orphaned) {
+    parts.push(`Its artist will be left empty.`);
+  }
+  parts.push(`Then deletes “${p.from_label}”. This can’t be undone.`);
+  return parts.join(' ');
 }
 function closeMerge() { mergeModal.classList.add('hidden'); mergeSource = null; }
 
@@ -686,17 +734,17 @@ document.addEventListener('keydown', e => {
 function resolveHashes(tracks) {
   return tracks.map(t => fileByURL.get(t.url)).filter(Boolean).map(f => f.hash);
 }
-async function albumTrackHashes(artist, title) {
+async function albumTrackHashes(albumId) {
   await ensureFilesLoaded();
-  const tracks = await entFetch(`/api/tracks?artist=${encodeURIComponent(artist || '')}&album=${encodeURIComponent(title || '')}`);
+  const tracks = await entFetch(`/api/tracks?album_id=${encodeURIComponent(albumId)}`);
   return resolveHashes(tracks);
 }
-async function artistTrackHashes(name) {
+async function artistTrackHashes(artistId) {
   await ensureFilesLoaded();
-  const albums = await entFetch(`/api/albums?artist=${encodeURIComponent(name || '')}`);
+  const albums = await entFetch(`/api/albums?artist_id=${encodeURIComponent(artistId)}`);
   const hashes = [];
   for (const al of albums) {
-    const tracks = await entFetch(`/api/tracks?artist=${encodeURIComponent(name || '')}&album=${encodeURIComponent(al.title || '')}`);
+    const tracks = await entFetch(`/api/tracks?album_id=${encodeURIComponent(al.id)}`);
     hashes.push(...resolveHashes(tracks));
   }
   return hashes;
@@ -737,7 +785,7 @@ async function deleteTrack(t) {
 }
 async function deleteAlbum(a) {
   let hashes;
-  try { hashes = await albumTrackHashes(entityDrill.artist, a.title); }
+  try { hashes = await albumTrackHashes(a.id); }
   catch (err) { toast(`Couldn’t load the album’s tracks: ${err.message}`, 'error'); return; }
   if (!hashes.length) { toast('No deletable files found for this album.', 'error'); return; }
   confirmDelete({
@@ -749,7 +797,7 @@ async function deleteAlbum(a) {
 }
 async function deleteArtist(a) {
   let hashes;
-  try { hashes = await artistTrackHashes(a.name); }
+  try { hashes = await artistTrackHashes(a.id); }
   catch (err) { toast(`Couldn’t load the artist’s tracks: ${err.message}`, 'error'); return; }
   if (!hashes.length) { toast('No deletable files found for this artist.', 'error'); return; }
   confirmDelete({

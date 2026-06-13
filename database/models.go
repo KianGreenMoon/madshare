@@ -150,11 +150,12 @@ type ArtistEntry struct {
 	HasImage   bool
 }
 
-// AlbumEntry is a row returned by ListAlbumsByArtist. ID is the stable albums.id
+// AlbumEntry is a row returned by ListAlbumsByArtistID. ID is the stable albums.id
 // surrogate. Title="" represents the "Other" bucket (tracks with no album, i.e.
 // the unknown-album entity under that artist).
 type AlbumEntry struct {
 	ID         int64
+	ArtistID   int64
 	ArtistName string
 	Title      string
 	Year       sql.NullInt64
@@ -162,7 +163,7 @@ type AlbumEntry struct {
 	HasImage   bool
 }
 
-// TrackEntry is a row returned by ListTracksByAlbumArtist.
+// TrackEntry is a row returned by ListTracksByAlbumID.
 type TrackEntry struct {
 	ID              int64
 	Title           string
@@ -170,6 +171,30 @@ type TrackEntry struct {
 	DurationSeconds sql.NullFloat64
 	ObjectKey       string
 	MimeType        string
+}
+
+// MergePreview is the read-only "what would this merge do" report returned by
+// MergeArtistsPreview / MergeAlbumsPreview. It computes the same moves the
+// corresponding destructive merge performs, without mutating anything. Fields
+// that don't apply to a given merge kind are left zero (see the per-field notes).
+type MergePreview struct {
+	FromID    int64  // source entity (merged away)
+	IntoID    int64  // target entity (absorbs the source)
+	FromLabel string // source display name/title
+	IntoLabel string // target display name/title
+
+	TracksMoved int // media_metadata rows repointed off the source
+
+	// Artist merge only:
+	AlbumsMoved     int      // source albums with no title collision, moved as-is
+	AlbumsCollapsed int      // source albums folding into an existing target album
+	CollapsedTitles []string // titles of the collapsing source albums
+
+	SourceHasCover bool // the source entity has a cover (moves only if target lacks one)
+	TargetHasCover bool // the target entity already has a cover (kept; source's ignored)
+
+	// Album merge only:
+	SourceArtistOrphaned bool // the source album's artist would be left with nothing
 }
 
 // SearchResults is returned by Search and SearchGuest.

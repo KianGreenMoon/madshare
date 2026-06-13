@@ -44,9 +44,13 @@ func TestGuestListings_RespectAccess(t *testing.T) {
 		t.Fatalf("guest artists = %v, want one artist with track_count 1", artists)
 	}
 
-	tracks, err := db.ListTracksByAlbumArtistGuest(ctx, "An Artist", "An Album")
+	albumID, found, err := db.LookupAlbumID(ctx, "An Artist", "An Album")
+	if err != nil || !found {
+		t.Fatalf("LookupAlbumID: found=%v err=%v", found, err)
+	}
+	tracks, err := db.ListTracksByAlbumIDGuest(ctx, albumID)
 	if err != nil {
-		t.Fatalf("ListTracksByAlbumArtistGuest: %v", err)
+		t.Fatalf("ListTracksByAlbumIDGuest: %v", err)
 	}
 	if len(tracks) != 1 {
 		t.Fatalf("guest tracks = %d, want 1", len(tracks))

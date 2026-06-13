@@ -28,24 +28,25 @@ type Repository interface {
 	// alphabetically. album_artist is preferred over artist for grouping.
 	ListArtists(ctx context.Context) ([]*ArtistEntry, error)
 
-	// ListAlbumsByArtist returns albums for the given artist. Pass an
-	// empty string to return albums across all artists. Tracks with no
-	// album are grouped under Title="".
-	ListAlbumsByArtist(ctx context.Context, artist string) ([]*AlbumEntry, error)
+	// ListAlbumsByArtistID returns the albums of one artist, addressed by its
+	// stable surrogate id. Tracks with no album are grouped under Title="" (the
+	// unknown-album entity).
+	ListAlbumsByArtistID(ctx context.Context, artistID int64) ([]*AlbumEntry, error)
 
-	// ListTracksByAlbumArtist returns tracks for the given artist+album
-	// combination. album="" selects the Other bucket (no album tag).
-	ListTracksByAlbumArtist(ctx context.Context, artist, album string) ([]*TrackEntry, error)
+	// ListTracksByAlbumID returns the tracks of one album, addressed by its
+	// stable surrogate id (which already pins the artist). The "Other" bucket is
+	// reached via the unknown-album entity's id.
+	ListTracksByAlbumID(ctx context.Context, albumID int64) ([]*TrackEntry, error)
 
-	// ListFilesGuest, ListArtistsGuest, ListAlbumsByArtistGuest, and
-	// ListTracksByAlbumArtistGuest are the guest counterparts of the listings
+	// ListFilesGuest, ListArtistsGuest, ListAlbumsByArtistIDGuest, and
+	// ListTracksByAlbumIDGuest are the guest counterparts of the listings
 	// above: they return only what an anonymous / capability-less request may
 	// reach (the guest-playable / license policy). Callers holding content.access
 	// use the unfiltered variants.
 	ListFilesGuest(ctx context.Context) ([]*FileListEntry, error)
 	ListArtistsGuest(ctx context.Context) ([]*ArtistEntry, error)
-	ListAlbumsByArtistGuest(ctx context.Context, artist string) ([]*AlbumEntry, error)
-	ListTracksByAlbumArtistGuest(ctx context.Context, artist, album string) ([]*TrackEntry, error)
+	ListAlbumsByArtistIDGuest(ctx context.Context, artistID int64) ([]*AlbumEntry, error)
+	ListTracksByAlbumIDGuest(ctx context.Context, albumID int64) ([]*TrackEntry, error)
 
 	// Search returns artists, albums, and tracks whose names/titles contain q
 	// (case-insensitive LIKE). q="" returns empty results immediately.
@@ -108,6 +109,12 @@ type Repository interface {
 	// target and its artist, cover moved if absent, source deleted). Returns
 	// ErrMergeSelf / ErrEntityNotFound.
 	MergeAlbums(ctx context.Context, fromID, intoID int64) error
+
+	// MergeArtistsPreview / MergeAlbumsPreview report what the corresponding
+	// merge would do (tracks moved, albums collapsed, cover/orphan effects)
+	// without mutating anything. Same ErrMergeSelf / ErrEntityNotFound contract.
+	MergeArtistsPreview(ctx context.Context, fromID, intoID int64) (*MergePreview, error)
+	MergeAlbumsPreview(ctx context.Context, fromID, intoID int64) (*MergePreview, error)
 
 	// SoftDeleteFileByHash marks the file as trashed (sets deleted_at). The
 	// blob and DB row are preserved. Returns the recorded filenames for audit.

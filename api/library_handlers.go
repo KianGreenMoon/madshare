@@ -73,15 +73,18 @@ func (h *handler) listArtists(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) listAlbums(w http.ResponseWriter, r *http.Request) {
-	artist := r.URL.Query().Get("artist")
+	artistID, ok := parsePositiveID(w, r.URL.Query().Get("artist_id"), "artist_id")
+	if !ok {
+		return
+	}
 	var (
 		albums []*database.AlbumEntry
 		err    error
 	)
 	if h.guestListing(r.Context()) {
-		albums, err = h.repo.ListAlbumsByArtistGuest(r.Context(), artist)
+		albums, err = h.repo.ListAlbumsByArtistIDGuest(r.Context(), artistID)
 	} else {
-		albums, err = h.repo.ListAlbumsByArtist(r.Context(), artist)
+		albums, err = h.repo.ListAlbumsByArtistID(r.Context(), artistID)
 	}
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
@@ -90,6 +93,7 @@ func (h *handler) listAlbums(w http.ResponseWriter, r *http.Request) {
 
 	type albumItem struct {
 		ID         int64  `json:"id"`
+		ArtistID   int64  `json:"artist_id"`
 		Title      string `json:"title"`
 		ArtistName string `json:"artist_name"`
 		Year       *int64 `json:"year"`
@@ -105,6 +109,7 @@ func (h *handler) listAlbums(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, albumItem{
 			ID:         a.ID,
+			ArtistID:   a.ArtistID,
 			Title:      a.Title,
 			ArtistName: a.ArtistName,
 			Year:       year,
@@ -116,17 +121,19 @@ func (h *handler) listAlbums(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) listTracks(w http.ResponseWriter, r *http.Request) {
-	artist := r.URL.Query().Get("artist")
-	album := r.URL.Query().Get("album")
+	albumID, ok := parsePositiveID(w, r.URL.Query().Get("album_id"), "album_id")
+	if !ok {
+		return
+	}
 
 	var (
 		tracks []*database.TrackEntry
 		err    error
 	)
 	if h.guestListing(r.Context()) {
-		tracks, err = h.repo.ListTracksByAlbumArtistGuest(r.Context(), artist, album)
+		tracks, err = h.repo.ListTracksByAlbumIDGuest(r.Context(), albumID)
 	} else {
-		tracks, err = h.repo.ListTracksByAlbumArtist(r.Context(), artist, album)
+		tracks, err = h.repo.ListTracksByAlbumID(r.Context(), albumID)
 	}
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
@@ -186,11 +193,14 @@ func (h *handler) search(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type artistItem struct {
+		ID         int64  `json:"id"`
 		Name       string `json:"name"`
 		TrackCount int    `json:"track_count"`
 		HasImage   bool   `json:"has_image"`
 	}
 	type albumItem struct {
+		ID         int64  `json:"id"`
+		ArtistID   int64  `json:"artist_id"`
 		Title      string `json:"title"`
 		ArtistName string `json:"artist_name"`
 		Year       *int64 `json:"year"`
@@ -219,14 +229,14 @@ func (h *handler) search(w http.ResponseWriter, r *http.Request) {
 		Tracks:  make([]trackItem, 0),
 	}
 	for _, a := range results.Artists {
-		resp.Artists = append(resp.Artists, artistItem{Name: a.Name, TrackCount: a.TrackCount, HasImage: a.HasImage})
+		resp.Artists = append(resp.Artists, artistItem{ID: a.ID, Name: a.Name, TrackCount: a.TrackCount, HasImage: a.HasImage})
 	}
 	for _, a := range results.Albums {
 		var year *int64
 		if a.Year.Valid {
 			year = &a.Year.Int64
 		}
-		resp.Albums = append(resp.Albums, albumItem{Title: a.Title, ArtistName: a.ArtistName, Year: year, TrackCount: a.TrackCount, HasImage: a.HasImage})
+		resp.Albums = append(resp.Albums, albumItem{ID: a.ID, ArtistID: a.ArtistID, Title: a.Title, ArtistName: a.ArtistName, Year: year, TrackCount: a.TrackCount, HasImage: a.HasImage})
 	}
 	for _, t := range results.Tracks {
 		var trackNum *int64
@@ -247,14 +257,8 @@ func (h *handler) search(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getArtistImage(w http.ResponseWriter, r *http.Request) {
-	artist := chi.URLParam(r, "artist")
-	artistID, found, err := h.repo.LookupArtistID(r.Context(), artist)
-	if err != nil {
-		http.Error(w, "storage error", http.StatusInternalServerError)
-		return
-	}
-	if !found {
-		http.NotFound(w, r)
+	artistID, ok := parsePositiveID(w, chi.URLParam(r, "artist_id"), "artist_id")
+	if !ok {
 		return
 	}
 	objectKey, mimeType, found, err := h.repo.GetArtistImage(r.Context(), artistID)
@@ -330,15 +334,8 @@ func (h *handler) coverReplaceBlocked(w http.ResponseWriter, r *http.Request, ha
 }
 
 func (h *handler) getAlbumImage(w http.ResponseWriter, r *http.Request) {
-	album := chi.URLParam(r, "album")
-	artist := r.URL.Query().Get("artist")
-	albumID, found, err := h.repo.LookupAlbumID(r.Context(), artist, album)
-	if err != nil {
-		http.Error(w, "storage error", http.StatusInternalServerError)
-		return
-	}
-	if !found {
-		http.NotFound(w, r)
+	albumID, ok := parsePositiveID(w, chi.URLParam(r, "album_id"), "album_id")
+	if !ok {
 		return
 	}
 	objectKey, mimeType, found, err := h.repo.GetAlbumImage(r.Context(), albumID)
@@ -367,17 +364,8 @@ type albumImageStatusResponse struct {
 }
 
 func (h *handler) getAlbumImageStatus(w http.ResponseWriter, r *http.Request) {
-	album := chi.URLParam(r, "album")
-	artist := r.URL.Query().Get("artist")
-	albumID, found, err := h.repo.LookupAlbumID(r.Context(), artist, album)
-	if err != nil {
-		http.Error(w, "storage error", http.StatusInternalServerError)
-		return
-	}
-	if !found {
-		// No such album entity → no cover; report the empty status (not a 404,
-		// the endpoint always returns a status body).
-		writeJSON(w, http.StatusOK, albumImageStatusResponse{Variants: map[string]string{}})
+	albumID, ok := parsePositiveID(w, chi.URLParam(r, "album_id"), "album_id")
+	if !ok {
 		return
 	}
 	baseKey, sourceExt, ready, found, err := h.repo.GetAlbumCoverStatus(r.Context(), albumID)
@@ -875,6 +863,76 @@ func (h *handler) mergeAlbumsByID(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit(r.Context(), "metadata.merge", fmt.Sprintf("album#%d", body.FromID), fmt.Sprintf("→ #%d", body.IntoID))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "from_id": body.FromID, "into_id": body.IntoID})
+}
+
+// mergePreviewResponse is the JSON body of the two merge-preview endpoints. It
+// mirrors database.MergePreview; unused fields for a given merge kind are zero.
+type mergePreviewResponse struct {
+	OK                   bool     `json:"ok"`
+	FromID               int64    `json:"from_id"`
+	IntoID               int64    `json:"into_id"`
+	FromLabel            string   `json:"from_label"`
+	IntoLabel            string   `json:"into_label"`
+	TracksMoved          int      `json:"tracks_moved"`
+	AlbumsMoved          int      `json:"albums_moved"`
+	AlbumsCollapsed      int      `json:"albums_collapsed"`
+	CollapsedTitles      []string `json:"collapsed_titles"`
+	SourceHasCover       bool     `json:"source_has_cover"`
+	TargetHasCover       bool     `json:"target_has_cover"`
+	SourceArtistOrphaned bool     `json:"source_artist_orphaned"`
+}
+
+func previewResponse(p *database.MergePreview) mergePreviewResponse {
+	titles := p.CollapsedTitles
+	if titles == nil {
+		titles = []string{}
+	}
+	return mergePreviewResponse{
+		OK: true, FromID: p.FromID, IntoID: p.IntoID,
+		FromLabel: p.FromLabel, IntoLabel: p.IntoLabel,
+		TracksMoved: p.TracksMoved, AlbumsMoved: p.AlbumsMoved,
+		AlbumsCollapsed: p.AlbumsCollapsed, CollapsedTitles: titles,
+		SourceHasCover: p.SourceHasCover, TargetHasCover: p.TargetHasCover,
+		SourceArtistOrphaned: p.SourceArtistOrphaned,
+	}
+}
+
+// writeMergePreview runs a preview reader and writes its JSON, mapping the shared
+// merge errors the same way the real merge endpoints do.
+func (h *handler) writeMergePreview(w http.ResponseWriter, p *database.MergePreview, err error) {
+	switch {
+	case errors.Is(err, database.ErrMergeSelf):
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "cannot merge an entity into itself"})
+	case errors.Is(err, database.ErrEntityNotFound):
+		http.Error(w, "entity not found", http.StatusNotFound)
+	case err != nil:
+		http.Error(w, "storage error", http.StatusInternalServerError)
+	default:
+		writeJSON(w, http.StatusOK, previewResponse(p))
+	}
+}
+
+// mergeArtistsPreview handles POST /api/artists/merge/preview with {from_id,
+// into_id}. Read-only: it reports what mergeArtistsByID would do. Gated on
+// metadata.edit (same as the real merge).
+func (h *handler) mergeArtistsPreview(w http.ResponseWriter, r *http.Request) {
+	body, ok := decodeMergeIDs(w, r)
+	if !ok {
+		return
+	}
+	p, err := h.repo.MergeArtistsPreview(r.Context(), body.FromID, body.IntoID)
+	h.writeMergePreview(w, p, err)
+}
+
+// mergeAlbumsPreview handles POST /api/albums/merge/preview with {from_id,
+// into_id}. Read-only counterpart of mergeAlbumsByID. Gated on metadata.edit.
+func (h *handler) mergeAlbumsPreview(w http.ResponseWriter, r *http.Request) {
+	body, ok := decodeMergeIDs(w, r)
+	if !ok {
+		return
+	}
+	p, err := h.repo.MergeAlbumsPreview(r.Context(), body.FromID, body.IntoID)
+	h.writeMergePreview(w, p, err)
 }
 
 func (h *handler) serveImageFile(w http.ResponseWriter, r *http.Request, objectKey, mimeType string) {

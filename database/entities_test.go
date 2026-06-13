@@ -596,7 +596,7 @@ func TestListArtists_ExcludesOrphanedByRename(t *testing.T) {
 	}
 }
 
-func TestListAlbumsByArtist_FiltersByNameReturnsEntityID(t *testing.T) {
+func TestListAlbumsByArtistID_FiltersByIDReturnsEntityID(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
@@ -604,10 +604,14 @@ func TestListAlbumsByArtist_FiltersByNameReturnsEntityID(t *testing.T) {
 	insertSearchFile(t, db, "p3dd0002", "T2", "Boards of Canada", "Geogaddi", "")
 	insertSearchFile(t, db, "p3dd0003", "T3", "Someone Else", "Other Album", "")
 
-	// Filter is by artist name (resolved to the entity), case-insensitively.
-	albums, err := db.ListAlbumsByArtist(ctx, "boards of canada")
+	// Filter is by the artist's stable surrogate id.
+	bocID, found, err := db.LookupArtistID(ctx, "boards of canada")
+	if err != nil || !found {
+		t.Fatalf("LookupArtistID: found=%v err=%v", found, err)
+	}
+	albums, err := db.ListAlbumsByArtistID(ctx, bocID)
 	if err != nil {
-		t.Fatalf("ListAlbumsByArtist: %v", err)
+		t.Fatalf("ListAlbumsByArtistID: %v", err)
 	}
 	if len(albums) != 1 {
 		t.Fatalf("albums = %d, want 1", len(albums))
@@ -622,13 +626,23 @@ func TestListAlbumsByArtist_FiltersByNameReturnsEntityID(t *testing.T) {
 		t.Errorf("artist_name = %q, want %q", albums[0].ArtistName, "Boards of Canada")
 	}
 
-	// Empty artist returns every album.
-	all, err := db.ListAlbumsByArtist(ctx, "")
+	// A different artist's id yields only that artist's albums.
+	otherID, _, _ := db.LookupArtistID(ctx, "Someone Else")
+	other, err := db.ListAlbumsByArtistID(ctx, otherID)
 	if err != nil {
-		t.Fatalf("ListAlbumsByArtist(all): %v", err)
+		t.Fatalf("ListAlbumsByArtistID(other): %v", err)
 	}
-	if len(all) != 2 {
-		t.Errorf("all albums = %d, want 2", len(all))
+	if len(other) != 1 || other[0].Title != "Other Album" {
+		t.Errorf("other artist albums = %+v, want 1 (Other Album)", other)
+	}
+
+	// An unknown id yields no albums (not an error).
+	none, err := db.ListAlbumsByArtistID(ctx, 999999)
+	if err != nil {
+		t.Fatalf("ListAlbumsByArtistID(unknown): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("unknown artist id albums = %d, want 0", len(none))
 	}
 }
 
@@ -892,7 +906,7 @@ func TestMergeArtists_NonCollidingMovesEverything(t *testing.T) {
 		t.Errorf("%d rows still reference the source artist", dangling)
 	}
 	// Target now owns both albums and both tracks.
-	albums, _ := db.ListAlbumsByArtist(ctx, "Artist A")
+	albums, _ := db.ListAlbumsByArtistID(ctx, aID)
 	if len(albums) != 2 {
 		t.Errorf("target albums = %d, want 2", len(albums))
 	}
@@ -918,7 +932,7 @@ func TestMergeArtists_CollidingAlbumsCollapse(t *testing.T) {
 	}
 
 	// Two albums under A: the collapsed "Greatest Hits" (2 tracks) + moved "Other".
-	albums, _ := db.ListAlbumsByArtist(ctx, "Artist A")
+	albums, _ := db.ListAlbumsByArtistID(ctx, aID)
 	if len(albums) != 2 {
 		t.Fatalf("target albums = %d, want 2 (collapsed + moved)", len(albums))
 	}
@@ -1054,5 +1068,116 @@ func TestMergeAlbums_SelfAndNotFound(t *testing.T) {
 	}
 	if err := db.MergeAlbums(ctx, id, 99999); !errors.Is(err, ErrEntityNotFound) {
 		t.Errorf("missing target = %v, want ErrEntityNotFound", err)
+	}
+}
+
+// ---- merge preview (read-only dry-run) --------------------------------------
+
+func TestMergeArtistsPreview_CountsAndNoMutation(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertSearchFile(t, db, "pv00a001", "TA", "Artist A", "Greatest Hits", "")
+	insertSearchFile(t, db, "pv00a002", "TB", "Artist B", "greatest hits", "") // collides (norm)
+	insertSearchFile(t, db, "pv00a003", "TC", "Artist B", "Solo", "")           // non-colliding
+	aID, _, _ := db.LookupArtistID(ctx, "Artist A")
+	bID, _, _ := db.LookupArtistID(ctx, "Artist B")
+	// Source has a cover, target does not → the cover would move.
+	if err := db.UpsertArtistImage(ctx, bID, "b.png", "image/png", 1); err != nil {
+		t.Fatalf("UpsertArtistImage: %v", err)
+	}
+
+	p, err := db.MergeArtistsPreview(ctx, bID, aID)
+	if err != nil {
+		t.Fatalf("MergeArtistsPreview: %v", err)
+	}
+	if p.TracksMoved != 2 {
+		t.Errorf("tracks_moved = %d, want 2", p.TracksMoved)
+	}
+	if p.AlbumsCollapsed != 1 || len(p.CollapsedTitles) != 1 || p.CollapsedTitles[0] != "greatest hits" {
+		t.Errorf("collapsed = %d %v, want 1 [greatest hits]", p.AlbumsCollapsed, p.CollapsedTitles)
+	}
+	if p.AlbumsMoved != 1 {
+		t.Errorf("albums_moved = %d, want 1 (Solo)", p.AlbumsMoved)
+	}
+	if !p.SourceHasCover || p.TargetHasCover {
+		t.Errorf("cover flags = src %v tgt %v, want src true tgt false", p.SourceHasCover, p.TargetHasCover)
+	}
+	if p.FromLabel != "Artist B" || p.IntoLabel != "Artist A" {
+		t.Errorf("labels = %q→%q, want Artist B→Artist A", p.FromLabel, p.IntoLabel)
+	}
+
+	// The preview must not have mutated anything.
+	if n := countRows(t, db, "artists"); n != 2 {
+		t.Errorf("artists after preview = %d, want 2 (no mutation)", n)
+	}
+	if _, found, _ := db.LookupArtistID(ctx, "Artist B"); !found {
+		t.Error("source artist gone after preview (mutated)")
+	}
+}
+
+func TestMergeArtistsPreview_SelfAndNotFound(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	insertSearchFile(t, db, "pv00b001", "T1", "Artist", "A", "")
+	id, _, _ := db.LookupArtistID(ctx, "Artist")
+
+	if _, err := db.MergeArtistsPreview(ctx, id, id); !errors.Is(err, ErrMergeSelf) {
+		t.Errorf("self = %v, want ErrMergeSelf", err)
+	}
+	if _, err := db.MergeArtistsPreview(ctx, id, 99999); !errors.Is(err, ErrEntityNotFound) {
+		t.Errorf("missing target = %v, want ErrEntityNotFound", err)
+	}
+}
+
+func TestMergeAlbumsPreview_OrphanAndNoMutation(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	// Artist B owns exactly one album; merging it cross-artist orphans B.
+	insertSearchFile(t, db, "pv00c001", "T1", "Artist B", "Old", "")
+	insertSearchFile(t, db, "pv00c002", "T2", "Artist A", "New", "")
+	fromID, _, _ := db.LookupAlbumID(ctx, "Artist B", "Old")
+	intoID, _, _ := db.LookupAlbumID(ctx, "Artist A", "New")
+
+	p, err := db.MergeAlbumsPreview(ctx, fromID, intoID)
+	if err != nil {
+		t.Fatalf("MergeAlbumsPreview: %v", err)
+	}
+	if p.TracksMoved != 1 {
+		t.Errorf("tracks_moved = %d, want 1", p.TracksMoved)
+	}
+	if !p.SourceArtistOrphaned {
+		t.Error("source_artist_orphaned = false, want true (Artist B left empty)")
+	}
+	if p.FromLabel != "Old" || p.IntoLabel != "New" {
+		t.Errorf("labels = %q→%q, want Old→New", p.FromLabel, p.IntoLabel)
+	}
+
+	// No mutation: the source album still exists with its track.
+	if _, found, _ := db.LookupAlbumID(ctx, "Artist B", "Old"); !found {
+		t.Error("source album gone after preview (mutated)")
+	}
+	if got := tracksUnderAlbum(t, db, fromID); got != 1 {
+		t.Errorf("source album tracks after preview = %d, want 1", got)
+	}
+}
+
+func TestMergeAlbumsPreview_SameArtistNotOrphaned(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	// Two albums of the same artist: merging one into the other never orphans.
+	insertSearchFile(t, db, "pv00d001", "T1", "Artist", "Old", "")
+	insertSearchFile(t, db, "pv00d002", "T2", "Artist", "New", "")
+	fromID, _, _ := db.LookupAlbumID(ctx, "Artist", "Old")
+	intoID, _, _ := db.LookupAlbumID(ctx, "Artist", "New")
+
+	p, err := db.MergeAlbumsPreview(ctx, fromID, intoID)
+	if err != nil {
+		t.Fatalf("MergeAlbumsPreview: %v", err)
+	}
+	if p.SourceArtistOrphaned {
+		t.Error("source_artist_orphaned = true, want false (same artist keeps the target album)")
 	}
 }

@@ -64,29 +64,28 @@ func (db *DB) listArtists(ctx context.Context, guest bool) ([]*ArtistEntry, erro
 	return out, nil
 }
 
-func (db *DB) ListAlbumsByArtist(ctx context.Context, artist string) ([]*AlbumEntry, error) {
-	return db.listAlbumsByArtist(ctx, artist, false)
+func (db *DB) ListAlbumsByArtistID(ctx context.Context, artistID int64) ([]*AlbumEntry, error) {
+	return db.listAlbumsByArtistID(ctx, artistID, false)
 }
 
-// ListAlbumsByArtistGuest is ListAlbumsByArtist restricted to albums an
+// ListAlbumsByArtistIDGuest is ListAlbumsByArtistID restricted to albums an
 // anonymous / capability-less request can reach at least one track of.
-func (db *DB) ListAlbumsByArtistGuest(ctx context.Context, artist string) ([]*AlbumEntry, error) {
-	return db.listAlbumsByArtist(ctx, artist, true)
+func (db *DB) ListAlbumsByArtistIDGuest(ctx context.Context, artistID int64) ([]*AlbumEntry, error) {
+	return db.listAlbumsByArtistID(ctx, artistID, true)
 }
 
-// listAlbumsByArtist is the shared album listing over the entity overlay. An
-// empty artist returns every album; otherwise it filters by the artist entity
-// resolved from the name (normalized the same way the resolver keys it). One row
-// per albums entity with at least one live (and, when guest, reachable) track.
-// The unknown-album bucket (norm_title = normalizeKey(DefaultAlbumTitle)) sorts
-// last, after the named albums, via the leading ORDER BY key.
-func (db *DB) listAlbumsByArtist(ctx context.Context, artist string, guest bool) ([]*AlbumEntry, error) {
-	where := "WHERE " + visibleFile + " AND (? = '' OR ar.norm_name = ?)"
+// listAlbumsByArtistID is the shared album listing over the entity overlay,
+// filtered to one artist by its stable surrogate id. One row per albums entity
+// with at least one live (and, when guest, reachable) track. The unknown-album
+// bucket (norm_title = normalizeKey(DefaultAlbumTitle)) sorts last, after the
+// named albums, via the leading ORDER BY key.
+func (db *DB) listAlbumsByArtistID(ctx context.Context, artistID int64, guest bool) ([]*AlbumEntry, error) {
+	where := "WHERE " + visibleFile + " AND al.artist_id = ?"
 	if guest {
 		where += " AND " + accessClause
 	}
 	q := `
-		SELECT al.id, al.title, ar.name AS artist_name, COALESCE(al.year, 0) AS year,
+		SELECT al.id, al.artist_id, al.title, ar.name AS artist_name, COALESCE(al.year, 0) AS year,
 		       COUNT(*) AS track_count,
 		       CASE WHEN ali.album_id IS NOT NULL THEN 1 ELSE 0 END AS has_image
 		FROM albums al
@@ -98,7 +97,7 @@ func (db *DB) listAlbumsByArtist(ctx context.Context, artist string, guest bool)
 		GROUP BY al.id
 		ORDER BY al.norm_title = ? ASC, year ASC, LOWER(al.title) ASC`
 
-	rows, err := db.QueryContext(ctx, q, artist, normalizeKey(artist), normalizeKey(DefaultAlbumTitle))
+	rows, err := db.QueryContext(ctx, q, artistID, normalizeKey(DefaultAlbumTitle))
 	if err != nil {
 		return nil, fmt.Errorf("list albums by artist: %w", err)
 	}
@@ -109,7 +108,7 @@ func (db *DB) listAlbumsByArtist(ctx context.Context, artist string, guest bool)
 		var e AlbumEntry
 		var year int64
 		var hasImage int
-		if err := rows.Scan(&e.ID, &e.Title, &e.ArtistName, &year, &e.TrackCount, &hasImage); err != nil {
+		if err := rows.Scan(&e.ID, &e.ArtistID, &e.Title, &e.ArtistName, &year, &e.TrackCount, &hasImage); err != nil {
 			return nil, fmt.Errorf("scan album entry: %w", err)
 		}
 		if year != 0 {
@@ -124,26 +123,22 @@ func (db *DB) listAlbumsByArtist(ctx context.Context, artist string, guest bool)
 	return out, nil
 }
 
-func (db *DB) ListTracksByAlbumArtist(ctx context.Context, artist, album string) ([]*TrackEntry, error) {
-	return db.listTracksByAlbumArtist(ctx, artist, album, false)
+func (db *DB) ListTracksByAlbumID(ctx context.Context, albumID int64) ([]*TrackEntry, error) {
+	return db.listTracksByAlbumID(ctx, albumID, false)
 }
 
-// ListTracksByAlbumArtistGuest is ListTracksByAlbumArtist restricted to the
-// tracks an anonymous / capability-less request may play/download.
-func (db *DB) ListTracksByAlbumArtistGuest(ctx context.Context, artist, album string) ([]*TrackEntry, error) {
-	return db.listTracksByAlbumArtist(ctx, artist, album, true)
+// ListTracksByAlbumIDGuest is ListTracksByAlbumID restricted to the tracks an
+// anonymous / capability-less request may play/download.
+func (db *DB) ListTracksByAlbumIDGuest(ctx context.Context, albumID int64) ([]*TrackEntry, error) {
+	return db.listTracksByAlbumID(ctx, albumID, true)
 }
 
-// listTracksByAlbumArtist is the shared track listing for a single (artist,
-// album) entity, identified by the normalized name keys. An empty artist returns
-// nil — the no-artist bucket is not browsable as a drill-down (unchanged
-// behavior). The empty-string album resolves to the unknown-album entity, so the
-// "Other" bucket's tracks remain reachable under a named artist.
-func (db *DB) listTracksByAlbumArtist(ctx context.Context, artist, album string, guest bool) ([]*TrackEntry, error) {
-	if artist == "" {
-		return nil, nil
-	}
-	where := "WHERE " + visibleFile + " AND ar.norm_name = ? AND al.norm_title = ?"
+// listTracksByAlbumID is the shared track listing for a single album entity,
+// identified by its stable surrogate id (which already pins the artist, since an
+// album belongs to one artist). The "Other" bucket's tracks are reached the same
+// way — by passing the unknown-album entity's id.
+func (db *DB) listTracksByAlbumID(ctx context.Context, albumID int64, guest bool) ([]*TrackEntry, error) {
+	where := "WHERE " + visibleFile + " AND m.album_id = ?"
 	if guest {
 		where += " AND " + accessClause
 	}
@@ -157,14 +152,12 @@ func (db *DB) listTracksByAlbumArtist(ctx context.Context, artist, album string,
 		    f.mime_type
 		FROM files f
 		JOIN media_metadata m ON m.file_id = f.id
-		JOIN albums al ON al.id = m.album_id
-		JOIN artists ar ON ar.id = al.artist_id
 		` + where + `
 		ORDER BY m.track_number ASC, LOWER(m.title) ASC`
 
-	rows, err := db.QueryContext(ctx, q, normalizeKey(artist), normalizeKey(album))
+	rows, err := db.QueryContext(ctx, q, albumID)
 	if err != nil {
-		return nil, fmt.Errorf("list tracks by album artist: %w", err)
+		return nil, fmt.Errorf("list tracks by album: %w", err)
 	}
 	defer rows.Close()
 
@@ -242,7 +235,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 		albumWhere += " AND " + accessClause
 	}
 	albumQ := `
-		SELECT al.id, al.title, ar.name AS artist_name, COALESCE(al.year, 0) AS year,
+		SELECT al.id, al.artist_id, al.title, ar.name AS artist_name, COALESCE(al.year, 0) AS year,
 		       COUNT(*) AS track_count,
 		       CASE WHEN ali.album_id IS NOT NULL THEN 1 ELSE 0 END AS has_image
 		FROM albums al
@@ -265,7 +258,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 		var e AlbumEntry
 		var year int64
 		var hasImage int
-		if err := alRows.Scan(&e.ID, &e.Title, &e.ArtistName, &year, &e.TrackCount, &hasImage); err != nil {
+		if err := alRows.Scan(&e.ID, &e.ArtistID, &e.Title, &e.ArtistName, &year, &e.TrackCount, &hasImage); err != nil {
 			return nil, fmt.Errorf("scan search album: %w", err)
 		}
 		if year != 0 {

@@ -109,13 +109,17 @@ func RegisterAPI(r chi.Router, d Deps) {
 	r.Get("/api/tracks", h.listTracks)
 	r.Get("/api/search", h.search)
 	r.Get("/api/ui/config", h.getUIConfig)
-	r.Get("/api/artists/{artist}/image", h.getArtistImage)
-	r.Get("/api/albums/{album}/image", h.getAlbumImage)
-	r.Get("/api/albums/{album}/image/status", h.getAlbumImageStatus)
+	// Cover reads are id-addressed (browse DTOs carry the entity id). chi routes
+	// these by-id GETs alongside the by-name POSTs below on the same path node.
+	r.Get("/api/artists/{artist_id}/image", h.getArtistImage)
+	r.Get("/api/albums/{album_id}/image", h.getAlbumImage)
+	r.Get("/api/albums/{album_id}/image/status", h.getAlbumImageStatus)
 	// Editing cover images and base tags is a metadata.edit capability.
 	// Cover uploads accept metadata.edit OR file.upload; the handlers add-only
 	// for file.upload-only callers (an uploader fills a missing cover; replacing
-	// stays a metadata.edit capability).
+	// stays a metadata.edit capability). The cover write path stays name-addressed
+	// because it resolve-or-creates the entity at upload time, before it has a
+	// browsable id (see docs/architecture/artist-album-model.md).
 	r.With(d.protectAny(auth.PermMetadataEdit, auth.PermFileUpload)).Post("/api/artists/{artist}/image", h.uploadArtistImage)
 	r.With(d.protectAny(auth.PermMetadataEdit, auth.PermFileUpload)).Post("/api/albums/{album}/image", h.uploadAlbumImage)
 	r.With(d.protect(auth.PermMetadataEdit)).Patch("/api/files/{hash}/metadata", h.updateFileMetadata)
@@ -132,6 +136,11 @@ func RegisterAPI(r chi.Router, d Deps) {
 	// UI. Distinct path depth from the name-addressed routes above, so no clash.
 	r.With(d.protect(auth.PermMetadataEdit)).Post("/api/artists/merge", h.mergeArtistsByID)
 	r.With(d.protect(auth.PermMetadataEdit)).Post("/api/albums/merge", h.mergeAlbumsByID)
+	// Read-only merge preview ("what would move / collapse / which cover wins"),
+	// same {from_id, into_id} body. A distinct path (not a dry_run flag) so a
+	// preview can never accidentally perform the merge.
+	r.With(d.protect(auth.PermMetadataEdit)).Post("/api/artists/merge/preview", h.mergeArtistsPreview)
+	r.With(d.protect(auth.PermMetadataEdit)).Post("/api/albums/merge/preview", h.mergeAlbumsPreview)
 
 	// Uploading new files requires file.upload. The route is registered here
 	// (rather than inside fileServer) so the gate wraps only the write path; the
