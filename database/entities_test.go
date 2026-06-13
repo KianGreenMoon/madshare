@@ -44,11 +44,11 @@ func TestResolveAlbumArtist_Idempotent(t *testing.T) {
 	ctx := context.Background()
 	tags := AlbumArtistTags{Artist: "Daft Punk", Album: "Discovery", Year: 2001}
 
-	a1, al1, err := db.resolveAlbumArtist(ctx, tags)
+	a1, _, al1, err := db.resolveAlbumArtist(ctx, tags)
 	if err != nil {
 		t.Fatalf("resolve 1: %v", err)
 	}
-	a2, al2, err := db.resolveAlbumArtist(ctx, tags)
+	a2, _, al2, err := db.resolveAlbumArtist(ctx, tags)
 	if err != nil {
 		t.Fatalf("resolve 2: %v", err)
 	}
@@ -67,11 +67,11 @@ func TestResolveAlbumArtist_CaseAndWhitespaceMerge(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
-	a1, _, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{Artist: "The Beatles", Album: "Abbey Road"})
+	a1, _, _, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{Artist: "The Beatles", Album: "Abbey Road"})
 	if err != nil {
 		t.Fatalf("resolve 1: %v", err)
 	}
-	a2, _, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{Artist: "  the   BEATLES ", Album: "abbey road"})
+	a2, _, _, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{Artist: "  the   BEATLES ", Album: "abbey road"})
 	if err != nil {
 		t.Fatalf("resolve 2: %v", err)
 	}
@@ -98,27 +98,36 @@ func TestResolveAlbumArtist_VariousArtists(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
-	// Two tracks, different performers, shared album_artist + album.
-	a1, al1, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{
+	// Two tracks, different performers, shared album_artist + album. The album-artist
+	// entity is the shared "Various Artists"; each track also gets its own performer
+	// entity from its `artist` tag.
+	aa1, p1, al1, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{
 		Artist: "Performer One", AlbumArtist: "Various Artists", Album: "Comp",
 	})
 	if err != nil {
 		t.Fatalf("resolve 1: %v", err)
 	}
-	a2, al2, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{
+	aa2, p2, al2, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{
 		Artist: "Performer Two", AlbumArtist: "Various Artists", Album: "Comp",
 	})
 	if err != nil {
 		t.Fatalf("resolve 2: %v", err)
 	}
-	if a1 != a2 {
-		t.Errorf("album_artist did not win: artist ids %d vs %d", a1, a2)
+	if aa1 != aa2 {
+		t.Errorf("album_artist did not win: album-artist ids %d vs %d", aa1, aa2)
 	}
 	if al1 != al2 {
 		t.Errorf("same album resolved to different ids: %d vs %d", al1, al2)
 	}
-	if n := countRows(t, db, "artists"); n != 1 {
-		t.Errorf("artists count = %d, want 1 (album_artist entity only)", n)
+	if p1 == p2 {
+		t.Errorf("distinct performers collapsed to one entity: %d", p1)
+	}
+	if p1 == aa1 || p2 == aa1 {
+		t.Errorf("performer entity equals the album-artist (Various Artists): p1=%d p2=%d aa=%d", p1, p2, aa1)
+	}
+	// Various Artists + Performer One + Performer Two = 3 distinct artists.
+	if n := countRows(t, db, "artists"); n != 3 {
+		t.Errorf("artists count = %d, want 3 (album-artist + two performers)", n)
 	}
 }
 
@@ -128,11 +137,11 @@ func TestResolveAlbumArtist_EmptyBuckets(t *testing.T) {
 
 	// Empty artist → unknown-artist bucket; empty album → unknown-album bucket
 	// under that artist. Two untagged tracks group together, not apart.
-	a1, al1, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{})
+	a1, _, al1, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{})
 	if err != nil {
 		t.Fatalf("resolve 1: %v", err)
 	}
-	a2, al2, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{})
+	a2, _, al2, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{})
 	if err != nil {
 		t.Fatalf("resolve 2: %v", err)
 	}
@@ -147,7 +156,7 @@ func TestResolveAlbumArtist_EmptyBuckets(t *testing.T) {
 	}
 
 	// A real album under the same (empty) artist is distinct from the unknown bucket.
-	_, al3, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{Album: "Has A Title"})
+	_, _, al3, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{Album: "Has A Title"})
 	if err != nil {
 		t.Fatalf("resolve 3: %v", err)
 	}
@@ -171,7 +180,7 @@ func TestResolveAlbumArtist_UnknownDefaults(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
-	aID, alID, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{})
+	aID, _, alID, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{})
 	if err != nil {
 		t.Fatalf("resolve untagged: %v", err)
 	}
@@ -191,7 +200,7 @@ func TestResolveAlbumArtist_UnknownDefaults(t *testing.T) {
 	}
 
 	// Literal "Unknown Artist" / "OTHER" normalize onto the same bucket keys.
-	aID2, alID2, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{Artist: "Unknown Artist", Album: "OTHER"})
+	aID2, _, alID2, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{Artist: "Unknown Artist", Album: "OTHER"})
 	if err != nil {
 		t.Fatalf("resolve literal: %v", err)
 	}
@@ -300,7 +309,7 @@ func TestResolveAlbumArtist_YearFillNotOverwritten(t *testing.T) {
 	ctx := context.Background()
 
 	// First track has no year → album.year stays NULL.
-	_, alID, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{Artist: "X", Album: "Y"})
+	_, _, alID, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{Artist: "X", Album: "Y"})
 	if err != nil {
 		t.Fatalf("resolve 1: %v", err)
 	}
@@ -309,7 +318,7 @@ func TestResolveAlbumArtist_YearFillNotOverwritten(t *testing.T) {
 	}
 
 	// Second track supplies a year → it fills in.
-	if _, _, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{Artist: "X", Album: "Y", Year: 1999}); err != nil {
+	if _, _, _, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{Artist: "X", Album: "Y", Year: 1999}); err != nil {
 		t.Fatalf("resolve 2: %v", err)
 	}
 	if got := albumYear(t, db, alID); !got.Valid || got.Int64 != 1999 {
@@ -317,7 +326,7 @@ func TestResolveAlbumArtist_YearFillNotOverwritten(t *testing.T) {
 	}
 
 	// Third track with a different year does NOT overwrite the representative one.
-	if _, _, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{Artist: "X", Album: "Y", Year: 2020}); err != nil {
+	if _, _, _, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{Artist: "X", Album: "Y", Year: 2020}); err != nil {
 		t.Fatalf("resolve 3: %v", err)
 	}
 	if got := albumYear(t, db, alID); !got.Valid || got.Int64 != 1999 {
@@ -337,7 +346,7 @@ func TestResolveAlbumArtist_Concurrent(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			defer wg.Done()
-			a, al, err := db.resolveAlbumArtist(ctx, tags)
+			a, _, al, err := db.resolveAlbumArtist(ctx, tags)
 			if err != nil {
 				t.Errorf("goroutine %d: %v", i, err)
 				return
@@ -374,7 +383,7 @@ func TestBackfillEntities(t *testing.T) {
 	insertSearchFile(t, db, "hashaaa4", "T4", "", "", "") // fully untagged
 
 	for _, stmt := range []string{
-		`UPDATE media_metadata SET artist_id = NULL, album_id = NULL`,
+		`UPDATE media_metadata SET album_artist_id = NULL, artist_id = NULL, album_id = NULL`,
 		`DELETE FROM albums`,
 		`DELETE FROM artists`,
 	} {
@@ -391,10 +400,10 @@ func TestBackfillEntities(t *testing.T) {
 		t.Errorf("backfilled = %d, want 4", n)
 	}
 
-	// Every row now has both FKs set.
+	// Every row now has all three FKs set.
 	var nullCount int
 	if err := db.QueryRow(
-		`SELECT COUNT(*) FROM media_metadata WHERE artist_id IS NULL OR album_id IS NULL`,
+		`SELECT COUNT(*) FROM media_metadata WHERE album_artist_id IS NULL OR artist_id IS NULL OR album_id IS NULL`,
 	).Scan(&nullCount); err != nil {
 		t.Fatalf("count nulls: %v", err)
 	}
@@ -402,10 +411,12 @@ func TestBackfillEntities(t *testing.T) {
 		t.Errorf("%d rows still have NULL FKs", nullCount)
 	}
 
-	// Two Discovery tracks share one album; Various Artists is its own artist;
-	// the untagged track is the empty bucket → 3 distinct artists, 3 albums.
-	if got := countRows(t, db, "artists"); got != 3 {
-		t.Errorf("artists count = %d, want 3", got)
+	// Two Discovery tracks share one (album-)artist + album; the comp track adds the
+	// "Various Artists" album-artist AND a distinct "Performer" performer entity; the
+	// untagged track is the unknown bucket → 4 distinct artists (Daft Punk, Various
+	// Artists, Performer, Unknown artist), 3 albums (Discovery, Comp, Other).
+	if got := countRows(t, db, "artists"); got != 4 {
+		t.Errorf("artists count = %d, want 4", got)
 	}
 	if got := countRows(t, db, "albums"); got != 3 {
 		t.Errorf("albums count = %d, want 3", got)
@@ -421,11 +432,12 @@ func TestBackfillEntities(t *testing.T) {
 	}
 }
 
-// fileEntityIDs reads the artist_id/album_id FKs of a file's metadata row.
+// fileEntityIDs reads the album_artist_id/album_id FKs of a file's metadata row
+// (the album-grouping artist, not the per-track performer).
 func fileEntityIDs(t *testing.T, db *DB, hash string) (artistID, albumID sql.NullInt64) {
 	t.Helper()
 	if err := db.QueryRow(
-		`SELECT m.artist_id, m.album_id FROM media_metadata m
+		`SELECT m.album_artist_id, m.album_id FROM media_metadata m
 		 JOIN files f ON f.id = m.file_id WHERE f.hash = ?`, hash,
 	).Scan(&artistID, &albumID); err != nil {
 		t.Fatalf("read entity ids for %s: %v", hash, err)
@@ -546,6 +558,82 @@ func TestListArtists_StableIDsAndEntityBacked(t *testing.T) {
 		if first[i].ID != second[i].ID {
 			t.Errorf("artist %q ID changed: %d → %d", first[i].Name, first[i].ID, second[i].ID)
 		}
+	}
+}
+
+// TestUnifiedArtistBrowse_PerformerOnCompilation exercises the track-performer
+// split: a "Various Artists" compilation surfaces its per-track performers as
+// first-class, browsable artists, and the artist drill-down unions the
+// album-artist and performer roles.
+func TestUnifiedArtistBrowse_PerformerOnCompilation(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	// A compilation: one album_artist ("Various Artists"), two different performers.
+	insertSearchFile(t, db, "uc000001", "Halo", "Beyonce", "Greatest Comp", "Various Artists")
+	insertSearchFile(t, db, "uc000002", "Hello", "Adele", "Greatest Comp", "Various Artists")
+	// Plus a normal single-artist album by Beyonce.
+	insertSearchFile(t, db, "uc000003", "Pretty Hurts", "Beyonce", "Beyonce", "")
+
+	beyID, _, _ := db.LookupArtistID(ctx, "Beyonce")
+	adeID, _, _ := db.LookupArtistID(ctx, "Adele")
+
+	// 1. ListArtists includes the album-artist VA AND both performers, each with its
+	//    union track_count (a row matching in both roles counts once).
+	artists, err := db.ListArtists(ctx)
+	if err != nil {
+		t.Fatalf("ListArtists: %v", err)
+	}
+	counts := map[string]int{}
+	for _, a := range artists {
+		counts[a.Name] = a.TrackCount
+	}
+	if counts["Various Artists"] != 2 { // album-artist of both comp tracks
+		t.Errorf("Various Artists track_count = %d, want 2", counts["Various Artists"])
+	}
+	if counts["Beyonce"] != 2 { // 1 comp performance + 1 own album track
+		t.Errorf("Beyonce track_count = %d, want 2", counts["Beyonce"])
+	}
+	if counts["Adele"] != 1 {
+		t.Errorf("Adele track_count = %d, want 1", counts["Adele"])
+	}
+
+	// 2. A pure performer's drill-down lists the comp it appears on, counting only
+	//    its own track on that album.
+	adeAlbums, err := db.ListAlbumsByArtistID(ctx, adeID)
+	if err != nil {
+		t.Fatalf("ListAlbumsByArtistID(Adele): %v", err)
+	}
+	if len(adeAlbums) != 1 || adeAlbums[0].Title != "Greatest Comp" || adeAlbums[0].TrackCount != 1 {
+		t.Errorf("Adele albums = %+v, want one 'Greatest Comp' with 1 track", adeAlbums)
+	}
+
+	// 3. An album-artist who also performs on a comp sees both: their own album
+	//    (full count) and the comp (their track only).
+	beyAlbums, err := db.ListAlbumsByArtistID(ctx, beyID)
+	if err != nil {
+		t.Fatalf("ListAlbumsByArtistID(Beyonce): %v", err)
+	}
+	beyCounts := map[string]int{}
+	for _, al := range beyAlbums {
+		beyCounts[al.Title] = al.TrackCount
+	}
+	if beyCounts["Beyonce"] != 1 || beyCounts["Greatest Comp"] != 1 {
+		t.Errorf("Beyonce albums = %+v, want Beyonce:1 and Greatest Comp:1", beyCounts)
+	}
+
+	// 4. The comp's track list shows each track's performer, not the album-artist.
+	compID, _, _ := db.LookupAlbumID(ctx, "Various Artists", "Greatest Comp")
+	tracks, err := db.ListTracksByAlbumID(ctx, compID)
+	if err != nil {
+		t.Fatalf("ListTracksByAlbumID: %v", err)
+	}
+	perf := map[string]string{}
+	for _, tr := range tracks {
+		perf[tr.Title] = tr.ArtistName
+	}
+	if perf["Halo"] != "Beyonce" || perf["Hello"] != "Adele" {
+		t.Errorf("performers = %v, want Halo:Beyonce Hello:Adele", perf)
 	}
 }
 
@@ -898,10 +986,11 @@ func TestMergeArtists_NonCollidingMovesEverything(t *testing.T) {
 	if n := countRows(t, db, "artists"); n != 1 {
 		t.Errorf("artists = %d, want 1", n)
 	}
-	// No track or album still references the deleted source.
+	// No track (in either role) or album still references the deleted source.
 	var dangling int
-	db.QueryRow(`SELECT COUNT(*) FROM media_metadata WHERE artist_id = ?`, bID).Scan(&dangling)
-	db.QueryRow(`SELECT COUNT(*) FROM albums WHERE artist_id = ?`, bID).Scan(&dangling)
+	db.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM media_metadata WHERE album_artist_id = ?1 OR artist_id = ?1)
+		+ (SELECT COUNT(*) FROM albums WHERE artist_id = ?1)`, bID).Scan(&dangling)
 	if dangling != 0 {
 		t.Errorf("%d rows still reference the source artist", dangling)
 	}
@@ -1032,7 +1121,7 @@ func TestMergeAlbums_SameArtist(t *testing.T) {
 	}
 }
 
-func TestMergeAlbums_CrossArtistRepointsArtist(t *testing.T) {
+func TestMergeAlbums_CrossArtistRepointsAlbumArtist(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
@@ -1040,20 +1129,27 @@ func TestMergeAlbums_CrossArtistRepointsArtist(t *testing.T) {
 	insertSearchFile(t, db, "mg00g002", "T2", "Artist Z", "Real", "")
 	yDup, _, _ := db.LookupAlbumID(ctx, "Artist Y", "Dup")
 	zReal, _, _ := db.LookupAlbumID(ctx, "Artist Z", "Real")
+	yID, _, _ := db.LookupArtistID(ctx, "Artist Y")
 	zID, _, _ := db.LookupArtistID(ctx, "Artist Z")
 
 	if err := db.MergeAlbums(ctx, yDup, zReal); err != nil {
 		t.Fatalf("MergeAlbums: %v", err)
 	}
-	// The moved track now points at the target album *and* its artist.
-	var aid, alid int64
+	// The moved track points at the target album and its album-artist (Z), but its
+	// performer (artist_id) stays Y — moving a track between albums never rewrites
+	// who performed it.
+	var albumArtistID, performerID, albumID int64
 	if err := db.QueryRow(
-		`SELECT m.artist_id, m.album_id FROM media_metadata m
-		 JOIN files f ON f.id = m.file_id WHERE f.hash = ?`, "mg00g001").Scan(&aid, &alid); err != nil {
+		`SELECT m.album_artist_id, m.artist_id, m.album_id FROM media_metadata m
+		 JOIN files f ON f.id = m.file_id WHERE f.hash = ?`, "mg00g001").
+		Scan(&albumArtistID, &performerID, &albumID); err != nil {
 		t.Fatalf("read moved track: %v", err)
 	}
-	if aid != zID || alid != zReal {
-		t.Errorf("moved track = (artist %d, album %d), want (%d, %d)", aid, alid, zID, zReal)
+	if albumArtistID != zID || albumID != zReal {
+		t.Errorf("moved track = (album-artist %d, album %d), want (%d, %d)", albumArtistID, albumID, zID, zReal)
+	}
+	if performerID != yID {
+		t.Errorf("performer = %d, want %d (unchanged by album merge)", performerID, yID)
 	}
 }
 
@@ -1134,8 +1230,11 @@ func TestMergeAlbumsPreview_OrphanAndNoMutation(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
-	// Artist B owns exactly one album; merging it cross-artist orphans B.
-	insertSearchFile(t, db, "pv00c001", "T1", "Artist B", "Old", "")
+	// Artist B is a pure album-artist label (its one track is performed by someone
+	// else), so it has no performer credit to survive the move. Merging its only
+	// album cross-artist therefore orphans B. (A single-artist album-artist would
+	// keep its performer credit and NOT orphan — see TestMergeAlbums_Cross... above.)
+	insertSearchFile(t, db, "pv00c001", "T1", "Performer C", "Old", "Artist B")
 	insertSearchFile(t, db, "pv00c002", "T2", "Artist A", "New", "")
 	fromID, _, _ := db.LookupAlbumID(ctx, "Artist B", "Old")
 	intoID, _, _ := db.LookupAlbumID(ctx, "Artist A", "New")

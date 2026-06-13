@@ -72,6 +72,24 @@ func effectiveArtist(albumArtist, artist string) string {
 	return DefaultArtistName
 }
 
+// effectiveTrackArtist is the track's *performer*, used for the per-track artist
+// (media_metadata.artist_id): the first of artist, then album_artist, whose
+// normalized key is non-empty, else DefaultArtistName. Note the precedence is the
+// reverse of effectiveArtist — the track's own `artist` tag wins, and it falls
+// back to the album artist when the track carries no performer tag — so for a
+// normal single-artist release it resolves to the same entity as effectiveArtist,
+// and only compilations (per-track performers under one album_artist) split out a
+// distinct performer entity. Never empty; the returned display string keeps the
+// original casing (trimmed). See docs/architecture/artist-album-model.md.
+func effectiveTrackArtist(artist, albumArtist string) string {
+	for _, s := range []string{artist, albumArtist} {
+		if normalizeKey(s) != "" {
+			return strings.TrimSpace(norm.NFC.String(s))
+		}
+	}
+	return DefaultArtistName
+}
+
 // effectiveAlbum is the album display title used for the album entity: the
 // track's album tag trimmed, or DefaultAlbumTitle ("Other") when the tag is
 // empty/whitespace. Mirrors effectiveArtist so untagged tracks land in one named
@@ -109,21 +127,21 @@ func tagsFromMeta(m *MediaMetadata) AlbumArtistTags {
 //     DefaultAlbumTitle ("Other") bucket under that artist.
 //   - year    = set on the album from the first track that supplies one; never
 //     overwritten once present.
-func (db *DB) resolveAlbumArtist(ctx context.Context, t AlbumArtistTags) (artistID, albumID int64, err error) {
+func (db *DB) resolveAlbumArtist(ctx context.Context, t AlbumArtistTags) (albumArtistID, trackArtistID, albumID int64, err error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, 0, fmt.Errorf("resolve album/artist: begin: %w", err)
+		return 0, 0, 0, fmt.Errorf("resolve album/artist: begin: %w", err)
 	}
 	defer tx.Rollback()
 
-	artistID, albumID, err = resolveAlbumArtistTx(ctx, tx, t)
+	albumArtistID, trackArtistID, albumID, err = resolveAlbumArtistTx(ctx, tx, t)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, 0, fmt.Errorf("resolve album/artist: commit: %w", err)
+		return 0, 0, 0, fmt.Errorf("resolve album/artist: commit: %w", err)
 	}
-	return artistID, albumID, nil
+	return albumArtistID, trackArtistID, albumID, nil
 }
 
 // resolveArtistTx get-or-creates the artist entity for a display name within an
@@ -164,7 +182,7 @@ func (db *DB) ResolveArtistID(ctx context.Context, name string) (int64, error) {
 // ResolveAlbumID get-or-creates the (artist, album) entity and returns the album
 // id. The artist is treated as the album artist. Used by cover-write paths.
 func (db *DB) ResolveAlbumID(ctx context.Context, artist, album string) (int64, error) {
-	_, albumID, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{AlbumArtist: artist, Album: album})
+	_, _, albumID, err := db.resolveAlbumArtist(ctx, AlbumArtistTags{AlbumArtist: artist, Album: album})
 	return albumID, err
 }
 
@@ -360,7 +378,7 @@ func (db *DB) MergeArtists(ctx context.Context, fromID, intoID int64) error {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE media_metadata SET album_id = ?, artist_id = ? WHERE album_id = ?`,
+			`UPDATE media_metadata SET album_id = ?, album_artist_id = ? WHERE album_id = ?`,
 			c.intoAlbum, intoID, c.fromAlbum); err != nil {
 			return fmt.Errorf("merge artists: repoint collapsed tracks: %w", err)
 		}
@@ -373,9 +391,15 @@ func (db *DB) MergeArtists(ctx context.Context, fromID, intoID int64) error {
 	if _, err := tx.ExecContext(ctx, `UPDATE albums SET artist_id = ? WHERE artist_id = ?`, intoID, fromID); err != nil {
 		return fmt.Errorf("merge artists: move albums: %w", err)
 	}
-	// 3. Repoint from's remaining tracks (those of the moved albums).
+	// 3. Repoint from's remaining tracks in BOTH artist roles: as album-artist (the
+	//    tracks of the moved albums) and as performer (e.g. from is a performer on a
+	//    compilation owned by another album-artist). Both refs must clear before the
+	//    RESTRICT delete of from below.
+	if _, err := tx.ExecContext(ctx, `UPDATE media_metadata SET album_artist_id = ? WHERE album_artist_id = ?`, intoID, fromID); err != nil {
+		return fmt.Errorf("merge artists: repoint album-artist tracks: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE media_metadata SET artist_id = ? WHERE artist_id = ?`, intoID, fromID); err != nil {
-		return fmt.Errorf("merge artists: repoint tracks: %w", err)
+		return fmt.Errorf("merge artists: repoint performer tracks: %w", err)
 	}
 	// 4. Give into from's artist cover only if into has none.
 	if _, err := tx.ExecContext(ctx,
@@ -399,10 +423,11 @@ func (db *DB) MergeArtists(ctx context.Context, fromID, intoID int64) error {
 }
 
 // MergeAlbums merges album `fromID` into `intoID`: from's tracks are repointed
-// onto into (and into's artist, keeping artist_id/album_id consistent), into
-// gains from's cover only if it has none, then from is deleted. Useful for two
-// albums of one artist that are really the same release under different titles.
-// Returns ErrMergeSelf / ErrEntityNotFound. from's artist, if left with nothing,
+// onto into (and into's album-artist, keeping album_artist_id/album_id
+// consistent — the per-track performer artist_id is left as-is), into gains
+// from's cover only if it has none, then from is deleted. Useful for two albums
+// of one artist that are really the same release under different titles. Returns
+// ErrMergeSelf / ErrEntityNotFound. from's album-artist, if left with nothing,
 // becomes a harmless orphan (invisible to listings).
 func (db *DB) MergeAlbums(ctx context.Context, fromID, intoID int64) error {
 	if fromID == intoID {
@@ -430,8 +455,11 @@ func (db *DB) MergeAlbums(ctx context.Context, fromID, intoID int64) error {
 	if err := moveAlbumCoverIfAbsentTx(ctx, tx, fromID, intoID); err != nil {
 		return err
 	}
+	// Repoint the tracks onto the target album and its album-artist. The performer
+	// (artist_id) is intentionally left untouched: moving a track to a different
+	// album never changes who performed it.
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE media_metadata SET album_id = ?, artist_id = ? WHERE album_id = ?`,
+		`UPDATE media_metadata SET album_id = ?, album_artist_id = ? WHERE album_id = ?`,
 		intoID, intoArtist, fromID); err != nil {
 		return fmt.Errorf("merge albums: repoint tracks: %w", err)
 	}
@@ -467,8 +495,11 @@ func (db *DB) MergeArtistsPreview(ctx context.Context, fromID, intoID int64) (*M
 		return nil, fmt.Errorf("merge artists preview: target: %w", err)
 	}
 
+	// A row is moved if from is its album-artist OR its performer; a single row
+	// matching in both roles counts once (it is one UPDATE target either way).
 	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM media_metadata WHERE artist_id = ?`, fromID).Scan(&p.TracksMoved); err != nil {
+		`SELECT COUNT(*) FROM media_metadata WHERE album_artist_id = ? OR artist_id = ?`,
+		fromID, fromID).Scan(&p.TracksMoved); err != nil {
 		return nil, fmt.Errorf("merge artists preview: tracks: %w", err)
 	}
 
@@ -550,18 +581,26 @@ func (db *DB) MergeAlbumsPreview(ctx context.Context, fromID, intoID int64) (*Me
 		return nil, fmt.Errorf("merge albums preview: target cover: %w", err)
 	}
 
-	// The source's artist is orphaned when it differs from the target's and, once
-	// from's album+tracks move away, it has no other album and no other track.
+	// The source's album-artist is orphaned (invisible to listings) when it differs
+	// from the target's and, once from's album moves away, nothing else references
+	// it in either role: no other album it owns, no album-artist credit on another
+	// album, and no performer credit anywhere. (Performer credits survive an album
+	// merge — the moved tracks keep their artist_id — so from's own tracks keep it
+	// alive when it also performs on them, the normal single-artist case.)
 	if fromArtist != intoArtist {
 		otherAlbums, err := db.exists(ctx, `SELECT 1 FROM albums WHERE artist_id = ? AND id <> ?`, fromArtist, fromID)
 		if err != nil {
 			return nil, fmt.Errorf("merge albums preview: other albums: %w", err)
 		}
-		otherTracks, err := db.exists(ctx, `SELECT 1 FROM media_metadata WHERE artist_id = ? AND album_id <> ?`, fromArtist, fromID)
+		otherAlbumArtistTracks, err := db.exists(ctx, `SELECT 1 FROM media_metadata WHERE album_artist_id = ? AND album_id <> ?`, fromArtist, fromID)
 		if err != nil {
-			return nil, fmt.Errorf("merge albums preview: other tracks: %w", err)
+			return nil, fmt.Errorf("merge albums preview: other album-artist tracks: %w", err)
 		}
-		p.SourceArtistOrphaned = !otherAlbums && !otherTracks
+		performerTracks, err := db.exists(ctx, `SELECT 1 FROM media_metadata WHERE artist_id = ?`, fromArtist)
+		if err != nil {
+			return nil, fmt.Errorf("merge albums preview: performer tracks: %w", err)
+		}
+		p.SourceArtistOrphaned = !otherAlbums && !otherAlbumArtistTracks && !performerTracks
 	}
 	return p, nil
 }
@@ -600,12 +639,20 @@ func moveAlbumCoverIfAbsentTx(ctx context.Context, tx *sql.Tx, fromAlbum, intoAl
 // callers already inside a transaction (InsertFile, UpdateFileMetadata). They
 // must resolve within their existing tx rather than open a nested one: the pool
 // is pinned to a single connection (Open), so a nested BeginTx would deadlock.
-func resolveAlbumArtistTx(ctx context.Context, tx *sql.Tx, t AlbumArtistTags) (artistID, albumID int64, err error) {
+func resolveAlbumArtistTx(ctx context.Context, tx *sql.Tx, t AlbumArtistTags) (albumArtistID, trackArtistID, albumID int64, err error) {
 	now := time.Now().Unix()
 
-	artistID, err = resolveArtistTx(ctx, tx, effectiveArtist(t.AlbumArtist, t.Artist), now)
+	albumArtistID, err = resolveArtistTx(ctx, tx, effectiveArtist(t.AlbumArtist, t.Artist), now)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
+	}
+	// The track's performer entity. For a normal release this resolves to the same
+	// row as albumArtistID (artist == album_artist); a compilation gets a distinct
+	// performer. Both go through the same artists dedup, so identical names share
+	// one row regardless of role.
+	trackArtistID, err = resolveArtistTx(ctx, tx, effectiveTrackArtist(t.Artist, t.AlbumArtist), now)
+	if err != nil {
+		return 0, 0, 0, err
 	}
 
 	var year any
@@ -618,12 +665,12 @@ func resolveAlbumArtistTx(ctx context.Context, tx *sql.Tx, t AlbumArtistTags) (a
 		 VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(artist_id, norm_title) DO UPDATE SET year = COALESCE(albums.year, excluded.year)
 		 RETURNING id`,
-		artistID, albumTitle, normalizeKey(albumTitle), year, now,
+		albumArtistID, albumTitle, normalizeKey(albumTitle), year, now,
 	).Scan(&albumID); err != nil {
-		return 0, 0, fmt.Errorf("resolve album: %w", err)
+		return 0, 0, 0, fmt.Errorf("resolve album: %w", err)
 	}
 
-	return artistID, albumID, nil
+	return albumArtistID, trackArtistID, albumID, nil
 }
 
 // BackfillEntities resolves and sets artist_id/album_id on every media_metadata
@@ -639,7 +686,7 @@ func (db *DB) BackfillEntities(ctx context.Context) (int, error) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT file_id, artist, album_artist, album, year
 		 FROM media_metadata
-		 WHERE artist_id IS NULL OR album_id IS NULL`)
+		 WHERE album_artist_id IS NULL OR artist_id IS NULL OR album_id IS NULL`)
 	if err != nil {
 		return 0, fmt.Errorf("backfill entities: query: %w", err)
 	}
@@ -677,13 +724,13 @@ func (db *DB) BackfillEntities(ctx context.Context) (int, error) {
 
 	var done int
 	for _, p := range todo {
-		artistID, albumID, err := db.resolveAlbumArtist(ctx, p.tags)
+		albumArtistID, trackArtistID, albumID, err := db.resolveAlbumArtist(ctx, p.tags)
 		if err != nil {
 			return done, fmt.Errorf("backfill entities: resolve file %d: %w", p.fileID, err)
 		}
 		if _, err := db.ExecContext(ctx,
-			`UPDATE media_metadata SET artist_id = ?, album_id = ? WHERE file_id = ?`,
-			artistID, albumID, p.fileID,
+			`UPDATE media_metadata SET album_artist_id = ?, artist_id = ?, album_id = ? WHERE file_id = ?`,
+			albumArtistID, trackArtistID, albumID, p.fileID,
 		); err != nil {
 			return done, fmt.Errorf("backfill entities: update file %d: %w", p.fileID, err)
 		}

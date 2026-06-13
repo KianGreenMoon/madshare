@@ -8,6 +8,8 @@ GET /api/search?q=<query>
 
 Returns artists, albums, and tracks whose names contain the query string as a case-insensitive substring. All three result sets are returned in a single response.
 
+An artist matches in **either role** — as an album-artist or as a track performer — so searching a performer who only appears on a compilation surfaces both the performer (in `artists`) and their tracks (in `tracks`). See `docs/architecture/artist-album-model.md`.
+
 ---
 
 ## Request
@@ -53,8 +55,8 @@ All three arrays are always present (never `null`). Each is capped at **50 resul
 
 | Field         | Type    | Description |
 |---------------|---------|-------------|
-| `name`        | string  | Artist name (resolved as `album_artist` → `artist`). |
-| `track_count` | integer | Number of accessible tracks by this artist. |
+| `name`        | string  | Artist name. Matched whether the entity is referenced as an album-artist or as a track performer. |
+| `track_count` | integer | Number of accessible tracks crediting this artist in either role. |
 | `has_image`   | boolean | Whether an artist image has been uploaded. |
 
 ### AlbumResult
@@ -100,7 +102,7 @@ All three arrays are always present (never `null`). Each is capped at **50 resul
 | `duration_seconds` | float\|null   | Duration in seconds, or `null` if not yet determined. |
 | `url`              | string        | Relative URL to stream or download the file. |
 | `mime_type`        | string        | Audio MIME type (e.g. `audio/flac`, `audio/mpeg`). |
-| `artist_name`      | string        | Artist name. |
+| `artist_name`      | string        | The track's **performer** (its `artist_id` entity), which may differ from the album-artist on a compilation. |
 | `album_title`      | string        | Album title, or empty string if untagged. |
 
 ---
@@ -120,9 +122,9 @@ All three arrays are always present (never `null`). Each is capped at **50 resul
 - **Case-insensitive:** matching is performed with `LOWER(…) LIKE LOWER(?)`.
 - **Literal wildcards:** `%` and `_` in the query are treated as ordinary characters, not SQL LIKE metacharacters.
 - **Match fields:**
-  - Artists — matched on the resolved artist name (`album_artist` → `artist`).
+  - Artists — matched on the artist name, in either role (album-artist or performer).
   - Albums — matched on the album title.
-  - Tracks — matched on the track title (falls back to filename if untagged).
+  - Tracks — matched on the track title **or** the performer name, so an artist query returns their tracks even on a "Various Artists" compilation.
 - **Soft-deleted files** are excluded from all result sets.
 - **Result order:** alphabetical by name/title within each set.
 

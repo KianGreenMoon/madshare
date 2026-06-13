@@ -163,10 +163,13 @@ type AlbumEntry struct {
 	HasImage   bool
 }
 
-// TrackEntry is a row returned by ListTracksByAlbumID.
+// TrackEntry is a row returned by ListTracksByAlbumID. ArtistName is the track's
+// performer (its media_metadata.artist_id entity), which may differ from the
+// album's album-artist on a compilation; "" when unresolved.
 type TrackEntry struct {
 	ID              int64
 	Title           string
+	ArtistName      string
 	TrackNumber     sql.NullInt64
 	DurationSeconds sql.NullFloat64
 	ObjectKey       string
@@ -204,8 +207,9 @@ type SearchResults struct {
 	Tracks  []*SearchTrackEntry
 }
 
-// SearchTrackEntry is like TrackEntry but also carries the artist and album
-// so the frontend can navigate to the right drill-down level.
+// SearchTrackEntry is like TrackEntry but also carries the album title for
+// context. ArtistName is the track's performer (its artist_id entity), matching
+// the track list; AlbumTitle lets the frontend navigate to the right drill level.
 type SearchTrackEntry struct {
 	ID              int64
 	Title           string

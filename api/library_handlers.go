@@ -143,6 +143,7 @@ func (h *handler) listTracks(w http.ResponseWriter, r *http.Request) {
 	type trackItem struct {
 		ID          int64    `json:"id"`
 		Title       string   `json:"title"`
+		ArtistName  string   `json:"artist_name"`
 		TrackNumber *int64   `json:"track_number"`
 		Duration    *float64 `json:"duration_seconds"`
 		URL         string   `json:"url"`
@@ -162,6 +163,7 @@ func (h *handler) listTracks(w http.ResponseWriter, r *http.Request) {
 		items = append(items, trackItem{
 			ID:          t.ID,
 			Title:       t.Title,
+			ArtistName:  t.ArtistName,
 			TrackNumber: trackNum,
 			Duration:    dur,
 			URL:         "/files/" + t.ObjectKey,

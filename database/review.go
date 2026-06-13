@@ -15,7 +15,7 @@ import (
 // depends on. Appended to each staging query's FROM (after the media_metadata
 // join) so the shared column list can reference aimg/alimg.
 const reviewJoins = `
-	LEFT JOIN artist_images aimg ON aimg.artist_id = m.artist_id
+	LEFT JOIN artist_images aimg ON aimg.artist_id = m.album_artist_id
 	LEFT JOIN album_images  alimg ON alimg.album_id  = m.album_id`
 
 const reviewEntryColumns = `

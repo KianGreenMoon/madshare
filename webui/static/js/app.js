@@ -181,7 +181,8 @@ function trackObjFromApi(t, artistName, durCache) {
     url,
     hash:   t.url.split('/')[2] || null,
     title:  t.title || 'Unknown',
-    artist: artistName || '',
+    // Per-track performer when present; else the album/artist passed by the caller.
+    artist: t.artist_name || artistName || '',
     dur:    t.duration_seconds ? fmtTime(t.duration_seconds) : (durCache[url] || '—'),
   };
 }
@@ -441,7 +442,9 @@ function renderTrackList(tracks) {
       // (t.url is /files/<hash>/<filename>).
       hash:   t.url.split('/')[2] || null,
       title:  t.title  || t.filename || 'Unknown',
-      artist: drill.artist || '',
+      // Per-track performer (matches the playlists page); falls back to the
+      // album-grouping artist from the breadcrumb when a row has no performer.
+      artist: t.artist_name || drill.artist || '',
       dur,
     });
   });
@@ -466,7 +469,7 @@ function renderTrackList(tracks) {
       `</span>` +
       `<div class="track-info">` +
         `<div class="track-title">${esc(track.title)}</div>` +
-        `<div class="track-meta">${esc(drill.artist || '')}</div>` +
+        `<div class="track-meta">${esc(track.artist)}</div>` +
       `</div>` +
       `<span class="track-dur">${esc(track.dur)}</span>`;
     const durEl = row.querySelector('.track-dur');

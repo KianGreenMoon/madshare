@@ -115,6 +115,36 @@ func TestSearch_MatchesArtistBySubstring(t *testing.T) {
 	}
 }
 
+func TestSearch_MatchesPerformerOnCompilation(t *testing.T) {
+	db := openMem(t)
+	// A comp where the performer differs from the album-artist ("Various Artists").
+	insertSearchFile(t, db, hash64("spc1"), "Halo", "Beyonce", "Greatest Comp", "Various Artists")
+	insertSearchFile(t, db, hash64("spc2"), "Hello", "Adele", "Greatest Comp", "Various Artists")
+
+	res, err := db.Search(context.Background(), "Beyonce")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// The performer is a real entity → it appears in the Artists section.
+	foundArtist := false
+	for _, a := range res.Artists {
+		if a.Name == "Beyonce" {
+			foundArtist = true
+		}
+	}
+	if !foundArtist {
+		t.Errorf("performer Beyonce not in artist results: %+v", res.Artists)
+	}
+	// Her track surfaces even though the album-artist is "Various Artists", and the
+	// returned artist_name is the performer (matching the track list).
+	if len(res.Tracks) != 1 {
+		t.Fatalf("tracks = %d, want 1", len(res.Tracks))
+	}
+	if res.Tracks[0].Title != "Halo" || res.Tracks[0].ArtistName != "Beyonce" {
+		t.Errorf("track = (%q, %q), want (Halo, Beyonce)", res.Tracks[0].Title, res.Tracks[0].ArtistName)
+	}
+}
+
 func TestSearch_PercentSign_TreatedAsLiteral(t *testing.T) {
 	// A query of "%" must NOT match all files — it is a LIKE metachar that should
 	// be escaped to "\%", which matches only files with "%" in their tags.

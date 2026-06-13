@@ -98,8 +98,10 @@ func (db *DB) InsertFile(ctx context.Context, f *File, upload *FileUpload, meta 
 			meta.Title = titleFromFilename(fname)
 		}
 		// Resolve the artist/album entities inline so a fresh upload carries its
-		// FKs immediately, without waiting for the startup backfill.
-		artistID, albumID, err := resolveAlbumArtistTx(ctx, tx, tagsFromMeta(meta))
+		// FKs immediately, without waiting for the startup backfill. Both the
+		// album-grouping artist (album_artist_id) and the track performer (artist_id)
+		// are resolved; for a normal release they are the same entity.
+		albumArtistID, trackArtistID, albumID, err := resolveAlbumArtistTx(ctx, tx, tagsFromMeta(meta))
 		if err != nil {
 			return fmt.Errorf("resolve entities: %w", err)
 		}
@@ -108,13 +110,13 @@ func (db *DB) InsertFile(ctx context.Context, f *File, upload *FileUpload, meta 
 				file_id, title, artist, album, album_artist, genre, year,
 				track_number, track_total, disc_number, composer, comment,
 				duration_seconds, bitrate, sample_rate, channels, codec,
-				tag_format, extracted_at, artist_id, album_id
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				tag_format, extracted_at, album_artist_id, artist_id, album_id
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			meta.FileID, meta.Title, meta.Artist, meta.Album, meta.AlbumArtist,
 			meta.Genre, meta.Year, meta.TrackNumber, meta.TrackTotal, meta.DiscNumber,
 			meta.Composer, meta.Comment, meta.DurationSeconds, meta.Bitrate,
 			meta.SampleRate, meta.Channels, meta.Codec, meta.TagFormat, meta.ExtractedAt,
-			artistID, albumID,
+			albumArtistID, trackArtistID, albumID,
 		); err != nil {
 			return fmt.Errorf("insert media_metadata: %w", err)
 		}
@@ -160,7 +162,7 @@ func (db *DB) listFiles(ctx context.Context, where string, args ...any) ([]*File
 			CASE WHEN alimg.album_id  IS NOT NULL THEN 1 ELSE 0 END AS album_has_image
 		FROM files f
 		LEFT JOIN media_metadata m ON m.file_id = f.id
-		LEFT JOIN artist_images aimg ON aimg.artist_id = m.artist_id
+		LEFT JOIN artist_images aimg ON aimg.artist_id = m.album_artist_id
 		LEFT JOIN album_images  alimg ON alimg.album_id  = m.album_id`
 	if where != "" {
 		q += "\n\t\tWHERE " + visibleFile + " AND " + where
@@ -331,7 +333,7 @@ func (db *DB) ListTrashedFiles(ctx context.Context) ([]*FileListEntry, error) {
 			CASE WHEN alimg.album_id  IS NOT NULL THEN 1 ELSE 0 END AS album_has_image
 		FROM files f
 		LEFT JOIN media_metadata m ON m.file_id = f.id
-		LEFT JOIN artist_images aimg ON aimg.artist_id = m.artist_id
+		LEFT JOIN artist_images aimg ON aimg.artist_id = m.album_artist_id
 		LEFT JOIN album_images  alimg ON alimg.album_id  = m.album_id
 		WHERE f.deleted_at IS NOT NULL
 		ORDER BY f.deleted_at DESC`

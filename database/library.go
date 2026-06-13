@@ -20,9 +20,12 @@ func (db *DB) ListArtistsGuest(ctx context.Context) ([]*ArtistEntry, error) {
 }
 
 // listArtists is the shared artist listing over the entity overlay. One row per
-// artists entity that has at least one live (and, when guest, reachable) track;
-// the INNER JOIN on media_metadata means orphan entities with no tracks (e.g.
-// left behind by a rename) never appear. has_image joins the now id-keyed
+// artists entity that has at least one live (and, when guest, reachable) track in
+// EITHER role — as the track's album-artist (album_artist_id) or its performer
+// (artist_id) — so a performer who only appears on compilations is listed too. A
+// row matching in both roles still joins once, so track_count is correct. The
+// INNER JOIN on media_metadata means orphan entities with no tracks (e.g. left
+// behind by a rename) never appear. has_image joins the now id-keyed
 // artist_images directly on artist_id (exact). The unknown-artist bucket
 // (norm_name = normalizeKey(DefaultArtistName)) sorts last, after the named
 // artists, via the leading ORDER BY key.
@@ -35,7 +38,7 @@ func (db *DB) listArtists(ctx context.Context, guest bool) ([]*ArtistEntry, erro
 		SELECT a.id, a.name, COUNT(*) AS track_count,
 		       CASE WHEN ai.artist_id IS NOT NULL THEN 1 ELSE 0 END AS has_image
 		FROM artists a
-		JOIN media_metadata m ON m.artist_id = a.id
+		JOIN media_metadata m ON (m.album_artist_id = a.id OR m.artist_id = a.id)
 		JOIN files f ON f.id = m.file_id
 		LEFT JOIN artist_images ai ON ai.artist_id = a.id
 		` + where + `
@@ -75,12 +78,16 @@ func (db *DB) ListAlbumsByArtistIDGuest(ctx context.Context, artistID int64) ([]
 }
 
 // listAlbumsByArtistID is the shared album listing over the entity overlay,
-// filtered to one artist by its stable surrogate id. One row per albums entity
-// with at least one live (and, when guest, reachable) track. The unknown-album
-// bucket (norm_title = normalizeKey(DefaultAlbumTitle)) sorts last, after the
-// named albums, via the leading ORDER BY key.
+// filtered to one artist by its stable surrogate id — in EITHER role. The artist
+// filter lives in the media_metadata join condition (al.artist_id = ? OR
+// m.artist_id = ?), which yields a useful hybrid track_count: an album the artist
+// owns as album-artist counts all its tracks (every row matches the first branch),
+// while a compilation the artist only performs on counts just their tracks on it
+// (only the performer rows match). So a pure performer's drill-down lists the
+// comps / features they appear on. The unknown-album bucket (norm_title =
+// normalizeKey(DefaultAlbumTitle)) sorts last via the leading ORDER BY key.
 func (db *DB) listAlbumsByArtistID(ctx context.Context, artistID int64, guest bool) ([]*AlbumEntry, error) {
-	where := "WHERE " + visibleFile + " AND al.artist_id = ?"
+	where := "WHERE " + visibleFile
 	if guest {
 		where += " AND " + accessClause
 	}
@@ -90,14 +97,14 @@ func (db *DB) listAlbumsByArtistID(ctx context.Context, artistID int64, guest bo
 		       CASE WHEN ali.album_id IS NOT NULL THEN 1 ELSE 0 END AS has_image
 		FROM albums al
 		JOIN artists ar ON ar.id = al.artist_id
-		JOIN media_metadata m ON m.album_id = al.id
+		JOIN media_metadata m ON m.album_id = al.id AND (al.artist_id = ? OR m.artist_id = ?)
 		JOIN files f ON f.id = m.file_id
 		LEFT JOIN album_images ali ON ali.album_id = al.id
 		` + where + `
 		GROUP BY al.id
 		ORDER BY al.norm_title = ? ASC, year ASC, LOWER(al.title) ASC`
 
-	rows, err := db.QueryContext(ctx, q, artistID, normalizeKey(DefaultAlbumTitle))
+	rows, err := db.QueryContext(ctx, q, artistID, artistID, normalizeKey(DefaultAlbumTitle))
 	if err != nil {
 		return nil, fmt.Errorf("list albums by artist: %w", err)
 	}
@@ -134,9 +141,11 @@ func (db *DB) ListTracksByAlbumIDGuest(ctx context.Context, albumID int64) ([]*T
 }
 
 // listTracksByAlbumID is the shared track listing for a single album entity,
-// identified by its stable surrogate id (which already pins the artist, since an
-// album belongs to one artist). The "Other" bucket's tracks are reached the same
-// way — by passing the unknown-album entity's id.
+// identified by its stable surrogate id (which already pins the album-artist,
+// since an album belongs to one artist). The "Other" bucket's tracks are reached
+// the same way — by passing the unknown-album entity's id. Each row carries the
+// track's *performer* name (its artist_id entity), which differs from the
+// album-artist on a compilation; matches the playlists page's per-track artist.
 func (db *DB) listTracksByAlbumID(ctx context.Context, albumID int64, guest bool) ([]*TrackEntry, error) {
 	where := "WHERE " + visibleFile + " AND m.album_id = ?"
 	if guest {
@@ -146,12 +155,14 @@ func (db *DB) listTracksByAlbumID(ctx context.Context, albumID int64, guest bool
 		SELECT
 		    f.id,
 		    m.title,
+		    COALESCE(par.name, '') AS artist_name,
 		    m.track_number,
 		    m.duration_seconds,
 		    f.object_key,
 		    f.mime_type
 		FROM files f
 		JOIN media_metadata m ON m.file_id = f.id
+		LEFT JOIN artists par ON par.id = m.artist_id
 		` + where + `
 		ORDER BY m.track_number ASC, LOWER(m.title) ASC`
 
@@ -164,7 +175,7 @@ func (db *DB) listTracksByAlbumID(ctx context.Context, albumID int64, guest bool
 	var out []*TrackEntry
 	for rows.Next() {
 		var e TrackEntry
-		if err := rows.Scan(&e.ID, &e.Title, &e.TrackNumber, &e.DurationSeconds, &e.ObjectKey, &e.MimeType); err != nil {
+		if err := rows.Scan(&e.ID, &e.Title, &e.ArtistName, &e.TrackNumber, &e.DurationSeconds, &e.ObjectKey, &e.MimeType); err != nil {
 			return nil, fmt.Errorf("scan track entry: %w", err)
 		}
 		out = append(out, &e)
@@ -201,7 +212,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 		SELECT a.id, a.name, COUNT(*) AS track_count,
 		       CASE WHEN ai.artist_id IS NOT NULL THEN 1 ELSE 0 END AS has_image
 		FROM artists a
-		JOIN media_metadata m ON m.artist_id = a.id
+		JOIN media_metadata m ON (m.album_artist_id = a.id OR m.artist_id = a.id)
 		JOIN files f ON f.id = m.file_id
 		LEFT JOIN artist_images ai ON ai.artist_id = a.id
 		` + artistWhere + `
@@ -272,8 +283,13 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 	}
 
 	// ── Tracks ───────────────────────────────────────────────────────────────
-	trackWhere := "WHERE " + visibleFile + " AND LOWER(m.title) LIKE LOWER(?) ESCAPE '\\'"
-	trackArgs := []any{like}
+	// Match the track title OR its performer name, so searching an artist surfaces
+	// their tracks even on a "Various Artists" compilation. The displayed
+	// artist_name is the performer (par.name, the track's artist_id entity), not the
+	// album-artist — consistent with the track list and the playlists page.
+	trackWhere := "WHERE " + visibleFile +
+		" AND (LOWER(m.title) LIKE LOWER(?) ESCAPE '\\' OR LOWER(par.name) LIKE LOWER(?) ESCAPE '\\')"
+	trackArgs := []any{like, like}
 	if filtered {
 		trackWhere += " AND " + accessClause
 	}
@@ -285,12 +301,12 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 		    m.duration_seconds,
 		    f.object_key,
 		    f.mime_type,
-		    ar.name AS artist_name,
+		    par.name AS artist_name,
 		    al.title AS album_title
 		FROM files f
 		JOIN media_metadata m ON m.file_id = f.id
 		JOIN albums al ON al.id = m.album_id
-		JOIN artists ar ON ar.id = al.artist_id
+		JOIN artists par ON par.id = m.artist_id
 		` + trackWhere + `
 		ORDER BY LOWER(m.title) ASC
 		LIMIT 50`

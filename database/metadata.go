@@ -120,13 +120,13 @@ func (db *DB) UpdateFileMetadata(ctx context.Context, hash string, p MetadataPat
 				Album:       album.String,
 				Year:        int(year.Int64),
 			}
-			artistID, albumID, err := resolveAlbumArtistTx(ctx, tx, t)
+			albumArtistID, trackArtistID, albumID, err := resolveAlbumArtistTx(ctx, tx, t)
 			if err != nil {
 				return nil, fmt.Errorf("update metadata: resolve entities: %w", err)
 			}
 			if _, err := tx.ExecContext(ctx,
-				`UPDATE media_metadata SET artist_id = ?, album_id = ? WHERE file_id = ?`,
-				artistID, albumID, fileID,
+				`UPDATE media_metadata SET album_artist_id = ?, artist_id = ?, album_id = ? WHERE file_id = ?`,
+				albumArtistID, trackArtistID, albumID, fileID,
 			); err != nil {
 				return nil, fmt.Errorf("update metadata: set entity fks: %w", err)
 			}
