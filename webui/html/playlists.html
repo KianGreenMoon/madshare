@@ -9,11 +9,12 @@
   <link rel="stylesheet" href="/static/css/player.css">
   <link rel="stylesheet" href="/static/css/playlists.css">
 </head>
-<body data-page="playlists" data-module="/static/js/playlists.js">
+<body data-page="playlists" data-section="library" data-module="/static/js/playlists.js">
 
 {{template "header" .}}
 
 <main>
+  {{template "library-subnav" .}}
   <div class="view-panel view-panel--active" id="view-playlists">
     <div class="library-bar">
       <nav class="breadcrumb" id="plBreadcrumb" aria-label="Playlists navigation">

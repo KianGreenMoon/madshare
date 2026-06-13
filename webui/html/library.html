@@ -25,11 +25,12 @@
   <link rel="stylesheet" href="/static/css/app.css">
   <link rel="stylesheet" href="/static/css/player.css">
 </head>
-<body data-page="library" data-module="/static/js/app.js">
+<body data-page="library" data-section="library" data-module="/static/js/app.js">
 
 {{template "header" .}}
 
 <main>
+  {{template "library-subnav" .}}
   <div class="view-panel view-panel--active" id="view-library">
     <div class="library-bar">
       <nav class="breadcrumb" id="breadcrumb" aria-label="Library navigation">

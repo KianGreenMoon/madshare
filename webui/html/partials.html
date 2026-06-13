@@ -2,8 +2,11 @@
 <header>
   <span class="logo"><span>Mad</span>share</span>
   <nav class="main-nav" aria-label="Site navigation">
-    <a href="/" class="nav-link{{if eq .Page "library"}} nav-link--active{{end}}"{{if eq .Page "library"}} aria-current="page"{{end}}>Library</a>
-    <a href="/playlists" class="nav-link{{if eq .Page "playlists"}} nav-link--active{{end}}"{{if eq .Page "playlists"}} aria-current="page"{{end}}>Playlists</a>
+    {{/* "Library" is a section: it stays active across its subtabs (Music,
+         Playlists, …), which live in the in-page subtab bar (library-subnav).
+         data-section lets the shell router keep it active after a client-side
+         swap (shell.js setActiveNav). */}}
+    <a href="/" data-section="library" class="nav-link{{if eq .Section "library"}} nav-link--active{{end}}"{{if eq .Section "library"}} aria-current="page"{{end}}>Library</a>
     <a href="/upload" class="nav-link{{if eq .Page "upload"}} nav-link--active{{end}}"{{if eq .Page "upload"}} aria-current="page"{{end}}>Upload</a>
     {{/* Admin opens in the SAME tab (owner decision 2026-06-10, reversing the
          Phase-1 new-tab default). Admin pages are outside the shell, so this
@@ -119,6 +122,19 @@
 
 {{define "header-insert"}}{{end}}
 {{define "header-actions-extra"}}{{end}}
+
+{{/* The listening section's subtab bar. Music (the artist/album browse at "/")
+     and Playlists today; Most played / Recently added / Podcasts can be added as
+     more <a class="section-tab"> entries + their routes. Rendered at the top of
+     <main> on each library subtab page, so the shell swaps it with the page and
+     the server-rendered active state (.Page) stays correct after a client-side
+     navigation. */}}
+{{define "library-subnav"}}
+<nav class="section-tabs" aria-label="Library sections">
+  <a href="/" class="section-tab{{if eq .Page "library"}} section-tab--active{{end}}"{{if eq .Page "library"}} aria-current="page"{{end}}>Music</a>
+  <a href="/playlists" class="section-tab{{if eq .Page "playlists"}} section-tab--active{{end}}"{{if eq .Page "playlists"}} aria-current="page"{{end}}>Playlists</a>
+</nav>
+{{end}}
 
 {{/* player-bar: the shared audio player markup driven by player.js. Include it
      on any page that wants playback, then create the player in JS. Carries its

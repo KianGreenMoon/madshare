@@ -13,6 +13,30 @@ these pages (see `docs/ui/player-and-queue.md`). A page opts in with
 `init()` / `teardown()` on entry / exit. `shell.js` deliberately does **not**
 intercept `/admin*` links — those are hard navigations into the other shell.
 
+### Library section + subtabs
+
+The header nav lists **sections**, not individual pages. **Library** is one
+section spanning a subtab bar (`{{define "library-subnav"}}` in `partials.html`,
+class `.section-tabs`) rendered at the top of `<main>` on each listening page:
+**Music** (`/`, the artist/album browse) and **Playlists** (`/playlists`) today,
+with Most played / Recently added / Podcasts intended later — each is just another
+`.section-tab` link plus its route. Upload is its own section.
+
+Active state is two-level:
+
+- The **header "Library" tab** stays active across all its subtabs. Pages carry
+  `Section` (`pageData.Section`, `"library"` for `/` and `/playlists`) rendered
+  into `<body data-section>` and onto the header link's `data-section`;
+  `shell.js`'s `setActiveNav` lights a header link whose `data-section` matches the
+  body's, falling back to an exact path match for section-less links (Upload).
+- The **subtab bar** marks the open subtab from `pageData.Page` (`"library"` =
+  Music, `"playlists"`). It lives inside `<main>`, so the shell swaps it with the
+  page and the server-rendered active state stays correct after a client swap.
+
+The subtab bar is permission-gated like the header: `applyNavPermissions` (auth.js)
+removes the Playlists tab for a principal without `content.access`, and the shell
+re-runs it after every swap (the swapped-in bar always ships all tabs).
+
 ## Admin shell
 
 `{{define "admin-shell"}}` (`webui/html/partials.html`) + `bootAdmin()`

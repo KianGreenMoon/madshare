@@ -83,7 +83,14 @@ var adminSubPages = map[string]*template.Template{
 // origin written into <meta name="api-url">; it is empty for the bundled,
 // same-origin server so the front-end falls back to relative URLs.
 // Page is the current page identifier used by the shared header partial to
-// mark the active nav link ("library", "playlists", "upload", "admin", "cmus").
+// mark the active nav link ("library", "playlists", "upload", "admin", "cmus")
+// and, on the listening pages, the active library subtab ("library" = Music,
+// "playlists").
+// Section groups a header tab across its subtabs: the listening pages (Music +
+// Playlists, future Most played / Recently / Podcasts) all carry Section
+// "library", so the single "Library" header tab stays active across them while
+// the in-page subtab bar shows which subtab is open. Empty for pages that are
+// their own section (upload, admin).
 // SubPage marks the active link in the secondary admin nav ("" = Overview,
 // "library", "users", "prune", "settings"); it is empty for non-admin pages.
 // GitRepo is the URL behind the header's GitRepo nav button
@@ -94,6 +101,7 @@ var adminSubPages = map[string]*template.Template{
 type pageData struct {
 	APIURL  string
 	Page    string
+	Section string
 	SubPage string
 	GitRepo string
 	Version string
@@ -132,8 +140,8 @@ func Register(r chi.Router, apiBase, gitRepo string) {
 	r.Handle("/static/*", http.StripPrefix("/static/", static))
 	r.Get("/cmus", makeHandler(cmusTmpl, "cmus.html", pageData{APIURL: apiBase, GitRepo: gitRepo}))
 	r.Get("/upload", makeHandler(uploadTmpl, "upload.html", pageData{APIURL: apiBase, Page: "upload", GitRepo: gitRepo}))
-	r.Get("/playlists", makeHandler(playlistsTmpl, "playlists.html", pageData{APIURL: apiBase, Page: "playlists", GitRepo: gitRepo}))
-	r.Get("/", makeHandler(libraryTmpl, "library.html", pageData{APIURL: apiBase, Page: "library", GitRepo: gitRepo}))
+	r.Get("/playlists", makeHandler(playlistsTmpl, "playlists.html", pageData{APIURL: apiBase, Page: "playlists", Section: "library", GitRepo: gitRepo}))
+	r.Get("/", makeHandler(libraryTmpl, "library.html", pageData{APIURL: apiBase, Page: "library", Section: "library", GitRepo: gitRepo}))
 }
 
 // RegisterAdminPage mounts the /admin page. It belongs to the admin route

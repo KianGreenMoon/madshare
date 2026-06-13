@@ -9,7 +9,7 @@
 // Each page ships `<body data-page=… data-module=/static/js/x.js>`; the shell
 // imports that module and runs its exported init()/teardown(). Anything that is
 // not shell-native (no data-module) falls back to a full browser navigation.
-import { initAuth, openLoginModal } from './auth.js';
+import { initAuth, openLoginModal, applyNavPermissions } from './auth.js';
 import { getController } from './player-controller.js';
 import { initQueuePanel } from './queue-panel.js';
 import { ensureLiked, isLiked, toggleLike, trackHash, onLikedChange } from './favorites.js';
@@ -66,9 +66,15 @@ async function navigate(url, { push = true } = {}) {
   ensureStylesheets(doc);
   swapMain(doc);
   swapHeaderInsert(doc);
+  // The freshly-swapped <main> carries the server-rendered subtab bar with every
+  // tab present; re-gate it for the current identity (e.g. drop Playlists for a
+  // principal without content.access). initAuth ran this once at boot for the
+  // first page; each swap needs it again.
+  applyNavPermissions();
   document.title = doc.title;
-  document.body.dataset.page   = doc.body.dataset.page   || '';
-  document.body.dataset.module = doc.body.dataset.module || '';
+  document.body.dataset.page    = doc.body.dataset.page    || '';
+  document.body.dataset.module  = doc.body.dataset.module  || '';
+  document.body.dataset.section = doc.body.dataset.section || '';
   setActiveNav(new URL(url, location.origin).pathname);
   if (push) {
     // Re-navigating to the same URL (e.g. clicking the active nav link) shouldn't
@@ -111,9 +117,17 @@ function swapHeaderInsert(doc) {
   else if (cur) cur.replaceChildren();
 }
 
+// A header tab can stand for a whole section (e.g. "Library" covers the Music and
+// Playlists subtabs): a link carrying data-section is active whenever the current
+// page's section (body[data-section], copied from the swapped doc) matches it,
+// regardless of the exact subtab path. Other links fall back to an exact path match.
 function setActiveNav(pathname) {
+  const section = document.body.dataset.section || '';
   document.querySelectorAll('.main-nav .nav-link').forEach(a => {
-    const match = new URL(a.href, location.origin).pathname === pathname;
+    const linkSection = a.dataset.section || '';
+    const match = linkSection
+      ? linkSection === section
+      : new URL(a.href, location.origin).pathname === pathname;
     a.classList.toggle('nav-link--active', match);
     if (match) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
