@@ -578,8 +578,9 @@ func TestUnifiedArtistBrowse_PerformerOnCompilation(t *testing.T) {
 	beyID, _, _ := db.LookupArtistID(ctx, "Beyonce")
 	adeID, _, _ := db.LookupArtistID(ctx, "Adele")
 
-	// 1. ListArtists includes the album-artist VA AND both performers, each with its
-	//    union track_count (a row matching in both roles counts once).
+	// 1. The library list (ListArtists) shows ALBUM-ARTISTS only: VA (owns the comp)
+	//    and Beyonce (owns her album). Adele — a pure performer on the comp — is
+	//    intentionally absent; it stays findable via search and browsable by id.
 	artists, err := db.ListArtists(ctx)
 	if err != nil {
 		t.Fatalf("ListArtists: %v", err)
@@ -591,11 +592,11 @@ func TestUnifiedArtistBrowse_PerformerOnCompilation(t *testing.T) {
 	if counts["Various Artists"] != 2 { // album-artist of both comp tracks
 		t.Errorf("Various Artists track_count = %d, want 2", counts["Various Artists"])
 	}
-	if counts["Beyonce"] != 2 { // 1 comp performance + 1 own album track
-		t.Errorf("Beyonce track_count = %d, want 2", counts["Beyonce"])
+	if counts["Beyonce"] != 1 { // only her own album; the comp track is filed under VA
+		t.Errorf("Beyonce track_count = %d, want 1", counts["Beyonce"])
 	}
-	if counts["Adele"] != 1 {
-		t.Errorf("Adele track_count = %d, want 1", counts["Adele"])
+	if _, listed := counts["Adele"]; listed {
+		t.Errorf("Adele (pure performer) must not appear in the library list: %v", counts)
 	}
 
 	// 2. A pure performer's drill-down lists the comp it appears on, counting only

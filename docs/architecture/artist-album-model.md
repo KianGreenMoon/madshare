@@ -186,22 +186,31 @@ Browsing by a *performing/featured* artist who is never an `album_artist` is
 **now provided** by the track-performer split (`artist_id`) and the unified
 browse below — it is no longer a non-goal.
 
-### Unified album-artist + performer browse
+### Browse by album-artist, search across both roles
 
-An artist entity is browsed/searched across **both** roles, so a performer who
-only appears on compilations is reachable just like an album artist:
+The **library is grouped by album-artist**: a performer who only ever appears on
+a compilation (its `album_artist` owned by someone else) does **not** clutter the
+library artist list. But such a performer is still findable in search and
+browsable by its id, so a search hit is never a dead end:
 
-- **Artist listing & search** (`ListArtists`, search-artists): an artist appears
-  if it has ≥1 visible (and, when guest, reachable) track as album-artist *or*
-  performer. The listing's join moves from `m.artist_id = a.id` to
-  `m.album_artist_id = a.id OR m.artist_id = a.id`; `track_count` counts the
-  matching `media_metadata` rows (one row matches once even when both its FKs
-  point at the same artist, so single-artist releases count exactly as before).
+- **Library artist list** (`ListArtists`): one row per artist that is the
+  **album-artist** of ≥1 visible (and, when guest, reachable) track
+  (`m.album_artist_id = a.id`). Pure performers are excluded here — the album the
+  performer's track sits on is grouped under *its* album-artist (e.g. "Various
+  Artists"), not under the performer.
+- **Artist search** (search-artists): matches **both** roles
+  (`m.album_artist_id = a.id OR m.artist_id = a.id`), so searching a performer
+  name returns the performer as a clickable artist entity even when it owns no
+  album. `track_count` counts the matching rows (a row whose two FKs point at the
+  same artist still counts once).
 - **Albums of an artist** (`ListAlbumsByArtistID`): the **union** of (a) albums
   the artist owns as album-artist (`albums.artist_id = a.id`) and (b) albums
-  containing a track they perform (`m.artist_id = a.id AND m.album_id = al.id`).
-  So a pure performer's drill-down lists the comps / featured appearances; an
-  album artist's lists their own albums (plus any comp they're individually on).
+  containing a track they perform (`m.artist_id = a.id`). Done in one pass via the
+  join condition `al.artist_id = ? OR m.artist_id = ?`, which yields a useful
+  hybrid `track_count`: an owned album counts all its tracks, while a comp the
+  artist only performs on counts just their tracks on it. So a performer reached
+  from search drills into the comps they appear on (not a dead end), and an
+  album-artist additionally surfaces any comp they are individually featured on.
 - **Tracks of an album** (`ListTracksByAlbumID`): **unchanged** — the whole
   album's track list, regardless of which artist the user entered from. The track
   row now shows the **performer** name (`media_metadata.artist_id → artists.name`),
@@ -259,13 +268,14 @@ album artist), which is the cover a track is filed under.
 
 `ListArtists` / `ListAlbumsByArtistID` / `ListTracksByAlbumID` / `search` are
 straight JOINs on `artists`/`albums` instead of `GROUP BY` over COALESCE
-expressions. The artist listing joins both roles — e.g.:
+expressions. The library artist listing joins the **album-artist** role only
+(search swaps in the both-roles `OR` from the section above) — e.g.:
 
 ```sql
 SELECT a.id, a.name, COUNT(*) AS track_count,
        (ai.artist_id IS NOT NULL) AS has_image
 FROM artists a
-JOIN media_metadata m ON (m.album_artist_id = a.id OR m.artist_id = a.id)
+JOIN media_metadata m ON m.album_artist_id = a.id   -- search: (= a.id OR m.artist_id = a.id)
 JOIN files f ON f.id = m.file_id AND f.deleted_at IS NULL
 LEFT JOIN artist_images ai ON ai.artist_id = a.id
 GROUP BY a.id

@@ -19,13 +19,15 @@ func (db *DB) ListArtistsGuest(ctx context.Context) ([]*ArtistEntry, error) {
 	return db.listArtists(ctx, true)
 }
 
-// listArtists is the shared artist listing over the entity overlay. One row per
-// artists entity that has at least one live (and, when guest, reachable) track in
-// EITHER role — as the track's album-artist (album_artist_id) or its performer
-// (artist_id) — so a performer who only appears on compilations is listed too. A
-// row matching in both roles still joins once, so track_count is correct. The
-// INNER JOIN on media_metadata means orphan entities with no tracks (e.g. left
-// behind by a rename) never appear. has_image joins the now id-keyed
+// listArtists is the shared artist listing over the entity overlay — the library
+// browse list. One row per artists entity that is the ALBUM-ARTIST of at least one
+// live (and, when guest, reachable) track (m.album_artist_id = a.id). A pure
+// performer who only appears on a compilation (its album_artist owned by someone
+// else) is intentionally NOT listed here — the library groups by album-artist —
+// but it stays findable via search (which matches both roles) and browsable by id
+// (ListAlbumsByArtistID unions the performer role, so a search hit isn't a dead
+// end). The INNER JOIN on media_metadata means orphan entities with no tracks (e.g.
+// left behind by a rename) never appear. has_image joins the now id-keyed
 // artist_images directly on artist_id (exact). The unknown-artist bucket
 // (norm_name = normalizeKey(DefaultArtistName)) sorts last, after the named
 // artists, via the leading ORDER BY key.
@@ -38,7 +40,7 @@ func (db *DB) listArtists(ctx context.Context, guest bool) ([]*ArtistEntry, erro
 		SELECT a.id, a.name, COUNT(*) AS track_count,
 		       CASE WHEN ai.artist_id IS NOT NULL THEN 1 ELSE 0 END AS has_image
 		FROM artists a
-		JOIN media_metadata m ON (m.album_artist_id = a.id OR m.artist_id = a.id)
+		JOIN media_metadata m ON m.album_artist_id = a.id
 		JOIN files f ON f.id = m.file_id
 		LEFT JOIN artist_images ai ON ai.artist_id = a.id
 		` + where + `
