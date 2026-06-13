@@ -266,6 +266,57 @@ above).
 - **P5 (future) — ffmpeg auto-transcode.** Generate missing renditions ourselves
   *into* this model (e.g. a small streaming copy beside a lossless master).
 
+## Future directions (beyond P5)
+
+### Canonical master + derived streaming renditions
+
+The natural end state of the ladder + P5: designate a recording's top rendition
+as its **canonical master** (the `preferred_file_id` slot) and have ffmpeg
+generate the smaller streaming renditions *from it* — the small copies become
+ordinary (lower) renditions feeding the Auto/Low playback tier.
+
+- **Always transcode from the best — ideally lossless — master**, never from an
+  already-lossy copy, or you stack generational loss (FLAC→Opus beats MP3→Opus
+  audibly).
+- **Derived renditions are generated, not uploaded:** they carry provenance
+  (`derived_from` = the master file), **skip moderation** (the master was
+  already approved), and **skip fingerprint matching** (their parent is known).
+- **Federation:** shared fingerprint identity lets a node discover that a peer
+  holds a *higher-ladder* rendition of a recording it already has and pull that
+  better master. Streaming copies are then cheap to regenerate **locally per
+  node** (CPU is cheaper than re-transferring large files) rather than shipping
+  them around — a federation-phase trade-off.
+
+### Authenticity / tamper checks (MusicBrainz-assisted)
+
+Important framing: fingerprinting is an **identity** tool, not a **forensics**
+one. An AcoustID/MusicBrainz match tells you *"this is recording X"* (→ an MBID);
+it is deliberately tolerant of re-encoding, so a match is **not** proof of an
+unmodified original. Acceleration in particular *breaks* the fingerprint
+(a sped-up file fails to match) rather than being flagged by it.
+
+What *does* work, as additive heuristics:
+
+- **MBID → canonical-duration cross-check.** Match the fingerprint to an MBID,
+  then compare our `duration_seconds` to MusicBrainz's authoritative track
+  length. Everything matches but our copy is ~3 % shorter → a strong
+  "time-stretched / accelerated / edited" flag. The practical "is this
+  tampered?" signal.
+- **Spectral-cutoff detection** catches *fake* lossless (a FLAC transcoded up
+  from a 128 kbps MP3 shows a ~16 kHz ceiling) — also the ladder's upscale
+  blind spot (see Quality ladder).
+
+These are exactly the use cases that would justify **reintroducing the
+MusicBrainz/AcoustID corroborator** deferred above (additive signal). Cost to
+weigh: AcoustID is an online API (key + network) or a large local MusicBrainz
+mirror — relevant for an offline/federated node.
+
+The honest ceiling: audio analysis cannot *prove* a file is the bit-for-bit
+original. True authenticity/provenance is a **trust** concern — a trusted node
+**cryptographically signs** "this blob is the master I vouch for" — and belongs
+to the federation trust layer (`docs/architecture/auth.md` §8, Phase 4), not to
+fingerprinting.
+
 ## Non-goals (v0)
 
 - **Segmented ABR / HLS / DASH** — video-era, not audio. Range + rendition-pick
