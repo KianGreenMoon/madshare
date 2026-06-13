@@ -76,6 +76,17 @@ dry-run".)
   return as an additive feature keyed off `album_id`/`artist_id` — recorded as a
   future idea, **not** planned. See `docs/architecture/auth.md`.
 
+## Recordings — same-audio grouping & renditions (designed, not built)
+
+Group files that are the *same audio in different encodings* (FLAC master + MP3
++ stream copy) under a fingerprint-keyed **recording** overlay, with an
+auto-ranked quality ladder, a moderator duplicates page (delete-with-confirm /
+split-off), a "possible duplicate" flag in moderation (no auto-approve), and
+per-client rendition pick for bandwidth (range requests; segmented ABR is a
+video-era non-goal). Rests on two new ingest passes — `ffprobe` (the
+NULL tech columns) and `fpcalc` (the acoustic fingerprint). Full design,
+phases P0–P5: `docs/architecture/recordings.md`.
+
 ## Federation (Phase 4, deferred)
 
 Server-to-server trust — peer keypairs, signed requests, file provenance, library
