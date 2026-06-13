@@ -32,6 +32,14 @@ Active state is two-level:
 - The **subtab bar** marks the open subtab from `pageData.Page` (`"library"` =
   Music, `"playlists"`). It lives inside `<main>`, so the shell swaps it with the
   page and the server-rendered active state stays correct after a client swap.
+  It's styled as an underline tab strip matching the header `.nav-link`, so the
+  app's tabs look the same throughout.
+
+The subtab is each section's **sole label and back-to-top affordance**, so the
+breadcrumb never repeats the section name (no "Music / Library", "Playlists /
+Playlists"): it holds only the drill path *below* the section root (artist /
+album, or the open playlist's name) and is hidden entirely at a section's top
+level. Clicking the active subtab returns to that top.
 
 The subtab bar is permission-gated like the header: `applyNavPermissions` (auth.js)
 removes the Playlists tab for a principal without `content.access`, and the shell

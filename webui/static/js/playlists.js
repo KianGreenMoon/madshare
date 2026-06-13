@@ -127,27 +127,21 @@ async function showDetail(id) {
   renderItems();
 }
 
+// The breadcrumb holds only the open playlist's name: the "Playlists" subtab
+// already labels the section and is the way back to the list, so we never repeat
+// it here. The list view shows no breadcrumb at all; its whole bar is hidden so
+// there's no empty strip (the bar also carries the detail-view head actions).
 function renderCrumbs() {
   const bc = crumbs();
   bc.replaceChildren();
-  if (!detail) {
+  if (detail) {
     const cur = document.createElement('span');
     cur.className = 'bc-item bc-current';
-    cur.textContent = 'Playlists';
+    cur.textContent = detail.name;
     bc.appendChild(cur);
-    return;
   }
-  const back = document.createElement('button');
-  back.className = 'bc-item bc-link';
-  back.textContent = 'Playlists';
-  back.addEventListener('click', showList);
-  const sep = document.createElement('span');
-  sep.className = 'bc-sep';
-  sep.textContent = '›';
-  const cur = document.createElement('span');
-  cur.className = 'bc-item bc-current';
-  cur.textContent = detail.name;
-  bc.append(back, sep, cur);
+  const bar = bc.closest('.library-bar');
+  if (bar) bar.style.display = detail ? '' : 'none';
 }
 
 // playableQueue maps the playlist's live (non-trashed) items to controller
