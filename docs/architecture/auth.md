@@ -295,7 +295,8 @@ creation (`POST /api/auth/tokens`) takes `name` plus an optional expiry: either
 `expires_at` (absolute unix seconds — the web UI's date picker; rejected if not
 in the future) or `expires_in_days` (duration, for non-browser clients);
 `expires_at` wins when both are present, and absent/zero means it never expires.
-The raw token is returned exactly once.
+The raw token is returned exactly once. Usage, response shapes, and `curl`
+examples: `docs/api/tokens.md`.
 
 ## 8. Federation (deferred)
 
