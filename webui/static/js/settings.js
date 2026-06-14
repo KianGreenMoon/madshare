@@ -17,10 +17,52 @@ export async function init() {
     renderSignInRequired();
     return;
   }
+  wireTabs();
   wirePassword();
   wireTokens();
   wireTheme();
   await loadTokens();
+}
+
+// ── Subtabs (Account · API tokens · Appearance) ───────────────────────────────
+// Shared .subtabs / .subtab component (app.css); shows one panel at a time and
+// follows the ARIA tablist keyboard pattern (arrows / Home / End, roving tabindex).
+
+function wireTabs() {
+  const tabs = [
+    ['tabBtnAccount', 'panelAccount'],
+    ['tabBtnTokens', 'panelTokens'],
+    ['tabBtnAppearance', 'panelAppearance'],
+  ].map(([tabId, panelId]) => ({
+    tab: document.getElementById(tabId),
+    panel: document.getElementById(panelId),
+  })).filter(({ tab, panel }) => tab && panel);
+
+  const select = (idx) => {
+    tabs.forEach(({ tab, panel }, i) => {
+      const on = i === idx;
+      tab.classList.toggle('is-active', on);
+      tab.setAttribute('aria-selected', String(on));
+      tab.tabIndex = on ? 0 : -1;
+      panel.hidden = !on;
+    });
+  };
+
+  tabs.forEach(({ tab }, i) => {
+    tab.addEventListener('click', () => select(i));
+    tab.addEventListener('keydown', (e) => {
+      const last = tabs.length - 1;
+      let next = null;
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = i === last ? 0 : i + 1;
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = i === 0 ? last : i - 1;
+      else if (e.key === 'Home') next = 0;
+      else if (e.key === 'End') next = last;
+      if (next === null) return;
+      e.preventDefault();
+      select(next);
+      tabs[next].tab.focus();
+    });
+  });
 }
 
 // ── Gate ─────────────────────────────────────────────────────────────────────

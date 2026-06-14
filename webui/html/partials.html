@@ -32,16 +32,15 @@
   </nav>
   <div id="header-insert">{{template "header-insert" .}}</div>
   <div class="header-actions">
-    {{/* Signed-in user area: username · Settings · Sign out. The voluntary
-         change-password control and the theme switcher moved to the Settings
-         page (/settings, docs/ui/user-settings.md); the forced first-run password
-         change still uses #passModal below. Settings is a plain <a> so the shell
-         router treats it as in-shell navigation. */}}
+    {{/* Signed-in user area: username · Sign out. The username itself is the link
+         to the Settings page (/settings, docs/ui/user-settings.md) — styled as a
+         .nav-link like the left-side Library/Upload tabs, only on the right. The
+         voluntary change-password control and the theme switcher live on that
+         page; the forced first-run password change still uses #passModal below.
+         It's a plain <a> so the shell router treats it as in-shell navigation;
+         its text is filled in by auth.js. */}}
     <div class="user-area" id="userArea" hidden>
-      <span class="user-name" id="userName"></span>
-      <a href="/settings" class="btn btn-neutral" id="settingsLink">
-        <span aria-hidden="true">&#9881;</span> Settings
-      </a>
+      <a href="/settings" class="nav-link{{if eq .Page "settings"}} nav-link--active{{end}}"{{if eq .Page "settings"}} aria-current="page"{{end}} id="userName" title="Settings"></a>
       <button class="btn btn-neutral" id="logoutBtn">Log out</button>
     </div>
     <button class="btn btn-neutral" id="signInBtn">Sign in</button>

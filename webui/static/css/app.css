@@ -853,10 +853,6 @@ input[type="range"]::-moz-range-thumb {
   gap: var(--space-3);
   margin-right: var(--space-2);
 }
-.user-name {
-  color: var(--text-muted);
-  font-size: 0.9rem;
-}
 
 /* ── Auth modals ── */
 .modal-body { font-size: 14px; color: var(--text); margin-bottom: var(--space-5); }

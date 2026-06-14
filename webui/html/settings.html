@@ -17,9 +17,19 @@
 <main id="settingsMain">
   <h1 class="settings-heading">Settings</h1>
 
+  <!-- Subtab bar (shared .subtabs / .subtab component, app.css). Each tab shows
+       one panel below; the tab labels the panel, so the cards drop their <h2>. -->
+  <nav class="subtabs" role="tablist" aria-label="Settings sections">
+    <button type="button" class="subtab is-active" id="tabBtnAccount" role="tab"
+            aria-selected="true" aria-controls="panelAccount">Account</button>
+    <button type="button" class="subtab" id="tabBtnTokens" role="tab"
+            aria-selected="false" aria-controls="panelTokens" tabindex="-1">API tokens</button>
+    <button type="button" class="subtab" id="tabBtnAppearance" role="tab"
+            aria-selected="false" aria-controls="panelAppearance" tabindex="-1">Appearance</button>
+  </nav>
+
   <!-- ── Account ─────────────────────────────────────────────────────────── -->
-  <section class="settings-card" aria-labelledby="accountTitle">
-    <h2 id="accountTitle" class="settings-card__title">Account</h2>
+  <section class="settings-card" id="panelAccount" role="tabpanel" aria-labelledby="tabBtnAccount">
     <form class="login-form settings-form" id="passSettingsForm" autocomplete="off">
       <label for="setOldPass">Current password</label>
       <input type="password" id="setOldPass" autocomplete="current-password" required>
@@ -35,8 +45,7 @@
   </section>
 
   <!-- ── API tokens ──────────────────────────────────────────────────────── -->
-  <section class="settings-card" aria-labelledby="tokensTitle">
-    <h2 id="tokensTitle" class="settings-card__title">API tokens</h2>
+  <section class="settings-card" id="panelTokens" role="tabpanel" aria-labelledby="tabBtnTokens" hidden>
     <p class="settings-card__hint">
       Personal access tokens authenticate non-browser clients with
       <code>Authorization: Bearer &lt;token&gt;</code>. The token is shown once at
@@ -78,8 +87,7 @@
   </section>
 
   <!-- ── Appearance ──────────────────────────────────────────────────────── -->
-  <section class="settings-card" aria-labelledby="appearanceTitle">
-    <h2 id="appearanceTitle" class="settings-card__title">Appearance</h2>
+  <section class="settings-card" id="panelAppearance" role="tabpanel" aria-labelledby="tabBtnAppearance" hidden>
     <fieldset class="theme-choices" id="themeChoices">
       <legend class="settings-card__hint">Theme (saved on this device)</legend>
       <label class="theme-choice" data-theme="dark">

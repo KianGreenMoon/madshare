@@ -112,9 +112,11 @@ function swapHeaderInsert(doc) {
 // Playlists subtabs): a link carrying data-section is active whenever the current
 // page's section (body[data-section], copied from the swapped doc) matches it,
 // regardless of the exact subtab path. Other links fall back to an exact path match.
+// Covers both the left main-nav and the right-side username link (.user-area, which
+// points to /settings) — all .nav-link anchors in the header.
 function setActiveNav(pathname) {
   const section = document.body.dataset.section || '';
-  document.querySelectorAll('.main-nav .nav-link').forEach(a => {
+  document.querySelectorAll('header .nav-link').forEach(a => {
     const linkSection = a.dataset.section || '';
     const match = linkSection
       ? linkSection === section

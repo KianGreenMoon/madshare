@@ -81,16 +81,20 @@ func TestSettingsPageRenders(t *testing.T) {
 	}
 }
 
-// TestHeaderUserArea guards the header rework: the Settings link replaced the
-// voluntary change-password button and the theme-switcher dots were removed.
+// TestHeaderUserArea guards the header rework: the username itself links to the
+// Settings page (the separate Settings button is gone), the voluntary
+// change-password button is gone, and the theme-switcher dots were removed.
 func TestHeaderUserArea(t *testing.T) {
 	r := chi.NewRouter()
 	Register(r, "", "")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	body := rec.Body.String()
-	if !strings.Contains(body, `id="settingsLink"`) {
-		t.Errorf("header: missing Settings link")
+	if !strings.Contains(body, `id="userName"`) || !strings.Contains(body, `href="/settings"`) {
+		t.Errorf("header: username should link to /settings")
+	}
+	if strings.Contains(body, `id="settingsLink"`) {
+		t.Errorf("header: separate Settings button should be gone (the username is the link now)")
 	}
 	if strings.Contains(body, `id="changePassBtn"`) {
 		t.Errorf("header: voluntary change-password button should be gone")

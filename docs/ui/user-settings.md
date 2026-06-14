@@ -38,10 +38,15 @@ shell + client router), `docs/architecture/auth.md` (password / token model),
    It is **not** a header *section* (it does not join the Library subtab family);
    it is reached from the right-side header area. Playback and the shared queue
    survive navigation to it, like every listening-shell page.
-2. **Entry point: right side of the header.** When signed in, the header's
-   `.header-actions` user area shows **`username · ⚙ Settings · Sign out`**. The
-   old **Change password** button is removed; **Settings** takes its slot. `Sign
-   out` and the username stay in the header (no extra clicks to log out).
+2. **Entry point: the username, on the right side of the header.** When signed in,
+   the header's `.header-actions` user area shows **`username · Sign out`**, where
+   the **username itself is the link to `/settings`** — there is no separate
+   Settings button. It is styled as a `.nav-link` (the same underline tab as the
+   left-side Library / Upload, with an active underline on `/settings`), only on
+   the right. The old **Change password** button is gone; `Sign out` and the
+   username stay in the header (no extra clicks to log out). `shell.js`
+   `setActiveNav` scans all `header .nav-link` anchors so the username's active
+   state updates on client-side navigation too.
 3. **Token expiry is an optional date.** The create form has an
    `<input type="date">` (blank = never expires). The client sends an absolute
    `expires_at` (unix seconds); the create handler is extended to accept it (the
@@ -129,11 +134,20 @@ Client gate (`webui/static/js/settings.js`, `init()`):
 
 ## Page layout
 
-A single `<main>` with three stacked `<section>`s, each a card. Reuse `app.css`
-form/card/button styles; add a small `settings.css` only for page-specific spacing.
+A single `<main>` with a **subtab bar** over three `<section>` panels — one panel
+shown at a time, like the library (`Music · Playlists`) and upload (`Upload · My
+uploads`) pages. The bar reuses the shared `.subtabs` / `.subtab` component
+(`app.css`); each `.subtab` is a `role="tab"` button driving a `role="tabpanel"`
+card. The tab labels the panel, so the cards carry no `<h2>`. Reuse `app.css`
+form/card/button styles; `settings.css` holds only page-specific spacing.
+
+The subtab bar follows the ARIA tablist keyboard pattern (arrow keys / Home / End,
+roving `tabindex`); `settings.js` `wireTabs()` toggles `.is-active` + `hidden` +
+`aria-selected`. Default tab: **Account**.
 
 ```
 Settings
+[ Account | API tokens | Appearance ]   ← subtab bar (one panel visible)
 ├─ Account
 │   └─ Change password (current / new / confirm)  → POST /api/auth/password
 ├─ API tokens
