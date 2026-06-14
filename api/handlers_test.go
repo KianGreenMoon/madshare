@@ -425,13 +425,14 @@ type fakeRepo struct {
 	searchErr    error
 
 	// Cover-variant queue stubs (Phase 1). Drive GetAlbumCoverStatus / counters.
-	coverBaseKey   string
-	coverExt       string
-	coverReady     bool
-	coverFound     bool
-	coverClaimLost bool // SetAlbumCoverIfAbsent reports the row already existed
-	enqueueCalls   int
-	setCoverCalls  int
+	coverBaseKey         string
+	coverExt             string
+	coverReady           bool
+	coverFound           bool
+	coverClaimLost       bool // SetAlbumCoverIfAbsent reports the row already existed
+	enqueueCalls         int
+	enqueueAnalysisCalls int
+	setCoverCalls        int
 
 	// Base-metadata edit stubs (Phase 5).
 	metaCalls     int
@@ -637,6 +638,11 @@ func (f *fakeRepo) FinishImageJob(_ context.Context, _ int64, _ error) error {
 }
 
 func (f *fakeRepo) ResetStaleJobs(_ context.Context) error {
+	return nil
+}
+
+func (f *fakeRepo) EnqueueAnalysisJob(_ context.Context, _, _ int64) error {
+	f.enqueueAnalysisCalls++
 	return nil
 }
 

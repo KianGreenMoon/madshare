@@ -33,10 +33,18 @@ version `18`; recordings migrations start at **`019`**.
 
 ---
 
-## P0 — Ingest media analysis (binaries + job queue)
+## P0 — Ingest media analysis (binaries + job queue) ✅ Done
 
 The foundation: a job queue that runs `ffprobe` + `fpcalc` at ingest, fills the
 tech columns, and stores the fingerprint. Pure data layer — nothing user-facing.
+
+**Shipped:** migration `019`; `media/analyze.go` (`ProbeTech`,
+`ComputeFingerprint`, `ToolStatus`, packed-fingerprint round-trip);
+`database/analysis.go` (queue + `UpsertTechColumns` + `InsertAudioFingerprint` +
+`FilesNeedingAnalysis`); `mediaproc.Pool`; `madshare.go` wiring (tool detection,
+stale reset, backfill) + inline enqueue on upload; `EnqueueAnalysisJob` on
+`Repository` (worker methods kept off it via `mediaproc.Repository`); tests in
+`media/`, `database/`, `mediaproc/`; schema version `18`→`19`; `fakeRepo` stub.
 
 **Migration `019_media_analysis.sql`**
 - `media_analysis_jobs` table — copy `image_processing_jobs` shape: `id`,

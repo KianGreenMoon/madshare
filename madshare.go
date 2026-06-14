@@ -20,6 +20,8 @@ import (
 	"daemonlord.ygg/madshare/config"
 	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/imageproc"
+	"daemonlord.ygg/madshare/media"
+	"daemonlord.ygg/madshare/mediaproc"
 	"daemonlord.ygg/madshare/webui"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -121,6 +123,39 @@ func main() {
 	pool := imageproc.NewPool(db, imagesDir, cfg.Storage.ImageProcessingWorkers)
 	go pool.Start(ctx)
 
+	// Ingest media analysis (ffprobe tech columns + fpcalc fingerprint). Both
+	// tools are optional: a missing binary warns (never fatal) and that tool is
+	// skipped for every job. See docs/architecture/recordings.md.
+	haveFFprobe, haveFpcalc := media.ToolStatus()
+	if !haveFFprobe {
+		log.Printf("warning: ffprobe not found on PATH; audio tech columns (bitrate/sample rate/codec) stay empty")
+	}
+	if !haveFpcalc {
+		log.Printf("warning: fpcalc not found on PATH; acoustic fingerprinting disabled (duplicate detection degrades to tags)")
+	}
+	if err := db.ResetStaleAnalysisJobs(ctx); err != nil {
+		log.Printf("reset stale analysis jobs: %v", err)
+	}
+	mediaPool := mediaproc.NewPool(db, audioDir, cfg.Storage.ImageProcessingWorkers, haveFFprobe, haveFpcalc)
+	go mediaPool.Start(ctx)
+	// Backfill analysis for blobs uploaded before this ran (idempotent; skips
+	// files that already have a fingerprint and tech columns). Only worth doing
+	// when at least one tool can produce something.
+	if haveFFprobe || haveFpcalc {
+		if ids, err := db.FilesNeedingAnalysis(ctx); err != nil {
+			log.Printf("media analysis backfill: %v", err)
+		} else if len(ids) > 0 {
+			now := time.Now().Unix()
+			for _, id := range ids {
+				if err := db.EnqueueAnalysisJob(ctx, id, now); err != nil {
+					log.Printf("media analysis backfill enqueue file=%d: %v", id, err)
+				}
+			}
+			log.Printf("enqueued %d file(s) for media analysis backfill", len(ids))
+			mediaPool.Notify()
+		}
+	}
+
 	limiter := api.NewUploadLimiter(
 		cfg.Storage.ServerMaxParallelWorkers,
 		cfg.Storage.UserMaxParallelWorkers,
@@ -140,6 +175,7 @@ func main() {
 		Auth:          db,
 		Manage:        db,
 		ImagePool:     pool,
+		MediaPool:     mediaPool,
 		UploadLimiter: limiter,
 		UIConfig:      uiCfg,
 		SourceRoot:    sourceRoot,
@@ -155,7 +191,7 @@ func main() {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
 	log.Println("Shutting down...")
-	cancel() // stop the image-variant worker pool
+	cancel() // stop the background worker pools (image variants + media analysis)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	var wg sync.WaitGroup

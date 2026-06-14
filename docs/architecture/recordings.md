@@ -1,9 +1,12 @@
 # Recordings — same-audio grouping & renditions
 
-**Status:** proposed (design only; not implemented). Builds on the
-artist/album overlay (`docs/architecture/artist-album-model.md`) and the
-moderation queue (`docs/architecture/moderation.md`). Federation-relevant: a
-recording is the first content identity that is **portable across nodes**.
+**Status:** in progress. **P0 (ingest media analysis) is implemented** —
+`media_analysis_jobs` queue + `mediaproc.Pool` worker, ffprobe tech columns,
+fpcalc `audio_fingerprints`, startup backfill (migration `019`). P1–P4 remain
+design only. Builds on the artist/album overlay
+(`docs/architecture/artist-album-model.md`) and the moderation queue
+(`docs/architecture/moderation.md`). Federation-relevant: a recording is the
+first content identity that is **portable across nodes**.
 
 ## Problem
 
@@ -287,8 +290,11 @@ above).
 
 ## Phase plan
 
-- **P0 — Ingest media analysis.** `media_analysis_jobs` queue + worker; ffprobe
-  fills tech columns, fpcalc fills `audio_fingerprints`. Backfill existing blobs.
+- **P0 — Ingest media analysis. ✅ Done.** `media_analysis_jobs` queue +
+  `mediaproc.Pool` worker; ffprobe fills tech columns (+ new `bit_depth`), fpcalc
+  fills `audio_fingerprints`; enqueued inline on upload and via idempotent
+  startup backfill. Both tools optional (degrade per Graceful degradation).
+  Migration `019`.
 - **P1 — Recording overlay.** `recordings` + `files.recording_id` /
   `recording_pinned` + resolver (inline + startup backfill). Data layer only.
 - **P2 — Duplicates admin page.** List multi-rendition recordings, tech compare,

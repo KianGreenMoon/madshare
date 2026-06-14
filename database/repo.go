@@ -209,6 +209,14 @@ type Repository interface {
 	// ResetStaleJobs returns all running jobs to pending (startup recovery).
 	ResetStaleJobs(ctx context.Context) error
 
+	// EnqueueAnalysisJob inserts a pending media-analysis job (ffprobe + fpcalc)
+	// for a file. Idempotent per file_id (at most one active job); a duplicate
+	// enqueue is a no-op. See docs/architecture/recordings.md (P0). The worker
+	// methods (ClaimAnalysisJob/FinishAnalysisJob/UpsertTechColumns/
+	// InsertAudioFingerprint) live on *database.DB only, behind mediaproc's own
+	// interface, so they do not widen this Repository.
+	EnqueueAnalysisJob(ctx context.Context, fileID, now int64) error
+
 	// SetAlbumCover inserts/replaces an album cover row (keyed by albums.id) with
 	// variant-tracking fields (variants_ready reset to 0).
 	SetAlbumCover(ctx context.Context, albumID int64, baseKey, sourceExt, objectKey, mimeType string, now int64) error

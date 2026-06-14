@@ -34,6 +34,10 @@ type Deps struct {
 	// an idle worker wakes immediately rather than waiting for its next poll.
 	// Optional; nil (e.g. in tests) simply skips the wake.
 	ImagePool interface{ Notify() }
+	// MediaPool, when set, is notified after an analysis job (ffprobe + fpcalc)
+	// is enqueued so an idle worker wakes immediately. Optional; nil skips the
+	// wake (tests / open embeddings).
+	MediaPool interface{ Notify() }
 	// UploadLimiter, when set, gates concurrent uploads (global + per-user caps
 	// from [storage]). Optional; nil disables the gate.
 	UploadLimiter *UploadLimiter
@@ -80,6 +84,7 @@ func (d Deps) newHandler() *handler {
 		maxUploadSize: d.MaxUploadSize,
 		authzEnabled:  d.Auth != nil,
 		imagePool:     d.ImagePool,
+		mediaPool:     d.MediaPool,
 		limiter:       d.UploadLimiter,
 		uiConfig:      d.UIConfig,
 	}

@@ -211,6 +211,15 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit(ctx, "file.upload", hash, filename)
 
+	// Enqueue ingest media analysis (ffprobe tech columns + fpcalc fingerprint)
+	// for the new blob. Best-effort: a queue failure is logged, not fatal — the
+	// startup backfill re-enqueues anything missed. See docs/architecture/recordings.md.
+	if err := h.repo.EnqueueAnalysisJob(ctx, f.ID, now); err != nil {
+		log.Printf("enqueue analysis job: hash=%s err=%v", hash, err)
+	} else if h.mediaPool != nil {
+		h.mediaPool.Notify()
+	}
+
 	// Fill the album cover from embedded art when the album has none yet.
 	// cover_found reports that usable embedded art (with album+artist context)
 	// was present; cover_processing reports that this upload actually claimed

@@ -75,6 +75,9 @@ type handler struct {
 	// imagePool, when non-nil, is notified after a cover-variant job is enqueued
 	// so an idle worker wakes immediately. Nil in tests / open embeddings.
 	imagePool interface{ Notify() }
+	// mediaPool, when non-nil, is notified after an analysis job (ffprobe +
+	// fpcalc) is enqueued so an idle worker wakes immediately. Nil in tests.
+	mediaPool interface{ Notify() }
 	// limiter, when non-nil, gates concurrent uploads (global + per-user). Nil
 	// disables the gate (tests / unlimited config).
 	limiter *UploadLimiter

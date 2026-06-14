@@ -17,6 +17,19 @@ listener/route-group model the variants rely on, see
 The Go module path is `daemonlord.ygg/madshare`; the entry point is
 `madshare.go` at the repository root.
 
+### Optional runtime tools (not build-time deps)
+
+Two external binaries enable ingest **media analysis** (see
+[`architecture/recordings.md`](architecture/recordings.md)). Both are looked up
+on `PATH` at startup and are **entirely optional** — neither affects the build,
+and a missing tool only logs a warning and disables its own output:
+
+- **`ffprobe`** (from FFmpeg) — fills the audio tech columns (duration, bitrate,
+  sample rate, channels, codec, bit depth). Absent → those columns stay empty.
+- **`fpcalc`** (Chromaprint) — computes the acoustic fingerprint used for
+  same-audio (recording) identity. Absent → fingerprinting is disabled and
+  duplicate detection degrades to a tag-based check.
+
 ## Standard build
 
 ```bash
