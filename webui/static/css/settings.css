@@ -2,11 +2,6 @@
    Layout/spacing only; colors, buttons, and form inputs reuse app.css tokens
    and classes (.btn, .login-form, .theme-dot). */
 
-.settings-heading {
-  font-size: 1.4rem;
-  margin-bottom: var(--space-5);
-}
-
 .settings-card {
   background: var(--surface);
   border: 1px solid var(--border);
