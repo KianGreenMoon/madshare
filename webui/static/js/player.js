@@ -59,6 +59,7 @@ export function createPlayer(callbacks = {}) {
   const iconPlay     = document.getElementById('iconPlay');
   const iconPause    = document.getElementById('iconPause');
   const volumeSlider = document.getElementById('volume-slider');
+  const qualitySelect = document.getElementById('qualitySelect'); // may be absent
 
   let shuffle = false;
   let repeat  = 'off';                 // 'off' | 'all' | 'one'
@@ -75,6 +76,69 @@ export function createPlayer(callbacks = {}) {
     titleEl.textContent = title || '';
     if (artistEl) artistEl.textContent = artist || '';
     bar.classList.remove('hidden');
+    // A new track resets the quality control until its renditions are fetched
+    // (the controller calls setRenditions); single-rendition tracks stay hidden.
+    setRenditions([], url);
+  }
+
+  // ── Audio quality / renditions (recordings P4) ──
+  // setRenditions populates the quality dropdown from the current track's
+  // recording. renditions is ranked best-first; each carries {url, format,
+  // bitrate, sample_rate, bit_depth, best}. currentURL is what's playing now, so
+  // the control reflects reality without forcing a swap. A list of 0 or 1 hides
+  // the control. No-op when the player-bar has no quality select.
+  function setRenditions(renditions, currentURL) {
+    if (!qualitySelect) return;
+    if (!renditions || renditions.length < 2) {
+      qualitySelect.classList.add('hidden');
+      qualitySelect.replaceChildren();
+      return;
+    }
+    const best = renditions[0];
+    const opts = [makeOption('Auto', best.url, 'auto')];
+    for (const r of renditions) opts.push(makeOption(qualityLabel(r), r.url, 'fixed'));
+    qualitySelect.replaceChildren(...opts);
+    // Reflect the playing rendition: Auto when it is the best, else the match.
+    qualitySelect.value = (currentURL && currentURL === best.url) ? best.url : (currentURL || best.url);
+    // The Auto option shares the best URL; selecting by value lands on whichever
+    // option has it — for "Auto" vs best they are equal, which is fine.
+    qualitySelect.classList.remove('hidden');
+  }
+
+  function makeOption(label, value, kind) {
+    const o = document.createElement('option');
+    o.textContent = label;
+    o.value = value;
+    o.dataset.kind = kind;
+    return o;
+  }
+
+  function qualityLabel(r) {
+    const parts = [r.format || 'audio'];
+    if (r.bitrate) parts.push(Math.round(r.bitrate / 1000) + 'k');
+    else if (r.sample_rate) {
+      let s = (r.sample_rate / 1000).toFixed(1) + 'kHz';
+      if (r.bit_depth) s += '/' + r.bit_depth + 'bit';
+      parts.push(s);
+    }
+    return parts.join(' ');
+  }
+
+  // switchSource swaps the audio to a different rendition URL, preserving the
+  // playback position and play/pause state across the reload.
+  function switchSource(url) {
+    if (!url || url === audio.src) return;
+    const at = audio.currentTime;
+    const wasPlaying = !audio.paused;
+    audio.src = url;
+    audio.addEventListener('loadedmetadata', () => {
+      try { audio.currentTime = at; } catch { /* ignore if not seekable */ }
+      if (wasPlaying) audio.play().catch(() => {});
+    }, { once: true });
+  }
+
+  if (qualitySelect) {
+    qualitySelect.addEventListener('change', () => switchSource(qualitySelect.value));
   }
 
   // Derive the play/pause icon purely from the audio element's state.
@@ -164,6 +228,7 @@ export function createPlayer(callbacks = {}) {
 
   return {
     load,
+    setRenditions,
     toggle,
     play:  () => audio.play().catch(() => {}),
     pause: () => audio.pause(),

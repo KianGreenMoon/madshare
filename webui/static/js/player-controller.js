@@ -117,9 +117,34 @@ function createController() {
     const track = queue[i];
     pendingSeek = resumeAt;
     player.load({ url: track.url, title: track.title, artist: track.artist }, { autoplay });
+    loadRenditions(track);
     persist(resumeAt ?? 0);
     emit('trackchange', track, i);
     updateMediaSession(track);
+  }
+
+  // renditionGen guards against a slow renditions fetch landing after the user
+  // skipped on — only the latest go() wins (recordings P4).
+  let renditionGen = 0;
+
+  // loadRenditions fetches the current track's recording renditions and hands
+  // them to the player so its quality control reflects them. Best-effort: any
+  // failure (or a single-rendition track) simply leaves the control hidden. The
+  // renditions endpoint shares the track URL's origin, so it needs no API base.
+  async function loadRenditions(track) {
+    const gen = ++renditionGen;
+    const url = track && track.url;
+    const at = url ? url.indexOf('/files/') : -1;
+    const m = at >= 0 ? /\/files\/([0-9a-f]{64})\//.exec(url) : null;
+    if (!m) return; // not a content-hash URL (e.g. a preview blob) — no renditions
+    const base = url.slice(0, at); // "" (same-origin) or "https://host"
+    try {
+      const res = await fetch(`${base}/api/tracks/${m[1]}/renditions`);
+      if (!res.ok || gen !== renditionGen) return;
+      const list = await res.json();
+      if (gen !== renditionGen) return; // superseded by a newer go()
+      player.setRenditions(list.map(r => ({ ...r, url: base + r.url })), url);
+    } catch { /* leave the control hidden */ }
   }
 
   // Shuffle reorders the QUEUE ITSELF (Spotify-style): toggling on snapshots

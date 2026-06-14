@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"daemonlord.ygg/madshare/database"
@@ -118,6 +119,59 @@ func TestDuplicatesSplit_NotFound(t *testing.T) {
 	h.duplicatesSplit(rr, splitRequest("5"))
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rr.Code)
+	}
+}
+
+func renditionsRequest(hash string) *http.Request {
+	req := httptest.NewRequest(http.MethodGet, "/api/tracks/"+hash+"/renditions", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("hash", hash)
+	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+}
+
+func TestTrackRenditions_OKRanked(t *testing.T) {
+	repo := &fakeRepo{renditions: []database.DuplicateRendition{
+		{FileID: 1, Hash: "h1", ObjectKey: "h1/a.mp3", Codec: "mp3", MimeType: "audio/mpeg", Bitrate: 320000, ByteSize: 9_000_000},
+		{FileID: 2, Hash: "h2", ObjectKey: "h2/a.flac", Codec: "flac", MimeType: "audio/flac", SampleRate: 44100, BitDepth: 16, ByteSize: 25_000_000},
+	}}
+	h := &handler{repo: repo}
+	rr := httptest.NewRecorder()
+	h.trackRenditions(rr, renditionsRequest(strings.Repeat("a", 64)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var rends []duplicateRenditionDTO
+	if err := json.Unmarshal(rr.Body.Bytes(), &rends); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(rends) != 2 {
+		t.Fatalf("got %d renditions, want 2", len(rends))
+	}
+	for _, r := range rends {
+		if r.FileID == 2 && (!r.Best || r.Rank != 1) {
+			t.Errorf("flac should be best/rank1, got best=%v rank=%d", r.Best, r.Rank)
+		}
+		if r.FileID == 2 && r.URL != "/files/h2/a.flac" {
+			t.Errorf("flac url = %q", r.URL)
+		}
+	}
+}
+
+func TestTrackRenditions_NotFound(t *testing.T) {
+	h := &handler{repo: &fakeRepo{}} // renditions nil
+	rr := httptest.NewRecorder()
+	h.trackRenditions(rr, renditionsRequest(strings.Repeat("a", 64)))
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rr.Code)
+	}
+}
+
+func TestTrackRenditions_BadHash(t *testing.T) {
+	h := &handler{repo: &fakeRepo{}}
+	rr := httptest.NewRecorder()
+	h.trackRenditions(rr, renditionsRequest("nothex"))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rr.Code)
 	}
 }
 

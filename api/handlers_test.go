@@ -438,7 +438,8 @@ type fakeRepo struct {
 	duplicateRecordings []database.DuplicateRecording
 	splitFileID         int64
 	splitNotFound       bool
-	duplicateHashes     map[string]bool // hashes IsDuplicateSubmission reports true
+	duplicateHashes     map[string]bool               // hashes IsDuplicateSubmission reports true
+	renditions          []database.DuplicateRendition // RecordingRenditionsByHash result
 
 	// Base-metadata edit stubs (Phase 5).
 	metaCalls     int
@@ -666,6 +667,10 @@ func (f *fakeRepo) SplitRendition(_ context.Context, fileID int64) (int64, bool,
 
 func (f *fakeRepo) IsDuplicateSubmission(_ context.Context, hash string) (bool, error) {
 	return f.duplicateHashes[hash], nil
+}
+
+func (f *fakeRepo) RecordingRenditionsByHash(_ context.Context, _ string) ([]database.DuplicateRendition, error) {
+	return f.renditions, nil
 }
 
 func (f *fakeRepo) SetAlbumCover(_ context.Context, _ int64, _, _, _, _ string, _ int64) error {

@@ -1,8 +1,8 @@
 # Recordings — same-audio grouping & renditions
 
-**Status:** in progress. **P0–P2 implemented** — P0: `media_analysis_jobs`
-queue + `mediaproc.Pool` worker, ffprobe tech columns, fpcalc
-`audio_fingerprints` (migration `019`). P1: `recordings` overlay +
+**Status:** P0–P4 implemented (single-node; federation deferred). P0:
+`media_analysis_jobs` queue + `mediaproc.Pool` worker, ffprobe tech columns,
+fpcalc `audio_fingerprints` (migration `019`). P1: `recordings` overlay +
 `recording_id`/`recording_pinned`, the fingerprint resolver (inline +
 `BackfillRecordings`), and the deterministic quality ladder
 (`database.RankRenditions`) with its degraded path (migration `020`). P2: the
@@ -10,7 +10,9 @@ queue + `mediaproc.Pool` worker, ffprobe tech columns, fpcalc
 (`content.moderate`), delete via the existing soft-delete. P3: the derived
 duplicate flag (`IsDuplicateSubmission`, fingerprint-or-tag-fallback) suppresses
 self-approve at submit, returns an uploader warning, and highlights the
-moderation queue. P4 remains design only. Builds on the artist/album overlay
+moderation queue. P4: `GET /api/tracks/{hash}/renditions` + the player's
+quality control (rendition switch over HTTP range). P5 (ffmpeg auto-transcode)
+remains future work. Builds on the artist/album overlay
 (`docs/architecture/artist-album-model.md`) and the moderation queue
 (`docs/architecture/moderation.md`). Federation-relevant: a recording is the
 first content identity that is **portable across nodes**.
@@ -194,15 +196,21 @@ The ladder needs the tech columns, which are **NULL in v0** — see Prerequisite
 
 ## Renditions & adaptive playback
 
-A "rendition" is just a file viewed as a member of a recording — there is no
-separate rendition table. The play path exposes the recording's renditions and
-lets the client choose:
+**✅ Implemented.** A "rendition" is just a file viewed as a member of a
+recording — there is no separate rendition table. The play path exposes the
+recording's renditions and lets the client choose:
 
-- A track's API payload gains its recording's rendition list: per rendition the
-  `hash`, codec/format, bitrate, sample rate, size, duration, and ladder rank.
-- The player gets an **Auto / High / Low** quality control. Auto = the ladder's
-  best that fits; Low/High = walk the ladder. (Auto can later measure bandwidth;
-  a federation node can advertise its own ceiling.)
+- `GET /api/tracks/{hash}/renditions` returns the recording's renditions
+  (ranked, best-marked): per rendition the `hash`, play `url`, `format`,
+  `bitrate`, `sample_rate`, `bit_depth`, `size`, `duration`, and `rank`. A
+  single-rendition track returns a one-element list; the endpoint is read-only
+  (playback of any `url` is still gated by `/files/*`).
+- The player (`player.js` + `player-controller.js`) shows a quality dropdown only
+  when the current track has >1 rendition: **Auto** (the ladder's best) plus each
+  rendition best-to-worst. Switching swaps the audio source **in place**,
+  preserving position and play/pause state. (Generalizes the originally-sketched
+  Auto/High/Low into a full per-rendition picker with an Auto default; Auto can
+  later measure bandwidth, and a federation node can advertise its own ceiling.)
 - Delivery is plain **HTTP range requests** — no segmenting needed for "pick one
   rendition and stream it." **Confirmed already in place:** `/files/*` is served
   by `http.FileServer` (`api/api.go`, `fileServer()`), which streams every blob
@@ -322,8 +330,9 @@ above).
   or tag-fallback) suppresses self-approve in `submitMyUploads`, returns an
   uploader `warning`, and flags the moderation queue rows (`duplicate`). Side-by-
   side compare is the `/admin/duplicates` page.
-- **P4 — Adaptive playback.** Rendition list in the track API + Auto/High/Low
-  player control + range-request delivery.
+- **P4 — Adaptive playback. ✅ Done.** `GET /api/tracks/{hash}/renditions` +
+  the player's quality dropdown (Auto + per-rendition, in-place source swap over
+  HTTP range; range delivery was already in place).
 - **P5 (future) — ffmpeg auto-transcode.** Generate missing renditions ourselves
   *into* this model (e.g. a small streaming copy beside a lossless master).
 

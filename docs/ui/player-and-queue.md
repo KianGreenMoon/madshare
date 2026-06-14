@@ -64,6 +64,18 @@ track *errored*, so a broken file can't loop forever), `all` wraps from the last
 track to the first, `off` stops at the end of the queue. Manual **Next/Prev
 always wrap** regardless of repeat.
 
+## Audio quality (renditions)
+
+When the current track's recording has **more than one rendition** (the same
+audio in different encodings — see
+[`../architecture/recordings.md`](../architecture/recordings.md)), a quality
+dropdown appears on the player bar: **Auto** (the quality ladder's best) plus
+each rendition, best-to-worst. On track change `player-controller.js` fetches
+`GET /api/tracks/{hash}/renditions` (best-effort; a single-rendition track leaves
+the control hidden); picking an option swaps the audio source **in place**,
+preserving the playback position and play/pause state. Delivery is plain HTTP
+range requests over `/files/*` — no transcoding or segmenting.
+
 ## Persistence & resume
 
 The queue persists to `localStorage` (`madshare-queue`): visible order, current

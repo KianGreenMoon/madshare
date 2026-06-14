@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"daemonlord.ygg/madshare/database"
 	"github.com/go-chi/chi/v5"
@@ -134,6 +135,30 @@ func codecClassOf(codec string) int {
 	default:
 		return 2
 	}
+}
+
+// trackRenditions handles GET /api/tracks/{hash}/renditions — the renditions of
+// the recording the given track belongs to, ranked by the quality ladder, for
+// the player's Auto/High/Low control (recordings P4). A single-rendition track
+// returns a one-element list; an unknown/non-approved hash 404s. Read-only;
+// playback of any listed URL is still gated by /files/*.
+func (h *handler) trackRenditions(w http.ResponseWriter, r *http.Request) {
+	hash := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "hash")))
+	if !isSHA256Hex(hash) {
+		http.Error(w, "invalid hash", http.StatusBadRequest)
+		return
+	}
+	rends, err := h.repo.RecordingRenditionsByHash(r.Context(), hash)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if len(rends) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	dto := buildDuplicateDTO(database.DuplicateRecording{Renditions: rends})
+	writeJSON(w, http.StatusOK, dto.Renditions)
 }
 
 // duplicatesSplit handles POST /api/admin/duplicates/{file_id}/split — detach a

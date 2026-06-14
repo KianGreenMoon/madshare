@@ -321,6 +321,51 @@ func TestIsDuplicateSubmission_TagFallbackExcludesUntagged(t *testing.T) {
 	}
 }
 
+func TestRecordingRenditionsByHash(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	fp := repeated(0x1A2B3C4D, 120)
+
+	a := insertFP(t, db, "r1", 200, fp)
+	db.ResolveRecording(ctx, a)
+	b := insertFP(t, db, "r2", 200, fp) // grouped with a
+	db.ResolveRecording(ctx, b)
+
+	// Either member returns both renditions of the recording.
+	rends, err := db.RecordingRenditionsByHash(ctx, hash64("r1"))
+	if err != nil {
+		t.Fatalf("renditions: %v", err)
+	}
+	if len(rends) != 2 {
+		t.Errorf("recording renditions = %d, want 2", len(rends))
+	}
+
+	// A lone file (its own recording) returns just itself.
+	c := insertFP(t, db, "r3", 90, repeated(0x99999999, 120))
+	db.ResolveRecording(ctx, c)
+	if rends, _ := db.RecordingRenditionsByHash(ctx, hash64("r3")); len(rends) != 1 {
+		t.Errorf("lone renditions = %d, want 1", len(rends))
+	}
+
+	// Unknown hash → nil.
+	if rends, _ := db.RecordingRenditionsByHash(ctx, hash64("zz")); rends != nil {
+		t.Errorf("unknown hash returned %v, want nil", rends)
+	}
+}
+
+func TestRecordingRenditionsByHash_ExcludesNonApproved(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	// A staged (submitted) file is not yet listenable, so its renditions 404.
+	h := insertApprovedTagged(t, db, "n1", "x", "A", "B")
+	if _, err := db.ExecContext(ctx, `UPDATE files SET review_state='submitted' WHERE hash=?`, h); err != nil {
+		t.Fatalf("set submitted: %v", err)
+	}
+	if rends, _ := db.RecordingRenditionsByHash(ctx, h); rends != nil {
+		t.Errorf("non-approved file returned %v, want nil", rends)
+	}
+}
+
 func TestRankRenditions_LosslessBeatsLossy(t *testing.T) {
 	// A high-bitrate MP3 must still rank below any lossless file.
 	ranked := RankRenditions([]Rendition{

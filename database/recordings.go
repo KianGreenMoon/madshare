@@ -264,6 +264,65 @@ func (db *DB) ListDuplicateRecordings(ctx context.Context) ([]DuplicateRecording
 	return out, rows.Err()
 }
 
+// RecordingRenditionsByHash returns the approved, non-trashed renditions of the
+// recording that the file with the given hash belongs to — the data the player's
+// Auto/High/Low quality control walks (recordings P4). A file with no
+// recording_id (no fingerprint / its own recording) yields just itself. An
+// unknown / non-approved / trashed hash yields nil (the caller 404s).
+func (db *DB) RecordingRenditionsByHash(ctx context.Context, hash string) ([]DuplicateRendition, error) {
+	var (
+		fileID int64
+		recID  sql.NullInt64
+	)
+	err := db.QueryRowContext(ctx,
+		`SELECT id, recording_id FROM files
+		  WHERE hash=? AND deleted_at IS NULL AND review_state='approved'`, hash,
+	).Scan(&fileID, &recID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("renditions: load file: %w", err)
+	}
+	if recID.Valid {
+		return db.renditionsWhere(ctx, "f.recording_id = ?", recID.Int64)
+	}
+	return db.renditionsWhere(ctx, "f.id = ?", fileID)
+}
+
+// renditionsWhere selects approved, non-trashed renditions matching cond (a
+// single-arg WHERE fragment), ordered by file id. Shared by the by-hash lookup.
+func (db *DB) renditionsWhere(ctx context.Context, cond string, arg int64) ([]DuplicateRendition, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT f.id, f.hash, f.object_key, f.byte_size, f.mime_type,
+		        mm.title,
+		        COALESCE(NULLIF(mm.album_artist, ''), mm.artist, ''),
+		        COALESCE(mm.codec, ''), COALESCE(mm.bitrate, 0),
+		        COALESCE(mm.sample_rate, 0), COALESCE(mm.bit_depth, 0),
+		        COALESCE(mm.duration_seconds, 0)
+		   FROM files f
+		   JOIN media_metadata mm ON mm.file_id = f.id
+		  WHERE f.deleted_at IS NULL AND f.review_state='approved' AND `+cond+`
+		  ORDER BY f.id`,
+		arg,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("renditions: query: %w", err)
+	}
+	defer rows.Close()
+	var out []DuplicateRendition
+	for rows.Next() {
+		var r DuplicateRendition
+		if err := rows.Scan(&r.FileID, &r.Hash, &r.ObjectKey, &r.ByteSize, &r.MimeType,
+			&r.Title, &r.Artist, &r.Codec, &r.Bitrate, &r.SampleRate,
+			&r.BitDepth, &r.DurationSeconds); err != nil {
+			return nil, fmt.Errorf("renditions: scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // SplitRendition detaches a file into its own brand-new recording and pins it so
 // the resolver never re-merges it (the "save as another composition" action).
 // found is false (no error) when no live file matches the id. Atomic.

@@ -111,6 +111,9 @@ func RegisterAPI(r chi.Router, d Deps) {
 	r.Get("/api/artists", h.listArtists)
 	r.Get("/api/albums", h.listAlbums)
 	r.Get("/api/tracks", h.listTracks)
+	// Renditions of a track's recording for the player's quality control
+	// (recordings P4). Read-only; playback is still gated by /files/*.
+	r.Get("/api/tracks/{hash}/renditions", h.trackRenditions)
 	r.Get("/api/search", h.search)
 	r.Get("/api/ui/config", h.getUIConfig)
 	// Cover reads are id-addressed (browse DTOs carry the entity id). chi routes

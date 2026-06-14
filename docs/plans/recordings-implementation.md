@@ -207,7 +207,17 @@ each other); non-duplicate submit still self-approves; queue highlight payload.
 
 ---
 
-## P4 — Adaptive playback
+## P4 — Adaptive playback ✅ Done
+
+**Shipped:** `database.RecordingRenditionsByHash` (approved renditions of a
+file's recording, or just itself) on the api `Repository` with a `fakeRepo` stub;
+`GET /api/tracks/{hash}/renditions` (ranked, best-marked, via `buildDuplicateDTO`).
+`player.js` gains `setRenditions` + an in-place `switchSource` (preserves
+position/play state) behind the new `#qualitySelect` control;
+`player-controller.js` fetches renditions on each track change (origin derived
+from the track URL, guarded against stale responses). `player.css` styling.
+Tests in `database/` + `api/`; JS syntax-checked. Player UI itself needs a manual
+browser pass (no JS test harness for the player).
 
 **Track API** — each track payload gains its recording's rendition list (`hash`,
 format, bitrate, sample-rate, size, duration, ladder rank). No new delivery

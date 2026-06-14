@@ -76,16 +76,18 @@ dry-run".)
   return as an additive feature keyed off `album_id`/`artist_id` — recorded as a
   future idea, **not** planned. See `docs/architecture/auth.md`.
 
-## Recordings — same-audio grouping & renditions (designed, not built)
+## Recordings — same-audio grouping & renditions (P0–P4 shipped)
 
-Group files that are the *same audio in different encodings* (FLAC master + MP3
-+ stream copy) under a fingerprint-keyed **recording** overlay, with an
-auto-ranked quality ladder, a moderator duplicates page (delete-with-confirm /
-split-off), a "possible duplicate" flag in moderation (no auto-approve), and
-per-client rendition pick for bandwidth (range requests; segmented ABR is a
-video-era non-goal). Rests on two new ingest passes — `ffprobe` (the
-NULL tech columns) and `fpcalc` (the acoustic fingerprint). Full design,
-phases P0–P5: `docs/architecture/recordings.md`.
+Group files that are the *same audio in different encodings* under a
+fingerprint-keyed **recording** overlay. **P0–P4 are implemented** (single-node):
+the `ffprobe`/`fpcalc` ingest passes, the recording overlay + resolver +
+auto-ranked quality ladder, the `/admin/duplicates` page (delete-with-confirm /
+split-off), the "possible duplicate" flag in moderation (no auto-approve, with a
+tag fallback when `fpcalc` is absent), and per-client rendition pick for
+bandwidth (range requests; segmented ABR is a video-era non-goal). Still future:
+**P5** (ffmpeg auto-transcode of derived renditions) and the cross-node
+fingerprint index (a federation concern). Design: `docs/architecture/recordings.md`;
+build log: `docs/plans/recordings-implementation.md`.
 
 ## Federation (Phase 4, deferred)
 

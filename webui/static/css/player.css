@@ -130,6 +130,19 @@
 
 #volume-slider { width: 76px; }
 
+/* Audio-quality (rendition) selector — recordings P4. Hidden until the current
+   track's recording has more than one rendition. */
+.quality-select {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  padding: 2px 4px;
+  max-width: 130px;
+}
+.quality-select.hidden { display: none; }
+
 /* Player-bar Like button (playlists.md Decision §8) */
 #btnLike:disabled { opacity: 0.35; cursor: default; }
 #btnLike:disabled:hover { color: var(--text-muted); background: none; }

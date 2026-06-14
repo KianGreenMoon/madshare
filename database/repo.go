@@ -231,6 +231,11 @@ type Repository interface {
 	// non-default tag collision. Suppresses self-approve and flags the queue.
 	IsDuplicateSubmission(ctx context.Context, hash string) (bool, error)
 
+	// RecordingRenditionsByHash returns the approved renditions of the file's
+	// recording (recordings P4, the player's quality control). A file with no
+	// recording yields just itself; an unknown/non-approved hash yields nil.
+	RecordingRenditionsByHash(ctx context.Context, hash string) ([]DuplicateRendition, error)
+
 	// SetAlbumCover inserts/replaces an album cover row (keyed by albums.id) with
 	// variant-tracking fields (variants_ready reset to 0).
 	SetAlbumCover(ctx context.Context, albumID int64, baseKey, sourceExt, objectKey, mimeType string, now int64) error
