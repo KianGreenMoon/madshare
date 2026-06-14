@@ -85,6 +85,44 @@ Two seams keep this one implementation rather than a fork:
 `file.upload`-gated upload endpoints `/upload` uses, so no new permission surface
 is introduced.
 
+### Uploads survive in-shell navigation
+
+Leaving `/upload` for another **listening-shell** page (e.g. Library) must not lose
+the intake queue or abort in-progress uploads. The shell never reloads the
+document — it only swaps `<main>` — so the JS heap (the picked `File` objects and
+live `XMLHttpRequest`s) survives; the only reason work was lost before was that the
+page module's `teardown()` deliberately aborted everything and cleared the queue.
+
+The fix mirrors the player: the upload engine is a document-lifetime **singleton**,
+`upload-controller.js` (`getUploadController()`), and `upload.js` is a thin view.
+
+- **Controller owns** the queue/groups/folders state, the worker pool, the in-flight
+  XHR set, the pump loop, and the per-row rendering — including the **persistent
+  `<ul class="queue-list">` node**, which it creates once and keeps alive across
+  swaps (a detached-but-referenced node stays valid and keeps updating). It exposes
+  `addEntries / start / clear / setWorkerCap / ensureConfig` and emits `change`,
+  `announce`, `workercap`, `staged`.
+- **View (`upload.js`)** owns the swappable chrome (drop-zone, slider, buttons,
+  tabs, *My uploads* list). On `init()` it re-attaches the controller's `<ul>` into
+  the freshly-swapped `<main>`, wires chrome → controller, subscribes to the events
+  to sync chrome, and reflects current state. Its `teardown()` only detaches the
+  view's listeners — it **does not** abort uploads, terminate workers, or clear the
+  queue. So you can navigate away mid-upload and find it still running on return.
+
+Two boundaries:
+
+- **Survives in-shell navigation, not a hard refresh / tab close.** Browser security
+  forbids re-reading a user-picked file after a real reload without re-selection, so
+  the queue can't be persisted to storage. A document-level `beforeunload` guard
+  (registered by the controller, active only while work is in flight) shows the
+  native "Leave site?" prompt to prevent *accidental* loss on refresh/close.
+- **Admin is full-page navigation.** Admin pages are not a client router (see *Admin
+  shell*), so admin→admin navigation reloads the document and the heap is gone —
+  uploads cannot survive it without first making admin a single-document shell. The
+  same `beforeunload` guard *does* fire on admin navigation (it's a real navigation),
+  so an in-progress admin upload at least prompts before it's lost. The controller is
+  reusable as-is if the admin section ever becomes a client shell.
+
 ## cmus
 
 `/cmus` (`webui/html/cmus.html`) is a **paused, standalone** view: its own header,
