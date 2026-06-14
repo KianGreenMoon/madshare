@@ -369,7 +369,7 @@ fingerprinting.
 
 ## Gotchas
 
-- New migration (next is **018**) bumps the `database_test.go` version/table
+- New migration (next is **019**) bumps the `database_test.go` version/table
   assertions; new `Repository` methods break the api package's `fakeRepo`
   (`docs/` migration-gotchas note).
 - Fingerprint/tech analysis depends on external binaries — keep startup a
