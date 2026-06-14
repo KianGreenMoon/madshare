@@ -97,7 +97,15 @@ fingerprint row), writes results, then (P1) calls the resolver.
 
 ---
 
-## P1 — Recording overlay + resolver
+## P1 — Recording overlay + resolver ✅ Done
+
+**Shipped:** migration `020`; `database/recordings.go` (`ResolveRecording`,
+`BackfillRecordings`, `FilesNeedingRecording`, duration-shortlisted matching via
+`media.BitErrorRate` with a conservative `maxBitErrorRate`, `RankRenditions` +
+codec classes); resolver wired inline into `mediaproc` (post-fingerprint) and at
+startup in `madshare.go`; `ResolveRecording` added to `mediaproc.Repository`
+(not the api `Repository`, so `fakeRepo` is untouched); tests in `database/` +
+`media/`; schema version `19`→`20`.
 
 **Migration `020_recordings.sql`** — `recordings` table (with
 `preferred_file_id` nullable), `files.recording_id` + `files.recording_pinned`,

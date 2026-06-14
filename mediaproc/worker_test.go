@@ -15,13 +15,14 @@ import (
 // fakeRepo implements mediaproc.Repository for the worker tests. It hands out a
 // single queued job, then reports the queue empty, and records outcomes.
 type fakeRepo struct {
-	mu          sync.Mutex
-	jobs        []*database.AnalysisJob
-	claimCalls  int
-	finishedErr error
-	finished    chan struct{}
-	techCalls   int
-	fpCalls     int
+	mu           sync.Mutex
+	jobs         []*database.AnalysisJob
+	claimCalls   int
+	finishedErr  error
+	finished     chan struct{}
+	techCalls    int
+	fpCalls      int
+	resolveCalls int
 }
 
 func (f *fakeRepo) ClaimAnalysisJob(context.Context) (*database.AnalysisJob, error) {
@@ -56,6 +57,13 @@ func (f *fakeRepo) InsertAudioFingerprint(context.Context, int64, media.Fingerpr
 	f.fpCalls++
 	f.mu.Unlock()
 	return nil
+}
+
+func (f *fakeRepo) ResolveRecording(context.Context, int64) (int64, error) {
+	f.mu.Lock()
+	f.resolveCalls++
+	f.mu.Unlock()
+	return 0, nil
 }
 
 func writeBlob(t *testing.T, audioDir, hash, name string, data []byte) {

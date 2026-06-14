@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math/bits"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -43,6 +44,27 @@ func (f *Fingerprint) Packed() []byte {
 		binary.LittleEndian.PutUint32(b[i*4:], v)
 	}
 	return b
+}
+
+// BitErrorRate returns the fraction of differing bits between two raw
+// fingerprints, compared positionally over their common prefix: 0 = identical,
+// 1 = every compared bit differs. Empty input (no overlap) returns 1.
+//
+// Positional only — v0 does no offset-alignment search, so a frame-shifted
+// re-encode reads as more different than it truly is. That biases toward false
+// negatives (the file lands as its own recording), which the design accepts: a
+// missed grouping loses nothing, whereas a wrong merge would (see
+// docs/architecture/recordings.md, Identity).
+func BitErrorRate(a, b []uint32) float64 {
+	n := min(len(a), len(b))
+	if n == 0 {
+		return 1
+	}
+	var diff int
+	for i := 0; i < n; i++ {
+		diff += bits.OnesCount32(a[i] ^ b[i])
+	}
+	return float64(diff) / float64(n*32)
 }
 
 // DecodeFingerprint unpacks a little-endian uint32 BLOB written by Packed back

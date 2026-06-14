@@ -33,6 +33,10 @@ type Repository interface {
 	FinishAnalysisJob(ctx context.Context, id int64, jobErr error) error
 	UpsertTechColumns(ctx context.Context, fileID int64, ti media.TechInfo) error
 	InsertAudioFingerprint(ctx context.Context, fileID int64, fp media.Fingerprint, now int64) error
+	// ResolveRecording groups the file with its matching recording (or creates a
+	// new one) once its fingerprint exists. Returns 0 when there is nothing to
+	// resolve (no fingerprint / pinned file).
+	ResolveRecording(ctx context.Context, fileID int64) (int64, error)
 }
 
 // Pool manages a fixed-size goroutine pool that drains media_analysis_jobs.
@@ -153,6 +157,10 @@ func (p *Pool) analyze(ctx context.Context, job *database.AnalysisJob) error {
 		if fp, err := media.ComputeFingerprint(ctx, path); err != nil {
 			log.Printf("mediaproc: fpcalc file=%d: %v", job.FileID, err)
 		} else if err := p.repo.InsertAudioFingerprint(ctx, job.FileID, *fp, now); err != nil {
+			return err
+		} else if _, err := p.repo.ResolveRecording(ctx, job.FileID); err != nil {
+			// Fingerprint is stored; only the grouping failed. A DB error is
+			// worth retrying — the startup backfill would also recover it.
 			return err
 		}
 	}

@@ -156,6 +156,16 @@ func main() {
 		}
 	}
 
+	// Resolve recordings for files whose fingerprints already exist but predate
+	// the recording overlay (idempotent; new uploads resolve inline as their
+	// analysis job completes). Fingerprints freshly enqueued above are resolved
+	// inline by the worker, not here.
+	if n, err := db.BackfillRecordings(ctx); err != nil {
+		log.Printf("backfill recordings: %v", err)
+	} else if n > 0 {
+		log.Printf("resolved recordings for %d existing file(s)", n)
+	}
+
 	limiter := api.NewUploadLimiter(
 		cfg.Storage.ServerMaxParallelWorkers,
 		cfg.Storage.UserMaxParallelWorkers,
