@@ -167,7 +167,7 @@ func main() {
 func startListeners(cfg config.Config, deps api.Deps) ([]*http.Server, error) {
 	servers := make([]*http.Server, 0, len(cfg.Listen))
 	for _, lc := range cfg.Listen {
-		handler, err := buildHandler(lc, deps, cfg.WebUI)
+		handler, err := buildHandler(lc, deps, cfg.WebUI, cfg.CORS.AllowedOrigins)
 		if err != nil {
 			return nil, err
 		}
@@ -189,12 +189,13 @@ func startListeners(cfg config.Config, deps api.Deps) ([]*http.Server, error) {
 
 // buildHandler composes the chi router for one listener: shared middleware plus
 // only the route groups named in the listener's serve list. web carries the
-// page-render options ([webui]: api_base + the resolved GitRepo button URL).
-func buildHandler(lc config.ListenConfig, deps api.Deps, web config.WebUIConfig) (http.Handler, error) {
+// page-render options ([webui]: api_base + the resolved GitRepo button URL);
+// corsOrigins is [cors].allowed_origins (empty → no cross-origin headers).
+func buildHandler(lc config.ListenConfig, deps api.Deps, web config.WebUIConfig, corsOrigins []string) (http.Handler, error) {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	r.Use(api.CORS)
+	r.Use(api.CORS(corsOrigins))
 	// Resolve the request's identity (session cookie / bearer token) for every
 	// route; authorization is enforced per group below.
 	if deps.Auth != nil {

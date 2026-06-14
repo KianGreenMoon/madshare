@@ -18,9 +18,30 @@ import (
 
 	"daemonlord.ygg/madshare/api/storage"
 	"daemonlord.ygg/madshare/database"
+	"github.com/go-chi/chi/v5"
 )
 
 // ---- helpers ----------------------------------------------------------------
+
+// newCORSServer starts a server whose CORS middleware is configured with the
+// given allowed origins (mirroring madshare.go's buildHandler), so the CORS
+// tests can verify the configurable policy end-to-end. Pass no origins for the
+// closed default.
+func newCORSServer(t *testing.T, allowed ...string) *httptest.Server {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	r := chi.NewRouter()
+	r.Use(CORS(allowed))
+	RegisterAPI(r, Deps{Store: storage.NewLocal(dir), Repo: db, CacheDir: t.TempDir(), FilesDir: dir, MaxUploadSize: testMaxUpload})
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+	return srv
+}
 
 // buildUploadRequest creates a multipart POST request with the given filename,
 // MIME type, and body content directed at /files/upload.
@@ -849,14 +870,18 @@ func TestWriteJSON_ContentType(t *testing.T) {
 	}
 }
 
-// TestCORS_OnErrorResponse verifies the wildcard CORS header is set even on
-// error responses written via http.Error — the corsMiddleware applies to every
-// route, so cross-origin JS clients can read error bodies. A bad upload (no
-// multipart body) exercises an http.Error path.
+// TestCORS_OnErrorResponse verifies the CORS header is echoed for an allowed
+// origin even on error responses written via http.Error — the middleware
+// applies to every route, so cross-origin JS clients can read error bodies. A
+// bad upload (no multipart body) exercises an http.Error path.
 func TestCORS_OnErrorResponse(t *testing.T) {
-	srv := newTestServer(t)
+	const origin = "https://ui.example"
+	srv := newCORSServer(t, origin)
 
-	resp, err := http.Post(srv.URL+"/files/upload", "text/plain", strings.NewReader("not multipart"))
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/files/upload", strings.NewReader("not multipart"))
+	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("Origin", origin)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -865,28 +890,86 @@ func TestCORS_OnErrorResponse(t *testing.T) {
 	if resp.StatusCode < 400 {
 		t.Fatalf("expected an error status, got %d", resp.StatusCode)
 	}
-	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin on error = %q, want *", got)
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != origin {
+		t.Errorf("Access-Control-Allow-Origin on error = %q, want %q (echoed)", got, origin)
 	}
 }
 
-// TestCORS_Preflight verifies an OPTIONS preflight request is answered with the
-// CORS headers and no route 405.
+// TestCORS_Preflight verifies an OPTIONS preflight from an allowed origin is
+// answered 204 with the origin echoed and the methods (incl. DELETE) advertised.
 func TestCORS_Preflight(t *testing.T) {
-	srv := newTestServer(t)
+	const origin = "https://ui.example"
+	srv := newCORSServer(t, origin)
 
 	req, _ := http.NewRequest(http.MethodOptions, srv.URL+"/files/upload", nil)
+	req.Header.Set("Origin", origin)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 
-	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want *", got)
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != origin {
+		t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, origin)
 	}
 	if resp.StatusCode != http.StatusNoContent {
 		t.Errorf("preflight status = %d, want 204", resp.StatusCode)
+	}
+	if m := resp.Header.Get("Access-Control-Allow-Methods"); !strings.Contains(m, "POST") || !strings.Contains(m, "DELETE") {
+		t.Errorf("Allow-Methods = %q, want POST and DELETE", m)
+	}
+}
+
+// TestCORS_DefaultClosed verifies the default (empty allow-list) emits no CORS
+// header — the bundled UI is same-origin and a cross-origin browser is blocked.
+func TestCORS_DefaultClosed(t *testing.T) {
+	srv := newTestServer(t) // NewRouter → CORS(nil)
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/files", nil)
+	req.Header.Set("Origin", "https://ui.example")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want empty (closed default)", got)
+	}
+}
+
+// TestCORS_Wildcard verifies "*" allows any origin, echoed literally and without
+// credentials (per the CORS spec). A disallowed origin under a specific
+// allow-list gets no header.
+func TestCORS_Wildcard(t *testing.T) {
+	srv := newCORSServer(t, "*")
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/files", nil)
+	req.Header.Set("Origin", "https://anything.example")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want *", got)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Errorf("Allow-Credentials = %q, want empty under wildcard", got)
+	}
+}
+
+// TestCORS_DisallowedOrigin verifies an origin outside the allow-list gets no
+// CORS header (the browser then blocks the cross-origin read).
+func TestCORS_DisallowedOrigin(t *testing.T) {
+	srv := newCORSServer(t, "https://ui.example")
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/files", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want empty for a disallowed origin", got)
 	}
 }
 
@@ -1054,19 +1137,26 @@ func TestListFiles_DBError(t *testing.T) {
 	}
 }
 
-// TestListFiles_CORSHeader verifies the /api/files response carries the
-// wildcard CORS header (applied by corsMiddleware at the router level).
+// TestListFiles_CORSHeader verifies the /api/files response carries the echoed
+// CORS header for an allowed origin (applied by the CORS middleware at the
+// router level), with Vary: Origin so caches key on it.
 func TestListFiles_CORSHeader(t *testing.T) {
-	srv := newTestServer(t)
+	const origin = "https://ui.example"
+	srv := newCORSServer(t, origin)
 
-	resp, err := http.Get(srv.URL + "/api/files")
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/files", nil)
+	req.Header.Set("Origin", origin)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 
-	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want *", got)
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != origin {
+		t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, origin)
+	}
+	if !strings.Contains(resp.Header.Get("Vary"), "Origin") {
+		t.Errorf("Vary = %q, want it to include Origin", resp.Header.Get("Vary"))
 	}
 }
 

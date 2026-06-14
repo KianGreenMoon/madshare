@@ -376,3 +376,69 @@ func TestLoad_GitRepoNonHTTP_Warns(t *testing.T) {
 		t.Errorf("expected a git_repo warning, got %v", cfg.Warnings())
 	}
 }
+
+// ── [cors].allowed_origins ───────────────────────────────────────────────────
+
+func TestLoad_CORS_ValidOrigins(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "cors.toml")
+	os.WriteFile(f, []byte(validListeners+
+		"[cors]\nallowed_origins = [\"https://ui.example\", \"http://localhost:5173\", \"*\"]\n"), 0o600)
+	cfg, err := config.Load(f)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.CORS.AllowedOrigins) != 3 {
+		t.Errorf("AllowedOrigins = %v, want 3 entries", cfg.CORS.AllowedOrigins)
+	}
+}
+
+func TestLoad_CORS_InvalidOrigin_Errors(t *testing.T) {
+	for _, bad := range []string{
+		"ui.example",              // no scheme
+		"https://ui.example/app",  // has a path
+		"https://ui.example?x=1",  // has a query
+		"ftp://ui.example",        // wrong scheme
+		"https://",                // no host
+	} {
+		f := filepath.Join(t.TempDir(), "cors.toml")
+		os.WriteFile(f, []byte(validListeners+"[cors]\nallowed_origins = [\""+bad+"\"]\n"), 0o600)
+		if _, err := config.Load(f); err == nil {
+			t.Errorf("Load with origin %q = nil error, want rejection", bad)
+		}
+	}
+}
+
+func TestLoad_CORS_WildcardPlusSpecific_Warns(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "cors.toml")
+	os.WriteFile(f, []byte(validListeners+
+		"[cors]\nallowed_origins = [\"*\", \"https://ui.example\"]\n"), 0o600)
+	cfg, err := config.Load(f)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !anyContains(cfg.Warnings(), "redundant") {
+		t.Errorf("want a wildcard+specific redundancy warning, got %v", cfg.Warnings())
+	}
+}
+
+func TestLoad_CORS_APIBaseWithoutOrigins_Warns(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "cors.toml")
+	os.WriteFile(f, []byte(validListeners+
+		"[webui]\napi_base = \"https://media.example.org\"\n"), 0o600)
+	cfg, err := config.Load(f)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !anyContains(cfg.Warnings(), "cors.allowed_origins is empty") {
+		t.Errorf("want an api_base-without-cors warning, got %v", cfg.Warnings())
+	}
+}
+
+func anyContains(ss []string, sub string) bool {
+	for _, s := range ss {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}

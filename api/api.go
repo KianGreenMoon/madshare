@@ -217,29 +217,70 @@ func NewRouter(store storage.Storage, repo database.Repository, cacheDir, filesD
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	r.Use(CORS)
+	r.Use(CORS(nil)) // closed by default; configure [cors].allowed_origins for cross-origin
 	RegisterAPI(r, d)
 	RegisterAdmin(r, d)
 	return r
 }
 
-// CORS sets permissive CORS headers on every response, including error
-// responses written via http.Error (which previously carried none, so
-// cross-origin JS clients could not read the error body). It also answers
-// preflight OPTIONS requests directly. With the bundled, same-origin web UI
-// these headers are inert; they matter for separately hosted or non-browser
-// clients. (Revisit making this opt-in alongside the auth layer.)
-func CORS(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, PATCH, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
+// CORS-preflight advertisements, attached only when an origin is granted.
+const (
+	corsMethods = "POST, GET, PATCH, DELETE, OPTIONS"
+	corsHeaders = "Content-Type, Authorization"
+	corsMaxAge  = "600"
+)
+
+// CORS returns middleware implementing the configurable cross-origin policy
+// from [cors].allowed_origins. It also answers preflight OPTIONS directly so a
+// granted origin can read error bodies and use non-simple methods.
+//
+//   - empty allow-list (the default) → no CORS headers are emitted. The bundled
+//     web UI is same-origin and needs none; cross-origin browsers are blocked.
+//   - "*" present                    → any origin is allowed, sent as a literal
+//     "*" (and, per the CORS spec, without credentials).
+//   - specific origins               → only those exact origins are allowed; a
+//     matching request's Origin is echoed back with Vary: Origin and
+//     Access-Control-Allow-Credentials, so a separately hosted UI may send the
+//     session cookie or a bearer token.
+//
+// Non-browser clients ignore CORS entirely, so an empty allow-list does not
+// affect API tokens / curl.
+func CORS(allowedOrigins []string) func(http.Handler) http.Handler {
+	wildcard := false
+	allowed := make(map[string]bool, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		if o == "*" {
+			wildcard = true
+			continue
 		}
-		next.ServeHTTP(w, r)
-	})
+		allowed[o] = true
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if origin := r.Header.Get("Origin"); origin != "" {
+				switch {
+				case wildcard:
+					w.Header().Set("Access-Control-Allow-Origin", "*")
+				case allowed[origin]:
+					w.Header().Add("Vary", "Origin")
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					w.Header().Set("Access-Control-Allow-Credentials", "true")
+				}
+				// When an origin was granted above, advertise the methods/headers
+				// a preflight needs (harmless on a non-preflight response).
+				if w.Header().Get("Access-Control-Allow-Origin") != "" {
+					w.Header().Set("Access-Control-Allow-Methods", corsMethods)
+					w.Header().Set("Access-Control-Allow-Headers", corsHeaders)
+					w.Header().Set("Access-Control-Max-Age", corsMaxAge)
+				}
+			}
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // noListFS wraps an http.FileSystem to disable directory listings: opening a

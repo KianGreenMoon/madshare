@@ -173,6 +173,34 @@ the nav button: `GET /source` (the AGPL §13 corresponding-source download)
 stays available regardless — its own nav link is currently hidden, see
 `docs/api/source.md`.
 
+### 4.3b `[cors].allowed_origins` (optional)
+
+```toml
+[cors]
+allowed_origins = ["https://ui.example.org"]
+```
+
+Controls the `Access-Control-Allow-Origin` policy applied as shared middleware
+(`api.CORS`) on every listener. The bundled web UI is **same-origin**, so it
+needs no CORS at all; the default allow-list is therefore **empty and emits no
+CORS headers** — a cross-origin browser is blocked, while non-browser clients
+(API tokens, `curl`) are unaffected since they ignore CORS.
+
+| `allowed_origins` | Behavior |
+|-------------------|----------|
+| empty / omitted (default) | no CORS headers; cross-origin browsers blocked |
+| `["*"]` | any origin, sent as a literal `*` (no credentials, per the CORS spec) |
+| `["https://a", …]` | only those exact origins; a match is echoed back with `Vary: Origin` and `Access-Control-Allow-Credentials: true` |
+
+Set it only for a **separately hosted** browser UI or a third-party web client,
+to that client's own origin (`scheme://host[:port]` as it appears in the
+browser's address bar) — **not** `[webui].api_base`. A malformed entry (missing
+scheme, a path/query, a non-`http(s)` scheme, no host) is a **fatal** config
+error, since a silently non-matching origin is a security footgun. Startup
+**warns** when `api_base` is set but the allow-list is empty (the separately
+hosted UI would be blocked), and when `*` is listed alongside specific origins
+(the specifics are redundant).
+
 ### 4.4 Defaults (no config file, or omitted keys)
 
 If no `[[listen]]` is given, the default is a single loopback listener serving
@@ -307,7 +335,10 @@ Resolved with the project owner on 2026-05-29:
    addresses; convenience/defense-in-depth on clearnet. Runs in the
    `buildHandler` shared middleware.
 
-5. **CORS once same-origin.** Kept: `api.CORS` runs as shared middleware on every
-   listener. It is harmless same-origin and still helps non-browser/remote
-   clients. (Whether to make it opt-in per listener can be revisited later.)
+5. **CORS is opt-in, default closed.** `api.CORS` runs as shared middleware on
+   every listener but emits headers only for origins in `[cors].allowed_origins`
+   (§4.3b). The bundled UI is same-origin and needs none, so the default
+   allow-list is empty — no `Access-Control-Allow-Origin` is sent, rather than
+   the former blanket `*`. Specific origins are echoed with credentials; `*`
+   remains available for operators who deliberately want an open API.
 ```

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"runtime"
 	"slices"
@@ -34,6 +35,7 @@ type Config struct {
 	Database DatabaseConfig `toml:"database"`
 	Storage  StorageConfig  `toml:"storage"`
 	Auth     AuthConfig     `toml:"auth"`
+	CORS     CORSConfig     `toml:"cors"`
 
 	// warnings accumulates non-fatal advisories produced while loading (e.g.
 	// clamped out-of-range worker counts). It is unexported so it is not a TOML
@@ -103,6 +105,17 @@ func (w WebUIConfig) GitRepoURL() string {
 		return DefaultGitRepoURL
 	}
 	return strings.TrimSpace(*w.GitRepo)
+}
+
+// CORSConfig controls cross-origin access to the API. AllowedOrigins is the
+// browser-origin allow-list emitted as Access-Control-Allow-Origin. Empty (the
+// default) emits no CORS headers — the bundled web UI is same-origin and needs
+// none, and non-browser clients (API tokens, curl) ignore CORS. A single "*"
+// allows any origin (echoed as "*", without credentials). Otherwise list exact
+// origins as scheme://host[:port]; a matching request's Origin is echoed back
+// and may carry credentials. See docs/architecture/listeners-and-config.md.
+type CORSConfig struct {
+	AllowedOrigins []string `toml:"allowed_origins"`
 }
 
 type DatabaseConfig struct {
@@ -257,7 +270,29 @@ func (c Config) validate() error {
 	if c.Storage.MaxUploadMB > MaxUploadMBLimit {
 		return fmt.Errorf("config: storage.max_upload_mb must not exceed %d", MaxUploadMBLimit)
 	}
+	if err := c.validateCORS(); err != nil {
+		return err
+	}
 	return c.validateListeners()
+}
+
+// validateCORS rejects malformed allowed-origin entries. A silently non-matching
+// origin would be a security footgun (the operator thinks they granted access),
+// so a bad value is a hard error, like an invalid allow_from CIDR. Each entry
+// must be "*" or an absolute scheme://host[:port] with no path/query/fragment.
+func (c Config) validateCORS() error {
+	for _, o := range c.CORS.AllowedOrigins {
+		if o == "*" {
+			continue
+		}
+		u, err := url.Parse(o)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") ||
+			u.Host == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("config: cors.allowed_origins has invalid origin %q "+
+				`(want "*" or scheme://host[:port])`, o)
+		}
+	}
+	return nil
 }
 
 func (c Config) validateListeners() error {
@@ -336,6 +371,15 @@ func (c Config) Warnings() []string {
 		if l.Serves(GroupWebUI) && !l.Serves(GroupAPI) {
 			w = append(w, fmt.Sprintf("listen[%d] serves %q without %q; the web UI would load but its API calls would 404", i, GroupWebUI, GroupAPI))
 		}
+	}
+	// A separately hosted UI ([webui].api_base set) makes cross-origin browser
+	// calls, which an empty CORS allow-list blocks. Flag the likely misconfig.
+	if c.WebUI.APIBase != "" && len(c.CORS.AllowedOrigins) == 0 {
+		w = append(w, "webui.api_base is set (separately hosted UI) but cors.allowed_origins is empty; "+
+			"the browser UI's cross-origin API calls will be blocked — add its origin to [cors].allowed_origins")
+	}
+	if slices.Contains(c.CORS.AllowedOrigins, "*") && len(c.CORS.AllowedOrigins) > 1 {
+		w = append(w, `cors.allowed_origins contains "*" plus specific origins; "*" already allows every origin, so the specific entries are redundant`)
 	}
 	return w
 }

@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"daemonlord.ygg/madshare/api/storage"
@@ -354,7 +353,8 @@ func TestAdminPrune_ConfirmDeletesDangling(t *testing.T) {
 }
 
 // TestAdminRoutes_Wired exercises the endpoints through the full router so the
-// route registration, hash param, and CORS DELETE method are all covered.
+// route registration and hash param are covered. (CORS preflight, incl. the
+// DELETE method advertisement, is covered by TestCORS_Preflight.)
 func TestAdminRoutes_Wired(t *testing.T) {
 	dir := t.TempDir()
 	db, err := database.Open(":memory:")
@@ -385,17 +385,6 @@ func TestAdminRoutes_Wired(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("DELETE status = %d, want 200", resp.StatusCode)
-	}
-
-	// CORS preflight for DELETE must advertise the method.
-	pre, _ := http.NewRequest(http.MethodOptions, srv.URL+"/api/admin/files/"+hash, nil)
-	preResp, err := http.DefaultClient.Do(pre)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer preResp.Body.Close()
-	if methods := preResp.Header.Get("Access-Control-Allow-Methods"); !strings.Contains(methods, "DELETE") {
-		t.Errorf("Allow-Methods = %q, want it to include DELETE", methods)
 	}
 }
 

@@ -41,6 +41,18 @@ serve = ["api", "webui", "admin"]
 #api_base = "https://media.example.org"
 #git_repo = "https://github.com/KianGreenMoon/madshare"
 
+# Cross-origin (CORS) access to the API. The bundled web UI is same-origin and
+# needs none, so the default emits NO CORS headers (cross-origin browsers are
+# blocked; non-browser clients like API tokens / curl are unaffected). Set this
+# only for a SEPARATELY hosted browser UI or a third-party web client — it must
+# match that UI's own origin (the scheme://host[:port] in the browser's URL bar),
+# not [webui].api_base.
+#   - list exact origins -> each is echoed back, with credentials allowed
+#   - a single "*"        -> any origin, sent as "*" (no credentials, per spec)
+# A malformed origin (missing scheme, has a path, etc.) is a fatal config error.
+#[cors]
+#allowed_origins = ["https://ui.example.org"]
+
 # First-run admin bootstrap. These are consumed ONLY when the users table is
 # empty (a fresh database): they create the first admin account, which is then
 # forced to change its password on first login. On a fresh DB the user is
