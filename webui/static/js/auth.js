@@ -23,11 +23,12 @@ function hasAnyPerm(needed) {
 }
 
 // applyNavPermissions removes the Upload / Admin header links and the Playlists
-// library subtab when the current principal (signed-in or anonymous) lacks the
-// rights — they shouldn't see entries for pages they cannot use. It gates both the
-// persistent header nav and the in-<main> subtab bar (.subtabs); the latter is
-// re-rendered on every shell swap, so the shell re-runs this after each navigation.
-// Exported for that reason. Idempotent (already-removed links match nothing).
+// library subtab when the current principal lacks the rights. The header and the
+// subtab bar are now rendered with the right gates SERVER-SIDE (webui makeHandler),
+// so there's no first-paint flash; this is the CLIENT-SIDE RECONCILER for the two
+// cases the server render can't cover: a page rendered for a since-changed session
+// (e.g. signed out in another tab), and the in-<main> subtab bar (.subtabs) after a
+// shell swap. Exported for that reason. Idempotent (already-removed links match nothing).
 export function applyNavPermissions() {
   const gates = [['/upload', UPLOAD_PERMS], ['/admin', ADMIN_PERMS], ['/playlists', PLAYLISTS_PERMS]];
   for (const [href, needed] of gates) {
@@ -113,10 +114,15 @@ export async function initAuth() {
   const loginCancel   = document.getElementById('loginCancel');
   const loginClose    = document.getElementById('loginClose');
 
+  // The server already painted the correct state (no FOUC); this only reconciles a
+  // mismatch — e.g. a signed-in header whose session expired before this /me call.
   if (_identity) {
     userArea.hidden  = false;
     userName.textContent = _identity.username;
     signInBtn.hidden = true;
+  } else {
+    userArea.hidden  = true;
+    signInBtn.hidden = false;
   }
 
   signInBtn.addEventListener('click', openLoginModal);

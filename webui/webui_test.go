@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"daemonlord.ygg/madshare/auth"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -101,6 +102,57 @@ func TestHeaderUserArea(t *testing.T) {
 	}
 	if strings.Contains(body, "theme-switcher") {
 		t.Errorf("header: theme switcher dots should be gone")
+	}
+}
+
+// TestHeaderAuthState guards the server-side auth rendering that kills the header
+// FOUC: an anonymous load omits the privileged nav links and shows Sign in with
+// the user area hidden; a signed-in load paints the username + user area and the
+// permitted links straight away (no client round-trip). See webui.makeHandler.
+func TestHeaderAuthState(t *testing.T) {
+	r := chi.NewRouter()
+	Register(r, "", "")
+
+	// Anonymous (no identity in context).
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	anon := rec.Body.String()
+	if strings.Contains(anon, `href="/upload"`) || strings.Contains(anon, `href="/admin"`) {
+		t.Errorf("anonymous header should omit the Upload/Admin nav links")
+	}
+	if strings.Contains(anon, `href="/playlists"`) {
+		t.Errorf("anonymous header should omit the Playlists subtab")
+	}
+	if !strings.Contains(anon, `id="signInBtn">`) {
+		t.Errorf("anonymous header should show Sign in (not hidden)")
+	}
+	if !strings.Contains(anon, `id="userArea" hidden`) {
+		t.Errorf("anonymous header should hide the user area")
+	}
+
+	// Signed-in admin: privileged links present, user area shows the username.
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = req.WithContext(auth.WithIdentity(req.Context(), &auth.Identity{
+		Username: "alice",
+		Permissions: map[string]bool{
+			auth.PermFileUpload:    true,
+			auth.PermFileDelete:    true,
+			auth.PermContentAccess: true,
+		},
+	}))
+	r.ServeHTTP(rec, req)
+	in := rec.Body.String()
+	for _, want := range []string{`href="/upload"`, `href="/admin"`, `href="/playlists"`, `>alice</a>`} {
+		if !strings.Contains(in, want) {
+			t.Errorf("signed-in header missing %q", want)
+		}
+	}
+	if strings.Contains(in, `id="userArea" hidden`) {
+		t.Errorf("signed-in header should show the user area (not hidden)")
+	}
+	if !strings.Contains(in, `id="signInBtn" hidden`) {
+		t.Errorf("signed-in header should hide the Sign in button")
 	}
 }
 

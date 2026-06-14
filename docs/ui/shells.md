@@ -17,10 +17,10 @@ intercept `/admin*` links — those are hard navigations into the other shell.
 
 The header nav lists **sections**, not individual pages. **Library** is one
 section spanning a subtab bar (`{{define "library-subnav"}}` in `partials.html`,
-class `.section-tabs`) rendered at the top of `<main>` on each listening page:
+class `.subtabs`) rendered at the top of `<main>` on each listening page:
 **Music** (`/`, the artist/album browse) and **Playlists** (`/playlists`) today,
 with Most played / Recently added / Podcasts intended later — each is just another
-`.section-tab` link plus its route. Upload is its own section.
+`.subtab` link plus its route. Upload is its own section.
 
 Active state is two-level:
 
@@ -41,9 +41,22 @@ Playlists"): it holds only the drill path *below* the section root (artist /
 album, or the open playlist's name) and is hidden entirely at a section's top
 level. Clicking the active subtab returns to that top.
 
-The subtab bar is permission-gated like the header: `applyNavPermissions` (auth.js)
-removes the Playlists tab for a principal without `content.access`, and the shell
-re-runs it after every swap (the swapped-in bar always ships all tabs).
+### Header auth state is server-rendered
+
+The header's auth-dependent parts are rendered **server-side per request**
+(`webui.makeHandler` fills `pageData` from the request-context identity), so the
+first paint is already correct — no FOUC. Specifically: the **Upload** / **Admin**
+nav links and the **Playlists** subtab are emitted only for a principal that holds
+the permission, and the user area shows the username + **Log out** (vs. **Sign in**)
+straight away rather than swapping in after a `/api/auth/me` round-trip. This is a
+UX hint only — the API still enforces every gate — so the per-user HTML is sent
+`Cache-Control: no-store`. Login and logout both reload the page, so the server
+re-renders on every auth-state change; the client never has to *add* links.
+
+`applyNavPermissions` (auth.js) stays as the **client-side reconciler**: it removes
+a link/subtab the server rendered for a session that has since changed (e.g. signed
+out in another tab), and re-gates the swapped-in subtab bar after each navigation.
+It only ever removes, and is idempotent — for the common case it's a no-op.
 
 ## Admin shell
 

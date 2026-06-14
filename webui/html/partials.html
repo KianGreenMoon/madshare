@@ -7,12 +7,16 @@
          data-section lets the shell router keep it active after a client-side
          swap (shell.js setActiveNav). */}}
     <a href="/" data-section="library" class="nav-link{{if eq .Section "library"}} nav-link--active{{end}}"{{if eq .Section "library"}} aria-current="page"{{end}}>Library</a>
-    <a href="/upload" class="nav-link{{if eq .Page "upload"}} nav-link--active{{end}}"{{if eq .Page "upload"}} aria-current="page"{{end}}>Upload</a>
+    {{/* Privileged links are rendered server-side only for principals that hold the
+         permission, so an anonymous/low-priv visitor never sees a flash of links
+         they can't use (the API enforces the same gates). Login/logout reload the
+         page, so the server re-renders these on every auth change. */}}
+    {{if .CanUpload}}<a href="/upload" class="nav-link{{if eq .Page "upload"}} nav-link--active{{end}}"{{if eq .Page "upload"}} aria-current="page"{{end}}>Upload</a>{{end}}
     {{/* Admin opens in the SAME tab (owner decision 2026-06-10, reversing the
          Phase-1 new-tab default). Admin pages are outside the shell, so this
          is a full page load — playback in this tab stops on entry. The shell
          router handles it via its non-shell-page fallback (location.assign). */}}
-    <a href="/admin" class="nav-link{{if eq .Page "admin"}} nav-link--active{{end}}"{{if eq .Page "admin"}} aria-current="page"{{end}}>Admin</a>
+    {{if .CanAdmin}}<a href="/admin" class="nav-link{{if eq .Page "admin"}} nav-link--active{{end}}"{{if eq .Page "admin"}} aria-current="page"{{end}}>Admin</a>{{end}}
     {{/* About: a mini-menu gathering the project links (GitRepo, the AGPL §13
          Source archive, the License) plus a Version entry that opens the About
          modal. Wired by about-menu.js (initAboutMenu), loaded on both the shell
@@ -39,11 +43,14 @@
          page; the forced first-run password change still uses #passModal below.
          It's a plain <a> so the shell router treats it as in-shell navigation;
          its text is filled in by auth.js. */}}
-    <div class="user-area" id="userArea" hidden>
-      <a href="/settings" class="nav-link{{if eq .Page "settings"}} nav-link--active{{end}}"{{if eq .Page "settings"}} aria-current="page"{{end}} id="userName" title="Settings"></a>
+    {{/* Both controls always exist (auth.js toggles them on a session edge), but
+         the server sets the correct initial state so there's no FOUC: a signed-in
+         load paints the username + Log out straight away, never "Sign in" first. */}}
+    <div class="user-area" id="userArea"{{if not .SignedIn}} hidden{{end}}>
+      <a href="/settings" class="nav-link{{if eq .Page "settings"}} nav-link--active{{end}}"{{if eq .Page "settings"}} aria-current="page"{{end}} id="userName" title="Settings">{{.Username}}</a>
       <button class="btn btn-neutral" id="logoutBtn">Log out</button>
     </div>
-    <button class="btn btn-neutral" id="signInBtn">Sign in</button>
+    <button class="btn btn-neutral" id="signInBtn"{{if .SignedIn}} hidden{{end}}>Sign in</button>
     {{template "header-actions-extra" .}}
   </div>
 </header>
@@ -132,7 +139,7 @@
 {{define "library-subnav"}}
 <nav class="subtabs" aria-label="Library sections">
   <a href="/" class="subtab{{if eq .Page "library"}} is-active{{end}}"{{if eq .Page "library"}} aria-current="page"{{end}}>Music</a>
-  <a href="/playlists" class="subtab{{if eq .Page "playlists"}} is-active{{end}}"{{if eq .Page "playlists"}} aria-current="page"{{end}}>Playlists</a>
+  {{if .CanPlaylists}}<a href="/playlists" class="subtab{{if eq .Page "playlists"}} is-active{{end}}"{{if eq .Page "playlists"}} aria-current="page"{{end}}>Playlists</a>{{end}}
 </nav>
 {{end}}
 

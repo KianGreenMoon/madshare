@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net/http"
 
+	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/internal/version"
 	"github.com/go-chi/chi/v5"
 )
@@ -99,6 +100,13 @@ var adminSubPages = map[string]*template.Template{
 // Version and Commit feed the header's About box: Version is the release tag
 // (or short commit hash, or "" when unknown at build time) and Commit is the
 // full commit hash; both come from internal/version and are constant per build.
+// The auth fields are filled per-request from the request-context identity so the
+// shared header renders its true state from the first paint — no client-side FOUC
+// of the user area, and no flash of nav links the principal can't use. They are a
+// UX hint only; the API still enforces every gate. SignedIn drives the user area
+// vs. Sign-in button (and carries Username); Can* gate the Upload/Admin nav links
+// and the Playlists subtab. Login and logout both reload the page, so the server
+// re-renders on every auth-state change — the client never has to add links.
 type pageData struct {
 	APIURL  string
 	Page    string
@@ -107,6 +115,12 @@ type pageData struct {
 	GitRepo string
 	Version string
 	Commit  string
+
+	SignedIn     bool
+	Username     string
+	CanUpload    bool
+	CanAdmin     bool
+	CanPlaylists bool
 }
 
 // verInfo is resolved once: the build metadata is constant for the process.
@@ -116,8 +130,21 @@ func makeHandler(tmpl *template.Template, tmplName string, data pageData) http.H
 	data.Version = verInfo.Version
 	data.Commit = verInfo.Commit
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Copy the closure's data so concurrent requests don't race on the per-
+		// request auth fields, then fill them from the context identity.
+		d := data
+		if id := auth.FromContext(r.Context()); id != nil {
+			d.SignedIn = true
+			d.Username = id.Username
+			d.CanUpload = id.Has(auth.PermFileUpload)
+			d.CanAdmin = id.Has(auth.PermFileDelete) || id.Has(auth.PermUserManage)
+			d.CanPlaylists = id.Has(auth.PermContentAccess)
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := tmpl.ExecuteTemplate(w, tmplName, data); err != nil {
+		// The header now carries per-user auth state — keep shared caches from
+		// serving one user's rendered header to another.
+		w.Header().Set("Cache-Control", "no-store")
+		if err := tmpl.ExecuteTemplate(w, tmplName, d); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	}
