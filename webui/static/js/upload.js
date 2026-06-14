@@ -22,8 +22,9 @@ const API = document.querySelector('meta[name="api-url"]')?.content || '';
 let previewPlay = (tracks, idx) => getController().setQueue(tracks, idx);
 
 // ── DOM refs (the swappable chrome; assigned by queryRefs() in init) ──────────
-// queueList is NOT here — that <ul> belongs to the controller (persistent) and is
-// re-parented into the page by attachQueueList().
+// uploadQueueList is NOT here — that <ul> belongs to the controller (persistent)
+// and is re-parented into the page by attachQueueList(). Its id is distinct from
+// the playback queue panel's #queueList so the two never collide on this page.
 let dropZone, fileInput, folderInput, addMusicBtn, addMenu, chooseFilesBtn, chooseFolderBtn;
 let workersRange, workersValue, startBtn, clearBtn, queueEmpty;
 let srStatus, precheckToggle;
@@ -102,8 +103,8 @@ export function teardown() {
 // attachQueueList re-parents the controller's persistent <ul> into the freshly
 // swapped page, replacing the server-rendered placeholder of the same id.
 function attachQueueList() {
-  const placeholder = document.getElementById('queueList');
-  const ul = ctrl.queueListEl;
+  const placeholder = document.getElementById('uploadQueueList');
+  const ul = ctrl.uploadQueueListEl;
   if (placeholder && placeholder !== ul) placeholder.replaceWith(ul);
 }
 
