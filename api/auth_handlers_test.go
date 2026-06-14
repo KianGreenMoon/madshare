@@ -23,7 +23,23 @@ const testAdminPassword = "admin-password-123"
 // newAuthTestServer wires a router that mirrors madshare.go's buildHandler:
 // the Identify middleware on every route, the api group, and the admin group
 // gated by file.delete. It bootstraps an admin user and returns the server.
+// newAuthTestServer starts a server whose bootstrap admin has already completed
+// the forced first-run password change, so the capability tests can act as
+// admin directly. Server-side enforcement of the change-required flag is
+// covered by auth/middleware_test.go and TestAuth_BootstrapRequiresPasswordChange.
 func newAuthTestServer(t *testing.T) (*httptest.Server, *database.DB) {
+	t.Helper()
+	srv, db := newAuthTestServerRaw(t)
+	if _, err := db.Exec(`UPDATE users SET password_change_required = 0 WHERE username = 'admin'`); err != nil {
+		t.Fatalf("clear admin change-required: %v", err)
+	}
+	return srv, db
+}
+
+// newAuthTestServerRaw is newAuthTestServer without clearing the bootstrap
+// admin's forced-change flag — i.e. a fresh, just-bootstrapped server. Used by
+// the test that asserts the forced password change is actually enforced.
+func newAuthTestServerRaw(t *testing.T) (*httptest.Server, *database.DB) {
 	t.Helper()
 	dir := t.TempDir()
 	db, err := database.Open(":memory:")
@@ -126,9 +142,6 @@ func TestAuth_LoginMeLogout(t *testing.T) {
 	if !contains(me.Permissions, auth.PermFileDelete) || !contains(me.Permissions, auth.PermContentAccess) {
 		t.Errorf("admin permissions = %v, missing file.delete/content.access", me.Permissions)
 	}
-	if !me.PasswordChangeRequired {
-		t.Error("bootstrap admin should require a password change")
-	}
 
 	// Logout, then /me must be anonymous again.
 	logoutResp, _ := client.Post(srv.URL+"/api/auth/logout", "", nil)
@@ -138,6 +151,48 @@ func TestAuth_LoginMeLogout(t *testing.T) {
 		t.Errorf("me after logout = %d, want 401", meResp2.StatusCode)
 	}
 	meResp2.Body.Close()
+}
+
+// TestAuth_BootstrapRequiresPasswordChange asserts the forced first-run change
+// is enforced, not merely advertised: a freshly bootstrapped admin sees the
+// flag on /me, and any capability-gated action (or minting a token) is refused
+// with 403 + the X-Password-Change-Required marker until the change is done.
+func TestAuth_BootstrapRequiresPasswordChange(t *testing.T) {
+	srv, _ := newAuthTestServerRaw(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
+
+	if resp := login(t, client, srv.URL, "admin", testAdminPassword); resp.StatusCode != http.StatusOK {
+		t.Fatalf("login = %d, want 200", resp.StatusCode)
+	}
+
+	var me identityJSON
+	meResp, _ := client.Get(srv.URL + "/api/auth/me")
+	json.NewDecoder(meResp.Body).Decode(&me)
+	meResp.Body.Close()
+	if !me.PasswordChangeRequired {
+		t.Error("bootstrap admin should require a password change")
+	}
+
+	// A capability-gated admin action is refused while the change is pending.
+	if code := doJSON(t, client, http.MethodDelete, srv.URL+"/api/admin/users/999", nil, nil); code != http.StatusForbidden {
+		t.Errorf("gated action while change-required = %d, want 403", code)
+	}
+	// Minting a token (a self-checking endpoint) is refused too.
+	if code := doJSON(t, client, http.MethodPost, srv.URL+"/api/auth/tokens",
+		map[string]any{"name": "x"}, nil); code != http.StatusForbidden {
+		t.Errorf("create token while change-required = %d, want 403", code)
+	}
+
+	// Changing the password clears the flag; the gated action then passes the
+	// password gate (404 = past it, the user 999 just doesn't exist).
+	if code := doJSON(t, client, http.MethodPost, srv.URL+"/api/auth/password",
+		map[string]any{"old_password": testAdminPassword, "new_password": "new-admin-pass-456"}, nil); code != http.StatusNoContent {
+		t.Fatalf("change password = %d, want 204", code)
+	}
+	if code := doJSON(t, client, http.MethodDelete, srv.URL+"/api/admin/users/999", nil, nil); code == http.StatusForbidden {
+		t.Errorf("gated action after change = 403, want past the gate")
+	}
 }
 
 func TestAuth_MeAnonymous(t *testing.T) {

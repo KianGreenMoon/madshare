@@ -55,15 +55,30 @@ func bearerToken(r *http.Request) (string, bool) {
 	return "", false
 }
 
+// DenyPasswordChange writes the standard 403 used when an authenticated
+// identity must change its password before it may act. The
+// X-Password-Change-Required header lets a client distinguish this from an
+// ordinary permission denial and route the user to the change-password flow.
+func DenyPasswordChange(w http.ResponseWriter) {
+	w.Header().Set("X-Password-Change-Required", "1")
+	http.Error(w, "password change required", http.StatusForbidden)
+}
+
 // RequirePermission returns middleware that allows the request only if the
 // context identity holds perm: 401 when anonymous, 403 when authenticated but
-// lacking the permission.
+// lacking the permission. An identity flagged PasswordChangeRequired is refused
+// outright (it must change its password first) — enforced here so every
+// capability-gated route inherits it.
 func RequirePermission(perm string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			id := FromContext(r.Context())
 			if id == nil {
 				http.Error(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			if id.PasswordChangeRequired {
+				DenyPasswordChange(w)
 				return
 			}
 			if !id.Has(perm) {
@@ -85,6 +100,10 @@ func RequireAnyPermission(perms ...string) func(http.Handler) http.Handler {
 			id := FromContext(r.Context())
 			if id == nil {
 				http.Error(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			if id.PasswordChangeRequired {
+				DenyPasswordChange(w)
 				return
 			}
 			for _, p := range perms {

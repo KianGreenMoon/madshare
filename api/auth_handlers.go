@@ -213,6 +213,14 @@ func (h *authHandler) createToken(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Minting new credentials is an action, not part of the change-password
+	// flow — refuse it until the forced password change is done. (The capability
+	// chokepoints enforce the same rule for permission-gated routes; the token
+	// endpoints self-check the identity, so this rule is applied directly here.)
+	if id.PasswordChangeRequired {
+		auth.DenyPasswordChange(w)
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
 	var req struct {
 		Name string `json:"name"`

@@ -95,6 +95,17 @@ Startup logic:
 This keeps the secret from being a permanent at-rest credential: it matters for
 exactly one startup and is inert thereafter.
 
+**Enforcement of `password_change_required`.** The flag is not merely advertised
+to the UI — it is enforced server-side. While an identity carries it,
+`RequirePermission` / `RequireAnyPermission` refuse the request with `403` and an
+`X-Password-Change-Required: 1` header (via `auth.DenyPasswordChange`), so every
+capability-gated route is closed until the change is made. The self-checking auth
+endpoints stay open exactly where they must — `login`, `logout`, `me`, and
+`password` (the change itself) — while `tokens` (minting new credentials) applies
+the same block. Clearing the flag is `POST /api/auth/password` setting
+`change_required = false`; the next request's freshly built identity is
+unrestricted. Holds for both session- and token-authenticated identities.
+
 ## 4. RBAC (capabilities)
 
 ### 4.1 Permissions (code-defined constants)
@@ -312,10 +323,16 @@ will extend.
 - **Audit log** of privileged actions (deletes, prunes, user/role/group changes,
   later federation approvals): `audit_log(id, actor_user_id, action, target,
   detail, created_at)`.
-- **Brute-force protection / rate limiting** on `/api/auth/login` and on auth
-  failures generally.
-- **Credential lifecycle**: forced first-login password change, password change,
-  token issue/revoke/expiry, session expiry, "revoke all sessions."
+- **Brute-force protection / rate limiting** on `/api/auth/login` — **implemented**
+  (`api/login_throttle.go`): per-IP token bucket (~10/min, burst 10) plus a global
+  semaphore bounding concurrent argon2 verifications, and `auth.DummyVerifyPassword`
+  to equalize timing on the user-not-found path. Loopback peers are exempt from the
+  per-IP bucket (a local reverse proxy shares one address for all users); the
+  `contrib/nginx` examples add a `limit_req` zone keyed on the real client IP for
+  proxied deployments.
+- **Credential lifecycle**: forced first-login password change (**enforced** —
+  see §3.4), password change, token issue/revoke/expiry, session expiry. Still
+  open: "revoke all sessions."
 - **Library-wide sharing scope** (`library.share`): madnetwork / friends / none,
   sitting above per-user ACLs — primarily a federation concern (§8).
 
