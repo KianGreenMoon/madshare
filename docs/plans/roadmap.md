@@ -92,3 +92,14 @@ phases P0–P5: `docs/architecture/recordings.md`.
 Server-to-server trust — peer keypairs, signed requests, file provenance, library
 sharing scope (madnetwork / friends / none). Acknowledged throughout the auth and
 entity models but not designed. See `docs/architecture/auth.md` §8.
+
+## Android app — Capacitor remote-URL shell (designed, not built)
+
+A thin Capacitor WebView that loads a running server's pages **same-origin**,
+reusing the whole web UI. Works over plaintext on an encrypted overlay
+(Yggdrasil / VPN) *and* over TLS, with a connection-safety gate that hard-warns
+("you may be about to leak your auth data") before sending credentials over
+plaintext across an untrusted/public network. Same-origin keeps cookie auth and
+gated `<audio>` streaming working with no CORS/token plumbing. Full design, phases
+P0–P4 (PWA stepping stone → shell+safety gate → background audio → multi-server):
+`docs/architecture/android-app.md`.
