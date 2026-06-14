@@ -177,6 +177,7 @@ func (h *handler) adminTrashRestore(w http.ResponseWriter, r *http.Request) {
 // every flagged record, and deep=true additionally rehashes each present blob to
 // flag corrupted content (an integrity scan), not just missing files.
 func (h *handler) adminPrune(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
 	var body struct {
 		Confirm bool `json:"confirm"`
 		Deep    bool `json:"deep"`

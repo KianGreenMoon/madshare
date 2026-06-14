@@ -31,7 +31,8 @@ type AuthStore interface {
 }
 
 type authHandler struct {
-	store AuthStore
+	store    AuthStore
+	throttle *loginThrottle
 }
 
 // registerAuth mounts the /api/auth/* endpoints. These self-check the identity
@@ -39,7 +40,7 @@ type authHandler struct {
 // RequirePermission, since any authenticated user may manage their own session,
 // password, and tokens.
 func registerAuth(r chi.Router, store AuthStore) {
-	h := &authHandler{store: store}
+	h := &authHandler{store: store, throttle: newLoginThrottle()}
 	r.Post("/api/auth/login", h.login)
 	r.Post("/api/auth/logout", h.logout)
 	r.Get("/api/auth/me", h.me)
@@ -69,6 +70,14 @@ func toIdentityJSON(id *auth.Identity) identityJSON {
 }
 
 func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
+	// Per-IP throttle: login is unauthenticated and every attempt runs an
+	// expensive argon2id verify, making it both a brute-force target and a
+	// resource-exhaustion vector. allowIP slows guessing from a single source.
+	if h.throttle != nil && !h.throttle.allowIP(clientIP(r)) {
+		http.Error(w, "too many login attempts, slow down", http.StatusTooManyRequests)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -77,14 +86,29 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
+
+	// Cap concurrent password verifications (each ~64 MiB). Acquiring before the
+	// user lookup gates the missing-user and real-user paths alike, so the
+	// timing equalization below is not undone under load.
+	if h.throttle != nil {
+		release, ok := h.throttle.acquire()
+		if !ok {
+			http.Error(w, "server busy, try again shortly", http.StatusServiceUnavailable)
+			return
+		}
+		defer release()
+	}
+
 	user, err := h.store.GetUserByUsername(r.Context(), req.Username)
 	if err != nil {
 		http.Error(w, "login failed", http.StatusInternalServerError)
 		return
 	}
 	// Same generic 401 whether the user is missing, disabled, or the password is
-	// wrong — don't leak which.
+	// wrong — and the same argon2 work either way (DummyVerifyPassword on the
+	// miss path), so the response time does not leak which.
 	if user == nil || user.Disabled {
+		auth.DummyVerifyPassword(req.Password)
 		http.Error(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	}
@@ -149,6 +173,7 @@ func (h *authHandler) changePassword(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
 	var req struct {
 		OldPassword string `json:"old_password"`
 		NewPassword string `json:"new_password"`
@@ -188,6 +213,7 @@ func (h *authHandler) createToken(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
 	var req struct {
 		Name string `json:"name"`
 		// ExpiresAt is an absolute unix timestamp (seconds); the web UI's date

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -72,4 +73,27 @@ func VerifyPassword(encoded, plain string) (bool, error) {
 	}
 	got := argon2.IDKey([]byte(plain), salt, time, mem, threads, uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
+}
+
+// dummyHash is a fixed argon2id hash, computed once on first use, that no real
+// password will ever match. It exists so DummyVerifyPassword can spend the same
+// work as a genuine verification.
+var dummyHash = sync.OnceValue(func() string {
+	h, err := HashPassword("madshare-login-timing-equalizer")
+	if err != nil {
+		return "" // rand failure: DummyVerifyPassword becomes a no-op
+	}
+	return h
+})
+
+// DummyVerifyPassword runs a throwaway argon2id verification against a fixed
+// hash and discards the result. Callers use it on the user-not-found login path
+// so a missing username costs the same time as a wrong password — closing the
+// timing side channel that would otherwise reveal which usernames exist.
+func DummyVerifyPassword(plain string) {
+	h := dummyHash()
+	if h == "" {
+		return
+	}
+	_, _ = VerifyPassword(h, plain)
 }

@@ -246,6 +246,7 @@ func (h *manageHandler) setTrashPolicy(w http.ResponseWriter, r *http.Request) {
 // decodeJSON decodes the request body into v, writing a 400 and returning false
 // on a malformed body. An empty body is treated as an empty object.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil && !errors.Is(err, io.EOF) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return false
