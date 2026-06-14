@@ -14,12 +14,13 @@
 
 .dup-card-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--space-4);
   padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--border);
   background: var(--surface-2, var(--surface));
 }
+.dup-play-best { flex-shrink: 0; }
 .dup-count      { font-weight: 600; font-size: 13px; color: var(--text-muted); white-space: nowrap; }
 .dup-suggestion { font-size: 13px; color: var(--text); }
 

@@ -113,8 +113,11 @@ function recordingCard(group) {
     ])]),
     el('tbody', {}, group.renditions.map(renditionRow)),
   ]);
+  // Recording-level play: preview the best (top-ranked) rendition with one click.
+  const best = group.renditions.find(r => r.best) || group.renditions[0];
   return el('section', { class: 'dup-card' }, [
     el('div', { class: 'dup-card-head' }, [
+      el('button', { class: 'btn btn-sm btn-neutral dup-play-best', title: 'Play the best rendition', onclick: () => preview(best) }, ['▶ Play best']),
       el('span', { class: 'dup-count' }, [`${group.renditions.length} renditions`]),
       el('span', { class: 'dup-suggestion' }, [group.suggestion]),
     ]),
