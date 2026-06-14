@@ -105,12 +105,46 @@ above is the storage that a later index sits on top of.
 
 ### Graceful degradation (no hard dependency)
 
-`fpcalc` is an external binary that may be absent. If it is missing,
-fingerprinting is **disabled**: new files get no `audio_fingerprints` row, the
-resolver leaves `recording_id` NULL (every file is its own implicit recording),
-and the duplicates page is empty. Startup must **warn, not fail** — same spirit
-as `Deps.SourceRoot == ""` disabling `/source`. Likewise `ffprobe` absent →
-tech columns stay NULL → the quality ladder degrades to format/size only.
+Both binaries are optional and degrade **independently**; startup must **warn,
+not fail** when either is absent — same spirit as `Deps.SourceRoot == ""`
+disabling `/source`.
+
+**`ffprobe` absent** → the tech columns (`duration_seconds / bitrate /
+sample_rate / channels / codec / bit_depth`) stay NULL. The quality ladder
+degrades to **format + size only** — codec class inferred from the persisted
+canonical MIME, size from the `files` row, both available with no binary — and
+the duplicates / moderation side-by-side compare shows only format + size, not
+bitrate or sample rate.
+
+**`fpcalc` absent** → no `audio_fingerprints` row, the resolver leaves
+`recording_id` NULL (every file is its own implicit recording), and the
+recordings overlay lies dormant: the duplicates admin page, which lists
+multi-rendition *recordings*, is necessarily empty because nothing is grouped.
+
+Rather than disabling duplicate handling outright, fpcalc-absent falls back to
+an **active tag-collision check at the moderation gate**. Tag identity is far
+weaker than fingerprinting (see Problem), so this is a fallback *warning* —
+never grouping, never deletion:
+
+- At submit time, derive whether another **approved, non-trashed** file shares
+  the same **artist + album + title**. If so, the submission is duplicate-flagged
+  exactly like a fingerprint match: the `content.moderate` self-approve shortcut
+  is **suppressed** (even for admins/moderators), the uploader gets a warning
+  (the same popup channel as the post-upload info notice), and it routes to the
+  moderation queue for a human decision. Mirrors Moderation integration.
+- The flag is **derived, not stored** — same as the fingerprint flag (see
+  Moderation integration). When `fpcalc` is later installed and the backfill
+  runs, identity switches from tags to fingerprint truth with no migration and
+  no stale "tagged as duplicate" rows to clean up.
+- **Default / empty tag-keys are excluded** from matching. The required-name
+  defaults turn an untagged file into `Unknown artist / Other / <filename>`, so
+  matching on those would flag every untagged upload against every other one.
+  Only real, non-default `artist + album + title` triples participate.
+
+This fallback touches **only the moderation gate** — it never creates a
+recording, sets `recording_id`, or populates the duplicates page. Tags can't
+safely group audio (see Problem); they can only raise a "look at this" flag for
+a human.
 
 ### MBID — deliberately out (for now)
 
@@ -324,7 +358,9 @@ fingerprinting.
 - **Cross-node fingerprint matching / a fingerprint index / AcoustID lookups** —
   the federation problem; the storage is here, the index is not.
 - **MBID-based identity**, spectral-cutoff upscale detection, and any
-  tag-based grouping — additive later, not built.
+  tag-based **grouping** — additive later, not built. (The fpcalc-absent
+  tag-collision check in Graceful degradation is a moderation *warning*, not
+  grouping: it never creates a recording or sets `recording_id`.)
 - **Auto-merge or auto-delete** — fingerprint grouping is a suggestion; every
   deletion is human-confirmed; every split is human-pinned.
 - **A track-level "work" entity** (one composition across different recordings/
