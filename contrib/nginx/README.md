@@ -24,3 +24,13 @@ socket and let nginx handle TLS / the public-facing interface. See the
   sees a TLS connection. Behind a TLS-terminating proxy the backend connection
   is plain HTTP, so the cookie won't currently be flagged `Secure` unless the
   app is taught to trust `X-Forwarded-Proto` (the examples already send it).
+- **Login rate-limiting:** the app has a built-in per-IP login throttle, but it
+  keys on the TCP peer — behind a proxy that peer is *always nginx's loopback
+  address*, so every proxied user shares one bucket. The examples therefore add
+  an nginx `limit_req` zone on `/api/auth/login`, keyed on the real client IP
+  (`$binary_remote_addr`), which is the only layer that sees it when proxied.
+  The app's global cap on *concurrent* (expensive) password verifications is
+  not per-IP and keeps working regardless. On a **direct bind** (no nginx — the
+  app listening straight on its public/Yggdrasil address) the app's own per-IP
+  throttle already sees the real client, so the nginx zone is just defense in
+  depth there.
