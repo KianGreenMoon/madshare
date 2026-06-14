@@ -207,6 +207,11 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(moderate).Post("/moderation/{hash}/approve", h.moderationApprove)
 		r.With(moderate).Post("/moderation/{hash}/return", h.moderationReturn)
 
+		// Duplicates / variants (recordings P2). List multi-rendition recordings
+		// and split a rendition off; delete reuses the soft-delete above.
+		r.With(moderate).Get("/duplicates", h.duplicatesList)
+		r.With(moderate).Post("/duplicates/{file_id}/split", h.duplicatesSplit)
+
 		// Content-access management (Phase 3c). Only registered when a store is
 		// configured; its routes carry their own permission gates.
 		if d.Manage != nil {

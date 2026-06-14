@@ -217,6 +217,15 @@ type Repository interface {
 	// interface, so they do not widen this Repository.
 	EnqueueAnalysisJob(ctx context.Context, fileID, now int64) error
 
+	// ListDuplicateRecordings returns every recording with >1 non-trashed
+	// rendition (the duplicates admin page; recordings P2), each with its
+	// renditions' tech info + display fields.
+	ListDuplicateRecordings(ctx context.Context) ([]DuplicateRecording, error)
+
+	// SplitRendition detaches a file into a new pinned recording (the "save as
+	// another composition" action). found is false when no live file matches.
+	SplitRendition(ctx context.Context, fileID int64) (newRecordingID int64, found bool, err error)
+
 	// SetAlbumCover inserts/replaces an album cover row (keyed by albums.id) with
 	// variant-tracking fields (variants_ready reset to 0).
 	SetAlbumCover(ctx context.Context, albumID int64, baseKey, sourceExt, objectKey, mimeType string, now int64) error

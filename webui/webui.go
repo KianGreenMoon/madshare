@@ -75,10 +75,13 @@ var adminSubPages = map[string]*template.Template{
 	// "upload" is the same upload body as /upload wrapped in the admin shell, so
 	// the upload page renders in whichever shell it was reached from
 	// (docs/ui/shells.md).
-	"upload":   buildPageTmpl("html/admin/upload.html"),
-	"users":    buildPageTmpl("html/admin/users.html"),
-	"prune":    buildPageTmpl("html/admin/prune.html"),
-	"settings": buildPageTmpl("html/admin/settings.html"),
+	"upload": buildPageTmpl("html/admin/upload.html"),
+	"users":  buildPageTmpl("html/admin/users.html"),
+	"prune":  buildPageTmpl("html/admin/prune.html"),
+	// "duplicates" lists same-audio recordings with >1 rendition (recordings P2,
+	// docs/architecture/recordings.md). Moderator-accessible.
+	"duplicates": buildPageTmpl("html/admin/duplicates.html"),
+	"settings":   buildPageTmpl("html/admin/settings.html"),
 }
 
 // pageData is the data injected into every page. APIURL is the absolute API

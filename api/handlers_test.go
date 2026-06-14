@@ -434,6 +434,11 @@ type fakeRepo struct {
 	enqueueAnalysisCalls int
 	setCoverCalls        int
 
+	// Duplicates / recordings stubs (recordings P2).
+	duplicateRecordings []database.DuplicateRecording
+	splitFileID         int64
+	splitNotFound       bool
+
 	// Base-metadata edit stubs (Phase 5).
 	metaCalls     int
 	lastMetaHash  string
@@ -644,6 +649,18 @@ func (f *fakeRepo) ResetStaleJobs(_ context.Context) error {
 func (f *fakeRepo) EnqueueAnalysisJob(_ context.Context, _, _ int64) error {
 	f.enqueueAnalysisCalls++
 	return nil
+}
+
+func (f *fakeRepo) ListDuplicateRecordings(_ context.Context) ([]database.DuplicateRecording, error) {
+	return f.duplicateRecordings, nil
+}
+
+func (f *fakeRepo) SplitRendition(_ context.Context, fileID int64) (int64, bool, error) {
+	f.splitFileID = fileID
+	if f.splitNotFound {
+		return 0, false, nil
+	}
+	return 999, true, nil
 }
 
 func (f *fakeRepo) SetAlbumCover(_ context.Context, _ int64, _, _, _, _ string, _ int64) error {

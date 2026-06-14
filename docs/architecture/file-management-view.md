@@ -10,6 +10,11 @@ This is the reference for the shipped system. It unified the former standalone
 `/admin/files` page and the separate Files / Moderation / Trash admin pages into
 this one scope-driven component.
 
+The **`/admin/duplicates`** page (same-audio recordings with >1 rendition) is a
+*separate* page, not a scope here — its rows are renditions grouped by recording
+with a different shape (tech compare + quality-ladder rank). See
+[`recordings.md`](recordings.md) (P2).
+
 ---
 
 ## The component

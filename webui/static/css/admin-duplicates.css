@@ -1,0 +1,60 @@
+/* Admin · Duplicates page (recordings P2). One card per recording, a table of
+   its renditions ranked by the quality ladder, and a slim page-local preview
+   player pinned to the bottom. Reuses app.css/.admin-shell.css buttons & modal. */
+
+.muted { color: var(--text-muted); font-size: 14px; }
+
+.dup-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  margin: var(--space-4) 0;
+  overflow: hidden;
+}
+
+.dup-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2, var(--surface));
+}
+.dup-count      { font-weight: 600; font-size: 13px; color: var(--text-muted); white-space: nowrap; }
+.dup-suggestion { font-size: 13px; color: var(--text); }
+
+.dup-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.dup-table th {
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+.dup-table td { padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); vertical-align: middle; }
+.dup-table tbody tr:last-child td { border-bottom: none; }
+
+.dup-rank   { white-space: nowrap; color: var(--text-muted); }
+.dup-best   { color: var(--accent); font-weight: 600; white-space: nowrap; }
+.dup-title  { font-weight: 500; }
+.dup-artist { font-size: 12px; }
+.dup-tech   { white-space: nowrap; color: var(--text-muted); }
+
+.dup-actions { white-space: nowrap; text-align: right; }
+.dup-actions .btn { margin-left: var(--space-2); }
+
+/* Page-local preview player */
+.dup-player {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+.dup-player.hidden { display: none; }
+.dup-player-title { font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
+.dup-player audio { flex: 1; height: 36px; }

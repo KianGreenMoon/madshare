@@ -189,6 +189,116 @@ func (db *DB) createRecording(ctx context.Context, now int64) (int64, error) {
 	return id, nil
 }
 
+// DuplicateRendition is a single rendition of a duplicate recording, enriched
+// with the display + URL fields the duplicates admin page needs.
+type DuplicateRendition struct {
+	FileID          int64
+	Hash            string
+	ObjectKey       string // "<hash>/<filename>"; the play URL is "/files/" + this
+	Title           string
+	Artist          string
+	Codec           string
+	MimeType        string
+	Bitrate         int
+	SampleRate      int
+	BitDepth        int
+	ByteSize        int64
+	DurationSeconds float64
+}
+
+// DuplicateRecording is a recording with more than one live (non-trashed)
+// rendition — the rows the duplicates admin page lists.
+type DuplicateRecording struct {
+	RecordingID int64
+	Renditions  []DuplicateRendition
+}
+
+// ListDuplicateRecordings returns every recording with >1 non-trashed rendition,
+// each with its renditions (tech info + display fields), ordered by recording id
+// then file id. Single-rendition recordings (the norm) are excluded.
+func (db *DB) ListDuplicateRecordings(ctx context.Context) ([]DuplicateRecording, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT f.recording_id, f.id, f.hash, f.object_key, f.byte_size, f.mime_type,
+		        mm.title,
+		        COALESCE(NULLIF(mm.album_artist, ''), mm.artist, ''),
+		        COALESCE(mm.codec, ''), COALESCE(mm.bitrate, 0),
+		        COALESCE(mm.sample_rate, 0), COALESCE(mm.bit_depth, 0),
+		        COALESCE(mm.duration_seconds, 0)
+		   FROM files f
+		   JOIN media_metadata mm ON mm.file_id = f.id
+		  WHERE f.recording_id IS NOT NULL
+		    AND f.deleted_at IS NULL
+		    AND f.recording_id IN (
+		        SELECT recording_id FROM files
+		         WHERE recording_id IS NOT NULL AND deleted_at IS NULL
+		         GROUP BY recording_id HAVING COUNT(*) > 1)
+		  ORDER BY f.recording_id, f.id`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list duplicate recordings: %w", err)
+	}
+	defer rows.Close()
+
+	var (
+		out    []DuplicateRecording
+		curID  int64
+		curIdx = -1
+	)
+	for rows.Next() {
+		var (
+			recID int64
+			r     DuplicateRendition
+		)
+		if err := rows.Scan(&recID, &r.FileID, &r.Hash, &r.ObjectKey, &r.ByteSize,
+			&r.MimeType, &r.Title, &r.Artist, &r.Codec, &r.Bitrate,
+			&r.SampleRate, &r.BitDepth, &r.DurationSeconds); err != nil {
+			return nil, fmt.Errorf("list duplicate recordings: scan: %w", err)
+		}
+		if curIdx < 0 || recID != curID {
+			out = append(out, DuplicateRecording{RecordingID: recID})
+			curIdx++
+			curID = recID
+		}
+		out[curIdx].Renditions = append(out[curIdx].Renditions, r)
+	}
+	return out, rows.Err()
+}
+
+// SplitRendition detaches a file into its own brand-new recording and pins it so
+// the resolver never re-merges it (the "save as another composition" action).
+// found is false (no error) when no live file matches the id. Atomic.
+func (db *DB) SplitRendition(ctx context.Context, fileID int64) (newRecordingID int64, found bool, err error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, false, fmt.Errorf("split rendition: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := tx.QueryRowContext(ctx,
+		`INSERT INTO recordings (created_at) VALUES (?) RETURNING id`, time.Now().Unix(),
+	).Scan(&newRecordingID); err != nil {
+		return 0, false, fmt.Errorf("split rendition: create recording: %w", err)
+	}
+	res, err := tx.ExecContext(ctx,
+		`UPDATE files SET recording_id=?, recording_pinned=1 WHERE id=? AND deleted_at IS NULL`,
+		newRecordingID, fileID,
+	)
+	if err != nil {
+		return 0, false, fmt.Errorf("split rendition: reassign: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, false, fmt.Errorf("split rendition: rows affected: %w", err)
+	}
+	if n == 0 {
+		return 0, false, nil // no live file with that id; the new recording rolls back
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, false, fmt.Errorf("split rendition: commit: %w", err)
+	}
+	return newRecordingID, true, nil
+}
+
 // Rendition is one file viewed as a member of a recording, with the tech fields
 // the quality ladder ranks on. Zero-valued tech fields mean "unknown" (ffprobe
 // absent or didn't report), in which case the ladder degrades to format + size.

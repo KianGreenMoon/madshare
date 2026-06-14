@@ -1,12 +1,14 @@
 # Recordings — same-audio grouping & renditions
 
-**Status:** in progress. **P0–P1 implemented** — P0: `media_analysis_jobs`
+**Status:** in progress. **P0–P2 implemented** — P0: `media_analysis_jobs`
 queue + `mediaproc.Pool` worker, ffprobe tech columns, fpcalc
 `audio_fingerprints` (migration `019`). P1: `recordings` overlay +
 `recording_id`/`recording_pinned`, the fingerprint resolver (inline +
 `BackfillRecordings`), and the deterministic quality ladder
-(`database.RankRenditions`) with its degraded path (migration `020`). P2–P4
-remain design only. Builds on the artist/album overlay
+(`database.RankRenditions`) with its degraded path (migration `020`). P2: the
+`/admin/duplicates` page + `GET /api/admin/duplicates` and split endpoint
+(`content.moderate`), delete via the existing soft-delete. P3–P4 remain design
+only. Builds on the artist/album overlay
 (`docs/architecture/artist-album-model.md`) and the moderation queue
 (`docs/architecture/moderation.md`). Federation-relevant: a recording is the
 first content identity that is **portable across nodes**.
@@ -217,9 +219,10 @@ video rendition can *be* an HLS manifest without reshaping this model.
 
 ## Duplicates / variants admin page
 
-A new moderator-accessible sub-page (gated **`content.moderate`** client-side,
-like `/admin/moderation`; reuses the shared `track-edit.js` modal and a
-page-local player). Lists every recording with **>1 non-trashed rendition**:
+**✅ Implemented** as `/admin/duplicates` (`webui/static/js/admin/duplicates.js`)
+backed by `GET /api/admin/duplicates` + `POST /api/admin/duplicates/{file_id}/split`
+(both gated **`content.moderate`**), with a page-local preview player. Lists every
+recording with **>1 non-trashed rendition**:
 
 - Per recording, the renditions side by side with tech info (format, bitrate,
   sample rate, duration, size) and the ladder rank, the best one marked, plus a
@@ -303,8 +306,10 @@ above).
   `BackfillRecordings` at startup) + the quality ladder (`RankRenditions`,
   degraded to format/size). Positional bit-error matching (`media.BitErrorRate`,
   duration-shortlisted, conservative threshold). Migration `020`. Data layer only.
-- **P2 — Duplicates admin page.** List multi-rendition recordings, tech compare,
-  delete-with-confirm, split-off. Moderator-accessible.
+- **P2 — Duplicates admin page. ✅ Done.** `/admin/duplicates` lists
+  multi-rendition recordings with the ranked tech compare + keep/variant
+  suggestion, page-local preview, delete-with-confirm (soft delete), and
+  split-off (`POST /api/admin/duplicates/{file_id}/split`). `content.moderate`.
 - **P3 — Moderation integration.** Derived duplicate flag, suppress self-approve,
   side-by-side highlight in the queue.
 - **P4 — Adaptive playback.** Rendition list in the track API + Auto/High/Low

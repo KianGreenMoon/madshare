@@ -158,6 +158,77 @@ func TestBackfillRecordings_GroupsExisting(t *testing.T) {
 	}
 }
 
+func TestListDuplicateRecordings(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	fp := repeated(0x33CC33CC, 120)
+
+	// Two same-audio files → one duplicate recording.
+	a := insertFP(t, db, "p1", 200, fp)
+	recA, _ := db.ResolveRecording(ctx, a)
+	b := insertFP(t, db, "p2", 200.2, fp)
+	if rec, _ := db.ResolveRecording(ctx, b); rec != recA {
+		t.Fatalf("setup: b grouped into %d, want %d", rec, recA)
+	}
+	// A lone recording must NOT appear.
+	c := insertFP(t, db, "p3", 90, repeated(0x11111111, 120))
+	db.ResolveRecording(ctx, c)
+
+	dups, err := db.ListDuplicateRecordings(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(dups) != 1 {
+		t.Fatalf("duplicate recordings = %d, want 1", len(dups))
+	}
+	if dups[0].RecordingID != recA || len(dups[0].Renditions) != 2 {
+		t.Errorf("got recording %d with %d renditions, want %d with 2", dups[0].RecordingID, len(dups[0].Renditions), recA)
+	}
+
+	// Trashing one rendition drops the recording below the >1 threshold.
+	if _, _, err := db.SoftDeleteFileByHash(ctx, hash64("p1")); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+	if dups, _ := db.ListDuplicateRecordings(ctx); len(dups) != 0 {
+		t.Errorf("after trashing one rendition, duplicates = %d, want 0", len(dups))
+	}
+}
+
+func TestSplitRendition(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	fp := repeated(0x77777777, 120)
+
+	a := insertFP(t, db, "q1", 200, fp)
+	recA, _ := db.ResolveRecording(ctx, a)
+	b := insertFP(t, db, "q2", 200, fp)
+	db.ResolveRecording(ctx, b)
+
+	newRec, found, err := db.SplitRendition(ctx, a)
+	if err != nil || !found {
+		t.Fatalf("split: found=%v err=%v", found, err)
+	}
+	if newRec == recA || newRec == 0 {
+		t.Errorf("split made recording %d, want a new id (not %d)", newRec, recA)
+	}
+	gotRec, _ := recordingOf(t, db, a)
+	var pinned int
+	db.QueryRow(`SELECT recording_pinned FROM files WHERE id=?`, a).Scan(&pinned)
+	if gotRec != newRec || pinned != 1 {
+		t.Errorf("after split: recording=%d pinned=%d, want %d / 1", gotRec, pinned, newRec)
+	}
+
+	// The pinned split must survive a re-resolve (resolver never re-merges it).
+	if rec, _ := db.ResolveRecording(ctx, a); rec != 0 {
+		t.Errorf("resolve after split returned %d, want 0 (pinned, skipped)", rec)
+	}
+
+	// Splitting an unknown file id is a clean not-found.
+	if _, found, _ := db.SplitRendition(ctx, 999999); found {
+		t.Error("split of unknown file reported found=true")
+	}
+}
+
 func TestRankRenditions_LosslessBeatsLossy(t *testing.T) {
 	// A high-bitrate MP3 must still rank below any lossless file.
 	ranked := RankRenditions([]Rendition{
