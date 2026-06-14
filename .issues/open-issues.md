@@ -144,3 +144,30 @@ sound). Findings and their disposition:
 | Low | **CORS `Access-Control-Allow-Origin: *` on every response** (`api/api.go` `CORS`). Broad — every site could call the API cross-origin (impact limited only by `SameSite=Lax` cookies + non-readable bearer tokens). Fixed: `CORS` is now configurable via `[cors].allowed_origins` and **default-closed** (empty → no CORS headers; the bundled UI is same-origin and needs none). Specific origins are echoed with `Vary: Origin` + credentials; `*` stays available as an explicit opt-in (no credentials). Malformed origins are a fatal config error; startup warns when `api_base` is set without origins, or when `*` is mixed with specifics. Docs: `docs/architecture/listeners-and-config.md` §4.3b. | **fixed** |
 | Info | **Covers reachable at `/files/images/<key>`** — fixed by splitting audio/images into sibling subtrees under `files_dir` (audio under `audio/`, served by `/files`; images under `images/`). See the updated "Round 4" row above. | **fixed** |
 | Info | **Stale agent worktree removed.** `.claude/worktrees/agent-a45c319640e0196cc` (a full duplicate of an abandoned Phase-2 auth experiment, gitignored) was a grep/IDE confusion hazard. Removed via `git worktree remove`; throwaway branch deleted. | **fixed** |
+
+## Search — should the Tracks section include tracks matched only by artist/performer name? (design question, 2026-06-15)
+
+**Open decision — no code change yet.** Today the search Tracks section matches a
+track on its **title OR its performer name** (`database/library.go` `search()`;
+documented in `docs/api/search.md` §"Search behaviour" → Match fields). So
+searching an artist name surfaces that artist's tracks as directly-playable rows
+in the Tracks section, *in addition* to the artist appearing in the Artists
+section. This was intentional — it surfaces a performer's tracks even on a
+"Various Artists" compilation where the artist isn't the album-artist (see
+`TestSearch_MatchesPerformerOnCompilation` and `docs/architecture/artist-album-model.md`).
+
+The owner is now reconsidering whether that's the right UX: searching a prolific
+artist can flood the Tracks section with rows that largely duplicate what the
+Artists-section drill-down already gives you.
+
+| Option | Trade-off |
+|---|---|
+| **Keep as-is** (title OR performer) | One click to play any of an artist's tracks straight from search; essential for finding a performer's contributions on compilations they don't headline. Cost: noisy Tracks section for common artist queries. |
+| **Restrict Tracks to title matches** | Cleaner Tracks section (only tracks whose *title* matches); artist-credited tracks are reached via the Artists row → drill-down. Cost: loses the direct-play affordance and makes compilation performers harder to surface. |
+| **Middle ground** | e.g. cap/secondary-sort artist-only matches below title matches, or only fold in performer matches when the Tracks-by-title set is small. Needs design. |
+
+Related: the sibling experiment "surface an album's tracks when searching its
+title" was tried and **reverted off `aidev`** for the same too-noisy reason —
+it lives on branch `show_albums_tracks_in_search` (commit `cea8521`). Whatever we
+decide here should be consistent with that call. If the decision changes the
+documented behaviour, update `docs/api/search.md` §"Search behaviour". | open |
