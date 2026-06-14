@@ -299,6 +299,85 @@ func (db *DB) SplitRendition(ctx context.Context, fileID int64) (newRecordingID 
 	return newRecordingID, true, nil
 }
 
+// IsDuplicateSubmission reports whether the file with the given hash duplicates
+// content already approved in the library — the derived flag that suppresses a
+// moderator's self-approve and highlights the moderation queue (recordings P3,
+// docs/architecture/recordings.md). It is computed, never stored.
+//
+// When the file has an acoustic fingerprint, identity is its recording: flagged
+// iff another approved, non-trashed file shares the same recording_id. When it
+// has no fingerprint (fpcalc absent), it falls back to a tag collision on a
+// non-default artist+album+title — untagged files, whose artist/album tag
+// columns are NULL/empty, never collide. Returns false for an unknown/trashed
+// hash.
+func (db *DB) IsDuplicateSubmission(ctx context.Context, hash string) (bool, error) {
+	var (
+		fileID int64
+		recID  sql.NullInt64
+	)
+	err := db.QueryRowContext(ctx,
+		`SELECT id, recording_id FROM files WHERE hash=? AND deleted_at IS NULL`, hash,
+	).Scan(&fileID, &recID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("duplicate check: load file: %w", err)
+	}
+
+	var hasFP bool
+	if err := db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM audio_fingerprints WHERE file_id=?)`, fileID,
+	).Scan(&hasFP); err != nil {
+		return false, fmt.Errorf("duplicate check: fingerprint exists: %w", err)
+	}
+
+	if hasFP {
+		// Fingerprint identity: another approved rendition in the same recording.
+		if !recID.Valid {
+			return false, nil
+		}
+		var n int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM files
+			  WHERE recording_id=? AND id<>? AND deleted_at IS NULL AND review_state='approved'`,
+			recID.Int64, fileID,
+		).Scan(&n); err != nil {
+			return false, fmt.Errorf("duplicate check: recording siblings: %w", err)
+		}
+		return n > 0, nil
+	}
+
+	// Tag-collision fallback (fpcalc absent). Only real, non-default tags
+	// participate — a file missing its artist or album is never flagged.
+	var (
+		title         string
+		artist, album sql.NullString
+	)
+	if err := db.QueryRowContext(ctx,
+		`SELECT title, artist, album FROM media_metadata WHERE file_id=?`, fileID,
+	).Scan(&title, &artist, &album); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("duplicate check: load tags: %w", err)
+	}
+	if title == "" || !artist.Valid || artist.String == "" || !album.Valid || album.String == "" {
+		return false, nil
+	}
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM files f
+		   JOIN media_metadata mm ON mm.file_id=f.id
+		  WHERE f.id<>? AND f.deleted_at IS NULL AND f.review_state='approved'
+		    AND mm.title=? AND mm.artist=? AND mm.album=?`,
+		fileID, title, artist.String, album.String,
+	).Scan(&n); err != nil {
+		return false, fmt.Errorf("duplicate check: tag collision: %w", err)
+	}
+	return n > 0, nil
+}
+
 // Rendition is one file viewed as a member of a recording, with the tech fields
 // the quality ladder ranks on. Zero-valued tech fields mean "unknown" (ffprobe
 // absent or didn't report), in which case the ladder degrades to format + size.

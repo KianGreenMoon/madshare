@@ -7,8 +7,10 @@ queue + `mediaproc.Pool` worker, ffprobe tech columns, fpcalc
 `BackfillRecordings`), and the deterministic quality ladder
 (`database.RankRenditions`) with its degraded path (migration `020`). P2: the
 `/admin/duplicates` page + `GET /api/admin/duplicates` and split endpoint
-(`content.moderate`), delete via the existing soft-delete. P3–P4 remain design
-only. Builds on the artist/album overlay
+(`content.moderate`), delete via the existing soft-delete. P3: the derived
+duplicate flag (`IsDuplicateSubmission`, fingerprint-or-tag-fallback) suppresses
+self-approve at submit, returns an uploader warning, and highlights the
+moderation queue. P4 remains design only. Builds on the artist/album overlay
 (`docs/architecture/artist-album-model.md`) and the moderation queue
 (`docs/architecture/moderation.md`). Federation-relevant: a recording is the
 first content identity that is **portable across nodes**.
@@ -243,22 +245,28 @@ by the (future) override path.
 
 ## Moderation integration
 
-An upload whose fingerprint matches an **existing recording that already has an
-approved rendition** is a possible duplicate and is treated specially:
+**✅ Implemented** (`database.IsDuplicateSubmission`, wired into `submitMyUploads`
+and `moderationList`). An upload that duplicates **already-approved** content is
+treated specially:
 
 - It is **never auto-approved** — the `content.moderate` self-approve shortcut
   (`docs/architecture/moderation.md`) is **suppressed** for a duplicate-flagged
   submission, even for admins/moderators. It must pass an explicit human look.
-- The moderation queue **highlights** it as "variant of an existing recording"
-  and shows it side by side with the existing rendition(s) + tech comparison, so
-  the moderator decides: keep as an intentional variant, discard as redundant,
-  or split (it's actually different).
+  The submit response carries a `warning` so the uploader is told why it went to
+  review (the post-upload popup channel).
+- The moderation queue **highlights** it (the review row's badge reads "possible
+  duplicate"). The full side-by-side tech comparison lives on the
+  `/admin/duplicates` page rather than being duplicated inline in the queue.
 
-The flag is **derived**, not a stored state: a submission is duplicate-flagged
-iff its recording already has another approved, non-trashed rendition — no new
-column on the review state machine. (Suppressing self-approve keys off that same
-derivation at submit time.) This depends on the fingerprint existing at submit
-time, so ingest fingerprinting must complete before/at submission.
+The flag is **derived**, not a stored state — no new column on the review state
+machine, and `IsDuplicateSubmission` is recomputed at submit/listing time:
+
+- **With a fingerprint:** flagged iff the file's recording already has another
+  approved, non-trashed rendition.
+- **Without a fingerprint (fpcalc absent):** the tag-collision fallback — flagged
+  iff another approved, non-trashed file shares the same **non-default**
+  `title + artist + album` (untagged files, whose artist/album columns are
+  NULL/empty, never collide). See Graceful degradation.
 
 ## Resolver & backfill
 
@@ -310,8 +318,10 @@ above).
   multi-rendition recordings with the ranked tech compare + keep/variant
   suggestion, page-local preview, delete-with-confirm (soft delete), and
   split-off (`POST /api/admin/duplicates/{file_id}/split`). `content.moderate`.
-- **P3 — Moderation integration.** Derived duplicate flag, suppress self-approve,
-  side-by-side highlight in the queue.
+- **P3 — Moderation integration. ✅ Done.** `IsDuplicateSubmission` (fingerprint
+  or tag-fallback) suppresses self-approve in `submitMyUploads`, returns an
+  uploader `warning`, and flags the moderation queue rows (`duplicate`). Side-by-
+  side compare is the `/admin/duplicates` page.
 - **P4 — Adaptive playback.** Rendition list in the track API + Auto/High/Low
   player control + range-request delivery.
 - **P5 (future) — ffmpeg auto-transcode.** Generate missing renditions ourselves

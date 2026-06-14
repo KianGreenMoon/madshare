@@ -226,6 +226,11 @@ type Repository interface {
 	// another composition" action). found is false when no live file matches.
 	SplitRendition(ctx context.Context, fileID int64) (newRecordingID int64, found bool, err error)
 
+	// IsDuplicateSubmission reports whether the file duplicates already-approved
+	// content (recordings P3): by fingerprint/recording when one exists, else a
+	// non-default tag collision. Suppresses self-approve and flags the queue.
+	IsDuplicateSubmission(ctx context.Context, hash string) (bool, error)
+
 	// SetAlbumCover inserts/replaces an album cover row (keyed by albums.id) with
 	// variant-tracking fields (variants_ready reset to 0).
 	SetAlbumCover(ctx context.Context, albumID int64, baseKey, sourceExt, objectKey, mimeType string, now int64) error

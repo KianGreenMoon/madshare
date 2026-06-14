@@ -178,7 +178,11 @@ export function createReviewScope({ play, perms }) {
     apiBase: API,
     metaLabel: 'Submitted',
     metaValue: f => (f.submitted_at ? fmtDate(f.submitted_at) : ''),
-    badge: f => ({ text: STATE_LABEL[f.state] || f.state, cls: 'is-' + f.state }),
+    // A duplicate-flagged row (recordings P3) is marked so the moderator looks
+    // before publishing; full side-by-side tech compare lives on /admin/duplicates.
+    badge: f => f.duplicate
+      ? { text: (STATE_LABEL[f.state] || f.state) + ' · possible duplicate', cls: 'is-' + f.state + ' is-duplicate' }
+      : { text: STATE_LABEL[f.state] || f.state, cls: 'is-' + f.state },
     accessEditable: false,
     load: loadQueue,
     grouping: {

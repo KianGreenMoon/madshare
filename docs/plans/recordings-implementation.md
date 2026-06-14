@@ -170,7 +170,16 @@ existing patterns unless new index math is added.
 
 ---
 
-## P3 — Moderation integration (incl. tag-collision fallback)
+## P3 — Moderation integration (incl. tag-collision fallback) ✅ Done
+
+**Shipped:** `database.IsDuplicateSubmission` (fingerprint→recording-sibling, or
+non-default `title+artist+album` tag fallback; untagged files excluded), on the
+api `Repository` with a `fakeRepo` stub. `submitMyUploads` now suppresses
+self-approve per-hash for duplicates and returns `flagged` + a `warning`;
+`moderationList` sets `duplicate` on each row; the upload page shows the warning
+toast and the review-scope badge reads "possible duplicate". Tests in `database/`
+(both paths, approved-sibling + untagged exclusion) and `api/` (self-approve
+suppressed / moderator non-dup approves / non-moderator queues).
 
 **Derived duplicate flag** — `func (h *handler) duplicateFlagged(ctx, hash) bool`:
 - Fingerprint present → flagged iff the file's recording already has another

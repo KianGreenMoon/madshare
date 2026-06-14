@@ -229,6 +229,98 @@ func TestSplitRendition(t *testing.T) {
 	}
 }
 
+// insertApprovedTagged inserts an approved, fingerprint-less file with the given
+// tags (empty string = NULL column) and returns its hash. For the tag-fallback
+// duplicate path.
+func insertApprovedTagged(t *testing.T, db *DB, seed, title, artist, album string) string {
+	t.Helper()
+	hash := hash64(seed)
+	meta := &MediaMetadata{Title: title, ExtractedAt: 1000}
+	if artist != "" {
+		meta.Artist = sql.NullString{String: artist, Valid: true}
+	}
+	if album != "" {
+		meta.Album = sql.NullString{String: album, Valid: true}
+	}
+	if err := db.InsertFile(context.Background(), newFile(hash), newUpload(seed+".mp3"), meta); err != nil {
+		t.Fatalf("InsertFile(%s): %v", seed, err)
+	}
+	return hash
+}
+
+func TestIsDuplicateSubmission_Fingerprint(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	fp := repeated(0x2468ACE0, 120)
+
+	a := insertFP(t, db, "s1", 200, fp) // approved by default
+	db.ResolveRecording(ctx, a)
+	b := insertFP(t, db, "s2", 200, fp) // same audio, grouped into a's recording
+	db.ResolveRecording(ctx, b)
+
+	if dup, err := db.IsDuplicateSubmission(ctx, hash64("s2")); err != nil || !dup {
+		t.Fatalf("want duplicate, got %v err=%v", dup, err)
+	}
+	// Trashing the only approved sibling clears the flag.
+	if _, _, err := db.SoftDeleteFileByHash(ctx, hash64("s1")); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+	if dup, _ := db.IsDuplicateSubmission(ctx, hash64("s2")); dup {
+		t.Error("a trashed sibling must not flag a duplicate")
+	}
+}
+
+func TestIsDuplicateSubmission_SiblingMustBeApproved(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	fp := repeated(0x13579BDF, 120)
+
+	a := insertFP(t, db, "s3", 200, fp)
+	db.ResolveRecording(ctx, a)
+	b := insertFP(t, db, "s4", 200, fp)
+	db.ResolveRecording(ctx, b)
+	// The sibling is itself still in review (not approved) → no duplicate yet.
+	if _, err := db.ExecContext(ctx, `UPDATE files SET review_state='submitted' WHERE hash=?`, hash64("s3")); err != nil {
+		t.Fatalf("set submitted: %v", err)
+	}
+	if dup, _ := db.IsDuplicateSubmission(ctx, hash64("s4")); dup {
+		t.Error("a non-approved sibling must not flag a duplicate")
+	}
+}
+
+func TestIsDuplicateSubmission_SingleRenditionNotFlagged(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	a := insertFP(t, db, "s5", 200, repeated(0xCAFEBABE, 120))
+	db.ResolveRecording(ctx, a)
+	if dup, _ := db.IsDuplicateSubmission(ctx, hash64("s5")); dup {
+		t.Error("a lone recording is not a duplicate")
+	}
+}
+
+func TestIsDuplicateSubmission_TagFallback(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	// No fingerprints (fpcalc absent): identical real tags collide.
+	insertApprovedTagged(t, db, "t1", "Same Song", "The Artist", "The Album")
+	insertApprovedTagged(t, db, "t2", "Same Song", "The Artist", "The Album")
+
+	if dup, err := db.IsDuplicateSubmission(ctx, hash64("t2")); err != nil || !dup {
+		t.Fatalf("matching tags should flag (fpcalc absent): %v err=%v", dup, err)
+	}
+}
+
+func TestIsDuplicateSubmission_TagFallbackExcludesUntagged(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	// Untagged files (NULL artist/album) must never collide, even with equal title.
+	insertApprovedTagged(t, db, "u1", "track", "", "")
+	insertApprovedTagged(t, db, "u2", "track", "", "")
+	if dup, _ := db.IsDuplicateSubmission(ctx, hash64("u2")); dup {
+		t.Error("untagged files must never tag-collide")
+	}
+}
+
 func TestRankRenditions_LosslessBeatsLossy(t *testing.T) {
 	// A high-bitrate MP3 must still rank below any lossless file.
 	ranked := RankRenditions([]Rendition{

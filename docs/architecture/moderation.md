@@ -97,6 +97,13 @@ roles; migration 017 also gave `moderator` the `file.upload` permission:
 uploads", but submitting publishes immediately). Plain uploaders always go
 through the queue. Tables: `docs/architecture/auth.md` §4.
 
+**Duplicate exception:** a submission that duplicates already-approved content is
+**never** self-approved — even for a `content.moderate` holder — and is flagged
+in the queue ("possible duplicate"). The flag is derived at submit time
+(`database.IsDuplicateSubmission`: acoustic fingerprint, or a tag fallback when
+`fpcalc` is absent), not stored. See `docs/architecture/recordings.md`
+(Moderation integration).
+
 ## Endpoints
 
 ### Uploader side (gated `file.upload`, owner-scoped, registered only with auth configured)

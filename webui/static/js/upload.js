@@ -365,6 +365,9 @@ async function mineSend(hashes) {
   showToast(data.approved
     ? `Published ${n} file${n === 1 ? '' : 's'} to the library.`
     : `Sent ${n} file${n === 1 ? '' : 's'} for review.`, { type: 'success' });
+  // A duplicate-flagged submission never auto-publishes (recordings P3); surface
+  // the server's explanation so the uploader knows why it went to review.
+  if (data.warning) showToast(data.warning, { type: 'info' });
   announce(data.approved ? 'Published to the library.' : 'Sent for review.');
 }
 

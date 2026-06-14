@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -40,6 +41,10 @@ type reviewItem struct {
 	// affordance (offered only when the entity has no cover yet).
 	ArtistHasImage bool `json:"artist_has_image"`
 	AlbumHasImage  bool `json:"album_has_image"`
+	// Duplicate marks a queue row that duplicates already-approved content
+	// (recordings P3); set only on the moderation listing. The queue highlights
+	// it and the matching submission could never have self-approved.
+	Duplicate bool `json:"duplicate,omitempty"`
 }
 
 func toReviewItem(e *database.ReviewEntry) reviewItem {
@@ -179,23 +184,32 @@ func (h *handler) submitMyUploads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	selfApprove := id.Has(auth.PermContentModerate)
-	target := database.ReviewSubmitted
-	if selfApprove {
-		target = database.ReviewApproved
-	}
+	// content.moderate holders self-approve their own submissions — except a
+	// duplicate-flagged one, which must pass an explicit human look even for a
+	// moderator (recordings P3, docs/architecture/recordings.md).
+	canSelfApprove := id.Has(auth.PermContentModerate)
 
 	type result struct {
 		Hash string `json:"hash"`
 		OK   bool   `json:"ok"`
 	}
 	results := make([]result, 0, len(body.Hashes))
-	submitted := 0
+	submitted, approved, flagged := 0, 0, 0
 	for _, raw := range body.Hashes {
 		hash := strings.ToLower(strings.TrimSpace(raw))
 		if !isSHA256Hex(hash) {
 			http.Error(w, "invalid hash (want 64 hex chars)", http.StatusBadRequest)
 			return
+		}
+		dup, err := h.repo.IsDuplicateSubmission(r.Context(), hash)
+		if err != nil {
+			http.Error(w, "storage error", http.StatusInternalServerError)
+			return
+		}
+		selfApprove := canSelfApprove && !dup
+		target := database.ReviewSubmitted
+		if selfApprove {
+			target = database.ReviewApproved
 		}
 		found, err := h.repo.UpdateReviewState(r.Context(), hash, database.ReviewTransition{
 			From:             []string{database.ReviewDraft, database.ReviewReturned},
@@ -209,20 +223,47 @@ func (h *handler) submitMyUploads(w http.ResponseWriter, r *http.Request) {
 		}
 		if found {
 			submitted++
+			if dup {
+				flagged++
+			}
 			if selfApprove {
+				approved++
 				h.audit(r.Context(), "file.approve", hash, "self")
+			} else if dup {
+				h.audit(r.Context(), "file.submit", hash, "duplicate-flagged")
 			} else {
 				h.audit(r.Context(), "file.submit", hash, "")
 			}
 		}
 		results = append(results, result{Hash: hash, OK: found})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"ok":        true,
 		"submitted": submitted,
-		"approved":  selfApprove,
-		"results":   results,
-	})
+		// True only when self-approve was in effect AND nothing was held back as a
+		// duplicate — i.e. everything actually reached the library.
+		"approved": canSelfApprove && flagged == 0,
+		"flagged":  flagged,
+		"results":  results,
+	}
+	if flagged > 0 {
+		resp["warning"] = duplicateWarning(flagged, canSelfApprove)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// duplicateWarning is the popup message for a submission that looked like a
+// duplicate of already-approved content. For a moderator it explains why
+// self-approve was withheld; for a regular uploader it is purely informational.
+func duplicateWarning(n int, moderator bool) string {
+	noun := "file"
+	if n != 1 {
+		noun += "s"
+	}
+	if moderator {
+		return fmt.Sprintf("%d %s look like duplicates of content already in the library — sent for review instead of auto-approving.", n, noun)
+	}
+	return fmt.Sprintf("%d %s look like duplicates of content already in the library — a moderator will take a look.", n, noun)
 }
 
 // moderationList handles GET /api/admin/moderation — every staged file with
@@ -235,7 +276,14 @@ func (h *handler) moderationList(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]reviewItem, 0, len(entries))
 	for _, e := range entries {
-		items = append(items, toReviewItem(e))
+		item := toReviewItem(e)
+		// Highlight rows that duplicate already-approved content so the moderator
+		// looks before publishing (recordings P3). Best-effort: a check error
+		// leaves the row unflagged rather than failing the whole queue.
+		if dup, derr := h.repo.IsDuplicateSubmission(r.Context(), e.Hash); derr == nil {
+			item.Duplicate = dup
+		}
+		items = append(items, item)
 	}
 	writeJSON(w, http.StatusOK, items)
 }
