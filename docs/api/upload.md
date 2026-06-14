@@ -78,7 +78,7 @@ The file is identified by the SHA-256 of its bytes (the `hash`). On first
 ingest of a given hash the server:
 
 1. extracts audio tags (ID3 / MP4 / FLAC / OGG via `dhowden/tag`),
-2. stores the blob at `<files_dir>/<hash>/<filename>`,
+2. stores the blob at `<files_dir>/audio/<hash>/<filename>`,
 3. inserts the `files` / `file_uploads` / `media_metadata` rows,
 4. extracts and processes any embedded cover art (see below).
 

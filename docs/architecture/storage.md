@@ -3,9 +3,15 @@
 Uploaded blobs are content-addressed and persisted through the `storage.Storage`
 interface (`api/storage/storage.go`). Today there is one implementation,
 `storage.Local` (`api/storage/local.go`), which lays files out as
-`<files_dir>/<hash>/<filename>`. The interface is the seam for a future object
-store (S3); everything below is written so that backend drops in without
-changing callers.
+`<files_dir>/audio/<hash>/<filename>` — under an `audio/` subdir
+(`storage.AudioSubdir`) so the served blob tree is a sibling of, not a parent
+of, the cover-images tree (`<files_dir>/images`); the `/files` server therefore
+cannot reach images. The interface is the seam for a future object store (S3);
+everything below is written so that backend drops in without changing callers.
+
+On startup the server relocates any pre-split blobs (hash dirs sitting directly
+under `<files_dir>`) into `audio/` via `storage.RelocateLegacyBlobs` — a
+one-time, idempotent migration.
 
 ## The `Storage` interface
 

@@ -37,7 +37,7 @@ func newCORSServer(t *testing.T, allowed ...string) *httptest.Server {
 	t.Cleanup(func() { db.Close() })
 	r := chi.NewRouter()
 	r.Use(CORS(allowed))
-	RegisterAPI(r, Deps{Store: storage.NewLocal(dir), Repo: db, CacheDir: t.TempDir(), FilesDir: dir, MaxUploadSize: testMaxUpload})
+	RegisterAPI(r, Deps{Store: storage.NewLocal(filepath.Join(dir, storage.AudioSubdir)), Repo: db, CacheDir: t.TempDir(), FilesDir: dir, MaxUploadSize: testMaxUpload})
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 	return srv
@@ -101,7 +101,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	srv := httptest.NewServer(NewRouter(storage.NewLocal(dir), db, t.TempDir(), dir, testMaxUpload))
+	srv := httptest.NewServer(NewRouter(storage.NewLocal(filepath.Join(dir, storage.AudioSubdir)), db, t.TempDir(), dir, testMaxUpload))
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -1157,6 +1157,48 @@ func TestListFiles_CORSHeader(t *testing.T) {
 	}
 	if !strings.Contains(resp.Header.Get("Vary"), "Origin") {
 		t.Errorf("Vary = %q, want it to include Origin", resp.Header.Get("Vary"))
+	}
+}
+
+// TestFilesServer_DoesNotExposeImages is the regression test for the cover-art
+// URL leak: cover images live in <FilesDir>/images, a sibling of the audio
+// tree the /files server roots at (<FilesDir>/audio). So a cover must be served
+// at /images/<key> but must NOT be reachable at /files/images/<key>.
+func TestFilesServer_DoesNotExposeImages(t *testing.T) {
+	dir := t.TempDir()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	imagesDir := filepath.Join(dir, "images")
+	if err := os.MkdirAll(imagesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(imagesDir, "cover.png"), []byte("PNGDATA"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(NewRouter(
+		storage.NewLocal(filepath.Join(dir, storage.AudioSubdir)), db, t.TempDir(), dir, testMaxUpload))
+	t.Cleanup(srv.Close)
+
+	if resp, err := http.Get(srv.URL + "/images/cover.png"); err != nil {
+		t.Fatal(err)
+	} else {
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET /images/cover.png = %d, want 200 (covers are public)", resp.StatusCode)
+		}
+	}
+	if resp, err := http.Get(srv.URL + "/files/images/cover.png"); err != nil {
+		t.Fatal(err)
+	} else {
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("GET /files/images/cover.png = %d, want 404 (must not be reachable via /files)", resp.StatusCode)
+		}
 	}
 }
 

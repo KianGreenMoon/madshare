@@ -61,7 +61,16 @@ func main() {
 	defer db.Close()
 
 	filesDir := cfg.Storage.FilesDir
-	if err := database.ReconcileOrphans(context.Background(), db, filesDir); err != nil {
+	// Audio blobs live under files_dir/audio, a sibling of files_dir/images, so
+	// the /files server (rooted at the audio dir) can never reach cover images.
+	// Relocate any pre-split blobs sitting directly under files_dir first.
+	if n, err := storage.RelocateLegacyBlobs(filesDir); err != nil {
+		log.Printf("relocate legacy blobs: %v", err)
+	} else if n > 0 {
+		log.Printf("relocated %d audio blob(s) under %s/%s", n, filesDir, storage.AudioSubdir)
+	}
+	audioDir := filepath.Join(filesDir, storage.AudioSubdir)
+	if err := database.ReconcileOrphans(context.Background(), db, audioDir); err != nil {
 		log.Printf("reconcile orphans: %v", err)
 	}
 
@@ -123,7 +132,7 @@ func main() {
 	}
 
 	deps := api.Deps{
-		Store:         storage.NewLocal(filesDir),
+		Store:         storage.NewLocal(audioDir),
 		Repo:          db,
 		CacheDir:      os.TempDir(),
 		FilesDir:      filesDir,

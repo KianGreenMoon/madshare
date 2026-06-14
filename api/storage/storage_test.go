@@ -26,6 +26,54 @@ func newLocal(t *testing.T) *Local {
 	return NewLocal(t.TempDir())
 }
 
+func TestRelocateLegacyBlobs(t *testing.T) {
+	dir := t.TempDir()
+	hash := strings.Repeat("a", 64)
+
+	// A legacy blob directly under filesDir, plus an images dir that must stay.
+	if err := os.MkdirAll(filepath.Join(dir, hash), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, hash, "song.mp3"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "images"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "images", "cover.png"), []byte("p"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := RelocateLegacyBlobs(dir)
+	if err != nil {
+		t.Fatalf("relocate: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("moved = %d, want 1", n)
+	}
+	if _, err := os.Stat(filepath.Join(dir, AudioSubdir, hash, "song.mp3")); err != nil {
+		t.Errorf("blob not under %s/: %v", AudioSubdir, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, hash)); !os.IsNotExist(err) {
+		t.Error("legacy blob dir still present at the top level")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "images", "cover.png")); err != nil {
+		t.Errorf("images dir must be left untouched: %v", err)
+	}
+
+	// Idempotent: a second run moves nothing.
+	if n2, err := RelocateLegacyBlobs(dir); err != nil || n2 != 0 {
+		t.Errorf("second run moved=%d err=%v, want 0 / nil", n2, err)
+	}
+}
+
+func TestRelocateLegacyBlobs_MissingDir(t *testing.T) {
+	n, err := RelocateLegacyBlobs(filepath.Join(t.TempDir(), "nope"))
+	if err != nil || n != 0 {
+		t.Errorf("missing dir: n=%d err=%v, want 0 / nil", n, err)
+	}
+}
+
 // ---- HashUpload -------------------------------------------------------------
 
 // TestHashUpload_SmallFile exercises the in-memory path (size <= memBufferLimit).

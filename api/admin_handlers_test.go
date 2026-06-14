@@ -362,7 +362,7 @@ func TestAdminRoutes_Wired(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	srv := httptest.NewServer(NewRouter(storage.NewLocal(dir), db, t.TempDir(), dir, testMaxUpload))
+	srv := httptest.NewServer(NewRouter(storage.NewLocal(filepath.Join(dir, storage.AudioSubdir)), db, t.TempDir(), dir, testMaxUpload))
 	t.Cleanup(srv.Close)
 
 	// Upload through the router so a real blob + row exist.

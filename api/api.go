@@ -14,9 +14,10 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
-// Deps bundles the dependencies the API route groups need. filesDir is the
-// directory uploaded blobs are served from (the same path the store writes to);
-// MaxUploadSize caps the upload request body in bytes.
+// Deps bundles the dependencies the API route groups need. FilesDir is the base
+// files directory: audio blobs are served from FilesDir/audio (so Store must be
+// rooted there too — see storage.AudioSubdir) and cover images from
+// FilesDir/images. MaxUploadSize caps the upload request body in bytes.
 type Deps struct {
 	Store         storage.Storage
 	Repo          database.Repository
@@ -66,13 +67,11 @@ func (d Deps) protectAny(perms ...string) func(http.Handler) http.Handler {
 }
 
 func (d Deps) newHandler() *handler {
-	// KNOWN ISSUE (TODO): imagesDir nests inside filesDir, and the /files/*
-	// file server serves the whole filesDir tree. As a side effect cover images
-	// are also reachable at /files/images/<key>, not just at /images/*. Harmless
-	// today (no auth, images are public, nosniff is set, listing is 404'd), but
-	// the URL surface is wider than intended and would bypass any future
-	// access control applied only to /images/*. Revisit how this is laid out —
-	// e.g. store images outside the served files tree, or 404 /files/images.
+	// Layout: audio blobs live under <FilesDir>/audio (served at /files), cover
+	// images under <FilesDir>/images (served at /images). The two are siblings,
+	// so the /files server — rooted at the audio dir below — can never reach an
+	// image; cover art is reachable only via /images. The store must be rooted
+	// at <FilesDir>/audio to match (see madshare.go and NewRouter).
 	h := &handler{
 		storage:       d.Store,
 		repo:          d.Repo,
@@ -152,7 +151,9 @@ func RegisterAPI(r chi.Router, d Deps) {
 	// Uploader-facing restore — only succeeds when the trash-restore policy is
 	// "uploader_restore" (the handler enforces it); gated on file.upload.
 	r.With(d.protect(auth.PermFileUpload)).Post("/api/files/{hash}/restore", h.restoreFileForUploader)
-	fileServer(r, "/files", noListFS{http.Dir(d.FilesDir)}, d.fileAccessGuard())
+	// Rooted at the audio subtree, a sibling of <FilesDir>/images, so /files can
+	// only ever serve audio blobs — never cover images.
+	fileServer(r, "/files", noListFS{http.Dir(filepath.Join(d.FilesDir, storage.AudioSubdir))}, d.fileAccessGuard())
 
 	imagesFS := noListFS{http.Dir(h.imagesDir)}
 	r.Get("/images/*", func(w http.ResponseWriter, r *http.Request) {
@@ -211,7 +212,9 @@ func RegisterAdmin(r chi.Router, d Deps) {
 
 // NewRouter builds a full API handler (api + admin groups) with the standard
 // middleware. It is a convenience for tests and pure-API embedding; the running
-// server composes route groups per listener via the Register* functions.
+// server composes route groups per listener via the Register* functions. store
+// must be rooted at filesDir/audio (storage.AudioSubdir), since the /files
+// server reads from there.
 func NewRouter(store storage.Storage, repo database.Repository, cacheDir, filesDir string, maxUploadSize int64) http.Handler {
 	d := Deps{Store: store, Repo: repo, CacheDir: cacheDir, FilesDir: filesDir, MaxUploadSize: maxUploadSize}
 	r := chi.NewRouter()
@@ -334,9 +337,9 @@ func fileServer(r chi.Router, path string, root http.FileSystem, guard func(http
 
 // fileAccessGuard returns middleware enforcing per-file play/download access on
 // the blob server. It is a pass-through when auth is not configured (NewRouter /
-// tests / open embedding). Cover images (served under <files>/images) are not
-// gated. A denied request gets 404 — not 403 — so it does not reveal that a
-// file exists.
+// tests / open embedding). A denied request gets 404 — not 403 — so it does not
+// reveal that a file exists. (Cover images live in a sibling tree served at
+// /images and never reach this guard.)
 //
 // Staged (pending-review) blobs serve only to identities holding file.upload or
 // content.moderate — uploaders, moderators, admins — and 404 for everyone else.
@@ -351,10 +354,6 @@ func (d Deps) fileAccessGuard() func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			rest := chi.URLParam(r, "*")
 			seg, _, _ := strings.Cut(rest, "/")
-			if seg == "images" { // cover art is not gated
-				next.ServeHTTP(w, r)
-				return
-			}
 			id := auth.FromContext(r.Context())
 			state, _, _, found, err := d.Repo.FileReviewInfo(r.Context(), seg)
 			if err != nil {

@@ -15,6 +15,50 @@ import (
 // validHash matches a lowercase SHA-256 hex digest (64 chars).
 var validHash = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
+// AudioSubdir is the subdirectory of files_dir under which audio blobs live, so
+// the served blob tree (/files) is a SIBLING of — not a parent of — the cover
+// images tree (files_dir/images). Nesting images under the served tree would
+// expose them at /files/images/<key> too; keeping them siblings means /files
+// can only ever reach audio. The store's baseDir is files_dir/<AudioSubdir>.
+const AudioSubdir = "audio"
+
+// RelocateLegacyBlobs migrates pre-AudioSubdir blobs — hash-named directories
+// sitting directly under filesDir — into filesDir/<AudioSubdir>. It is the
+// one-time upgrade for databases created before audio and images were split
+// into sibling subtrees. Idempotent: once moved, no hash dirs remain at the top
+// level, so a re-run is a no-op. Returns the number of blob directories moved.
+// Cover images (filesDir/images) and any other non-hash entry are left in place.
+func RelocateLegacyBlobs(filesDir string) (int, error) {
+	entries, err := os.ReadDir(filesDir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return 0, nil // fresh install: nothing to migrate
+		}
+		return 0, fmt.Errorf("storage: read files dir: %w", err)
+	}
+	audioDir := filepath.Join(filesDir, AudioSubdir)
+	moved := 0
+	for _, e := range entries {
+		if !e.IsDir() || !validHash.MatchString(e.Name()) {
+			continue
+		}
+		if err := os.MkdirAll(audioDir, 0755); err != nil {
+			return moved, err
+		}
+		dst := filepath.Join(audioDir, e.Name())
+		if _, err := os.Stat(dst); err == nil {
+			// Already at the destination (a half-finished prior migration);
+			// leave the stray top-level copy rather than clobbering it.
+			continue
+		}
+		if err := os.Rename(filepath.Join(filesDir, e.Name()), dst); err != nil {
+			return moved, fmt.Errorf("storage: relocate blob %s: %w", e.Name(), err)
+		}
+		moved++
+	}
+	return moved, nil
+}
+
 // Local stores files at baseDir/<sha256>/<filename>.
 type Local struct {
 	baseDir string

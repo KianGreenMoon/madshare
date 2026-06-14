@@ -8,6 +8,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -55,7 +56,7 @@ func newAuthTestServerRaw(t *testing.T) (*httptest.Server, *database.DB) {
 
 	// With Auth set, RegisterAPI/RegisterAdmin gate the protected routes
 	// themselves (see Deps.protect); the test only needs Identify in the chain.
-	deps := Deps{Store: storage.NewLocal(dir), Repo: db, CacheDir: t.TempDir(), FilesDir: dir, MaxUploadSize: testMaxUpload, Auth: db, Manage: db}
+	deps := Deps{Store: storage.NewLocal(filepath.Join(dir, storage.AudioSubdir)), Repo: db, CacheDir: t.TempDir(), FilesDir: dir, MaxUploadSize: testMaxUpload, Auth: db, Manage: db}
 	r := chi.NewRouter()
 	r.Use(auth.Identify(db))
 	RegisterAPI(r, deps)
