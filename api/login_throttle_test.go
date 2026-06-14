@@ -32,6 +32,29 @@ func TestLoginThrottleAllowIP(t *testing.T) {
 	}
 }
 
+func TestLoginThrottleExemptsLoopback(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	tt := newLoginThrottle()
+	tt.now = func() time.Time { return now }
+
+	// A loopback peer (a local reverse proxy, or a local operator) is never
+	// bucketed: well past the burst it is still allowed, and it allocates no
+	// bucket, so it cannot throttle the many users that share that address.
+	for _, ip := range []string{"127.0.0.1", "::1"} {
+		for i := 0; i < loginBurst*3; i++ {
+			if !tt.allowIP(ip) {
+				t.Fatalf("loopback %s attempt %d should always be allowed", ip, i+1)
+			}
+		}
+	}
+	tt.mu.Lock()
+	n := len(tt.buckets)
+	tt.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("loopback peers should allocate no buckets, got %d", n)
+	}
+}
+
 func TestLoginThrottleAcquire(t *testing.T) {
 	tt := newLoginThrottle()
 

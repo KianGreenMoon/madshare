@@ -22,9 +22,17 @@ const (
 // loginThrottle defends the login endpoint against brute-force and flood
 // attacks. It combines a per-IP token bucket (slows guessing from any single
 // source) with a global semaphore that bounds how many argon2 verifications run
-// at once (so a flood cannot exhaust memory/CPU). It is keyed on the request's
-// source IP: effective for direct and Yggdrasil binds; behind a reverse proxy,
-// the proxy reports its own address, so rate-limit at the proxy as well.
+// at once (so a flood cannot exhaust memory/CPU).
+//
+// The per-IP bucket is keyed on the request's source IP, so it is effective on
+// direct and Yggdrasil binds. A LOOPBACK peer is exempt from it: behind a local
+// reverse proxy every remote client arrives from the proxy's loopback address,
+// so a shared bucket would throttle all users at once (one user's failed logins
+// would lock out everyone) while distinguishing no one — and the proxy does its
+// own per-client limiting (see contrib/nginx). A loopback peer is therefore
+// either that proxy or a local operator; in neither case is it an individually
+// throttleable remote attacker. The global verify-concurrency cap is NOT
+// per-IP and always applies, including to loopback.
 type loginThrottle struct {
 	mu      sync.Mutex
 	buckets map[string]*tokenBucket
@@ -47,8 +55,12 @@ func newLoginThrottle() *loginThrottle {
 }
 
 // allowIP reports whether ip may make another login attempt now, consuming one
-// token when it does. A previously unseen IP starts with a full burst.
+// token when it does. A previously unseen IP starts with a full burst. Loopback
+// peers are always allowed (never bucketed) — see the type comment.
 func (t *loginThrottle) allowIP(ip string) bool {
+	if isLoopback(ip) {
+		return true
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -105,4 +117,12 @@ func clientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// isLoopback reports whether ip is a loopback address (127.0.0.0/8 or ::1).
+// Such a peer is a local reverse proxy or a local operator, not a remote client
+// the per-IP throttle can meaningfully distinguish.
+func isLoopback(ip string) bool {
+	parsed := net.ParseIP(ip)
+	return parsed != nil && parsed.IsLoopback()
 }
