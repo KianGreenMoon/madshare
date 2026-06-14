@@ -516,33 +516,51 @@ input[type="range"]::-moz-range-thumb {
 .upload-status.success { color: var(--success); }
 
 /* ── Library drill-down ── */
-/* ── Library section subtabs (Music · Playlists · …) ── */
-/* The in-page section switcher at the top of <main> on the listening pages.
-   Underline tab strip matching the header nav (.nav-link) so the app's tabs look
-   the same throughout; it is the section's sole label and back-to-top affordance,
-   so the breadcrumb below never repeats the section name. Extends by adding more
-   .section-tab. */
-.section-tabs {
+/* ── In-page subtab bar (.subtabs / .subtab) ──────────────────────────────── */
+/* The underline tab strip used by every in-<main> subtab switcher: the library's
+   section switcher (Music · Playlists · …, server-rendered <a>) and the upload
+   page's Upload ⇄ My uploads bar (client-toggled <button>). One component so they
+   look identical throughout; .subtab carries both the <a> and <button> resets so
+   either element works. Active tab = .is-active. Extend by adding more .subtab. */
+.subtabs {
   display: flex;
   gap: var(--space-2);
   margin-bottom: var(--space-4);
   border-bottom: 1px solid var(--border);
 }
-.section-tab {
+.subtab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;            /* sit the active underline on the strip's border */
+  font: inherit;
   font-size: 13px;
   font-weight: 500;
   color: var(--text-muted);
   text-decoration: none;
   padding: var(--space-2) var(--space-3);
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;            /* sit the active underline on the strip's border */
+  cursor: pointer;
   transition: color 150ms ease, border-color 150ms ease;
 }
-.section-tab:hover { color: var(--text); }
-.section-tab--active { color: var(--text); border-bottom-color: var(--accent); }
-.section-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+.subtab:hover { color: var(--text); }
+.subtab.is-active { color: var(--text); border-bottom-color: var(--accent); }
+.subtab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+/* Pill count badge (e.g. the upload page's My-uploads count). */
+.subtab__count {
+  display: inline-block;
+  min-width: 1.6em;
+  padding: 0 var(--space-1);
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.6;
+  text-align: center;
+  vertical-align: text-bottom;
+}
 
-/* The breadcrumb row. No bottom border: the section-tabs strip above is the only
+/* The breadcrumb row. No bottom border: the .subtabs strip above is the only
    divider, so a drilled view doesn't show two stacked lines. Hidden entirely at a
    section's top level (JS sets display:none) — there's nothing to show there. */
 .library-bar {

@@ -25,14 +25,14 @@ function hasAnyPerm(needed) {
 // applyNavPermissions removes the Upload / Admin header links and the Playlists
 // library subtab when the current principal (signed-in or anonymous) lacks the
 // rights — they shouldn't see entries for pages they cannot use. It gates both the
-// persistent header nav and the in-<main> subtab bar (.section-tabs); the latter is
+// persistent header nav and the in-<main> subtab bar (.subtabs); the latter is
 // re-rendered on every shell swap, so the shell re-runs this after each navigation.
 // Exported for that reason. Idempotent (already-removed links match nothing).
 export function applyNavPermissions() {
   const gates = [['/upload', UPLOAD_PERMS], ['/admin', ADMIN_PERMS], ['/playlists', PLAYLISTS_PERMS]];
   for (const [href, needed] of gates) {
     if (hasAnyPerm(needed)) continue;
-    document.querySelectorAll(`.main-nav a[href="${href}"], .section-tabs a[href="${href}"]`).forEach(a => a.remove());
+    document.querySelectorAll(`.main-nav a[href="${href}"], .subtabs a[href="${href}"]`).forEach(a => a.remove());
   }
 }
 

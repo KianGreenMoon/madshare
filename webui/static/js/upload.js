@@ -687,9 +687,9 @@ function handleBackoff(item) {
     workersRange.value = String(workerCap);
     workersValue.textContent = String(workerCap);
   }
-  console.log(`Server limit hit — workers reduced to ${workerCap}`);
-  showToast(`Server busy — workers reduced to ${workerCap}.`, { type: 'status' });
-  announce(`Workers reduced to ${workerCap}.`);
+  console.log(`Server limit hit — parallel uploads reduced to ${workerCap}`);
+  showToast(`Server busy — parallel uploads reduced to ${workerCap}.`, { type: 'status' });
+  announce(`Parallel uploads reduced to ${workerCap}.`);
 
   setItemState(item, 'pending');
   setProgress(item, 0);
