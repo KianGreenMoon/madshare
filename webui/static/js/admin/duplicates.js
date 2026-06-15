@@ -39,11 +39,14 @@ function updateSelCount() {
 results.addEventListener('change', e => {
   if (e.target.classList?.contains('dup-check')) updateSelCount();
 });
-btnSelectExtras.addEventListener('click', () => {
-  // Tick every rendition except each recording's best (the redundant copies).
-  allChecks().forEach(c => { c.checked = c.dataset.best !== '1'; });
+btnSelectExtras.addEventListener('click', () => selectExtrasIn(results));
+
+// selectExtrasIn ticks every rendition except the best within a scope (one
+// recording card, or `results` for the whole page) — the redundant copies.
+function selectExtrasIn(scope) {
+  scope.querySelectorAll('.dup-check').forEach(c => { c.checked = c.dataset.best !== '1'; });
   updateSelCount();
-});
+}
 btnClearSel.addEventListener('click', () => {
   allChecks().forEach(c => { c.checked = false; });
   updateSelCount();
@@ -202,11 +205,13 @@ function recordingCard(group) {
     ])]),
     el('tbody', {}, group.renditions.map((r, i) => renditionRow(group, r, i))),
   ]);
-  // Recording-level play: start at the best (top-ranked) rendition.
-  const bestIdx = Math.max(0, group.renditions.findIndex(r => r.best));
   return el('section', { class: 'dup-card' }, [
     el('div', { class: 'dup-card-head' }, [
-      el('button', { class: 'btn btn-sm btn-neutral dup-play-best', title: 'Play the best rendition', onclick: () => playGroup(group, bestIdx) }, ['▶ Play best']),
+      el('button', {
+        class: 'btn btn-sm btn-neutral',
+        title: 'Tick every rendition of this recording except its best',
+        onclick: e => selectExtrasIn(e.target.closest('.dup-card')),
+      }, ['Select non-best']),
       el('span', { class: 'dup-count' }, [`${group.renditions.length} renditions`]),
       el('span', { class: 'dup-suggestion' }, [group.suggestion]),
     ]),

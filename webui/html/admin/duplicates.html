@@ -22,14 +22,15 @@
     <p class="muted">
       Recordings that hold more than one rendition of the same audio (matched by
       acoustic fingerprint). The best rendition by the quality ladder is marked.
-      Tick the renditions to remove (<strong>Select non-best</strong> ticks every
-      redundant copy across all recordings) and <strong>Delete selected</strong>
+      Tick the renditions to remove — <strong>Select non-best</strong> on a card
+      ticks that recording's redundant copies, <strong>Select all non-best</strong>
+      does it across every recording — then <strong>Delete selected</strong>
       sends them to Trash. <strong>Split off</strong> detaches a rendition into its
       own recording when the fingerprint grouped two genuinely different versions.
     </p>
 
     <div class="dup-toolbar hidden" id="dupToolbar" role="region" aria-label="Bulk actions">
-      <button class="btn btn-sm btn-neutral" id="selectExtras" title="Tick every rendition except each recording's best">Select non-best</button>
+      <button class="btn btn-sm btn-neutral" id="selectExtras" title="Tick every rendition except each recording's best, across all recordings">Select all non-best</button>
       <button class="btn btn-sm btn-neutral" id="clearSel">Clear</button>
       <span class="dup-toolbar-spacer"></span>
       <button class="btn btn-sm btn-destructive-solid" id="deleteSelected" disabled>Delete selected</button>
