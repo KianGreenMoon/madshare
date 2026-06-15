@@ -273,6 +273,7 @@ export function createFileList(scope) {
   function isSelectable(f) { return scope.selectable ? scope.selectable(f) : false; }
   function rowCheckbox(f) {
     const cb = el('input', { type: 'checkbox', class: 'fl-rowcheck', 'aria-label': `Select ${displayTitle(f)}` });
+    cb.dataset.hash = f.hash;
     cb.checked = selected.has(f.hash);
     cb.addEventListener('change', () => { cb.checked ? selected.add(f.hash) : selected.delete(f.hash); syncSelectionUI(); });
     return cb;
@@ -285,6 +286,9 @@ export function createFileList(scope) {
     mountEl.querySelectorAll('.fl-bulk-btn').forEach(b => (b.disabled = sel === 0));
 
     const checks = [...mountEl.querySelectorAll('.fl-rowcheck')];
+    // Reconcile each row checkbox from the selection Set so a group-checkbox
+    // (artist/album separator) cascade is reflected on the track rows it governs.
+    checks.forEach(c => { if (c.dataset.hash) c.checked = selected.has(c.dataset.hash); });
     const visSel = checks.filter(c => c.checked).length;
     const selectAll = mountEl.querySelector('.fl-selectall');
     if (selectAll) { selectAll.checked = checks.length > 0 && visSel === checks.length; selectAll.indeterminate = visSel > 0 && visSel < checks.length; }
@@ -579,6 +583,7 @@ export function createFileList(scope) {
     const kids = [];
     if (hash && isSelectableTrack()) {
       const cb = el('input', { type: 'checkbox', class: 'fl-rowcheck', 'aria-label': `Select ${t.title || 'track'}` });
+      cb.dataset.hash = hash;
       cb.checked = selected.has(hash);
       cb.addEventListener('change', () => { cb.checked ? selected.add(hash) : selected.delete(hash); syncSelectionUI(); });
       kids.push(cb);
