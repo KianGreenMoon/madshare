@@ -145,9 +145,14 @@ api `Repository`, with `fakeRepo` stubs); `api/duplicates_handlers.go`
 (`GET /api/admin/duplicates` ranked via `RankRenditions` + keep/variant
 suggestion, `POST /api/admin/duplicates/{file_id}/split`), gated
 `content.moderate`; `/admin/duplicates` page (`webui/html/admin/duplicates.html`
-+ `static/js/admin/duplicates.js` + `admin-duplicates.css`) with a page-local
-preview player, registered in `adminSubPages`, nav link + dashboard card; delete
-reuses the soft-delete endpoint. Tests in `database/` + `api/`.
++ `static/js/admin/duplicates.js` + `admin-duplicates.css`), registered in
+`adminSubPages`, nav link + dashboard card; delete reuses the soft-delete
+endpoint. Tests in `database/` + `api/`. **Post-review rework (99c28b4):** reuse
+the shared player core (`createPlayer` + player-bar partial, page-local play
+context, renditions as a mini-queue) instead of a bare `<audio>`, and add an
+Edit-tags action via the shared `track-edit.js` modal (raw album/album_artist
+added to the rendition DTO for prefill). The list stays bespoke — file-list.js is
+flat-file, this is recording-grouped tech-compare rows.
 
 **API (`api/`)** — `GET /api/admin/duplicates`: recordings with >1 non-trashed
 rendition, each with renditions side-by-side (format, bitrate, sample-rate,

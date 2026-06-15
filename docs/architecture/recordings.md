@@ -231,7 +231,13 @@ video rendition can *be* an HLS manifest without reshaping this model.
 
 **✅ Implemented** as `/admin/duplicates` (`webui/static/js/admin/duplicates.js`)
 backed by `GET /api/admin/duplicates` + `POST /api/admin/duplicates/{file_id}/split`
-(both gated **`content.moderate`**), with a page-local preview player. Lists every
+(both gated **`content.moderate`**). It reuses the shared building blocks: the
+**player core** (`player.js`, the same bar as the listening pages) driven by a
+page-local play context — playing a rendition queues the recording's renditions
+so Prev/Next/auto-advance walk them — and the shared **`track-edit.js`** modal for
+an **Edit tags** action per rendition (gated `metadata.edit`). The list itself is
+bespoke (not `file-list.js`): renditions grouped under a recording with
+tech-compare columns are a different shape than the flat file list. Lists every
 recording with **>1 non-trashed rendition**:
 
 - Per recording, the renditions side by side with tech info (format, bitrate,
@@ -324,8 +330,9 @@ above).
   duration-shortlisted, conservative threshold). Migration `020`. Data layer only.
 - **P2 — Duplicates admin page. ✅ Done.** `/admin/duplicates` lists
   multi-rendition recordings with the ranked tech compare + keep/variant
-  suggestion, page-local preview, delete-with-confirm (soft delete), and
-  split-off (`POST /api/admin/duplicates/{file_id}/split`). `content.moderate`.
+  suggestion, preview via the shared player, edit-tags via the shared
+  `track-edit.js` modal, delete-with-confirm (soft delete), and split-off
+  (`POST /api/admin/duplicates/{file_id}/split`). `content.moderate`.
 - **P3 — Moderation integration. ✅ Done.** `IsDuplicateSubmission` (fingerprint
   or tag-fallback) suppresses self-approve in `submitMyUploads`, returns an
   uploader `warning`, and flags the moderation queue rows (`duplicate`). Side-by-
