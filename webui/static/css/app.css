@@ -883,7 +883,7 @@ input[type="range"]::-moz-range-thumb {
 .edit-form input:focus-visible,
 .edit-form select:focus-visible,
 .edit-form textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-/* "Extended edit" disclosure: a quiet text button that reveals the rare tags. */
+/* "Extended edit" disclosure: a quiet text button that opens the wide modal. */
 .edit-extended-toggle {
   justify-self: start;
   padding: 0;
@@ -895,12 +895,12 @@ input[type="range"]::-moz-range-thumb {
   cursor: pointer;
 }
 .edit-extended-toggle:hover { text-decoration: underline; }
-.edit-extended {
-  display: grid;
-  gap: var(--space-3);
-  padding-top: var(--space-1);
-  border-top: 1px solid var(--border);
-}
+/* Wide secondary modal (the full "extended tags" editor), stacked above the
+   regular edit modal. Two-column field grid; a .span-2 field spans both. */
+.modal-wide { width: min(620px, calc(100vw - 2 * var(--space-5))); }
+.modal-backdrop.is-stacked { z-index: 110; background: rgba(0,0,0,0.45); }
+.edit-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
+.edit-grid-2 .span-2 { grid-column: 1 / -1; }
 .login-form {
   display: flex;
   flex-direction: column;
