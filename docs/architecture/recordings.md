@@ -244,9 +244,12 @@ recording with **>1 non-trashed rendition**:
   sample rate, duration, size) and the ladder rank, the best one marked, plus a
   **suggestion** ("keep #1, others are strictly lower quality" / "these differ
   only in format — may be intentional variants").
-- **Delete a duplicate, with confirmation** — reuses the existing soft delete
-  (`docs/architecture/soft-delete.md`); the blob and its `files` row go to
-  Trash like any other delete. No auto-delete, ever.
+- **Delete duplicates, with confirmation** — per-rendition checkboxes plus a
+  toolbar: **Select non-best** ticks every redundant copy across all recordings
+  (keep each best, drop the rest), then **Delete selected (N)** soft-deletes them
+  after a count-aware confirm. Reuses the existing soft delete
+  (`docs/architecture/soft-delete.md`); blobs and `files` rows go to Trash like
+  any other delete. The selection is the human's — never auto-delete.
 - **Split off as a separate recording** — the "save as another composition"
   action: detach a rendition into its own new recording and set
   `recording_pinned = 1` so the resolver never re-merges it (fingerprint
