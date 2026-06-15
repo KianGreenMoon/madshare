@@ -192,11 +192,15 @@ func (db *DB) createRecording(ctx context.Context, now int64) (int64, error) {
 // DuplicateRendition is a single rendition of a duplicate recording, enriched
 // with the display + URL fields the duplicates admin page needs.
 type DuplicateRendition struct {
-	FileID          int64
-	Hash            string
-	ObjectKey       string // "<hash>/<filename>"; the play URL is "/files/" + this
-	Title           string
+	FileID    int64
+	Hash      string
+	ObjectKey string // "<hash>/<filename>"; the play URL is "/files/" + this
+	Title     string
+	// Raw tag fields (not coalesced) so the edit-tags modal prefills correctly;
+	// the page derives the display artist as AlbumArtist || Artist.
 	Artist          string
+	AlbumArtist     string
+	Album           string
 	Codec           string
 	MimeType        string
 	Bitrate         int
@@ -219,8 +223,8 @@ type DuplicateRecording struct {
 func (db *DB) ListDuplicateRecordings(ctx context.Context) ([]DuplicateRecording, error) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT f.recording_id, f.id, f.hash, f.object_key, f.byte_size, f.mime_type,
-		        mm.title,
-		        COALESCE(NULLIF(mm.album_artist, ''), mm.artist, ''),
+		        mm.title, COALESCE(mm.artist, ''), COALESCE(mm.album_artist, ''),
+		        COALESCE(mm.album, ''),
 		        COALESCE(mm.codec, ''), COALESCE(mm.bitrate, 0),
 		        COALESCE(mm.sample_rate, 0), COALESCE(mm.bit_depth, 0),
 		        COALESCE(mm.duration_seconds, 0)
@@ -250,7 +254,7 @@ func (db *DB) ListDuplicateRecordings(ctx context.Context) ([]DuplicateRecording
 			r     DuplicateRendition
 		)
 		if err := rows.Scan(&recID, &r.FileID, &r.Hash, &r.ObjectKey, &r.ByteSize,
-			&r.MimeType, &r.Title, &r.Artist, &r.Codec, &r.Bitrate,
+			&r.MimeType, &r.Title, &r.Artist, &r.AlbumArtist, &r.Album, &r.Codec, &r.Bitrate,
 			&r.SampleRate, &r.BitDepth, &r.DurationSeconds); err != nil {
 			return nil, fmt.Errorf("list duplicate recordings: scan: %w", err)
 		}
@@ -295,8 +299,8 @@ func (db *DB) RecordingRenditionsByHash(ctx context.Context, hash string) ([]Dup
 func (db *DB) renditionsWhere(ctx context.Context, cond string, arg int64) ([]DuplicateRendition, error) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT f.id, f.hash, f.object_key, f.byte_size, f.mime_type,
-		        mm.title,
-		        COALESCE(NULLIF(mm.album_artist, ''), mm.artist, ''),
+		        mm.title, COALESCE(mm.artist, ''), COALESCE(mm.album_artist, ''),
+		        COALESCE(mm.album, ''),
 		        COALESCE(mm.codec, ''), COALESCE(mm.bitrate, 0),
 		        COALESCE(mm.sample_rate, 0), COALESCE(mm.bit_depth, 0),
 		        COALESCE(mm.duration_seconds, 0)
@@ -314,7 +318,7 @@ func (db *DB) renditionsWhere(ctx context.Context, cond string, arg int64) ([]Du
 	for rows.Next() {
 		var r DuplicateRendition
 		if err := rows.Scan(&r.FileID, &r.Hash, &r.ObjectKey, &r.ByteSize, &r.MimeType,
-			&r.Title, &r.Artist, &r.Codec, &r.Bitrate, &r.SampleRate,
+			&r.Title, &r.Artist, &r.AlbumArtist, &r.Album, &r.Codec, &r.Bitrate, &r.SampleRate,
 			&r.BitDepth, &r.DurationSeconds); err != nil {
 			return nil, fmt.Errorf("renditions: scan: %w", err)
 		}

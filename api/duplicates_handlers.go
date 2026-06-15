@@ -12,19 +12,21 @@ import (
 // duplicateRenditionDTO is one rendition in the duplicates response: tech info,
 // the ladder rank (1 = best), the best mark, and a play URL for the preview.
 type duplicateRenditionDTO struct {
-	FileID     int64   `json:"file_id"`
-	Hash       string  `json:"hash"`
-	URL        string  `json:"url"`
-	Title      string  `json:"title"`
-	Artist     string  `json:"artist"`
-	Format     string  `json:"format"` // codec when probed, else MIME (degraded)
-	Bitrate    int     `json:"bitrate"`
-	SampleRate int     `json:"sample_rate"`
-	BitDepth   int     `json:"bit_depth"`
-	Size       int64   `json:"size"`
-	Duration   float64 `json:"duration"`
-	Rank       int     `json:"rank"`
-	Best       bool    `json:"best"`
+	FileID      int64   `json:"file_id"`
+	Hash        string  `json:"hash"`
+	URL         string  `json:"url"`
+	Title       string  `json:"title"`
+	Artist      string  `json:"artist"`       // raw artist tag (edit prefill)
+	AlbumArtist string  `json:"album_artist"` // raw album_artist tag (edit prefill)
+	Album       string  `json:"album"`        // raw album tag (edit prefill)
+	Format      string  `json:"format"`       // codec when probed, else MIME (degraded)
+	Bitrate     int     `json:"bitrate"`
+	SampleRate  int     `json:"sample_rate"`
+	BitDepth    int     `json:"bit_depth"`
+	Size        int64   `json:"size"`
+	Duration    float64 `json:"duration"`
+	Rank        int     `json:"rank"`
+	Best        bool    `json:"best"`
 }
 
 type duplicateRecordingDTO struct {
@@ -83,19 +85,21 @@ func buildDuplicateDTO(g database.DuplicateRecording) duplicateRecordingDTO {
 		}
 		rank := rankByFile[r.FileID]
 		dto.Renditions = append(dto.Renditions, duplicateRenditionDTO{
-			FileID:     r.FileID,
-			Hash:       r.Hash,
-			URL:        "/files/" + r.ObjectKey,
-			Title:      r.Title,
-			Artist:     r.Artist,
-			Format:     format,
-			Bitrate:    r.Bitrate,
-			SampleRate: r.SampleRate,
-			BitDepth:   r.BitDepth,
-			Size:       r.ByteSize,
-			Duration:   r.DurationSeconds,
-			Rank:       rank,
-			Best:       rank == 1,
+			FileID:      r.FileID,
+			Hash:        r.Hash,
+			URL:         "/files/" + r.ObjectKey,
+			Title:       r.Title,
+			Artist:      r.Artist,
+			AlbumArtist: r.AlbumArtist,
+			Album:       r.Album,
+			Format:      format,
+			Bitrate:     r.Bitrate,
+			SampleRate:  r.SampleRate,
+			BitDepth:    r.BitDepth,
+			Size:        r.ByteSize,
+			Duration:    r.DurationSeconds,
+			Rank:        rank,
+			Best:        rank == 1,
 		})
 	}
 	dto.Suggestion = duplicateSuggestion(g.Renditions)

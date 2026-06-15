@@ -45,17 +45,9 @@
 .dup-actions { white-space: nowrap; text-align: right; }
 .dup-actions .btn { margin-left: var(--space-2); }
 
-/* Page-local preview player */
-.dup-player {
-  position: sticky;
-  bottom: 0;
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-4);
-  background: var(--surface);
-  border-top: 1px solid var(--border);
-}
-.dup-player.hidden { display: none; }
-.dup-player-title { font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
-.dup-player audio { flex: 1; height: 36px; }
+/* The rendition currently playing through the shared player bar. */
+.dup-table tr.dup-row--playing { background: var(--accent-bg, var(--surface-hover)); }
+.dup-table tr.dup-row--playing .dup-title { color: var(--accent); }
+
+/* Keep recording cards clear of the fixed player bar when it is shown. */
+.admin-main { padding-bottom: 96px; }

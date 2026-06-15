@@ -8,6 +8,7 @@
   {{template "theme-guard" .}}
   <link rel="stylesheet" href="/static/css/app.css">
   <link rel="stylesheet" href="/static/css/admin-shell.css">
+  <link rel="stylesheet" href="/static/css/player.css">
   <link rel="stylesheet" href="/static/css/admin-duplicates.css">
 </head>
 <body>
@@ -32,12 +33,6 @@
   </section>
 </main>
 
-<!-- Page-local preview player -->
-<div class="dup-player hidden" id="dupPlayer">
-  <span class="dup-player-title" id="dupPlayerTitle"></span>
-  <audio id="dupAudio" controls preload="none"></audio>
-</div>
-
 <!-- Delete confirmation modal -->
 <div class="modal-backdrop hidden" id="delModal" role="dialog" aria-modal="true" aria-labelledby="delModalTitle" aria-describedby="delModalBody">
   <div class="modal">
@@ -53,6 +48,7 @@
   </div>
 </div>
 
+{{template "player-bar" .}}
 {{template "auth-modals" .}}
 
 <script type="module" src="/static/js/admin/duplicates.js"></script>

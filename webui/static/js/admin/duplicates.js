@@ -1,30 +1,72 @@
 // Admin · Duplicates — recordings with more than one rendition of the same audio
 // (recordings P2, docs/architecture/recordings.md). Lists each recording with
-// its renditions ranked by the quality ladder, a keep/variant suggestion, a
-// page-local preview player, and two human-confirmed actions: Delete (soft
-// delete → Trash) and Split off (detach into a new pinned recording).
+// its renditions ranked by the quality ladder and a keep/variant suggestion.
+//
+// Reuses the shared building blocks: the player core (player.js, the same bar as
+// every listening page) driven by a page-local play context, and the track-edit
+// modal (track-edit.js) for fixing tags. Per-rendition actions: Play, Edit tags
+// (metadata.edit), Split off (detach into a new pinned recording), and Delete
+// (soft delete → Trash). Bespoke list rather than file-list.js: the rows are
+// renditions grouped under a recording with tech-compare columns, a shape
+// file-list's flat-file model doesn't carry.
 //
 // Moderator-accessible: bootAdmin additionally requires content.moderate.
 import { API, el, fmtBytes, fmtTime, toast, handleAuthError, bootAdmin } from './shared.js';
+import { createPlayer } from '../player.js';
+import { createTrackEditor } from '../track-edit.js';
 
 const results = document.getElementById('dupResults');
 const loading = document.getElementById('dupLoading');
 
-// ── Preview player (page-local) ───────────────────────────────────────────────
-const player      = document.getElementById('dupPlayer');
-const playerTitle = document.getElementById('dupPlayerTitle');
-const audio       = document.getElementById('dupAudio');
+// display artist: prefer the album artist, fall back to the track artist.
+const dispArtist = r => r.album_artist || r.artist || '';
 
-function preview(r) {
-  audio.src = API + r.url;
-  playerTitle.textContent = `${r.title || r.hash}${r.artist ? ' — ' + r.artist : ''}`;
-  player.classList.remove('hidden');
-  audio.play().catch(() => {/* autoplay may be blocked; controls still work */});
+// ── Shared preview player ─────────────────────────────────────────────────────
+// One player-bar for the page (createPlayer), driven by a page-local play
+// context like /admin/library: playing a rendition queues the whole recording's
+// renditions so Prev/Next/auto-advance walk them, and the playing row highlights.
+let playCtx = null;
+const player = createPlayer({
+  onPrev:  () => { if (playCtx) playAt(playCtx.index > 0 ? playCtx.index - 1 : playCtx.items.length - 1); },
+  onNext:  () => { if (playCtx) playAt(playCtx.index < playCtx.items.length - 1 ? playCtx.index + 1 : 0); },
+  onEnded: () => { if (playCtx && playCtx.index < playCtx.items.length - 1) playAt(playCtx.index + 1); },
+  onError: () => {
+    toast('Couldn’t play this rendition.', 'error');
+    if (playCtx && playCtx.index < playCtx.items.length - 1) playAt(playCtx.index + 1);
+  },
+});
+
+function playGroup(group, index) {
+  const items = group.renditions.map(r => ({
+    url: API + r.url, title: r.title || r.hash, artist: dispArtist(r), key: r.hash,
+  }));
+  playCtx = { items, index: index < 0 ? 0 : index };
+  playAt(playCtx.index);
+}
+function playAt(i) {
+  if (!playCtx || i < 0 || i >= playCtx.items.length) return;
+  playCtx.index = i;
+  const it = playCtx.items[i];
+  player.load({ url: it.url, title: it.title, artist: it.artist });
+  setPlaying(it.key);
+}
+function setPlaying(hash) {
+  results.querySelectorAll('tr.dup-row--playing').forEach(tr => tr.classList.remove('dup-row--playing'));
+  results.querySelector(`tr[data-hash="${CSS.escape(hash)}"]`)?.classList.add('dup-row--playing');
+}
+
+// ── Edit-tags modal (shared track-edit.js), gated on metadata.edit ────────────
+let editor = null; // created in init() only when the caller may edit
+function editTags(r) {
+  editor?.open({
+    hash: r.hash, title: r.title, artist: r.artist,
+    album_artist: r.album_artist, album: r.album,
+  });
 }
 
 // ── Delete confirmation modal ─────────────────────────────────────────────────
 const delModal   = document.getElementById('delModal');
-const delBody     = document.getElementById('delModalBody');
+const delBody    = document.getElementById('delModalBody');
 const delConfirm = document.getElementById('delConfirm');
 const delCancel  = document.getElementById('delCancel');
 const delClose   = document.getElementById('delClose');
@@ -41,8 +83,8 @@ function confirmDelete(r) {
       delModal.removeEventListener('click', onBackdrop);
       document.removeEventListener('keydown', onKey);
     };
-    const onOk      = () => { delModal.classList.add('hidden'); cleanup(); resolve(true); };
-    const onCancel  = () => { delModal.classList.add('hidden'); cleanup(); resolve(false); };
+    const onOk       = () => { delModal.classList.add('hidden'); cleanup(); resolve(true); };
+    const onCancel   = () => { delModal.classList.add('hidden'); cleanup(); resolve(false); };
     const onBackdrop = e => { if (e.target === delModal) onCancel(); };
     const onKey      = e => { if (e.key === 'Escape' && !delModal.classList.contains('hidden')) onCancel(); };
     delConfirm.addEventListener('click', onOk);
@@ -84,24 +126,28 @@ function techCell(r) {
   return parts.join(' · ') || '—';
 }
 
-function renditionRow(r) {
-  const cells = [
+function renditionRow(group, r, index) {
+  const artist = dispArtist(r);
+  const actions = [
+    el('button', { class: 'btn btn-sm btn-neutral', onclick: () => playGroup(group, index) }, ['Play']),
+  ];
+  if (editor) actions.push(el('button', { class: 'btn btn-sm btn-neutral', title: 'Edit this rendition’s tags', onclick: () => editTags(r) }, ['Edit']));
+  actions.push(
+    el('button', { class: 'btn btn-sm btn-neutral', title: 'Detach into its own recording', onclick: () => splitRendition(r) }, ['Split off']),
+    el('button', { class: 'btn btn-sm btn-destructive-outline', onclick: () => deleteRendition(r) }, ['Delete']),
+  );
+  return el('tr', { 'data-hash': r.hash }, [
     el('td', { class: 'dup-rank' }, [r.best ? el('span', { class: 'dup-best', title: 'Best by the quality ladder' }, ['★ best']) : `#${r.rank}`]),
     el('td', {}, [
       el('div', { class: 'dup-title' }, [r.title || '(untitled)']),
-      r.artist ? el('div', { class: 'dup-artist muted' }, [r.artist]) : null,
+      artist ? el('div', { class: 'dup-artist muted' }, [artist]) : null,
     ]),
     el('td', {}, [r.format || '—']),
     el('td', { class: 'dup-tech' }, [techCell(r)]),
     el('td', {}, [fmtTime(r.duration)]),
     el('td', {}, [fmtBytes(r.size)]),
-    el('td', { class: 'dup-actions' }, [
-      el('button', { class: 'btn btn-sm btn-neutral', onclick: () => preview(r) }, ['Play']),
-      el('button', { class: 'btn btn-sm btn-neutral', title: 'Detach into its own recording', onclick: () => splitRendition(r) }, ['Split off']),
-      el('button', { class: 'btn btn-sm btn-destructive-outline', onclick: () => deleteRendition(r) }, ['Delete']),
-    ]),
-  ];
-  return el('tr', {}, cells);
+    el('td', { class: 'dup-actions' }, actions),
+  ]);
 }
 
 function recordingCard(group) {
@@ -111,13 +157,13 @@ function recordingCard(group) {
       el('th', {}, ['Quality']), el('th', {}, ['Length']), el('th', {}, ['Size']),
       el('th', {}, ['']),
     ])]),
-    el('tbody', {}, group.renditions.map(renditionRow)),
+    el('tbody', {}, group.renditions.map((r, i) => renditionRow(group, r, i))),
   ]);
-  // Recording-level play: preview the best (top-ranked) rendition with one click.
-  const best = group.renditions.find(r => r.best) || group.renditions[0];
+  // Recording-level play: start at the best (top-ranked) rendition.
+  const bestIdx = Math.max(0, group.renditions.findIndex(r => r.best));
   return el('section', { class: 'dup-card' }, [
     el('div', { class: 'dup-card-head' }, [
-      el('button', { class: 'btn btn-sm btn-neutral dup-play-best', title: 'Play the best rendition', onclick: () => preview(best) }, ['▶ Play best']),
+      el('button', { class: 'btn btn-sm btn-neutral dup-play-best', title: 'Play the best rendition', onclick: () => playGroup(group, bestIdx) }, ['▶ Play best']),
       el('span', { class: 'dup-count' }, [`${group.renditions.length} renditions`]),
       el('span', { class: 'dup-suggestion' }, [group.suggestion]),
     ]),
@@ -141,6 +187,17 @@ async function load() {
 }
 
 (async function init() {
-  if (!(await bootAdmin({ require: 'content.moderate' }))) return;
+  const identity = await bootAdmin({ require: 'content.moderate' });
+  if (!identity) return;
+  // Edit tags is a metadata.edit capability; wire the shared modal only then.
+  if ((identity.permissions || []).includes('metadata.edit')) {
+    editor = createTrackEditor({
+      patchURL: f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`,
+      note: 'Edits this rendition’s tags. A tag fix usually accompanies a Split off.',
+      checkAuth: handleAuthError,
+      onSaved: () => { toast('Tags updated.', 'success'); load(); },
+      onError: () => toast('Couldn’t save tags.', 'error'),
+    });
+  }
   load();
 })();
