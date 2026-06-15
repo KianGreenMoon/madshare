@@ -33,6 +33,14 @@ UI.
   "My uploads" area until a moderator approves it into the library (or returns
   it with a note, or discards it to Trash); moderators' own uploads
   self-approve. [`docs/architecture/moderation.md`](docs/architecture/moderation.md).
+- Same-audio **recordings**: files that are the same audio in different encodings
+  (e.g. a FLAC master and a 320 kbps MP3) are grouped by acoustic fingerprint. A
+  moderator `/admin/duplicates` page compares renditions by quality, removes
+  redundant copies (per-row or bulk "Select non-best"), and the player can switch
+  rendition quality. A possible duplicate is flagged in moderation and never
+  auto-approved. Needs the optional `ffprobe`/`fpcalc` tools (see Requirements);
+  without them it degrades to a tag-based duplicate check.
+  [`docs/architecture/recordings.md`](docs/architecture/recordings.md).
 - One process, one HTTP listener per configured socket; the web UI can be
   compiled out for a pure-API binary.
 
@@ -42,6 +50,10 @@ UI.
 - SQLite via [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite) — pure
   Go, so **no cgo / no system SQLite** is required.
 - Disk for the database and uploaded blobs (see `[storage]`).
+- *Optional runtime tools* for the recordings feature, looked up on `PATH` at
+  startup (a missing tool only logs a warning): **`ffprobe`** (FFmpeg — fills
+  audio tech columns) and **`fpcalc`** (Chromaprint — acoustic fingerprint).
+  Neither is a build dependency.
 
 ## Build & run
 
@@ -233,10 +245,12 @@ library), **listener** (play/download the full library). Any *authenticated*
 user therefore sees the whole library; **anonymous** (not-logged-in) visitors
 are **default-deny** and see only files explicitly marked guest-playable (or
 free-licensed). Per-group / per-file grants exist for custom restricted roles.
-Manage users and access from the `/admin` page; review staged uploads on
-`/admin/moderation`. Details:
+Manage users and access from the `/admin` page; review staged uploads in
+`/admin/library` (the Review tab) and reconcile same-audio duplicates on
+`/admin/duplicates`. Details:
 [`docs/architecture/auth.md`](docs/architecture/auth.md),
-[`docs/architecture/moderation.md`](docs/architecture/moderation.md).
+[`docs/architecture/moderation.md`](docs/architecture/moderation.md),
+[`docs/architecture/recordings.md`](docs/architecture/recordings.md).
 
 ## Deployment
 
