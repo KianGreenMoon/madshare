@@ -427,8 +427,18 @@ async function uploadCover(target, file) {
 function renderTracks(items) {
   if (!items.length) { entityPanel.replaceChildren(entEmpty(entFilterText ? 'No matching tracks.' : 'No tracks in this album.')); return; }
   const navItems = items.map(trackToItem);
+  // Multi-disc albums (>1 distinct disc, untagged = disc 1) get a quiet "Disc N"
+  // subheading before each disc; purely visual, the play order is unchanged.
+  const multiDisc = new Set(items.map(t => t.disc_number || 1)).size > 1;
+  let shownDisc = null;
   const frag = document.createDocumentFragment();
-  items.forEach((t, i) => frag.appendChild(trackRow(t, navItems, i)));
+  items.forEach((t, i) => {
+    if (multiDisc && (t.disc_number || 1) !== shownDisc) {
+      shownDisc = t.disc_number || 1;
+      frag.appendChild(el('div', { class: 'entity-disc-header', text: `Disc ${shownDisc}` }));
+    }
+    frag.appendChild(trackRow(t, navItems, i));
+  });
   entityPanel.replaceChildren(frag);
   if (entityPlayingKey != null) entityHighlight(entityPlayingKey);
 }

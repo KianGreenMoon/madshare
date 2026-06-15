@@ -138,3 +138,12 @@
   flex-shrink: 0;
 }
 .entity-row--track .entity-name { flex: 1; }
+/* Quiet "Disc N" subheading in a multi-disc album's track list. */
+.entity-disc-header {
+  padding: var(--space-3) 0 var(--space-1);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
