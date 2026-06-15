@@ -47,6 +47,25 @@ function selectExtrasIn(scope) {
   scope.querySelectorAll('.dup-check').forEach(c => { c.checked = c.dataset.best !== '1'; });
   updateSelCount();
 }
+
+// toggleExtrasIn is selectExtrasIn with clear-on-repeat, used by the per-card
+// button: when the card's selection is ALREADY exactly its non-best set (every
+// redundant copy ticked and the best untouched, nothing else), a second click
+// clears that card instead. Otherwise it selects the non-best. Scoped to the
+// one card — other cards' selections are untouched.
+function toggleExtrasIn(scope) {
+  const checks = [...scope.querySelectorAll('.dup-check')];
+  const extras = checks.filter(c => c.dataset.best !== '1');
+  const exactlyExtras = extras.length > 0
+    && extras.every(c => c.checked)
+    && checks.every(c => c.dataset.best !== '1' || !c.checked); // best not ticked
+  if (exactlyExtras) {
+    checks.forEach(c => { c.checked = false; });
+    updateSelCount();
+  } else {
+    selectExtrasIn(scope);
+  }
+}
 btnClearSel.addEventListener('click', () => {
   allChecks().forEach(c => { c.checked = false; });
   updateSelCount();
@@ -209,8 +228,8 @@ function recordingCard(group) {
     el('div', { class: 'dup-card-head' }, [
       el('button', {
         class: 'btn btn-sm btn-neutral',
-        title: 'Tick every rendition of this recording except its best',
-        onclick: e => selectExtrasIn(e.target.closest('.dup-card')),
+        title: 'Tick this recording’s non-best renditions; click again to clear them',
+        onclick: e => toggleExtrasIn(e.target.closest('.dup-card')),
       }, ['Select non-best']),
       el('span', { class: 'dup-count' }, [`${group.renditions.length} renditions`]),
       el('span', { class: 'dup-suggestion' }, [group.suggestion]),
