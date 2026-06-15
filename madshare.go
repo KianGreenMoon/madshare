@@ -120,6 +120,15 @@ func main() {
 		log.Printf("reset stale image jobs: %v", err)
 	}
 	imagesDir := filepath.Join(filesDir, "images")
+	// Sweep orphaned album-cover variant dirs (covers replaced with different
+	// bytes, distinct-art race losers) with no referencing row and no active job.
+	// Runs after the entity/cover backfills above (so album_images rows are final)
+	// and before the pool starts writing variants — startup-only, no upload races.
+	if n, err := db.ReconcileImageOrphans(ctx, imagesDir); err != nil {
+		log.Printf("reconcile image orphans: %v", err)
+	} else if n > 0 {
+		log.Printf("reconciled %d orphan image dir(s)", n)
+	}
 	pool := imageproc.NewPool(db, imagesDir, cfg.Storage.ImageProcessingWorkers)
 	go pool.Start(ctx)
 

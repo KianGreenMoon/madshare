@@ -34,6 +34,12 @@ recover stuck jobs:
   corrupt/mislabelled embedded cover), so re-enqueuing it would retry corrupt
   images on every restart. Albums sharing one cover (same `base_key`) collapse to
   a single job.
+- `db.ReconcileImageOrphans` removes album-cover variant directories
+  (`<imagesDir>/<base_key>/`) that no `album_images`/`artist_images` row and no
+  active (`pending`/`running`) job references. These accumulate when a cover is
+  replaced with different bytes or from a distinct-art race loser. Artist covers
+  are flat `<base_key><ext>` files (no variant directory), so the directory sweep
+  never touches them.
 
 ---
 
@@ -210,7 +216,8 @@ original is written to `<files_dir>/images/<base_key>/original<ext>`, the
 idempotent per `base_key`, so re-uploading the same image does not double-queue.
 
 Replacing a cover with a *different* image leaves the previous original on disk
-as a harmless orphan (see `.issues/open-issues.md`).
+until the next startup, when `db.ReconcileImageOrphans` sweeps unreferenced
+`<base_key>/` directories (see "Startup recovery" above).
 
 ### Response
 

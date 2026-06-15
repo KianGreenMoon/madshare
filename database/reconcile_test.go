@@ -95,3 +95,100 @@ func TestReconcileOrphans_MissingBaseDirOK(t *testing.T) {
 		t.Errorf("missing baseDir should not error, got %v", err)
 	}
 }
+
+// mkBaseKeyDir creates an <imagesDir>/<baseKey>/original.jpg album-cover dir.
+func mkBaseKeyDir(t *testing.T, imagesDir, baseKey string) string {
+	t.Helper()
+	dir := filepath.Join(imagesDir, baseKey)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "original.jpg"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestReconcileImageOrphans(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	imagesDir := t.TempDir()
+
+	// 1. Orphan: a base_key dir with no row and no job → must be removed.
+	orphanKey := hexHash("orphan-cover")[:16]
+	orphanDir := mkBaseKeyDir(t, imagesDir, orphanKey)
+
+	// 2. Album-referenced: dir + album_images row → kept.
+	albumKey := hexHash("album-cover")[:16]
+	albumDir := mkBaseKeyDir(t, imagesDir, albumKey)
+	albumID, err := db.ResolveAlbumID(ctx, "Artist", "Album")
+	if err != nil {
+		t.Fatalf("resolve album: %v", err)
+	}
+	if err := db.SetAlbumCover(ctx, albumID, albumKey, ".jpg", albumKey+"/original.jpg", "image/jpeg", 1000); err != nil {
+		t.Fatalf("set album cover: %v", err)
+	}
+
+	// 3. Active job: dir + pending job, no row → kept (variants in flight).
+	jobKey := hexHash("job-cover")[:16]
+	jobDir := mkBaseKeyDir(t, imagesDir, jobKey)
+	if err := db.EnqueueImageJob(ctx, "album", "x\x1fy", jobKey, 1000); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	// 4. Artist-referenced (shared base_key): dir + artist_images row → kept.
+	artistKey := hexHash("artist-shared")[:16]
+	artistDir := mkBaseKeyDir(t, imagesDir, artistKey)
+	artistID, err := db.ResolveArtistID(ctx, "Some Artist")
+	if err != nil {
+		t.Fatalf("resolve artist: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO artist_images (artist_id, object_key, mime_type, updated_at, base_key, source_ext, variants_ready)
+		 VALUES (?, ?, 'image/jpeg', 1000, ?, '.jpg', 0)`,
+		artistID, artistKey+".jpg", artistKey,
+	); err != nil {
+		t.Fatalf("insert artist image: %v", err)
+	}
+
+	// 5. Flat artist file (not a dir) → untouched by the directory sweep.
+	flatFile := filepath.Join(imagesDir, hexHash("artist-flat")[:16]+".jpg")
+	if err := os.WriteFile(flatFile, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 6. Non-base_key directory name → skipped.
+	miscDir := filepath.Join(imagesDir, "coverart")
+	if err := os.MkdirAll(miscDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := db.ReconcileImageOrphans(ctx, imagesDir)
+	if err != nil {
+		t.Fatalf("ReconcileImageOrphans: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("removed = %d, want 1 (only the orphan)", n)
+	}
+
+	if _, err := os.Stat(orphanDir); !os.IsNotExist(err) {
+		t.Error("orphan dir still exists, want removed")
+	}
+	for _, keep := range []string{albumDir, jobDir, artistDir, flatFile, miscDir} {
+		if _, err := os.Stat(keep); err != nil {
+			t.Errorf("expected %s kept, got %v", keep, err)
+		}
+	}
+}
+
+func TestReconcileImageOrphans_MissingDirOK(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	n, err := db.ReconcileImageOrphans(ctx, filepath.Join(t.TempDir(), "does-not-exist"))
+	if err != nil {
+		t.Errorf("missing imagesDir should not error, got %v", err)
+	}
+	if n != 0 {
+		t.Errorf("removed = %d, want 0", n)
+	}
+}
