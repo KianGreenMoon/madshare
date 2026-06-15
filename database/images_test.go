@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -149,6 +150,144 @@ func TestResetStaleJobs(t *testing.T) {
 	if status != "pending" {
 		t.Fatalf("status after reset = %q, want pending", status)
 	}
+}
+
+// jobStatus returns the status of the single job for base_key, or "" if none.
+func jobStatus(t *testing.T, db *DB, baseKey string) string {
+	t.Helper()
+	var s string
+	err := db.QueryRow(
+		`SELECT status FROM image_processing_jobs WHERE base_key = ?`, baseKey,
+	).Scan(&s)
+	if err == sql.ErrNoRows {
+		return ""
+	}
+	if err != nil {
+		t.Fatalf("read job status: %v", err)
+	}
+	return s
+}
+
+func TestRequeueStuckImageJobs(t *testing.T) {
+	ctx := context.Background()
+
+	// A stuck cover (variants_ready=0) with no job is re-enqueued exactly once.
+	t.Run("requeues stuck no-job row", func(t *testing.T) {
+		db := openMem(t)
+		const baseKey = "stuck00000000001"
+		albumID, err := db.ResolveAlbumID(ctx, "Artist", "Album")
+		if err != nil {
+			t.Fatalf("resolve album: %v", err)
+		}
+		if err := db.SetAlbumCover(ctx, albumID, baseKey, ".jpg", baseKey+"/original.jpg", "image/jpeg", 1000); err != nil {
+			t.Fatalf("set cover: %v", err)
+		}
+
+		n, err := db.RequeueStuckImageJobs(ctx)
+		if err != nil {
+			t.Fatalf("requeue: %v", err)
+		}
+		if n != 1 {
+			t.Fatalf("requeued = %d, want 1", n)
+		}
+		if got := countActiveJobs(t, db, baseKey); got != 1 {
+			t.Fatalf("jobs for base_key = %d, want 1", got)
+		}
+		if got := jobStatus(t, db, baseKey); got != "pending" {
+			t.Fatalf("job status = %q, want pending", got)
+		}
+
+		// Running again is a no-op now that a pending job exists.
+		if n, err := db.RequeueStuckImageJobs(ctx); err != nil || n != 0 {
+			t.Fatalf("second requeue = (%d,%v), want (0,nil)", n, err)
+		}
+		if got := countActiveJobs(t, db, baseKey); got != 1 {
+			t.Fatalf("jobs after second requeue = %d, want 1 (idempotent)", got)
+		}
+	})
+
+	// variants_ready=1 covers are already done and must be left alone.
+	t.Run("skips ready cover", func(t *testing.T) {
+		db := openMem(t)
+		const baseKey = "ready00000000001"
+		albumID, err := db.ResolveAlbumID(ctx, "Artist", "Album")
+		if err != nil {
+			t.Fatalf("resolve album: %v", err)
+		}
+		if err := db.SetAlbumCover(ctx, albumID, baseKey, ".jpg", baseKey+"/original.jpg", "image/jpeg", 1000); err != nil {
+			t.Fatalf("set cover: %v", err)
+		}
+		if _, err := db.Exec(`UPDATE album_images SET variants_ready=1 WHERE base_key=?`, baseKey); err != nil {
+			t.Fatalf("mark ready: %v", err)
+		}
+
+		if n, err := db.RequeueStuckImageJobs(ctx); err != nil || n != 0 {
+			t.Fatalf("requeue = (%d,%v), want (0,nil)", n, err)
+		}
+		if got := countActiveJobs(t, db, baseKey); got != 0 {
+			t.Fatalf("jobs for ready cover = %d, want 0", got)
+		}
+	})
+
+	// A terminal 'failed' job (retried out, e.g. corrupt embedded cover) must
+	// stay failed — re-enqueuing it would retry corrupt images on every restart.
+	t.Run("skips terminal failed job", func(t *testing.T) {
+		db := openMem(t)
+		const baseKey = "failed0000000001"
+		albumID, err := db.ResolveAlbumID(ctx, "Artist", "Album")
+		if err != nil {
+			t.Fatalf("resolve album: %v", err)
+		}
+		if err := db.SetAlbumCover(ctx, albumID, baseKey, ".jpg", baseKey+"/original.jpg", "image/jpeg", 1000); err != nil {
+			t.Fatalf("set cover: %v", err)
+		}
+		if _, err := db.Exec(
+			`INSERT INTO image_processing_jobs (cover_type, subject_key, base_key, status, retry_count, created_at, finished_at)
+			 VALUES ('album', 'Artist`+"\x1f"+`Album', ?, 'failed', 3, 1000, 1001)`, baseKey,
+		); err != nil {
+			t.Fatalf("seed failed job: %v", err)
+		}
+
+		if n, err := db.RequeueStuckImageJobs(ctx); err != nil || n != 0 {
+			t.Fatalf("requeue = (%d,%v), want (0,nil)", n, err)
+		}
+		if got := countActiveJobs(t, db, baseKey); got != 1 {
+			t.Fatalf("jobs for failed cover = %d, want 1 (the failed job, untouched)", got)
+		}
+		if got := jobStatus(t, db, baseKey); got != "failed" {
+			t.Fatalf("job status = %q, want failed (terminal, untouched)", got)
+		}
+	})
+
+	// Two albums sharing one cover image (same base_key) collapse to one job.
+	t.Run("collapses shared base_key to one job", func(t *testing.T) {
+		db := openMem(t)
+		const baseKey = "shared0000000001"
+		a1, err := db.ResolveAlbumID(ctx, "Artist", "Album One")
+		if err != nil {
+			t.Fatalf("resolve album 1: %v", err)
+		}
+		a2, err := db.ResolveAlbumID(ctx, "Artist", "Album Two")
+		if err != nil {
+			t.Fatalf("resolve album 2: %v", err)
+		}
+		for _, id := range []int64{a1, a2} {
+			if err := db.SetAlbumCover(ctx, id, baseKey, ".jpg", baseKey+"/original.jpg", "image/jpeg", 1000); err != nil {
+				t.Fatalf("set cover %d: %v", id, err)
+			}
+		}
+
+		n, err := db.RequeueStuckImageJobs(ctx)
+		if err != nil {
+			t.Fatalf("requeue: %v", err)
+		}
+		if n != 1 {
+			t.Fatalf("requeued = %d, want 1 (shared base_key collapses)", n)
+		}
+		if got := countActiveJobs(t, db, baseKey); got != 1 {
+			t.Fatalf("jobs for shared base_key = %d, want 1", got)
+		}
+	})
 }
 
 func TestFinishImageJob_SetsVariantsReady(t *testing.T) {

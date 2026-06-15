@@ -18,6 +18,23 @@ keeps the cover attached with no re-upload. The on-disk `<base_key>/` layout and
 the `image_processing_jobs` queue are unaffected (keyed by `base_key`). See
 `docs/architecture/artist-album-model.md` (cover re-keying).
 
+**Startup recovery.** Before listeners accept traffic, two idempotent passes
+recover stuck jobs:
+
+- `db.ResetStaleJobs` returns any `running` job to `pending` — recovers jobs that
+  were in flight when the process died.
+- `db.RequeueStuckImageJobs` re-enqueues a job for every `album_images` row at
+  `variants_ready=0` that has **no** job in the queue. This recovers the rare
+  case where the cover row was claimed but the subsequent `EnqueueImageJob`
+  errored (a DB-level failure), which would otherwise leave the cover
+  "processing" forever; the original blob is written *before* the row is claimed,
+  so a fresh job is all that is needed. A base_key whose job is already
+  `pending`/`running` is skipped (in flight), and one marked `failed` is left
+  terminal — it was retried `maxImageJobRetries` times (typically a
+  corrupt/mislabelled embedded cover), so re-enqueuing it would retry corrupt
+  images on every restart. Albums sharing one cover (same `base_key`) collapse to
+  a single job.
+
 ---
 
 ## `GET /api/albums/{album}/image/status`

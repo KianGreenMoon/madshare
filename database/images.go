@@ -117,6 +117,48 @@ func (db *DB) FinishImageJob(ctx context.Context, id int64, jobErr error) error 
 	return nil
 }
 
+// RequeueStuckImageJobs re-enqueues image jobs for album covers stuck at
+// variants_ready=0 with no job in the queue. This recovers the row whose claim
+// succeeded but whose EnqueueImageJob then errored (a genuine DB failure), which
+// would otherwise leave the cover "processing" forever — the original blob is on
+// disk (written before the row is claimed), so a fresh job is all that's needed.
+// Called once at startup, after the worker pool launches. Returns the number of
+// jobs created.
+//
+// Only base_keys with no job row at all are requeued: a base_key whose job is
+// already pending/running is in flight, and one marked 'failed' is terminal (it
+// was retried maxImageJobRetries times — typically a corrupt/mislabelled embedded
+// cover) and must not be retried on every restart. Multiple albums sharing one
+// cover (same base_key) collapse to a single job via GROUP BY, matching the
+// queue's per-base_key grain and the idx_imgproc_active unique index. Scope is
+// album_images only — artist_images has no worker pipeline. subject_key is
+// reconstructed for debuggability only; the worker keys off base_key.
+func (db *DB) RequeueStuckImageJobs(ctx context.Context) (int, error) {
+	res, err := db.ExecContext(ctx,
+		`INSERT INTO image_processing_jobs (cover_type, subject_key, base_key, status, created_at)
+		 SELECT 'album',
+		        COALESCE(ar.name, '') || char(31) || COALESCE(al.title, ''),
+		        ai.base_key, 'pending', ?
+		 FROM album_images ai
+		 JOIN albums  al ON al.id = ai.album_id
+		 JOIN artists ar ON ar.id = al.artist_id
+		 WHERE ai.variants_ready = 0
+		   AND ai.base_key IS NOT NULL AND ai.base_key <> ''
+		   AND NOT EXISTS (SELECT 1 FROM image_processing_jobs j WHERE j.base_key = ai.base_key)
+		 GROUP BY ai.base_key
+		 ON CONFLICT DO NOTHING`,
+		time.Now().Unix(),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("requeue stuck image jobs: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("requeue stuck image jobs: rows affected: %w", err)
+	}
+	return int(n), nil
+}
+
 // ResetStaleJobs returns all status='running' jobs to 'pending' (clearing
 // started_at). Called once at startup, before workers launch, to recover jobs
 // that were in flight when the process died.

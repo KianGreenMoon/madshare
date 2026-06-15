@@ -123,6 +123,18 @@ func main() {
 	pool := imageproc.NewPool(db, imagesDir, cfg.Storage.ImageProcessingWorkers)
 	go pool.Start(ctx)
 
+	// Recover album covers stuck at variants_ready=0 with no job — the row whose
+	// claim succeeded but whose enqueue then failed (a rare DB error). The
+	// complement to ResetStaleJobs above: that recovers running jobs, this
+	// recovers claimed-but-never-queued covers. Idempotent; skips terminal
+	// 'failed' jobs. The original blob is already on disk, so a fresh job suffices.
+	if n, err := db.RequeueStuckImageJobs(ctx); err != nil {
+		log.Printf("requeue stuck image jobs: %v", err)
+	} else if n > 0 {
+		log.Printf("re-enqueued %d stuck cover job(s)", n)
+		pool.Notify()
+	}
+
 	// Ingest media analysis (ffprobe tech columns + fpcalc fingerprint). Both
 	// tools are optional: a missing binary warns (never fatal) and that tool is
 	// skipped for every job. See docs/architecture/recordings.md.
