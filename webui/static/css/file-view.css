@@ -157,6 +157,14 @@
 .files-table tr.grp-album td { border-top: 1px solid var(--border); }
 .grp-album .grp-label { padding-left: 22px; }
 
+/* Disc = a quiet sub-label, indented further under the album, no divider line. */
+.grp-disc .grp-label {
+  padding-left: 38px;
+  font-size: 11px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
 .grp-label { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
 /* Inner flex row lives inside the <td> so the cell keeps its table-cell layout
    (and spans the full colspan width); flexing the <td> itself collapsed it. */

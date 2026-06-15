@@ -101,6 +101,7 @@ type FileListEntry struct {
 	AlbumArtist     sql.NullString
 	Album           string
 	TrackNumber     sql.NullInt64
+	DiscNumber      sql.NullInt64
 	Year            int64
 	DurationSeconds sql.NullFloat64
 	GuestPlayable   bool
@@ -130,6 +131,7 @@ type ReviewEntry struct {
 	Album           sql.NullString
 	AlbumArtist     sql.NullString
 	TrackNumber     sql.NullInt64
+	DiscNumber      sql.NullInt64
 	Year            sql.NullInt64
 	ArtistHasImage  bool
 	AlbumHasImage   bool

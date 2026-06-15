@@ -369,6 +369,7 @@ export function createFileList(scope) {
         (!a.key - !b.key) || (albumYear(a.files) - albumYear(b.files)) || lc(a.key).localeCompare(lc(b.key)));
       for (const al of art.albumList) {
         al.files.sort((a, b) =>
+          ((a.disc_number ?? 1) - (b.disc_number ?? 1)) ||
           ((a.track_number == null) - (b.track_number == null)) ||
           ((a.track_number ?? 0) - (b.track_number ?? 0)) ||
           lc(a.title || a.filename).localeCompare(lc(b.title || b.filename)));
@@ -438,7 +439,17 @@ export function createFileList(scope) {
         body.appendChild(grpSepRow('album', al.key || 'Other', y < 9999 ? String(y) : '',
           al.files.filter(isSelectable).map(f => f.hash), !al.key,
           coverBtn('album', { artist: art.key, album: al.key }, !al.key, al.files[0]?.album_has_image)));
-        al.files.forEach(f => body.appendChild(groupedTrack(f)));
+        // Multi-disc album → a quiet "Disc N" separator before each disc (purely
+        // visual; the files are already disc-then-track ordered above).
+        const multiDisc = new Set(al.files.map(f => f.disc_number || 1)).size > 1;
+        let shownDisc = null;
+        al.files.forEach(f => {
+          if (multiDisc && (f.disc_number || 1) !== shownDisc) {
+            shownDisc = f.disc_number || 1;
+            body.appendChild(grpSepRow('disc', `Disc ${shownDisc}`, '', [], false, null));
+          }
+          body.appendChild(groupedTrack(f));
+        });
       }
     }
     return el('div', { class: 'files-table-wrap' }, [

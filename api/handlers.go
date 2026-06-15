@@ -148,6 +148,7 @@ func (h *handler) listFiles(w http.ResponseWriter, r *http.Request) {
 		AlbumArtist   string   `json:"album_artist"`
 		Album         string   `json:"album"`
 		TrackNumber   *int64   `json:"track_number"` // null when untagged (used to sort the grouped view)
+		DiscNumber    *int64   `json:"disc_number"`  // null when untagged (groups the grouped view)
 		Year          int64    `json:"year"`
 		Duration      *float64 `json:"duration"` // seconds; null when not yet extracted
 		GuestPlayable bool     `json:"guest_playable"`
@@ -168,6 +169,10 @@ func (h *handler) listFiles(w http.ResponseWriter, r *http.Request) {
 		if e.TrackNumber.Valid {
 			trackNum = &e.TrackNumber.Int64
 		}
+		var discNum *int64
+		if e.DiscNumber.Valid {
+			discNum = &e.DiscNumber.Int64
+		}
 		items = append(items, fileItem{
 			ID:             e.ID,
 			Hash:           e.Hash,
@@ -180,6 +185,7 @@ func (h *handler) listFiles(w http.ResponseWriter, r *http.Request) {
 			AlbumArtist:    e.AlbumArtist.String,
 			Album:          e.Album,
 			TrackNumber:    trackNum,
+			DiscNumber:     discNum,
 			Year:           e.Year,
 			Duration:       dur,
 			GuestPlayable:  e.GuestPlayable,
