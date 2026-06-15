@@ -167,6 +167,17 @@ async function deleteSelected() {
   load();
 }
 
+async function deleteOne(r) {
+  if (!(await confirmDelete(1))) return;
+  let res;
+  try { res = await fetch(`${API}/api/admin/files/${encodeURIComponent(r.hash)}`, { method: 'DELETE' }); }
+  catch { toast('Network error deleting rendition.', 'error'); return; }
+  if (handleAuthError(res)) return;
+  if (!res.ok) { toast(`Delete failed (HTTP ${res.status}).`, 'error'); return; }
+  toast('Rendition sent to Trash.', 'success');
+  load();
+}
+
 async function splitRendition(r) {
   let res;
   try { res = await fetch(`${API}/api/admin/duplicates/${r.file_id}/split`, { method: 'POST' }); }
@@ -194,6 +205,7 @@ function renditionRow(group, r, index) {
   if (editor) actions.push(el('button', { class: 'btn btn-sm btn-neutral', title: 'Edit this rendition’s tags', onclick: () => editTags(r) }, ['Edit']));
   actions.push(
     el('button', { class: 'btn btn-sm btn-neutral', title: 'Detach into its own recording', onclick: () => splitRendition(r) }, ['Split off']),
+    el('button', { class: 'btn btn-sm btn-destructive-outline', title: 'Send this rendition to Trash', onclick: () => deleteOne(r) }, ['Delete']),
   );
   const check = el('input', {
     type: 'checkbox', class: 'dup-check', 'data-hash': r.hash, 'data-best': r.best ? '1' : '',
