@@ -4,6 +4,24 @@
 
 .muted { color: var(--text-muted); font-size: 14px; }
 
+/* Bulk-selection toolbar above the list. Not sticky — the page header already
+   is, and stacking two sticky bars overlaps. */
+.dup-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.dup-toolbar.hidden { display: none; }
+.dup-toolbar-spacer { flex: 1; }
+
+.dup-checkcell { width: 1%; text-align: center; white-space: nowrap; }
+.dup-checkcell input { cursor: pointer; }
+
 .dup-card {
   border: 1px solid var(--border);
   border-radius: var(--radius);

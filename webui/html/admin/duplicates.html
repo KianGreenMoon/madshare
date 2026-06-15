@@ -22,10 +22,18 @@
     <p class="muted">
       Recordings that hold more than one rendition of the same audio (matched by
       acoustic fingerprint). The best rendition by the quality ladder is marked.
-      Nothing is removed automatically &mdash; <strong>Delete</strong> sends a
-      rendition to Trash, and <strong>Split off</strong> detaches one into its own
-      recording when the fingerprint grouped two genuinely different versions.
+      Tick the renditions to remove (<strong>Select non-best</strong> ticks every
+      redundant copy across all recordings) and <strong>Delete selected</strong>
+      sends them to Trash. <strong>Split off</strong> detaches a rendition into its
+      own recording when the fingerprint grouped two genuinely different versions.
     </p>
+
+    <div class="dup-toolbar hidden" id="dupToolbar" role="region" aria-label="Bulk actions">
+      <button class="btn btn-sm btn-neutral" id="selectExtras" title="Tick every rendition except each recording's best">Select non-best</button>
+      <button class="btn btn-sm btn-neutral" id="clearSel">Clear</button>
+      <span class="dup-toolbar-spacer"></span>
+      <button class="btn btn-sm btn-destructive-solid" id="deleteSelected" disabled>Delete selected</button>
+    </div>
 
     <div id="dupResults" aria-live="polite">
       <p class="muted" id="dupLoading">Loading&hellip;</p>
@@ -37,7 +45,7 @@
 <div class="modal-backdrop hidden" id="delModal" role="dialog" aria-modal="true" aria-labelledby="delModalTitle" aria-describedby="delModalBody">
   <div class="modal">
     <div class="modal-header">
-      <h2 id="delModalTitle">Delete rendition?</h2>
+      <h2 id="delModalTitle">Delete to Trash?</h2>
       <button class="btn-close" id="delClose" aria-label="Close">&times;</button>
     </div>
     <p class="modal-body" id="delModalBody"></p>

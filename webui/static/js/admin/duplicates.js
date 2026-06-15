@@ -21,6 +21,35 @@ const loading = document.getElementById('dupLoading');
 // display artist: prefer the album artist, fall back to the track artist.
 const dispArtist = r => r.album_artist || r.artist || '';
 
+// ── Bulk selection toolbar ────────────────────────────────────────────────────
+const toolbar           = document.getElementById('dupToolbar');
+const btnSelectExtras   = document.getElementById('selectExtras');
+const btnClearSel       = document.getElementById('clearSel');
+const btnDeleteSelected = document.getElementById('deleteSelected');
+
+const allChecks      = () => [...results.querySelectorAll('.dup-check')];
+const selectedHashes = () => allChecks().filter(c => c.checked).map(c => c.dataset.hash);
+
+function updateSelCount() {
+  const n = selectedHashes().length;
+  btnDeleteSelected.textContent = n ? `Delete selected (${n})` : 'Delete selected';
+  btnDeleteSelected.disabled = n === 0;
+}
+// One delegated listener on the stable container survives every reload.
+results.addEventListener('change', e => {
+  if (e.target.classList?.contains('dup-check')) updateSelCount();
+});
+btnSelectExtras.addEventListener('click', () => {
+  // Tick every rendition except each recording's best (the redundant copies).
+  allChecks().forEach(c => { c.checked = c.dataset.best !== '1'; });
+  updateSelCount();
+});
+btnClearSel.addEventListener('click', () => {
+  allChecks().forEach(c => { c.checked = false; });
+  updateSelCount();
+});
+btnDeleteSelected.addEventListener('click', deleteSelected);
+
 // ── Shared preview player ─────────────────────────────────────────────────────
 // One player-bar for the page (createPlayer), driven by a page-local play
 // context like /admin/library: playing a rendition queues the whole recording's
@@ -71,9 +100,12 @@ const delConfirm = document.getElementById('delConfirm');
 const delCancel  = document.getElementById('delCancel');
 const delClose   = document.getElementById('delClose');
 
-function confirmDelete(r) {
+function confirmDelete(n) {
   return new Promise(resolve => {
-    delBody.textContent = `Send "${r.title || r.hash}" to Trash? The blob is kept and can be restored.`;
+    delBody.textContent = n === 1
+      ? 'Send 1 rendition to Trash? The blob is kept and can be restored.'
+      : `Send ${n} renditions to Trash? The blobs are kept and can be restored.`;
+    delConfirm.textContent = n === 1 ? 'Delete to Trash' : `Delete ${n} to Trash`;
     delModal.classList.remove('hidden');
     delConfirm.focus();
     const cleanup = () => {
@@ -96,14 +128,20 @@ function confirmDelete(r) {
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────
-async function deleteRendition(r) {
-  if (!(await confirmDelete(r))) return;
-  let res;
-  try { res = await fetch(`${API}/api/admin/files/${encodeURIComponent(r.hash)}`, { method: 'DELETE' }); }
-  catch { toast('Network error deleting rendition.', 'error'); return; }
-  if (handleAuthError(res)) return;
-  if (!res.ok) { toast(`Delete failed (HTTP ${res.status}).`, 'error'); return; }
-  toast('Rendition sent to Trash.', 'success');
+async function deleteSelected() {
+  const hashes = selectedHashes();
+  if (!hashes.length || !(await confirmDelete(hashes.length))) return;
+  let ok = 0, fail = 0, authFailed = false;
+  for (const hash of hashes) {
+    let res;
+    try { res = await fetch(`${API}/api/admin/files/${encodeURIComponent(hash)}`, { method: 'DELETE' }); }
+    catch { fail++; continue; }
+    if (res.status === 401) { handleAuthError(res); authFailed = true; break; }
+    if (res.ok) ok++; else fail++;
+  }
+  if (authFailed)   { if (ok) toast(`Deleted ${ok} before the session expired.`, 'error'); }
+  else if (fail)    toast(`Deleted ${ok}; ${fail} failed.`, 'error');
+  else if (ok)      toast(`Sent ${ok} ${ok === 1 ? 'rendition' : 'renditions'} to Trash.`, 'success');
   load();
 }
 
@@ -134,9 +172,13 @@ function renditionRow(group, r, index) {
   if (editor) actions.push(el('button', { class: 'btn btn-sm btn-neutral', title: 'Edit this rendition’s tags', onclick: () => editTags(r) }, ['Edit']));
   actions.push(
     el('button', { class: 'btn btn-sm btn-neutral', title: 'Detach into its own recording', onclick: () => splitRendition(r) }, ['Split off']),
-    el('button', { class: 'btn btn-sm btn-destructive-outline', onclick: () => deleteRendition(r) }, ['Delete']),
   );
+  const check = el('input', {
+    type: 'checkbox', class: 'dup-check', 'data-hash': r.hash, 'data-best': r.best ? '1' : '',
+    'aria-label': `Select ${r.title || r.hash} for deletion`,
+  });
   return el('tr', { 'data-hash': r.hash }, [
+    el('td', { class: 'dup-checkcell' }, [check]),
     el('td', { class: 'dup-rank' }, [r.best ? el('span', { class: 'dup-best', title: 'Best by the quality ladder' }, ['★ best']) : `#${r.rank}`]),
     el('td', {}, [
       el('div', { class: 'dup-title' }, [r.title || '(untitled)']),
@@ -153,6 +195,7 @@ function renditionRow(group, r, index) {
 function recordingCard(group) {
   const table = el('table', { class: 'dup-table' }, [
     el('thead', {}, [el('tr', {}, [
+      el('th', { class: 'dup-checkcell', 'aria-label': 'Select' }, ['']),
       el('th', {}, ['Rank']), el('th', {}, ['Track']), el('th', {}, ['Format']),
       el('th', {}, ['Quality']), el('th', {}, ['Length']), el('th', {}, ['Size']),
       el('th', {}, ['']),
@@ -180,10 +223,13 @@ async function load() {
   if (!res.ok) { results.replaceChildren(el('p', { class: 'error' }, [`Failed to load (HTTP ${res.status}).`])); return; }
   const groups = await res.json();
   if (!groups.length) {
+    toolbar.classList.add('hidden');
     results.replaceChildren(el('p', { class: 'muted' }, ['No duplicate renditions — every recording has a single copy.']));
     return;
   }
   results.replaceChildren(...groups.map(recordingCard));
+  toolbar.classList.remove('hidden');
+  updateSelCount(); // reset the count/disabled state after the rebuild
 }
 
 (async function init() {
