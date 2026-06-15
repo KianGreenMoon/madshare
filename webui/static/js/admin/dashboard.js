@@ -71,5 +71,6 @@ async function fillStorage() {
   fillCount('countFiles', '/api/files');
   fillCount('countModeration', '/api/admin/moderation');
   fillCount('countTrash', '/api/admin/trash');
+  fillCount('countDuplicates', '/api/admin/duplicates');
   fillCount('countUsers', '/api/admin/users');
 })();
