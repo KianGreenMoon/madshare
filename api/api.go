@@ -129,6 +129,7 @@ func RegisterAPI(r chi.Router, d Deps) {
 	// browsable id (see docs/architecture/artist-album-model.md).
 	r.With(d.protectAny(auth.PermMetadataEdit, auth.PermFileUpload)).Post("/api/artists/{artist}/image", h.uploadArtistImage)
 	r.With(d.protectAny(auth.PermMetadataEdit, auth.PermFileUpload)).Post("/api/albums/{album}/image", h.uploadAlbumImage)
+	r.With(d.protect(auth.PermMetadataEdit)).Get("/api/files/{hash}/metadata", h.getFileMetadata)
 	r.With(d.protect(auth.PermMetadataEdit)).Patch("/api/files/{hash}/metadata", h.updateFileMetadata)
 	// Renaming an artist/album entity edits the entity in place; tracks and
 	// covers follow via their FKs. Addressed by current name like the cover routes.
@@ -181,6 +182,7 @@ func RegisterAPI(r chi.Router, d Deps) {
 		registerPlaylists(r, d, h)
 		fileUpload := d.protect(auth.PermFileUpload)
 		r.With(fileUpload).Get("/api/my/uploads", h.myUploads)
+		r.With(fileUpload).Get("/api/my/uploads/{hash}/metadata", h.myUploadMetadataGet)
 		r.With(fileUpload).Patch("/api/my/uploads/{hash}/metadata", h.myUploadMetadata)
 		r.With(fileUpload).Post("/api/my/uploads/submit", h.submitMyUploads)
 		r.With(fileUpload).Delete("/api/my/uploads/{hash}", h.myUploadDiscard)

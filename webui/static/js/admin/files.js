@@ -158,6 +158,7 @@ function filesScope() {
     load: loadFilesList,
     selectable: () => canEditMeta || canDelete,
     editPatchURL: canEditMeta ? (f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`) : undefined,
+    editDetailURL: canEditMeta ? (f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`) : undefined,
     editNote: 'Edits one track’s tags + access, and reclassifies just that track. ' +
               'To rename a whole album or artist (cover and tracks stay attached), use Rename in the By-entity view.',
     saveAccess: canEditMeta ? saveFileAccess : undefined,
@@ -178,6 +179,7 @@ function filesScope() {
 // opened by editTrack() in the drill-down, where access isn't surfaced.
 const entityEditor = createTrackEditor({
   patchURL: f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`,
+  detailURL: f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`,
   note: 'This edits one track’s tags and reclassifies just that track. ' +
         'To rename a whole album or artist (cover and all tracks stay attached), ' +
         'use Rename in the “By entity” view instead.',

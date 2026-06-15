@@ -74,6 +74,76 @@ func TestUpdateFileMetadata_UpdatesAndEchoes(t *testing.T) {
 	}
 }
 
+// seedEditableFile inserts a file + metadata row and returns its hash.
+func seedEditableFile(t *testing.T, db *database.DB, hash string) {
+	t.Helper()
+	f := &database.File{
+		Hash: hash, ByteSize: 1, MimeType: "audio/mpeg",
+		StorageBackend: "local", ObjectKey: hash + "/s.mp3", CreatedAt: 1,
+	}
+	m := &database.MediaMetadata{ExtractedAt: 1, Title: "Old"}
+	if err := db.InsertFile(context.Background(), f, &database.FileUpload{Filename: "s.mp3", UploadedAt: 1}, m); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+}
+
+// TestUpdateFileMetadata_RichFields PATCHes the extended tags and confirms the
+// GET endpoint then echoes the full set.
+func TestUpdateFileMetadata_RichFields(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	hash := "cd34000000000000000000000000000000000000000000000000000000000000"
+	seedEditableFile(t, db, hash)
+
+	rr := httptest.NewRecorder()
+	h.updateFileMetadata(rr, metadataReq(t, hash,
+		`{"track_number":"5","track_total":"12","disc_number":"1","year":"1999","genre":"Jazz","composer":"BE","comment":"live"}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PATCH status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	var patchEcho map[string]any
+	json.NewDecoder(rr.Body).Decode(&patchEcho)
+	if patchEcho["track_number"] != float64(5) || patchEcho["genre"] != "Jazz" {
+		t.Errorf("PATCH echo = %v, want track_number=5 genre=Jazz", patchEcho)
+	}
+
+	// GET returns the persisted full set.
+	getReq := withChiParams(httptest.NewRequest(http.MethodGet, "/api/files/"+hash+"/metadata", nil), map[string]string{"hash": hash})
+	gr := httptest.NewRecorder()
+	h.getFileMetadata(gr, getReq)
+	if gr.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200; body: %s", gr.Code, gr.Body.String())
+	}
+	var got map[string]any
+	json.NewDecoder(gr.Body).Decode(&got)
+	if got["year"] != float64(1999) || got["composer"] != "BE" || got["comment"] != "live" {
+		t.Errorf("GET = %v, want year=1999 composer=BE comment=live", got)
+	}
+}
+
+// TestUpdateFileMetadata_BadNumber rejects a non-numeric numeric field with 400.
+func TestUpdateFileMetadata_BadNumber(t *testing.T) {
+	h, db, _ := newTestHandler(t)
+	hash := "cd35000000000000000000000000000000000000000000000000000000000000"
+	seedEditableFile(t, db, hash)
+
+	rr := httptest.NewRecorder()
+	h.updateFileMetadata(rr, metadataReq(t, hash, `{"track_number":"abc"}`))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestGetFileMetadata_NotFound returns 404 for an unknown hash.
+func TestGetFileMetadata_NotFound(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	getReq := withChiParams(httptest.NewRequest(http.MethodGet, "/api/files/deadbeef/metadata", nil), map[string]string{"hash": "deadbeef"})
+	rr := httptest.NewRecorder()
+	h.getFileMetadata(rr, getReq)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
 // withChiParams attaches chi URL params to a request so a handler reached via
 // chi.URLParam can be invoked directly (without spinning up a router).
 func withChiParams(req *http.Request, params map[string]string) *http.Request {

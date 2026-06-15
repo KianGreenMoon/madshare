@@ -67,6 +67,7 @@ const PLAY_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="current
  *                       run:async(file)=>void|false }]
  *   bulkActions      [{ id,label,kind, run:async(hashes)=>void }]
  *   editPatchURL(file) → url        (enables the built-in Edit action)
+ *   editDetailURL(file) → url       (GET full tags; enables track #/extended edit)
  *   editNote         note shown in the edit modal
  *   saveAccess(file,{guest,license})→Promise  (when accessEditable)
  *   bulkApply(hashes,patch)→Promise (enables the built-in "Edit tags…" bulk action)
@@ -112,6 +113,7 @@ export function createFileList(scope) {
     if (_editor) return _editor;
     _editor = createTrackEditor({
       patchURL: scope.editPatchURL,
+      detailURL: scope.editDetailURL,
       note: scope.editNote || '',
       checkAuth: scope.handleAuthError,
       access: scope.accessEditable

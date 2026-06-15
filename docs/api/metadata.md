@@ -1,21 +1,31 @@
 # Metadata Editing API
 
-Editing the base tags of an already-uploaded file.
+Editing the tags of an already-uploaded file.
 
-This is the server side of the upload page's **verify & edit** panel: after files
-are uploaded and grouped into albums (by their embedded tags), the user can
-correct what tag extraction got wrong.
+This is the server side of the edit-tags modal (shared `track-edit.js`): after
+files are uploaded and grouped into albums (by their embedded tags), the user can
+correct what tag extraction got wrong. The modal shows the four base tags plus
+the track number, with an **"Extended edit"** disclosure for the rarely-touched
+tags (year, track total, disc number, genre, composer, comment).
 
-> **Scope — base fields only.** This round writes only `title`, `album`,
-> `album_artist`, and `artist`. Richer tag editing (track #, disc, year, genre,
-> composer, …) and a dedicated editor UI are deferred — see
-> `.issues/open-issues.md`. The endpoint is shaped to extend without a redesign.
+---
+
+## `GET /api/files/{hash}/metadata`
+
+Returns the full editable tag set for one file, for the edit modal to prefill
+before editing (so it can save the extended fields without clobbering ones the
+user never sees). Requires `metadata.edit`. The response body is identical to the
+`PATCH` echo below; `404` when no file matches `hash`.
+
+The owner-scoped twin `GET /api/my/uploads/{hash}/metadata` returns the same shape
+for the uploader's own staged (draft/returned) files; gated by `file.upload` +
+ownership, `404` on anything the caller may not see (same guard as the PATCH).
 
 ---
 
 ## `PATCH /api/files/{hash}/metadata`
 
-Updates the base tags on one file's `media_metadata` row.
+Updates the tags on one file's `media_metadata` row.
 
 ### Request
 
@@ -35,23 +45,38 @@ are written. Pointer/presence semantics:
 - **`"field": ""`** (empty string) → the column is cleared (stored `NULL`).
 - **`"field": "value"`** → the column is set to `value`.
 
-Any key other than the four base fields is **ignored**.
+Numeric fields are sent **as strings** so they share the same trichotomy: `""`
+clears the column, and a value must be a non-negative integer (a malformed value
+is a `400`). Any unrecognised key is **ignored**.
 
 ```json
 {
   "title": "Breed",
   "album": "Nevermind",
   "album_artist": "Nirvana",
-  "artist": "Nirvana"
+  "artist": "Nirvana",
+  "track_number": "3",
+  "year": "1991",
+  "genre": "Grunge"
 }
 ```
 
-| Field          | Type   | Description |
-|----------------|--------|-------------|
-| `title`        | string | Track title. |
-| `album`        | string | Album title. |
-| `album_artist` | string | Album artist (the field albums are grouped by). |
-| `artist`       | string | Track artist. |
+| Field          | Type           | Description |
+|----------------|----------------|-------------|
+| `title`        | string         | Track title. |
+| `album`        | string         | Album title. |
+| `album_artist` | string         | Album artist (the field albums are grouped by). |
+| `artist`       | string         | Track artist. |
+| `track_number` | string (int)   | Track number on the disc. |
+| `track_total`  | string (int)   | Total tracks on the disc. |
+| `disc_number`  | string (int)   | Disc number for multi-disc releases. |
+| `year`         | string (int)   | Release year. |
+| `genre`        | string         | Genre tag. |
+| `composer`     | string         | Composer tag. |
+| `comment`      | string         | Free-text comment. |
+
+Only the four base fields (`title`/`album`/`album_artist`/`artist`) re-resolve the
+artist/album entity FKs; the extended fields are stored as-is.
 
 ### Access control
 
@@ -90,18 +115,26 @@ Anonymous requests get `401`; an authenticated user lacking the permission gets
   "title": "Breed",
   "album": "Nevermind",
   "album_artist": "Nirvana",
-  "artist": "Nirvana"
+  "artist": "Nirvana",
+  "genre": "Grunge",
+  "composer": "",
+  "comment": "",
+  "track_number": 3,
+  "track_total": 12,
+  "disc_number": 1,
+  "year": 1991
 }
 ```
 
-The echoed fields reflect the row *after* the update (empty string for a cleared
-or never-set field).
+The echoed fields reflect the row *after* the update: string fields are `""` when
+cleared or never-set, numeric fields are `null` when unset (and a JSON number
+otherwise). This is also the exact shape returned by the two `GET` endpoints.
 
 ### Error responses
 
 | Status | Condition |
 |--------|-----------|
-| 400    | Malformed JSON body. |
+| 400    | Malformed JSON body, or a numeric field that is not a non-negative integer. |
 | 401    | Anonymous request (auth configured). |
 | 403    | Authenticated but missing `metadata.edit`. |
 | 404    | No file matches `hash`. |

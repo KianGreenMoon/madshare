@@ -275,6 +275,7 @@ async function load() {
   if ((identity.permissions || []).includes('metadata.edit')) {
     editor = createTrackEditor({
       patchURL: f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`,
+      detailURL: f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`,
       note: 'Edits this rendition’s tags. A tag fix usually accompanies a Split off.',
       checkAuth: handleAuthError,
       onSaved: () => { toast('Tags updated.', 'success'); load(); },

@@ -6,28 +6,42 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
 // ErrFileNotFound is returned when no files row matches a given content hash.
 var ErrFileNotFound = errors.New("file not found")
 
-// MetadataPatch carries the base media_metadata fields editable via
+// MetadataPatch carries the media_metadata fields editable via
 // PATCH /api/files/{hash}/metadata. A nil pointer leaves that column unchanged;
 // a non-nil pointer writes its value, so a pointer to "" clears the field.
-// Only these base fields are writable in this round — richer tag editing
-// (track #, disc, year, genre, …) is deferred (see
-// .issues/open-issues.md).
+//
+// The numeric fields are carried as *string (the raw form input) rather than
+// *int64 so they share the nil = unchanged / "" = clear / value = set trichotomy
+// of the text fields; UpdateFileMetadata parses them (blank → NULL, otherwise a
+// non-negative integer, else an error).
 type MetadataPatch struct {
+	// Base identity fields (also re-resolve the artist/album entity FKs).
 	Title       *string
 	Album       *string
 	AlbumArtist *string
 	Artist      *string
+	// Extended tags — do not affect entity resolution.
+	Genre       *string
+	Composer    *string
+	Comment     *string
+	TrackNumber *string
+	TrackTotal  *string
+	DiscNumber  *string
+	Year        *string
 }
 
 // IsEmpty reports whether the patch would change nothing (all fields nil).
 func (p MetadataPatch) IsEmpty() bool {
-	return p.Title == nil && p.Album == nil && p.AlbumArtist == nil && p.Artist == nil
+	return p.Title == nil && p.Album == nil && p.AlbumArtist == nil && p.Artist == nil &&
+		p.Genre == nil && p.Composer == nil && p.Comment == nil &&
+		p.TrackNumber == nil && p.TrackTotal == nil && p.DiscNumber == nil && p.Year == nil
 }
 
 // UpdateFileMetadata writes the provided base fields onto the media_metadata row
@@ -94,6 +108,39 @@ func (db *DB) UpdateFileMetadata(ctx context.Context, hash string, p MetadataPat
 		if p.Artist != nil {
 			sets = append(sets, "artist = ?")
 			args = append(args, metaNullString(*p.Artist))
+		}
+		// Extended string tags.
+		if p.Genre != nil {
+			sets = append(sets, "genre = ?")
+			args = append(args, metaNullString(*p.Genre))
+		}
+		if p.Composer != nil {
+			sets = append(sets, "composer = ?")
+			args = append(args, metaNullString(*p.Composer))
+		}
+		if p.Comment != nil {
+			sets = append(sets, "comment = ?")
+			args = append(args, metaNullString(*p.Comment))
+		}
+		// Extended numeric tags (blank → NULL, else a non-negative integer).
+		for _, nf := range []struct {
+			col string
+			val *string
+		}{
+			{"track_number", p.TrackNumber},
+			{"track_total", p.TrackTotal},
+			{"disc_number", p.DiscNumber},
+			{"year", p.Year},
+		} {
+			if nf.val == nil {
+				continue
+			}
+			n, err := metaNullInt(*nf.val)
+			if err != nil {
+				return nil, fmt.Errorf("update metadata: %s: %w", nf.col, err)
+			}
+			sets = append(sets, nf.col+" = ?")
+			args = append(args, n)
 		}
 		args = append(args, fileID)
 		if _, err := tx.ExecContext(ctx,
@@ -169,6 +216,39 @@ func (db *DB) getMetadataByFileID(ctx context.Context, fileID int64) (*MediaMeta
 // edited-then-cleared field is indistinguishable from a never-set one.
 func metaNullString(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}
+}
+
+// ErrInvalidMetadata flags a client-supplied value the patch can't accept (e.g.
+// a non-numeric track number), so the API layer can map it to 400 rather than 500.
+var ErrInvalidMetadata = errors.New("invalid metadata value")
+
+// metaNullInt parses a numeric tag field carried as raw text: blank/whitespace
+// clears the column (NULL); otherwise it must be a non-negative integer. A
+// malformed or negative value is an ErrInvalidMetadata.
+func metaNullInt(s string) (sql.NullInt64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return sql.NullInt64{}, nil
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || n < 0 {
+		return sql.NullInt64{}, fmt.Errorf("%w: %q is not a non-negative integer", ErrInvalidMetadata, s)
+	}
+	return sql.NullInt64{Int64: n, Valid: true}, nil
+}
+
+// FileMetadataByHash loads the editable media_metadata row for the file with the
+// given content hash. Returns ErrFileNotFound when no files row matches.
+func (db *DB) FileMetadataByHash(ctx context.Context, hash string) (*MediaMetadata, error) {
+	var fileID int64
+	err := db.QueryRowContext(ctx, `SELECT id FROM files WHERE hash = ?`, hash).Scan(&fileID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrFileNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("file metadata by hash: %w", err)
+	}
+	return db.getMetadataByFileID(ctx, fileID)
 }
 
 // titleFromFilename derives a display title from an upload filename: the base

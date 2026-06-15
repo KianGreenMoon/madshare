@@ -300,6 +300,7 @@ function mineScope() {
     autoSelect: true,                 // "send the lot unless you untick"
     editable: MINE_EDITABLE,
     editPatchURL: f => `${API}/api/my/uploads/${encodeURIComponent(f.hash)}/metadata`,
+    editDetailURL: f => `${API}/api/my/uploads/${encodeURIComponent(f.hash)}/metadata`,
     editNote: 'Fix the tags before sending to approval — title, artist and album decide where the track lands in the library.',
     accessEditable: false,            // an uploader sets tags on drafts, not access
     badge: (f, grouped) => grouped && f.state !== 'submitted'

@@ -254,10 +254,15 @@ type Repository interface {
 
 	// --- Base metadata editing (Phase 5: upload & covers) ---
 
-	// UpdateFileMetadata writes the provided base fields (nil = leave unchanged)
-	// onto the media_metadata row of the file with the given content hash and
-	// returns the updated row. Returns ErrFileNotFound when no file matches.
+	// UpdateFileMetadata writes the provided fields (nil = leave unchanged) onto
+	// the media_metadata row of the file with the given content hash and returns
+	// the updated row. Returns ErrFileNotFound when no file matches, or an error
+	// wrapping ErrInvalidMetadata when a numeric field carries a bad value.
 	UpdateFileMetadata(ctx context.Context, hash string, p MetadataPatch) (*MediaMetadata, error)
+
+	// FileMetadataByHash loads the editable media_metadata row for the file with
+	// the given content hash. Returns ErrFileNotFound when no file matches.
+	FileMetadataByHash(ctx context.Context, hash string) (*MediaMetadata, error)
 
 	// --- Playlists & favorites (docs/api/playlists.md) ---
 	// All playlist methods are scoped to userID; a playlist id belonging to a

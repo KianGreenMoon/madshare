@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -106,28 +107,60 @@ func (h *handler) myUploads(w http.ResponseWriter, r *http.Request) {
 // or returned) instead of the metadata.edit permission. 404 on anything the
 // caller may not edit, so it does not reveal other users' staged files.
 func (h *handler) myUploadMetadata(w http.ResponseWriter, r *http.Request) {
+	hash, ok := h.ownStagedHash(w, r)
+	if !ok {
+		return
+	}
+	h.applyMetadataPatch(w, r, hash, "own staged file")
+}
+
+// myUploadMetadataGet handles GET /api/my/uploads/{hash}/metadata — the
+// owner-scoped read of a staged file's full editable tag set, for the edit modal
+// to populate before editing. Same ownership + editable-state guard as the PATCH.
+func (h *handler) myUploadMetadataGet(w http.ResponseWriter, r *http.Request) {
+	hash, ok := h.ownStagedHash(w, r)
+	if !ok {
+		return
+	}
+	meta, err := h.repo.FileMetadataByHash(r.Context(), hash)
+	if errors.Is(err, database.ErrFileNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, metadataJSON(hash, meta))
+}
+
+// ownStagedHash validates the {hash} path param and authorizes the caller as the
+// owner of an editable (draft or returned) staged file. It writes the error
+// response and returns ok=false on any failure — 404 on anything the caller may
+// not see, so other users' staged files are never revealed.
+func (h *handler) ownStagedHash(w http.ResponseWriter, r *http.Request) (string, bool) {
 	id := auth.FromContext(r.Context())
 	if id == nil {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
-		return
+		return "", false
 	}
 	hash := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "hash")))
 	if !isSHA256Hex(hash) {
 		http.Error(w, "invalid hash", http.StatusBadRequest)
-		return
+		return "", false
 	}
 	state, uploadedBy, deleted, found, err := h.repo.FileReviewInfo(r.Context(), hash)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
-		return
+		return "", false
 	}
 	editable := state == database.ReviewDraft || state == database.ReviewReturned
 	owned := uploadedBy.Valid && uploadedBy.Int64 == id.UserID
 	if !found || deleted || !editable || !owned {
 		http.NotFound(w, r)
-		return
+		return "", false
 	}
-	h.applyMetadataPatch(w, r, hash, "own staged file")
+	return hash, true
 }
 
 // myUploadDiscard handles DELETE /api/my/uploads/{hash} — the owner removes

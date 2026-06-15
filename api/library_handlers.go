@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -534,6 +535,42 @@ type metadataPatchRequest struct {
 	Album       *string `json:"album"`
 	AlbumArtist *string `json:"album_artist"`
 	Artist      *string `json:"artist"`
+	// Extended tags (richer editing). Numeric fields are carried as strings so an
+	// absent key (unchanged), "" (clear), and a value (set) stay distinct; the DB
+	// layer parses them. See database.MetadataPatch.
+	Genre       *string `json:"genre"`
+	Composer    *string `json:"composer"`
+	Comment     *string `json:"comment"`
+	TrackNumber *string `json:"track_number"`
+	TrackTotal  *string `json:"track_total"`
+	DiscNumber  *string `json:"disc_number"`
+	Year        *string `json:"year"`
+}
+
+// metadataJSON is the full editable-field echo shared by the GET endpoints and the
+// PATCH response. Strings are "" when unset; numeric fields are null when unset.
+func metadataJSON(hash string, m *database.MediaMetadata) map[string]any {
+	nullInt := func(n sql.NullInt64) any {
+		if !n.Valid {
+			return nil
+		}
+		return n.Int64
+	}
+	return map[string]any{
+		"ok":           true,
+		"hash":         hash,
+		"title":        m.Title,
+		"album":        m.Album.String,
+		"album_artist": m.AlbumArtist.String,
+		"artist":       m.Artist.String,
+		"genre":        m.Genre.String,
+		"composer":     m.Composer.String,
+		"comment":      m.Comment.String,
+		"track_number": nullInt(m.TrackNumber),
+		"track_total":  nullInt(m.TrackTotal),
+		"disc_number":  nullInt(m.DiscNumber),
+		"year":         nullInt(m.Year),
+	}
 }
 
 // updateFileMetadata edits the base tags (title / album / album_artist / artist)
@@ -565,11 +602,22 @@ func (h *handler) applyMetadataPatch(w http.ResponseWriter, r *http.Request, has
 		Album:       req.Album,
 		AlbumArtist: req.AlbumArtist,
 		Artist:      req.Artist,
+		Genre:       req.Genre,
+		Composer:    req.Composer,
+		Comment:     req.Comment,
+		TrackNumber: req.TrackNumber,
+		TrackTotal:  req.TrackTotal,
+		DiscNumber:  req.DiscNumber,
+		Year:        req.Year,
 	}
 
 	meta, err := h.repo.UpdateFileMetadata(r.Context(), hash, patch)
 	if errors.Is(err, database.ErrFileNotFound) {
 		http.NotFound(w, r)
+		return
+	}
+	if errors.Is(err, database.ErrInvalidMetadata) {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if err != nil {
@@ -578,14 +626,23 @@ func (h *handler) applyMetadataPatch(w http.ResponseWriter, r *http.Request, has
 	}
 
 	h.audit(r.Context(), "metadata.edit", "file:"+hash, auditDetail)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":           true,
-		"hash":         hash,
-		"title":        meta.Title,
-		"album":        meta.Album.String,
-		"album_artist": meta.AlbumArtist.String,
-		"artist":       meta.Artist.String,
-	})
+	writeJSON(w, http.StatusOK, metadataJSON(hash, meta))
+}
+
+// getFileMetadata handles GET /api/files/{hash}/metadata — the full editable tag
+// set for the edit modal to populate before editing. Gated on metadata.edit.
+func (h *handler) getFileMetadata(w http.ResponseWriter, r *http.Request) {
+	hash := chi.URLParam(r, "hash")
+	meta, err := h.repo.FileMetadataByHash(r.Context(), hash)
+	if errors.Is(err, database.ErrFileNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, metadataJSON(hash, meta))
 }
 
 // renameArtist handles POST /api/artists/{artist}/rename. The {artist} path

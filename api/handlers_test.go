@@ -447,6 +447,8 @@ type fakeRepo struct {
 	lastMetaPatch database.MetadataPatch
 	metaResult    *database.MediaMetadata
 	metaErr       error
+	metaGetResult *database.MediaMetadata // FileMetadataByHash result
+	metaGetErr    error
 
 	// Playlist stubs (UI roadmap Phase 5). playlistErr is returned by every
 	// playlist method, so each error branch is one knob away.
@@ -702,6 +704,17 @@ func (f *fakeRepo) UpdateFileMetadata(_ context.Context, hash string, p database
 	}
 	if f.metaResult != nil {
 		return f.metaResult, nil
+	}
+	return &database.MediaMetadata{}, nil
+}
+
+func (f *fakeRepo) FileMetadataByHash(_ context.Context, hash string) (*database.MediaMetadata, error) {
+	f.lastMetaHash = hash
+	if f.metaGetErr != nil {
+		return nil, f.metaGetErr
+	}
+	if f.metaGetResult != nil {
+		return f.metaGetResult, nil
 	}
 	return &database.MediaMetadata{}, nil
 }

@@ -194,6 +194,7 @@ export function createReviewScope({ play, perms }) {
     selectable: f => f.state === 'submitted',
     editable: f => canEdit && ACTIONABLE.has(f.state),
     editPatchURL: f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`,
+    editDetailURL: f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`,
     editNote: 'Edits this submission’s tags before approval.',
     rowActions: [
       { id: 'approve', label: 'Approve', kind: 'neutral', show: f => ACTIONABLE.has(f.state), run: f => approveMany([f.hash]) },

@@ -84,6 +84,80 @@ func TestUpdateFileMetadata_ClearTitleRederivesFilename(t *testing.T) {
 	}
 }
 
+// TestUpdateFileMetadata_ExtendedFields verifies the rich tags (string + numeric)
+// round-trip, and that a blank numeric clears the column to NULL.
+func TestUpdateFileMetadata_ExtendedFields(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	seedFile(t, db, metaHash, "song.mp3")
+
+	got, err := db.UpdateFileMetadata(ctx, metaHash, MetadataPatch{
+		Genre:       strPtr("Jazz"),
+		Composer:    strPtr("Bill Evans"),
+		Comment:     strPtr("live"),
+		TrackNumber: strPtr("3"),
+		TrackTotal:  strPtr("10"),
+		DiscNumber:  strPtr("1"),
+		Year:        strPtr("1961"),
+	})
+	if err != nil {
+		t.Fatalf("UpdateFileMetadata: %v", err)
+	}
+	if got.Genre.String != "Jazz" || got.Composer.String != "Bill Evans" || got.Comment.String != "live" {
+		t.Errorf("string tags = (%q,%q,%q), want (Jazz, Bill Evans, live)", got.Genre.String, got.Composer.String, got.Comment.String)
+	}
+	if got.TrackNumber.Int64 != 3 || got.TrackTotal.Int64 != 10 || got.DiscNumber.Int64 != 1 || got.Year.Int64 != 1961 {
+		t.Errorf("numeric tags = (%d,%d,%d,%d), want (3,10,1,1961)", got.TrackNumber.Int64, got.TrackTotal.Int64, got.DiscNumber.Int64, got.Year.Int64)
+	}
+
+	// Blank clears the numeric to NULL; an absent field is left untouched.
+	got, err = db.UpdateFileMetadata(ctx, metaHash, MetadataPatch{TrackNumber: strPtr("")})
+	if err != nil {
+		t.Fatalf("clear track_number: %v", err)
+	}
+	if got.TrackNumber.Valid {
+		t.Errorf("track_number should be NULL after clearing, got %d", got.TrackNumber.Int64)
+	}
+	if got.Year.Int64 != 1961 {
+		t.Errorf("year = %d, want unchanged 1961", got.Year.Int64)
+	}
+}
+
+// TestUpdateFileMetadata_InvalidNumber rejects a non-numeric / negative numeric
+// field with ErrInvalidMetadata (mapped to 400 at the API layer).
+func TestUpdateFileMetadata_InvalidNumber(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	seedFile(t, db, metaHash, "song.mp3")
+
+	for _, bad := range []string{"abc", "-1", "3.5"} {
+		_, err := db.UpdateFileMetadata(ctx, metaHash, MetadataPatch{TrackNumber: strPtr(bad)})
+		if !errors.Is(err, ErrInvalidMetadata) {
+			t.Errorf("track_number=%q: err = %v, want ErrInvalidMetadata", bad, err)
+		}
+	}
+}
+
+// TestFileMetadataByHash round-trips a stored row and reports ErrFileNotFound for
+// an unknown hash.
+func TestFileMetadataByHash(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	seedFile(t, db, metaHash, "song.mp3")
+
+	got, err := db.FileMetadataByHash(ctx, metaHash)
+	if err != nil {
+		t.Fatalf("FileMetadataByHash: %v", err)
+	}
+	if got.Title != "A Song" {
+		t.Errorf("title = %q, want %q", got.Title, "A Song")
+	}
+
+	if _, err := db.FileMetadataByHash(ctx, "nope"); !errors.Is(err, ErrFileNotFound) {
+		t.Fatalf("unknown hash err = %v, want ErrFileNotFound", err)
+	}
+}
+
 // TestUpdateFileMetadata_UnknownHash returns ErrFileNotFound for a hash with no
 // files row, even for an empty patch.
 func TestUpdateFileMetadata_UnknownHash(t *testing.T) {

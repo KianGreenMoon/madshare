@@ -80,6 +80,19 @@ func TestReview_UploaderModeratorFlow(t *testing.T) {
 		map[string]any{"title": "Fixed Title"}, nil); code != http.StatusOK {
 		t.Errorf("owner edit of draft = %d, want 200", code)
 	}
+	// The owner can GET the full editable tag set (for the modal to prefill),
+	// including the extended fields, and a rich PATCH round-trips.
+	var draftMeta map[string]any
+	if code := doJSON(t, up, http.MethodGet, srv.URL+"/api/my/uploads/"+hash+"/metadata", nil, &draftMeta); code != http.StatusOK {
+		t.Errorf("owner GET draft metadata = %d, want 200", code)
+	}
+	if _, ok := draftMeta["track_number"]; !ok {
+		t.Errorf("owner GET metadata missing track_number: %+v", draftMeta)
+	}
+	if code := doJSON(t, up, http.MethodPatch, srv.URL+"/api/my/uploads/"+hash+"/metadata",
+		map[string]any{"track_number": "7", "genre": "Jazz"}, nil); code != http.StatusOK {
+		t.Errorf("owner rich edit of draft = %d, want 200", code)
+	}
 	// The moderation queue is not for uploaders.
 	if code := doJSON(t, up, http.MethodGet, srv.URL+"/api/admin/moderation", nil, nil); code != http.StatusForbidden {
 		t.Errorf("uploader moderation list = %d, want 403", code)
@@ -99,6 +112,9 @@ func TestReview_UploaderModeratorFlow(t *testing.T) {
 	if code := doJSON(t, up, http.MethodPatch, srv.URL+"/api/my/uploads/"+hash+"/metadata",
 		map[string]any{"title": "Too Late"}, nil); code != http.StatusNotFound {
 		t.Errorf("owner edit after submit = %d, want 404 (locked)", code)
+	}
+	if code := doJSON(t, up, http.MethodGet, srv.URL+"/api/my/uploads/"+hash+"/metadata", nil, nil); code != http.StatusNotFound {
+		t.Errorf("owner GET metadata after submit = %d, want 404 (locked)", code)
 	}
 
 	// Moderator sees it, returns it with a note.

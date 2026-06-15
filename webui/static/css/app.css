@@ -870,7 +870,8 @@ input[type="range"]::-moz-range-thumb {
   color: var(--text-muted);
 }
 .edit-form input,
-.edit-form select {
+.edit-form select,
+.edit-form textarea {
   padding: var(--space-2) var(--space-3);
   background: var(--bg);
   color: var(--text);
@@ -878,8 +879,28 @@ input[type="range"]::-moz-range-thumb {
   border-radius: var(--radius);
   font: inherit;
 }
+.edit-form textarea { resize: vertical; min-height: 2.4em; }
 .edit-form input:focus-visible,
-.edit-form select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.edit-form select:focus-visible,
+.edit-form textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* "Extended edit" disclosure: a quiet text button that reveals the rare tags. */
+.edit-extended-toggle {
+  justify-self: start;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.edit-extended-toggle:hover { text-decoration: underline; }
+.edit-extended {
+  display: grid;
+  gap: var(--space-3);
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--border);
+}
 .login-form {
   display: flex;
   flex-direction: column;
