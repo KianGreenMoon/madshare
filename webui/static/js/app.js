@@ -454,8 +454,24 @@ function renderTrackList(tracks) {
   const wrap = document.createElement('div');
   wrap.className = 'panel-fade-in';
 
+  // Multi-disc albums (more than one distinct disc number, untagged = disc 1)
+  // get a "Disc N" subheading before each disc; the queue stays one flat ordered
+  // list, so the headers are purely visual and don't shift track indices.
+  const multiDisc = new Set(tracks.map(t => t.disc_number || 1)).size > 1;
+  let shownDisc = null, discTrackNo = 0;
+
   tracks.forEach((t, i) => {
-    const displayNum = t.track_number || (i + 1);
+    const disc = t.disc_number || 1;
+    if (multiDisc && disc !== shownDisc) {
+      shownDisc = disc;
+      discTrackNo = 0;
+      const hdr = document.createElement('div');
+      hdr.className = 'track-disc-header';
+      hdr.textContent = `Disc ${disc}`;
+      wrap.appendChild(hdr);
+    }
+    discTrackNo++;
+    const displayNum = t.track_number || (multiDisc ? discTrackNo : i + 1);
     const track      = libraryPlaylist[i];
     const row        = document.createElement('div');
     row.className    = 'track-row';

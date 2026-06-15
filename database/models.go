@@ -171,6 +171,7 @@ type TrackEntry struct {
 	Title           string
 	ArtistName      string
 	TrackNumber     sql.NullInt64
+	DiscNumber      sql.NullInt64
 	DurationSeconds sql.NullFloat64
 	ObjectKey       string
 	MimeType        string

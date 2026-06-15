@@ -146,6 +146,7 @@ func (h *handler) listTracks(w http.ResponseWriter, r *http.Request) {
 		Title       string   `json:"title"`
 		ArtistName  string   `json:"artist_name"`
 		TrackNumber *int64   `json:"track_number"`
+		DiscNumber  *int64   `json:"disc_number"`
 		Duration    *float64 `json:"duration_seconds"`
 		URL         string   `json:"url"`
 		MimeType    string   `json:"mime_type"`
@@ -157,6 +158,10 @@ func (h *handler) listTracks(w http.ResponseWriter, r *http.Request) {
 		if t.TrackNumber.Valid {
 			trackNum = &t.TrackNumber.Int64
 		}
+		var discNum *int64
+		if t.DiscNumber.Valid {
+			discNum = &t.DiscNumber.Int64
+		}
 		var dur *float64
 		if t.DurationSeconds.Valid {
 			dur = &t.DurationSeconds.Float64
@@ -166,6 +171,7 @@ func (h *handler) listTracks(w http.ResponseWriter, r *http.Request) {
 			Title:       t.Title,
 			ArtistName:  t.ArtistName,
 			TrackNumber: trackNum,
+			DiscNumber:  discNum,
 			Duration:    dur,
 			URL:         "/files/" + t.ObjectKey,
 			MimeType:    t.MimeType,

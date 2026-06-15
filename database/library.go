@@ -159,6 +159,7 @@ func (db *DB) listTracksByAlbumID(ctx context.Context, albumID int64, guest bool
 		    m.title,
 		    COALESCE(par.name, '') AS artist_name,
 		    m.track_number,
+		    m.disc_number,
 		    m.duration_seconds,
 		    f.object_key,
 		    f.mime_type
@@ -166,7 +167,7 @@ func (db *DB) listTracksByAlbumID(ctx context.Context, albumID int64, guest bool
 		JOIN media_metadata m ON m.file_id = f.id
 		LEFT JOIN artists par ON par.id = m.artist_id
 		` + where + `
-		ORDER BY m.track_number ASC, LOWER(m.title) ASC`
+		ORDER BY COALESCE(m.disc_number, 1) ASC, m.track_number ASC, LOWER(m.title) ASC`
 
 	rows, err := db.QueryContext(ctx, q, albumID)
 	if err != nil {
@@ -177,7 +178,7 @@ func (db *DB) listTracksByAlbumID(ctx context.Context, albumID int64, guest bool
 	var out []*TrackEntry
 	for rows.Next() {
 		var e TrackEntry
-		if err := rows.Scan(&e.ID, &e.Title, &e.ArtistName, &e.TrackNumber, &e.DurationSeconds, &e.ObjectKey, &e.MimeType); err != nil {
+		if err := rows.Scan(&e.ID, &e.Title, &e.ArtistName, &e.TrackNumber, &e.DiscNumber, &e.DurationSeconds, &e.ObjectKey, &e.MimeType); err != nil {
 			return nil, fmt.Errorf("scan track entry: %w", err)
 		}
 		out = append(out, &e)

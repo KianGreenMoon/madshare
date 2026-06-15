@@ -346,6 +346,16 @@ main { padding: var(--space-5); max-width: 860px; margin: 0 auto; }
 .track-row.playing { background: var(--surface-hover); }
 .track-row.playing .track-title { color: var(--accent); }
 
+/* Multi-disc subheading in an album's track list. */
+.track-disc-header {
+  padding: var(--space-4) var(--space-4) var(--space-2);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
 .track-num {
   flex-shrink: 0;
   width: 22px;
