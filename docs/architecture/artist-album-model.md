@@ -211,10 +211,13 @@ browsable by its id, so a search hit is never a dead end:
   artist only performs on counts just their tracks on it. So a performer reached
   from search drills into the comps they appear on (not a dead end), and an
   album-artist additionally surfaces any comp they are individually featured on.
-- **Tracks of an album** (`ListTracksByAlbumID`): **unchanged** — the whole
-  album's track list, regardless of which artist the user entered from. The track
-  row now shows the **performer** name (`media_metadata.artist_id → artists.name`),
-  matching the playlists page (which shows each track's own `artist`).
+- **Tracks of an album** (`ListTracksByAlbumID`): the whole album's track list,
+  regardless of which artist the user entered from, ordered
+  `COALESCE(disc_number, 1), track_number, title` so a multi-disc album groups by
+  disc instead of interleaving (the row carries `disc_number` for the UI's
+  "Disc N" grouping). The track row shows the **performer** name
+  (`media_metadata.artist_id → artists.name`), matching the playlists page (which
+  shows each track's own `artist`).
 
 The guest-filtered variants apply the same `OR` over the access clause. The
 unknown-bucket sorting is unchanged.
