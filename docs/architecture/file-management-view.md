@@ -42,7 +42,11 @@ correctly; the admin pages load it too.
 - **Bulk edit** — `bulk-edit.js`, a selection-wide editor. **Blank field = keep**
   each file's value; **Title is excluded** (it is per-track). Setting the
   album/artist tag on a selection *re-tags* those files — it is **not** an entity
-  rename.
+  rename. An **+ Extended edit…** button opens a stacked wide modal with the
+  rarely-touched tags (year, track total, disc number, genre, composer, comment),
+  reusing track-edit.js's `EXTENDED_FIELDS`; the same blank = keep rule applies and
+  **track number stays excluded** (per-track, like Title). The toggle shows a
+  count of how many extended fields are staged.
 
 ## The scope catalog
 

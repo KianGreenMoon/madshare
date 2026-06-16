@@ -97,7 +97,9 @@ async function runBulk(hashes, makeRequest) {
 // the user actually filled.
 async function filesBulkApply(hashes, patch) {
   const tag = {};
-  for (const k of ['title', 'artist', 'album_artist', 'album']) if (k in patch) tag[k] = patch[k];
+  // Everything except the access keys is a metadata tag (base + extended); the
+  // metadata PATCH ignores any stray key, but only forward the real tags.
+  for (const k of Object.keys(patch)) if (k !== 'license' && k !== 'guest') tag[k] = patch[k];
   let ok = 0, fail = 0;
   for (const hash of hashes) {
     let good = true;

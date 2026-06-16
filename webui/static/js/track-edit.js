@@ -25,8 +25,9 @@
 let nextEditorId = 1;
 
 // The extended fields (shown in the wide modal) and their input flavour. A
-// 'span' field spans both grid columns.
-const EXTENDED_FIELDS = [
+// 'span' field spans both grid columns. Exported so bulk-edit.js builds the same
+// extended set from one source of truth.
+export const EXTENDED_FIELDS = [
   ['year', 'Year', 'number'],
   ['track_total', 'Track total', 'number'],
   ['disc_number', 'Disc number', 'number'],
