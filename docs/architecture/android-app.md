@@ -1,6 +1,8 @@
 # Android app — Capacitor remote-URL shell
 
-Status: **designed, not built.** This describes how to ship an installable
+Status: **P1 built** on the `app-dev` branch (`mobile/` — launcher, §4 safety
+gate, health probe, hand-off; the `classify.js` gate is unit-tested). P2–P4
+pending. This describes how to ship an installable
 Android app that reuses the existing web UI by wrapping it in a [Capacitor](https://capacitorjs.com/)
 WebView pointed at a running Madshare server. The emphasis is the
 **connection-safety model**: the app must work over plaintext on an
@@ -179,13 +181,25 @@ them in this mode.
 ## 6. Background audio
 
 `player-controller.js` already drives `navigator.mediaSession` (metadata +
-play/pause/seek), so lock-screen and notification controls light up in any modern
-WebView. The gap a plain WebView leaves is the OS suspending a backgrounded
-WebView and pausing playback. Close it with a **foreground-service audio plugin**
-(e.g. a community Capacitor media/foreground-service plugin) that holds audio
-focus and a media notification while playing. The existing `mediaSession`
-metadata feeds that notification. This is the one area where a fully native app
-would be sturdier; for v1 a foreground service is sufficient.
+play/pause/seek). **Correction to an earlier assumption:** the Android *System
+WebView* does **not** implement the Web Media Session API, so those calls are a
+no-op there (lock-screen/notification controls do **not** light up on their own),
+and a backgrounded WebView is suspended by the OS so playback pauses. A native
+plugin is therefore **required**, not just nice-to-have.
+
+Chosen plugin: **`@jofr/capacitor-media-session`** (GPL-3.0, compatible with this
+project's AGPL). It starts an Android **foreground service** for an active media
+session — keeping the WebView's `<audio>` playing in the background — and renders
+the media notification, with an API modelled on the Web Media Session API the web
+UI already uses. Caveats to handle at P2: it is lightly maintained (single
+maintainer; the 4.x line targets Capacitor ≤6 — we pin Capacitor 6), and because
+the player runs on the **remote** server origin, the web UI must reach the plugin
+across the hand-off — either a small `player-controller.js` tweak that routes
+through the plugin when `window.Capacitor` is present, or an app-side adapter
+injected into the remote page (same bridge-on-remote-origin mechanism the §10-Q1
+return-to-launcher control relies on; the app sets `allowNavigation: ["*"]` so the
+Capacitor bridge is injected into the server's pages). A fully native app would be
+sturdier here; for v1 the foreground service is sufficient.
 
 ## 7. Packaging
 
@@ -229,13 +243,21 @@ None required for the core flow. Optional, additive niceties (separate work):
 ## 10. Open questions
 
 1. **Return-to-launcher UX.** Once the WebView is on a remote origin, how does the
-   user get back to switch servers? Options: a native back-action/menu, a
-   long-press affordance, or a tiny control the shell injects. Leaning native
-   menu so it works regardless of page.
-2. **Override scope.** Is the trusted-network override per-server (proposed) or
-   also per-network (SSID)? Per-server is simpler and proposed; per-network is
-   safer but needs network-state permissions.
-3. **PWA vs Capacitor first.** P0 may be enough for some users; confirm whether
-   to ship the PWA independently or only as a dev stepping stone.
-4. **Foreground-audio plugin choice.** Pick/validate a maintained Capacitor
-   plugin (or write a thin one) for the media foreground service.
+   user get back to switch servers?
+   **Resolved (P3):** a **native control, login-screen-only** — not part of the
+   server's web UI. The app shows a "Servers" affordance for *unauthorised* users,
+   detected natively by the absence of the `madshare_session` cookie (Android
+   `CookieManager`) for the current origin; signing out reveals it. Keeps the
+   control off the web UI (so the localhost/browser UI never grows an app-only
+   button) and avoids fragile DOM injection into authenticated pages.
+2. **Override scope.** Per-server or also per-network (SSID)?
+   **Resolved:** **per-server** only (simpler; no network-state permission). The
+   `mobile/www/js/launcher.js` server store already carries a `trusted` flag.
+3. **PWA vs Capacitor first.** P0 may be enough for some users.
+   **Resolved:** **Capacitor first** (P0/PWA deferred — revisit later).
+4. **Foreground-audio plugin choice.**
+   **Resolved (P2):** **`@jofr/capacitor-media-session`** (GPL-3.0). See §6 for
+   rationale and the Android-WebView caveat; alternatives (Capawesome Media
+   Session — paid + needs native audio; `@mediagrid/capacitor-native-audio` —
+   plays natively, not the WebView) were rejected as a worse fit for the
+   reuse-the-web-UI model.

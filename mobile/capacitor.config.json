@@ -1,0 +1,12 @@
+{
+  "appId": "ygg.daemonlord.madshare",
+  "appName": "Madshare",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https",
+    "allowNavigation": ["*"]
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}

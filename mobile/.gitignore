@@ -1,0 +1,14 @@
+# Capacitor mobile app — build artifacts and generated native projects.
+node_modules/
+
+# Generated native platform (re-created with `npx cap add android`).
+# Kept out of git for now; revisit once we hand-customise native files (P4).
+android/
+ios/
+
+# Capacitor copies www/ into the native project here.
+.gradle/
+*.apk
+*.aab
+*.keystore
+.DS_Store

@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>Madshare</title>
+  <link rel="stylesheet" href="launcher.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1 class="app-title">Madshare</h1>
+    <p class="app-sub">Pick a server to connect to</p>
+  </header>
+
+  <main class="launcher">
+    <p id="flash" class="flash" hidden></p>
+
+    <section class="panel">
+      <h2 class="panel-title">Your servers</h2>
+      <div id="server-list" class="server-list"></div>
+      <p id="empty-state" class="empty-state">No servers yet — add one below.</p>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Add a server</h2>
+      <form id="add-form" class="add-form" autocomplete="off">
+        <label class="field">
+          <span class="field-label">Address</span>
+          <input id="url-input" class="input" type="text" inputmode="url"
+                 placeholder="http://192.168.1.10:3000 or https://media.example.org" required>
+        </label>
+        <label class="field">
+          <span class="field-label">Name <span class="muted">(optional)</span></span>
+          <input id="name-input" class="input" type="text" placeholder="Home server">
+        </label>
+        <label class="check">
+          <input id="trusted-input" type="checkbox">
+          <span>I trust this network (VPN / encrypted overlay) — skip the plaintext warning</span>
+        </label>
+        <button class="btn btn-primary" type="submit">Add server</button>
+      </form>
+    </section>
+  </main>
+
+  <!-- §4.3 connection-safety warning -->
+  <dialog id="warn-dialog" class="warn">
+    <form method="dialog" class="warn-body">
+      <h2 class="warn-title">⚠️ This connection isn’t encrypted</h2>
+      <p>You’re about to connect to <code id="warn-host"></code> over a public network
+         with no TLS. Your login and everything you browse or play could be read or
+         stolen by others on the network — <strong>you may be about to leak your auth data.</strong></p>
+      <p class="muted">Only continue if you trust this network (a VPN, or a mesh like
+         Yggdrasil that encrypts traffic itself). The safe fix is to use
+         <code>https://</code> or put the server on an encrypted overlay.</p>
+      <label class="check">
+        <input id="warn-remember" type="checkbox">
+        <span>Don’t ask again for this server</span>
+      </label>
+      <div class="warn-actions">
+        <button class="btn btn-ghost" value="cancel" formnovalidate>Cancel</button>
+        <button class="btn btn-danger" value="continue">I understand the risk — continue</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="js/launcher.js"></script>
+</body>
+</html>
