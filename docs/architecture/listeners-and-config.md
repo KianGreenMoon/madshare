@@ -309,9 +309,15 @@ The design above is implemented as follows:
   (bundling deps into `api.Deps`); `webui` exposes `Register` / `RegisterAdminPage`.
 - **Per-listener serving** — `madshare.go` `buildHandler` composes a `chi.Router`
   per listener with shared middleware (Logger, Recoverer, `api.CORS`,
-  `auth.Identify`, and the `allow_from` filter), mounts only the requested groups,
-  and `startListeners` runs one `http.Server` per `[[listen]]` with graceful
-  SIGINT/SIGTERM shutdown.
+  `auth.Identify`, the `allow_from` filter, and `api.SupportHEAD`), mounts only the
+  requested groups, and `startListeners` runs one `http.Server` per `[[listen]]`
+  with graceful SIGINT/SIGTERM shutdown.
+- **`HEAD` on `GET` routes** — chi's `r.Get` registers `GET` only, so `api.SupportHEAD`
+  (wired innermost in `buildHandler`) rewrites a `HEAD` to a `GET` clone before
+  routing and discards the body. Every `GET` route therefore answers `HEAD`
+  headers-only, taking the **same** `auth.Identify` + `/files` access-guard path —
+  a `HEAD` to a denied blob still `404`s, no bypass. Health-check monitors,
+  download managers, and link crawlers depend on this.
 - **Same-origin front-end** — the web UI reads `meta[name="api-url"]`
   (= `[webui].api_base`); empty → relative URLs.
 - **Compile-out web UI** — `-tags nowebui`; `webui.Available` is the sentinel the

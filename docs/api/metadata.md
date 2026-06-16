@@ -69,7 +69,7 @@ is a `400`). Any unrecognised key is **ignored**.
 | `artist`       | string         | Track artist. |
 | `track_number` | string (int)   | Track number on the disc. |
 | `track_total`  | string (int)   | Total tracks on the disc. |
-| `disc_number`  | string (int)   | Disc number for multi-disc releases. |
+| `disc_number`  | string (int)   | Disc number for multi-disc releases. `NULL` (untagged), `0`, and `N` are three *distinct* discs — see `docs/architecture/disc-numbering.md`. |
 | `year`         | string (int)   | Release year. |
 | `genre`        | string         | Genre tag. |
 | `composer`     | string         | Composer tag. |
@@ -277,3 +277,6 @@ curl -X POST -H "Content-Type: application/json" \
   album/artist rename automatically, via the entity id).
 - `docs/architecture/artist-album-model.md` — the artist/album entity model that
   rename/merge and entity-keyed covers build on.
+- `docs/architecture/file-management-view.md` — the shared file-list view and the
+  **bulk** tag editor (this same PATCH applied across a selection; shared values
+  pre-filled, only changed fields written, base + extended tags).
