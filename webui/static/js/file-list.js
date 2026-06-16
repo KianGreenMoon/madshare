@@ -14,6 +14,7 @@
 import { createTrackEditor } from './track-edit.js';
 import { createBulkEditor } from './bulk-edit.js';
 import { createCoverPicker } from './cover-edit.js';
+import { discKey, discSort, discLabel, isMultiDisc } from './disc.js';
 
 // Local DOM builder + formatter so this module has no page-specific imports.
 // el('button', {class:'btn', onclick: fn}, ['Label'])
@@ -412,7 +413,7 @@ export function createFileList(scope) {
         (!a.key - !b.key) || (albumYear(a.files) - albumYear(b.files)) || lc(a.key).localeCompare(lc(b.key)));
       for (const al of art.albumList) {
         al.files.sort((a, b) =>
-          ((a.disc_number ?? 1) - (b.disc_number ?? 1)) ||
+          (discSort(a.disc_number) - discSort(b.disc_number)) ||
           ((a.track_number == null) - (b.track_number == null)) ||
           ((a.track_number ?? 0) - (b.track_number ?? 0)) ||
           lc(a.title || a.filename).localeCompare(lc(b.title || b.filename)));
@@ -483,13 +484,15 @@ export function createFileList(scope) {
           al.files.filter(isSelectable).map(f => f.hash), !al.key,
           coverBtn('album', { artist: art.key, album: al.key }, !al.key, al.files[0]?.album_has_image)));
         // Multi-disc album → a quiet "Disc N" separator before each disc (purely
-        // visual; the files are already disc-then-track ordered above).
-        const multiDisc = new Set(al.files.map(f => f.disc_number || 1)).size > 1;
-        let shownDisc = null;
+        // visual; the files are already disc-then-track ordered above). disc.js is
+        // the shared rule (docs/architecture/disc-numbering.md).
+        const multiDisc = isMultiDisc(al.files);
+        let shownDisc;   // undefined: no real disc key equals it
         al.files.forEach(f => {
-          if (multiDisc && (f.disc_number || 1) !== shownDisc) {
-            shownDisc = f.disc_number || 1;
-            body.appendChild(grpSepRow('disc', `Disc ${shownDisc}`, '', [], false, null));
+          const disc = discKey(f.disc_number);
+          if (multiDisc && disc !== shownDisc) {
+            shownDisc = disc;
+            body.appendChild(grpSepRow('disc', discLabel(disc), '', [], false, null));
           }
           body.appendChild(groupedTrack(f));
         });

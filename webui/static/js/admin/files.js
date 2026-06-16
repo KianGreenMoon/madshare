@@ -8,6 +8,7 @@ import {
 } from './shared.js';
 import { createTrackEditor } from '../track-edit.js';
 import { createFileList } from '../file-list.js';
+import { discKey, discLabel, isMultiDisc } from '../disc.js';
 
 // createFilesScope builds the "All files" Library scope: the flat list (shared
 // component) plus the By-entity drill-down (rename / merge / cover / delete).
@@ -429,15 +430,17 @@ async function uploadCover(target, file) {
 function renderTracks(items) {
   if (!items.length) { entityPanel.replaceChildren(entEmpty(entFilterText ? 'No matching tracks.' : 'No tracks in this album.')); return; }
   const navItems = items.map(trackToItem);
-  // Multi-disc albums (>1 distinct disc, untagged = disc 1) get a quiet "Disc N"
-  // subheading before each disc; purely visual, the play order is unchanged.
-  const multiDisc = new Set(items.map(t => t.disc_number || 1)).size > 1;
-  let shownDisc = null;
+  // Multi-disc albums (>1 distinct disc key — untagged/0/N each count) get a quiet
+  // "Disc N" subheading before each disc; purely visual, the play order is
+  // unchanged. disc.js is the shared rule (docs/architecture/disc-numbering.md).
+  const multiDisc = isMultiDisc(items);
+  let shownDisc;   // undefined: no real disc key equals it
   const frag = document.createDocumentFragment();
   items.forEach((t, i) => {
-    if (multiDisc && (t.disc_number || 1) !== shownDisc) {
-      shownDisc = t.disc_number || 1;
-      frag.appendChild(el('div', { class: 'entity-disc-header', text: `Disc ${shownDisc}` }));
+    const disc = discKey(t.disc_number);
+    if (multiDisc && disc !== shownDisc) {
+      shownDisc = disc;
+      frag.appendChild(el('div', { class: 'entity-disc-header', text: discLabel(disc) }));
     }
     frag.appendChild(trackRow(t, navItems, i));
   });

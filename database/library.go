@@ -167,7 +167,7 @@ func (db *DB) listTracksByAlbumID(ctx context.Context, albumID int64, guest bool
 		JOIN media_metadata m ON m.file_id = f.id
 		LEFT JOIN artists par ON par.id = m.artist_id
 		` + where + `
-		ORDER BY COALESCE(m.disc_number, 1) ASC, m.track_number ASC, LOWER(m.title) ASC`
+		ORDER BY (m.disc_number IS NULL) ASC, m.disc_number ASC, m.track_number ASC, LOWER(m.title) ASC`
 
 	rows, err := db.QueryContext(ctx, q, albumID)
 	if err != nil {

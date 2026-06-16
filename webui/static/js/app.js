@@ -4,6 +4,7 @@ import { fmtTime } from './player.js';
 import { ensureLiked, isLiked, toggleLike, onLikedChange } from './favorites.js';
 import { openRowMenu } from './row-menu.js';
 import { showToast } from './shell.js';
+import { discKey, discLabel, isMultiDisc } from './disc.js';
 
 // Read API base from HTML meta. Empty default => relative, same-origin URLs
 // (the page and API share an origin in the bundled server). A non-empty value
@@ -454,20 +455,21 @@ function renderTrackList(tracks) {
   const wrap = document.createElement('div');
   wrap.className = 'panel-fade-in';
 
-  // Multi-disc albums (more than one distinct disc number, untagged = disc 1)
+  // Multi-disc albums (more than one distinct disc key — untagged/0/N each count)
   // get a "Disc N" subheading before each disc; the queue stays one flat ordered
   // list, so the headers are purely visual and don't shift track indices.
-  const multiDisc = new Set(tracks.map(t => t.disc_number || 1)).size > 1;
-  let shownDisc = null, discTrackNo = 0;
+  // disc.js is the shared rule (docs/architecture/disc-numbering.md).
+  const multiDisc = isMultiDisc(tracks);
+  let shownDisc, discTrackNo = 0;   // shownDisc starts undefined: no real key equals it
 
   tracks.forEach((t, i) => {
-    const disc = t.disc_number || 1;
+    const disc = discKey(t.disc_number);
     if (multiDisc && disc !== shownDisc) {
       shownDisc = disc;
       discTrackNo = 0;
       const hdr = document.createElement('div');
       hdr.className = 'track-disc-header';
-      hdr.textContent = `Disc ${disc}`;
+      hdr.textContent = discLabel(disc);
       wrap.appendChild(hdr);
     }
     discTrackNo++;
