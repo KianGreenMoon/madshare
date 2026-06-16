@@ -128,6 +128,9 @@ export function createFileList(scope) {
     if (_bulk) return _bulk;
     _bulk = createBulkEditor({
       access: scope.accessEditable ? { licenses: scope.licenses || [] } : null,
+      // When the scope can read a file's full tags, let the bulk editor fetch them
+      // for the selection so the Extended modal can pre-fill its shared values too.
+      loadDetails: scope.editDetailURL ? loadSelectionDetails : null,
       onApply: async (hashes, patch) => {
         await scope.bulkApply(hashes, patch);
         selected.clear();
@@ -271,6 +274,42 @@ export function createFileList(scope) {
 
   // ── Selection ───────────────────────────────────────────────────────────────
   function isSelectable(f) { return scope.selectable ? scope.selectable(f) : false; }
+
+  // selectionTags inspects the already-loaded rows for a set of hashes and reports
+  // which tags every selected file agrees on, so the bulk editor can pre-fill the
+  // shared value and flag the rest as "multiple values". Only fields the list
+  // payload actually carries (artist/album_artist/album + access) are considered;
+  // a field absent from the data is simply not reported. Returns
+  // { common: {field: value}, mixed: Set<field> }.
+  function selectionTags(hashes) {
+    const set = new Set(hashes);
+    const files = rows.filter(f => set.has(f.hash));
+    const common = {}, mixed = new Set();
+    // Only pre-fill when every selected file's data is in hand; a partial subset
+    // (e.g. a browse group whose hashes aren't all loaded here) could otherwise
+    // report a "shared" value that isn't actually shared across the selection.
+    if (!files.length || files.length !== set.size) return { common, mixed };
+    const agree = (field, present, read) => {
+      if (!present) return;                       // not in this scope's payload
+      const v = read(files[0]);
+      if (files.every(f => read(f) === v)) common[field] = v; else mixed.add(field);
+    };
+    for (const k of ['artist', 'album_artist', 'album', 'license']) agree(k, k in files[0], f => f[k] ?? '');
+    agree('guest', 'guest_playable' in files[0], f => !!f.guest_playable);
+    return { common, mixed };
+  }
+
+  // loadSelectionDetails fetches the full tag set for each selected hash via the
+  // scope's detail endpoint, so the bulk editor's Extended modal can compute the
+  // shared values for fields the list payload doesn't carry (genre, composer, …).
+  async function loadSelectionDetails(hashes) {
+    return Promise.all(hashes.map(async hash => {
+      const res = await fetch(scope.editDetailURL({ hash }));
+      if (scope.handleAuthError && scope.handleAuthError(res)) throw new Error('Your session expired.');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    }));
+  }
   function rowCheckbox(f) {
     const cb = el('input', { type: 'checkbox', class: 'fl-rowcheck', 'aria-label': `Select ${displayTitle(f)}` });
     cb.dataset.hash = f.hash;
@@ -609,7 +648,7 @@ export function createFileList(scope) {
     try {
       const hashes = await scope.browse.groupHashes(level, item, br.artist);
       if (!hashes.length) { toast('No files found for this group.', 'error'); return; }
-      bulkEditor().open(hashes);
+      bulkEditor().open(hashes, selectionTags(hashes));
     } catch (err) { toast(`Couldn’t gather the group: ${err.message}`, 'error'); }
   }
 
@@ -658,7 +697,7 @@ export function createFileList(scope) {
 
   function bulkToolbar() {
     const buttons = [];
-    if (scope.bulkApply) buttons.push(el('button', { class: 'btn btn-neutral btn-sm fl-bulk-btn', text: 'Edit tags…', disabled: 'true', onclick: () => bulkEditor().open([...selected]) }));
+    if (scope.bulkApply) buttons.push(el('button', { class: 'btn btn-neutral btn-sm fl-bulk-btn', text: 'Edit tags…', disabled: 'true', onclick: () => bulkEditor().open([...selected], selectionTags([...selected])) }));
     for (const a of scope.bulkActions || []) {
       const cls = (a.kind === 'danger' ? 'btn btn-destructive-outline btn-sm' : 'btn btn-neutral btn-sm') + ' fl-bulk-btn';
       buttons.push(el('button', { class: cls, text: a.label, disabled: 'true', onclick: () => runBulkAction(a) }));

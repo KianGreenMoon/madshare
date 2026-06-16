@@ -39,14 +39,29 @@ correctly; the admin pages load it too.
 
 - **Per-file edit** — `track-edit.js`, with an optional **access** section
   (License picker + Guest toggle) shown when the scope is `accessEditable`.
-- **Bulk edit** — `bulk-edit.js`, a selection-wide editor. **Blank field = keep**
-  each file's value; **Title is excluded** (it is per-track). Setting the
-  album/artist tag on a selection *re-tags* those files — it is **not** an entity
-  rename. An **+ Extended edit…** button opens a stacked wide modal with the
-  rarely-touched tags (year, track total, disc number, genre, composer, comment),
-  reusing track-edit.js's `EXTENDED_FIELDS`; the same blank = keep rule applies and
-  **track number stays excluded** (per-track, like Title). The toggle shows a
-  count of how many extended fields are staged.
+- **Bulk edit** — `bulk-edit.js`, a selection-wide editor. The fields every
+  selected file already shares (artist / album-artist / album + access) are
+  **pre-filled** so the editor sees the common value; fields that vary show blank
+  with a "multiple values" hint. **Only the fields you change are written** — an
+  untouched shared value isn't re-applied, and a blank field is never written (bulk
+  never clears). `file-list.js` computes the shared values from its loaded rows
+  (`selectionTags`, full-coverage only) and passes them in. **Title is excluded**
+  (it is per-track). Setting the album/artist tag on a selection *re-tags* those
+  files — it is **not** an entity rename. An **+ Extended edit…** button opens a
+  stacked wide modal with the rarely-touched tags (year, track total, disc number,
+  genre, composer, comment), reusing track-edit.js's `EXTENDED_FIELDS`. Those tags
+  aren't in the list payload, so the first time the modal opens for a selection it
+  **lazily fetches** each file's full tags (`loadDetails`, via the scope's detail
+  endpoint) to pre-fill their shared values — same change-only / never-clear rule
+  as the base fields. **Track number stays excluded** (per-track, like Title). The
+  toggle shows a count of how many extended fields the user has changed.
+
+  > **Extended pre-fill cap (`EXT_PREFILL_CAP = 100`).** The extended pre-fill is
+  > one detail fetch per selected file, so it's bounded: when more than 100 files
+  > are selected, the modal skips the fetch and the extended fields stay set-only
+  > (blank, "fields here set what you enter"); you can still bulk-set them, you just
+  > don't see the shared starting values. The **base** pre-fill has **no cap** — it
+  > is computed from rows already in memory (no fetch), so it always runs.
 
 ## The scope catalog
 

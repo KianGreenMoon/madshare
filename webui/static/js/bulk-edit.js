@@ -30,6 +30,15 @@ const GUEST_ON   = 'on';
 const GUEST_OFF  = 'off';
 const LICENSE_KEEP = '\x00keep'; // sentinel distinct from "" (= clear), unused here
 
+// Field placeholders. MIXED marks a field whose selected files disagree (shown
+// blank, so leaving it blank keeps each file's own value).
+const MIXED_PLACEHOLDER = 'Multiple values — leave blank to keep';
+const KEEP_PLACEHOLDER  = 'Leave blank to keep each file’s value';
+
+// EXT_PREFILL_CAP bounds how many files we'll fetch full tags for to compute the
+// extended modal's shared values; above it the extended fields stay set-only.
+const EXT_PREFILL_CAP = 100;
+
 /**
  * createBulkEditor builds the modal (hidden) and returns its controls.
  *
@@ -41,9 +50,21 @@ const LICENSE_KEEP = '\x00keep'; // sentinel distinct from "" (= clear), unused 
  *                                   { artist?, album_artist?, album?,
  *                                     license?, guest? (boolean) }.
  * @param {Function} [opts.onError]  (err) => void — apply failure.
- * @returns {{ open(hashes): void, close(): void, destroy(): void }}
+ * @param {Function} [opts.loadDetails] async (hashes) => metadata[] — fetch each
+ *                                   selected file's full tag set. When supplied,
+ *                                   opening the Extended modal lazily fetches it
+ *                                   to pre-fill the extended fields' shared values
+ *                                   too (same change-only write rule). Omit to keep
+ *                                   the extended fields set-only.
+ * @returns {{ open(hashes, prefill?): void, close(): void, destroy(): void }}
+ *   open()'s optional `prefill` = { common: {field: value}, mixed: Set<field> }
+ *   reports the tags every selected file already shares (pre-filled so the user
+ *   sees them) vs. those that vary (shown blank with a "multiple values" hint).
+ *   `common` may carry artist / album_artist / album / license (strings) and
+ *   guest (boolean). With a prefill the modal writes only the fields the user
+ *   actually CHANGES, so an untouched shared value isn't needlessly re-applied.
  */
-export function createBulkEditor({ access = null, onApply, onError }) {
+export function createBulkEditor({ access = null, onApply, onError, loadDetails = null }) {
   const titleId = `bulkEditTitle${nextBulkId++}`;
 
   const backdrop = document.createElement('div');
@@ -137,7 +158,7 @@ export function createBulkEditor({ access = null, onApply, onError }) {
 
   const hint = document.createElement('p');
   hint.className = 'modal-body modal-hint';
-  hint.textContent = 'Only the fields you fill are written; the rest stay as they are on each file. '
+  hint.textContent = 'Shared values are pre-filled; only the fields you change are written, the rest stay as they are. '
     + 'Title isn’t bulk-edited (it is unique per track).';
   form.appendChild(hint);
 
@@ -200,7 +221,7 @@ export function createBulkEditor({ access = null, onApply, onError }) {
       if (kind === 'number') { input.min = '0'; input.step = '1'; input.inputMode = 'numeric'; }
       else input.autocomplete = 'off';
     }
-    input.placeholder = 'Keep each file’s value';
+    input.placeholder = KEEP_PLACEHOLDER;
     extInputs[key] = input;
     const wrap = document.createElement('label');
     if (span === 'span') wrap.className = 'span-2';
@@ -209,9 +230,15 @@ export function createBulkEditor({ access = null, onApply, onError }) {
   }
   extForm.appendChild(grid);
 
+  // Status line: shows the "loading shared values…" state and any fetch error.
+  const extNote = document.createElement('p');
+  extNote.className = 'modal-body modal-hint';
+  extNote.hidden = true;
+  extForm.appendChild(extNote);
+
   const extHint = document.createElement('p');
   extHint.className = 'modal-body modal-hint';
-  extHint.textContent = 'Same rule here: only the fields you fill are written across the selection.';
+  extHint.textContent = 'Same rule here: only the fields you change are written across the selection.';
   extForm.appendChild(extHint);
 
   const extActions = document.createElement('div');
@@ -234,32 +261,109 @@ export function createBulkEditor({ access = null, onApply, onError }) {
   document.body.appendChild(extBackdrop);
 
   let hashes = [];
+  // The pre-filled (shared) values captured on open, so buildPatch can write only
+  // the fields the user actually changed away from them. initialExt holds the same
+  // for the extended fields once their shared values are fetched.
+  const initial = { artist: '', album_artist: '', album: '', license: LICENSE_KEEP, guest: GUEST_KEEP };
+  const initialExt = {};
+  let extLoaded = false, extLoading = false;   // per-selection fetch state
   const isOpen = () => !backdrop.classList.contains('hidden');
   const extIsOpen = () => !extBackdrop.classList.contains('hidden');
 
-  function openExtended() { extBackdrop.classList.remove('hidden'); extInputs.year.focus(); }
+  function openExtended() {
+    extBackdrop.classList.remove('hidden');
+    extInputs.year.focus();
+    loadExtendedCommon();   // lazily fetch + pre-fill shared values (once per selection)
+  }
   function closeExtended() { extBackdrop.classList.add('hidden'); syncExtendedBadge(); }
 
-  // syncExtendedBadge annotates the toggle with how many extended fields are
-  // filled, so a closed wide modal still shows the user they staged changes there.
+  // loadExtendedCommon fetches the selected files' full tags (once) and pre-fills
+  // each extended field with the value they all share, flagging the rest as
+  // "multiple values". No-op without loadDetails (extended stays set-only) or for
+  // a selection too large to fetch politely.
+  async function loadExtendedCommon() {
+    if (!loadDetails || extLoaded || extLoading) return;
+    if (hashes.length > EXT_PREFILL_CAP) {
+      extNote.textContent = `Too many files to pre-fill shared values; fields here set what you enter.`;
+      extNote.hidden = false;
+      return;
+    }
+    extLoading = true;
+    extNote.textContent = 'Loading shared values…';
+    extNote.hidden = false;
+    for (const [key] of EXTENDED_FIELDS) extInputs[key].disabled = true;
+    extSubmitBtn.disabled = true;
+    const targets = hashes.slice();
+    try {
+      const details = await loadDetails(targets);
+      if (JSON.stringify(hashes) !== JSON.stringify(targets)) return; // selection changed / modal closed under us
+      for (const [key, , kind] of EXTENDED_FIELDS) {
+        const read = d => kind === 'number' ? (d[key] == null ? '' : String(d[key])) : (d[key] || '');
+        const v0 = details.length ? read(details[0]) : '';
+        const allSame = details.every(d => read(d) === v0);
+        extInputs[key].value = allSame ? v0 : '';
+        extInputs[key].placeholder = allSame ? KEEP_PLACEHOLDER : MIXED_PLACEHOLDER;
+        initialExt[key] = allSame ? v0 : '';
+      }
+      extLoaded = true;
+      extNote.hidden = true;
+    } catch (err) {
+      extNote.textContent = `Couldn’t load shared values: ${err.message}. Fields here set what you enter.`;
+      extNote.hidden = false;
+    } finally {
+      extLoading = false;
+      for (const [key] of EXTENDED_FIELDS) extInputs[key].disabled = false;
+      extSubmitBtn.disabled = false;
+      syncExtendedBadge();
+    }
+  }
+
+  // syncExtendedBadge annotates the toggle with how many extended fields the user
+  // has CHANGED, so a closed wide modal still shows staged edits (a pre-filled but
+  // untouched shared value doesn't count).
   function syncExtendedBadge() {
-    const n = EXTENDED_FIELDS.reduce((c, [key]) => c + (extInputs[key].value.trim() ? 1 : 0), 0);
+    const n = EXTENDED_FIELDS.reduce((c, [key]) => {
+      const v = extInputs[key].value.trim();
+      return c + (v && v !== (initialExt[key] || '') ? 1 : 0);
+    }, 0);
     extendedBtn.textContent = n ? `${EXTENDED_LABEL} (${n})` : EXTENDED_LABEL;
   }
   extForm.addEventListener('input', syncExtendedBadge);
 
-  function open(selectedHashes) {
+  function open(selectedHashes, prefill = {}) {
     hashes = Array.isArray(selectedHashes) ? selectedHashes : [];
     if (!hashes.length) return;
+    const common = prefill.common || {};
+    const mixed = prefill.mixed || new Set();
     const n = hashes.length;
     countLine.textContent = `Applies to ${n} selected file${n === 1 ? '' : 's'}. `
-      + 'Leave a field blank to keep each file’s current value.';
-    inputs.artist.value = '';
-    inputs.album_artist.value = '';
-    inputs.album.value = '';
-    for (const [key] of EXTENDED_FIELDS) extInputs[key].value = '';
+      + 'Shared values are pre-filled; only the fields you change are written.';
+
+    // Base text fields: pre-fill the shared value, or blank + a "multiple values"
+    // hint when they vary. Record the starting value for change detection.
+    for (const key of ['artist', 'album_artist', 'album']) {
+      const v = key in common ? String(common[key]) : '';
+      inputs[key].value = v;
+      inputs[key].placeholder = mixed.has(key) ? MIXED_PLACEHOLDER : KEEP_PLACEHOLDER;
+      initial[key] = v;
+    }
+    // Extended fields reset to blank set-only; their shared values are fetched
+    // lazily the first time the Extended modal is opened for this selection.
+    extLoaded = false; extLoading = false;
+    extNote.hidden = true; extNote.textContent = '';
+    for (const [key] of EXTENDED_FIELDS) {
+      extInputs[key].value = '';
+      extInputs[key].placeholder = KEEP_PLACEHOLDER;
+      initialExt[key] = '';
+    }
     syncExtendedBadge();
-    if (access) { licenseSel.value = LICENSE_KEEP; guestSel.value = GUEST_KEEP; }
+
+    if (access) {
+      licenseSel.value = 'license' in common ? String(common.license) : LICENSE_KEEP;
+      initial.license = licenseSel.value;
+      guestSel.value = 'guest' in common ? (common.guest ? GUEST_ON : GUEST_OFF) : GUEST_KEEP;
+      initial.guest = guestSel.value;
+    }
     errLine.hidden = true;
     errLine.textContent = '';
     backdrop.classList.remove('hidden');
@@ -283,22 +387,23 @@ export function createBulkEditor({ access = null, onApply, onError }) {
   };
   document.addEventListener('keydown', onKey);
 
-  // buildPatch collects only the fields the user actually set. Extended numeric
-  // fields ride along as strings (the server parses them); a blank one is omitted
-  // so it stays "keep", never "clear".
+  // buildPatch collects only the fields the user changed away from their starting
+  // (shared) value. A field left blank is never written, so clearing a pre-filled
+  // value keeps each file's own — bulk never clears. Extended numeric fields ride
+  // along as strings (the server parses them).
   function buildPatch() {
     const patch = {};
     for (const key of ['artist', 'album_artist', 'album']) {
       const v = inputs[key].value.trim();
-      if (v) patch[key] = v;
+      if (v && v !== initial[key]) patch[key] = v;
     }
     for (const [key] of EXTENDED_FIELDS) {
       const v = extInputs[key].value.trim();
-      if (v) patch[key] = v;
+      if (v && v !== (initialExt[key] || '')) patch[key] = v;
     }
     if (access) {
-      if (licenseSel.value !== LICENSE_KEEP) patch.license = licenseSel.value;
-      if (guestSel.value !== GUEST_KEEP) patch.guest = guestSel.value === GUEST_ON;
+      if (licenseSel.value !== LICENSE_KEEP && licenseSel.value !== initial.license) patch.license = licenseSel.value;
+      if (guestSel.value !== GUEST_KEEP && guestSel.value !== initial.guest) patch.guest = guestSel.value === GUEST_ON;
     }
     return patch;
   }
@@ -311,7 +416,7 @@ export function createBulkEditor({ access = null, onApply, onError }) {
     closeExtended();
     const patch = buildPatch();
     if (!Object.keys(patch).length) {
-      errLine.textContent = 'Fill at least one field to apply.';
+      errLine.textContent = 'Change at least one field to apply.';
       errLine.hidden = false;
       return;
     }
