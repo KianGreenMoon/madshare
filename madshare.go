@@ -284,6 +284,11 @@ func buildHandler(lc config.ListenConfig, deps api.Deps, web config.WebUIConfig,
 		}
 		r.Use(mw)
 	}
+	// Let GET routes answer HEAD. Registered last (innermost) so the rewrite to
+	// GET happens just before routing: the logger above still records HEAD, and
+	// Identify / allow_from have already run, so the HEAD takes the same auth and
+	// access path as a GET. See api.SupportHEAD.
+	r.Use(api.SupportHEAD)
 
 	if lc.Serves(config.GroupAPI) {
 		api.RegisterAPI(r, deps)

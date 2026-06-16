@@ -243,7 +243,7 @@ func NewRouter(store storage.Storage, repo database.Repository, cacheDir, filesD
 
 // CORS-preflight advertisements, attached only when an origin is granted.
 const (
-	corsMethods = "POST, GET, PATCH, DELETE, OPTIONS"
+	corsMethods = "POST, GET, HEAD, PATCH, DELETE, OPTIONS"
 	corsHeaders = "Content-Type, Authorization"
 	corsMaxAge  = "600"
 )
@@ -300,6 +300,39 @@ func CORS(allowedOrigins []string) func(http.Handler) http.Handler {
 		})
 	}
 }
+
+// SupportHEAD lets the GET-only routes answer HEAD requests. chi's r.Get
+// registers the GET method alone, so a HEAD otherwise gets 405 — breaking
+// uptime monitors that probe /healthz with HEAD, download managers sizing a
+// file before fetching it, and link-preview crawlers.
+//
+// It rewrites HEAD to GET *before* the router matches the method, so the request
+// runs the identical handler chain — auth.Identify, the /files access guard,
+// http.FileServer (which natively sizes the file), everything — just with the
+// response body discarded. Per RFC 7231 a HEAD response carries the headers a
+// GET would, with no body. Because the rewrite happens ahead of routing, access
+// control is never bypassed: a HEAD to a denied blob 404s exactly as the GET does.
+//
+// The rewrite is done on a clone so outer middleware (e.g. the request logger)
+// still sees the original HEAD method.
+func SupportHEAD(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead {
+			next.ServeHTTP(w, r)
+			return
+		}
+		r2 := r.Clone(r.Context())
+		r2.Method = http.MethodGet
+		next.ServeHTTP(headResponseWriter{w}, r2)
+	})
+}
+
+// headResponseWriter forwards status and headers but swallows the body, so a
+// HEAD handler (which runs the GET code path) returns headers only. It reports a
+// successful write count so handlers don't see short-write errors.
+type headResponseWriter struct{ http.ResponseWriter }
+
+func (h headResponseWriter) Write(b []byte) (int, error) { return len(b), nil }
 
 // noListFS wraps an http.FileSystem to disable directory listings: opening a
 // directory with no index.html returns fs.ErrNotExist, so http.FileServer
