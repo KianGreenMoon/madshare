@@ -14,30 +14,50 @@ import (
 )
 
 type sourceArchiver struct {
-	root string
-	once sync.Once
-	data []byte
-	err  error
+	// prebuilt, when non-nil, is the source tar.gz embedded into the binary at
+	// build time (make build -> git archive HEAD -> //go:embed). It is served
+	// verbatim and makes /source work with no working tree, the AGPL-relevant
+	// case. When nil, the archive is built on demand from git ls-files in root.
+	prebuilt []byte
+	root     string
+	once     sync.Once
+	data     []byte
+	err      error
 
-	// licenseOnce/licenseData cache the bundled LICENSE.md, read once from root
-	// and served at GET /license alongside the /source archive (both are AGPL
-	// compliance surfaces and share the source tree on disk).
-	licenseOnce sync.Once
-	licenseData []byte
-	licenseErr  error
+	// licensePrebuilt is the LICENSE.md embedded at build time (always present
+	// in the real server). licenseOnce/licenseData cache the on-disk fallback
+	// read from root when no embedded copy is supplied (tests via NewRouter).
+	licensePrebuilt []byte
+	licenseOnce     sync.Once
+	licenseData     []byte
+	licenseErr      error
 }
 
-// license returns the bytes of the bundled LICENSE.md, reading it from root
-// on first use and caching the result in memory.
+// license returns the AGPL LICENSE text — the build-time-embedded bytes when
+// present, otherwise read once from <root>/LICENSE.md and cached in memory.
 func (s *sourceArchiver) license() ([]byte, error) {
+	if s.licensePrebuilt != nil {
+		return s.licensePrebuilt, nil
+	}
 	s.licenseOnce.Do(func() {
+		if s.root == "" {
+			s.licenseErr = fmt.Errorf("no embedded license and no source root")
+			return
+		}
 		s.licenseData, s.licenseErr = os.ReadFile(filepath.Join(s.root, "LICENSE.md"))
 	})
 	return s.licenseData, s.licenseErr
 }
 
 func (s *sourceArchiver) get() ([]byte, error) {
+	if s.prebuilt != nil {
+		return s.prebuilt, nil
+	}
 	s.once.Do(func() {
+		if s.root == "" {
+			s.err = fmt.Errorf("no embedded source archive and no source root")
+			return
+		}
 		s.data, s.err = buildSourceArchive(s.root)
 	})
 	return s.data, s.err

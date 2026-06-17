@@ -46,7 +46,10 @@ UI.
 
 ## Requirements
 
-- **Go 1.26+** to build (the only build dependency).
+- **Go 1.26+** to build — all a plain `go build` requires.
+- **git** is needed only by `make build`, which embeds the AGPL source archive
+  (`git archive`) and stamps the version (`git describe`); a plain `go build`
+  works without it.
 - SQLite via [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite) — pure
   Go, so **no cgo / no system SQLite** is required.
 - Disk for the database and uploaded blobs (see `[storage]`).
@@ -319,4 +322,6 @@ new binary and restart.
 
 Madshare is licensed under the **GNU AGPL-3.0** (see [`LICENSE.md`](LICENSE.md)).
 For §13 network-use compliance the running server publishes its own source at
-`GET /source` and the license text at `GET /license`.
+`GET /source` and the license text at `GET /license`. `make build` embeds both
+into the binary (the source archive via `-tags embedsource`), so an installed
+binary serves its Corresponding Source with no working tree present.

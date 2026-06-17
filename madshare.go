@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"flag"
 	"log"
@@ -26,6 +27,18 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
+
+// licenseText is the AGPL LICENSE, embedded unconditionally so GET /license
+// works in every build with no working tree.
+//
+//go:embed LICENSE.md
+var licenseText []byte
+
+// embeddedSourceTGZ is the AGPL source archive served at GET /source. It is nil
+// here and overridden only in release builds (-tags embedsource, see source.go),
+// where it holds the embedded source.tar.gz; dev builds leave it nil and fall
+// back to building the archive from git ls-files in the CWD.
+var embeddedSourceTGZ []byte
 
 func main() {
 	configPath := flag.String("config", "madshare.toml", "path to config file")
@@ -209,6 +222,8 @@ func main() {
 		MediaPool:     mediaPool,
 		UploadLimiter: limiter,
 		UIConfig:      uiCfg,
+		SourceArchive: embeddedSourceTGZ,
+		LicenseText:   licenseText,
 		SourceRoot:    sourceRoot,
 	}
 

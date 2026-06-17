@@ -78,6 +78,40 @@ func TestSourceArchive(t *testing.T) {
 	}
 }
 
+func TestSourceArchivePrebuilt(t *testing.T) {
+	// A build-time-embedded archive is served verbatim, with no git invocation
+	// and no working tree (root left empty).
+	want := []byte("not really a tarball, but served as-is")
+	h := &handler{source: &sourceArchiver{prebuilt: want}}
+	rec := httptest.NewRecorder()
+	h.sourceArchive(rec, httptest.NewRequest(http.MethodGet, "/source", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/gzip" {
+		t.Errorf("Content-Type = %q, want application/gzip", ct)
+	}
+	if got := rec.Body.Bytes(); string(got) != string(want) {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+}
+
+func TestLicensePrebuilt(t *testing.T) {
+	// Embedded LICENSE bytes are served even with no SourceRoot on disk.
+	want := "GNU AFFERO GENERAL PUBLIC LICENSE (embedded)\n"
+	h := &handler{source: &sourceArchiver{licensePrebuilt: []byte(want)}}
+	rec := httptest.NewRecorder()
+	h.licenseDoc(rec, httptest.NewRequest(http.MethodGet, "/license", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if rec.Body.String() != want {
+		t.Errorf("body = %q, want %q", rec.Body.String(), want)
+	}
+}
+
 func TestSourceArchiveNotConfigured(t *testing.T) {
 	h := &handler{}
 	rec := httptest.NewRecorder()

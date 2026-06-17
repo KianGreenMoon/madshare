@@ -44,8 +44,17 @@ type Deps struct {
 	// UIConfig is the parsed webui.toml served at GET /api/ui/config. When nil,
 	// the handler falls back to config.DefaultUIConfig().
 	UIConfig *config.UIConfig
-	// SourceRoot is the project root directory used to build the AGPL source
-	// archive served at GET /source. Empty string disables the endpoint.
+	// SourceArchive, when non-nil, is the prebuilt AGPL source tar.gz embedded
+	// into the binary at build time (make build, -tags embedsource). It is
+	// served verbatim at GET /source, so the endpoint works with no working
+	// tree. When nil, the archive is built from git ls-files in SourceRoot.
+	SourceArchive []byte
+	// LicenseText, when non-nil, is the embedded AGPL LICENSE served at
+	// GET /license. When nil, the handler reads <SourceRoot>/LICENSE.md.
+	LicenseText []byte
+	// SourceRoot is the working directory used as the git ls-files / LICENSE.md
+	// fallback for /source and /license when nothing is embedded (dev builds).
+	// With no embedded data and an empty SourceRoot, both endpoints are disabled.
 	SourceRoot string
 }
 
@@ -88,8 +97,12 @@ func (d Deps) newHandler() *handler {
 		limiter:       d.UploadLimiter,
 		uiConfig:      d.UIConfig,
 	}
-	if d.SourceRoot != "" {
-		h.source = &sourceArchiver{root: d.SourceRoot}
+	if d.SourceArchive != nil || d.LicenseText != nil || d.SourceRoot != "" {
+		h.source = &sourceArchiver{
+			prebuilt:        d.SourceArchive,
+			licensePrebuilt: d.LicenseText,
+			root:            d.SourceRoot,
+		}
 	}
 	return h
 }

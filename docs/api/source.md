@@ -32,18 +32,34 @@ curl -OJ http://localhost:3000/source
 
 | Status | Meaning |
 |--------|---------|
-| `503 Service Unavailable` | The server could not run `git ls-files` (git not available, or not running from a git repository). |
-| `404 Not Found` | `SourceRoot` was not configured (should not happen in a standard deployment). |
+| `503 Service Unavailable` | No archive was embedded (dev build) **and** the server could not run `git ls-files` (git not available, or not running from a git repository). A binary built via `make build` never hits this. |
+| `404 Not Found` | Neither an embedded archive nor a `SourceRoot` was configured (should not happen in a standard deployment). |
 
 ### Implementation notes
 
-- The archive is built once on the first request by running `git ls-files` in
-  the working directory the server was started from (resolved at startup with
-  `os.Getwd()`), then cached in memory for subsequent requests.
-- Because `git ls-files` enumerates only **tracked** files, the archive reflects
-  whatever is committed (plus any staged/tracked-but-modified files on disk at
-  the time of first build). Instance-specific config files (`madshare.toml`,
-  `webui.toml`) and runtime data (`data/`) are gitignored and therefore absent.
+- **Release builds embed the archive at build time.** `make build` (and
+  `make build-nowebui`) run `git archive HEAD` to package the tracked files at
+  the built commit into `source.tar.gz`, then compile with `-tags embedsource`,
+  which `//go:embed`s that tarball into the binary (`source.go`). An
+  installed binary therefore carries its own Corresponding Source and serves
+  `/source` with **no git checkout or working tree** present — the relevant
+  case for AGPL compliance. `source.tar.gz` is a generated artifact (gitignored)
+  and is only referenced by the build-tagged file, so plain `go build`/`go run`
+  never need it.
+- **Dev builds fall back to git.** Without the `embedsource` tag the embedded
+  archive is `nil`, so on the first request the server runs `git ls-files` in
+  the working directory it was started from (resolved at startup with
+  `os.Getwd()`, carried as `Deps.SourceRoot`) and builds the tar.gz on the fly.
+  The result is cached in memory either way.
+- The embedded archive reflects the **committed** source at the built commit
+  (`git archive HEAD`); the dev fallback reflects the **tracked** files as they
+  exist on disk (including staged/modified content). Instance-specific config
+  files (`madshare.toml`, `webui.toml`) and runtime data (`data/`) are gitignored
+  and therefore absent from both.
+- `go install`-style builds that skip the Makefile do **not** set the tag and so
+  fall back to the git path; that is fine for development from a checkout but
+  will return `503` if run from a tree without git. Distribute binaries built via
+  the Makefile.
 - The endpoint is **public** — no authentication required. AGPL demands source
   be freely available to anyone interacting with the service.
 - The web UI's "Source" nav link is currently **hidden** (its markup is kept
@@ -83,10 +99,13 @@ curl http://localhost:3000/license
 
 ### Implementation notes
 
-- Shares the `SourceRoot` dependency with `/source`: the file is read from
-  `<SourceRoot>/LICENSE.md` and cached in memory on first request. When
-  `SourceRoot` is empty (endpoint disabled), `/license` returns 404 just like
-  `/source`.
+- `LICENSE.md` is **always embedded** into the binary unconditionally
+  (`//go:embed LICENSE.md` in `madshare.go`, passed as `Deps.LicenseText`), so
+  `/license` works in every build — no build tag and no working tree required.
+  Only when those embedded bytes are absent (e.g. the api package's own
+  `NewRouter` in tests) does it fall back to reading `<SourceRoot>/LICENSE.md`
+  from disk. The served bytes are cached in memory on first request. With no
+  embedded text and no `SourceRoot`, `/license` returns 404 like `/source`.
 - The endpoint is **public** — no authentication required.
 - A "License" link pointing to `/license` (opening in a new tab) appears in the
   navigation header of every web UI page.

@@ -7,3 +7,6 @@ webui.toml
 
 # Compiled binary (e.g. `make build` / `go build -o madshare`)
 /madshare
+
+# Generated AGPL source archive embedded by `make build` (-tags embedsource)
+/source.tar.gz
