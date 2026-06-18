@@ -268,6 +268,13 @@ moderators to prune, that is a separate role-permission change, out of scope her
   re-checking only those hashes via the shared `danglingReason` helper. The old
   `PruneDangling` is retained as a scan-then-prune convenience for direct callers
   and tests.
+  - Deleting from the background job races other writers (analysis/image pools),
+    which surfaced a WAL read-then-write deadlock: `hardDelete` does `SELECT id …`
+    then `DELETE`, and a deferred transaction fails the upgrade with `SQLITE_BUSY`
+    immediately (busy_timeout can't wait out a deadlock). Fixed DB-wide by opening
+    the on-disk database with `_txlock=immediate` so every (read-write) transaction
+    takes the write lock at `BEGIN` — see `database/database.go`
+    (`withConnectionPragmas`) and the regression in `database/busy_test.go`.
 - **API (`api/admin_handlers.go`, gated `file.delete`)** — `adminPrune` (async
   start → 202 / 409), `adminPruneStatus`, `adminPruneCancel`; the response is
   shaped by `pruneStatusJSON`. Wired via `Deps.PruneManager` → `handler.pruneMgr`
