@@ -62,7 +62,15 @@ function categoryLabel(name) {
 // category becomes a colored bar segment (before the rest-of-disk "other"
 // segment) and a swatch+bytes detail row (before the "Madshare total" row).
 // Idempotent: prior dynamic nodes are cleared first.
-function renderCategories(categories, totalBytes) {
+//
+// Segment widths are % of totalBytes (the disk), but collectively capped at
+// budgetBytes — the clamped library footprint that the sibling "other" segment
+// also respects. They normally match the raw category bytes (budget == footprint),
+// but when the logical footprint exceeds the disk's df-style used (logical vs.
+// filesystem-allocated bytes — FS compression / sparse / different mount), the
+// segments are scaled down proportionally so the bar can't overrun the track.
+// The detail rows always show the true (unscaled) byte figures.
+function renderCategories(categories, totalBytes, budgetBytes) {
   const bar = document.getElementById('storageBar');
   const other = document.getElementById('storageBarOther');
   const detail = document.getElementById('storageDetail');
@@ -71,13 +79,19 @@ function renderCategories(categories, totalBytes) {
   bar.querySelectorAll('.storage-bar-cat').forEach((n) => n.remove());
   detail.querySelectorAll('.storage-cat-row').forEach((n) => n.remove());
 
+  const footprint = categories.reduce((sum, c) => sum + (c.bytes || 0), 0);
+
   categories.forEach((c, i) => {
     const color = categoryColor(c.name, i);
 
+    // Share of the (clamped) library budget, expressed as % of the whole disk.
+    const widthPct = (totalBytes > 0 && footprint > 0)
+      ? (c.bytes / footprint) * (budgetBytes / totalBytes) * 100
+      : 0;
     const seg = document.createElement('div');
     seg.className = 'storage-bar-seg storage-bar-cat';
     seg.style.background = color;
-    seg.style.width = (totalBytes ? (c.bytes / totalBytes) * 100 : 0).toFixed(2) + '%';
+    seg.style.width = widthPct.toFixed(2) + '%';
     bar.insertBefore(seg, other);
 
     const row = document.createElement('div');
@@ -124,9 +138,11 @@ async function fillStorage() {
       setText('storageUsed', `${fmtBytes(used)} (${Math.round(s.volume.used_percent)}%)`);
 
       // Bar = [audio][images][…][other disk usage][free]. The category segments
-      // sum to the library footprint; "other" is the rest of the disk's used
-      // space. Widths are % of total.
-      renderCategories(categories, total);
+      // collectively fill the (clamped) library footprint `lib`; "other" is the
+      // rest of the disk's used space. Passing `lib` as the budget keeps the
+      // segments and "other" consistent even when the logical footprint exceeds
+      // disk-used (then both shrink to fit). Widths are % of total.
+      renderCategories(categories, total, lib);
       const otherPct = total ? Math.max(0, (used - lib) / total * 100) : 0;
       document.getElementById('storageBarOther').style.width = otherPct.toFixed(2) + '%';
 
@@ -136,7 +152,7 @@ async function fillStorage() {
     } else {
       // No whole-disk figure for object storage: still show the per-category
       // footprint (the meaningful number), just no meter/disk-used row.
-      renderCategories(categories, 0);
+      renderCategories(categories, 0, 0);
       meter.hidden = true;
       note.hidden = false;
       usedRow.hidden = true;
