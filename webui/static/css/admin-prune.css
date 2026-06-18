@@ -29,11 +29,19 @@
 .prune-status:empty { margin-bottom: 0; }
 .prune-controls[hidden] { display: none; }
 
-/* Last-run summary lines (idle). */
-.prune-lastrun { display: grid; gap: var(--space-1); }
-.prune-lastrun-line { font-size: 13px; color: var(--text); margin: 0; }
-.prune-lastrun-label { font-weight: 600; }
-.prune-lastrun-meta { color: var(--text-muted); }
+/* Collapsed idle summary: one dated line per last scan / last prune. */
+.prune-summary-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: 14px;
+}
+.prune-summary-row + .prune-summary-row { margin-top: var(--space-1); }
+.prune-summary-icon.is-ok { color: var(--success); }
+.prune-summary-icon.is-warn,
+.prune-summary-icon.is-error { color: var(--danger); }
+.prune-summary-text { font-weight: 600; }
+.prune-summary-meta { color: var(--text-muted); font-size: 13px; margin: var(--space-2) 0 0; }
 
 /* In-progress panel. */
 .result-panel.is-running { border-color: var(--accent, var(--border)); }

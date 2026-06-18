@@ -132,50 +132,79 @@ function renderRunning(snap) {
 function renderIdle(snap) {
   setControlsBusy(false);
   pruneControls.hidden = false;
-  pruneStatus.replaceChildren(buildLastRunLines(snap));
+  pruneStatus.replaceChildren(); // the status block carries the in-progress panel only
 
-  // Held detail of the most recent in-process run (gone after a restart).
+  // A held scan that found records to prune is actionable: show the list + the
+  // Prune button (only available while this process still holds the scan detail).
   const r = snap.last_result;
-  if (!r) { pruneResults.replaceChildren(); return; }
-  if (r.kind === 'scan') {
-    if ((r.dangling_count || 0) === 0) {
-      renderPrunePanel('success', 'All records verified',
-        `${r.scanned} file${r.scanned === 1 ? '' : 's'} checked, nothing to prune.`);
-    } else {
-      renderDanglingPanel(r);
-    }
-  } else {
-    renderPruneCommitResult(r);
+  if (r && r.kind === 'scan' && (r.dangling_count || 0) > 0) {
+    renderDanglingPanel(r, snap.last_scan);
+    return;
   }
+  // A held prune that had failures: show which rows could not be removed.
+  if (r && r.kind === 'prune' && (r.failed || []).length) {
+    renderFailuresPanel(r, snap.last_prune);
+    return;
+  }
+  // Otherwise a single dated summary, collapsing the old result box into the
+  // last-run line so it never reads as a timeless "All verified!".
+  renderSummary(snap);
 }
 
-// Compact "last scan / last prune" lines with their date — survive a restart.
-function buildLastRunLines(snap) {
-  const lines = [];
-  if (snap.last_scan) {
-    const s = snap.last_scan;
-    lines.push(lastRunLine('Last scan',
-      `${s.dangling_count || 0} dangling of ${s.scanned} checked` + (s.deep ? ' · deep' : ''), s));
+// renderSummary draws one panel summarising the last scan and last prune, each on
+// its own line stamped with when it ran (the summaries survive a restart). This is
+// the collapsed status: e.g. "✓ All 1203 records verified · 18 Jun 2026, 14:02".
+function renderSummary(snap) {
+  const rows = [];
+  let worst = 'ok';
+  for (const [s, wording] of [[snap.last_scan, scanWording], [snap.last_prune, pruneWording]]) {
+    if (!s) continue;
+    const w = wording(s);
+    worst = worseLevel(worst, w[0]);
+    rows.push(summaryRow(w, s));
   }
-  if (snap.last_prune) {
-    const s = snap.last_prune;
-    let summary = `${s.pruned_count || 0} record${s.pruned_count === 1 ? '' : 's'} removed`;
-    if (s.failed_count) summary += `, ${s.failed_count} failed`;
-    lines.push(lastRunLine('Last prune', summary + (s.deep ? ' · deep' : ''), s));
+  if (!rows.length) {
+    renderPrunePanel('success', 'Not yet scanned', 'Run Preview to check the library.');
+    return;
   }
-  return el('div', { class: 'prune-lastrun' }, lines);
+  const kind = worst === 'error' ? 'error' : worst === 'warn' ? 'warning' : 'success';
+  pruneResults.replaceChildren(el('div', { class: 'result-panel is-' + kind }, rows));
 }
 
-function lastRunLine(label, summary, s) {
+// scanWording / pruneWording return [level, text]; level ∈ ok | warn | error.
+function scanWording(s) {
+  if (s.outcome === 'cancelled') return ['warn', 'Last scan cancelled'];
+  if (s.outcome === 'failed')    return ['error', 'Last scan failed'];
+  const n = s.dangling_count || 0;
+  if (n === 0) return ['ok', `All ${s.scanned} record${s.scanned === 1 ? '' : 's'} verified`];
+  return ['warn', `Last scan found ${n} dangling of ${s.scanned} — run Preview to prune`];
+}
+
+function pruneWording(s) {
+  if (s.outcome === 'cancelled') return ['warn', 'Last prune cancelled'];
+  if (s.outcome === 'failed')    return ['error', 'Last prune failed'];
+  const n = s.pruned_count || 0;
+  const t = `Last prune removed ${n} record${n === 1 ? '' : 's'}`;
+  if (s.failed_count) return ['warn', `${t}, ${s.failed_count} failed`];
+  return ['ok', t];
+}
+
+function summaryRow([level, text], s) {
+  const icon = level === 'ok' ? '✓' : level === 'error' ? '✕' : '⚠';
   const tail = [];
-  if (s.outcome && s.outcome !== 'completed') tail.push(s.outcome);
-  if (s.by) tail.push(`by ${s.by}`);
+  if (s.deep) tail.push('deep');
   if (s.finished_at) tail.push(fmtWhen(s.finished_at));
-  return el('p', { class: 'prune-lastrun-line' }, [
-    el('span', { class: 'prune-lastrun-label', text: label + ':' }),
-    el('span', { text: ` ${summary}` }),
-    tail.length ? el('span', { class: 'prune-lastrun-meta', text: ` · ${tail.join(' · ')}` }) : null,
+  if (s.by) tail.push(`by ${s.by}`);
+  return el('div', { class: 'prune-summary-row' }, [
+    el('span', { class: 'prune-summary-icon is-' + level, 'aria-hidden': 'true', text: icon }),
+    el('span', { class: 'prune-summary-text', text }),
+    tail.length ? el('span', { class: 'prune-summary-meta', text: ` · ${tail.join(' · ')}` }) : null,
   ]);
+}
+
+function worseLevel(a, b) {
+  const rank = { ok: 0, warn: 1, error: 2 };
+  return rank[b] > rank[a] ? b : a;
 }
 
 function fmtWhen(iso) {
@@ -195,7 +224,7 @@ function renderPrunePanel(kind, title, detail) {
   pruneResults.replaceChildren(el('div', { class: 'result-panel is-' + kind }, children));
 }
 
-function renderDanglingPanel(data) {
+function renderDanglingPanel(data, summary) {
   const n = data.dangling_count;
   pruneResults.replaceChildren(el('div', { class: 'result-panel is-warning' }, [
     el('div', { class: 'result-panel-head' }, [
@@ -210,7 +239,33 @@ function renderDanglingPanel(data) {
       class: 'btn btn-destructive-solid', text: `Prune ${n} record${n === 1 ? '' : 's'}`,
       onclick: () => openPruneModal(n),
     }),
+    whenLine('Scanned', summary),
   ]));
+}
+
+// renderFailuresPanel shows a finished prune that could not remove every row.
+function renderFailuresPanel(data, summary) {
+  const pruned = data.pruned_count || 0;
+  const failed = data.failed || [];
+  pruneResults.replaceChildren(el('div', { class: 'result-panel is-warning' }, [
+    el('div', { class: 'result-panel-head' }, [
+      el('span', { class: 'result-panel-icon', 'aria-hidden': 'true', text: '⚠' }),
+      el('span', { text: `Pruned ${pruned} record${pruned === 1 ? '' : 's'}, ${failed.length} failed.` }),
+    ]),
+    el('ul', { class: 'dangling-list' }, failed.map(f => el('li', {}, [
+      el('span', { class: 'dangling-hash', title: f.hash || '', text: shortHash(f.hash) }),
+      el('span', { class: 'dangling-name', text: f.error || 'unknown error' }),
+    ]))),
+    whenLine('Pruned', summary),
+  ]));
+}
+
+// whenLine renders a muted "<verb> <date> · by <who>" footnote, or nothing when
+// the summary has no timestamp.
+function whenLine(verb, summary) {
+  if (!summary || !summary.finished_at) return null;
+  const by = summary.by ? ` · by ${summary.by}` : '';
+  return el('p', { class: 'prune-summary-meta', text: `${verb} ${fmtWhen(summary.finished_at)}${by}` });
 }
 
 function buildDanglingList(entries) {
