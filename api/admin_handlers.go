@@ -360,6 +360,10 @@ type storageStatsResp struct {
 func (h *handler) adminStorageStats(w http.ResponseWriter, r *http.Request) {
 	resp, err := h.storageStats(r.Context())
 	if err != nil {
+		// One generic body for the client, but log the wrapped cause so an
+		// operator can tell a statfs failure from a DB-query or image-walk
+		// failure (all three otherwise look identical from the outside).
+		log.Printf("storage stats: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
 		return
 	}
@@ -378,21 +382,22 @@ func (h *handler) adminStorageStats(w http.ResponseWriter, r *http.Request) {
 func (h *handler) storageStats(ctx context.Context) (*storageStatsResp, error) {
 	st, err := h.storage.Stats()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("backend stats: %w", err)
 	}
 
 	bd, err := h.repo.StorageByteBreakdown(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("byte breakdown: %w", err)
 	}
 	imageBytes, err := storage.DirSize(h.imagesDir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("image dir size %q: %w", h.imagesDir, err)
 	}
 
-	// audio = the live (approved, not-deleted) library; review and trash are the
-	// same files table partitioned by state, so the four categories never
-	// double-count. images is the separate on-disk cover-variant tree.
+	// audio/review/trash are the same files table partitioned by state (one DB
+	// sum), and images is the separate on-disk cover-variant tree — so the four
+	// categories never double-count. audio = the live (approved, not-deleted)
+	// library; review and trash are its non-approved and soft-deleted rows.
 	cats := []categoryUsage{
 		{Name: "audio", Bytes: nonNegBytes(bd.Library)},
 		{Name: "review", Bytes: nonNegBytes(bd.Review)},
