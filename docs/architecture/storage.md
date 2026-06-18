@@ -77,10 +77,16 @@ Two different numbers, sourced separately:
     Prune view's job, `docs/architecture/prune-job.md`.)
   - **images** (and future video) are **walked on disk** with `storage.DirSize`
     (`api/storage/dirsize.go`), because cover images have **no byte-size column**
-    in the DB (the 8 variants per cover are derived files). A missing subtree (a
-    fresh install has no `images/` yet) reads as zero, not an error. The image set
-    is small (few files), so the walk is cheap and is **not cached** — the panel
-    is always up to date.
+    in the DB (the 8 variants per cover are derived files). The image set is small
+    (few files), so the walk is cheap and is **not cached** — it re-reads the tree
+    on every request. The walk is a **best-effort advisory** measure, deliberately
+    tolerant of the tree being mutated under it (the image pool writes variants;
+    prune/delete removes them, concurrently with a dashboard load): a missing
+    subtree (a fresh install has no `images/` yet) reads as zero; an entry that
+    vanishes mid-walk, or an unreadable subdir, is **skipped** rather than failing
+    the request — so a transient race can momentarily undercount but never 500s
+    the panel or collapses the total. Only a structural error (a path component
+    that is a regular file, `ENOTDIR`) is surfaced as an error.
 
   **Sizes are logical, not filesystem-allocated.** Both sources report logical
   bytes — `SUM(byte_size)` and `DirSize`'s `stat` `st_size` — i.e. the apparent
