@@ -193,3 +193,23 @@ title" was tried and **reverted off `aidev`** for the same too-noisy reason —
 it lives on branch `show_albums_tracks_in_search` (commit `cea8521`). Whatever we
 decide here should be consistent with that call. If the decision changes the
 documented behaviour, update `docs/api/search.md` §"Search behaviour". | open |
+
+## Storage-by-category panel — scope review (2026-06-18)
+
+Reflective "did we forget anything?" pass over the v0.4.5 storage-usage-by-category
+feature (`GET /api/admin/storage`, `adminStorageStats`/`storageStats`,
+`StorageByteBreakdown`, `storage.DirSize`; design `docs/architecture/storage.md`).
+The four review findings from the developer+tester pass were already fixed
+(commits `2655773`/`6232d19`/`c609f7c`/`0ce11fe`, folded into the moved `v0.4.5`
+tag). The items below are blind spots found afterwards — **none fixed yet**,
+logged for a later session.
+
+| Severity | Issue | Status |
+|---|---|---|
+| Low | **Fresh install 500s the whole storage panel.** `storage.Local.Stats()` (`api/storage/local.go:183`) `statfs`es `baseDir` = `files_dir/audio`, which is **not created until the first upload** (nothing makes it at startup). On a brand-new instance `statfs` → ENOENT → `Stats()` errors → `storageStats` returns it → `adminStorageStats` logs + 500s → the dashboard storage card silently stays hidden until the first audio file is uploaded. **Pre-existing** (the old audio-only endpoint also called `Stats()` first), squarely in this scope, and untested. Fix: `statfs` `files_dir` (or the nearest existing ancestor) instead of the not-yet-created `audio/` subdir, or `MkdirAll` the subtrees at startup; add a fresh-install test. | open |
+| Low | **Image sizing doesn't scale — the exact concern that motivated the hybrid design.** Audio/review/trash moved to an indexed DB `SUM(byte_size)` precisely to avoid walking a big tree, but images are **still an uncached full `DirSize` walk on every dashboard load** (8 variants per cover × every album → ~400k `stat()` calls on a 50k-album library). The doc's "image set is small (few files)" rationale doesn't hold at scale. Honest fix (deferred at design time): track image bytes in the DB — a `byte_size` on cover variants or a running total in `settings` — so images become an indexed sum too. The deferral *is* the unsolved half of the original big-storage question. | open |
+| Info | **"audio" and "images" measure different *kinds* of bytes.** Audio = logical DB sum (one blob per hash — dedup never double-stores, confirmed — but **excludes** orphan audio blobs with no DB row). Images = physical disk walk (which **includes** orphan/stale image dirs). So orphan audio falls into the "other disk usage" segment while orphan images land in "images". They sit side-by-side as if comparable but aren't quite; orphans are really the Verify & Prune view's job (`docs/architecture/prune-job.md`). Acceptable if we know it. | open |
+| Info | **Madshare's own DB isn't counted.** `madshare.db` + WAL/SHM is real app footprint but belongs to no category, so it folds into "other" and "Madshare total" understates the true footprint. Small for a media server, but worth a deliberate note (or a "database" category). | open |
+| Info | **Panel fetches once per page load — no live refresh.** We optimised *server* freshness (dropped the cache) but the *client* fetches once on dashboard load: figures don't move while a prune/upload runs until a manual reload. If "watch it update" matters, add a poll or a refresh button. | open |
+| Info | **Storage view gated behind a destructive permission.** `GET /api/admin/storage` requires `file.delete`; a moderate-only admin can't see it (reuses the storage-management route group). Probably intended — just be deliberate about whether a read-only stats view should need a delete permission. | open |
+| Info | **Detail rows can look self-contradictory.** The *bar* is clamped, but the rows still show raw "Madshare total" (logical bytes) vs "Disk used" (FS-allocated); on a compressing/sparse FS the total can read *larger* than disk-used, which looks wrong to a human even though it's correct. Consider a tooltip/footnote. | open |
