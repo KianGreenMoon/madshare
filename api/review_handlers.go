@@ -295,14 +295,14 @@ func (h *handler) submitMyUploads(w http.ResponseWriter, r *http.Request) {
 // duplicate of already-approved content. For a moderator it explains why
 // self-approve was withheld; for a regular uploader it is purely informational.
 func duplicateWarning(n int, moderator bool) string {
-	noun := "file"
+	subject := "1 file looks like a duplicate"
 	if n != 1 {
-		noun += "s"
+		subject = fmt.Sprintf("%d files look like duplicates", n)
 	}
 	if moderator {
-		return fmt.Sprintf("%d %s look like duplicates of content already in the library — sent for review instead of auto-approving.", n, noun)
+		return subject + " of content already in the library — sent for review instead of auto-approving."
 	}
-	return fmt.Sprintf("%d %s look like duplicates of content already in the library — a moderator will take a look.", n, noun)
+	return subject + " of content already in the library — a moderator will take a look."
 }
 
 // moderationList handles GET /api/admin/moderation — every staged file with
