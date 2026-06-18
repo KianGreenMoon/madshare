@@ -4,8 +4,56 @@ import (
 	"context"
 	"database/sql"
 	"reflect"
+	"strings"
 	"testing"
 )
+
+// TestStorageByteBreakdown verifies the per-state byte partition: approved/live
+// files count as Library, not-yet-approved as Review, and any soft-deleted file
+// as Trash (precedence over review state), with the three buckets mutually
+// exclusive.
+func TestStorageByteBreakdown(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	ins := func(hash string, size int64, state string) {
+		f := newFile(hash)
+		f.ByteSize = size
+		f.ReviewState = state
+		if err := db.InsertFile(ctx, f, newUpload("x.mp3"), newMeta()); err != nil {
+			t.Fatalf("InsertFile %s: %v", hash, err)
+		}
+	}
+	libHash := strings.Repeat("a", 64)
+	revHash := strings.Repeat("b", 64)
+	trashHash := strings.Repeat("c", 64)
+	trashUnapprovedHash := strings.Repeat("d", 64)
+
+	ins(libHash, 1000, ReviewApproved)           // live library
+	ins(revHash, 200, ReviewSubmitted)           // on review
+	ins(trashHash, 30, ReviewApproved)           // → trashed below
+	ins(trashUnapprovedHash, 4, ReviewSubmitted) // trashed AND unapproved → Trash
+
+	for _, h := range []string{trashHash, trashUnapprovedHash} {
+		if _, _, err := db.SoftDeleteFileByHash(ctx, h); err != nil {
+			t.Fatalf("SoftDeleteFileByHash %s: %v", h, err)
+		}
+	}
+
+	bd, err := db.StorageByteBreakdown(ctx)
+	if err != nil {
+		t.Fatalf("StorageByteBreakdown: %v", err)
+	}
+	if bd.Library != 1000 {
+		t.Errorf("Library = %d, want 1000", bd.Library)
+	}
+	if bd.Review != 200 {
+		t.Errorf("Review = %d, want 200", bd.Review)
+	}
+	if bd.Trash != 34 {
+		t.Errorf("Trash = %d, want 34 (30+4)", bd.Trash)
+	}
+}
 
 func newFile(hash string) *File {
 	return &File{

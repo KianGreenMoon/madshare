@@ -38,6 +38,8 @@ async function fillPruneStatus() {
 const CATEGORY_COLORS = {
   audio: 'var(--accent)',
   images: 'var(--storage-cat-images)',
+  review: 'var(--storage-cat-review)',
+  trash: 'var(--storage-cat-trash)',
   video: 'var(--storage-cat-video)',
 };
 const CATEGORY_FALLBACKS = ['var(--storage-cat-alt1)', 'var(--storage-cat-alt2)', 'var(--storage-cat-alt3)'];
@@ -46,8 +48,13 @@ function categoryColor(name, i) {
   return CATEGORY_COLORS[name] || CATEGORY_FALLBACKS[i % CATEGORY_FALLBACKS.length];
 }
 
-// Title-case a category name for display ("audio" -> "Audio").
+// Display labels for categories whose name doesn't title-case nicely.
+const CATEGORY_LABELS = { review: 'On review', trash: 'In trash' };
+
+// Label a category for display: a friendly override, else title-case the name
+// ("audio" -> "Audio").
 function categoryLabel(name) {
+  if (CATEGORY_LABELS[name]) return CATEGORY_LABELS[name];
   return name ? name.charAt(0).toUpperCase() + name.slice(1) : '—';
 }
 

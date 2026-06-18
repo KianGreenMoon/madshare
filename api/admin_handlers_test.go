@@ -184,21 +184,19 @@ func writeFileN(t *testing.T, path string, n int) {
 func TestAdminStorageStats(t *testing.T) {
 	filesDir := t.TempDir()
 	imagesDir := filepath.Join(filesDir, "images")
-	// Hybrid sizing: audio comes from the DB (3000), images are walked on disk
+	// Hybrid sizing: the files-table categories come from the DB breakdown
+	// (audio=3000, review=700, trash=300); images are walked on disk
 	// (1000 + 500 = 1500 across two variant files).
 	writeFileN(t, filepath.Join(imagesDir, "key", "small_crop.jpg"), 1000)
 	writeFileN(t, filepath.Join(imagesDir, "key", "small_fit.jpg"), 500)
 
-	repo := &fakeRepo{libraryBytes: 3000}
+	repo := &fakeRepo{breakdown: database.StorageByteBreakdown{Library: 3000, Review: 700, Trash: 300}}
 	h := &handler{
-		storage:  storage.NewLocal(filepath.Join(filesDir, storage.AudioSubdir)),
-		repo:     repo,
-		filesDir: filesDir,
-		storageCategories: []storageCategory{
-			{Name: "audio", DBSize: repo.LibraryByteSize},
-			{Name: "images", Dir: imagesDir},
-		},
-		cacheDir: t.TempDir(), maxUploadSize: testMaxUpload,
+		storage:   storage.NewLocal(filepath.Join(filesDir, storage.AudioSubdir)),
+		repo:      repo,
+		filesDir:  filesDir,
+		imagesDir: imagesDir,
+		cacheDir:  t.TempDir(), maxUploadSize: testMaxUpload,
 	}
 
 	rr := httptest.NewRecorder()
@@ -230,7 +228,7 @@ func TestAdminStorageStats(t *testing.T) {
 	if resp.Location != filesDir {
 		t.Errorf("location = %q, want %q", resp.Location, filesDir)
 	}
-	want := map[string]uint64{"audio": 3000, "images": 1500}
+	want := map[string]uint64{"audio": 3000, "review": 700, "trash": 300, "images": 1500}
 	got := map[string]uint64{}
 	for _, c := range resp.Categories {
 		got[c.Name] = c.Bytes
@@ -240,8 +238,8 @@ func TestAdminStorageStats(t *testing.T) {
 			t.Errorf("category %q = %d bytes, want %d", name, got[name], n)
 		}
 	}
-	if resp.LibraryBytes != 4500 {
-		t.Errorf("library_bytes = %d, want 4500 (sum of categories)", resp.LibraryBytes)
+	if resp.LibraryBytes != 5500 {
+		t.Errorf("library_bytes = %d, want 5500 (sum of categories)", resp.LibraryBytes)
 	}
 	if resp.Volume == nil {
 		t.Skip("no volume reported on this platform")
@@ -255,18 +253,18 @@ func TestAdminStorageStats(t *testing.T) {
 }
 
 // TestAdminStorageStats_WalkErrorReturns500 forces the images walk to fail by
-// pointing its category dir below a regular file (ENOTDIR).
+// pointing imagesDir below a regular file (ENOTDIR).
 func TestAdminStorageStats_WalkErrorReturns500(t *testing.T) {
 	filesDir := t.TempDir()
 	regular := filepath.Join(filesDir, "not-a-dir")
 	writeFileN(t, regular, 1)
 
 	h := &handler{
-		storage:  storage.NewLocal(filepath.Join(filesDir, storage.AudioSubdir)),
-		filesDir: filesDir,
-		// The "images" category dir lives below a regular file → walk errors.
-		storageCategories: []storageCategory{{Name: "images", Dir: filepath.Join(regular, "sub")}},
-		cacheDir:          t.TempDir(), maxUploadSize: testMaxUpload,
+		storage:   storage.NewLocal(filepath.Join(filesDir, storage.AudioSubdir)),
+		repo:      &fakeRepo{},
+		filesDir:  filesDir,
+		imagesDir: filepath.Join(regular, "sub"), // below a regular file → walk errors
+		cacheDir:  t.TempDir(), maxUploadSize: testMaxUpload,
 	}
 
 	rr := httptest.NewRecorder()
@@ -276,17 +274,15 @@ func TestAdminStorageStats_WalkErrorReturns500(t *testing.T) {
 	}
 }
 
-// TestAdminStorageStats_DBErrorReturns500 forces the audio category's DB sizer
-// to fail (the hybrid's DB-sourced side).
+// TestAdminStorageStats_DBErrorReturns500 forces the DB breakdown query to fail.
 func TestAdminStorageStats_DBErrorReturns500(t *testing.T) {
 	filesDir := t.TempDir()
-	repo := &fakeRepo{libraryBytesErr: context.DeadlineExceeded}
 	h := &handler{
-		storage:           storage.NewLocal(filepath.Join(filesDir, storage.AudioSubdir)),
-		repo:              repo,
-		filesDir:          filesDir,
-		storageCategories: []storageCategory{{Name: "audio", DBSize: repo.LibraryByteSize}},
-		cacheDir:          t.TempDir(), maxUploadSize: testMaxUpload,
+		storage:   storage.NewLocal(filepath.Join(filesDir, storage.AudioSubdir)),
+		repo:      &fakeRepo{breakdownErr: context.DeadlineExceeded},
+		filesDir:  filesDir,
+		imagesDir: filepath.Join(filesDir, "images"),
+		cacheDir:  t.TempDir(), maxUploadSize: testMaxUpload,
 	}
 
 	rr := httptest.NewRecorder()

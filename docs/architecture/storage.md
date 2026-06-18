@@ -52,20 +52,29 @@ type Stats struct {
 Two different numbers, sourced separately:
 
 - **Volume** (whole disk): from `Storage.Stats()`. Local only.
-- **Library footprint, by category**: a per-category size — `audio`, `images`,
-  and (future) `video` — summing to `library_bytes`. This figure is
-  backend-agnostic: it is the meaningful capacity number for an object store too.
+- **Library footprint, by category**: a per-category size — `audio`, `review`,
+  `trash`, `images` (and future `video`) — summing to `library_bytes`. This
+  figure is backend-agnostic: it is the meaningful capacity number for an object
+  store too.
 
   Sizing is **hybrid**, because the categories have different cheapest truthful
   sources:
 
-  - **audio** comes from the DB: `Repository.LibraryByteSize` (`database/files.go`)
-    — `SELECT COALESCE(SUM(byte_size),0) FROM files`. Files are content-addressed
-    (one row per hash), so this is the deduplicated blob total, trashed-but-unpruned
-    rows included. It is an **indexed sum: instant and always fresh**, so the audio
-    figure needs no caching. (It does *not* count un-pruned orphan audio blobs that
-    exist on disk without a row — those are the Verify & Prune view's job,
-    `docs/architecture/prune-job.md`.)
+  - **audio / review / trash** come from the DB in one query:
+    `Repository.StorageByteBreakdown` (`database/files.go`) — a single
+    `SUM(byte_size)` over the files table, partitioned by state with `CASE`:
+    - `audio` = approved & not soft-deleted (the live library);
+    - `review` = not deleted, `review_state <> 'approved'` (staged uploads,
+      `docs/architecture/moderation.md`);
+    - `trash` = soft-deleted, awaiting prune.
+
+    The three are **mutually exclusive** (trash takes precedence over review
+    state) and together equal the whole files-table byte total, so they never
+    double-count. Files are content-addressed (one row per hash), so each bucket
+    is a deduplicated blob total. It is an **indexed sum: instant and always
+    fresh**, so these figures need no caching. (They do *not* count un-pruned
+    orphan audio blobs that exist on disk without a row — those are the Verify &
+    Prune view's job, `docs/architecture/prune-job.md`.)
   - **images** (and future video) are **walked on disk** with `storage.DirSize`
     (`api/storage/dirsize.go`), because cover images have **no byte-size column**
     in the DB (the 8 variants per cover are derived files). A missing subtree (a
@@ -95,6 +104,8 @@ storage-management routes) merges the volume with the per-category breakdown:
   "library_bytes": 12345678,
   "categories": [
     { "name": "audio",  "bytes": 11000000 },
+    { "name": "review", "bytes": 0 },
+    { "name": "trash",  "bytes": 0 },
     { "name": "images", "bytes": 1345678 }
   ],
   "volume": { "total_bytes": N, "free_bytes": N, "used_bytes": N, "used_percent": 42.0 }
@@ -107,8 +118,9 @@ drops the disk meter and shows only the per-category breakdown with a "no fixed
 capacity" note. The dashboard (`webui/static/js/admin/dashboard.js`, panel in
 `webui/html/admin/dashboard.html`) renders a usage bar with one colored segment
 per category, then a rest-of-disk-used segment, plus "X free of Y"; the category
-list is rendered generically, so a future `video` category appears automatically
-once the server reports it.
+list is rendered **generically** (colors + display labels keyed by name, e.g.
+`review` → "On review", `trash` → "In trash"), so a future `video` category
+appears automatically once the server reports it.
 
 ## Deferred: split block devices / multi-volume storage
 

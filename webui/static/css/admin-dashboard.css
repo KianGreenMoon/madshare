@@ -74,6 +74,8 @@
    Fallbacks cover any future category the server adds before the UI knows it. */
 .storage-card {
   --storage-cat-images: #4f9ad6;
+  --storage-cat-review: #d6b24f;
+  --storage-cat-trash:  #b06a78;
   --storage-cat-video:  #d68f4f;
   --storage-cat-alt1:   #9b7fd6;
   --storage-cat-alt2:   #4fb59a;

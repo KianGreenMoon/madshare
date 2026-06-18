@@ -408,8 +408,8 @@ type fakeRepo struct {
 	insertCalls  int
 	listFilesErr error
 
-	libraryBytes    int64
-	libraryBytesErr error
+	breakdown    database.StorageByteBreakdown
+	breakdownErr error
 
 	deleteFilenames []string
 	deleteFound     bool
@@ -544,8 +544,8 @@ func (f *fakeRepo) ListFiles(_ context.Context) ([]*database.FileListEntry, erro
 	return nil, f.listFilesErr
 }
 
-func (f *fakeRepo) LibraryByteSize(_ context.Context) (int64, error) {
-	return f.libraryBytes, f.libraryBytesErr
+func (f *fakeRepo) StorageByteBreakdown(_ context.Context) (database.StorageByteBreakdown, error) {
+	return f.breakdown, f.breakdownErr
 }
 
 func (f *fakeRepo) ListArtists(_ context.Context) ([]*database.ArtistEntry, error) {

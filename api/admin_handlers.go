@@ -324,24 +324,21 @@ type volumeStats struct {
 	UsedPercent float64 `json:"used_percent"`
 }
 
-// storageCategory describes one disk-usage category and how to size it. Sizing
-// is hybrid: the audio category comes from the DB (DBSize — an indexed
-// byte_size sum, instant and always fresh), while images (and future video)
-// are walked on disk (Dir, via storage.DirSize) because their files carry no
-// byte size in the DB. Exactly one of DBSize / Dir is set. The list is built in
-// newHandler; adding video later is a single entry there.
-type storageCategory struct {
-	Name   string
-	Dir    string                               // walked with DirSize when set
-	DBSize func(context.Context) (int64, error) // DB-sourced size when set
-}
-
 // categoryUsage is one row of the storage response's per-category breakdown:
 // the bytes occupied by that category (logical size — filesystem-compression-
 // aware allocated sizing is intentionally out of scope; see storageStats).
 type categoryUsage struct {
 	Name  string `json:"name"`
 	Bytes uint64 `json:"bytes"`
+}
+
+// nonNegBytes converts a signed byte total (from a DB SUM) to uint64, clamping
+// the impossible negative case to zero.
+func nonNegBytes(v int64) uint64 {
+	if v < 0 {
+		return 0
+	}
+	return uint64(v)
 }
 
 // storageStatsResp is the body of GET /api/admin/storage. Categories is the
@@ -370,39 +367,41 @@ func (h *handler) adminStorageStats(w http.ResponseWriter, r *http.Request) {
 }
 
 // storageStats computes the storage breakdown: whole-volume capacity plus the
-// per-category footprint. Sizing is hybrid (DB for audio, walk for images), so
-// the audio figure is instant and always fresh; the image walk is small (few
-// files) and not cached. The sizes are logical (st_size / SUM(byte_size)), not
-// filesystem-allocated: the payload is already-compressed media + images, so
-// transparent FS compression saves negligibly and allocated sizing isn't worth
-// the platform-specific stat-block accounting (see docs/architecture/storage.md).
+// per-category footprint. Sizing is hybrid: the files-table categories (audio,
+// review, trash) come from one indexed byte_size sum (StorageByteBreakdown —
+// instant and always fresh), while images are walked on disk (no byte size is
+// tracked in the DB for cover variants). The audio/review/trash split is by
+// state and is mutually exclusive. Sizes are logical (st_size / SUM(byte_size)),
+// not filesystem-allocated: the payload is already-compressed media + images,
+// so transparent FS compression saves negligibly and allocated sizing isn't
+// worth the platform-specific stat-block accounting (docs/architecture/storage.md).
 func (h *handler) storageStats(ctx context.Context) (*storageStatsResp, error) {
 	st, err := h.storage.Stats()
 	if err != nil {
 		return nil, err
 	}
 
-	cats := make([]categoryUsage, 0, len(h.storageCategories))
+	bd, err := h.repo.StorageByteBreakdown(ctx)
+	if err != nil {
+		return nil, err
+	}
+	imageBytes, err := storage.DirSize(h.imagesDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// audio = the live (approved, not-deleted) library; review and trash are the
+	// same files table partitioned by state, so the four categories never
+	// double-count. images is the separate on-disk cover-variant tree.
+	cats := []categoryUsage{
+		{Name: "audio", Bytes: nonNegBytes(bd.Library)},
+		{Name: "review", Bytes: nonNegBytes(bd.Review)},
+		{Name: "trash", Bytes: nonNegBytes(bd.Trash)},
+		{Name: "images", Bytes: imageBytes},
+	}
 	var libBytes uint64
-	for _, c := range h.storageCategories {
-		var n uint64
-		if c.DBSize != nil {
-			v, err := c.DBSize(ctx)
-			if err != nil {
-				return nil, err
-			}
-			if v > 0 {
-				n = uint64(v)
-			}
-		} else {
-			v, err := storage.DirSize(c.Dir)
-			if err != nil {
-				return nil, err
-			}
-			n = v
-		}
-		cats = append(cats, categoryUsage{Name: c.Name, Bytes: n})
-		libBytes += n
+	for _, c := range cats {
+		libBytes += c.Bytes
 	}
 
 	// The managed root (parent of the subtrees) is the meaningful "location";
