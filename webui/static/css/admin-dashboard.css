@@ -42,6 +42,18 @@
   background: var(--accent-glow);
   color: var(--accent);
 }
+/* Live activity badge (e.g. a running prune) — distinct from numeric counts. */
+.dash-card-count--live {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.7rem;
+  font-weight: 600;
+  background: var(--danger-bg, var(--accent-glow));
+  color: var(--danger, var(--accent));
+  animation: dash-live-pulse 1.6s ease-in-out infinite;
+}
+@keyframes dash-live-pulse { 50% { opacity: 0.55; } }
+
 .dash-card-desc { font-size: 14px; color: var(--text-muted); line-height: 1.45; }
 
 /* ── Storage panel ── */

@@ -24,6 +24,48 @@
 .prune-results { margin-top: var(--space-4); }
 .prune-results:empty { margin-top: 0; }
 
+/* Status block: in-progress panel OR idle last-run summary lines. */
+.prune-status { margin-bottom: var(--space-4); }
+.prune-status:empty { margin-bottom: 0; }
+.prune-controls[hidden] { display: none; }
+
+/* Last-run summary lines (idle). */
+.prune-lastrun { display: grid; gap: var(--space-1); }
+.prune-lastrun-line { font-size: 13px; color: var(--text); margin: 0; }
+.prune-lastrun-label { font-weight: 600; }
+.prune-lastrun-meta { color: var(--text-muted); }
+
+/* In-progress panel. */
+.result-panel.is-running { border-color: var(--accent, var(--border)); }
+.prune-meta { color: var(--text-muted); font-size: 13px; margin: var(--space-2) 0 var(--space-3); }
+.prune-cancel { margin-top: var(--space-1); }
+
+.prune-progress {
+  height: 8px;
+  border-radius: var(--radius);
+  background: var(--surface-2, var(--border));
+  overflow: hidden;
+  margin: var(--space-2) 0;
+}
+.prune-progress-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent, var(--success));
+  transition: width 0.3s ease;
+}
+
+/* Indeterminate-ish spinner for the panel head. */
+.prune-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent, var(--text));
+  border-radius: 50%;
+  display: inline-block;
+  animation: prune-spin 0.8s linear infinite;
+}
+@keyframes prune-spin { to { transform: rotate(360deg); } }
+
 .result-panel {
   border-radius: var(--radius);
   padding: var(--space-4);

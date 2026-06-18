@@ -18,6 +18,7 @@ import (
 
 	"daemonlord.ygg/madshare/api/storage"
 	"daemonlord.ygg/madshare/database"
+	"daemonlord.ygg/madshare/prune"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -88,6 +89,7 @@ func newTestHandler(t *testing.T) (*handler, *database.DB, string) {
 		imagesDir:     filepath.Join(base, "images"),
 		maxUploadSize: testMaxUpload,
 	}
+	h.pruneMgr = prune.New(db, h.storage, db)
 	return h, db, base
 }
 

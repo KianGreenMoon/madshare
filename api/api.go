@@ -10,6 +10,7 @@ import (
 	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/config"
 	"daemonlord.ygg/madshare/database"
+	"daemonlord.ygg/madshare/prune"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
@@ -38,6 +39,11 @@ type Deps struct {
 	// is enqueued so an idle worker wakes immediately. Optional; nil skips the
 	// wake (tests / open embeddings).
 	MediaPool interface{ Notify() }
+	// PruneManager owns the single, process-global Verify & Prune background job
+	// (start / status / cancel). When nil, the prune endpoints respond 503 — the
+	// running server always wires it (see madshare.go); tests that exercise prune
+	// construct one explicitly.
+	PruneManager *prune.Manager
 	// UploadLimiter, when set, gates concurrent uploads (global + per-user caps
 	// from [storage]). Optional; nil disables the gate.
 	UploadLimiter *UploadLimiter
@@ -94,6 +100,7 @@ func (d Deps) newHandler() *handler {
 		authzEnabled:  d.Auth != nil,
 		imagePool:     d.ImagePool,
 		mediaPool:     d.MediaPool,
+		pruneMgr:      d.PruneManager,
 		limiter:       d.UploadLimiter,
 		uiConfig:      d.UIConfig,
 	}
@@ -213,6 +220,8 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		fileDelete := d.protect(auth.PermFileDelete)
 		r.With(fileDelete).Delete("/files/{hash}", h.adminDeleteFile)
 		r.With(fileDelete).Post("/prune", h.adminPrune)
+		r.With(fileDelete).Get("/prune/status", h.adminPruneStatus)
+		r.With(fileDelete).Post("/prune/cancel", h.adminPruneCancel)
 		r.With(fileDelete).Get("/storage", h.adminStorageStats)
 		r.With(fileDelete).Get("/trash", h.adminTrashList)
 		r.With(fileDelete).Delete("/trash/{hash}", h.adminTrashHardDelete)

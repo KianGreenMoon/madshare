@@ -19,6 +19,18 @@ function setText(id, text) {
   if (node) node.textContent = text;
 }
 
+// Show an "in progress" badge on the Verify & Prune card when the single prune
+// job is running, so the running state is visible without opening the page.
+async function fillPruneStatus() {
+  try {
+    const res = await fetch(`${API}/api/admin/prune/status`);
+    if (!res.ok) return; // lacks file.delete — leave the badge hidden
+    const snap = await res.json();
+    const badge = document.getElementById('pruneRunning');
+    if (badge) badge.hidden = snap.state !== 'running';
+  } catch { /* network error — leave the badge hidden */ }
+}
+
 // Storage panel: free/used disk space for the files volume + Madshare's own
 // footprint. Gated like the other admin endpoints; on a 403/error the card
 // stays hidden. An object-store backend (future S3) returns volume=null, so we
@@ -68,6 +80,7 @@ async function fillStorage() {
   const identity = await bootAdmin();
   if (!identity) return;
   fillStorage();
+  fillPruneStatus();
   fillCount('countFiles', '/api/files');
   fillCount('countModeration', '/api/admin/moderation');
   fillCount('countTrash', '/api/admin/trash');

@@ -10,7 +10,9 @@ import (
 	"regexp"
 	"strings"
 
+	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/database"
+	"daemonlord.ygg/madshare/prune"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -172,11 +174,19 @@ func (h *handler) adminTrashRestore(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "hash": hash})
 }
 
-// adminPrune handles POST /api/admin/prune. An empty body is treated as a dry
-// run. The request body is {"confirm": bool, "deep": bool}: confirm=true deletes
-// every flagged record, and deep=true additionally rehashes each present blob to
-// flag corrupted content (an integrity scan), not just missing files.
+// adminPrune handles POST /api/admin/prune — it *starts* the single, server-wide
+// prune background job and returns immediately (the scan, especially deep, is
+// slow and now outlives the request). Body is {"confirm": bool, "deep": bool}:
+// confirm=false starts a dry-run scan (the full damage sweep), confirm=true starts
+// a prune that deletes exactly the set the last scan found and the admin reviewed.
+// An empty body is treated as a scan. Returns 202 with the started snapshot, or
+// 409 with the current snapshot when a prune is already running (so the page can
+// render the in-progress state instead of starting a duplicate).
 func (h *handler) adminPrune(w http.ResponseWriter, r *http.Request) {
+	if h.pruneMgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "prune unavailable"})
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
 	var body struct {
 		Confirm bool `json:"confirm"`
@@ -187,39 +197,119 @@ func (h *handler) adminPrune(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := database.PruneDangling(r.Context(), h.repo, h.storage, body.Confirm, body.Deep)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "prune scan failed"})
+	by := ""
+	if id := auth.FromContext(r.Context()); id != nil {
+		by = id.Username
+	}
+
+	var (
+		snap prune.Snapshot
+		err  error
+	)
+	if body.Confirm {
+		snap, err = h.pruneMgr.StartPrune(by)
+	} else {
+		snap, err = h.pruneMgr.StartScan(body.Deep, by)
+	}
+	switch {
+	case errors.Is(err, prune.ErrBusy):
+		writeJSON(w, http.StatusConflict, pruneStatusJSON(snap, "a prune is already running"))
+		return
+	case errors.Is(err, prune.ErrNoScan):
+		writeJSON(w, http.StatusConflict, pruneStatusJSON(snap, "run a scan first"))
+		return
+	case err != nil:
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "prune failed to start"})
 		return
 	}
 
-	if !body.Confirm {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":             true,
-			"dry_run":        true,
-			"deep":           result.Deep,
-			"scanned":        result.Scanned,
-			"dangling":       danglingJSON(result.Dangling),
-			"dangling_count": len(result.Dangling),
-		})
+	if body.Confirm {
+		h.audit(r.Context(), "file.prune", "", fmt.Sprintf("deep=%v started prune", snap.Deep))
+	}
+	writeJSON(w, http.StatusAccepted, pruneStatusJSON(snap, ""))
+}
+
+// adminPruneStatus handles GET /api/admin/prune/status — the cheap, read-only,
+// pollable shared view of the one prune operation. Any admin sees the same state:
+// a running run's progress, or the persisted last-scan / last-prune summaries.
+func (h *handler) adminPruneStatus(w http.ResponseWriter, r *http.Request) {
+	if h.pruneMgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "prune unavailable"})
 		return
 	}
+	writeJSON(w, http.StatusOK, pruneStatusJSON(h.pruneMgr.Snapshot(), ""))
+}
 
-	failed := make([]map[string]any, 0, len(result.Failed))
-	for _, f := range result.Failed {
-		failed = append(failed, map[string]any{"hash": f.Hash, "error": f.Err})
+// adminPruneCancel handles POST /api/admin/prune/cancel — stops the running prune.
+// Reports whether a run was actually cancelled (false when already idle).
+func (h *handler) adminPruneCancel(w http.ResponseWriter, r *http.Request) {
+	if h.pruneMgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "prune unavailable"})
+		return
 	}
-	h.audit(r.Context(), "file.prune", "",
-		fmt.Sprintf("deep=%v pruned %d, failed %d", result.Deep, len(result.Pruned), len(result.Failed)))
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":           true,
-		"dry_run":      false,
-		"deep":         result.Deep,
-		"scanned":      result.Scanned,
-		"pruned":       danglingJSON(result.Pruned),
-		"pruned_count": len(result.Pruned),
-		"failed":       failed,
-	})
+	cancelled := h.pruneMgr.Cancel()
+	if cancelled {
+		h.audit(r.Context(), "file.prune", "", "cancelled")
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cancelled": cancelled})
+}
+
+// pruneStatusJSON renders a prune snapshot into the response shape the admin page
+// consumes. The DanglingRef / PruneFailure lists are converted via danglingJSON /
+// failureJSON so their field names match the rest of the prune UI. errMsg, when
+// non-empty, is included (used by the 409 responses).
+func pruneStatusJSON(snap prune.Snapshot, errMsg string) map[string]any {
+	out := map[string]any{
+		"ok":    errMsg == "",
+		"state": string(snap.State),
+	}
+	if errMsg != "" {
+		out["error"] = errMsg
+	}
+	if snap.State == prune.StateRunning {
+		out["phase"] = string(snap.Phase)
+		out["deep"] = snap.Deep
+		out["started_by"] = snap.StartedBy
+		if snap.StartedAt != nil {
+			out["started_at"] = snap.StartedAt
+		}
+		if snap.Progress != nil {
+			out["progress"] = map[string]any{"scanned": snap.Progress.Scanned, "total": snap.Progress.Total}
+		}
+	}
+	if snap.LastScan != nil {
+		out["last_scan"] = snap.LastScan
+	}
+	if snap.LastPrune != nil {
+		out["last_prune"] = snap.LastPrune
+	}
+	if d := snap.LastResult; d != nil {
+		res := map[string]any{
+			"kind":    d.Kind,
+			"deep":    d.Deep,
+			"scanned": d.Scanned,
+			"outcome": d.Outcome,
+		}
+		if d.Kind == prune.KindScan {
+			res["dangling"] = danglingJSON(d.Dangling)
+			res["dangling_count"] = len(d.Dangling)
+		} else {
+			res["pruned"] = danglingJSON(d.Pruned)
+			res["pruned_count"] = len(d.Pruned)
+			res["failed"] = failureJSON(d.Failed)
+		}
+		out["last_result"] = res
+	}
+	return out
+}
+
+// failureJSON shapes prune failures as {hash, error} for the admin page.
+func failureJSON(failures []database.PruneFailure) []map[string]any {
+	out := make([]map[string]any, 0, len(failures))
+	for _, f := range failures {
+		out = append(out, map[string]any{"hash": f.Hash, "error": f.Err})
+	}
+	return out
 }
 
 // volumeStats is the disk-capacity portion of the storage response. It is

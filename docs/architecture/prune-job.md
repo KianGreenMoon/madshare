@@ -1,6 +1,6 @@
 # Single-process prune (background prune job)
 
-Status: **agreed** — all decisions resolved; not yet implemented.
+Status: **implemented** (aidev). See [As built](#as-built) for the concrete code.
 
 ## Problem
 
@@ -252,3 +252,29 @@ moderators to prune, that is a separate role-permission change, out of scope her
    overview/dashboard card too (same `/status` endpoint).
 4. **Last-run summary store** — *use the `settings` slots* (latest of each, no
    full-history table).
+
+## As built
+
+- **`prune/` package** — `prune.Manager` is the in-memory singleton. `New(repo,
+  probe, settings)` loads the persisted summaries; `StartScan(deep, by)` /
+  `StartPrune(by)` are the compare-and-swap launch path (`ErrBusy` / `ErrNoScan`);
+  `Snapshot()`, `Cancel()`, `Wait()`, `Running()`. The job goroutine runs on a
+  `context.Background()`-derived context and `Wait()` blocks on its `WaitGroup`.
+  Summaries persist as JSON in `settings` keys `prune.last_scan` /
+  `prune.last_prune`.
+- **`database/prune.go`** — `ScanDangling(ctx, repo, probe, deep, onProgress)` is
+  the full sweep (progress callback + per-row `ctx.Err()` check); `PruneRefs(ctx,
+  repo, probe, deep, refs, onProgress)` deletes exactly the reviewed set,
+  re-checking only those hashes via the shared `danglingReason` helper. The old
+  `PruneDangling` is retained as a scan-then-prune convenience for direct callers
+  and tests.
+- **API (`api/admin_handlers.go`, gated `file.delete`)** — `adminPrune` (async
+  start → 202 / 409), `adminPruneStatus`, `adminPruneCancel`; the response is
+  shaped by `pruneStatusJSON`. Wired via `Deps.PruneManager` → `handler.pruneMgr`
+  (nil ⇒ 503); routes in `RegisterAdmin`. The manager is constructed in
+  `madshare.go` (sharing the audio blob store) and `pruneMgr.Wait()` is called in
+  the shutdown path.
+- **Web UI** — `webui/static/js/admin/prune.js` (start + poll `/status`,
+  in-progress panel with progress bar + Cancel, last-run summary lines) and the
+  dashboard "in progress" badge in `webui/static/js/admin/dashboard.js`. Styles in
+  `admin-prune.css` / `admin-dashboard.css`.
