@@ -84,13 +84,15 @@
     <h2 class="section-title" id="storageHeading">Storage</h2>
     {{/* Populated by dashboard.js from GET /api/admin/storage. Hidden until the
          fetch succeeds (an admin lacking file.delete simply never sees it). The
-         meter block is disk-only; an object-store backend (future S3) reports no
-         fixed capacity, so the meter is replaced by the "no fixed capacity"
-         note and only the library figure + backend/location remain. */}}
+         per-category bar segments and detail rows (audio, images, …future video)
+         are inserted by JS before #storageBarOther / #storageTotalRow. The meter
+         block is disk-only; an object-store backend (future S3) reports no fixed
+         capacity, so the meter is replaced by the "no fixed capacity" note and
+         only the per-category breakdown + backend/location remain. */}}
     <div class="storage-card" id="storageCard" hidden>
       <div class="storage-meter" id="storageMeter" hidden>
-        <div class="storage-bar" role="img" id="storageBar" aria-label="Disk usage">
-          <div class="storage-bar-seg storage-bar-lib" id="storageBarLib"></div>
+        <div class="storage-bar" role="img" id="storageBar" aria-label="Disk usage by category">
+          {{/* category segments inserted here by JS */}}
           <div class="storage-bar-seg storage-bar-other" id="storageBarOther"></div>
         </div>
         <p class="storage-headline">
@@ -100,14 +102,15 @@
       <p class="storage-note" id="storageNote" hidden>
         Object storage — no fixed capacity.
       </p>
-      <dl class="storage-detail">
+      <dl class="storage-detail" id="storageDetail">
+        {{/* per-category rows inserted here by JS, before the total row */}}
+        <div class="storage-detail-row" id="storageTotalRow">
+          <dt>Madshare total</dt>
+          <dd id="storageLibrary">—</dd>
+        </div>
         <div class="storage-detail-row" id="storageUsedRow">
           <dt><span class="storage-swatch storage-swatch--other" aria-hidden="true"></span>Disk used</dt>
           <dd id="storageUsed">—</dd>
-        </div>
-        <div class="storage-detail-row">
-          <dt><span class="storage-swatch storage-swatch--lib" aria-hidden="true"></span>Madshare library</dt>
-          <dd id="storageLibrary">—</dd>
         </div>
         <div class="storage-detail-row">
           <dt>Backend</dt>

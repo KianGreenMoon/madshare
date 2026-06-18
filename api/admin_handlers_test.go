@@ -170,10 +170,36 @@ func TestAdminDeleteFile_DBErrorReturns500(t *testing.T) {
 
 // ---- adminStorageStats -------------------------------------------------------
 
+// writeFileN writes a file of exactly n bytes at path, creating parents.
+func writeFileN(t *testing.T, path string, n int) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, make([]byte, n), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAdminStorageStats(t *testing.T) {
-	repo := &fakeRepo{libraryBytes: 4096}
-	dir := t.TempDir()
-	h := &handler{storage: storage.NewLocal(dir), repo: repo, cacheDir: t.TempDir(), maxUploadSize: testMaxUpload}
+	filesDir := t.TempDir()
+	imagesDir := filepath.Join(filesDir, "images")
+	// Hybrid sizing: audio comes from the DB (3000), images are walked on disk
+	// (1000 + 500 = 1500 across two variant files).
+	writeFileN(t, filepath.Join(imagesDir, "key", "small_crop.jpg"), 1000)
+	writeFileN(t, filepath.Join(imagesDir, "key", "small_fit.jpg"), 500)
+
+	repo := &fakeRepo{libraryBytes: 3000}
+	h := &handler{
+		storage:  storage.NewLocal(filepath.Join(filesDir, storage.AudioSubdir)),
+		repo:     repo,
+		filesDir: filesDir,
+		storageCategories: []storageCategory{
+			{Name: "audio", DBSize: repo.LibraryByteSize},
+			{Name: "images", Dir: imagesDir},
+		},
+		cacheDir: t.TempDir(), maxUploadSize: testMaxUpload,
+	}
 
 	rr := httptest.NewRecorder()
 	h.adminStorageStats(rr, httptest.NewRequest(http.MethodGet, "/api/admin/storage", nil))
@@ -183,8 +209,12 @@ func TestAdminStorageStats(t *testing.T) {
 	var resp struct {
 		Backend      string `json:"backend"`
 		Location     string `json:"location"`
-		LibraryBytes int64  `json:"library_bytes"`
-		Volume       *struct {
+		LibraryBytes uint64 `json:"library_bytes"`
+		Categories   []struct {
+			Name  string `json:"name"`
+			Bytes uint64 `json:"bytes"`
+		} `json:"categories"`
+		Volume *struct {
 			TotalBytes  uint64  `json:"total_bytes"`
 			FreeBytes   uint64  `json:"free_bytes"`
 			UsedBytes   uint64  `json:"used_bytes"`
@@ -197,8 +227,21 @@ func TestAdminStorageStats(t *testing.T) {
 	if resp.Backend != "local" {
 		t.Errorf("backend = %q, want local", resp.Backend)
 	}
-	if resp.LibraryBytes != 4096 {
-		t.Errorf("library_bytes = %d, want 4096", resp.LibraryBytes)
+	if resp.Location != filesDir {
+		t.Errorf("location = %q, want %q", resp.Location, filesDir)
+	}
+	want := map[string]uint64{"audio": 3000, "images": 1500}
+	got := map[string]uint64{}
+	for _, c := range resp.Categories {
+		got[c.Name] = c.Bytes
+	}
+	for name, n := range want {
+		if got[name] != n {
+			t.Errorf("category %q = %d bytes, want %d", name, got[name], n)
+		}
+	}
+	if resp.LibraryBytes != 4500 {
+		t.Errorf("library_bytes = %d, want 4500 (sum of categories)", resp.LibraryBytes)
 	}
 	if resp.Volume == nil {
 		t.Skip("no volume reported on this platform")
@@ -211,10 +254,40 @@ func TestAdminStorageStats(t *testing.T) {
 	}
 }
 
-// TestAdminStorageStats_DBErrorReturns500 forces the library-size query to fail.
+// TestAdminStorageStats_WalkErrorReturns500 forces the images walk to fail by
+// pointing its category dir below a regular file (ENOTDIR).
+func TestAdminStorageStats_WalkErrorReturns500(t *testing.T) {
+	filesDir := t.TempDir()
+	regular := filepath.Join(filesDir, "not-a-dir")
+	writeFileN(t, regular, 1)
+
+	h := &handler{
+		storage:  storage.NewLocal(filepath.Join(filesDir, storage.AudioSubdir)),
+		filesDir: filesDir,
+		// The "images" category dir lives below a regular file → walk errors.
+		storageCategories: []storageCategory{{Name: "images", Dir: filepath.Join(regular, "sub")}},
+		cacheDir:          t.TempDir(), maxUploadSize: testMaxUpload,
+	}
+
+	rr := httptest.NewRecorder()
+	h.adminStorageStats(rr, httptest.NewRequest(http.MethodGet, "/api/admin/storage", nil))
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rr.Code)
+	}
+}
+
+// TestAdminStorageStats_DBErrorReturns500 forces the audio category's DB sizer
+// to fail (the hybrid's DB-sourced side).
 func TestAdminStorageStats_DBErrorReturns500(t *testing.T) {
+	filesDir := t.TempDir()
 	repo := &fakeRepo{libraryBytesErr: context.DeadlineExceeded}
-	h := &handler{storage: storage.NewLocal(t.TempDir()), repo: repo, cacheDir: t.TempDir(), maxUploadSize: testMaxUpload}
+	h := &handler{
+		storage:           storage.NewLocal(filepath.Join(filesDir, storage.AudioSubdir)),
+		repo:              repo,
+		filesDir:          filesDir,
+		storageCategories: []storageCategory{{Name: "audio", DBSize: repo.LibraryByteSize}},
+		cacheDir:          t.TempDir(), maxUploadSize: testMaxUpload,
+	}
 
 	rr := httptest.NewRecorder()
 	h.adminStorageStats(rr, httptest.NewRequest(http.MethodGet, "/api/admin/storage", nil))

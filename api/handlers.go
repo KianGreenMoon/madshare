@@ -66,6 +66,14 @@ type handler struct {
 	// imagesDir is where artist/album cover images are stored and served. It is
 	// the "images" subdirectory of the configured files_dir.
 	imagesDir string
+	// filesDir is the configured storage root (parent of the audio/ and images/
+	// subtrees); reported as the storage panel's "location".
+	filesDir string
+	// storageCategories enumerates the disk-usage categories (audio, images, and
+	// future video) for the per-category breakdown in the admin storage panel.
+	// Each is sized either from the DB (audio) or by walking its subtree
+	// (images). See adminStorageStats.
+	storageCategories []storageCategory
 	// maxUploadSize caps the upload request body in bytes (from config).
 	maxUploadSize int64
 	// authzEnabled mirrors Deps.Auth != nil: when true, library listings are

@@ -31,10 +31,68 @@ async function fillPruneStatus() {
   } catch { /* network error — leave the badge hidden */ }
 }
 
+// Colors for the per-category bar segments + swatches. Known categories get a
+// stable color; anything unknown (a future category the server adds before the
+// UI knows about it) cycles through the fallbacks. Values are CSS vars so they
+// follow the theme (defined in admin-dashboard.css).
+const CATEGORY_COLORS = {
+  audio: 'var(--accent)',
+  images: 'var(--storage-cat-images)',
+  video: 'var(--storage-cat-video)',
+};
+const CATEGORY_FALLBACKS = ['var(--storage-cat-alt1)', 'var(--storage-cat-alt2)', 'var(--storage-cat-alt3)'];
+
+function categoryColor(name, i) {
+  return CATEGORY_COLORS[name] || CATEGORY_FALLBACKS[i % CATEGORY_FALLBACKS.length];
+}
+
+// Title-case a category name for display ("audio" -> "Audio").
+function categoryLabel(name) {
+  return name ? name.charAt(0).toUpperCase() + name.slice(1) : '—';
+}
+
+// Render the per-category bar segments + detail rows from s.categories. Each
+// category becomes a colored bar segment (before the rest-of-disk "other"
+// segment) and a swatch+bytes detail row (before the "Madshare total" row).
+// Idempotent: prior dynamic nodes are cleared first.
+function renderCategories(categories, totalBytes) {
+  const bar = document.getElementById('storageBar');
+  const other = document.getElementById('storageBarOther');
+  const detail = document.getElementById('storageDetail');
+  const totalRow = document.getElementById('storageTotalRow');
+
+  bar.querySelectorAll('.storage-bar-cat').forEach((n) => n.remove());
+  detail.querySelectorAll('.storage-cat-row').forEach((n) => n.remove());
+
+  categories.forEach((c, i) => {
+    const color = categoryColor(c.name, i);
+
+    const seg = document.createElement('div');
+    seg.className = 'storage-bar-seg storage-bar-cat';
+    seg.style.background = color;
+    seg.style.width = (totalBytes ? (c.bytes / totalBytes) * 100 : 0).toFixed(2) + '%';
+    bar.insertBefore(seg, other);
+
+    const row = document.createElement('div');
+    row.className = 'storage-detail-row storage-cat-row';
+    const dt = document.createElement('dt');
+    const swatch = document.createElement('span');
+    swatch.className = 'storage-swatch';
+    swatch.style.background = color;
+    swatch.setAttribute('aria-hidden', 'true');
+    dt.append(swatch, document.createTextNode(categoryLabel(c.name)));
+    const dd = document.createElement('dd');
+    dd.textContent = fmtBytes(c.bytes);
+    row.append(dt, dd);
+    detail.insertBefore(row, totalRow);
+  });
+}
+
 // Storage panel: free/used disk space for the files volume + Madshare's own
-// footprint. Gated like the other admin endpoints; on a 403/error the card
-// stays hidden. An object-store backend (future S3) returns volume=null, so we
-// drop the meter and show only the library figure.
+// footprint, broken down by category (audio, images, …). Gated like the other
+// admin endpoints; on a 403/error the card stays hidden. An object-store backend
+// (future S3) returns volume=null, so we drop the meter and show only the
+// per-category breakdown.
 async function fillStorage() {
   try {
     const res = await fetch(`${API}/api/admin/storage`);
@@ -48,6 +106,7 @@ async function fillStorage() {
     const meter = document.getElementById('storageMeter');
     const note = document.getElementById('storageNote');
     const usedRow = document.getElementById('storageUsedRow');
+    const categories = Array.isArray(s.categories) ? s.categories : [];
 
     if (s.volume) {
       const total = s.volume.total_bytes;
@@ -57,19 +116,23 @@ async function fillStorage() {
       setText('storageTotal', fmtBytes(total));
       setText('storageUsed', `${fmtBytes(used)} (${Math.round(s.volume.used_percent)}%)`);
 
-      // Bar = [Madshare library][other disk usage][free]. Widths are % of total.
-      const libPct = total ? (lib / total) * 100 : 0;
+      // Bar = [audio][images][…][other disk usage][free]. The category segments
+      // sum to the library footprint; "other" is the rest of the disk's used
+      // space. Widths are % of total.
+      renderCategories(categories, total);
       const otherPct = total ? Math.max(0, (used - lib) / total * 100) : 0;
-      document.getElementById('storageBarLib').style.width = libPct.toFixed(2) + '%';
       document.getElementById('storageBarOther').style.width = otherPct.toFixed(2) + '%';
 
       meter.hidden = false;
       note.hidden = true;
       usedRow.hidden = false;
     } else {
+      // No whole-disk figure for object storage: still show the per-category
+      // footprint (the meaningful number), just no meter/disk-used row.
+      renderCategories(categories, 0);
       meter.hidden = true;
       note.hidden = false;
-      usedRow.hidden = true; // no whole-disk figure for object storage
+      usedRow.hidden = true;
     }
 
     document.getElementById('storageCard').hidden = false;

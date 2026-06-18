@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"daemonlord.ygg/madshare/api/storage"
 	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/prune"
@@ -322,33 +324,99 @@ type volumeStats struct {
 	UsedPercent float64 `json:"used_percent"`
 }
 
-// storageStatsResp is the body of GET /api/admin/storage. LibraryBytes (the
-// app's own footprint, from the DB) is meaningful for every backend; Volume is
-// the whole-disk capacity and is null when the backend has no fixed capacity.
+// storageCategory describes one disk-usage category and how to size it. Sizing
+// is hybrid: the audio category comes from the DB (DBSize — an indexed
+// byte_size sum, instant and always fresh), while images (and future video)
+// are walked on disk (Dir, via storage.DirSize) because their files carry no
+// byte size in the DB. Exactly one of DBSize / Dir is set. The list is built in
+// newHandler; adding video later is a single entry there.
+type storageCategory struct {
+	Name   string
+	Dir    string                               // walked with DirSize when set
+	DBSize func(context.Context) (int64, error) // DB-sourced size when set
+}
+
+// categoryUsage is one row of the storage response's per-category breakdown:
+// the bytes occupied by that category (logical size — filesystem-compression-
+// aware allocated sizing is intentionally out of scope; see storageStats).
+type categoryUsage struct {
+	Name  string `json:"name"`
+	Bytes uint64 `json:"bytes"`
+}
+
+// storageStatsResp is the body of GET /api/admin/storage. Categories is the
+// per-category footprint (audio, images, …) and LibraryBytes is their sum —
+// both meaningful for every backend. Volume is the whole-disk capacity and is
+// null when the backend has no fixed capacity (the future object-store path).
 type storageStatsResp struct {
-	Backend      string       `json:"backend"`
-	Location     string       `json:"location"`
-	LibraryBytes int64        `json:"library_bytes"`
-	Volume       *volumeStats `json:"volume"`
+	Backend      string          `json:"backend"`
+	Location     string          `json:"location"`
+	LibraryBytes uint64          `json:"library_bytes"`
+	Categories   []categoryUsage `json:"categories"`
+	Volume       *volumeStats    `json:"volume"`
 }
 
 // adminStorageStats handles GET /api/admin/storage. It merges the backend's
-// capacity (storage.Stats — disk statfs today) with the library's on-disk
-// footprint (DB SUM of byte_size) so the admin dashboard can show free/used
-// disk space and how much of it Madshare occupies.
+// capacity (storage.Stats — disk statfs today) with the library's per-category
+// footprint so the admin dashboard can show free/used disk space and how much
+// of it Madshare occupies, broken down by category (audio, images, …).
 func (h *handler) adminStorageStats(w http.ResponseWriter, r *http.Request) {
+	resp, err := h.storageStats(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// storageStats computes the storage breakdown: whole-volume capacity plus the
+// per-category footprint. Sizing is hybrid (DB for audio, walk for images), so
+// the audio figure is instant and always fresh; the image walk is small (few
+// files) and not cached. The sizes are logical (st_size / SUM(byte_size)), not
+// filesystem-allocated: the payload is already-compressed media + images, so
+// transparent FS compression saves negligibly and allocated sizing isn't worth
+// the platform-specific stat-block accounting (see docs/architecture/storage.md).
+func (h *handler) storageStats(ctx context.Context) (*storageStatsResp, error) {
 	st, err := h.storage.Stats()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
-		return
-	}
-	libBytes, err := h.repo.LibraryByteSize(r.Context())
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
-		return
+		return nil, err
 	}
 
-	resp := storageStatsResp{Backend: st.Backend, Location: st.Location, LibraryBytes: libBytes}
+	cats := make([]categoryUsage, 0, len(h.storageCategories))
+	var libBytes uint64
+	for _, c := range h.storageCategories {
+		var n uint64
+		if c.DBSize != nil {
+			v, err := c.DBSize(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if v > 0 {
+				n = uint64(v)
+			}
+		} else {
+			v, err := storage.DirSize(c.Dir)
+			if err != nil {
+				return nil, err
+			}
+			n = v
+		}
+		cats = append(cats, categoryUsage{Name: c.Name, Bytes: n})
+		libBytes += n
+	}
+
+	// The managed root (parent of the subtrees) is the meaningful "location";
+	// fall back to the backend's own location when files_dir wasn't wired.
+	location := h.filesDir
+	if location == "" {
+		location = st.Location
+	}
+	resp := &storageStatsResp{
+		Backend:      st.Backend,
+		Location:     location,
+		LibraryBytes: libBytes,
+		Categories:   cats,
+	}
 	if st.HasVolume {
 		var pct float64
 		if st.TotalBytes > 0 {
@@ -361,7 +429,7 @@ func (h *handler) adminStorageStats(w http.ResponseWriter, r *http.Request) {
 			UsedPercent: pct,
 		}
 	}
-	writeJSON(w, http.StatusOK, resp)
+	return resp, nil
 }
 
 // danglingJSON shapes DanglingRefs into {hash, filenames, reason} objects,

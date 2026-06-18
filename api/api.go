@@ -92,10 +92,18 @@ func (d Deps) newHandler() *handler {
 	// image; cover art is reachable only via /images. The store must be rooted
 	// at <FilesDir>/audio to match (see madshare.go and NewRouter).
 	h := &handler{
-		storage:       d.Store,
-		repo:          d.Repo,
-		cacheDir:      d.CacheDir,
-		imagesDir:     filepath.Join(d.FilesDir, "images"),
+		storage:   d.Store,
+		repo:      d.Repo,
+		cacheDir:  d.CacheDir,
+		imagesDir: filepath.Join(d.FilesDir, "images"),
+		filesDir:  d.FilesDir,
+		// Disk-usage categories. Audio is sized from the DB (instant, always
+		// fresh); images are walked on disk (no byte size tracked in the DB).
+		// Adding video later is a single entry here.
+		storageCategories: []storageCategory{
+			{Name: "audio", DBSize: d.Repo.LibraryByteSize},
+			{Name: "images", Dir: filepath.Join(d.FilesDir, "images")},
+		},
 		maxUploadSize: d.MaxUploadSize,
 		authzEnabled:  d.Auth != nil,
 		imagePool:     d.ImagePool,

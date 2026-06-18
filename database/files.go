@@ -15,10 +15,12 @@ import (
 // and review/staging queries intentionally do not use it.
 const visibleFile = "f.deleted_at IS NULL AND f.review_state = 'approved'"
 
-// LibraryByteSize returns the total on-disk footprint of stored blobs: the sum
+// LibraryByteSize returns the total logical byte size of stored blobs: the sum
 // of byte_size over every files row. Files are content-addressed (one row per
 // hash), so this is the deduplicated blob total. Trashed-but-not-yet-pruned
 // rows are included — their blobs still occupy the disk until a hard delete.
+// It backs the "audio" disk-usage category (files hold audio in v0); it is an
+// indexed sum, so it is instant and needs no caching, unlike the image walk.
 func (db *DB) LibraryByteSize(ctx context.Context) (int64, error) {
 	var total int64
 	err := db.QueryRowContext(ctx,
