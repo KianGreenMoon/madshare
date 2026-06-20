@@ -37,3 +37,19 @@ export function thresholdsFor(caseNames) {
 
 // Convenience: thresholds for the full case set.
 export const thresholds = thresholdsFor(Object.keys(PER_CASE));
+
+// capacityThresholds defines the "knee": looser SLOs that ABORT the ramp once
+// crossed, so capacity.js stops at the breaking point instead of running to the
+// ceiling. delayAbortEval rides out transient blips. Per-case budgets are kept
+// as non-aborting observability.
+export function capacityThresholds(caseNames) {
+  const t = {
+    http_req_failed: [{ threshold: 'rate<0.05', abortOnFail: true, delayAbortEval: '15s' }],
+    http_req_duration: [{ threshold: 'p(95)<1500', abortOnFail: true, delayAbortEval: '15s' }],
+    checks: ['rate>0.95'],
+  };
+  for (const name of caseNames) {
+    if (PER_CASE[name]) t[`http_req_duration{case:${name}}`] = PER_CASE[name];
+  }
+  return t;
+}
