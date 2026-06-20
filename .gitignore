@@ -1,4 +1,6 @@
 data/**
+# Local audio fixtures for the k6 test suite (TEST_AUDIO_DIR) — never committed.
+test_data/
 exe/
 CLAUDE.md
 .claude/
