@@ -4,7 +4,6 @@
 
 import http from 'k6/http';
 import { BASE_URL } from '../config/env.js';
-import { manifestNames } from './data.js';
 
 const MAX_ARTISTS = 8; // cap drill-down breadth so setup stays fast
 const MAX_ALBUMS = 12;
@@ -28,18 +27,10 @@ export function discover(tokens) {
     for (const t of tr) if (t.url) tracks.push({ url: t.url });
   }
 
-  // The delete case only reaps the suite's own uploads — files whose name is in
-  // the manifest. hashes are content-addressed and stable across re-upload.
-  const files = json(http.get(`${BASE_URL}/api/files`, auth(tokens.admin)));
-  const deletable = files
-    .filter((f) => manifestNames.includes(f.filename))
-    .map((f) => ({ hash: f.hash, filename: f.filename }));
-
   return {
     artistIds,
     albums,
     tracks,
-    deletable,
     searchTerms: buildSearchTerms(artists),
   };
 }

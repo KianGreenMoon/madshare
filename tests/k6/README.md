@@ -63,10 +63,10 @@ shape, and `TEST_AUDIO_DIR`.
   (paths relative to `TEST_AUDIO_DIR`). **Edit the manifest when you swap audio.**
   No audio is ever committed. If `TEST_AUDIO_DIR` is empty/absent the `upload`
   case simply no-ops, so read-only runs still work.
-- **delete** only reaps the suite's own uploads (files whose name is in the
-  manifest), so it never destroys the rest of the library. With auth configured,
-  uploads land as drafts; on a long run those drafts accumulate — prune the test
-  server between big runs if needed.
+- **delete** addresses files by their content hash (computed locally — the server
+  keys blobs by sha256 of the bytes), so it only ever reaps the manifest files the
+  `upload` case creates and never touches the rest of the library. A 404 is an
+  accepted outcome (the upload/delete churn means the file is often already gone).
 
 ## Layout
 

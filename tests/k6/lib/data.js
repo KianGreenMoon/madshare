@@ -4,6 +4,7 @@
 // TEST_AUDIO_DIR). Missing audio is tolerated — the upload case then no-ops, so
 // read-only runs work without any fixtures present.
 
+import crypto from 'k6/crypto';
 import { TEST_AUDIO_DIR } from '../config/env.js';
 
 const MIME = {
@@ -37,18 +38,19 @@ function safeOpen(path, mode) {
 // Manifest is committed config, so this open() must succeed.
 const manifest = JSON.parse(open('../config/audio-manifest.json'));
 
-// Filenames the suite uploads — also used to recognise the suite's own files
-// when the delete case picks what to reap (see discover.js).
-export const manifestNames = manifest.map(baseName);
-
 // Audio payloads, ready for http.file(). k6 shares the underlying buffers
-// across VUs, so loading them once at init is cheap.
+// across VUs, so loading them once at init is cheap. The server keys blobs by
+// sha256 of the bytes, so we compute the same hash here — the delete case then
+// targets exactly the suite's own uploads (see audioHashes) with no discovery.
 export const audioFiles = manifest
   .map((rel) => {
     const bin = safeOpen(`${TEST_AUDIO_DIR}/${rel}`, 'b');
-    return bin ? { name: baseName(rel), bin, type: mimeFor(rel) } : null;
+    return bin ? { name: baseName(rel), bin, type: mimeFor(rel), hash: crypto.sha256(bin, 'hex') } : null;
   })
   .filter(Boolean);
+
+// Content hashes (sha256 hex) of the fixtures — the delete case's targets.
+export const audioHashes = audioFiles.map((a) => a.hash);
 
 // pick returns a random element, or null for an empty/absent array.
 export function pick(arr) {
