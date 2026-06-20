@@ -6,11 +6,16 @@
 
 import { DURATION, PROFILE, PROFILE_PROC, ramp, perHour } from '../config/env.js';
 
-// Profiles are committed config; preload both so selection needs no dynamic path.
-const PROFILES = {
-  standard: JSON.parse(open('../config/profiles/standard.json')),
-  uploading: JSON.parse(open('../config/profiles/uploading.json')),
-};
+// Profiles are committed config. k6's runtime can't list a directory (no fs
+// readdir/glob, and open() reads a single named file), so config/profiles/
+// index.json is the manifest of available profile names — add a profile by
+// dropping <name>.json and adding its name there. We preload every listed
+// profile here so selection at use-time needs no I/O.
+const PROFILE_NAMES = JSON.parse(open('../config/profiles/index.json'));
+const PROFILES = {};
+for (const name of PROFILE_NAMES) {
+  PROFILES[name] = JSON.parse(open(`../config/profiles/${name}.json`));
+}
 
 export function loadProfile(name = PROFILE) {
   const p = PROFILES[name];

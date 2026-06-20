@@ -22,7 +22,10 @@ Three layers, each a separate entity, so the *traffic shape* lives apart from
    user does (browse, search, listen, upload, …). The building blocks.
 2. **Profiles** (`config/profiles/*.json`) — a *named* map of *case → requests per
    hour*. Pure data describing "normal traffic." A `PROFILE_PROC` multiplier scales
-   a whole profile (1.0 = as written, 0.75 = lighter, 1.25 = heavier).
+   a whole profile (1.0 = as written, 0.75 = lighter, 1.25 = heavier). The engine
+   loads profiles dynamically from `config/profiles/index.json` (k6 can't list a
+   directory), so adding a profile means dropping `<name>.json` and adding its name
+   to that index — no code change.
 3. **Scenarios** (`scenarios/`) — thin runners that execute a profile via one shared
    **engine** (`lib/engine.js`). Change the mix without touching scenarios; change
    the run style without touching the mix.
@@ -154,7 +157,7 @@ is heavy → dedicated test server only.
 ## Layout
 
 ```
-config/    env.js, options.js (thresholds), profiles/{standard,uploading}.json, audio-manifest.json
+config/    env.js, options.js (thresholds), profiles/{index.json,standard.json,uploading.json}, audio-manifest.json
 lib/       auth, http, discover, data, lifecycle (setup/teardown), engine, runner (case dispatch)
 cases/     browse, search, listen, playlists, admin_read, upload, delete
 scenarios/ smoke, load, upload, capacity
