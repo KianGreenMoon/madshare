@@ -3,6 +3,13 @@ data/**
 test_data/
 # Local k6 env file (copied from tests/k6/.env.example) — may hold credentials.
 tests/k6/.env
+# Playwright e2e suite: local deps, env (may hold credentials), generated artifacts.
+tests/playwright/node_modules/
+tests/playwright/.env
+tests/playwright/test-results/
+tests/playwright/playwright-report/
+tests/playwright/blob-report/
+tests/playwright/.auth/
 exe/
 CLAUDE.md
 .claude/
