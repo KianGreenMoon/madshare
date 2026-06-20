@@ -1,6 +1,8 @@
 data/**
 # Local audio fixtures for the k6 test suite (TEST_AUDIO_DIR) — never committed.
 test_data/
+# Local k6 env file (copied from tests/k6/.env.example) — may hold credentials.
+tests/k6/.env
 exe/
 CLAUDE.md
 .claude/
