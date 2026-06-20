@@ -3,7 +3,7 @@
 // steps. The abortOnFail thresholds stop the run at the breaking point, so the
 // last sustained stage tells you the max multiple of the profile the system
 // takes. Multiply the standard per_hour values by ~0.75 of that for the
-// regression profile (PLAN.md §7).
+// regression profile (see README "Deriving the profile").
 //
 //   k6 run -e BASE_URL=https://test.example.ygg tests/k6/scenarios/capacity.js
 //

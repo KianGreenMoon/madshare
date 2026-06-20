@@ -1,6 +1,6 @@
 // Authentication helpers used only in setup()/teardown().
 //
-// Strategy (PLAN.md §4): mint ONE bearer API token per role once, reuse it for
+// Strategy (see README): mint ONE bearer API token per role once, reuse it for
 // all VUs. Per-iteration login is avoided — it runs argon2id behind a global
 // 8-concurrent-verify cap and would measure the throttle, not the endpoint.
 

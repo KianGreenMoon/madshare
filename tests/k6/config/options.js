@@ -1,5 +1,5 @@
 // Shared k6 thresholds. Starting SLOs — re-baseline after the first capacity
-// run (PLAN.md §10). Requests are tagged by user case, so per-case thresholds
+// run (see README). Requests are tagged by user case, so per-case thresholds
 // use the {case:...} sub-metric selector.
 //
 // http_req_failed stays meaningful because upload/delete mark their expected

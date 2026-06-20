@@ -2,7 +2,7 @@
 // sensible default, so pointing at another server / tuning load is a one-line
 // change (`-e KEY=val` or an exported OS env var — k6 reads both via __ENV).
 //
-// See ../PLAN.md and ../README.md for the meaning of each.
+// See ../README.md for the meaning of each.
 
 export const BASE_URL = __ENV.BASE_URL || 'http://localhost:3000';
 
