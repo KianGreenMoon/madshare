@@ -43,19 +43,42 @@ UI. (The health probe needs the native HTTP layer to bypass CORS, so in a plain
 browser it degrades to "unreachable" unless the server enables CORS — the gate
 and hand-off still work.)
 
-## Build the Android app (needs the Android SDK)
+## Build the APK (aarch64 host, e.g. Asahi)
 
-> **Not yet runnable on this machine** — no Android SDK is installed
-> (`ANDROID_HOME` unset) and this is aarch64. Install Android command-line tools
-> + platform/build-tools and set `ANDROID_HOME` first.
+There is **no native aarch64 Android SDK** — Google ships `aapt2` (the only
+x86_64-only tool in the build) for x86_64 only. The supported path here is to run
+the Gradle build inside an **x86_64 container** while the Capacitor scaffolding
+runs natively on the host's aarch64 Node. `build/build-apk.sh` does both:
 
 ```bash
 cd mobile
-npm install
-npx cap add android        # generates mobile/android/ (gitignored)
-npx cap sync android
-npx cap open android       # or: cd android && ./gradlew assembleDebug
+./build/build-apk.sh
 ```
+
+It runs `cap add`/`cap sync` natively, then `gradlew assembleDebug` in the
+`build/Dockerfile` amd64 image (under podman + qemu). Output:
+`android/app/build/outputs/apk/debug/app-debug.apk`.
+
+### One-time: let containers run x86_64 on this host
+
+This machine emulates x86 with **FEX + muvm** behind a binfmt *dispatcher*, which
+shadows the static `qemu-x86_64` handler that container builds need. If the
+script reports `amd64 containers can't exec`, enable qemu for containers
+(reversible) and re-run:
+
+```bash
+echo 0 | sudo tee /proc/sys/fs/binfmt_misc/binfmt-dispatcher-x86_64
+echo 0 | sudo tee /proc/sys/fs/binfmt_misc/FEX-x86_64
+# build, then restore your normal x86 emulation:
+sudo systemctl restart systemd-binfmt
+```
+
+The first container build is slow (emulated `apt` + `sdkmanager`); the image and
+the `madshare-gradle-cache` volume are reused afterwards.
+
+> On an x86_64 machine (or CI) none of this applies — just
+> `npm install && npx cap add android && cd android && ./gradlew assembleDebug`
+> with a stock SDK. The `android/` dir is gitignored and fully regenerable.
 
 ### Cleartext (added when the android/ project exists)
 
