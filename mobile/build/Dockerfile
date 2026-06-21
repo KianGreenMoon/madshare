@@ -7,7 +7,7 @@
 # executes it with a consistent x86_64 rootfs and no -L hacks.
 #
 # Built and run under podman with --platform linux/amd64. See build-apk.sh.
-FROM --platform=linux/amd64 eclipse-temurin:17-jdk-jammy
+FROM --platform=linux/amd64 docker.io/library/eclipse-temurin:17-jdk-jammy
 
 ENV ANDROID_SDK_ROOT=/opt/android-sdk \
     ANDROID_HOME=/opt/android-sdk \
