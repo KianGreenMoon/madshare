@@ -138,26 +138,42 @@ starting SLOs after your first capacity run.
   seeding, no fixtures in the repo.
 - **Uploads** read audio from `TEST_AUDIO_DIR` (default: the repo's gitignored
   `test_data/`). Because k6 cannot list a directory, the files actually opened are
-  those named in [`config/audio-manifest.json`](./config/audio-manifest.json)
-  (paths relative to `TEST_AUDIO_DIR`). **Edit the manifest when you swap audio.**
-  No audio is ever committed. If a fixture is absent the `upload` case no-ops, so
-  read-only runs work without any audio.
+  those named in `config/audio-manifest.json` (paths relative to `TEST_AUDIO_DIR`).
+  That manifest is **gitignored and generated** — it carries your local audio
+  names; only [`audio-manifest.json.example`](./config/audio-manifest.json.example)
+  is committed. Generate (or refresh, after swapping audio) with:
+
+  ```bash
+  ./prepare-data.sh                 # scans <repo>/test_data
+  ./prepare-data.sh /path/to/audio  # or an explicit dir (prefer absolute)
+  ```
+
+  No audio is ever committed. **Without a generated manifest** the suite falls
+  back to the committed `.example` and prints a one-line warning; its placeholder
+  names don't resolve to real files, so the `upload` case no-ops and **read-only
+  runs work with zero setup**.
 - **delete** addresses files by content hash (computed locally — the server keys
   blobs by `sha256` of the bytes), so it only ever reaps the manifest files the
   `upload` case creates, never the rest of the library. A 404 is accepted (the
-  upload/delete churn means the file is often already gone).
+  upload/delete churn means the file is often already gone). **The `delete` case is
+  forced inert unless a real, generated manifest is present** — running off the
+  `.example` it has no targets and cannot remove any server content.
 
 ## Safety
 
 The suite runs **only against a disposable test environment** — so `delete` (incl.
-hard delete) on test data is fine, and there are no "are you sure" guards. `prune`
-(the destructive single-job admin op) is **not** a case and never runs. `capacity`
-is heavy → dedicated test server only.
+hard delete) on test data is fine, and there are no "are you sure" guards. As a
+backstop, `delete` only ever targets the hashes of the suite's **own** generated-
+manifest uploads, and is **forced inert** when no real manifest exists (running
+off the committed `.example`), so a misconfigured run can't degrade server data.
+`prune` (the destructive single-job admin op) is **not** a case and never runs.
+`capacity` is heavy → dedicated test server only.
 
 ## Layout
 
 ```
-config/    env.js, options.js (thresholds), profiles/{index.json,standard.json,uploading.json}, audio-manifest.json
+prepare-data.sh  generates config/audio-manifest.json from TEST_AUDIO_DIR
+config/    env.js, options.js (thresholds), profiles/{index.json,standard.json,uploading.json}, audio-manifest.json.example
 lib/       auth, http, discover, data, lifecycle (setup/teardown), engine, runner (case dispatch)
 cases/     browse, search, listen, playlists, admin_read, upload, delete
 scenarios/ smoke, load, upload, capacity
