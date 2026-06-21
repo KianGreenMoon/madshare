@@ -10,6 +10,7 @@ import (
 	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/config"
 	"daemonlord.ygg/madshare/database"
+	"daemonlord.ygg/madshare/prune"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
@@ -38,14 +39,28 @@ type Deps struct {
 	// is enqueued so an idle worker wakes immediately. Optional; nil skips the
 	// wake (tests / open embeddings).
 	MediaPool interface{ Notify() }
+	// PruneManager owns the single, process-global Verify & Prune background job
+	// (start / status / cancel). When nil, the prune endpoints respond 503 — the
+	// running server always wires it (see madshare.go); tests that exercise prune
+	// construct one explicitly.
+	PruneManager *prune.Manager
 	// UploadLimiter, when set, gates concurrent uploads (global + per-user caps
 	// from [storage]). Optional; nil disables the gate.
 	UploadLimiter *UploadLimiter
 	// UIConfig is the parsed webui.toml served at GET /api/ui/config. When nil,
 	// the handler falls back to config.DefaultUIConfig().
 	UIConfig *config.UIConfig
-	// SourceRoot is the project root directory used to build the AGPL source
-	// archive served at GET /source. Empty string disables the endpoint.
+	// SourceArchive, when non-nil, is the prebuilt AGPL source tar.gz embedded
+	// into the binary at build time (make build, -tags embedsource). It is
+	// served verbatim at GET /source, so the endpoint works with no working
+	// tree. When nil, the archive is built from git ls-files in SourceRoot.
+	SourceArchive []byte
+	// LicenseText, when non-nil, is the embedded AGPL LICENSE served at
+	// GET /license. When nil, the handler reads <SourceRoot>/LICENSE.md.
+	LicenseText []byte
+	// SourceRoot is the working directory used as the git ls-files / LICENSE.md
+	// fallback for /source and /license when nothing is embedded (dev builds).
+	// With no embedded data and an empty SourceRoot, both endpoints are disabled.
 	SourceRoot string
 }
 
@@ -81,15 +96,21 @@ func (d Deps) newHandler() *handler {
 		repo:          d.Repo,
 		cacheDir:      d.CacheDir,
 		imagesDir:     filepath.Join(d.FilesDir, "images"),
+		filesDir:      d.FilesDir,
 		maxUploadSize: d.MaxUploadSize,
 		authzEnabled:  d.Auth != nil,
 		imagePool:     d.ImagePool,
 		mediaPool:     d.MediaPool,
+		pruneMgr:      d.PruneManager,
 		limiter:       d.UploadLimiter,
 		uiConfig:      d.UIConfig,
 	}
-	if d.SourceRoot != "" {
-		h.source = &sourceArchiver{root: d.SourceRoot}
+	if d.SourceArchive != nil || d.LicenseText != nil || d.SourceRoot != "" {
+		h.source = &sourceArchiver{
+			prebuilt:        d.SourceArchive,
+			licensePrebuilt: d.LicenseText,
+			root:            d.SourceRoot,
+		}
 	}
 	return h
 }
@@ -200,6 +221,8 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		fileDelete := d.protect(auth.PermFileDelete)
 		r.With(fileDelete).Delete("/files/{hash}", h.adminDeleteFile)
 		r.With(fileDelete).Post("/prune", h.adminPrune)
+		r.With(fileDelete).Get("/prune/status", h.adminPruneStatus)
+		r.With(fileDelete).Post("/prune/cancel", h.adminPruneCancel)
 		r.With(fileDelete).Get("/storage", h.adminStorageStats)
 		r.With(fileDelete).Get("/trash", h.adminTrashList)
 		r.With(fileDelete).Delete("/trash/{hash}", h.adminTrashHardDelete)

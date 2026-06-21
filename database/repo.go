@@ -24,9 +24,10 @@ type Repository interface {
 	// joined with their first filename and media metadata.
 	ListFiles(ctx context.Context) ([]*FileListEntry, error)
 
-	// LibraryByteSize returns the total on-disk footprint of stored blobs
-	// (SUM of byte_size over every files row, trashed-but-unpruned included).
-	LibraryByteSize(ctx context.Context) (int64, error)
+	// StorageByteBreakdown partitions the files table's logical byte_size total
+	// by state (live library / on review / in trash). Backs the audio, review,
+	// and trash disk-usage categories (see adminStorageStats).
+	StorageByteBreakdown(ctx context.Context) (StorageByteBreakdown, error)
 
 	// ListArtists returns one entry per effective artist name, ordered
 	// alphabetically. album_artist is preferred over artist for grouping.

@@ -1,0 +1,13 @@
+{
+  "name": "standard",
+  "note": "requests/hour per user case. Balanced everyday traffic; upload == delete so the library self-balances. Numbers are placeholders — set real ones from capacity.js.",
+  "cases": {
+    "browse":     { "role": "user",     "per_hour": 3000 },
+    "listen":     { "role": "user",     "per_hour": 1500 },
+    "search":     { "role": "user",     "per_hour": 600  },
+    "playlists":  { "role": "user",     "per_hour": 300  },
+    "admin_read": { "role": "admin",    "per_hour": 120  },
+    "upload":     { "role": "uploader", "per_hour": 60   },
+    "delete":     { "role": "admin",    "per_hour": 60   }
+  }
+}

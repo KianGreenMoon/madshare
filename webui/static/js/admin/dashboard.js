@@ -19,10 +19,101 @@ function setText(id, text) {
   if (node) node.textContent = text;
 }
 
+// Show an "in progress" badge on the Verify & Prune card when the single prune
+// job is running, so the running state is visible without opening the page.
+async function fillPruneStatus() {
+  try {
+    const res = await fetch(`${API}/api/admin/prune/status`);
+    if (!res.ok) return; // lacks file.delete — leave the badge hidden
+    const snap = await res.json();
+    const badge = document.getElementById('pruneRunning');
+    if (badge) badge.hidden = snap.state !== 'running';
+  } catch { /* network error — leave the badge hidden */ }
+}
+
+// Colors for the per-category bar segments + swatches. Known categories get a
+// stable color; anything unknown (a future category the server adds before the
+// UI knows about it) cycles through the fallbacks. Values are CSS vars so they
+// follow the theme (defined in admin-dashboard.css).
+const CATEGORY_COLORS = {
+  audio: 'var(--accent)',
+  images: 'var(--storage-cat-images)',
+  review: 'var(--storage-cat-review)',
+  trash: 'var(--storage-cat-trash)',
+  video: 'var(--storage-cat-video)',
+};
+const CATEGORY_FALLBACKS = ['var(--storage-cat-alt1)', 'var(--storage-cat-alt2)', 'var(--storage-cat-alt3)'];
+
+function categoryColor(name, i) {
+  return CATEGORY_COLORS[name] || CATEGORY_FALLBACKS[i % CATEGORY_FALLBACKS.length];
+}
+
+// Display labels for categories whose name doesn't title-case nicely.
+const CATEGORY_LABELS = { review: 'On review', trash: 'In trash' };
+
+// Label a category for display: a friendly override, else title-case the name
+// ("audio" -> "Audio").
+function categoryLabel(name) {
+  if (CATEGORY_LABELS[name]) return CATEGORY_LABELS[name];
+  return name ? name.charAt(0).toUpperCase() + name.slice(1) : '—';
+}
+
+// Render the per-category bar segments + detail rows from s.categories. Each
+// category becomes a colored bar segment (before the rest-of-disk "other"
+// segment) and a swatch+bytes detail row (before the "Madshare total" row).
+// Idempotent: prior dynamic nodes are cleared first.
+//
+// Segment widths are % of totalBytes (the disk), but collectively capped at
+// budgetBytes — the clamped library footprint that the sibling "other" segment
+// also respects. They normally match the raw category bytes (budget == footprint),
+// but when the logical footprint exceeds the disk's df-style used (logical vs.
+// filesystem-allocated bytes — FS compression / sparse / different mount), the
+// segments are scaled down proportionally so the bar can't overrun the track.
+// The detail rows always show the true (unscaled) byte figures.
+function renderCategories(categories, totalBytes, budgetBytes) {
+  const bar = document.getElementById('storageBar');
+  const other = document.getElementById('storageBarOther');
+  const detail = document.getElementById('storageDetail');
+  const totalRow = document.getElementById('storageTotalRow');
+
+  bar.querySelectorAll('.storage-bar-cat').forEach((n) => n.remove());
+  detail.querySelectorAll('.storage-cat-row').forEach((n) => n.remove());
+
+  const footprint = categories.reduce((sum, c) => sum + (c.bytes || 0), 0);
+
+  categories.forEach((c, i) => {
+    const color = categoryColor(c.name, i);
+
+    // Share of the (clamped) library budget, expressed as % of the whole disk.
+    const widthPct = (totalBytes > 0 && footprint > 0)
+      ? (c.bytes / footprint) * (budgetBytes / totalBytes) * 100
+      : 0;
+    const seg = document.createElement('div');
+    seg.className = 'storage-bar-seg storage-bar-cat';
+    seg.style.background = color;
+    seg.style.width = widthPct.toFixed(2) + '%';
+    bar.insertBefore(seg, other);
+
+    const row = document.createElement('div');
+    row.className = 'storage-detail-row storage-cat-row';
+    const dt = document.createElement('dt');
+    const swatch = document.createElement('span');
+    swatch.className = 'storage-swatch';
+    swatch.style.background = color;
+    swatch.setAttribute('aria-hidden', 'true');
+    dt.append(swatch, document.createTextNode(categoryLabel(c.name)));
+    const dd = document.createElement('dd');
+    dd.textContent = fmtBytes(c.bytes);
+    row.append(dt, dd);
+    detail.insertBefore(row, totalRow);
+  });
+}
+
 // Storage panel: free/used disk space for the files volume + Madshare's own
-// footprint. Gated like the other admin endpoints; on a 403/error the card
-// stays hidden. An object-store backend (future S3) returns volume=null, so we
-// drop the meter and show only the library figure.
+// footprint, broken down by category (audio, images, …). Gated like the other
+// admin endpoints; on a 403/error the card stays hidden. An object-store backend
+// (future S3) returns volume=null, so we drop the meter and show only the
+// per-category breakdown.
 async function fillStorage() {
   try {
     const res = await fetch(`${API}/api/admin/storage`);
@@ -36,6 +127,7 @@ async function fillStorage() {
     const meter = document.getElementById('storageMeter');
     const note = document.getElementById('storageNote');
     const usedRow = document.getElementById('storageUsedRow');
+    const categories = Array.isArray(s.categories) ? s.categories : [];
 
     if (s.volume) {
       const total = s.volume.total_bytes;
@@ -45,19 +137,25 @@ async function fillStorage() {
       setText('storageTotal', fmtBytes(total));
       setText('storageUsed', `${fmtBytes(used)} (${Math.round(s.volume.used_percent)}%)`);
 
-      // Bar = [Madshare library][other disk usage][free]. Widths are % of total.
-      const libPct = total ? (lib / total) * 100 : 0;
+      // Bar = [audio][images][…][other disk usage][free]. The category segments
+      // collectively fill the (clamped) library footprint `lib`; "other" is the
+      // rest of the disk's used space. Passing `lib` as the budget keeps the
+      // segments and "other" consistent even when the logical footprint exceeds
+      // disk-used (then both shrink to fit). Widths are % of total.
+      renderCategories(categories, total, lib);
       const otherPct = total ? Math.max(0, (used - lib) / total * 100) : 0;
-      document.getElementById('storageBarLib').style.width = libPct.toFixed(2) + '%';
       document.getElementById('storageBarOther').style.width = otherPct.toFixed(2) + '%';
 
       meter.hidden = false;
       note.hidden = true;
       usedRow.hidden = false;
     } else {
+      // No whole-disk figure for object storage: still show the per-category
+      // footprint (the meaningful number), just no meter/disk-used row.
+      renderCategories(categories, 0, 0);
       meter.hidden = true;
       note.hidden = false;
-      usedRow.hidden = true; // no whole-disk figure for object storage
+      usedRow.hidden = true;
     }
 
     document.getElementById('storageCard').hidden = false;
@@ -68,6 +166,7 @@ async function fillStorage() {
   const identity = await bootAdmin();
   if (!identity) return;
   fillStorage();
+  fillPruneStatus();
   fillCount('countFiles', '/api/files');
   fillCount('countModeration', '/api/admin/moderation');
   fillCount('countTrash', '/api/admin/trash');

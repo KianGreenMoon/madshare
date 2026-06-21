@@ -1,0 +1,8 @@
+{
+  "name": "uploading",
+  "note": "heavy ingest period — upload-weighted, still self-balanced (upload == delete).",
+  "cases": {
+    "upload": { "role": "uploader", "per_hour": 1200 },
+    "delete": { "role": "admin",    "per_hour": 1200 }
+  }
+}

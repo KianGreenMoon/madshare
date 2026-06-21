@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"flag"
 	"log"
@@ -22,10 +23,23 @@ import (
 	"daemonlord.ygg/madshare/imageproc"
 	"daemonlord.ygg/madshare/media"
 	"daemonlord.ygg/madshare/mediaproc"
+	"daemonlord.ygg/madshare/prune"
 	"daemonlord.ygg/madshare/webui"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
+
+// licenseText is the AGPL LICENSE, embedded unconditionally so GET /license
+// works in every build with no working tree.
+//
+//go:embed LICENSE.md
+var licenseText []byte
+
+// embeddedSourceTGZ is the AGPL source archive served at GET /source. It is nil
+// here and overridden only in release builds (-tags embedsource, see source.go),
+// where it holds the embedded source.tar.gz; dev builds leave it nil and fall
+// back to building the archive from git ls-files in the CWD.
+var embeddedSourceTGZ []byte
 
 func main() {
 	configPath := flag.String("config", "madshare.toml", "path to config file")
@@ -192,13 +206,19 @@ func main() {
 		cfg.Storage.UserMaxParallelWorkers,
 	)
 
+	// The single, process-global Verify & Prune job. Detached from request and
+	// shutdown contexts; graceful shutdown waits for an in-flight run below. It
+	// shares the audio blob store with the API.
+	audioStore := storage.NewLocal(audioDir)
+	pruneMgr := prune.New(db, audioStore, db)
+
 	sourceRoot, err := os.Getwd()
 	if err != nil {
 		log.Printf("warning: cannot determine working directory for source archive: %v", err)
 	}
 
 	deps := api.Deps{
-		Store:         storage.NewLocal(audioDir),
+		Store:         audioStore,
 		Repo:          db,
 		CacheDir:      os.TempDir(),
 		FilesDir:      filesDir,
@@ -207,8 +227,11 @@ func main() {
 		Manage:        db,
 		ImagePool:     pool,
 		MediaPool:     mediaPool,
+		PruneManager:  pruneMgr,
 		UploadLimiter: limiter,
 		UIConfig:      uiCfg,
+		SourceArchive: embeddedSourceTGZ,
+		LicenseText:   licenseText,
 		SourceRoot:    sourceRoot,
 	}
 
@@ -234,6 +257,13 @@ func main() {
 		})
 	}
 	wg.Wait()
+	// Let a running Verify & Prune finish rather than killing it mid-pass (a hard
+	// kill is still safe — prune is idempotent and re-runnable). A long deep prune
+	// can hold shutdown here; an admin who needs an immediate exit can Cancel it.
+	if pruneMgr.Running() {
+		log.Println("Waiting for in-progress prune to finish...")
+	}
+	pruneMgr.Wait()
 	log.Println("End!")
 }
 

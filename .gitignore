@@ -1,4 +1,17 @@
 data/**
+# Local audio fixtures for the k6 test suite (TEST_AUDIO_DIR) — never committed.
+test_data/
+# Local k6 env file (copied from tests/k6/.env.example) — may hold credentials.
+tests/k6/.env
+# Generated k6 audio manifest (./prepare-data.sh from TEST_AUDIO_DIR) — local audio names.
+tests/k6/config/audio-manifest.json
+# Playwright e2e suite: local deps, env (may hold credentials), generated artifacts.
+tests/playwright/node_modules/
+tests/playwright/.env
+tests/playwright/test-results/
+tests/playwright/playwright-report/
+tests/playwright/blob-report/
+tests/playwright/.auth/
 exe/
 CLAUDE.md
 .claude/
@@ -7,3 +20,6 @@ webui.toml
 
 # Compiled binary (e.g. `make build` / `go build -o madshare`)
 /madshare
+
+# Generated AGPL source archive embedded by `make build` (-tags embedsource)
+/source.tar.gz

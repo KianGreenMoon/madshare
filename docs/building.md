@@ -7,8 +7,12 @@ listener/route-group model the variants rely on, see
 
 ## Prerequisites
 
-- **Go 1.26+** (see the `go` directive in [`go.mod`](../go.mod)). It is the only
-  build-time dependency.
+- **Go 1.26+** (see the `go` directive in [`go.mod`](../go.mod)) — all a plain
+  `go build` needs.
+- **git** — required only by `make build`, which embeds the AGPL Corresponding
+  Source via `git archive HEAD` and stamps the version via `git describe`. A
+  plain `go build`/`go run` needs no git: it embeds no source archive, and
+  `/source` then falls back to a runtime `git ls-files` (see below).
 - **No C toolchain / no cgo.** SQLite is provided by the pure-Go
   [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite) driver, so there
   is no system-SQLite or cgo requirement. Builds work with `CGO_ENABLED=0` and
@@ -58,9 +62,14 @@ source tree at runtime. Note the distinction:
   relative to the **current working directory** when the server starts. Launch
   the process from a stable directory (or use absolute paths in the config; the
   systemd unit pins `WorkingDirectory`).
-- **`GET /source` archive** — built at startup from `git ls-files` in the CWD, so
-  that endpoint only produces output when the process is started inside a git
-  checkout. It is disabled (404) otherwise; it does not affect the build.
+- **`GET /source` archive (AGPL §13)** — `make build` embeds it into the binary
+  (`git archive HEAD` → `source.tar.gz`, baked in via `//go:embed` under
+  `-tags embedsource`), so an installed binary serves its own Corresponding
+  Source with no working tree. A plain `go build`/`go run` omits the tag and
+  falls back to building the archive at runtime from `git ls-files` in the CWD
+  (output only when started inside a git checkout, 404 otherwise). The bundled
+  `LICENSE.md` served at `GET /license` is embedded unconditionally and always
+  available. See [`docs/api/source.md`](api/source.md).
 
 ## Version stamping
 
@@ -95,9 +104,11 @@ even that is unavailable, e.g. a `-buildvcs=false` build).
 
 ## Build variants
 
-There is exactly one build tag (`nowebui`); the server-only / UI-only split is
-otherwise a *runtime* choice driven by each listener's `serve` route groups. The
-two axes are independent.
+`nowebui` is the only build tag you choose by hand; the server-only / UI-only
+split is otherwise a *runtime* choice driven by each listener's `serve` route
+groups. The two axes are independent. (A second tag, `embedsource`, bakes the
+AGPL source archive into the binary, but the `Makefile` manages it for every
+`make build` — you don't set it manually. See the `/source` note above.)
 
 ### Full stack (default)
 

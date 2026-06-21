@@ -170,10 +170,34 @@ func TestAdminDeleteFile_DBErrorReturns500(t *testing.T) {
 
 // ---- adminStorageStats -------------------------------------------------------
 
+// writeFileN writes a file of exactly n bytes at path, creating parents.
+func writeFileN(t *testing.T, path string, n int) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, make([]byte, n), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAdminStorageStats(t *testing.T) {
-	repo := &fakeRepo{libraryBytes: 4096}
-	dir := t.TempDir()
-	h := &handler{storage: storage.NewLocal(dir), repo: repo, cacheDir: t.TempDir(), maxUploadSize: testMaxUpload}
+	filesDir := t.TempDir()
+	imagesDir := filepath.Join(filesDir, "images")
+	// Hybrid sizing: the files-table categories come from the DB breakdown
+	// (audio=3000, review=700, trash=300); images are walked on disk
+	// (1000 + 500 = 1500 across two variant files).
+	writeFileN(t, filepath.Join(imagesDir, "key", "small_crop.jpg"), 1000)
+	writeFileN(t, filepath.Join(imagesDir, "key", "small_fit.jpg"), 500)
+
+	repo := &fakeRepo{breakdown: database.StorageByteBreakdown{Library: 3000, Review: 700, Trash: 300}}
+	h := &handler{
+		storage:   storage.NewLocal(filepath.Join(filesDir, storage.AudioSubdir)),
+		repo:      repo,
+		filesDir:  filesDir,
+		imagesDir: imagesDir,
+		cacheDir:  t.TempDir(), maxUploadSize: testMaxUpload,
+	}
 
 	rr := httptest.NewRecorder()
 	h.adminStorageStats(rr, httptest.NewRequest(http.MethodGet, "/api/admin/storage", nil))
@@ -183,8 +207,12 @@ func TestAdminStorageStats(t *testing.T) {
 	var resp struct {
 		Backend      string `json:"backend"`
 		Location     string `json:"location"`
-		LibraryBytes int64  `json:"library_bytes"`
-		Volume       *struct {
+		LibraryBytes uint64 `json:"library_bytes"`
+		Categories   []struct {
+			Name  string `json:"name"`
+			Bytes uint64 `json:"bytes"`
+		} `json:"categories"`
+		Volume *struct {
 			TotalBytes  uint64  `json:"total_bytes"`
 			FreeBytes   uint64  `json:"free_bytes"`
 			UsedBytes   uint64  `json:"used_bytes"`
@@ -197,8 +225,21 @@ func TestAdminStorageStats(t *testing.T) {
 	if resp.Backend != "local" {
 		t.Errorf("backend = %q, want local", resp.Backend)
 	}
-	if resp.LibraryBytes != 4096 {
-		t.Errorf("library_bytes = %d, want 4096", resp.LibraryBytes)
+	if resp.Location != filesDir {
+		t.Errorf("location = %q, want %q", resp.Location, filesDir)
+	}
+	want := map[string]uint64{"audio": 3000, "review": 700, "trash": 300, "images": 1500}
+	got := map[string]uint64{}
+	for _, c := range resp.Categories {
+		got[c.Name] = c.Bytes
+	}
+	for name, n := range want {
+		if got[name] != n {
+			t.Errorf("category %q = %d bytes, want %d", name, got[name], n)
+		}
+	}
+	if resp.LibraryBytes != 5500 {
+		t.Errorf("library_bytes = %d, want 5500 (sum of categories)", resp.LibraryBytes)
 	}
 	if resp.Volume == nil {
 		t.Skip("no volume reported on this platform")
@@ -211,10 +252,38 @@ func TestAdminStorageStats(t *testing.T) {
 	}
 }
 
-// TestAdminStorageStats_DBErrorReturns500 forces the library-size query to fail.
+// TestAdminStorageStats_WalkErrorReturns500 forces the images walk to fail by
+// pointing imagesDir below a regular file (ENOTDIR).
+func TestAdminStorageStats_WalkErrorReturns500(t *testing.T) {
+	filesDir := t.TempDir()
+	regular := filepath.Join(filesDir, "not-a-dir")
+	writeFileN(t, regular, 1)
+
+	h := &handler{
+		storage:   storage.NewLocal(filepath.Join(filesDir, storage.AudioSubdir)),
+		repo:      &fakeRepo{},
+		filesDir:  filesDir,
+		imagesDir: filepath.Join(regular, "sub"), // below a regular file → walk errors
+		cacheDir:  t.TempDir(), maxUploadSize: testMaxUpload,
+	}
+
+	rr := httptest.NewRecorder()
+	h.adminStorageStats(rr, httptest.NewRequest(http.MethodGet, "/api/admin/storage", nil))
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rr.Code)
+	}
+}
+
+// TestAdminStorageStats_DBErrorReturns500 forces the DB breakdown query to fail.
 func TestAdminStorageStats_DBErrorReturns500(t *testing.T) {
-	repo := &fakeRepo{libraryBytesErr: context.DeadlineExceeded}
-	h := &handler{storage: storage.NewLocal(t.TempDir()), repo: repo, cacheDir: t.TempDir(), maxUploadSize: testMaxUpload}
+	filesDir := t.TempDir()
+	h := &handler{
+		storage:   storage.NewLocal(filepath.Join(filesDir, storage.AudioSubdir)),
+		repo:      &fakeRepo{breakdownErr: context.DeadlineExceeded},
+		filesDir:  filesDir,
+		imagesDir: filepath.Join(filesDir, "images"),
+		cacheDir:  t.TempDir(), maxUploadSize: testMaxUpload,
+	}
 
 	rr := httptest.NewRecorder()
 	h.adminStorageStats(rr, httptest.NewRequest(http.MethodGet, "/api/admin/storage", nil))
@@ -226,7 +295,7 @@ func TestAdminStorageStats_DBErrorReturns500(t *testing.T) {
 // ---- adminPrune --------------------------------------------------------------
 
 // pruneReq builds a POST /api/admin/prune request with the given JSON body
-// (pass nil for an empty body = dry run).
+// (pass nil for an empty body = scan).
 func pruneReq(body []byte) *http.Request {
 	var r *http.Request
 	if body == nil {
@@ -237,9 +306,37 @@ func pruneReq(body []byte) *http.Request {
 	return r
 }
 
-func TestAdminPrune_DryRunReportsDangling(t *testing.T) {
+// startPrune fires adminPrune, asserts the start status code, then blocks until
+// the detached job finishes — the prune is now async (202 + a background run), so
+// tests start it and Wait rather than reading a synchronous result.
+func startPrune(t *testing.T, h *handler, body []byte, wantStatus int) {
+	t.Helper()
+	rr := httptest.NewRecorder()
+	h.adminPrune(rr, pruneReq(body))
+	if rr.Code != wantStatus {
+		t.Fatalf("start status = %d, want %d; body: %s", rr.Code, wantStatus, rr.Body.String())
+	}
+	h.pruneMgr.Wait()
+}
+
+// pruneStatus reads GET /api/admin/prune/status as a decoded map.
+func pruneStatus(t *testing.T, h *handler) map[string]any {
+	t.Helper()
+	rr := httptest.NewRecorder()
+	h.adminPruneStatus(rr, httptest.NewRequest(http.MethodGet, "/api/admin/prune/status", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200", rr.Code)
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	return resp
+}
+
+func TestAdminPrune_ScanReportsDangling(t *testing.T) {
 	h, _, base := newTestHandler(t)
-	healthy := uploadAudio(t, h, "healthy.mp3", []byte("healthy"))
+	uploadAudio(t, h, "healthy.mp3", []byte("healthy"))
 	dangling := uploadAudio(t, h, "gone.mp3", []byte("dangling"))
 
 	// Delete the dangling blob on disk so its DB row is now dangling.
@@ -247,53 +344,40 @@ func TestAdminPrune_DryRunReportsDangling(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rr := httptest.NewRecorder()
-	h.adminPrune(rr, pruneReq([]byte(`{"confirm":false}`)))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	startPrune(t, h, []byte(`{"confirm":false}`), http.StatusAccepted)
+
+	snap := pruneStatus(t, h)
+	if snap["state"] != "idle" {
+		t.Errorf("state = %v, want idle after scan finished", snap["state"])
 	}
-	var resp struct {
-		OK            bool `json:"ok"`
-		DryRun        bool `json:"dry_run"`
-		Scanned       int  `json:"scanned"`
-		DanglingCount int  `json:"dangling_count"`
-		Dangling      []struct {
-			Hash      string   `json:"hash"`
-			Filenames []string `json:"filenames"`
-		} `json:"dangling"`
+	res, _ := snap["last_result"].(map[string]any)
+	if res == nil || res["kind"] != "scan" {
+		t.Fatalf("last_result = %v, want a scan detail", snap["last_result"])
 	}
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
+	if got := res["scanned"]; got != float64(2) {
+		t.Errorf("scanned = %v, want 2", got)
 	}
-	if !resp.OK || !resp.DryRun {
-		t.Errorf("resp ok=%v dry_run=%v, want both true", resp.OK, resp.DryRun)
+	dl, _ := res["dangling"].([]any)
+	if len(dl) != 1 {
+		t.Fatalf("dangling = %v, want one entry", res["dangling"])
 	}
-	if resp.Scanned != 2 {
-		t.Errorf("scanned = %d, want 2", resp.Scanned)
-	}
-	if resp.DanglingCount != 1 || len(resp.Dangling) != 1 || resp.Dangling[0].Hash != dangling {
-		t.Errorf("dangling = %+v, want one entry for %s", resp.Dangling, dangling)
+	if first, _ := dl[0].(map[string]any); first["hash"] != dangling {
+		t.Errorf("dangling hash = %v, want %s", first["hash"], dangling)
 	}
 
-	// Dry run deletes nothing: the healthy file is still listed.
+	// Scan deletes nothing: both rows survive.
 	refs, _ := h.repo.ListFileRefs(context.Background())
 	if len(refs) != 2 {
-		t.Errorf("file rows = %d after dry run, want 2", len(refs))
+		t.Errorf("file rows = %d after scan, want 2", len(refs))
 	}
-	_ = healthy
 }
 
-func TestAdminPrune_EmptyBodyIsDryRun(t *testing.T) {
+func TestAdminPrune_EmptyBodyIsScan(t *testing.T) {
 	h, _, _ := newTestHandler(t)
-	rr := httptest.NewRecorder()
-	h.adminPrune(rr, pruneReq(nil))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rr.Code)
-	}
-	var resp map[string]any
-	json.NewDecoder(rr.Body).Decode(&resp)
-	if resp["dry_run"] != true {
-		t.Errorf("dry_run = %v, want true for empty body", resp["dry_run"])
+	startPrune(t, h, nil, http.StatusAccepted)
+	snap := pruneStatus(t, h)
+	if snap["last_scan"] == nil {
+		t.Errorf("last_scan = nil, want a scan summary after empty-body start")
 	}
 }
 
@@ -306,7 +390,18 @@ func TestAdminPrune_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestAdminPrune_ConfirmDeletesDangling(t *testing.T) {
+// A confirm with no prior scan is refused (409) — prune deletes only a reviewed
+// set, so a scan must run first.
+func TestAdminPrune_ConfirmWithoutScanIs409(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	rr := httptest.NewRecorder()
+	h.adminPrune(rr, pruneReq([]byte(`{"confirm":true}`)))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 without a prior scan", rr.Code)
+	}
+}
+
+func TestAdminPrune_ScanThenConfirmDeletesDangling(t *testing.T) {
 	h, db, base := newTestHandler(t)
 	healthy := uploadAudio(t, h, "healthy.mp3", []byte("healthy"))
 	dangling := uploadAudio(t, h, "gone.mp3", []byte("dangling"))
@@ -315,32 +410,21 @@ func TestAdminPrune_ConfirmDeletesDangling(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rr := httptest.NewRecorder()
-	h.adminPrune(rr, pruneReq([]byte(`{"confirm":true}`)))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	// Scan (preview) first so the prune has a reviewed set to act on.
+	startPrune(t, h, []byte(`{"confirm":false}`), http.StatusAccepted)
+	// Then prune.
+	startPrune(t, h, []byte(`{"confirm":true}`), http.StatusAccepted)
+
+	snap := pruneStatus(t, h)
+	res, _ := snap["last_result"].(map[string]any)
+	if res == nil || res["kind"] != "prune" {
+		t.Fatalf("last_result = %v, want a prune detail", snap["last_result"])
 	}
-	var resp struct {
-		OK          bool `json:"ok"`
-		DryRun      bool `json:"dry_run"`
-		Scanned     int  `json:"scanned"`
-		PrunedCount int  `json:"pruned_count"`
-		Pruned      []struct {
-			Hash string `json:"hash"`
-		} `json:"pruned"`
-		Failed []any `json:"failed"`
+	if got := res["pruned_count"]; got != float64(1) {
+		t.Errorf("pruned_count = %v, want 1", got)
 	}
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp.DryRun {
-		t.Error("dry_run = true, want false on confirm")
-	}
-	if resp.PrunedCount != 1 || len(resp.Pruned) != 1 || resp.Pruned[0].Hash != dangling {
-		t.Errorf("pruned = %+v, want one entry for %s", resp.Pruned, dangling)
-	}
-	if len(resp.Failed) != 0 {
-		t.Errorf("failed = %v, want empty", resp.Failed)
+	if failed, _ := res["failed"].([]any); len(failed) != 0 {
+		t.Errorf("failed = %v, want empty", res["failed"])
 	}
 
 	// The dangling row is gone, healthy survives.
@@ -349,6 +433,21 @@ func TestAdminPrune_ConfirmDeletesDangling(t *testing.T) {
 	}
 	if got, _ := db.GetFileByHash(context.Background(), healthy); got == nil {
 		t.Error("healthy row removed by prune")
+	}
+}
+
+// Cancel on an idle manager is a no-op reporting cancelled=false.
+func TestAdminPruneCancel_IdleNoop(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	rr := httptest.NewRecorder()
+	h.adminPruneCancel(rr, httptest.NewRequest(http.MethodPost, "/api/admin/prune/cancel", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(rr.Body).Decode(&resp)
+	if resp["cancelled"] != false {
+		t.Errorf("cancelled = %v, want false when idle", resp["cancelled"])
 	}
 }
 

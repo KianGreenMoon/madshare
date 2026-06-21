@@ -60,14 +60,28 @@ func Open(dsn string) (*DB, error) {
 	return db, nil
 }
 
-// withConnectionPragmas appends the modernc.org/sqlite connection pragmas that
-// must apply to every connection in the pool: foreign-key enforcement and a
-// busy_timeout so a connection waits on a held write lock instead of failing
-// immediately with SQLITE_BUSY. The latter matters now that the image-variant
-// worker pool creates sustained concurrent write pressure on the on-disk DB
-// (the pool is multi-connection; only :memory: is pinned to one). The driver
-// reads _pragma query parameters from the DSN and issues them on each new
-// connection. Pragmas already named in the dsn are left as-is.
+// withConnectionPragmas appends the modernc.org/sqlite connection settings that
+// must apply to every connection in the pool:
+//
+//   - foreign_keys — ON DELETE CASCADE enforcement (per-connection pragma).
+//   - busy_timeout — wait on a held write lock instead of failing immediately
+//     with SQLITE_BUSY. Matters because the worker pools (image variants, media
+//     analysis) and the background prune job put sustained concurrent write
+//     pressure on the on-disk DB (the pool is multi-connection; only :memory: is
+//     pinned to one).
+//   - _txlock=immediate — begin every transaction with BEGIN IMMEDIATE so it
+//     takes the write lock up front. Without it a transaction that reads (SELECT)
+//     and only later writes (e.g. hardDelete: SELECT id … then DELETE) holds a
+//     deferred read snapshot and, if another connection commits a write in the
+//     gap, the write upgrade fails with SQLITE_BUSY *immediately* — busy_timeout
+//     cannot wait that out, because waiting can't resolve the deadlock. Acquiring
+//     the write lock at BEGIN turns that deadlock into a normal wait the
+//     busy_timeout absorbs. Every transaction here is read-write, so there is no
+//     read-concurrency cost. (This is what produced "delete file: database is
+//     locked" when pruning a file concurrently with the analysis pool.)
+//
+// The driver reads _pragma and _txlock query parameters from the DSN. Settings
+// already named in the dsn are left as-is.
 func withConnectionPragmas(dsn string) string {
 	sep := func(d string) string {
 		if strings.Contains(d, "?") {
@@ -80,6 +94,9 @@ func withConnectionPragmas(dsn string) string {
 	}
 	if !strings.Contains(dsn, "_pragma=busy_timeout") {
 		dsn += sep(dsn) + "_pragma=busy_timeout(5000)"
+	}
+	if !strings.Contains(dsn, "_txlock=") {
+		dsn += sep(dsn) + "_txlock=immediate"
 	}
 	return dsn
 }

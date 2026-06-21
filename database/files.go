@@ -15,19 +15,35 @@ import (
 // and review/staging queries intentionally do not use it.
 const visibleFile = "f.deleted_at IS NULL AND f.review_state = 'approved'"
 
-// LibraryByteSize returns the total on-disk footprint of stored blobs: the sum
-// of byte_size over every files row. Files are content-addressed (one row per
-// hash), so this is the deduplicated blob total. Trashed-but-not-yet-pruned
-// rows are included — their blobs still occupy the disk until a hard delete.
-func (db *DB) LibraryByteSize(ctx context.Context) (int64, error) {
-	var total int64
-	err := db.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(byte_size), 0) FROM files`,
-	).Scan(&total)
+// StorageByteBreakdown partitions the logical byte size of stored blobs by
+// state. Files are content-addressed (one row per hash), so each bucket is a
+// deduplicated blob total. The three buckets are mutually exclusive — Trash
+// (any soft-deleted row) takes precedence over review state — and together they
+// equal SUM(byte_size) over the whole files table. Sizes are logical (the
+// byte_size column), matching the rest of the storage panel; see
+// docs/architecture/storage.md. It backs the audio/review/trash disk-usage
+// categories (files hold audio in v0); one indexed sum, so it is instant and
+// needs no caching, unlike the image walk.
+type StorageByteBreakdown struct {
+	Library int64 // approved & not soft-deleted — the live library
+	Review  int64 // not deleted, review_state <> 'approved' — staged uploads
+	Trash   int64 // soft-deleted, awaiting prune
+}
+
+// StorageByteBreakdown computes the per-state byte totals in a single query.
+func (db *DB) StorageByteBreakdown(ctx context.Context) (StorageByteBreakdown, error) {
+	var b StorageByteBreakdown
+	err := db.QueryRowContext(ctx, `
+		SELECT
+		  COALESCE(SUM(CASE WHEN deleted_at IS NULL AND review_state =  'approved' THEN byte_size END), 0),
+		  COALESCE(SUM(CASE WHEN deleted_at IS NULL AND review_state <> 'approved' THEN byte_size END), 0),
+		  COALESCE(SUM(CASE WHEN deleted_at IS NOT NULL                            THEN byte_size END), 0)
+		FROM files`,
+	).Scan(&b.Library, &b.Review, &b.Trash)
 	if err != nil {
-		return 0, fmt.Errorf("sum library byte size: %w", err)
+		return b, fmt.Errorf("storage byte breakdown: %w", err)
 	}
-	return total, nil
+	return b, nil
 }
 
 // GetFileByHash looks up a files row by content hash. Returns (nil, nil) if

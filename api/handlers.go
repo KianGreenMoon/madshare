@@ -16,6 +16,7 @@ import (
 	"daemonlord.ygg/madshare/config"
 	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/media"
+	"daemonlord.ygg/madshare/prune"
 )
 
 // actorID returns the acting user's id from the request context as a nullable
@@ -65,6 +66,9 @@ type handler struct {
 	// imagesDir is where artist/album cover images are stored and served. It is
 	// the "images" subdirectory of the configured files_dir.
 	imagesDir string
+	// filesDir is the configured storage root (parent of the audio/ and images/
+	// subtrees); reported as the storage panel's "location".
+	filesDir string
 	// maxUploadSize caps the upload request body in bytes (from config).
 	maxUploadSize int64
 	// authzEnabled mirrors Deps.Auth != nil: when true, library listings are
@@ -78,6 +82,9 @@ type handler struct {
 	// mediaPool, when non-nil, is notified after an analysis job (ffprobe +
 	// fpcalc) is enqueued so an idle worker wakes immediately. Nil in tests.
 	mediaPool interface{ Notify() }
+	// pruneMgr owns the single Verify & Prune background job. Nil when no manager
+	// was wired (the prune endpoints then respond 503).
+	pruneMgr *prune.Manager
 	// limiter, when non-nil, gates concurrent uploads (global + per-user). Nil
 	// disables the gate (tests / unlimited config).
 	limiter *UploadLimiter

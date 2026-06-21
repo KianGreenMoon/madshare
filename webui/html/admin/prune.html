@@ -23,14 +23,20 @@
       blob is missing are <strong>dangling</strong> and can be pruned. Preview is
       non-destructive &mdash; it only scans and reports.
     </p>
-    <label class="check-row deep-verify-row">
-      <input type="checkbox" id="deepVerify">
-      <span>
-        <strong>Deep verify</strong> &mdash; re-read and re-hash every file to also
-        catch <em>corrupted</em> blobs (slower; reads all content).
-      </span>
-    </label>
-    <button class="btn btn-destructive-outline" id="previewPrune">Preview prune</button>
+    <!-- In-progress panel (when a prune runs) OR last-run summary lines (idle).
+         Populated by prune.js from GET /api/admin/prune/status. -->
+    <div class="prune-status" id="pruneStatus" aria-live="polite"></div>
+
+    <div class="prune-controls" id="pruneControls">
+      <label class="check-row deep-verify-row">
+        <input type="checkbox" id="deepVerify">
+        <span>
+          <strong>Deep verify</strong> &mdash; re-read and re-hash every file to also
+          catch <em>corrupted</em> blobs (slower; reads all content).
+        </span>
+      </label>
+      <button class="btn btn-destructive-outline" id="previewPrune">Preview prune</button>
+    </div>
 
     <div class="prune-results" id="pruneResults" aria-live="polite"></div>
   </section>

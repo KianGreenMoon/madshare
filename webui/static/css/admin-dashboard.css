@@ -42,6 +42,18 @@
   background: var(--accent-glow);
   color: var(--accent);
 }
+/* Live activity badge (e.g. a running prune) — distinct from numeric counts. */
+.dash-card-count--live {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.7rem;
+  font-weight: 600;
+  background: var(--danger-bg, var(--accent-glow));
+  color: var(--danger, var(--accent));
+  animation: dash-live-pulse 1.6s ease-in-out infinite;
+}
+@keyframes dash-live-pulse { 50% { opacity: 0.55; } }
+
 .dash-card-desc { font-size: 14px; color: var(--text-muted); line-height: 1.45; }
 
 /* ── Storage panel ── */
@@ -56,8 +68,19 @@
   border-radius: var(--radius);
 }
 
-/* Usage meter: a single track with two filled segments (Madshare library, then
-   the rest of the disk's used space); the remaining track is free space. */
+/* Usage meter: one filled segment per category (audio, images, …), then the
+   rest of the disk's used space; the remaining track is free space. Category
+   segment/swatch colors are set inline from JS using these vars (theme-aware).
+   Fallbacks cover any future category the server adds before the UI knows it. */
+.storage-card {
+  --storage-cat-images: #4f9ad6;
+  --storage-cat-review: #d6b24f;
+  --storage-cat-trash:  #b06a78;
+  --storage-cat-video:  #d68f4f;
+  --storage-cat-alt1:   #9b7fd6;
+  --storage-cat-alt2:   #4fb59a;
+  --storage-cat-alt3:   #d6678a;
+}
 .storage-bar {
   display: flex;
   height: 12px;
@@ -67,7 +90,6 @@
   border: 1px solid var(--border);
 }
 .storage-bar-seg { height: 100%; transition: width 200ms ease; }
-.storage-bar-lib { background: var(--accent); }
 .storage-bar-other { background: var(--text-muted); opacity: 0.55; }
 
 .storage-headline {
@@ -118,5 +140,4 @@
   border-radius: 3px;
   flex-shrink: 0;
 }
-.storage-swatch--lib { background: var(--accent); }
 .storage-swatch--other { background: var(--text-muted); opacity: 0.55; }
