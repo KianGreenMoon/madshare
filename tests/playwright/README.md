@@ -11,8 +11,11 @@ high-value user journeys.
 ## Prerequisites
 
 - Node.js ≥ 20 (uses the native `.env` loader; developed on Node 22).
-- A **running Madshare server** with seeded test users — same disposable
-  environment convention as the k6 suite.
+- A **running, disposable Madshare server** with seeded `admin` / `uploader` /
+  `user` accounts — same convention as the k6 suite. The upload journey *mutates*
+  the library (creates and approves a track), so never point it at production.
+- `ffmpeg` on PATH — only for the upload spec, which generates a tiny tagged
+  fixture on the fly. Without it, `upload.spec.ts` skips itself.
 
 ## Install
 
@@ -62,10 +65,24 @@ npx playwright test --project=chromium      # one project
 ```
 tests/playwright/
   playwright.config.ts   # the control center: baseURL, projects, retries, trace
+  helpers/
+    auth.ts              # ROLES, login(), storageStateFor()
+    audio.ts             # ffmpeg-generated upload fixtures
   e2e/
+    auth.setup.ts        # setup project: log in each role once → .auth/<role>.json
     auth.spec.ts         # login: happy path + wrong-password
+    access.spec.ts       # role-based header gating matrix
+    library.spec.ts      # artist → album → track drill-down
+    playback.spec.ts     # clicking a track actually plays audio
+    upload.spec.ts       # uploader → moderation → appears in library (3 sessions)
   .env.example           # copy to .env to override BASE_URL / credentials
+  .auth/                 # saved sessions (gitignored)
 ```
+
+The `setup` project runs first and saves one session per role; specs adopt a
+role with `test.use({ storageState: storageStateFor('user') })`, so they start
+already signed in. The upload spec instead opens three explicit contexts
+(uploader/admin/user) because the journey spans multiple identities.
 
 ## Debugging a failure
 
