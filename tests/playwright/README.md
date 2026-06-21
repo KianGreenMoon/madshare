@@ -68,12 +68,15 @@ tests/playwright/
   helpers/
     auth.ts              # ROLES, login(), storageStateFor()
     audio.ts             # ffmpeg-generated upload fixtures
+    library.ts           # drill helper + sticky-header-safe menu/click helpers
   e2e/
     auth.setup.ts        # setup project: log in each role once → .auth/<role>.json
     auth.spec.ts         # login: happy path + wrong-password
     access.spec.ts       # role-based header gating matrix
     library.spec.ts      # artist → album → track drill-down
     playback.spec.ts     # clicking a track actually plays audio
+    favorites.spec.ts    # heart a track → appears in Favorites → persists
+    playlists.spec.ts    # create a playlist from a track → verify → delete
     upload.spec.ts       # uploader → moderation → appears in library (3 sessions)
   .env.example           # copy to .env to override BASE_URL / credentials
   .auth/                 # saved sessions (gitignored)
