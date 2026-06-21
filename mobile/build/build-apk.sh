@@ -20,20 +20,26 @@ echo "==> native scaffold (host aarch64 node)"
 npx cap sync android
 rm -f android/local.properties   # let the container's ANDROID_SDK_ROOT win
 
-echo "==> check amd64 container exec"
-if ! podman run --rm --platform linux/amd64 docker.io/library/alpine:3.20 true >/dev/null 2>&1; then
+echo "==> host capability check"
+if [ "$(uname -m)" = "aarch64" ] && [ "$(getconf PAGE_SIZE)" = "16384" ]; then
   cat >&2 <<'EOF'
 
-amd64 containers can't exec on this host: the FEX/muvm binfmt dispatcher is
-shadowing the static qemu handler. Enable qemu for containers (reversible):
+This is a 16 KB-page aarch64 host (e.g. Asahi). x86 emulation cannot run the
+Android toolchain here: qemu can't map x86 libstdc++ onto 16 KB pages, and FEX
+needs muvm's 4 KB microVM. Build on an x86_64 machine or CI instead — copy this
+mobile/ tree there and run this script, or natively:
 
-  echo 0 | sudo tee /proc/sys/fs/binfmt_misc/binfmt-dispatcher-x86_64
-  echo 0 | sudo tee /proc/sys/fs/binfmt_misc/FEX-x86_64
+  npm install && npx cap add android && cd android && ./gradlew assembleDebug
 
-…then re-run this script. Restore your normal x86 emulation afterwards with:
-
-  sudo systemctl restart systemd-binfmt
+See README.md, "Why it does NOT build on a 16 KB-page aarch64 host".
 EOF
+  exit 2
+fi
+
+echo "==> check amd64 container exec"
+if ! podman run --rm --platform linux/amd64 docker.io/library/alpine:3.20 true >/dev/null 2>&1; then
+  echo "amd64 containers can't exec here — no working x86 emulation for podman." >&2
+  echo "Install qemu-user-static (binfmt), or build on a native x86_64 host." >&2
   exit 1
 fi
 

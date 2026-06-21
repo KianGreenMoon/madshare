@@ -43,42 +43,48 @@ UI. (The health probe needs the native HTTP layer to bypass CORS, so in a plain
 browser it degrades to "unreachable" unless the server enables CORS — the gate
 and hand-off still work.)
 
-## Build the APK (aarch64 host, e.g. Asahi)
+## Build the APK
 
 There is **no native aarch64 Android SDK** — Google ships `aapt2` (the only
-x86_64-only tool in the build) for x86_64 only. The supported path here is to run
-the Gradle build inside an **x86_64 container** while the Capacitor scaffolding
-runs natively on the host's aarch64 Node. `build/build-apk.sh` does both:
+x86_64-only tool in the build) for x86_64 only. So the build must run on an
+x86_64 toolchain. `build/build-apk.sh` runs the Capacitor scaffolding natively
+(aarch64 Node) and the Gradle build in the `build/Dockerfile` amd64 image:
 
 ```bash
 cd mobile
 ./build/build-apk.sh
+# -> android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-It runs `cap add`/`cap sync` natively, then `gradlew assembleDebug` in the
-`build/Dockerfile` amd64 image (under podman + qemu). Output:
-`android/app/build/outputs/apk/debug/app-debug.apk`.
-
-### One-time: let containers run x86_64 on this host
-
-This machine emulates x86 with **FEX + muvm** behind a binfmt *dispatcher*, which
-shadows the static `qemu-x86_64` handler that container builds need. If the
-script reports `amd64 containers can't exec`, enable qemu for containers
-(reversible) and re-run:
+This works on an **x86_64 host** (or CI runner) with podman/Docker. On a plain
+x86_64 box you can also skip the container entirely:
 
 ```bash
-echo 0 | sudo tee /proc/sys/fs/binfmt_misc/binfmt-dispatcher-x86_64
-echo 0 | sudo tee /proc/sys/fs/binfmt_misc/FEX-x86_64
-# build, then restore your normal x86 emulation:
-sudo systemctl restart systemd-binfmt
+npm install && npx cap add android && cd android && ./gradlew assembleDebug
 ```
 
-The first container build is slow (emulated `apt` + `sdkmanager`); the image and
-the `madshare-gradle-cache` volume are reused afterwards.
+The `android/` dir is gitignored and fully regenerable, so building on a
+different machine just needs this `mobile/` tree.
 
-> On an x86_64 machine (or CI) none of this applies — just
-> `npm install && npx cap add android && cd android && ./gradlew assembleDebug`
-> with a stock SDK. The `android/` dir is gitignored and fully regenerable.
+### Why it does NOT build on a 16 KB-page aarch64 host (Asahi)
+
+On Apple-Silicon Linux with a **16 KB page kernel** (`uname -r` ends `+16k`),
+x86 emulation can't run the toolchain locally — confirmed the hard way:
+
+- **qemu-user** (what container emulation uses): trivial binaries run, but
+  mapping a real x86 shared library (`libstdc++.so.6`) fails — its 4 KB-aligned
+  ELF segments can't map onto 16 KB host pages (`failed to map segment`). So
+  `apt`/`sdkmanager`/`aapt2` all die.
+- **FEX alone**: `<jemalloc>: Unsupported system page size` → segfault. FEX needs
+  a 4 KB-page environment.
+- **FEX + muvm** (the host's real x86 path): works for desktop apps but requires
+  a rootfs + microVM boot; driving a headless SDK/Gradle build through it is a
+  project of its own.
+
+Bottom line on such a host: **build on x86_64** (another machine, a VPS, or CI).
+Do *not* disable the FEX/qemu binfmt dispatcher to force qemu — qemu can't do it
+on 16 KB pages anyway, and you'll just break desktop x86 until
+`sudo systemctl restart systemd-binfmt`.
 
 ### Cleartext (added when the android/ project exists)
 
