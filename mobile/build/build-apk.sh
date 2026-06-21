@@ -20,6 +20,22 @@ echo "==> native scaffold (host aarch64 node)"
 npx cap sync android
 rm -f android/local.properties   # let the container's ANDROID_SDK_ROOT win
 
+# The @jofr/capacitor-media-session foreground service is type "mediaPlayback":
+# Android 14 (targetSdk 34) requires FOREGROUND_SERVICE_MEDIA_PLAYBACK to start
+# it, and Android 13+ needs POST_NOTIFICATIONS to show the media notification.
+# The plugin declares neither, so add them to the app manifest (idempotent).
+manifest=android/app/src/main/AndroidManifest.xml
+add_perm() {
+  grep -q "$1" "$manifest" 2>/dev/null && return 0
+  sed -i "s#</manifest>#    <uses-permission android:name=\"android.permission.$1\" />\n</manifest>#" "$manifest"
+  echo "   + $1"
+}
+if [ -f "$manifest" ]; then
+  echo "==> ensure foreground-service / notification permissions"
+  add_perm FOREGROUND_SERVICE_MEDIA_PLAYBACK
+  add_perm POST_NOTIFICATIONS
+fi
+
 echo "==> host capability check"
 if [ "$(uname -m)" = "aarch64" ] && [ "$(getconf PAGE_SIZE)" = "16384" ]; then
   cat >&2 <<'EOF'

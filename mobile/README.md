@@ -97,10 +97,14 @@ the in-app gate in `classify.js` (design doc §4.4).
 ## Status
 
 - **P1 — launcher + safety gate + health probe + hand-off:** built (this dir).
-- **P2 — background audio:** target plugin `@jofr/capacitor-media-session`
-  (GPL-3.0). Note: the Android System WebView does **not** implement the Web
-  Media Session API, so the server's `navigator.mediaSession` calls are a no-op
-  there and a native plugin is required (correction to design-doc §6).
+- **P2 — background audio:** wired (on-device verification pending). The Android
+  System WebView's `navigator.mediaSession` is a no-op, so `player-controller.js`
+  routes through `@jofr/capacitor-media-session` (GPL-3.0) via the
+  `createMediaSession()` adapter when running in the shell. `build-apk.sh` patches
+  the app manifest with `FOREGROUND_SERVICE_MEDIA_PLAYBACK` + `POST_NOTIFICATIONS`
+  (the plugin omits both). To verify on a device: background playback survives,
+  the notification's play/pause/next/prev/scrubber work, and the notification
+  shows once notification permission is granted. See design-doc §6.
 - **P3 — multi-server polish + per-server trusted override** (storage already
   supports it) + native "Servers" return control (login-screen-only, gated on the
   session cookie via Android `CookieManager`).

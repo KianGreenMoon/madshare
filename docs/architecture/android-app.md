@@ -1,8 +1,9 @@
 # Android app — Capacitor remote-URL shell
 
-Status: **P1 built** on the `app-dev` branch (`mobile/` — launcher, §4 safety
-gate, health probe, hand-off; the `classify.js` gate is unit-tested). P2–P4
-pending. This describes how to ship an installable
+Status: **P1 built + P2 wired** on the `app-dev` branch (`mobile/` — launcher, §4
+safety gate, health probe, hand-off, `classify.js` unit-tested; P2 background-audio
+adapter in `player-controller.js` + plugin dep + manifest patch — see §6, on-device
+verification pending). P3–P4 pending. This describes how to ship an installable
 Android app that reuses the existing web UI by wrapping it in a [Capacitor](https://capacitorjs.com/)
 WebView pointed at a running Madshare server. The emphasis is the
 **connection-safety model**: the app must work over plaintext on an
@@ -188,18 +189,36 @@ and a backgrounded WebView is suspended by the OS so playback pauses. A native
 plugin is therefore **required**, not just nice-to-have.
 
 Chosen plugin: **`@jofr/capacitor-media-session`** (GPL-3.0, compatible with this
-project's AGPL). It starts an Android **foreground service** for an active media
-session — keeping the WebView's `<audio>` playing in the background — and renders
-the media notification, with an API modelled on the Web Media Session API the web
-UI already uses. Caveats to handle at P2: it is lightly maintained (single
-maintainer; the 4.x line targets Capacitor ≤6 — we pin Capacitor 6), and because
-the player runs on the **remote** server origin, the web UI must reach the plugin
-across the hand-off — either a small `player-controller.js` tweak that routes
-through the plugin when `window.Capacitor` is present, or an app-side adapter
-injected into the remote page (same bridge-on-remote-origin mechanism the §10-Q1
-return-to-launcher control relies on; the app sets `allowNavigation: ["*"]` so the
-Capacitor bridge is injected into the server's pages). A fully native app would be
-sturdier here; for v1 the foreground service is sufficient.
+project's AGPL; the 4.x line targets Capacitor ≤6 — we pin Capacitor 6). It starts
+an Android **foreground service** for an active media session — keeping the
+WebView's `<audio>` playing in the background — and renders the media notification.
+
+**Bridge (decided & built, P2).** The player runs on the **remote** server origin,
+where the app's own JS does not execute — but `allowNavigation: ["*"]` means the
+Capacitor **bridge** is injected, so the native plugin is reachable there as
+`window.Capacitor.Plugins.MediaSession`. All platform handling lives in its own
+module, **`webui/static/js/media-session.js`** (`createMediaSession()`), so the
+queue controller stays platform-agnostic: `player-controller.js` only imports it,
+constructs it (passing `player` + the queue's nav callbacks), and feeds it
+`setTrack` / `setState` — a net *reduction* in that file, no web behaviour change.
+The module picks a backend — the native plugin when `Capacitor.isNativePlatform()`,
+else `navigator.mediaSession`, else no-op — and normalises the two APIs (property-set
+vs. method-call; action-handler shape) to one surface. It wires play / pause /
+previoustrack / nexttrack / **seekto** handlers and pushes `setPositionState` on
+track/state changes (the OS extrapolates the scrubber from `playbackRate`, so no
+polling). It is unit-tested with mocked globals (`tests/js/media-session.test.mjs`).
+
+**Android manifest.** The plugin merges its own `MediaSessionService`
+(`foregroundServiceType="mediaPlayback"`) and `FOREGROUND_SERVICE`, but **not**
+`FOREGROUND_SERVICE_MEDIA_PLAYBACK` (Android 14 / targetSdk 34 requires it to start
+that service) or `POST_NOTIFICATIONS` (Android 13+, to show the notification).
+`build/build-apk.sh` adds both to the app manifest after `cap add` (idempotent).
+
+**Still to verify on-device** (needs a built APK): that action-handler callbacks
+arrive over the bare bridge (metadata / state / position are plain data calls and
+are safe regardless), and that the notification shows once `POST_NOTIFICATIONS` is
+granted (a runtime request may be needed on 13+). A fully native app would be
+sturdier; for v1 the foreground service is sufficient.
 
 ## 7. Packaging
 
@@ -234,7 +253,10 @@ None required for the core flow. Optional, additive niceties (separate work):
   screen" and validates same-origin behaviour with zero native code.
 - **P1 — Capacitor shell + launcher + §4 gate.** Single hard-coded-then-editable
   server, the full safety classification and warning, health probe, hand-off.
-- **P2 — Background audio.** Foreground-service plugin wired to `mediaSession`.
+- **P2 — Background audio.** *Wired (on-device verification pending):*
+  `@jofr/capacitor-media-session` foreground-service plugin reached via the
+  `createMediaSession()` adapter in `player-controller.js`; manifest permissions
+  patched by `build/build-apk.sh`. See §6.
 - **P3 — Multi-server + overrides.** Saved server list, per-server "trusted
   network" override, switch-server affordance.
 - **P4 — Polish / distribution.** Network-security-config hardening, app icons,

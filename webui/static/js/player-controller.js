@@ -28,6 +28,7 @@
 //                                    went away; the queue panel shows/hides Restore
 import { createPlayer } from './player.js';
 import { insertAdjust, removeAdjust, moveAdjust, clampIndex, shufflePerm, relinkTracks } from './queue-ops.js';
+import { createMediaSession } from './media-session.js';
 
 // QUEUE_KEY persists { tracks, index, dirty } so a reload resumes the queue
 // (paused — see restoreFromStorage). localStorage only, per Decision §4.
@@ -241,27 +242,17 @@ function createController() {
   window.addEventListener('pagehide', () => { if (index >= 0) persist(); });
 
   // ── Media Session ───────────────────────────────────────────────────────────
-  const hasMediaSession = 'mediaSession' in navigator;
-  function setPlaybackState(state) {
-    if (hasMediaSession) navigator.mediaSession.playbackState = state;
-  }
-  function updateMediaSession(track) {
-    if (!hasMediaSession) return;
-    try {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: track.title || '',
-        artist: track.artist || '',
-      });
-    } catch { /* MediaMetadata unsupported — ignore */ }
-  }
-  if (hasMediaSession) {
-    const ms = navigator.mediaSession;
-    const set = (action, fn) => { try { ms.setActionHandler(action, fn); } catch { /* unsupported */ } };
-    set('play',  () => player.play());
-    set('pause', () => player.pause());
-    set('previoustrack', goPrev);
-    set('nexttrack',     goNext);
-  }
+  // Lock-screen / notification / media-key integration — and, inside the app, the
+  // foreground service that keeps playback alive in the background — lives entirely
+  // in media-session.js. Here we just construct it and feed it track/state.
+  const mediaSession = createMediaSession(player, {
+    onPlay:  () => player.play(),
+    onPause: () => player.pause(),
+    onPrev:  goPrev,
+    onNext:  goNext,
+  });
+  function setPlaybackState(state) { mediaSession.setState(state); }
+  function updateMediaSession(track) { mediaSession.setTrack(track); }
 
   // restoreFromStorage resumes the persisted queue PAUSED: the player is pointed
   // at the saved track without fetching it (autoplay:false sets preload=none),
