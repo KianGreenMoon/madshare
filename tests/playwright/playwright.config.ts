@@ -39,12 +39,18 @@ export default defineConfig({
   },
 
   // ── Projects = your "profiles": one suite, many configurations ───────────────
-  // Start with Chromium only; widen the matrix once the suite is green.
+  // The `setup` project logs in once per role and saves each session; `chromium`
+  // depends on it, so those sessions exist before any spec runs. `.setup.ts`
+  // files are only picked up here (the default matcher wants `.spec`/`.test`).
   projects: [
-    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
-    // { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
-    // { name: 'webkit',  use: { ...devices['Desktop Safari'] } },
-    // { name: 'mobile',  use: { ...devices['Pixel 7'] } },
+    { name: 'setup', testMatch: /.*\.setup\.ts/ },
+    {
+      name: 'chromium',
+      use: { ...devices['Desktop Chrome'] },
+      dependencies: ['setup'],
+    },
+    // { name: 'firefox', use: { ...devices['Desktop Firefox'] }, dependencies: ['setup'] },
+    // { name: 'webkit',  use: { ...devices['Desktop Safari'] },  dependencies: ['setup'] },
   ],
 
   // ── Optional: let Playwright start the server for you (Lesson 3 territory) ────
