@@ -159,6 +159,38 @@ starting SLOs after your first capacity run.
   forced inert unless a real, generated manifest is present** — running off the
   `.example` it has no targets and cannot remove any server content.
 
+### Upload & delete: status codes and the current contract
+
+Both mutating cases assert on a small set of expected statuses; anything else is a
+failure (counted by `http_req_failed` and a per-case `check`). What to watch:
+
+| Case | Accepted | Meaning |
+|---|---|---|
+| `upload` | **200** | bytes already on the server — deduped by content hash, no new ingest |
+| `upload` | **201** | newly stored |
+| `delete` | **200** | the file existed and was removed (soft-delete, plus trash purge when `HARD_DELETE`) |
+| `delete` | **404** | nothing to remove — that hash isn't on the server |
+
+**The current contract — and its limit.** `delete` does *not* know what this run
+uploaded. It derives its targets from the manifest hashes (the `sha256` of the
+local files, which equals the server's blob key) and deletes one at random. So a
+`404` is **expected and tolerated**: the file was either never uploaded, or
+already deleted — by an earlier iteration, or by another VU racing the same hash.
+Symmetrically, `upload` re-POSTing a file that's already present is a normal `200`
+dedup, not an error. The suite therefore **self-balances only at equal upload and
+delete rates**; it is not a guaranteed closed loop, because k6 has no shared
+mutable state across VUs with which to hand a freshly-uploaded hash to a deleter.
+
+**Future: a real closed loop via Redis (deferred, no rush).** A true
+producer→consumer queue would let `delete` reap exactly what `upload` produced —
+no spurious 404s, realistic content turnover: `upload` VUs `LPUSH` their stored
+hashes onto a shared queue/stack and `delete` VUs `LPOP` them, via the
+[`k6/experimental/redis`](https://grafana.com/docs/k6/latest/javascript-api/k6-experimental/redis/)
+module. This is **intentionally not implemented yet** — it adds an external Redis
+dependency, and the suite deliberately prizes a zero-footprint, single-binary
+setup. The deterministic-hash manifest is the dependency-free stand-in until
+realistic churn becomes a hard requirement.
+
 ## Safety
 
 The suite runs **only against a disposable test environment** — so `delete` (incl.
@@ -174,7 +206,7 @@ off the committed `.example`), so a misconfigured run can't degrade server data.
 ```
 prepare-data.sh  generates config/audio-manifest.json from TEST_AUDIO_DIR
 config/    env.js, options.js (thresholds), profiles/{index.json,standard.json,uploading.json}, audio-manifest.json.example
-lib/       auth, http, discover, data, lifecycle (setup/teardown), engine, runner (case dispatch)
+lib/       auth, http, discover, data (fixtures), util (pick), lifecycle (setup/teardown), engine, runner (case dispatch)
 cases/     browse, search, listen, playlists, admin_read, upload, delete
 scenarios/ smoke, load, upload, capacity
 ```

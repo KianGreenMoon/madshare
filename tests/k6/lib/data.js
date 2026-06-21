@@ -70,8 +70,3 @@ export const audioFiles = manifest
 // server content when running off the committed example (whose placeholder names
 // normally don't resolve to local files anyway).
 export const audioHashes = usingExample ? [] : audioFiles.map((a) => a.hash);
-
-// pick returns a random element, or null for an empty/absent array.
-export function pick(arr) {
-  return arr && arr.length ? arr[Math.floor(Math.random() * arr.length)] : null;
-}

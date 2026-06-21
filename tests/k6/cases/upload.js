@@ -3,7 +3,8 @@
 // uploader's draft. No-ops when no audio fixtures are present (read-only runs).
 import http from 'k6/http';
 import { postFile } from '../lib/http.js';
-import { audioFiles, pick } from '../lib/data.js';
+import { audioFiles } from '../lib/data.js';
+import { pick } from '../lib/util.js';
 
 export function upload(data) {
   const audio = pick(audioFiles);

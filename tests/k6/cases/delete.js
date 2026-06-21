@@ -8,7 +8,8 @@
 // Exported as deleteCase because `delete` is a reserved word; the runner maps
 // the 'delete' case name to it.
 import { del } from '../lib/http.js';
-import { pick, audioHashes } from '../lib/data.js';
+import { audioHashes } from '../lib/data.js';
+import { pick } from '../lib/util.js';
 import { HARD_DELETE } from '../config/env.js';
 
 export function deleteCase(data) {

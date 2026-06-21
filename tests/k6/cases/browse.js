@@ -1,6 +1,6 @@
 // browse (user): the library drill-down — artists -> albums -> tracks.
 import { get } from '../lib/http.js';
-import { pick } from '../lib/data.js';
+import { pick } from '../lib/util.js';
 
 export function browse(data) {
   get('/api/artists', data.tokens.user, 'browse');
