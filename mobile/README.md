@@ -87,13 +87,14 @@ Do *not* disable the FEX/qemu binfmt dispatcher to force qemu — qemu can't do 
 on 16 KB pages anyway, and you'll just break desktop x86 until
 `sudo systemctl restart systemd-binfmt`.
 
-### Cleartext (added when the android/ project exists)
+### Cleartext (handled automatically by build-apk.sh)
 
-The server is user-chosen and unknown at build time, so the app must permit
-plaintext HTTP broadly (Yggdrasil / LAN). After `cap add android`, allow
-cleartext via an Android **network-security-config** (preferred over a blanket
-`usesCleartextTraffic`). This is the coarse OS permission; the real protection is
-the in-app gate in `classify.js` (design doc §4.4).
+The server is user-chosen and unknown at build time, and is usually plaintext
+HTTP (Yggdrasil / LAN). Android blocks cleartext by default, so without this the
+WebView fails to load an `http://` server even though a desktop browser opens it
+fine. `build-apk.sh` adds `android:usesCleartextTraffic="true"` to the app's
+`<application>` after `cap add` (idempotent). This is the coarse OS permission;
+the real protection is the in-app gate in `classify.js` (design doc §4.4).
 
 ## Status
 

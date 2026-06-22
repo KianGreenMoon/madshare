@@ -40,6 +40,23 @@ if [ -f "$manifest" ]; then
   echo "==> ensure foreground-service / notification permissions"
   add_perm FOREGROUND_SERVICE_MEDIA_PLAYBACK
   add_perm POST_NOTIFICATIONS
+
+  # The server is user-chosen plaintext (Yggdrasil / LAN), so the app must permit
+  # cleartext HTTP — Android blocks it by default and the WebView would fail to
+  # load an http:// server. This is the coarse OS switch; the REAL protection is
+  # the in-app connection gate (mobile/www/js/classify.js, design §4.4).
+  if ! grep -q "usesCleartextTraffic" "$manifest"; then
+    # Capacitor writes <application on its own line with attributes below; append one.
+    sed -i '/<application$/a\        android:usesCleartextTraffic="true"' "$manifest"
+    # Fallback for an inline <application ...> tag.
+    grep -q "usesCleartextTraffic" "$manifest" || \
+      sed -i 's#<application #<application android:usesCleartextTraffic="true" #' "$manifest"
+    if grep -q "usesCleartextTraffic" "$manifest"; then
+      echo "   + usesCleartextTraffic=true (allows http:// servers)"
+    else
+      echo "   ! could not auto-enable cleartext — add android:usesCleartextTraffic=\"true\" to <application> in $manifest" >&2
+    fi
+  fi
 fi
 
 # ── Pick build method ─────────────────────────────────────────────────────────
