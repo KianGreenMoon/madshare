@@ -149,6 +149,33 @@ header {
   border-radius: 3px;
 }
 
+/* The pinned Library tab never shrinks: it stays inline on the left at every
+   width while the rest of the nav collapses into the ☰ menu on narrow screens. */
+.nav-link--home { flex-shrink: 0; }
+
+/* ── Collapsible nav group + ☰ toggle (responsive header) ──────────────────────
+   On wide screens .nav-collapse is display:contents, so its children (.main-nav,
+   .header-actions) are direct header flex items laid out exactly as before, and
+   the toggle is hidden. Below the breakpoint (media query near the file end) the
+   wrapper becomes a dropdown panel opened by the toggle, so the header is always
+   a single row that fits — it can never overflow and force a horizontal page
+   scroll. Wired by nav-menu.js. */
+.nav-collapse { display: contents; }
+
+.nav-toggle {
+  display: none;            /* shown only below the narrow breakpoint */
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 6px;
+}
+.nav-toggle:hover { color: var(--text); }
+.nav-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 /* ── About mini-menu (header) ── */
 /* A flex container (not the default block) so the inline-flex button has no line
    box and centres against the sibling .nav-link anchors instead of sitting low. */
@@ -1095,4 +1122,78 @@ body.queue-open #toastStatus {
 /* ── Narrow viewport: in-page library search spans the content width ── */
 @media (max-width: 599px) {
   .library-search { max-width: none; }
+}
+
+/* ── Narrow viewport: collapse the header into a ☰ menu ────────────────────────
+   Below this width only the logo + pinned Library stay inline; everything else
+   (Upload, Admin, About, the user area / Sign in) folds into a dropdown panel
+   opened by the ☰ toggle. This keeps the header to one always-fitting row, the
+   fix for the overflow that pushed buttons off-screen and forced a horizontal
+   page scroll (worst as admin, who has the most links). */
+@media (max-width: 720px) {
+  .nav-toggle { display: inline-flex; margin-left: auto; }
+
+  /* The wrapper stops being display:contents and becomes a positioned dropdown
+     panel, hidden until nav-menu.js adds .is-open. It anchors to the sticky
+     <header> (a positioned ancestor). */
+  .nav-collapse {
+    display: none;
+    position: absolute;
+    top: 100%;
+    right: var(--space-4);
+    z-index: 20;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-1);
+    min-width: 180px;
+    margin-top: 6px;
+    padding: var(--space-2);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  }
+  .nav-collapse.is-open { display: flex; }
+
+  /* Inside the panel the two groups stack as full-width rows. */
+  .nav-collapse .main-nav,
+  .nav-collapse .header-actions,
+  .nav-collapse .user-area {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-1);
+    margin: 0;
+  }
+  .nav-collapse .nav-link {
+    border-bottom: none;        /* drop the underline-tab affordance in a list */
+    margin-bottom: 0;
+    padding: 8px 10px;
+    border-radius: 6px;
+  }
+  .nav-collapse .nav-link:hover { background: var(--surface-hover); }
+  .nav-collapse .nav-link--active { color: var(--text); background: var(--surface-hover); }
+
+  /* About: flatten it — hide the toggle and render its menu inline as flat list
+     items (it is normally an absolute flyout). display:contents lets the items
+     line up with the other nav links instead of nesting under an About box. */
+  .nav-collapse .about { display: contents; }
+  .nav-collapse .about__btn { display: none; }
+  .nav-collapse .about__menu,
+  .nav-collapse .about__menu[hidden] {
+    display: flex;
+    position: static;
+    width: auto;
+    padding: 0;
+    border: none;
+    box-shadow: none;
+  }
+
+  /* A hairline divider sets the user area / Sign in apart from the links above. */
+  .nav-collapse .header-actions {
+    border-top: 1px solid var(--border);
+    margin-top: var(--space-1);
+    padding-top: var(--space-2);
+  }
+  .nav-collapse .btn { width: 100%; }
 }

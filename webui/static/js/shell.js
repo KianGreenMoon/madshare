@@ -14,6 +14,7 @@ import { getController } from './player-controller.js';
 import { initQueuePanel } from './queue-panel.js';
 import { ensureLiked, isLiked, toggleLike, trackHash, onLikedChange } from './favorites.js';
 import { initAboutMenu } from './about-menu.js';
+import { initNavMenu } from './nav-menu.js';
 import { showToast } from './toast.js';
 import { applyTheme, currentTheme } from './theme.js';
 
@@ -217,6 +218,7 @@ function wireLikeButton(controller) {
 (async function boot() {
   wireTheme();
   initAboutMenu();         // persistent header — wired once for the document
+  initNavMenu();           // responsive ☰ overflow menu (same persistent header)
   wirePlayer();
   await initAuth();        // once for the document's lifetime
   await runModule();       // the server already rendered this page; just init it

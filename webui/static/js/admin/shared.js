@@ -5,6 +5,7 @@
 // Path note: this module sits in static/js/admin/, so auth.js is one level up.
 import { initAuth, openLoginModal, gatePage, PAGE_PERMS } from '../auth.js';
 import { initAboutMenu } from '../about-menu.js';
+import { initNavMenu } from '../nav-menu.js';
 import { showToast } from '../toast.js';
 import { applyTheme, currentTheme } from '../theme.js';
 
@@ -107,6 +108,7 @@ export function initTheme() {
 export async function bootAdmin({ require } = {}) {
   initTheme();
   initAboutMenu();
+  initNavMenu();
   const identity = await initAuth();
   if (!gatePage(PAGE_PERMS.admin)) return null;
 

@@ -1,57 +1,82 @@
 {{define "header"}}
 <header>
   <span class="logo"><span>Mad</span>share</span>
-  <nav class="main-nav" aria-label="Site navigation">
-    {{/* "Library" is a section: it stays active across its subtabs (Music,
-         Playlists, …), which live in the in-page subtab bar (library-subnav).
-         data-section lets the shell router keep it active after a client-side
-         swap (shell.js setActiveNav). */}}
-    <a href="/" data-section="library" class="nav-link{{if eq .Section "library"}} nav-link--active{{end}}"{{if eq .Section "library"}} aria-current="page"{{end}}>Library</a>
-    {{/* Privileged links are rendered server-side only for principals that hold the
-         permission, so an anonymous/low-priv visitor never sees a flash of links
-         they can't use (the API enforces the same gates). Login/logout reload the
-         page, so the server re-renders these on every auth change. */}}
-    {{if .CanUpload}}<a href="/upload" class="nav-link{{if eq .Page "upload"}} nav-link--active{{end}}"{{if eq .Page "upload"}} aria-current="page"{{end}}>Upload</a>{{end}}
-    {{/* Admin opens in the SAME tab (owner decision 2026-06-10, reversing the
-         Phase-1 new-tab default). Admin pages are outside the shell, so this
-         is a full page load — playback in this tab stops on entry. The shell
-         router handles it via its non-shell-page fallback (location.assign). */}}
-    {{if .CanAdmin}}<a href="/admin" class="nav-link{{if eq .Page "admin"}} nav-link--active{{end}}"{{if eq .Page "admin"}} aria-current="page"{{end}}>Admin</a>{{end}}
-    {{/* About: a mini-menu gathering the project links (GitRepo, the AGPL §13
-         Source archive, the License) plus a Version entry that opens the About
-         modal. Wired by about-menu.js (initAboutMenu), loaded on both the shell
-         pages and the admin pages. */}}
-    <div class="about" id="about">
-      <button type="button" class="nav-link about__btn" id="aboutBtn"
-              aria-haspopup="true" aria-expanded="false" aria-controls="aboutMenu">
-        About <span class="about__caret" aria-hidden="true">&#9662;</span>
-      </button>
-      <div class="about__menu" id="aboutMenu" role="menu" aria-labelledby="aboutBtn" hidden>
-        {{if .GitRepo}}<a href="{{.GitRepo}}" class="about__item" role="menuitem" target="_blank" rel="noopener">GitRepo</a>{{end}}
-        <a href="/source" class="about__item" role="menuitem" download>Source</a>
-        <a href="/license" class="about__item" role="menuitem" target="_blank" rel="license">License</a>
-        <button type="button" class="about__item about__version" id="aboutVersion" role="menuitem">Version</button>
-      </div>
-    </div>
-  </nav>
+  {{/* "Library" is a section: it stays active across its subtabs (Music,
+       Playlists, …), which live in the in-page subtab bar (library-subnav).
+       data-section lets the shell router keep it active after a client-side
+       swap (shell.js setActiveNav, which scans all `header .nav-link`).
+       It is PINNED outside .nav-collapse (owner decision 2026-06-22): at every
+       width the logo + Library stay inline on the left, and only the secondary
+       controls fold into the ☰ menu below the narrow breakpoint. */}}
+  <a href="/" data-section="library" class="nav-link nav-link--home{{if eq .Section "library"}} nav-link--active{{end}}"{{if eq .Section "library"}} aria-current="page"{{end}}>Library</a>
+
+  {{/* Narrow-width overflow toggle. Hidden on wide screens (CSS) — there it is a
+       no-box element while .nav-collapse is display:contents, so .main-nav and
+       .header-actions lay out inline in the header row exactly as before. Below
+       the breakpoint this shows (pushed right) and opens .nav-collapse as a
+       dropdown panel. Wired by nav-menu.js (initNavMenu). */}}
+  <button type="button" class="nav-toggle" id="navToggle"
+          aria-haspopup="true" aria-expanded="false" aria-controls="navCollapse" aria-label="Menu">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/>
+    </svg>
+  </button>
+
   <div id="header-insert">{{template "header-insert" .}}</div>
-  <div class="header-actions">
-    {{/* Signed-in user area: username · Sign out. The username itself is the link
-         to the Settings page (/settings, docs/ui/user-settings.md) — styled as a
-         .nav-link like the left-side Library/Upload tabs, only on the right. The
-         voluntary change-password control and the theme switcher live on that
-         page; the forced first-run password change still uses #passModal below.
-         It's a plain <a> so the shell router treats it as in-shell navigation;
-         its text is filled in by auth.js. */}}
-    {{/* Both controls always exist (auth.js toggles them on a session edge), but
-         the server sets the correct initial state so there's no FOUC: a signed-in
-         load paints the username + Log out straight away, never "Sign in" first. */}}
-    <div class="user-area" id="userArea"{{if not .SignedIn}} hidden{{end}}>
-      <a href="/settings" class="nav-link{{if eq .Page "settings"}} nav-link--active{{end}}"{{if eq .Page "settings"}} aria-current="page"{{end}} id="userName" title="Settings">{{.Username}}</a>
-      <button class="btn btn-neutral" id="logoutBtn">Log out</button>
+
+  {{/* The collapsible group: every header control EXCEPT the logo and the pinned
+       Library link. Wide screens: display:contents dissolves this wrapper so its
+       children participate directly in the header flex (main-nav's margin-right:
+       auto still pushes header-actions to the far right). Narrow: it becomes the
+       ☰ dropdown panel. */}}
+  <div class="nav-collapse" id="navCollapse">
+    <nav class="main-nav" aria-label="Site navigation">
+      {{/* Privileged links are rendered server-side only for principals that hold the
+           permission, so an anonymous/low-priv visitor never sees a flash of links
+           they can't use (the API enforces the same gates). Login/logout reload the
+           page, so the server re-renders these on every auth change. */}}
+      {{if .CanUpload}}<a href="/upload" class="nav-link{{if eq .Page "upload"}} nav-link--active{{end}}"{{if eq .Page "upload"}} aria-current="page"{{end}}>Upload</a>{{end}}
+      {{/* Admin opens in the SAME tab (owner decision 2026-06-10, reversing the
+           Phase-1 new-tab default). Admin pages are outside the shell, so this
+           is a full page load — playback in this tab stops on entry. The shell
+           router handles it via its non-shell-page fallback (location.assign). */}}
+      {{if .CanAdmin}}<a href="/admin" class="nav-link{{if eq .Page "admin"}} nav-link--active{{end}}"{{if eq .Page "admin"}} aria-current="page"{{end}}>Admin</a>{{end}}
+      {{/* About: a mini-menu gathering the project links (GitRepo, the AGPL §13
+           Source archive, the License) plus a Version entry that opens the About
+           modal. Wired by about-menu.js (initAboutMenu), loaded on both the shell
+           pages and the admin pages. Inside the ☰ panel (narrow) the toggle is
+           hidden and the menu shows flat (CSS) — no nested dropdown. */}}
+      <div class="about" id="about">
+        <button type="button" class="nav-link about__btn" id="aboutBtn"
+                aria-haspopup="true" aria-expanded="false" aria-controls="aboutMenu">
+          About <span class="about__caret" aria-hidden="true">&#9662;</span>
+        </button>
+        <div class="about__menu" id="aboutMenu" role="menu" aria-labelledby="aboutBtn" hidden>
+          {{if .GitRepo}}<a href="{{.GitRepo}}" class="about__item" role="menuitem" target="_blank" rel="noopener">GitRepo</a>{{end}}
+          <a href="/source" class="about__item" role="menuitem" download>Source</a>
+          <a href="/license" class="about__item" role="menuitem" target="_blank" rel="license">License</a>
+          <button type="button" class="about__item about__version" id="aboutVersion" role="menuitem">Version</button>
+        </div>
+      </div>
+    </nav>
+    <div class="header-actions">
+      {{/* Signed-in user area: username · Sign out. The username itself is the link
+           to the Settings page (/settings, docs/ui/user-settings.md) — styled as a
+           .nav-link like the left-side Library/Upload tabs, only on the right. The
+           voluntary change-password control and the theme switcher live on that
+           page; the forced first-run password change still uses #passModal below.
+           It's a plain <a> so the shell router treats it as in-shell navigation;
+           its text is filled in by auth.js. */}}
+      {{/* Both controls always exist (auth.js toggles them on a session edge), but
+           the server sets the correct initial state so there's no FOUC: a signed-in
+           load paints the username + Log out straight away, never "Sign in" first. */}}
+      <div class="user-area" id="userArea"{{if not .SignedIn}} hidden{{end}}>
+        <a href="/settings" class="nav-link{{if eq .Page "settings"}} nav-link--active{{end}}"{{if eq .Page "settings"}} aria-current="page"{{end}} id="userName" title="Settings">{{.Username}}</a>
+        <button class="btn btn-neutral" id="logoutBtn">Log out</button>
+      </div>
+      <button class="btn btn-neutral" id="signInBtn"{{if .SignedIn}} hidden{{end}}>Sign in</button>
+      {{template "header-actions-extra" .}}
     </div>
-    <button class="btn btn-neutral" id="signInBtn"{{if .SignedIn}} hidden{{end}}>Sign in</button>
-    {{template "header-actions-extra" .}}
   </div>
 </header>
 

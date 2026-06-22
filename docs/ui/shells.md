@@ -58,6 +58,38 @@ a link/subtab the server rendered for a session that has since changed (e.g. sig
 out in another tab), and re-gates the swapped-in subtab bar after each navigation.
 It only ever removes, and is idempotent — for the common case it's a no-op.
 
+### Responsive header (narrow widths)
+
+The header is a single non-wrapping flex row. With every link visible it cannot
+fit a phone-width viewport — worst as an admin, who has the most links — so the
+buttons used to spill past the edge, widen the document, and force a horizontal
+page scroll. The fix collapses the header into a **☰ overflow menu** below a
+breakpoint (shared by both shells, since the `{{define "header"}}` partial is):
+
+- **Logo + Library stay pinned** inline on the left at every width (owner decision:
+  Library is the primary tab and always one tap away). Library is a `.nav-link`
+  carrying `data-section` (so `setActiveNav` still lights it) rendered *outside*
+  the collapsible group.
+- Everything else — **Upload, Admin, About, the user area / Sign in** — lives in a
+  single `#navCollapse` wrapper. On wide screens that wrapper is `display: contents`,
+  so its children (`.main-nav`, `.header-actions`) are direct header flex items laid
+  out **exactly as before** (`.main-nav`'s `margin-right: auto` still pushes the user
+  area to the far right); the **`#navToggle` ☰ button is hidden**.
+- Below **720px** (`app.css` media query) the toggle appears (pushed right with
+  `margin-left: auto`) and `#navCollapse` becomes an absolutely-positioned dropdown
+  panel anchored under the sticky header, hidden until `.is-open`. Inside it the
+  links stack vertically; the **About flyout is flattened** to plain items (its
+  toggle hidden, its menu forced static — no nested dropdown); a hairline divider
+  sets off the user area. The header row is then only `logo · Library · ☰`, which
+  always fits, so it can never overflow.
+
+`nav-menu.js` (`initNavMenu`) wires the open/close, mirroring `about-menu.js`:
+toggle, close on outside-click / Escape, and close when any item inside the panel
+is chosen. It runs once per page context — `shell.js` at boot (the persistent
+header survives shell swaps) and `bootAdmin()` on each admin full load — next to
+`initAboutMenu()`. Because the inner nav keeps the `.main-nav` class and the
+Upload/Admin links, `applyNavPermissions` still finds and gates them unchanged.
+
 ## Admin shell
 
 `{{define "admin-shell"}}` (`webui/html/partials.html`) + `bootAdmin()`
