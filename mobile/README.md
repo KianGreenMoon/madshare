@@ -48,7 +48,7 @@ and hand-off still work.)
 There is **no native aarch64 Android SDK** — Google ships `aapt2` (the only
 x86_64-only tool in the build) for x86_64 only. So the build must run on an
 x86_64 toolchain. `build/build-apk.sh` runs the Capacitor scaffolding natively
-(aarch64 Node) and the Gradle build in the `build/Dockerfile` amd64 image:
+(host Node) and then **auto-detects how to build**:
 
 ```bash
 cd mobile
@@ -56,15 +56,16 @@ cd mobile
 # -> android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-This works on an **x86_64 host** (or CI runner) with podman/Docker. On a plain
-x86_64 box you can also skip the container entirely:
+- **native** — on an x86_64 host that has a **JDK + Android SDK** (via
+  `ANDROID_SDK_ROOT`/`ANDROID_HOME`, or an `sdk.dir` that `cap add` wrote into
+  `android/local.properties`), it runs Gradle directly. Fastest, no container.
+- **container** — otherwise (x86_64 host without a local SDK), it builds inside
+  the `build/Dockerfile` amd64 image via podman/Docker. No Android toolchain
+  needed on the host.
 
-```bash
-npm install && npx cap add android && cd android && ./gradlew assembleDebug
-```
-
-The `android/` dir is gitignored and fully regenerable, so building on a
-different machine just needs this `mobile/` tree.
+Force one with `BUILD_METHOD=native ./build/build-apk.sh` (or `=container`). The
+`android/` dir is gitignored and fully regenerable, so building on a different
+machine just needs this `mobile/` tree.
 
 ### Why it does NOT build on a 16 KB-page aarch64 host (Asahi)
 
