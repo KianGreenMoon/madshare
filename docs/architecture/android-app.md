@@ -214,11 +214,23 @@ polling). It is unit-tested with mocked globals (`tests/js/media-session.test.mj
 that service) or `POST_NOTIFICATIONS` (Android 13+, to show the notification).
 `build/build-apk.sh` adds both to the app manifest after `cap add` (idempotent).
 
-**Still to verify on-device** (needs a built APK): that action-handler callbacks
-arrive over the bare bridge (metadata / state / position are plain data calls and
-are safe regardless), and that the notification shows once `POST_NOTIFICATIONS` is
-granted (a runtime request may be needed on 13+). A fully native app would be
-sturdier; for v1 the foreground service is sufficient.
+**On-device status (GrapheneOS, 2026-06-22).** The app builds, installs, reaches
+an Yggdrasil `http://` server (once `build-apk.sh` auto-enables cleartext, §7), and
+**plays audio** — P1 + same-origin streaming confirmed on hardware. **But the OS
+media controls / notification do NOT appear, and the OS suspends playback ~30 s
+after backgrounding** → the native foreground service is **not starting**. Both
+symptoms are that one thing. Root cause is **not yet diagnosed**: GrapheneOS
+Vanadium exposes no on-device JS console and locks down remote debugging
+(`chrome://inspect`), so we could not confirm whether
+`window.Capacitor.Plugins.MediaSession` is even reachable on the remote page, nor
+capture the foreground-service-start error. **Next step:** surface that bridge
+state without a console (e.g. a temporary on-screen diagnostic, or `adb logcat`).
+**Candidate fixes** once the cause is known: drop the `isNativePlatform()` gate in
+`media-session.js` (prefer the plugin whenever `Capacitor.Plugins.MediaSession`
+exists — it can be unreliable on a remotely-loaded page); a runtime
+`POST_NOTIFICATIONS` request; or, if the bridge isn't injected on the remote origin
+at all, native script injection. A fully native app would be sturdier; for v1 the
+foreground service is sufficient.
 
 ## 7. Packaging
 
