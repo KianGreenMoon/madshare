@@ -208,8 +208,8 @@ shell registers one as **`window.MadshareMedia`** (`mobile/native/java/.../Media
 backed by a native **`MediaPlaybackService`** that owns a `MediaSessionCompat`, runs
 the `foregroundServiceType="mediaPlayback"` foreground service, and renders the media
 notification. Control events (notification / lock screen / headset) travel back into
-the page via `window.__madshareMediaAction(action[, posMs])`. This replaces the
-`@jofr` plugin (still installed but inert — it can be removed).
+the page via `window.__madshareMediaAction(action[, posMs])`. This replaced the
+`@jofr/capacitor-media-session` plugin, which has been removed.
 
 **Platform-agnostic web side.** All platform handling stays in
 **`webui/static/js/media-session.js`** (`createMediaSession()`), so the queue controller
@@ -242,9 +242,18 @@ console on the remote page. `adb logcat` captures foreground-service start error
 earlier "GrapheneOS blocks remote debugging" blocker conflated the Vanadium *browser*
 with the app's own debug-build WebView; the latter is fully inspectable.
 
-**On-device status.** Plays audio + same-origin streaming confirmed on hardware (P1).
-Background audio / OS controls: native bridge implemented; **on-device verification of
-the foreground service + notification pending** the next x86 build.
+**On-device status — VERIFIED 2026-06-23** (Pixel 7 Pro, GrapheneOS, Android 16).
+Background playback survives backgrounding/lock, the media notification + transport
+controls work, and the foreground service starts cleanly (confirmed first in
+isolation via scripted CDP — `Background started FGS: Allowed`, MediaSession active,
+MediaStyle notification posted — then end-to-end with real playback).
+
+**Deployment gotcha.** `media-session.js` (and the rest of the player) is served by
+the **server**, not bundled in the APK — and the web assets are compile-time embedded
+into the server binary. So shipping a player change to the app means **rebuilding and
+restarting the server** on a matching commit; updating only the APK is not enough. (In
+testing, the app reached an already-updated server before the server was redeployed, so
+the bridge was present but the old player never called it.)
 
 ## 7. Packaging
 
@@ -279,7 +288,7 @@ None required for the core flow. Optional, additive niceties (separate work):
   screen" and validates same-origin behaviour with zero native code.
 - **P1 — Capacitor shell + launcher + §4 gate.** Single hard-coded-then-editable
   server, the full safety classification and warning, health probe, hand-off.
-- **P2 — Background audio.** *Implemented; on-device verification pending:* a native
+- **P2 — Background audio.** *DONE — verified on-device 2026-06-23:* a native
   `window.MadshareMedia` bridge (`addJavascriptInterface`) backing a
   `MediaPlaybackService` foreground service + `MediaSessionCompat`, driven by the
   `createMediaSession()` adapter. Replaces the Capacitor-plugin path, which cannot
