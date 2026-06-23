@@ -181,56 +181,70 @@ them in this mode.
 
 ## 6. Background audio
 
-`player-controller.js` already drives `navigator.mediaSession` (metadata +
-play/pause/seek). **Correction to an earlier assumption:** the Android *System
-WebView* does **not** implement the Web Media Session API, so those calls are a
-no-op there (lock-screen/notification controls do **not** light up on their own),
-and a backgrounded WebView is suspended by the OS so playback pauses. A native
-plugin is therefore **required**, not just nice-to-have.
+Two facts about the Android *System WebView* force a native solution:
 
-Chosen plugin: **`@jofr/capacitor-media-session`** (GPL-3.0, compatible with this
-project's AGPL; the 4.x line targets Capacitor ≤6 — we pin Capacitor 6). It starts
-an Android **foreground service** for an active media session — keeping the
-WebView's `<audio>` playing in the background — and renders the media notification.
+1. It does **not** implement the Web Media Session API — `navigator.mediaSession`
+   is absent (not merely a no-op), so OS controls never light up on their own.
+2. A backgrounded WebView is suspended by the OS, so playback dies (~30 s on the
+   test device) unless a **foreground service** keeps the process alive.
 
-**Bridge (decided & built, P2).** The player runs on the **remote** server origin,
-where the app's own JS does not execute — but `allowNavigation: ["*"]` means the
-Capacitor **bridge** is injected, so the native plugin is reachable there as
-`window.Capacitor.Plugins.MediaSession`. All platform handling lives in its own
-module, **`webui/static/js/media-session.js`** (`createMediaSession()`), so the
-queue controller stays platform-agnostic: `player-controller.js` only imports it,
-constructs it (passing `player` + the queue's nav callbacks), and feeds it
-`setTrack` / `setState` — a net *reduction* in that file, no web behaviour change.
-The module picks a backend — the native plugin when `Capacitor.isNativePlatform()`,
-else `navigator.mediaSession`, else no-op — and normalises the two APIs (property-set
-vs. method-call; action-handler shape) to one surface. It wires play / pause /
-previoustrack / nexttrack / **seekto** handlers and pushes `setPositionState` on
-track/state changes (the OS extrapolates the scrubber from `playbackRate`, so no
-polling). It is unit-tested with mocked globals (`tests/js/media-session.test.mjs`).
+**Why the Capacitor plugin path does not work here (diagnosed on-device).** The
+player runs on the **remote** server origin. An earlier design assumed
+`allowNavigation: ["*"]` injects the Capacitor bridge there, making
+`@jofr/capacitor-media-session` reachable as `window.Capacitor.Plugins.MediaSession`.
+**That assumption is wrong.** `allowNavigation` only permits the WebView to *navigate*
+to those origins instead of bouncing them to the system browser; it does **not** inject
+the Capacitor bridge. Measured via remote DevTools on the live app (Pixel 7 Pro,
+GrapheneOS, Android 16): on the remote page `window.Capacitor` is `undefined`,
+`window.cordova` is `undefined`, and `'mediaSession' in navigator` is `false` — so
+every media-session call was a silent no-op and the foreground service was never even
+asked to start. The single fixed-URL escape hatch (`server.url`, which *would* get the
+bridge injected) is incompatible with the multi-server launcher and the same-origin
+cookie/streaming design, so it is out.
 
-**Android manifest.** The plugin merges its own `MediaSessionService`
-(`foregroundServiceType="mediaPlayback"`) and `FOREGROUND_SERVICE`, but **not**
-`FOREGROUND_SERVICE_MEDIA_PLAYBACK` (Android 14 / targetSdk 34 requires it to start
-that service) or `POST_NOTIFICATIONS` (Android 13+, to show the notification).
-`build/build-apk.sh` adds both to the app manifest after `cap add` (idempotent).
+**The bridge that does reach the remote origin.** `WebView.addJavascriptInterface()`
+injects an object into **every** page the WebView loads, on any origin. The mobile
+shell registers one as **`window.MadshareMedia`** (`mobile/native/java/.../MediaBridge.java`),
+backed by a native **`MediaPlaybackService`** that owns a `MediaSessionCompat`, runs
+the `foregroundServiceType="mediaPlayback"` foreground service, and renders the media
+notification. Control events (notification / lock screen / headset) travel back into
+the page via `window.__madshareMediaAction(action[, posMs])`. This replaces the
+`@jofr` plugin (still installed but inert — it can be removed).
 
-**On-device status (GrapheneOS, 2026-06-22).** The app builds, installs, reaches
-an Yggdrasil `http://` server (once `build-apk.sh` auto-enables cleartext, §7), and
-**plays audio** — P1 + same-origin streaming confirmed on hardware. **But the OS
-media controls / notification do NOT appear, and the OS suspends playback ~30 s
-after backgrounding** → the native foreground service is **not starting**. Both
-symptoms are that one thing. Root cause is **not yet diagnosed**: GrapheneOS
-Vanadium exposes no on-device JS console and locks down remote debugging
-(`chrome://inspect`), so we could not confirm whether
-`window.Capacitor.Plugins.MediaSession` is even reachable on the remote page, nor
-capture the foreground-service-start error. **Next step:** surface that bridge
-state without a console (e.g. a temporary on-screen diagnostic, or `adb logcat`).
-**Candidate fixes** once the cause is known: drop the `isNativePlatform()` gate in
-`media-session.js` (prefer the plugin whenever `Capacitor.Plugins.MediaSession`
-exists — it can be unreliable on a remotely-loaded page); a runtime
-`POST_NOTIFICATIONS` request; or, if the bridge isn't injected on the remote origin
-at all, native script injection. A fully native app would be sturdier; for v1 the
-foreground service is sufficient.
+**Platform-agnostic web side.** All platform handling stays in
+**`webui/static/js/media-session.js`** (`createMediaSession()`), so the queue controller
+only imports it, constructs it (with `player` + nav callbacks), and feeds it `setTrack` /
+`setState`. `resolveBackend()` picks, in order: the **native bridge** (`window.MadshareMedia`)
+→ the Capacitor plugin (fallback for local app content only) → `navigator.mediaSession`
+→ no-op. It normalises each to one surface and wires play / pause / previoustrack /
+nexttrack / **seekto**, pushing `setPositionState` on track/state changes (the OS
+extrapolates the scrubber from `playbackRate`, so no polling). The native side works in
+**milliseconds**; the web player reports **seconds** — `media-session.js` converts at the
+boundary. Unit-tested with mocked globals, including the native bridge
+(`tests/js/media-session.test.mjs`).
+
+**Native source & manifest (regenerable `android/`).** The Java lives under the
+tracked `mobile/native/` tree and is copied into `android/app/src/main/java/...` by
+`build/build-apk.sh` on every build (overwriting Capacitor's default `MainActivity`).
+The same script adds, idempotently: the `FOREGROUND_SERVICE` /
+`FOREGROUND_SERVICE_MEDIA_PLAYBACK` / `POST_NOTIFICATIONS` permissions, the
+`<service android:name=".MediaPlaybackService" foregroundServiceType="mediaPlayback">`
+declaration (with a `MEDIA_BUTTON` intent-filter so transport controls route into the
+session), and the `androidx.media:media` Gradle dependency. `MainActivity` requests
+`POST_NOTIFICATIONS` at runtime (Android 13+); the service still runs without it, only
+the notification is suppressed.
+
+**On-device diagnosis loop (works from the Asahi dev host).** Building needs an x86_64
+toolchain (§7), but **diagnosis does not**: `adb` (USB client) and `chromium` both run
+natively on aarch64. Debug builds enable WebView inspection (`@webview_devtools_remote_*`
+socket), so `chrome://inspect` — or scripted CDP over `adb forward` — gives a full JS
+console on the remote page. `adb logcat` captures foreground-service start errors. The
+earlier "GrapheneOS blocks remote debugging" blocker conflated the Vanadium *browser*
+with the app's own debug-build WebView; the latter is fully inspectable.
+
+**On-device status.** Plays audio + same-origin streaming confirmed on hardware (P1).
+Background audio / OS controls: native bridge implemented; **on-device verification of
+the foreground service + notification pending** the next x86 build.
 
 ## 7. Packaging
 
@@ -265,10 +279,12 @@ None required for the core flow. Optional, additive niceties (separate work):
   screen" and validates same-origin behaviour with zero native code.
 - **P1 — Capacitor shell + launcher + §4 gate.** Single hard-coded-then-editable
   server, the full safety classification and warning, health probe, hand-off.
-- **P2 — Background audio.** *Wired (on-device verification pending):*
-  `@jofr/capacitor-media-session` foreground-service plugin reached via the
-  `createMediaSession()` adapter in `player-controller.js`; manifest permissions
-  patched by `build/build-apk.sh`. See §6.
+- **P2 — Background audio.** *Implemented; on-device verification pending:* a native
+  `window.MadshareMedia` bridge (`addJavascriptInterface`) backing a
+  `MediaPlaybackService` foreground service + `MediaSessionCompat`, driven by the
+  `createMediaSession()` adapter. Replaces the Capacitor-plugin path, which cannot
+  reach the remote origin. Native source in `mobile/native/`, wired by
+  `build/build-apk.sh`. See §6.
 - **P3 — Multi-server + overrides.** Saved server list, per-server "trusted
   network" override, switch-server affordance.
 - **P4 — Polish / distribution.** Network-security-config hardening, app icons,
@@ -289,9 +305,9 @@ None required for the core flow. Optional, additive niceties (separate work):
    `mobile/www/js/launcher.js` server store already carries a `trusted` flag.
 3. **PWA vs Capacitor first.** P0 may be enough for some users.
    **Resolved:** **Capacitor first** (P0/PWA deferred — revisit later).
-4. **Foreground-audio plugin choice.**
-   **Resolved (P2):** **`@jofr/capacitor-media-session`** (GPL-3.0). See §6 for
-   rationale and the Android-WebView caveat; alternatives (Capawesome Media
-   Session — paid + needs native audio; `@mediagrid/capacitor-native-audio` —
-   plays natively, not the WebView) were rejected as a worse fit for the
-   reuse-the-web-UI model.
+4. **Foreground-audio mechanism.**
+   **Resolved (P2):** a **native `addJavascriptInterface` bridge** + foreground
+   service (see §6). Capacitor media plugins (`@jofr/capacitor-media-session`,
+   Capawesome, `@mediagrid/capacitor-native-audio`) were all rejected: their JS
+   bridge is not injected on the remote server origin where the player runs, which
+   is the whole reason the plugin approach failed on-device.

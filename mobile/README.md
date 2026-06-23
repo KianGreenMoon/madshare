@@ -20,11 +20,22 @@ mobile/
 │   └── js/
 │       ├── classify.js   PURE connection-safety classifier (security core)
 │       └── launcher.js   storage + health probe + gate + hand-off glue
+├── native/               TRACKED native sources (android/ is gitignored + regenerable)
+│   └── java/ygg/daemonlord/madshare/
+│       ├── MainActivity.java        installs the media bridge on the WebView
+│       ├── MediaBridge.java         window.MadshareMedia (addJavascriptInterface)
+│       └── MediaPlaybackService.java foreground service + MediaSession + notification
 ├── tests/
 │   └── classify.test.mjs unit tests for classify.js (node --test)
 ├── capacitor.config.json appId/appName, allowNavigation:["*"], cleartext
 └── package.json          Capacitor 6 deps; `npm test` runs the classifier tests
 ```
+
+`native/` holds the native Java that `build/build-apk.sh` copies into the
+regenerable `android/` tree on every build (background audio — see the design doc
+§6). `allowNavigation` does **not** inject the Capacitor bridge on the remote
+origin, so OS media controls / background playback are driven by the
+`window.MadshareMedia` bridge here, not by a Capacitor plugin.
 
 `classify.js` is the security-critical part and is kept DOM-/network-free so it
 is unit-tested without a browser (mirrors `tests/js/queue-ops.js` in the server
@@ -99,14 +110,17 @@ the real protection is the in-app gate in `classify.js` (design doc §4.4).
 ## Status
 
 - **P1 — launcher + safety gate + health probe + hand-off:** built (this dir).
-- **P2 — background audio:** wired (on-device verification pending). The Android
-  System WebView's `navigator.mediaSession` is a no-op, so `player-controller.js`
-  routes through `@jofr/capacitor-media-session` (GPL-3.0) via the
-  `createMediaSession()` adapter when running in the shell. `build-apk.sh` patches
-  the app manifest with `FOREGROUND_SERVICE_MEDIA_PLAYBACK` + `POST_NOTIFICATIONS`
-  (the plugin omits both). To verify on a device: background playback survives,
-  the notification's play/pause/next/prev/scrubber work, and the notification
-  shows once notification permission is granted. See design-doc §6.
+- **P2 — background audio:** implemented; on-device verification pending. The
+  Android System WebView exposes no `navigator.mediaSession`, and Capacitor's
+  bridge is **not** injected on the remote server origin where the player runs — so
+  the `createMediaSession()` adapter routes through `window.MadshareMedia`, a native
+  bridge injected via `addJavascriptInterface` (`native/java/.../MediaBridge.java`)
+  backed by a `MediaPlaybackService` foreground service + `MediaSessionCompat`.
+  `build-apk.sh` copies the native sources in and patches the manifest
+  (`FOREGROUND_SERVICE`/`…_MEDIA_PLAYBACK`/`POST_NOTIFICATIONS` + the `<service>`)
+  and `build.gradle` (`androidx.media`). To verify on a device: background playback
+  survives, the notification's play/pause/next/prev/scrubber work, and the
+  notification shows once notification permission is granted. See design-doc §6.
 - **P3 — multi-server polish + per-server trusted override** (storage already
   supports it) + native "Servers" return control (login-screen-only, gated on the
   session cookie via Android `CookieManager`).

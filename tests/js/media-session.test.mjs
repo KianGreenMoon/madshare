@@ -67,6 +67,40 @@ test('native plugin: routes through Capacitor.Plugins.MediaSession with native s
   });
 });
 
+test('native app bridge: routes through window.MadshareMedia + __madshareMediaAction', () => {
+  const calls = [];
+  const MadshareMedia = {
+    setMetadata: (json) => calls.push(['meta', json]),
+    setPlaybackState: (s) => calls.push(['state', s]),
+    setPositionState: (durMs, posMs, rate) => calls.push(['pos', durMs, posMs, rate]),
+  };
+  const win = { MadshareMedia };
+  withGlobals({ window: win }, () => {
+    const player = newPlayer(); // duration 100s, currentTime 5s
+    const ms = createMediaSession(player, {
+      onPlay: () => player.play(), onPause: () => player.pause(), onPrev: () => {}, onNext: () => {},
+    });
+    ms.setTrack({ title: 'T', artist: 'A', album: 'Al' });
+    ms.setState('playing');
+
+    // metadata forwarded as a JSON string
+    assert.deepEqual(JSON.parse(calls.find(c => c[0] === 'meta')[1]), { title: 'T', artist: 'A', album: 'Al' });
+    // playbackState forwarded as a bare string (the native interface signature)
+    assert.deepEqual(calls.find(c => c[0] === 'state'), ['state', 'playing']);
+    // position pushed in MILLISECONDS (seconds * 1000)
+    const pos = calls.find(c => c[0] === 'pos');
+    assert.equal(pos[1], 100000); // duration ms
+    assert.equal(pos[2], 5000);   // position ms
+
+    // the native side drives the page through the installed global dispatcher
+    assert.equal(typeof win.__madshareMediaAction, 'function');
+    win.__madshareMediaAction('play');  assert.equal(player.played, 1);
+    win.__madshareMediaAction('pause'); assert.equal(player.paused_, 1);
+    // seekto carries milliseconds; the handler receives seconds
+    win.__madshareMediaAction('seekto', 42000); assert.equal(player.seeked, 42);
+  });
+});
+
 test('web: routes through navigator.mediaSession (property assignment)', () => {
   const nav = { metadata: null, playbackState: null, positions: [],
     setActionHandler() {}, setPositionState(p) { this.positions.push(p); } };

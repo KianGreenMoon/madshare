@@ -26,10 +26,23 @@ echo "==> native scaffold (host Node)"
 [ -d android ] || npx cap add android
 npx cap sync android
 
-# The @jofr/capacitor-media-session foreground service is type "mediaPlayback":
-# Android 14 (targetSdk 34) requires FOREGROUND_SERVICE_MEDIA_PLAYBACK to start
-# it, and Android 13+ needs POST_NOTIFICATIONS to show the media notification.
-# The plugin declares neither, so add them to the app manifest (idempotent).
+# ── Native media bridge (background audio, design §6) ─────────────────────────
+# The player runs on the REMOTE server origin, where Capacitor does NOT inject its
+# plugin bridge — so background audio is driven by our own native bridge, injected
+# into every page via WebView.addJavascriptInterface(). The sources are tracked
+# under mobile/native/ (android/ itself is gitignored + regenerable) and copied in
+# on every build, overwriting Capacitor's default MainActivity.
+echo "==> install native media-bridge sources"
+nativedst=android/app/src/main/java/ygg/daemonlord/madshare
+mkdir -p "$nativedst"
+cp native/java/ygg/daemonlord/madshare/*.java "$nativedst/"
+ls -1 native/java/ygg/daemonlord/madshare/*.java | sed 's#.*/#   + #'
+
+# MediaPlaybackService is a type="mediaPlayback" foreground service: Android 14
+# (targetSdk 34) requires FOREGROUND_SERVICE_MEDIA_PLAYBACK to start it, Android 13+
+# needs POST_NOTIFICATIONS to show the media notification, and the base
+# FOREGROUND_SERVICE permission is required since API 28. Add them + declare the
+# service in the app manifest (all idempotent).
 manifest=android/app/src/main/AndroidManifest.xml
 add_perm() {
   grep -q "$1" "$manifest" 2>/dev/null && return 0
@@ -38,8 +51,18 @@ add_perm() {
 }
 if [ -f "$manifest" ]; then
   echo "==> ensure foreground-service / notification permissions"
+  add_perm FOREGROUND_SERVICE
   add_perm FOREGROUND_SERVICE_MEDIA_PLAYBACK
   add_perm POST_NOTIFICATIONS
+
+  # Declare MediaPlaybackService inside <application> (handles MEDIA_BUTTON so the
+  # notification / headset transport controls route into the MediaSession).
+  if ! grep -q "MediaPlaybackService" "$manifest"; then
+    svc='        <service\n            android:name=".MediaPlaybackService"\n            android:exported="false"\n            android:foregroundServiceType="mediaPlayback">\n            <intent-filter>\n                <action android:name="android.intent.action.MEDIA_BUTTON" />\n            </intent-filter>\n        </service>\n    </application>'
+    sed -i "s#    </application>#$svc#" "$manifest"
+    grep -q "MediaPlaybackService" "$manifest" && echo "   + <service MediaPlaybackService>" \
+      || echo "   ! could not declare MediaPlaybackService — add it to <application> in $manifest" >&2
+  fi
 
   # The server is user-chosen plaintext (Yggdrasil / LAN), so the app must permit
   # cleartext HTTP — Android blocks it by default and the WebView would fail to
@@ -57,6 +80,17 @@ if [ -f "$manifest" ]; then
       echo "   ! could not auto-enable cleartext — add android:usesCleartextTraffic=\"true\" to <application> in $manifest" >&2
     fi
   fi
+fi
+
+# MediaPlaybackService uses MediaSessionCompat / MediaButtonReceiver / MediaStyle
+# from androidx.media. Capacitor's default app/build.gradle does not depend on it,
+# and the android/ tree is regenerable, so add the dependency on every build.
+appgradle=android/app/build.gradle
+if [ -f "$appgradle" ] && ! grep -q "androidx.media:media" "$appgradle"; then
+  echo "==> add androidx.media dependency"
+  sed -i 's#^dependencies {#dependencies {\n    implementation "androidx.media:media:1.7.0"#' "$appgradle"
+  grep -q "androidx.media:media" "$appgradle" && echo "   + androidx.media:media:1.7.0" \
+    || echo "   ! could not add androidx.media dependency to $appgradle" >&2
 fi
 
 # ── Pick build method ─────────────────────────────────────────────────────────
