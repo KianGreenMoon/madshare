@@ -111,6 +111,45 @@ the transcode worker (an ffmpeg pool mirroring `imageproc`/`mediaproc`);
 eviction policy details and accounting; whether cache variants count toward
 storage stats; per-source or per-quality policy. All TBD in a later pass.
 
+## IDEA — give variants their own directory (possible decision, not decided)
+
+Today image variants live under `files_dir/images/<base_key>/` — i.e. *inside* the
+local source tree. An alternative worth weighing: move **all** derived artifacts,
+**permanent and cache alike**, out of `files/` into a dedicated top-level tree:
+
+```
+<data_dir>/
+  files/      sources only (audio blobs)         <- files/images/ goes away
+  links/      symlink sources
+  variants/   ALL derived media (owned)
+    images/   <base_key>/<variant>               (permanent)
+    audio/    <key>/<variant>                     (permanent and/or cache)
+```
+
+(or a sibling `cache/` for the ephemeral tier, if LRU-evicting a whole subtree is
+simpler than per-entry).
+
+**Why it's attractive:**
+- Makes the source-vs-derivative split *physical*: `files/` is purely originals;
+  `variants/` is purely regenerable, owned, GC-able derived data (Principle 1).
+- One subtree to account as the "derived footprint", and one you can wipe and
+  rebuild without ever touching a source.
+- Unifies the permanent and cache tiers under one home (distinguished by a
+  retention-policy attribute) instead of images-under-`files/` and
+  audio-cache-elsewhere.
+- Removes an existing wart: `/images/*` is served today from a sibling of the
+  audio tree under `files/`; a dedicated root decouples them.
+
+**Costs:**
+- Relocates existing image variants (`files/images/` → `variants/images/`) — a
+  one-time idempotent startup move (à la `RelocateLegacyBlobs`), plus repointing
+  the `/images/*` server root and the reconcile/`imagesDir` paths.
+- It's a refactor of working code for a conceptual win — weigh against the cheaper
+  "leave images where they are, only give *audio* its own/cache dir" middle ground.
+
+Lean: clearly right for audio; for images it's a tidy-up whose only real cost is the
+one-time relocation. Deferred with the rest of variants storage.
+
 ## Cross-cutting open questions
 
 - **Active vs startup GC.** Image GC is startup-only; an audio cache needs
