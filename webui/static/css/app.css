@@ -149,6 +149,19 @@ header {
   border-radius: 3px;
 }
 
+/* A <button> rendered as a nav tab (the app-only "Switch server" control, and the
+   About trigger) needs the native button chrome reset, plus left-aligned text so
+   it matches the other items when the nav folds into the ☰ dropdown. Mirrors the
+   reset .about__btn already applies; font-family only, so .nav-link's size/weight
+   still win. */
+button.nav-link {
+  background: none;
+  border: none;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
 /* The pinned Library tab never shrinks: it stays inline on the left at every
    width while the rest of the nav collapses into the ☰ menu on narrow screens. */
 .nav-link--home { flex-shrink: 0; }

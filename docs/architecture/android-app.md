@@ -326,9 +326,13 @@ None required for the core flow. Optional, additive niceties (separate work):
    Because the launcher must not sit in the WebView back-stack, the hand-off
    switches from `window.location.href = serverUrl` to
    **`location.replace(serverUrl)`**, making the **library the true root** of the
-   back-stack. The native back handler is then: `canGoBack() → goBack()`; at the
-   library root, **stay put** — a soft no-op, *not* a hard reload (a reload would
-   tear down the `player-controller.js` singleton and stop background audio).
+   back-stack. Drill-down and search are *in-page* state with no history entry, so
+   the web UI gets first crack via a `window.__madshareBack()` hook (registered by
+   `app.js` while the library is active): it closes an open search, else drills one
+   level up, and returns `true` when it consumed the press. The native handler runs
+   only when the hook returns false: `canGoBack() → goBack()`; at the library root,
+   **stay put** — a soft no-op, *not* a hard reload (a reload would tear down the
+   `player-controller.js` singleton and stop background audio).
    Closing the app is left to Android's task switcher. The one exception is the
    launcher screen itself (before connecting): there, back exits the app, since it
    is the genuine app root.

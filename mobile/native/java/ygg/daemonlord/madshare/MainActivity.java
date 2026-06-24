@@ -65,23 +65,38 @@ public class MainActivity extends BridgeActivity {
     private void installBackHandler(WebView webView, String localOrigin) {
         // Match the launcher on an origin boundary so a server that merely shares the
         // "localhost" prefix (e.g. https://localhost:3000) is not mistaken for it.
-        String launcherExact = localOrigin == null ? null : localOrigin;
-        String launcherPrefix = localOrigin == null ? null : localOrigin + "/";
+        final String launcherExact = localOrigin;
+        final String launcherPrefix = localOrigin == null ? null : localOrigin + "/";
 
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override
             public void handleOnBackPressed() {
-                String current = webView.getUrl();
-                boolean onLauncher = current != null && launcherExact != null
-                        && (current.equals(launcherExact) || current.startsWith(launcherPrefix));
-                if (onLauncher) {
-                    finish();              // genuine app root → exit the app
-                } else if (webView.canGoBack()) {
-                    webView.goBack();      // in-page history on the server origin
-                }
-                // else: at the server's library root → stay put (no exit, no launcher).
+                // The web UI gets first chance to consume the press for in-page state
+                // that has no WebView-history entry — closing an open search or
+                // drilling one level up the library. window.__madshareBack() returns
+                // true when it handled it. The result arrives async on the UI thread;
+                // only fall back to native history/root nav when it did not.
+                webView.evaluateJavascript(
+                        "(window.__madshareBack&&window.__madshareBack())===true",
+                        consumed -> {
+                            if (!"true".equals(consumed)) {
+                                nativeBack(webView, launcherExact, launcherPrefix);
+                            }
+                        });
             }
         });
+    }
+
+    private void nativeBack(WebView webView, String launcherExact, String launcherPrefix) {
+        String current = webView.getUrl();
+        boolean onLauncher = current != null && launcherExact != null
+                && (current.equals(launcherExact) || current.startsWith(launcherPrefix));
+        if (onLauncher) {
+            finish();              // genuine app root → exit the app
+        } else if (webView.canGoBack()) {
+            webView.goBack();      // in-page history on the server origin
+        }
+        // else: at the server's library root with nothing to pop → stay put.
     }
 
     @Override

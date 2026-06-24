@@ -848,10 +848,25 @@ function esc(s) {
 let abort  = null;     // AbortController for this activation's listeners
 let active = false;    // guards late async renders after teardown
 
+// Hardware back-button hook for the Android app: the native MainActivity calls
+// window.__madshareBack first and only does its own history/root handling when
+// this returns false. Here it pops the library's in-page state (which has no
+// browser-history entry): close an open search, else drill one level up. Returns
+// false at the artists root so native can take over. A plain browser never calls it.
+function handleBack() {
+  const searching = (viewSearch && viewSearch.classList.contains('view-panel--active'))
+    || (searchInput && searchInput.value);
+  if (searching) { clearSearch(); return true; }
+  if (drill.level === 'tracks') { drillToAlbums(drill.artistId, drill.artist); return true; }
+  if (drill.level === 'albums') { loadArtists(); return true; }
+  return false;
+}
+
 export function init() {
   active = true;
   abort = new AbortController();
   wireSearch(abort.signal);
+  window.__madshareBack = handleBack;   // app-only; harmless/no-op in a browser
   ensureLiked(); // hearts repaint via onLikedChange once the set arrives
   loadArtists();
 }
@@ -860,6 +875,7 @@ export function teardown() {
   active = false;
   abort?.abort();
   abort = null;
+  if (window.__madshareBack === handleBack) window.__madshareBack = null;
   clearTimeout(searchTimer);
   if (searchAbort) { searchAbort.abort(); searchAbort = null; }
 }
