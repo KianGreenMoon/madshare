@@ -30,7 +30,8 @@ listing/health.
 The library is **content-addressed**: the `files` table is the catalog (one
 logical row per hash). A hash may physically exist in **more than one storage**
 (a duplicate) — allowed, not auto-managed. The **resolver** decides which copy to
-serve by searching storages in priority order.
+serve by trying storages in a **fixed precedence** (`local` before `links`; see
+*Storage precedence*).
 
 > **Scope (YAGNI).** Build the seam; implement `local` + `links` only. The
 > `Storage` interface is shaped so `s3` drops in, but no S3 code or plugin
@@ -45,8 +46,8 @@ serve by searching storages in priority order.
 | Cover images | Link sidecar covers too; resized **variants stay owned/local**. |
 | Path safety | Config allowlist `[sources].symlink_roots`. |
 | Storages dir | **One shared `links` storage** (`links/audio/<hash>/…`), mirroring `files/`. No per-source dirs. |
-| **Resolver** | **Probe by storage priority order; serve the first storage that physically has the hash.** A dangling link reads as absent → falls through to the next storage (free resilience). |
-| **Storage order / default** | **Editable and live** (`/admin/sources`); the resolver consults it on every play. Stored in `settings`. Default = `local` then `links`. |
+| **Resolver** | Serve the first storage that physically has the hash, **`local` before `links`** (fixed precedence). A dangling link reads as absent → falls through (free resilience). |
+| **Storage precedence** | **Fixed in v0** (`local` > `links`; uploads → `local` only; `links` never outranks `local`). Configurable priority/default is an **S3-era** feature → `docs/architecture/s3-storage.md`. |
 | Upload of an existing hash | **Dedup** — no re-store (no need to upload what a storage already has). |
 | Duplicates across storages | **Allowed, not auto-managed**; a manual reconcile knob comes later. Within `links`: one link per hash (don't overwrite). |
 | Default data location | `data_dir` (db + files + links default under it); `database.path`/`files_dir` are overrides. |
@@ -100,17 +101,16 @@ ALTER TABLE artist_images ADD COLUMN storage_backend TEXT NOT NULL DEFAULT 'loca
 ALTER TABLE artist_images ADD COLUMN link_target      TEXT;
 ```
 
-Storage **order** and **default** live in the existing `settings` table
-(`storage_order` = JSON array, `storage_default`) — editable without a schema
-change. No per-file `source_id`: with a shared links dir, per-source file
+No `storage_order`/`storage_default` settings in v0 — precedence is the fixed
+constant `local` > `links` (see *Storage precedence*; configurable ordering ships
+with S3). No per-file `source_id`: with a shared links dir, per-source file
 attribution is not tracked in v0 (sources show their **scan-time summary**; link
 health is reported over the whole `links` storage).
 
 ## Storages registry & the resolver
 
-An in-memory `storages.Registry` built at startup from config (`local` rooted at
-`files_dir`, `links` rooted at `<data_dir>/links`) ordered by the `settings`
-priority list.
+An in-memory `storages.Registry` is built at startup from config: `local` (rooted
+at `files_dir`) and `links` (rooted at `<data_dir>/links`).
 
 ```go
 type Storage interface {
@@ -118,33 +118,33 @@ type Storage interface {
     // Locate returns the on-disk path of the file for hash, and whether this
     // storage actually has it. local: a regular file in the hash dir. links:
     // a symlink whose target stats as a regular file (a DANGLING link → false).
-    // A future s3 storage answers from a known-location lookup, never a blind probe.
     Locate(hash string) (path string, ok bool)
 }
 ```
+
+**v0 precedence is fixed — `local` before `links`** (see *Storage precedence*).
+There are only two storages, one each, and `links` can never outrank `local`, so
+there is nothing to order. The general, configurable priority-ordered probe — the
+machinery that only earns its keep once a second interchangeable storage exists —
+lives in `docs/architecture/s3-storage.md`; v0 is its degenerate case.
 
 **Serving `/files/*` (resolving handler, replaces the static mount):**
 
 1. `fileAccessGuard` already loads the `files` row for ACL; keep that (one lookup
    for access + the canonical name).
-2. **Probe in priority order:** call `Locate(hash)` on each storage (default
-   first); serve the first hit via `http.ServeFile` (native HEAD/range; `links`
-   follows the symlink to the original). For local + links this is ≤2 stats.
+2. **Try `local`, then `links`:** call `Locate(hash)` on each; serve the first hit
+   via `http.ServeFile` (native HEAD/range; `links` follows the symlink to the
+   original). ≤2 cheap stats.
 3. A dangling/missing copy returns `ok=false`, so resolution **falls through** to
-   the next storage that has the hash — a duplicate elsewhere transparently
-   covers a broken link. No hit anywhere → 404.
+   the next storage that has the hash — a duplicate elsewhere transparently covers
+   a broken link. No hit anywhere → 404.
 
 `hash` is regex-validated before any join (as today); a link may legitimately
 resolve outside `data_dir` — that is the mechanism, gated at *creation*.
-`storage_backend` may be probed first as an optimization, but it is only a hint.
+`storage_backend` is only an origin hint; serving does not depend on it.
 
 `/images/*` is **unchanged** — a static `http.FileServer` rooted at
 `files_dir/images`, since all variants are owned/local regardless of storage.
-
-> **S3 (future) note.** Blind per-play probing is fine for local-filesystem
-> storages (cheap stats) but not for a network bucket. When `s3` lands, the
-> resolver probes the local-fs storages first and consults S3 by known location
-> (or a presence cache) — never a blind network probe. No effect on v0.
 
 ## Ingest & duplicates
 
@@ -155,8 +155,8 @@ The library is content-addressed; what creates/locates a copy:
 - **Symlink import** → add a link in the `links` storage for each scanned file,
   **unless `links` already has that hash** (don't overwrite). It does not consult
   other storages, so a file that is also a `local` blob may end up duplicated
-  across `local` + `links` — **allowed**; the resolver serves whichever the order
-  prefers (default `local`), and the link is a tiny, resilient fallback.
+  across `local` + `links` — **allowed**; the resolver serves the `local` copy
+  (`local` always precedes `links`), and the link is a tiny, resilient fallback.
 - **Duplicates across storages** are never removed automatically. A deliberate
   (likely manual) reconcile tool is future work.
 
@@ -167,14 +167,21 @@ no local copy). If the external dir later disappears the link dangles, nothing
 else has the hash, and it 404s — accepted. A future **"adopt / materialize"**
 action could copy a link's bytes into `local` on demand.
 
-## Storage ordering (priority / default) — live in v0
+## Storage precedence — fixed in v0
 
-`storage_order` (a JSON array of storage ids) and `storage_default` live in
-`settings`. The resolver walks `storage_order` on every play; `storage_default`
-is the head of that list. Both are editable on `/admin/sources` (reorder, set
-default). Default is `["local","links"]`. Changing the order re-prefers which
-copy of a *duplicated* hash is served — instantly, since serving probes the live
-order (no per-file rewrite).
+With exactly two storages, one each, precedence is a constant, not a setting:
+
+- **`local` always precedes `links`.** `links` can never outrank `local`.
+- **Uploads only ever go to `local`.** `links` receives imports only — never an
+  upload.
+- So the resolver order is hardwired `[local, links]`; there is **no reorder or
+  set-default control in v0**, and no `storage_order`/`storage_default` settings.
+
+Configurable priority, a selectable upload default, an S3 cache that may be raised
+above `local`, and ordering among multiple object stores only become meaningful
+with a second uploadable/interchangeable storage. That logic — and why the rules
+look convoluted — lives in `docs/architecture/s3-storage.md`, deferred with S3
+itself.
 
 ## Adding & managing a source
 
@@ -193,10 +200,9 @@ Endpoints under `/api/admin/sources*` — admin group (`file.delete`) + gated
   recording. Sidecar covers: symlink the original into `links/images/<base_key>/`,
   generate variants into the **local** `files_dir/images/<base_key>/`, attach the
   album image (`storage_backend='links'`). Record a scan summary; `status='active'`.
-- **`GET /api/admin/sources`** — list storages (local + links, with the live
-  order/default) and symlink sources (root, scan summary, external bytes); plus
-  `links`-storage health (broken-link count).
-- **`PATCH /api/admin/storages/order`** — set `storage_order` / `storage_default`.
+- **`GET /api/admin/sources`** — list the symlink sources (root, scan summary,
+  external bytes) and `links`-storage health (broken-link count), plus the `local`
+  store summary. No reorder/default control (v0 precedence is fixed).
 - **`DELETE /api/admin/sources/{id}`** — *deferred / best-effort* (delete flagged
   "later, not necessary"): mark the source inactive / forget the record;
   reclaiming shared links is a later **manual** tool since attribution isn't
@@ -268,12 +274,15 @@ Every destructive path is storage-aware:
 
 ## UI
 
-`/admin/sources` ("Data sources", admin shell): the storages (local + links) with
-a **reorder / set-default** control; each symlink source with root, scan summary,
-external bytes, health badge; an **Add symlink source** form constrained to
-`symlink_roots` (hidden if none); scan progress (prune-status polling); a
-broken-links detail view. Reuses the admin shell, `toast.js`, shared player.
-`-tags nowebui`: page compiles out, API stays.
+`/admin/sources` ("Data sources", admin shell): an **Imported directories**
+section listing each symlink source (root, scan summary, external bytes, health
+badge), an **Add symlink source** form constrained to `symlink_roots` (hidden if
+none), scan progress (prune-status polling), and a broken-links detail view —
+plus a read-only `local` store summary. **No reorderable storage list in v0**:
+`links` is not presented as a peer storage device, it *is* the imports section
+(the reorderable storage view is an S3-era addition — see `s3-storage.md`). Reuses
+the admin shell, `toast.js`, shared player. `-tags nowebui`: page compiles out,
+API stays.
 
 ## Phasing
 
@@ -282,16 +291,18 @@ broken-links detail view. Reuses the admin shell, `toast.js`, shared player.
 - **P1 — registry + schema.** Migration 021, `data_sources`, the `storages.Registry`
   (`local` + `links`) ordered from `settings`. Only `local` populated → no
   behaviour change.
-- **P2 — resolving `/files` handler** (probe by priority order; links-aware
+- **P2 — resolving `/files` handler** (try `local` then `links`; links-aware
   `Locate`; fall-through). `/images` unchanged. Regression-test HEAD/range.
 - **P3 — `links` storage + symlink source.** Shared links dir, symlink/kind-aware
   storage helpers, `POST/GET /api/admin/sources` + scan engine (walk/hash/skip-if-
   in-links/symlink/insert + tags + analysis + recordings).
 - **P4 — sidecar covers.**
 - **P5 — prune broken-link detection + per-storage accounting.**
-- **P6 — `/admin/sources` page** (incl. reorder/set-default).
+- **P6 — `/admin/sources` page** (imports section + add/scan/health; no storage
+  reorder UI — that ships with S3).
 - **Future** — source delete / duplicate-reconcile tool; two-way sync/rescan; the
-  `s3` storage; "adopt/materialize" a link into `local`.
+  `s3` storage + configurable precedence (`docs/architecture/s3-storage.md`);
+  "adopt/materialize" a link into `local`.
 
 ## Open questions
 
@@ -299,5 +310,6 @@ broken-links detail view. Reuses the admin shell, `toast.js`, shared player.
    deliberate (likely manual) tool; deferred.
 2. **Two-way sync (`rescan`).** v0 is one-shot; sync needs a removed-original
    policy.
-3. **`s3` storage** (activates the S3-aware resolver path) and
-   **adopt/materialize** — future.
+3. **`s3` storage** — the configurable storage priority/default, S3-as-cache, and
+   multi-store ordering are designed in `docs/architecture/s3-storage.md` (future,
+   not built). **adopt/materialize** a link into `local` — also future.
