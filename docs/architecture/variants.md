@@ -57,14 +57,30 @@ also sweep the `links/images` tree by the same `base_key` reference check, using
 `os.Remove` on the symlink. (See the matching bullet in
 `docs/architecture/data-sources.md` → *Lifecycle & safety*.)
 
-**Open:** the sweep is startup-only. Fine for small owned images; a more active GC
-matters more for the audio cache below. Also reconsider whether to persist the
-linked-original image symlink at all — *read-once-derive* (don't keep the link)
-would make image variants fully self-contained in `local`, removing the second
-cleanup location and any broken-image-link health, at the cost of not being able
-to re-derive variants if the recipe changes and the original is gone. (This is the
-data-sources "image-original persistence" open question, viewed from the variant
-side.)
+**Note:** the sweep is startup-only. Fine for small owned images; a more active GC
+matters more for the audio cache below.
+
+### OPEN DECISION — image original persistence (to discuss, not decided)
+
+For a **linked** cover, do we keep the external original around (as a symlink) or
+only the derived variants?
+
+- **(A) Read-once-derive** — generate variants from the cover, keep **no** link to
+  the original. Variants are fully self-contained in `local`: a single cleanup
+  location, no `links/images` tree, no broken-image-link health. Cost: if the
+  variant recipe ever changes (new sizes/crops) and the original cover is gone, we
+  can't re-derive. Simplifies the whole data-sources linked-cover path.
+- **(B) Persist linked original** — symlink the original in `links/images` as a
+  regenerate-source *plus* owned variants. Enables future re-derivation, but adds
+  the second cleanup location + broken-image-link health (the "stinky" part).
+
+**Nuance for the discussion:** *embedded* cover art (ID3/MP4/FLAC pictures) has no
+separate original file — it is bytes inside the audio blob/link — so it is
+inherently read-once-derive; only **sidecar** images (`cover.jpg` next to the
+tracks) even *have* an original file to persist. So (B) only buys re-derivation for
+sidecar covers, while (A) treats sidecar and embedded art uniformly. That
+asymmetry leans toward (A). Owner parked it; revisit before implementing P4.
+(Mirror of the data-sources "image-original persistence" open question.)
 
 ## Audio variants (FUTURE — sketch only, not designed)
 

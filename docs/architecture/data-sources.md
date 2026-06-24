@@ -235,6 +235,11 @@ unless overridden; the `links` storage root is `<data_dir>/links`; validate
 non-existent root is a `cfg.Warnings()` advisory; empty `symlink_roots` disables
 the `symlink` kind.
 
+`symlink_roots` is **deploy-time TOML and intentionally not UI-editable** (it is a
+trust boundary — see `docs/architecture/configuration.md`). Symlink *sources*,
+which live within the allow-list, are DB-backed (`data_sources`) and added from
+the UI, so no TOML write-back is needed for this feature.
+
 ## Lifecycle & safety
 
 > **INVARIANT — Madshare never touches a file it does not own.** Nothing in any
@@ -325,3 +330,10 @@ API stays.
 3. **`s3` storage** — the configurable storage priority/default, S3-as-cache, and
    multi-store ordering are designed in `docs/architecture/s3-storage.md` (future,
    not built). **adopt/materialize** a link into `local` — also future.
+4. **Image-original persistence (PARKED — to discuss).** Read-once-derive vs.
+   persist the linked-original symlink for sidecar covers. Owner leans to settle
+   this *before* implementation (it touches P4 cleanup). Framed in
+   `docs/architecture/variants.md`.
+5. **UI config-editing model (PARKED — to discuss).** DB `settings` vs a live TOML
+   editor. Not a v0 blocker (sources are DB-backed, the allow-list is operator-only
+   TOML). Framed in `docs/architecture/configuration.md`.
