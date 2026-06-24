@@ -35,6 +35,7 @@ public class MediaBridge {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     private final Context appContext;
+    private final String launcherUrl; // bundled launcher URL (e.g. https://localhost), reloaded by openLauncher()
 
     // Latest snapshot, sent whole on every change (updates are infrequent: track
     // change + play/pause, not per-frame — the OS extrapolates the scrubber).
@@ -43,7 +44,10 @@ public class MediaBridge {
     private boolean playing = false;
     private boolean active = false; // whether the foreground service is running
 
-    MediaBridge(Context ctx) { this.appContext = ctx.getApplicationContext(); }
+    MediaBridge(Context ctx, String launcherUrl) {
+        this.appContext = ctx.getApplicationContext();
+        this.launcherUrl = launcherUrl;
+    }
 
     /** Wire the WebView the service should call back into. Cleared in onDestroy. */
     static void attachWebView(WebView wv) { webViewRef = new WeakReference<>(wv); }
@@ -72,6 +76,22 @@ public class MediaBridge {
         positionMs = posMs;
         rate = playbackRate <= 0 ? 1.0 : playbackRate;
         push();
+    }
+
+    /**
+     * Hand the WebView back to the bundled launcher so the user can pick another
+     * server. Called by the web UI's app-only "Switch server" header control
+     * (design doc §10 Q1). @JavascriptInterface methods arrive on a binder thread,
+     * so the navigation is posted to the main thread (like {@link #eval}).
+     */
+    @JavascriptInterface
+    public void openLauncher() {
+        final String url = launcherUrl;
+        if (url == null || url.isEmpty()) return;
+        MAIN.post(() -> {
+            WebView wv = webViewRef.get();
+            if (wv != null) wv.loadUrl(url);
+        });
     }
 
     /** Tear down the session + notification (queue emptied / player stopped). */

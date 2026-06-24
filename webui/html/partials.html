@@ -58,6 +58,14 @@
           <button type="button" class="about__item about__version" id="aboutVersion" role="menuitem">Version</button>
         </div>
       </div>
+      {{/* App-only "Switch server" control (Android app). Hands the WebView back to
+           the bundled launcher to pick another server. Rendered hidden; nav-menu.js
+           reveals it only when the native window.MadshareMedia bridge is present, so
+           a desktop/mobile browser never shows it. It lives in the collapsible group,
+           so it is inline in the headbar on wide screens and folds into the ☰ menu on
+           narrow ones, and is available signed in or out — switching servers must not
+           require a sign-out. See docs/architecture/android-app.md §10 Q1. */}}
+      <button type="button" class="nav-link" id="switchServerBtn" hidden>Switch server</button>
     </nav>
     <div class="header-actions">
       {{/* Signed-in user area: username · Sign out. The username itself is the link

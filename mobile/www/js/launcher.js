@@ -114,7 +114,12 @@ function handoff(server) {
   server.lastUsed = Date.now();
   upsertServer(server);
   // Hand the WebView to the server, same-origin from here on (android-app.md §1).
-  window.location.href = server.url;
+  // replace() (not href=) so the launcher is NOT left in the WebView back-stack:
+  // the server's library becomes the true root, so the hardware back button can
+  // never walk back into the launcher (android-app.md §10 Q1). Returning to the
+  // launcher is done explicitly via the native MadshareMedia.openLauncher() bridge,
+  // surfaced as the web UI's "Switch server" header item.
+  window.location.replace(server.url);
 }
 
 // --- rendering -------------------------------------------------------------

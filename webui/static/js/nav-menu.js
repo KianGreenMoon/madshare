@@ -41,4 +41,17 @@ export function initNavMenu() {
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && isOpen()) close();
   });
+
+  // App-only "Switch server" control. The bundled Android app injects a native
+  // window.MadshareMedia bridge into every page (incl. the remote server origin);
+  // a plain browser has no such object, so the header item stays hidden there.
+  // Reveal it and wire it to hand the WebView back to the launcher. Available
+  // whether signed in or out — switching servers must not require a sign-out
+  // (docs/architecture/android-app.md §10 Q1).
+  const switchBtn = document.getElementById('switchServerBtn');
+  const bridge = typeof window !== 'undefined' ? window.MadshareMedia : undefined;
+  if (switchBtn && bridge && typeof bridge.openLauncher === 'function') {
+    switchBtn.hidden = false;
+    switchBtn.addEventListener('click', () => bridge.openLauncher());
+  }
 }

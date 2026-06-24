@@ -6,6 +6,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.webkit.WebView;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
@@ -29,8 +30,14 @@ public class MainActivity extends BridgeActivity {
         // It takes effect on the next page load; the launcher is already loaded but
         // does not use it — the remote navigation that follows does.
         WebView webView = getBridge().getWebView();
-        webView.addJavascriptInterface(new MediaBridge(this), "MadshareMedia");
+        // The bundled launcher's URL (e.g. https://localhost); openLauncher() reloads it
+        // to return from a remote server to the server picker, and getLocalUrl() is the
+        // origin the back handler uses to tell "are we on the launcher?".
+        String launcherUrl = getBridge().getAppUrl();
+        webView.addJavascriptInterface(new MediaBridge(this, launcherUrl), "MadshareMedia");
         MediaBridge.attachWebView(webView);
+
+        installBackHandler(webView, getBridge().getLocalUrl());
 
         // Android 13+: the media notification (and thus the visible controls) needs
         // runtime notification permission. The foreground service still runs without
@@ -41,6 +48,40 @@ public class MainActivity extends BridgeActivity {
             ActivityCompat.requestPermissions(this,
                     new String[]{ Manifest.permission.POST_NOTIFICATIONS }, REQ_POST_NOTIFICATIONS);
         }
+    }
+
+    /**
+     * Hardware back-button policy (design doc §10 Q1). Capacitor ships no back
+     * handling, so by default Android finishes the activity (closing the app) on
+     * every back press. Instead:
+     *   • on a remote server page with WebView history → go back one page;
+     *   • at the server's library — the back-stack root, because the launcher hands
+     *     off with location.replace() and is never left on the stack → stay put: no
+     *     exit, and never re-open the launcher (that is the explicit "Switch server"
+     *     control's job);
+     *   • on the launcher screen itself (the genuine app root) → exit the app.
+     * Closing the app from inside a server is left to Android's task switcher.
+     */
+    private void installBackHandler(WebView webView, String localOrigin) {
+        // Match the launcher on an origin boundary so a server that merely shares the
+        // "localhost" prefix (e.g. https://localhost:3000) is not mistaken for it.
+        String launcherExact = localOrigin == null ? null : localOrigin;
+        String launcherPrefix = localOrigin == null ? null : localOrigin + "/";
+
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                String current = webView.getUrl();
+                boolean onLauncher = current != null && launcherExact != null
+                        && (current.equals(launcherExact) || current.startsWith(launcherPrefix));
+                if (onLauncher) {
+                    finish();              // genuine app root → exit the app
+                } else if (webView.canGoBack()) {
+                    webView.goBack();      // in-page history on the server origin
+                }
+                // else: at the server's library root → stay put (no exit, no launcher).
+            }
+        });
     }
 
     @Override

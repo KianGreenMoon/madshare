@@ -68,9 +68,12 @@ capability so playback survives backgrounding.
 The launcher is itself web tech (HTML/JS bundled as the app's default assets), so
 the only native code is the foreground-audio plugin and Capacitor glue. The
 launcher is the app's "home"; selecting a server navigates the WebView to that
-origin. A persistent **"Servers" affordance** (a native back-action or a small
-floating control injected by the shell) returns to the launcher to switch
-servers — see §7 Open questions.
+origin. To switch servers afterwards the web UI header carries a **"Switch
+server"** item shown *only inside the app* (feature-detected by the presence of
+the `window.MadshareMedia` bridge, so a desktop/mobile browser never renders it),
+available whether or not the user is signed in; it calls a native bridge method
+that reloads the bundled launcher. The Android back button is deliberately **not**
+part of this — it never opens the launcher and never exits the app — see §10 Q1.
 
 ## 3. Supported connection types
 
@@ -295,7 +298,9 @@ None required for the core flow. Optional, additive niceties (separate work):
   reach the remote origin. Native source in `mobile/native/`, wired by
   `build/build-apk.sh`. See §6.
 - **P3 — Multi-server + overrides.** Saved server list, per-server "trusted
-  network" override, switch-server affordance.
+  network" override, an app-only **"Switch server"** header item (returns to the
+  launcher via the native bridge), and back-button handling that treats the
+  library as the root — see §10 Q1.
 - **P4 — Polish / distribution.** Network-security-config hardening, app icons,
   `.aab`, optional Play Store.
 
@@ -303,12 +308,30 @@ None required for the core flow. Optional, additive niceties (separate work):
 
 1. **Return-to-launcher UX.** Once the WebView is on a remote origin, how does the
    user get back to switch servers?
-   **Resolved (P3):** a **native control, login-screen-only** — not part of the
-   server's web UI. The app shows a "Servers" affordance for *unauthorised* users,
-   detected natively by the absence of the `madshare_session` cookie (Android
-   `CookieManager`) for the current origin; signing out reveals it. Keeps the
-   control off the web UI (so the localhost/browser UI never grows an app-only
-   button) and avoids fragile DOM injection into authenticated pages.
+   **Resolved (P3), revised 2026-06-24:** a **"Switch server" item in the web UI
+   header**, *not* a login-screen-only / cookie-gated control. Rationale for the
+   change: a user is routinely signed in to *several* servers at once, so a
+   control that only appeared when logged out would force a needless sign-out just
+   to switch. The item is rendered server-side but `hidden`, and revealed by JS
+   only when `window.MadshareMedia` (the native bridge) is present — so it shows
+   **only inside the Android app**, never in a desktop/mobile browser, which keeps
+   the localhost/browser UI clean with no external DOM injection. It lives in the
+   collapsible header group (`#navCollapse`), so it sits inline in the headbar on
+   wide screens (tablets) and folds under the ☰ menu on narrow ones, and it is
+   available signed in *or* out. Activating it calls a native bridge method (e.g.
+   `MadshareMedia.openLauncher()`) that reloads the bundled launcher.
+
+   **Back button (revised):** the hardware back button does **in-page history
+   navigation only** — it never opens the launcher and never exits the app.
+   Because the launcher must not sit in the WebView back-stack, the hand-off
+   switches from `window.location.href = serverUrl` to
+   **`location.replace(serverUrl)`**, making the **library the true root** of the
+   back-stack. The native back handler is then: `canGoBack() → goBack()`; at the
+   library root, **stay put** — a soft no-op, *not* a hard reload (a reload would
+   tear down the `player-controller.js` singleton and stop background audio).
+   Closing the app is left to Android's task switcher. The one exception is the
+   launcher screen itself (before connecting): there, back exits the app, since it
+   is the genuine app root.
 2. **Override scope.** Per-server or also per-network (SSID)?
    **Resolved:** **per-server** only (simpler; no network-state permission). The
    `mobile/www/js/launcher.js` server store already carries a `trusted` flag.
