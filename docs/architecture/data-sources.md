@@ -260,6 +260,16 @@ Every destructive path is storage-aware:
   target no longer hashes to `files.hash`). Each reported; the target is never
   touched. The prune summary distinguishes *missing blob* (local) from *broken
   link* (links); health surfaces on `/admin/sources`.
+- **Derived cover variants & linked-image originals.** Cover variants are
+  owned/local and shared by `base_key` across albums, so they are reclaimed by the
+  **reference-counted** image reconcile (`ReconcileImageOrphans`) when no
+  `album_images`/`artist_images` row references the key — never inline on a single
+  file delete. For a **linked** cover this spans two places: the owned variant dir
+  `files_dir/images/<base_key>/` (`os.RemoveAll`, ours) **and** the linked-original
+  symlink `<data_dir>/links/images/<base_key>/` (`os.Remove` the symlink only —
+  **never the external original**). **v0 work:** extend the reconcile to also sweep
+  `links/images`. Full variant-storage design (incl. future audio variants):
+  `docs/architecture/variants.md`.
 
 ## Accounting
 
@@ -296,7 +306,9 @@ API stays.
 - **P3 — `links` storage + symlink source.** Shared links dir, symlink/kind-aware
   storage helpers, `POST/GET /api/admin/sources` + scan engine (walk/hash/skip-if-
   in-links/symlink/insert + tags + analysis + recordings).
-- **P4 — sidecar covers.**
+- **P4 — sidecar covers** + extend the image reconcile to sweep `links/images`
+  (`os.Remove` the unreferenced linked-original symlink — see *Lifecycle & safety*
+  and `docs/architecture/variants.md`).
 - **P5 — prune broken-link detection + per-storage accounting.**
 - **P6 — `/admin/sources` page** (imports section + add/scan/health; no storage
   reorder UI — that ships with S3).
