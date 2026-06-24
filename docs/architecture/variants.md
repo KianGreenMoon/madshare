@@ -79,7 +79,16 @@ separate original file — it is bytes inside the audio blob/link — so it is
 inherently read-once-derive; only **sidecar** images (`cover.jpg` next to the
 tracks) even *have* an original file to persist. So (B) only buys re-derivation for
 sidecar covers, while (A) treats sidecar and embedded art uniformly. That
-asymmetry leans toward (A). Owner parked it; revisit before implementing P4.
+asymmetry leans toward (A).
+
+**Argument that (B) buys ~nothing:** the persisted symlink is redundant with the
+source directory itself. If the variant recipe ever changes, re-derive by
+**re-scanning the source** (the `cover.jpg` is still in the external dir — and a
+rescan is wanted anyway, the future sync). The *only* case (B)'s symlink would help
+— recipe changed **and** the source dir is gone — is exactly the case where the
+linked **audio** is also gone, so the album is unplayable and its cover is moot.
+Net: (A) loses nothing real and drops the second cleanup path, the `links/images`
+tree, and the broken-image health surface. Owner parked it; revisit before P4.
 (Mirror of the data-sources "image-original persistence" open question.)
 
 ## Audio variants (FUTURE — sketch only, not designed)
