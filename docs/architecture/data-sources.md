@@ -344,10 +344,16 @@ API stays.
   upload `CacheDir` → `SpoolDir`. Doing this **before P4** means P4 derives covers
   straight into the final location and fresh installs never put images under
   `files/`. Full design: `docs/architecture/variants.md`.
-- **P4 — covers (read-once-derive).** Decode each source's cover (sidecar or
-  embedded) once into owned `local` variants under `variants/images` (P3.5) and
-  attach the album image; no `links/images` tree, so the existing image reconcile
-  is unchanged. See *Cover images* and `docs/architecture/variants.md`.
+- **P4 — covers (read-once-derive). _(done)_** During a scan, each newly linked
+  file's cover — a sidecar `cover/folder/front.{jpg,jpeg,png}` in its directory
+  (preferred) or the embedded picture — is decoded once into an owned source
+  original under `<files_dir>/images/<image_hash>/original<ext>` and its album
+  cover filled if absent (`SetAlbumCoverIfAbsent`), with a variant job enqueued on
+  the shared cover-variant pool (variants land in `variants/images`). Covers are
+  always **owned/local** — there is no `links/images` tree, so the existing image
+  reconcile is unchanged. Enabled via `Manager.WithCovers`; opt-out (unset) keeps
+  the P3 no-cover behaviour. Capped at 10 MB like the upload path. See *Cover
+  images* and `docs/architecture/variants.md`.
 - **P5 — prune broken-link detection + per-storage accounting.**
 - **P6 — `/admin/sources` page** (imports section + add/scan/health; no storage
   reorder UI — that ships with S3).

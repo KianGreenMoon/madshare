@@ -168,6 +168,11 @@ func (m *Manager) ingestOne(ctx context.Context, path, mime string, actor sql.Nu
 	} else if m.notify != nil {
 		m.notify.Notify()
 	}
+
+	// Read-once-derive the album cover (sidecar or embedded) into owned variants,
+	// when this is the album's first cover. Best-effort; never fails the import.
+	m.maybeSaveCover(ctx, path, tags, now)
+
 	sum.Linked++
 }
 

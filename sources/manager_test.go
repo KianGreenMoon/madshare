@@ -29,6 +29,11 @@ type fakeStore struct {
 	insertFn func() error // optional hook to fail/block InsertFile
 
 	finished []finishCall
+
+	// cover bookkeeping (P4)
+	albumCovers map[int64]bool // albumID -> already has a cover
+	coverClaims int            // SetAlbumCoverIfAbsent that inserted
+	imageJobs   int            // EnqueueImageJob calls
 }
 
 type finishCall struct {
@@ -36,7 +41,40 @@ type finishCall struct {
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{sources: map[string]*database.DataSource{}, byHash: map[string]*database.File{}}
+	return &fakeStore{
+		sources:     map[string]*database.DataSource{},
+		byHash:      map[string]*database.File{},
+		albumCovers: map[int64]bool{},
+	}
+}
+
+func (s *fakeStore) ResolveAlbumID(_ context.Context, artist, album string) (int64, error) {
+	// A stable positive id per (artist, album) is enough for the cover path.
+	return 1, nil
+}
+
+func (s *fakeStore) HasAlbumCover(_ context.Context, albumID int64) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.albumCovers[albumID], nil
+}
+
+func (s *fakeStore) SetAlbumCoverIfAbsent(_ context.Context, albumID int64, _, _, _, _ string, _ int64) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.albumCovers[albumID] {
+		return false, nil
+	}
+	s.albumCovers[albumID] = true
+	s.coverClaims++
+	return true, nil
+}
+
+func (s *fakeStore) EnqueueImageJob(_ context.Context, _, _, _ string, _ int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.imageJobs++
+	return nil
 }
 
 func (s *fakeStore) InsertDataSource(_ context.Context, ds *database.DataSource) error {

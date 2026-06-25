@@ -247,7 +247,11 @@ func main() {
 	// [sources].symlink_roots allow-list. Reset any source left 'scanning' by a
 	// crash before serving. See docs/architecture/data-sources.md.
 	linker := storages.NewLinker(cfg.LinksDir())
-	sourcesMgr := sources.New(db, linker, mediaPool, cfg.Sources.SymlinkRoots, api.AcceptedAudioTypes())
+	sourcesMgr := sources.New(db, linker, mediaPool, cfg.Sources.SymlinkRoots, api.AcceptedAudioTypes()).
+		// Read-once-derive covers (P4): decode each linked file's sidecar/embedded
+		// art once into owned variants under <files_dir>/images, sharing the running
+		// cover-variant pool (filesImagesDir + pool, same as uploads). See variants.md.
+		WithCovers(filesImagesDir, pool)
 	if err := sourcesMgr.ResetStaleScans(ctx); err != nil {
 		log.Printf("reset stale source scans: %v", err)
 	}

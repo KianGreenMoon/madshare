@@ -57,6 +57,13 @@ type Store interface {
 	InsertFile(ctx context.Context, f *database.File, upload *database.FileUpload, meta *database.MediaMetadata) error
 	RecordUpload(ctx context.Context, fileID int64, filename string) error
 	EnqueueAnalysisJob(ctx context.Context, fileID, now int64) error
+
+	// Cover attach (read-once-derive, P4). Mirrors the upload path's
+	// maybeSaveEmbeddedCover: resolve the album, fill its cover if absent.
+	ResolveAlbumID(ctx context.Context, artist, album string) (int64, error)
+	HasAlbumCover(ctx context.Context, albumID int64) (bool, error)
+	SetAlbumCoverIfAbsent(ctx context.Context, albumID int64, imageHash, sourceExt, objectKey, mimeType string, now int64) (bool, error)
+	EnqueueImageJob(ctx context.Context, coverType, subjectKey, imageHash string, now int64) error
 }
 
 // Linker is the write side of the 'links' storage; *storages.Linker satisfies it.
@@ -98,6 +105,11 @@ type Manager struct {
 	accepted map[string]string // accepted audio extension -> canonical MIME
 	clock    func() int64      // injectable for tests; defaults to time.Now().Unix
 
+	// Cover read-once-derive (P4), set by WithCovers. When sourceImagesDir is
+	// empty, cover extraction is skipped entirely (the P3 behaviour).
+	sourceImagesDir string   // owned cover source-original tree (<files_dir>/images)
+	imagePool       Notifier // wakes the cover-variant worker; nil skips the wake
+
 	mu      sync.Mutex
 	running bool
 	wg      sync.WaitGroup // tracks the in-flight scan for Wait (shutdown/tests)
@@ -122,6 +134,19 @@ func New(store Store, linker Linker, notify Notifier, roots []string, accepted m
 		accepted: acc,
 		clock:    unixNow,
 	}
+}
+
+// WithCovers enables read-once-derive cover extraction during scans: each new
+// linked file's embedded or sidecar art is decoded once into an owned source
+// original under sourceImagesDir (<files_dir>/images) and its album cover is
+// filled if absent, with a variant job enqueued (woken via imagePool). Call once
+// before serving. With an empty sourceImagesDir covers are skipped (P3 behaviour).
+// imagePool may be nil (the job still queues; no immediate wake). See
+// docs/architecture/data-sources.md (Cover images) and variants.md.
+func (m *Manager) WithCovers(sourceImagesDir string, imagePool Notifier) *Manager {
+	m.sourceImagesDir = sourceImagesDir
+	m.imagePool = imagePool
+	return m
 }
 
 // Enabled reports whether any symlink root is configured.
