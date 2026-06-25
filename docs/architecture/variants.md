@@ -118,16 +118,22 @@ across a *recipe* change — handle that with a single global recipe-version bum
 not a hash per file. (The audio cache is the opposite case — see below — which is
 why its layout above *does* carry `<variant_hash>`.)
 
-**Migration & open sub-points.**
+**Owned covers keep their source; linked covers don't (DECIDED).** Uploaded *and*
+embedded covers store the original at `files/images/<original_hash>/original<ext>` —
+for an embedded cover, extract the picture once and keep the (few-KB) copy, so the
+invariant "every owned cover has a source file in `files/images`" holds with no
+empty-hash-dir special case, and regeneration never has to re-find or re-read the
+audio blob. Only the **linked-import** case stays read-once-derive (no stored
+original — see the decision below): that choice avoided a `links/images` *symlink
+tree* with broken-link health, a cost that simply doesn't apply to a tiny owned
+copy. Clean rule: **owned content keeps its cover source; linked content re-scans.**
+
+**Migration.**
 - Re-key `base_key` (16-char) → full original hash; relocate
   `variants/images/<base_key>/{original,<variant>}` →
   `files/images/<full_hash>/original<ext>` + `variants/images/<full_hash>/<recipe><ext>`.
   One idempotent startup pass (extends `RelocateImageVariants`) plus a DB column
   change (`album_images`/`artist_images` `base_key` → `image_hash`).
-- **Embedded-cover handling (TBD):** store the extracted bytes as the
-  `files/images` original (a copy), or read-once-derive and keep no original
-  (re-extract from the audio blob on a recipe change), consistent with the linked-
-  cover decision below.
 - A phase **beyond P3.5** — sequence after it.
 
 ### The `CacheDir` → `SpoolDir` rename (terminology hygiene)
