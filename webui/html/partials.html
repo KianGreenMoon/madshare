@@ -10,6 +10,26 @@
        controls fold into the ☰ menu below the narrow breakpoint. */}}
   <a href="/" data-section="library" class="nav-link nav-link--home{{if eq .Section "library"}} nav-link--active{{end}}"{{if eq .Section "library"}} aria-current="page"{{end}}>Library</a>
 
+  {{/* About: a mini-menu gathering the project links (GitRepo, the AGPL §13
+       Source archive, the License) plus a Version entry that opens the About
+       modal. PINNED outside .nav-collapse next to Library (owner decision
+       2026-06-26): it stays a visible "About ▾" button at every width and never
+       folds into the ☰ menu. The flyout (.about__menu) is an absolute dropdown
+       toggled by about-menu.js (initAboutMenu), loaded on the shell and admin
+       pages alike. */}}
+  <div class="about" id="about">
+    <button type="button" class="nav-link about__btn" id="aboutBtn"
+            aria-haspopup="true" aria-expanded="false" aria-controls="aboutMenu">
+      About <span class="about__caret" aria-hidden="true">&#9662;</span>
+    </button>
+    <div class="about__menu" id="aboutMenu" role="menu" aria-labelledby="aboutBtn">
+      {{if .GitRepo}}<a href="{{.GitRepo}}" class="about__item" role="menuitem" target="_blank" rel="noopener">GitRepo</a>{{end}}
+      <a href="/source" class="about__item" role="menuitem" download>Source</a>
+      <a href="/license" class="about__item" role="menuitem" target="_blank" rel="license">License</a>
+      <button type="button" class="about__item about__version" id="aboutVersion" role="menuitem">Version</button>
+    </div>
+  </div>
+
   {{/* Narrow-width overflow toggle. Hidden on wide screens (CSS) — there it is a
        no-box element while .nav-collapse is display:contents, so .main-nav and
        .header-actions lay out inline in the header row exactly as before. Below
@@ -41,23 +61,6 @@
            is a full page load — playback in this tab stops on entry. The shell
            router handles it via its non-shell-page fallback (location.assign). */}}
       {{if .CanAdmin}}<a href="/admin" class="nav-link{{if eq .Page "admin"}} nav-link--active{{end}}"{{if eq .Page "admin"}} aria-current="page"{{end}}>Admin</a>{{end}}
-      {{/* About: a mini-menu gathering the project links (GitRepo, the AGPL §13
-           Source archive, the License) plus a Version entry that opens the About
-           modal. Wired by about-menu.js (initAboutMenu), loaded on both the shell
-           pages and the admin pages. Inside the ☰ panel (narrow) the toggle is
-           hidden and the menu shows flat (CSS) — no nested dropdown. */}}
-      <div class="about" id="about">
-        <button type="button" class="nav-link about__btn" id="aboutBtn"
-                aria-haspopup="true" aria-expanded="false" aria-controls="aboutMenu">
-          About <span class="about__caret" aria-hidden="true">&#9662;</span>
-        </button>
-        <div class="about__menu" id="aboutMenu" role="menu" aria-labelledby="aboutBtn" hidden>
-          {{if .GitRepo}}<a href="{{.GitRepo}}" class="about__item" role="menuitem" target="_blank" rel="noopener">GitRepo</a>{{end}}
-          <a href="/source" class="about__item" role="menuitem" download>Source</a>
-          <a href="/license" class="about__item" role="menuitem" target="_blank" rel="license">License</a>
-          <button type="button" class="about__item about__version" id="aboutVersion" role="menuitem">Version</button>
-        </div>
-      </div>
       {{/* App-only "Switch server" control (Android app). Hands the WebView back to
            the bundled launcher to pick another server. Rendered hidden; nav-menu.js
            reveals it only when the native window.MadshareMedia bridge is present, so

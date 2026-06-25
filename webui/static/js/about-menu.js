@@ -12,17 +12,22 @@ export function initAboutMenu() {
   const menu = document.getElementById('aboutMenu');
   if (!about || !btn || !menu) return; // page without the shared header
 
-  const openMenu = () => { menu.hidden = false; btn.setAttribute('aria-expanded', 'true'); };
-  const closeMenu = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
+  // Toggle a class, not the [hidden] attribute: the UA stylesheet's
+  // [hidden] { display: none !important } would otherwise beat our CSS (UA
+  // !important outranks every author rule), so an element keeping [hidden] could
+  // never be un-hidden by CSS. See app.css .about__menu.is-open.
+  const isOpen = () => menu.classList.contains('is-open');
+  const openMenu = () => { menu.classList.add('is-open'); btn.setAttribute('aria-expanded', 'true'); };
+  const closeMenu = () => { menu.classList.remove('is-open'); btn.setAttribute('aria-expanded', 'false'); };
 
   btn.addEventListener('click', e => {
     e.stopPropagation();
-    menu.hidden ? openMenu() : closeMenu();
+    isOpen() ? closeMenu() : openMenu();
   });
 
   // A click anywhere outside the menu closes it.
   document.addEventListener('click', e => {
-    if (!menu.hidden && !about.contains(e.target)) closeMenu();
+    if (isOpen() && !about.contains(e.target)) closeMenu();
   });
 
   // ── Version entry → About modal ────────────────────────────────────────────
@@ -40,6 +45,6 @@ export function initAboutMenu() {
   document.addEventListener('keydown', e => {
     if (e.key !== 'Escape') return;
     if (modal && !modal.classList.contains('hidden')) { closeModal(); return; }
-    if (!menu.hidden) closeMenu();
+    if (isOpen()) closeMenu();
   });
 }

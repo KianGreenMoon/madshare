@@ -214,7 +214,7 @@ button.nav-link {
   /* Hug the widest entry (e.g. "GitRepo") instead of a fixed width, so short
      items don't leave a big empty gap on the right. */
   width: max-content;
-  display: flex;
+  display: none;          /* shown via .is-open — about-menu.js toggles the class */
   flex-direction: column;
   padding: var(--space-1);
   background: var(--surface);
@@ -222,9 +222,12 @@ button.nav-link {
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
-/* Beat the UA [hidden] rule, which our .about__menu display would otherwise win
-   against (author > UA at equal specificity). */
-.about__menu[hidden] { display: none; }
+/* Open state. We toggle a class, not the [hidden] attribute, on purpose: the UA
+   stylesheet sets [hidden] { display: none !important }, and UA !important beats
+   every author rule (even author !important) — so an element keeping [hidden]
+   can never be un-hidden by CSS. That is exactly why the About menu stayed
+   invisible inside the ☰ panel; the class-based toggle has no such conflict. */
+.about__menu.is-open { display: flex; }
 
 .about__item {
   display: flex;
@@ -1138,9 +1141,9 @@ body.queue-open #toastStatus {
 }
 
 /* ── Narrow viewport: collapse the header into a ☰ menu ────────────────────────
-   Below this width only the logo + pinned Library stay inline; everything else
-   (Upload, Admin, About, the user area / Sign in) folds into a dropdown panel
-   opened by the ☰ toggle. This keeps the header to one always-fitting row, the
+   Below this width only the logo + pinned Library + pinned About stay inline;
+   everything else (Upload, Admin, the user area / Sign in) folds into a dropdown
+   panel opened by the ☰ toggle. This keeps the header to one always-fitting row, the
    fix for the overflow that pushed buttons off-screen and forced a horizontal
    page scroll (worst as admin, who has the most links). */
 @media (max-width: 720px) {
@@ -1186,21 +1189,6 @@ body.queue-open #toastStatus {
   }
   .nav-collapse .nav-link:hover { background: var(--surface-hover); }
   .nav-collapse .nav-link--active { color: var(--text); background: var(--surface-hover); }
-
-  /* About: flatten it — hide the toggle and render its menu inline as flat list
-     items (it is normally an absolute flyout). display:contents lets the items
-     line up with the other nav links instead of nesting under an About box. */
-  .nav-collapse .about { display: contents; }
-  .nav-collapse .about__btn { display: none; }
-  .nav-collapse .about__menu,
-  .nav-collapse .about__menu[hidden] {
-    display: flex;
-    position: static;
-    width: auto;
-    padding: 0;
-    border: none;
-    box-shadow: none;
-  }
 
   /* A hairline divider sets the user area / Sign in apart from the links above. */
   .nav-collapse .header-actions {

@@ -66,22 +66,26 @@ buttons used to spill past the edge, widen the document, and force a horizontal
 page scroll. The fix collapses the header into a **☰ overflow menu** below a
 breakpoint (shared by both shells, since the `{{define "header"}}` partial is):
 
-- **Logo + Library stay pinned** inline on the left at every width (owner decision:
-  Library is the primary tab and always one tap away). Library is a `.nav-link`
-  carrying `data-section` (so `setActiveNav` still lights it) rendered *outside*
-  the collapsible group.
-- Everything else — **Upload, Admin, About, the user area / Sign in** — lives in a
-  single `#navCollapse` wrapper. On wide screens that wrapper is `display: contents`,
-  so its children (`.main-nav`, `.header-actions`) are direct header flex items laid
+- **Logo + Library + About stay pinned** inline on the left at every width (owner
+  decision: Library is the primary tab and always one tap away; About is kept a
+  visible button, never folded into the ☰ — judged inconvenient under the menu).
+  Library is a `.nav-link` carrying `data-section` (so `setActiveNav` still lights
+  it); both it and the `.about` flyout are rendered *outside* the collapsible group.
+- Everything else — **Upload, Admin, the user area / Sign in** — lives in a single
+  `#navCollapse` wrapper. On wide screens that wrapper is `display: contents`, so
+  its children (`.main-nav`, `.header-actions`) are direct header flex items laid
   out **exactly as before** (`.main-nav`'s `margin-right: auto` still pushes the user
   area to the far right); the **`#navToggle` ☰ button is hidden**.
 - Below **720px** (`app.css` media query) the toggle appears (pushed right with
   `margin-left: auto`) and `#navCollapse` becomes an absolutely-positioned dropdown
   panel anchored under the sticky header, hidden until `.is-open`. Inside it the
-  links stack vertically; the **About flyout is flattened** to plain items (its
-  toggle hidden, its menu forced static — no nested dropdown); a hairline divider
-  sets off the user area. The header row is then only `logo · Library · ☰`, which
-  always fits, so it can never overflow.
+  links stack vertically; a hairline divider sets off the user area. The header row
+  is then `logo · Library · About ▾ · ☰`, which always fits, so it can never overflow.
+
+  The About flyout (`.about__menu`) is shown/hidden via an `.is-open` **class**, not
+  the `hidden` attribute — the UA stylesheet's `[hidden] { display: none !important }`
+  outranks all author CSS (UA `!important` beats even author `!important`), so an
+  element keeping `[hidden]` can never be re-shown by CSS.
 
 `nav-menu.js` (`initNavMenu`) wires the open/close, mirroring `about-menu.js`:
 toggle, close on outside-click / Escape, and close when any item inside the panel
