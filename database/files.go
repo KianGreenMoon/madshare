@@ -30,7 +30,11 @@ type StorageByteBreakdown struct {
 	Trash   int64 // soft-deleted, awaiting prune
 }
 
-// StorageByteBreakdown computes the per-state byte totals in a single query.
+// StorageByteBreakdown computes the per-state byte totals in a single query. It
+// counts only on-disk (owned) blobs: links rows reference external originals that
+// live outside data_dir, so their byte_size is NOT part of the on-disk footprint
+// (it is reported separately as external bytes — see storageStats and
+// docs/architecture/data-sources.md). Importing in place adds 0 here.
 func (db *DB) StorageByteBreakdown(ctx context.Context) (StorageByteBreakdown, error) {
 	var b StorageByteBreakdown
 	err := db.QueryRowContext(ctx, `
@@ -38,7 +42,8 @@ func (db *DB) StorageByteBreakdown(ctx context.Context) (StorageByteBreakdown, e
 		  COALESCE(SUM(CASE WHEN deleted_at IS NULL AND review_state =  'approved' THEN byte_size END), 0),
 		  COALESCE(SUM(CASE WHEN deleted_at IS NULL AND review_state <> 'approved' THEN byte_size END), 0),
 		  COALESCE(SUM(CASE WHEN deleted_at IS NOT NULL                            THEN byte_size END), 0)
-		FROM files`,
+		FROM files
+		WHERE storage_backend <> 'links'`,
 	).Scan(&b.Library, &b.Review, &b.Trash)
 	if err != nil {
 		return b, fmt.Errorf("storage byte breakdown: %w", err)
@@ -404,7 +409,8 @@ func (db *DB) ListTrashedFiles(ctx context.Context) ([]*FileListEntry, error) {
 // permanently delete files the admin placed in the trash intentionally.
 func (db *DB) ListFileRefs(ctx context.Context) ([]FileRef, error) {
 	const q = `
-		SELECT f.hash, COALESCE(GROUP_CONCAT(u.filename, char(10)), '')
+		SELECT f.hash, f.storage_backend, COALESCE(f.link_target, ''),
+		       COALESCE(GROUP_CONCAT(u.filename, char(10)), '')
 		FROM files f
 		LEFT JOIN file_uploads u ON u.file_id = f.id
 		WHERE f.deleted_at IS NULL
@@ -419,11 +425,11 @@ func (db *DB) ListFileRefs(ctx context.Context) ([]FileRef, error) {
 
 	out := make([]FileRef, 0)
 	for rows.Next() {
-		var hash, joined string
-		if err := rows.Scan(&hash, &joined); err != nil {
+		var hash, backend, linkTarget, joined string
+		if err := rows.Scan(&hash, &backend, &linkTarget, &joined); err != nil {
 			return nil, fmt.Errorf("scan file ref: %w", err)
 		}
-		ref := FileRef{Hash: hash}
+		ref := FileRef{Hash: hash, StorageBackend: backend, LinkTarget: linkTarget}
 		if joined != "" {
 			ref.Filenames = strings.Split(joined, "\n")
 		}

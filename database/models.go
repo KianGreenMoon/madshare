@@ -92,9 +92,13 @@ type FileUpload struct {
 
 // FileRef pairs a content hash with the original filenames recorded for it.
 // Used by admin delete/prune flows to report what was (or would be) removed.
+// StorageBackend + LinkTarget let the prune scan probe the right storage (a
+// local blob vs a links symlink) and detect a retargeted link.
 type FileRef struct {
-	Hash      string
-	Filenames []string
+	Hash           string
+	Filenames      []string
+	StorageBackend string // StorageBackendLocal | StorageBackendLinks
+	LinkTarget     string // recorded external target for a links row; "" for local
 }
 
 // FileListEntry is a flattened view of a file row joined with its first

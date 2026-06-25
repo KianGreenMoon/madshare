@@ -90,7 +90,7 @@ func newTestHandler(t *testing.T) (*handler, *database.DB, string) {
 		sourceImagesDir: filepath.Join(base, "images"),
 		maxUploadSize:   testMaxUpload,
 	}
-	h.pruneMgr = prune.New(db, h.storage, db)
+	h.pruneMgr = prune.New(db, h.storage, nil, db)
 	return h, db, base
 }
 

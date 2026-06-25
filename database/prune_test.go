@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 )
 
@@ -65,7 +66,7 @@ func TestPruneDangling_DryRunReportsButKeeps(t *testing.T) {
 
 	probe := &fakeProbe{present: map[string]bool{hashHealthy: true}} // dangling blob missing
 
-	res, err := PruneDangling(ctx, db, probe, false, false)
+	res, err := PruneDangling(ctx, db, probe, nil, false, false)
 	if err != nil {
 		t.Fatalf("PruneDangling: %v", err)
 	}
@@ -97,7 +98,7 @@ func TestPruneDangling_ConfirmDeletesDanglingOnly(t *testing.T) {
 
 	probe := &fakeProbe{present: map[string]bool{hashHealthy: true}}
 
-	res, err := PruneDangling(ctx, db, probe, true, false)
+	res, err := PruneDangling(ctx, db, probe, nil, true, false)
 	if err != nil {
 		t.Fatalf("PruneDangling: %v", err)
 	}
@@ -117,7 +118,7 @@ func TestPruneDangling_ConfirmDeletesDanglingOnly(t *testing.T) {
 	}
 
 	// Idempotent re-run: nothing left to prune, no error.
-	res2, err := PruneDangling(ctx, db, probe, true, false)
+	res2, err := PruneDangling(ctx, db, probe, nil, true, false)
 	if err != nil {
 		t.Fatalf("PruneDangling re-run: %v", err)
 	}
@@ -142,7 +143,7 @@ func TestPruneDangling_DeepDetectsCorruption(t *testing.T) {
 	}
 
 	// Cheap scan: both present, nothing flagged.
-	shallow, err := PruneDangling(ctx, db, probe, false, false)
+	shallow, err := PruneDangling(ctx, db, probe, nil, false, false)
 	if err != nil {
 		t.Fatalf("shallow PruneDangling: %v", err)
 	}
@@ -151,7 +152,7 @@ func TestPruneDangling_DeepDetectsCorruption(t *testing.T) {
 	}
 
 	// Deep scan (dry run): the corrupted blob is flagged with reason "corrupt".
-	deep, err := PruneDangling(ctx, db, probe, false, true)
+	deep, err := PruneDangling(ctx, db, probe, nil, false, true)
 	if err != nil {
 		t.Fatalf("deep PruneDangling: %v", err)
 	}
@@ -163,7 +164,7 @@ func TestPruneDangling_DeepDetectsCorruption(t *testing.T) {
 	}
 
 	// Deep scan (confirm): prunes the row and sweeps the bad blob.
-	committed, err := PruneDangling(ctx, db, probe, true, true)
+	committed, err := PruneDangling(ctx, db, probe, nil, true, true)
 	if err != nil {
 		t.Fatalf("deep confirm PruneDangling: %v", err)
 	}
@@ -188,7 +189,7 @@ func TestPruneDangling_AllHealthy(t *testing.T) {
 
 	probe := &fakeProbe{present: map[string]bool{hashHealthy: true, hashDangling: true}}
 
-	res, err := PruneDangling(ctx, db, probe, true, false)
+	res, err := PruneDangling(ctx, db, probe, nil, true, false)
 	if err != nil {
 		t.Fatalf("PruneDangling: %v", err)
 	}
@@ -197,5 +198,148 @@ func TestPruneDangling_AllHealthy(t *testing.T) {
 	}
 	if len(res.Pruned) != 0 {
 		t.Errorf("Pruned = %+v, want none", res.Pruned)
+	}
+}
+
+// fakeLinkProbe is an in-test linkProbe. Each hash maps to its on-disk link state.
+type linkState struct {
+	target  string // recorded readlink target ("" + exists models a non-symlink entry)
+	exists  bool   // a link entry is present at all
+	present bool   // the target stats as a regular file
+	intact  bool   // (deep) the target still hashes to the digest
+}
+
+type fakeLinkProbe struct {
+	links   map[string]linkState
+	removed map[string]bool
+}
+
+func (p *fakeLinkProbe) LinkInfo(hash string) (string, bool, bool, error) {
+	s := p.links[hash]
+	return s.target, s.exists, s.present, nil
+}
+
+func (p *fakeLinkProbe) VerifyLink(hash string) (bool, error) {
+	return p.links[hash].intact, nil
+}
+
+func (p *fakeLinkProbe) Remove(hash string) error {
+	if p.removed == nil {
+		p.removed = map[string]bool{}
+	}
+	p.removed[hash] = true
+	return nil
+}
+
+// seedLinkFile inserts a links-backed files row with the given recorded target.
+func seedLinkFile(t *testing.T, db *DB, hash, filename, target string) {
+	t.Helper()
+	f := newFile(hash)
+	f.StorageBackend = StorageBackendLinks
+	f.LinkTarget = sql.NullString{String: target, Valid: true}
+	if err := db.InsertFile(context.Background(), f, newUpload(filename), newMeta()); err != nil {
+		t.Fatalf("seed link %s: %v", hash, err)
+	}
+}
+
+const (
+	hashLinkOK     = "3333000000000000000000000000000000000000000000000000000000000000"
+	hashLinkGone   = "4444000000000000000000000000000000000000000000000000000000000000"
+	hashRetargeted = "5555000000000000000000000000000000000000000000000000000000000000"
+)
+
+// TestPrune_LinksBrokenDetection verifies the prune classifies links rows by
+// their symlink health (healthy / dangling / retargeted), separately from local
+// blobs, and that a confirmed prune unlinks only the symlink (Remove), never the
+// blob store's DeleteAll.
+func TestPrune_LinksBrokenDetection(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	// A healthy local blob, plus three links rows in different states.
+	seedFile(t, db, hashHealthy, "local.mp3")
+	seedLinkFile(t, db, hashLinkOK, "ok.flac", "/srv/music/ok.flac")
+	seedLinkFile(t, db, hashLinkGone, "gone.flac", "/srv/music/gone.flac")
+	seedLinkFile(t, db, hashRetargeted, "moved.flac", "/srv/music/moved.flac")
+
+	blob := &fakeProbe{present: map[string]bool{hashHealthy: true}}
+	link := &fakeLinkProbe{links: map[string]linkState{
+		hashLinkOK:     {target: "/srv/music/ok.flac", exists: true, present: true},
+		hashLinkGone:   {target: "/srv/music/gone.flac", exists: true, present: false}, // dangling
+		hashRetargeted: {target: "/srv/music/SOMEWHERE-ELSE.flac", exists: true, present: true},
+	}}
+
+	scan, err := ScanDangling(ctx, db, blob, link, false, nil)
+	if err != nil {
+		t.Fatalf("ScanDangling: %v", err)
+	}
+	got := map[string]string{}
+	for _, d := range scan.Dangling {
+		got[d.Hash] = d.Reason
+	}
+	if got[hashLinkGone] != ReasonDangling {
+		t.Errorf("gone link reason = %q, want %q", got[hashLinkGone], ReasonDangling)
+	}
+	if got[hashRetargeted] != ReasonRetargeted {
+		t.Errorf("retargeted link reason = %q, want %q", got[hashRetargeted], ReasonRetargeted)
+	}
+	if _, flagged := got[hashLinkOK]; flagged {
+		t.Errorf("healthy link should not be flagged")
+	}
+	if _, flagged := got[hashHealthy]; flagged {
+		t.Errorf("healthy local blob should not be flagged")
+	}
+	if len(scan.Dangling) != 2 {
+		t.Fatalf("Dangling = %d, want 2 (dangling + retargeted)", len(scan.Dangling))
+	}
+
+	// Confirm: prune the two broken links. Each must be unlinked via Remove, and
+	// the local blob store's DeleteAll must NOT be called for a links hash.
+	pruned, err := PruneRefs(ctx, db, blob, link, false, scan.Dangling, nil)
+	if err != nil {
+		t.Fatalf("PruneRefs: %v", err)
+	}
+	if len(pruned.Pruned) != 2 {
+		t.Errorf("Pruned = %d, want 2", len(pruned.Pruned))
+	}
+	if !link.removed[hashLinkGone] || !link.removed[hashRetargeted] {
+		t.Errorf("broken links not unlinked: removed=%v", link.removed)
+	}
+	if blob.deleted[hashLinkGone] || blob.deleted[hashRetargeted] {
+		t.Errorf("local DeleteAll must never run on a links hash: %v", blob.deleted)
+	}
+	// The rows are gone; the healthy ones remain.
+	var n int
+	db.QueryRow(`SELECT COUNT(*) FROM files`).Scan(&n)
+	if n != 2 {
+		t.Errorf("files rows = %d, want 2 (healthy local + healthy link survive)", n)
+	}
+}
+
+// TestPrune_LinksDeepCorruption verifies the deep scan flags a links target whose
+// bytes no longer hash to the digest (ReasonCorrupt).
+func TestPrune_LinksDeepCorruption(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	seedLinkFile(t, db, hashLinkOK, "ok.flac", "/srv/music/ok.flac")
+
+	blob := &fakeProbe{}
+	link := &fakeLinkProbe{links: map[string]linkState{
+		hashLinkOK: {target: "/srv/music/ok.flac", exists: true, present: true, intact: false},
+	}}
+
+	shallow, err := ScanDangling(ctx, db, blob, link, false, nil)
+	if err != nil {
+		t.Fatalf("shallow: %v", err)
+	}
+	if len(shallow.Dangling) != 0 {
+		t.Errorf("shallow scan flagged a present link: %+v", shallow.Dangling)
+	}
+
+	deep, err := ScanDangling(ctx, db, blob, link, true, nil)
+	if err != nil {
+		t.Fatalf("deep: %v", err)
+	}
+	if len(deep.Dangling) != 1 || deep.Dangling[0].Reason != ReasonCorrupt {
+		t.Errorf("deep scan = %+v, want one ReasonCorrupt", deep.Dangling)
 	}
 }

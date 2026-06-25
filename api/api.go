@@ -64,6 +64,11 @@ type Deps struct {
 	// SourcesManager owns symlink data sources (list / add / scan). When nil, the
 	// /api/admin/sources endpoints respond 503. See docs/architecture/data-sources.md.
 	SourcesManager *sources.Manager
+	// Linker is the links-storage write/probe side. It makes admin hard delete
+	// storage-aware (unlink a symlink import, never its external target) and backs
+	// external-bytes accounting + links health on /api/admin/sources. Optional;
+	// nil falls back to local-only delete and omits external figures.
+	Linker *storages.Linker
 	// UploadLimiter, when set, gates concurrent uploads (global + per-user caps
 	// from [storage]). Optional; nil disables the gate.
 	UploadLimiter *UploadLimiter
@@ -130,6 +135,7 @@ func (d Deps) newHandler() *handler {
 		mediaPool:       d.MediaPool,
 		pruneMgr:        d.PruneManager,
 		sourcesMgr:      d.SourcesManager,
+		linker:          d.Linker,
 		limiter:         d.UploadLimiter,
 		uiConfig:        d.UIConfig,
 	}

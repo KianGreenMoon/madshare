@@ -19,6 +19,7 @@ import (
 	"daemonlord.ygg/madshare/media"
 	"daemonlord.ygg/madshare/prune"
 	"daemonlord.ygg/madshare/sources"
+	"daemonlord.ygg/madshare/storages"
 )
 
 // actorID returns the acting user's id from the request context as a nullable
@@ -107,6 +108,11 @@ type handler struct {
 	// sourcesMgr owns symlink data sources (list/add/scan). Nil when no manager
 	// was wired (the /api/admin/sources endpoints then respond 503).
 	sourcesMgr *sources.Manager
+	// linker is the write/probe side of the links storage. It makes hard delete
+	// storage-aware (a links row → unlink the symlink, never the external target)
+	// and backs external-bytes accounting + links health. Nil → no links storage
+	// (deletes fall back to the local store; accounting omits external figures).
+	linker *storages.Linker
 	// limiter, when non-nil, gates concurrent uploads (global + per-user). Nil
 	// disables the gate (tests / unlimited config).
 	limiter *UploadLimiter

@@ -6,14 +6,24 @@ import (
 	"log"
 )
 
-// Prune reasons reported per dangling record.
+// Prune reasons reported per dangling record. The first two apply to a local
+// blob; the next two are links-storage broken-link states (data-sources P5). A
+// links row whose symlink entry is entirely gone reports ReasonMissing (like a
+// missing local blob), and a deep links integrity failure reports ReasonCorrupt
+// (the target no longer hashes to the digest) — so the reason vocabulary stays
+// small and the prune summary's Dangling count covers both storages.
 const (
-	// ReasonMissing: the backing blob file is gone (the hash directory is absent
-	// or has been emptied). Detected by the cheap presence scan.
+	// ReasonMissing: the backing blob is gone (local: the hash dir is absent or
+	// emptied; links: the symlink entry is gone). Detected by the cheap scan.
 	ReasonMissing = "missing"
-	// ReasonCorrupt: the blob exists but its content no longer hashes to the
-	// recorded digest. Detected only by the deep (rehash) scan.
+	// ReasonCorrupt: the blob/target exists but no longer hashes to the recorded
+	// digest. Detected only by the deep (rehash) scan.
 	ReasonCorrupt = "corrupt"
+	// ReasonDangling: a links symlink is present but its external target is gone.
+	ReasonDangling = "dangling"
+	// ReasonRetargeted: a links symlink resolves but points somewhere other than
+	// the recorded link_target (the external file was swapped under us).
+	ReasonRetargeted = "retargeted"
 )
 
 // PruneFailure records a hash whose prune delete failed, with the error text.
@@ -42,7 +52,7 @@ type PruneResult struct {
 	Failed   []PruneFailure
 }
 
-// blobProbe is the slice of a storage backend PruneDangling needs. Declared
+// blobProbe is the slice of a local storage backend the prune needs. Declared
 // here so the database package does not import api/storage (the dependency arrow
 // runs api → database and api → storage, never database → storage).
 type blobProbe interface {
@@ -52,6 +62,81 @@ type blobProbe interface {
 	VerifyBlob(hash string) (bool, error)
 	// DeleteAll removes the hash directory and its contents (idempotent).
 	DeleteAll(hash string) (bool, error)
+}
+
+// linkProbe is the slice of the links storage the prune needs to classify and
+// reclaim a symlink import (data-sources P5). Same import-arrow reasoning as
+// blobProbe; satisfied by *storages.Linker. It is never asked to touch a target.
+// May be nil (no links storage wired), in which case links rows are skipped.
+type linkProbe interface {
+	// LinkInfo returns the symlink's recorded target, whether a link entry
+	// exists, and whether its target currently stats as a regular file.
+	LinkInfo(hash string) (target string, exists, targetPresent bool, err error)
+	// VerifyLink reports whether the link target still hashes to hash (deep).
+	VerifyLink(hash string) (bool, error)
+	// Remove unlinks the symlink for hash, never following it to the target.
+	Remove(hash string) error
+}
+
+// linkReason classifies one links-storage ref against the recorded target,
+// returning a prune reason ("" = healthy). A links row with no symlink entry is
+// missing; a present link whose target is gone is dangling; a link pointing
+// somewhere other than its recorded target is retargeted; and (deep) a target
+// that no longer hashes to the digest is corrupt. The external target is never
+// modified. A nil probe cannot check, so every links ref reads as healthy.
+func linkReason(probe linkProbe, hash, expectedTarget string, deep bool) (string, error) {
+	if probe == nil {
+		return "", nil
+	}
+	target, exists, present, err := probe.LinkInfo(hash)
+	if err != nil {
+		return "", fmt.Errorf("probe link %s: %w", hash, err)
+	}
+	if !exists {
+		return ReasonMissing, nil
+	}
+	if !present {
+		return ReasonDangling, nil
+	}
+	if expectedTarget != "" && target != expectedTarget {
+		return ReasonRetargeted, nil
+	}
+	if deep {
+		intact, err := probe.VerifyLink(hash)
+		if err != nil {
+			return "", fmt.Errorf("verify link %s: %w", hash, err)
+		}
+		if !intact {
+			return ReasonCorrupt, nil
+		}
+	}
+	return "", nil
+}
+
+// refReason classifies one file ref against the storage it lives in, dispatching
+// on its storage_backend: a links symlink (linkReason) or a local blob
+// (danglingReason). It is the single per-row entry point both ScanDangling and
+// PruneRefs use so the local/links split is decided in exactly one place.
+func refReason(blob blobProbe, link linkProbe, ref FileRef, deep bool) (string, error) {
+	if ref.StorageBackend == StorageBackendLinks {
+		return linkReason(link, ref.Hash, ref.LinkTarget, deep)
+	}
+	return danglingReason(blob, ref.Hash, deep)
+}
+
+// reclaimStorage removes a pruned ref's storage-specific bytes after its row is
+// deleted: unlink the symlink for a links import (never the external target), or
+// os.RemoveAll the hash dir for a local blob. Best-effort; the row is already
+// gone, so a sweep failure only leaves reclaimable debris.
+func reclaimStorage(blob blobProbe, link linkProbe, ref FileRef) error {
+	if ref.StorageBackend == StorageBackendLinks {
+		if link == nil {
+			return nil
+		}
+		return link.Remove(ref.Hash)
+	}
+	_, err := blob.DeleteAll(ref.Hash)
+	return err
 }
 
 // danglingReason classifies one file ref against the blob store, returning a
@@ -88,7 +173,7 @@ func danglingReason(probe blobProbe, hash string, deep bool) (string, error) {
 // caller can report live progress on the slow deep path. ctx cancellation is
 // honoured between rows: a cancelled scan returns the partial result so far plus
 // ctx.Err().
-func ScanDangling(ctx context.Context, repo Repository, probe blobProbe, deep bool, onProgress func(scanned, total int)) (*PruneResult, error) {
+func ScanDangling(ctx context.Context, repo Repository, probe blobProbe, link linkProbe, deep bool, onProgress func(scanned, total int)) (*PruneResult, error) {
 	refs, err := repo.ListFileRefs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list file refs: %w", err)
@@ -99,7 +184,7 @@ func ScanDangling(ctx context.Context, repo Repository, probe blobProbe, deep bo
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		reason, err := danglingReason(probe, ref.Hash, deep)
+		reason, err := refReason(probe, link, ref, deep)
 		if err != nil {
 			return nil, err
 		}
@@ -127,7 +212,7 @@ func ScanDangling(ctx context.Context, repo Repository, probe blobProbe, deep bo
 //
 // The returned result carries Dangling = refs (the reviewed set); Scanned is left
 // to the caller to fill from the originating scan.
-func PruneRefs(ctx context.Context, repo Repository, probe blobProbe, deep bool, refs []DanglingRef, onProgress func(done, total int)) (*PruneResult, error) {
+func PruneRefs(ctx context.Context, repo Repository, probe blobProbe, link linkProbe, deep bool, refs []DanglingRef, onProgress func(done, total int)) (*PruneResult, error) {
 	result := &PruneResult{Deep: deep, Dangling: refs}
 	for i, ref := range refs {
 		if err := ctx.Err(); err != nil {
@@ -136,7 +221,7 @@ func PruneRefs(ctx context.Context, repo Repository, probe blobProbe, deep bool,
 		// Re-check this hash only. If it healed in the gap since the scan, leave
 		// it alone — deleting it would remove a now-valid row the operator never
 		// meant to prune.
-		reason, err := danglingReason(probe, ref.Hash, deep)
+		reason, err := refReason(probe, link, ref.FileRef, deep)
 		if err != nil {
 			return nil, err
 		}
@@ -152,10 +237,11 @@ func PruneRefs(ctx context.Context, repo Repository, probe blobProbe, deep bool,
 			result.Failed = append(result.Failed, PruneFailure{Hash: ref.Hash, Err: err.Error()})
 			continue
 		}
-		// Sweep any leftover bytes (an emptied dir, or a corrupted blob) so the
-		// hash directory does not linger as an orphan. Best-effort: a failure
-		// here is logged but the row is already gone, so the prune still counts.
-		if _, err := probe.DeleteAll(ref.Hash); err != nil {
+		// Reclaim the storage-specific bytes so the entry does not linger as an
+		// orphan: unlink the symlink for a links import (the external target is
+		// NEVER touched), or os.RemoveAll the hash dir for a local blob.
+		// Best-effort: a failure here is logged but the row is already gone.
+		if err := reclaimStorage(probe, link, ref.FileRef); err != nil {
 			log.Printf("prune sweep: hash=%s err=%v", ref.Hash, err)
 		}
 		result.Pruned = append(result.Pruned, d)
@@ -168,15 +254,15 @@ func PruneRefs(ctx context.Context, repo Repository, probe blobProbe, deep bool,
 // what the scan flagged (via PruneRefs). The async server path drives ScanDangling
 // and PruneRefs separately through the prune manager; this wrapper is retained for
 // direct callers and tests.
-func PruneDangling(ctx context.Context, repo Repository, probe blobProbe, confirm, deep bool) (*PruneResult, error) {
-	scan, err := ScanDangling(ctx, repo, probe, deep, nil)
+func PruneDangling(ctx context.Context, repo Repository, probe blobProbe, link linkProbe, confirm, deep bool) (*PruneResult, error) {
+	scan, err := ScanDangling(ctx, repo, probe, link, deep, nil)
 	if err != nil {
 		return nil, err
 	}
 	if !confirm {
 		return scan, nil
 	}
-	pruned, err := PruneRefs(ctx, repo, probe, deep, scan.Dangling, nil)
+	pruned, err := PruneRefs(ctx, repo, probe, link, deep, scan.Dangling, nil)
 	if err != nil {
 		return nil, err
 	}

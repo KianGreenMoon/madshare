@@ -69,11 +69,22 @@ const (
 	OutcomeFailed    = "failed"
 )
 
-// Probe is the blob-store slice the prune needs (satisfied by api/storage.Storage).
+// Probe is the local blob-store slice the prune needs (satisfied by
+// api/storage.Local).
 type Probe interface {
 	BlobPresent(hash string) (bool, error)
 	VerifyBlob(hash string) (bool, error)
 	DeleteAll(hash string) (removed bool, err error)
+}
+
+// LinkProbe is the links-storage slice the prune needs to detect and reclaim
+// broken symlink imports (data-sources P5; satisfied by *storages.Linker). It is
+// never asked to touch an external target. May be nil when no links storage is
+// wired (then links rows are skipped by the scan).
+type LinkProbe interface {
+	LinkInfo(hash string) (target string, exists, targetPresent bool, err error)
+	VerifyLink(hash string) (bool, error)
+	Remove(hash string) error
 }
 
 // SettingsStore persists the last-run summaries (satisfied by *database.DB).
@@ -133,9 +144,10 @@ type Snapshot struct {
 
 // Manager owns the single prune operation. The zero value is not usable; call New.
 type Manager struct {
-	repo     database.Repository
-	probe    Probe
-	settings SettingsStore
+	repo      database.Repository
+	probe     Probe
+	linkProbe LinkProbe
+	settings  SettingsStore
 
 	mu        sync.Mutex
 	running   bool
@@ -160,9 +172,10 @@ type Manager struct {
 }
 
 // New builds the manager and loads any persisted last-run summaries so an admin
-// (even right after a restart) sees the previous outcome and date.
-func New(repo database.Repository, probe Probe, settings SettingsStore) *Manager {
-	m := &Manager{repo: repo, probe: probe, settings: settings}
+// (even right after a restart) sees the previous outcome and date. linkProbe may
+// be nil when no links storage is configured (links rows are then skipped).
+func New(repo database.Repository, probe Probe, linkProbe LinkProbe, settings SettingsStore) *Manager {
+	m := &Manager{repo: repo, probe: probe, linkProbe: linkProbe, settings: settings}
 	if settings != nil {
 		m.lastScan = loadSummary(settings, settingLastScan)
 		m.lastPrune = loadSummary(settings, settingLastPrune)
@@ -266,10 +279,10 @@ func (m *Manager) run(ctx context.Context, phase Phase, deep bool, by string, re
 	)
 	if phase == PhaseScanning {
 		kind, setting = KindScan, settingLastScan
-		res, err = database.ScanDangling(ctx, m.repo, m.probe, deep, onProgress)
+		res, err = database.ScanDangling(ctx, m.repo, m.probe, m.linkProbe, deep, onProgress)
 	} else {
 		kind, setting = KindPrune, settingLastPrune
-		res, err = database.PruneRefs(ctx, m.repo, m.probe, deep, refs, onProgress)
+		res, err = database.PruneRefs(ctx, m.repo, m.probe, m.linkProbe, deep, refs, onProgress)
 		if res != nil {
 			res.Scanned = len(refs)
 		}

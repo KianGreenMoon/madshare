@@ -101,7 +101,7 @@ func TestScanThenPrune(t *testing.T) {
 	seed(t, db, hashDangling, "gone.mp3")
 	probe := &fakeProbe{present: map[string]bool{hashHealthy: true}} // dangling blob missing
 	settings := newMemSettings()
-	m := New(db, probe, settings)
+	m := New(db, probe, nil, settings)
 
 	if _, err := m.StartScan(false, "alice"); err != nil {
 		t.Fatalf("StartScan: %v", err)
@@ -148,7 +148,7 @@ func TestScanThenPrune(t *testing.T) {
 
 func TestStartPrune_NoScan(t *testing.T) {
 	db := openDB(t)
-	m := New(db, &fakeProbe{present: map[string]bool{}}, newMemSettings())
+	m := New(db, &fakeProbe{present: map[string]bool{}}, nil, newMemSettings())
 	if _, err := m.StartPrune("alice"); err != ErrNoScan {
 		t.Fatalf("StartPrune without scan = %v, want ErrNoScan", err)
 	}
@@ -161,7 +161,7 @@ func TestBusyGuard(t *testing.T) {
 	seed(t, db, hashHealthy, "a.mp3")
 	gate := make(chan struct{})
 	probe := &fakeProbe{present: map[string]bool{hashHealthy: true}, gate: gate}
-	m := New(db, probe, newMemSettings())
+	m := New(db, probe, nil, newMemSettings())
 
 	if _, err := m.StartScan(false, "alice"); err != nil {
 		t.Fatalf("first StartScan: %v", err)
@@ -187,7 +187,7 @@ func TestCancel(t *testing.T) {
 	seed(t, db, hashDangling, "b.mp3")
 	gate := make(chan struct{})
 	probe := &fakeProbe{present: map[string]bool{hashHealthy: true, hashDangling: true}, gate: gate}
-	m := New(db, probe, newMemSettings())
+	m := New(db, probe, nil, newMemSettings())
 
 	if _, err := m.StartScan(false, "alice"); err != nil {
 		t.Fatalf("StartScan: %v", err)
@@ -217,7 +217,7 @@ func TestLoadsPersistedSummaries(t *testing.T) {
 	settings := newMemSettings()
 	settings.SetSetting(context.Background(), settingLastPrune,
 		`{"kind":"prune","scanned":5,"pruned_count":2,"outcome":"completed","by":"alice","finished_at":"2026-06-18T14:00:00Z"}`)
-	m := New(db, &fakeProbe{present: map[string]bool{}}, settings)
+	m := New(db, &fakeProbe{present: map[string]bool{}}, nil, settings)
 	snap := m.Snapshot()
 	if snap.LastPrune == nil || snap.LastPrune.Pruned != 2 || snap.LastPrune.By != "alice" {
 		t.Fatalf("loaded last_prune = %+v", snap.LastPrune)

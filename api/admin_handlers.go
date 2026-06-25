@@ -126,6 +126,16 @@ func (h *handler) adminTrashHardDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Learn the storage kind before the row is gone, so the byte reclaim is
+	// storage-aware: a links import is unlinked (the symlink only — never the
+	// external target), a local blob is os.RemoveAll'd. GetFileByHash returns the
+	// trashed row (deleted_at set); the atomic guard stays on the delete below.
+	f, err := h.repo.GetFileByHash(r.Context(), hash)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+		return
+	}
+
 	filenames, found, err := h.repo.HardDeleteTrashedFileByHash(r.Context(), hash)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
@@ -136,7 +146,7 @@ func (h *handler) adminTrashHardDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	blobRemoved, err := h.storage.DeleteAll(hash)
+	blobRemoved, err := h.reclaimStorage(f, hash)
 	if err != nil {
 		log.Printf("orphan blob: hash=%s err=%v", hash, err)
 	}
@@ -151,6 +161,29 @@ func (h *handler) adminTrashHardDelete(w http.ResponseWriter, r *http.Request) {
 		"blob_removed": blobRemoved,
 		"filenames":    filenames,
 	})
+}
+
+// reclaimStorage removes a hard-deleted file's physical bytes, dispatching on its
+// storage kind. A links import is unlinked via the Linker (os.Remove of the
+// symlink only — the external target is NEVER touched, upholding the data-sources
+// invariant), so the generic local DeleteAll (os.RemoveAll of a hash dir) is
+// never invoked on a path that resolves through a link. A local blob (or an
+// unknown/nil row) takes the historical DeleteAll path. f may be nil if the row
+// vanished between lookup and delete; that falls through to the safe local path.
+func (h *handler) reclaimStorage(f *database.File, hash string) (removed bool, err error) {
+	if f != nil && f.StorageBackend == database.StorageBackendLinks {
+		if h.linker == nil {
+			// No links storage wired: cannot safely reclaim, and we must not run
+			// the local DeleteAll on a links hash. Leave the symlink for the
+			// reclaim tool rather than risk the wrong storage.
+			return false, nil
+		}
+		if err := h.linker.Remove(hash); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return h.storage.DeleteAll(hash)
 }
 
 // adminTrashRestore handles POST /api/admin/trash/{hash}/restore. It restores
@@ -351,6 +384,12 @@ type storageStatsResp struct {
 	LibraryBytes uint64          `json:"library_bytes"`
 	Categories   []categoryUsage `json:"categories"`
 	Volume       *volumeStats    `json:"volume"`
+	// ExternalBytes is the bytes referenced by symlink imports (the links
+	// storage), summed by stat-through-symlink. It lives physically OUTSIDE
+	// data_dir, so it is reported separately and is NOT part of LibraryBytes or
+	// the on-disk volume usage — importing 200 GB in place adds 0 on disk. Zero
+	// when no links storage is wired. See docs/architecture/data-sources.md.
+	ExternalBytes uint64 `json:"external_bytes"`
 }
 
 // adminStorageStats handles GET /api/admin/storage. It merges the backend's
@@ -420,6 +459,15 @@ func (h *handler) storageStats(ctx context.Context) (*storageStatsResp, error) {
 		Location:     location,
 		LibraryBytes: libBytes,
 		Categories:   cats,
+	}
+	// External (symlink-import) bytes are walked from the links storage and shown
+	// separately — never folded into LibraryBytes or the volume usage above.
+	if h.linker != nil {
+		u, err := h.linker.Usage()
+		if err != nil {
+			return nil, fmt.Errorf("links usage: %w", err)
+		}
+		resp.ExternalBytes = u.ExternalBytes
 	}
 	if st.HasVolume {
 		var pct float64

@@ -354,7 +354,19 @@ API stays.
   reconcile is unchanged. Enabled via `Manager.WithCovers`; opt-out (unset) keeps
   the P3 no-cover behaviour. Capped at 10 MB like the upload path. See *Cover
   images* and `docs/architecture/variants.md`.
-- **P5 — prune broken-link detection + per-storage accounting.**
+- **P5 — prune broken-link detection + per-storage accounting + storage-aware
+  delete. _(done)_** The prune scan is storage-aware: each `files` row is probed
+  against the storage its `storage_backend` names — a local blob (missing/corrupt,
+  as before) or a links symlink (`dangling` target gone / `retargeted` ≠
+  `link_target` / deep `corrupt` target no longer hashes), classified via
+  `storages.Linker` and reported with its reason; a confirmed prune **unlinks the
+  symlink only** (never the external target). Admin hard-delete is likewise
+  storage-aware (`reclaimStorage`): a links row is unlinked, never `RemoveAll`'d.
+  Accounting: `storageStats` reports `external_bytes` (the links storage walked
+  stat-through-symlink) **separately** from `library_bytes`, which now excludes
+  links rows (`storage_backend <> 'links'`) — importing in place adds 0 on disk.
+  `GET /api/admin/sources` carries links health (`count` / `broken` / external
+  bytes). The external original is never touched in any path.
 - **P6 — `/admin/sources` page** (imports section + add/scan/health; no storage
   reorder UI — that ships with S3).
 - **Future** — source delete / duplicate-reconcile tool; two-way sync/rescan; the

@@ -1,6 +1,8 @@
 package storages_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,6 +10,13 @@ import (
 	"daemonlord.ygg/madshare/api/storage"
 	"daemonlord.ygg/madshare/storages"
 )
+
+// sha256Hex is the lowercase hex SHA-256 of content — the hash a links entry is
+// keyed by when it references a file holding exactly those bytes.
+func sha256Hex(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
+}
 
 func TestLinker_LinkAndResolve(t *testing.T) {
 	links := t.TempDir()
@@ -100,6 +109,107 @@ func TestLinker_Remove_LeavesTargetIntact(t *testing.T) {
 	}
 	if data, err := os.ReadFile(external); err != nil || string(data) != "precious" {
 		t.Errorf("external original disturbed by Remove: data=%q err=%v", data, err)
+	}
+}
+
+func TestLinker_LinkInfo(t *testing.T) {
+	links := t.TempDir()
+	external := filepath.Join(t.TempDir(), "song.flac")
+	if err := os.WriteFile(external, []byte("ext"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l := storages.NewLinker(links)
+
+	// No link yet.
+	if _, exists, _, err := l.LinkInfo(hash64(21)); err != nil || exists {
+		t.Errorf("LinkInfo(absent) = exists %v err %v, want absent", exists, err)
+	}
+
+	// Healthy link.
+	h := hash64(22)
+	if _, err := l.Link(h, "song.flac", external); err != nil {
+		t.Fatal(err)
+	}
+	target, exists, present, err := l.LinkInfo(h)
+	if err != nil || !exists || !present {
+		t.Fatalf("LinkInfo(healthy) = (%q,%v,%v,%v)", target, exists, present, err)
+	}
+	if target != external {
+		t.Errorf("recorded target = %q, want %q", target, external)
+	}
+
+	// Dangling link: target removed.
+	if err := os.Remove(external); err != nil {
+		t.Fatal(err)
+	}
+	_, exists, present, err = l.LinkInfo(h)
+	if err != nil || !exists || present {
+		t.Errorf("LinkInfo(dangling) = exists %v present %v err %v, want exists+not-present", exists, present, err)
+	}
+}
+
+func TestLinker_VerifyLink(t *testing.T) {
+	links := t.TempDir()
+	// The content's real hash so VerifyLink can match it.
+	content := []byte("real audio bytes")
+	hash := sha256Hex(content)
+	external := filepath.Join(t.TempDir(), "song.flac")
+	if err := os.WriteFile(external, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l := storages.NewLinker(links)
+	if _, err := l.Link(hash, "song.flac", external); err != nil {
+		t.Fatal(err)
+	}
+
+	ok, err := l.VerifyLink(hash)
+	if err != nil || !ok {
+		t.Errorf("VerifyLink(intact) = (%v,%v), want true", ok, err)
+	}
+
+	// Mutate the external original: VerifyLink must now report a mismatch.
+	if err := os.WriteFile(external, []byte("tampered"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := l.VerifyLink(hash); err != nil || ok {
+		t.Errorf("VerifyLink(tampered) = (%v,%v), want false", ok, err)
+	}
+}
+
+func TestLinker_Usage(t *testing.T) {
+	links := t.TempDir()
+	l := storages.NewLinker(links)
+
+	// Empty links tree → zero usage.
+	if u, err := l.Usage(); err != nil || u != (storages.LinksUsage{}) {
+		t.Fatalf("Usage(empty) = (%+v,%v), want zero", u, err)
+	}
+
+	ext1 := filepath.Join(t.TempDir(), "a.flac")
+	if err := os.WriteFile(ext1, []byte("12345"), 0o644); err != nil { // 5 bytes
+		t.Fatal(err)
+	}
+	ext2 := filepath.Join(t.TempDir(), "b.flac")
+	if err := os.WriteFile(ext2, []byte("678"), 0o644); err != nil { // 3 bytes
+		t.Fatal(err)
+	}
+	if _, err := l.Link(hash64(31), "a.flac", ext1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Link(hash64(32), "b.flac", ext2); err != nil {
+		t.Fatal(err)
+	}
+	// A dangling link contributes to Count + Broken but not ExternalBytes.
+	if _, err := l.Link(hash64(33), "gone.flac", filepath.Join(t.TempDir(), "missing.flac")); err != nil {
+		t.Fatal(err)
+	}
+
+	u, err := l.Usage()
+	if err != nil {
+		t.Fatalf("Usage: %v", err)
+	}
+	if u.Count != 3 || u.Broken != 1 || u.ExternalBytes != 8 {
+		t.Errorf("Usage = %+v, want count=3 broken=1 external=8", u)
 	}
 }
 

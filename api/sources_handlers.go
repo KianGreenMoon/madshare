@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 
@@ -25,12 +26,28 @@ func (h *handler) adminSourcesList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"ok":      true,
 		"enabled": h.sourcesMgr.Enabled(),
 		"roots":   h.sourcesMgr.Roots(),
 		"sources": list,
-	})
+	}
+	// Links-storage health/accounting (data-sources P5): one walk of the links
+	// tree reporting how many links exist, how many are broken (dangling), and the
+	// external bytes referenced. Best-effort — a walk error omits the figures
+	// rather than failing the whole listing.
+	if h.linker != nil {
+		if u, err := h.linker.Usage(); err != nil {
+			log.Printf("links usage: %v", err)
+		} else {
+			resp["links"] = map[string]any{
+				"count":          u.Count,
+				"broken":         u.Broken,
+				"external_bytes": u.ExternalBytes,
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // adminSourcesAdd handles POST /api/admin/sources: validate {kind,name,root}

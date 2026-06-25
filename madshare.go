@@ -231,22 +231,27 @@ func main() {
 		cfg.Storage.UserMaxParallelWorkers,
 	)
 
-	// The single, process-global Verify & Prune job. Detached from request and
-	// shutdown contexts; graceful shutdown waits for an in-flight run below. It
-	// shares the audio blob store with the API.
-	audioStore := storage.NewLocal(audioDir)
-	pruneMgr := prune.New(db, audioStore, db)
-
 	// The read-side resolver: serves /files by probing local (files_dir) then the
 	// shared links storage (<data_dir>/links). The links dir need not exist yet —
 	// it stays empty until a symlink source populates it (data-sources P3).
 	storageRegistry := storages.New(filesDir, cfg.LinksDir())
 
-	// Symlink data sources (import in place). The Linker is the write side of the
-	// links storage; the Manager runs one scan at a time and is gated by the
-	// [sources].symlink_roots allow-list. Reset any source left 'scanning' by a
-	// crash before serving. See docs/architecture/data-sources.md.
+	// The Linker is the write side of the links storage (symlink create/remove)
+	// and the prune's broken-link probe. Built before the prune manager so prune
+	// can detect/reclaim broken symlink imports (data-sources P5).
 	linker := storages.NewLinker(cfg.LinksDir())
+
+	// The single, process-global Verify & Prune job. Detached from request and
+	// shutdown contexts; graceful shutdown waits for an in-flight run below. It
+	// shares the audio blob store with the API and the links storage with the
+	// symlink sources; the prune is storage-aware (missing local blob vs broken
+	// link), never touching an external target.
+	audioStore := storage.NewLocal(audioDir)
+	pruneMgr := prune.New(db, audioStore, linker, db)
+
+	// Symlink data sources (import in place). The Manager runs one scan at a time
+	// and is gated by the [sources].symlink_roots allow-list. Reset any source
+	// left 'scanning' by a crash before serving. See docs/architecture/data-sources.md.
 	sourcesMgr := sources.New(db, linker, mediaPool, cfg.Sources.SymlinkRoots, api.AcceptedAudioTypes()).
 		// Read-once-derive covers (P4): decode each linked file's sidecar/embedded
 		// art once into owned variants under <files_dir>/images, sharing the running
@@ -275,6 +280,7 @@ func main() {
 		MediaPool:      mediaPool,
 		PruneManager:   pruneMgr,
 		SourcesManager: sourcesMgr,
+		Linker:         linker,
 		UploadLimiter:  limiter,
 		UIConfig:       uiCfg,
 		SourceArchive:  embeddedSourceTGZ,
