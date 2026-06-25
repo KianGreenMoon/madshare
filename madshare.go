@@ -24,6 +24,7 @@ import (
 	"daemonlord.ygg/madshare/media"
 	"daemonlord.ygg/madshare/mediaproc"
 	"daemonlord.ygg/madshare/prune"
+	"daemonlord.ygg/madshare/storages"
 	"daemonlord.ygg/madshare/webui"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -212,6 +213,11 @@ func main() {
 	audioStore := storage.NewLocal(audioDir)
 	pruneMgr := prune.New(db, audioStore, db)
 
+	// The read-side resolver: serves /files by probing local (files_dir) then the
+	// shared links storage (<data_dir>/links). The links dir need not exist yet —
+	// it stays empty until a symlink source populates it (data-sources P3).
+	storageRegistry := storages.New(filesDir, cfg.LinksDir())
+
 	sourceRoot, err := os.Getwd()
 	if err != nil {
 		log.Printf("warning: cannot determine working directory for source archive: %v", err)
@@ -222,6 +228,7 @@ func main() {
 		Repo:          db,
 		CacheDir:      os.TempDir(),
 		FilesDir:      filesDir,
+		Storages:      storageRegistry,
 		MaxUploadSize: cfg.Storage.MaxUploadBytes(),
 		Auth:          db,
 		Manage:        db,

@@ -11,6 +11,7 @@ import (
 	"daemonlord.ygg/madshare/config"
 	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/prune"
+	"daemonlord.ygg/madshare/storages"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
@@ -25,6 +26,12 @@ type Deps struct {
 	CacheDir      string
 	FilesDir      string
 	MaxUploadSize int64
+	// Storages is the read-side resolver registry (local + links) backing the
+	// /files blob server: it resolves a content hash to an on-disk path across
+	// storages in fixed precedence (see docs/architecture/data-sources.md). When
+	// nil (NewRouter / tests / open embeddings), the blob server falls back to a
+	// local-only registry rooted at FilesDir — see blobStorages.
+	Storages *storages.Registry
 	// Auth backs the /api/auth/* endpoints. When nil (e.g. NewRouter in tests),
 	// those endpoints are not registered.
 	Auth AuthStore
@@ -181,9 +188,12 @@ func RegisterAPI(r chi.Router, d Deps) {
 	// Uploader-facing restore — only succeeds when the trash-restore policy is
 	// "uploader_restore" (the handler enforces it); gated on file.upload.
 	r.With(d.protect(auth.PermFileUpload)).Post("/api/files/{hash}/restore", h.restoreFileForUploader)
-	// Rooted at the audio subtree, a sibling of <FilesDir>/images, so /files can
-	// only ever serve audio blobs — never cover images.
-	fileServer(r, "/files", noListFS{http.Dir(filepath.Join(d.FilesDir, storage.AudioSubdir))}, d.fileAccessGuard())
+	// The /files blob server resolves the content hash across the storages
+	// registry (local before links) rather than mounting one static dir, so a
+	// blob served from a symlink source works the same as an owned upload. It
+	// keys only on the hash (the audio tree is a sibling of <FilesDir>/images,
+	// so /files can never reach cover images).
+	d.serveBlobs(r, d.fileAccessGuard())
 
 	imagesFS := noListFS{http.Dir(h.imagesDir)}
 	r.Get("/images/*", func(w http.ResponseWriter, r *http.Request) {
@@ -384,25 +394,38 @@ func (n noListFS) Open(name string) (http.File, error) {
 	return f, nil
 }
 
-func fileServer(r chi.Router, path string, root http.FileSystem, guard func(http.Handler) http.Handler) {
-	if strings.ContainsAny(path, "{}*") {
-		panic("fileServer does not permit any URL parameters.")
+// blobStorages returns the configured storage registry, or a local-only
+// fallback rooted at FilesDir when none was wired (NewRouter / tests / open
+// embeddings that predate the links storage). The fallback's links root is a
+// non-existent sibling of the audio tree, so it simply never hits — preserving
+// today's local-only behaviour without per-test plumbing.
+func (d Deps) blobStorages() *storages.Registry {
+	if d.Storages != nil {
+		return d.Storages
 	}
+	return storages.New(d.FilesDir, filepath.Join(d.FilesDir, storages.Links))
+}
 
-	// The POST <path>/upload route is registered (and gated) by the caller.
-
-	if path != "/" && path[len(path)-1] != '/' {
-		r.Get(path, http.RedirectHandler(path+"/", 301).ServeHTTP)
-		path += "/"
-	}
-	path += "*"
-
-	r.With(guard).Get(path, func(w http.ResponseWriter, r *http.Request) {
+// serveBlobs registers the resolving /files blob server. It parses the content
+// hash from the first URL segment, resolves it across the storages registry
+// (local before links; a dangling link falls through), and serves the first hit
+// via http.ServeFile — which provides native HEAD/range and follows a links
+// symlink to the external original. No hit anywhere → 404. The access guard runs
+// first (per-file ACL + the staged-review gate); the hash is regex-validated
+// inside Resolve, so a malformed segment can never escape the hash dir.
+func (d Deps) serveBlobs(r chi.Router, guard func(http.Handler) http.Handler) {
+	reg := d.blobStorages()
+	// A bare /files redirects to /files/, matching the previous static mount.
+	r.Get("/files", http.RedirectHandler("/files/", http.StatusMovedPermanently).ServeHTTP)
+	r.With(guard).Get("/files/*", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		rctx := chi.RouteContext(r.Context())
-		pathPrefix := strings.TrimSuffix(rctx.RoutePattern(), "/*")
-		fs := http.StripPrefix(pathPrefix, http.FileServer(root))
-		fs.ServeHTTP(w, r)
+		hash, _, _ := strings.Cut(chi.URLParam(req, "*"), "/")
+		path, _, ok := reg.Resolve(hash)
+		if !ok {
+			http.NotFound(w, req)
+			return
+		}
+		http.ServeFile(w, req, path)
 	})
 }
 
