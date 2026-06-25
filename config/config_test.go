@@ -200,6 +200,20 @@ func TestLoad_DataDir_ExplicitPathsOverride(t *testing.T) {
 	}
 }
 
+func TestConfig_LinksDir(t *testing.T) {
+	cases := []struct{ dataDir, want string }{
+		{"./data", "data/links"},
+		{"/var/lib/madshare", "/var/lib/madshare/links"},
+		{"/var/lib/madshare/", "/var/lib/madshare/links"},
+	}
+	for _, tc := range cases {
+		c := config.Config{DataDir: tc.dataDir}
+		if got := c.LinksDir(); got != tc.want {
+			t.Errorf("LinksDir() with data_dir %q = %q, want %q", tc.dataDir, got, tc.want)
+		}
+	}
+}
+
 func TestListenConfig_BindAddr(t *testing.T) {
 	cases := []struct {
 		addr string

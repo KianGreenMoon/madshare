@@ -304,8 +304,8 @@ API stays.
 - **P0 — `data_dir`** config + derivation + overrides + validation. No behaviour
   change (default `./data` = today).
 - **P1 — registry + schema.** Migration 021, `data_sources`, the `storages.Registry`
-  (`local` + `links`) ordered from `settings`. Only `local` populated → no
-  behaviour change.
+  (`local` + `links`) in the fixed precedence `local` > `links` (no settings —
+  see *Storage precedence*). Only `local` populated → no behaviour change.
 - **P2 — resolving `/files` handler** (try `local` then `links`; links-aware
   `Locate`; fall-through). `/images` unchanged. Regression-test HEAD/range.
 - **P3 — `links` storage + symlink source.** Shared links dir, symlink/kind-aware

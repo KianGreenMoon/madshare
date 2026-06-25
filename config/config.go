@@ -242,6 +242,13 @@ func (c *Config) resolveDataDir() {
 	}
 }
 
+// LinksDir returns the root of the shared "links" storage (the single dir of
+// symlinks to externals), derived as <data_dir>/links. See
+// docs/architecture/data-sources.md.
+func (c Config) LinksDir() string {
+	return filepath.Join(c.DataDir, "links")
+}
+
 // resolveGitRepo trims [webui].git_repo and warns (non-fatal) when a non-empty
 // value doesn't look like an http(s) URL — the UI links to it verbatim.
 func (c *Config) resolveGitRepo() {
