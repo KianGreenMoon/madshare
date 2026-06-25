@@ -15,7 +15,7 @@ live and who may change them*.
 | Mutable at runtime? | **No** — read once at startup | **Yes** |
 | Who may change it | whoever has **filesystem / deploy access** | an admin via the **web UI** (gated API) |
 | Applied | on (re)start | immediately |
-| Examples | `[[listen]]`, `data_dir`, `database.path`, `storage.files_dir`, `[sources].symlink_roots`, `[cors]`, `[auth]` bootstrap | trash-restore policy, cover auto-derive on/off + licenses, prune summaries |
+| Examples | `[[listen]]`, `data_dir`, `database.path`, `storage.files_dir`, `storage.variants_dir`, `[sources].symlink_roots`, `[cors]`, `[auth]` bootstrap | trash-restore policy, cover auto-derive on/off + licenses, prune summaries |
 
 This split already exists: runtime-tunable settings (autoderive, trash-policy)
 are stored in the `settings` table and edited via `/api/admin/settings/*`

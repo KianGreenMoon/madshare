@@ -59,16 +59,21 @@ serve by trying storages in a **fixed precedence** (`local` before `links`; see
 <data_dir>/                              data_dir (config; default "./data" = today's defaults)
   madshare.db                            database.path  (default <data_dir>/madshare.db)
   files/                                 storage.files_dir (default <data_dir>/files) = 'local' storage
-    audio/   <hash>/<filename>           owned blobs
-    images/  <base_key>/<variant>        owned cover variants — ALL storages' variants live here
+    audio/   <hash>/<filename>           owned source blobs (audio only; no images here)
   links/                                 the single 'links' storage (shared by every symlink source)
     audio/   <hash>/<filename>  ->  /srv/music/album/song.flac    symlink
-                                           (no links/images: covers are read-once-derived into files/images, owned)
+                                           (no links/images: covers are read-once-derived, owned)
+  variants/                              owned DERIVED media — variants_dir (default <data_dir>/variants)
+    images/  <base_key>/<variant>        owned cover variants — ALL storages' covers derive here
+    cache/                               evictable audio-variant tier (future; LRU-GC'd)
 ```
 
-One `links/` dir, content-addressed by hash exactly like `files/`. `data_dir`
-default `./data` reproduces the historical defaults; `database.path` / `files_dir`,
-if set, override their derived value (nothing breaks for existing installs).
+One `links/` dir, content-addressed by hash exactly like `files/`. Derived media
+(cover variants today, audio variants later) lives under its own `variants/` tree,
+**not** under `files/` — see `docs/architecture/variants.md` for that decision.
+`data_dir` default `./data` reproduces the historical defaults; `database.path` /
+`files_dir` / `variants_dir`, if set, override their derived value (nothing breaks
+for existing installs).
 
 ## Database
 
@@ -144,8 +149,10 @@ lives in `docs/architecture/s3-storage.md`; v0 is its degenerate case.
 resolve outside `data_dir` — that is the mechanism, gated at *creation*.
 `storage_backend` is only an origin hint; serving does not depend on it.
 
-`/images/*` is **unchanged** — a static `http.FileServer` rooted at
-`files_dir/images`, since all variants are owned/local regardless of storage.
+`/images/*` is **unchanged** — a static `http.FileServer` rooted at the owned
+cover-variant tree (`files_dir/images` today; `variants/images` after the
+variants-dir relocation — see `docs/architecture/variants.md`), since all variants
+are owned/local regardless of storage.
 
 ## Ingest & duplicates
 
@@ -199,9 +206,10 @@ Endpoints under `/api/admin/sources*` — admin group (`file.delete`) + gated
   `uploaded_by`; if a row already exists for the hash, reuse it — content-addressed
   catalog), `file_uploads`, `media_metadata`, enqueue analysis, resolve the
   recording. Covers (read-once-derive): decode the cover — sidecar `cover.jpg` or
-  embedded picture — once into owned variants under `files_dir/images/<base_key>/`
-  and attach the album image (owned/`local`); **no `links/images` symlink is
-  kept**. Record a scan summary; `status='active'`.
+  embedded picture — once into owned variants under the cover-variant tree
+  (`variants/images/<base_key>/`; see `docs/architecture/variants.md`) and attach
+  the album image (owned/`local`); **no `links/images` symlink is kept**. Record a
+  scan summary; `status='active'`.
 - **`GET /api/admin/sources`** — list the symlink sources (root, scan summary,
   external bytes) and `links`-storage health (broken-link count), plus the `local`
   store summary. No reorder/default control (v0 precedence is fixed).
@@ -216,13 +224,14 @@ Recordings/duplicates run unchanged through the link (see
 ## Configuration
 
 ```toml
-data_dir = "./data"          # default root for db + files + links; "./data" = today's defaults
+data_dir = "./data"          # default root for db + files + links + variants; "./data" = today's defaults
 
 [database]
 #path = "./data/madshare.db" # defaults to <data_dir>/madshare.db
 
 [storage]
-#files_dir = "./data/files"  # defaults to <data_dir>/files
+#files_dir    = "./data/files"     # defaults to <data_dir>/files (source blobs)
+#variants_dir = "./data/variants"  # defaults to <data_dir>/variants (derived media; see variants.md)
 # … existing storage keys unchanged …
 
 [sources]
@@ -231,11 +240,12 @@ data_dir = "./data"          # default root for db + files + links; "./data" = t
 symlink_roots = ["/srv/music", "/mnt/nas/audio"]
 ```
 
-`config.Load`: derive effective `database.path` / `files_dir` from `data_dir`
-unless overridden; the `links` storage root is `<data_dir>/links`; validate
-`data_dir` non-empty and each `symlink_roots` entry absolute + `Clean`-stable; a
-non-existent root is a `cfg.Warnings()` advisory; empty `symlink_roots` disables
-the `symlink` kind.
+`config.Load`: derive effective `database.path` / `files_dir` / `variants_dir`
+from `data_dir` unless overridden; the `links` storage root is `<data_dir>/links`;
+validate `data_dir` non-empty and each `symlink_roots` entry absolute +
+`Clean`-stable; a non-existent root is a `cfg.Warnings()` advisory; empty
+`symlink_roots` disables the `symlink` kind. (`variants_dir` derivation arrives
+with the variants-dir relocation — see `docs/architecture/variants.md`.)
 
 `symlink_roots` is **deploy-time TOML and intentionally not UI-editable** (it is a
 trust boundary — see `docs/architecture/configuration.md`). Symlink *sources*,
@@ -273,8 +283,9 @@ Every destructive path is storage-aware:
   row references the key — never inline on a single file delete. Because covers are
   **read-once-derived** (no linked original kept — see *Cover images* and
   `docs/architecture/variants.md`), there is a **single** cleanup location
-  (`files_dir/images/<base_key>/`, `os.RemoveAll`, ours) and **no `links/images`
-  tree** to sweep, so the existing reconcile needs no change for linked imports.
+  (the owned cover-variant tree `variants/images/<base_key>/`, `os.RemoveAll`,
+  ours) and **no `links/images` tree** to sweep, so the existing reconcile needs no
+  change for linked imports.
   Full variant-storage design (incl. future audio variants):
   `docs/architecture/variants.md`.
 
@@ -312,11 +323,21 @@ API stays.
   `Locate`; fall-through). `/images` unchanged. Regression-test HEAD/range.
 - **P3 — `links` storage + symlink source.** Shared links dir, symlink/kind-aware
   storage helpers, `POST/GET /api/admin/sources` + scan engine (walk/hash/skip-if-
-  in-links/symlink/insert + tags + analysis + recordings).
+  in-links/symlink/insert + tags + analysis + recordings). **No covers yet** (P4).
+- **P3.5 — `variants/` directory relocation** *(pre-P4; independent of the links
+  work — can land anytime before P4, but P4 depends on it).* Add `variants_dir`
+  (derive from `data_dir`, default `<data_dir>/variants`, overridable); point the
+  two image-dir derivation sites (`madshare.go` reconcile + imageproc; `api/api.go`
+  `/images/*` mount + cover read/write) at `variants/images`; one idempotent
+  startup relocation of an existing `files/images` → `variants/images` (à la
+  `storage.RelocateLegacyBlobs`). The `/images/*` URL is unchanged. Also rename the
+  upload `CacheDir` → `SpoolDir`. Doing this **before P4** means P4 derives covers
+  straight into the final location and fresh installs never put images under
+  `files/`. Full design: `docs/architecture/variants.md`.
 - **P4 — covers (read-once-derive).** Decode each source's cover (sidecar or
-  embedded) once into owned `local` variants and attach the album image; no
-  `links/images` tree, so the existing image reconcile is unchanged. See *Cover
-  images* and `docs/architecture/variants.md`.
+  embedded) once into owned `local` variants under `variants/images` (P3.5) and
+  attach the album image; no `links/images` tree, so the existing image reconcile
+  is unchanged. See *Cover images* and `docs/architecture/variants.md`.
 - **P5 — prune broken-link detection + per-storage accounting.**
 - **P6 — `/admin/sources` page** (imports section + add/scan/health; no storage
   reorder UI — that ships with S3).

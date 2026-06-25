@@ -9,6 +9,11 @@ of, the cover-images tree (`<files_dir>/images`); the `/files` server therefore
 cannot reach images. The interface is the seam for a future object store (S3);
 everything below is written so that backend drops in without changing callers.
 
+> **Planned (roadmap):** the cover-images tree relocates out of `<files_dir>` into
+> a dedicated owned `variants/` directory (`<variants_dir>/images`), so `files/`
+> holds only source blobs and all derived media lives under `variants/`. See
+> `docs/architecture/variants.md`. Not yet implemented.
+
 On startup the server relocates any pre-split blobs (hash dirs sitting directly
 under `<files_dir>`) into `audio/` via `storage.RelocateLegacyBlobs` — a
 one-time, idempotent migration.

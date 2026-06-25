@@ -24,6 +24,25 @@ bug/cleanup items live in `.issues/open-issues.md` and `.issues/ui-issues.md`.
   resize variants or worker job. Give artists the same pipeline when artist pages
   need sized thumbnails.
 
+## Variants & derived-media storage (decided, not built)
+
+- **Dedicated `variants/` directory** — *scheduled as data-sources **P3.5** (pre-P4;
+  see `docs/architecture/data-sources.md` → Phasing).* Move all *derived* media out
+  of `files/` into an owned top-level `variants/` tree (`variants/images/` permanent
+  + `variants/cache/` evictable), so `files/` holds only source blobs. Config:
+  `variants_dir` derived from `data_dir` (default `<data_dir>/variants`). Cost is
+  small — two image-dir derivation sites + a one-time idempotent `files/images` →
+  `variants/images` startup relocation (à la `RelocateLegacyBlobs`); the `/images/*`
+  URL is unchanged. Landing it before P4 lets the read-once-derive cover step write
+  straight to `variants/images`. Design: `docs/architecture/variants.md`.
+- **`CacheDir` → `SpoolDir` rename.** The upload "cache" (`os.TempDir` staging for
+  hashing large uploads) is really a spool; rename it so "cache" unambiguously
+  means the variant cache. Internal-only (~6 sites; no TOML/DB/user surface).
+- **Audio variants (engine).** On-the-fly transcodes streamed to `variants/cache/`
+  (LRU-evicted) with an opt-in permanent tier under `variants/audio/`. Recipe/key
+  scheme, ffmpeg worker pool, eviction policy, and accounting are all undesigned.
+  Sketch only in `docs/architecture/variants.md`.
+
 ## Artist / album entities
 
 - **Track-level performer entity (`track_artist_id`).** `media_metadata.artist_id`
