@@ -29,11 +29,16 @@ func TestLoad_MissingFile_ReturnsDefaults(t *testing.T) {
 	if cfg.WebUI.APIBase != "" {
 		t.Errorf("WebUI.APIBase = %q, want empty (relative, same-origin)", cfg.WebUI.APIBase)
 	}
-	if cfg.Database.Path != "./data/madshare.db" {
-		t.Errorf("Database.Path = %q, want ./data/madshare.db", cfg.Database.Path)
+	if cfg.DataDir != "./data" {
+		t.Errorf("DataDir = %q, want ./data", cfg.DataDir)
 	}
-	if cfg.Storage.FilesDir != "./data/files" {
-		t.Errorf("Storage.FilesDir = %q, want ./data/files", cfg.Storage.FilesDir)
+	// database.path / files_dir are derived from data_dir via filepath.Join,
+	// which canonicalises "./data" to "data" — the same path, resolved against CWD.
+	if cfg.Database.Path != "data/madshare.db" {
+		t.Errorf("Database.Path = %q, want data/madshare.db", cfg.Database.Path)
+	}
+	if cfg.Storage.FilesDir != "data/files" {
+		t.Errorf("Storage.FilesDir = %q, want data/files", cfg.Storage.FilesDir)
 	}
 	if cfg.Storage.MaxUploadMB != 500 {
 		t.Errorf("Storage.MaxUploadMB = %d, want 500", cfg.Storage.MaxUploadMB)
@@ -156,6 +161,45 @@ max_upload_mb = 100
 	}
 }
 
+// ── data_dir derivation & overrides ──────────────────────────────────────────
+
+func TestLoad_DataDir_DerivesPaths(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "datadir.toml")
+	os.WriteFile(f, []byte("data_dir = \"/var/lib/madshare\"\n"+validListeners), 0o600)
+	cfg, err := config.Load(f)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DataDir != "/var/lib/madshare" {
+		t.Errorf("DataDir = %q, want /var/lib/madshare", cfg.DataDir)
+	}
+	if cfg.Database.Path != "/var/lib/madshare/madshare.db" {
+		t.Errorf("Database.Path = %q, want derived under data_dir", cfg.Database.Path)
+	}
+	if cfg.Storage.FilesDir != "/var/lib/madshare/files" {
+		t.Errorf("Storage.FilesDir = %q, want derived under data_dir", cfg.Storage.FilesDir)
+	}
+}
+
+// An explicit database.path / files_dir overrides the data_dir derivation
+// independently — one can be derived while the other is set.
+func TestLoad_DataDir_ExplicitPathsOverride(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "datadir.toml")
+	os.WriteFile(f, []byte("data_dir = \"/var/lib/madshare\"\n"+validListeners+
+		"[database]\npath = \"/srv/db/m.sqlite\"\n"), 0o600)
+	cfg, err := config.Load(f)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Database.Path != "/srv/db/m.sqlite" {
+		t.Errorf("Database.Path = %q, want explicit override", cfg.Database.Path)
+	}
+	// files_dir was not set, so it still derives from data_dir.
+	if cfg.Storage.FilesDir != "/var/lib/madshare/files" {
+		t.Errorf("Storage.FilesDir = %q, want derived under data_dir", cfg.Storage.FilesDir)
+	}
+}
+
 func TestListenConfig_BindAddr(t *testing.T) {
 	cases := []struct {
 		addr string
@@ -200,8 +244,11 @@ func TestLoad_Validation(t *testing.T) {
 		// empty string means the config must load without error.
 		wantErrContains string
 	}{
-		{"empty database path", validListeners + "[database]\npath = \"\"\n", "database.path must not be empty"},
-		{"empty files_dir", validListeners + "[storage]\nfiles_dir = \"\"\n", "files_dir must not be empty"},
+		{"empty data_dir", "data_dir = \"\"\n" + validListeners, "data_dir must not be empty"},
+		// An explicit-but-empty database.path / files_dir is no longer an error:
+		// it means "derive from data_dir", so these load cleanly.
+		{name: "empty database path derives from data_dir", toml: validListeners + "[database]\npath = \"\"\n"},
+		{name: "empty files_dir derives from data_dir", toml: validListeners + "[storage]\nfiles_dir = \"\"\n"},
 		{"zero max_upload_mb", validListeners + "[storage]\nmax_upload_mb = 0\n", "max_upload_mb must be positive"},
 		{"negative max_upload_mb", validListeners + "[storage]\nmax_upload_mb = -1\n", "max_upload_mb must be positive"},
 		{

@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
@@ -30,6 +31,13 @@ var knownGroups = map[string]bool{
 }
 
 type Config struct {
+	// DataDir is the default root under which the database and uploaded files
+	// live. database.path and storage.files_dir are derived from it when unset
+	// (<data_dir>/madshare.db and <data_dir>/files); either may be overridden
+	// independently. The default "./data" reproduces the historical layout. See
+	// docs/architecture/data-sources.md.
+	DataDir string `toml:"data_dir"`
+
 	Listen   []ListenConfig `toml:"listen"`
 	WebUI    WebUIConfig    `toml:"webui"`
 	Database DatabaseConfig `toml:"database"`
@@ -152,8 +160,13 @@ func (s StorageConfig) MaxUploadBytes() int64 {
 	return s.MaxUploadMB << 20
 }
 
+// DefaultDataDir is the default root for derived data paths. "./data"
+// reproduces the historical default layout (db + files under ./data).
+const DefaultDataDir = "./data"
+
 func defaults() Config {
 	return Config{
+		DataDir: DefaultDataDir,
 		// Default: a single loopback listener serving the full stack. Loopback
 		// is the safe default while the admin surface is unauthenticated.
 		Listen: []ListenConfig{
@@ -163,11 +176,9 @@ func defaults() Config {
 				Serve: []string{GroupAPI, GroupWebUI, GroupAdmin},
 			},
 		},
-		Database: DatabaseConfig{
-			Path: "./data/madshare.db",
-		},
+		// Database.Path and Storage.FilesDir are intentionally left empty here;
+		// resolveDataDir derives them from DataDir unless the file overrides them.
 		Storage: StorageConfig{
-			FilesDir:    "./data/files",
 			MaxUploadMB: 500,
 		},
 		Auth: AuthConfig{
@@ -204,12 +215,31 @@ func Load(path string) (Config, error) {
 	if pw := os.Getenv(InitialAdminPasswordEnv); pw != "" {
 		cfg.Auth.InitialAdminPassword = pw
 	}
+	cfg.resolveDataDir()
 	cfg.resolveStorageWorkers()
 	cfg.resolveGitRepo()
 	if err := cfg.validate(); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+// resolveDataDir derives the effective database and files paths from DataDir
+// when the file did not set them explicitly. An explicit database.path /
+// storage.files_dir takes precedence (independent overrides). When DataDir is
+// empty nothing is derived — validate() reports it. Paths are joined with
+// filepath.Join so a data_dir with a trailing slash or "." segments resolves
+// cleanly.
+func (c *Config) resolveDataDir() {
+	if c.DataDir == "" {
+		return
+	}
+	if c.Database.Path == "" {
+		c.Database.Path = filepath.Join(c.DataDir, "madshare.db")
+	}
+	if c.Storage.FilesDir == "" {
+		c.Storage.FilesDir = filepath.Join(c.DataDir, "files")
+	}
 }
 
 // resolveGitRepo trims [webui].git_repo and warns (non-fatal) when a non-empty
@@ -258,6 +288,9 @@ func (c *Config) resolveStorageWorkers() {
 // every successfully-parsed config (including the all-defaults case). It
 // returns only hard errors; soft advisories are reported by Warnings.
 func (c Config) validate() error {
+	if c.DataDir == "" {
+		return errors.New("config: data_dir must not be empty")
+	}
 	if c.Database.Path == "" {
 		return errors.New("config: database.path must not be empty")
 	}
