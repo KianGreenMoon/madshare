@@ -51,14 +51,14 @@ func (db *DB) StorageByteBreakdown(ctx context.Context) (StorageByteBreakdown, e
 // returned with DeletedAt set so the upload handler can restore them.
 func (db *DB) GetFileByHash(ctx context.Context, hash string) (*File, error) {
 	const q = `
-		SELECT id, hash, byte_size, mime_type, storage_backend, object_key, created_at, deleted_at,
+		SELECT id, hash, byte_size, mime_type, storage_backend, object_key, link_target, created_at, deleted_at,
 		       review_state, review_note, submitted_at
 		FROM files
 		WHERE hash = ?`
 
 	var f File
 	err := db.QueryRowContext(ctx, q, hash).Scan(
-		&f.ID, &f.Hash, &f.ByteSize, &f.MimeType, &f.StorageBackend, &f.ObjectKey, &f.CreatedAt, &f.DeletedAt,
+		&f.ID, &f.Hash, &f.ByteSize, &f.MimeType, &f.StorageBackend, &f.ObjectKey, &f.LinkTarget, &f.CreatedAt, &f.DeletedAt,
 		&f.ReviewState, &f.ReviewNote, &f.SubmittedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -86,9 +86,9 @@ func (db *DB) InsertFile(ctx context.Context, f *File, upload *FileUpload, meta 
 		f.ReviewState = ReviewApproved
 	}
 	res, err := tx.ExecContext(ctx, `
-		INSERT INTO files (hash, byte_size, mime_type, storage_backend, object_key, created_at, uploaded_by, review_state)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		f.Hash, f.ByteSize, f.MimeType, f.StorageBackend, f.ObjectKey, f.CreatedAt, f.UploadedBy, f.ReviewState,
+		INSERT INTO files (hash, byte_size, mime_type, storage_backend, object_key, link_target, created_at, uploaded_by, review_state)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		f.Hash, f.ByteSize, f.MimeType, f.StorageBackend, f.ObjectKey, f.LinkTarget, f.CreatedAt, f.UploadedBy, f.ReviewState,
 	)
 	if err != nil {
 		return fmt.Errorf("insert files: %w", err)

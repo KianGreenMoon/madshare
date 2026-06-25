@@ -81,3 +81,14 @@ max_upload_mb = 500          # per-request upload cap, in MiB
 # server_max_parallel_workers = 0   # total concurrent uploads from all users (0 = unlimited)
 # user_max_parallel_workers   = 0   # concurrent uploads per user (0 = unlimited; no admin bypass)
 # image_processing_workers    = 0   # cover-image resize goroutines; 0 = auto (number of CPUs)
+
+# [sources] controls in-place "symlink" imports: an admin points at an external
+# directory and Madshare references each audio file by a symlink in the shared
+# links storage (<data_dir>/links) — never copying, never modifying the originals.
+# symlink_roots is the trust boundary: a symlink source may only reference a
+# directory at or under one of these roots. Each entry must be an absolute,
+# Clean-stable path. Empty (the default) disables symlink sources entirely (the
+# local storage and uploads are unaffected). Deploy-time only — not UI-editable.
+# See docs/architecture/data-sources.md.
+#[sources]
+#symlink_roots = ["/srv/music", "/mnt/nas/audio"]

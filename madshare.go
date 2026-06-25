@@ -24,6 +24,7 @@ import (
 	"daemonlord.ygg/madshare/media"
 	"daemonlord.ygg/madshare/mediaproc"
 	"daemonlord.ygg/madshare/prune"
+	"daemonlord.ygg/madshare/sources"
 	"daemonlord.ygg/madshare/storages"
 	"daemonlord.ygg/madshare/webui"
 	"github.com/go-chi/chi/v5"
@@ -241,29 +242,40 @@ func main() {
 	// it stays empty until a symlink source populates it (data-sources P3).
 	storageRegistry := storages.New(filesDir, cfg.LinksDir())
 
+	// Symlink data sources (import in place). The Linker is the write side of the
+	// links storage; the Manager runs one scan at a time and is gated by the
+	// [sources].symlink_roots allow-list. Reset any source left 'scanning' by a
+	// crash before serving. See docs/architecture/data-sources.md.
+	linker := storages.NewLinker(cfg.LinksDir())
+	sourcesMgr := sources.New(db, linker, mediaPool, cfg.Sources.SymlinkRoots, api.AcceptedAudioTypes())
+	if err := sourcesMgr.ResetStaleScans(ctx); err != nil {
+		log.Printf("reset stale source scans: %v", err)
+	}
+
 	sourceRoot, err := os.Getwd()
 	if err != nil {
 		log.Printf("warning: cannot determine working directory for source archive: %v", err)
 	}
 
 	deps := api.Deps{
-		Store:         audioStore,
-		Repo:          db,
-		SpoolDir:      os.TempDir(),
-		FilesDir:      filesDir,
-		VariantsDir:   variantsDir,
-		Storages:      storageRegistry,
-		MaxUploadSize: cfg.Storage.MaxUploadBytes(),
-		Auth:          db,
-		Manage:        db,
-		ImagePool:     pool,
-		MediaPool:     mediaPool,
-		PruneManager:  pruneMgr,
-		UploadLimiter: limiter,
-		UIConfig:      uiCfg,
-		SourceArchive: embeddedSourceTGZ,
-		LicenseText:   licenseText,
-		SourceRoot:    sourceRoot,
+		Store:          audioStore,
+		Repo:           db,
+		SpoolDir:       os.TempDir(),
+		FilesDir:       filesDir,
+		VariantsDir:    variantsDir,
+		Storages:       storageRegistry,
+		MaxUploadSize:  cfg.Storage.MaxUploadBytes(),
+		Auth:           db,
+		Manage:         db,
+		ImagePool:      pool,
+		MediaPool:      mediaPool,
+		PruneManager:   pruneMgr,
+		SourcesManager: sourcesMgr,
+		UploadLimiter:  limiter,
+		UIConfig:       uiCfg,
+		SourceArchive:  embeddedSourceTGZ,
+		LicenseText:    licenseText,
+		SourceRoot:     sourceRoot,
 	}
 
 	servers, err := startListeners(cfg, deps)

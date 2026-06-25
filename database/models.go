@@ -45,6 +45,14 @@ const (
 	ReviewApproved  = "approved"
 )
 
+// Storage-backend origin hints recorded in files.storage_backend. They are an
+// origin hint only — the resolver decides which copy to serve by probing storages
+// (see docs/architecture/data-sources.md), so serving never depends on this value.
+const (
+	StorageBackendLocal = "local" // an owned blob under files_dir/audio (uploads)
+	StorageBackendLinks = "links" // a symlink to an external original (symlink import)
+)
+
 // File is a row in the files table — one record per unique content hash.
 type File struct {
 	ID             int64
@@ -53,7 +61,11 @@ type File struct {
 	MimeType       string
 	StorageBackend string
 	ObjectKey      string
-	CreatedAt      int64
+	// LinkTarget is the absolute path of the external original for a symlink
+	// import (storage_backend='links'); invalid (NULL) for owned local blobs.
+	// See docs/architecture/data-sources.md.
+	LinkTarget sql.NullString
+	CreatedAt  int64
 	// UploadedBy is the id of the uploading user, or invalid for pre-auth /
 	// federated files.
 	UploadedBy sql.NullInt64

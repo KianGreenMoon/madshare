@@ -322,9 +322,18 @@ API stays.
   see *Storage precedence*). Only `local` populated → no behaviour change.
 - **P2 — resolving `/files` handler** (try `local` then `links`; links-aware
   `Locate`; fall-through). `/images` unchanged. Regression-test HEAD/range.
-- **P3 — `links` storage + symlink source.** Shared links dir, symlink/kind-aware
-  storage helpers, `POST/GET /api/admin/sources` + scan engine (walk/hash/skip-if-
-  in-links/symlink/insert + tags + analysis + recordings). **No covers yet** (P4).
+- **P3 — `links` storage + symlink source. _(done)_** Shared links dir,
+  symlink/kind-aware storage helpers (`storages.Linker` — `Has`/`Link`/`Remove`,
+  link-only, never touches the target), `[sources].symlink_roots` allow-list,
+  `data_sources` CRUD + `files.link_target` (origin hint `storage_backend='links'`),
+  the `sources.Manager` scan engine (one scan at a time; walk/hash/skip-if-in-links/
+  symlink/insert + tags + analysis + recordings; lands `approved`), and
+  `GET/POST /api/admin/sources` (`content.moderate`; 503 disabled / 403 root not
+  allowed / 409 busy). **No covers yet** (P4): a file's embedded/sidecar art is
+  ignored at scan time. **No admin-delete storage-awareness yet:** a links row
+  hard-deleted by an admin removes only its catalog row (the local-rooted
+  `DeleteAll` can't reach the external original — the safety invariant holds), but
+  leaves the symlink as a dangling orphan in `links/` for the future reclaim tool.
 - **P3.5 — `variants/` directory relocation** *(pre-P4; independent of the links
   work — can land anytime before P4, but P4 depends on it).* Add `variants_dir`
   (derive from `data_dir`, default `<data_dir>/variants`, overridable); point the

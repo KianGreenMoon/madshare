@@ -11,6 +11,7 @@ import (
 	"daemonlord.ygg/madshare/config"
 	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/prune"
+	"daemonlord.ygg/madshare/sources"
 	"daemonlord.ygg/madshare/storages"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -60,6 +61,9 @@ type Deps struct {
 	// running server always wires it (see madshare.go); tests that exercise prune
 	// construct one explicitly.
 	PruneManager *prune.Manager
+	// SourcesManager owns symlink data sources (list / add / scan). When nil, the
+	// /api/admin/sources endpoints respond 503. See docs/architecture/data-sources.md.
+	SourcesManager *sources.Manager
 	// UploadLimiter, when set, gates concurrent uploads (global + per-user caps
 	// from [storage]). Optional; nil disables the gate.
 	UploadLimiter *UploadLimiter
@@ -125,6 +129,7 @@ func (d Deps) newHandler() *handler {
 		imagePool:       d.ImagePool,
 		mediaPool:       d.MediaPool,
 		pruneMgr:        d.PruneManager,
+		sourcesMgr:      d.SourcesManager,
 		limiter:         d.UploadLimiter,
 		uiConfig:        d.UIConfig,
 	}
@@ -266,6 +271,12 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		// and split a rendition off; delete reuses the soft-delete above.
 		r.With(moderate).Get("/duplicates", h.duplicatesList)
 		r.With(moderate).Post("/duplicates/{file_id}/split", h.duplicatesSplit)
+
+		// Symlink data sources (import in place). The admin group is already
+		// file.delete-gated at the listener; adding/scanning a source is a
+		// content.moderate capability. See docs/architecture/data-sources.md.
+		r.With(moderate).Get("/sources", h.adminSourcesList)
+		r.With(moderate).Post("/sources", h.adminSourcesAdd)
 
 		// Content-access management (Phase 3c). Only registered when a store is
 		// configured; its routes carry their own permission gates.

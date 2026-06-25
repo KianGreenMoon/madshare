@@ -238,6 +238,78 @@ func TestConfig_LinksDir(t *testing.T) {
 	}
 }
 
+func TestSourcesConfig_SymlinkSourcesEnabled(t *testing.T) {
+	if (config.SourcesConfig{}).SymlinkSourcesEnabled() {
+		t.Error("empty symlink_roots should disable symlink sources")
+	}
+	if !(config.SourcesConfig{SymlinkRoots: []string{"/srv/music"}}).SymlinkSourcesEnabled() {
+		t.Error("a configured root should enable symlink sources")
+	}
+}
+
+func TestLoad_Sources_ValidRoots(t *testing.T) {
+	dir := t.TempDir() // an existing absolute dir → no warning
+	f := filepath.Join(t.TempDir(), "sources.toml")
+	body := validListeners + "[sources]\nsymlink_roots = [\"" + dir + "\"]\n"
+	if err := os.WriteFile(f, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(f)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Sources.SymlinkSourcesEnabled() {
+		t.Error("symlink sources should be enabled")
+	}
+	for _, w := range cfg.Warnings() {
+		if strings.Contains(w, "symlink_roots") {
+			t.Errorf("unexpected warning for an existing root: %q", w)
+		}
+	}
+}
+
+func TestLoad_Sources_NonexistentRoot_Warns(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "not-there")
+	f := filepath.Join(t.TempDir(), "sources.toml")
+	body := validListeners + "[sources]\nsymlink_roots = [\"" + missing + "\"]\n"
+	if err := os.WriteFile(f, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(f) // a missing root is an advisory, not fatal
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	found := false
+	for _, w := range cfg.Warnings() {
+		if strings.Contains(w, "symlink_roots") && strings.Contains(w, "does not exist") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a non-existent-root warning, got %v", cfg.Warnings())
+	}
+}
+
+func TestLoad_Sources_InvalidRoot_Errors(t *testing.T) {
+	cases := []struct{ name, root string }{
+		{"relative", "srv/music"},
+		{"not-clean", "/srv/music/"},
+		{"dotdot", "/srv/../srv/music/.."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := filepath.Join(t.TempDir(), "sources.toml")
+			body := validListeners + "[sources]\nsymlink_roots = [\"" + tc.root + "\"]\n"
+			if err := os.WriteFile(f, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := config.Load(f); err == nil {
+				t.Errorf("Load with root %q should fail validation", tc.root)
+			}
+		})
+	}
+}
+
 func TestListenConfig_BindAddr(t *testing.T) {
 	cases := []struct {
 		addr string

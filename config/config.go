@@ -45,6 +45,7 @@ type Config struct {
 	Storage  StorageConfig  `toml:"storage"`
 	Auth     AuthConfig     `toml:"auth"`
 	CORS     CORSConfig     `toml:"cors"`
+	Sources  SourcesConfig  `toml:"sources"`
 
 	// warnings accumulates non-fatal advisories produced while loading (e.g.
 	// clamped out-of-range worker counts). It is unexported so it is not a TOML
@@ -125,6 +126,23 @@ func (w WebUIConfig) GitRepoURL() string {
 // and may carry credentials. See docs/architecture/listeners-and-config.md.
 type CORSConfig struct {
 	AllowedOrigins []string `toml:"allowed_origins"`
+}
+
+// SourcesConfig controls in-place symlink imports (see
+// docs/architecture/data-sources.md). SymlinkRoots is the operator-set allow-list
+// of external directories a 'symlink' data source may reference; it is a trust
+// boundary and intentionally deploy-time TOML only (not UI-editable). Empty (the
+// default) disables the symlink source kind entirely — the local storage and
+// uploads are unaffected. Each entry must be an absolute, Clean-stable path.
+type SourcesConfig struct {
+	SymlinkRoots []string `toml:"symlink_roots"`
+}
+
+// SymlinkSourcesEnabled reports whether any symlink root is configured. When
+// false the symlink source kind is disabled: POST /api/admin/sources is refused
+// and the Add form is hidden.
+func (s SourcesConfig) SymlinkSourcesEnabled() bool {
+	return len(s.SymlinkRoots) > 0
 }
 
 type DatabaseConfig struct {
@@ -225,6 +243,7 @@ func Load(path string) (Config, error) {
 	cfg.resolveDataDir()
 	cfg.resolveStorageWorkers()
 	cfg.resolveGitRepo()
+	cfg.resolveSources()
 	if err := cfg.validate(); err != nil {
 		return cfg, err
 	}
@@ -270,6 +289,29 @@ func (c *Config) resolveGitRepo() {
 	if v != "" && !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") {
 		c.warnings = append(c.warnings, fmt.Sprintf(
 			"webui.git_repo %q does not look like an http(s) URL; the GitRepo button will link to it as-is", v))
+	}
+}
+
+// resolveSources records non-fatal advisories about the symlink-source
+// allow-list: a configured root that does not currently exist (or is not a
+// directory) is warned about, not rejected — the directory may be mounted later,
+// and the hard format checks live in validateSources. Malformed entries (caught
+// there) are skipped here so a single advisory does not pre-empt the fatal error.
+func (c *Config) resolveSources() {
+	for _, root := range c.Sources.SymlinkRoots {
+		if !filepath.IsAbs(root) || filepath.Clean(root) != root {
+			continue // validateSources turns this into a hard error
+		}
+		info, err := os.Stat(root)
+		if err != nil {
+			c.warnings = append(c.warnings, fmt.Sprintf(
+				"sources.symlink_roots entry %q does not exist yet; symlink sources under it cannot be added until it appears", root))
+			continue
+		}
+		if !info.IsDir() {
+			c.warnings = append(c.warnings, fmt.Sprintf(
+				"sources.symlink_roots entry %q is not a directory", root))
+		}
 	}
 }
 
@@ -326,7 +368,29 @@ func (c Config) validate() error {
 	if err := c.validateCORS(); err != nil {
 		return err
 	}
+	if err := c.validateSources(); err != nil {
+		return err
+	}
 	return c.validateListeners()
+}
+
+// validateSources rejects a malformed symlink-source allow-list. Each entry is a
+// trust boundary used to gate where a symlink import may point, so a relative or
+// non-Clean path (which could be interpreted ambiguously at scan time) is a hard
+// error, not an advisory. Existence is checked separately (resolveSources warns).
+func (c Config) validateSources() error {
+	for _, root := range c.Sources.SymlinkRoots {
+		if root == "" {
+			return errors.New("config: sources.symlink_roots has an empty entry")
+		}
+		if !filepath.IsAbs(root) {
+			return fmt.Errorf("config: sources.symlink_roots entry %q must be an absolute path", root)
+		}
+		if filepath.Clean(root) != root {
+			return fmt.Errorf("config: sources.symlink_roots entry %q is not Clean-stable (want %q)", root, filepath.Clean(root))
+		}
+	}
+	return nil
 }
 
 // validateCORS rejects malformed allowed-origin entries. A silently non-matching

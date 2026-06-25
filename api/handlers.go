@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/media"
 	"daemonlord.ygg/madshare/prune"
+	"daemonlord.ygg/madshare/sources"
 )
 
 // actorID returns the acting user's id from the request context as a nullable
@@ -58,6 +60,15 @@ var acceptedAudioTypes = map[string]string{
 	".opus": "audio/opus",
 }
 
+// AcceptedAudioTypes returns a copy of the canonical extension→MIME audio
+// allow-list. It is the single source of truth shared by the upload gate and the
+// symlink-source scan engine (passed to sources.New to avoid an import cycle).
+func AcceptedAudioTypes() map[string]string {
+	out := make(map[string]string, len(acceptedAudioTypes))
+	maps.Copy(out, acceptedAudioTypes)
+	return out
+}
+
 // handler holds the dependencies for the API HTTP handlers.
 type handler struct {
 	storage storage.Storage
@@ -93,6 +104,9 @@ type handler struct {
 	// pruneMgr owns the single Verify & Prune background job. Nil when no manager
 	// was wired (the prune endpoints then respond 503).
 	pruneMgr *prune.Manager
+	// sourcesMgr owns symlink data sources (list/add/scan). Nil when no manager
+	// was wired (the /api/admin/sources endpoints then respond 503).
+	sourcesMgr *sources.Manager
 	// limiter, when non-nil, gates concurrent uploads (global + per-user). Nil
 	// disables the gate (tests / unlimited config).
 	limiter *UploadLimiter
