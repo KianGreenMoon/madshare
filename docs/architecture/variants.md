@@ -1,12 +1,15 @@
 # Variants (derived media) — DRAFT / INCOMPLETE
 
-> **STATUS: partial.** The image half, and the storage **layout** (a dedicated
-> `variants/` directory — *decided* below), are settled; the audio-variant
-> **engine** (transcode recipes, the LRU cache, eviction policy) is still an early
-> sketch and is deliberately under-specified. Do not implement the audio engine
-> from this doc. The layout decision and the `CacheDir`→`SpoolDir` rename are a
-> **roadmap** — recorded here, **not yet implemented**. See
-> `docs/architecture/data-sources.md` for storages.
+> **STATUS: partial.** Three layers, at three maturities:
+> 1. The dedicated `variants/` **directory** + the `CacheDir`→`SpoolDir` rename are
+>    **BUILT** (data-sources P3.5).
+> 2. The cover **source/derivative split & full-hash keying** (original →
+>    `files/images`, recipe-keyed variants, audio asymmetry) is **DESIGNED below,
+>    not yet built** — a later phase.
+> 3. The audio-variant **engine** (transcode recipes, the LRU cache, eviction) is
+>    an early **sketch** — do not implement from it.
+>
+> See `docs/architecture/data-sources.md` for storages.
 
 A **variant** is a *derived* representation of a source file — a resized cover
 image today, a transcoded/down-bitrate audio stream tomorrow. Variants are not
@@ -38,21 +41,30 @@ catalog content of their own; they are computed from a source blob and a recipe.
    cannot safely remove a variant — another entry may still use it. Removal is a
    GC sweep that drops a variant only when nothing references its key.
 
-## Storage layout — a dedicated `variants/` directory (DECIDED, roadmap)
+## Storage layout — a dedicated `variants/` directory (DECIDED — dir built, split designed)
 
 All derived media — **permanent and cache alike** — lives under one owned
-top-level tree, separate from sources. Images move out of `files/images/`; the
-audio cache gets a home alongside them.
+top-level tree, separate from sources. `files/` holds only *sources* (content-
+addressed by hash); `variants/` holds only *derivatives*.
 
 ```
 <data_dir>/
-  files/      sources only — owned audio blobs (files/images/ goes away)
+  files/      SOURCES (owned, content-addressed by hash)
+    audio/    <hash>/<filename>                     audio source blobs (catalog / files table)
+    images/   <original_hash>/original<ext>         cover originals = regenerate seeds — NEVER served
   links/      symlink sources (audio only; covers are read-once-derived)
-  variants/   ALL derived media (owned)            variants_dir (default <data_dir>/variants)
-    images/   <base_key>/<variant>                 permanent — refcount GC (ReconcileImageOrphans)
-    audio/    <key>/<variant>                      permanent audio variants (future) — refcount GC
-    cache/    <key>/<variant>                      EVICTABLE audio-variant tier (future) — LRU GC
+  variants/   DERIVED media (owned)                 variants_dir (default <data_dir>/variants)
+    images/   <original_hash>/<recipe><ext>         permanent cover sizes — refcount GC; served at /images
+    audio/    <source_hash>/<variant_hash>/<file>   permanent audio variants (future) — refcount GC
+    cache/    <source_hash>/<variant_hash>/<file>   EVICTABLE audio-variant tier (future) — LRU GC
 ```
+
+> **What's built vs designed.** **P3.5 (built)** created the dedicated `variants/`
+> tree and relocated the whole cover bundle there under the legacy 16-char
+> `base_key` (`variants/images/<base_key>/{original,<variant>}`, original + sizes
+> together). The **source/derivative split** drawn above — cover original back out
+> to `files/images/<full_hash>`, full-hash keying, recipe-keyed variants — is the
+> next refinement, **designed below, not yet built**.
 
 `variants_dir` derives from `data_dir` (default `<data_dir>/variants`) with an
 optional override, exactly like `files_dir`/`database.path` (data-sources P0). The
@@ -76,6 +88,48 @@ is rooted at `variants/cache/`, so it is **physically incapable** of deleting a
 permanent, refcounted variant under `variants/images/` or `variants/audio/`. The
 two retention policies — refcount-GC vs LRU-evict — never share a directory.
 
+### Cover source/derivative split & keying (DESIGN — refines P3.5, not built)
+
+Decided with the owner 2026-06-25. Brings the cover pipeline to a fully content-
+addressed source/derivative split that mirrors the audio model.
+
+- **Original = source → `files/images/<original_hash>/original<ext>`**, addressed
+  by the **full** `sha256` of the original bytes (supersedes the 16-char
+  `base_key`). Uploaded and embedded covers alike land here under the canonical
+  name `original<ext>` (embedded art has no real filename). The original is the
+  regenerate seed.
+- **Variants = derivatives → `variants/images/<original_hash>/<recipe><ext>`**,
+  **recipe-keyed** (`thumb_crop`, `small_fit`, … — today's recipe set), nested
+  under the same original hash. The hash is the source→derivative link, and the
+  same cover bytes auto-share one variant set across every album/artist that uses
+  them.
+- **The cover original is NEVER served.** The current UI has no full-size cover
+  view (largest shown is 600px — the original is too big to be useful), so
+  `files/images/<hash>` is a pure regenerate seed. **`/images` serves only
+  `variants/`** — a source is never exposed there.
+
+**Why recipe-keyed, not a per-variant hash.** A cover variant's content is fully
+determined by `(original_hash, recipe)` — same source + same recipe → byte-
+identical output. So a `<variant_hash>` level is *derivable* info we'd have to
+**track in the DB to use**, replacing today's zero-DB static path map
+(`/images/<key>/<recipe>.jpg`, URL = path). And `original_hash` already changes
+whenever the cover bytes change, so the paths are already cache-immutable except
+across a *recipe* change — handle that with a single global recipe-version bump,
+not a hash per file. (The audio cache is the opposite case — see below — which is
+why its layout above *does* carry `<variant_hash>`.)
+
+**Migration & open sub-points.**
+- Re-key `base_key` (16-char) → full original hash; relocate
+  `variants/images/<base_key>/{original,<variant>}` →
+  `files/images/<full_hash>/original<ext>` + `variants/images/<full_hash>/<recipe><ext>`.
+  One idempotent startup pass (extends `RelocateImageVariants`) plus a DB column
+  change (`album_images`/`artist_images` `base_key` → `image_hash`).
+- **Embedded-cover handling (TBD):** store the extracted bytes as the
+  `files/images` original (a copy), or read-once-derive and keep no original
+  (re-extract from the audio blob on a recipe change), consistent with the linked-
+  cover decision below.
+- A phase **beyond P3.5** — sequence after it.
+
 ### The `CacheDir` → `SpoolDir` rename (terminology hygiene)
 
 Today the upload path has a thing called `CacheDir` (`api.Deps.CacheDir`,
@@ -94,7 +148,13 @@ accurate, non-overlapping names —
 - **`variants/`** — permanent derived media.
 - **`variants/cache/`** — evictable derived media.
 
-### Implementation cost & sequencing (when this lands)
+### Implementation cost & sequencing
+
+> **STATUS: the relocation + `SpoolDir` rename are BUILT** (data-sources P3.5,
+> commits `80ab0b3` + `5528de0`): `variants_dir`, `storage.RelocateImageVariants`
+> (`files/images` → `variants/images`), and `CacheDir` → `SpoolDir`. What remains
+> is the *source/derivative split & full-hash keying* above (a separate, later
+> phase). The cost notes below described the relocation step.
 
 Small and precedented; the image-dir path is derived in only **two** sites
 (`madshare.go` → reconcile + imageproc pool; `api/api.go` → the `/images/*` mount
@@ -182,11 +242,42 @@ second copy of every track. Two admin-selectable modes:
   standard streaming bitrate) under `variants/audio/`, kept and GC'd by reference
   count like images.
 
-Undesigned (do not assume): the recipe/key scheme (codec, bitrate, container); the
-transcode worker (an ffmpeg pool mirroring `imageproc`/`mediaproc`); eviction
-policy details and accounting; whether cache variants count toward storage stats;
-per-source or per-quality policy. (The cache *location* is no longer open — it is
-`variants/cache/`, distinct from the upload `spool`.) All TBD in a later pass.
+### Audio is NOT symmetric with covers — serve the source AND the variants
+
+The defining difference from the cover pipeline (where the original is an *unserved*
+regenerate seed): for audio, **both the source and its variants are reachable**.
+
+- The audio **source** (full-quality original) is the catalog blob at
+  `files/audio/<hash>` and is served at `/files/<hash>` today — unchanged. Users
+  who want full quality get the source.
+- Audio **variants** (transcodes) are served too: the client **picks a quality**
+  and the chosen rendition is streamed. So unlike a cover (seed never exposed), an
+  audio source *and* all its variants are first-class served objects.
+- This is why audio variants are **content-hash-keyed**
+  (`variants/audio/<source_hash>/<variant_hash>/…`, `variants/cache/…` likewise)
+  rather than recipe-keyed: the recipe space is large (codec × bitrate ×
+  container), they're DB-indexed in the cache anyway, and immutable/evictable
+  content-addressed keys are exactly right. This is the one place `<variant_hash>`
+  earns its keep (contrast the cover decision above).
+
+### Frontend surface (don't forget)
+
+Whatever the keying, the API must hand the frontend what it needs to *use* a
+variant without knowing the storage layout:
+
+- **Covers:** deterministic variant URLs (already `media.VariantURL` →
+  `/images/<key>/<recipe><ext>`); browse DTOs / the image-status endpoint carry the
+  key + `variants_ready`.
+- **Audio:** the renditions / quality list — already `GET /api/tracks/{hash}/renditions`
+  (recordings P4), the player's *Auto* + per-rendition in-place source swap. **Audio
+  variants slot into this same list**, so when the engine lands it extends an
+  existing surface rather than inventing one.
+
+Undesigned (do not assume): the recipe/key scheme detail (codec, bitrate,
+container); the transcode worker (an ffmpeg pool mirroring `imageproc`/`mediaproc`);
+eviction policy details and accounting; whether cache variants count toward storage
+stats; per-source or per-quality policy. (The cache *location* is no longer open —
+it is `variants/cache/`, distinct from the upload `spool`.) All TBD in a later pass.
 
 ## Cross-cutting open questions
 
