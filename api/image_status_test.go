@@ -29,7 +29,7 @@ func newImageTestServer(t *testing.T, ui *config.UIConfig) (*httptest.Server, *d
 	RegisterAPI(r, Deps{
 		Store:         storage.NewLocal(dir),
 		Repo:          db,
-		CacheDir:      t.TempDir(),
+		SpoolDir:      t.TempDir(),
 		FilesDir:      dir,
 		MaxUploadSize: testMaxUpload,
 		UIConfig:      ui,

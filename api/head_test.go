@@ -27,7 +27,7 @@ func newHeadTestServer(t *testing.T) *httptest.Server {
 	RegisterAPI(r, Deps{
 		Store:         storage.NewLocal(dir),
 		Repo:          db,
-		CacheDir:      t.TempDir(),
+		SpoolDir:      t.TempDir(),
 		FilesDir:      dir,
 		MaxUploadSize: testMaxUpload,
 	})

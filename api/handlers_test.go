@@ -38,7 +38,7 @@ func newCORSServer(t *testing.T, allowed ...string) *httptest.Server {
 	t.Cleanup(func() { db.Close() })
 	r := chi.NewRouter()
 	r.Use(CORS(allowed))
-	RegisterAPI(r, Deps{Store: storage.NewLocal(filepath.Join(dir, storage.AudioSubdir)), Repo: db, CacheDir: t.TempDir(), FilesDir: dir, MaxUploadSize: testMaxUpload})
+	RegisterAPI(r, Deps{Store: storage.NewLocal(filepath.Join(dir, storage.AudioSubdir)), Repo: db, SpoolDir: t.TempDir(), FilesDir: dir, MaxUploadSize: testMaxUpload})
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 	return srv
@@ -85,7 +85,7 @@ func newTestHandler(t *testing.T) (*handler, *database.DB, string) {
 	h := &handler{
 		storage:       storage.NewLocal(base),
 		repo:          db,
-		cacheDir:      t.TempDir(),
+		spoolDir:      t.TempDir(),
 		imagesDir:     filepath.Join(base, "images"),
 		maxUploadSize: testMaxUpload,
 	}
@@ -835,7 +835,7 @@ func TestUploadFile_InsertFailureLeavesOrphan(t *testing.T) {
 	h := &handler{
 		storage:       storage.NewLocal(baseDir),
 		repo:          repo,
-		cacheDir:      t.TempDir(),
+		spoolDir:      t.TempDir(),
 		maxUploadSize: testMaxUpload,
 	}
 
@@ -1172,7 +1172,7 @@ func TestListFiles_DBError(t *testing.T) {
 	h := &handler{
 		storage:       storage.NewLocal(baseDir),
 		repo:          repo,
-		cacheDir:      t.TempDir(),
+		spoolDir:      t.TempDir(),
 		maxUploadSize: testMaxUpload,
 	}
 
@@ -1627,7 +1627,7 @@ func newSearchHandler(repo *fakeRepo) *handler {
 	return &handler{
 		storage:       storage.NewLocal(os.TempDir()),
 		repo:          repo,
-		cacheDir:      os.TempDir(),
+		spoolDir:      os.TempDir(),
 		maxUploadSize: testMaxUpload,
 		authzEnabled:  false, // no auth → Search (unfiltered) path
 	}

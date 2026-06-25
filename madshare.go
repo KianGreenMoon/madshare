@@ -235,7 +235,7 @@ func main() {
 	deps := api.Deps{
 		Store:         audioStore,
 		Repo:          db,
-		CacheDir:      os.TempDir(),
+		SpoolDir:      os.TempDir(),
 		FilesDir:      filesDir,
 		VariantsDir:   variantsDir,
 		Storages:      storageRegistry,

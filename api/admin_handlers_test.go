@@ -158,7 +158,7 @@ func TestAdminDeleteFile_BlobAlreadyMissing(t *testing.T) {
 // TestAdminDeleteFile_DBErrorReturns500 uses a fakeRepo to force a delete error.
 func TestAdminDeleteFile_DBErrorReturns500(t *testing.T) {
 	repo := &fakeRepo{deleteErr: context.DeadlineExceeded}
-	h := &handler{storage: storage.NewLocal(t.TempDir()), repo: repo, cacheDir: t.TempDir(), maxUploadSize: testMaxUpload}
+	h := &handler{storage: storage.NewLocal(t.TempDir()), repo: repo, spoolDir: t.TempDir(), maxUploadSize: testMaxUpload}
 	hash := "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 
 	rr := httptest.NewRecorder()
@@ -196,7 +196,7 @@ func TestAdminStorageStats(t *testing.T) {
 		repo:      repo,
 		filesDir:  filesDir,
 		imagesDir: imagesDir,
-		cacheDir:  t.TempDir(), maxUploadSize: testMaxUpload,
+		spoolDir:  t.TempDir(), maxUploadSize: testMaxUpload,
 	}
 
 	rr := httptest.NewRecorder()
@@ -264,7 +264,7 @@ func TestAdminStorageStats_WalkErrorReturns500(t *testing.T) {
 		repo:      &fakeRepo{},
 		filesDir:  filesDir,
 		imagesDir: filepath.Join(regular, "sub"), // below a regular file → walk errors
-		cacheDir:  t.TempDir(), maxUploadSize: testMaxUpload,
+		spoolDir:  t.TempDir(), maxUploadSize: testMaxUpload,
 	}
 
 	rr := httptest.NewRecorder()
@@ -282,7 +282,7 @@ func TestAdminStorageStats_DBErrorReturns500(t *testing.T) {
 		repo:      &fakeRepo{breakdownErr: context.DeadlineExceeded},
 		filesDir:  filesDir,
 		imagesDir: filepath.Join(filesDir, "images"),
-		cacheDir:  t.TempDir(), maxUploadSize: testMaxUpload,
+		spoolDir:  t.TempDir(), maxUploadSize: testMaxUpload,
 	}
 
 	rr := httptest.NewRecorder()

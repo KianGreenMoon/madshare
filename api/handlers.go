@@ -60,9 +60,11 @@ var acceptedAudioTypes = map[string]string{
 
 // handler holds the dependencies for the API HTTP handlers.
 type handler struct {
-	storage  storage.Storage
-	repo     database.Repository
-	cacheDir string
+	storage storage.Storage
+	repo    database.Repository
+	// spoolDir is the upload spool: large uploads are staged here as a temp file
+	// while hashing (see storage.HashUpload). Not a cache.
+	spoolDir string
 	// imagesDir is where artist/album cover variants are stored and served — the
 	// "images" subdirectory of the configured variants_dir (it falls back to
 	// files_dir when variants_dir is unset; see Deps.newHandler).

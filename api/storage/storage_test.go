@@ -237,10 +237,10 @@ func TestHashUpload_EmptyFile(t *testing.T) {
 func TestHashUpload_LargeFile(t *testing.T) {
 	data := bytes.Repeat([]byte("x"), 1024)
 	want := sha256hex(data)
-	cacheDir := t.TempDir()
+	spoolDir := t.TempDir()
 
 	// Force the large-file spool path by claiming the file is enormous.
-	hash, content, size, cleanup, err := HashUpload(bytes.NewReader(data), memBufferLimit+1, cacheDir)
+	hash, content, size, cleanup, err := HashUpload(bytes.NewReader(data), memBufferLimit+1, spoolDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestHashUpload_LargeFile(t *testing.T) {
 	}
 
 	// Verify the temp file exists before cleanup.
-	entries, _ := os.ReadDir(cacheDir)
+	entries, _ := os.ReadDir(spoolDir)
 	var tempFiles []string
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), "upload-") {
@@ -272,12 +272,12 @@ func TestHashUpload_LargeFile(t *testing.T) {
 		}
 	}
 	if len(tempFiles) == 0 {
-		t.Error("expected a temp file in cacheDir before cleanup")
+		t.Error("expected a temp file in spoolDir before cleanup")
 	}
 
 	// Cleanup must remove the temp file.
 	cleanup()
-	entries, _ = os.ReadDir(cacheDir)
+	entries, _ = os.ReadDir(spoolDir)
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), "upload-") {
 			t.Errorf("temp file %q was not removed by cleanup", e.Name())
@@ -289,9 +289,9 @@ func TestHashUpload_LargeFile(t *testing.T) {
 // caller can read the content before calling cleanup (cleanup closes the file).
 func TestHashUpload_LargeFile_ContentReadBeforeCleanup(t *testing.T) {
 	data := []byte("spool me please")
-	cacheDir := t.TempDir()
+	spoolDir := t.TempDir()
 
-	_, content, _, cleanup, err := HashUpload(bytes.NewReader(data), memBufferLimit+1, cacheDir)
+	_, content, _, cleanup, err := HashUpload(bytes.NewReader(data), memBufferLimit+1, spoolDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,9 +330,9 @@ func TestHashUpload_ReaderError(t *testing.T) {
 	}
 }
 
-// TestHashUpload_LargeFile_BadCacheDir exercises the MkdirAll / CreateTemp
-// error path when cacheDir is an unwritable location.
-func TestHashUpload_LargeFile_BadCacheDir(t *testing.T) {
+// TestHashUpload_LargeFile_BadSpoolDir exercises the MkdirAll / CreateTemp
+// error path when spoolDir is an unwritable location.
+func TestHashUpload_LargeFile_BadSpoolDir(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("running as root; permission checks do not apply")
 	}
@@ -344,7 +344,7 @@ func TestHashUpload_LargeFile_BadCacheDir(t *testing.T) {
 		defer cleanup()
 	}
 	if err == nil {
-		t.Error("expected error with unwritable cacheDir, got nil")
+		t.Error("expected error with unwritable spoolDir, got nil")
 	}
 }
 

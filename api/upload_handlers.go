@@ -71,7 +71,7 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, content, size, cleanup, err := storage.HashUpload(file, header.Size, h.cacheDir)
+	hash, content, size, cleanup, err := storage.HashUpload(file, header.Size, h.spoolDir)
 	if cleanup != nil {
 		defer cleanup()
 	}

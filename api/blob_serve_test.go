@@ -66,7 +66,7 @@ func newBlobServer(t *testing.T, filesDir string, reg *storages.Registry) *httpt
 	RegisterAPI(r, Deps{
 		Store:         storage.NewLocal(filepath.Join(filesDir, storage.AudioSubdir)),
 		Repo:          db,
-		CacheDir:      t.TempDir(),
+		SpoolDir:      t.TempDir(),
 		FilesDir:      filesDir,
 		Storages:      reg,
 		MaxUploadSize: testMaxUpload,

@@ -303,7 +303,7 @@ func TestUploadFile_ConcurrentSameAlbum_OneCover(t *testing.T) {
 	h := &handler{
 		storage:       storage.NewLocal(base),
 		repo:          db,
-		cacheDir:      t.TempDir(),
+		spoolDir:      t.TempDir(),
 		imagesDir:     filepath.Join(base, "images"),
 		maxUploadSize: testMaxUpload,
 	}
@@ -465,7 +465,7 @@ func TestUploadFile_ConcurrentSameAlbumIdenticalArt_OneFile(t *testing.T) {
 	h := &handler{
 		storage:       storage.NewLocal(base),
 		repo:          db,
-		cacheDir:      t.TempDir(),
+		spoolDir:      t.TempDir(),
 		imagesDir:     filepath.Join(base, "images"),
 		maxUploadSize: testMaxUpload,
 	}

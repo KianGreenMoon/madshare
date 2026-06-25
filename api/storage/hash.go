@@ -10,7 +10,7 @@ import (
 )
 
 // memBufferLimit is the file size below which uploads are hashed entirely in
-// memory. Above this threshold the upload is spooled to cacheDir so heap
+// memory. Above this threshold the upload is spooled to spoolDir so heap
 // pressure stays bounded. Computed once at startup from heap headroom,
 // capped at 50 MB.
 var memBufferLimit = func() int64 {
@@ -26,11 +26,11 @@ var memBufferLimit = func() int64 {
 
 // HashUpload computes the SHA-256 of r. Files with declaredSize <= memBufferLimit
 // are read entirely into memory. Larger files are spooled to a temp file in
-// cacheDir so heap usage stays bounded.
+// spoolDir so heap usage stays bounded.
 //
 // The returned cleanup func (if non-nil) must be deferred by the caller to
 // remove the temp file once it is no longer needed.
-func HashUpload(r io.Reader, declaredSize int64, cacheDir string) (
+func HashUpload(r io.Reader, declaredSize int64, spoolDir string) (
 	hash string, content io.Reader, size int64, cleanup func(), err error,
 ) {
 	h := sha256.New()
@@ -48,10 +48,10 @@ func HashUpload(r io.Reader, declaredSize int64, cacheDir string) (
 	}
 
 	// Large file: spool to a temp file while computing the hash.
-	if err = os.MkdirAll(cacheDir, 0755); err != nil {
+	if err = os.MkdirAll(spoolDir, 0755); err != nil {
 		return
 	}
-	tmp, tmpErr := os.CreateTemp(cacheDir, "upload-*")
+	tmp, tmpErr := os.CreateTemp(spoolDir, "upload-*")
 	if tmpErr != nil {
 		err = tmpErr
 		return

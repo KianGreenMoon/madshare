@@ -23,9 +23,12 @@ import (
 // (NewRouter / tests / open embeddings) it falls back to FilesDir, the historical
 // location. MaxUploadSize caps the upload request body in bytes.
 type Deps struct {
-	Store    storage.Storage
-	Repo     database.Repository
-	CacheDir string
+	Store storage.Storage
+	Repo  database.Repository
+	// SpoolDir is the transient staging dir where a large upload is spooled to a
+	// temp file while its hash is computed (above storage.memBufferLimit). Not a
+	// cache; defaults to os.TempDir() (see madshare.go).
+	SpoolDir string
 	FilesDir string
 	// VariantsDir roots the owned derived-media tree (cover variants under
 	// VariantsDir/images). Empty falls back to FilesDir — see newHandler and
@@ -113,7 +116,7 @@ func (d Deps) newHandler() *handler {
 	h := &handler{
 		storage:       d.Store,
 		repo:          d.Repo,
-		cacheDir:      d.CacheDir,
+		spoolDir:      d.SpoolDir,
 		imagesDir:     filepath.Join(variantsDir, storage.ImagesSubdir),
 		filesDir:      d.FilesDir,
 		maxUploadSize: d.MaxUploadSize,
@@ -276,8 +279,8 @@ func RegisterAdmin(r chi.Router, d Deps) {
 // server composes route groups per listener via the Register* functions. store
 // must be rooted at filesDir/audio (storage.AudioSubdir), since the /files
 // server reads from there.
-func NewRouter(store storage.Storage, repo database.Repository, cacheDir, filesDir string, maxUploadSize int64) http.Handler {
-	d := Deps{Store: store, Repo: repo, CacheDir: cacheDir, FilesDir: filesDir, MaxUploadSize: maxUploadSize}
+func NewRouter(store storage.Storage, repo database.Repository, spoolDir, filesDir string, maxUploadSize int64) http.Handler {
+	d := Deps{Store: store, Repo: repo, SpoolDir: spoolDir, FilesDir: filesDir, MaxUploadSize: maxUploadSize}
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)

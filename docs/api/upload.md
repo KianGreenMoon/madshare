@@ -69,7 +69,7 @@ like `C:\Users\evil.mp3` or `../../etc/track.mp3` is stored as just `track.mp3`.
 - `storage.max_upload_mb` (default 500 MiB) caps the request body. Exceeding it
   returns `400`.
 - Uploads up to ~50 MB are hashed in memory; larger ones are spooled to the
-  cache directory while hashing. This threshold is internal and distinct from
+  spool directory while hashing. This threshold is internal and distinct from
   `max_upload_mb`.
 
 ### Content addressing & metadata

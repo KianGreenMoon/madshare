@@ -148,7 +148,7 @@ type StorageConfig struct {
 	VariantsDir string `toml:"variants_dir"`
 	// MaxUploadMB caps the size of a single upload request body, in MiB. It is
 	// distinct from the in-memory hashing threshold (storage.memBufferLimit),
-	// above which an upload is spooled to the cache dir rather than buffered.
+	// above which an upload is spooled to the spool dir rather than buffered.
 	MaxUploadMB int64 `toml:"max_upload_mb"`
 	// ServerMaxParallelWorkers caps concurrent uploads across all users.
 	// 0 (the default) means unlimited. Negative values are clamped to 0.
