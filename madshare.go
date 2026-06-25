@@ -122,6 +122,21 @@ func main() {
 		log.Printf("fold unknown buckets: %v", err)
 	}
 
+	// Cover source/derivative split (data half of migration 022): re-key any legacy
+	// 16-char-keyed album covers to the full image hash, moving the source original
+	// out to <files_dir>/images (a regenerate seed, never served) and regenerating
+	// its variants under <variants_dir>/images. Idempotent; a no-op once every cover
+	// is full-hash-keyed. Must run after the cover backfills above (rows final) and
+	// before the orphan sweep / worker pool below, which expect full-hash variant
+	// directories. See docs/architecture/variants.md.
+	filesImagesDir := filepath.Join(filesDir, storage.ImagesSubdir)
+	imagesDir := filepath.Join(variantsDir, storage.ImagesSubdir)
+	if n, err := db.SplitImageSources(context.Background(), filesImagesDir, imagesDir); err != nil {
+		log.Printf("split image sources: %v", err)
+	} else if n > 0 {
+		log.Printf("split %d cover(s) into source seed + variants", n)
+	}
+
 	// First-run admin bootstrap: create the admin only when no users exist.
 	created, err := auth.Bootstrap(context.Background(), db, cfg.Auth.InitialAdminUser, cfg.Auth.InitialAdminPassword)
 	if err != nil {
@@ -143,17 +158,16 @@ func main() {
 	if err := db.ResetStaleJobs(ctx); err != nil {
 		log.Printf("reset stale image jobs: %v", err)
 	}
-	imagesDir := filepath.Join(variantsDir, storage.ImagesSubdir)
 	// Sweep orphaned album-cover variant dirs (covers replaced with different
 	// bytes, distinct-art race losers) with no referencing row and no active job.
 	// Runs after the entity/cover backfills above (so album_images rows are final)
 	// and before the pool starts writing variants — startup-only, no upload races.
-	if n, err := db.ReconcileImageOrphans(ctx, imagesDir); err != nil {
+	if n, err := db.ReconcileImageOrphans(ctx, imagesDir, filesImagesDir); err != nil {
 		log.Printf("reconcile image orphans: %v", err)
 	} else if n > 0 {
 		log.Printf("reconciled %d orphan image dir(s)", n)
 	}
-	pool := imageproc.NewPool(db, imagesDir, cfg.Storage.ImageProcessingWorkers)
+	pool := imageproc.NewPool(db, filesImagesDir, imagesDir, cfg.Storage.ImageProcessingWorkers)
 	go pool.Start(ctx)
 
 	// Recover album covers stuck at variants_ready=0 with no job — the row whose

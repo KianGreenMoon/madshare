@@ -189,7 +189,7 @@ func TestUploadAlbumImage_EnqueuesJob(t *testing.T) {
 		t.Errorf("response = %v, want ok:true processing:true", resp)
 	}
 
-	baseKey := media.BaseKey(img)
+	baseKey := media.ImageHash(img)
 	wantPath := filepath.Join(base, "images", baseKey, "original.jpg")
 	if _, err := os.Stat(wantPath); err != nil {
 		t.Errorf("original not stored at %s: %v", wantPath, err)
@@ -244,11 +244,11 @@ func TestUploadAlbumImage_OverwritesExisting(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("GetAlbumCoverStatus: found=%v err=%v", found, err)
 	}
-	if want := media.BaseKey(imgB); gotKey != want {
+	if want := media.ImageHash(imgB); gotKey != want {
 		t.Errorf("base_key = %q, want %q (cover should be overwritten)", gotKey, want)
 	}
 	// Both originals exist on disk (the old one becomes a harmless orphan).
-	if _, err := os.Stat(filepath.Join(base, "images", media.BaseKey(imgB), "original.jpg")); err != nil {
+	if _, err := os.Stat(filepath.Join(base, "images", media.ImageHash(imgB), "original.jpg")); err != nil {
 		t.Errorf("new original missing: %v", err)
 	}
 }
@@ -305,7 +305,7 @@ func TestUploadArtistImage_StoresFlatKey(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("GetArtistImage: found=%v err=%v", found, err)
 	}
-	wantKey := media.BaseKey(img) + ".png"
+	wantKey := media.ImageHash(img) + ".png"
 	if objectKey != wantKey {
 		t.Errorf("object_key = %q, want flat %q", objectKey, wantKey)
 	}

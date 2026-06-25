@@ -4,8 +4,9 @@
 > 1. The dedicated `variants/` **directory** + the `CacheDir`→`SpoolDir` rename are
 >    **BUILT** (data-sources P3.5).
 > 2. The cover **source/derivative split & full-hash keying** (original →
->    `files/images`, recipe-keyed variants, audio asymmetry) is **DESIGNED below,
->    not yet built** — a later phase.
+>    `files/images`, recipe-keyed variants served at `/images`, the album-cover
+>    endpoint serving `large_crop` only) is **BUILT** (migration 022 +
+>    `db.SplitImageSources`); the *audio* asymmetry below is still design-only.
 > 3. The audio-variant **engine** (transcode recipes, the LRU cache, eviction) is
 >    an early **sketch** — do not implement from it.
 >
@@ -59,12 +60,15 @@ addressed by hash); `variants/` holds only *derivatives*.
     cache/    <source_hash>/<variant_hash>/<file>   EVICTABLE audio-variant tier (future) — LRU GC
 ```
 
-> **What's built vs designed.** **P3.5 (built)** created the dedicated `variants/`
-> tree and relocated the whole cover bundle there under the legacy 16-char
-> `base_key` (`variants/images/<base_key>/{original,<variant>}`, original + sizes
-> together). The **source/derivative split** drawn above — cover original back out
-> to `files/images/<full_hash>`, full-hash keying, recipe-keyed variants — is the
-> next refinement, **designed below, not yet built**.
+> **What's built.** **P3.5** created the dedicated `variants/` tree and relocated
+> the whole cover bundle there under the legacy 16-char `base_key`
+> (`variants/images/<base_key>/{original,<variant>}`, original + sizes together).
+> The **source/derivative split** drawn above — cover original back out to
+> `files/images/<full_hash>/original<ext>`, full-hash keying, recipe-keyed variants
+> served at `/images` — is **now built** (migration 022 renames the key column
+> `base_key`→`image_hash`; `db.SplitImageSources` re-keys + relocates existing
+> covers at startup; the worker reads the source and writes variants; the
+> album-cover endpoint serves the `large_crop` variant only — see below).
 
 `variants_dir` derives from `data_dir` (default `<data_dir>/variants`) with an
 optional override, exactly like `files_dir`/`database.path` (data-sources P0). The
@@ -88,25 +92,31 @@ is rooted at `variants/cache/`, so it is **physically incapable** of deleting a
 permanent, refcounted variant under `variants/images/` or `variants/audio/`. The
 two retention policies — refcount-GC vs LRU-evict — never share a directory.
 
-### Cover source/derivative split & keying (DESIGN — refines P3.5, not built)
+### Cover source/derivative split & keying (BUILT — refines P3.5)
 
-Decided with the owner 2026-06-25. Brings the cover pipeline to a fully content-
-addressed source/derivative split that mirrors the audio model.
+Decided with the owner 2026-06-25, built the same day (migration 022 +
+`db.SplitImageSources` + worker/handler rewire). Brings the cover pipeline to a
+fully content-addressed source/derivative split that mirrors the audio model.
 
 - **Original = source → `files/images/<original_hash>/original<ext>`**, addressed
   by the **full** `sha256` of the original bytes (supersedes the 16-char
   `base_key`). Uploaded and embedded covers alike land here under the canonical
   name `original<ext>` (embedded art has no real filename). The original is the
-  regenerate seed.
+  regenerate seed. (`media.ImageHash` computes the key; the DB column is
+  `album_images.image_hash` / `artist_images.image_hash`.)
 - **Variants = derivatives → `variants/images/<original_hash>/<recipe><ext>`**,
-  **recipe-keyed** (`thumb_crop`, `small_fit`, … — today's recipe set), nested
+  **recipe-keyed** (`thumb_crop`, `small_fit`, … — `media.DerivedVariants`), nested
   under the same original hash. The hash is the source→derivative link, and the
   same cover bytes auto-share one variant set across every album/artist that uses
   them.
-- **The cover original is NEVER served.** The current UI has no full-size cover
-  view (largest shown is 600px — the original is too big to be useful), so
-  `files/images/<hash>` is a pure regenerate seed. **`/images` serves only
-  `variants/`** — a source is never exposed there.
+- **The cover original is NEVER served.** The UI shows covers at most ~400–480 px
+  (the now-playing art; everything else is 40–200 px), so the original is too big
+  to be useful — `files/images/<hash>` is a pure regenerate seed. **`/images`
+  (rooted at `variants/images`) serves only derived variants;** the album-cover
+  endpoint `GET /api/albums/{album_id}/image` serves the **`large_crop` (600 px)**
+  variant and 404s until `variants_ready` (the UI shows its placeholder in that
+  gap). Artist covers keep no variant pipeline (deferred): their original is the
+  flat `<image_hash><ext>` file, served directly.
 
 **Why recipe-keyed, not a per-variant hash.** A cover variant's content is fully
 determined by `(original_hash, recipe)` — same source + same recipe → byte-
@@ -128,13 +138,25 @@ original — see the decision below): that choice avoided a `links/images` *syml
 tree* with broken-link health, a cost that simply doesn't apply to a tiny owned
 copy. Clean rule: **owned content keeps its cover source; linked content re-scans.**
 
-**Migration.**
-- Re-key `base_key` (16-char) → full original hash; relocate
-  `variants/images/<base_key>/{original,<variant>}` →
-  `files/images/<full_hash>/original<ext>` + `variants/images/<full_hash>/<recipe><ext>`.
-  One idempotent startup pass (extends `RelocateImageVariants`) plus a DB column
-  change (`album_images`/`artist_images` `base_key` → `image_hash`).
-- A phase **beyond P3.5** — sequence after it.
+**Migration (BUILT).**
+- **Schema half — migration `022_image_source_split.sql`:** rename the key column
+  `base_key` → `image_hash` on `album_images`, `artist_images`, and
+  `image_processing_jobs` (drop/recreate the `idx_imgproc_active` partial index on
+  the new name).
+- **Data half — `db.SplitImageSources` (startup pass):** the full hash is not
+  recoverable from the 16-char prefix, so for every album cover still keyed by a
+  legacy `base_key` it reads `variants/images/<base_key>/original<ext>`, recomputes
+  the full `sha256`, writes the source seed to `files/images/<full_hash>/original<ext>`,
+  re-keys the row with `variants_ready=0`, and drops the old `<base_key>/` dir.
+  It deliberately does **not** move the old variant files — resetting
+  `variants_ready=0` lets the existing `RequeueStuckImageJobs` + worker pool
+  regenerate them under `variants/images/<full_hash>/` (one code path, no fragile
+  move). Idempotent and crash-safe (copy-before-re-key; a final sweep drops any
+  unreferenced leftover 16-char dir). Runs after the cover backfills and before
+  `ReconcileImageOrphans` / the worker pool (`madshare.go`).
+- `ReconcileImageOrphans` now sweeps **both** trees (variants + source) for
+  unreferenced `<image_hash>/` dirs, since the split spreads an orphan's debris
+  across both.
 
 ### The `CacheDir` → `SpoolDir` rename (terminology hygiene)
 
@@ -156,11 +178,11 @@ accurate, non-overlapping names —
 
 ### Implementation cost & sequencing
 
-> **STATUS: the relocation + `SpoolDir` rename are BUILT** (data-sources P3.5,
-> commits `80ab0b3` + `5528de0`): `variants_dir`, `storage.RelocateImageVariants`
-> (`files/images` → `variants/images`), and `CacheDir` → `SpoolDir`. What remains
-> is the *source/derivative split & full-hash keying* above (a separate, later
-> phase). The cost notes below described the relocation step.
+> **STATUS: BUILT.** The relocation + `SpoolDir` rename landed in data-sources P3.5
+> (commits `80ab0b3` + `5528de0`): `variants_dir`, `storage.RelocateImageVariants`
+> (`files/images` → `variants/images`), and `CacheDir` → `SpoolDir`. The
+> *source/derivative split & full-hash keying* above then landed on top (migration
+> 022 + `db.SplitImageSources`). The cost notes below described the relocation step.
 
 Small and precedented; the image-dir path is derived in only **two** sites
 (`madshare.go` → reconcile + imageproc pool; `api/api.go` → the `/images/*` mount
@@ -183,15 +205,17 @@ parameter, so it is already path-agnostic.
 
 ## Image variants (today + linked imports)
 
-Today (`media/images.go`, `imageproc/`, `database/reconcile.go`) image variants are
-written under `files_dir/images/<base_key>/`; per the layout decision above they
-**relocate to `variants/images/<base_key>/`** (paths below name the post-move
-location). The behaviour is otherwise unchanged:
+Today (`media/images.go`, `imageproc/`, `database/reconcile.go`) the source
+original is stored under `files/images/<image_hash>/original<ext>` and the 8
+derived variants under `variants/images/<image_hash>/<recipe><ext>` (the
+source/derivative split above):
 
-- `media.ProcessImage` makes 8 square variants (crop/fit × 64/150/300/600),
-  drained from `image_processing_jobs`.
-- `ReconcileImageOrphans` (startup) removes a `<base_key>/` dir when no
-  `album_images`/`artist_images` row and no active job references the key.
+- `media.ProcessImage` makes 8 square variants (crop/fit × 64/150/300/600), drained
+  from `image_processing_jobs` by the worker, which reads the source original and
+  writes `media.DerivedVariants` (never the original) into the variants tree.
+- `ReconcileImageOrphans` (startup) removes an `<image_hash>/` dir — in **both** the
+  source and variants trees — when no `album_images`/`artist_images` row and no
+  active job references the hash.
 
 **What linked imports change: nothing here.** Per the read-once-derive decision
 below, a linked source's cover (sidecar `cover.jpg` or embedded picture) is decoded

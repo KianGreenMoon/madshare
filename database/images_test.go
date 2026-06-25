@@ -13,7 +13,7 @@ func countActiveJobs(t *testing.T, db *DB, baseKey string) int {
 	t.Helper()
 	var n int
 	if err := db.QueryRow(
-		`SELECT COUNT(*) FROM image_processing_jobs WHERE base_key = ?`, baseKey,
+		`SELECT COUNT(*) FROM image_processing_jobs WHERE image_hash = ?`, baseKey,
 	).Scan(&n); err != nil {
 		t.Fatalf("count jobs: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestEnqueueImageJob_Idempotent(t *testing.T) {
 		t.Fatalf("second enqueue: %v", err)
 	}
 	if got := countActiveJobs(t, db, "abc123"); got != 1 {
-		t.Fatalf("active jobs for base_key = %d, want 1 (idempotent enqueue)", got)
+		t.Fatalf("active jobs for image_hash = %d, want 1 (idempotent enqueue)", got)
 	}
 }
 
@@ -152,12 +152,12 @@ func TestResetStaleJobs(t *testing.T) {
 	}
 }
 
-// jobStatus returns the status of the single job for base_key, or "" if none.
+// jobStatus returns the status of the single job for image_hash, or "" if none.
 func jobStatus(t *testing.T, db *DB, baseKey string) string {
 	t.Helper()
 	var s string
 	err := db.QueryRow(
-		`SELECT status FROM image_processing_jobs WHERE base_key = ?`, baseKey,
+		`SELECT status FROM image_processing_jobs WHERE image_hash = ?`, baseKey,
 	).Scan(&s)
 	if err == sql.ErrNoRows {
 		return ""
@@ -191,7 +191,7 @@ func TestRequeueStuckImageJobs(t *testing.T) {
 			t.Fatalf("requeued = %d, want 1", n)
 		}
 		if got := countActiveJobs(t, db, baseKey); got != 1 {
-			t.Fatalf("jobs for base_key = %d, want 1", got)
+			t.Fatalf("jobs for image_hash = %d, want 1", got)
 		}
 		if got := jobStatus(t, db, baseKey); got != "pending" {
 			t.Fatalf("job status = %q, want pending", got)
@@ -217,7 +217,7 @@ func TestRequeueStuckImageJobs(t *testing.T) {
 		if err := db.SetAlbumCover(ctx, albumID, baseKey, ".jpg", baseKey+"/original.jpg", "image/jpeg", 1000); err != nil {
 			t.Fatalf("set cover: %v", err)
 		}
-		if _, err := db.Exec(`UPDATE album_images SET variants_ready=1 WHERE base_key=?`, baseKey); err != nil {
+		if _, err := db.Exec(`UPDATE album_images SET variants_ready=1 WHERE image_hash=?`, baseKey); err != nil {
 			t.Fatalf("mark ready: %v", err)
 		}
 
@@ -242,7 +242,7 @@ func TestRequeueStuckImageJobs(t *testing.T) {
 			t.Fatalf("set cover: %v", err)
 		}
 		if _, err := db.Exec(
-			`INSERT INTO image_processing_jobs (cover_type, subject_key, base_key, status, retry_count, created_at, finished_at)
+			`INSERT INTO image_processing_jobs (cover_type, subject_key, image_hash, status, retry_count, created_at, finished_at)
 			 VALUES ('album', 'Artist`+"\x1f"+`Album', ?, 'failed', 3, 1000, 1001)`, baseKey,
 		); err != nil {
 			t.Fatalf("seed failed job: %v", err)
@@ -259,8 +259,8 @@ func TestRequeueStuckImageJobs(t *testing.T) {
 		}
 	})
 
-	// Two albums sharing one cover image (same base_key) collapse to one job.
-	t.Run("collapses shared base_key to one job", func(t *testing.T) {
+	// Two albums sharing one cover image (same image_hash) collapse to one job.
+	t.Run("collapses shared image_hash to one job", func(t *testing.T) {
 		db := openMem(t)
 		const baseKey = "shared0000000001"
 		a1, err := db.ResolveAlbumID(ctx, "Artist", "Album One")
@@ -282,10 +282,10 @@ func TestRequeueStuckImageJobs(t *testing.T) {
 			t.Fatalf("requeue: %v", err)
 		}
 		if n != 1 {
-			t.Fatalf("requeued = %d, want 1 (shared base_key collapses)", n)
+			t.Fatalf("requeued = %d, want 1 (shared image_hash collapses)", n)
 		}
 		if got := countActiveJobs(t, db, baseKey); got != 1 {
-			t.Fatalf("jobs for shared base_key = %d, want 1", got)
+			t.Fatalf("jobs for shared image_hash = %d, want 1", got)
 		}
 	})
 }
@@ -354,7 +354,7 @@ func TestClaimImageJob_Concurrent(t *testing.T) {
 
 	const nJobs = 200
 	for i := 0; i < nJobs; i++ {
-		// Distinct base_key per job so the active-job unique index never collapses them.
+		// Distinct image_hash per job so the active-job unique index never collapses them.
 		if err := db.EnqueueImageJob(ctx, "album", fmt.Sprintf("a\x1f%d", i), fmt.Sprintf("key%04d", i), int64(i)); err != nil {
 			t.Fatalf("enqueue %d: %v", i, err)
 		}

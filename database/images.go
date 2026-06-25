@@ -17,21 +17,21 @@ type ImageJob struct {
 	ID         int64
 	CoverType  string
 	SubjectKey string // "<album_artist>\x1f<album_title>" for albums
-	BaseKey    string
+	ImageHash  string // full sha256 of the original; keys both source + variant dirs
 	RetryCount int
 }
 
 // EnqueueImageJob inserts a new pending image_processing_jobs row. It is
 // idempotent at the DB level: the partial unique index idx_imgproc_active (one
-// active job per base_key) plus ON CONFLICT DO NOTHING means concurrent
-// enqueues for the same base_key collapse to a single active job. Returns nil
+// active job per image_hash) plus ON CONFLICT DO NOTHING means concurrent
+// enqueues for the same image_hash collapse to a single active job. Returns nil
 // when a job already exists.
-func (db *DB) EnqueueImageJob(ctx context.Context, coverType, subjectKey, baseKey string, now int64) error {
+func (db *DB) EnqueueImageJob(ctx context.Context, coverType, subjectKey, imageHash string, now int64) error {
 	_, err := db.ExecContext(ctx,
-		`INSERT INTO image_processing_jobs (cover_type, subject_key, base_key, status, created_at)
+		`INSERT INTO image_processing_jobs (cover_type, subject_key, image_hash, status, created_at)
 		 VALUES (?, ?, ?, 'pending', ?)
 		 ON CONFLICT DO NOTHING`,
-		coverType, subjectKey, baseKey, now,
+		coverType, subjectKey, imageHash, now,
 	)
 	if err != nil {
 		return fmt.Errorf("enqueue image job: %w", err)
@@ -53,9 +53,9 @@ func (db *DB) ClaimImageJob(ctx context.Context) (*ImageJob, error) {
 		     ORDER BY created_at, id
 		     LIMIT 1
 		 )
-		 RETURNING id, cover_type, subject_key, base_key, retry_count`,
+		 RETURNING id, cover_type, subject_key, image_hash, retry_count`,
 		time.Now().Unix(),
-	).Scan(&j.ID, &j.CoverType, &j.SubjectKey, &j.BaseKey, &j.RetryCount)
+	).Scan(&j.ID, &j.CoverType, &j.SubjectKey, &j.ImageHash, &j.RetryCount)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -68,7 +68,7 @@ func (db *DB) ClaimImageJob(ctx context.Context) (*ImageJob, error) {
 // FinishImageJob records the outcome of a claimed job. It owns the full
 // done/retry/failed decision so the worker never touches retry_count:
 //   - jobErr == nil: status='done', finished_at=now, and variants_ready=1 on
-//     every album_images row sharing the job's base_key.
+//     every album_images row sharing the job's image_hash.
 //   - jobErr != nil: retry_count is incremented; if it then reaches
 //     maxImageJobRetries the job is marked 'failed' (finished_at=now);
 //     otherwise it returns to 'pending' with started_at=NULL so another worker
@@ -90,7 +90,7 @@ func (db *DB) FinishImageJob(ctx context.Context, id int64, jobErr error) error 
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE album_images SET variants_ready=1
-			 WHERE base_key = (SELECT base_key FROM image_processing_jobs WHERE id=?)`,
+			 WHERE image_hash = (SELECT image_hash FROM image_processing_jobs WHERE id=?)`,
 			id,
 		); err != nil {
 			return fmt.Errorf("finish image job: set variants_ready: %w", err)
@@ -125,27 +125,29 @@ func (db *DB) FinishImageJob(ctx context.Context, id int64, jobErr error) error 
 // Called once at startup, after the worker pool launches. Returns the number of
 // jobs created.
 //
-// Only base_keys with no job row at all are requeued: a base_key whose job is
-// already pending/running is in flight, and one marked 'failed' is terminal (it
+// Only image_hashes with no job row at all are requeued: an image_hash whose job
+// is already pending/running is in flight, and one marked 'failed' is terminal (it
 // was retried maxImageJobRetries times — typically a corrupt/mislabelled embedded
 // cover) and must not be retried on every restart. Multiple albums sharing one
-// cover (same base_key) collapse to a single job via GROUP BY, matching the
-// queue's per-base_key grain and the idx_imgproc_active unique index. Scope is
+// cover (same image_hash) collapse to a single job via GROUP BY, matching the
+// queue's per-image_hash grain and the idx_imgproc_active unique index. Scope is
 // album_images only — artist_images has no worker pipeline. subject_key is
-// reconstructed for debuggability only; the worker keys off base_key.
+// reconstructed for debuggability only; the worker keys off image_hash. This also
+// regenerates the covers that db.SplitImageSources re-keyed to the full hash
+// (reset to variants_ready=0 with no job).
 func (db *DB) RequeueStuckImageJobs(ctx context.Context) (int, error) {
 	res, err := db.ExecContext(ctx,
-		`INSERT INTO image_processing_jobs (cover_type, subject_key, base_key, status, created_at)
+		`INSERT INTO image_processing_jobs (cover_type, subject_key, image_hash, status, created_at)
 		 SELECT 'album',
 		        COALESCE(ar.name, '') || char(31) || COALESCE(al.title, ''),
-		        ai.base_key, 'pending', ?
+		        ai.image_hash, 'pending', ?
 		 FROM album_images ai
 		 JOIN albums  al ON al.id = ai.album_id
 		 JOIN artists ar ON ar.id = al.artist_id
 		 WHERE ai.variants_ready = 0
-		   AND ai.base_key IS NOT NULL AND ai.base_key <> ''
-		   AND NOT EXISTS (SELECT 1 FROM image_processing_jobs j WHERE j.base_key = ai.base_key)
-		 GROUP BY ai.base_key
+		   AND ai.image_hash IS NOT NULL AND ai.image_hash <> ''
+		   AND NOT EXISTS (SELECT 1 FROM image_processing_jobs j WHERE j.image_hash = ai.image_hash)
+		 GROUP BY ai.image_hash
 		 ON CONFLICT DO NOTHING`,
 		time.Now().Unix(),
 	)
@@ -175,12 +177,12 @@ func (db *DB) ResetStaleJobs(ctx context.Context) error {
 // SetAlbumCover inserts or replaces the album_images row for the album entity
 // with the given variant-tracking fields. variants_ready is reset to 0 — the
 // async worker flips it to 1 via FinishImageJob once variants are generated.
-func (db *DB) SetAlbumCover(ctx context.Context, albumID int64, baseKey, sourceExt, objectKey, mimeType string, now int64) error {
+func (db *DB) SetAlbumCover(ctx context.Context, albumID int64, imageHash, sourceExt, objectKey, mimeType string, now int64) error {
 	_, err := db.ExecContext(ctx,
 		`INSERT OR REPLACE INTO album_images
-		     (album_id, object_key, mime_type, updated_at, base_key, source_ext, variants_ready)
+		     (album_id, object_key, mime_type, updated_at, image_hash, source_ext, variants_ready)
 		 VALUES (?, ?, ?, ?, ?, ?, 0)`,
-		albumID, objectKey, mimeType, now, baseKey, sourceExt,
+		albumID, objectKey, mimeType, now, imageHash, sourceExt,
 	)
 	if err != nil {
 		return fmt.Errorf("set album cover: %w", err)
@@ -197,13 +199,13 @@ func (db *DB) SetAlbumCover(ctx context.Context, albumID int64, baseKey, sourceE
 // variant processing — the rest are no-ops. Unlike SetAlbumCover it never
 // overwrites an existing cover, so a previously stored (e.g. manually uploaded)
 // cover always wins over embedded art. variants_ready starts at 0.
-func (db *DB) SetAlbumCoverIfAbsent(ctx context.Context, albumID int64, baseKey, sourceExt, objectKey, mimeType string, now int64) (bool, error) {
+func (db *DB) SetAlbumCoverIfAbsent(ctx context.Context, albumID int64, imageHash, sourceExt, objectKey, mimeType string, now int64) (bool, error) {
 	res, err := db.ExecContext(ctx,
 		`INSERT INTO album_images
-		     (album_id, object_key, mime_type, updated_at, base_key, source_ext, variants_ready)
+		     (album_id, object_key, mime_type, updated_at, image_hash, source_ext, variants_ready)
 		 VALUES (?, ?, ?, ?, ?, ?, 0)
 		 ON CONFLICT(album_id) DO NOTHING`,
-		albumID, objectKey, mimeType, now, baseKey, sourceExt,
+		albumID, objectKey, mimeType, now, imageHash, sourceExt,
 	)
 	if err != nil {
 		return false, fmt.Errorf("set album cover if absent: %w", err)
@@ -216,24 +218,24 @@ func (db *DB) SetAlbumCoverIfAbsent(ctx context.Context, albumID int64, baseKey,
 }
 
 // GetAlbumCoverStatus returns the variant-tracking state for an album cover.
-// found is false (no error) when no album_images row exists. base_key and
+// found is false (no error) when no album_images row exists. imageHash and
 // source_ext may be empty for legacy rows written before variants existed.
-func (db *DB) GetAlbumCoverStatus(ctx context.Context, albumID int64) (baseKey, sourceExt string, variantsReady, found bool, err error) {
+func (db *DB) GetAlbumCoverStatus(ctx context.Context, albumID int64) (imageHash, sourceExt string, variantsReady, found bool, err error) {
 	var (
-		bk, se sql.NullString
+		ih, se sql.NullString
 		ready  int
 	)
 	row := db.QueryRowContext(ctx,
-		`SELECT base_key, source_ext, variants_ready FROM album_images WHERE album_id = ?`,
+		`SELECT image_hash, source_ext, variants_ready FROM album_images WHERE album_id = ?`,
 		albumID,
 	)
-	if err = row.Scan(&bk, &se, &ready); errors.Is(err, sql.ErrNoRows) {
+	if err = row.Scan(&ih, &se, &ready); errors.Is(err, sql.ErrNoRows) {
 		return "", "", false, false, nil
 	}
 	if err != nil {
 		return "", "", false, false, fmt.Errorf("get album cover status: %w", err)
 	}
-	return bk.String, se.String, ready == 1, true, nil
+	return ih.String, se.String, ready == 1, true, nil
 }
 
 // HasAlbumCover reports whether an album_images row exists for the album entity,

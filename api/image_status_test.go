@@ -67,7 +67,7 @@ func TestGetAlbumImageStatus_WithCover(t *testing.T) {
 	var body struct {
 		HasCover      bool              `json:"has_cover"`
 		VariantsReady bool              `json:"variants_ready"`
-		BaseKey       string            `json:"base_key"`
+		ImageHash     string            `json:"image_hash"`
 		SourceExt     string            `json:"source_ext"`
 		Variants      map[string]string `json:"variants"`
 	}
@@ -80,11 +80,15 @@ func TestGetAlbumImageStatus_WithCover(t *testing.T) {
 	if body.VariantsReady {
 		t.Error("variants_ready = true, want false (worker has not run)")
 	}
-	if body.BaseKey != baseKey {
-		t.Errorf("base_key = %q, want %q", body.BaseKey, baseKey)
+	if body.ImageHash != baseKey {
+		t.Errorf("image_hash = %q, want %q", body.ImageHash, baseKey)
 	}
-	if len(body.Variants) != len(media.AllVariants) {
-		t.Fatalf("variants count = %d, want %d", len(body.Variants), len(media.AllVariants))
+	// Only the derived variants are advertised; the source original is never served.
+	if len(body.Variants) != len(media.DerivedVariants) {
+		t.Fatalf("variants count = %d, want %d", len(body.Variants), len(media.DerivedVariants))
+	}
+	if _, ok := body.Variants[media.VariantOriginal]; ok {
+		t.Error("variants includes original, want it excluded (original is never served)")
 	}
 	if got, want := body.Variants[media.VariantSmallCrop], media.VariantURL(baseKey, media.VariantSmallCrop, ".jpg"); got != want {
 		t.Errorf("small_crop URL = %q, want %q", got, want)

@@ -196,8 +196,8 @@ type Repository interface {
 	// --- Cover image variants & async job queue (Phase 1: upload & covers) ---
 
 	// EnqueueImageJob inserts a pending image-variant job. Idempotent per
-	// base_key (at most one active job); a duplicate enqueue is a no-op.
-	EnqueueImageJob(ctx context.Context, coverType, subjectKey, baseKey string, now int64) error
+	// image_hash (at most one active job); a duplicate enqueue is a no-op.
+	EnqueueImageJob(ctx context.Context, coverType, subjectKey, imageHash string, now int64) error
 
 	// ClaimImageJob atomically claims the oldest pending job (flipping it to
 	// running) and returns it, or (nil, nil) when the queue is empty.
@@ -239,16 +239,16 @@ type Repository interface {
 
 	// SetAlbumCover inserts/replaces an album cover row (keyed by albums.id) with
 	// variant-tracking fields (variants_ready reset to 0).
-	SetAlbumCover(ctx context.Context, albumID int64, baseKey, sourceExt, objectKey, mimeType string, now int64) error
+	SetAlbumCover(ctx context.Context, albumID int64, imageHash, sourceExt, objectKey, mimeType string, now int64) error
 
 	// SetAlbumCoverIfAbsent inserts an album cover row (keyed by albums.id) only
 	// when none exists, reporting inserted=true exactly when this call created it.
 	// Race-free fill-if-missing: it never overwrites an existing cover.
-	SetAlbumCoverIfAbsent(ctx context.Context, albumID int64, baseKey, sourceExt, objectKey, mimeType string, now int64) (bool, error)
+	SetAlbumCoverIfAbsent(ctx context.Context, albumID int64, imageHash, sourceExt, objectKey, mimeType string, now int64) (bool, error)
 
 	// GetAlbumCoverStatus returns the variant-tracking state for an album cover;
 	// found is false when no row exists.
-	GetAlbumCoverStatus(ctx context.Context, albumID int64) (baseKey, sourceExt string, variantsReady, found bool, err error)
+	GetAlbumCoverStatus(ctx context.Context, albumID int64) (imageHash, sourceExt string, variantsReady, found bool, err error)
 
 	// HasAlbumCover reports whether an album_images row exists for the album entity.
 	HasAlbumCover(ctx context.Context, albumID int64) (bool, error)

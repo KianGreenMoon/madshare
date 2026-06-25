@@ -67,8 +67,13 @@ type handler struct {
 	spoolDir string
 	// imagesDir is where artist/album cover variants are stored and served — the
 	// "images" subdirectory of the configured variants_dir (it falls back to
-	// files_dir when variants_dir is unset; see Deps.newHandler).
+	// files_dir when variants_dir is unset; see Deps.newHandler). Served at /images.
 	imagesDir string
+	// sourceImagesDir is where cover source originals are stored — the "images"
+	// subdirectory of files_dir (<files_dir>/images/<hash>/original<ext>). It is a
+	// regenerate seed for the variant worker and is NEVER served; /images is rooted
+	// at imagesDir (the variants tree), a different directory. See variants.md.
+	sourceImagesDir string
 	// filesDir is the configured source-blob root (parent of the audio/ subtree);
 	// reported as the storage panel's "location".
 	filesDir string

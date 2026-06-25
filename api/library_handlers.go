@@ -308,10 +308,11 @@ func (h *handler) uploadArtistImage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Artist covers have no variant pipeline yet (deferred — see the plan), so
-	// they keep the flat <base_key><ext> object key rather than a <base_key>/
-	// variant directory. The schema reserves variant columns for later.
-	objectKey := media.BaseKey(data) + ext
+	// Artist covers have no variant pipeline yet (deferred — see the plan), so the
+	// uploaded original is stored and served directly under the flat <hash><ext>
+	// object key (no <hash>/ variant directory, no source/derivative split). The
+	// schema reserves variant columns for later.
+	objectKey := media.ImageHash(data) + ext
 	if err := os.MkdirAll(h.imagesDir, 0o755); err != nil {
 		http.Error(w, "cannot create images dir", http.StatusInternalServerError)
 		return
@@ -342,32 +343,41 @@ func (h *handler) coverReplaceBlocked(w http.ResponseWriter, r *http.Request, ha
 	return false
 }
 
+// getAlbumImage serves an album cover. Per the source/derivative split
+// (docs/architecture/variants.md) it serves the derived large_crop variant from
+// the variants tree — the source original is never exposed. Until the variant
+// worker has finished (variants_ready) — or for a legacy row with no image hash —
+// there is no servable variant, so it 404s and the UI falls back to its "no
+// cover" placeholder.
 func (h *handler) getAlbumImage(w http.ResponseWriter, r *http.Request) {
 	albumID, ok := parsePositiveID(w, chi.URLParam(r, "album_id"), "album_id")
 	if !ok {
 		return
 	}
-	objectKey, mimeType, found, err := h.repo.GetAlbumImage(r.Context(), albumID)
+	imageHash, sourceExt, ready, found, err := h.repo.GetAlbumCoverStatus(r.Context(), albumID)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	if !found {
+	mimeType, extOK := allowedImageExtensions[sourceExt]
+	if !found || !ready || imageHash == "" || !extOK {
 		http.NotFound(w, r)
 		return
 	}
-	h.serveImageFile(w, r, objectKey, mimeType)
+	rel := media.VariantPath(imageHash, media.VariantLargeCrop, sourceExt)
+	h.serveImageFile(w, r, rel, mimeType)
 }
 
 // albumImageStatusResponse is the JSON body of GET /api/albums/{album}/image/status.
-// When has_cover is false: variants_ready is false, base_key is "", variants is {}.
+// When has_cover is false: variants_ready is false, image_hash is "", variants is {}.
 // When variants_ready is false but a cover exists, the variant URLs are still
 // included (they are deterministic and may already exist partially) — the UI is
-// responsible for not displaying images until variants_ready is true.
+// responsible for not displaying images until variants_ready is true. Only derived
+// variants are listed; the source original is never served (see variants.md).
 type albumImageStatusResponse struct {
 	HasCover      bool              `json:"has_cover"`
 	VariantsReady bool              `json:"variants_ready"`
-	BaseKey       string            `json:"base_key"`
+	ImageHash     string            `json:"image_hash"`
 	SourceExt     string            `json:"source_ext"`
 	Variants      map[string]string `json:"variants"`
 }
@@ -377,7 +387,7 @@ func (h *handler) getAlbumImageStatus(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	baseKey, sourceExt, ready, found, err := h.repo.GetAlbumCoverStatus(r.Context(), albumID)
+	imageHash, sourceExt, ready, found, err := h.repo.GetAlbumCoverStatus(r.Context(), albumID)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -385,15 +395,16 @@ func (h *handler) getAlbumImageStatus(w http.ResponseWriter, r *http.Request) {
 	resp := albumImageStatusResponse{
 		HasCover:      found,
 		VariantsReady: ready,
-		BaseKey:       baseKey,
+		ImageHash:     imageHash,
 		SourceExt:     sourceExt,
 		Variants:      map[string]string{},
 	}
-	// base_key is empty for legacy rows written before variants existed; those
-	// have no deterministic variant paths, so report no variant URLs for them.
-	if found && baseKey != "" {
-		for _, name := range media.AllVariants {
-			resp.Variants[name] = media.VariantURL(baseKey, name, sourceExt)
+	// image_hash is empty for legacy rows written before variants existed; those
+	// have no deterministic variant paths, so report no variant URLs for them. The
+	// source original is excluded — only the derived variants are served.
+	if found && imageHash != "" {
+		for _, name := range media.DerivedVariants {
+			resp.Variants[name] = media.VariantURL(imageHash, name, sourceExt)
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -453,9 +464,12 @@ func (h *handler) uploadAlbumImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	baseKey := media.BaseKey(data)
-	objectKey := media.VariantPath(baseKey, media.VariantOriginal, ext)
-	destPath := filepath.Join(h.imagesDir, objectKey)
+	// The source original lands under <files_dir>/images (a regenerate seed, never
+	// served); the variant worker writes the served variants under the variants
+	// tree, keyed by the same full image hash. See docs/architecture/variants.md.
+	imageHash := media.ImageHash(data)
+	objectKey := media.VariantPath(imageHash, media.VariantOriginal, ext)
+	destPath := filepath.Join(h.sourceImagesDir, objectKey)
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		http.Error(w, "cannot create images dir", http.StatusInternalServerError)
 		return
@@ -466,12 +480,12 @@ func (h *handler) uploadAlbumImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().Unix()
-	if err := h.repo.SetAlbumCover(ctx, albumID, baseKey, ext, objectKey, mimeType, now); err != nil {
+	if err := h.repo.SetAlbumCover(ctx, albumID, imageHash, ext, objectKey, mimeType, now); err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
 	subjectKey := artist + "\x1f" + album
-	if err := h.repo.EnqueueImageJob(ctx, "album", subjectKey, baseKey, now); err != nil {
+	if err := h.repo.EnqueueImageJob(ctx, "album", subjectKey, imageHash, now); err != nil {
 		// Non-fatal: the original is saved; variants stay missing until the cover
 		// is re-uploaded (or a future reconciler re-enqueues the job).
 		log.Printf("enqueue image job: %v", err)

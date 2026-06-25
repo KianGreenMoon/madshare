@@ -403,8 +403,8 @@ func (db *DB) MergeArtists(ctx context.Context, fromID, intoID int64) error {
 	}
 	// 4. Give into from's artist cover only if into has none.
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO artist_images (artist_id, object_key, mime_type, updated_at, base_key, source_ext, variants_ready)
-		 SELECT ?, object_key, mime_type, updated_at, base_key, source_ext, variants_ready
+		`INSERT INTO artist_images (artist_id, object_key, mime_type, updated_at, image_hash, source_ext, variants_ready)
+		 SELECT ?, object_key, mime_type, updated_at, image_hash, source_ext, variants_ready
 		 FROM artist_images WHERE artist_id = ?
 		   AND NOT EXISTS (SELECT 1 FROM artist_images WHERE artist_id = ?)`,
 		intoID, fromID, intoID); err != nil {
@@ -625,8 +625,8 @@ func (db *DB) exists(ctx context.Context, query string, args ...any) (bool, erro
 // by the caller's subsequent DELETE of the source album (cascade).
 func moveAlbumCoverIfAbsentTx(ctx context.Context, tx *sql.Tx, fromAlbum, intoAlbum int64) error {
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO album_images (album_id, object_key, mime_type, updated_at, base_key, source_ext, variants_ready)
-		 SELECT ?, object_key, mime_type, updated_at, base_key, source_ext, variants_ready
+		`INSERT INTO album_images (album_id, object_key, mime_type, updated_at, image_hash, source_ext, variants_ready)
+		 SELECT ?, object_key, mime_type, updated_at, image_hash, source_ext, variants_ready
 		 FROM album_images WHERE album_id = ?
 		   AND NOT EXISTS (SELECT 1 FROM album_images WHERE album_id = ?)`,
 		intoAlbum, fromAlbum, intoAlbum); err != nil {
@@ -913,7 +913,7 @@ func (db *DB) backfillAlbumCovers(ctx context.Context) error {
 		}
 		if _, err := db.ExecContext(ctx,
 			`INSERT OR IGNORE INTO album_images
-			     (album_id, object_key, mime_type, updated_at, base_key, source_ext, variants_ready)
+			     (album_id, object_key, mime_type, updated_at, image_hash, source_ext, variants_ready)
 			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			albumID, o.objectKey, o.mimeType, o.updatedAt, o.baseKey, o.sourceExt, o.variantsReady,
 		); err != nil {
@@ -977,7 +977,7 @@ func (db *DB) backfillArtistCovers(ctx context.Context) error {
 		}
 		if _, err := db.ExecContext(ctx,
 			`INSERT OR IGNORE INTO artist_images
-			     (artist_id, object_key, mime_type, updated_at, base_key, source_ext, variants_ready)
+			     (artist_id, object_key, mime_type, updated_at, image_hash, source_ext, variants_ready)
 			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			artistID, o.objectKey, o.mimeType, o.updatedAt, o.baseKey, o.sourceExt, o.variantsReady,
 		); err != nil {

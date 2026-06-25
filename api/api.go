@@ -114,18 +114,19 @@ func (d Deps) newHandler() *handler {
 		variantsDir = d.FilesDir
 	}
 	h := &handler{
-		storage:       d.Store,
-		repo:          d.Repo,
-		spoolDir:      d.SpoolDir,
-		imagesDir:     filepath.Join(variantsDir, storage.ImagesSubdir),
-		filesDir:      d.FilesDir,
-		maxUploadSize: d.MaxUploadSize,
-		authzEnabled:  d.Auth != nil,
-		imagePool:     d.ImagePool,
-		mediaPool:     d.MediaPool,
-		pruneMgr:      d.PruneManager,
-		limiter:       d.UploadLimiter,
-		uiConfig:      d.UIConfig,
+		storage:         d.Store,
+		repo:            d.Repo,
+		spoolDir:        d.SpoolDir,
+		imagesDir:       filepath.Join(variantsDir, storage.ImagesSubdir),
+		sourceImagesDir: filepath.Join(d.FilesDir, storage.ImagesSubdir),
+		filesDir:        d.FilesDir,
+		maxUploadSize:   d.MaxUploadSize,
+		authzEnabled:    d.Auth != nil,
+		imagePool:       d.ImagePool,
+		mediaPool:       d.MediaPool,
+		pruneMgr:        d.PruneManager,
+		limiter:         d.UploadLimiter,
+		uiConfig:        d.UIConfig,
 	}
 	if d.SourceArchive != nil || d.LicenseText != nil || d.SourceRoot != "" {
 		h.source = &sourceArchiver{

@@ -267,11 +267,11 @@ func effectiveAlbumArtist(t *media.Tags) string {
 // Concurrency: two tracks of the same album uploaded at once both pass the cheap
 // HasAlbumCover pre-check, so correctness rests on SetAlbumCoverIfAbsent, an
 // atomic INSERT ... ON CONFLICT DO NOTHING. Exactly one caller wins the row; the
-// losers return false without enqueuing. The original is written before the
-// claim so the winner's file is always present. Tracks of one album normally
-// embed identical art (same base_key → same path → the "loser" wrote the very
+// losers return false without enqueuing. The source original is written before
+// the claim so the winner's file is always present. Tracks of one album normally
+// embed identical art (same image_hash → same path → the "loser" wrote the very
 // same bytes, no orphan); only the rare distinct-art loser leaves a harmless
-// orphan image file — never a row pointing at a missing file.
+// orphan source file — never a row pointing at a missing file.
 func (h *handler) maybeSaveEmbeddedCover(ctx context.Context, tags *media.Tags, artist string) bool {
 	if tags.CoverImage == nil || tags.Album == "" || artist == "" {
 		return false
@@ -300,9 +300,12 @@ func (h *handler) maybeSaveEmbeddedCover(ctx context.Context, tags *media.Tags, 
 		log.Printf("embedded cover: %d bytes exceeds %d cap; skipping", len(tags.CoverImage.Data), maxImageSize)
 		return false
 	}
-	baseKey := media.BaseKey(tags.CoverImage.Data)
-	objectKey := media.VariantPath(baseKey, media.VariantOriginal, ext)
-	destPath := filepath.Join(h.imagesDir, objectKey)
+	// The embedded picture is stored once as an owned source original under
+	// <files_dir>/images/<hash>/original<ext> (a regenerate seed, never served);
+	// the variant worker derives the served variants from it. See variants.md.
+	imageHash := media.ImageHash(tags.CoverImage.Data)
+	objectKey := media.VariantPath(imageHash, media.VariantOriginal, ext)
+	destPath := filepath.Join(h.sourceImagesDir, objectKey)
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		log.Printf("embedded cover: mkdir %s: %v", filepath.Dir(destPath), err)
 		return false
@@ -312,7 +315,7 @@ func (h *handler) maybeSaveEmbeddedCover(ctx context.Context, tags *media.Tags, 
 		return false
 	}
 	now := time.Now().Unix()
-	inserted, err := h.repo.SetAlbumCoverIfAbsent(ctx, albumID, baseKey, ext, objectKey, tags.CoverImage.MIMEType, now)
+	inserted, err := h.repo.SetAlbumCoverIfAbsent(ctx, albumID, imageHash, ext, objectKey, tags.CoverImage.MIMEType, now)
 	if err != nil {
 		log.Printf("embedded cover: claim album cover: %v", err)
 		return false
@@ -323,7 +326,7 @@ func (h *handler) maybeSaveEmbeddedCover(ctx context.Context, tags *media.Tags, 
 		return false
 	}
 	subjectKey := artist + "\x1f" + tags.Album
-	if err := h.repo.EnqueueImageJob(ctx, "album", subjectKey, baseKey, now); err != nil {
+	if err := h.repo.EnqueueImageJob(ctx, "album", subjectKey, imageHash, now); err != nil {
 		log.Printf("embedded cover: enqueue job: %v", err)
 		return false
 	}

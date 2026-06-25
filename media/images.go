@@ -10,7 +10,7 @@ import (
 	"github.com/disintegration/imaging"
 )
 
-// Variant names. Each maps to one output file inside the base_key directory.
+// Variant names. Each maps to one output file inside the <image_hash> directory.
 // Crop variants are center-cropped squares. Fit variants preserve aspect ratio
 // inside a square, padded with white (JPEG) or transparent (PNG).
 const (
@@ -37,9 +37,21 @@ var variantSizes = map[string]int{
 	VariantLargeFit:   600,
 }
 
-// AllVariants lists every variant name in a stable order.
+// AllVariants lists every variant name in a stable order, including the source
+// original. Most callers want DerivedVariants instead.
 var AllVariants = []string{
 	VariantOriginal,
+	VariantThumbCrop, VariantThumbFit,
+	VariantSmallCrop, VariantSmallFit,
+	VariantMediumCrop, VariantMediumFit,
+	VariantLargeCrop, VariantLargeFit,
+}
+
+// DerivedVariants lists every variant EXCEPT the source original, in stable
+// order — the set the resize worker generates and /images serves. The original
+// is a stored source seed (<files_dir>/images), not a derived/served variant, so
+// it is excluded here. See docs/architecture/variants.md.
+var DerivedVariants = []string{
 	VariantThumbCrop, VariantThumbFit,
 	VariantSmallCrop, VariantSmallFit,
 	VariantMediumCrop, VariantMediumFit,

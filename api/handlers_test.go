@@ -83,11 +83,12 @@ func newTestHandler(t *testing.T) (*handler, *database.DB, string) {
 	}
 	t.Cleanup(func() { db.Close() })
 	h := &handler{
-		storage:       storage.NewLocal(base),
-		repo:          db,
-		spoolDir:      t.TempDir(),
-		imagesDir:     filepath.Join(base, "images"),
-		maxUploadSize: testMaxUpload,
+		storage:         storage.NewLocal(base),
+		repo:            db,
+		spoolDir:        t.TempDir(),
+		imagesDir:       filepath.Join(base, "images"),
+		sourceImagesDir: filepath.Join(base, "images"),
+		maxUploadSize:   testMaxUpload,
 	}
 	h.pruneMgr = prune.New(db, h.storage, db)
 	return h, db, base

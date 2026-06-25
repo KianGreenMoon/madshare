@@ -3,64 +3,80 @@
 Endpoints for querying album cover variant readiness and the UI upload
 configuration.
 
-Cover images are processed asynchronously: a JPEG/PNG original is stored under
-`<files_dir>/images/<base_key>/original<ext>`, an `image_processing_jobs` row is
-enqueued, and a worker pool (`imageproc.Pool`) generates eight square variants
-(crop + fit at 64 / 150 / 300 / 600 px) into the same `<base_key>/` directory.
+Cover images use a content-addressed **source/derivative split** (full design:
+`docs/architecture/variants.md`). The **source original** — a JPEG/PNG — is stored
+under `<files_dir>/images/<image_hash>/original<ext>`, keyed by the **full**
+`sha256` of its bytes; it is a regenerate seed and is **never served**. An
+`image_processing_jobs` row is enqueued and a worker pool (`imageproc.Pool`)
+generates eight square **derived variants** (crop + fit at 64 / 150 / 300 / 600 px)
+under `<variants_dir>/images/<image_hash>/<recipe><ext>` — served at `/images`.
 The status endpoint reports whether that generation has finished.
 
-**Storage model.** These endpoints address albums/artists by name in the URL for
-backward compatibility, but covers are stored keyed by the **album/artist entity
-id** (`album_images.album_id` / `artist_images.artist_id`), not by the name
-strings — the handlers resolve the name to its entity (normalized) on each call.
-A cover therefore attaches to a stable id: an admin rename of the album/artist
-keeps the cover attached with no re-upload. The on-disk `<base_key>/` layout and
-the `image_processing_jobs` queue are unaffected (keyed by `base_key`). See
+The album-cover endpoint `GET /api/albums/{album_id}/image` serves the
+**`large_crop` (600 px) variant** — never the original — and 404s until variants
+are ready (the UI shows its placeholder in the gap). Artist images keep **no
+variant pipeline** (deferred): their original is stored and served directly under
+the flat `<image_hash><ext>` key.
+
+**Storage model.** These endpoints address albums/artists by entity id in the URL
+(the by-name `POST` write paths resolve-or-create the entity), but covers are
+stored keyed by the **album/artist entity id** (`album_images.album_id` /
+`artist_images.artist_id`), not by name strings. A cover therefore attaches to a
+stable id: an admin rename of the album/artist keeps the cover attached with no
+re-upload. The on-disk `<image_hash>/` layout and the `image_processing_jobs`
+queue are keyed by the full image hash. See
 `docs/architecture/artist-album-model.md` (cover re-keying).
 
-**Startup recovery.** Before listeners accept traffic, two idempotent passes
-recover stuck jobs:
+**Startup recovery.** Before listeners accept traffic, idempotent passes upgrade
+and recover covers:
 
+- `db.SplitImageSources` is the data half of the source/derivative split: for
+  every album cover still keyed by a legacy 16-char `base_key` it recomputes the
+  full image hash from the stored bytes, writes the source original out to
+  `<files_dir>/images/<image_hash>/original<ext>`, re-keys the row (with
+  `variants_ready=0`), and drops the old `<base_key>/` directory. Regeneration of
+  its variants then falls to `RequeueStuckImageJobs` below.
 - `db.ResetStaleJobs` returns any `running` job to `pending` — recovers jobs that
   were in flight when the process died.
 - `db.RequeueStuckImageJobs` re-enqueues a job for every `album_images` row at
   `variants_ready=0` that has **no** job in the queue. This recovers the rare
   case where the cover row was claimed but the subsequent `EnqueueImageJob`
-  errored (a DB-level failure), which would otherwise leave the cover
-  "processing" forever; the original blob is written *before* the row is claimed,
-  so a fresh job is all that is needed. A base_key whose job is already
+  errored (a DB-level failure), and regenerates the covers `SplitImageSources`
+  just re-keyed; the source original is written *before* the row is claimed, so a
+  fresh job is all that is needed. An `image_hash` whose job is already
   `pending`/`running` is skipped (in flight), and one marked `failed` is left
   terminal — it was retried `maxImageJobRetries` times (typically a
   corrupt/mislabelled embedded cover), so re-enqueuing it would retry corrupt
-  images on every restart. Albums sharing one cover (same `base_key`) collapse to
-  a single job.
-- `db.ReconcileImageOrphans` removes album-cover variant directories
-  (`<imagesDir>/<base_key>/`) that no `album_images`/`artist_images` row and no
-  active (`pending`/`running`) job references. These accumulate when a cover is
-  replaced with different bytes or from a distinct-art race loser. Artist covers
-  are flat `<base_key><ext>` files (no variant directory), so the directory sweep
-  never touches them.
+  images on every restart. Albums sharing one cover (same `image_hash`) collapse
+  to a single job.
+- `db.ReconcileImageOrphans` removes album-cover directories — variant dirs under
+  `<variants_dir>/images/<image_hash>/` **and** the matching source-original dirs
+  under `<files_dir>/images/<image_hash>/` — that no `album_images`/`artist_images`
+  row and no active (`pending`/`running`) job references. These accumulate when a
+  cover is replaced with different bytes or from a distinct-art race loser.
+  Artist covers are flat `<image_hash><ext>` files (no variant directory), so the
+  directory sweep never touches them.
 
 ---
 
-## `GET /api/albums/{album}/image/status`
+## `GET /api/albums/{album_id}/image/status`
 
-Returns the variant-readiness state and every variant URL for an album cover.
+Returns the variant-readiness state and every **derived** variant URL for an album
+cover.
 
 ### Request
 
 ```
-GET /api/albums/{album}/image/status?artist=<album_artist>
+GET /api/albums/{album_id}/image/status
 ```
 
-| Parameter | In    | Required | Description |
-|-----------|-------|----------|-------------|
-| `album`   | path  | yes      | Album title. **Known limitation:** taken from the path segment, so titles containing `/` do not round-trip, and the empty-string ("Other") bucket cannot be expressed. This mirrors `GET /api/albums/{album}/image`. |
-| `artist`  | query | no       | Album artist. Resolved to the album-artist entity; empty string matches the unknown-artist bucket. |
+| Parameter  | In   | Required | Description |
+|------------|------|----------|-------------|
+| `album_id` | path | yes      | The album entity id (`albums.id`); browse DTOs carry it. Must be a positive integer. |
 
 ### Access control
 
-None — public, matching `GET /api/albums/{album}/image`. The upload UI calls it
+None — public, matching `GET /api/albums/{album_id}/image`. The upload UI calls it
 for every detected album group, including before login.
 
 ### Response
@@ -71,18 +87,17 @@ HTTP 200 with `Content-Type: application/json`.
 {
   "has_cover": true,
   "variants_ready": false,
-  "base_key": "a3f1c8d2e4b7f901",
+  "image_hash": "e2ce7eb8c06762a9a8cc7938f405211a21b4bb9a0fea442d427801bbbfa842e9",
   "source_ext": ".jpg",
   "variants": {
-    "original":    "/images/a3f1c8d2e4b7f901/original.jpg",
-    "thumb_crop":  "/images/a3f1c8d2e4b7f901/thumb_crop.jpg",
-    "thumb_fit":   "/images/a3f1c8d2e4b7f901/thumb_fit.jpg",
-    "small_crop":  "/images/a3f1c8d2e4b7f901/small_crop.jpg",
-    "small_fit":   "/images/a3f1c8d2e4b7f901/small_fit.jpg",
-    "medium_crop": "/images/a3f1c8d2e4b7f901/medium_crop.jpg",
-    "medium_fit":  "/images/a3f1c8d2e4b7f901/medium_fit.jpg",
-    "large_crop":  "/images/a3f1c8d2e4b7f901/large_crop.jpg",
-    "large_fit":   "/images/a3f1c8d2e4b7f901/large_fit.jpg"
+    "thumb_crop":  "/images/e2ce…842e9/thumb_crop.jpg",
+    "thumb_fit":   "/images/e2ce…842e9/thumb_fit.jpg",
+    "small_crop":  "/images/e2ce…842e9/small_crop.jpg",
+    "small_fit":   "/images/e2ce…842e9/small_fit.jpg",
+    "medium_crop": "/images/e2ce…842e9/medium_crop.jpg",
+    "medium_fit":  "/images/e2ce…842e9/medium_fit.jpg",
+    "large_crop":  "/images/e2ce…842e9/large_crop.jpg",
+    "large_fit":   "/images/e2ce…842e9/large_fit.jpg"
   }
 }
 ```
@@ -91,27 +106,29 @@ HTTP 200 with `Content-Type: application/json`.
 |------------------|---------|-------------|
 | `has_cover`      | boolean | Whether an `album_images` row exists for the album. |
 | `variants_ready` | boolean | `true` once the worker has generated all variants. |
-| `base_key`       | string  | 16-char SHA-256 prefix of the original image; `""` when no cover or for legacy rows predating variants. |
+| `image_hash`     | string  | Full SHA-256 of the source original; `""` when no cover or for legacy rows predating variants. |
 | `source_ext`     | string  | `.jpg` or `.png` — the extension of both the original and its variants. |
-| `variants`       | object  | Map of variant name → `/images/…` URL. |
+| `variants`       | object  | Map of **derived** variant name → `/images/…` URL. The source `original` is **never** included — it is not served. |
 
 Behaviour:
 
-- **No cover** (`has_cover: false`): `variants_ready` is `false`, `base_key` is
+- **No cover** (`has_cover: false`): `variants_ready` is `false`, `image_hash` is
   `""`, and `variants` is `{}`.
-- **Legacy rows** (cover exists but `base_key` is empty, written before variants
+- **Legacy rows** (cover exists but `image_hash` is empty, written before variants
   existed): `variants` is `{}` — there are no deterministic variant paths.
-- **Not yet ready** (`variants_ready: false` with a `base_key`): the variant URLs
-  are still returned. They are deterministic and some files may already exist
+- **Not yet ready** (`variants_ready: false` with an `image_hash`): the variant
+  URLs are still returned. They are deterministic and some files may already exist
   partially, so the client is responsible for not displaying images until
   `variants_ready` is `true`. A typical client polls this endpoint every ~2 s
   until ready.
 
 ### Variants
 
+The eight **derived** variants — all served at `/images`. The source `original`
+is **not** a variant: it is stored under `<files_dir>/images` and never served.
+
 | Name          | Size      | Mode | Padding (fit only) |
 |---------------|-----------|------|--------------------|
-| `original`    | as-is     | —    | — |
 | `thumb_crop`  | 64×64     | crop | — |
 | `thumb_fit`   | 64×64     | fit  | white (JPEG) / transparent (PNG) |
 | `small_crop`  | 150×150   | crop | — |
@@ -122,7 +139,7 @@ Behaviour:
 | `large_fit`   | 600×600   | fit  | white / transparent |
 
 `crop` is a center-cropped square; `fit` preserves aspect ratio inside the square
-and pads the remainder.
+and pads the remainder. `GET /api/albums/{album_id}/image` serves `large_crop`.
 
 ### Error responses
 
@@ -194,7 +211,9 @@ Content-Type: multipart/form-data
 **Accepted formats: JPEG and PNG only.** WebP and any other type are rejected
 with `400`. The extension is canonicalised to `.jpg` / `.png` (a `.jpeg` upload
 is stored as `original.jpg`), since the worker and status route assume those
-names.
+names. (`GET .../image` and `.../image/status` are **id**-addressed —
+`{album_id}` — while this write path stays **name**-addressed, since it
+resolve-or-creates the entity before it has a browsable id.)
 
 ### Access control
 
@@ -210,14 +229,16 @@ without granting them the power to change covers already on the library.
 
 Unlike embedded cover extraction (which only fills a missing cover), a manual
 upload **always replaces** the current cover — *explicit beats embedded*. The
-original is written to `<files_dir>/images/<base_key>/original<ext>`, the
-`album_images` row is updated with the new `base_key`/`source_ext` (and
-`variants_ready` reset to 0), and a variant job is enqueued. The enqueue is
-idempotent per `base_key`, so re-uploading the same image does not double-queue.
+source original is written to `<files_dir>/images/<image_hash>/original<ext>`
+(keyed by the full SHA-256 of the bytes), the `album_images` row is updated with
+the new `image_hash`/`source_ext` (and `variants_ready` reset to 0), and a variant
+job is enqueued. The enqueue is idempotent per `image_hash`, so re-uploading the
+same image does not double-queue.
 
-Replacing a cover with a *different* image leaves the previous original on disk
-until the next startup, when `db.ReconcileImageOrphans` sweeps unreferenced
-`<base_key>/` directories (see "Startup recovery" above).
+Replacing a cover with a *different* image leaves the previous original (and its
+variants) on disk until the next startup, when `db.ReconcileImageOrphans` sweeps
+unreferenced `<image_hash>/` directories in **both** the source and variants trees
+(see "Startup recovery" above).
 
 ### Response
 
@@ -228,7 +249,7 @@ until the next startup, when `db.ReconcileImageOrphans` sweeps unreferenced
 ```
 
 `processing` is always `true` — poll
-`GET /api/albums/{album}/image/status` until `variants_ready` is `true`.
+`GET /api/albums/{album_id}/image/status` until `variants_ready` is `true`.
 
 ### Error responses
 
@@ -244,8 +265,8 @@ until the next startup, when `db.ReconcileImageOrphans` sweeps unreferenced
 ## `POST /api/artists/{artist}/image`
 
 Uploads an artist image. Artist covers have **no variant pipeline yet**
-(deferred), so the original is stored under the flat key `<base_key><ext>` and no
-job is enqueued. Same JPEG/PNG-only validation and the same
+(deferred), so the original is stored and served directly under the flat key
+`<image_hash><ext>` (no source/derivative split) and no job is enqueued. Same JPEG/PNG-only validation and the same
 `metadata.edit`-OR-`file.upload` gate (with the add-only rule for an
 upload-only caller) as the album endpoint. Returns `{ "ok": true }`.
 
@@ -258,8 +279,8 @@ upload-only caller) as the album endpoint. Returns `{ "ok": true }`.
 curl -X POST -F "image=@./cover.jpg" \
   "http://localhost:3000/api/albums/Dark%20Side/image?artist=Pink%20Floyd"
 
-# Poll an album cover's variant readiness
-curl "http://localhost:3000/api/albums/Album%20Title/image/status?artist=Some%20Artist"
+# Poll an album cover's variant readiness (id-addressed; 42 = albums.id)
+curl "http://localhost:3000/api/albums/42/image/status"
 
 # Fetch the UI upload configuration
 curl "http://localhost:3000/api/ui/config"

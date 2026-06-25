@@ -22,9 +22,12 @@ var validHash = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // audio. The store's baseDir is files_dir/<AudioSubdir>.
 const AudioSubdir = "audio"
 
-// ImagesSubdir is the subdirectory, under the variants dir, that holds owned
-// cover-image variants (<variants_dir>/images/<base_key>/…, served at /images).
-// It historically lived under files_dir; see RelocateImageVariants and
+// ImagesSubdir is the "images" subdirectory shared by both image trees: the
+// owned cover-variant tree under the variants dir
+// (<variants_dir>/images/<image_hash>/<recipe>…, served at /images) and the
+// source-original seed tree under files_dir
+// (<files_dir>/images/<image_hash>/original<ext>, never served). The variant tree
+// historically lived under files_dir; see RelocateImageVariants and
 // docs/architecture/variants.md.
 const ImagesSubdir = "images"
 

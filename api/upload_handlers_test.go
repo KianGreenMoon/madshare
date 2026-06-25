@@ -148,7 +148,7 @@ func TestUploadFile_ExtractsCover(t *testing.T) {
 	}
 
 	// The original cover file was written under imagesDir.
-	baseKey := media.BaseKey(fakeJPEG)
+	baseKey := media.ImageHash(fakeJPEG)
 	want := filepath.Join(base, "images", baseKey, "original.jpg")
 	if _, err := os.Stat(want); err != nil {
 		t.Errorf("original cover not written at %s: %v", want, err)
@@ -301,11 +301,12 @@ func TestUploadFile_ConcurrentSameAlbum_OneCover(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 	h := &handler{
-		storage:       storage.NewLocal(base),
-		repo:          db,
-		spoolDir:      t.TempDir(),
-		imagesDir:     filepath.Join(base, "images"),
-		maxUploadSize: testMaxUpload,
+		storage:         storage.NewLocal(base),
+		repo:            db,
+		spoolDir:        t.TempDir(),
+		imagesDir:       filepath.Join(base, "images"),
+		sourceImagesDir: filepath.Join(base, "images"),
+		maxUploadSize:   testMaxUpload,
 	}
 	const tracks = 8
 
@@ -463,11 +464,12 @@ func TestUploadFile_ConcurrentSameAlbumIdenticalArt_OneFile(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 	h := &handler{
-		storage:       storage.NewLocal(base),
-		repo:          db,
-		spoolDir:      t.TempDir(),
-		imagesDir:     filepath.Join(base, "images"),
-		maxUploadSize: testMaxUpload,
+		storage:         storage.NewLocal(base),
+		repo:            db,
+		spoolDir:        t.TempDir(),
+		imagesDir:       filepath.Join(base, "images"),
+		sourceImagesDir: filepath.Join(base, "images"),
+		maxUploadSize:   testMaxUpload,
 	}
 
 	const tracks = 8
@@ -508,7 +510,7 @@ func TestUploadFile_ConcurrentSameAlbumIdenticalArt_OneFile(t *testing.T) {
 	}
 	// Exactly one base_key dir holding exactly the one original file — identical
 	// art means no per-track orphans.
-	baseKey := media.BaseKey(fakeJPEG)
+	baseKey := media.ImageHash(fakeJPEG)
 	dirs, _ := os.ReadDir(filepath.Join(base, "images"))
 	if len(dirs) != 1 || dirs[0].Name() != baseKey {
 		t.Errorf("imagesDir dirs = %v, want exactly [%s]", dirNames(dirs), baseKey)

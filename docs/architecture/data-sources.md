@@ -59,12 +59,13 @@ serve by trying storages in a **fixed precedence** (`local` before `links`; see
 <data_dir>/                              data_dir (config; default "./data" = today's defaults)
   madshare.db                            database.path  (default <data_dir>/madshare.db)
   files/                                 storage.files_dir (default <data_dir>/files) = 'local' storage
-    audio/   <hash>/<filename>           owned source blobs (audio only; no images here)
+    audio/   <hash>/<filename>           owned source blobs (audio)
+    images/  <image_hash>/original<ext>  owned cover SOURCE originals — regenerate seeds, NEVER served
   links/                                 the single 'links' storage (shared by every symlink source)
     audio/   <hash>/<filename>  ->  /srv/music/album/song.flac    symlink
                                            (no links/images: covers are read-once-derived, owned)
   variants/                              owned DERIVED media — variants_dir (default <data_dir>/variants)
-    images/  <base_key>/<variant>        owned cover variants — ALL storages' covers derive here
+    images/  <image_hash>/<recipe>       owned cover VARIANTS — served at /images; ALL storages' covers derive here
     cache/                               evictable audio-variant tier (future; LRU-GC'd)
 ```
 
@@ -207,7 +208,7 @@ Endpoints under `/api/admin/sources*` — admin group (`file.delete`) + gated
   catalog), `file_uploads`, `media_metadata`, enqueue analysis, resolve the
   recording. Covers (read-once-derive): decode the cover — sidecar `cover.jpg` or
   embedded picture — once into owned variants under the cover-variant tree
-  (`variants/images/<base_key>/`; see `docs/architecture/variants.md`) and attach
+  (`variants/images/<image_hash>/`; see `docs/architecture/variants.md`) and attach
   the album image (owned/`local`); **no `links/images` symlink is kept**. Record a
   scan summary; `status='active'`.
 - **`GET /api/admin/sources`** — list the symlink sources (root, scan summary,
@@ -278,14 +279,14 @@ Every destructive path is storage-aware:
   touched. The prune summary distinguishes *missing blob* (local) from *broken
   link* (links); health surfaces on `/admin/sources`.
 - **Derived cover variants.** Cover variants are owned/local and shared by
-  `base_key` across albums, so they are reclaimed by the **reference-counted**
+  `image_hash` across albums, so they are reclaimed by the **reference-counted**
   image reconcile (`ReconcileImageOrphans`) when no `album_images`/`artist_images`
   row references the key — never inline on a single file delete. Because covers are
   **read-once-derived** (no linked original kept — see *Cover images* and
-  `docs/architecture/variants.md`), there is a **single** cleanup location
-  (the owned cover-variant tree `variants/images/<base_key>/`, `os.RemoveAll`,
-  ours) and **no `links/images` tree** to sweep, so the existing reconcile needs no
-  change for linked imports.
+  `docs/architecture/variants.md`), there is a **single** owned cleanup location
+  per tree (`variants/images/<image_hash>/` + the source seed
+  `files/images/<image_hash>/`, `os.RemoveAll`, ours) and **no `links/images` tree**
+  to sweep, so the existing reconcile needs no change for linked imports.
   Full variant-storage design (incl. future audio variants):
   `docs/architecture/variants.md`.
 

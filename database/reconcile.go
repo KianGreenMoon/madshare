@@ -55,24 +55,46 @@ func ReconcileOrphans(ctx context.Context, repo Repository, baseDir string) erro
 	return nil
 }
 
-// baseKeyDirPattern matches the 16-char lowercase-hex base_key directory names
-// under imagesDir. Album covers live in such a directory
-// (<base_key>/original.<ext> + variants); artist covers are flat <base_key><ext>
-// files (no variant pipeline), so a directory sweep never touches them.
-var baseKeyDirPattern = regexp.MustCompile(`^[0-9a-f]{16}$`)
+// imageHashDirPattern matches the full 64-char lowercase-hex image-hash
+// directory names that key both image trees. Album cover variants live in such a
+// directory under the variants tree (<image_hash>/<recipe>.<ext>) and the source
+// original in the same-named directory under the files tree
+// (<image_hash>/original<ext>). Artist covers are flat <key><ext> files (no
+// variant pipeline), so a directory sweep never touches them.
+var imageHashDirPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// ReconcileImageOrphans removes album-cover variant directories under imagesDir
-// (<base_key>/) that no album_images or artist_images row references and that
-// have no active (pending/running) image-processing job. These accumulate when a
-// cover is replaced with different bytes, or when the rare distinct-art loser of
-// a concurrent same-album upload writes an original that no row ends up pointing
-// at (see .issues/open-issues.md). Returns the number of directories removed.
+// ReconcileImageOrphans removes album-cover image directories — variant dirs
+// under variantsImagesDir AND the matching source-original dirs under
+// sourceImagesDir — keyed by an <image_hash> that no album_images/artist_images
+// row references and that has no active (pending/running) image-processing job.
+// These accumulate when a cover is replaced with different bytes, or when the
+// rare distinct-art loser of a concurrent same-album upload writes a cover that
+// no row ends up pointing at (see .issues/open-issues.md). Sweeping BOTH trees
+// matters since the split (variants.md): the source original and its variants now
+// live in separate directory trees, so an orphan leaves debris in each. Returns
+// the total number of directories removed.
 //
 // Startup-only, like ReconcileOrphans: it relies on no concurrent uploads or
 // variant writes creating new references mid-sweep. Non-directory entries (artist
-// flat files) and directories whose name isn't a base_key are skipped silently.
-func (db *DB) ReconcileImageOrphans(ctx context.Context, imagesDir string) (int, error) {
-	entries, err := os.ReadDir(imagesDir)
+// flat files) and directories whose name isn't a full image hash are skipped
+// silently — so it must run after db.SplitImageSources, which removes the
+// pre-split 16-char directories this 64-char pattern intentionally ignores.
+func (db *DB) ReconcileImageOrphans(ctx context.Context, variantsImagesDir, sourceImagesDir string) (int, error) {
+	total := 0
+	for _, dir := range []string{variantsImagesDir, sourceImagesDir} {
+		n, err := db.reconcileImageDir(ctx, dir)
+		if err != nil {
+			return total, err
+		}
+		total += n
+	}
+	return total, nil
+}
+
+// reconcileImageDir sweeps one image tree (variants or source) for orphan
+// <image_hash>/ directories; see ReconcileImageOrphans.
+func (db *DB) reconcileImageDir(ctx context.Context, dir string) (int, error) {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return 0, nil
@@ -85,12 +107,12 @@ func (db *DB) ReconcileImageOrphans(ctx context.Context, imagesDir string) (int,
 		if !e.IsDir() {
 			continue
 		}
-		baseKey := e.Name()
-		if !baseKeyDirPattern.MatchString(baseKey) {
+		imageHash := e.Name()
+		if !imageHashDirPattern.MatchString(imageHash) {
 			continue
 		}
 
-		referenced, err := db.imageBaseKeyReferenced(ctx, baseKey)
+		referenced, err := db.imageHashReferenced(ctx, imageHash)
 		if err != nil {
 			return removed, err
 		}
@@ -98,31 +120,32 @@ func (db *DB) ReconcileImageOrphans(ctx context.Context, imagesDir string) (int,
 			continue
 		}
 
-		path := filepath.Join(imagesDir, baseKey)
+		path := filepath.Join(dir, imageHash)
 		if err := os.RemoveAll(path); err != nil {
 			return removed, fmt.Errorf("remove orphan image dir %s: %w", path, err)
 		}
-		log.Printf("reconciled orphan image dir: %s", baseKey)
+		log.Printf("reconciled orphan image dir: %s", path)
 		removed++
 	}
 	return removed, nil
 }
 
-// imageBaseKeyReferenced reports whether any cover row or active image job still
-// needs the given base_key's on-disk directory. The active-job clause protects a
-// dir whose variants are still being generated; the artist_images clause is
-// belt-and-suspenders for an album/artist cover that happens to share base_key.
-func (db *DB) imageBaseKeyReferenced(ctx context.Context, baseKey string) (bool, error) {
+// imageHashReferenced reports whether any cover row or active image job still
+// needs the given image_hash's on-disk variant directory. The active-job clause
+// protects a dir whose variants are still being generated; the artist_images
+// clause is belt-and-suspenders for an album/artist cover that happens to share
+// an image_hash.
+func (db *DB) imageHashReferenced(ctx context.Context, imageHash string) (bool, error) {
 	var n int
 	err := db.QueryRowContext(ctx,
 		`SELECT
-		   EXISTS(SELECT 1 FROM album_images  WHERE base_key = ?) OR
-		   EXISTS(SELECT 1 FROM artist_images WHERE base_key = ?) OR
-		   EXISTS(SELECT 1 FROM image_processing_jobs WHERE base_key = ? AND status IN ('pending','running'))`,
-		baseKey, baseKey, baseKey,
+		   EXISTS(SELECT 1 FROM album_images  WHERE image_hash = ?) OR
+		   EXISTS(SELECT 1 FROM artist_images WHERE image_hash = ?) OR
+		   EXISTS(SELECT 1 FROM image_processing_jobs WHERE image_hash = ? AND status IN ('pending','running'))`,
+		imageHash, imageHash, imageHash,
 	).Scan(&n)
 	if err != nil {
-		return false, fmt.Errorf("image base_key referenced: %w", err)
+		return false, fmt.Errorf("image hash referenced: %w", err)
 	}
 	return n > 0, nil
 }

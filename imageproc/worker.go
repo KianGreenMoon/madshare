@@ -1,7 +1,10 @@
 // Package imageproc runs the asynchronous cover-image variant generation pool.
-// Workers claim jobs from the image_processing_jobs queue (see database.DB),
-// read the stored original off disk, generate every variant via media.ProcessImage,
-// and write them under <imagesDir>/<base_key>/.
+// Workers claim jobs from the image_processing_jobs queue (see database.DB), read
+// the stored source original off disk (sourceImagesDir/<image_hash>/original<ext>,
+// under files_dir — never served), generate every derived variant via
+// media.ProcessImage, and write them under
+// variantsImagesDir/<image_hash>/<recipe><ext> (under variants_dir — served at
+// /images). See docs/architecture/variants.md.
 package imageproc
 
 import (
@@ -23,23 +26,28 @@ const pollInterval = 5 * time.Second
 
 // Pool manages a fixed-size goroutine pool that drains image_processing_jobs.
 type Pool struct {
-	repo      database.Repository
-	imagesDir string
-	workers   int
-	notify    chan struct{}
+	repo database.Repository
+	// sourceImagesDir is where source originals are read from
+	// (<files_dir>/images/<image_hash>/original<ext>); variantsImagesDir is where
+	// derived variants are written (<variants_dir>/images/<image_hash>/<recipe><ext>).
+	sourceImagesDir   string
+	variantsImagesDir string
+	workers           int
+	notify            chan struct{}
 }
 
-// NewPool creates (but does not start) a worker pool. imagesDir is the absolute
-// path to the images directory. workers < 1 is treated as 1.
-func NewPool(repo database.Repository, imagesDir string, workers int) *Pool {
+// NewPool creates (but does not start) a worker pool. sourceImagesDir and
+// variantsImagesDir are absolute paths (see Pool). workers < 1 is treated as 1.
+func NewPool(repo database.Repository, sourceImagesDir, variantsImagesDir string, workers int) *Pool {
 	if workers < 1 {
 		workers = 1
 	}
 	return &Pool{
-		repo:      repo,
-		imagesDir: imagesDir,
-		workers:   workers,
-		notify:    make(chan struct{}, 1),
+		repo:              repo,
+		sourceImagesDir:   sourceImagesDir,
+		variantsImagesDir: variantsImagesDir,
+		workers:           workers,
+		notify:            make(chan struct{}, 1),
 	}
 }
 
@@ -100,18 +108,19 @@ func (p *Pool) run(ctx context.Context) {
 func (p *Pool) process(ctx context.Context, job *database.ImageJob) {
 	genErr := p.generate(job)
 	if genErr != nil {
-		log.Printf("imageproc: job %d (base_key=%s): %v", job.ID, job.BaseKey, genErr)
+		log.Printf("imageproc: job %d (image_hash=%s): %v", job.ID, job.ImageHash, genErr)
 	}
 	if err := p.repo.FinishImageJob(ctx, job.ID, genErr); err != nil {
 		log.Printf("imageproc: finish job %d: %v", job.ID, err)
 	}
 }
 
-// generate reads the original for the job's base_key, produces all variants,
-// and writes them to disk. It returns any error so the caller can hand it to
-// FinishImageJob, which owns the retry/fail decision.
+// generate reads the source original for the job's image_hash, produces every
+// derived variant, and writes them under variantsImagesDir/<image_hash>/. It
+// returns any error so the caller can hand it to FinishImageJob, which owns the
+// retry/fail decision.
 func (p *Pool) generate(job *database.ImageJob) error {
-	origPath, mimeType, err := p.resolveOriginal(job.BaseKey)
+	origPath, mimeType, err := p.resolveOriginal(job.ImageHash)
 	if err != nil {
 		return err
 	}
@@ -123,20 +132,18 @@ func (p *Pool) generate(job *database.ImageJob) error {
 	if err != nil {
 		return err
 	}
-	dir := filepath.Join(p.imagesDir, job.BaseKey)
+	dir := filepath.Join(p.variantsImagesDir, job.ImageHash)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 	// Track what this attempt wrote so a mid-loop failure (e.g. disk full) does
-	// not leave a partial set of variants behind. The original is never touched
-	// here — retries re-read it via resolveOriginal. We never remove the source.
+	// not leave a partial set of variants behind. The source original lives under
+	// sourceImagesDir and is never touched here — retries re-read it via
+	// resolveOriginal. Only derived variants are written (never the original).
 	var written []string
-	for _, name := range media.AllVariants {
-		if name == media.VariantOriginal {
-			continue // already on disk; never rewrite the source
-		}
-		rel := media.VariantPath(job.BaseKey, name, ext)
-		dest := filepath.Join(p.imagesDir, filepath.FromSlash(rel))
+	for _, name := range media.DerivedVariants {
+		rel := media.VariantPath(job.ImageHash, name, ext)
+		dest := filepath.Join(p.variantsImagesDir, filepath.FromSlash(rel))
 		if err := os.WriteFile(dest, set[name], 0o644); err != nil {
 			for _, w := range written {
 				os.Remove(w) // best-effort cleanup of this attempt's partial output
@@ -148,19 +155,19 @@ func (p *Pool) generate(job *database.ImageJob) error {
 	return nil
 }
 
-// resolveOriginal finds the stored original for a base_key by probing the two
-// accepted extensions, returning its path and MIME type. This keys off the
-// base_key directory directly, so it processes exactly the claimed image even
-// if the album's cover was since replaced with different bytes.
-func (p *Pool) resolveOriginal(baseKey string) (path, mimeType string, err error) {
+// resolveOriginal finds the stored source original for an image_hash by probing
+// the two accepted extensions under sourceImagesDir, returning its path and MIME
+// type. This keys off the image_hash directory directly, so it processes exactly
+// the claimed image even if the album's cover was since replaced with other bytes.
+func (p *Pool) resolveOriginal(imageHash string) (path, mimeType string, err error) {
 	for _, c := range []struct{ ext, mime string }{
 		{".jpg", "image/jpeg"},
 		{".png", "image/png"},
 	} {
-		candidate := filepath.Join(p.imagesDir, baseKey, media.VariantOriginal+c.ext)
+		candidate := filepath.Join(p.sourceImagesDir, imageHash, media.VariantOriginal+c.ext)
 		if _, statErr := os.Stat(candidate); statErr == nil {
 			return candidate, c.mime, nil
 		}
 	}
-	return "", "", fmt.Errorf("no original image found for base_key %s", baseKey)
+	return "", "", fmt.Errorf("no source original found for image_hash %s", imageHash)
 }
