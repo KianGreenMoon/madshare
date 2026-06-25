@@ -43,7 +43,7 @@ serve by trying storages in a **fixed precedence** (`local` before `links`; see
 |---|---|
 | Trigger | Admin page + API (`/admin/sources`); server-side path. |
 | Link type | **Symlink** (cross-fs; breaks honestly if the original disappears). |
-| Cover images | Link sidecar covers too; resized **variants stay owned/local**. |
+| Cover images | **Read-once-derive** — covers (sidecar + embedded) decode into owned/local **variants** at scan time; **no linked original kept** (decided; see `docs/architecture/variants.md`). |
 | Path safety | Config allowlist `[sources].symlink_roots`. |
 | Storages dir | **One shared `links` storage** (`links/audio/<hash>/…`), mirroring `files/`. No per-source dirs. |
 | **Resolver** | Serve the first storage that physically has the hash, **`local` before `links`** (fixed precedence). A dangling link reads as absent → falls through (free resilience). |
@@ -63,7 +63,7 @@ serve by trying storages in a **fixed precedence** (`local` before `links`; see
     images/  <base_key>/<variant>        owned cover variants — ALL storages' variants live here
   links/                                 the single 'links' storage (shared by every symlink source)
     audio/   <hash>/<filename>  ->  /srv/music/album/song.flac    symlink
-    images/  <base_key>/<orig>  ->  /srv/music/album/cover.jpg    symlink (cover regenerate-source)
+                                           (no links/images: covers are read-once-derived into files/images, owned)
 ```
 
 One `links/` dir, content-addressed by hash exactly like `files/`. `data_dir`
@@ -94,11 +94,12 @@ CREATE TABLE data_sources (
 -- pointer for link rows:
 ALTER TABLE files ADD COLUMN link_target TEXT;             -- abs path of the original; NULL for local
 
--- Cover-image entities: which storage the linked ORIGINAL came from (variants stay local).
-ALTER TABLE album_images  ADD COLUMN storage_backend TEXT NOT NULL DEFAULT 'local';
-ALTER TABLE album_images  ADD COLUMN link_target      TEXT;
-ALTER TABLE artist_images ADD COLUMN storage_backend TEXT NOT NULL DEFAULT 'local';
-ALTER TABLE artist_images ADD COLUMN link_target      TEXT;
+-- No cover-image storage columns: covers are read-once-derived into owned/local
+-- variants (see the Cover images decision + variants.md), so every
+-- album_images/artist_images row is implicitly local. The storage-aware image
+-- columns (storage_backend / link_target on album_images + artist_images) are
+-- parked, unapplied, in database/migrations/pending/image_storage_columns.sql in
+-- case the "persist linked original" option (B) is ever adopted.
 ```
 
 No `storage_order`/`storage_default` settings in v0 — precedence is the fixed
@@ -197,9 +198,10 @@ Endpoints under `/api/admin/sources*` — admin group (`file.delete`) + gated
   (`storage_backend='links'`, `link_target`, `review_state='approved'`,
   `uploaded_by`; if a row already exists for the hash, reuse it — content-addressed
   catalog), `file_uploads`, `media_metadata`, enqueue analysis, resolve the
-  recording. Sidecar covers: symlink the original into `links/images/<base_key>/`,
-  generate variants into the **local** `files_dir/images/<base_key>/`, attach the
-  album image (`storage_backend='links'`). Record a scan summary; `status='active'`.
+  recording. Covers (read-once-derive): decode the cover — sidecar `cover.jpg` or
+  embedded picture — once into owned variants under `files_dir/images/<base_key>/`
+  and attach the album image (owned/`local`); **no `links/images` symlink is
+  kept**. Record a scan summary; `status='active'`.
 - **`GET /api/admin/sources`** — list the symlink sources (root, scan summary,
   external bytes) and `links`-storage health (broken-link count), plus the `local`
   store summary. No reorder/default control (v0 precedence is fixed).
@@ -265,15 +267,15 @@ Every destructive path is storage-aware:
   target no longer hashes to `files.hash`). Each reported; the target is never
   touched. The prune summary distinguishes *missing blob* (local) from *broken
   link* (links); health surfaces on `/admin/sources`.
-- **Derived cover variants & linked-image originals.** Cover variants are
-  owned/local and shared by `base_key` across albums, so they are reclaimed by the
-  **reference-counted** image reconcile (`ReconcileImageOrphans`) when no
-  `album_images`/`artist_images` row references the key — never inline on a single
-  file delete. For a **linked** cover this spans two places: the owned variant dir
-  `files_dir/images/<base_key>/` (`os.RemoveAll`, ours) **and** the linked-original
-  symlink `<data_dir>/links/images/<base_key>/` (`os.Remove` the symlink only —
-  **never the external original**). **v0 work:** extend the reconcile to also sweep
-  `links/images`. Full variant-storage design (incl. future audio variants):
+- **Derived cover variants.** Cover variants are owned/local and shared by
+  `base_key` across albums, so they are reclaimed by the **reference-counted**
+  image reconcile (`ReconcileImageOrphans`) when no `album_images`/`artist_images`
+  row references the key — never inline on a single file delete. Because covers are
+  **read-once-derived** (no linked original kept — see *Cover images* and
+  `docs/architecture/variants.md`), there is a **single** cleanup location
+  (`files_dir/images/<base_key>/`, `os.RemoveAll`, ours) and **no `links/images`
+  tree** to sweep, so the existing reconcile needs no change for linked imports.
+  Full variant-storage design (incl. future audio variants):
   `docs/architecture/variants.md`.
 
 ## Accounting
@@ -311,9 +313,10 @@ API stays.
 - **P3 — `links` storage + symlink source.** Shared links dir, symlink/kind-aware
   storage helpers, `POST/GET /api/admin/sources` + scan engine (walk/hash/skip-if-
   in-links/symlink/insert + tags + analysis + recordings).
-- **P4 — sidecar covers** + extend the image reconcile to sweep `links/images`
-  (`os.Remove` the unreferenced linked-original symlink — see *Lifecycle & safety*
-  and `docs/architecture/variants.md`).
+- **P4 — covers (read-once-derive).** Decode each source's cover (sidecar or
+  embedded) once into owned `local` variants and attach the album image; no
+  `links/images` tree, so the existing image reconcile is unchanged. See *Cover
+  images* and `docs/architecture/variants.md`.
 - **P5 — prune broken-link detection + per-storage accounting.**
 - **P6 — `/admin/sources` page** (imports section + add/scan/health; no storage
   reorder UI — that ships with S3).
@@ -330,10 +333,12 @@ API stays.
 3. **`s3` storage** — the configurable storage priority/default, S3-as-cache, and
    multi-store ordering are designed in `docs/architecture/s3-storage.md` (future,
    not built). **adopt/materialize** a link into `local` — also future.
-4. **Image-original persistence (PARKED — to discuss).** Read-once-derive vs.
-   persist the linked-original symlink for sidecar covers. Owner leans to settle
-   this *before* implementation (it touches P4 cleanup). Framed in
-   `docs/architecture/variants.md`.
+4. **Image-original persistence (DECIDED — read-once-derive).** Covers (sidecar +
+   embedded) decode once into owned/local variants; no linked original is kept, so
+   there is no `links/images` tree and a single cleanup location. Rationale in
+   `docs/architecture/variants.md`. The storage-aware `album_images`/`artist_images`
+   columns are therefore left out of migration 021 and parked, unapplied, in
+   `database/migrations/pending/image_storage_columns.sql` for the (B) contingency.
 5. **UI config-editing model (PARKED — to discuss).** DB `settings` vs a live TOML
    editor. Not a v0 blocker (sources are DB-backed, the allow-list is operator-only
    TOML). Framed in `docs/architecture/configuration.md`.
