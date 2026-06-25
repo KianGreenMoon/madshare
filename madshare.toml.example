@@ -2,11 +2,12 @@
 # exists, the built-in defaults apply (a single loopback listener serving the
 # full stack). See docs/architecture/listeners-and-config.md for the full model.
 
-# data_dir is the default root for the database and uploaded files. When
-# database.path / storage.files_dir are omitted they are derived from it as
-# <data_dir>/madshare.db and <data_dir>/files; setting either overrides only
-# that path. The default "./data" reproduces the historical layout.
-# See docs/architecture/data-sources.md.
+# data_dir is the default root for the database, uploaded files, and derived
+# media. When database.path / storage.files_dir / storage.variants_dir are omitted
+# they are derived from it as <data_dir>/madshare.db, <data_dir>/files and
+# <data_dir>/variants; setting any overrides only that path. The default "./data"
+# reproduces the historical layout.
+# See docs/architecture/data-sources.md and docs/architecture/variants.md.
 #data_dir = "./data"
 
 # One [[listen]] block per bound socket. Each chooses which route groups it
@@ -74,7 +75,8 @@ initial_admin_user = "admin"
 #path = "./data/madshare.db"  # defaults to <data_dir>/madshare.db
 
 [storage]
-#files_dir = "./data/files"   # defaults to <data_dir>/files; cover images go in <files_dir>/images
+#files_dir    = "./data/files"      # defaults to <data_dir>/files; source audio blobs under <files_dir>/audio
+#variants_dir = "./data/variants"   # defaults to <data_dir>/variants; cover variants under <variants_dir>/images
 max_upload_mb = 500          # per-request upload cap, in MiB
 # server_max_parallel_workers = 0   # total concurrent uploads from all users (0 = unlimited)
 # user_max_parallel_workers   = 0   # concurrent uploads per user (0 = unlimited; no admin bypass)

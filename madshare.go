@@ -78,13 +78,22 @@ func main() {
 	defer db.Close()
 
 	filesDir := cfg.Storage.FilesDir
-	// Audio blobs live under files_dir/audio, a sibling of files_dir/images, so
-	// the /files server (rooted at the audio dir) can never reach cover images.
-	// Relocate any pre-split blobs sitting directly under files_dir first.
+	variantsDir := cfg.Storage.VariantsDir
+	// Audio blobs live under files_dir/audio; the /files server (rooted at the
+	// audio dir) can never reach cover images, which live in the separate variants
+	// tree. Relocate any pre-split blobs sitting directly under files_dir first.
 	if n, err := storage.RelocateLegacyBlobs(filesDir); err != nil {
 		log.Printf("relocate legacy blobs: %v", err)
 	} else if n > 0 {
 		log.Printf("relocated %d audio blob(s) under %s/%s", n, filesDir, storage.AudioSubdir)
+	}
+	// One-time upgrade: move the owned cover-image tree out of files_dir into the
+	// dedicated variants dir (files_dir/images -> variants_dir/images). Idempotent;
+	// a no-op on fresh installs and once migrated. See docs/architecture/variants.md.
+	if n, err := storage.RelocateImageVariants(filesDir, variantsDir); err != nil {
+		log.Printf("relocate image variants: %v", err)
+	} else if n > 0 {
+		log.Printf("relocated %d image entries into %s/%s", n, variantsDir, storage.ImagesSubdir)
 	}
 	audioDir := filepath.Join(filesDir, storage.AudioSubdir)
 	if err := database.ReconcileOrphans(context.Background(), db, audioDir); err != nil {
@@ -134,7 +143,7 @@ func main() {
 	if err := db.ResetStaleJobs(ctx); err != nil {
 		log.Printf("reset stale image jobs: %v", err)
 	}
-	imagesDir := filepath.Join(filesDir, "images")
+	imagesDir := filepath.Join(variantsDir, storage.ImagesSubdir)
 	// Sweep orphaned album-cover variant dirs (covers replaced with different
 	// bytes, distinct-art race losers) with no referencing row and no active job.
 	// Runs after the entity/cover backfills above (so album_images rows are final)
@@ -228,6 +237,7 @@ func main() {
 		Repo:          db,
 		CacheDir:      os.TempDir(),
 		FilesDir:      filesDir,
+		VariantsDir:   variantsDir,
 		Storages:      storageRegistry,
 		MaxUploadSize: cfg.Storage.MaxUploadBytes(),
 		Auth:          db,

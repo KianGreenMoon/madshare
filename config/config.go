@@ -31,11 +31,12 @@ var knownGroups = map[string]bool{
 }
 
 type Config struct {
-	// DataDir is the default root under which the database and uploaded files
-	// live. database.path and storage.files_dir are derived from it when unset
-	// (<data_dir>/madshare.db and <data_dir>/files); either may be overridden
-	// independently. The default "./data" reproduces the historical layout. See
-	// docs/architecture/data-sources.md.
+	// DataDir is the default root under which the database, uploaded files, and
+	// derived media live. database.path, storage.files_dir and storage.variants_dir
+	// are derived from it when unset (<data_dir>/madshare.db, <data_dir>/files,
+	// <data_dir>/variants); each may be overridden independently. The default
+	// "./data" reproduces the historical layout. See
+	// docs/architecture/data-sources.md and docs/architecture/variants.md.
 	DataDir string `toml:"data_dir"`
 
 	Listen   []ListenConfig `toml:"listen"`
@@ -137,8 +138,14 @@ type DatabaseConfig struct {
 const MaxUploadMBLimit = 1 << 20
 
 type StorageConfig struct {
-	// FilesDir is the directory where uploaded blobs are stored and served.
+	// FilesDir is the directory where uploaded source blobs are stored and served
+	// (audio under FilesDir/audio).
 	FilesDir string `toml:"files_dir"`
+	// VariantsDir is the directory holding owned, derived media — cover-image
+	// variants under VariantsDir/images, with VariantsDir/cache reserved for the
+	// future evictable audio-variant tier. Derived from data_dir
+	// (<data_dir>/variants) when unset. See docs/architecture/variants.md.
+	VariantsDir string `toml:"variants_dir"`
 	// MaxUploadMB caps the size of a single upload request body, in MiB. It is
 	// distinct from the in-memory hashing threshold (storage.memBufferLimit),
 	// above which an upload is spooled to the cache dir rather than buffered.
@@ -240,6 +247,9 @@ func (c *Config) resolveDataDir() {
 	if c.Storage.FilesDir == "" {
 		c.Storage.FilesDir = filepath.Join(c.DataDir, "files")
 	}
+	if c.Storage.VariantsDir == "" {
+		c.Storage.VariantsDir = filepath.Join(c.DataDir, "variants")
+	}
 }
 
 // LinksDir returns the root of the shared "links" storage (the single dir of
@@ -303,6 +313,9 @@ func (c Config) validate() error {
 	}
 	if c.Storage.FilesDir == "" {
 		return errors.New("config: storage.files_dir must not be empty")
+	}
+	if c.Storage.VariantsDir == "" {
+		return errors.New("config: storage.variants_dir must not be empty")
 	}
 	if c.Storage.MaxUploadMB <= 0 {
 		return errors.New("config: storage.max_upload_mb must be positive")

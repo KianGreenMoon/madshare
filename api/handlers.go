@@ -63,11 +63,12 @@ type handler struct {
 	storage  storage.Storage
 	repo     database.Repository
 	cacheDir string
-	// imagesDir is where artist/album cover images are stored and served. It is
-	// the "images" subdirectory of the configured files_dir.
+	// imagesDir is where artist/album cover variants are stored and served — the
+	// "images" subdirectory of the configured variants_dir (it falls back to
+	// files_dir when variants_dir is unset; see Deps.newHandler).
 	imagesDir string
-	// filesDir is the configured storage root (parent of the audio/ and images/
-	// subtrees); reported as the storage panel's "location".
+	// filesDir is the configured source-blob root (parent of the audio/ subtree);
+	// reported as the storage panel's "location".
 	filesDir string
 	// maxUploadSize caps the upload request body in bytes (from config).
 	maxUploadSize int64

@@ -40,6 +40,9 @@ func TestLoad_MissingFile_ReturnsDefaults(t *testing.T) {
 	if cfg.Storage.FilesDir != "data/files" {
 		t.Errorf("Storage.FilesDir = %q, want data/files", cfg.Storage.FilesDir)
 	}
+	if cfg.Storage.VariantsDir != "data/variants" {
+		t.Errorf("Storage.VariantsDir = %q, want data/variants", cfg.Storage.VariantsDir)
+	}
 	if cfg.Storage.MaxUploadMB != 500 {
 		t.Errorf("Storage.MaxUploadMB = %d, want 500", cfg.Storage.MaxUploadMB)
 	}
@@ -179,6 +182,9 @@ func TestLoad_DataDir_DerivesPaths(t *testing.T) {
 	if cfg.Storage.FilesDir != "/var/lib/madshare/files" {
 		t.Errorf("Storage.FilesDir = %q, want derived under data_dir", cfg.Storage.FilesDir)
 	}
+	if cfg.Storage.VariantsDir != "/var/lib/madshare/variants" {
+		t.Errorf("Storage.VariantsDir = %q, want derived under data_dir", cfg.Storage.VariantsDir)
+	}
 }
 
 // An explicit database.path / files_dir overrides the data_dir derivation
@@ -193,6 +199,24 @@ func TestLoad_DataDir_ExplicitPathsOverride(t *testing.T) {
 	}
 	if cfg.Database.Path != "/srv/db/m.sqlite" {
 		t.Errorf("Database.Path = %q, want explicit override", cfg.Database.Path)
+	}
+	// files_dir was not set, so it still derives from data_dir.
+	if cfg.Storage.FilesDir != "/var/lib/madshare/files" {
+		t.Errorf("Storage.FilesDir = %q, want derived under data_dir", cfg.Storage.FilesDir)
+	}
+}
+
+// variants_dir overrides the data_dir derivation independently of files_dir.
+func TestLoad_DataDir_ExplicitVariantsDirOverride(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "datadir.toml")
+	os.WriteFile(f, []byte("data_dir = \"/var/lib/madshare\"\n"+validListeners+
+		"[storage]\nvariants_dir = \"/srv/derived\"\n"), 0o600)
+	cfg, err := config.Load(f)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Storage.VariantsDir != "/srv/derived" {
+		t.Errorf("Storage.VariantsDir = %q, want explicit override", cfg.Storage.VariantsDir)
 	}
 	// files_dir was not set, so it still derives from data_dir.
 	if cfg.Storage.FilesDir != "/var/lib/madshare/files" {
@@ -455,11 +479,11 @@ func TestLoad_CORS_ValidOrigins(t *testing.T) {
 
 func TestLoad_CORS_InvalidOrigin_Errors(t *testing.T) {
 	for _, bad := range []string{
-		"ui.example",              // no scheme
-		"https://ui.example/app",  // has a path
-		"https://ui.example?x=1",  // has a query
-		"ftp://ui.example",        // wrong scheme
-		"https://",                // no host
+		"ui.example",             // no scheme
+		"https://ui.example/app", // has a path
+		"https://ui.example?x=1", // has a query
+		"ftp://ui.example",       // wrong scheme
+		"https://",               // no host
 	} {
 		f := filepath.Join(t.TempDir(), "cors.toml")
 		os.WriteFile(f, []byte(validListeners+"[cors]\nallowed_origins = [\""+bad+"\"]\n"), 0o600)

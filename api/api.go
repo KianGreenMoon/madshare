@@ -18,13 +18,19 @@ import (
 
 // Deps bundles the dependencies the API route groups need. FilesDir is the base
 // files directory: audio blobs are served from FilesDir/audio (so Store must be
-// rooted there too — see storage.AudioSubdir) and cover images from
-// FilesDir/images. MaxUploadSize caps the upload request body in bytes.
+// rooted there too — see storage.AudioSubdir). Cover images are served from
+// VariantsDir/images (the owned derived-media tree); when VariantsDir is empty
+// (NewRouter / tests / open embeddings) it falls back to FilesDir, the historical
+// location. MaxUploadSize caps the upload request body in bytes.
 type Deps struct {
-	Store         storage.Storage
-	Repo          database.Repository
-	CacheDir      string
-	FilesDir      string
+	Store    storage.Storage
+	Repo     database.Repository
+	CacheDir string
+	FilesDir string
+	// VariantsDir roots the owned derived-media tree (cover variants under
+	// VariantsDir/images). Empty falls back to FilesDir — see newHandler and
+	// docs/architecture/variants.md.
+	VariantsDir   string
 	MaxUploadSize int64
 	// Storages is the read-side resolver registry (local + links) backing the
 	// /files blob server: it resolves a content hash to an on-disk path across
@@ -93,16 +99,22 @@ func (d Deps) protectAny(perms ...string) func(http.Handler) http.Handler {
 }
 
 func (d Deps) newHandler() *handler {
-	// Layout: audio blobs live under <FilesDir>/audio (served at /files), cover
-	// images under <FilesDir>/images (served at /images). The two are siblings,
-	// so the /files server — rooted at the audio dir below — can never reach an
-	// image; cover art is reachable only via /images. The store must be rooted
-	// at <FilesDir>/audio to match (see madshare.go and NewRouter).
+	// Layout: audio blobs live under <FilesDir>/audio (served at /files); cover
+	// images under <VariantsDir>/images (served at /images), a separate owned
+	// derived-media tree. The /files server — rooted at the audio dir below —
+	// can never reach an image; cover art is reachable only via /images. The
+	// store must be rooted at <FilesDir>/audio to match (see madshare.go and
+	// NewRouter). VariantsDir empty falls back to FilesDir (its historical home):
+	// NewRouter / tests / open embeddings keep working with no extra wiring.
+	variantsDir := d.VariantsDir
+	if variantsDir == "" {
+		variantsDir = d.FilesDir
+	}
 	h := &handler{
 		storage:       d.Store,
 		repo:          d.Repo,
 		cacheDir:      d.CacheDir,
-		imagesDir:     filepath.Join(d.FilesDir, "images"),
+		imagesDir:     filepath.Join(variantsDir, storage.ImagesSubdir),
 		filesDir:      d.FilesDir,
 		maxUploadSize: d.MaxUploadSize,
 		authzEnabled:  d.Auth != nil,
@@ -190,9 +202,10 @@ func RegisterAPI(r chi.Router, d Deps) {
 	r.With(d.protect(auth.PermFileUpload)).Post("/api/files/{hash}/restore", h.restoreFileForUploader)
 	// The /files blob server resolves the content hash across the storages
 	// registry (local before links) rather than mounting one static dir, so a
-	// blob served from a symlink source works the same as an owned upload. It
-	// keys only on the hash (the audio tree is a sibling of <FilesDir>/images,
-	// so /files can never reach cover images).
+	// blob served from a symlink source works the same as an upload. It probes
+	// only the audio tree (<root>/audio/<hash>), and cover images live in a
+	// separate tree (<VariantsDir>/images) entirely, so /files can never reach an
+	// image.
 	d.serveBlobs(r, d.fileAccessGuard())
 
 	imagesFS := noListFS{http.Dir(h.imagesDir)}

@@ -17,10 +17,63 @@ var validHash = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // AudioSubdir is the subdirectory of files_dir under which audio blobs live, so
 // the served blob tree (/files) is a SIBLING of — not a parent of — the cover
-// images tree (files_dir/images). Nesting images under the served tree would
-// expose them at /files/images/<key> too; keeping them siblings means /files
-// can only ever reach audio. The store's baseDir is files_dir/<AudioSubdir>.
+// images tree. Nesting images under the served tree would expose them at
+// /files/images/<key> too; keeping them out means /files can only ever reach
+// audio. The store's baseDir is files_dir/<AudioSubdir>.
 const AudioSubdir = "audio"
+
+// ImagesSubdir is the subdirectory, under the variants dir, that holds owned
+// cover-image variants (<variants_dir>/images/<base_key>/…, served at /images).
+// It historically lived under files_dir; see RelocateImageVariants and
+// docs/architecture/variants.md.
+const ImagesSubdir = "images"
+
+// RelocateImageVariants migrates the owned cover-image tree from its historical
+// home under filesDir (filesDir/images) into the dedicated variants dir
+// (variantsDir/images), so files_dir holds only source blobs and all derived
+// media lives under variants_dir. It is the one-time upgrade for installs created
+// before the split; mirrors RelocateLegacyBlobs.
+//
+// Idempotent and non-destructive: a missing source dir (fresh install or already
+// migrated) is a no-op; an entry already present at the destination (a
+// half-finished prior run) is left in place rather than clobbered. When the two
+// paths resolve to the same directory (variants_dir == files_dir) it does
+// nothing. Returns the number of top-level image entries moved.
+func RelocateImageVariants(filesDir, variantsDir string) (int, error) {
+	oldImages := filepath.Join(filesDir, ImagesSubdir)
+	newImages := filepath.Join(variantsDir, ImagesSubdir)
+	if filepath.Clean(oldImages) == filepath.Clean(newImages) {
+		return 0, nil // variants_dir resolves to files_dir: nothing to relocate
+	}
+	entries, err := os.ReadDir(oldImages)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return 0, nil // fresh install or already migrated
+		}
+		return 0, fmt.Errorf("storage: read images dir: %w", err)
+	}
+	moved := 0
+	for _, e := range entries {
+		if err := os.MkdirAll(newImages, 0755); err != nil {
+			return moved, err
+		}
+		dst := filepath.Join(newImages, e.Name())
+		if _, err := os.Stat(dst); err == nil {
+			// Already at the destination (a half-finished prior migration);
+			// leave the source copy rather than clobbering it.
+			continue
+		}
+		if err := os.Rename(filepath.Join(oldImages, e.Name()), dst); err != nil {
+			return moved, fmt.Errorf("storage: relocate image %s: %w", e.Name(), err)
+		}
+		moved++
+	}
+	// Best-effort tidy: drop the now-(hopefully-)empty old images dir. A
+	// non-empty dir (entries left behind above) makes Remove fail, which we
+	// deliberately ignore — the relocation itself already succeeded.
+	_ = os.Remove(oldImages)
+	return moved, nil
+}
 
 // RelocateLegacyBlobs migrates pre-AudioSubdir blobs — hash-named directories
 // sitting directly under filesDir — into filesDir/<AudioSubdir>. It is the

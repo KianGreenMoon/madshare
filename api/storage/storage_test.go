@@ -74,6 +74,106 @@ func TestRelocateLegacyBlobs_MissingDir(t *testing.T) {
 	}
 }
 
+func TestRelocateImageVariants(t *testing.T) {
+	root := t.TempDir()
+	filesDir := filepath.Join(root, "files")
+	variantsDir := filepath.Join(root, "variants")
+
+	// An album variant dir, a flat artist image, plus an audio blob that must
+	// stay under files/ (only images move).
+	key := strings.Repeat("b", 16)
+	if err := os.MkdirAll(filepath.Join(filesDir, "images", key), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filesDir, "images", key, "crop_64.jpg"), []byte("v"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filesDir, "images", "artist123.png"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(filesDir, AudioSubdir, strings.Repeat("a", 64)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := RelocateImageVariants(filesDir, variantsDir)
+	if err != nil {
+		t.Fatalf("relocate: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("moved = %d, want 2 (album dir + flat artist image)", n)
+	}
+	if _, err := os.Stat(filepath.Join(variantsDir, "images", key, "crop_64.jpg")); err != nil {
+		t.Errorf("album variant not under variants/images: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(variantsDir, "images", "artist123.png")); err != nil {
+		t.Errorf("artist image not under variants/images: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(filesDir, "images")); !os.IsNotExist(err) {
+		t.Error("old files/images dir should be gone after relocation")
+	}
+	if _, err := os.Stat(filepath.Join(filesDir, AudioSubdir, strings.Repeat("a", 64))); err != nil {
+		t.Errorf("audio tree must be left untouched: %v", err)
+	}
+
+	// Idempotent: a second run moves nothing.
+	if n2, err := RelocateImageVariants(filesDir, variantsDir); err != nil || n2 != 0 {
+		t.Errorf("second run moved=%d err=%v, want 0 / nil", n2, err)
+	}
+}
+
+// A destination entry that already exists (half-finished prior run) is left
+// untouched rather than clobbered; other entries still move.
+func TestRelocateImageVariants_NoClobber(t *testing.T) {
+	root := t.TempDir()
+	filesDir := filepath.Join(root, "files")
+	variantsDir := filepath.Join(root, "variants")
+
+	key := strings.Repeat("c", 16)
+	if err := os.MkdirAll(filepath.Join(filesDir, "images", key), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filesDir, "images", key, "v.jpg"), []byte("src"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(variantsDir, "images", key), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(variantsDir, "images", key, "v.jpg"), []byte("dst"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := RelocateImageVariants(filesDir, variantsDir)
+	if err != nil {
+		t.Fatalf("relocate: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("moved = %d, want 0 (destination already present)", n)
+	}
+	got, _ := os.ReadFile(filepath.Join(variantsDir, "images", key, "v.jpg"))
+	if string(got) != "dst" {
+		t.Errorf("destination clobbered: got %q, want dst", got)
+	}
+}
+
+func TestRelocateImageVariants_MissingAndSamePath(t *testing.T) {
+	root := t.TempDir()
+	// No files/images at all: nothing to do.
+	if n, err := RelocateImageVariants(filepath.Join(root, "files"), filepath.Join(root, "variants")); err != nil || n != 0 {
+		t.Errorf("missing source: n=%d err=%v, want 0 / nil", n, err)
+	}
+	// variants_dir == files_dir: source and destination coincide, so it is a
+	// no-op even when files/images exists.
+	if err := os.MkdirAll(filepath.Join(root, "files", "images", "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := RelocateImageVariants(filepath.Join(root, "files"), filepath.Join(root, "files")); err != nil || n != 0 {
+		t.Errorf("same path: n=%d err=%v, want 0 / nil", n, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "files", "images", "x")); err != nil {
+		t.Errorf("same-path no-op must not disturb the dir: %v", err)
+	}
+}
+
 // ---- HashUpload -------------------------------------------------------------
 
 // TestHashUpload_SmallFile exercises the in-memory path (size <= memBufferLimit).

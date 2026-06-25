@@ -8,7 +8,7 @@ import (
 
 // DirSize returns the total size in bytes of all regular files under dir,
 // walking subdirectories. It is the per-category disk-usage measure for the
-// admin storage panel: audio (<files_dir>/audio), images (<files_dir>/images),
+// admin storage panel: audio (<files_dir>/audio), images (<variants_dir>/images),
 // and any future category subtree are each sized by a DirSize of their root.
 //
 // It is deliberately tolerant, because it sizes a live tree that other
