@@ -364,8 +364,26 @@ func (h *handler) getAlbumImage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	rel := media.VariantPath(imageHash, media.VariantLargeCrop, sourceExt)
+	rel := media.VariantPath(imageHash, albumImageVariant(r), sourceExt)
 	h.serveImageFile(w, r, rel, mimeType)
+}
+
+// albumImageVariant picks which derived cover variant getAlbumImage serves from
+// the optional ?size= query param. Only crop variants are served (square art).
+// The default is large_crop (600px) so existing callers — cmus, the mobile app —
+// are unaffected; the library/admin thumbnails pass ?size=small (150px) since
+// they only render a small image and have no use for the larger blob.
+func albumImageVariant(r *http.Request) string {
+	switch r.URL.Query().Get("size") {
+	case "thumb":
+		return media.VariantThumbCrop
+	case "small":
+		return media.VariantSmallCrop
+	case "medium":
+		return media.VariantMediumCrop
+	default:
+		return media.VariantLargeCrop
+	}
 }
 
 // albumImageStatusResponse is the JSON body of GET /api/albums/{album}/image/status.

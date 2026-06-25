@@ -12,11 +12,14 @@ generates eight square **derived variants** (crop + fit at 64 / 150 / 300 / 600 
 under `<variants_dir>/images/<image_hash>/<recipe><ext>` — served at `/images`.
 The status endpoint reports whether that generation has finished.
 
-The album-cover endpoint `GET /api/albums/{album_id}/image` serves the
-**`large_crop` (600 px) variant** — never the original — and 404s until variants
-are ready (the UI shows its placeholder in the gap). Artist images keep **no
-variant pipeline** (deferred): their original is stored and served directly under
-the flat `<image_hash><ext>` key.
+The album-cover endpoint `GET /api/albums/{album_id}/image` serves a derived
+**crop variant** — never the original — and 404s until variants are ready (the UI
+shows its placeholder in the gap). An optional `?size=` query param picks which
+crop is served: `thumb` (64 px), `small` (150 px), `medium` (300 px), or the
+default `large` (600 px) when omitted/unknown. The library and admin thumbnails
+request `?size=small`; cmus and the mobile app use the `large` default. Artist
+images keep **no variant pipeline** (deferred): their original is stored and
+served directly under the flat `<image_hash><ext>` key (and ignore `?size=`).
 
 **Storage model.** These endpoints address albums/artists by entity id in the URL
 (the by-name `POST` write paths resolve-or-create the entity), but covers are
@@ -139,7 +142,9 @@ is **not** a variant: it is stored under `<files_dir>/images` and never served.
 | `large_fit`   | 600×600   | fit  | white / transparent |
 
 `crop` is a center-cropped square; `fit` preserves aspect ratio inside the square
-and pads the remainder. `GET /api/albums/{album_id}/image` serves `large_crop`.
+and pads the remainder. `GET /api/albums/{album_id}/image` serves one of the crop
+variants, selected by `?size=` (`thumb`/`small`/`medium`/`large`, default
+`large` → `large_crop`).
 
 ### Error responses
 

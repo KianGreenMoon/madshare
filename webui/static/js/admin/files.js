@@ -377,13 +377,15 @@ function albumRow(a) {
 }
 
 // ── Cover images (artist / album) ────────────────────────────────────────────
-// has_image comes from the browse DTOs. The GET .../image endpoints serve the
-// original directly, so a thumbnail updates the moment an upload finishes (album
-// variants are generated async, but they only feed the responsive public UI).
+// has_image comes from the browse DTOs. Artist covers are served raw (no variant
+// pipeline); album covers are served from a derived variant, and we request the
+// small (150px) crop here since the list only renders a small thumbnail. Album
+// variants are generated async, so a freshly uploaded album cover only appears
+// once its variants are ready.
 // coverBust busts the browser cache after an upload so a replaced cover shows.
 let coverBust = 0;
 function artistImageURL(id) { return `/api/artists/${encodeURIComponent(id)}/image`; }
-function albumImageURL(id)  { return `/api/albums/${encodeURIComponent(id)}/image`; }
+function albumImageURL(id)  { return `/api/albums/${encodeURIComponent(id)}/image?size=small`; }
 function coverThumb(hasImage, url) {
   if (!hasImage) return el('div', { class: 'entity-cover entity-cover--empty', 'aria-hidden': 'true', text: '♪' });
   const sep = url.includes('?') ? '&' : '?';

@@ -388,7 +388,7 @@ function renderAlbumList(albums) {
     const count      = album.track_count ?? 0;
     const yearPrefix = album.year        ? `${album.year} · ` : '';
     const artContent = album.has_image
-      ? `<img src="${API}/api/albums/${encodeURIComponent(album.id)}/image" alt="" loading="lazy">`
+      ? `<img src="${API}/api/albums/${encodeURIComponent(album.id)}/image?size=small" alt="" loading="lazy">`
       : noteSvg;
 
     const row = document.createElement('div');
@@ -742,7 +742,7 @@ function renderSearchResults(results, q) {
     sec.innerHTML = '<h2 class="search-section__header">Albums</h2>';
     albums.forEach(a => {
       const artContent = a.has_image
-        ? `<img src="${API}/api/albums/${encodeURIComponent(a.id)}/image" alt="" loading="lazy">`
+        ? `<img src="${API}/api/albums/${encodeURIComponent(a.id)}/image?size=small" alt="" loading="lazy">`
         : noteSvg;
       const row = document.createElement('div');
       row.className = 'search-row search-row--album';
