@@ -67,7 +67,7 @@ correctly; the admin pages load it too.
 
 | Scope | Endpoint | Group | Selectable | Access edit | Notes |
 |---|---|---|---|---|---|
-| **All files** (admin) | `GET /api/files` (paged) | – (opt.) | all | ✓ (modal + bulk) | server-**paged** flat list (page controls + server **sort dropdown**, incl. Untagged first); access is a **read-only column**, edited in the modals. Bulk Move to Trash + Edit tags… (selection or "select all N matching"). Grouped **By artist / album** awaits virtualization (below). The By-entity drill-down is a separate sub-view (below). |
+| **All files** (admin) | `GET /api/files` (paged) | – (opt.) | all | ✓ (modal + bulk) | **windowed** flat list (infinite scroll + server **sort dropdown**, incl. Untagged first); access is a **read-only column**, edited in the modals. Bulk Move to Trash + Edit tags… (selection or "select all N matching"). Grouped **By artist / album** via a separate toggle pill (loads the whole set, then windows it; below). The By-entity drill-down is a separate sub-view (below). |
 | **Review** (admin) | `GET /api/admin/moderation` | by uploader (collapsible) | `submitted` | ✗ (tags only) | Approve / Return-with-note / Discard; `show()` gates per state (drafts preview-only), `editable()` gates Edit. |
 | **Trash** (admin) | `GET /api/admin/trash` | – | all | ✗ (tags only)¹ | Restore / Delete forever; gained Edit + Play. |
 | **My uploads** (owner, `/upload`) | `GET /api/my/uploads` | by state | draft/returned | ✗ (tags only) | state sections, `autoSelect`, Send to approval / Remove; owner-scoped edit endpoint. |
@@ -87,23 +87,27 @@ fields. Every editable list DTO carries `album_artist` (the editor writes all
 four base tags, so an absent prefill would silently clear it — the trash DTO was
 extended for this).
 
-### Sort dropdown + grouped view + needs-metadata flag
+### Sort dropdown + grouped-view toggle + needs-metadata flag
 
-Every list view shows one **sort dropdown** (`sortControl`, the same control
-everywhere). The flat orders are `Newest`/`Oldest`, `Title`, `Artist`, `Largest`/
-`Smallest`, and **Untagged first** (rows with no artist/album-artist tag — the
-needs-metadata rows). The non-paged scopes additionally offer **Default order**
-(as loaded) and, where `scope.artistAlbumSort`, **By artist / album** (grouped);
-the choice is persisted in `localStorage`.
+Every list view shows one **sort dropdown** (`sortControl`) for the **flat**
+orders — `Newest`/`Oldest`, `Title`, `Artist`, `Largest`/`Smallest`, and
+**Untagged first** (rows with no artist/album-artist tag — the needs-metadata
+rows); non-paged scopes also offer **Default order** (as loaded). The **paged
+All-files** scope drives the dropdown server-side (the token rides on
+`GET /api/files?sort=`, see [`file-list-scaling.md`](file-list-scaling.md));
+non-paged scopes sort the in-memory rows client-side. The choice is persisted in
+`localStorage`.
 
-The **paged All-files** scope (`scope.paged`) drives this dropdown **server-side**
-(the token rides on `GET /api/files?sort=`, see
-[`file-list-scaling.md`](file-list-scaling.md)); the non-paged scopes sort the
-in-memory rows client-side. The paged scope omits **Default order** and **By
-artist / album** — grouping there sorts the whole set client-side, so it awaits
-the list being virtualized (see
-[`infinite-scroll-virtualization.md`](infinite-scroll-virtualization.md)); until
-then the All-files view is the flat, server-sorted list.
+The **By artist / album** grouped view is a **separate toggle pill** (`groupToggle`,
+reusing the `.sort-switch`/`.vm-btn` styling), *not* an entry in the sort dropdown —
+grouping is a view mode, not one more order, and folding it in made the dropdown
+crowded. It is offered on every `scope.artistAlbumSort` scope. While it is on, the
+flat sort dropdown is **disabled** (the grouped view imposes its own
+artist→album→track order), and on a **paged** scope turning it on loads the whole
+set ([`infinite-scroll-virtualization.md`](infinite-scroll-virtualization.md))
+which the windowed list then renders a slice of; turning it off returns to the
+lazy infinite-scroll flat list. The toggle state is persisted (non-paged) in
+`localStorage`.
 
 In **By artist / album** mode the same `.files-table` is sorted
 **album-artist → album → disc# → track# (then title)** with **separator rows** woven

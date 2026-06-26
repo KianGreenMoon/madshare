@@ -121,15 +121,26 @@ export function createFileList(scope) {
   let loadedCount = 0;           // rows fetched so far (paged infinite scroll)
   let selectAllMatching = false; // bulk acts on every matching row, not just the page
 
-  // Unified sort selection (the dropdown), shared by every list view. Paged
-  // scopes pass it to the server as the sort token (flat orders only). Non-paged
-  // scopes sort/group in memory and additionally allow 'default' (as loaded) and
-  // 'grouped' (By artist / album), the latter only when scope.artistAlbumSort.
-  // Persisted (non-paged) so the choice sticks across visits.
+  // Flat sort selection (the dropdown), shared by every list view. Paged scopes
+  // pass it to the server as the sort token; non-paged scopes sort in memory and
+  // additionally allow 'default' (as loaded). The "By artist / album" GROUPED view
+  // is a SEPARATE toggle (groupToggle) — it's a view mode, not a sort order, so
+  // keeping it out of the dropdown declutters the orders (owner ask). Both are
+  // persisted (non-paged) so the choice sticks across visits.
   const SORT_KEY = 'madshare-files-sort';
+  const GROUP_KEY = 'madshare-files-grouped';
   let sortToken = paged ? 'created_desc' : 'default';
+  let grouped = false;           // the "By artist / album" view is on
   if (!paged) {
-    try { const s = localStorage.getItem(SORT_KEY); if (s) sortToken = s; } catch { /* ignore */ }
+    try {
+      let s = localStorage.getItem(SORT_KEY);
+      if (s === 'grouped') {     // migrate the legacy combined token, once
+        grouped = true; s = 'default';
+        localStorage.setItem(SORT_KEY, 'default');
+      }
+      if (s) sortToken = s;
+      if (localStorage.getItem(GROUP_KEY) === '1') grouped = true;
+    } catch { /* ignore */ }
   }
 
   let _editor = null, _bulk = null, _cover = null;
@@ -208,7 +219,7 @@ export function createFileList(scope) {
   // groupedActive: the "By artist / album" view is selected and the scope allows
   // it. Grouping sorts across the whole set, so on a paged scope it loads every
   // page first; the flat view stays lazy (infinite scroll).
-  function groupedActive() { return sortToken === 'grouped' && !!scope.artistAlbumSort; }
+  function groupedActive() { return grouped && !!scope.artistAlbumSort; }
 
   // ── Loading ─────────────────────────────────────────────────────────────────
   async function reload() {
@@ -301,9 +312,9 @@ export function createFileList(scope) {
       ? el('span', { class: 'cell-title', text: f.title })
       : el('span', { class: 'cell-title is-fallback', text: f.filename || 'Untitled' });
     const kids = [titleSpan];
-    // The badge fn gets whether the list is in grouped sort, so a scope can show
-    // a state badge only when its native (sectioned) grouping is hidden.
-    const b = scope.badge ? scope.badge(f, scope.artistAlbumSort && sortToken === 'grouped') : null;
+    // The badge fn gets whether the list is in the grouped view, so a scope can
+    // show a state badge only when its native (sectioned) grouping is hidden.
+    const b = scope.badge ? scope.badge(f, groupedActive()) : null;
     if (b) kids.push(document.createTextNode(' '), el('span', { class: `state-badge ${b.cls || ''}`, title: b.title || null, text: b.text }));
     kids.push(el('span', { class: 'cell-hash', title: f.hash || '', text: shortHash(f.hash) }));
     if (f.note) kids.push(el('span', { class: 'mod-note', text: `Note: ${f.note}` }));
@@ -866,7 +877,10 @@ export function createFileList(scope) {
     heading.append(scope.title);
     if (view === 'list') heading.append(` (${paged ? total : rows.length})`);
     const controls = [];
-    if (view === 'list') controls.push(sortControl());
+    if (view === 'list') {
+      controls.push(sortControl());
+      if (scope.artistAlbumSort) controls.push(groupToggle());
+    }
     controls.push(el('div', { class: 'files-search' }, [searchInput]));
     return el('div', { class: 'files-bar' }, [heading, el('div', { class: 'files-bar-controls' }, controls)]);
   }
@@ -883,17 +897,21 @@ export function createFileList(scope) {
   ];
 
   // sortControl is the single sort dropdown for every list view. Non-paged scopes
-  // also get a "Default order" (as loaded) entry; where scope.artistAlbumSort, a
-  // "By artist / album" grouped entry is offered on every scope now that the list
-  // is virtualized (the paged scope loads its whole set for grouping). Changing it
-  // re-queries the server (paged) or re-renders in place (non-paged).
+  // also get a "Default order" (as loaded) entry. The grouped view is a separate
+  // toggle (groupToggle), so it isn't in this list. Changing the sort re-queries
+  // the server (paged) or re-renders in place (non-paged). The dropdown is disabled
+  // while grouping is on, since the grouped view imposes its own order.
   function sortControl() {
     const opts = [];
     if (!paged) opts.push(['default', 'Default order']);
     opts.push(...SORT_OPTIONS);
-    if (scope.artistAlbumSort) opts.push(['grouped', 'By artist / album']);
 
-    const sel = el('select', { class: 'files-sort-select', 'aria-label': 'Sort' });
+    const on = groupedActive();
+    const sel = el('select', {
+      class: 'files-sort-select', 'aria-label': 'Sort',
+      disabled: on ? 'true' : null,
+      title: on ? 'Grouped by artist / album — turn off grouping to sort' : null,
+    });
     for (const [val, label] of opts) {
       const o = el('option', { value: val, text: label });
       if (val === sortToken) o.selected = true;
@@ -906,6 +924,29 @@ export function createFileList(scope) {
       render();
     });
     return el('div', { class: 'files-sort' }, [sel]);
+  }
+
+  // groupToggle is the independent "By artist / album" view switch — a pill that's
+  // separate from the flat sort dropdown so the grouped view isn't lost among the
+  // sort orders (owner ask). On a paged scope, turning it on loads the whole set
+  // (loadAllPages); turning it off returns to the lazy infinite-scroll flat list.
+  // Reuses the .sort-switch / .vm-btn styling of the old toggle.
+  function groupToggle() {
+    const on = groupedActive();
+    const b = el('button', {
+      type: 'button', class: 'vm-btn' + (on ? ' is-active' : ''),
+      'aria-pressed': String(on), title: 'Group by artist / album', text: 'By artist / album',
+    });
+    b.addEventListener('click', () => {
+      grouped = !grouped;
+      // Paged: the grouped view loads the whole set, so re-query (and drop the
+      // page/filter-mode selection). Non-paged: just re-render — the selected
+      // hashes stay valid across the flat ⇄ grouped views.
+      if (paged) { clearPageSelection(); reload(); return; }
+      try { localStorage.setItem(GROUP_KEY, grouped ? '1' : '0'); } catch { /* ignore */ }
+      render();
+    });
+    return el('div', { class: 'sort-switch', role: 'group', 'aria-label': 'Grouping' }, [b]);
   }
 
   // sortFilesBy returns a sorted COPY of an in-memory row set for a flat token
