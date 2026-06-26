@@ -459,16 +459,9 @@ export function createFileList(scope) {
     const selectAll = mountEl.querySelector('.fl-selectall');
     if (selectAll) { selectAll.checked = checks.length > 0 && visSel === checks.length; selectAll.indeterminate = visSel > 0 && visSel < checks.length; }
 
-    mountEl.querySelectorAll('.fl-group').forEach(g => {
-      const gc = g.querySelector('.fl-groupcheck'); if (!gc) return;
-      const cs = [...g.querySelectorAll('.fl-rowcheck')];
-      const n = cs.filter(c => c.checked).length;
-      gc.checked = cs.length > 0 && n === cs.length;
-      gc.indeterminate = n > 0 && n < cs.length;
-    });
-
-    // Artist/album separator checkboxes (grouped sort): checked when all governed
-    // hashes are selected, indeterminate when some.
+    // Group-select checkboxes on the separator / collapsible-header rows (artist,
+    // album, uploader): checked when all governed hashes are selected,
+    // indeterminate when some — works for off-screen rows too (hash-set based).
     mountEl.querySelectorAll('.grp-check').forEach(cb => {
       const hs = cb.dataset.hashes ? cb.dataset.hashes.split(',').filter(Boolean) : [];
       const n = hs.filter(h => selected.has(h)).length;
@@ -483,16 +476,12 @@ export function createFileList(scope) {
     afterSelectionChange();
   }
 
-  // windowedMode: the flat / grouped single-table presentations render through the
-  // virtual scroller. The classic collapsible (Review) and sections (My uploads)
-  // groupings are non-windowed until they're folded into the item-array model.
-  function windowedMode() {
-    if (view !== 'list') return false;
-    return groupedActive() || !scope.grouping;
-  }
+  // windowedMode: every list presentation (flat, grouped, collapsible, sections)
+  // now renders through the virtual scroller; only the browse view is not windowed.
+  function windowedMode() { return view === 'list'; }
 
   // afterSelectionChange repaints checkbox state without a data reload: windowed
-  // mode re-paints the on-screen slice (keeping scroll); classic re-renders.
+  // mode re-paints the on-screen slice (keeping scroll); browse re-renders.
   function afterSelectionChange() {
     if (windowedMode() && vlist) { vlist.refresh(); syncSelectionUI(); }
     else render();
@@ -519,19 +508,11 @@ export function createFileList(scope) {
     return el('tr', {}, ths);
   }
 
-  // rowTr builds one flat data row (shared by the classic table() and the windowed
-  // renderer). groupedTrack() is the grouped-mode variant (it prefixes a track #).
+  // rowTr builds one flat data row for the windowed renderer. groupedTrack() is the
+  // grouped-mode variant (it prefixes a track #).
   function rowTr(f) {
     const holder = {};
     return el('tr', rowAttrs(f), scope.columns.map(c => bodyCell(c, f, holder)));
-  }
-
-  function table(files, withSelectAll = true) {
-    const body = el('tbody');
-    files.forEach(f => body.appendChild(rowTr(f)));
-    return el('div', { class: 'files-table-wrap' }, [
-      el('table', { class: 'files-table' }, [el('thead', {}, [headRow(withSelectAll)]), body]),
-    ]);
   }
 
   // ── Artist → album → track grouped sort (scope.artistAlbumSort, grouped mode) ──
@@ -658,17 +639,27 @@ export function createFileList(scope) {
   // renderWindowItem builds one item element on demand as it scrolls into view.
   function renderWindowItem(item) {
     if (!item) return null;
-    if (item.kind === 'row')  return rowTr(item.file);
-    if (item.kind === 'grow') return groupedTrack(item.file);
-    const extra = item.cover ? coverBtn(item.cover.kind, item.cover.target, item.fallback, item.cover.hasImage) : null;
-    return grpSepRow(item.sep, item.label, item.meta, item.hashes, item.fallback, extra);
+    switch (item.kind) {
+      case 'row':   return rowTr(item.file);
+      case 'grow':  return groupedTrack(item.file);
+      case 'ghead': return groupHeadRow(item);
+      case 'shead': return sectionHeadRow(item);
+      default: {    // 'sep' — artist / album / disc separator
+        const extra = item.cover ? coverBtn(item.cover.kind, item.cover.target, item.fallback, item.cover.hasImage) : null;
+        return grpSepRow(item.sep, item.label, item.meta, item.hashes, item.fallback, extra);
+      }
+    }
   }
 
   // estimateItemHeight is the starting height before a row is measured; the
-  // scroller corrects it to the real offsetHeight once rendered (separators and
-  // the responsive card mode vary, so heights aren't assumed fixed).
+  // scroller corrects it to the real offsetHeight once rendered (separators,
+  // headers, and the responsive card mode vary, so heights aren't assumed fixed).
   function estimateItemHeight(item) {
-    if (item && item.kind === 'sep') return item.sep === 'artist' ? 40 : item.sep === 'disc' ? 28 : 34;
+    if (item) {
+      if (item.kind === 'sep')   return item.sep === 'artist' ? 40 : item.sep === 'disc' ? 28 : 34;
+      if (item.kind === 'ghead') return 44;
+      if (item.kind === 'shead') return 40;
+    }
     return 46;
   }
 
@@ -690,12 +681,12 @@ export function createFileList(scope) {
   function destroyVList() { vlist?.destroy(); vlist = null; vWrap = null; vTbody = null; vGrouped = null; }
 
   // renderWindowed mounts (or reuses) the virtual scroller in the body host and
-  // feeds it the current item array. Flat paged scopes get infinite-scroll
-  // fetchMore; grouped (and bounded scopes) hold the whole set already.
+  // feeds it the current item array (flat / grouped / collapsible / sections).
+  // Only the flat paged list gets infinite-scroll fetchMore; every other view
+  // holds its whole set already. The is-grouped tbody class (track-# indent) is
+  // for the artist/album view only.
   function renderWindowed() {
     const grouped = groupedActive();
-    const files = visibleFiles();
-    const items = grouped ? groupedItems(files) : files.map(flatItem);
     if (!vWrap || vGrouped !== grouped) {
       destroyVList();
       bodyHost.replaceChildren(buildWindowedShell(grouped));
@@ -708,10 +699,16 @@ export function createFileList(scope) {
         onAfterRender: () => { syncSelectionUI(); applyPlayingHighlight(); },
       });
     }
-    vlist.setItems(items);
+    vlist.setItems(buildItems());
   }
 
-  function uploaderGroups(files) {
+  // ── Native groupings as windowed item arrays ─────────────────────────────────
+  // The collapsible (Review, by uploader) and sections (My uploads, by state)
+  // groupings fold into the SAME windowed table as a flat item array: a header
+  // entry followed by its (sorted) rows. A collapsed group omits its rows. This is
+  // what lets these scopes scale like the flat/grouped views — every list view is
+  // now windowed (docs/architecture/infinite-scroll-virtualization.md "This pass").
+  function collapsibleItems(files) {
     const g = scope.grouping;
     const byKey = new Map();
     for (const f of files) {
@@ -719,50 +716,74 @@ export function createFileList(scope) {
       if (!byKey.has(k)) byKey.set(k, { key: k, label: g.label(f), items: [] });
       byKey.get(k).items.push(f);
     }
-    const frag = document.createDocumentFragment();
+    const items = [];
     for (const grp of byKey.values()) {
-      const section = el('section', { class: 'mod-group fl-group' + (collapsed.has(grp.key) ? ' is-collapsed' : '') });
-      const bodyId = `flGroup-${grp.key}`;
-
-      const groupCheck = el('input', { type: 'checkbox', class: 'mod-group-check fl-groupcheck', 'aria-label': `Select all from ${grp.label}` });
-      const selectableItems = grp.items.filter(isSelectable);
-      if (!selectableItems.length) groupCheck.disabled = true;
-      groupCheck.addEventListener('change', () => {
-        selectableItems.forEach(f => groupCheck.checked ? selected.add(f.hash) : selected.delete(f.hash));
-        render();
+      const isCollapsed = collapsed.has(grp.key);
+      items.push({
+        kind: 'ghead', key: grp.key, label: grp.label, collapsed: isCollapsed,
+        counts: g.counts ? g.counts(grp.items) : String(grp.items.length),
+        hashes: grp.items.filter(isSelectable).map(f => f.hash),
       });
-
-      const toggle = el('button', { class: 'mod-group-toggle', 'aria-expanded': String(!collapsed.has(grp.key)), 'aria-controls': bodyId }, [
-        el('span', { class: 'mod-group-chevron', 'aria-hidden': 'true', text: '▾' }),
-        el('span', { text: grp.label }),
-        el('span', { class: 'mod-group-counts', text: g.counts ? g.counts(grp.items) : `${grp.items.length}` }),
-      ]);
-      toggle.addEventListener('click', () => {
-        const c = section.classList.toggle('is-collapsed');
-        if (c) collapsed.add(grp.key); else collapsed.delete(grp.key);
-        toggle.setAttribute('aria-expanded', String(!c));
-      });
-
-      section.append(
-        el('div', { class: 'mod-group-header' }, [groupCheck, toggle]),
-        el('div', { class: 'mod-group-body', id: bodyId }, [table(grp.items, false)]),
-      );
-      frag.appendChild(section);
+      if (!isCollapsed) for (const f of grp.items) items.push({ kind: 'row', file: f });
     }
-    return frag;
+    return items;
   }
 
-  function sectionGroups(files) {
-    const frag = document.createDocumentFragment();
+  function sectionItems(files) {
+    const items = [];
     for (const sec of scope.grouping.sections) {
-      const items = files.filter(sec.match);
-      if (!items.length) continue;
-      frag.append(
-        el('h3', { class: 'section-title section-title--sub', text: `${sec.label} (${items.length})` }),
-        table(items, false),
-      );
+      const secFiles = files.filter(sec.match);
+      if (!secFiles.length) continue;
+      items.push({ kind: 'shead', label: `${sec.label} (${secFiles.length})` });
+      for (const f of secFiles) items.push({ kind: 'row', file: f });
     }
-    return frag;
+    return items;
+  }
+
+  // groupHeadRow is the collapsible (uploader) group header as a table row: a
+  // select-all-in-group checkbox (reusing the .grp-check selection cascade) + a
+  // collapse toggle (chevron + label + counts).
+  function groupHeadRow(item) {
+    const checkKids = [];
+    if (item.hashes.length) {
+      const cb = el('input', { type: 'checkbox', class: 'grp-check', 'aria-label': `Select all in ${item.label}` });
+      cb.dataset.hashes = item.hashes.join(',');
+      cb.addEventListener('change', () => { item.hashes.forEach(h => cb.checked ? selected.add(h) : selected.delete(h)); afterSelectionChange(); });
+      checkKids.push(cb);
+    }
+    const toggle = el('button', { type: 'button', class: 'grp-collapse-btn', 'aria-expanded': String(!item.collapsed) }, [
+      el('span', { class: 'grp-chevron' + (item.collapsed ? ' is-collapsed' : ''), 'aria-hidden': 'true', text: '▾' }),
+      el('span', { class: 'grp-head-label', text: item.label }),
+      el('span', { class: 'grp-meta', text: item.counts }),
+    ]);
+    toggle.addEventListener('click', () => {
+      if (collapsed.has(item.key)) collapsed.delete(item.key); else collapsed.add(item.key);
+      vlist?.setItems(buildItems(), { keepScroll: true });   // hide/show the group's rows in place
+    });
+    return el('tr', { class: 'grp grp-group' }, [
+      el('td', { class: 'cell-check' }, checkKids),
+      el('td', { colspan: String(scope.columns.length - 1), class: 'grp-label' }, [toggle]),
+    ]);
+  }
+
+  // sectionHeadRow is a My-uploads state section header (label only) as a table row.
+  function sectionHeadRow(item) {
+    return el('tr', { class: 'grp grp-section' }, [
+      el('td', { class: 'cell-check' }),
+      el('td', { colspan: String(scope.columns.length - 1), class: 'grp-label grp-section-label', text: item.label }),
+    ]);
+  }
+
+  // buildItems is the single source for the windowed item array, by current view:
+  // grouped (artist/album), collapsible (uploader), sections (state), or flat.
+  function buildItems() {
+    const files = visibleFiles();
+    if (groupedActive()) return groupedItems(files);
+    if (scope.grouping?.kind === 'collapsible') return collapsibleItems(sortFilesBy(files, sortToken));
+    if (scope.grouping?.kind === 'sections')   return sectionItems(sortFilesBy(files, sortToken));
+    // Flat: paged scopes are already server-sorted (and stream more on scroll);
+    // non-paged flat scopes (Trash) sort the loaded rows client-side.
+    return (paged ? files : sortFilesBy(files, sortToken)).map(flatItem);
   }
 
   // ── Browse (artist → album → track) ──────────────────────────────────────────
@@ -1070,32 +1091,16 @@ export function createFileList(scope) {
     return (rows.length && q) ? stateBlock(`No files match “${q}”`) : emptyBlock();
   }
 
-  // classicContent renders the non-windowed groupings (Review's collapsible-by-
-  // uploader, My-uploads' state sections) — bounded by nature, so still built whole.
-  function classicContent() {
-    const matched = visibleFiles();
-    if (!matched.length) return emptyOrNoMatch();
-    const files = sortFilesBy(matched, sortToken);
-    if (scope.grouping?.kind === 'collapsible') return uploaderGroups(files);
-    if (scope.grouping?.kind === 'sections') return sectionGroups(files);
-    return table(files, true);
-  }
-
-  // renderBody fills the persistent body host: the loading/error/browse states, the
-  // windowed flat/grouped table, or the classic groupings. The header bar (search
-  // box) is owned by render() and untouched here.
+  // renderBody fills the persistent body host: the loading/error/browse states, or
+  // the windowed list (flat / grouped / collapsible / sections — every list view is
+  // windowed). The header bar (search box) is owned by render() and untouched here.
   function renderBody() {
     const host = ensureBodyHost();
     if (loading)   { destroyVList(); host.replaceChildren(stateBlock('Loading…')); return; }
     if (loadError) { destroyVList(); host.replaceChildren(errorBlock()); return; }
     if (view === 'browse' && hasBrowse) { destroyVList(); host.replaceChildren(crumb(), browseTree()); return; }
-    if (windowedMode()) {
-      if (!visibleFiles().length) { destroyVList(); host.replaceChildren(emptyOrNoMatch()); return; }
-      renderWindowed();
-      return;
-    }
-    destroyVList();
-    host.replaceChildren(classicContent());
+    if (!visibleFiles().length) { destroyVList(); host.replaceChildren(emptyOrNoMatch()); return; }
+    renderWindowed();
   }
 
   function render() {

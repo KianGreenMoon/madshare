@@ -201,6 +201,30 @@
    right edge of the separator, pushed there by margin-left:auto in the flex row. */
 .grp-cover-btn { margin-left: auto; font-weight: 400; }
 
+/* Collapsible (uploader) + state-section headers, folded into the windowed table
+   as full-width header rows (Review / My uploads). They reuse the separator band
+   look — a tinted row with a brighter top line — so the component renders right on
+   pages that don't load admin-moderation.css / upload.css. */
+.files-table tr.grp-group td,
+.files-table tr.grp-section td {
+  background: var(--surface);
+  border-top: 1px solid var(--text-muted);
+  padding-top: var(--space-3); padding-bottom: var(--space-2);
+}
+.files-table tbody tr.grp-group:first-child td,
+.files-table tbody tr.grp-section:first-child td { border-top: none; }
+.grp-section-label { font-size: 13px; font-weight: 600; color: var(--text); letter-spacing: .02em; }
+.grp-collapse-btn {
+  display: flex; align-items: center; gap: var(--space-2); width: 100%;
+  background: none; border: 0; margin: 0; padding: 0; cursor: pointer;
+  font: inherit; font-weight: 600; font-size: 13px; color: var(--text); text-align: left;
+}
+.grp-collapse-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.grp-collapse-btn .grp-chevron { color: var(--text-muted); font-size: 11px; transition: transform 120ms ease; }
+.grp-collapse-btn .grp-chevron.is-collapsed { transform: rotate(-90deg); }
+.grp-collapse-btn .grp-meta { margin-left: auto; font-weight: 400; opacity: .7; }
+@media (prefers-reduced-motion: reduce) { .grp-collapse-btn .grp-chevron { transition: none; } }
+
 /* Track rows under a group: aligned track number + indented title. */
 .files-table tbody.is-grouped .cell-title-td { padding-left: 22px; }
 .tracknum {

@@ -28,12 +28,18 @@ runs unchanged on the admin pages and the shell-native upload page. Built-in
 automatically from the scope's capabilities.
 
 Presentations: a flat **list** (optionally grouped — collapsible-by-uploader for
-Review, fixed state sections for My uploads) and an artist→album→track **browse**
-(currently used only via the Files By-entity view; see below). Styling lives in
-`webui/static/css/file-view.css`, the single source for the component's chrome
-(table, bulk toolbar, badges, confirms, switches, the modal access/field layout).
-It is self-sufficient so the upload page — which loads no admin CSS — renders
-correctly; the admin pages load it too.
+Review, fixed state sections for My uploads, or By artist / album) and an
+artist→album→track **browse** (currently used only via the Files By-entity view;
+see below). **Every list presentation is virtualized**: the component builds one
+flat array of items (rows + separator/header entries) and renders only the
+on-screen window through the shared `virtual-list.js` scroller, so it never
+freezes at scale — group/section headers are full-width table rows, a collapsed
+group omits its rows from the array, and the paged All-files scope streams more on
+scroll (see [`infinite-scroll-virtualization.md`](infinite-scroll-virtualization.md)).
+Styling lives in `webui/static/css/file-view.css`, the single source for the
+component's chrome (table, bulk toolbar, badges, confirms, switches, the modal
+access/field layout). It is self-sufficient so the upload page — which loads no
+admin CSS — renders correctly; the admin pages load it too.
 
 ### Shared editors
 
