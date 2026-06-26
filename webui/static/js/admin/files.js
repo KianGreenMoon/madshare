@@ -14,12 +14,8 @@ import { discKey, discLabel, isMultiDisc } from '../disc.js';
 // component) plus the By-entity drill-down (rename / merge / cover / delete).
 // The shared preview player is injected as `play`; `perms` gates the actions.
 export function createFilesScope({ play, perms }) {
-let allFiles    = [];     // last /api/files fetch (also feeds the url→hash index)
-let fileByURL   = new Map(); // url → file record, so the entity view can resolve
-                             // a browse track (id/url only) to its hash for edit
 let canEditMeta = perms.includes('metadata.edit');  // metadata + access edit + rename/merge
 let canDelete   = perms.includes('file.delete');    // move-to-trash
-let filesLoaded = false;  // /api/files loaded at least once (index freshness)
 
 // The flat table is the shared component, mounted lazily into #fileList.
 let fileList     = null;
@@ -48,24 +44,30 @@ function playFile(f, visible) {
 const PLAY_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
 const displayTitle = f => f.title || f.filename || 'this file';
 
-// fileForTrack resolves an entity-view browse track (id/url only) back to its
-// full file record (with the hash the edit endpoint needs).
-function fileForTrack(t) { return fileByURL.get(t.url); }
-
-// loadFilesList backs the All-files component AND refreshes the url→file index
-// the entity view resolves browse tracks through.
-async function loadFilesList() {
-  const res = await fetch(`${API}/api/files`);
+// loadFilesPage backs the All-files component's paged mode: one server page,
+// filtered + sorted, as {total, items} (docs/architecture/file-list-scaling.md).
+async function loadFilesPage({ limit, offset, q, sort }) {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset), sort: sort || 'created_desc' });
+  if (q) params.set('q', q);
+  const res = await fetch(`${API}/api/files?${params.toString()}`);
   if (handleAuthError(res)) throw new Error('Your session expired.');
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  allFiles = (await res.json()) || [];
-  fileByURL = new Map(allFiles.map(f => [f.url, f]));
-  filesLoaded = true;
-  return allFiles;
+  const data = await res.json();
+  return { total: data.total || 0, items: data.items || [] };
 }
-// ensureFilesLoaded guarantees the url→file index before an entity-view edit or
-// delete, even if the All-files tab has never been opened.
-async function ensureFilesLoaded() { if (!filesLoaded) await loadFilesList(); }
+
+// bulkTrash moves a set to Trash in one transactional request — an explicit hash
+// list, or a filter ("everything matching"). Returns the count actually trashed.
+async function bulkTrash(body) {
+  const res = await fetch(`${API}/api/admin/files/bulk`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'trash', ...body }),
+  });
+  if (handleAuthError(res)) throw new Error('Your session expired.');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data.affected || 0;
+}
 
 // ── Access writes (per file). License first, then guest, so the explicit guest
 //    wins over any auto-derive the license change triggers. ────────────────────
@@ -78,19 +80,6 @@ async function saveFileAccess(f, { guest, license }) {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ guest_playable: guest }),
   });
   if (!r2.ok) throw new Error((await r2.text()).trim() || `HTTP ${r2.status}`);
-}
-
-// runBulk loops one request per hash and tallies; never throws.
-async function runBulk(hashes, makeRequest) {
-  let ok = 0, fail = 0, authFailed = false;
-  for (const hash of hashes) {
-    let res;
-    try { res = await makeRequest(hash); } catch { fail++; continue; }
-    if (res.status === 401) { handleAuthError(res); authFailed = true; break; }
-    const data = await res.json().catch(() => ({}));
-    if (res.ok && data.ok) ok++; else fail++;
-  }
-  return { ok, fail, authFailed };
 }
 
 // filesBulkApply writes the bulk-edit patch across a selection: tag keys via
@@ -136,11 +125,15 @@ async function trashOne(f) {
   if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
   toast(`“${displayTitle(f)}” moved to Trash.`, 'success');
 }
-async function bulkTrashHashes(hashes) {
-  const { ok, fail, authFailed } = await runBulk(hashes, h => fetch(`${API}/api/admin/files/${encodeURIComponent(h)}`, { method: 'DELETE' }));
-  if (authFailed) { if (ok) toast(`Moved ${ok} to Trash before the session expired.`, 'error'); return; }
-  if (fail) toast(`Moved ${ok} to Trash; ${fail} failed.`, 'error');
-  else if (ok) toast(`Moved ${ok} ${ok === 1 ? 'file' : 'files'} to Trash.`, 'success');
+// bulkTrashSelection trashes the explicitly-selected page rows (one request);
+// bulkTrashAll trashes the whole filtered set ("select all N matching").
+async function bulkTrashSelection(hashes) {
+  const n = await bulkTrash({ hashes });
+  toast(`Moved ${n} ${n === 1 ? 'file' : 'files'} to Trash.`, 'success');
+}
+async function bulkTrashAll({ q }) {
+  const n = await bulkTrash({ filter: { q }, all: !q });
+  toast(`Moved ${n} ${n === 1 ? 'file' : 'files'} to Trash.`, 'success');
 }
 
 // ── The All-files scope (the flat list, via the shared component) ────────────
@@ -152,13 +145,14 @@ function filesScope() {
     title: 'Files',
     emptyText: 'No files yet. Add music from the Upload page.',
     columns: ['check', 'title', 'artist', 'album', 'size', 'access', 'actions'],
-    artistAlbumSort: true,   // offer the Default ⇄ artist/album sort toggle
-    allowCoverAdd: canEditMeta,   // grouped "Add cover" on coverless artist/album separators
-    allowCoverEdit: canEditMeta,  // "Edit cover" on separators that already have one
+    // Server-paged: the flat list can be huge, so it loads one page at a time
+    // with server filter + sort (the grouped/drill-down view lives in By-entity).
+    paged: true,
+    pageSize: 100,
     apiBase: API,
     accessEditable: canEditMeta,
     licenses: LICENSE_OPTIONS,
-    load: loadFilesList,
+    loadPage: loadFilesPage,
     selectable: () => canEditMeta || canDelete,
     editPatchURL: canEditMeta ? (f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`) : undefined,
     editDetailURL: canEditMeta ? (f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`) : undefined,
@@ -171,7 +165,11 @@ function filesScope() {
       confirm: 'inline', confirmPrompt: 'Move to Trash?', confirmLabel: 'Confirm',
       run: f => trashOne(f),
     }] : [],
-    bulkActions: canDelete ? [{ id: 'trash', label: 'Move to Trash', kind: 'danger', run: hashes => bulkTrashHashes(hashes) }] : [],
+    bulkActions: canDelete ? [{
+      id: 'trash', label: 'Move to Trash', kind: 'danger',
+      run: hashes => bulkTrashSelection(hashes),   // explicit page selection
+      runAll: filter => bulkTrashAll(filter),       // "select all N matching"
+    }] : [],
     onPlay: playFile,
     toast, handleAuthError,
   };
@@ -475,14 +473,12 @@ function trackRow(t, navItems, idx) {
   return el('div', { class: 'entity-row entity-row--track', 'data-track-id': String(t.id) }, children);
 }
 
-// editTrack opens the per-track metadata modal from the entity view. The browse
-// track carries no hash, so it lazily loads /api/files on first need and resolves
-// the track to its file record there.
-async function editTrack(t) {
-  await ensureFilesLoaded();
-  const f = fileForTrack(t);
-  if (!f) { toast('Couldn’t find this file’s details.', 'error'); return; }
-  entityEditor.open(f);
+// editTrack opens the per-track metadata modal from the entity view. The track
+// DTO carries its content hash (GET /api/tracks), so the editor fetches the full
+// tags via detailURL(hash) — no whole-library fetch needed.
+function editTrack(t) {
+  if (!t.hash) { toast('Couldn’t find this file’s details.', 'error'); return; }
+  entityEditor.open({ hash: t.hash, title: t.title, artist: t.artist_name || '', album: entityDrill.album || '' });
 }
 
 function trackCount(n) { return `${n} track${n === 1 ? '' : 's'}`; }
@@ -750,80 +746,44 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && !deleteModal.classList.contains('hidden')) closeDelete();
 });
 
-function resolveHashes(tracks) {
-  return tracks.map(t => fileByURL.get(t.url)).filter(Boolean).map(f => f.hash);
-}
-async function albumTrackHashes(albumId) {
-  await ensureFilesLoaded();
-  const tracks = await entFetch(`/api/tracks?album_id=${encodeURIComponent(albumId)}`);
-  return resolveHashes(tracks);
-}
-async function artistTrackHashes(artistId) {
-  await ensureFilesLoaded();
-  const albums = await entFetch(`/api/albums?artist_id=${encodeURIComponent(artistId)}`);
-  const hashes = [];
-  for (const al of albums) {
-    const tracks = await entFetch(`/api/tracks?album_id=${encodeURIComponent(al.id)}`);
-    hashes.push(...resolveHashes(tracks));
-  }
-  return hashes;
-}
-
-// deleteHashes moves each file to Trash sequentially and reports the tally. It
-// never throws — it owns its own success/error toasts — so the modal closes.
-async function deleteHashes(hashes) {
-  let ok = 0, fail = 0, authFailed = false;
-  for (const hash of hashes) {
-    let res;
-    try {
-      res = await fetch(`${API}/api/admin/files/${encodeURIComponent(hash)}`, { method: 'DELETE' });
-    } catch { fail++; continue; }
-    if (res.status === 401) { handleAuthError(res); authFailed = true; break; }
-    const data = await res.json().catch(() => ({}));
-    if (res.ok && data.ok) ok++; else fail++;
-  }
-  fileList?.reload();          // refresh the All-files list + url→file index
+// trashByFilter moves a whole entity's tracks to Trash in one request and
+// refreshes both views. It throws on failure so the confirm modal surfaces it.
+async function trashByFilter(filter) {
+  const n = await bulkTrash({ filter });
+  fileList?.reload();
   reloadEntityLevel();
-  if (authFailed) {
-    if (ok) toast(`Moved ${ok} to Trash before the session expired.`, 'error');
-    return;
-  }
-  if (fail) toast(`Moved ${ok} to Trash; ${fail} failed.`, 'error');
-  else if (ok) toast(`Moved ${ok} ${ok === 1 ? 'track' : 'tracks'} to Trash.`, 'success');
+  toast(`Moved ${n} ${n === 1 ? 'track' : 'tracks'} to Trash.`, 'success');
 }
 
 async function deleteTrack(t) {
-  await ensureFilesLoaded();
-  const f = fileForTrack(t);
-  if (!f) { toast('Couldn’t find this file’s details.', 'error'); return; }
+  if (!t.hash) { toast('Couldn’t find this file’s details.', 'error'); return; }
   confirmDelete({
     title: 'Move track to Trash',
     body: `Move “${t.title || 'this track'}” to Trash?`,
-    run: () => deleteHashes([f.hash]),
+    run: async () => {
+      await bulkTrash({ hashes: [t.hash] });
+      fileList?.reload();
+      reloadEntityLevel();
+      toast('Moved to Trash.', 'success');
+    },
   });
 }
-async function deleteAlbum(a) {
-  let hashes;
-  try { hashes = await albumTrackHashes(a.id); }
-  catch (err) { toast(`Couldn’t load the album’s tracks: ${err.message}`, 'error'); return; }
-  if (!hashes.length) { toast('No deletable files found for this album.', 'error'); return; }
+function deleteAlbum(a) {
+  const n = a.track_count || 0;
   confirmDelete({
     title: 'Delete album',
-    body: `Move all ${hashes.length} ${hashes.length === 1 ? 'track' : 'tracks'} in “${a.title || '(no album)'}” to Trash?`,
-    confirmLabel: `Move ${hashes.length} to Trash`,
-    run: () => deleteHashes(hashes),
+    body: `Move all ${n} ${n === 1 ? 'track' : 'tracks'} in “${a.title || '(no album)'}” to Trash?`,
+    confirmLabel: `Move ${n} to Trash`,
+    run: () => trashByFilter({ album_id: a.id }),
   });
 }
-async function deleteArtist(a) {
-  let hashes;
-  try { hashes = await artistTrackHashes(a.id); }
-  catch (err) { toast(`Couldn’t load the artist’s tracks: ${err.message}`, 'error'); return; }
-  if (!hashes.length) { toast('No deletable files found for this artist.', 'error'); return; }
+function deleteArtist(a) {
+  const n = a.track_count || 0;
   confirmDelete({
     title: 'Delete artist',
-    body: `Move all ${hashes.length} ${hashes.length === 1 ? 'track' : 'tracks'} by “${a.name || '(no artist)'}” to Trash?`,
-    confirmLabel: `Move ${hashes.length} to Trash`,
-    run: () => deleteHashes(hashes),
+    body: `Move all ${n} ${n === 1 ? 'track' : 'tracks'} by “${a.name || '(no artist)'}” to Trash?`,
+    confirmLabel: `Move ${n} to Trash`,
+    run: () => trashByFilter({ artist_id: a.id }),
   });
 }
 

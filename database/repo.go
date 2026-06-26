@@ -24,6 +24,19 @@ type Repository interface {
 	// joined with their first filename and media metadata.
 	ListFiles(ctx context.Context) ([]*FileListEntry, error)
 
+	// ListFilesPage returns one filtered + sorted page of the file listing, and
+	// CountFiles the total matching the same filter (for "page N of M"). The
+	// paginated listing path; see docs/architecture/file-list-scaling.md.
+	ListFilesPage(ctx context.Context, q FileListQuery) ([]*FileListEntry, error)
+	CountFiles(ctx context.Context, f FileFilter) (int, error)
+
+	// FileHashesByFilter resolves a filter to the matching content hashes (no
+	// paging), and BulkSoftDeleteByHashes moves a hash set to Trash in one
+	// transaction (returning the count actually trashed). Together they back the
+	// "select all N matching → Move to Trash" bulk action.
+	FileHashesByFilter(ctx context.Context, f FileFilter) ([]string, error)
+	BulkSoftDeleteByHashes(ctx context.Context, hashes []string) (int, error)
+
 	// StorageByteBreakdown partitions the files table's logical byte_size total
 	// by state (live library / on review / in trash). Backs the audio, review,
 	// and trash disk-usage categories (see adminStorageStats).

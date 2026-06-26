@@ -105,6 +105,20 @@ export function createFileList(scope) {
   const collapsed = new Set();   // collapsed group keys (collapsible grouping)
   const br = { level: 'artists', artist: null, album: null, items: [] };
 
+  // ── Server-paged mode (scope.paged) ─────────────────────────────────────────
+  // The admin All-files scope is too large to hold in the DOM, so it loads one
+  // server page at a time (file-list-scaling.md). filterText + sort + page round-
+  // trip to scope.loadPage({limit,offset,q,sort}) → {total,items}; rows holds just
+  // the current page. selectAllMatching flips bulk actions onto the whole filtered
+  // set (via the scope's runAll) rather than the in-memory selection. In this mode
+  // the client grouped sort, sections, and in-memory filter are all bypassed.
+  const paged = !!scope.paged;
+  const PAGE_SIZE = scope.pageSize || 100;
+  let page = 0;                  // zero-based page index
+  let total = 0;                 // total rows matching the current filter
+  let serverSort = 'created_desc';
+  let selectAllMatching = false; // bulk acts on every matching row, not just the page
+
   let _editor = null, _bulk = null, _cover = null;
 
   const displayTitle = f => f.title || f.filename || 'this file';
@@ -155,7 +169,24 @@ export function createFileList(scope) {
   // ── Loading ─────────────────────────────────────────────────────────────────
   async function reload() {
     if (view === 'browse' && hasBrowse) return loadBrowse();
+    if (paged) return loadPage();
     return loadList();
+  }
+  async function loadPage() {
+    loading = true; loadError = false; render();
+    try {
+      const res = await scope.loadPage({ limit: PAGE_SIZE, offset: page * PAGE_SIZE, q: filterText.trim(), sort: serverSort }) || {};
+      rows = res.items || [];
+      total = res.total || 0;
+    } catch (err) { loadError = true; console.error('file-list page load failed:', err); }
+    loading = false;
+    // A delete/filter can leave us past the last page; clamp once and refetch.
+    const lastPage = Math.max(0, Math.ceil(total / PAGE_SIZE) - 1);
+    if (!loadError && page > lastPage && rows.length === 0 && total > 0) {
+      page = lastPage;
+      return loadPage();
+    }
+    render();
   }
   async function loadList() {
     loading = true; loadError = false; render();
@@ -184,6 +215,7 @@ export function createFileList(scope) {
     return !q || (s || '').toLowerCase().includes(q);
   }
   function visibleFiles() {
+    if (paged) return rows;   // the server already filtered this page
     const q = filterText.trim().toLowerCase();
     if (!q) return rows;
     return rows.filter(f => [f.title, f.artist, f.album, f.filename].filter(Boolean).join(' ').toLowerCase().includes(q));
@@ -315,15 +347,30 @@ export function createFileList(scope) {
     const cb = el('input', { type: 'checkbox', class: 'fl-rowcheck', 'aria-label': `Select ${displayTitle(f)}` });
     cb.dataset.hash = f.hash;
     cb.checked = selected.has(f.hash);
-    cb.addEventListener('change', () => { cb.checked ? selected.add(f.hash) : selected.delete(f.hash); syncSelectionUI(); });
+    cb.addEventListener('change', () => {
+      cb.checked ? selected.add(f.hash) : selected.delete(f.hash);
+      // A manual tick narrows the selection back to explicit rows — drop the
+      // "all matching" mode and re-render so the banner/count reflect it.
+      if (selectAllMatching) { selectAllMatching = false; render(); return; }
+      syncSelectionUI();
+    });
     return cb;
   }
 
   function syncSelectionUI() {
     if (!mountEl) return;
     const sel = selected.size;
-    mountEl.querySelectorAll('.fl-selcount').forEach(n => (n.textContent = `${sel} selected`));
-    mountEl.querySelectorAll('.fl-bulk-btn').forEach(b => (b.disabled = sel === 0));
+    const allMatch = paged && selectAllMatching;
+    mountEl.querySelectorAll('.fl-selcount').forEach(n => (n.textContent = allMatch ? `All ${total} selected` : `${sel} selected`));
+    const active = allMatch || sel > 0;
+    mountEl.querySelectorAll('.fl-bulk-btn').forEach(b => (b.disabled = !active));
+    // Bulk "Edit tags…" can't yet target the whole filtered set — only a page.
+    if (allMatch) {
+      mountEl.querySelectorAll('.fl-bulk-edit').forEach(b => {
+        b.disabled = true;
+        b.title = 'Editing every matching file isn’t available yet — clear “select all” to edit this page.';
+      });
+    }
 
     const checks = [...mountEl.querySelectorAll('.fl-rowcheck')];
     // Reconcile each row checkbox from the selection Set so a group-checkbox
@@ -352,6 +399,7 @@ export function createFileList(scope) {
   }
 
   function selectAllVisible(on) {
+    if (!on) selectAllMatching = false;   // unchecking select-all clears the whole-set mode too
     visibleFiles().filter(isSelectable).forEach(f => on ? selected.add(f.hash) : selected.delete(f.hash));
     render();
   }
@@ -655,6 +703,10 @@ export function createFileList(scope) {
     } catch (err) { toast(`Couldn’t gather the group: ${err.message}`, 'error'); }
   }
 
+  // clearPageSelection drops the current selection when the page/filter/sort
+  // changes (paged mode), so a checkbox can never act on a row no longer shown.
+  function clearPageSelection() { selected.clear(); selectAllMatching = false; }
+
   // ── Chrome ──────────────────────────────────────────────────────────────────
   let filterTimer;
   function headerBar() {
@@ -662,15 +714,75 @@ export function createFileList(scope) {
     search.value = filterText;
     search.addEventListener('input', () => {
       clearTimeout(filterTimer);
-      filterTimer = setTimeout(() => { filterText = search.value; renderContent(); }, 150);
+      filterTimer = setTimeout(() => {
+        filterText = search.value;
+        // Paged: a new filter is a fresh server query from page 0; in-memory
+        // scopes just re-filter the rows already loaded.
+        if (paged) { page = 0; clearPageSelection(); reload(); }
+        else renderContent();
+      }, 200);
     });
     const heading = el('h2', { class: 'section-title section-title--files' });
     heading.append(scope.title);
-    if (view === 'list') heading.append(` (${rows.length})`);
+    if (view === 'list') heading.append(` (${paged ? total : rows.length})`);
     const controls = [];
-    if (scope.artistAlbumSort && view === 'list') controls.push(sortSwitch());
+    if (paged && view === 'list') controls.push(serverSortControl());
+    else if (scope.artistAlbumSort && view === 'list') controls.push(sortSwitch());
     controls.push(el('div', { class: 'files-search' }, [search]));
     return el('div', { class: 'files-bar' }, [heading, el('div', { class: 'files-bar-controls' }, controls)]);
+  }
+
+  // serverSortControl is the paged list's sort dropdown — the tokens mirror the
+  // server's allow-list (fileSortOrder). Changing sort restarts at page 0.
+  const SORT_OPTIONS = [
+    ['created_desc', 'Newest first'], ['created_asc', 'Oldest first'],
+    ['title_asc', 'Title A–Z'], ['title_desc', 'Title Z–A'],
+    ['artist_asc', 'Artist A–Z'], ['artist_desc', 'Artist Z–A'],
+    ['size_desc', 'Largest first'], ['size_asc', 'Smallest first'],
+  ];
+  function serverSortControl() {
+    const sel = el('select', { class: 'files-sort-select', 'aria-label': 'Sort' });
+    for (const [val, label] of SORT_OPTIONS) {
+      const o = el('option', { value: val, text: label });
+      if (val === serverSort) o.selected = true;
+      sel.appendChild(o);
+    }
+    sel.addEventListener('change', () => { serverSort = sel.value; page = 0; clearPageSelection(); reload(); });
+    return el('div', { class: 'files-sort' }, [sel]);
+  }
+
+  // pager renders the Prev / "page N of M · T files" / Next control under the
+  // paged table. Changing page clears the selection (it can't span pages — use
+  // "Select all N matching" for that).
+  function pager() {
+    const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    const cur = Math.min(page + 1, pages);
+    const go = d => { page += d; clearPageSelection(); reload(); };
+    const prev = el('button', { class: 'btn btn-neutral btn-sm', text: '‹ Prev', disabled: cur <= 1 ? 'true' : null, onclick: () => go(-1) });
+    const next = el('button', { class: 'btn btn-neutral btn-sm', text: 'Next ›', disabled: cur >= pages ? 'true' : null, onclick: () => go(1) });
+    const label = el('span', { class: 'pager-label', text: `Page ${cur} of ${pages} · ${total} file${total === 1 ? '' : 's'}` });
+    return el('div', { class: 'files-pager' }, [prev, label, next]);
+  }
+
+  // selectAllBanner offers (and reflects) cross-page selection in paged mode:
+  // once the whole page is ticked and more matches exist, "Select all N matching"
+  // flips bulk actions onto the entire filtered set (via the scope's runAll).
+  function selectAllBanner() {
+    if (!paged || view !== 'list') return null;
+    if (selectAllMatching) {
+      return el('div', { class: 'select-all-banner is-active' }, [
+        `All ${total} matching file${total === 1 ? '' : 's'} selected. `,
+        el('button', { type: 'button', class: 'linklike', text: 'Clear selection', onclick: () => { clearPageSelection(); render(); } }),
+      ]);
+    }
+    const pageSel = rows.filter(isSelectable);
+    if (pageSel.length && pageSel.every(f => selected.has(f.hash)) && total > pageSel.length) {
+      return el('div', { class: 'select-all-banner' }, [
+        `All ${pageSel.length} on this page selected. `,
+        el('button', { type: 'button', class: 'linklike', text: `Select all ${total} matching`, onclick: () => { selectAllMatching = true; render(); } }),
+      ]);
+    }
+    return null;
   }
 
   // sortSwitch toggles the flat list between its default order and the
@@ -700,7 +812,7 @@ export function createFileList(scope) {
 
   function bulkToolbar() {
     const buttons = [];
-    if (scope.bulkApply) buttons.push(el('button', { class: 'btn btn-neutral btn-sm fl-bulk-btn', text: 'Edit tags…', disabled: 'true', onclick: () => bulkEditor().open([...selected], selectionTags([...selected])) }));
+    if (scope.bulkApply) buttons.push(el('button', { class: 'btn btn-neutral btn-sm fl-bulk-btn fl-bulk-edit', text: 'Edit tags…', disabled: 'true', onclick: () => bulkEditor().open([...selected], selectionTags([...selected])) }));
     for (const a of scope.bulkActions || []) {
       const cls = (a.kind === 'danger' ? 'btn btn-destructive-outline btn-sm' : 'btn btn-neutral btn-sm') + ' fl-bulk-btn';
       buttons.push(el('button', { class: cls, text: a.label, disabled: 'true', onclick: () => runBulkAction(a) }));
@@ -713,6 +825,18 @@ export function createFileList(scope) {
     ]);
   }
   async function runBulkAction(a) {
+    // Filter-mode (select-all-matching): act on the whole filtered set server-
+    // side via the scope's runAll, instead of the in-memory hash selection.
+    if (paged && selectAllMatching) {
+      if (!a.runAll) { toast('That action can’t target all matching files yet.', 'error'); return; }
+      try {
+        const changed = await a.runAll({ q: filterText.trim() });
+        if (changed === false) return;
+        clearPageSelection();
+        await reload();
+      } catch (err) { toast(`${a.label} failed: ${err.message}`, 'error'); }
+      return;
+    }
     const hashes = [...selected];
     if (!hashes.length) return;
     try {
@@ -739,6 +863,11 @@ export function createFileList(scope) {
     if (loading) return stateBlock('Loading…');
     if (loadError) return errorBlock();
     if (view === 'browse' && hasBrowse) return el('div', {}, [crumb(), browseTree()]);
+    // Paged: a flat table of just this page (grouping/sections live elsewhere).
+    if (paged) {
+      if (!rows.length) return filterText.trim() ? stateBlock(`No files match “${filterText.trim()}”`) : emptyBlock();
+      return table(rows, true);
+    }
     if (!rows.length) return emptyBlock();
     const files = visibleFiles();
     if (!files.length) return stateBlock(`No files match “${filterText.trim()}”`);
@@ -755,9 +884,12 @@ export function createFileList(scope) {
     if (scope.desc) kids.push(el('p', { class: 'scope-desc', text: scope.desc }));
     const tb = (view === 'list') ? bulkToolbar() : (hasBrowse ? bulkToolbar() : null);
     if (tb) kids.push(tb);
+    const banner = selectAllBanner();
+    if (banner) kids.push(banner);
     contentEl = el('div', { class: 'fl-content' });
     contentEl.appendChild(content());
     kids.push(contentEl);
+    if (paged && view === 'list' && !loading && !loadError && total > 0) kids.push(pager());
     mountEl.replaceChildren(...kids);
     syncSelectionUI();
     applyPlayingHighlight();

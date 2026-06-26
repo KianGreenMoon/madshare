@@ -41,6 +41,20 @@ func doJSON(t *testing.T, client *http.Client, method, url string, body any, out
 	return resp.StatusCode
 }
 
+// getFileItems GETs the paginated /api/files envelope as the given client and
+// returns just the items slice, so callers keep their len()/index assertions
+// against the listing (see docs/architecture/file-list-scaling.md).
+func getFileItems(t *testing.T, client *http.Client, url string) []map[string]any {
+	t.Helper()
+	var env struct {
+		Items []map[string]any `json:"items"`
+	}
+	if code := doJSON(t, client, http.MethodGet, url, nil, &env); code != http.StatusOK {
+		t.Fatalf("GET %s = %d, want 200", url, code)
+	}
+	return env.Items
+}
+
 // uploadAndHash uploads a file as the given client and returns its content hash
 // and download path (/files/<hash>/<filename>). With moderation (migration 017)
 // an authenticated upload stages as a draft, so the helper submits it right
@@ -125,14 +139,18 @@ func TestListings_AnonymousCannotBrowsePrivate(t *testing.T) {
 		t.Fatalf("ListArtists: %d artists, err=%v", len(artists), err)
 	}
 	albumsURL := "/api/albums?artist_id=" + strconv.FormatInt(artists[0].ID, 10)
+	// /api/files now returns a paginated envelope, so it is checked separately
+	// via getFileItems; the others are bare arrays.
 	listings := []string{
-		"/api/files",
 		"/api/artists",
 		albumsURL,
 	}
 
 	// Anonymous: no file is guest-playable, so every listing is empty and the
 	// blob itself is 404 (existence not revealed).
+	if n := len(getFileItems(t, http.DefaultClient, srv.URL+"/api/files")); n != 0 {
+		t.Errorf("anon /api/files = %d items, want 0 (private file leaked)", n)
+	}
 	for _, url := range listings {
 		var items []map[string]any
 		doJSON(t, http.DefaultClient, http.MethodGet, srv.URL+url, nil, &items)
@@ -145,16 +163,17 @@ func TestListings_AnonymousCannotBrowsePrivate(t *testing.T) {
 	}
 
 	// Admin (content.access) always sees the full library.
-	var adminFiles []map[string]any
-	doJSON(t, admin, http.MethodGet, srv.URL+"/api/files", nil, &adminFiles)
-	if len(adminFiles) != 1 {
-		t.Errorf("admin /api/files = %d, want 1", len(adminFiles))
+	if n := len(getFileItems(t, admin, srv.URL+"/api/files")); n != 1 {
+		t.Errorf("admin /api/files = %d, want 1", n)
 	}
 
 	// Once guest-playable, the same anonymous browse surfaces reveal it.
 	if code := doJSON(t, admin, http.MethodPost, srv.URL+"/api/admin/files/"+hash+"/guest",
 		map[string]any{"guest_playable": true}, nil); code != http.StatusOK {
 		t.Fatalf("set guest = %d, want 200", code)
+	}
+	if n := len(getFileItems(t, http.DefaultClient, srv.URL+"/api/files")); n != 1 {
+		t.Errorf("anon /api/files after guest flag = %d items, want 1", n)
 	}
 	for _, url := range listings {
 		var items []map[string]any

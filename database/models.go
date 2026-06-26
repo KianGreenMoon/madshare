@@ -186,6 +186,7 @@ type AlbumEntry struct {
 // album's album-artist on a compilation; "" when unresolved.
 type TrackEntry struct {
 	ID              int64
+	Hash            string
 	Title           string
 	ArtistName      string
 	TrackNumber     sql.NullInt64

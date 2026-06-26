@@ -156,6 +156,7 @@ func (db *DB) listTracksByAlbumID(ctx context.Context, albumID int64, guest bool
 	q := `
 		SELECT
 		    f.id,
+		    f.hash,
 		    m.title,
 		    COALESCE(par.name, '') AS artist_name,
 		    m.track_number,
@@ -178,7 +179,7 @@ func (db *DB) listTracksByAlbumID(ctx context.Context, albumID int64, guest bool
 	var out []*TrackEntry
 	for rows.Next() {
 		var e TrackEntry
-		if err := rows.Scan(&e.ID, &e.Title, &e.ArtistName, &e.TrackNumber, &e.DiscNumber, &e.DurationSeconds, &e.ObjectKey, &e.MimeType); err != nil {
+		if err := rows.Scan(&e.ID, &e.Hash, &e.Title, &e.ArtistName, &e.TrackNumber, &e.DiscNumber, &e.DurationSeconds, &e.ObjectKey, &e.MimeType); err != nil {
 			return nil, fmt.Errorf("scan track entry: %w", err)
 		}
 		out = append(out, &e)

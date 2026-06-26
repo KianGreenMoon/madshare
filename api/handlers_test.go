@@ -409,6 +409,14 @@ type fakeRepo struct {
 	insertCalls  int
 	listFilesErr error
 
+	// Paginated listing + bulk-trash fakes (file-list-scaling).
+	pageFiles         []*database.FileListEntry
+	countFiles        int
+	filterHashes      []string
+	filterHashesErr   error
+	bulkTrashedHashes []string
+	bulkTrashErr      error
+
 	breakdown    database.StorageByteBreakdown
 	breakdownErr error
 
@@ -543,6 +551,26 @@ func (f *fakeRepo) RecordUpload(_ context.Context, _ int64, _ string) error {
 
 func (f *fakeRepo) ListFiles(_ context.Context) ([]*database.FileListEntry, error) {
 	return nil, f.listFilesErr
+}
+
+func (f *fakeRepo) ListFilesPage(_ context.Context, _ database.FileListQuery) ([]*database.FileListEntry, error) {
+	return f.pageFiles, f.listFilesErr
+}
+
+func (f *fakeRepo) CountFiles(_ context.Context, _ database.FileFilter) (int, error) {
+	return f.countFiles, f.listFilesErr
+}
+
+func (f *fakeRepo) FileHashesByFilter(_ context.Context, _ database.FileFilter) ([]string, error) {
+	return f.filterHashes, f.filterHashesErr
+}
+
+func (f *fakeRepo) BulkSoftDeleteByHashes(_ context.Context, hashes []string) (int, error) {
+	f.bulkTrashedHashes = append(f.bulkTrashedHashes, hashes...)
+	if f.bulkTrashErr != nil {
+		return 0, f.bulkTrashErr
+	}
+	return len(hashes), nil
 }
 
 func (f *fakeRepo) StorageByteBreakdown(_ context.Context) (database.StorageByteBreakdown, error) {
@@ -1055,14 +1083,26 @@ func TestListFiles_Empty(t *testing.T) {
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
 
-	var items []any
-	if err := json.NewDecoder(rr.Body).Decode(&items); err != nil {
+	var env fileListEnvelope
+	if err := json.NewDecoder(rr.Body).Decode(&env); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	// Must be an array (len 0), never null.
-	if len(items) != 0 {
-		t.Errorf("items = %v, want empty array", items)
+	// items must be an array (len 0), never null; total reflects the empty set.
+	if len(env.Items) != 0 {
+		t.Errorf("items = %v, want empty array", env.Items)
 	}
+	if env.Total != 0 {
+		t.Errorf("total = %d, want 0", env.Total)
+	}
+}
+
+// fileListEnvelope mirrors the GET /api/files response shape (a paginated
+// envelope, not a bare array). Tests decode into it and read .Items / .Total.
+type fileListEnvelope struct {
+	Total  int              `json:"total"`
+	Limit  int              `json:"limit"`
+	Offset int              `json:"offset"`
+	Items  []map[string]any `json:"items"`
 }
 
 // TestListFiles_ReturnsUploadedFiles uploads a file then checks that
@@ -1104,14 +1144,16 @@ func TestListFiles_ReturnsUploadedFiles(t *testing.T) {
 		Title    string `json:"title"`
 		Artist   string `json:"artist"`
 	}
-	var items []fileItem
-	if err := json.NewDecoder(listRR.Body).Decode(&items); err != nil {
+	var env struct {
+		Items []fileItem `json:"items"`
+	}
+	if err := json.NewDecoder(listRR.Body).Decode(&env); err != nil {
 		t.Fatalf("decode list response: %v", err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("len(items) = %d, want 1", len(items))
+	if len(env.Items) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(env.Items))
 	}
-	got := items[0]
+	got := env.Items[0]
 	if got.Hash != wantHash {
 		t.Errorf("hash = %q, want %q", got.Hash, wantHash)
 	}
@@ -1149,16 +1191,16 @@ func TestListFiles_URLFormatMatchesFileServer(t *testing.T) {
 	listRR := httptest.NewRecorder()
 	h.listFiles(listRR, listReq)
 
-	var items []map[string]any
-	if err := json.NewDecoder(listRR.Body).Decode(&items); err != nil {
+	var env fileListEnvelope
+	if err := json.NewDecoder(listRR.Body).Decode(&env); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("want 1 item, got %d", len(items))
+	if len(env.Items) != 1 {
+		t.Fatalf("want 1 item, got %d", len(env.Items))
 	}
 
-	url, _ := items[0]["url"].(string)
-	hash, _ := items[0]["hash"].(string)
+	url, _ := env.Items[0]["url"].(string)
+	hash, _ := env.Items[0]["hash"].(string)
 	wantURLPrefix := "/files/" + hash + "/"
 	if !strings.HasPrefix(url, wantURLPrefix) {
 		t.Errorf("url = %q, want prefix %q; download link is broken", url, wantURLPrefix)
@@ -1353,16 +1395,16 @@ func TestUploadFile_TraversalFilenameProducesCorrectURL(t *testing.T) {
 	listRR := httptest.NewRecorder()
 	h.listFiles(listRR, listReq)
 
-	var items []map[string]any
-	if err := json.NewDecoder(listRR.Body).Decode(&items); err != nil {
+	var env fileListEnvelope
+	if err := json.NewDecoder(listRR.Body).Decode(&env); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("want 1 item, got %d", len(items))
+	if len(env.Items) != 1 {
+		t.Fatalf("want 1 item, got %d", len(env.Items))
 	}
 
-	url, _ := items[0]["url"].(string)
-	hash, _ := items[0]["hash"].(string)
+	url, _ := env.Items[0]["url"].(string)
+	hash, _ := env.Items[0]["hash"].(string)
 
 	// Go's multipart parser applies filepath.Base to every filename (RFC 7578 §4.2),
 	// so header.Filename == "track.mp3" (not the raw "../../../music/track.mp3").
@@ -1429,15 +1471,15 @@ func TestUploadFile_WindowsPathFilenameProducesCleanURL(t *testing.T) {
 	listRR := httptest.NewRecorder()
 	h.listFiles(listRR, listReq)
 
-	var items []map[string]any
-	if err := json.NewDecoder(listRR.Body).Decode(&items); err != nil {
+	var env fileListEnvelope
+	if err := json.NewDecoder(listRR.Body).Decode(&env); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("want 1 item, got %d", len(items))
+	if len(env.Items) != 1 {
+		t.Fatalf("want 1 item, got %d", len(env.Items))
 	}
-	url, _ := items[0]["url"].(string)
-	hash, _ := items[0]["hash"].(string)
+	url, _ := env.Items[0]["url"].(string)
+	hash, _ := env.Items[0]["hash"].(string)
 	wantURL := "/files/" + hash + "/evil.mp3"
 	if url != wantURL {
 		t.Errorf("url = %q, want %q (backslashes should be stripped)", url, wantURL)

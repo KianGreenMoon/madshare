@@ -54,6 +54,94 @@ func (h *handler) adminDeleteFile(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// bulkHashCap bounds an explicit hash list in a bulk request, so a single call
+// can't carry an unbounded body. The filter path (no hashes) has no cap — it
+// resolves the set server-side. Hand-picked selections never approach this.
+const bulkHashCap = 5000
+
+// adminBulkFiles handles POST /api/admin/files/bulk — a transactional bulk
+// action over an explicit hash set OR everything matching a filter
+// (docs/architecture/file-list-scaling.md). v1 implements action "trash"
+// (move to Trash); editing is a planned follow-up on the same endpoint. Gated
+// by file.delete at registration.
+//
+// Exactly one of {hashes, filter} must be given. An empty filter means the
+// whole (matching) library, which is refused unless "all": true — the guardrail
+// the UI pairs with a strong confirm.
+func (h *handler) adminBulkFiles(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // a large hash list is still small
+	var req struct {
+		Action string   `json:"action"`
+		Hashes []string `json:"hashes"`
+		Filter *struct {
+			Q        string `json:"q"`
+			ArtistID *int64 `json:"artist_id"`
+			AlbumID  *int64 `json:"album_id"`
+		} `json:"filter"`
+		All bool `json:"all"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid JSON body"})
+		return
+	}
+	if req.Action != "trash" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown action"})
+		return
+	}
+
+	hasHashes := len(req.Hashes) > 0
+	hasFilter := req.Filter != nil
+	if hasHashes == hasFilter { // both, or neither
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "provide exactly one of hashes or filter"})
+		return
+	}
+
+	// Resolve the target set to a hash list (explicit, validated; or filter).
+	var hashes []string
+	if hasHashes {
+		if len(req.Hashes) > bulkHashCap {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "too many hashes"})
+			return
+		}
+		for _, hsh := range req.Hashes {
+			if !adminHashPattern.MatchString(hsh) {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid hash"})
+				return
+			}
+		}
+		hashes = req.Hashes
+	} else {
+		filter := database.FileFilter{
+			Q:        strings.TrimSpace(req.Filter.Q),
+			ArtistID: req.Filter.ArtistID,
+			AlbumID:  req.Filter.AlbumID,
+		}
+		if filter.Q == "" && filter.ArtistID == nil && filter.AlbumID == nil && !req.All {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": `refusing to act on the whole library without "all": true`})
+			return
+		}
+		var err error
+		hashes, err = h.repo.FileHashesByFilter(r.Context(), filter)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+			return
+		}
+	}
+
+	if len(hashes) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": 0})
+		return
+	}
+
+	affected, err := h.repo.BulkSoftDeleteByHashes(r.Context(), hashes)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+		return
+	}
+	h.audit(r.Context(), "file.bulk_trash", "files", fmt.Sprintf("%d trashed", affected))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
+}
+
 // adminTrashList handles GET /api/admin/trash. It returns all soft-deleted
 // files ordered by deletion time descending.
 func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {

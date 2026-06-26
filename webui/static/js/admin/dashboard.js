@@ -8,9 +8,14 @@ async function fillCount(id, url) {
     const res = await fetch(`${API}${url}`);
     if (!res.ok) return; // lacking permission, etc. — leave the badge hidden
     const data = await res.json();
-    if (!Array.isArray(data)) return;
+    // Bare-array listings report length; the paginated /api/files envelope
+    // reports its total (fetched with limit=0, so no page rows come back).
+    let count;
+    if (Array.isArray(data)) count = data.length;
+    else if (data && typeof data.total === 'number') count = data.total;
+    else return;
     const badge = document.getElementById(id);
-    if (badge) { badge.textContent = String(data.length); badge.hidden = false; }
+    if (badge) { badge.textContent = String(count); badge.hidden = false; }
   } catch { /* network error — leave the badge hidden */ }
 }
 
@@ -193,7 +198,7 @@ async function fillStorage() {
   fillStorage();
   fillPruneStatus();
   fillSourcesStatus();
-  fillCount('countFiles', '/api/files');
+  fillCount('countFiles', '/api/files?limit=0');
   fillCount('countModeration', '/api/admin/moderation');
   fillCount('countTrash', '/api/admin/trash');
   fillCount('countDuplicates', '/api/admin/duplicates');

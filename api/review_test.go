@@ -43,8 +43,7 @@ func TestReview_UploaderModeratorFlow(t *testing.T) {
 	hash, path := uploadStaged(t, up, srv.URL, "draft.mp3")
 
 	// Staged: invisible in the library, even for the admin.
-	var files []map[string]any
-	doJSON(t, admin, http.MethodGet, srv.URL+"/api/files", nil, &files)
+	files := getFileItems(t, admin, srv.URL+"/api/files")
 	if len(files) != 0 {
 		t.Errorf("admin /api/files = %d, want 0 (draft hidden)", len(files))
 	}
@@ -151,7 +150,7 @@ func TestReview_UploaderModeratorFlow(t *testing.T) {
 	if code := doJSON(t, admin, http.MethodPost, srv.URL+"/api/admin/moderation/"+hash+"/approve", nil, nil); code != http.StatusOK {
 		t.Fatalf("approve = %d, want 200", code)
 	}
-	doJSON(t, admin, http.MethodGet, srv.URL+"/api/files", nil, &files)
+	files = getFileItems(t, admin, srv.URL+"/api/files")
 	if len(files) != 1 {
 		t.Errorf("admin /api/files after approve = %d, want 1", len(files))
 	}
@@ -188,8 +187,7 @@ func TestReview_ModeratorSelfApproves(t *testing.T) {
 	if !sub.Approved || sub.Submitted != 1 {
 		t.Fatalf("moderator submit: approved=%v submitted=%d, want self-approve", sub.Approved, sub.Submitted)
 	}
-	var files []map[string]any
-	doJSON(t, admin, http.MethodGet, srv.URL+"/api/files", nil, &files)
+	files := getFileItems(t, admin, srv.URL+"/api/files")
 	if len(files) != 1 {
 		t.Errorf("library after self-approve = %d files, want 1", len(files))
 	}
@@ -222,8 +220,7 @@ func TestReview_DiscardToTrashAndBack(t *testing.T) {
 	if len(queue) != 1 {
 		t.Errorf("queue after restore = %d, want 1 (submitted state survives trash)", len(queue))
 	}
-	var files []map[string]any
-	doJSON(t, admin, http.MethodGet, srv.URL+"/api/files", nil, &files)
+	files := getFileItems(t, admin, srv.URL+"/api/files")
 	if len(files) != 0 {
 		t.Errorf("library after restore = %d, want 0 (still awaiting review)", len(files))
 	}
@@ -272,8 +269,7 @@ func TestReview_ReuploadOfTrashedFileRestages(t *testing.T) {
 		t.Errorf("re-upload = %+v, want existed+restored+pending", body)
 	}
 
-	var files []map[string]any
-	doJSON(t, admin, http.MethodGet, srv.URL+"/api/files", nil, &files)
+	files := getFileItems(t, admin, srv.URL+"/api/files")
 	if len(files) != 0 {
 		t.Errorf("library after re-upload restore = %d files, want 0 (re-staged, not republished)", len(files))
 	}
@@ -319,8 +315,7 @@ func TestReview_UploaderRestoreRestages(t *testing.T) {
 	if !res.OK || !res.Staged {
 		t.Errorf("uploader restore = %+v, want ok+staged", res)
 	}
-	var files []map[string]any
-	doJSON(t, admin, http.MethodGet, srv.URL+"/api/files", nil, &files)
+	files := getFileItems(t, admin, srv.URL+"/api/files")
 	if len(files) != 0 {
 		t.Errorf("library after uploader restore = %d files, want 0 (re-staged)", len(files))
 	}

@@ -143,6 +143,7 @@ func (h *handler) listTracks(w http.ResponseWriter, r *http.Request) {
 
 	type trackItem struct {
 		ID          int64    `json:"id"`
+		Hash        string   `json:"hash"` // lets the admin By-entity view edit/delete a track without a whole-table fetch
 		Title       string   `json:"title"`
 		ArtistName  string   `json:"artist_name"`
 		TrackNumber *int64   `json:"track_number"`
@@ -168,6 +169,7 @@ func (h *handler) listTracks(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, trackItem{
 			ID:          t.ID,
+			Hash:        t.Hash,
 			Title:       t.Title,
 			ArtistName:  t.ArtistName,
 			TrackNumber: trackNum,

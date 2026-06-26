@@ -177,43 +177,33 @@ func (db *DB) ListFilesGuest(ctx context.Context) ([]*FileListEntry, error) {
 	return db.listFiles(ctx, accessClause)
 }
 
-// listFiles is the shared query. When where is non-empty it is appended as an
-// access predicate (with its bind args), restricting the result to reachable
-// files.
-func (db *DB) listFiles(ctx context.Context, where string, args ...any) ([]*FileListEntry, error) {
-	q := `
-		SELECT
-			f.id, f.hash, f.mime_type, f.byte_size, f.object_key, f.created_at,
-			COALESCE((SELECT filename FROM file_uploads WHERE file_id = f.id ORDER BY id LIMIT 1), f.hash) AS filename,
-			COALESCE(m.title,  '') AS title,
-			COALESCE(m.artist, '') AS artist,
-			m.album_artist,
-			COALESCE(m.album,  '') AS album,
-			m.track_number,
-			m.disc_number,
-			COALESCE(m.year,    0) AS year,
-			m.duration_seconds,
-			` + guestAccessibleExpr + ` AS guest_playable,
-			f.license,
-			CASE WHEN aimg.artist_id IS NOT NULL THEN 1 ELSE 0 END AS artist_has_image,
-			CASE WHEN alimg.album_id  IS NOT NULL THEN 1 ELSE 0 END AS album_has_image
-		FROM files f
-		LEFT JOIN media_metadata m ON m.file_id = f.id
-		LEFT JOIN artist_images aimg ON aimg.artist_id = m.album_artist_id
-		LEFT JOIN album_images  alimg ON alimg.album_id  = m.album_id`
-	if where != "" {
-		q += "\n\t\tWHERE " + visibleFile + " AND " + where
-	} else {
-		q += "\n\t\tWHERE " + visibleFile
-	}
-	q += "\n\t\tORDER BY f.created_at DESC"
+// fileListSelect is the column list + joins shared by every file listing (full,
+// guest, and paginated). Callers append their own WHERE / ORDER BY / LIMIT and
+// scan the result with scanFileList — so the row shape is defined in one place.
+// (A var, not a const, because it embeds the guestAccessibleExpr var.)
+var fileListSelect = `
+	SELECT
+		f.id, f.hash, f.mime_type, f.byte_size, f.object_key, f.created_at,
+		COALESCE((SELECT filename FROM file_uploads WHERE file_id = f.id ORDER BY id LIMIT 1), f.hash) AS filename,
+		COALESCE(m.title,  '') AS title,
+		COALESCE(m.artist, '') AS artist,
+		m.album_artist,
+		COALESCE(m.album,  '') AS album,
+		m.track_number,
+		m.disc_number,
+		COALESCE(m.year,    0) AS year,
+		m.duration_seconds,
+		` + guestAccessibleExpr + ` AS guest_playable,
+		f.license,
+		CASE WHEN aimg.artist_id IS NOT NULL THEN 1 ELSE 0 END AS artist_has_image,
+		CASE WHEN alimg.album_id  IS NOT NULL THEN 1 ELSE 0 END AS album_has_image
+	FROM files f
+	LEFT JOIN media_metadata m ON m.file_id = f.id
+	LEFT JOIN artist_images aimg ON aimg.artist_id = m.album_artist_id
+	LEFT JOIN album_images  alimg ON alimg.album_id  = m.album_id`
 
-	rows, err := db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, fmt.Errorf("list files: %w", err)
-	}
-	defer rows.Close()
-
+// scanFileList drains a fileListSelect result into FileListEntry values.
+func scanFileList(rows *sql.Rows) ([]*FileListEntry, error) {
 	out := make([]*FileListEntry, 0)
 	for rows.Next() {
 		var e FileListEntry
@@ -234,6 +224,215 @@ func (db *DB) listFiles(ctx context.Context, where string, args ...any) ([]*File
 		return nil, fmt.Errorf("list files rows: %w", err)
 	}
 	return out, nil
+}
+
+// listFiles is the shared query. When where is non-empty it is appended as an
+// access predicate (with its bind args), restricting the result to reachable
+// files.
+func (db *DB) listFiles(ctx context.Context, where string, args ...any) ([]*FileListEntry, error) {
+	q := fileListSelect
+	if where != "" {
+		q += "\n\t\tWHERE " + visibleFile + " AND " + where
+	} else {
+		q += "\n\t\tWHERE " + visibleFile
+	}
+	q += "\n\t\tORDER BY f.created_at DESC"
+
+	rows, err := db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list files: %w", err)
+	}
+	defer rows.Close()
+	return scanFileList(rows)
+}
+
+// FileFilter narrows a file listing or bulk operation. The zero value matches
+// every approved, non-trashed file (the visibleFile predicate is always
+// applied). Guest additionally restricts to guest-reachable files (the listing
+// path); the admin bulk path leaves it false. Q is a case-insensitive substring
+// over the fields a row shows (title / artist / album-artist / album / filename);
+// ArtistID / AlbumID pin an entity — an artist matches in EITHER role
+// (album-artist OR performer), mirroring the entity browse.
+// See docs/architecture/file-list-scaling.md.
+type FileFilter struct {
+	Guest    bool
+	Q        string
+	ArtistID *int64
+	AlbumID  *int64
+}
+
+// FileListQuery is a FileFilter plus presentation: a sort token (allow-listed in
+// fileSortOrder) and a page window. Limit <= 0 means "no limit" (every match);
+// Offset < 0 clamps to 0.
+type FileListQuery struct {
+	FileFilter
+	Sort   string
+	Limit  int
+	Offset int
+}
+
+// likeEscaped wraps q as a LIKE pattern with % and _ neutralised (used with
+// ESCAPE '\'), mirroring database/library.go search so a literal underscore in
+// a title can't act as a wildcard.
+func likeEscaped(q string) string {
+	return "%" + strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(q) + "%"
+}
+
+// fileFilterWhere builds the WHERE predicate (always including visibleFile) and
+// its bind args for a FileFilter. It is the single definition of "what matches",
+// shared by the page query, the count, and the bulk hash resolver.
+func fileFilterWhere(f FileFilter) (string, []any) {
+	where := visibleFile
+	var args []any
+	if f.Guest {
+		where += " AND " + accessClause
+	}
+	if q := strings.TrimSpace(f.Q); q != "" {
+		like := likeEscaped(q)
+		where += ` AND (
+			LOWER(COALESCE(m.title,        '')) LIKE LOWER(?) ESCAPE '\' OR
+			LOWER(COALESCE(m.artist,       '')) LIKE LOWER(?) ESCAPE '\' OR
+			LOWER(COALESCE(m.album_artist, '')) LIKE LOWER(?) ESCAPE '\' OR
+			LOWER(COALESCE(m.album,        '')) LIKE LOWER(?) ESCAPE '\' OR
+			EXISTS (SELECT 1 FROM file_uploads u WHERE u.file_id = f.id AND LOWER(u.filename) LIKE LOWER(?) ESCAPE '\')
+		)`
+		args = append(args, like, like, like, like, like)
+	}
+	if f.ArtistID != nil {
+		where += " AND (m.album_artist_id = ? OR m.artist_id = ?)"
+		args = append(args, *f.ArtistID, *f.ArtistID)
+	}
+	if f.AlbumID != nil {
+		where += " AND m.album_id = ?"
+		args = append(args, *f.AlbumID)
+	}
+	return where, args
+}
+
+// fileSortOrder maps a sort token to a safe ORDER BY fragment (allow-listed
+// columns only — never interpolate caller input). Every order ends with f.id so
+// paging is stable across ties. Unknown tokens fall back to newest-first.
+func fileSortOrder(token string) string {
+	switch token {
+	case "created_asc":
+		return "f.created_at ASC, f.id ASC"
+	case "title_asc":
+		return "LOWER(COALESCE(m.title, '')) ASC, f.id ASC"
+	case "title_desc":
+		return "LOWER(COALESCE(m.title, '')) DESC, f.id DESC"
+	case "artist_asc":
+		return "LOWER(COALESCE(m.album_artist, m.artist, '')) ASC, f.id ASC"
+	case "artist_desc":
+		return "LOWER(COALESCE(m.album_artist, m.artist, '')) DESC, f.id DESC"
+	case "size_asc":
+		return "f.byte_size ASC, f.id ASC"
+	case "size_desc":
+		return "f.byte_size DESC, f.id DESC"
+	default: // created_desc
+		return "f.created_at DESC, f.id DESC"
+	}
+}
+
+// ListFilesPage returns one filtered, sorted page of the file listing — the
+// paginated counterpart of ListFiles. With Limit <= 0 it returns every match
+// (no window). See docs/architecture/file-list-scaling.md.
+func (db *DB) ListFilesPage(ctx context.Context, q FileListQuery) ([]*FileListEntry, error) {
+	where, args := fileFilterWhere(q.FileFilter)
+	sqlText := fileListSelect + "\n\t\tWHERE " + where + "\n\t\tORDER BY " + fileSortOrder(q.Sort)
+	if q.Limit > 0 {
+		offset := q.Offset
+		if offset < 0 {
+			offset = 0
+		}
+		sqlText += "\n\t\tLIMIT ? OFFSET ?"
+		args = append(args, q.Limit, offset)
+	}
+	rows, err := db.QueryContext(ctx, sqlText, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list files page: %w", err)
+	}
+	defer rows.Close()
+	return scanFileList(rows)
+}
+
+// CountFiles returns how many files match the filter, ignoring paging — the
+// total for "page N of M" and "select all N matching".
+func (db *DB) CountFiles(ctx context.Context, f FileFilter) (int, error) {
+	where, args := fileFilterWhere(f)
+	var n int
+	err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM files f LEFT JOIN media_metadata m ON m.file_id = f.id WHERE `+where, args...).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count files: %w", err)
+	}
+	return n, nil
+}
+
+// FileHashesByFilter returns the content hashes of every file matching the
+// filter (no paging), ordered by id. Backs "select all N matching" bulk actions:
+// the handler resolves the set here, then acts on the hashes.
+func (db *DB) FileHashesByFilter(ctx context.Context, f FileFilter) ([]string, error) {
+	where, args := fileFilterWhere(f)
+	rows, err := db.QueryContext(ctx,
+		`SELECT f.hash FROM files f LEFT JOIN media_metadata m ON m.file_id = f.id WHERE `+where+` ORDER BY f.id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("file hashes by filter: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, fmt.Errorf("scan file hash: %w", err)
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// BulkSoftDeleteByHashes soft-deletes (moves to Trash) the given hashes in a
+// single transaction, chunked to stay within SQLite's bound-parameter limit. It
+// mirrors SoftDeleteFileByHash's deleted_at-only guard, so already-trashed and
+// unknown hashes are simply skipped; the returned count is how many rows were
+// actually trashed. Blobs and DB rows are preserved for the Trash flow.
+func (db *DB) BulkSoftDeleteByHashes(ctx context.Context, hashes []string) (int, error) {
+	if len(hashes) == 0 {
+		return 0, nil
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := time.Now().Unix()
+	total := 0
+	const chunk = 400
+	for i := 0; i < len(hashes); i += chunk {
+		end := i + chunk
+		if end > len(hashes) {
+			end = len(hashes)
+		}
+		batch := hashes[i:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, 0, len(batch)+1)
+		args = append(args, now)
+		for j, h := range batch {
+			placeholders[j] = "?"
+			args = append(args, h)
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE files SET deleted_at = ? WHERE deleted_at IS NULL AND hash IN (`+strings.Join(placeholders, ",")+`)`, args...)
+		if err != nil {
+			return 0, fmt.Errorf("bulk soft delete: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		total += int(n)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit: %w", err)
+	}
+	return total, nil
 }
 
 // uploadFilenamesInTx returns the recorded filenames for a file (ordered by

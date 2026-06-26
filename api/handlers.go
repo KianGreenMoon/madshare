@@ -156,19 +156,44 @@ func (h *handler) guestListing(ctx context.Context) bool {
 	return !auth.FromContext(ctx).Has(auth.PermContentAccess)
 }
 
+// fileListDefaultLimit / fileListMaxLimit bound the page window. A missing
+// limit defaults to fileListDefaultLimit; limit=0 is a count-only request (the
+// dashboard reads just total); anything above the max is clamped.
+const (
+	fileListDefaultLimit = 100
+	fileListMaxLimit     = 500
+)
+
 func (h *handler) listFiles(w http.ResponseWriter, r *http.Request) {
-	var (
-		entries []*database.FileListEntry
-		err     error
-	)
-	if h.guestListing(r.Context()) {
-		entries, err = h.repo.ListFilesGuest(r.Context())
-	} else {
-		entries, err = h.repo.ListFiles(r.Context())
+	q := r.URL.Query()
+	query := q.Get("q")
+	if len(query) > 200 {
+		http.Error(w, "query too long", http.StatusBadRequest)
+		return
 	}
+	filter := database.FileFilter{
+		Guest: h.guestListing(r.Context()),
+		Q:     query,
+	}
+	limit := clampInt(q.Get("limit"), fileListDefaultLimit, 0, fileListMaxLimit)
+	offset := clampInt(q.Get("offset"), 0, 0, 1<<30)
+
+	total, err := h.repo.CountFiles(r.Context(), filter)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
+	}
+
+	// limit=0 → count-only: skip the page query entirely.
+	var entries []*database.FileListEntry
+	if limit > 0 {
+		entries, err = h.repo.ListFilesPage(r.Context(), database.FileListQuery{
+			FileFilter: filter, Sort: q.Get("sort"), Limit: limit, Offset: offset,
+		})
+		if err != nil {
+			http.Error(w, "storage error", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	type fileItem struct {
@@ -229,7 +254,31 @@ func (h *handler) listFiles(w http.ResponseWriter, r *http.Request) {
 			AlbumHasImage:  e.AlbumHasImage,
 		})
 	}
-	writeJSON(w, http.StatusOK, items)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+		"items":  items,
+	})
+}
+
+// clampInt parses a query-string integer, falling back to def when empty or
+// malformed, then clamps the result to [lo, hi].
+func clampInt(s string, def, lo, hi int) int {
+	if s == "" {
+		return def
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	if n < lo {
+		return lo
+	}
+	if n > hi {
+		return hi
+	}
+	return n
 }
 
 // extractTagsOrEmpty runs media.ExtractTags on content if it is seekable.
