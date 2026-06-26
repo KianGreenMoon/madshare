@@ -303,15 +303,19 @@ Every destructive path is storage-aware:
 
 ## UI
 
-`/admin/sources` ("Data sources", admin shell): an **Imported directories**
-section listing each symlink source (root, scan summary, external bytes, health
-badge), an **Add symlink source** form constrained to `symlink_roots` (hidden if
-none), scan progress (prune-status polling), and a broken-links detail view —
-plus a read-only `local` store summary. **No reorderable storage list in v0**:
-`links` is not presented as a peer storage device, it *is* the imports section
-(the reorderable storage view is an S3-era addition — see `s3-storage.md`). Reuses
-the admin shell, `toast.js`, shared player. `-tags nowebui`: page compiles out,
-API stays.
+`/admin/sources` ("Data sources", admin shell — built, P6): an **Imported
+directories** section listing each symlink source (name, root, status badge, scan
+summary, last-scan date), an **Add symlink source** form constrained to
+`symlink_roots` (root dropdown + optional subfolder; hidden when none), scan
+progress (polling `GET /api/admin/sources` while any source is `scanning`), and a
+**Links storage** health line (count / external bytes / broken-link count); the
+broken-link *detail* (which hashes, with reasons) lives on the Prune page, linked
+from the health line. The dashboard's storage card shows external (linked) bytes
+separately and a "scanning" badge. **No reorderable storage list in v0**: `links`
+is not presented as a peer storage device, it *is* the imports section (the
+reorderable storage view is an S3-era addition — see `s3-storage.md`). Reuses the
+admin shell, `shared.js`, `toast.js`. Moderator-gated client-side
+(`content.moderate`). `-tags nowebui`: page compiles out, API stays.
 
 ## Phasing
 
@@ -367,8 +371,16 @@ API stays.
   links rows (`storage_backend <> 'links'`) — importing in place adds 0 on disk.
   `GET /api/admin/sources` carries links health (`count` / `broken` / external
   bytes). The external original is never touched in any path.
-- **P6 — `/admin/sources` page** (imports section + add/scan/health; no storage
-  reorder UI — that ships with S3).
+- **P6 — `/admin/sources` page. _(done)_** Admin-shell page ("Data sources" nav
+  link + dashboard card): an **Add symlink source** form constrained to
+  `symlink_roots` (a root dropdown + optional subfolder; hidden when none
+  configured), an **Imported directories** list (name, root, status badge,
+  scan summary, last-scan date) that polls `GET /api/admin/sources` while any
+  source is scanning, and a **Links storage** health line (count / external bytes
+  / broken-link count, linking to Prune when broken). The dashboard's storage card
+  also shows external (linked) bytes separately and a "scanning" badge. No
+  reorderable storage list (that ships with S3). Moderator-gated client-side
+  (`content.moderate`); compiles out under `-tags nowebui` (API stays).
 - **Future** — source delete / duplicate-reconcile tool; two-way sync/rescan; the
   `s3` storage + configurable precedence (`docs/architecture/s3-storage.md`);
   "adopt/materialize" a link into `local`.

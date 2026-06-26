@@ -81,7 +81,10 @@ var adminSubPages = map[string]*template.Template{
 	// "duplicates" lists same-audio recordings with >1 rendition (recordings P2,
 	// docs/architecture/recordings.md). Moderator-accessible.
 	"duplicates": buildPageTmpl("html/admin/duplicates.html"),
-	"settings":   buildPageTmpl("html/admin/settings.html"),
+	// "sources" manages in-place symlink imports (data-sources P6,
+	// docs/architecture/data-sources.md). Moderator-accessible.
+	"sources":  buildPageTmpl("html/admin/sources.html"),
+	"settings": buildPageTmpl("html/admin/settings.html"),
 }
 
 // pageData is the data injected into every page. APIURL is the absolute API

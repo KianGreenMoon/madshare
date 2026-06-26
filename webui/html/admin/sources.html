@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Madshare &mdash; Admin &middot; Data sources</title>
+  <meta name="api-url" content="{{.APIURL}}">
+  {{template "theme-guard" .}}
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/admin-shell.css">
+  <link rel="stylesheet" href="/static/css/admin-sources.css">
+</head>
+<body>
+
+{{template "header" .}}
+{{template "admin-shell" .}}
+
+<main class="admin-main">
+  <section aria-labelledby="sourcesHeading">
+    <h2 class="section-title" id="sourcesHeading">Data sources</h2>
+    <p class="section-copy">
+      Import an external directory of audio files <strong>in place</strong>: Madshare
+      references each track by a symlink and never copies, moves, or modifies your
+      originals. A source may only point at a folder under an allow-listed root
+      (<code>[sources].symlink_roots</code> in <code>madshare.toml</code>).
+    </p>
+
+    <!-- Add form — shown only when at least one symlink_root is configured. -->
+    <form class="source-add" id="addForm" hidden>
+      <h3 class="src-subhead">Add a symlink source</h3>
+      <div class="source-add-grid">
+        <label class="src-field">
+          <span>Name</span>
+          <input id="srcName" type="text" required maxlength="100" placeholder="e.g. NAS music" autocomplete="off">
+        </label>
+        <label class="src-field">
+          <span>Allowed root</span>
+          <select id="srcRoot"></select>
+        </label>
+        <label class="src-field">
+          <span>Subfolder <span class="src-opt">(optional)</span></span>
+          <input id="srcSub" type="text" placeholder="Albums/2024" autocomplete="off">
+        </label>
+      </div>
+      <button class="btn btn-neutral" id="addBtn" type="submit">Scan &amp; import</button>
+    </form>
+
+    <!-- Disabled note — shown when no symlink_root is configured. -->
+    <div class="source-disabled" id="disabledNote" hidden>
+      <p>
+        Symlink imports are turned off. Add one or more directories to
+        <code>[sources].symlink_roots</code> in <code>madshare.toml</code> and
+        restart to enable importing external folders.
+      </p>
+    </div>
+
+    <!-- Links-storage health (count / broken / external bytes). -->
+    <div class="links-health" id="linksHealth" hidden></div>
+
+    <h3 class="src-subhead" id="importedHeading">Imported directories</h3>
+    <div class="sources-list" id="sourcesList" aria-live="polite"></div>
+  </section>
+</main>
+
+{{template "auth-modals" .}}
+
+<script type="module" src="/static/js/admin/sources.js"></script>
+</body>
+</html>

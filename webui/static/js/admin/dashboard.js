@@ -31,6 +31,19 @@ async function fillPruneStatus() {
   } catch { /* network error — leave the badge hidden */ }
 }
 
+// Show a "scanning" badge on the Data sources card while any symlink source is
+// mid-scan (the same shared state the /admin/sources page polls).
+async function fillSourcesStatus() {
+  try {
+    const res = await fetch(`${API}/api/admin/sources`);
+    if (!res.ok) return; // lacks content.moderate / no manager — leave it hidden
+    const data = await res.json();
+    const badge = document.getElementById('sourcesScanning');
+    const scanning = Array.isArray(data.sources) && data.sources.some((s) => s.status === 'scanning');
+    if (badge) badge.hidden = !scanning;
+  } catch { /* network error — leave the badge hidden */ }
+}
+
 // Colors for the per-category bar segments + swatches. Known categories get a
 // stable color; anything unknown (a future category the server adds before the
 // UI knows about it) cycles through the fallbacks. Values are CSS vars so they
@@ -124,6 +137,18 @@ async function fillStorage() {
     setText('storageLocation', s.location || '—');
     setText('storageLibrary', fmtBytes(s.library_bytes));
 
+    // External (symlink-imported) bytes live outside data_dir and are not part of
+    // the on-disk total, so they get their own row — shown only when non-zero.
+    const extRow = document.getElementById('storageExternalRow');
+    if (extRow) {
+      if (s.external_bytes > 0) {
+        setText('storageExternal', fmtBytes(s.external_bytes));
+        extRow.hidden = false;
+      } else {
+        extRow.hidden = true;
+      }
+    }
+
     const meter = document.getElementById('storageMeter');
     const note = document.getElementById('storageNote');
     const usedRow = document.getElementById('storageUsedRow');
@@ -167,6 +192,7 @@ async function fillStorage() {
   if (!identity) return;
   fillStorage();
   fillPruneStatus();
+  fillSourcesStatus();
   fillCount('countFiles', '/api/files');
   fillCount('countModeration', '/api/admin/moderation');
   fillCount('countTrash', '/api/admin/trash');

@@ -65,6 +65,14 @@
         <span class="dash-card-desc">Review same-audio recordings with more than one rendition.</span>
       </a>
 
+      <a class="dash-card" href="/admin/sources">
+        <span class="dash-card-head">
+          <span class="dash-card-title">Data sources</span>
+          <span class="dash-card-count dash-card-count--live" id="sourcesScanning" hidden>scanning</span>
+        </span>
+        <span class="dash-card-desc">Import external folders in place via symlinks; no copying.</span>
+      </a>
+
       <a class="dash-card" href="/admin/library#trash">
         <span class="dash-card-head">
           <span class="dash-card-title">Trash</span>
@@ -107,6 +115,12 @@
         <div class="storage-detail-row" id="storageTotalRow">
           <dt>Madshare total</dt>
           <dd id="storageLibrary">—</dd>
+        </div>
+        {{/* External (symlink-imported) bytes — outside data_dir, shown only when
+             a symlink source has linked something (data-sources P6). */}}
+        <div class="storage-detail-row" id="storageExternalRow" hidden>
+          <dt>External (linked)</dt>
+          <dd id="storageExternal">—</dd>
         </div>
         <div class="storage-detail-row" id="storageUsedRow">
           <dt><span class="storage-swatch storage-swatch--other" aria-hidden="true"></span>Disk used</dt>
