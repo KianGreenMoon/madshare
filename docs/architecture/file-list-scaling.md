@@ -19,6 +19,16 @@ designed in
 sit on the same paginated backend; this flow just renders one page at a time
 rather than a virtualized window.
 
+> **Update (2026-06-26): the numbered pager is superseded by infinite scroll.**
+> The offset **backend** described here (the `GET /api/files` envelope, `CountFiles`,
+> the bulk endpoint, the filter/sort maps) is unchanged and stays the source of
+> truth. Only the **presentation** changed: the All-files list now renders through
+> the shared virtualized scroller and loads pages by infinite scroll instead of
+> Prev/Next, and the grouped "By artist / album" view returns on that windowed
+> list. See ["This pass"](infinite-scroll-virtualization.md) in the virtualization
+> doc. The numbered-pager prose below is retained for the backend contract it
+> documents.
+
 ---
 
 ## The problem (why it freezes — nothing is lazy)

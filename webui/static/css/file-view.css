@@ -307,6 +307,13 @@
 }
 .files-table tbody tr:last-child td { border-bottom: none; }
 
+/* Virtual-scroll spacers: a single full-colspan cell whose height stands in for
+   the off-screen rows above/below the window. No padding/border so the pad height
+   is exactly what the scroller sets (file-list.js makeSpacerRow). */
+.files-table tbody tr.fl-spacer,
+.files-table tbody tr.fl-spacer:hover { background: transparent; }
+.files-table tbody td.fl-spacer-cell { padding: 0; border: 0; }
+
 .cell-title { font-weight: 500; }
 .cell-title.is-fallback { font-weight: 400; font-style: italic; color: var(--text-muted); }
 .cell-hash {

@@ -26,6 +26,60 @@ scopes). Until then, that scope ships the flat, server-paged list from
 
 ---
 
+## This pass: unify admin + upload on one virtualized list (decided 2026-06-26)
+
+Owner steering folded the two efforts together for the **admin + upload** file
+lists (the public library `/` stays on the future cursor-paginated path below).
+Decisions:
+
+- **One engine for every file-list scope.** All files · Review · Trash · My
+  uploads all render through the same windowed core in `file-list.js`; the
+  `/admin/duplicates` page stays a separate renderer (recordings→renditions is a
+  different row shape) but may reuse the scroller module if it grows.
+- **Flat All-files becomes infinite scroll**, superseding the numbered pager from
+  [`file-list-scaling.md`](file-list-scaling.md) (v0.4.8). The offset backend
+  (`GET /api/files` envelope) is unchanged — the scroller's `fetchMore` walks
+  `offset` and appends; numbered Prev/Next is removed.
+- **Bounded scopes keep loading their full set** (`/api/admin/moderation`,
+  `/api/admin/trash`, `/api/my/uploads` — no backend pagination added); only their
+  *rendering* is windowed, which is what makes their grouped view scale.
+
+### Mechanism: measured-height windowing over a `<table>`
+
+The list is a `<table>` with a **responsive card mode** (`@media max-width:640px`
+turns each row into a variable-height block) and content-driven row heights, so
+fixed-`rowHeight` windowing (the sketch below) doesn't hold. The implemented
+module is **measured-height**:
+
+- A **Fenwick (binary-indexed) tree** over per-item heights gives `O(log n)`
+  prefix-sum and "which item contains pixel `y`" (`findIndex`), so scroll math
+  stays cheap at 10⁴–10⁵ rows. Heights start from a per-item-type estimate and are
+  corrected to the real `offsetHeight` the first time a row renders (point-update
+  the tree; no full O(n) recompute).
+- Windowing lives **inside the existing scroll container** (`.files-table-wrap`,
+  `max-height:64vh`). The `<tbody>` holds `[topSpacer <tr>, …window rows,
+  bottomSpacer <tr>]`; a spacer is a `<tr>` with one full-`colspan` `<td>` of the
+  pad height, so the sticky `<thead>` and all current table/card CSS are untouched.
+- A **`ResizeObserver`** on the container re-measures on resize and on crossing the
+  640px breakpoint (card mode changes every row's height).
+
+`virtual-list.js` exports the **pure math** (`createHeightIndex`, `computeWindow`)
+— unit-tested in `tests/js/` like `queue-ops` — plus the DOM-bound
+`createVirtualList({ scrollEl, sizerEl, makeSpacer, renderRow, estimateHeight,
+buffer, fetchMore })` that wires scroll/resize → window → render+measure and calls
+`fetchMore` near the tail while more remain.
+
+### Every presentation is one flat item array
+
+`file-list.js` builds a single ordered **items array** of heterogeneous entries —
+`{kind:'row', file}` and separator/header kinds (`artist` / `album` / `disc` /
+`group-header` / `section`) — and windows over it. Flat = just rows; By
+artist/album = separators woven in; collapsible-by-uploader (Review) and state
+sections (My uploads) = header entries with their rows (a collapsed group simply
+omits its rows from the array). Selection stays a `Set` of hashes (off-screen rows
+re-apply their checked state when scrolled in); "select all N matching" stays the
+filter-mode bulk path, which never needs rows materialized.
+
 ## The problem (two halves)
 
 **1. Unbounded queries.** The library browse queries return the whole set, with
@@ -124,6 +178,13 @@ and `project_migration_repo_gotchas`.
 
 ## Frontend: a shared virtual-scroller module
 
+> **Note (superseded by "This pass").** The uniform-`rowHeight` sketch below was
+> the original library-first design. The shipped `virtual-list.js` is
+> **measured-height** (the admin table's responsive card mode rules out a fixed
+> row height) — see "Mechanism: measured-height windowing" above for the real
+> contract. The responsibilities (window math, prefetch sentinel, resize handling)
+> still apply.
+
 A new dependency-free module, e.g. `webui/static/js/virtual-list.js`:
 
 ```
@@ -210,24 +271,28 @@ standard one for any virtualized list.
 
 ## Phasing
 
-1. **Backend** — cursor-paginate `/api/artists` (the unbounded one) + the
-   Unknown/Other bucket paths; clamp `limit`; stable sort keys. Guest variants
-   composed.
-2. **Module** — `virtual-list.js` (uniform-height windowing + prefetch sentinel),
-   with unit-testable index math.
-3. **Library** — `app.js` artist grid (and large track buckets via the threshold)
-   on the module.
-4. **Admin file-list grouped view** — virtualize `file-list.js` so the All-files
-   scope can re-enable its grouped **By artist / album** toggle on a windowed list
-   (load the full set, render only the visible slice; grouping/filter/select-all
-   keep working). The grouped table has **variable-height** separator rows
-   (artist band / album line / disc subheader), so this is the measured-height
-   case — render the grouped list as a flat array of "items" (separator or track),
-   each with its own height, and window over that. The same virtualized list then
-   extends to the Review / Trash / My-uploads scopes. The flat list can also adopt
-   the module over the offset endpoint from `file-list-scaling.md`.
-5. **Later (optional)** — cursor-paginate albums/tracks only if a real library
-   shows they need it.
+**This pass (admin + upload)** implements the module + the file-list adoption —
+i.e. steps M and A below, which were drafted as steps 2 and 4. The library/backend
+steps (B, L, X) stay future. See "This pass" above for the decisions.
+
+- **M. Module (this pass)** — `virtual-list.js`: the **measured-height** windowing
+  core (Fenwick height index + `computeWindow`, both pure + unit-tested) plus the
+  DOM-bound `createVirtualList`. (The original sketch below assumed a uniform
+  `rowHeight`; the table's responsive card mode forced measured heights — see
+  "This pass".)
+- **A. File-list adoption (this pass)** — render `file-list.js` through the module
+  for **every** scope as one flat item array (rows + separators/headers). The flat
+  All-files view becomes **infinite scroll** over the offset endpoint (replacing
+  the numbered pager); the grouped **By artist / album** view returns on the
+  windowed list (load the full set, window the slice); Review / Trash / My-uploads
+  window their already-loaded sets.
+- **B. Backend (future, public library)** — cursor-paginate `/api/artists` (the
+  unbounded one) + the Unknown/Other bucket paths; clamp `limit`; stable sort keys;
+  guest variants composed.
+- **L. Library (future)** — `app.js` artist grid (and large track buckets via the
+  threshold) on the module.
+- **X. Later (optional)** — cursor-paginate albums/tracks only if a real library
+  shows they need it.
 
 ## Testing
 

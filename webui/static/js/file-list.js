@@ -15,6 +15,7 @@ import { createTrackEditor } from './track-edit.js';
 import { createBulkEditor } from './bulk-edit.js';
 import { createCoverPicker } from './cover-edit.js';
 import { discKey, discSort, discLabel, isMultiDisc } from './disc.js';
+import { createVirtualList } from './virtual-list.js';
 
 // Local DOM builder + formatter so this module has no page-specific imports.
 // el('button', {class:'btn', onclick: fn}, ['Label'])
@@ -88,16 +89,24 @@ export function createFileList(scope) {
   const hasBrowse = !!scope.browse;
 
   let mountEl = null;
-  let rows = [];                 // current list rows
+  let rows = [];                 // current list rows (paged: every row loaded so far)
   let loading = false, loadError = false;
   let filterText = '';
   let view = hasBrowse ? 'browse' : 'list';
   let playingHash = null;
-  let contentEl = null;          // the rows container; re-rendered alone on filter
+  let bodyHost = null;           // persistent body container (survives chrome rebuilds)
 
   const selected = new Set();    // selected file hashes (shared list ⇄ browse)
   const collapsed = new Set();   // collapsed group keys (collapsible grouping)
   const br = { level: 'artists', artist: null, album: null, items: [] };
+
+  // ── Windowed list (virtual-list.js) ──────────────────────────────────────────
+  // The flat and the "By artist / album" single-table presentations render through
+  // a persistent virtual scroller (only on-screen rows in the DOM), so they never
+  // freeze and the grouped view scales. The classic collapsible (Review) and
+  // sections (My uploads) groupings stay non-windowed for now. Design:
+  // docs/architecture/infinite-scroll-virtualization.md ("This pass").
+  let vlist = null, vWrap = null, vTbody = null, vGrouped = null;
 
   // ── Server-paged mode (scope.paged) ─────────────────────────────────────────
   // The admin All-files scope is too large to hold in the DOM, so it loads one
@@ -108,8 +117,8 @@ export function createFileList(scope) {
   // the client grouped sort, sections, and in-memory filter are all bypassed.
   const paged = !!scope.paged;
   const PAGE_SIZE = scope.pageSize || 100;
-  let page = 0;                  // zero-based page index
   let total = 0;                 // total rows matching the current filter
+  let loadedCount = 0;           // rows fetched so far (paged infinite scroll)
   let selectAllMatching = false; // bulk acts on every matching row, not just the page
 
   // Unified sort selection (the dropdown), shared by every list view. Paged
@@ -124,6 +133,24 @@ export function createFileList(scope) {
   }
 
   let _editor = null, _bulk = null, _cover = null;
+
+  // The filter box is a PERSISTENT node, created once. A paged reload rebuilds the
+  // whole header bar, so a freshly-built <input> would blur after a single
+  // keystroke (the All-files search dropped focus on every server round-trip);
+  // reusing the same node lets render() refocus it and keep the caret. See
+  // headerBar() (sync) and render() (focus restore).
+  let filterTimer = null;
+  const searchInput = el('input', { type: 'search', placeholder: 'Filter…', autocomplete: 'off', 'aria-label': 'Filter files' });
+  searchInput.addEventListener('input', () => {
+    clearTimeout(filterTimer);
+    filterTimer = setTimeout(() => {
+      filterText = searchInput.value;
+      // Paged: a new filter is a fresh server query (from offset 0); in-memory
+      // scopes just re-filter the rows already loaded.
+      if (paged) { clearPageSelection(); reload(); }
+      else renderContent();
+    }, 200);
+  });
 
   const displayTitle = f => f.title || f.filename || 'this file';
 
@@ -178,27 +205,55 @@ export function createFileList(scope) {
     return _cover;
   }
 
+  // groupedActive: the "By artist / album" view is selected and the scope allows
+  // it. Grouping sorts across the whole set, so on a paged scope it loads every
+  // page first; the flat view stays lazy (infinite scroll).
+  function groupedActive() { return sortToken === 'grouped' && !!scope.artistAlbumSort; }
+
   // ── Loading ─────────────────────────────────────────────────────────────────
   async function reload() {
     if (view === 'browse' && hasBrowse) return loadBrowse();
-    if (paged) return loadPage();
+    if (paged) return groupedActive() ? loadAllPages() : loadPage();
     return loadList();
   }
+  // loadPage fetches the first page; further pages stream in via fetchMorePage as
+  // the windowed list scrolls (file-list-scaling.md backend, infinite-scroll UI).
   async function loadPage() {
-    loading = true; loadError = false; render();
+    loading = true; loadError = false; rows = []; loadedCount = 0; render();
     try {
-      const res = await scope.loadPage({ limit: PAGE_SIZE, offset: page * PAGE_SIZE, q: filterText.trim(), sort: sortToken }) || {};
+      const res = await scope.loadPage({ limit: PAGE_SIZE, offset: 0, q: filterText.trim(), sort: sortToken }) || {};
       rows = res.items || [];
       total = res.total || 0;
+      loadedCount = rows.length;
     } catch (err) { loadError = true; console.error('file-list page load failed:', err); }
-    loading = false;
-    // A delete/filter can leave us past the last page; clamp once and refetch.
-    const lastPage = Math.max(0, Math.ceil(total / PAGE_SIZE) - 1);
-    if (!loadError && page > lastPage && rows.length === 0 && total > 0) {
-      page = lastPage;
-      return loadPage();
-    }
-    render();
+    loading = false; render();
+  }
+  // fetchMorePage backs the windowed flat list's infinite scroll: the next offset
+  // page, appended to rows. done once the whole filtered total has been fetched.
+  async function fetchMorePage() {
+    if (loadedCount >= total) return { items: [], done: true };
+    const res = await scope.loadPage({ limit: PAGE_SIZE, offset: loadedCount, q: filterText.trim(), sort: sortToken }) || {};
+    const items = res.items || [];
+    if (typeof res.total === 'number') total = res.total;
+    rows = rows.concat(items);
+    loadedCount = rows.length;
+    return { items: items.map(flatItem), done: loadedCount >= total || items.length === 0 };
+  }
+  // loadAllPages walks the offset endpoint to completion — the grouped view sorts
+  // across artists, so it needs every row. (Explicit grouped mode only.)
+  async function loadAllPages() {
+    loading = true; loadError = false; rows = []; loadedCount = 0; render();
+    try {
+      for (;;) {
+        const res = await scope.loadPage({ limit: PAGE_SIZE, offset: rows.length, q: filterText.trim(), sort: 'created_desc' }) || {};
+        const items = res.items || [];
+        if (typeof res.total === 'number') total = res.total;
+        rows = rows.concat(items);
+        if (!items.length || rows.length >= total) break;
+      }
+      loadedCount = rows.length;
+    } catch (err) { loadError = true; console.error('file-list grouped load-all failed:', err); }
+    loading = false; render();
   }
   async function loadList() {
     loading = true; loadError = false; render();
@@ -414,7 +469,22 @@ export function createFileList(scope) {
   function selectAllVisible(on) {
     if (!on) selectAllMatching = false;   // unchecking select-all clears the whole-set mode too
     visibleFiles().filter(isSelectable).forEach(f => on ? selected.add(f.hash) : selected.delete(f.hash));
-    render();
+    afterSelectionChange();
+  }
+
+  // windowedMode: the flat / grouped single-table presentations render through the
+  // virtual scroller. The classic collapsible (Review) and sections (My uploads)
+  // groupings are non-windowed until they're folded into the item-array model.
+  function windowedMode() {
+    if (view !== 'list') return false;
+    return groupedActive() || !scope.grouping;
+  }
+
+  // afterSelectionChange repaints checkbox state without a data reload: windowed
+  // mode re-paints the on-screen slice (keeping scroll); classic re-renders.
+  function afterSelectionChange() {
+    if (windowedMode() && vlist) { vlist.refresh(); syncSelectionUI(); }
+    else render();
   }
 
   // ── Table + grouping ─────────────────────────────────────────────────────────
@@ -438,13 +508,16 @@ export function createFileList(scope) {
     return el('tr', {}, ths);
   }
 
+  // rowTr builds one flat data row (shared by the classic table() and the windowed
+  // renderer). groupedTrack() is the grouped-mode variant (it prefixes a track #).
+  function rowTr(f) {
+    const holder = {};
+    return el('tr', rowAttrs(f), scope.columns.map(c => bodyCell(c, f, holder)));
+  }
+
   function table(files, withSelectAll = true) {
     const body = el('tbody');
-    files.forEach(f => {
-      const holder = {};
-      const tr = el('tr', rowAttrs(f), scope.columns.map(c => bodyCell(c, f, holder)));
-      body.appendChild(tr);
-    });
+    files.forEach(f => body.appendChild(rowTr(f)));
     return el('div', { class: 'files-table-wrap' }, [
       el('table', { class: 'files-table' }, [el('thead', {}, [headRow(withSelectAll)]), body]),
     ]);
@@ -528,40 +601,103 @@ export function createFileList(scope) {
     return tr;
   }
 
-  function groupedTable(files) {
-    const body = el('tbody', { class: 'is-grouped' });
+  // groupedItems flattens the artist → album → disc → track tree into a single
+  // ordered item array (separator + track entries) that the windowed table renders
+  // one slice at a time. All files in a group share one artist_id / album_id, so
+  // the representative row's *_has_image flag governs the whole group's cover.
+  function groupedItems(files) {
+    const items = [];
     for (const art of buildArtistGroups(files)) {
       const artFiles = art.albumList.flatMap(al => al.files);
-      const artHashes = artFiles.filter(isSelectable).map(f => f.hash);
-      // All files in a group share one artist_id / album_id (resolved from the
-      // same effectiveArtist/album), so the representative row's has_image flag
-      // reflects the whole group's entity.
-      body.appendChild(grpSepRow('artist', art.key || 'Unknown artist',
-        `${art.albumList.length} album${art.albumList.length === 1 ? '' : 's'} · ${artFiles.length} track${artFiles.length === 1 ? '' : 's'}`,
-        artHashes, !art.key, coverBtn('artist', { artist: art.key }, !art.key, artFiles[0]?.artist_has_image)));
+      items.push({
+        kind: 'sep', sep: 'artist', label: art.key || 'Unknown artist',
+        meta: `${art.albumList.length} album${art.albumList.length === 1 ? '' : 's'} · ${artFiles.length} track${artFiles.length === 1 ? '' : 's'}`,
+        hashes: artFiles.filter(isSelectable).map(f => f.hash), fallback: !art.key,
+        cover: { kind: 'artist', target: { artist: art.key }, hasImage: artFiles[0]?.artist_has_image },
+      });
       for (const al of art.albumList) {
         const y = albumYear(al.files);
-        body.appendChild(grpSepRow('album', al.key || 'Other', y < 9999 ? String(y) : '',
-          al.files.filter(isSelectable).map(f => f.hash), !al.key,
-          coverBtn('album', { artist: art.key, album: al.key }, !al.key, al.files[0]?.album_has_image)));
+        items.push({
+          kind: 'sep', sep: 'album', label: al.key || 'Other', meta: y < 9999 ? String(y) : '',
+          hashes: al.files.filter(isSelectable).map(f => f.hash), fallback: !al.key,
+          cover: { kind: 'album', target: { artist: art.key, album: al.key }, hasImage: al.files[0]?.album_has_image },
+        });
         // Multi-disc album → a quiet "Disc N" separator before each disc (purely
-        // visual; the files are already disc-then-track ordered above). disc.js is
-        // the shared rule (docs/architecture/disc-numbering.md).
+        // visual; files are already disc-then-track ordered). disc.js is the shared
+        // rule (docs/architecture/disc-numbering.md).
         const multiDisc = isMultiDisc(al.files);
         let shownDisc;   // undefined: no real disc key equals it
         al.files.forEach(f => {
           const disc = discKey(f.disc_number);
           if (multiDisc && disc !== shownDisc) {
             shownDisc = disc;
-            body.appendChild(grpSepRow('disc', discLabel(disc), '', [], false, null));
+            items.push({ kind: 'sep', sep: 'disc', label: discLabel(disc), meta: '', hashes: [], fallback: false, cover: null });
           }
-          body.appendChild(groupedTrack(f));
+          items.push({ kind: 'grow', file: f });
         });
       }
     }
-    return el('div', { class: 'files-table-wrap' }, [
-      el('table', { class: 'files-table' }, [el('thead', {}, [headRow(true)]), body]),
-    ]);
+    return items;
+  }
+
+  // flatItem wraps a file as a windowed-list row entry.
+  const flatItem = f => ({ kind: 'row', file: f });
+
+  // ── Windowed rendering (virtual-list.js) ─────────────────────────────────────
+  // renderWindowItem builds one item element on demand as it scrolls into view.
+  function renderWindowItem(item) {
+    if (!item) return null;
+    if (item.kind === 'row')  return rowTr(item.file);
+    if (item.kind === 'grow') return groupedTrack(item.file);
+    const extra = item.cover ? coverBtn(item.cover.kind, item.cover.target, item.fallback, item.cover.hasImage) : null;
+    return grpSepRow(item.sep, item.label, item.meta, item.hashes, item.fallback, extra);
+  }
+
+  // estimateItemHeight is the starting height before a row is measured; the
+  // scroller corrects it to the real offsetHeight once rendered (separators and
+  // the responsive card mode vary, so heights aren't assumed fixed).
+  function estimateItemHeight(item) {
+    if (item && item.kind === 'sep') return item.sep === 'artist' ? 40 : item.sep === 'disc' ? 28 : 34;
+    return 46;
+  }
+
+  // makeSpacerRow is a table spacer <tr> of a given pixel height (one full-colspan
+  // cell), so windowing keeps the sticky <thead> and all the table/card CSS intact.
+  function makeSpacerRow(px) {
+    const td = el('td', { class: 'fl-spacer-cell', colspan: String(scope.columns.length) });
+    td.style.height = `${Math.max(0, px)}px`;
+    return el('tr', { class: 'fl-spacer', 'aria-hidden': 'true' }, [td]);
+  }
+
+  function buildWindowedShell(grouped) {
+    vTbody = el('tbody', { class: grouped ? 'is-grouped' : null });
+    const tbl = el('table', { class: 'files-table' }, [el('thead', {}, [headRow(true)]), vTbody]);
+    vWrap = el('div', { class: 'files-table-wrap fl-virtual' }, [tbl]);
+    vGrouped = grouped;
+    return vWrap;
+  }
+  function destroyVList() { vlist?.destroy(); vlist = null; vWrap = null; vTbody = null; vGrouped = null; }
+
+  // renderWindowed mounts (or reuses) the virtual scroller in the body host and
+  // feeds it the current item array. Flat paged scopes get infinite-scroll
+  // fetchMore; grouped (and bounded scopes) hold the whole set already.
+  function renderWindowed() {
+    const grouped = groupedActive();
+    const files = visibleFiles();
+    const items = grouped ? groupedItems(files) : files.map(flatItem);
+    if (!vWrap || vGrouped !== grouped) {
+      destroyVList();
+      bodyHost.replaceChildren(buildWindowedShell(grouped));
+      vlist = createVirtualList({
+        scrollEl: vWrap, sizerEl: vTbody,
+        makeSpacer: makeSpacerRow,
+        renderRow: renderWindowItem,
+        estimateHeight: estimateItemHeight,
+        fetchMore: (paged && !grouped) ? fetchMorePage : null,
+        onAfterRender: () => { syncSelectionUI(); applyPlayingHighlight(); },
+      });
+    }
+    vlist.setItems(items);
   }
 
   function uploaderGroups(files) {
@@ -721,26 +857,17 @@ export function createFileList(scope) {
   function clearPageSelection() { selected.clear(); selectAllMatching = false; }
 
   // ── Chrome ──────────────────────────────────────────────────────────────────
-  let filterTimer;
   function headerBar() {
-    const search = el('input', { type: 'search', placeholder: 'Filter…', autocomplete: 'off', 'aria-label': 'Filter files' });
-    search.value = filterText;
-    search.addEventListener('input', () => {
-      clearTimeout(filterTimer);
-      filterTimer = setTimeout(() => {
-        filterText = search.value;
-        // Paged: a new filter is a fresh server query from page 0; in-memory
-        // scopes just re-filter the rows already loaded.
-        if (paged) { page = 0; clearPageSelection(); reload(); }
-        else renderContent();
-      }, 200);
-    });
+    // Keep the persistent search box's value in sync with filterText when it's not
+    // being typed into (so a programmatic reset shows), but never clobber live
+    // typing — the input event owns the value while the field is focused.
+    if (document.activeElement !== searchInput) searchInput.value = filterText;
     const heading = el('h2', { class: 'section-title section-title--files' });
     heading.append(scope.title);
     if (view === 'list') heading.append(` (${paged ? total : rows.length})`);
     const controls = [];
     if (view === 'list') controls.push(sortControl());
-    controls.push(el('div', { class: 'files-search' }, [search]));
+    controls.push(el('div', { class: 'files-search' }, [searchInput]));
     return el('div', { class: 'files-bar' }, [heading, el('div', { class: 'files-bar-controls' }, controls)]);
   }
 
@@ -756,15 +883,15 @@ export function createFileList(scope) {
   ];
 
   // sortControl is the single sort dropdown for every list view. Non-paged scopes
-  // also get a "Default order" (as loaded) entry and, where scope.artistAlbumSort,
-  // a "By artist / album" grouped entry; paged scopes get the flat orders only
-  // (grouping there awaits virtualization — see file-list-scaling.md). Changing it
-  // re-queries the server (paged, from page 0) or re-renders in place (non-paged).
+  // also get a "Default order" (as loaded) entry; where scope.artistAlbumSort, a
+  // "By artist / album" grouped entry is offered on every scope now that the list
+  // is virtualized (the paged scope loads its whole set for grouping). Changing it
+  // re-queries the server (paged) or re-renders in place (non-paged).
   function sortControl() {
     const opts = [];
     if (!paged) opts.push(['default', 'Default order']);
     opts.push(...SORT_OPTIONS);
-    if (!paged && scope.artistAlbumSort) opts.push(['grouped', 'By artist / album']);
+    if (scope.artistAlbumSort) opts.push(['grouped', 'By artist / album']);
 
     const sel = el('select', { class: 'files-sort-select', 'aria-label': 'Sort' });
     for (const [val, label] of opts) {
@@ -774,7 +901,7 @@ export function createFileList(scope) {
     }
     sel.addEventListener('change', () => {
       sortToken = sel.value;
-      if (paged) { page = 0; clearPageSelection(); reload(); return; }
+      if (paged) { clearPageSelection(); reload(); return; }
       try { localStorage.setItem(SORT_KEY, sortToken); } catch { /* ignore */ }
       render();
     });
@@ -805,22 +932,10 @@ export function createFileList(scope) {
     return cmp ? arr.sort(cmp) : arr;
   }
 
-  // pager renders the Prev / "page N of M · T files" / Next control under the
-  // paged table. Changing page clears the selection (it can't span pages — use
-  // "Select all N matching" for that).
-  function pager() {
-    const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-    const cur = Math.min(page + 1, pages);
-    const go = d => { page += d; clearPageSelection(); reload(); };
-    const prev = el('button', { class: 'btn btn-neutral btn-sm', text: '‹ Prev', disabled: cur <= 1 ? 'true' : null, onclick: () => go(-1) });
-    const next = el('button', { class: 'btn btn-neutral btn-sm', text: 'Next ›', disabled: cur >= pages ? 'true' : null, onclick: () => go(1) });
-    const label = el('span', { class: 'pager-label', text: `Page ${cur} of ${pages} · ${total} file${total === 1 ? '' : 's'}` });
-    return el('div', { class: 'files-pager' }, [prev, label, next]);
-  }
-
-  // selectAllBanner offers (and reflects) cross-page selection in paged mode:
-  // once the whole page is ticked and more matches exist, "Select all N matching"
-  // flips bulk actions onto the entire filtered set (via the scope's runAll).
+  // selectAllBanner offers (and reflects) cross-page selection in paged mode: once
+  // every loaded row is ticked and more matches remain unfetched, "Select all N
+  // matching" flips bulk actions onto the entire filtered set (via the scope's
+  // runAll), so a bulk action need never materialise the unscrolled rows.
   function selectAllBanner() {
     if (!paged || view !== 'list') return null;
     if (selectAllMatching) {
@@ -829,10 +944,10 @@ export function createFileList(scope) {
         el('button', { type: 'button', class: 'linklike', text: 'Clear selection', onclick: () => { clearPageSelection(); render(); } }),
       ]);
     }
-    const pageSel = rows.filter(isSelectable);
-    if (pageSel.length && pageSel.every(f => selected.has(f.hash)) && total > pageSel.length) {
+    const loadedSel = rows.filter(isSelectable);
+    if (loadedSel.length && loadedSel.every(f => selected.has(f.hash)) && total > loadedSel.length) {
       return el('div', { class: 'select-all-banner' }, [
-        `All ${pageSel.length} on this page selected. `,
+        `All ${loadedSel.length} loaded file${loadedSel.length === 1 ? '' : 's'} selected. `,
         el('button', { type: 'button', class: 'linklike', text: `Select all ${total} matching`, onclick: () => { selectAllMatching = true; render(); } }),
       ]);
     }
@@ -908,29 +1023,45 @@ export function createFileList(scope) {
     return el('div', { role: 'alert' }, [el('p', { class: 'section-copy', text: 'Failed to load.' }), retry]);
   }
 
-  function content() {
-    if (loading) return stateBlock('Loading…');
-    if (loadError) return errorBlock();
-    if (view === 'browse' && hasBrowse) return el('div', {}, [crumb(), browseTree()]);
-    // Paged: a flat table of just this page (grouping/sections live elsewhere).
-    if (paged) {
-      if (!rows.length) return filterText.trim() ? stateBlock(`No files match “${filterText.trim()}”`) : emptyBlock();
-      return table(rows, true);
-    }
-    if (!rows.length) return emptyBlock();
+  function ensureBodyHost() { if (!bodyHost) bodyHost = el('div', { class: 'fl-body' }); return bodyHost; }
+  function emptyOrNoMatch() {
+    const q = filterText.trim();
+    return (rows.length && q) ? stateBlock(`No files match “${q}”`) : emptyBlock();
+  }
+
+  // classicContent renders the non-windowed groupings (Review's collapsible-by-
+  // uploader, My-uploads' state sections) — bounded by nature, so still built whole.
+  function classicContent() {
     const matched = visibleFiles();
-    if (!matched.length) return stateBlock(`No files match “${filterText.trim()}”`);
-    // "By artist / album" is its own ordered layout; every other token is a flat
-    // order applied to the rows before the scope's native grouping renders them.
-    if (sortToken === 'grouped' && scope.artistAlbumSort) return groupedTable(matched);
+    if (!matched.length) return emptyOrNoMatch();
     const files = sortFilesBy(matched, sortToken);
     if (scope.grouping?.kind === 'collapsible') return uploaderGroups(files);
     if (scope.grouping?.kind === 'sections') return sectionGroups(files);
     return table(files, true);
   }
 
+  // renderBody fills the persistent body host: the loading/error/browse states, the
+  // windowed flat/grouped table, or the classic groupings. The header bar (search
+  // box) is owned by render() and untouched here.
+  function renderBody() {
+    const host = ensureBodyHost();
+    if (loading)   { destroyVList(); host.replaceChildren(stateBlock('Loading…')); return; }
+    if (loadError) { destroyVList(); host.replaceChildren(errorBlock()); return; }
+    if (view === 'browse' && hasBrowse) { destroyVList(); host.replaceChildren(crumb(), browseTree()); return; }
+    if (windowedMode()) {
+      if (!visibleFiles().length) { destroyVList(); host.replaceChildren(emptyOrNoMatch()); return; }
+      renderWindowed();
+      return;
+    }
+    destroyVList();
+    host.replaceChildren(classicContent());
+  }
+
   function render() {
     if (!mountEl) return;
+    // If the persistent search box had focus, restore it after the rebuild so the
+    // caret survives a reload (the same node is re-mounted by headerBar()).
+    const keepSearchFocus = document.activeElement === searchInput;
     const kids = [headerBar()];
     if (hasBrowse) kids.push(viewSwitch());
     if (scope.desc) kids.push(el('p', { class: 'scope-desc', text: scope.desc }));
@@ -938,21 +1069,20 @@ export function createFileList(scope) {
     if (tb) kids.push(tb);
     const banner = selectAllBanner();
     if (banner) kids.push(banner);
-    contentEl = el('div', { class: 'fl-content' });
-    contentEl.appendChild(content());
-    kids.push(contentEl);
-    if (paged && view === 'list' && !loading && !loadError && total > 0) kids.push(pager());
+    kids.push(ensureBodyHost());
     mountEl.replaceChildren(...kids);
+    if (keepSearchFocus) searchInput.focus();
+    renderBody();
     syncSelectionUI();
     applyPlayingHighlight();
   }
 
-  // renderContent re-renders only the rows, leaving the header (search box + its
-  // focus/caret) and the bulk toolbar in place — used by the filter input so
+  // renderContent re-fills only the body, leaving the header (search box + its
+  // focus/caret) and the bulk toolbar in place — used by the non-paged filter so
   // typing doesn't rebuild and blur the search field.
   function renderContent() {
-    if (!mountEl || !contentEl) { render(); return; }
-    contentEl.replaceChildren(content());
+    if (!mountEl || !bodyHost) { render(); return; }
+    renderBody();
     syncSelectionUI();
     applyPlayingHighlight();
   }
@@ -969,9 +1099,11 @@ export function createFileList(scope) {
   // ── Public surface ────────────────────────────────────────────────────────────
   function mount(node) { mountEl = node; reload(); }
   function destroy() {
+    destroyVList();
     _editor?.destroy(); _editor = null;
     _bulk?.destroy(); _bulk = null;
     _cover?.destroy(); _cover = null;
+    bodyHost = null;
     mountEl = null;
   }
 
