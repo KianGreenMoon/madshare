@@ -59,11 +59,29 @@ func (h *handler) adminDeleteFile(w http.ResponseWriter, r *http.Request) {
 // resolves the set server-side. Hand-picked selections never approach this.
 const bulkHashCap = 5000
 
-// adminBulkFiles handles POST /api/admin/files/bulk — a transactional bulk
-// action over an explicit hash set OR everything matching a filter
-// (docs/architecture/file-list-scaling.md). v1 implements action "trash"
-// (move to Trash); editing is a planned follow-up on the same endpoint. Gated
-// by file.delete at registration.
+// bulkEditPatch is a bulk metadata edit: the per-file tag set plus the access
+// fields, applied to every resolved file (change-only / never-clear is the
+// client's job — only filled fields are sent). License/Guest mirror the per-file
+// access endpoints and need the content-access store (h.manage).
+type bulkEditPatch struct {
+	metadataPatchRequest
+	License *string `json:"license"`
+	Guest   *bool   `json:"guest"`
+}
+
+func (p *bulkEditPatch) hasTags() bool {
+	m := p.metadataPatchRequest
+	return m.Title != nil || m.Album != nil || m.AlbumArtist != nil || m.Artist != nil ||
+		m.Genre != nil || m.Composer != nil || m.Comment != nil ||
+		m.TrackNumber != nil || m.TrackTotal != nil || m.DiscNumber != nil || m.Year != nil
+}
+func (p *bulkEditPatch) hasAccess() bool { return p != nil && (p.License != nil || p.Guest != nil) }
+
+// adminBulkFiles handles POST /api/admin/files/bulk — a bulk action over an
+// explicit hash set OR everything matching a filter
+// (docs/architecture/file-list-scaling.md). Actions: "trash" (move to Trash,
+// needs file.delete) and "edit" (apply a tag/access patch, needs metadata.edit).
+// The route admits either capability; this handler enforces the per-action gate.
 //
 // Exactly one of {hashes, filter} must be given. An empty filter means the
 // whole (matching) library, which is refused unless "all": true — the guardrail
@@ -78,15 +96,28 @@ func (h *handler) adminBulkFiles(w http.ResponseWriter, r *http.Request) {
 			ArtistID *int64 `json:"artist_id"`
 			AlbumID  *int64 `json:"album_id"`
 		} `json:"filter"`
-		All bool `json:"all"`
+		All   bool           `json:"all"`
+		Patch *bulkEditPatch `json:"patch"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid JSON body"})
 		return
 	}
-	if req.Action != "trash" {
+	if req.Action != "trash" && req.Action != "edit" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown action"})
 		return
+	}
+	// Per-action authorization (the route admits either capability).
+	if h.authzEnabled {
+		id := auth.FromContext(r.Context())
+		need := auth.PermFileDelete
+		if req.Action == "edit" {
+			need = auth.PermMetadataEdit
+		}
+		if !id.Has(need) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "forbidden"})
+			return
+		}
 	}
 
 	hasHashes := len(req.Hashes) > 0
@@ -128,11 +159,16 @@ func (h *handler) adminBulkFiles(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if req.Action == "edit" {
+		h.bulkEditFiles(w, r, hashes, req.Patch)
+		return
+	}
+
+	// action == "trash"
 	if len(hashes) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": 0})
 		return
 	}
-
 	affected, err := h.repo.BulkSoftDeleteByHashes(r.Context(), hashes)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
@@ -140,6 +176,67 @@ func (h *handler) adminBulkFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit(r.Context(), "file.bulk_trash", "files", fmt.Sprintf("%d trashed", affected))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
+}
+
+// bulkEditFiles applies a tag/access patch across the resolved hash set, one
+// file at a time, and reports the count plus any per-file failures. Tags go
+// through the repository; access (license/guest) through the content-access
+// store, so an access edit needs h.manage to be wired.
+func (h *handler) bulkEditFiles(w http.ResponseWriter, r *http.Request, hashes []string, patch *bulkEditPatch) {
+	tags := patch != nil && patch.hasTags()
+	access := patch.hasAccess()
+	if !tags && !access {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "nothing to update"})
+		return
+	}
+	if access && h.manage == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "access editing unavailable"})
+		return
+	}
+	if len(hashes) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": 0, "failed": []any{}})
+		return
+	}
+
+	mp := database.MetadataPatch{
+		Title: patch.Title, Album: patch.Album, AlbumArtist: patch.AlbumArtist, Artist: patch.Artist,
+		Genre: patch.Genre, Composer: patch.Composer, Comment: patch.Comment,
+		TrackNumber: patch.TrackNumber, TrackTotal: patch.TrackTotal, DiscNumber: patch.DiscNumber, Year: patch.Year,
+	}
+	affected := 0
+	failed := make([]map[string]string, 0)
+	for _, hsh := range hashes {
+		err := h.applyOneBulkEdit(r.Context(), hsh, mp, tags, access, patch)
+		if err != nil {
+			failed = append(failed, map[string]string{"hash": hsh, "error": err.Error()})
+			continue
+		}
+		affected++
+	}
+	h.audit(r.Context(), "metadata.bulk_edit", "files", fmt.Sprintf("%d updated", affected))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected, "failed": failed})
+}
+
+// applyOneBulkEdit writes the patch to a single file: tags first (re-resolving
+// its artist/album entities), then license, then guest — license before guest so
+// an explicit guest wins over any license auto-derive (the per-file order).
+func (h *handler) applyOneBulkEdit(ctx context.Context, hash string, mp database.MetadataPatch, tags, access bool, patch *bulkEditPatch) error {
+	if tags {
+		if _, err := h.repo.UpdateFileMetadata(ctx, hash, mp); err != nil {
+			return err
+		}
+	}
+	if access && patch.License != nil {
+		if _, err := h.manage.SetLicense(ctx, hash, *patch.License); err != nil {
+			return err
+		}
+	}
+	if access && patch.Guest != nil {
+		if _, err := h.manage.SetGuestPlayable(ctx, hash, *patch.Guest); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // adminTrashList handles GET /api/admin/trash. It returns all soft-deleted

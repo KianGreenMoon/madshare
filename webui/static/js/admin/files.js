@@ -82,40 +82,32 @@ async function saveFileAccess(f, { guest, license }) {
   if (!r2.ok) throw new Error((await r2.text()).trim() || `HTTP ${r2.status}`);
 }
 
-// filesBulkApply writes the bulk-edit patch across a selection: tag keys via
-// PATCH metadata, then access via the guest/license endpoints — only the fields
-// the user actually filled.
+// bulkEdit applies a tag/access patch in one request, over an explicit hash list
+// or a filter ("select all matching"). The bulk editor's patch object already
+// carries exactly the tag keys + license/guest, so it is forwarded as-is.
+async function bulkEdit(body) {
+  const res = await fetch(`${API}/api/admin/files/bulk`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'edit', ...body }),
+  });
+  if (handleAuthError(res)) throw new Error('Your session expired.');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data; // { affected, failed:[{hash,error}] }
+}
+
+// filesBulkApply edits the explicitly-selected page rows; bulkApplyAll edits the
+// whole filtered set. Both surface a partial failure as a throw (the editor shows
+// it). bulkApplyAll owns its own success toast (the component doesn't, in filter
+// mode); filesBulkApply lets the component toast the page count.
 async function filesBulkApply(hashes, patch) {
-  const tag = {};
-  // Everything except the access keys is a metadata tag (base + extended); the
-  // metadata PATCH ignores any stray key, but only forward the real tags.
-  for (const k of Object.keys(patch)) if (k !== 'license' && k !== 'guest') tag[k] = patch[k];
-  let ok = 0, fail = 0;
-  for (const hash of hashes) {
-    let good = true;
-    try {
-      if (Object.keys(tag).length) {
-        const r = await fetch(`${API}/api/files/${encodeURIComponent(hash)}/metadata`, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tag),
-        });
-        good = good && r.ok && (await r.json().catch(() => ({}))).ok !== false;
-      }
-      if ('license' in patch) {
-        const r = await fetch(`${API}/api/admin/files/${encodeURIComponent(hash)}/license`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ license: patch.license }),
-        });
-        good = good && r.ok;
-      }
-      if ('guest' in patch) {
-        const r = await fetch(`${API}/api/admin/files/${encodeURIComponent(hash)}/guest`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ guest_playable: patch.guest }),
-        });
-        good = good && r.ok;
-      }
-    } catch { good = false; }
-    if (good) ok++; else fail++;
-  }
-  if (fail) throw new Error(`updated ${ok}, ${fail} failed`);
+  const data = await bulkEdit({ hashes, patch });
+  if (data.failed?.length) throw new Error(`updated ${data.affected}, ${data.failed.length} failed`);
+}
+async function bulkApplyAll(filter, patch) {
+  const data = await bulkEdit({ filter, patch });
+  if (data.failed?.length) throw new Error(`updated ${data.affected}, ${data.failed.length} failed`);
+  toast(`Updated ${data.affected} ${data.affected === 1 ? 'file' : 'files'}.`, 'success');
 }
 
 async function trashOne(f) {
@@ -160,6 +152,7 @@ function filesScope() {
               'To rename a whole album or artist (cover and tracks stay attached), use Rename in the By-entity view.',
     saveAccess: canEditMeta ? saveFileAccess : undefined,
     bulkApply: canEditMeta ? filesBulkApply : undefined,
+    bulkApplyAll: canEditMeta ? bulkApplyAll : undefined,   // "select all N matching" → server-side edit
     rowActions: canDelete ? [{
       id: 'trash', label: 'Move to Trash', kind: 'danger',
       confirm: 'inline', confirmPrompt: 'Move to Trash?', confirmLabel: 'Confirm',

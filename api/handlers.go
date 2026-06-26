@@ -74,6 +74,10 @@ func AcceptedAudioTypes() map[string]string {
 type handler struct {
 	storage storage.Storage
 	repo    database.Repository
+	// manage is the content-access store (per-file guest/license), used by the
+	// bulk-edit action to write access alongside tags. Nil in tests / open
+	// embeddings — the bulk handler then rejects access-bearing edits.
+	manage ManageStore
 	// spoolDir is the upload spool: large uploads are staged here as a temp file
 	// while hashing (see storage.HashUpload). Not a cache.
 	spoolDir string

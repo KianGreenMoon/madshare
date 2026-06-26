@@ -147,6 +147,14 @@ export function createFileList(scope) {
       // for the selection so the Extended modal can pre-fill its shared values too.
       loadDetails: scope.editDetailURL ? loadSelectionDetails : null,
       onApply: async (hashes, patch) => {
+        // Filter mode: apply to the whole matching set via the scope's runAll
+        // equivalent (it owns its own success toast); else the explicit page set.
+        if (paged && selectAllMatching && scope.bulkApplyAll) {
+          await scope.bulkApplyAll({ q: filterText.trim() }, patch);
+          clearPageSelection();
+          await reload();
+          return;
+        }
         await scope.bulkApply(hashes, patch);
         selected.clear();
         toast(`Updated ${hashes.length} file${hashes.length === 1 ? '' : 's'}.`, 'success');
@@ -364,11 +372,12 @@ export function createFileList(scope) {
     mountEl.querySelectorAll('.fl-selcount').forEach(n => (n.textContent = allMatch ? `All ${total} selected` : `${sel} selected`));
     const active = allMatch || sel > 0;
     mountEl.querySelectorAll('.fl-bulk-btn').forEach(b => (b.disabled = !active));
-    // Bulk "Edit tags…" can't yet target the whole filtered set — only a page.
-    if (allMatch) {
+    // Bulk "Edit tags…" over the whole filtered set needs the scope's bulkApplyAll;
+    // without it, it can only target the current page (disable in select-all mode).
+    if (allMatch && !scope.bulkApplyAll) {
       mountEl.querySelectorAll('.fl-bulk-edit').forEach(b => {
         b.disabled = true;
-        b.title = 'Editing every matching file isn’t available yet — clear “select all” to edit this page.';
+        b.title = 'Editing every matching file isn’t available here — clear “select all” to edit this page.';
       });
     }
 
@@ -812,7 +821,7 @@ export function createFileList(scope) {
 
   function bulkToolbar() {
     const buttons = [];
-    if (scope.bulkApply) buttons.push(el('button', { class: 'btn btn-neutral btn-sm fl-bulk-btn fl-bulk-edit', text: 'Edit tags…', disabled: 'true', onclick: () => bulkEditor().open([...selected], selectionTags([...selected])) }));
+    if (scope.bulkApply) buttons.push(el('button', { class: 'btn btn-neutral btn-sm fl-bulk-btn fl-bulk-edit', text: 'Edit tags…', disabled: 'true', onclick: () => openBulkEditor() }));
     for (const a of scope.bulkActions || []) {
       const cls = (a.kind === 'danger' ? 'btn btn-destructive-outline btn-sm' : 'btn btn-neutral btn-sm') + ' fl-bulk-btn';
       buttons.push(el('button', { class: cls, text: a.label, disabled: 'true', onclick: () => runBulkAction(a) }));
@@ -824,6 +833,17 @@ export function createFileList(scope) {
       ...buttons,
     ]);
   }
+  // openBulkEditor opens the shared bulk tag/access editor. In filter mode it
+  // can't compute shared values from the page alone, so it opens set-only (empty
+  // prefill) with an "all N matching" headline; onApply routes to bulkApplyAll.
+  function openBulkEditor() {
+    if (paged && selectAllMatching && scope.bulkApplyAll) {
+      bulkEditor().open([...selected], { common: {}, mixed: new Set() }, `Applies to all ${total} matching files.`);
+    } else {
+      bulkEditor().open([...selected], selectionTags([...selected]));
+    }
+  }
+
   async function runBulkAction(a) {
     // Filter-mode (select-all-matching): act on the whole filtered set server-
     // side via the scope's runAll, instead of the in-memory hash selection.

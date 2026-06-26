@@ -125,6 +125,7 @@ func (d Deps) newHandler() *handler {
 	h := &handler{
 		storage:         d.Store,
 		repo:            d.Repo,
+		manage:          d.Manage,
 		spoolDir:        d.SpoolDir,
 		imagesDir:       filepath.Join(variantsDir, storage.ImagesSubdir),
 		sourceImagesDir: filepath.Join(d.FilesDir, storage.ImagesSubdir),
@@ -258,7 +259,9 @@ func RegisterAdmin(r chi.Router, d Deps) {
 	r.Route("/api/admin", func(r chi.Router) {
 		fileDelete := d.protect(auth.PermFileDelete)
 		r.With(fileDelete).Delete("/files/{hash}", h.adminDeleteFile)
-		r.With(fileDelete).Post("/files/bulk", h.adminBulkFiles)
+		// Bulk admits either capability; the handler enforces the per-action gate
+		// (trash → file.delete, edit → metadata.edit).
+		r.With(d.protectAny(auth.PermFileDelete, auth.PermMetadataEdit)).Post("/files/bulk", h.adminBulkFiles)
 		r.With(fileDelete).Post("/prune", h.adminPrune)
 		r.With(fileDelete).Get("/prune/status", h.adminPruneStatus)
 		r.With(fileDelete).Post("/prune/cancel", h.adminPruneCancel)

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+
+	"daemonlord.ygg/madshare/auth"
 )
 
 // fileEnv mirrors the GET /api/files envelope for the pagination tests.
@@ -120,5 +122,74 @@ func TestBulkTrash(t *testing.T) {
 	// Unknown action → 400.
 	if code, _ := bulk(map[string]any{"action": "explode", "hashes": []string{fmt.Sprintf("%064d", 1)}}); code != http.StatusBadRequest {
 		t.Errorf("unknown action = %d, want 400", code)
+	}
+}
+
+// TestBulkEdit covers POST /api/admin/files/bulk action "edit": tag edits over
+// explicit hashes and over a filter, an access (license) edit, the
+// nothing-to-update guardrail, and the per-action permission gate.
+func TestBulkEdit(t *testing.T) {
+	srv, db := newAuthTestServer(t)
+	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
+
+	for i := 1; i <= 3; i++ {
+		insertTaggedFile(t, db, fmt.Sprintf("%064d", i), "Old", "Album", fmt.Sprintf("T%d", i))
+	}
+
+	bulk := func(client *http.Client, body map[string]any) (int, int) {
+		t.Helper()
+		var out struct {
+			OK       bool             `json:"ok"`
+			Affected int              `json:"affected"`
+			Failed   []map[string]any `json:"failed"`
+		}
+		code := doJSON(t, client, http.MethodPost, srv.URL+"/api/admin/files/bulk", body, &out)
+		return code, out.Affected
+	}
+	totalQ := func(q string) int {
+		var e fileEnv
+		doJSON(t, admin, http.MethodGet, srv.URL+"/api/files?limit=0&q="+q, nil, &e)
+		return e.Total
+	}
+
+	// Filter-mode tag edit: re-tag the whole "Old" set to "New".
+	if code, n := bulk(admin, map[string]any{
+		"action": "edit", "filter": map[string]any{"q": "Old"}, "patch": map[string]any{"artist": "New"},
+	}); code != http.StatusOK || n != 3 {
+		t.Fatalf("filter edit = %d affected=%d, want 200/3", code, n)
+	}
+	if totalQ("New") != 3 || totalQ("Old") != 0 {
+		t.Errorf("after re-tag: New=%d Old=%d, want 3/0", totalQ("New"), totalQ("Old"))
+	}
+
+	// Explicit-hashes edit with an access field (license).
+	if code, n := bulk(admin, map[string]any{
+		"action": "edit", "hashes": []string{fmt.Sprintf("%064d", 1), fmt.Sprintf("%064d", 2)},
+		"patch": map[string]any{"license": "CC0-1.0"},
+	}); code != http.StatusOK || n != 2 {
+		t.Fatalf("hash edit = %d affected=%d, want 200/2", code, n)
+	}
+	var e fileEnv
+	doJSON(t, admin, http.MethodGet, srv.URL+"/api/files?limit=50", nil, &e)
+	licensed := 0
+	for _, it := range e.Items {
+		if it["license"] == "CC0-1.0" {
+			licensed++
+		}
+	}
+	if licensed != 2 {
+		t.Errorf("licensed files = %d, want 2", licensed)
+	}
+
+	// Empty patch → nothing to update → 400.
+	if code, _ := bulk(admin, map[string]any{"action": "edit", "hashes": []string{fmt.Sprintf("%064d", 1)}, "patch": map[string]any{}}); code != http.StatusBadRequest {
+		t.Errorf("empty patch = %d, want 400", code)
+	}
+
+	// Permission: a listener (no metadata.edit / file.delete) is refused.
+	makeUser(t, db, "lis", "listener-pass-1", auth.RoleListener)
+	lis := clientFor(t, srv.URL, "lis", "listener-pass-1")
+	if code, _ := bulk(lis, map[string]any{"action": "edit", "hashes": []string{fmt.Sprintf("%064d", 1)}, "patch": map[string]any{"artist": "X"}}); code != http.StatusForbidden {
+		t.Errorf("listener edit = %d, want 403", code)
 	}
 }

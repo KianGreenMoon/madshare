@@ -56,7 +56,9 @@ const EXT_PREFILL_CAP = 100;
  *                                   to pre-fill the extended fields' shared values
  *                                   too (same change-only write rule). Omit to keep
  *                                   the extended fields set-only.
- * @returns {{ open(hashes, prefill?): void, close(): void, destroy(): void }}
+ * @returns {{ open(hashes, prefill?, countLabel?): void, close(): void, destroy(): void }}
+ *   open()'s optional `countLabel` overrides the headline (filter-mode bulk edit
+ *   passes "all N matching", where `hashes` is just the current page).
  *   open()'s optional `prefill` = { common: {field: value}, mixed: Set<field> }
  *   reports the tags every selected file already shares (pre-filled so the user
  *   sees them) vs. those that vary (shown blank with a "multiple values" hint).
@@ -330,14 +332,16 @@ export function createBulkEditor({ access = null, onApply, onError, loadDetails 
   }
   extForm.addEventListener('input', syncExtendedBadge);
 
-  function open(selectedHashes, prefill = {}) {
+  function open(selectedHashes, prefill = {}, countLabel = null) {
     hashes = Array.isArray(selectedHashes) ? selectedHashes : [];
     if (!hashes.length) return;
     const common = prefill.common || {};
     const mixed = prefill.mixed || new Set();
     const n = hashes.length;
-    countLine.textContent = `Applies to ${n} selected file${n === 1 ? '' : 's'}. `
-      + 'Shared values are pre-filled; only the fields you change are written.';
+    // countLabel lets a caller override the headline — e.g. filter-mode bulk edit
+    // ("all N matching"), where `hashes` is only the current page.
+    countLine.textContent = (countLabel || `Applies to ${n} selected file${n === 1 ? '' : 's'}.`)
+      + ' Shared values are pre-filled; only the fields you change are written.';
 
     // Base text fields: pre-fill the shared value, or blank + a "multiple values"
     // hint when they vary. Record the starting value for change detection.
