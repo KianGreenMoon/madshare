@@ -177,5 +177,6 @@ gates server-side.
 
 ## See also
 
+- `docs/architecture/file-list-scaling.md` — server-side pagination + filter/sort + the bulk-action endpoint for the **All files** scope (the fix for the flat list freezing at scale; grouping moves to the Browse view).
 - `docs/architecture/moderation.md` — the review state machine the Review scope drives.
 - `docs/api/metadata.md` — the per-file tag edit + entity rename/merge endpoints.
