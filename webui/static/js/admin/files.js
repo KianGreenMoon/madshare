@@ -138,7 +138,8 @@ function filesScope() {
     emptyText: 'No files yet. Add music from the Upload page.',
     columns: ['check', 'title', 'artist', 'album', 'size', 'access', 'actions'],
     // Server-paged: the flat list can be huge, so it loads one page at a time
-    // with server filter + sort (the grouped/drill-down view lives in By-entity).
+    // with server filter + sort. The grouped "By artist / album" view is deferred
+    // until the list is virtualized (docs/architecture/file-list-scaling.md).
     paged: true,
     pageSize: 100,
     apiBase: API,

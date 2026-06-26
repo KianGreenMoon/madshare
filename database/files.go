@@ -312,6 +312,11 @@ func fileFilterWhere(f FileFilter) (string, []any) {
 // fileSortOrder maps a sort token to a safe ORDER BY fragment (allow-listed
 // columns only — never interpolate caller input). Every order ends with f.id so
 // paging is stable across ties. Unknown tokens fall back to newest-first.
+// untaggedExpr is 1 for a file with neither an artist nor an album-artist tag —
+// the "needs metadata" rows (mirrors file-list.js needsMeta). Used by the
+// untagged_first sort to surface rows that still want tagging.
+const untaggedExpr = `(CASE WHEN TRIM(COALESCE(m.artist, '')) = '' AND TRIM(COALESCE(m.album_artist, '')) = '' THEN 1 ELSE 0 END)`
+
 func fileSortOrder(token string) string {
 	switch token {
 	case "created_asc":
@@ -328,6 +333,9 @@ func fileSortOrder(token string) string {
 		return "f.byte_size ASC, f.id ASC"
 	case "size_desc":
 		return "f.byte_size DESC, f.id DESC"
+	case "untagged_first":
+		// Untagged rows first, then newest — surfaces files that still need tags.
+		return untaggedExpr + " DESC, f.created_at DESC, f.id DESC"
 	default: // created_desc
 		return "f.created_at DESC, f.id DESC"
 	}

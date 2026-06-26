@@ -65,6 +65,38 @@ func TestFilesPagination(t *testing.T) {
 	}
 }
 
+// TestFilesSort_UntaggedFirst verifies the untagged_first sort floats files with
+// no artist/album-artist tag to the top.
+func TestFilesSort_UntaggedFirst(t *testing.T) {
+	srv, db := newAuthTestServer(t)
+	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
+
+	// Two tagged, two untagged (empty artist + album_artist).
+	insertTaggedFile(t, db, fmt.Sprintf("%064d", 1), "Alpha", "Album", "Tagged 1")
+	insertTaggedFile(t, db, fmt.Sprintf("%064d", 2), "Beta", "Album", "Tagged 2")
+	insertTaggedFile(t, db, fmt.Sprintf("%064d", 3), "", "", "Untagged 1")
+	insertTaggedFile(t, db, fmt.Sprintf("%064d", 4), "", "", "Untagged 2")
+
+	var e fileEnv
+	if code := doJSON(t, admin, http.MethodGet, srv.URL+"/api/files?sort=untagged_first&limit=50", nil, &e); code != http.StatusOK {
+		t.Fatalf("GET sort=untagged_first = %d", code)
+	}
+	if len(e.Items) != 4 {
+		t.Fatalf("items = %d, want 4", len(e.Items))
+	}
+	// The first two rows must be the untagged ones (no artist).
+	for i := 0; i < 2; i++ {
+		if a, _ := e.Items[i]["artist"].(string); a != "" {
+			t.Errorf("row %d artist = %q, want empty (untagged first)", i, a)
+		}
+	}
+	for i := 2; i < 4; i++ {
+		if a, _ := e.Items[i]["artist"].(string); a == "" {
+			t.Errorf("row %d artist empty, want a tagged row after the untagged ones", i)
+		}
+	}
+}
+
 // TestBulkTrash covers POST /api/admin/files/bulk: explicit hashes, filter mode
 // ("select all matching"), the empty-filter guardrail, and bad requests.
 func TestBulkTrash(t *testing.T) {

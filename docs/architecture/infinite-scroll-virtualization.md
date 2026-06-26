@@ -14,6 +14,16 @@ seamless windowed scrolling here. The plan is to build the scroller as a shared
 module so the admin flat list can later adopt it over the very same paginated
 endpoint.
 
+**This work also unblocks the admin file-list's grouped "By artist / album"
+view.** That view sorts the *whole* set in the browser, so it can't live on
+numbered server pages — it needs virtualization (load the full set, render only
+the visible window) to scale without freezing. So the `file-list.js` component is
+a first-class consumer of the virtual scroller here, not just the public library:
+when this lands, the All-files scope re-enables its grouped toggle on the
+virtualized list (and the same view can extend to the Review / Trash / My-uploads
+scopes). Until then, that scope ships the flat, server-paged list from
+`file-list-scaling.md` (with a server sort dropdown, incl. *Untagged first*).
+
 ---
 
 ## The problem (two halves)
@@ -207,9 +217,17 @@ standard one for any virtualized list.
    with unit-testable index math.
 3. **Library** — `app.js` artist grid (and large track buckets via the threshold)
    on the module.
-4. **Later (optional)** — admin flat list adopts the same module over the offset
-   endpoint from `file-list-scaling.md`; cursor-paginate albums/tracks only if a
-   real library shows they need it.
+4. **Admin file-list grouped view** — virtualize `file-list.js` so the All-files
+   scope can re-enable its grouped **By artist / album** toggle on a windowed list
+   (load the full set, render only the visible slice; grouping/filter/select-all
+   keep working). The grouped table has **variable-height** separator rows
+   (artist band / album line / disc subheader), so this is the measured-height
+   case — render the grouped list as a flat array of "items" (separator or track),
+   each with its own height, and window over that. The same virtualized list then
+   extends to the Review / Trash / My-uploads scopes. The flat list can also adopt
+   the module over the offset endpoint from `file-list-scaling.md`.
+5. **Later (optional)** — cursor-paginate albums/tracks only if a real library
+   shows they need it.
 
 ## Testing
 

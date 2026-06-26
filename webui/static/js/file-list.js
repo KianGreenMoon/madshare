@@ -748,6 +748,7 @@ export function createFileList(scope) {
     ['title_asc', 'Title A–Z'], ['title_desc', 'Title Z–A'],
     ['artist_asc', 'Artist A–Z'], ['artist_desc', 'Artist Z–A'],
     ['size_desc', 'Largest first'], ['size_asc', 'Smallest first'],
+    ['untagged_first', 'Untagged first'],
   ];
   function serverSortControl() {
     const sel = el('select', { class: 'files-sort-select', 'aria-label': 'Sort' });

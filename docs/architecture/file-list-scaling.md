@@ -56,12 +56,17 @@ bounded level per fetch (`/api/artists` → `/api/albums?artist_id=` →
    `limit`, `offset`, `q`, `sort` and returns a `{ total, items }` envelope. The
    client renders one bounded page (~100 rows) with page controls; filter and
    sort round-trip to the server.
-2. **Grouping moves to Browse.** The in-list **Default ⇄ By artist/album** sort
-   toggle is dropped from the All-files scope (it needs the whole set in memory).
-   The grouped/drill-down experience already lives in the By-entity Browse view,
-   which is naturally paginated by entity. The other scopes (Review / Trash / My
-   uploads) keep their current in-memory grouping unchanged — they are bounded by
-   nature.
+2. **The grouped "By artist / album" view is RETAINED but deferred.** It sorts
+   the *whole* set in the browser, which is incompatible with server paging (only
+   one page is in hand). It is **not** dropped and **not** replaced by Browse — it
+   is a planned capability that requires the shared list to be **virtualized**
+   (load the full set, render only the visible window), so grouping/filter/select-
+   all keep working without freezing. That work is designed in
+   [`infinite-scroll-virtualization.md`](infinite-scroll-virtualization.md);
+   until it lands, the All-files flat list ships **without** the grouped toggle
+   (the flat list + server sort is the interim view). The other scopes (Review /
+   Trash / My uploads) keep their current in-memory grouping unchanged — they are
+   bounded by nature.
 3. **A transactional bulk endpoint** — `POST /api/admin/files/bulk` — runs an
    action over either an explicit hash set **or** "everything matching the current
    filter", in one request. This is what makes "delete a big group" real and what
@@ -86,7 +91,7 @@ Query parameters (all optional):
 | `limit` | `100` | page size; clamped to `[0, 500]`. `0` = count-only (empty `items`, `total` still set — used by the dashboard count). |
 | `offset` | `0` | rows to skip; clamped to `>= 0`. |
 | `q` | `""` | case-insensitive substring filter (see below). |
-| `sort` | `created_desc` | one of `created_desc`, `created_asc`, `title_asc`, `title_desc`, `artist_asc`, `artist_desc`, `size_desc`, `size_asc`. Unknown → `created_desc`. |
+| `sort` | `created_desc` | one of `created_desc`, `created_asc`, `title_asc`, `title_desc`, `artist_asc`, `artist_desc`, `size_desc`, `size_asc`, `untagged_first` (rows with no artist/album-artist tag first — the "needs metadata" rows). Unknown → `created_desc`. |
 
 Response is an **envelope** (was a bare array):
 
@@ -199,9 +204,9 @@ Keep the component shared; add a **paged mode** rather than rewriting it.
     of building the whole table;
   - routes the **filter box** to a debounced server reload (resetting to offset
     0), not an in-memory `visibleFiles()` rebuild;
-  - renders a **sort control** (the allow-listed `sort` tokens) instead of the
-    client `artistAlbumSort` toggle (which is removed for this scope — grouping
-    is in Browse);
+  - renders a **sort control** (the allow-listed `sort` tokens, including
+    **Untagged first**) instead of the client `artistAlbumSort` grouped toggle —
+    the grouped view returns once the list is virtualized (see the plan below);
   - selection stays a per-page `Set`, **plus** a "Select all N matching" banner
     that flips selection into **filter-mode** so a bulk action hits
     `POST …/bulk` with the filter, not an enumerated list.
@@ -234,17 +239,19 @@ Unchanged model. The bulk endpoint enforces the same per-action gate the UI
 shows (`trash` → `file.delete`, `edit` → `metadata.edit`); the listing's `q` and
 visibility honour the existing guest-listing narrowing. No new permission.
 
-## Out of scope / future
+## Planned / future
 
-- **Virtualized infinite scroll** for both the public library and (optionally)
-  this flat list — designed separately in
-  [`infinite-scroll-virtualization.md`](infinite-scroll-virtualization.md). If
-  the flat list later adopts the shared virtual scroller, it consumes the same
-  paginated endpoint defined here.
+- **Grouped "By artist / album" view via virtualization (planned).** This is the
+  one piece deliberately deferred, not dropped. The grouped view needs the whole
+  set in the browser to sort across artists, so it returns once the shared list
+  is **virtualized** (load the full set, render only the visible window — keeping
+  grouping, filter, and select-all working without a freeze). Designed in
+  [`infinite-scroll-virtualization.md`](infinite-scroll-virtualization.md); that
+  doc carries the admin file-list as a consumer of the shared virtual scroller.
+  When it lands, the All-files scope re-enables the grouped toggle on the
+  virtualized list, and the same view can extend to the other file-list scopes.
 - Moving **Trash restore / delete-forever** and the **Review** bulk actions onto
   the bulk endpoint (bounded scopes; deferred).
-- Server-side **grouped** paging (artist/album) for the flat list — the Browse
-  view already covers this need.
 
 ## Testing
 
