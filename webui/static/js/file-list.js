@@ -95,12 +95,6 @@ export function createFileList(scope) {
   let playingHash = null;
   let contentEl = null;          // the rows container; re-rendered alone on filter
 
-  // Default ⇄ artist/album sort (scope.artistAlbumSort). Persisted so the choice
-  // sticks across visits.
-  const SORT_KEY = 'madshare-files-sort';
-  let sortMode = 'default';
-  if (scope.artistAlbumSort) { try { if (localStorage.getItem(SORT_KEY) === 'grouped') sortMode = 'grouped'; } catch { /* ignore */ } }
-
   const selected = new Set();    // selected file hashes (shared list ⇄ browse)
   const collapsed = new Set();   // collapsed group keys (collapsible grouping)
   const br = { level: 'artists', artist: null, album: null, items: [] };
@@ -116,8 +110,18 @@ export function createFileList(scope) {
   const PAGE_SIZE = scope.pageSize || 100;
   let page = 0;                  // zero-based page index
   let total = 0;                 // total rows matching the current filter
-  let serverSort = 'created_desc';
   let selectAllMatching = false; // bulk acts on every matching row, not just the page
+
+  // Unified sort selection (the dropdown), shared by every list view. Paged
+  // scopes pass it to the server as the sort token (flat orders only). Non-paged
+  // scopes sort/group in memory and additionally allow 'default' (as loaded) and
+  // 'grouped' (By artist / album), the latter only when scope.artistAlbumSort.
+  // Persisted (non-paged) so the choice sticks across visits.
+  const SORT_KEY = 'madshare-files-sort';
+  let sortToken = paged ? 'created_desc' : 'default';
+  if (!paged) {
+    try { const s = localStorage.getItem(SORT_KEY); if (s) sortToken = s; } catch { /* ignore */ }
+  }
 
   let _editor = null, _bulk = null, _cover = null;
 
@@ -183,7 +187,7 @@ export function createFileList(scope) {
   async function loadPage() {
     loading = true; loadError = false; render();
     try {
-      const res = await scope.loadPage({ limit: PAGE_SIZE, offset: page * PAGE_SIZE, q: filterText.trim(), sort: serverSort }) || {};
+      const res = await scope.loadPage({ limit: PAGE_SIZE, offset: page * PAGE_SIZE, q: filterText.trim(), sort: sortToken }) || {};
       rows = res.items || [];
       total = res.total || 0;
     } catch (err) { loadError = true; console.error('file-list page load failed:', err); }
@@ -244,7 +248,7 @@ export function createFileList(scope) {
     const kids = [titleSpan];
     // The badge fn gets whether the list is in grouped sort, so a scope can show
     // a state badge only when its native (sectioned) grouping is hidden.
-    const b = scope.badge ? scope.badge(f, scope.artistAlbumSort && sortMode === 'grouped') : null;
+    const b = scope.badge ? scope.badge(f, scope.artistAlbumSort && sortToken === 'grouped') : null;
     if (b) kids.push(document.createTextNode(' '), el('span', { class: `state-badge ${b.cls || ''}`, title: b.title || null, text: b.text }));
     kids.push(el('span', { class: 'cell-hash', title: f.hash || '', text: shortHash(f.hash) }));
     if (f.note) kids.push(el('span', { class: 'mod-note', text: `Note: ${f.note}` }));
@@ -735,14 +739,14 @@ export function createFileList(scope) {
     heading.append(scope.title);
     if (view === 'list') heading.append(` (${paged ? total : rows.length})`);
     const controls = [];
-    if (paged && view === 'list') controls.push(serverSortControl());
-    else if (scope.artistAlbumSort && view === 'list') controls.push(sortSwitch());
+    if (view === 'list') controls.push(sortControl());
     controls.push(el('div', { class: 'files-search' }, [search]));
     return el('div', { class: 'files-bar' }, [heading, el('div', { class: 'files-bar-controls' }, controls)]);
   }
 
-  // serverSortControl is the paged list's sort dropdown — the tokens mirror the
-  // server's allow-list (fileSortOrder). Changing sort restarts at page 0.
+  // SORT_OPTIONS are the flat orders; the tokens mirror the server's allow-list
+  // (fileSortOrder) so the same dropdown drives the paged (server) and the
+  // in-memory (client) lists identically.
   const SORT_OPTIONS = [
     ['created_desc', 'Newest first'], ['created_asc', 'Oldest first'],
     ['title_asc', 'Title A–Z'], ['title_desc', 'Title Z–A'],
@@ -750,15 +754,55 @@ export function createFileList(scope) {
     ['size_desc', 'Largest first'], ['size_asc', 'Smallest first'],
     ['untagged_first', 'Untagged first'],
   ];
-  function serverSortControl() {
+
+  // sortControl is the single sort dropdown for every list view. Non-paged scopes
+  // also get a "Default order" (as loaded) entry and, where scope.artistAlbumSort,
+  // a "By artist / album" grouped entry; paged scopes get the flat orders only
+  // (grouping there awaits virtualization — see file-list-scaling.md). Changing it
+  // re-queries the server (paged, from page 0) or re-renders in place (non-paged).
+  function sortControl() {
+    const opts = [];
+    if (!paged) opts.push(['default', 'Default order']);
+    opts.push(...SORT_OPTIONS);
+    if (!paged && scope.artistAlbumSort) opts.push(['grouped', 'By artist / album']);
+
     const sel = el('select', { class: 'files-sort-select', 'aria-label': 'Sort' });
-    for (const [val, label] of SORT_OPTIONS) {
+    for (const [val, label] of opts) {
       const o = el('option', { value: val, text: label });
-      if (val === serverSort) o.selected = true;
+      if (val === sortToken) o.selected = true;
       sel.appendChild(o);
     }
-    sel.addEventListener('change', () => { serverSort = sel.value; page = 0; clearPageSelection(); reload(); });
+    sel.addEventListener('change', () => {
+      sortToken = sel.value;
+      if (paged) { page = 0; clearPageSelection(); reload(); return; }
+      try { localStorage.setItem(SORT_KEY, sortToken); } catch { /* ignore */ }
+      render();
+    });
     return el('div', { class: 'files-sort' }, [sel]);
+  }
+
+  // sortFilesBy returns a sorted COPY of an in-memory row set for a flat token
+  // (non-paged scopes; the paged list is ordered server-side). 'default' / unknown
+  // leaves the order as loaded. Recency falls back across the scopes' timestamps.
+  function sortFilesBy(files, token) {
+    const arr = files.slice();
+    const lc = s => (s || '').toLowerCase();
+    const rec = f => Number(f.created_at ?? f.deleted_at ?? f.id ?? 0);
+    const title = f => lc(f.title || f.filename);
+    const artist = f => lc(f.album_artist || f.artist);
+    const size = f => Number(f.byte_size ?? 0);
+    const cmp = {
+      created_desc: (a, b) => rec(b) - rec(a),
+      created_asc: (a, b) => rec(a) - rec(b),
+      title_asc: (a, b) => title(a).localeCompare(title(b)),
+      title_desc: (a, b) => title(b).localeCompare(title(a)),
+      artist_asc: (a, b) => artist(a).localeCompare(artist(b)),
+      artist_desc: (a, b) => artist(b).localeCompare(artist(a)),
+      size_desc: (a, b) => size(b) - size(a),
+      size_asc: (a, b) => size(a) - size(b),
+      untagged_first: (a, b) => (needsMeta(b) - needsMeta(a)) || (rec(b) - rec(a)),
+    }[token];
+    return cmp ? arr.sort(cmp) : arr;
   }
 
   // pager renders the Prev / "page N of M · T files" / Next control under the
@@ -793,22 +837,6 @@ export function createFileList(scope) {
       ]);
     }
     return null;
-  }
-
-  // sortSwitch toggles the flat list between its default order and the
-  // artist → album → track# grouped sort (scope.artistAlbumSort).
-  function sortSwitch() {
-    const mk = (m, label) => {
-      const b = el('button', { type: 'button', class: 'vm-btn' + (sortMode === m ? ' is-active' : ''), 'aria-pressed': String(sortMode === m), text: label });
-      b.addEventListener('click', () => {
-        if (sortMode === m) return;
-        sortMode = m;
-        try { localStorage.setItem(SORT_KEY, m); } catch { /* ignore */ }
-        render();
-      });
-      return b;
-    };
-    return el('div', { class: 'sort-switch', role: 'group', 'aria-label': 'Sort' }, [mk('default', 'Default'), mk('grouped', 'By artist / album')]);
   }
 
   function viewSwitch() {
@@ -890,9 +918,12 @@ export function createFileList(scope) {
       return table(rows, true);
     }
     if (!rows.length) return emptyBlock();
-    const files = visibleFiles();
-    if (!files.length) return stateBlock(`No files match “${filterText.trim()}”`);
-    if (scope.artistAlbumSort && sortMode === 'grouped') return groupedTable(files);
+    const matched = visibleFiles();
+    if (!matched.length) return stateBlock(`No files match “${filterText.trim()}”`);
+    // "By artist / album" is its own ordered layout; every other token is a flat
+    // order applied to the rows before the scope's native grouping renders them.
+    if (sortToken === 'grouped' && scope.artistAlbumSort) return groupedTable(matched);
+    const files = sortFilesBy(matched, sortToken);
     if (scope.grouping?.kind === 'collapsible') return uploaderGroups(files);
     if (scope.grouping?.kind === 'sections') return sectionGroups(files);
     return table(files, true);

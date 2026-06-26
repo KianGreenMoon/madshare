@@ -67,7 +67,7 @@ correctly; the admin pages load it too.
 
 | Scope | Endpoint | Group | Selectable | Access edit | Notes |
 |---|---|---|---|---|---|
-| **All files** (admin) | `GET /api/files` | – (opt.) | all | ✓ (modal + bulk) | flat list; access is a **read-only column**, edited in the modals. Bulk Move to Trash + Edit tags…. A **Default ⇄ artist/album** sort toggle groups the same flat table (see below). The By-entity drill-down is a separate sub-view (below). |
+| **All files** (admin) | `GET /api/files` (paged) | – (opt.) | all | ✓ (modal + bulk) | server-**paged** flat list (page controls + server **sort dropdown**, incl. Untagged first); access is a **read-only column**, edited in the modals. Bulk Move to Trash + Edit tags… (selection or "select all N matching"). Grouped **By artist / album** awaits virtualization (below). The By-entity drill-down is a separate sub-view (below). |
 | **Review** (admin) | `GET /api/admin/moderation` | by uploader (collapsible) | `submitted` | ✗ (tags only) | Approve / Return-with-note / Discard; `show()` gates per state (drafts preview-only), `editable()` gates Edit. |
 | **Trash** (admin) | `GET /api/admin/trash` | – | all | ✗ (tags only)¹ | Restore / Delete forever; gained Edit + Play. |
 | **My uploads** (owner, `/upload`) | `GET /api/my/uploads` | by state | draft/returned | ✗ (tags only) | state sections, `autoSelect`, Send to approval / Remove; owner-scoped edit endpoint. |
@@ -87,19 +87,34 @@ fields. Every editable list DTO carries `album_artist` (the editor writes all
 four base tags, so an absent prefill would silently clear it — the trash DTO was
 extended for this).
 
-### Grouped sort + needs-metadata flag
+### Sort dropdown + grouped view + needs-metadata flag
 
-`scope.artistAlbumSort` adds a **Default ⇄ "By artist / album"** toggle (persisted
-in `localStorage`). In grouped mode the same `.files-table` is sorted
+Every list view shows one **sort dropdown** (`sortControl`, the same control
+everywhere). The flat orders are `Newest`/`Oldest`, `Title`, `Artist`, `Largest`/
+`Smallest`, and **Untagged first** (rows with no artist/album-artist tag — the
+needs-metadata rows). The non-paged scopes additionally offer **Default order**
+(as loaded) and, where `scope.artistAlbumSort`, **By artist / album** (grouped);
+the choice is persisted in `localStorage`.
+
+The **paged All-files** scope (`scope.paged`) drives this dropdown **server-side**
+(the token rides on `GET /api/files?sort=`, see
+[`file-list-scaling.md`](file-list-scaling.md)); the non-paged scopes sort the
+in-memory rows client-side. The paged scope omits **Default order** and **By
+artist / album** — grouping there sorts the whole set client-side, so it awaits
+the list being virtualized (see
+[`infinite-scroll-virtualization.md`](infinite-scroll-virtualization.md)); until
+then the All-files view is the flat, server-sorted list.
+
+In **By artist / album** mode the same `.files-table` is sorted
 **album-artist → album → disc# → track# (then title)** with **separator rows** woven
 in — a tinted band per artist, a thin indented line per album — each carrying a
 **group-select checkbox** wired into the selection Set, so a whole artist/album
 can be bulk-edited. Grouping is by `album_artist ?? artist` (a Various-Artists
 compilation stays under one band); empty artist/album fall into Unknown / Other
-buckets, sorted last. Enabled on **All files, Review, Trash, and My uploads** (in
-grouped mode it overrides a scope's native uploader/state grouping). The sort
-needs the track + disc number, so `track_number` and `disc_number` (+ `year`) are
-on the `/api/files`, `reviewItem`, and `trashItem` DTOs.
+buckets, sorted last. Available on **Review, Trash, and My uploads** (it overrides
+a scope's native uploader/state grouping). The sort needs the track + disc
+number, so `track_number` and `disc_number` (+ `year`) are on the `/api/files`,
+`reviewItem`, and `trashItem` DTOs.
 
 A **multi-disc album** (more than one distinct `disc_number`; an untagged track
 counts as disc 1) also gets a quiet **"Disc N" separator row** before each disc —
