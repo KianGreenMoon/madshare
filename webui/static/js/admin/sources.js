@@ -119,8 +119,25 @@ function sourceCard(s) {
     meta.push(el('span', { class: 'source-when', text: `Last scan ${fmtDate(s.scanned_at)}` }));
   }
 
+  // Per-source actions: Refresh (additive rescan) + Remove (relation-aware).
+  // Both are disabled mid-scan; `el` sets attributes literally, so use the DOM
+  // .disabled property rather than a (truthy) disabled="false" attribute.
+  const scanning = s.status === 'scanning';
+  const refreshBtn = el('button', {
+    class: 'btn btn-sm btn-neutral', text: 'Refresh',
+    title: 'Re-scan this folder for newly added files', onclick: () => onRefresh(s),
+  });
+  const removeBtn = el('button', {
+    class: 'btn btn-sm btn-destructive-outline', text: 'Remove',
+    title: 'Remove this source (unlinks its tracks; never touches your originals)',
+    onclick: () => onRemove(s),
+  });
+  refreshBtn.disabled = scanning;
+  removeBtn.disabled = scanning;
+  const actions = el('div', { class: 'source-card-actions' }, [refreshBtn, removeBtn]);
+
   return el('div', { class: 'source-card is-' + (s.status || 'active') }, [
-    head, root, el('div', { class: 'source-card-meta' }, meta),
+    head, root, el('div', { class: 'source-card-meta' }, meta), actions,
   ]);
 }
 
@@ -176,6 +193,77 @@ async function onAdd(e) {
   } finally {
     addBtn.disabled = false;
     addBtn.removeAttribute('aria-busy');
+  }
+}
+
+// ── Refresh (additive rescan) ───────────────────────────────────────────────────
+async function onRefresh(s) {
+  try {
+    const res = await fetch(`${API}/api/admin/sources/${encodeURIComponent(s.id)}/rescan`, { method: 'POST' });
+    if (handleAuthError(res)) return;
+    const body = await res.json().catch(() => ({}));
+    if (res.ok) {
+      toast(`Rescanning “${s.name}”…`, 'info');
+      load(); // reflect the scanning status and begin polling
+      return;
+    }
+    const msg = {
+      404: 'That source no longer exists.',
+      403: body.error || 'That folder is no longer under an allowed root.',
+      409: 'A scan is already running — try again when it finishes.',
+      503: 'Symlink imports are not configured.',
+    }[res.status] || body.error || `Could not rescan (HTTP ${res.status}).`;
+    toast(msg, 'error');
+  } catch (err) {
+    toast(`Rescan failed: ${err.message}`, 'error');
+  }
+}
+
+// ── Remove (relation-aware) ─────────────────────────────────────────────────────
+// Dry-run the removal first so the confirm dialog states the real consequences
+// (how many records are deleted vs kept because another source/local upload still
+// references them). Originals are never touched — only our symlinks.
+async function onRemove(s) {
+  let prev;
+  try {
+    const res = await fetch(`${API}/api/admin/sources/${encodeURIComponent(s.id)}/removal-preview`);
+    if (handleAuthError(res)) return;
+    prev = await res.json().catch(() => ({}));
+    if (!res.ok) { toast(prev.error || `Could not prepare removal (HTTP ${res.status}).`, 'error'); return; }
+  } catch (err) {
+    toast(`Could not prepare removal: ${err.message}`, 'error');
+    return;
+  }
+
+  const remove = prev.will_remove || 0;
+  const keep = prev.will_keep || 0;
+  let msg = `Remove the source “${s.name}”?\n\n`;
+  if (remove === 0) {
+    msg += keep > 0
+      ? `No tracks will be deleted — all ${keep} are still referenced elsewhere (another source or a local upload).`
+      : 'No tracks are attributed to this source; only the source record is removed.';
+  } else {
+    msg += `${remove} track${remove === 1 ? '' : 's'} will be removed (their links only — your original files are never touched).`;
+    if (keep > 0) msg += `\n${keep} shared/owned track${keep === 1 ? '' : 's'} will be kept.`;
+  }
+  if (!confirm(msg)) return;
+
+  try {
+    const res = await fetch(`${API}/api/admin/sources/${encodeURIComponent(s.id)}`, { method: 'DELETE' });
+    if (handleAuthError(res)) return;
+    const body = await res.json().catch(() => ({}));
+    if (res.ok) {
+      toast(`Removed “${s.name}” — ${body.removed || 0} removed, ${body.kept || 0} kept.`, 'info');
+      load();
+      return;
+    }
+    const m = {
+      404: 'That source no longer exists.',
+      409: 'A scan is running — try again when it finishes.',
+    }[res.status] || body.error || `Could not remove source (HTTP ${res.status}).`;
+    toast(m, 'error');
+  } catch (err) {
+    toast(`Remove failed: ${err.message}`, 'error');
   }
 }
 

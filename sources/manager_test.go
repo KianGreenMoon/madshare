@@ -30,6 +30,9 @@ type fakeStore struct {
 
 	finished []finishCall
 
+	// per-source attribution (migration 023): sourceID -> set of file ids.
+	attrib map[string]map[int64]bool
+
 	// cover bookkeeping (P4)
 	albumCovers map[int64]bool // albumID -> already has a cover
 	coverClaims int            // SetAlbumCoverIfAbsent that inserted
@@ -44,6 +47,7 @@ func newFakeStore() *fakeStore {
 	return &fakeStore{
 		sources:     map[string]*database.DataSource{},
 		byHash:      map[string]*database.File{},
+		attrib:      map[string]map[int64]bool{},
 		albumCovers: map[int64]bool{},
 	}
 }
@@ -154,6 +158,96 @@ func (s *fakeStore) EnqueueAnalysisJob(_ context.Context, _, _ int64) error {
 	defer s.mu.Unlock()
 	s.enqueued++
 	return nil
+}
+
+func (s *fakeStore) UpdateDataSourceStatus(_ context.Context, id, status string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ds := s.sources[id]; ds != nil {
+		ds.Status = status
+	}
+	return nil
+}
+
+func (s *fakeStore) DeleteDataSource(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.sources, id)
+	delete(s.attrib, id) // ON DELETE CASCADE
+	return nil
+}
+
+func (s *fakeStore) AttributeSourceFile(_ context.Context, sourceID string, fileID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.attrib[sourceID] == nil {
+		s.attrib[sourceID] = map[int64]bool{}
+	}
+	s.attrib[sourceID][fileID] = true
+	return nil
+}
+
+func (s *fakeStore) SourceHasAttribution(_ context.Context, sourceID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.attrib[sourceID]) > 0, nil
+}
+
+func (s *fakeStore) CountSourceFiles(_ context.Context, sourceID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.attrib[sourceID]), nil
+}
+
+func (s *fakeStore) SourceExclusiveFiles(_ context.Context, sourceID string) ([]database.SourceFileRef, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	byID := map[int64]*database.File{}
+	for _, f := range s.byHash {
+		byID[f.ID] = f
+	}
+	var out []database.SourceFileRef
+	for fid := range s.attrib[sourceID] {
+		exclusive := true
+		for sid, set := range s.attrib {
+			if sid != sourceID && set[fid] {
+				exclusive = false
+				break
+			}
+		}
+		f := byID[fid]
+		if !exclusive || f == nil {
+			continue
+		}
+		out = append(out, database.SourceFileRef{ID: fid, Hash: f.Hash, StorageBackend: f.StorageBackend})
+	}
+	return out, nil
+}
+
+func (s *fakeStore) ListLinkFiles(_ context.Context) ([]database.LinkFileRef, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []database.LinkFileRef
+	for _, f := range s.byHash {
+		if f.StorageBackend == database.StorageBackendLinks && f.LinkTarget.Valid && f.LinkTarget.String != "" {
+			out = append(out, database.LinkFileRef{ID: f.ID, LinkTarget: f.LinkTarget.String})
+		}
+	}
+	return out, nil
+}
+
+func (s *fakeStore) HardDeleteFileByHash(_ context.Context, hash string) ([]string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, ok := s.byHash[hash]
+	if !ok {
+		return nil, false, nil
+	}
+	delete(s.byHash, hash)
+	for _, set := range s.attrib { // ON DELETE CASCADE on file_id
+		delete(set, f.ID)
+	}
+	return []string{}, true, nil
 }
 
 // writeAudio creates root/name with content and returns the dir's path.

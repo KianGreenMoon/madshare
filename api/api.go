@@ -288,6 +288,9 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		// content.moderate capability. See docs/architecture/data-sources.md.
 		r.With(moderate).Get("/sources", h.adminSourcesList)
 		r.With(moderate).Post("/sources", h.adminSourcesAdd)
+		r.With(moderate).Post("/sources/{id}/rescan", h.adminSourcesRescan)
+		r.With(moderate).Get("/sources/{id}/removal-preview", h.adminSourcesRemovalPreview)
+		r.With(moderate).Delete("/sources/{id}", h.adminSourcesDelete)
 
 		// Content-access management (Phase 3c). Only registered when a store is
 		// configured; its routes carry their own permission gates.

@@ -110,9 +110,33 @@ ALTER TABLE files ADD COLUMN link_target TEXT;             -- abs path of the or
 
 No `storage_order`/`storage_default` settings in v0 — precedence is the fixed
 constant `local` > `links` (see *Storage precedence*; configurable ordering ships
-with S3). No per-file `source_id`: with a shared links dir, per-source file
-attribution is not tracked in v0 (sources show their **scan-time summary**; link
-health is reported over the whole `links` storage).
+with S3).
+
+Migration `023_source_files.sql` (DB version → 23) adds **per-source file
+attribution**, required so a source can be removed safely (drop a record only when
+no source still references it — see *Removing a source*). It was deliberately
+omitted in v0 (a shared links dir reported only a scan summary); it is added now
+that delete/refresh exist:
+
+```sql
+-- Which files each source references. Many-to-many on purpose: the same hash
+-- found under two source roots is attributed to BOTH (so removing one leaves
+-- the record, owned by the other). ON DELETE CASCADE on both sides keeps it
+-- self-cleaning — a hard-deleted file or a removed source takes its rows with it.
+CREATE TABLE source_files (
+  source_id TEXT    NOT NULL REFERENCES data_sources(id) ON DELETE CASCADE,
+  file_id   INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  PRIMARY KEY (source_id, file_id)
+);
+CREATE INDEX idx_source_files_file ON source_files(file_id);  -- the "any other source?" probe
+```
+
+A scan attributes **every** accepted file it touches — newly linked, an existing
+catalog row it reuses, **and** a hash already in the links storage it skips (the
+skip path still records that *this* source references the hash). Attribution is
+`INSERT OR IGNORE`, so a re-scan of the same tree is a no-op. Sources still carry
+their **scan-time summary**; link health is still reported over the whole `links`
+storage.
 
 ## Storages registry & the resolver
 
@@ -218,10 +242,23 @@ Endpoints under `/api/admin/sources*` — admin group (`file.delete`) + gated
 - **`GET /api/admin/sources`** — list the symlink sources (root, scan summary,
   external bytes) and `links`-storage health (broken-link count), plus the `local`
   store summary. No reorder/default control (v0 precedence is fixed).
-- **`DELETE /api/admin/sources/{id}`** — *deferred / best-effort* (delete flagged
-  "later, not necessary"): mark the source inactive / forget the record;
-  reclaiming shared links is a later **manual** tool since attribution isn't
-  tracked.
+- **`POST /api/admin/sources/{id}/rescan`** — *Refresh.* Re-walk the source's
+  existing root (re-validated against `symlink_roots`, in case the allow-list
+  changed) and re-run the same scan, reusing the existing `data_sources` row
+  (status → `scanning`, then a fresh summary). **Additive only:** it links newly
+  appeared files and re-affirms attribution; it never removes files that have
+  *disappeared* from the root (a temporarily-unmounted drive must not trigger a
+  mass delete). Vanished originals surface as broken links on the Prune page; the
+  explicit Remove action below is how you delete. Reuses the single scan slot
+  (409 `busy` if a scan/removal is already running).
+- **`GET /api/admin/sources/{id}/removal-preview`** — dry-run for Remove: returns
+  `{ will_remove, will_keep }` so the UI can confirm before destroying anything
+  (mirrors the album-merge preview).
+- **`DELETE /api/admin/sources/{id}`** — *Remove,* relation-aware (see *Removing a
+  source*). Drops the source and, for each file it **exclusively** references
+  (no other source, and not an owned `local` blob), unlinks the symlink and
+  removes the catalog row; shared or locally-owned records are kept. Returns the
+  removed/kept counts. Reuses the single scan slot so it can never race a scan.
 
 Recordings/duplicates run unchanged through the link (see
 `docs/architecture/recordings.md`).
@@ -294,6 +331,36 @@ Every destructive path is storage-aware:
   Full variant-storage design (incl. future audio variants):
   `docs/architecture/variants.md`.
 
+### Removing a source
+
+Backed by the `source_files` attribution table (migration 023). Removing a source
+must never destroy a record another source — or a local upload — still relies on:
+
+1. **Exclusive set.** Find the files referenced by *this* source and by **no
+   other** source (`NOT EXISTS` over `source_files`). This is content-addressed by
+   the `files` row, so a hash imported from two roots is excluded (kept).
+2. **Per file in the set** — unlink the **symlink** for its hash (only-this-source,
+   so the one link-per-hash is safe to drop; never touches the external target).
+   Then: if the catalog row is a `links` row, hard-delete it (**removed**); if it
+   is an owned `local` blob (a prior upload the scan merely re-linked), keep the
+   row — only the stray link is reclaimed (**kept**). The local `DeleteAll` is
+   never invoked, upholding the never-touch-what-we-don't-own invariant.
+3. **Delete the `data_sources` row.** Its remaining `source_files` rows (the shared
+   / locally-owned files we kept) cascade away; those records stay, now attributed
+   only to their other source(s).
+
+Removal reserves the **single scan slot** (409 `busy` while a scan/removal runs),
+so attribution can't shift underneath it. The `GET …/removal-preview` endpoint
+runs step 1 read-only to report `{will_remove, will_keep}` for a confirm dialog.
+
+**Legacy backfill.** Sources created before migration 023 have no `source_files`
+rows. At startup, `Manager.BackfillAttribution` attributes each such source's
+linked files by matching `files.link_target` under the source's (symlink-resolved)
+`root_path` — recovering single-source attribution so Remove works without a
+forced rescan first. It is idempotent and skipped once a source has any rows. (A
+hash that earlier scans *skipped* under a second root was never recorded anywhere;
+a Refresh of that source re-attributes it via the skip path.)
+
 ## Accounting
 
 `storageStats` reports per **storage**:
@@ -311,8 +378,10 @@ Every destructive path is storage-aware:
 directories** section listing each symlink source (name, root, status badge, scan
 summary, last-scan date), an **Add symlink source** form constrained to
 `symlink_roots` (root dropdown + optional subfolder; hidden when none), scan
-progress (polling `GET /api/admin/sources` while any source is `scanning`), and a
-**Links storage** health line (count / external bytes / broken-link count); the
+progress (polling `GET /api/admin/sources` while any source is `scanning`),
+per-source **Refresh** (rescan, additive) and **Remove** (relation-aware delete,
+gated behind a `removal-preview` confirm showing the will-remove/keep counts), and
+a **Links storage** health line (count / external bytes / broken-link count); the
 broken-link *detail* (which hashes, with reasons) lives on the Prune page, linked
 from the health line. The dashboard's storage card shows external (linked) bytes
 separately and a "scanning" badge. **No reorderable storage list in v0**: `links`
@@ -385,16 +454,31 @@ admin shell, `shared.js`, `toast.js`. Moderator-gated client-side
   also shows external (linked) bytes separately and a "scanning" badge. No
   reorderable storage list (that ships with S3). Moderator-gated client-side
   (`content.moderate`); compiles out under `-tags nowebui` (API stays).
-- **Future** — source delete / duplicate-reconcile tool; two-way sync/rescan; the
-  `s3` storage + configurable precedence (`docs/architecture/s3-storage.md`);
-  "adopt/materialize" a link into `local`.
+- **P7 — source refresh + relation-aware remove. _(done)_** Migration 023
+  (`source_files` attribution; DB → 23). The scan engine attributes every file it
+  touches (link/reuse/skip). `Manager.Rescan` re-walks an existing source
+  additively (reusing its row); `Manager.Remove` drops a source and, via the
+  exclusive set, unlinks + hard-deletes only the records no other source/local
+  blob relies on (shared/local kept), with a `removal-preview` dry-run;
+  `Manager.BackfillAttribution` heals pre-023 sources at startup. Endpoints
+  `POST …/{id}/rescan`, `GET …/{id}/removal-preview`, `DELETE …/{id}`
+  (`content.moderate`; reuse the single scan slot → 409 busy). The `/admin/sources`
+  page gains per-source **Refresh** and **Remove** (confirm with counts).
+- **Future** — *full two-way* sync/rescan (auto-remove disappeared originals with
+  an empty-root guard); duplicate-reconcile tool; the `s3` storage + configurable
+  precedence (`docs/architecture/s3-storage.md`); "adopt/materialize" a link into
+  `local`.
 
 ## Open questions
 
-1. **Source deletion / reclaim.** Shared links dir + no per-file attribution → a
-   deliberate (likely manual) tool; deferred.
-2. **Two-way sync (`rescan`).** v0 is one-shot; sync needs a removed-original
-   policy.
+1. **Source deletion / reclaim. _(DONE — P7.)_** Resolved by the `source_files`
+   attribution table: Remove is relation-aware (drop a record only when no other
+   source — or local upload — still references it). See *Removing a source*.
+2. **Two-way sync (`rescan`). _(Refresh DONE — P7; full sync deferred.)_** Refresh
+   re-scans **additively** (links new files, re-affirms attribution; never removes
+   vanished originals — that stays Prune's job, to avoid an unmounted-drive mass
+   delete). A true two-way sync that auto-removes disappeared files (with an
+   empty/unreadable-root guard) is still future.
 3. **`s3` storage** — the configurable storage priority/default, S3-as-cache, and
    multi-store ordering are designed in `docs/architecture/s3-storage.md` (future,
    not built). **adopt/materialize** a link into `local` — also future.

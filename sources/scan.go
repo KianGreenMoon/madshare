@@ -55,7 +55,7 @@ func (m *Manager) scan(id, realRoot string, actor sql.NullInt64) {
 		if !ok {
 			return nil // not an accepted audio file; ignore (not counted)
 		}
-		m.ingestOne(ctx, path, mime, actor, &sum)
+		m.ingestOne(ctx, id, path, mime, actor, &sum)
 		return nil
 	})
 
@@ -77,9 +77,11 @@ func (m *Manager) scan(id, realRoot string, actor sql.NullInt64) {
 
 // ingestOne references one audio file: hash it, skip if the links storage already
 // has it, else create the symlink and a catalog row (reusing an existing files
-// row for the same hash). It updates the running summary counts. All errors are
-// per-file (logged, counted as Failed) so the scan continues.
-func (m *Manager) ingestOne(ctx context.Context, path, mime string, actor sql.NullInt64, sum *ScanSummary) {
+// row for the same hash). It attributes the file to sourceID on every path —
+// linked, reused, or skipped — so Refresh re-affirms attribution and Remove can
+// reason about it (migration 023). It updates the running summary counts. All
+// errors are per-file (logged, counted as Failed) so the scan continues.
+func (m *Manager) ingestOne(ctx context.Context, sourceID, path, mime string, actor sql.NullInt64, sum *ScanSummary) {
 	sum.Scanned++
 
 	hash, size, err := hashFile(path)
@@ -90,13 +92,15 @@ func (m *Manager) ingestOne(ctx context.Context, path, mime string, actor sql.Nu
 	}
 
 	// One link per hash: if the links storage already references this content,
-	// a prior scan already linked and cataloged it — don't overwrite.
+	// a prior scan already linked and cataloged it — don't overwrite. Still
+	// attribute it to this source (a hash may live under two source roots).
 	if has, err := m.linker.Has(hash); err != nil {
 		logf("sources: links probe %s: %v", hash, err)
 		sum.Failed++
 		return
 	} else if has {
 		sum.Skipped++
+		m.attributeByHash(ctx, sourceID, hash)
 		return
 	}
 
@@ -127,6 +131,7 @@ func (m *Manager) ingestOne(ctx context.Context, path, mime string, actor sql.Nu
 		if err := m.store.RecordUpload(ctx, existing.ID, filename); err != nil {
 			logf("sources: record upload %s: %v", hash, err)
 		}
+		m.attribute(ctx, sourceID, existing.ID)
 		sum.Linked++
 		return
 	}
@@ -160,6 +165,9 @@ func (m *Manager) ingestOne(ctx context.Context, path, mime string, actor sql.Nu
 		return
 	}
 
+	// Attribute the freshly inserted file to this source (migration 023).
+	m.attribute(ctx, sourceID, f.ID)
+
 	// Enqueue ingest analysis (ffprobe tech columns + fpcalc fingerprint →
 	// recording resolution), exactly like an upload. Best-effort: the startup
 	// backfill re-enqueues anything missed.
@@ -174,6 +182,28 @@ func (m *Manager) ingestOne(ctx context.Context, path, mime string, actor sql.Nu
 	m.maybeSaveCover(ctx, path, tags, now)
 
 	sum.Linked++
+}
+
+// attribute records that sourceID references fileID (best-effort: a failure is
+// logged, never aborts the scan — a missed attribution just leaves the file out
+// of this source's removal/keep accounting, the safe direction).
+func (m *Manager) attribute(ctx context.Context, sourceID string, fileID int64) {
+	if err := m.store.AttributeSourceFile(ctx, sourceID, fileID); err != nil {
+		logf("sources: attribute %s/%d: %v", sourceID, fileID, err)
+	}
+}
+
+// attributeByHash attributes the catalog row for hash to sourceID (used on the
+// skip path, where we have only the hash). A missing row is a no-op.
+func (m *Manager) attributeByHash(ctx context.Context, sourceID, hash string) {
+	f, err := m.store.GetFileByHash(ctx, hash)
+	if err != nil {
+		logf("sources: attribute lookup %s: %v", hash, err)
+		return
+	}
+	if f != nil {
+		m.attribute(ctx, sourceID, f.ID)
+	}
 }
 
 // hashFile streams the SHA-256 of the file at path and returns the digest and

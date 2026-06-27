@@ -50,12 +50,22 @@ type Store interface {
 	InsertDataSource(ctx context.Context, ds *database.DataSource) error
 	ListDataSources(ctx context.Context) ([]*database.DataSource, error)
 	GetDataSource(ctx context.Context, id string) (*database.DataSource, error)
+	UpdateDataSourceStatus(ctx context.Context, id, status string) error
 	FinishDataSourceScan(ctx context.Context, id, status, summaryJSON string, scannedAt int64) error
+	DeleteDataSource(ctx context.Context, id string) error
 	ResetStaleScans(ctx context.Context) (int64, error)
+
+	// Per-source attribution (migration 023) — drives Refresh/Remove.
+	AttributeSourceFile(ctx context.Context, sourceID string, fileID int64) error
+	SourceHasAttribution(ctx context.Context, sourceID string) (bool, error)
+	CountSourceFiles(ctx context.Context, sourceID string) (int, error)
+	SourceExclusiveFiles(ctx context.Context, sourceID string) ([]database.SourceFileRef, error)
+	ListLinkFiles(ctx context.Context) ([]database.LinkFileRef, error)
 
 	GetFileByHash(ctx context.Context, hash string) (*database.File, error)
 	InsertFile(ctx context.Context, f *database.File, upload *database.FileUpload, meta *database.MediaMetadata) error
 	RecordUpload(ctx context.Context, fileID int64, filename string) error
+	HardDeleteFileByHash(ctx context.Context, hash string) ([]string, bool, error)
 	EnqueueAnalysisJob(ctx context.Context, fileID, now int64) error
 
 	// Cover attach (read-once-derive, P4). Mirrors the upload path's
@@ -201,13 +211,9 @@ func (m *Manager) Add(ctx context.Context, name, root string, actor sql.NullInt6
 
 	// Reserve the single scan slot before touching the DB so a refused Add never
 	// leaves a half-created 'scanning' row behind.
-	m.mu.Lock()
-	if m.running {
-		m.mu.Unlock()
+	if !m.reserveScanSlot() {
 		return nil, ErrBusy
 	}
-	m.running = true
-	m.mu.Unlock()
 
 	now := m.clock()
 	ds := &database.DataSource{
@@ -219,17 +225,224 @@ func (m *Manager) Add(ctx context.Context, name, root string, actor sql.NullInt6
 		CreatedAt: now,
 	}
 	if err := m.store.InsertDataSource(ctx, ds); err != nil {
-		m.mu.Lock()
-		m.running = false
-		m.mu.Unlock()
+		m.releaseScanSlot()
 		return nil, err
 	}
 
-	m.wg.Add(1)
-	go m.scan(ds.ID, realRoot, actor)
+	m.launchScan(ds.ID, realRoot, actor)
 
 	src := toSource(ds)
 	return &src, nil
+}
+
+// Rescan re-walks an existing source's root and re-runs the scan, reusing the
+// source's row (status → scanning, fresh summary). It is ADDITIVE: it links newly
+// appeared files and re-affirms attribution, but never removes files that have
+// disappeared from the root (a temporarily-unavailable drive must not trigger a
+// mass delete; vanished originals surface on the Prune page and are removed via
+// Remove). The root is re-validated against the allow-list, in case symlink_roots
+// changed since the source was added. Errors: ErrDisabled, ErrSourceNotFound,
+// ErrInvalidRoot, ErrRootNotAllowed, ErrBusy.
+func (m *Manager) Rescan(ctx context.Context, id string, actor sql.NullInt64) (*Source, error) {
+	if !m.Enabled() {
+		return nil, ErrDisabled
+	}
+	ds, err := m.store.GetDataSource(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	realRoot, err := m.resolveAllowedRoot(ds.RootPath)
+	if err != nil {
+		return nil, err
+	}
+	if !m.reserveScanSlot() {
+		return nil, ErrBusy
+	}
+	if err := m.store.UpdateDataSourceStatus(ctx, id, database.SourceStatusScanning); err != nil {
+		m.releaseScanSlot()
+		return nil, err
+	}
+	m.launchScan(id, realRoot, actor)
+	ds.Status = database.SourceStatusScanning
+	src := toSource(ds)
+	return &src, nil
+}
+
+// Removal is the outcome (or, from RemovalPreview, the projection) of removing a
+// source: how many records are deleted vs kept (shared with another source or
+// owned by a local upload).
+type Removal struct {
+	WillRemove int `json:"will_remove"`
+	WillKeep   int `json:"will_keep"`
+}
+
+// RemovalPreview reports, without changing anything, how many of a source's files
+// would be deleted vs kept if it were removed — for a confirm dialog. Returns
+// ErrSourceNotFound for an unknown id.
+func (m *Manager) RemovalPreview(ctx context.Context, id string) (Removal, error) {
+	if _, err := m.store.GetDataSource(ctx, id); err != nil {
+		return Removal{}, err
+	}
+	excl, err := m.store.SourceExclusiveFiles(ctx, id)
+	if err != nil {
+		return Removal{}, err
+	}
+	total, err := m.store.CountSourceFiles(ctx, id)
+	if err != nil {
+		return Removal{}, err
+	}
+	return Removal{WillRemove: countLinks(excl), WillKeep: total - countLinks(excl)}, nil
+}
+
+// Remove deletes a source relation-awarely (see docs/architecture/data-sources.md,
+// Removing a source). For each file the source references EXCLUSIVELY (no other
+// source) it unlinks the hash's symlink — safe, only-this-source, never the
+// external target — and, if the catalog row is a links import, hard-deletes it.
+// A shared record (referenced by another source) or a local upload is kept. It
+// reserves the single scan slot so attribution cannot shift underneath it.
+// Errors: ErrSourceNotFound, ErrBusy.
+func (m *Manager) Remove(ctx context.Context, id string) (Removal, error) {
+	if _, err := m.store.GetDataSource(ctx, id); err != nil {
+		return Removal{}, err
+	}
+	if !m.reserveScanSlot() {
+		return Removal{}, ErrBusy
+	}
+	defer m.releaseScanSlot()
+
+	excl, err := m.store.SourceExclusiveFiles(ctx, id)
+	if err != nil {
+		return Removal{}, err
+	}
+	total, err := m.store.CountSourceFiles(ctx, id)
+	if err != nil {
+		return Removal{}, err
+	}
+
+	removed := 0
+	for _, f := range excl {
+		// Only this source references the hash, so its single symlink is safe to
+		// reclaim whether the row is a links import or a local upload's stray
+		// re-link. os.Remove on the link never follows it to the external target.
+		if err := m.linker.Remove(f.Hash); err != nil {
+			logf("sources: remove %s: unlink %s: %v", id, f.Hash, err)
+		}
+		// A local blob is owned — keep the catalog row; only links rows are deleted.
+		if f.StorageBackend != database.StorageBackendLinks {
+			continue
+		}
+		if _, _, err := m.store.HardDeleteFileByHash(ctx, f.Hash); err != nil {
+			logf("sources: remove %s: delete file %s: %v", id, f.Hash, err)
+			continue
+		}
+		removed++
+	}
+	if err := m.store.DeleteDataSource(ctx, id); err != nil {
+		return Removal{}, err
+	}
+	logf("sources: removed source %s: deleted=%d kept=%d", id, removed, total-removed)
+	return Removal{WillRemove: removed, WillKeep: total - removed}, nil
+}
+
+// BackfillAttribution heals sources created before migration 023 (no source_files
+// rows): it attributes each such source's linked files by matching files.link_target
+// under the source's symlink-resolved root_path, so Remove works without a forced
+// rescan first. Idempotent — a source with any attribution is skipped, and the
+// inserts are INSERT OR IGNORE. Call once at startup, after ResetStaleScans. A
+// cross-root duplicate that earlier scans SKIPPED was never recorded; a Refresh of
+// that source re-attributes it via the skip path.
+func (m *Manager) BackfillAttribution(ctx context.Context) error {
+	srcs, err := m.store.ListDataSources(ctx)
+	if err != nil {
+		return err
+	}
+	var need []*database.DataSource
+	for _, s := range srcs {
+		has, err := m.store.SourceHasAttribution(ctx, s.ID)
+		if err != nil {
+			return err
+		}
+		if !has {
+			need = append(need, s)
+		}
+	}
+	if len(need) == 0 {
+		return nil
+	}
+	links, err := m.store.ListLinkFiles(ctx)
+	if err != nil {
+		return err
+	}
+	attributed := 0
+	for _, s := range need {
+		root := resolveRealPath(s.RootPath)
+		for _, lf := range links {
+			if !isUnder(lf.LinkTarget, root) {
+				continue
+			}
+			if err := m.store.AttributeSourceFile(ctx, s.ID, lf.ID); err != nil {
+				logf("sources: backfill attribute %s/%d: %v", s.ID, lf.ID, err)
+				continue
+			}
+			attributed++
+		}
+	}
+	if attributed > 0 {
+		logf("sources: backfilled attribution for %d link reference(s) across %d source(s)", attributed, len(need))
+	}
+	return nil
+}
+
+// countLinks returns how many of the exclusive files are links rows (the set that
+// Remove actually deletes; local rows are kept).
+func countLinks(refs []database.SourceFileRef) int {
+	n := 0
+	for _, r := range refs {
+		if r.StorageBackend == database.StorageBackendLinks {
+			n++
+		}
+	}
+	return n
+}
+
+// reserveScanSlot atomically claims the single scan/removal slot, returning false
+// if one is already in flight. releaseScanSlot frees it.
+func (m *Manager) reserveScanSlot() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.running {
+		return false
+	}
+	m.running = true
+	return true
+}
+
+func (m *Manager) releaseScanSlot() {
+	m.mu.Lock()
+	m.running = false
+	m.mu.Unlock()
+}
+
+// launchScan starts the background scan goroutine, tracked by wg for Wait.
+func (m *Manager) launchScan(id, realRoot string, actor sql.NullInt64) {
+	m.wg.Add(1)
+	go m.scan(id, realRoot, actor)
+}
+
+// resolveRealPath resolves symlinks in p (a scan walks the symlink-resolved root,
+// so link_target values live under it), falling back to a plain Clean on error.
+func resolveRealPath(p string) string {
+	if r, err := filepath.EvalSymlinks(filepath.Clean(p)); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
+}
+
+// isUnder reports whether target is root or nested under it, with a separator
+// boundary so a sibling prefix (/srv/music vs /srv/music-evil) does not match.
+func isUnder(target, root string) bool {
+	target = filepath.Clean(target)
+	return target == root || strings.HasPrefix(target, root+string(filepath.Separator))
 }
 
 // Wait blocks until the in-flight scan (if any) finishes. Used by graceful

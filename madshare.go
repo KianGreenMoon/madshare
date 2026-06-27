@@ -262,6 +262,11 @@ func main() {
 	if err := sourcesMgr.ResetStaleScans(ctx); err != nil {
 		log.Printf("reset stale source scans: %v", err)
 	}
+	// Heal pre-023 sources that have no per-file attribution yet, so Remove works
+	// without a forced rescan first (idempotent — see data-sources.md, P7).
+	if err := sourcesMgr.BackfillAttribution(ctx); err != nil {
+		log.Printf("backfill source attribution: %v", err)
+	}
 
 	sourceRoot, err := os.Getwd()
 	if err != nil {

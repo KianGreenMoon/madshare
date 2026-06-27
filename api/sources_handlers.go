@@ -3,9 +3,12 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
+
+	"github.com/go-chi/chi/v5"
 
 	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/sources"
@@ -106,4 +109,98 @@ func (h *handler) adminSourcesAdd(w http.ResponseWriter, r *http.Request) {
 
 	h.audit(r.Context(), "source.add", src.ID, "symlink source "+src.Name+" -> "+src.Root)
 	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "source": src})
+}
+
+// adminSourcesRescan handles POST /api/admin/sources/{id}/rescan: re-walk an
+// existing source's root and re-run its scan additively (links new files,
+// re-affirms attribution; never removes vanished originals). Returns the source
+// with status=scanning; poll GET /api/admin/sources for the outcome. 503 when no
+// manager is wired, 404 unknown id, 409 a scan/removal is already running.
+func (h *handler) adminSourcesRescan(w http.ResponseWriter, r *http.Request) {
+	if h.sourcesMgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "data sources unavailable"})
+		return
+	}
+	id := chi.URLParam(r, "id")
+	src, err := h.sourcesMgr.Rescan(r.Context(), id, actorID(r.Context()))
+	switch {
+	case errors.Is(err, database.ErrSourceNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "source not found"})
+		return
+	case errors.Is(err, sources.ErrDisabled):
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "symlink sources are not configured"})
+		return
+	case errors.Is(err, sources.ErrRootNotAllowed):
+		writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "root is no longer under an allowed directory"})
+		return
+	case errors.Is(err, sources.ErrInvalidRoot):
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "source root is missing or unreadable"})
+		return
+	case errors.Is(err, sources.ErrBusy):
+		writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": "a source scan is already running"})
+		return
+	case err != nil:
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+
+	h.audit(r.Context(), "source.rescan", src.ID, "rescan "+src.Name)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "source": src})
+}
+
+// adminSourcesRemovalPreview handles GET /api/admin/sources/{id}/removal-preview:
+// a read-only dry-run reporting how many records removing the source would delete
+// vs keep (shared with another source or owned by a local upload). 404 unknown id.
+func (h *handler) adminSourcesRemovalPreview(w http.ResponseWriter, r *http.Request) {
+	if h.sourcesMgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "data sources unavailable"})
+		return
+	}
+	id := chi.URLParam(r, "id")
+	prev, err := h.sourcesMgr.RemovalPreview(r.Context(), id)
+	switch {
+	case errors.Is(err, database.ErrSourceNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "source not found"})
+		return
+	case err != nil:
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":          true,
+		"will_remove": prev.WillRemove,
+		"will_keep":   prev.WillKeep,
+	})
+}
+
+// adminSourcesDelete handles DELETE /api/admin/sources/{id}: remove the source
+// relation-awarely — unlink + hard-delete only the records it references
+// exclusively (no other source, not a local upload); shared/local records are
+// kept (see docs/architecture/data-sources.md, Removing a source). Returns the
+// removed/kept counts. 404 unknown id, 409 a scan/removal is already running.
+func (h *handler) adminSourcesDelete(w http.ResponseWriter, r *http.Request) {
+	if h.sourcesMgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "data sources unavailable"})
+		return
+	}
+	id := chi.URLParam(r, "id")
+	res, err := h.sourcesMgr.Remove(r.Context(), id)
+	switch {
+	case errors.Is(err, database.ErrSourceNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "source not found"})
+		return
+	case errors.Is(err, sources.ErrBusy):
+		writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": "a source scan is already running"})
+		return
+	case err != nil:
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+
+	h.audit(r.Context(), "source.remove", id, fmt.Sprintf("removed=%d kept=%d", res.WillRemove, res.WillKeep))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"removed": res.WillRemove,
+		"kept":    res.WillKeep,
+	})
 }
