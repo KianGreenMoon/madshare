@@ -502,6 +502,51 @@ func (db *DB) BulkSoftDeleteByHashes(ctx context.Context, hashes []string) (int,
 	return total, nil
 }
 
+// BulkRestoreByHashes clears deleted_at on the given hashes in a single
+// transaction, chunked to stay within SQLite's bound-parameter limit. It mirrors
+// RestoreFileByHash's deleted_at-only guard, so live and unknown hashes are
+// simply skipped; the returned count is how many trashed rows were restored.
+// This is the restore counterpart to BulkSoftDeleteByHashes — one transaction
+// instead of one autocommit write per hash, which is what made bulk restore both
+// slow and a SQLITE_BUSY source under concurrent write pressure.
+func (db *DB) BulkRestoreByHashes(ctx context.Context, hashes []string) (int, error) {
+	if len(hashes) == 0 {
+		return 0, nil
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	total := 0
+	const chunk = 400
+	for i := 0; i < len(hashes); i += chunk {
+		end := i + chunk
+		if end > len(hashes) {
+			end = len(hashes)
+		}
+		batch := hashes[i:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, 0, len(batch))
+		for j, h := range batch {
+			placeholders[j] = "?"
+			args = append(args, h)
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE files SET deleted_at = NULL WHERE deleted_at IS NOT NULL AND hash IN (`+strings.Join(placeholders, ",")+`)`, args...)
+		if err != nil {
+			return 0, fmt.Errorf("bulk restore: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		total += int(n)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit: %w", err)
+	}
+	return total, nil
+}
+
 // uploadFilenamesInTx returns the recorded filenames for a file (ordered by
 // upload id) within an open transaction. It is a shared helper for the two
 // delete variants that need to report filenames before mutating the row.

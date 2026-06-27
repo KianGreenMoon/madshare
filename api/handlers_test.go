@@ -414,8 +414,10 @@ type fakeRepo struct {
 	countFiles        int
 	filterHashes      []string
 	filterHashesErr   error
-	bulkTrashedHashes []string
-	bulkTrashErr      error
+	bulkTrashedHashes  []string
+	bulkTrashErr       error
+	bulkRestoredHashes []string
+	bulkRestoreErr     error
 
 	breakdown    database.StorageByteBreakdown
 	breakdownErr error
@@ -817,6 +819,14 @@ func (f *fakeRepo) HardDeleteTrashedFileByHash(_ context.Context, _ string) ([]s
 
 func (f *fakeRepo) RestoreFileByHash(_ context.Context, _ string) (bool, error) {
 	return true, nil
+}
+
+func (f *fakeRepo) BulkRestoreByHashes(_ context.Context, hashes []string) (int, error) {
+	f.bulkRestoredHashes = append(f.bulkRestoredHashes, hashes...)
+	if f.bulkRestoreErr != nil {
+		return 0, f.bulkRestoreErr
+	}
+	return len(hashes), nil
 }
 
 func (f *fakeRepo) GetTrashRestorePolicy(_ context.Context) (string, error) {

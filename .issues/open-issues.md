@@ -234,3 +234,33 @@ folding (`é`↔`e`): `strasse` does not match `Straße`, `cafe` does not match
 Decision: keep the current Unicode case folding; do **not** add the cheap per-row
 normalization. Revisit the precomputed approach only if diacritic/`ß` search
 mismatches are reported as a real problem in practice. | open |
+
+## Bulk write paths / SQLITE_BUSY (2026-06-28)
+
+Reported: Trash *Restore* was far slower than *Move to Trash* and produced
+`SQLITE_BUSY` in the log, occasionally rendering the admin page logged-out (a
+reload recovered it). Root cause: `trashBulk`'s restore action looped per hash,
+opening **two** autocommit write transactions per file (the `RestoreFileByHash`
+UPDATE + a `file.restore` audit INSERT) — `2N` write transactions — while *Move
+to Trash* uses one batched `BulkSoftDeleteByHashes` transaction + one audit row.
+Under `_txlock=immediate` on the multi-connection on-disk pool, that storm of
+short write-lock acquisitions contends with the analysis/prune/concurrent-request
+writers; once a writer waits past the 5 s `busy_timeout` it fails with
+`SQLITE_BUSY`. **Fixed** for restore: new `database.BulkRestoreByHashes` (one
+chunked transaction, mirrors `BulkSoftDeleteByHashes`) + a single
+`file.bulk_restore` audit row.
+
+The same `2N`-write-transaction anti-pattern remains in the other bulk handlers
+below. All four bulk endpoints accept the "Select all N matching" scope, so each
+can be invoked over an arbitrarily large set and reproduce the same slowness /
+`SQLITE_BUSY` / transient-logout cascade. The audit INSERT per row is half the
+write traffic and is the easiest part to collapse (one summary row, as the trash
+and edit paths already do).
+
+| Severity | Issue | Status |
+|---|---|---|
+| Medium | **Session silently drops on a transient session-lookup DB error.** `auth/middleware.go` `resolve()` treats *any* error from `store.SessionIdentity` (or `TokenIdentity`) the same as "no session" → returns an anonymous identity, so the admin page renders logged-out. This is what turned the restore-time `SQLITE_BUSY` into the visible "thrown off the admin page, reload fixes it" symptom. Removing the write-lock storm (restore fix) removes the *trigger*, but the fragility is independent: any transient DB hiccup mid-session still appears as a logout. Consider distinguishing a transient DB error from a genuine no-session and failing closed (503) rather than appearing unauthenticated. | open |
+| Medium | **`moderationBulk` loops per row (approve / return / discard).** `api/review_handlers.go:587` — each hash does `UpdateReviewState` (or `SoftDeleteFileByHash` for discard) **plus** a per-row `file.approve`/`file.return`/`file.trash` audit INSERT → `2N` write transactions over the full moderation "select all matching" scope. approve/return are pure `review_state` flips (a single guarded `UPDATE … WHERE hash IN (…)` per chunk, like restore); discard could reuse `BulkSoftDeleteByHashes`. Collapse the audit to one summary row. | open |
+| Medium | **`myUploadsBulk` remove loops per row.** `api/review_handlers.go:420` — `DiscardOwnUpload` + a per-row `file.trash` audit per hash → `2N` write transactions over the owner's "select all matching" staged set. Needs an owner-scoped batched soft delete (e.g. `BulkDiscardOwnUploads(ctx, hashes, ownerID)`) + one summary audit. | open |
+| Low | **`myUploadsBulk` submit loops per row (`submitStaged`).** `api/review_handlers.go:302` — per hash: `IsDuplicateSubmission` (read) + `UpdateReviewState` (write) + a per-row audit. Harder to fully batch because the target state is decided per file by the duplicate check, but the write + audit can still be grouped (e.g. partition into self-approve / submitted / flagged buckets and issue one guarded `UPDATE` + one audit row per bucket). | open |
+| Low | **`bulkEditFiles` loops per row (`applyOneBulkEdit`).** `api/admin_handlers.go:210` — per hash: `UpdateFileMetadata` (+ `SetLicense` / `SetGuestPlayable`) → up to 3 write transactions/file (the audit *is* already a single summary row). The metadata write genuinely re-resolves per-file artist/album entities so it can't collapse to one `UPDATE`, but each file's writes could share one transaction, and the whole batch could run under fewer transactions to cut the lock-acquire count. Lower priority than the pure-state-flip handlers above. | open |

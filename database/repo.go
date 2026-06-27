@@ -168,6 +168,11 @@ type Repository interface {
 	// the live library. found is false (no error) when no trashed row matches.
 	RestoreFileByHash(ctx context.Context, hash string) (found bool, err error)
 
+	// BulkRestoreByHashes clears deleted_at on a hash set in one transaction
+	// (returning the count actually restored) — the restore counterpart to
+	// BulkSoftDeleteByHashes, backing the Trash "Restore selected" bulk action.
+	BulkRestoreByHashes(ctx context.Context, hashes []string) (int, error)
+
 	// GetTrashRestorePolicy reads the trash-restore policy (reupload_restores /
 	// inform / uploader_restore); defaults to reupload_restores when unset.
 	GetTrashRestorePolicy(ctx context.Context) (string, error)

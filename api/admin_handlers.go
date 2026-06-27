@@ -499,27 +499,36 @@ func (h *handler) trashBulk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Restore is a pure deleted_at flip with no storage side-effects, so it goes
+	// through one batched transaction + one audit row (mirroring the send-to-trash
+	// BulkSoftDeleteByHashes path). The old per-hash loop opened two autocommit
+	// write transactions per file (restore + audit), which made restore far slower
+	// than trashing and produced SQLITE_BUSY under concurrent write pressure.
+	if req.Action == "restore" {
+		affected, err := h.repo.BulkRestoreByHashes(r.Context(), hashes)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+			return
+		}
+		h.audit(r.Context(), "file.bulk_restore", "files", fmt.Sprintf("%d restored", affected))
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
+		return
+	}
+
+	// delete: per-hash, since each needs its storage kind learned before the row
+	// is gone and its blob reclaimed.
 	affected := 0
 	for _, hash := range hashes {
+		f, err := h.repo.GetFileByHash(r.Context(), hash)
 		var found bool
-		var err error
-		if req.Action == "restore" {
-			found, err = h.repo.RestoreFileByHash(r.Context(), hash)
-			if found {
-				h.audit(r.Context(), "file.restore", hash, "")
-			}
-		} else { // delete: learn storage kind before the row is gone, then reclaim
-			var f *database.File
-			f, err = h.repo.GetFileByHash(r.Context(), hash)
-			if err == nil {
-				var filenames []string
-				filenames, found, err = h.repo.HardDeleteTrashedFileByHash(r.Context(), hash)
-				if found && err == nil {
-					if _, rerr := h.reclaimStorage(f, hash); rerr != nil {
-						log.Printf("orphan blob: hash=%s err=%v", hash, rerr)
-					}
-					h.audit(r.Context(), "file.delete", hash, strings.Join(filenames, ", "))
+		if err == nil {
+			var filenames []string
+			filenames, found, err = h.repo.HardDeleteTrashedFileByHash(r.Context(), hash)
+			if found && err == nil {
+				if _, rerr := h.reclaimStorage(f, hash); rerr != nil {
+					log.Printf("orphan blob: hash=%s err=%v", hash, rerr)
 				}
+				h.audit(r.Context(), "file.delete", hash, strings.Join(filenames, ", "))
 			}
 		}
 		if err != nil {
