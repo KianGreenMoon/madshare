@@ -97,6 +97,9 @@ export function createFileList(scope) {
   let view = hasBrowse ? 'browse' : 'list';
   let playingHash = null;
   let bodyHost = null;           // persistent body container (survives chrome rebuilds)
+  let bannerHost = null;         // persistent "select all N matching" banner slot — updated
+                                 // on every selection change (not just full render), so it
+                                 // appears the moment the loaded page is fully ticked
 
   const selected = new Set();    // selected file hashes (shared list ⇄ browse)
   const collapsed = new Set();   // collapsed group keys (collapsible grouping)
@@ -566,6 +569,11 @@ export function createFileList(scope) {
       cb.checked = hs.length > 0 && n === hs.length;
       cb.indeterminate = n > 0 && n < hs.length;
     });
+
+    // Re-evaluate the "Select all N matching" offer: in windowed mode a selection
+    // change repaints via syncSelectionUI (no full render), so the banner must be
+    // refreshed here or it would never appear after ticking the header checkbox.
+    renderBanner();
   }
 
   function selectAllVisible(on) {
@@ -1234,6 +1242,15 @@ export function createFileList(scope) {
   }
 
   function ensureBodyHost() { if (!bodyHost) bodyHost = el('div', { class: 'fl-body' }); return bodyHost; }
+  function ensureBannerHost() { if (!bannerHost) bannerHost = el('div', { class: 'fl-banner-host' }); return bannerHost; }
+  // renderBanner refills the persistent banner slot from the current selection.
+  // Called from syncSelectionUI so ticking "select all" (which, in windowed mode,
+  // doesn't trigger a full render) still surfaces the "Select all N matching" offer.
+  function renderBanner() {
+    if (!bannerHost) return;
+    const b = selectAllBanner();
+    bannerHost.replaceChildren(...(b ? [b] : []));   // replaceChildren(null) would print "null"
+  }
   function emptyOrNoMatch() {
     const q = filterText.trim();
     return (rows.length && q) ? stateBlock(`No files match “${q}”`) : emptyBlock();
@@ -1261,8 +1278,7 @@ export function createFileList(scope) {
     if (scope.desc) kids.push(el('p', { class: 'scope-desc', text: scope.desc }));
     const tb = (view === 'list') ? bulkToolbar() : (hasBrowse ? bulkToolbar() : null);
     if (tb) kids.push(tb);
-    const banner = selectAllBanner();
-    if (banner) kids.push(banner);
+    kids.push(ensureBannerHost());   // filled by renderBanner() (via syncSelectionUI)
     kids.push(ensureBodyHost());
     mountEl.replaceChildren(...kids);
     if (keepSearchFocus) searchInput.focus();
@@ -1298,6 +1314,7 @@ export function createFileList(scope) {
     _bulk?.destroy(); _bulk = null;
     _cover?.destroy(); _cover = null;
     bodyHost = null;
+    bannerHost = null;
     mountEl = null;
   }
 
