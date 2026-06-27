@@ -196,7 +196,14 @@ func main() {
 	if err := db.ResetStaleAnalysisJobs(ctx); err != nil {
 		log.Printf("reset stale analysis jobs: %v", err)
 	}
-	mediaPool := mediaproc.NewPool(db, audioDir, cfg.Storage.ImageProcessingWorkers, haveFFprobe, haveFpcalc)
+	// The read-side resolver: serves a content hash by probing local (files_dir)
+	// then the shared links storage (<data_dir>/links). Built here (ahead of its
+	// other uses below) so the media-analysis pool resolves linked imports the
+	// same way /files does — otherwise it only sees the local audio dir and logs
+	// "no blob for hash" for every external file. The links dir need not exist
+	// yet; it stays empty until a symlink source populates it (data-sources P3).
+	storageRegistry := storages.New(filesDir, cfg.LinksDir())
+	mediaPool := mediaproc.NewPool(db, storageRegistry, cfg.Storage.ImageProcessingWorkers, haveFFprobe, haveFpcalc)
 	go mediaPool.Start(ctx)
 	// Backfill analysis for blobs uploaded before this ran (idempotent; skips
 	// files that already have a fingerprint and tech columns). Only worth doing
@@ -230,11 +237,6 @@ func main() {
 		cfg.Storage.ServerMaxParallelWorkers,
 		cfg.Storage.UserMaxParallelWorkers,
 	)
-
-	// The read-side resolver: serves /files by probing local (files_dir) then the
-	// shared links storage (<data_dir>/links). The links dir need not exist yet —
-	// it stays empty until a symlink source populates it (data-sources P3).
-	storageRegistry := storages.New(filesDir, cfg.LinksDir())
 
 	// The Linker is the write side of the links storage (symlink create/remove)
 	// and the prune's broken-link probe. Built before the prune manager so prune

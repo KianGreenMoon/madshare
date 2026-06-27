@@ -10,10 +10,7 @@ package mediaproc
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"log"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -39,27 +36,37 @@ type Repository interface {
 	ResolveRecording(ctx context.Context, fileID int64) (int64, error)
 }
 
+// BlobResolver maps a content hash to its on-disk blob path across every
+// configured storage, in precedence order (local before links). *storages.Registry
+// satisfies it. The worker must probe all storages — not just the local audio
+// dir — because a links-backed file (an external symlink import) has no blob
+// under <files_dir>/audio; its bytes are reached through the links storage.
+type BlobResolver interface {
+	Resolve(hash string) (path, storageID string, ok bool)
+}
+
 // Pool manages a fixed-size goroutine pool that drains media_analysis_jobs.
 type Pool struct {
 	repo        Repository
-	audioDir    string
+	resolver    BlobResolver
 	workers     int
 	haveFFprobe bool
 	haveFpcalc  bool
 	notify      chan struct{}
 }
 
-// NewPool creates (but does not start) a worker pool. audioDir is the absolute
-// path to the audio blob directory (<files_dir>/audio). haveFFprobe / haveFpcalc
-// reflect tool availability (see media.ToolStatus); a false flag skips that tool
-// for every job. workers < 1 is treated as 1.
-func NewPool(repo Repository, audioDir string, workers int, haveFFprobe, haveFpcalc bool) *Pool {
+// NewPool creates (but does not start) a worker pool. resolver locates each
+// job's blob across all storages (local + links), so linked imports are analysed
+// just like uploads. haveFFprobe / haveFpcalc reflect tool availability (see
+// media.ToolStatus); a false flag skips that tool for every job. workers < 1 is
+// treated as 1.
+func NewPool(repo Repository, resolver BlobResolver, workers int, haveFFprobe, haveFpcalc bool) *Pool {
 	if workers < 1 {
 		workers = 1
 	}
 	return &Pool{
 		repo:        repo,
-		audioDir:    audioDir,
+		resolver:    resolver,
 		workers:     workers,
 		haveFFprobe: haveFFprobe,
 		haveFpcalc:  haveFpcalc,
@@ -140,9 +147,12 @@ func (p *Pool) process(ctx context.Context, job *database.AnalysisJob) {
 // ffprobe/fpcalc can't decode) is logged and skipped, never retried, because the
 // next attempt would fail identically.
 func (p *Pool) analyze(ctx context.Context, job *database.AnalysisJob) error {
-	path, err := resolveBlobPath(p.audioDir, job.Hash)
-	if err != nil {
-		return err
+	path, _, ok := p.resolver.Resolve(job.Hash)
+	if !ok {
+		// No storage has the blob (gone, or only a dangling link). Surface as a
+		// retryable error so a transient miss recovers; a persistent one ages out
+		// to 'failed' after maxAnalysisJobRetries.
+		return fmt.Errorf("no blob for hash %s", job.Hash)
 	}
 	now := time.Now().Unix()
 
@@ -165,33 +175,4 @@ func (p *Pool) analyze(ctx context.Context, job *database.AnalysisJob) error {
 		}
 	}
 	return nil
-}
-
-// resolveBlobPath returns the on-disk path of the audio blob for hash. Blobs
-// live at <audioDir>/<hash>/<filename>; the filename is recovered by reading the
-// hash directory and taking its first regular file (a hash dir holds exactly one
-// blob, possibly under several upload names — any is the same bytes).
-func resolveBlobPath(audioDir, hash string) (string, error) {
-	dir := filepath.Join(audioDir, hash)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", fmt.Errorf("blob dir missing for hash %s", hash)
-		}
-		return "", fmt.Errorf("read blob dir %s: %w", dir, err)
-	}
-	for _, e := range entries {
-		if e.Type().IsRegular() {
-			return filepath.Join(dir, e.Name()), nil
-		}
-		// A symlink would surface as a non-regular entry; resolve and re-check so
-		// we never hand a directory to the probe.
-		if e.Type()&fs.ModeSymlink != 0 {
-			full := filepath.Join(dir, e.Name())
-			if info, statErr := os.Stat(full); statErr == nil && info.Mode().IsRegular() {
-				return full, nil
-			}
-		}
-	}
-	return "", fmt.Errorf("no blob file for hash %s", hash)
 }
