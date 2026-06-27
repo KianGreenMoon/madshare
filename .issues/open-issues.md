@@ -213,3 +213,24 @@ logged for a later session.
 | Info | **Panel fetches once per page load — no live refresh.** We optimised *server* freshness (dropped the cache) but the *client* fetches once on dashboard load: figures don't move while a prune/upload runs until a manual reload. If "watch it update" matters, add a poll or a refresh button. | open |
 | Info | **Storage view gated behind a destructive permission.** `GET /api/admin/storage` requires `file.delete`; a moderate-only admin can't see it (reuses the storage-management route group). Probably intended — just be deliberate about whether a read-only stats view should need a delete permission. | open |
 | Info | **Detail rows can look self-contradictory.** The *bar* is clamped, but the rows still show raw "Madshare total" (logical bytes) vs "Disk used" (FS-allocated); on a compressing/sparse FS the total can read *larger* than disk-used, which looks wrong to a human even though it's correct. Consider a tooltip/footnote. | open |
+
+## Search — diacritic / ß normalization (2026-06-27)
+
+Case folding for non-ASCII letters is now handled: search registers a
+Unicode-aware `unicode_lower` SQL function (Go `strings.ToLower`) used on both
+sides of the search `LIKE` predicates in `DB.Search` (`database/library.go`) and
+the unified file filter (`database/files.go`), so e.g. `über` matches `Über`
+(commit `fdd95b6`, regression `TestSearch_CaseInsensitive_Unicode`).
+
+What is **not** handled is orthographic normalization — `ß`↔`ss` and accent
+folding (`é`↔`e`): `strasse` does not match `Straße`, `cafe` does not match
+`Café`. Logged as a deliberate non-goal for now.
+
+| Approach | Why we are NOT doing it | Status |
+|---|---|---|
+| **Cheap (per-row transform)** — extend `unicode_lower` into a `search_norm` that NFD-decomposes, strips combining marks and maps `ß`→`ss`, applied per row on both sides of the `LIKE`. | **Rejected.** Runs a non-trivial transform on every scanned row of every search (tolerable for the small library search, wasteful on the large `media_metadata` file filter) for marginal recall, and the semantics turn murky — accent folding over-matches (collapses genuinely distinct names) and `ß`↔`ss` is asymmetric/locale-dependent. Not worth predictable behavior. | **won't do (cheap way)** |
+| **Proper (precomputed indexed column)** — a normalized search column (generated/indexed) populated at ingest + backfill, so normalized matching is an indexed lookup rather than a per-row scan. | Correct and fast at query time, but it is real schema churn (migration + ingest hook + backfill) and adds index write/storage cost on every upload/edit. **Performance is a priority for us**, so even this may not pay for itself — the win (matching `ß`/accents) is a rare edge case since users usually type the umlaut/ß form they see. | **deferred — may never do** |
+
+Decision: keep the current Unicode case folding; do **not** add the cheap per-row
+normalization. Revisit the precomputed approach only if diacritic/`ß` search
+mismatches are reported as a real problem in practice. | open |
