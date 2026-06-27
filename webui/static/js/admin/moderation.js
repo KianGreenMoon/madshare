@@ -18,47 +18,59 @@ export function createReviewScope({ play, perms }) {
   let fileList = null;
 
   // ── Fetch helpers ───────────────────────────────────────────────────────────
-  async function loadQueue() {
-    const res = await fetch(`${API}/api/admin/moderation`);
+  // loadModerationPage backs the paged component: one server page of the queue,
+  // filtered + sorted, as {total, selectable_total, items}. selectable_total is the
+  // submitted (actionable) count, so the "Select all N matching" banner reflects
+  // only the rows the bulk actions touch (file-list-scaling.md).
+  async function loadModerationPage({ limit, offset, q, field, sort }) {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (sort) params.set('sort', sort);
+    if (q) params.set('q', q);
+    if (field) params.set('field', field);
+    const res = await fetch(`${API}/api/admin/moderation?${params.toString()}`);
     if (handleAuthError(res)) throw new Error('Your session expired.');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
+    const data = await res.json();
+    return { total: data.total || 0, selectable_total: data.selectable_total, items: data.items || [] };
   }
-  async function runBulk(hashes, makeRequest) {
-    let ok = 0, fail = 0, authFailed = false;
-    for (const hash of hashes) {
-      let res;
-      try { res = await makeRequest(hash); } catch { fail++; continue; }
-      if (res.status === 401) { handleAuthError(res); authFailed = true; break; }
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.ok) ok++; else fail++;
-    }
-    return { ok, fail, authFailed };
+
+  // moderationBulkCall is the single batched action over an explicit hash list OR
+  // a filter ("select all N matching"). Returns the count actually affected.
+  async function moderationBulkCall(body) {
+    const res = await fetch(`${API}/api/admin/moderation/bulk`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (handleAuthError(res)) throw new Error('Your session expired.');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data.affected || 0;
   }
-  async function approveMany(hashes) {
-    const { ok, fail, authFailed } = await runBulk(hashes, h => fetch(`${API}/api/admin/moderation/${encodeURIComponent(h)}/approve`, { method: 'POST' }));
-    if (authFailed) { if (ok) toast(`Approved ${ok} before the session expired.`, 'error'); return; }
-    if (fail) toast(`Approved ${ok}; ${fail} failed.`, 'error');
-    else if (ok) toast(`Approved ${ok} ${ok === 1 ? 'file' : 'files'} into the library.`, 'success');
-  }
-  async function discardMany(hashes) {
-    const { ok, fail, authFailed } = await runBulk(hashes, h => fetch(`${API}/api/admin/files/${encodeURIComponent(h)}`, { method: 'DELETE' }));
-    if (authFailed) { if (ok) toast(`Discarded ${ok} before the session expired.`, 'error'); return; }
-    if (fail) toast(`Discarded ${ok} to Trash; ${fail} failed.`, 'error');
-    else if (ok) toast(`Discarded ${ok} ${ok === 1 ? 'file' : 'files'} to Trash.`, 'success');
-  }
-  async function returnMany(hashes, note) {
-    const { ok, fail, authFailed } = await runBulk(hashes, h => fetch(`${API}/api/admin/moderation/${encodeURIComponent(h)}/return`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note }),
-    }));
-    if (authFailed) { if (ok) toast(`Returned ${ok} before the session expired.`, 'error'); return; }
-    if (fail) toast(`Returned ${ok}; ${fail} failed.`, 'error');
-    else if (ok) toast(`Returned ${ok} ${ok === 1 ? 'file' : 'files'} to the uploader.`, 'success');
-  }
+  const filterBody = filter => ({ filter: { q: filter.q, field: filter.field }, all: !filter.q });
+
+  function toastApproved(n) { if (n) toast(`Approved ${n} ${n === 1 ? 'file' : 'files'} into the library.`, 'success'); }
+  function toastReturned(n) { if (n) toast(`Returned ${n} ${n === 1 ? 'file' : 'files'} to the uploader.`, 'success'); }
+  function toastDiscarded(n) { if (n) toast(`Discarded ${n} ${n === 1 ? 'file' : 'files'} to Trash.`, 'success'); }
+
+  const approveHashes = hashes => moderationBulkCall({ action: 'approve', hashes });
+  const approveAll = filter => moderationBulkCall({ action: 'approve', ...filterBody(filter) });
+  const returnHashes = (hashes, note) => moderationBulkCall({ action: 'return', hashes, note });
+  const returnAll = (filter, note) => moderationBulkCall({ action: 'return', ...filterBody(filter), note });
+  const discardHashes = hashes => moderationBulkCall({ action: 'discard', hashes });
+  const discardAll = filter => moderationBulkCall({ action: 'discard', ...filterBody(filter) });
+
+  // Explicit-selection metadata edit (per-hash PATCH); there is no edit-by-filter
+  // for staged files, so the component disables "Edit tags…" in select-all mode.
   async function moderationBulkPatch(hashes, patch) {
-    const { ok, fail } = await runBulk(hashes, h => fetch(`${API}/api/files/${encodeURIComponent(h)}/metadata`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
-    }));
+    let ok = 0, fail = 0;
+    for (const h of hashes) {
+      try {
+        const res = await fetch(`${API}/api/files/${encodeURIComponent(h)}/metadata`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.ok) ok++; else fail++;
+      } catch { fail++; }
+    }
     if (fail) throw new Error(`updated ${ok}, ${fail} failed`);
   }
 
@@ -72,12 +84,11 @@ export function createReviewScope({ play, perms }) {
   const returnCancel  = document.getElementById('returnCancel');
   const returnClose   = document.getElementById('returnClose');
 
-  function returnFlow(hashes) {
+  // promptReturnNote shows the return modal and resolves the trimmed note, or null
+  // if cancelled. The caller does the actual return (one batched request).
+  function promptReturnNote(bodyText) {
     return new Promise(resolve => {
-      if (!hashes.length) { resolve(false); return; }
-      returnBody.textContent = hashes.length === 1
-        ? 'Send this file back to its uploader to fix?'
-        : `Send ${hashes.length} files back to their uploader with one note?`;
+      returnBody.textContent = bodyText;
       returnNote.value = '';
       returnError.hidden = true; returnError.textContent = '';
       returnModal.classList.remove('hidden');
@@ -89,18 +100,15 @@ export function createReviewScope({ play, perms }) {
         returnModal.removeEventListener('click', onBackdrop);
         document.removeEventListener('keydown', onKey);
       };
-      const onSubmit = async e => {
+      const onSubmit = e => {
         e.preventDefault();
         const note = returnNote.value.trim();
         if (!note) { returnError.textContent = 'A note is required.'; returnError.hidden = false; return; }
-        returnConfirm.disabled = true;
         returnModal.classList.add('hidden');
-        await returnMany(hashes, note);
-        returnConfirm.disabled = false;
         cleanup();
-        resolve(true);
+        resolve(note);
       };
-      const onCancel   = () => { returnModal.classList.add('hidden'); cleanup(); resolve(false); };
+      const onCancel   = () => { returnModal.classList.add('hidden'); cleanup(); resolve(null); };
       const onBackdrop = e => { if (e.target === returnModal) onCancel(); };
       const onKey      = e => { if (e.key === 'Escape' && !returnModal.classList.contains('hidden')) onCancel(); };
       returnForm.addEventListener('submit', onSubmit);
@@ -119,11 +127,12 @@ export function createReviewScope({ play, perms }) {
   const discardCancel  = document.getElementById('discardCancel');
   const discardClose   = document.getElementById('discardClose');
 
-  function discardFlow(hashes) {
+  // confirmDiscard shows the bulk discard confirm; resolves true/false. The caller
+  // does the actual discard (one batched request).
+  function confirmDiscard(bodyText, confirmLabel) {
     return new Promise(resolve => {
-      if (!hashes.length) { resolve(false); return; }
-      discardBody.textContent = `Discard ${hashes.length} ${hashes.length === 1 ? 'file' : 'files'} to Trash?`;
-      discardConfirm.textContent = `Discard ${hashes.length}`;
+      discardBody.textContent = bodyText;
+      discardConfirm.textContent = confirmLabel;
       discardError.hidden = true; discardError.textContent = '';
       discardModal.classList.remove('hidden');
       discardConfirm.focus();
@@ -134,7 +143,7 @@ export function createReviewScope({ play, perms }) {
         discardModal.removeEventListener('click', onBackdrop);
         document.removeEventListener('keydown', onKey);
       };
-      const onOk = async () => { discardModal.classList.add('hidden'); cleanup(); await discardMany(hashes); resolve(true); };
+      const onOk       = () => { discardModal.classList.add('hidden'); cleanup(); resolve(true); };
       const onCancel   = () => { discardModal.classList.add('hidden'); cleanup(); resolve(false); };
       const onBackdrop = e => { if (e.target === discardModal) onCancel(); };
       const onKey      = e => { if (e.key === 'Escape' && !discardModal.classList.contains('hidden')) onCancel(); };
@@ -184,9 +193,15 @@ export function createReviewScope({ play, perms }) {
       ? { text: (STATE_LABEL[f.state] || f.state) + ' · possible duplicate', cls: 'is-' + f.state + ' is-duplicate' }
       : { text: STATE_LABEL[f.state] || f.state, cls: 'is-' + f.state },
     accessEditable: false,
-    load: loadQueue,
+    // Server-paged: the queue can be large, so it loads pages by infinite scroll
+    // (file-list-scaling.md). The by-uploader grouping streams non-collapsible
+    // uploader separators as pages arrive (sort=uploader).
+    paged: true,
+    pageSize: 100,
+    loadPage: loadModerationPage,
     grouping: {
       kind: 'collapsible',
+      groupSort: 'uploader',
       by: f => f.uploader_id || 0,
       label: f => f.uploader || '(unknown uploader)',
       counts: groupCounts,
@@ -197,19 +212,52 @@ export function createReviewScope({ play, perms }) {
     editDetailURL: f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`,
     editNote: 'Edits this submission’s tags before approval.',
     rowActions: [
-      { id: 'approve', label: 'Approve', kind: 'neutral', show: f => ACTIONABLE.has(f.state), run: f => approveMany([f.hash]) },
-      { id: 'return',  label: 'Return…', kind: 'neutral', show: f => ACTIONABLE.has(f.state), run: f => returnFlow([f.hash]) },
+      { id: 'approve', label: 'Approve', kind: 'neutral', show: f => ACTIONABLE.has(f.state), run: async f => { toastApproved(await approveHashes([f.hash])); } },
+      {
+        id: 'return', label: 'Return…', kind: 'neutral', show: f => ACTIONABLE.has(f.state),
+        run: async f => {
+          const note = await promptReturnNote('Send this file back to its uploader to fix?');
+          if (note == null) return false;
+          toastReturned(await returnHashes([f.hash], note));
+        },
+      },
       {
         id: 'discard', label: 'Discard', kind: 'danger',
         confirm: 'inline', confirmPrompt: 'Discard to Trash?', confirmLabel: 'Discard',
         show: f => ACTIONABLE.has(f.state),
-        run: f => discardMany([f.hash]),
+        run: async f => { toastDiscarded(await discardHashes([f.hash])); },
       },
     ],
     bulkActions: [
-      { id: 'approve', label: 'Approve selected', kind: 'neutral', run: hashes => approveMany(hashes) },
-      { id: 'return',  label: 'Return selected…', kind: 'neutral', run: hashes => returnFlow(hashes) },
-      { id: 'discard', label: 'Discard selected', kind: 'danger',  run: hashes => discardFlow(hashes) },
+      {
+        id: 'approve', label: 'Approve selected', kind: 'neutral',
+        run: async hashes => { toastApproved(await approveHashes(hashes)); },
+        runAll: async filter => { toastApproved(await approveAll(filter)); },
+      },
+      {
+        id: 'return', label: 'Return selected…', kind: 'neutral',
+        run: async hashes => {
+          const note = await promptReturnNote(`Send ${hashes.length} files back to their uploader with one note?`);
+          if (note == null) return false;
+          toastReturned(await returnHashes(hashes, note));
+        },
+        runAll: async filter => {
+          const note = await promptReturnNote('Send all matching files back to their uploaders with one note?');
+          if (note == null) return false;
+          toastReturned(await returnAll(filter, note));
+        },
+      },
+      {
+        id: 'discard', label: 'Discard selected', kind: 'danger',
+        run: async hashes => {
+          if (!await confirmDiscard(`Discard ${hashes.length} ${hashes.length === 1 ? 'file' : 'files'} to Trash?`, `Discard ${hashes.length}`)) return false;
+          toastDiscarded(await discardHashes(hashes));
+        },
+        runAll: async filter => {
+          if (!await confirmDiscard('Discard all matching files to Trash?', 'Discard all')) return false;
+          toastDiscarded(await discardAll(filter));
+        },
+      },
     ],
     bulkApply: canEdit ? moderationBulkPatch : undefined,
     onPlay: playFile,

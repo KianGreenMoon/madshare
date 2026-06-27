@@ -281,6 +281,46 @@ func likeEscaped(q string) string {
 	return "%" + strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(q) + "%"
 }
 
+// qFieldClause builds the case-insensitive search predicate for a filter term,
+// scoped to a field group (the UI's filter-type dropdown). It is the single
+// definition of "what the search box matches" — title / artist / album-artist /
+// album / filename — shared by the files filter, the trash filter, and the
+// review/upload filters, so every list matches identically. It returns a
+// parenthesised OR fragment (no leading " AND ") and its binds, or ("", nil)
+// when the term is blank. Callers must have the media_metadata join aliased `m`
+// and the files row aliased `f`.
+func qFieldClause(q, field string) (string, []any) {
+	q = strings.TrimSpace(q)
+	if q == "" {
+		return "", nil
+	}
+	like := likeEscaped(q)
+	// col() is a case-insensitive LIKE over one media_metadata column; fnameExists
+	// matches the upload filename. field scopes which set the term searches; an
+	// empty/unknown field keeps the original "every field" behaviour. Each cond
+	// carries exactly one '?', so one `like` bind per cond, in order.
+	col := func(c string) string {
+		return "unicode_lower(COALESCE(m." + c + ", '')) LIKE unicode_lower(?) ESCAPE '\\'"
+	}
+	const fnameExists = `EXISTS (SELECT 1 FROM file_uploads u WHERE u.file_id = f.id AND unicode_lower(u.filename) LIKE unicode_lower(?) ESCAPE '\')`
+	var conds []string
+	switch field {
+	case "artist":
+		conds = []string{col("artist"), col("album_artist")}
+	case "album":
+		conds = []string{col("album")}
+	case "title":
+		conds = []string{col("title"), fnameExists}
+	default: // "" / unknown → search every field, as before
+		conds = []string{col("title"), col("artist"), col("album_artist"), col("album"), fnameExists}
+	}
+	args := make([]any, len(conds))
+	for i := range conds {
+		args[i] = like
+	}
+	return "(" + strings.Join(conds, " OR ") + ")", args
+}
+
 // fileFilterWhere builds the WHERE predicate (always including visibleFile) and
 // its bind args for a FileFilter. It is the single definition of "what matches",
 // shared by the page query, the count, and the bulk hash resolver.
@@ -290,31 +330,9 @@ func fileFilterWhere(f FileFilter) (string, []any) {
 	if f.Guest {
 		where += " AND " + accessClause
 	}
-	if q := strings.TrimSpace(f.Q); q != "" {
-		like := likeEscaped(q)
-		// col() is a case-insensitive LIKE over one media_metadata column; fnameExists
-		// matches the upload filename. QField scopes which set the term searches; an
-		// empty/unknown field keeps the original "every field" behaviour. Each cond
-		// carries exactly one '?', so one `like` bind per cond, in order.
-		col := func(c string) string {
-			return "unicode_lower(COALESCE(m." + c + ", '')) LIKE unicode_lower(?) ESCAPE '\\'"
-		}
-		const fnameExists = `EXISTS (SELECT 1 FROM file_uploads u WHERE u.file_id = f.id AND unicode_lower(u.filename) LIKE unicode_lower(?) ESCAPE '\')`
-		var conds []string
-		switch f.QField {
-		case "artist":
-			conds = []string{col("artist"), col("album_artist")}
-		case "album":
-			conds = []string{col("album")}
-		case "title":
-			conds = []string{col("title"), fnameExists}
-		default: // "" / unknown → search every field, as before
-			conds = []string{col("title"), col("artist"), col("album_artist"), col("album"), fnameExists}
-		}
-		where += " AND (" + strings.Join(conds, " OR ") + ")"
-		for range conds {
-			args = append(args, like)
-		}
+	if frag, fragArgs := qFieldClause(f.Q, f.QField); frag != "" {
+		where += " AND " + frag
+		args = append(args, fragArgs...)
 	}
 	if f.ArtistID != nil {
 		where += " AND (m.album_artist_id = ? OR m.artist_id = ?)"
@@ -334,6 +352,27 @@ func fileFilterWhere(f FileFilter) (string, []any) {
 // the "needs metadata" rows (mirrors file-list.js needsMeta). Used by the
 // untagged_first sort to surface rows that still want tagging.
 const untaggedExpr = `(CASE WHEN TRIM(COALESCE(m.artist, '')) = '' AND TRIM(COALESCE(m.album_artist, '')) = '' THEN 1 ELSE 0 END)`
+
+// groupedSortOrder is the "By artist / album" view order, reproduced server-side
+// so the grouped list can stream (infinite scroll) instead of loading every row
+// to sort in the browser. Mirrors file-list.js buildArtistGroups: album-artist
+// (falling back to performer, empty bucket last), then album within the artist by
+// its earliest year (a window MIN so a per-track year can't reorder the album)
+// then album name (empty "Other" bucket last), then disc (untagged last), track
+// (untagged last), title. f.id keeps paging stable across ties. The client only
+// inserts separators where these keys change between rows. Shared by the files,
+// trash, and review listings so their grouped views order identically. Requires
+// the media_metadata join aliased `m`, a `filename` select alias, and files `f`.
+const groupedSortOrder = `(CASE WHEN COALESCE(m.album_artist, m.artist, '') = '' THEN 1 ELSE 0 END) ASC,
+	LOWER(COALESCE(m.album_artist, m.artist, '')) ASC,
+	(CASE WHEN COALESCE(m.album, '') = '' THEN 1 ELSE 0 END) ASC,
+	COALESCE(MIN(NULLIF(m.year, 0)) OVER (
+		PARTITION BY LOWER(COALESCE(m.album_artist, m.artist, '')), LOWER(COALESCE(m.album, ''))
+	), 9999) ASC,
+	LOWER(COALESCE(m.album, '')) ASC,
+	(CASE WHEN m.disc_number IS NULL THEN 1 ELSE 0 END) ASC, m.disc_number ASC,
+	(CASE WHEN m.track_number IS NULL THEN 1 ELSE 0 END) ASC, m.track_number ASC,
+	LOWER(COALESCE(NULLIF(m.title, ''), filename, '')) ASC, f.id ASC`
 
 func fileSortOrder(token string) string {
 	switch token {
@@ -355,24 +394,7 @@ func fileSortOrder(token string) string {
 		// Untagged rows first, then newest — surfaces files that still need tags.
 		return untaggedExpr + " DESC, f.created_at DESC, f.id DESC"
 	case "grouped":
-		// The "By artist / album" view order, reproduced server-side so the grouped
-		// list can stream (infinite scroll) instead of loading every row to sort in
-		// the browser. Mirrors file-list.js buildArtistGroups: album-artist (falling
-		// back to performer, empty bucket last), then album within the artist by its
-		// earliest year (a window MIN so a per-track year can't reorder the album)
-		// then album name (empty "Other" bucket last), then disc (untagged last),
-		// track (untagged last), title. f.id keeps paging stable across ties.
-		// The client only inserts separators where these keys change between rows.
-		return `(CASE WHEN COALESCE(m.album_artist, m.artist, '') = '' THEN 1 ELSE 0 END) ASC,
-			LOWER(COALESCE(m.album_artist, m.artist, '')) ASC,
-			(CASE WHEN COALESCE(m.album, '') = '' THEN 1 ELSE 0 END) ASC,
-			COALESCE(MIN(NULLIF(m.year, 0)) OVER (
-				PARTITION BY LOWER(COALESCE(m.album_artist, m.artist, '')), LOWER(COALESCE(m.album, ''))
-			), 9999) ASC,
-			LOWER(COALESCE(m.album, '')) ASC,
-			(CASE WHEN m.disc_number IS NULL THEN 1 ELSE 0 END) ASC, m.disc_number ASC,
-			(CASE WHEN m.track_number IS NULL THEN 1 ELSE 0 END) ASC, m.track_number ASC,
-			LOWER(COALESCE(NULLIF(m.title, ''), filename, '')) ASC, f.id ASC`
+		return groupedSortOrder
 	default: // created_desc
 		return "f.created_at DESC, f.id DESC"
 	}
@@ -592,39 +614,33 @@ func (db *DB) RestoreFileByHash(ctx context.Context, hash string) (bool, error) 
 	return n > 0, nil
 }
 
-// ListTrashedFiles returns all soft-deleted files ordered by deletion time
-// descending, joined with the first recorded filename and media_metadata tags.
-func (db *DB) ListTrashedFiles(ctx context.Context) ([]*FileListEntry, error) {
-	const q = `
-		SELECT
-			f.id, f.hash, f.mime_type, f.byte_size, f.object_key, f.created_at,
-			COALESCE((SELECT filename FROM file_uploads WHERE file_id = f.id ORDER BY id LIMIT 1), f.hash) AS filename,
-			COALESCE(m.title,  '') AS title,
-			COALESCE(m.artist, '') AS artist,
-			m.album_artist,
-			COALESCE(m.album,  '') AS album,
-			m.track_number,
-			COALESCE(m.year,    0) AS year,
-			m.duration_seconds,
-			f.guest_playable,
-			f.license,
-			f.deleted_at,
-			f.review_state,
-			CASE WHEN aimg.artist_id IS NOT NULL THEN 1 ELSE 0 END AS artist_has_image,
-			CASE WHEN alimg.album_id  IS NOT NULL THEN 1 ELSE 0 END AS album_has_image
-		FROM files f
-		LEFT JOIN media_metadata m ON m.file_id = f.id
-		LEFT JOIN artist_images aimg ON aimg.artist_id = m.album_artist_id
-		LEFT JOIN album_images  alimg ON alimg.album_id  = m.album_id
-		WHERE f.deleted_at IS NOT NULL
-		ORDER BY f.deleted_at DESC`
+// trashListSelect is the shared SELECT for the Trash listings (the f.deleted_at /
+// f.review_state columns the flat list and its restore badge need; no
+// disc_number, matching the historical trash payload). Keep in sync with
+// scanTrashList.
+const trashListSelect = `
+	SELECT
+		f.id, f.hash, f.mime_type, f.byte_size, f.object_key, f.created_at,
+		COALESCE((SELECT filename FROM file_uploads WHERE file_id = f.id ORDER BY id LIMIT 1), f.hash) AS filename,
+		COALESCE(m.title,  '') AS title,
+		COALESCE(m.artist, '') AS artist,
+		m.album_artist,
+		COALESCE(m.album,  '') AS album,
+		m.track_number,
+		COALESCE(m.year,    0) AS year,
+		m.duration_seconds,
+		f.guest_playable,
+		f.license,
+		f.deleted_at,
+		f.review_state,
+		CASE WHEN aimg.artist_id IS NOT NULL THEN 1 ELSE 0 END AS artist_has_image,
+		CASE WHEN alimg.album_id  IS NOT NULL THEN 1 ELSE 0 END AS album_has_image
+	FROM files f
+	LEFT JOIN media_metadata m ON m.file_id = f.id
+	LEFT JOIN artist_images aimg ON aimg.artist_id = m.album_artist_id
+	LEFT JOIN album_images  alimg ON alimg.album_id  = m.album_id`
 
-	rows, err := db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("list trashed files: %w", err)
-	}
-	defer rows.Close()
-
+func scanTrashList(rows *sql.Rows) ([]*FileListEntry, error) {
 	out := make([]*FileListEntry, 0)
 	for rows.Next() {
 		var e FileListEntry
@@ -645,6 +661,108 @@ func (db *DB) ListTrashedFiles(ctx context.Context) ([]*FileListEntry, error) {
 		return nil, fmt.Errorf("list trashed files rows: %w", err)
 	}
 	return out, nil
+}
+
+// trashFilterWhere builds the WHERE predicate (always the trashed base
+// f.deleted_at IS NOT NULL) and binds for a FileFilter over the Trash bucket. It
+// reuses qFieldClause + the artist/album pins so Trash matches identically to the
+// live library, just over soft-deleted rows. Guest is never applied (Trash is
+// admin-only).
+func trashFilterWhere(f FileFilter) (string, []any) {
+	where := "f.deleted_at IS NOT NULL"
+	var args []any
+	if frag, fragArgs := qFieldClause(f.Q, f.QField); frag != "" {
+		where += " AND " + frag
+		args = append(args, fragArgs...)
+	}
+	if f.ArtistID != nil {
+		where += " AND (m.album_artist_id = ? OR m.artist_id = ?)"
+		args = append(args, *f.ArtistID, *f.ArtistID)
+	}
+	if f.AlbumID != nil {
+		where += " AND m.album_id = ?"
+		args = append(args, *f.AlbumID)
+	}
+	return where, args
+}
+
+// trashSortOrder maps a sort token to a safe ORDER BY for the Trash list. It adds
+// deletion-time orders (the Trash default) and otherwise delegates to the shared
+// flat / grouped orders. Unknown tokens fall back to newest-deleted-first.
+func trashSortOrder(token string) string {
+	switch token {
+	case "deleted_asc":
+		return "f.deleted_at ASC, f.id ASC"
+	case "deleted_desc":
+		return "f.deleted_at DESC, f.id DESC"
+	case "created_asc", "created_desc", "title_asc", "title_desc",
+		"artist_asc", "artist_desc", "size_asc", "size_desc", "untagged_first", "grouped":
+		return fileSortOrder(token)
+	default:
+		return "f.deleted_at DESC, f.id DESC"
+	}
+}
+
+// ListTrashedFiles returns all soft-deleted files ordered by deletion time
+// descending — the non-paged wrapper over ListTrashedFilesPage (Limit <= 0).
+func (db *DB) ListTrashedFiles(ctx context.Context) ([]*FileListEntry, error) {
+	return db.ListTrashedFilesPage(ctx, FileListQuery{})
+}
+
+// ListTrashedFilesPage returns one filtered, sorted page of the Trash listing.
+// With Limit <= 0 it returns every match (no window).
+func (db *DB) ListTrashedFilesPage(ctx context.Context, q FileListQuery) ([]*FileListEntry, error) {
+	where, args := trashFilterWhere(q.FileFilter)
+	sqlText := trashListSelect + "\n\t\tWHERE " + where + "\n\t\tORDER BY " + trashSortOrder(q.Sort)
+	if q.Limit > 0 {
+		offset := q.Offset
+		if offset < 0 {
+			offset = 0
+		}
+		sqlText += "\n\t\tLIMIT ? OFFSET ?"
+		args = append(args, q.Limit, offset)
+	}
+	rows, err := db.QueryContext(ctx, sqlText, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list trashed files page: %w", err)
+	}
+	defer rows.Close()
+	return scanTrashList(rows)
+}
+
+// CountTrashedFiles returns how many trashed files match the filter, ignoring
+// paging — the total for the Trash list and "select all N matching".
+func (db *DB) CountTrashedFiles(ctx context.Context, f FileFilter) (int, error) {
+	where, args := trashFilterWhere(f)
+	var n int
+	err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM files f LEFT JOIN media_metadata m ON m.file_id = f.id WHERE `+where, args...).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count trashed files: %w", err)
+	}
+	return n, nil
+}
+
+// TrashedFileHashesByFilter returns the content hashes of every trashed file
+// matching the filter (no paging), ordered by id. Backs the Trash "select all N
+// matching" bulk restore / delete / edit.
+func (db *DB) TrashedFileHashesByFilter(ctx context.Context, f FileFilter) ([]string, error) {
+	where, args := trashFilterWhere(f)
+	rows, err := db.QueryContext(ctx,
+		`SELECT f.hash FROM files f LEFT JOIN media_metadata m ON m.file_id = f.id WHERE `+where+` ORDER BY f.id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("trashed file hashes by filter: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, fmt.Errorf("scan trashed file hash: %w", err)
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
 }
 
 // ListFileRefs returns one FileRef per live (non-trashed) files row with the

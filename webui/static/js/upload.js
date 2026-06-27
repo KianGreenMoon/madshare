@@ -288,8 +288,16 @@ function mineScope() {
     allowCoverAdd: true,            // uploaders may add a missing artist/album cover (server enforces add-only)
     allowCoverEdit: canEditMeta,    // replacing an existing cover needs metadata.edit (server enforces it too)
     apiBase: API,
+    // Server-paged (file-list-scaling.md): the state sections stream as
+    // non-collapsible section headers in server order (sort=state). Paging means
+    // unloaded rows can't be pre-checked, so autoSelect is gone — "Select all N
+    // matching" is the equivalent.
+    paged: true,
+    pageSize: 100,
+    loadPage: loadMinePage,
     grouping: {
       kind: 'sections',
+      groupSort: 'state',
       sections: [
         { key: 'returned',  label: 'Returned by a moderator', match: f => f.state === 'returned' },
         { key: 'draft',     label: 'Drafts',                  match: f => f.state === 'draft' },
@@ -297,7 +305,6 @@ function mineScope() {
       ],
     },
     selectable: MINE_EDITABLE,
-    autoSelect: true,                 // "send the lot unless you untick"
     editable: MINE_EDITABLE,
     editPatchURL: f => `${API}/api/my/uploads/${encodeURIComponent(f.hash)}/metadata`,
     editDetailURL: f => `${API}/api/my/uploads/${encodeURIComponent(f.hash)}/metadata`,
@@ -316,22 +323,66 @@ function mineScope() {
       },
     ],
     bulkActions: [
-      { id: 'send',   label: 'Send to approval', kind: 'neutral', run: hashes => mineSend(hashes) },
-      { id: 'remove', label: 'Remove selected',  kind: 'danger',  run: hashes => mineRemoveMany(hashes) },
+      {
+        id: 'send', label: 'Send to approval', kind: 'neutral',
+        run: async hashes => { sendToast(await mineBulkCall({ action: 'submit', hashes })); },
+        runAll: async filter => { sendToast(await mineBulkCall({ action: 'submit', ...mineFilterBody(filter) })); },
+      },
+      {
+        id: 'remove', label: 'Remove selected', kind: 'danger',
+        run: async hashes => { removeToast(await mineBulkCall({ action: 'remove', hashes })); },
+        runAll: async filter => { removeToast(await mineBulkCall({ action: 'remove', ...mineFilterBody(filter) })); },
+      },
     ],
     bulkApply: (hashes, patch) => mineBulkPatch(hashes, patch),
 
     onPlay: playMine,
     toast: msg => showToast(msg),
-
-    load: async () => {
-      const res = await fetch(`${API}/api/my/uploads`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      updateMineCount(Array.isArray(data) ? data.length : 0);
-      return data;
-    },
   };
+}
+
+// loadMinePage backs the paged component: one server page of the caller's staged
+// files as {total, selectable_total, items}. selectable_total is the editable set
+// (draft + returned) so the "Select all N matching" banner counts only sendable /
+// removable rows. It also refreshes the "My uploads" tab badge from the total.
+async function loadMinePage({ limit, offset, q, field, sort }) {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (sort) params.set('sort', sort);
+  if (q) params.set('q', q);
+  if (field) params.set('field', field);
+  const res = await fetch(`${API}/api/my/uploads?${params.toString()}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  updateMineCount(data.total || 0);
+  return { total: data.total || 0, selectable_total: data.selectable_total, items: data.items || [] };
+}
+
+// mineBulkCall is the single batched submit/remove over an explicit hash list OR a
+// filter ("select all N matching"). mineFilterBody turns the component's filter
+// into the request body (all:true only when there is no search term).
+const mineFilterBody = filter => ({ filter: { q: filter.q, field: filter.field }, all: !filter.q });
+async function mineBulkCall(body) {
+  const res = await fetch(`${API}/api/my/uploads/bulk`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+function sendToast(data) {
+  const n = data.submitted ?? 0;
+  showToast(data.approved
+    ? `Published ${n} file${n === 1 ? '' : 's'} to the library.`
+    : `Sent ${n} file${n === 1 ? '' : 's'} for review.`, { type: 'success' });
+  // A duplicate-flagged submission never auto-publishes (recordings P3); surface
+  // the server's explanation so the uploader knows why it went to review.
+  if (data.warning) showToast(data.warning, { type: 'info' });
+  announce(data.approved ? 'Published to the library.' : 'Sent for review.');
+}
+function removeToast(data) {
+  const n = data.removed ?? 0;
+  if (n) showToast(`Removed ${n} file${n === 1 ? '' : 's'}.`, { type: 'success' });
+  announce(`Removed ${n} file${n === 1 ? '' : 's'}.`);
 }
 
 function updateMineCount(n) {
@@ -344,32 +395,6 @@ async function mineDelete(hash) {
   const res = await fetch(`${API}/api/my/uploads/${encodeURIComponent(hash)}`, { method: 'DELETE' });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-}
-
-async function mineRemoveMany(hashes) {
-  let ok = 0, fail = 0;
-  for (const hash of hashes) {
-    try { await mineDelete(hash); ok++; } catch { fail++; }
-  }
-  if (fail) showToast(`Removed ${ok}; ${fail} failed.`, { type: 'error' });
-  else if (ok) showToast(`Removed ${ok} file${ok === 1 ? '' : 's'}.`, { type: 'success' });
-  announce(`Removed ${ok} file${ok === 1 ? '' : 's'}.`);
-}
-
-async function mineSend(hashes) {
-  const res = await fetch(`${API}/api/my/uploads/submit`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hashes }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  const n = data.submitted ?? hashes.length;
-  showToast(data.approved
-    ? `Published ${n} file${n === 1 ? '' : 's'} to the library.`
-    : `Sent ${n} file${n === 1 ? '' : 's'} for review.`, { type: 'success' });
-  // A duplicate-flagged submission never auto-publishes (recordings P3); surface
-  // the server's explanation so the uploader knows why it went to review.
-  if (data.warning) showToast(data.warning, { type: 'info' });
-  announce(data.approved ? 'Published to the library.' : 'Sent for review.');
 }
 
 async function mineBulkPatch(hashes, patch) {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -88,23 +89,56 @@ func toReviewItem(e *database.ReviewEntry) reviewItem {
 }
 
 // myUploads handles GET /api/my/uploads — the caller's staged files (drafts,
-// submitted, returned), newest first. Gated on file.upload.
+// submitted, returned), paged + filtered + sorted like the live library
+// (docs/architecture/file-list-scaling.md). Returns {total, selectable_total,
+// items}: selectable_total is the editable subset (draft + returned) so the UI's
+// "Select all N matching" banner counts only the rows it can act on. Gated on
+// file.upload.
 func (h *handler) myUploads(w http.ResponseWriter, r *http.Request) {
 	id := auth.FromContext(r.Context())
 	if id == nil {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
-	entries, err := h.repo.ListUploadsByUser(r.Context(), id.UserID)
+	q := r.URL.Query()
+	if len(q.Get("q")) > 200 {
+		http.Error(w, "query too long", http.StatusBadRequest)
+		return
+	}
+	base := database.ReviewFilter{OwnerID: id.UserID, Q: q.Get("q"), QField: normalizeQField(q.Get("field"))}
+	limit := clampInt(q.Get("limit"), fileListDefaultLimit, 0, fileListMaxLimit)
+	offset := clampInt(q.Get("offset"), 0, 0, 1<<30)
+
+	total, err := h.repo.CountUploadsByUser(r.Context(), base)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
+	}
+	selFilter := base
+	selFilter.States = []string{database.ReviewDraft, database.ReviewReturned}
+	selectable, err := h.repo.CountUploadsByUser(r.Context(), selFilter)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+
+	var entries []*database.ReviewEntry
+	if limit > 0 {
+		entries, err = h.repo.ListUploadsByUserPage(r.Context(), database.ReviewListQuery{
+			ReviewFilter: base, Sort: q.Get("sort"), Limit: limit, Offset: offset,
+		})
+		if err != nil {
+			http.Error(w, "storage error", http.StatusInternalServerError)
+			return
+		}
 	}
 	items := make([]reviewItem, 0, len(entries))
 	for _, e := range entries {
 		items = append(items, toReviewItem(e))
 	}
-	writeJSON(w, http.StatusOK, items)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total": total, "selectable_total": selectable, "limit": limit, "offset": offset, "items": items,
+	})
 }
 
 // myUploadMetadata handles PATCH /api/my/uploads/{hash}/metadata — the
@@ -223,59 +257,17 @@ func (h *handler) submitMyUploads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// content.moderate holders self-approve their own submissions — except a
-	// duplicate-flagged one, which must pass an explicit human look even for a
-	// moderator (recordings P3, docs/architecture/recordings.md).
+	hashes, err := normalizeBulkHashes(body.Hashes)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	submitted, _, flagged, results, err := h.submitStaged(r.Context(), id, hashes)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
 	canSelfApprove := id.Has(auth.PermContentModerate)
-
-	type result struct {
-		Hash string `json:"hash"`
-		OK   bool   `json:"ok"`
-	}
-	results := make([]result, 0, len(body.Hashes))
-	submitted, approved, flagged := 0, 0, 0
-	for _, raw := range body.Hashes {
-		hash := strings.ToLower(strings.TrimSpace(raw))
-		if !isSHA256Hex(hash) {
-			http.Error(w, "invalid hash (want 64 hex chars)", http.StatusBadRequest)
-			return
-		}
-		dup, err := h.repo.IsDuplicateSubmission(r.Context(), hash)
-		if err != nil {
-			http.Error(w, "storage error", http.StatusInternalServerError)
-			return
-		}
-		selfApprove := canSelfApprove && !dup
-		target := database.ReviewSubmitted
-		if selfApprove {
-			target = database.ReviewApproved
-		}
-		found, err := h.repo.UpdateReviewState(r.Context(), hash, database.ReviewTransition{
-			From:             []string{database.ReviewDraft, database.ReviewReturned},
-			To:               target,
-			OwnerID:          id.UserID,
-			StampSubmittedAt: true,
-		})
-		if err != nil {
-			http.Error(w, "storage error", http.StatusInternalServerError)
-			return
-		}
-		if found {
-			submitted++
-			if dup {
-				flagged++
-			}
-			if selfApprove {
-				approved++
-				h.audit(r.Context(), "file.approve", hash, "self")
-			} else if dup {
-				h.audit(r.Context(), "file.submit", hash, "duplicate-flagged")
-			} else {
-				h.audit(r.Context(), "file.submit", hash, "")
-			}
-		}
-		results = append(results, result{Hash: hash, OK: found})
-	}
 	resp := map[string]any{
 		"ok":        true,
 		"submitted": submitted,
@@ -289,6 +281,193 @@ func (h *handler) submitMyUploads(w http.ResponseWriter, r *http.Request) {
 		resp["warning"] = duplicateWarning(flagged, canSelfApprove)
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// submitResult is the per-hash outcome of a submit (ok=false when the hash was
+// not the caller's editable file). Surfaced by the single /submit endpoint.
+type submitResult struct {
+	Hash string `json:"hash"`
+	OK   bool   `json:"ok"`
+}
+
+// submitStaged applies the "send to approval" transition to a set of the
+// caller's already-validated staged hashes, returning aggregate counts and
+// per-hash results. content.moderate holders self-approve their own submissions
+// — except a duplicate-flagged one, which always goes to the queue for a human
+// look (recordings P3, docs/architecture/recordings.md). Shared by the single
+// /submit endpoint and the /bulk submit action so their semantics stay identical.
+func (h *handler) submitStaged(ctx context.Context, id *auth.Identity, hashes []string) (submitted, approved, flagged int, results []submitResult, err error) {
+	canSelfApprove := id.Has(auth.PermContentModerate)
+	results = make([]submitResult, 0, len(hashes))
+	for _, hash := range hashes {
+		dup, derr := h.repo.IsDuplicateSubmission(ctx, hash)
+		if derr != nil {
+			return submitted, approved, flagged, results, derr
+		}
+		selfApprove := canSelfApprove && !dup
+		target := database.ReviewSubmitted
+		if selfApprove {
+			target = database.ReviewApproved
+		}
+		found, uerr := h.repo.UpdateReviewState(ctx, hash, database.ReviewTransition{
+			From:             []string{database.ReviewDraft, database.ReviewReturned},
+			To:               target,
+			OwnerID:          id.UserID,
+			StampSubmittedAt: true,
+		})
+		if uerr != nil {
+			return submitted, approved, flagged, results, uerr
+		}
+		if found {
+			submitted++
+			if dup {
+				flagged++
+			}
+			switch {
+			case selfApprove:
+				approved++
+				h.audit(ctx, "file.approve", hash, "self")
+			case dup:
+				h.audit(ctx, "file.submit", hash, "duplicate-flagged")
+			default:
+				h.audit(ctx, "file.submit", hash, "")
+			}
+		}
+		results = append(results, submitResult{Hash: hash, OK: found})
+	}
+	return submitted, approved, flagged, results, nil
+}
+
+// normalizeBulkHashes lower-cases + validates an explicit bulk hash list,
+// rejecting an over-long list or any non-SHA-256 entry. Shared by the staging
+// bulk paths.
+func normalizeBulkHashes(raw []string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, errors.New("hashes is required")
+	}
+	if len(raw) > bulkHashCap {
+		return nil, errors.New("too many hashes")
+	}
+	out := make([]string, 0, len(raw))
+	for _, h := range raw {
+		h = strings.ToLower(strings.TrimSpace(h))
+		if !isSHA256Hex(h) {
+			return nil, errors.New("invalid hash (want 64 hex chars)")
+		}
+		out = append(out, h)
+	}
+	return out, nil
+}
+
+// reviewBulkRequest is the shared body of the two staging bulk endpoints: an
+// explicit hash list OR a filter (resolved server-side), with `all` required to
+// act on the whole (matching) set when the filter term is blank — the same
+// guardrail adminBulkFiles uses.
+type reviewBulkRequest struct {
+	Action string   `json:"action"`
+	Hashes []string `json:"hashes"`
+	Filter *struct {
+		Q     string `json:"q"`
+		Field string `json:"field"`
+	} `json:"filter"`
+	All  bool   `json:"all"`
+	Note string `json:"note"`
+}
+
+// myUploadsBulk handles POST /api/my/uploads/bulk — a bulk action over the
+// caller's own staged files: "submit" (send to approval) or "remove" (discard to
+// Trash). Targets an explicit hash list OR everything the owner has matching a
+// filter (draft + returned only — submitted files can't be withdrawn). Gated on
+// file.upload.
+func (h *handler) myUploadsBulk(w http.ResponseWriter, r *http.Request) {
+	id := auth.FromContext(r.Context())
+	if id == nil {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req reviewBulkRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid JSON body"})
+		return
+	}
+	if req.Action != "submit" && req.Action != "remove" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown action"})
+		return
+	}
+	hashes, ok := h.resolveOwnUploadBulk(w, r.Context(), id.UserID, req)
+	if !ok {
+		return
+	}
+
+	if req.Action == "submit" {
+		submitted, _, flagged, _, err := h.submitStaged(r.Context(), id, hashes)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+			return
+		}
+		canSelfApprove := id.Has(auth.PermContentModerate)
+		resp := map[string]any{"ok": true, "submitted": submitted, "approved": canSelfApprove && flagged == 0, "flagged": flagged}
+		if flagged > 0 {
+			resp["warning"] = duplicateWarning(flagged, canSelfApprove)
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	// action == "remove"
+	removed := 0
+	for _, hash := range hashes {
+		found, err := h.repo.DiscardOwnUpload(r.Context(), hash, id.UserID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+			return
+		}
+		if found {
+			removed++
+			h.audit(r.Context(), "file.trash", hash, "owner-discard")
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": removed})
+}
+
+// resolveOwnUploadBulk turns a reviewBulkRequest into the caller's matching
+// staged hashes — exactly one of {hashes, filter} (filter resolves to the
+// owner's draft+returned set). It writes the HTTP error and returns ok=false on
+// any problem.
+func (h *handler) resolveOwnUploadBulk(w http.ResponseWriter, ctx context.Context, ownerID int64, req reviewBulkRequest) ([]string, bool) {
+	hasHashes := len(req.Hashes) > 0
+	hasFilter := req.Filter != nil
+	if hasHashes == hasFilter {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "provide exactly one of hashes or filter"})
+		return nil, false
+	}
+	if hasHashes {
+		hashes, err := normalizeBulkHashes(req.Hashes)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+			return nil, false
+		}
+		return hashes, true
+	}
+	q := strings.TrimSpace(req.Filter.Q)
+	if len(q) > 200 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "query too long"})
+		return nil, false
+	}
+	if q == "" && !req.All {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": `refusing to act on every staged file without "all": true`})
+		return nil, false
+	}
+	hashes, err := h.repo.UploadHashesByUserFilter(ctx, database.ReviewFilter{
+		OwnerID: ownerID, Q: q, QField: normalizeQField(req.Filter.Field),
+		States: []string{database.ReviewDraft, database.ReviewReturned},
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+		return nil, false
+	}
+	return hashes, true
 }
 
 // duplicateWarning is the popup message for a submission that looked like a
@@ -305,13 +484,47 @@ func duplicateWarning(n int, moderator bool) string {
 	return subject + " of content already in the library — a moderator will take a look."
 }
 
-// moderationList handles GET /api/admin/moderation — every staged file with
-// its uploader, ordered for by-uploader grouping. Gated on content.moderate.
+// moderationList handles GET /api/admin/moderation — staged files with their
+// uploader, paged + filtered + sorted (docs/architecture/file-list-scaling.md).
+// Returns {total, selectable_total, items}: selectable_total counts the
+// submitted (actionable) subset so the "Select all N matching" banner reflects
+// only the rows the bulk actions act on. Gated on content.moderate.
 func (h *handler) moderationList(w http.ResponseWriter, r *http.Request) {
-	entries, err := h.repo.ListPendingReview(r.Context())
+	q := r.URL.Query()
+	if len(q.Get("q")) > 200 {
+		http.Error(w, "query too long", http.StatusBadRequest)
+		return
+	}
+	base := database.ReviewFilter{Q: q.Get("q"), QField: normalizeQField(q.Get("field"))}
+	limit := clampInt(q.Get("limit"), fileListDefaultLimit, 0, fileListMaxLimit)
+	offset := clampInt(q.Get("offset"), 0, 0, 1<<30)
+
+	total, err := h.repo.CountPendingReview(r.Context(), base)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
+	}
+	selFilter := base
+	selFilter.States = []string{database.ReviewSubmitted}
+	selectable, err := h.repo.CountPendingReview(r.Context(), selFilter)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+
+	var entries []*database.ReviewEntry
+	if limit > 0 {
+		sort := q.Get("sort")
+		if sort == "" {
+			sort = "uploader" // the by-uploader grouping order, as before
+		}
+		entries, err = h.repo.ListPendingReviewPage(r.Context(), database.ReviewListQuery{
+			ReviewFilter: base, Sort: sort, Limit: limit, Offset: offset,
+		})
+		if err != nil {
+			http.Error(w, "storage error", http.StatusInternalServerError)
+			return
+		}
 	}
 	items := make([]reviewItem, 0, len(entries))
 	for _, e := range entries {
@@ -324,7 +537,124 @@ func (h *handler) moderationList(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, item)
 	}
-	writeJSON(w, http.StatusOK, items)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total": total, "selectable_total": selectable, "limit": limit, "offset": offset, "items": items,
+	})
+}
+
+// moderationBulk handles POST /api/admin/moderation/bulk — a bulk moderation
+// action ("approve" / "return" / "discard") over an explicit hash list OR every
+// submitted file matching a filter ("select all N matching"). Gated on
+// content.moderate. Resolves the set to submitted rows server-side, then loops
+// the same guarded transitions the per-row endpoints use.
+func (h *handler) moderationBulk(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req reviewBulkRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid JSON body"})
+		return
+	}
+	if req.Action != "approve" && req.Action != "return" && req.Action != "discard" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown action"})
+		return
+	}
+	// Discard is a soft delete; the per-row path needs file.delete, so the bulk
+	// discard does too (the route only checks content.moderate).
+	if req.Action == "discard" && h.authzEnabled {
+		if id := auth.FromContext(r.Context()); id == nil || !id.Has(auth.PermFileDelete) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "forbidden"})
+			return
+		}
+	}
+	var note string
+	if req.Action == "return" {
+		note = strings.TrimSpace(req.Note)
+		if note == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "note is required"})
+			return
+		}
+		if len(note) > 1000 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "note too long (max 1000 bytes)"})
+			return
+		}
+	}
+	hashes, ok := h.resolveModerationBulk(w, r.Context(), req)
+	if !ok {
+		return
+	}
+
+	affected := 0
+	for _, hash := range hashes {
+		var found bool
+		var err error
+		switch req.Action {
+		case "approve":
+			found, err = h.repo.UpdateReviewState(r.Context(), hash, database.ReviewTransition{
+				From: []string{database.ReviewSubmitted, database.ReviewReturned}, To: database.ReviewApproved,
+			})
+			if found {
+				h.audit(r.Context(), "file.approve", hash, "")
+			}
+		case "return":
+			found, err = h.repo.UpdateReviewState(r.Context(), hash, database.ReviewTransition{
+				From: []string{database.ReviewSubmitted, database.ReviewReturned}, To: database.ReviewReturned, Note: note,
+			})
+			if found {
+				h.audit(r.Context(), "file.return", hash, note)
+			}
+		case "discard":
+			var filenames []string
+			filenames, found, err = h.repo.SoftDeleteFileByHash(r.Context(), hash)
+			if found {
+				h.audit(r.Context(), "file.trash", hash, strings.Join(filenames, ", "))
+			}
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+			return
+		}
+		if found {
+			affected++
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
+}
+
+// resolveModerationBulk turns a reviewBulkRequest into the matching submitted
+// hashes — exactly one of {hashes, filter}. Writes the HTTP error and returns
+// ok=false on any problem.
+func (h *handler) resolveModerationBulk(w http.ResponseWriter, ctx context.Context, req reviewBulkRequest) ([]string, bool) {
+	hasHashes := len(req.Hashes) > 0
+	hasFilter := req.Filter != nil
+	if hasHashes == hasFilter {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "provide exactly one of hashes or filter"})
+		return nil, false
+	}
+	if hasHashes {
+		hashes, err := normalizeBulkHashes(req.Hashes)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+			return nil, false
+		}
+		return hashes, true
+	}
+	q := strings.TrimSpace(req.Filter.Q)
+	if len(q) > 200 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "query too long"})
+		return nil, false
+	}
+	if q == "" && !req.All {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": `refusing to act on the whole queue without "all": true`})
+		return nil, false
+	}
+	hashes, err := h.repo.PendingReviewHashesByFilter(ctx, database.ReviewFilter{
+		Q: q, QField: normalizeQField(req.Filter.Field), States: []string{database.ReviewSubmitted},
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+		return nil, false
+	}
+	return hashes, true
 }
 
 // moderationApprove handles POST /api/admin/moderation/{hash}/approve —

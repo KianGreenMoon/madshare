@@ -9,6 +9,32 @@ import (
 	"daemonlord.ygg/madshare/database"
 )
 
+// mineRow / queueRow are the staging-list fields the tests assert on; the paged
+// endpoints now return a {total, selectable_total, items} envelope.
+type mineRow struct {
+	Hash  string `json:"hash"`
+	State string `json:"state"`
+	Note  string `json:"note"`
+}
+type queueRow struct {
+	Hash     string `json:"hash"`
+	State    string `json:"state"`
+	Uploader string `json:"uploader"`
+}
+
+// getStaged GETs a paged staging/trash list and returns its `items` decoded as
+// []T (the envelope's total/selectable_total are ignored here).
+func getStaged[T any](t *testing.T, c *http.Client, url string) []T {
+	t.Helper()
+	var env struct {
+		Items []T `json:"items"`
+	}
+	if code := doJSON(t, c, http.MethodGet, url, nil, &env); code != http.StatusOK {
+		t.Fatalf("GET %s = %d, want 200", url, code)
+	}
+	return env.Items
+}
+
 // uploadStaged uploads as the given client and returns the staged file's hash
 // and blob path, asserting the response reports the pending (draft) state.
 func uploadStaged(t *testing.T, client *http.Client, base, name string) (hash, path string) {
@@ -66,12 +92,7 @@ func TestReview_UploaderModeratorFlow(t *testing.T) {
 	}
 
 	// My-uploads listing shows the draft; the owner can edit it.
-	var mine []struct {
-		Hash  string `json:"hash"`
-		State string `json:"state"`
-		Note  string `json:"note"`
-	}
-	doJSON(t, up, http.MethodGet, srv.URL+"/api/my/uploads", nil, &mine)
+	mine := getStaged[mineRow](t, up, srv.URL+"/api/my/uploads")
 	if len(mine) != 1 || mine[0].State != "draft" {
 		t.Fatalf("my uploads = %+v, want one draft", mine)
 	}
@@ -117,12 +138,7 @@ func TestReview_UploaderModeratorFlow(t *testing.T) {
 	}
 
 	// Moderator sees it, returns it with a note.
-	var queue []struct {
-		Hash     string `json:"hash"`
-		State    string `json:"state"`
-		Uploader string `json:"uploader"`
-	}
-	doJSON(t, admin, http.MethodGet, srv.URL+"/api/admin/moderation", nil, &queue)
+	queue := getStaged[queueRow](t, admin, srv.URL+"/api/admin/moderation")
 	if len(queue) != 1 || queue[0].State != "submitted" || queue[0].Uploader != "up" {
 		t.Fatalf("moderation queue = %+v, want up's submitted file", queue)
 	}
@@ -130,7 +146,7 @@ func TestReview_UploaderModeratorFlow(t *testing.T) {
 		map[string]any{"note": "fix the artist tag"}, nil); code != http.StatusOK {
 		t.Fatalf("return = %d, want 200", code)
 	}
-	doJSON(t, up, http.MethodGet, srv.URL+"/api/my/uploads", nil, &mine)
+	mine = getStaged[mineRow](t, up, srv.URL+"/api/my/uploads")
 	if len(mine) != 1 || mine[0].State != "returned" || mine[0].Note != "fix the artist tag" {
 		t.Fatalf("my uploads after return = %+v, want returned with the note", mine)
 	}
@@ -157,12 +173,12 @@ func TestReview_UploaderModeratorFlow(t *testing.T) {
 	if code := doJSON(t, lis, http.MethodGet, srv.URL+path, nil, nil); code != http.StatusOK {
 		t.Errorf("listener blob GET after approve = %d, want 200", code)
 	}
-	doJSON(t, up, http.MethodGet, srv.URL+"/api/my/uploads", nil, &mine)
+	mine = getStaged[mineRow](t, up, srv.URL+"/api/my/uploads")
 	if len(mine) != 0 {
 		t.Errorf("my uploads after approve = %d, want 0", len(mine))
 	}
 	// Nothing left to moderate.
-	doJSON(t, admin, http.MethodGet, srv.URL+"/api/admin/moderation", nil, &queue)
+	queue = getStaged[queueRow](t, admin, srv.URL+"/api/admin/moderation")
 	if len(queue) != 0 {
 		t.Errorf("moderation queue after approve = %d, want 0", len(queue))
 	}
@@ -207,8 +223,7 @@ func TestReview_DiscardToTrashAndBack(t *testing.T) {
 	if code := doJSON(t, admin, http.MethodDelete, srv.URL+"/api/admin/files/"+hash, nil, nil); code != http.StatusOK {
 		t.Fatalf("discard (soft delete) = %d, want 200", code)
 	}
-	var queue []map[string]any
-	doJSON(t, admin, http.MethodGet, srv.URL+"/api/admin/moderation", nil, &queue)
+	queue := getStaged[map[string]any](t, admin, srv.URL+"/api/admin/moderation")
 	if len(queue) != 0 {
 		t.Errorf("queue after discard = %d, want 0", len(queue))
 	}
@@ -216,7 +231,7 @@ func TestReview_DiscardToTrashAndBack(t *testing.T) {
 	if code := doJSON(t, admin, http.MethodPost, srv.URL+"/api/admin/trash/"+hash+"/restore", nil, nil); code != http.StatusOK {
 		t.Fatalf("trash restore = %d, want 200", code)
 	}
-	doJSON(t, admin, http.MethodGet, srv.URL+"/api/admin/moderation", nil, &queue)
+	queue = getStaged[map[string]any](t, admin, srv.URL+"/api/admin/moderation")
 	if len(queue) != 1 {
 		t.Errorf("queue after restore = %d, want 1 (submitted state survives trash)", len(queue))
 	}
@@ -274,15 +289,11 @@ func TestReview_ReuploadOfTrashedFileRestages(t *testing.T) {
 		t.Errorf("library after re-upload restore = %d files, want 0 (re-staged, not republished)", len(files))
 	}
 	// The file lands in the *restorer's* staging area as a draft.
-	var mine []struct {
-		Hash  string `json:"hash"`
-		State string `json:"state"`
-	}
-	doJSON(t, up2, http.MethodGet, srv.URL+"/api/my/uploads", nil, &mine)
+	mine := getStaged[mineRow](t, up2, srv.URL+"/api/my/uploads")
 	if len(mine) != 1 || mine[0].Hash != hash || mine[0].State != "draft" {
 		t.Errorf("restorer's my uploads = %+v, want the restored draft", mine)
 	}
-	doJSON(t, up, http.MethodGet, srv.URL+"/api/my/uploads", nil, &mine)
+	mine = getStaged[mineRow](t, up, srv.URL+"/api/my/uploads")
 	if len(mine) != 0 {
 		t.Errorf("original uploader's my uploads = %d, want 0 (ownership moved to restorer)", len(mine))
 	}
@@ -319,10 +330,7 @@ func TestReview_UploaderRestoreRestages(t *testing.T) {
 	if len(files) != 0 {
 		t.Errorf("library after uploader restore = %d files, want 0 (re-staged)", len(files))
 	}
-	var mine []struct {
-		State string `json:"state"`
-	}
-	doJSON(t, up, http.MethodGet, srv.URL+"/api/my/uploads", nil, &mine)
+	mine := getStaged[mineRow](t, up, srv.URL+"/api/my/uploads")
 	if len(mine) != 1 || mine[0].State != "draft" {
 		t.Errorf("my uploads after uploader restore = %+v, want one draft", mine)
 	}
@@ -349,13 +357,11 @@ func TestReview_OwnerRemovesStagedFile(t *testing.T) {
 	if code := doJSON(t, up, http.MethodDelete, srv.URL+"/api/my/uploads/"+hash, nil, nil); code != http.StatusOK {
 		t.Fatalf("owner remove = %d, want 200", code)
 	}
-	var mine []map[string]any
-	doJSON(t, up, http.MethodGet, srv.URL+"/api/my/uploads", nil, &mine)
+	mine := getStaged[map[string]any](t, up, srv.URL+"/api/my/uploads")
 	if len(mine) != 0 {
 		t.Errorf("my uploads after remove = %d, want 0", len(mine))
 	}
-	var trash []map[string]any
-	doJSON(t, admin, http.MethodGet, srv.URL+"/api/admin/trash", nil, &trash)
+	trash := getStaged[map[string]any](t, admin, srv.URL+"/api/admin/trash")
 	if len(trash) != 1 {
 		t.Errorf("trash after owner remove = %d, want 1", len(trash))
 	}
@@ -398,12 +404,7 @@ func TestReview_ReuploadOfTrashedPendingFileKeepsState(t *testing.T) {
 	}
 	uploadViaClient(t, up, srv.URL, "song.mp3").Body.Close()
 
-	var queue []struct {
-		Hash     string `json:"hash"`
-		State    string `json:"state"`
-		Uploader string `json:"uploader"`
-	}
-	doJSON(t, admin, http.MethodGet, srv.URL+"/api/admin/moderation", nil, &queue)
+	queue := getStaged[queueRow](t, admin, srv.URL+"/api/admin/moderation")
 	if len(queue) != 1 || queue[0].State != "submitted" || queue[0].Uploader != "up" {
 		t.Errorf("queue after pending-file re-upload = %+v, want up's submitted file back", queue)
 	}

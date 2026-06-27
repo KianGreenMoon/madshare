@@ -241,13 +241,39 @@ func (h *handler) applyOneBulkEdit(ctx context.Context, hash string, mp database
 	return nil
 }
 
-// adminTrashList handles GET /api/admin/trash. It returns all soft-deleted
-// files ordered by deletion time descending.
+// adminTrashList handles GET /api/admin/trash — soft-deleted files, paged +
+// filtered + sorted like the live library (docs/architecture/file-list-scaling.md).
+// Returns {total, items}; every trashed row is selectable, so there is no
+// separate selectable_total. Default order is newest-deleted-first.
 func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
-	entries, err := h.repo.ListTrashedFiles(r.Context())
+	q := r.URL.Query()
+	if len(q.Get("q")) > 200 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "query too long"})
+		return
+	}
+	filter := database.FileFilter{Q: q.Get("q"), QField: normalizeQField(q.Get("field"))}
+	limit := clampInt(q.Get("limit"), fileListDefaultLimit, 0, fileListMaxLimit)
+	offset := clampInt(q.Get("offset"), 0, 0, 1<<30)
+
+	total, err := h.repo.CountTrashedFiles(r.Context(), filter)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
 		return
+	}
+
+	var entries []*database.FileListEntry
+	if limit > 0 {
+		sort := q.Get("sort")
+		if sort == "" {
+			sort = "deleted_desc"
+		}
+		entries, err = h.repo.ListTrashedFilesPage(r.Context(), database.FileListQuery{
+			FileFilter: filter, Sort: sort, Limit: limit, Offset: offset,
+		})
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+			return
+		}
 	}
 
 	type trashItem struct {
@@ -300,7 +326,9 @@ func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
 			AlbumHasImage:  e.AlbumHasImage,
 		})
 	}
-	writeJSON(w, http.StatusOK, items)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total": total, "limit": limit, "offset": offset, "items": items,
+	})
 }
 
 // adminTrashHardDelete handles DELETE /api/admin/trash/{hash}. It permanently
@@ -394,6 +422,115 @@ func (h *handler) adminTrashRestore(w http.ResponseWriter, r *http.Request) {
 
 	h.audit(r.Context(), "file.restore", hash, "")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "hash": hash})
+}
+
+// trashBulk handles POST /api/admin/trash/bulk — a bulk Trash action ("restore"
+// / "delete" / "edit") over an explicit hash list OR everything trashed matching
+// a filter ("select all N matching"). Gated on file.delete. It loops the same
+// per-row logic the single-hash endpoints use (restore, storage-aware hard
+// delete, tag edit), so the trashed/live guards are unchanged.
+func (h *handler) trashBulk(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req struct {
+		Action string   `json:"action"`
+		Hashes []string `json:"hashes"`
+		Filter *struct {
+			Q     string `json:"q"`
+			Field string `json:"field"`
+		} `json:"filter"`
+		All   bool           `json:"all"`
+		Patch *bulkEditPatch `json:"patch"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid JSON body"})
+		return
+	}
+	if req.Action != "restore" && req.Action != "delete" && req.Action != "edit" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown action"})
+		return
+	}
+	// Per-action authorization (the route admits either capability).
+	if h.authzEnabled {
+		need := auth.PermFileDelete
+		if req.Action == "edit" {
+			need = auth.PermMetadataEdit
+		}
+		if id := auth.FromContext(r.Context()); id == nil || !id.Has(need) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "forbidden"})
+			return
+		}
+	}
+
+	// Resolve the target set: exactly one of {hashes, filter}.
+	hasHashes := len(req.Hashes) > 0
+	hasFilter := req.Filter != nil
+	if hasHashes == hasFilter {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "provide exactly one of hashes or filter"})
+		return
+	}
+	var hashes []string
+	if hasHashes {
+		var err error
+		hashes, err = normalizeBulkHashes(req.Hashes)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+	} else {
+		q := strings.TrimSpace(req.Filter.Q)
+		if len(q) > 200 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "query too long"})
+			return
+		}
+		if q == "" && !req.All {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": `refusing to act on the whole trash without "all": true`})
+			return
+		}
+		var err error
+		hashes, err = h.repo.TrashedFileHashesByFilter(r.Context(), database.FileFilter{Q: q, QField: normalizeQField(req.Filter.Field)})
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+			return
+		}
+	}
+
+	if req.Action == "edit" {
+		h.bulkEditFiles(w, r, hashes, req.Patch)
+		return
+	}
+
+	affected := 0
+	for _, hash := range hashes {
+		var found bool
+		var err error
+		if req.Action == "restore" {
+			found, err = h.repo.RestoreFileByHash(r.Context(), hash)
+			if found {
+				h.audit(r.Context(), "file.restore", hash, "")
+			}
+		} else { // delete: learn storage kind before the row is gone, then reclaim
+			var f *database.File
+			f, err = h.repo.GetFileByHash(r.Context(), hash)
+			if err == nil {
+				var filenames []string
+				filenames, found, err = h.repo.HardDeleteTrashedFileByHash(r.Context(), hash)
+				if found && err == nil {
+					if _, rerr := h.reclaimStorage(f, hash); rerr != nil {
+						log.Printf("orphan blob: hash=%s err=%v", hash, rerr)
+					}
+					h.audit(r.Context(), "file.delete", hash, strings.Join(filenames, ", "))
+				}
+			}
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+			return
+		}
+		if found {
+			affected++
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
 }
 
 // adminPrune handles POST /api/admin/prune — it *starts* the single, server-wide

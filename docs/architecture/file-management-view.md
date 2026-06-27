@@ -27,15 +27,19 @@ runs unchanged on the admin pages and the shell-native upload page. Built-in
 **Play** + **Edit** row actions and an **Edit tags…** bulk action appear
 automatically from the scope's capabilities.
 
-Presentations: a flat **list** (optionally grouped — collapsible-by-uploader for
-Review, fixed state sections for My uploads, or By artist / album) and an
-artist→album→track **browse** (currently used only via the Files By-entity view;
-see below). **Every list presentation is virtualized**: the component builds one
-flat array of items (rows + separator/header entries) and renders only the
-on-screen window through the shared `virtual-list.js` scroller, so it never
-freezes at scale — group/section headers are full-width table rows, a collapsed
-group omits its rows from the array, and the paged All-files scope streams more on
-scroll (see [`infinite-scroll-virtualization.md`](infinite-scroll-virtualization.md)).
+Presentations: a flat **list** (optionally grouped — by-uploader for Review, state
+sections for My uploads, or By artist / album) and an artist→album→track **browse**
+(currently used only via the Files By-entity view; see below). **Every list
+presentation is virtualized**: the component builds one flat array of items (rows +
+separator/header entries) and renders only the on-screen window through the shared
+`virtual-list.js` scroller, so it never freezes at scale — group/section headers are
+full-width table rows and the paged scopes stream more on scroll (see
+[`infinite-scroll-virtualization.md`](infinite-scroll-virtualization.md)). All four
+scopes are **server-paged**; under paging the native groupings stream as
+**non-collapsible separators** via `section-stream.js` (the single-level sibling of
+the artist/album `grouped-stream.js`, fed pages in `sort=uploader` / `sort=state`
+order). The classic collapsible-by-uploader view is only used in the (now unused)
+non-paged path; Review's paged separators don't collapse.
 Styling lives in `webui/static/css/file-view.css`, the single source for the
 component's chrome (table, bulk toolbar, badges, confirms, switches, the modal
 access/field layout). It is self-sufficient so the upload page — which loads no
@@ -73,10 +77,10 @@ admin CSS — renders correctly; the admin pages load it too.
 
 | Scope | Endpoint | Group | Selectable | Access edit | Notes |
 |---|---|---|---|---|---|
-| **All files** (admin) | `GET /api/files` (paged) | – (opt.) | all | ✓ (modal + bulk) | **windowed** flat list (infinite scroll + server **sort dropdown**, incl. Untagged first); access is a **read-only column**, edited in the modals. Bulk Move to Trash + Edit tags… (selection or "select all N matching"). Grouped **By artist / album** via a separate toggle pill (loads the whole set, then windows it; below). The By-entity drill-down is a separate sub-view (below). |
-| **Review** (admin) | `GET /api/admin/moderation` | by uploader (collapsible) | `submitted` | ✗ (tags only) | Approve / Return-with-note / Discard; `show()` gates per state (drafts preview-only), `editable()` gates Edit. |
-| **Trash** (admin) | `GET /api/admin/trash` | – | all | ✗ (tags only)¹ | Restore / Delete forever; gained Edit + Play. |
-| **My uploads** (owner, `/upload`) | `GET /api/my/uploads` | by state | draft/returned | ✗ (tags only) | state sections, `autoSelect`, Send to approval / Remove; owner-scoped edit endpoint. |
+| **All files** (admin) | `GET /api/files` (paged) | – (opt.) | all | ✓ (modal + bulk) | **windowed** flat list (infinite scroll + server **sort dropdown**, incl. Untagged first); access is a **read-only column**, edited in the modals. Bulk Move to Trash + Edit tags… (selection or "select all N matching"). Grouped **By artist / album** via a separate toggle pill (streams in `sort=grouped` order; below). The By-entity drill-down is a separate sub-view (below). |
+| **Review** (admin) | `GET /api/admin/moderation` (paged) | by uploader (streamed separators) | `submitted` | ✗ (tags only) | Approve / Return-with-note / Discard; bulk via `POST …/moderation/bulk` (selection or "select all N matching"); `show()` gates per state (drafts preview-only), `editable()` gates Edit. |
+| **Trash** (admin) | `GET /api/admin/trash` (paged) | – | all | ✗ (tags only)¹ | Restore / Delete forever / Edit, bulk via `POST …/trash/bulk` (selection or "select all N matching"); gained Play. |
+| **My uploads** (owner, `/upload`) | `GET /api/my/uploads` (paged) | by state (streamed sections) | draft/returned | ✗ (tags only) | state sections; Send to approval / Remove via `POST …/my/uploads/bulk` (selection or "select all N matching"); owner-scoped edit endpoint. |
 
 ¹ **Trash edits tags only.** `UpdateFileMetadata` resolves by hash with no
 `deleted_at` filter (so a tag can be corrected before restore), but the access
@@ -98,22 +102,23 @@ extended for this).
 Every list view shows one **sort dropdown** (`sortControl`) for the **flat**
 orders — `Newest`/`Oldest`, `Title`, `Artist`, `Largest`/`Smallest`, and
 **Untagged first** (rows with no artist/album-artist tag — the needs-metadata
-rows); non-paged scopes also offer **Default order** (as loaded). The **paged
-All-files** scope drives the dropdown server-side (the token rides on
-`GET /api/files?sort=`, see [`file-list-scaling.md`](file-list-scaling.md));
-non-paged scopes sort the in-memory rows client-side. The choice is persisted in
-`localStorage`.
+rows); non-paged scopes also offer **Default order** (as loaded). All four current
+scopes are **paged** and drive the dropdown server-side (the token rides on the
+listing's `?sort=`, see [`file-list-scaling.md`](file-list-scaling.md)); the
+component still supports non-paged scopes (in-memory sort) for any future caller.
+The choice is persisted in `localStorage`.
 
 The **By artist / album** grouped view is a **separate toggle pill** (`groupToggle`,
 reusing the `.sort-switch`/`.vm-btn` styling), *not* an entry in the sort dropdown —
 grouping is a view mode, not one more order, and folding it in made the dropdown
-crowded. It is offered on every `scope.artistAlbumSort` scope. While it is on, the
-flat sort dropdown is **disabled** (the grouped view imposes its own
-artist→album→track order), and on a **paged** scope turning it on loads the whole
-set ([`infinite-scroll-virtualization.md`](infinite-scroll-virtualization.md))
-which the windowed list then renders a slice of; turning it off returns to the
-lazy infinite-scroll flat list. The toggle state is persisted (non-paged) in
-`localStorage`.
+crowded. It is offered on every `scope.artistAlbumSort` scope. While **any** grouped
+view is active — the artist/album toggle, or (on a scope with a native grouping) the
+streamed by-uploader / by-state view — the flat sort dropdown is **disabled**, since
+the grouped view imposes its own order. On a paged scope turning the toggle on
+re-queries with `sort=grouped` and **streams** that order page-by-page
+([`infinite-scroll-virtualization.md`](infinite-scroll-virtualization.md)); turning
+it off returns to the scope's default view (the flat list, or its native streamed
+grouping). The toggle state is persisted (non-paged) in `localStorage`.
 
 In **By artist / album** mode the same `.files-table` is sorted
 **album-artist → album → disc# → track# (then title)** with **separator rows** woven

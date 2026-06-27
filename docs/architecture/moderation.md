@@ -110,19 +110,21 @@ in the queue ("possible duplicate"). The flag is derived at submit time
 
 | Endpoint | Behavior |
 |---|---|
-| `GET /api/my/uploads` | The caller's staged files (any state but `approved`, non-trashed), newest first: hash, filename, tags, `state`, `note`, timestamps. |
+| `GET /api/my/uploads` | The caller's staged files (any state but `approved`, non-trashed). **Paged** like the library (`?limit&offset&q&field&sort`, default `sort=state`); returns `{total, selectable_total, items}` — `selectable_total` is the editable (`draft`+`returned`) subset count. Each item: hash, filename, tags, `state`, `note`, timestamps. |
 | `PATCH /api/my/uploads/{hash}/metadata` | Tag edit with the same body/pointer semantics as `PATCH /api/files/{hash}/metadata`, but authorized by **ownership + editable state** (`draft`/`returned`) instead of `metadata.edit`. 404 on anything the caller may not edit (reveals nothing about other users' staged files). |
 | `POST /api/my/uploads/submit` | Body `{"hashes": [...]}`. Each owned `draft`/`returned` file → `submitted` (clears the note, stamps `submitted_at`); for `content.moderate` holders → straight to `approved`. Per-hash `results`; a non-eligible hash reports `ok: false` without failing the batch. Response `approved: true` signals self-approve. |
+| `POST /api/my/uploads/bulk` | Batch `{"action": "submit"\|"remove", "hashes": [...] \| "filter": {q,field}, "all": bool}` over the owner's `draft`+`returned` set (`all:true` required when the filter term is blank). `submit` shares the `/submit` semantics (dup-flag, self-approve, `warning`); `remove` discards to Trash. Backs the uploader-side "Select all N matching". |
 | `DELETE /api/my/uploads/{hash}` | The owner removes one of his own **editable** staged files (`draft`/`returned` → Trash, the regular soft delete; an admin can restore it). `submitted` files cannot be removed — no withdraw once sent to approval. 404 on anything the caller may not remove. Audit: `file.trash` / `owner-discard`. |
 
 ### Moderator side (gated `content.moderate`, under `/api/admin`)
 
 | Endpoint | Behavior |
 |---|---|
-| `GET /api/admin/moderation` | Every staged (non-trashed, non-approved) file with uploader id + name, ordered for by-uploader grouping. |
+| `GET /api/admin/moderation` | Staged (non-trashed, non-approved) files with uploader id + name. **Paged** (`?limit&offset&q&field&sort`, default `sort=uploader`); returns `{total, selectable_total, items}` — `selectable_total` is the actionable (`submitted`) subset count. |
 | `POST /api/admin/moderation/{hash}/approve` | `submitted`/`returned` → `approved`; clears the note. |
 | `POST /api/admin/moderation/{hash}/return` | Body `{"note": "…"}` (required, ≤ 1000 bytes). `submitted`/`returned` → `returned` with the note. |
-| *(discard)* | No distinct endpoint — `DELETE /api/admin/files/{hash}` (soft delete → Trash). Bulk actions loop the per-file endpoints client-side. |
+| `POST /api/admin/moderation/bulk` | Batch `{"action": "approve"\|"return"\|"discard", "hashes": [...] \| "filter": {q,field}, "all": bool, "note": "…"}`. Filter resolves to **submitted** rows only (`all:true` required when the term is blank); loops the per-row transitions server-side. `discard` additionally requires `file.delete`. Returns `{ok, affected}`. Backs "Select all N matching". |
+| *(per-row discard)* | No distinct single-hash endpoint — `DELETE /api/admin/files/{hash}` (soft delete → Trash). |
 
 Moderators edit a submission's tags via the regular
 `PATCH /api/files/{hash}/metadata` (`metadata.edit`) — it is hash-addressed

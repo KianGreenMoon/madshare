@@ -17,6 +17,7 @@ import { createCoverPicker } from './cover-edit.js';
 import { discKey, discSort, discLabel, isMultiDisc } from './disc.js';
 import { createVirtualList } from './virtual-list.js';
 import { createGroupedStream } from './grouped-stream.js';
+import { createSectionStream } from './section-stream.js';
 
 // Local DOM builder + formatter so this module has no page-specific imports.
 // el('button', {class:'btn', onclick: fn}, ['Label'])
@@ -117,6 +118,28 @@ export function createFileList(scope) {
   // closure only drives its I/O (fetchMoreGrouped) and reads gstream.items.
   const gstream = createGroupedStream(isSelectable);
 
+  // ── Native grouping under paging (section-stream.js) ─────────────────────────
+  // A paged scope with a native grouping (moderation = collapsible by uploader,
+  // My-uploads = sections by state) streams non-collapsible header + row items in
+  // server group order (sort = grouping.groupSort), so these grouped views scale
+  // like the flat infinite-scroll. groupKeyOf / makeGroupHeader derive the
+  // section-stream's key + header from the scope's grouping descriptor.
+  function groupKeyOf(f) {
+    const g = scope.grouping;
+    if (g?.kind === 'sections') return (g.sections.find(s => s.match(f)) || {}).key ?? '';
+    return g ? String(g.by(f)) : '';
+  }
+  function makeGroupHeader(f) {
+    const g = scope.grouping;
+    if (g?.kind === 'sections') {
+      return { kind: 'shead', label: (g.sections.find(s => s.match(f)) || {}).label || '' };
+    }
+    return { kind: 'ghead', streamed: true, key: String(g.by(f)), label: g.label(f), counts: '', hashes: [] };
+  }
+  const sstream = scope.grouping
+    ? createSectionStream({ keyOf: groupKeyOf, makeHeader: makeGroupHeader, isSelectable })
+    : null;
+
   // ── Server-paged mode (scope.paged) ─────────────────────────────────────────
   // The admin All-files scope is too large to hold in the DOM, so it loads one
   // server page at a time (file-list-scaling.md). filterText + sort + page round-
@@ -127,6 +150,9 @@ export function createFileList(scope) {
   const paged = !!scope.paged;
   const PAGE_SIZE = scope.pageSize || 100;
   let total = 0;                 // total rows matching the current filter
+  let selectableTotal = 0;       // matching rows that are actually selectable (= total
+                                 // unless the scope reports selectable_total, e.g.
+                                 // moderation's submitted-only / My-uploads' editable set)
   let loadedCount = 0;           // rows fetched so far (paged infinite scroll)
   let selectAllMatching = false; // bulk acts on every matching row, not just the page
 
@@ -248,30 +274,45 @@ export function createFileList(scope) {
   // already-loaded set in the browser.
   function groupedActive() { return grouped && !!scope.artistAlbumSort; }
 
+  // nativeGroupActive: a paged scope with a native grouping (moderation /
+  // My-uploads) is showing its streamed by-uploader / by-state view — i.e. it's
+  // paged, has a grouping, and the artist/album toggle is off. activeStream /
+  // activeSort pick the streamer + server sort for whichever streamed view is on.
+  function nativeGroupActive() { return paged && !!scope.grouping && !groupedActive(); }
+  function streamedActive() { return paged && (groupedActive() || nativeGroupActive()); }
+  function activeStream() { return groupedActive() ? gstream : sstream; }
+  function activeSort() { return groupedActive() ? 'grouped' : scope.grouping.groupSort; }
+
   // ── Loading ─────────────────────────────────────────────────────────────────
   async function reload() {
     if (view === 'browse' && hasBrowse) return loadBrowse();
     if (paged) return loadPage();
     return loadList();
   }
+  // pageSort picks the server sort token for the current paged view: the streamed
+  // grouping order when a grouped view is on (artist/album = grouped; native = the
+  // grouping's groupSort), else the flat sort dropdown.
+  function pageSort() { return streamedActive() ? activeSort() : sortToken; }
+
   // loadPage fetches the first page; further pages stream in via fetchMorePage (flat)
-  // or fetchMoreGrouped (grouped) as the windowed list scrolls (file-list-scaling.md
-  // backend, infinite-scroll UI). The grouped view asks the server for its order
-  // (sort=grouped) and folds the page into the streamed item array as it arrives.
+  // or fetchMoreStreamed (any grouped view) as the windowed list scrolls
+  // (file-list-scaling.md backend, infinite-scroll UI). A grouped view asks the
+  // server for its order and folds each page into the active stream as it arrives.
   async function loadPage() {
-    const grouped = groupedActive();
+    const stream = streamedActive() ? activeStream() : null;
     loading = true; loadError = false; rows = []; loadedCount = 0;
-    if (grouped) gstream.reset();
+    if (stream) stream.reset();
     render();
     try {
-      const res = await scope.loadPage({ limit: PAGE_SIZE, offset: 0, q: filterText.trim(), field: qField, sort: grouped ? 'grouped' : sortToken }) || {};
+      const res = await scope.loadPage({ limit: PAGE_SIZE, offset: 0, q: filterText.trim(), field: qField, sort: pageSort() }) || {};
       rows = res.items || [];
       total = res.total || 0;
+      selectableTotal = typeof res.selectable_total === 'number' ? res.selectable_total : total;
       loadedCount = rows.length;
       // Grouped: fold the first page into the streamed items now; a page wholly
       // absorbed into one still-open album yields nothing yet — the windowed list's
-      // near-bottom fetch then pulls more until an album flushes.
-      if (grouped) gstream.ingest(rows, loadedCount >= total || !rows.length);
+      // near-bottom fetch then pulls more until a group flushes.
+      if (stream) stream.ingest(rows, loadedCount >= total || !rows.length);
     } catch (err) { loadError = true; console.error('file-list page load failed:', err); }
     loading = false; render();
   }
@@ -286,20 +327,23 @@ export function createFileList(scope) {
     loadedCount = rows.length;
     return { items: items.map(flatItem), done: loadedCount >= total || items.length === 0 };
   }
-  // fetchMoreGrouped backs the grouped view's infinite scroll: pull the next page
-  // (server-sorted) and hand it to the stream. A page wholly inside one still-open
-  // album flushes nothing, so it keeps pulling until an album closes (or the listing
-  // ends) — returning [] without `done` would make the scroller stop short.
-  async function fetchMoreGrouped() {
+  // fetchMoreStreamed backs any grouped view's infinite scroll: pull the next page
+  // (server-sorted) and hand it to the active stream. The artist/album stream
+  // buffers an album, so a page wholly inside one still-open album flushes nothing
+  // and it keeps pulling until an album closes; the single-level native stream
+  // emits immediately. ingest([], true) flushes any buffered group at the end.
+  async function fetchMoreStreamed() {
+    const stream = activeStream();
+    const sort = activeSort();
     for (;;) {
-      if (loadedCount >= total) return { items: gstream.ingest([], true), done: true };
-      const res = await scope.loadPage({ limit: PAGE_SIZE, offset: loadedCount, q: filterText.trim(), field: qField, sort: 'grouped' }) || {};
+      if (loadedCount >= total) return { items: stream.ingest([], true), done: true };
+      const res = await scope.loadPage({ limit: PAGE_SIZE, offset: loadedCount, q: filterText.trim(), field: qField, sort }) || {};
       const items = res.items || [];
       if (typeof res.total === 'number') total = res.total;
-      if (!items.length) return { items: gstream.ingest([], true), done: true };
+      if (!items.length) return { items: stream.ingest([], true), done: true };
       rows = rows.concat(items); loadedCount = rows.length;
       const isFinal = loadedCount >= total;
-      const delta = gstream.ingest(items, isFinal);
+      const delta = stream.ingest(items, isFinal);
       if (isFinal) return { items: delta, done: true };
       if (delta.length) return { items: delta, done: false };
     }
@@ -493,7 +537,7 @@ export function createFileList(scope) {
     if (!mountEl) return;
     const sel = selected.size;
     const allMatch = paged && selectAllMatching;
-    mountEl.querySelectorAll('.fl-selcount').forEach(n => (n.textContent = allMatch ? `All ${total} selected` : `${sel} selected`));
+    mountEl.querySelectorAll('.fl-selcount').forEach(n => (n.textContent = allMatch ? `All ${selectableTotal} selected` : `${sel} selected`));
     const active = allMatch || sel > 0;
     mountEl.querySelectorAll('.fl-bulk-btn').forEach(b => (b.disabled = !active));
     // Bulk "Edit tags…" over the whole filtered set needs the scope's bulkApplyAll;
@@ -750,7 +794,7 @@ export function createFileList(scope) {
         makeSpacer: makeSpacerRow,
         renderRow: renderWindowItem,
         estimateHeight: estimateItemHeight,
-        fetchMore: paged ? (grouped ? fetchMoreGrouped : fetchMorePage) : null,
+        fetchMore: paged ? (streamedActive() ? fetchMoreStreamed : fetchMorePage) : null,
         onAfterRender: () => { syncSelectionUI(); applyPlayingHighlight(); },
       });
     }
@@ -795,9 +839,11 @@ export function createFileList(scope) {
     return items;
   }
 
-  // groupHeadRow is the collapsible (uploader) group header as a table row: a
+  // groupHeadRow is the (uploader) group header as a table row: a
   // select-all-in-group checkbox (reusing the .grp-check selection cascade) + a
-  // collapse toggle (chevron + label + counts).
+  // collapse toggle (chevron + label + counts). Under paging (item.streamed) the
+  // header is a non-collapsible separator (rows arrive a page at a time, so a
+  // collapse toggle can't hide unfetched rows) — a static label, no chevron.
   function groupHeadRow(item) {
     const checkKids = [];
     if (item.hashes.length) {
@@ -806,18 +852,26 @@ export function createFileList(scope) {
       cb.addEventListener('change', () => { item.hashes.forEach(h => cb.checked ? selected.add(h) : selected.delete(h)); afterSelectionChange(); });
       checkKids.push(cb);
     }
-    const toggle = el('button', { type: 'button', class: 'grp-collapse-btn', 'aria-expanded': String(!item.collapsed) }, [
-      el('span', { class: 'grp-chevron' + (item.collapsed ? ' is-collapsed' : ''), 'aria-hidden': 'true', text: '▾' }),
-      el('span', { class: 'grp-head-label', text: item.label }),
-      el('span', { class: 'grp-meta', text: item.counts }),
-    ]);
-    toggle.addEventListener('click', () => {
-      if (collapsed.has(item.key)) collapsed.delete(item.key); else collapsed.add(item.key);
-      vlist?.setItems(buildItems(), { keepScroll: true });   // hide/show the group's rows in place
-    });
+    let labelCell;
+    if (item.streamed) {
+      labelCell = el('div', { class: 'grp-label-row' }, [
+        el('span', { class: 'grp-head-label', text: item.label }),
+        item.counts ? el('span', { class: 'grp-meta', text: item.counts }) : null,
+      ]);
+    } else {
+      labelCell = el('button', { type: 'button', class: 'grp-collapse-btn', 'aria-expanded': String(!item.collapsed) }, [
+        el('span', { class: 'grp-chevron' + (item.collapsed ? ' is-collapsed' : ''), 'aria-hidden': 'true', text: '▾' }),
+        el('span', { class: 'grp-head-label', text: item.label }),
+        el('span', { class: 'grp-meta', text: item.counts }),
+      ]);
+      labelCell.addEventListener('click', () => {
+        if (collapsed.has(item.key)) collapsed.delete(item.key); else collapsed.add(item.key);
+        vlist?.setItems(buildItems(), { keepScroll: true });   // hide/show the group's rows in place
+      });
+    }
     return el('tr', { class: 'grp grp-group' }, [
       el('td', { class: 'cell-check' }, checkKids),
-      el('td', { colspan: String(scope.columns.length - 1), class: 'grp-label' }, [toggle]),
+      el('td', { colspan: String(scope.columns.length - 1), class: 'grp-label' }, [labelCell]),
     ]);
   }
 
@@ -833,13 +887,16 @@ export function createFileList(scope) {
   // grouped (artist/album), collapsible (uploader), sections (state), or flat.
   function buildItems() {
     const files = visibleFiles();
-    // Grouped: paged scopes stream their items (built incrementally as pages
-    // arrive); non-paged scopes hold the whole set and group it in one pass.
+    // Grouped (artist/album): paged scopes stream their items (built incrementally
+    // as pages arrive); non-paged scopes hold the whole set and group it in one pass.
     if (groupedActive()) return paged ? gstream.items.slice() : groupedItems(files);
+    // Native grouping under paging streams its headers + rows like the artist/album
+    // view (sstream); non-paged scopes still group the whole loaded set in one pass.
+    if (paged && nativeGroupActive()) return sstream.items.slice();
     if (scope.grouping?.kind === 'collapsible') return collapsibleItems(sortFilesBy(files, sortToken));
     if (scope.grouping?.kind === 'sections')   return sectionItems(sortFilesBy(files, sortToken));
     // Flat: paged scopes are already server-sorted (and stream more on scroll);
-    // non-paged flat scopes (Trash) sort the loaded rows client-side.
+    // non-paged flat scopes sort the loaded rows client-side.
     return (paged ? files : sortFilesBy(files, sortToken)).map(flatItem);
   }
 
@@ -985,11 +1042,13 @@ export function createFileList(scope) {
     if (!paged) opts.push(['default', 'Default order']);
     opts.push(...SORT_OPTIONS);
 
-    const on = groupedActive();
+    // The flat sort is disabled while any grouped view imposes its own order: the
+    // artist/album toggle, or (paged scopes) the native by-uploader / by-state view.
+    const on = groupedActive() || nativeGroupActive();
     const sel = el('select', {
       class: 'files-sort-select', 'aria-label': 'Sort',
       disabled: on ? 'true' : null,
-      title: on ? 'Grouped by artist / album — turn off grouping to sort' : null,
+      title: on ? (groupedActive() ? 'Grouped by artist / album — turn off grouping to sort' : 'Grouped view — its order is fixed') : null,
     });
     for (const [val, label] of opts) {
       const o = el('option', { value: val, text: label });
@@ -1088,15 +1147,18 @@ export function createFileList(scope) {
     if (!paged || view !== 'list') return null;
     if (selectAllMatching) {
       return el('div', { class: 'select-all-banner is-active' }, [
-        `All ${total} matching file${total === 1 ? '' : 's'} selected. `,
+        `All ${selectableTotal} matching file${selectableTotal === 1 ? '' : 's'} selected. `,
         el('button', { type: 'button', class: 'linklike', text: 'Clear selection', onclick: () => { clearPageSelection(); render(); } }),
       ]);
     }
+    // Offered once every loaded selectable row is ticked and more selectable
+    // matches remain unfetched. selectableTotal (= total unless the scope reports
+    // a smaller actionable count, e.g. moderation's submitted-only set) bounds it.
     const loadedSel = rows.filter(isSelectable);
-    if (loadedSel.length && loadedSel.every(f => selected.has(f.hash)) && total > loadedSel.length) {
+    if (loadedSel.length && loadedSel.every(f => selected.has(f.hash)) && selectableTotal > loadedSel.length) {
       return el('div', { class: 'select-all-banner' }, [
         `All ${loadedSel.length} loaded file${loadedSel.length === 1 ? '' : 's'} selected. `,
-        el('button', { type: 'button', class: 'linklike', text: `Select all ${total} matching`, onclick: () => { selectAllMatching = true; render(); } }),
+        el('button', { type: 'button', class: 'linklike', text: `Select all ${selectableTotal} matching`, onclick: () => { selectAllMatching = true; render(); } }),
       ]);
     }
     return null;
@@ -1130,7 +1192,7 @@ export function createFileList(scope) {
   // prefill) with an "all N matching" headline; onApply routes to bulkApplyAll.
   function openBulkEditor() {
     if (paged && selectAllMatching && scope.bulkApplyAll) {
-      bulkEditor().open([...selected], { common: {}, mixed: new Set() }, `Applies to all ${total} matching files.`);
+      bulkEditor().open([...selected], { common: {}, mixed: new Set() }, `Applies to all ${selectableTotal} matching files.`);
     } else {
       bulkEditor().open([...selected], selectionTags([...selected]));
     }

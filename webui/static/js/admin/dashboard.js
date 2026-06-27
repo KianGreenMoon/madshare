@@ -199,8 +199,8 @@ async function fillStorage() {
   fillPruneStatus();
   fillSourcesStatus();
   fillCount('countFiles', '/api/files?limit=0');
-  fillCount('countModeration', '/api/admin/moderation');
-  fillCount('countTrash', '/api/admin/trash');
+  fillCount('countModeration', '/api/admin/moderation?limit=0');
+  fillCount('countTrash', '/api/admin/trash?limit=0');
   fillCount('countDuplicates', '/api/admin/duplicates');
   fillCount('countUsers', '/api/admin/users');
 })();

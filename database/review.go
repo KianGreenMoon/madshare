@@ -47,66 +47,215 @@ func scanReviewEntry(rows *sql.Rows, withUploader bool) (*ReviewEntry, error) {
 	return &e, nil
 }
 
-// ListUploadsByUser returns the user's staged files — non-trashed rows in any
-// review state but approved — newest first. This backs the "My uploads" tab.
-func (db *DB) ListUploadsByUser(ctx context.Context, userID int64) ([]*ReviewEntry, error) {
-	q := `
-		SELECT ` + reviewEntryColumns + `
-		FROM files f
-		LEFT JOIN media_metadata m ON m.file_id = f.id` + reviewJoins + `
-		WHERE f.uploaded_by = ? AND f.deleted_at IS NULL AND f.review_state <> 'approved'
-		ORDER BY f.created_at DESC`
+// ReviewFilter narrows a staging listing or bulk operation. OwnerID (when
+// non-zero) restricts to one uploader's files (the My-uploads scope). States,
+// when non-empty, additionally restricts to those review states (on top of the
+// implicit "not approved") — used to scope a count or a bulk resolver to just
+// the actionable/selectable subset (submitted for moderation; draft+returned for
+// My-uploads). Q / QField are the same search as the file listing (qFieldClause).
+type ReviewFilter struct {
+	OwnerID int64
+	States  []string
+	Q       string
+	QField  string
+}
 
-	rows, err := db.QueryContext(ctx, q, userID)
-	if err != nil {
-		return nil, fmt.Errorf("list uploads by user: %w", err)
+// ReviewListQuery is a ReviewFilter plus presentation: an allow-listed sort token
+// (reviewSortOrder) and a page window. Limit <= 0 means "no limit" (every match);
+// Offset < 0 clamps to 0.
+type ReviewListQuery struct {
+	ReviewFilter
+	Sort   string
+	Limit  int
+	Offset int
+}
+
+// reviewSortOrder maps a sort token to a safe ORDER BY for the staging listings.
+// "uploader" requires the users join (pending-review only); "state" / "grouped"
+// and the shared flat orders work for both. Unknown tokens fall back to
+// newest-first. Every order ends with f.id so paging is stable across ties.
+func reviewSortOrder(token string) string {
+	switch token {
+	case "uploader":
+		return "u.username IS NULL, LOWER(u.username), f.created_at DESC, f.id DESC"
+	case "state":
+		return "CASE f.review_state WHEN 'returned' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END, f.created_at DESC, f.id DESC"
+	case "created_asc":
+		return "f.created_at ASC, f.id ASC"
+	case "grouped":
+		return groupedSortOrder
+	case "title_asc", "title_desc", "artist_asc", "artist_desc", "size_asc", "size_desc", "untagged_first":
+		return fileSortOrder(token)
+	default: // created_desc
+		return "f.created_at DESC, f.id DESC"
 	}
-	defer rows.Close()
+}
 
+// appendReviewFilter adds the optional state restriction and the search predicate
+// (with binds) onto a base WHERE + its base args. The base carries the scope's
+// fixed predicate (non-approved, non-trashed, optionally one owner).
+func appendReviewFilter(where string, args []any, f ReviewFilter) (string, []any) {
+	if len(f.States) > 0 {
+		where += " AND f.review_state IN (?" + strings.Repeat(",?", len(f.States)-1) + ")"
+		for _, s := range f.States {
+			args = append(args, s)
+		}
+	}
+	if frag, fragArgs := qFieldClause(f.Q, f.QField); frag != "" {
+		where += " AND " + frag
+		args = append(args, fragArgs...)
+	}
+	return where, args
+}
+
+// pendingReviewBase / uploadsBase are the scope predicates the staging queries
+// share between their page, count, and hash-resolver forms.
+const pendingReviewBase = "f.deleted_at IS NULL AND f.review_state <> 'approved'"
+const uploadsBase = "f.uploaded_by = ? AND f.deleted_at IS NULL AND f.review_state <> 'approved'"
+
+func scanReviewRows(rows *sql.Rows, withUploader bool) ([]*ReviewEntry, error) {
 	out := make([]*ReviewEntry, 0)
 	for rows.Next() {
-		e, err := scanReviewEntry(rows, false)
+		e, err := scanReviewEntry(rows, withUploader)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list uploads rows: %w", err)
+		return nil, fmt.Errorf("review rows: %w", err)
 	}
 	return out, nil
 }
 
+func scanHashes(rows *sql.Rows) ([]string, error) {
+	var out []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, fmt.Errorf("scan review hash: %w", err)
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+func pageWindow(sqlText string, args []any, limit, offset int) (string, []any) {
+	if limit > 0 {
+		if offset < 0 {
+			offset = 0
+		}
+		sqlText += "\n\t\tLIMIT ? OFFSET ?"
+		args = append(args, limit, offset)
+	}
+	return sqlText, args
+}
+
+// ListUploadsByUser returns the user's staged files — non-trashed rows in any
+// review state but approved — newest first. Non-paged wrapper over
+// ListUploadsByUserPage; backs the "My uploads" tab's legacy callers.
+func (db *DB) ListUploadsByUser(ctx context.Context, userID int64) ([]*ReviewEntry, error) {
+	return db.ListUploadsByUserPage(ctx, ReviewListQuery{ReviewFilter: ReviewFilter{OwnerID: userID}, Sort: "created_desc"})
+}
+
+// ListUploadsByUserPage returns one filtered, sorted page of the user's staged
+// files. With Limit <= 0 it returns every match (no window).
+func (db *DB) ListUploadsByUserPage(ctx context.Context, q ReviewListQuery) ([]*ReviewEntry, error) {
+	where, args := appendReviewFilter(uploadsBase, []any{q.OwnerID}, q.ReviewFilter)
+	sqlText := `
+		SELECT ` + reviewEntryColumns + `
+		FROM files f
+		LEFT JOIN media_metadata m ON m.file_id = f.id` + reviewJoins + `
+		WHERE ` + where + `
+		ORDER BY ` + reviewSortOrder(q.Sort)
+	sqlText, args = pageWindow(sqlText, args, q.Limit, q.Offset)
+	rows, err := db.QueryContext(ctx, sqlText, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list uploads by user: %w", err)
+	}
+	defer rows.Close()
+	return scanReviewRows(rows, false)
+}
+
+// CountUploadsByUser counts the user's staged files matching the filter, ignoring
+// paging. Set States to scope the total to a subset (e.g. the selectable count).
+func (db *DB) CountUploadsByUser(ctx context.Context, f ReviewFilter) (int, error) {
+	where, args := appendReviewFilter(uploadsBase, []any{f.OwnerID}, f)
+	var n int
+	err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM files f LEFT JOIN media_metadata m ON m.file_id = f.id WHERE `+where, args...).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count uploads by user: %w", err)
+	}
+	return n, nil
+}
+
+// UploadHashesByUserFilter returns the owner's matching staged hashes (ordered by
+// id) for "select all N matching". Callers set States to the editable/selectable
+// set (draft + returned) so a bulk action never targets a submitted file.
+func (db *DB) UploadHashesByUserFilter(ctx context.Context, f ReviewFilter) ([]string, error) {
+	where, args := appendReviewFilter(uploadsBase, []any{f.OwnerID}, f)
+	rows, err := db.QueryContext(ctx,
+		`SELECT f.hash FROM files f LEFT JOIN media_metadata m ON m.file_id = f.id WHERE `+where+` ORDER BY f.id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("upload hashes by filter: %w", err)
+	}
+	defer rows.Close()
+	return scanHashes(rows)
+}
+
 // ListPendingReview returns every staged (non-trashed, non-approved) file with
-// its uploader's name, ordered for by-uploader grouping in the moderation
-// queue. Files with no recorded uploader (pre-auth rows) sort last.
+// its uploader's name, ordered for by-uploader grouping in the moderation queue.
+// Non-paged wrapper over ListPendingReviewPage.
 func (db *DB) ListPendingReview(ctx context.Context) ([]*ReviewEntry, error) {
-	q := `
+	return db.ListPendingReviewPage(ctx, ReviewListQuery{Sort: "uploader"})
+}
+
+// ListPendingReviewPage returns one filtered, sorted page of the moderation
+// queue (with uploader name). With Limit <= 0 it returns every match (no window).
+func (db *DB) ListPendingReviewPage(ctx context.Context, q ReviewListQuery) ([]*ReviewEntry, error) {
+	where, args := appendReviewFilter(pendingReviewBase, nil, q.ReviewFilter)
+	sqlText := `
 		SELECT ` + reviewEntryColumns + `, u.username
 		FROM files f
 		LEFT JOIN media_metadata m ON m.file_id = f.id` + reviewJoins + `
 		LEFT JOIN users u ON u.id = f.uploaded_by
-		WHERE f.deleted_at IS NULL AND f.review_state <> 'approved'
-		ORDER BY u.username IS NULL, LOWER(u.username), f.created_at DESC`
-
-	rows, err := db.QueryContext(ctx, q)
+		WHERE ` + where + `
+		ORDER BY ` + reviewSortOrder(q.Sort)
+	sqlText, args = pageWindow(sqlText, args, q.Limit, q.Offset)
+	rows, err := db.QueryContext(ctx, sqlText, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list pending review: %w", err)
 	}
 	defer rows.Close()
+	return scanReviewRows(rows, true)
+}
 
-	out := make([]*ReviewEntry, 0)
-	for rows.Next() {
-		e, err := scanReviewEntry(rows, true)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, e)
+// CountPendingReview counts the staged files matching the filter, ignoring
+// paging. Set States to scope the total to a subset (e.g. the selectable count).
+func (db *DB) CountPendingReview(ctx context.Context, f ReviewFilter) (int, error) {
+	where, args := appendReviewFilter(pendingReviewBase, nil, f)
+	var n int
+	err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM files f LEFT JOIN media_metadata m ON m.file_id = f.id WHERE `+where, args...).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count pending review: %w", err)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list pending review rows: %w", err)
+	return n, nil
+}
+
+// PendingReviewHashesByFilter returns the matching staged hashes (ordered by id)
+// for "select all N matching". Callers set States to the actionable/selectable
+// set (submitted) so a bulk action never targets a draft or returned file.
+func (db *DB) PendingReviewHashesByFilter(ctx context.Context, f ReviewFilter) ([]string, error) {
+	where, args := appendReviewFilter(pendingReviewBase, nil, f)
+	rows, err := db.QueryContext(ctx,
+		`SELECT f.hash FROM files f LEFT JOIN media_metadata m ON m.file_id = f.id WHERE `+where+` ORDER BY f.id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("pending review hashes by filter: %w", err)
 	}
-	return out, nil
+	defer rows.Close()
+	return scanHashes(rows)
 }
 
 // ReviewTransition describes one guarded review-state change. The update only

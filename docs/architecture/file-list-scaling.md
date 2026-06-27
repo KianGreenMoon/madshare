@@ -28,6 +28,28 @@ rather than a virtualized window.
 > list. See ["This pass"](infinite-scroll-virtualization.md) in the virtualization
 > doc. The numbered-pager prose below is retained for the backend contract it
 > documents.
+>
+> **Update (2026-06-27): the same treatment now covers Review, My-uploads, and
+> Trash.** All three were non-paged (loaded the whole set, looped one HTTP request
+> per file for bulk actions). They are now server-paged with the same envelope +
+> infinite scroll, and each has its own **filter-or-hashes batch endpoint** so
+> "select all N matching" hits one request:
+> - `GET /api/admin/moderation`, `GET /api/my/uploads`, `GET /api/admin/trash`
+>   return `{ total, items }` (the two staging lists also add `selectable_total` —
+>   the actionable subset count, so the banner reflects only the rows the bulk
+>   actions touch: submitted for moderation, draft+returned for My-uploads).
+> - `POST /api/admin/moderation/bulk` (approve / return / discard),
+>   `POST /api/my/uploads/bulk` (submit / remove),
+>   `POST /api/admin/trash/bulk` (restore / delete / edit) — each resolves an
+>   explicit `hashes` list **or** a state-scoped `filter` (the same `all:true`
+>   guardrail as `/api/admin/files/bulk`), then loops the existing per-row logic
+>   server-side. DB resolvers: `PendingReviewHashesByFilter`,
+>   `UploadHashesByUserFilter`, `TrashedFileHashesByFilter`.
+> - The two bespoke groupings (moderation by uploader, My-uploads by state) survive
+>   paging as **non-collapsible streamed separators** via `section-stream.js`
+>   (`createSectionStream`, unit-tested) — the single-level sibling of
+>   `grouped-stream.js`, fed pages in `sort=uploader` / `sort=state` order.
+>   Moderation loses its collapse toggle (a collapse can't hide unfetched rows).
 
 ---
 
@@ -78,8 +100,9 @@ bounded level per fetch (`/api/artists` → `/api/albums?artist_id=` →
    you scroll. The pure grouping state machine is `grouped-stream.js`
    (`createGroupedStream`, unit-tested in `tests/js/grouped-stream.test.mjs`); the
    windowing is [`infinite-scroll-virtualization.md`](infinite-scroll-virtualization.md).
-   The other scopes (Review / Trash / My uploads) are bounded by nature and keep
-   grouping their already-loaded set in the browser (`file-list.js groupedItems`).
+   The Review / Trash / My-uploads scopes now stream the same way (2026-06-27 update
+   note): Trash reuses this artist/album stream, while Review and My-uploads stream
+   their native by-uploader / by-state separators through `section-stream.js`.
 3. **A transactional bulk endpoint** — `POST /api/admin/files/bulk` — runs an
    action over either an explicit hash set **or** "everything matching the current
    filter", in one request. This is what makes "delete a big group" real and what
@@ -165,9 +188,10 @@ Body:
   `action:"edit"` that can partially fail reports `{ "affected": N, "failed":
   [{hash,error}] }`.
 
-`Restore` / `Delete forever` on the Trash scope are **out of scope here** (Trash
-is bounded); they keep their per-hash loops for now. The bulk endpoint is
-designed generically so they can move onto it later if needed.
+`Restore` / `Delete forever` / bulk tag-edit on the Trash scope **now use their
+own batch endpoint** — `POST /api/admin/trash/bulk` (same hashes-or-filter +
+`all` shape), resolved by `TrashedFileHashesByFilter` over the trashed bucket
+(`f.deleted_at IS NOT NULL`). See the 2026-06-27 update note above.
 
 ### `GET /api/tracks` — add `hash`
 
@@ -262,9 +286,13 @@ visibility honour the existing guest-listing narrowing. No new permission.
   per-group aggregate (counts + cover flags) or a group-scoped "select all
   matching" (reusing `FileFilter.ArtistID`/`AlbumID`) would make both exact up
   front. Deferred — the loaded-so-far behaviour is acceptable for the common edit
-  flows (select an album, or individual tracks).
-- Moving **Trash restore / delete-forever** and the **Review** bulk actions onto
-  the bulk endpoint (bounded scopes; deferred).
+  flows (select an album, or individual tracks). This applies equally to the
+  streamed by-uploader (moderation) and by-state (My-uploads) separators.
+- **Edit-all-matching for the staging scopes.** Moderation and My-uploads support
+  filter-batch approve/return/discard/submit/remove, but *tag editing* across "all
+  matching" is not wired (there is no edit-by-filter endpoint for staged files), so
+  the component disables "Edit tags…" in select-all mode there; explicit-selection
+  edit still works. Trash does support edit-all (`/trash/bulk` `action:"edit"`).
 
 ## Testing
 

@@ -37,6 +37,14 @@ type Repository interface {
 	FileHashesByFilter(ctx context.Context, f FileFilter) ([]string, error)
 	BulkSoftDeleteByHashes(ctx context.Context, hashes []string) (int, error)
 
+	// The Trash listing is paged like the live library: ListTrashedFilesPage +
+	// CountTrashedFiles drive the page/total, and TrashedFileHashesByFilter
+	// resolves the Trash "select all N matching" set for the bulk restore /
+	// delete / edit endpoint.
+	ListTrashedFilesPage(ctx context.Context, q FileListQuery) ([]*FileListEntry, error)
+	CountTrashedFiles(ctx context.Context, f FileFilter) (int, error)
+	TrashedFileHashesByFilter(ctx context.Context, f FileFilter) ([]string, error)
+
 	// StorageByteBreakdown partitions the files table's logical byte_size total
 	// by state (live library / on review / in trash). Backs the audio, review,
 	// and trash disk-usage categories (see adminStorageStats).
@@ -191,6 +199,18 @@ type Repository interface {
 	// ListPendingReview returns every staged file with its uploader's name,
 	// ordered for by-uploader grouping in the moderation queue.
 	ListPendingReview(ctx context.Context) ([]*ReviewEntry, error)
+
+	// The two staging listings are paged like the live library. The *Page forms
+	// return one filtered/sorted window; the Count* forms return the total (set
+	// ReviewFilter.States to scope it to the selectable subset); the *HashesBy*
+	// forms resolve the "select all N matching" set for the bulk endpoints. See
+	// docs/architecture/file-list-scaling.md.
+	ListUploadsByUserPage(ctx context.Context, q ReviewListQuery) ([]*ReviewEntry, error)
+	CountUploadsByUser(ctx context.Context, f ReviewFilter) (int, error)
+	UploadHashesByUserFilter(ctx context.Context, f ReviewFilter) ([]string, error)
+	ListPendingReviewPage(ctx context.Context, q ReviewListQuery) ([]*ReviewEntry, error)
+	CountPendingReview(ctx context.Context, f ReviewFilter) (int, error)
+	PendingReviewHashesByFilter(ctx context.Context, f ReviewFilter) ([]string, error)
 
 	// UpdateReviewState applies a guarded review-state transition (single
 	// UPDATE: state must be in From, file non-trashed, owner matching when

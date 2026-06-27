@@ -490,6 +490,16 @@ type fakeRepo struct {
 	stageRestored     bool
 	stageRestoredErr  error
 	stageRestoreCalls int
+
+	// Paged review/trash stubs (select-all-matching + batch). The *Page methods
+	// return reviewEntries/pageFiles unless a dedicated slice is set; the count /
+	// hash-resolver knobs back the "select all N matching" path.
+	countReview        int
+	reviewFilterHashes []string
+	lastReviewFilter   database.ReviewFilter
+	pageTrash          []*database.FileListEntry
+	countTrash         int
+	trashFilterHashes  []string
 }
 
 func (f *fakeRepo) ListUploadsByUser(_ context.Context, _ int64) ([]*database.ReviewEntry, error) {
@@ -498,6 +508,32 @@ func (f *fakeRepo) ListUploadsByUser(_ context.Context, _ int64) ([]*database.Re
 
 func (f *fakeRepo) ListPendingReview(_ context.Context) ([]*database.ReviewEntry, error) {
 	return f.reviewEntries, f.reviewErr
+}
+
+func (f *fakeRepo) ListUploadsByUserPage(_ context.Context, _ database.ReviewListQuery) ([]*database.ReviewEntry, error) {
+	return f.reviewEntries, f.reviewErr
+}
+
+func (f *fakeRepo) CountUploadsByUser(_ context.Context, _ database.ReviewFilter) (int, error) {
+	return f.countReview, f.reviewErr
+}
+
+func (f *fakeRepo) UploadHashesByUserFilter(_ context.Context, fl database.ReviewFilter) ([]string, error) {
+	f.lastReviewFilter = fl
+	return f.reviewFilterHashes, f.reviewErr
+}
+
+func (f *fakeRepo) ListPendingReviewPage(_ context.Context, _ database.ReviewListQuery) ([]*database.ReviewEntry, error) {
+	return f.reviewEntries, f.reviewErr
+}
+
+func (f *fakeRepo) CountPendingReview(_ context.Context, _ database.ReviewFilter) (int, error) {
+	return f.countReview, f.reviewErr
+}
+
+func (f *fakeRepo) PendingReviewHashesByFilter(_ context.Context, fl database.ReviewFilter) ([]string, error) {
+	f.lastReviewFilter = fl
+	return f.reviewFilterHashes, f.reviewErr
 }
 
 func (f *fakeRepo) UpdateReviewState(_ context.Context, hash string, t database.ReviewTransition) (bool, error) {
@@ -571,6 +607,18 @@ func (f *fakeRepo) BulkSoftDeleteByHashes(_ context.Context, hashes []string) (i
 		return 0, f.bulkTrashErr
 	}
 	return len(hashes), nil
+}
+
+func (f *fakeRepo) ListTrashedFilesPage(_ context.Context, _ database.FileListQuery) ([]*database.FileListEntry, error) {
+	return f.pageTrash, f.listFilesErr
+}
+
+func (f *fakeRepo) CountTrashedFiles(_ context.Context, _ database.FileFilter) (int, error) {
+	return f.countTrash, f.listFilesErr
+}
+
+func (f *fakeRepo) TrashedFileHashesByFilter(_ context.Context, _ database.FileFilter) ([]string, error) {
+	return f.trashFilterHashes, f.filterHashesErr
 }
 
 func (f *fakeRepo) StorageByteBreakdown(_ context.Context) (database.StorageByteBreakdown, error) {

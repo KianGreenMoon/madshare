@@ -246,6 +246,7 @@ func RegisterAPI(r chi.Router, d Deps) {
 		r.With(fileUpload).Get("/api/my/uploads/{hash}/metadata", h.myUploadMetadataGet)
 		r.With(fileUpload).Patch("/api/my/uploads/{hash}/metadata", h.myUploadMetadata)
 		r.With(fileUpload).Post("/api/my/uploads/submit", h.submitMyUploads)
+		r.With(fileUpload).Post("/api/my/uploads/bulk", h.myUploadsBulk)
 		r.With(fileUpload).Delete("/api/my/uploads/{hash}", h.myUploadDiscard)
 	}
 }
@@ -268,6 +269,9 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(fileDelete).Post("/prune/cancel", h.adminPruneCancel)
 		r.With(fileDelete).Get("/storage", h.adminStorageStats)
 		r.With(fileDelete).Get("/trash", h.adminTrashList)
+		// Bulk Trash admits either capability; the handler enforces the per-action
+		// gate (restore/delete → file.delete, edit → metadata.edit).
+		r.With(d.protectAny(auth.PermFileDelete, auth.PermMetadataEdit)).Post("/trash/bulk", h.trashBulk)
 		r.With(fileDelete).Delete("/trash/{hash}", h.adminTrashHardDelete)
 		r.With(fileDelete).Post("/trash/{hash}/restore", h.adminTrashRestore)
 
@@ -275,6 +279,7 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		// it is the soft delete above (moderators hold file.delete).
 		moderate := d.protect(auth.PermContentModerate)
 		r.With(moderate).Get("/moderation", h.moderationList)
+		r.With(moderate).Post("/moderation/bulk", h.moderationBulk)
 		r.With(moderate).Post("/moderation/{hash}/approve", h.moderationApprove)
 		r.With(moderate).Post("/moderation/{hash}/return", h.moderationReturn)
 

@@ -496,12 +496,15 @@ func TestAdminTrashList_Empty(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
-	var items []any
-	if err := json.NewDecoder(rr.Body).Decode(&items); err != nil {
+	var env struct {
+		Total int   `json:"total"`
+		Items []any `json:"items"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&env); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(items) != 0 {
-		t.Errorf("len = %d, want 0 for empty trash", len(items))
+	if env.Total != 0 || len(env.Items) != 0 {
+		t.Errorf("total=%d len=%d, want 0/0 for empty trash", env.Total, len(env.Items))
 	}
 }
 
@@ -522,17 +525,20 @@ func TestAdminTrashList_ReturnsTrashedFiles(t *testing.T) {
 	if rr2.Code != http.StatusOK {
 		t.Fatalf("trash list status = %d", rr2.Code)
 	}
-	var items []map[string]any
-	if err := json.NewDecoder(rr2.Body).Decode(&items); err != nil {
+	var env struct {
+		Total int              `json:"total"`
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(rr2.Body).Decode(&env); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("len = %d, want 1", len(items))
+	if env.Total != 1 || len(env.Items) != 1 {
+		t.Fatalf("total=%d len=%d, want 1/1", env.Total, len(env.Items))
 	}
-	if items[0]["hash"] != hash {
-		t.Errorf("hash = %v, want %s", items[0]["hash"], hash)
+	if env.Items[0]["hash"] != hash {
+		t.Errorf("hash = %v, want %s", env.Items[0]["hash"], hash)
 	}
-	if items[0]["deleted_at"] == nil || items[0]["deleted_at"].(float64) == 0 {
+	if env.Items[0]["deleted_at"] == nil || env.Items[0]["deleted_at"].(float64) == 0 {
 		t.Error("deleted_at not set in trash list response")
 	}
 }

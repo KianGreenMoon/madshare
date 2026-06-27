@@ -14,11 +14,19 @@ export function createTrashScope({ play, perms }) {
   let fileList = null;
 
   // ── Fetch helpers ───────────────────────────────────────────────────────────
-  async function loadTrash() {
-    const res = await fetch(`${API}/api/admin/trash`);
+  // loadTrashPage backs the paged component: one server page of Trash, filtered +
+  // sorted, as {total, items} (file-list-scaling.md). Every trashed row is
+  // selectable, so there is no selectable_total — the banner uses total.
+  async function loadTrashPage({ limit, offset, q, field, sort }) {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (sort) params.set('sort', sort);
+    if (q) params.set('q', q);
+    if (field) params.set('field', field);
+    const res = await fetch(`${API}/api/admin/trash?${params.toString()}`);
     if (handleAuthError(res)) throw new Error('Your session expired.');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
+    const data = await res.json();
+    return { total: data.total || 0, items: data.items || [] };
   }
   async function restoreOne(hash) {
     const res = await fetch(`${API}/api/admin/trash/${encodeURIComponent(hash)}/restore`, { method: 'POST' });
@@ -32,17 +40,21 @@ export function createTrashScope({ play, perms }) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
   }
-  async function runBulk(hashes, makeRequest) {
-    let ok = 0, fail = 0, authFailed = false;
-    for (const hash of hashes) {
-      let res;
-      try { res = await makeRequest(hash); } catch { fail++; continue; }
-      if (res.status === 401) { handleAuthError(res); authFailed = true; break; }
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.ok) ok++; else fail++;
-    }
-    return { ok, fail, authFailed };
+
+  // trashBulkCall is the single batched Trash action (restore / delete / edit)
+  // over an explicit hash list OR a filter ("select all N matching").
+  async function trashBulkCall(body) {
+    const res = await fetch(`${API}/api/admin/trash/bulk`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (handleAuthError(res)) throw new Error('Your session expired.');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
   }
+  const trashFilterBody = filter => ({ filter: { q: filter.q, field: filter.field }, all: !filter.q });
+  const restoreToast = n => { if (n) toast(`Restored ${n} ${n === 1 ? 'file' : 'files'}.`, 'success'); };
+  const deleteToast = n => { if (n) toast(`Permanently deleted ${n} ${n === 1 ? 'file' : 'files'}.`, 'success'); };
 
   // ── Bulk permanent-delete confirm modal (in library.html) ──────────────────
   const delModal   = document.getElementById('trashDeleteModal');
@@ -52,10 +64,10 @@ export function createTrashScope({ play, perms }) {
   const delCancel  = document.getElementById('trashDeleteCancel');
   const delClose   = document.getElementById('trashDeleteClose');
 
-  function confirmBulkDelete(n) {
+  function confirmBulkDelete(bodyText, confirmLabel) {
     return new Promise(resolve => {
-      delBody.textContent = `Permanently delete ${n} ${n === 1 ? 'file' : 'files'}?`;
-      delConfirm.textContent = `Delete ${n} forever`;
+      delBody.textContent = bodyText;
+      delConfirm.textContent = confirmLabel;
       delError.hidden = true; delError.textContent = '';
       delModal.classList.remove('hidden');
       delConfirm.focus();
@@ -106,7 +118,11 @@ export function createTrashScope({ play, perms }) {
       : null,
     accessEditable: false,
     licenses: [],
-    load: loadTrash,
+    // Server-paged like the live library (file-list-scaling.md): flat list +
+    // "By artist / album", every row selectable, default newest-deleted-first.
+    paged: true,
+    pageSize: 100,
+    loadPage: loadTrashPage,
     selectable: () => true,
     editPatchURL: f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`,
     editNote: 'Fix a tag before restoring — the corrected tags decide where the file lands when it returns to the library.',
@@ -128,29 +144,32 @@ export function createTrashScope({ play, perms }) {
     bulkActions: [
       {
         id: 'restoreSel', label: 'Restore selected', kind: 'neutral',
-        run: async hashes => {
-          const { ok, fail, authFailed } = await runBulk(hashes, h => fetch(`${API}/api/admin/trash/${encodeURIComponent(h)}/restore`, { method: 'POST' }));
-          if (authFailed) { if (ok) toast(`Restored ${ok} before the session expired.`, 'error'); return; }
-          if (fail) toast(`Restored ${ok}; ${fail} failed.`, 'error');
-          else if (ok) toast(`Restored ${ok} ${ok === 1 ? 'file' : 'files'}.`, 'success');
-        },
+        run: async hashes => { restoreToast((await trashBulkCall({ action: 'restore', hashes })).affected); },
+        runAll: async filter => { restoreToast((await trashBulkCall({ action: 'restore', ...trashFilterBody(filter) })).affected); },
       },
       {
         id: 'deleteSel', label: 'Delete selected', kind: 'danger',
         run: async hashes => {
-          if (!await confirmBulkDelete(hashes.length)) return false;
-          const { ok, fail, authFailed } = await runBulk(hashes, h => fetch(`${API}/api/admin/trash/${encodeURIComponent(h)}`, { method: 'DELETE' }));
-          if (authFailed) { if (ok) toast(`Deleted ${ok} before the session expired.`, 'error'); return; }
-          if (fail) toast(`Permanently deleted ${ok}; ${fail} failed.`, 'error');
-          else if (ok) toast(`Permanently deleted ${ok} ${ok === 1 ? 'file' : 'files'}.`, 'success');
+          if (!await confirmBulkDelete(`Permanently delete ${hashes.length} ${hashes.length === 1 ? 'file' : 'files'}?`, `Delete ${hashes.length} forever`)) return false;
+          deleteToast((await trashBulkCall({ action: 'delete', hashes })).affected);
+        },
+        runAll: async filter => {
+          if (!await confirmBulkDelete('Permanently delete all matching files?', 'Delete all forever')) return false;
+          deleteToast((await trashBulkCall({ action: 'delete', ...trashFilterBody(filter) })).affected);
         },
       },
     ],
+    // Explicit-selection tag edit and "select all N matching" edit both go through
+    // the Trash bulk endpoint (action:"edit"); the component owns the success toast
+    // for the page selection, bulkApplyAll owns its own.
     bulkApply: async (hashes, patch) => {
-      const { ok, fail } = await runBulk(hashes, h => fetch(`${API}/api/files/${encodeURIComponent(h)}/metadata`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
-      }));
-      if (fail) throw new Error(`updated ${ok}, ${fail} failed`);
+      const data = await trashBulkCall({ action: 'edit', hashes, patch });
+      if (data.failed?.length) throw new Error(`updated ${data.affected}, ${data.failed.length} failed`);
+    },
+    bulkApplyAll: async (filter, patch) => {
+      const data = await trashBulkCall({ action: 'edit', ...trashFilterBody(filter), patch });
+      if (data.failed?.length) throw new Error(`updated ${data.affected}, ${data.failed.length} failed`);
+      toast(`Updated ${data.affected} ${data.affected === 1 ? 'file' : 'files'}.`, 'success');
     },
     onPlay: playFile,
     toast, handleAuthError,
