@@ -53,6 +53,7 @@ func (h *handler) audit(ctx context.Context, action, target, detail string) {
 var acceptedAudioTypes = map[string]string{
 	".mp3":  "audio/mpeg",
 	".ogg":  "audio/ogg",
+	".oga":  "audio/ogg",
 	".flac": "audio/flac",
 	".wav":  "audio/wav",
 	".mp4":  "audio/mp4",

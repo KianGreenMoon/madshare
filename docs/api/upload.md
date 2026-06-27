@@ -44,7 +44,7 @@ that the server persists and serves:
 | Extension | Canonical MIME |
 |-----------|----------------|
 | `.mp3`    | `audio/mpeg`   |
-| `.ogg`    | `audio/ogg`    |
+| `.ogg`, `.oga` | `audio/ogg` |
 | `.flac`   | `audio/flac`   |
 | `.wav`    | `audio/wav`    |
 | `.mp4`, `.m4a` | `audio/mp4` |
