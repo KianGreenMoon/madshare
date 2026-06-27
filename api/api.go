@@ -3,6 +3,7 @@ package api
 import (
 	"io/fs"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -447,10 +448,18 @@ func (d Deps) blobStorages() *storages.Registry {
 // serveBlobs registers the resolving /files blob server. It parses the content
 // hash from the first URL segment, resolves it across the storages registry
 // (local before links; a dangling link falls through), and serves the first hit
-// via http.ServeFile — which provides native HEAD/range and follows a links
-// symlink to the external original. No hit anywhere → 404. The access guard runs
-// first (per-file ACL + the staged-review gate); the hash is regex-validated
-// inside Resolve, so a malformed segment can never escape the hash dir.
+// via os.Open + http.ServeContent — which provides native HEAD/range and follows
+// a links symlink to the external original. No hit anywhere → 404. The access
+// guard runs first (per-file ACL + the staged-review gate); the hash is
+// regex-validated inside Resolve, so a malformed segment can never escape the
+// hash dir.
+//
+// We deliberately do NOT use http.ServeFile here: it re-opens the resolved path
+// through http.Dir, which rejects file names that are not valid UTF-8 (responds
+// 404). Linked imports keep the external original's raw on-disk filename bytes —
+// e.g. a legacy Latin-encoded "ł" — so ServeFile would 404 a perfectly resolvable
+// blob purely because of its name. os.Open is byte-based and ServeContent never
+// re-opens by name, so byte-exact filenames serve correctly.
 func (d Deps) serveBlobs(r chi.Router, guard func(http.Handler) http.Handler) {
 	reg := d.blobStorages()
 	// A bare /files redirects to /files/, matching the previous static mount.
@@ -463,7 +472,21 @@ func (d Deps) serveBlobs(r chi.Router, guard func(http.Handler) http.Handler) {
 			http.NotFound(w, req)
 			return
 		}
-		http.ServeFile(w, req, path)
+		f, err := os.Open(path) // follows a links symlink to the external original (read-only)
+		if err != nil {
+			http.NotFound(w, req)
+			return
+		}
+		defer f.Close()
+		info, err := f.Stat()
+		if err != nil || info.IsDir() {
+			http.NotFound(w, req)
+			return
+		}
+		// info.Name() is the resolved blob's base name; ServeContent uses it only
+		// for extension-based Content-Type detection (the byte its name may carry
+		// does not affect the extension).
+		http.ServeContent(w, req, info.Name(), info.ModTime(), f)
 	})
 }
 

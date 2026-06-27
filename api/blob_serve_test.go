@@ -98,7 +98,7 @@ func TestBlobServe_LocalGET(t *testing.T) {
 	}
 }
 
-// TestBlobServe_HEAD confirms http.ServeFile sizes the blob for HEAD (200,
+// TestBlobServe_HEAD confirms the blob server sizes the blob for HEAD (200,
 // Content-Length set, empty body) through the resolver + SupportHEAD chain.
 func TestBlobServe_HEAD(t *testing.T) {
 	files, links := t.TempDir(), t.TempDir()
@@ -185,6 +185,58 @@ func TestBlobServe_DanglingLinkFallsThroughToLocal(t *testing.T) {
 	if got := string(bodyBytes(t, resp)); got != "local-copy" {
 		t.Errorf("body = %q, want the local duplicate", got)
 	}
+}
+
+// TestBlobServe_NonUTF8Filename serves blobs whose on-disk filename carries a
+// raw, non-UTF-8 byte (e.g. a links import of a Latin-encoded "ł" → 0xea). The
+// blob resolves by hash regardless of the name, but http.ServeFile would re-open
+// it through http.Dir and 404 the invalid name; the server uses os.Open +
+// http.ServeContent precisely so these still serve. Regression test.
+func TestBlobServe_NonUTF8Filename(t *testing.T) {
+	// "Musia\xea.flac" — a single 0xea byte where "ł" belongs (invalid UTF-8).
+	badName := "Piotr Musia\xea - track.flac"
+
+	t.Run("links", func(t *testing.T) {
+		files, links := t.TempDir(), t.TempDir()
+		external := filepath.Join(t.TempDir(), badName)
+		if err := os.WriteFile(external, []byte("external-bytes"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		h := fakeHash(20)
+		linkBlobInto(t, links, h, badName, external)
+		srv := newBlobServer(t, files, storages.New(files, links))
+
+		// The URL filename is irrelevant (resolution keys on the hash); any
+		// segment after the hash works.
+		resp, err := http.Get(srv.URL + "/files/" + h + "/x.flac")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("links GET status = %d, want 200 (non-UTF-8 name must still serve)", resp.StatusCode)
+		}
+		if got := string(bodyBytes(t, resp)); got != "external-bytes" {
+			t.Errorf("body = %q, want the external original", got)
+		}
+	})
+
+	t.Run("local", func(t *testing.T) {
+		files, links := t.TempDir(), t.TempDir()
+		h := fakeHash(21)
+		putBlob(t, files, h, badName, "local-bytes")
+		srv := newBlobServer(t, files, storages.New(files, links))
+
+		resp, err := http.Get(srv.URL + "/files/" + h + "/x.flac")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("local GET status = %d, want 200 (non-UTF-8 name must still serve)", resp.StatusCode)
+		}
+		if got := string(bodyBytes(t, resp)); got != "local-bytes" {
+			t.Errorf("body = %q, want the local blob", got)
+		}
+	})
 }
 
 // TestBlobServe_DanglingLinkOnly404: only a broken link exists → 404.

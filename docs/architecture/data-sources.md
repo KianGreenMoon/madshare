@@ -140,8 +140,12 @@ lives in `docs/architecture/s3-storage.md`; v0 is its degenerate case.
 1. `fileAccessGuard` already loads the `files` row for ACL; keep that (one lookup
    for access + the canonical name).
 2. **Try `local`, then `links`:** call `Locate(hash)` on each; serve the first hit
-   via `http.ServeFile` (native HEAD/range; `links` follows the symlink to the
-   original). ≤2 cheap stats.
+   via `os.Open` + `http.ServeContent` (native HEAD/range; `links` follows the
+   symlink to the original). ≤2 cheap stats. We open the blob ourselves rather
+   than calling `http.ServeFile` because `ServeFile` re-opens the path through
+   `http.Dir`, which **404s file names that are not valid UTF-8** — and a `links`
+   import keeps the external original's raw on-disk filename bytes (e.g. a
+   Latin-encoded `ł`). `os.Open` is byte-based, so those blobs still serve.
 3. A dangling/missing copy returns `ok=false`, so resolution **falls through** to
    the next storage that has the hash — a duplicate elsewhere transparently covers
    a broken link. No hit anywhere → 404.
