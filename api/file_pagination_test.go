@@ -97,6 +97,37 @@ func TestFilesSort_UntaggedFirst(t *testing.T) {
 	}
 }
 
+// TestFilesSort_Grouped verifies the server reproduces the "By artist / album"
+// order the grouped view streams: album-artist, then album by its earliest year
+// (a per-track year gap can't reorder it), then track, with the empty bucket last.
+func TestFilesSort_Grouped(t *testing.T) {
+	srv, db := newAuthTestServer(t)
+	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
+
+	h := func(n int) string { return fmt.Sprintf("%064d", n) }
+	// Alpha owns two albums: Zebra (1999) must precede Apple (2005) despite sorting
+	// after it alphabetically — albums order by earliest year. Zebra's second track
+	// carries no year (NULL) to prove the gap doesn't reorder the album.
+	insertGroupedFile(t, db, h(1), "Alpha", "Apple", "apple-1", 2005, 0, 1)
+	insertGroupedFile(t, db, h(2), "Alpha", "Zebra", "zebra-2", 0, 0, 2)
+	insertGroupedFile(t, db, h(3), "Alpha", "Zebra", "zebra-1", 1999, 0, 1)
+	insertGroupedFile(t, db, h(4), "Beta", "Solo", "beta-1", 2000, 0, 1)
+	insertGroupedFile(t, db, h(5), "", "", "zz-untagged", 0, 0, 0)
+
+	var e fileEnv
+	if code := doJSON(t, admin, http.MethodGet, srv.URL+"/api/files?sort=grouped&limit=50", nil, &e); code != http.StatusOK {
+		t.Fatalf("GET sort=grouped = %d", code)
+	}
+	got := make([]string, len(e.Items))
+	for i, it := range e.Items {
+		got[i], _ = it["title"].(string)
+	}
+	want := []string{"zebra-1", "zebra-2", "apple-1", "beta-1", "zz-untagged"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("grouped order = %v, want %v", got, want)
+	}
+}
+
 // TestBulkTrash covers POST /api/admin/files/bulk: explicit hashes, filter mode
 // ("select all matching"), the empty-filter guardrail, and bad requests.
 func TestBulkTrash(t *testing.T) {

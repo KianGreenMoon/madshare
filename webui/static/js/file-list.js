@@ -16,6 +16,7 @@ import { createBulkEditor } from './bulk-edit.js';
 import { createCoverPicker } from './cover-edit.js';
 import { discKey, discSort, discLabel, isMultiDisc } from './disc.js';
 import { createVirtualList } from './virtual-list.js';
+import { createGroupedStream } from './grouped-stream.js';
 
 // Local DOM builder + formatter so this module has no page-specific imports.
 // el('button', {class:'btn', onclick: fn}, ['Label'])
@@ -107,6 +108,14 @@ export function createFileList(scope) {
   // sections (My uploads) groupings stay non-windowed for now. Design:
   // docs/architecture/infinite-scroll-virtualization.md ("This pass").
   let vlist = null, vWrap = null, vTbody = null, vGrouped = null;
+
+  // ── Grouped streaming (paged "By artist / album" view) ───────────────────────
+  // The paged grouped view streams pages in server-sorted (sort=grouped) order and
+  // inserts the artist/album/disc separators on the client as the keys change — so
+  // it scales like the flat infinite-scroll instead of loading every row first. The
+  // pure grouping state machine lives in createGroupedStream (unit-tested); this
+  // closure only drives its I/O (fetchMoreGrouped) and reads gstream.items.
+  const gstream = createGroupedStream(isSelectable);
 
   // ── Server-paged mode (scope.paged) ─────────────────────────────────────────
   // The admin All-files scope is too large to hold in the DOM, so it loads one
@@ -217,25 +226,35 @@ export function createFileList(scope) {
   }
 
   // groupedActive: the "By artist / album" view is selected and the scope allows
-  // it. Grouping sorts across the whole set, so on a paged scope it loads every
-  // page first; the flat view stays lazy (infinite scroll).
+  // it. On a paged scope the server supplies the grouping order (sort=grouped) so
+  // the view streams page-by-page like the flat list; non-paged scopes group the
+  // already-loaded set in the browser.
   function groupedActive() { return grouped && !!scope.artistAlbumSort; }
 
   // ── Loading ─────────────────────────────────────────────────────────────────
   async function reload() {
     if (view === 'browse' && hasBrowse) return loadBrowse();
-    if (paged) return groupedActive() ? loadAllPages() : loadPage();
+    if (paged) return loadPage();
     return loadList();
   }
-  // loadPage fetches the first page; further pages stream in via fetchMorePage as
-  // the windowed list scrolls (file-list-scaling.md backend, infinite-scroll UI).
+  // loadPage fetches the first page; further pages stream in via fetchMorePage (flat)
+  // or fetchMoreGrouped (grouped) as the windowed list scrolls (file-list-scaling.md
+  // backend, infinite-scroll UI). The grouped view asks the server for its order
+  // (sort=grouped) and folds the page into the streamed item array as it arrives.
   async function loadPage() {
-    loading = true; loadError = false; rows = []; loadedCount = 0; render();
+    const grouped = groupedActive();
+    loading = true; loadError = false; rows = []; loadedCount = 0;
+    if (grouped) gstream.reset();
+    render();
     try {
-      const res = await scope.loadPage({ limit: PAGE_SIZE, offset: 0, q: filterText.trim(), sort: sortToken }) || {};
+      const res = await scope.loadPage({ limit: PAGE_SIZE, offset: 0, q: filterText.trim(), sort: grouped ? 'grouped' : sortToken }) || {};
       rows = res.items || [];
       total = res.total || 0;
       loadedCount = rows.length;
+      // Grouped: fold the first page into the streamed items now; a page wholly
+      // absorbed into one still-open album yields nothing yet — the windowed list's
+      // near-bottom fetch then pulls more until an album flushes.
+      if (grouped) gstream.ingest(rows, loadedCount >= total || !rows.length);
     } catch (err) { loadError = true; console.error('file-list page load failed:', err); }
     loading = false; render();
   }
@@ -250,21 +269,23 @@ export function createFileList(scope) {
     loadedCount = rows.length;
     return { items: items.map(flatItem), done: loadedCount >= total || items.length === 0 };
   }
-  // loadAllPages walks the offset endpoint to completion — the grouped view sorts
-  // across artists, so it needs every row. (Explicit grouped mode only.)
-  async function loadAllPages() {
-    loading = true; loadError = false; rows = []; loadedCount = 0; render();
-    try {
-      for (;;) {
-        const res = await scope.loadPage({ limit: PAGE_SIZE, offset: rows.length, q: filterText.trim(), sort: 'created_desc' }) || {};
-        const items = res.items || [];
-        if (typeof res.total === 'number') total = res.total;
-        rows = rows.concat(items);
-        if (!items.length || rows.length >= total) break;
-      }
-      loadedCount = rows.length;
-    } catch (err) { loadError = true; console.error('file-list grouped load-all failed:', err); }
-    loading = false; render();
+  // fetchMoreGrouped backs the grouped view's infinite scroll: pull the next page
+  // (server-sorted) and hand it to the stream. A page wholly inside one still-open
+  // album flushes nothing, so it keeps pulling until an album closes (or the listing
+  // ends) — returning [] without `done` would make the scroller stop short.
+  async function fetchMoreGrouped() {
+    for (;;) {
+      if (loadedCount >= total) return { items: gstream.ingest([], true), done: true };
+      const res = await scope.loadPage({ limit: PAGE_SIZE, offset: loadedCount, q: filterText.trim(), sort: 'grouped' }) || {};
+      const items = res.items || [];
+      if (typeof res.total === 'number') total = res.total;
+      if (!items.length) return { items: gstream.ingest([], true), done: true };
+      rows = rows.concat(items); loadedCount = rows.length;
+      const isFinal = loadedCount >= total;
+      const delta = gstream.ingest(items, isFinal);
+      if (isFinal) return { items: delta, done: true };
+      if (delta.length) return { items: delta, done: false };
+    }
   }
   async function loadList() {
     loading = true; loadError = false; render();
@@ -685,10 +706,11 @@ export function createFileList(scope) {
   function destroyVList() { vlist?.destroy(); vlist = null; vWrap = null; vTbody = null; vGrouped = null; }
 
   // renderWindowed mounts (or reuses) the virtual scroller in the body host and
-  // feeds it the current item array (flat / grouped / collapsible / sections).
-  // Only the flat paged list gets infinite-scroll fetchMore; every other view
-  // holds its whole set already. The is-grouped tbody class (track-# indent) is
-  // for the artist/album view only.
+  // feeds it the current item array (flat / grouped / collapsible / sections). Both
+  // paged views (flat and grouped) get infinite-scroll fetchMore — flat appends
+  // rows, grouped appends streamed separators+rows; the non-paged scopes hold their
+  // whole set already. The is-grouped tbody class (track-# indent) is for the
+  // artist/album view only.
   function renderWindowed() {
     const grouped = groupedActive();
     if (!vWrap || vGrouped !== grouped) {
@@ -699,7 +721,7 @@ export function createFileList(scope) {
         makeSpacer: makeSpacerRow,
         renderRow: renderWindowItem,
         estimateHeight: estimateItemHeight,
-        fetchMore: (paged && !grouped) ? fetchMorePage : null,
+        fetchMore: paged ? (grouped ? fetchMoreGrouped : fetchMorePage) : null,
         onAfterRender: () => { syncSelectionUI(); applyPlayingHighlight(); },
       });
     }
@@ -782,7 +804,9 @@ export function createFileList(scope) {
   // grouped (artist/album), collapsible (uploader), sections (state), or flat.
   function buildItems() {
     const files = visibleFiles();
-    if (groupedActive()) return groupedItems(files);
+    // Grouped: paged scopes stream their items (built incrementally as pages
+    // arrive); non-paged scopes hold the whole set and group it in one pass.
+    if (groupedActive()) return paged ? gstream.items.slice() : groupedItems(files);
     if (scope.grouping?.kind === 'collapsible') return collapsibleItems(sortFilesBy(files, sortToken));
     if (scope.grouping?.kind === 'sections')   return sectionItems(sortFilesBy(files, sortToken));
     // Flat: paged scopes are already server-sorted (and stream more on scroll);
@@ -953,9 +977,9 @@ export function createFileList(scope) {
 
   // groupToggle is the independent "By artist / album" view switch — a pill that's
   // separate from the flat sort dropdown so the grouped view isn't lost among the
-  // sort orders (owner ask). On a paged scope, turning it on loads the whole set
-  // (loadAllPages); turning it off returns to the lazy infinite-scroll flat list.
-  // Reuses the .sort-switch / .vm-btn styling of the old toggle.
+  // sort orders (owner ask). On a paged scope, turning it on re-queries with the
+  // server grouping order and streams it; turning it off returns to the flat list.
+  // Both stay lazy (infinite scroll). Reuses the .sort-switch / .vm-btn styling.
   function groupToggle() {
     const on = groupedActive();
     const b = el('button', {
@@ -964,8 +988,8 @@ export function createFileList(scope) {
     });
     b.addEventListener('click', () => {
       grouped = !grouped;
-      // Paged: the grouped view loads the whole set, so re-query (and drop the
-      // page/filter-mode selection). Non-paged: just re-render — the selected
+      // Paged: the grouped view streams its own server order, so re-query (and drop
+      // the page/filter-mode selection). Non-paged: just re-render — the selected
       // hashes stay valid across the flat ⇄ grouped views.
       if (paged) { clearPageSelection(); reload(); return; }
       try { localStorage.setItem(GROUP_KEY, grouped ? '1' : '0'); } catch { /* ignore */ }

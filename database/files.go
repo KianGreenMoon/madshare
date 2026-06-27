@@ -336,6 +336,25 @@ func fileSortOrder(token string) string {
 	case "untagged_first":
 		// Untagged rows first, then newest — surfaces files that still need tags.
 		return untaggedExpr + " DESC, f.created_at DESC, f.id DESC"
+	case "grouped":
+		// The "By artist / album" view order, reproduced server-side so the grouped
+		// list can stream (infinite scroll) instead of loading every row to sort in
+		// the browser. Mirrors file-list.js buildArtistGroups: album-artist (falling
+		// back to performer, empty bucket last), then album within the artist by its
+		// earliest year (a window MIN so a per-track year can't reorder the album)
+		// then album name (empty "Other" bucket last), then disc (untagged last),
+		// track (untagged last), title. f.id keeps paging stable across ties.
+		// The client only inserts separators where these keys change between rows.
+		return `(CASE WHEN COALESCE(m.album_artist, m.artist, '') = '' THEN 1 ELSE 0 END) ASC,
+			LOWER(COALESCE(m.album_artist, m.artist, '')) ASC,
+			(CASE WHEN COALESCE(m.album, '') = '' THEN 1 ELSE 0 END) ASC,
+			COALESCE(MIN(NULLIF(m.year, 0)) OVER (
+				PARTITION BY LOWER(COALESCE(m.album_artist, m.artist, '')), LOWER(COALESCE(m.album, ''))
+			), 9999) ASC,
+			LOWER(COALESCE(m.album, '')) ASC,
+			(CASE WHEN m.disc_number IS NULL THEN 1 ELSE 0 END) ASC, m.disc_number ASC,
+			(CASE WHEN m.track_number IS NULL THEN 1 ELSE 0 END) ASC, m.track_number ASC,
+			LOWER(COALESCE(NULLIF(m.title, ''), filename, '')) ASC, f.id ASC`
 	default: // created_desc
 		return "f.created_at DESC, f.id DESC"
 	}

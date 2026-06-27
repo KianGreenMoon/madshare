@@ -205,6 +205,31 @@ func insertTaggedFile(t *testing.T, db *database.DB, hash, artist, album, title 
 	}
 }
 
+// insertGroupedFile seeds a file with the metadata the grouped sort orders on
+// (album-artist / album / year / disc / track). A zero year/disc/track is stored
+// as NULL (untagged), matching a real ingest with the tag absent.
+func insertGroupedFile(t *testing.T, db *database.DB, hash, albumArtist, album, title string, year, disc, track int64) {
+	t.Helper()
+	nn := func(v int64) sql.NullInt64 { return sql.NullInt64{Int64: v, Valid: v != 0} }
+	f := &database.File{
+		Hash: hash, ByteSize: 1, MimeType: "audio/mpeg", StorageBackend: "local",
+		ObjectKey: hash + "/t.mp3", CreatedAt: 1700000000,
+	}
+	meta := &database.MediaMetadata{
+		Title:       title,
+		AlbumArtist: sql.NullString{String: albumArtist, Valid: albumArtist != ""},
+		Album:       sql.NullString{String: album, Valid: true},
+		Year:        nn(year),
+		TrackNumber: nn(track),
+		DiscNumber:  nn(disc),
+		ExtractedAt: 1700000000,
+	}
+	if err := db.InsertFile(context.Background(), f,
+		&database.FileUpload{Filename: "t.mp3", UploadedAt: 1700000000}, meta); err != nil {
+		t.Fatalf("InsertFile: %v", err)
+	}
+}
+
 // TestListings_TrackFilteringOverHTTP exercises the /api/tracks access filter on
 // the wire (handler guestListing + content.access bypass + the *Guest query),
 // which the DB-only test cannot reach.

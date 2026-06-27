@@ -15,14 +15,14 @@ module so the admin flat list can later adopt it over the very same paginated
 endpoint.
 
 **This work also unblocks the admin file-list's grouped "By artist / album"
-view.** That view sorts the *whole* set in the browser, so it can't live on
-numbered server pages — it needs virtualization (load the full set, render only
-the visible window) to scale without freezing. So the `file-list.js` component is
-a first-class consumer of the virtual scroller here, not just the public library:
-when this lands, the All-files scope re-enables its grouped toggle on the
-virtualized list (and the same view can extend to the Review / Trash / My-uploads
-scopes). Until then, that scope ships the flat, server-paged list from
-`file-list-scaling.md` (with a server sort dropdown, incl. *Untagged first*).
+view.** The grouped view is just another order, so the server supplies it
+(`sort=grouped`) and the windowed list **streams** it page-by-page exactly like
+the flat list — no loading the whole set. The client inserts the artist/album/disc
+separators as the sort keys change between rows (`grouped-stream.js`). So the
+`file-list.js` component is a first-class consumer of the virtual scroller here,
+not just the public library. The bounded scopes (Review / Trash / My-uploads) load
+their full set anyway, so they group it in the browser; only the large All-files
+scope streams its grouping.
 
 ---
 
@@ -283,9 +283,10 @@ steps (B, L, X) stay future. See "This pass" above for the decisions.
 - **A. File-list adoption (this pass)** — render `file-list.js` through the module
   for **every** scope as one flat item array (rows + separators/headers). The flat
   All-files view becomes **infinite scroll** over the offset endpoint (replacing
-  the numbered pager); the grouped **By artist / album** view returns on the
-  windowed list (load the full set, window the slice); Review / Trash / My-uploads
-  window their already-loaded sets.
+  the numbered pager); the grouped **By artist / album** view also streams that
+  endpoint, with `sort=grouped` ordering it server-side and `grouped-stream.js`
+  inserting separators as keys change; Review / Trash / My-uploads window their
+  already-loaded sets.
 - **B. Backend — artist list DONE.** `GET /api/artists` is cursor-paginated when a
   `limit` is given: `{items, next_cursor}`, keyset on `(is_unknown_bucket,
   lower_name, id)` (`ListArtistsPage`), `limit` clamped to `[1,200]`, guest variant

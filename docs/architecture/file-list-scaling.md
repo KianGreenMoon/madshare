@@ -66,17 +66,20 @@ bounded level per fetch (`/api/artists` → `/api/albums?artist_id=` →
    `limit`, `offset`, `q`, `sort` and returns a `{ total, items }` envelope. The
    client renders one bounded page (~100 rows) with page controls; filter and
    sort round-trip to the server.
-2. **The grouped "By artist / album" view is RETAINED but deferred.** It sorts
-   the *whole* set in the browser, which is incompatible with server paging (only
-   one page is in hand). It is **not** dropped and **not** replaced by Browse — it
-   is a planned capability that requires the shared list to be **virtualized**
-   (load the full set, render only the visible window), so grouping/filter/select-
-   all keep working without freezing. That work is designed in
-   [`infinite-scroll-virtualization.md`](infinite-scroll-virtualization.md);
-   until it lands, the All-files flat list ships **without** the grouped toggle
-   (the flat list + server sort is the interim view). The other scopes (Review /
-   Trash / My uploads) keep their current in-memory grouping unchanged — they are
-   bounded by nature.
+2. **The grouped "By artist / album" view streams in server order.** Rather than
+   sort the *whole* set in the browser (incompatible with paging — only one page
+   is in hand), the server owns the grouping order via a `sort=grouped` token
+   (album-artist → album by earliest year → disc → track; see `fileSortOrder`),
+   so the grouped view **streams page-by-page exactly like the flat list** through
+   the same windowed infinite-scroll. The client inserts the artist/album/disc
+   separators as the keys change between rows; an album is buffered to its boundary
+   so multi-disc detection and its select-all hashes are exact, and an artist spans
+   pages so its header's count and select-all set are "loaded so far" and grow as
+   you scroll. The pure grouping state machine is `grouped-stream.js`
+   (`createGroupedStream`, unit-tested in `tests/js/grouped-stream.test.mjs`); the
+   windowing is [`infinite-scroll-virtualization.md`](infinite-scroll-virtualization.md).
+   The other scopes (Review / Trash / My uploads) are bounded by nature and keep
+   grouping their already-loaded set in the browser (`file-list.js groupedItems`).
 3. **A transactional bulk endpoint** — `POST /api/admin/files/bulk` — runs an
    action over either an explicit hash set **or** "everything matching the current
    filter", in one request. This is what makes "delete a big group" real and what
@@ -101,7 +104,7 @@ Query parameters (all optional):
 | `limit` | `100` | page size; clamped to `[0, 500]`. `0` = count-only (empty `items`, `total` still set — used by the dashboard count). |
 | `offset` | `0` | rows to skip; clamped to `>= 0`. |
 | `q` | `""` | case-insensitive substring filter (see below). |
-| `sort` | `created_desc` | one of `created_desc`, `created_asc`, `title_asc`, `title_desc`, `artist_asc`, `artist_desc`, `size_desc`, `size_asc`, `untagged_first` (rows with no artist/album-artist tag first — the "needs metadata" rows). Unknown → `created_desc`. |
+| `sort` | `created_desc` | one of `created_desc`, `created_asc`, `title_asc`, `title_desc`, `artist_asc`, `artist_desc`, `size_desc`, `size_asc`, `untagged_first` (rows with no artist/album-artist tag first — the "needs metadata" rows), `grouped` (the "By artist / album" view order: album-artist → album by earliest year → disc → track, empty buckets last; a window `MIN(year)` orders each album so a per-track year gap can't reorder it). Unknown → `created_desc`. |
 
 Response is an **envelope** (was a bare array):
 
@@ -215,8 +218,9 @@ Keep the component shared; add a **paged mode** rather than rewriting it.
   - routes the **filter box** to a debounced server reload (resetting to offset
     0), not an in-memory `visibleFiles()` rebuild;
   - renders a **sort control** (the allow-listed `sort` tokens, including
-    **Untagged first**) instead of the client `artistAlbumSort` grouped toggle —
-    the grouped view returns once the list is virtualized (see the plan below);
+    **Untagged first**) plus the separate **By artist / album** toggle, which
+    re-queries with `sort=grouped` and streams that order (the dropdown is disabled
+    while grouping is on, since grouping imposes its own order);
   - selection stays a per-page `Set`, **plus** a "Select all N matching" banner
     that flips selection into **filter-mode** so a bulk action hits
     `POST …/bulk` with the filter, not an enumerated list.
@@ -251,15 +255,14 @@ visibility honour the existing guest-listing narrowing. No new permission.
 
 ## Planned / future
 
-- **Grouped "By artist / album" view via virtualization (planned).** This is the
-  one piece deliberately deferred, not dropped. The grouped view needs the whole
-  set in the browser to sort across artists, so it returns once the shared list
-  is **virtualized** (load the full set, render only the visible window — keeping
-  grouping, filter, and select-all working without a freeze). Designed in
-  [`infinite-scroll-virtualization.md`](infinite-scroll-virtualization.md); that
-  doc carries the admin file-list as a consumer of the shared virtual scroller.
-  When it lands, the All-files scope re-enables the grouped toggle on the
-  virtualized list, and the same view can extend to the other file-list scopes.
+- **Per-group exact counts / select-all-across-pages for the grouped view.** The
+  streamed grouped view (Decision 2) shows artist-header counts and select-all
+  hashes that are "loaded so far" — exact for an album (it's buffered whole) but
+  growing for an artist until you've scrolled past all of it. A small server-side
+  per-group aggregate (counts + cover flags) or a group-scoped "select all
+  matching" (reusing `FileFilter.ArtistID`/`AlbumID`) would make both exact up
+  front. Deferred — the loaded-so-far behaviour is acceptable for the common edit
+  flows (select an album, or individual tracks).
 - Moving **Trash restore / delete-forever** and the **Review** bulk actions onto
   the bulk endpoint (bounded scopes; deferred).
 
