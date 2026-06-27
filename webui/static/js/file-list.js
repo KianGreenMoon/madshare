@@ -308,14 +308,18 @@ export function createFileList(scope) {
   }
 
   function titleCell(f) {
-    const titleSpan = f.title
-      ? el('span', { class: 'cell-title', text: f.title })
-      : el('span', { class: 'cell-title is-fallback', text: f.filename || 'Untitled' });
-    const kids = [titleSpan];
+    const titleText = f.title || f.filename || 'Untitled';
+    // The title can be overlong; it ellipsises (see .cell-title) so the columns
+    // stay put — the full text rides along in a hover tooltip and the Edit modal.
+    const titleSpan = el('span', { class: f.title ? 'cell-title' : 'cell-title is-fallback', title: titleText, text: titleText });
+    // Title + badge share one flex line so the title ellipsises but the badge,
+    // which must stay readable, never gets clipped.
+    const line = [titleSpan];
     // The badge fn gets whether the list is in the grouped view, so a scope can
     // show a state badge only when its native (sectioned) grouping is hidden.
     const b = scope.badge ? scope.badge(f, groupedActive()) : null;
-    if (b) kids.push(document.createTextNode(' '), el('span', { class: `state-badge ${b.cls || ''}`, title: b.title || null, text: b.text }));
+    if (b) line.push(el('span', { class: `state-badge ${b.cls || ''}`, title: b.title || null, text: b.text }));
+    const kids = [el('span', { class: 'cell-title-line' }, line)];
     kids.push(el('span', { class: 'cell-hash', title: f.hash || '', text: shortHash(f.hash) }));
     if (f.note) kids.push(el('span', { class: 'mod-note', text: `Note: ${f.note}` }));
     return el('td', { class: 'cell-title-td', 'data-label': 'Title' }, kids);
@@ -327,13 +331,13 @@ export function createFileList(scope) {
         if (!isSelectable(f)) return el('td', { class: 'cell-check' });
         return el('td', { class: 'cell-check' }, [rowCheckbox(f)]);
       case 'title':  return titleCell(f);
-      case 'artist': return f.artist ? el('td', { 'data-label': 'Artist', text: f.artist }) : el('td', { class: 'cell-muted', 'data-label': 'Artist', text: '—' });
-      case 'album':  return f.album ? el('td', { 'data-label': 'Album', text: f.album }) : el('td', { class: 'cell-muted', 'data-label': 'Album', text: '—' });
+      case 'artist': return f.artist ? el('td', { class: 'cell-text', title: f.artist, 'data-label': 'Artist', text: f.artist }) : el('td', { class: 'cell-text cell-muted', 'data-label': 'Artist', text: '—' });
+      case 'album':  return f.album ? el('td', { class: 'cell-text', title: f.album, 'data-label': 'Album', text: f.album }) : el('td', { class: 'cell-text cell-muted', 'data-label': 'Album', text: '—' });
       case 'size':   return el('td', { class: 'cell-size', 'data-label': 'Size', text: fmtBytes(f.byte_size) });
       case 'access': return el('td', { class: 'cell-access', 'data-label': 'Access' }, [accessSummary(f)]);
       case 'meta': {
         const v = scope.metaValue ? scope.metaValue(f) : '';
-        return v ? el('td', { 'data-label': scope.metaLabel || 'Meta', text: v }) : el('td', { class: 'cell-muted', 'data-label': scope.metaLabel || 'Meta', text: '—' });
+        return v ? el('td', { class: 'cell-text', title: v, 'data-label': scope.metaLabel || 'Meta', text: v }) : el('td', { class: 'cell-text cell-muted', 'data-label': scope.metaLabel || 'Meta', text: '—' });
       }
       case 'actions': {
         const wrap = el('div', { class: 'trash-actions' });

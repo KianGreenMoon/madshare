@@ -305,7 +305,12 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
-.files-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+/* table-layout: fixed freezes the columns: widths come from the fixed-width
+   columns below + an even split of the remainder among the text columns, never
+   from cell content. Without it (auto layout) a long title would reflow the
+   columns — and because the list is virtualized, scrolling a new long title
+   into view would make the columns visibly jump. */
+.files-table { width: 100%; border-collapse: collapse; font-size: 14px; table-layout: fixed; }
 .files-table thead th {
   position: sticky;
   top: 0;
@@ -322,6 +327,16 @@
 }
 .files-table .col-size,
 .files-table .col-actions { text-align: right; }
+
+/* Fixed-width columns (table-layout: fixed). The text columns — title, artist,
+   album, meta — carry no width and evenly share whatever's left, ellipsising
+   their overflow instead of pushing the layout around. */
+.files-table .col-size,
+.files-table .cell-size { width: 6rem; }
+.files-table .col-access,
+.files-table .cell-access { width: 9.5rem; }
+.files-table .col-actions,
+.files-table .cell-actions { width: 13rem; }
 .files-table tbody tr { transition: background 120ms ease; }
 .files-table tbody tr:hover { background: var(--surface-hover); }
 .files-table tbody td {
@@ -338,8 +353,27 @@
 .files-table tbody tr.fl-spacer:hover { background: transparent; }
 .files-table tbody td.fl-spacer-cell { padding: 0; border: 0; }
 
-.cell-title { font-weight: 500; }
+/* Title + state badge share one line; the title ellipsises (min-width: 0 lets
+   the flex item shrink below its content), the badge never shrinks or clips. */
+.cell-title-line { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.cell-title-line .state-badge { flex-shrink: 0; }
+.cell-title {
+  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .cell-title.is-fallback { font-weight: 400; font-style: italic; color: var(--text-muted); }
+
+/* Plain text columns (artist / album / meta) and the access summary clip to one
+   line with an ellipsis; the full value is in the title= hover tooltip. */
+.files-table tbody td.cell-text,
+.files-table tbody td.cell-access {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .cell-hash {
   display: block;
   font-size: 13px;
@@ -347,6 +381,9 @@
   font-variant-numeric: tabular-nums;
   font-family: ui-monospace, monospace;
   margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .cell-muted { color: var(--text-muted); }
 .cell-size {
@@ -359,7 +396,7 @@
 .cell-actions .btn + .btn { margin-left: var(--space-2); }
 
 .files-table .col-check,
-.files-table .cell-check { width: 1%; text-align: center; padding-right: 0; }
+.files-table .cell-check { width: 2.75rem; text-align: center; padding-right: 0; }
 .cell-check input,
 .col-check input { cursor: pointer; }
 
@@ -421,8 +458,11 @@
 .empty-state .drop-icon { font-size: 40px; }
 .empty-state p { margin-top: var(--space-2); font-size: 14px; }
 
-/* Responsive: collapse the table to cards below 640px. */
-@media (max-width: 640px) {
+/* Responsive: collapse the table to cards below 820px. Collapsing this early
+   keeps the title column wide enough for its hash line — once the fixed size /
+   access / actions columns are subtracted, a narrower viewport squeezes the
+   title cell below the hash width and would clip it. */
+@media (max-width: 820px) {
   .files-table-wrap { border: none; max-height: none; overflow: visible; }
   .files-table thead { display: none; }
   .files-table,
@@ -454,6 +494,13 @@
     flex-shrink: 0;
   }
   .files-table td.cell-title-td::before { align-self: flex-start; }
+  /* In card mode the cells are full-width — let the clipped text wrap fully
+     again instead of ellipsising (table-layout: fixed no longer applies once
+     the table is display: block). */
+  .files-table tbody td.cell-text,
+  .files-table tbody td.cell-access,
+  .cell-title { overflow: visible; text-overflow: clip; white-space: normal; }
+  .cell-title-line { flex-wrap: wrap; }
   .cell-size { text-align: right; }
   .cell-actions { display: block; }
   .cell-actions .btn,
