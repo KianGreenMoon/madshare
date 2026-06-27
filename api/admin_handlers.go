@@ -93,6 +93,7 @@ func (h *handler) adminBulkFiles(w http.ResponseWriter, r *http.Request) {
 		Hashes []string `json:"hashes"`
 		Filter *struct {
 			Q        string `json:"q"`
+			Field    string `json:"field"`
 			ArtistID *int64 `json:"artist_id"`
 			AlbumID  *int64 `json:"album_id"`
 		} `json:"filter"`
@@ -144,6 +145,7 @@ func (h *handler) adminBulkFiles(w http.ResponseWriter, r *http.Request) {
 	} else {
 		filter := database.FileFilter{
 			Q:        strings.TrimSpace(req.Filter.Q),
+			QField:   normalizeQField(req.Filter.Field),
 			ArtistID: req.Filter.ArtistID,
 			AlbumID:  req.Filter.AlbumID,
 		}

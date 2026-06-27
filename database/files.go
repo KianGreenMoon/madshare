@@ -251,12 +251,15 @@ func (db *DB) listFiles(ctx context.Context, where string, args ...any) ([]*File
 // applied). Guest additionally restricts to guest-reachable files (the listing
 // path); the admin bulk path leaves it false. Q is a case-insensitive substring
 // over the fields a row shows (title / artist / album-artist / album / filename);
-// ArtistID / AlbumID pin an entity — an artist matches in EITHER role
-// (album-artist OR performer), mirroring the entity browse.
+// QField scopes that substring to one column group ("artist" / "album" /
+// "title") — empty (or unknown) searches every field, as before. ArtistID /
+// AlbumID pin an entity — an artist matches in EITHER role (album-artist OR
+// performer), mirroring the entity browse.
 // See docs/architecture/file-list-scaling.md.
 type FileFilter struct {
 	Guest    bool
 	Q        string
+	QField   string
 	ArtistID *int64
 	AlbumID  *int64
 }
@@ -289,14 +292,29 @@ func fileFilterWhere(f FileFilter) (string, []any) {
 	}
 	if q := strings.TrimSpace(f.Q); q != "" {
 		like := likeEscaped(q)
-		where += ` AND (
-			unicode_lower(COALESCE(m.title,        '')) LIKE unicode_lower(?) ESCAPE '\' OR
-			unicode_lower(COALESCE(m.artist,       '')) LIKE unicode_lower(?) ESCAPE '\' OR
-			unicode_lower(COALESCE(m.album_artist, '')) LIKE unicode_lower(?) ESCAPE '\' OR
-			unicode_lower(COALESCE(m.album,        '')) LIKE unicode_lower(?) ESCAPE '\' OR
-			EXISTS (SELECT 1 FROM file_uploads u WHERE u.file_id = f.id AND unicode_lower(u.filename) LIKE unicode_lower(?) ESCAPE '\')
-		)`
-		args = append(args, like, like, like, like, like)
+		// col() is a case-insensitive LIKE over one media_metadata column; fnameExists
+		// matches the upload filename. QField scopes which set the term searches; an
+		// empty/unknown field keeps the original "every field" behaviour. Each cond
+		// carries exactly one '?', so one `like` bind per cond, in order.
+		col := func(c string) string {
+			return "unicode_lower(COALESCE(m." + c + ", '')) LIKE unicode_lower(?) ESCAPE '\\'"
+		}
+		const fnameExists = `EXISTS (SELECT 1 FROM file_uploads u WHERE u.file_id = f.id AND unicode_lower(u.filename) LIKE unicode_lower(?) ESCAPE '\')`
+		var conds []string
+		switch f.QField {
+		case "artist":
+			conds = []string{col("artist"), col("album_artist")}
+		case "album":
+			conds = []string{col("album")}
+		case "title":
+			conds = []string{col("title"), fnameExists}
+		default: // "" / unknown → search every field, as before
+			conds = []string{col("title"), col("artist"), col("album_artist"), col("album"), fnameExists}
+		}
+		where += " AND (" + strings.Join(conds, " OR ") + ")"
+		for range conds {
+			args = append(args, like)
+		}
 	}
 	if f.ArtistID != nil {
 		where += " AND (m.album_artist_id = ? OR m.artist_id = ?)"

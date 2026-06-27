@@ -46,9 +46,10 @@ const displayTitle = f => f.title || f.filename || 'this file';
 
 // loadFilesPage backs the All-files component's paged mode: one server page,
 // filtered + sorted, as {total, items} (docs/architecture/file-list-scaling.md).
-async function loadFilesPage({ limit, offset, q, sort }) {
+async function loadFilesPage({ limit, offset, q, field, sort }) {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset), sort: sort || 'created_desc' });
   if (q) params.set('q', q);
+  if (field) params.set('field', field);
   const res = await fetch(`${API}/api/files?${params.toString()}`);
   if (handleAuthError(res)) throw new Error('Your session expired.');
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -123,8 +124,8 @@ async function bulkTrashSelection(hashes) {
   const n = await bulkTrash({ hashes });
   toast(`Moved ${n} ${n === 1 ? 'file' : 'files'} to Trash.`, 'success');
 }
-async function bulkTrashAll({ q }) {
-  const n = await bulkTrash({ filter: { q }, all: !q });
+async function bulkTrashAll({ q, field }) {
+  const n = await bulkTrash({ filter: { q, field }, all: !q });
   toast(`Moved ${n} ${n === 1 ? 'file' : 'files'} to Trash.`, 'success');
 }
 

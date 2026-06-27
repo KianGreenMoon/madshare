@@ -169,6 +169,18 @@ const (
 	fileListMaxLimit     = 500
 )
 
+// normalizeQField allow-lists the search-field scope (the UI's filter-type
+// dropdown). Anything outside the set falls back to "" — search every field —
+// so a stray value can never widen or break the query.
+func normalizeQField(s string) string {
+	switch s {
+	case "artist", "album", "title":
+		return s
+	default:
+		return ""
+	}
+}
+
 func (h *handler) listFiles(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	query := q.Get("q")
@@ -177,8 +189,9 @@ func (h *handler) listFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filter := database.FileFilter{
-		Guest: h.guestListing(r.Context()),
-		Q:     query,
+		Guest:  h.guestListing(r.Context()),
+		Q:      query,
+		QField: normalizeQField(q.Get("field")),
 	}
 	limit := clampInt(q.Get("limit"), fileListDefaultLimit, 0, fileListMaxLimit)
 	offset := clampInt(q.Get("offset"), 0, 0, 1<<30)

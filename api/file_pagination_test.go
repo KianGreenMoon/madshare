@@ -65,6 +65,45 @@ func TestFilesPagination(t *testing.T) {
 	}
 }
 
+// TestFilesFilter_FieldScope verifies the filter-type dropdown's field= param
+// scopes the search term to one column group: "Echo" appears as an artist, an
+// album, and a title on three different files; General matches all three while
+// each field= value matches only its own. An unknown field falls back to General.
+func TestFilesFilter_FieldScope(t *testing.T) {
+	srv, db := newAuthTestServer(t)
+	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
+
+	h := func(n int) string { return fmt.Sprintf("%064d", n) }
+	insertTaggedFile(t, db, h(1), "Echo", "AlbumX", "SongOne")     // artist match
+	insertTaggedFile(t, db, h(2), "ArtistY", "Echo", "SongTwo")    // album match
+	insertTaggedFile(t, db, h(3), "ArtistZ", "AlbumZ", "EchoTune") // title match
+
+	count := func(query string) int {
+		t.Helper()
+		var e fileEnv
+		if code := doJSON(t, admin, http.MethodGet, srv.URL+"/api/files"+query, nil, &e); code != http.StatusOK {
+			t.Fatalf("GET /api/files%s = %d, want 200", query, code)
+		}
+		return e.Total
+	}
+
+	cases := []struct {
+		query string
+		want  int
+	}{
+		{"?q=Echo&limit=50", 3},              // General: every field
+		{"?q=Echo&field=artist&limit=50", 1}, // artist only
+		{"?q=Echo&field=album&limit=50", 1},  // album only
+		{"?q=Echo&field=title&limit=50", 1},  // track name only
+		{"?q=Echo&field=bogus&limit=50", 3},  // unknown → General
+	}
+	for _, c := range cases {
+		if got := count(c.query); got != c.want {
+			t.Errorf("%s: total=%d, want %d", c.query, got, c.want)
+		}
+	}
+}
+
 // TestFilesSort_UntaggedFirst verifies the untagged_first sort floats files with
 // no artist/album-artist tag to the top.
 func TestFilesSort_UntaggedFirst(t *testing.T) {

@@ -152,6 +152,17 @@ export function createFileList(scope) {
     } catch { /* ignore */ }
   }
 
+  // Filter-field scope (the filter-type dropdown): '' = General (every field),
+  // else one of artist / album / title. It narrows what the search box matches —
+  // paged scopes pass it to the server (mirrors fileFilterWhere); non-paged scopes
+  // apply it in visibleFiles(). Persisted globally like the sort/grouping choice.
+  const FIELD_KEY = 'madshare-files-field';
+  let qField = '';
+  try {
+    const fv = localStorage.getItem(FIELD_KEY);
+    if (fv === 'artist' || fv === 'album' || fv === 'title') qField = fv;
+  } catch { /* ignore */ }
+
   let _editor = null, _bulk = null, _cover = null;
 
   // The filter box is a PERSISTENT node, created once. A paged reload rebuilds the
@@ -171,6 +182,12 @@ export function createFileList(scope) {
       else renderContent();
     }, 200);
   });
+
+  // The filter box's placeholder echoes the active field scope, so it's obvious
+  // the term will only match (say) artists. Kept in sync with qField.
+  const FIELD_PLACEHOLDERS = { '': 'Filter…', artist: 'Filter by artist…', album: 'Filter by album…', title: 'Filter by track name…' };
+  function updateSearchPlaceholder() { searchInput.placeholder = FIELD_PLACEHOLDERS[qField] || 'Filter…'; }
+  updateSearchPlaceholder();
 
   const displayTitle = f => f.title || f.filename || 'this file';
 
@@ -201,7 +218,7 @@ export function createFileList(scope) {
         // Filter mode: apply to the whole matching set via the scope's runAll
         // equivalent (it owns its own success toast); else the explicit page set.
         if (paged && selectAllMatching && scope.bulkApplyAll) {
-          await scope.bulkApplyAll({ q: filterText.trim() }, patch);
+          await scope.bulkApplyAll({ q: filterText.trim(), field: qField }, patch);
           clearPageSelection();
           await reload();
           return;
@@ -247,7 +264,7 @@ export function createFileList(scope) {
     if (grouped) gstream.reset();
     render();
     try {
-      const res = await scope.loadPage({ limit: PAGE_SIZE, offset: 0, q: filterText.trim(), sort: grouped ? 'grouped' : sortToken }) || {};
+      const res = await scope.loadPage({ limit: PAGE_SIZE, offset: 0, q: filterText.trim(), field: qField, sort: grouped ? 'grouped' : sortToken }) || {};
       rows = res.items || [];
       total = res.total || 0;
       loadedCount = rows.length;
@@ -262,7 +279,7 @@ export function createFileList(scope) {
   // page, appended to rows. done once the whole filtered total has been fetched.
   async function fetchMorePage() {
     if (loadedCount >= total) return { items: [], done: true };
-    const res = await scope.loadPage({ limit: PAGE_SIZE, offset: loadedCount, q: filterText.trim(), sort: sortToken }) || {};
+    const res = await scope.loadPage({ limit: PAGE_SIZE, offset: loadedCount, q: filterText.trim(), field: qField, sort: sortToken }) || {};
     const items = res.items || [];
     if (typeof res.total === 'number') total = res.total;
     rows = rows.concat(items);
@@ -276,7 +293,7 @@ export function createFileList(scope) {
   async function fetchMoreGrouped() {
     for (;;) {
       if (loadedCount >= total) return { items: gstream.ingest([], true), done: true };
-      const res = await scope.loadPage({ limit: PAGE_SIZE, offset: loadedCount, q: filterText.trim(), sort: 'grouped' }) || {};
+      const res = await scope.loadPage({ limit: PAGE_SIZE, offset: loadedCount, q: filterText.trim(), field: qField, sort: 'grouped' }) || {};
       const items = res.items || [];
       if (typeof res.total === 'number') total = res.total;
       if (!items.length) return { items: gstream.ingest([], true), done: true };
@@ -313,11 +330,23 @@ export function createFileList(scope) {
     const q = filterText.trim().toLowerCase();
     return !q || (s || '').toLowerCase().includes(q);
   }
+  // fieldStrings returns the haystacks the filter searches for a row, scoped by
+  // the active field (qField). The General set mirrors the server's fileFilterWhere
+  // (title / artist / album-artist / album / filename) so paged and in-memory
+  // scopes match identically.
+  function fieldStrings(f) {
+    switch (qField) {
+      case 'artist': return [f.album_artist, f.artist];
+      case 'album':  return [f.album];
+      case 'title':  return [f.title, f.filename];
+      default:       return [f.title, f.artist, f.album_artist, f.album, f.filename];
+    }
+  }
   function visibleFiles() {
     if (paged) return rows;   // the server already filtered this page
     const q = filterText.trim().toLowerCase();
     if (!q) return rows;
-    return rows.filter(f => [f.title, f.artist, f.album, f.filename].filter(Boolean).join(' ').toLowerCase().includes(q));
+    return rows.filter(f => fieldStrings(f).filter(Boolean).join(' ').toLowerCase().includes(q));
   }
   function getVisible() { return visibleFiles(); }
 
@@ -929,6 +958,7 @@ export function createFileList(scope) {
     if (view === 'list') {
       controls.push(sortControl());
       if (scope.artistAlbumSort) controls.push(groupToggle());
+      controls.push(filterFieldControl());
     }
     controls.push(el('div', { class: 'files-search' }, [searchInput]));
     return el('div', { class: 'files-bar' }, [heading, el('div', { class: 'files-bar-controls' }, controls)]);
@@ -996,6 +1026,34 @@ export function createFileList(scope) {
       render();
     });
     return el('div', { class: 'sort-switch', role: 'group', 'aria-label': 'Grouping' }, [b]);
+  }
+
+  // FIELD_OPTIONS are the filter-type scopes (the dropdown). The tokens match the
+  // server's normalizeQField allow-list and the client fieldStrings() switch, so
+  // the same choice drives the paged (server) and in-memory (client) filters.
+  const FIELD_OPTIONS = [['', 'General'], ['artist', 'Artist'], ['album', 'Album'], ['title', 'Track name']];
+
+  // filterFieldControl is the filter-type dropdown beside the search box: it scopes
+  // what the filter term matches (General = every field, or just artist / album /
+  // track name). Changing it re-queries (paged) or re-filters in place (non-paged)
+  // and updates the search placeholder. Persisted across visits like the sort.
+  function filterFieldControl() {
+    const sel = el('select', { class: 'files-sort-select files-field-select', 'aria-label': 'Filter type' });
+    for (const [val, label] of FIELD_OPTIONS) {
+      const o = el('option', { value: val, text: label });
+      if (val === qField) o.selected = true;
+      sel.appendChild(o);
+    }
+    sel.addEventListener('change', () => {
+      qField = sel.value;
+      try { localStorage.setItem(FIELD_KEY, qField); } catch { /* ignore */ }
+      updateSearchPlaceholder();
+      // An empty filter box means the field choice changes nothing yet — but a
+      // re-render is harmless and keeps the control state consistent.
+      if (paged) { clearPageSelection(); reload(); }
+      else renderContent();
+    });
+    return el('div', { class: 'files-filter-field' }, [sel]);
   }
 
   // sortFilesBy returns a sorted COPY of an in-memory row set for a flat token
@@ -1084,7 +1142,7 @@ export function createFileList(scope) {
     if (paged && selectAllMatching) {
       if (!a.runAll) { toast('That action can’t target all matching files yet.', 'error'); return; }
       try {
-        const changed = await a.runAll({ q: filterText.trim() });
+        const changed = await a.runAll({ q: filterText.trim(), field: qField });
         if (changed === false) return;
         clearPageSelection();
         await reload();
