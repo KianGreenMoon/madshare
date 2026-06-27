@@ -290,11 +290,11 @@ func fileFilterWhere(f FileFilter) (string, []any) {
 	if q := strings.TrimSpace(f.Q); q != "" {
 		like := likeEscaped(q)
 		where += ` AND (
-			LOWER(COALESCE(m.title,        '')) LIKE LOWER(?) ESCAPE '\' OR
-			LOWER(COALESCE(m.artist,       '')) LIKE LOWER(?) ESCAPE '\' OR
-			LOWER(COALESCE(m.album_artist, '')) LIKE LOWER(?) ESCAPE '\' OR
-			LOWER(COALESCE(m.album,        '')) LIKE LOWER(?) ESCAPE '\' OR
-			EXISTS (SELECT 1 FROM file_uploads u WHERE u.file_id = f.id AND LOWER(u.filename) LIKE LOWER(?) ESCAPE '\')
+			unicode_lower(COALESCE(m.title,        '')) LIKE unicode_lower(?) ESCAPE '\' OR
+			unicode_lower(COALESCE(m.artist,       '')) LIKE unicode_lower(?) ESCAPE '\' OR
+			unicode_lower(COALESCE(m.album_artist, '')) LIKE unicode_lower(?) ESCAPE '\' OR
+			unicode_lower(COALESCE(m.album,        '')) LIKE unicode_lower(?) ESCAPE '\' OR
+			EXISTS (SELECT 1 FROM file_uploads u WHERE u.file_id = f.id AND unicode_lower(u.filename) LIKE unicode_lower(?) ESCAPE '\')
 		)`
 		args = append(args, like, like, like, like, like)
 	}

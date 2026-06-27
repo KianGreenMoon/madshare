@@ -4,11 +4,28 @@ package database
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"strings"
 
-	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
 )
+
+// unicode_lower folds case the Unicode-aware way (Go's strings.ToLower handles
+// German umlauts and other non-ASCII letters), unlike SQLite's built-in LOWER,
+// which only lowercases ASCII. It is used on both sides of the search LIKE
+// predicates so e.g. searching "über" matches "Über". Registered for every
+// connection opened after this point, hence in init() before any Open.
+func init() {
+	sqlite.MustRegisterDeterministicScalarFunction("unicode_lower", 1,
+		func(ctx *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+			s, ok := args[0].(string)
+			if !ok {
+				return args[0], nil // NULL / non-text: pass through unchanged
+			}
+			return strings.ToLower(s), nil
+		})
+}
 
 // DB is the application's database handle. It wraps *sql.DB so callers
 // can depend on a concrete type with repository methods attached.

@@ -318,7 +318,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 	like := "%" + escaped + "%"
 
 	// ── Artists ──────────────────────────────────────────────────────────────
-	artistWhere := "WHERE " + visibleFile + " AND LOWER(a.name) LIKE LOWER(?) ESCAPE '\\'"
+	artistWhere := "WHERE " + visibleFile + " AND unicode_lower(a.name) LIKE unicode_lower(?) ESCAPE '\\'"
 	artistArgs := []any{like}
 	if filtered {
 		artistWhere += " AND " + accessClause
@@ -355,7 +355,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 	}
 
 	// ── Albums ───────────────────────────────────────────────────────────────
-	albumWhere := "WHERE " + visibleFile + " AND LOWER(al.title) LIKE LOWER(?) ESCAPE '\\'"
+	albumWhere := "WHERE " + visibleFile + " AND unicode_lower(al.title) LIKE unicode_lower(?) ESCAPE '\\'"
 	albumArgs := []any{like}
 	if filtered {
 		albumWhere += " AND " + accessClause
@@ -403,7 +403,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 	// artist_name is the performer (par.name, the track's artist_id entity), not the
 	// album-artist — consistent with the track list and the playlists page.
 	trackWhere := "WHERE " + visibleFile +
-		" AND (LOWER(m.title) LIKE LOWER(?) ESCAPE '\\' OR LOWER(par.name) LIKE LOWER(?) ESCAPE '\\')"
+		" AND (unicode_lower(m.title) LIKE unicode_lower(?) ESCAPE '\\' OR unicode_lower(par.name) LIKE unicode_lower(?) ESCAPE '\\')"
 	trackArgs := []any{like, like}
 	if filtered {
 		trackWhere += " AND " + accessClause

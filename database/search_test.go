@@ -215,6 +215,28 @@ func TestSearch_CaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestSearch_CaseInsensitive_Unicode(t *testing.T) {
+	// SQLite's built-in LOWER only folds ASCII, so non-ASCII letters (German
+	// umlauts here) must match regardless of case via the unicode_lower SQL fn.
+	db := openMem(t)
+	insertSearchFile(t, db, hash64("uni1"), "Über den Wolken", "Reinhard Mey", "Über den Wolken", "Reinhard Mey")
+
+	for _, q := range []string{"über", "ÜBER", "Über", "über den"} {
+		t.Run(q, func(t *testing.T) {
+			res, err := db.Search(context.Background(), q)
+			if err != nil {
+				t.Fatalf("Search(%q): %v", q, err)
+			}
+			if len(res.Tracks) != 1 {
+				t.Errorf("Search(%q) tracks = %d, want 1 (unicode case-insensitive match)", q, len(res.Tracks))
+			}
+			if len(res.Albums) != 1 {
+				t.Errorf("Search(%q) albums = %d, want 1 (unicode case-insensitive match)", q, len(res.Albums))
+			}
+		})
+	}
+}
+
 func TestSearch_SoftDeletedFileExcluded(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
