@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,12 +40,53 @@ var allowedImageExtensions = map[string]string{
 	".png":  "image/png",
 }
 
+type artistItem struct {
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	TrackCount int    `json:"track_count"`
+	HasImage   bool   `json:"has_image"`
+}
+
+func toArtistItem(a *database.ArtistEntry) artistItem {
+	return artistItem{ID: a.ID, Name: a.Name, TrackCount: a.TrackCount, HasImage: a.HasImage}
+}
+
+// listArtists serves GET /api/artists. Without a `limit` query param it returns
+// the full artist list as a bare array (the admin By-entity + cmus views). With
+// `limit` (and an optional opaque `cursor`) it returns a cursor-paginated page
+// `{items, next_cursor}` for the public library's virtualized infinite scroll
+// (docs/architecture/infinite-scroll-virtualization.md).
 func (h *handler) listArtists(w http.ResponseWriter, r *http.Request) {
+	guest := h.guestListing(r.Context())
+	q := r.URL.Query()
+
+	if q.Has("limit") {
+		limit, _ := strconv.Atoi(q.Get("limit"))
+		artists, next, err := h.repo.ListArtistsPage(r.Context(), q.Get("cursor"), limit, guest)
+		if err != nil {
+			http.Error(w, "storage error", http.StatusInternalServerError)
+			return
+		}
+		items := make([]artistItem, 0, len(artists))
+		for _, a := range artists {
+			items = append(items, toArtistItem(a))
+		}
+		var nextCursor *string
+		if next != "" {
+			nextCursor = &next
+		}
+		writeJSON(w, http.StatusOK, struct {
+			Items      []artistItem `json:"items"`
+			NextCursor *string      `json:"next_cursor"`
+		}{items, nextCursor})
+		return
+	}
+
 	var (
 		artists []*database.ArtistEntry
 		err     error
 	)
-	if h.guestListing(r.Context()) {
+	if guest {
 		artists, err = h.repo.ListArtistsGuest(r.Context())
 	} else {
 		artists, err = h.repo.ListArtists(r.Context())
@@ -53,22 +95,9 @@ func (h *handler) listArtists(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-
-	type artistItem struct {
-		ID         int64  `json:"id"`
-		Name       string `json:"name"`
-		TrackCount int    `json:"track_count"`
-		HasImage   bool   `json:"has_image"`
-	}
-
 	items := make([]artistItem, 0, len(artists))
 	for _, a := range artists {
-		items = append(items, artistItem{
-			ID:         a.ID,
-			Name:       a.Name,
-			TrackCount: a.TrackCount,
-			HasImage:   a.HasImage,
-		})
+		items = append(items, toArtistItem(a))
 	}
 	writeJSON(w, http.StatusOK, items)
 }

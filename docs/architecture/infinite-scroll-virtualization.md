@@ -286,13 +286,19 @@ steps (B, L, X) stay future. See "This pass" above for the decisions.
   the numbered pager); the grouped **By artist / album** view returns on the
   windowed list (load the full set, window the slice); Review / Trash / My-uploads
   window their already-loaded sets.
-- **B. Backend (future, public library)** — cursor-paginate `/api/artists` (the
-  unbounded one) + the Unknown/Other bucket paths; clamp `limit`; stable sort keys;
-  guest variants composed.
-- **L. Library (future)** — `app.js` artist grid (and large track buckets via the
-  threshold) on the module.
-- **X. Later (optional)** — cursor-paginate albums/tracks only if a real library
-  shows they need it.
+- **B. Backend — artist list DONE.** `GET /api/artists` is cursor-paginated when a
+  `limit` is given: `{items, next_cursor}`, keyset on `(is_unknown_bucket,
+  lower_name, id)` (`ListArtistsPage`), `limit` clamped to `[1,200]`, guest variant
+  composed; without `limit` it still returns the full bare array (the admin
+  By-entity + cmus consumers, unchanged). The Unknown/Other **album/track** bucket
+  paths are not yet cursor-paginated (still future — see X).
+- **L. Library — artist list DONE.** `app.js` renders the artist list through the
+  module in **window-scroll** mode (the page is the scroller; the slice derives from
+  the sizer's viewport position), infinite-scrolling the cursor pages. The scroller
+  is torn down on drill-away / teardown. Album + track lists per entity render whole
+  (bounded); large Unknown/Other track buckets via a render-only threshold is future.
+- **X. Later (optional)** — cursor-paginate albums/tracks (incl. the large
+  Unknown/Other buckets) only if a real library shows they need it.
 
 ## Testing
 

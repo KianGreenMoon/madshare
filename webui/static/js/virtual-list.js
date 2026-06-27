@@ -124,6 +124,10 @@ export function computeWindow(idx, scrollTop, viewportH, buffer) {
  *   fetchMore       optional async () => { items, done }; called near the tail
  *   prefetchPx      distance from the bottom that triggers fetchMore (default 800)
  *   onAfterRender(firstIndex, lastIndex)  hook after each window paint
+ *   windowScroll    true = the page/window is the scroller (the sizer flows in the
+ *                   document, e.g. the public library); the window slice is derived
+ *                   from sizerEl's position in the viewport. Default false: scrollEl
+ *                   is a fixed-height overflow container (e.g. the admin table).
  *
  * @returns {{ setItems, appendItems, refresh, scrollToTop, getItems, count, destroy }}
  */
@@ -131,7 +135,7 @@ export function createVirtualList(opts) {
   const {
     scrollEl, sizerEl, makeSpacer, renderRow,
     estimateHeight = 44, buffer = 6, fetchMore = null,
-    prefetchPx = 800, onAfterRender = null,
+    prefetchPx = 800, onAfterRender = null, windowScroll = false,
   } = opts;
 
   const estOf = typeof estimateHeight === 'function'
@@ -144,8 +148,18 @@ export function createVirtualList(opts) {
   let fetching = false;
   let rafToken = 0;
   let destroyed = false;
-  let lastWidth = scrollEl ? scrollEl.clientWidth : 0;
   let suppressScroll = false;   // ignore the scroll event from a programmatic anchor
+
+  // Scroll metrics, abstracted over the two modes. In window-scroll mode the
+  // "scrollTop into the list" is how far the sizer's top has gone above the
+  // viewport top (negative getBoundingClientRect top), and the viewport is the
+  // window; the chrome above the list naturally falls out of the arithmetic.
+  function viewportH() { return windowScroll ? window.innerHeight : scrollEl.clientHeight; }
+  function scrollOffset() {
+    return windowScroll ? Math.max(0, -sizerEl.getBoundingClientRect().top) : scrollEl.scrollTop;
+  }
+  function curWidth() { return windowScroll ? window.innerWidth : scrollEl.clientWidth; }
+  let lastWidth = curWidth();
 
   // paint replaces the window in one shot: top spacer, the rendered rows, bottom
   // spacer. New row elements each paint — the window is small, so it's cheap.
@@ -175,13 +189,13 @@ export function createVirtualList(opts) {
   }
 
   function render() {
-    if (destroyed || !scrollEl) return;
-    const vp = scrollEl.clientHeight;
+    if (destroyed || (!scrollEl && !windowScroll)) return;
+    const vp = viewportH();
     // Up to 3 passes: a measurement can shrink/grow rows so the window no longer
     // covers the viewport; re-deriving it from corrected heights fills any gap.
     let win;
     for (let pass = 0; pass < 3; pass++) {
-      win = computeWindow(idx, scrollEl.scrollTop, vp, buffer);
+      win = computeWindow(idx, scrollOffset(), vp, buffer);
       paint(win);
       if (!measure(win)) break;
     }
@@ -196,7 +210,7 @@ export function createVirtualList(opts) {
 
   async function maybeFetch() {
     if (!fetchMore || !hasMore || fetching || destroyed) return;
-    const nearBottom = scrollEl.scrollTop + scrollEl.clientHeight >= idx.total() - prefetchPx;
+    const nearBottom = scrollOffset() + viewportH() >= idx.total() - prefetchPx;
     if (!nearBottom) return;
     fetching = true;
     try {
@@ -224,20 +238,22 @@ export function createVirtualList(opts) {
   // so they re-measure. A height-only change just shows more/fewer rows.
   function onResize() {
     if (destroyed) return;
-    const w = scrollEl.clientWidth;
+    const w = curWidth();
     if (w === 0) return;            // detached (consumer re-inserted the host) — ignore
     if (w !== lastWidth) { lastWidth = w; idx.reset(items.length); }
     scheduleRender();
   }
 
-  const ro = (typeof ResizeObserver !== 'undefined') ? new ResizeObserver(onResize) : null;
+  const ro = (!windowScroll && typeof ResizeObserver !== 'undefined') ? new ResizeObserver(onResize) : null;
 
   // ── public surface ──────────────────────────────────────────────────────────
   function setItems(next, { keepScroll = false } = {}) {
     items = next || [];
     idx.reset(items.length);
     hasMore = !!fetchMore;
-    if (!keepScroll && scrollEl) { suppressScroll = true; scrollEl.scrollTop = 0; }
+    // Reset the scroll position on a fresh data set (filter/sort/new load). In
+    // window-scroll mode we leave the page where it is — the caller owns that.
+    if (!keepScroll && !windowScroll && scrollEl) { suppressScroll = true; scrollEl.scrollTop = 0; }
     render();
   }
   function appendItems(more) {
@@ -247,19 +263,31 @@ export function createVirtualList(opts) {
     render();
   }
   function refresh() { render(); }              // re-paint the current window (data unchanged)
-  function scrollToTop() { if (scrollEl) scrollEl.scrollTop = 0; scheduleRender(); }
+  function scrollToTop() {
+    if (windowScroll) window.scrollTo({ top: 0 });
+    else if (scrollEl) scrollEl.scrollTop = 0;
+    scheduleRender();
+  }
   function getItems() { return items; }
   function count() { return items.length; }
 
   function destroy() {
     destroyed = true;
     if (rafToken) cancelAnimationFrame(rafToken);
-    scrollEl?.removeEventListener('scroll', onScroll);
-    ro?.disconnect();
+    if (windowScroll) {
+      window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onResize);
+    } else {
+      scrollEl?.removeEventListener('scroll', onScroll);
+      ro?.disconnect();
+    }
     if (sizerEl) sizerEl.replaceChildren();
   }
 
-  if (scrollEl) {
+  if (windowScroll) {
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onResize);
+  } else if (scrollEl) {
     scrollEl.addEventListener('scroll', onScroll, { passive: true });
     ro?.observe(scrollEl);
   }

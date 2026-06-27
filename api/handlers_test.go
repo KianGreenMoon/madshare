@@ -597,6 +597,10 @@ func (f *fakeRepo) ListArtistsGuest(_ context.Context) ([]*database.ArtistEntry,
 	return nil, nil
 }
 
+func (f *fakeRepo) ListArtistsPage(_ context.Context, _ string, _ int, _ bool) ([]*database.ArtistEntry, string, error) {
+	return nil, "", nil
+}
+
 func (f *fakeRepo) ListAlbumsByArtistIDGuest(_ context.Context, _ int64) ([]*database.AlbumEntry, error) {
 	return nil, nil
 }

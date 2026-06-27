@@ -3,8 +3,74 @@ package database
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 )
+
+// TestListArtistsPage verifies the cursor-paginated artist listing returns every
+// artist exactly once, in the same order as ListArtists, across page boundaries —
+// including the Unknown-Artist bucket, which must sort last.
+func TestListArtistsPage(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	seed := func(hash, artist string) {
+		t.Helper()
+		f := newFile(hash)
+		meta := &MediaMetadata{Title: "T" + hash, ExtractedAt: 1700000000, Album: sql.NullString{String: "Alb " + artist, Valid: true}}
+		if artist != "" {
+			meta.Artist = sql.NullString{String: artist, Valid: true}
+			meta.AlbumArtist = sql.NullString{String: artist, Valid: true}
+		}
+		if err := db.InsertFile(ctx, f, newUpload(hash+".mp3"), meta); err != nil {
+			t.Fatalf("InsertFile %s: %v", hash, err)
+		}
+	}
+	// Mixed case + an untagged track (→ Unknown Artist bucket, sorts last).
+	names := []string{"Beta", "alpha", "Gamma", "delta", "Echo", "bravo", "Foxtrot"}
+	for i, n := range names {
+		seed(fmt.Sprintf("art%05d", i), n)
+	}
+	seed("art99999", "") // unknown bucket
+
+	full, err := db.ListArtists(ctx)
+	if err != nil {
+		t.Fatalf("ListArtists: %v", err)
+	}
+	var want []int64
+	for _, a := range full {
+		want = append(want, a.ID)
+	}
+
+	// Page through with a small limit; collect ids in arrival order.
+	var got []int64
+	cursor := ""
+	for i := 0; ; i++ {
+		page, next, err := db.ListArtistsPage(ctx, cursor, 3, false)
+		if err != nil {
+			t.Fatalf("ListArtistsPage: %v", err)
+		}
+		for _, a := range page {
+			got = append(got, a.ID)
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+		if i > len(want)+5 {
+			t.Fatalf("paging did not terminate (got %d so far)", len(got))
+		}
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("paged %d artists, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("paged order = %v, want %v (must match ListArtists)", got, want)
+		}
+	}
+}
 
 // TestListTracksByAlbumID_DiscOrdering verifies a multi-disc album returns its
 // tracks ordered by (disc, track) and carries disc_number out for the UI's

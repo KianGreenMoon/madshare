@@ -5,6 +5,7 @@ import { ensureLiked, isLiked, toggleLike, onLikedChange } from './favorites.js'
 import { openRowMenu } from './row-menu.js';
 import { showToast } from './shell.js';
 import { discKey, discLabel, isMultiDisc } from './disc.js';
+import { createVirtualList } from './virtual-list.js';
 
 // Read API base from HTML meta. Empty default => relative, same-origin URLs
 // (the page and API share an origin in the bundled server). A non-empty value
@@ -25,6 +26,21 @@ import { loadDurCache, saveDurCache } from './dur-cache.js';
 // metadata text.
 const drill = { level: 'artists', artist: null, album: null, artistId: null, albumId: null };
 
+// The artist list is the unbounded browse surface, so it's cursor-paginated and
+// virtualized (window-scroll): only on-screen rows live in the DOM and more pages
+// stream in as you scroll (docs/architecture/infinite-scroll-virtualization.md).
+// Albums/tracks per entity are bounded and render whole. artistVList holds the
+// live scroller so navigating away (or re-entering) can tear it down.
+const ARTIST_PAGE_SIZE = 80;
+let artistVList = null;
+function destroyArtistVList() { if (artistVList) { artistVList.destroy(); artistVList = null; } }
+function spacerDiv(px) {
+  const d = document.createElement('div');
+  d.style.height = `${Math.max(0, px)}px`;
+  d.setAttribute('aria-hidden', 'true');
+  return d;
+}
+
 // Fetch and render the top-level artists panel.
 async function loadArtists() {
   drill.level    = 'artists';
@@ -33,14 +49,15 @@ async function loadArtists() {
   drill.artistId = null;
   drill.albumId  = null;
 
+  destroyArtistVList();
   const panel = document.getElementById('libraryPanel');
   panel.innerHTML = '<div class="panel-loading" aria-live="polite" role="status"></div>';
 
-  let artists;
+  let page;
   try {
-    const res = await fetch(`${API}/api/artists`);
+    const res = await fetch(`${API}/api/artists?limit=${ARTIST_PAGE_SIZE}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    artists = await res.json();
+    page = await res.json();   // { items, next_cursor }
   } catch (err) {
     console.error('Failed to load artists:', err);
     panel.innerHTML = '<div class="panel-empty" role="alert">Failed to load library.</div>';
@@ -49,7 +66,7 @@ async function loadArtists() {
 
   if (!active) return; // navigated away while loading
   renderBreadcrumb();
-  renderArtistList(artists);
+  renderArtistList(page);
 }
 
 // Fetch and render the albums panel for a given artist (addressed by id).
@@ -60,6 +77,7 @@ async function drillToAlbums(artistId, artistName) {
   drill.album    = null;
   drill.albumId  = null;
 
+  destroyArtistVList();   // leaving the artists level
   const panel = document.getElementById('libraryPanel');
   panel.innerHTML = '';
 
@@ -88,6 +106,7 @@ async function drillToTracks(albumId, artistId, artistName, albumTitle) {
   drill.album    = albumTitle;
   drill.albumId  = albumId;
 
+  destroyArtistVList();   // can be reached straight from a search hit
   const panel = document.getElementById('libraryPanel');
   panel.innerHTML = '';
 
@@ -320,11 +339,41 @@ function mkHeartBtn(hash) {
   return btn;
 }
 
-// Render a list of artist rows into #libraryPanel.
-function renderArtistList(artists) {
-  const panel = document.getElementById('libraryPanel');
+// buildArtistRow builds one artist row element. Shared by the windowed scroller's
+// renderRow and reused as items scroll into view.
+function buildArtistRow(artist) {
+  const displayName = artist.name || 'Unknown Artist';
+  const count       = artist.track_count ?? 0;
+  const row         = document.createElement('div');
+  row.className     = 'panel-row artist-row';
+  row.tabIndex      = 0;
+  row.setAttribute('role', 'button');
+  row.setAttribute('aria-label', `Browse ${displayName}`);
+  row.innerHTML =
+    `<span class="row-name">${esc(displayName)}</span>` +
+    `<span class="row-meta">${count} track${count !== 1 ? 's' : ''}</span>` +
+    `<span class="row-chevron" aria-hidden="true">›</span>`;
+  row.insertBefore(
+    mkMoreBtn(`More actions for ${displayName}`,
+      btn => quickAddItems(btn, () => entityTracks(artist.id, null, artist.name))),
+    row.querySelector('.row-chevron'));
+  row.addEventListener('click', () => drillToAlbums(artist.id, artist.name));
+  row.addEventListener('keydown', e => {
+    if (e.target !== row) return; // buttons inside the row handle their own keys
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); drillToAlbums(artist.id, artist.name); }
+  });
+  return row;
+}
 
-  if (!artists || artists.length === 0) {
+// Render the artists panel as a virtualized, infinite-scrolling list. `page` is
+// the first { items, next_cursor } response; further pages stream in via the
+// scroller's fetchMore as the window nears the end.
+function renderArtistList(page) {
+  const panel = document.getElementById('libraryPanel');
+  const items = (page && page.items) || [];
+
+  if (items.length === 0) {
+    destroyArtistVList();
     panel.innerHTML =
       `<div class="panel-fade-in"><div class="panel-empty">` +
       `No music yet. <a href="/upload" id="openUploadEmpty">Upload files →</a>` +
@@ -332,36 +381,34 @@ function renderArtistList(artists) {
     return;
   }
 
-  // Build all rows as a fragment for a single DOM write.
+  destroyArtistVList();
   const wrap = document.createElement('div');
   wrap.className = 'panel-fade-in';
-
-  artists.forEach(artist => {
-    const displayName = artist.name || 'Unknown Artist';
-    const count       = artist.track_count ?? 0;
-    const row         = document.createElement('div');
-    row.className     = 'panel-row artist-row';
-    row.tabIndex      = 0;
-    row.setAttribute('role', 'button');
-    row.setAttribute('aria-label', `Browse ${displayName}`);
-    row.innerHTML =
-      `<span class="row-name">${esc(displayName)}</span>` +
-      `<span class="row-meta">${count} track${count !== 1 ? 's' : ''}</span>` +
-      `<span class="row-chevron" aria-hidden="true">›</span>`;
-    row.insertBefore(
-      mkMoreBtn(`More actions for ${displayName}`,
-        btn => quickAddItems(btn, () => entityTracks(artist.id, null, artist.name))),
-      row.querySelector('.row-chevron'));
-    row.addEventListener('click', () => drillToAlbums(artist.id, artist.name));
-    row.addEventListener('keydown', e => {
-      if (e.target !== row) return; // buttons inside the row handle their own keys
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); drillToAlbums(artist.id, artist.name); }
-    });
-    wrap.appendChild(row);
-  });
-
   panel.innerHTML = '';
   panel.appendChild(wrap);
+
+  let cursor = page.next_cursor || null;
+  artistVList = createVirtualList({
+    sizerEl: wrap,
+    windowScroll: true,
+    makeSpacer: spacerDiv,
+    renderRow: buildArtistRow,
+    estimateHeight: 56,         // artist-row height; corrected on measure
+    fetchMore: async () => {
+      if (!cursor) return { items: [], done: true };
+      try {
+        const res = await fetch(`${API}/api/artists?limit=${ARTIST_PAGE_SIZE}&cursor=${encodeURIComponent(cursor)}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const d = await res.json();
+        cursor = d.next_cursor || null;
+        return { items: d.items || [], done: !cursor };
+      } catch (err) {
+        console.error('Failed to load more artists:', err);
+        return { items: [], done: true };
+      }
+    },
+  });
+  artistVList.setItems(items);
 }
 
 // Render a list of album cards into #libraryPanel.
@@ -656,6 +703,9 @@ function showLibraryView() {
   viewLibrary.classList.remove('view-panel--hidden');
   viewSearch.classList.add('view-panel--hidden');
   viewSearch.classList.remove('view-panel--active');
+  // The artist scroller may have rendered against a hidden (zero-rect) sizer while
+  // search was up; re-derive its window for the now-visible scroll position.
+  artistVList?.refresh();
 }
 
 function showSearchView() {
@@ -875,6 +925,7 @@ export function teardown() {
   active = false;
   abort?.abort();
   abort = null;
+  destroyArtistVList();   // drop the window scroll/resize listeners
   if (window.__madshareBack === handleBack) window.__madshareBack = null;
   clearTimeout(searchTimer);
   if (searchAbort) { searchAbort.abort(); searchAbort = null; }

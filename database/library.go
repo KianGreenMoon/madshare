@@ -3,6 +3,8 @@ package database
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -67,6 +69,115 @@ func (db *DB) listArtists(ctx context.Context, guest bool) ([]*ArtistEntry, erro
 		return nil, fmt.Errorf("list artists rows: %w", err)
 	}
 	return out, nil
+}
+
+// ─── Cursor-paginated artist listing (public library infinite scroll) ───────
+// The artist list is the genuinely unbounded browse surface (one row per
+// album-artist), so the public library pages it with a keyset cursor rather than
+// loading every row. Keyset (not offset) is stable while the set changes under
+// an append feed and O(1) at any depth. Design:
+// docs/architecture/infinite-scroll-virtualization.md.
+
+// artistCursor is the opaque keyset position: the last returned row's
+// (unknown-bucket flag, lowercased name, id) — exactly the ORDER BY key.
+type artistCursor struct {
+	Unknown int    `json:"u"`
+	Name    string `json:"n"`
+	ID      int64  `json:"i"`
+}
+
+func encodeArtistCursor(c artistCursor) string {
+	b, _ := json.Marshal(c)
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+func decodeArtistCursor(s string) (artistCursor, bool) {
+	if s == "" {
+		return artistCursor{}, false
+	}
+	b, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return artistCursor{}, false
+	}
+	var c artistCursor
+	if err := json.Unmarshal(b, &c); err != nil {
+		return artistCursor{}, false
+	}
+	return c, true
+}
+
+const artistPageMaxLimit = 200
+
+// ListArtistsPage is the cursor-paginated counterpart of ListArtists. It returns
+// up to `limit` artists after `cursor` (empty = first page), in the same order as
+// ListArtists, plus the cursor for the next page ("" when this page wasn't full,
+// i.e. the end). `guest` applies the reachable-track narrowing. limit is clamped
+// to [1, 200] (default 60).
+func (db *DB) ListArtistsPage(ctx context.Context, cursor string, limit int, guest bool) ([]*ArtistEntry, string, error) {
+	if limit <= 0 {
+		limit = 60
+	}
+	if limit > artistPageMaxLimit {
+		limit = artistPageMaxLimit
+	}
+	unknown := normalizeKey(DefaultArtistName)
+
+	where := "WHERE " + visibleFile
+	if guest {
+		where += " AND " + accessClause
+	}
+	args := []any{unknown} // the SELECT's is_unknown expression
+	if c, ok := decodeArtistCursor(cursor); ok {
+		// Rows strictly after the cursor in (is_unknown, lower_name, id) order.
+		where += ` AND (
+			(a.norm_name = ?) > ?
+			OR ((a.norm_name = ?) = ? AND LOWER(a.name) > ?)
+			OR ((a.norm_name = ?) = ? AND LOWER(a.name) = ? AND a.id > ?)
+		)`
+		args = append(args, unknown, c.Unknown, unknown, c.Unknown, c.Name, unknown, c.Unknown, c.Name, c.ID)
+	}
+	args = append(args, unknown, limit) // ORDER BY key, then LIMIT
+
+	q := `
+		SELECT a.id, a.name, COUNT(*) AS track_count,
+		       CASE WHEN ai.artist_id IS NOT NULL THEN 1 ELSE 0 END AS has_image,
+		       (a.norm_name = ?) AS is_unknown, LOWER(a.name) AS sort_name
+		FROM artists a
+		JOIN media_metadata m ON m.album_artist_id = a.id
+		JOIN files f ON f.id = m.file_id
+		LEFT JOIN artist_images ai ON ai.artist_id = a.id
+		` + where + `
+		GROUP BY a.id
+		ORDER BY a.norm_name = ? ASC, LOWER(a.name) ASC, a.id ASC
+		LIMIT ?`
+
+	rows, err := db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, "", fmt.Errorf("list artists page: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]*ArtistEntry, 0, limit)
+	var last artistCursor
+	for rows.Next() {
+		var e ArtistEntry
+		var hasImage, isUnknown int
+		var sortName string
+		if err := rows.Scan(&e.ID, &e.Name, &e.TrackCount, &hasImage, &isUnknown, &sortName); err != nil {
+			return nil, "", fmt.Errorf("scan artist page entry: %w", err)
+		}
+		e.HasImage = hasImage == 1
+		out = append(out, &e)
+		last = artistCursor{Unknown: isUnknown, Name: sortName, ID: e.ID}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", fmt.Errorf("list artists page rows: %w", err)
+	}
+
+	next := ""
+	if len(out) == limit {
+		next = encodeArtistCursor(last)
+	}
+	return out, next, nil
 }
 
 func (db *DB) ListAlbumsByArtistID(ctx context.Context, artistID int64) ([]*AlbumEntry, error) {

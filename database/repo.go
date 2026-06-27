@@ -46,6 +46,11 @@ type Repository interface {
 	// alphabetically. album_artist is preferred over artist for grouping.
 	ListArtists(ctx context.Context) ([]*ArtistEntry, error)
 
+	// ListArtistsPage is the cursor-paginated ListArtists backing the public
+	// library's infinite scroll: up to `limit` artists after `cursor` in the same
+	// order, plus the next-page cursor ("" = end). guest narrows to reachable.
+	ListArtistsPage(ctx context.Context, cursor string, limit int, guest bool) ([]*ArtistEntry, string, error)
+
 	// ListAlbumsByArtistID returns the albums of one artist, addressed by its
 	// stable surrogate id. Tracks with no album are grouped under Title="" (the
 	// unknown-album entity).
