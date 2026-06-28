@@ -279,28 +279,36 @@ Key proxy concerns (covered in the examples): set `client_max_body_size` ≥
 `storage.max_upload_mb`, and disable response buffering + forward `Range` for
 audio streaming/seeking. See [`contrib/nginx/README.md`](contrib/nginx/README.md).
 
-**Run as a service (systemd).** An example unit is provided at
-[`contrib/systemd/madshare.service`](contrib/systemd/madshare.service). It runs
-Madshare as a dedicated `madshare` system user with `WorkingDirectory=/var/lib/madshare`
-(so the default relative data paths land there), reads config from
-`/etc/madshare/`, takes the first-run admin password from an optional
-`/etc/madshare/madshare.env`, and applies the usual sandboxing directives. The
-file header lists the full setup steps. The file-placement parts are automated
-by `sudo make install` (builds if needed, installs the binary to
-`/usr/local/bin`, seeds `/etc/madshare/{madshare,webui}.toml` without clobbering
-an existing config, and installs the systemd unit when `systemctl` is present —
-overridable via `PREFIX` / `SYSCONFDIR` / `DESTDIR`; see
-[`docs/building.md`](docs/building.md#installing-make-install)). It deliberately
-does **not** create the service user or enable the unit; do those by hand:
+**Run as a service.** Example definitions are provided for both init systems:
+[`contrib/systemd/madshare.service`](contrib/systemd/madshare.service) and
+[`contrib/openrc/`](contrib/openrc/) (`madshare.initd` + `madshare.confd`). Both
+run Madshare as a dedicated `madshare` system user with working directory
+`/var/lib/madshare` (so the default relative data paths land there), read config
+from `/etc/madshare/`, and take the first-run admin password from the
+environment. The file headers list the full setup steps.
+
+The file-placement parts are automated by `sudo make install` (builds if needed,
+installs the binary to `/usr/local/bin`, seeds `/etc/madshare/{madshare,webui}.toml`
+without clobbering an existing config, and — autodetecting the init system —
+installs the systemd unit when `systemctl` is present and/or the OpenRC service
+when `rc-update` is present; overridable via `PREFIX` / `SYSCONFDIR` / `DESTDIR`;
+see [`docs/building.md`](docs/building.md#installing-make-install)). It
+deliberately does **not** create the service user or enable the service; do
+those by hand:
 
 ```bash
-sudo make install                                  # binary + config + unit
+sudo make install                                  # binary + config + service
 sudo useradd --system --home /var/lib/madshare --shell /usr/sbin/nologin madshare
 sudo install -d -o madshare -g madshare /var/lib/madshare
+
+# systemd:
 echo 'MADSHARE_INITIAL_ADMIN_PASSWORD=...' | sudo tee /etc/madshare/madshare.env >/dev/null
 sudo chmod 600 /etc/madshare/madshare.env
-sudo systemctl daemon-reload
-sudo systemctl enable --now madshare
+sudo systemctl daemon-reload && sudo systemctl enable --now madshare
+
+# OpenRC (instead of the systemd lines): export the password in
+# /etc/conf.d/madshare, then:
+sudo rc-update add madshare default && sudo rc-service madshare start
 ```
 
 `make uninstall` reverses the file placement, keeping your live config and data.

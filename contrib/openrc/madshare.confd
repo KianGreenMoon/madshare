@@ -1,0 +1,15 @@
+# /etc/conf.d/madshare — OpenRC settings for the madshare service.
+# Sourced by /etc/init.d/madshare.
+
+# Paths and identity (defaults shown — uncomment to override):
+#madshare_config="/etc/madshare/madshare.toml"
+#madshare_webui_config="/etc/madshare/webui.toml"
+#madshare_user="madshare"
+#madshare_group="madshare"
+#madshare_workdir="/var/lib/madshare"
+#madshare_logdir="/var/log/madshare"
+
+# First-run admin password. Consumed ONLY when the users table is empty (a
+# fresh database) and ignored afterwards. It must be EXPORTED so the daemon
+# inherits it. You can comment it back out after the first successful start.
+#export MADSHARE_INITIAL_ADMIN_PASSWORD="choose-a-strong-password"

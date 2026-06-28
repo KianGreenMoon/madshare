@@ -1,0 +1,59 @@
+#!/sbin/openrc-run
+# Madshare OpenRC service (example). Installed to /etc/init.d/madshare.
+#
+# Setup:
+#   1. Build and install the binary (e.g. `make install`, or by hand):
+#        go build -o /usr/local/bin/madshare ./
+#   2. Create a system user and state directory (syntax varies by distro):
+#        # Gentoo / util-linux:
+#        useradd --system --home-dir /var/lib/madshare --shell /sbin/nologin madshare
+#        # Alpine / busybox:
+#        addgroup -S madshare
+#        adduser -S -D -H -h /var/lib/madshare -s /sbin/nologin -G madshare madshare
+#        install -d -o madshare -g madshare /var/lib/madshare
+#   3. Place config under /etc/madshare/ (madshare.toml, optionally webui.toml).
+#      Data paths in madshare.toml are resolved relative to the working
+#      directory (madshare_workdir below), so the defaults land in
+#      /var/lib/madshare/data.
+#   4. First-run admin password: export it in /etc/conf.d/madshare (see there).
+#   5. Enable and start:
+#        rc-update add madshare default
+#        rc-service madshare start
+#
+# Madshare speaks plain HTTP; put it behind a TLS-terminating reverse proxy
+# (see contrib/nginx/).
+
+name="Madshare media sharing server"
+description="Federated audio/media sharing server"
+
+: "${madshare_config:=/etc/madshare/madshare.toml}"
+: "${madshare_webui_config:=/etc/madshare/webui.toml}"
+: "${madshare_user:=madshare}"
+: "${madshare_group:=madshare}"
+: "${madshare_workdir:=/var/lib/madshare}"
+: "${madshare_logdir:=/var/log/madshare}"
+
+command="/usr/local/bin/madshare"
+command_args="-config ${madshare_config} -webui-config ${madshare_webui_config}"
+command_user="${madshare_user}:${madshare_group}"
+directory="${madshare_workdir}"
+pidfile="/run/${RC_SVCNAME}.pid"
+
+# Built-in supervisor: restart on unexpected exit (parity with the systemd
+# unit's Restart=on-failure / RestartSec=5s). Requires OpenRC >= 0.21.
+supervisor="supervise-daemon"
+respawn_delay=5
+
+output_log="${madshare_logdir}/madshare.log"
+error_log="${madshare_logdir}/madshare.log"
+
+depend() {
+	need net
+	use dns logger
+	after firewall
+}
+
+start_pre() {
+	checkpath --directory --owner "${madshare_user}:${madshare_group}" --mode 0750 \
+		"${madshare_workdir}" "${madshare_logdir}"
+}

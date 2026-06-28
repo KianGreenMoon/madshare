@@ -118,10 +118,21 @@ It will:
 - create `$(CONFDIR)` (`/etc/madshare`) and copy `madshare.toml.example` /
   `webui.toml.example` there, then seed the live `madshare.toml` / `webui.toml`
   from them **only if absent** — re-running never clobbers an edited config;
-- when `systemctl` is on `PATH` (or `DESTDIR` is set), install
-  [`contrib/systemd/madshare.service`](../contrib/systemd/madshare.service) to
-  `$(SYSTEMD_UNIT_DIR)` (`/etc/systemd/system`), rewriting its `/usr/local/bin`
-  and `/etc/madshare` paths to match `BINDIR` / `CONFDIR`.
+- install a service definition for the detected init system, with its
+  `/usr/local/bin` and `/etc/madshare` paths rewritten to match `BINDIR` /
+  `CONFDIR`:
+  - **systemd** (when `systemctl` is on `PATH`, or `DESTDIR` is set) —
+    [`contrib/systemd/madshare.service`](../contrib/systemd/madshare.service) to
+    `$(SYSTEMD_UNIT_DIR)` (`/etc/systemd/system`);
+  - **OpenRC** (when `rc-update` is on `PATH`, or `DESTDIR` is set) —
+    [`contrib/openrc/madshare.initd`](../contrib/openrc/madshare.initd) to
+    `$(OPENRC_INITD_DIR)/madshare` (`/etc/init.d`, mode `0755`) plus a
+    no-clobber [`madshare.confd`](../contrib/openrc/madshare.confd) seeded to
+    `$(OPENRC_CONFD_DIR)/madshare` (`/etc/conf.d`). The init script uses
+    `supervise-daemon` for restart-on-failure parity with the systemd unit.
+
+  Both can be installed at once (e.g. under `DESTDIR` for a package that
+  targets both); on a real host only the one whose tool is present fires.
 
 It intentionally does **not** create the `madshare` service user, write the
 admin-password env file, or `daemon-reload`/`enable` the unit — those need root
@@ -136,7 +147,9 @@ Overridable variables (GNU-style, plus `DESTDIR` for staged/packaging installs):
 | `BINDIR` | `$(PREFIX)/bin` | where the binary lands |
 | `SYSCONFDIR` | `/etc` | config root; `CONFDIR` derives as `$(SYSCONFDIR)/madshare` |
 | `CONFDIR` | `$(SYSCONFDIR)/madshare` | config directory |
-| `SYSTEMD_UNIT_DIR` | `/etc/systemd/system` | unit destination |
+| `SYSTEMD_UNIT_DIR` | `/etc/systemd/system` | systemd unit destination |
+| `OPENRC_INITD_DIR` | `/etc/init.d` | OpenRC init-script destination |
+| `OPENRC_CONFD_DIR` | `/etc/conf.d` | OpenRC conf.d destination |
 | `DESTDIR` | *(empty)* | staging prefix prepended to every path |
 | `INSTALL` | `install` | the install(1) program |
 
