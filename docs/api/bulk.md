@@ -1,0 +1,305 @@
+# Bulk Operations API
+
+Acting on **many files at once** from the scope-driven file lists (`file-list.js`):
+the admin library and Trash views, the moderation queue, and the uploader's own
+staging tab. Each surface has a bulk toolbar that operates over either a
+**hand-picked selection** or the whole **"Select all N matching"** set, and posts
+to one of the four endpoints below.
+
+There are four bulk endpoints, one per surface:
+
+| Endpoint | Surface | Actions | Gate |
+|----------|---------|---------|------|
+| `POST /api/admin/files/bulk` | live library (`/admin/library`) | `trash`, `edit` | `file.delete` **or** `metadata.edit` (per action) |
+| `POST /api/admin/trash/bulk` | Trash (`/admin/library#trash`) | `restore`, `delete`, `edit` | `file.delete` **or** `metadata.edit` (per action) |
+| `POST /api/admin/moderation/bulk` | review queue (`/admin/library#review`) | `approve`, `return`, `discard` | `content.moderate` (`discard` also needs `file.delete`) |
+| `POST /api/my/uploads/bulk` | "My uploads" staging tab | `submit`, `remove` | `file.upload` (owner-scoped) |
+
+All four share the same **target-set resolution** and **guardrail** described
+next; the differences are which actions they accept and which set the filter
+resolves to. The concept lives in `docs/architecture/file-list-scaling.md`; this
+page is the request/response reference.
+
+---
+
+## Common concepts
+
+### Target set: `hashes` **xor** `filter`
+
+Every bulk request names its target set in exactly **one** of two ways
+(supplying both, or neither, is a `400`):
+
+- **`hashes`** — an explicit array of content hashes (a hand-picked selection).
+  Each must be 64 lowercase hex chars. The list is capped at **5000** entries
+  (`bulkHashCap`) to bound the request body; over the cap is a `400`.
+- **`filter`** — an object the server resolves to the matching set on its side
+  (the "Select all N matching" path). No cap — it is a server-side `WHERE`.
+
+```json
+"filter": { "q": "beatles", "field": "artist" }
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `q` | string | The search term (same matching the listing's filter box uses). Max 200 chars. |
+| `field` | string | Narrows what `q` matches: `artist`, `album`, or `title`. Empty / omitted / any other value = **General** (every field). |
+
+`POST /api/admin/files/bulk` additionally accepts `artist_id` / `album_id` in the
+filter (the By-entity delete-album / delete-artist path); the other three resolve
+on `q` + `field` only.
+
+The filter resolves only to the rows that surface actually owns: live
+(non-deleted) files for `files/bulk`, trashed files for `trash/bulk`, **submitted**
+rows for `moderation/bulk`, and the caller's own **draft + returned** files for
+`my/uploads/bulk`.
+
+### The empty-filter guardrail (`all`)
+
+A blank `filter.q` (with no `artist_id`/`album_id`) means **"everything in this
+surface"**. That is refused with a `400` unless the request also sets
+`"all": true` — the explicit confirmation the UI pairs with a strong "act on all
+N" dialog. It prevents an accidental trash-the-whole-library. `all` has no effect
+in `hashes` mode or when the filter term is non-empty.
+
+### Per-action authorization
+
+The `files/bulk` and `trash/bulk` routes admit **either** `file.delete` **or**
+`metadata.edit`, and the handler enforces the gate the chosen action actually
+needs (destructive actions → `file.delete`; `edit` → `metadata.edit`). A caller
+holding only one capability is `403` for actions requiring the other. The
+`moderation/bulk` route requires `content.moderate` outright, with `discard`
+additionally requiring `file.delete` (it is a soft delete). `my/uploads/bulk` is
+owner-scoped under `file.upload`. Gating is a pass-through only when auth is not
+configured.
+
+### Body cap
+
+Each request body is capped at **1 MiB** (a 5000-hash list is well under it).
+
+---
+
+## `POST /api/admin/files/bulk`
+
+Acts over the **live library**. Backs the admin library bulk toolbar.
+
+### Request
+
+```json
+{
+  "action": "trash" | "edit",
+  "hashes": ["…", "…"],
+  "filter": { "q": "beatles", "field": "artist", "artist_id": 12, "album_id": 4 },
+  "all": false,
+  "patch": { "artist": "…", "license": "…", "guest": true }
+}
+```
+
+| `action` | Effect | Permission |
+|----------|--------|------------|
+| `trash` | Soft-delete (move to Trash) the resolved set. One batched `BulkSoftDeleteByHashes` transaction + a single `file.bulk_trash` audit row. | `file.delete` |
+| `edit` | Apply `patch` (tags + access) across the set — see [The edit patch](#the-edit-patch). | `metadata.edit` |
+
+### Response
+
+- `trash`: `{ "ok": true, "affected": 1412 }` (`affected` = rows actually moved).
+- `edit`: `{ "ok": true, "affected": 1408, "failed": [{ "hash": "…", "error": "…" }] }`
+  — the edit path applies per file and reports any individual failures (see
+  [The edit patch](#the-edit-patch)).
+
+---
+
+## `POST /api/admin/trash/bulk`
+
+Acts over the **Trash** (soft-deleted) bucket. The filter resolves over
+`deleted_at IS NOT NULL` (`field` may be `artist`/`album`/`title`; no
+`artist_id`/`album_id`).
+
+### Request
+
+```json
+{
+  "action": "restore" | "delete" | "edit",
+  "hashes": ["…"],
+  "filter": { "q": "", "field": "" },
+  "all": true,
+  "patch": { "title": "…" }
+}
+```
+
+| `action` | Effect | Permission |
+|----------|--------|------------|
+| `restore` | Un-delete the resolved set (re-enters its prior review state). One batched `BulkRestoreByHashes` transaction + one `file.bulk_restore` audit row. | `file.delete` |
+| `delete` | **Permanently** delete (DB rows in one batched transaction; blobs reclaimed storage-aware after commit, a failure only orphans bytes for prune to reconcile). One `file.bulk_delete` audit row. | `file.delete` |
+| `edit` | Apply `patch` across the trashed set — same as the library `edit` above. | `metadata.edit` |
+
+### Response
+
+`restore` / `delete`: `{ "ok": true, "affected": N }`. `edit`:
+`{ "ok": true, "affected": N, "failed": [...] }` (same shape as the library edit).
+
+> Restore and permanent-delete were originally per-row loops (two write
+> transactions each) and produced `SQLITE_BUSY` under load over large
+> "select all matching" sets; both are now single batched transactions. See
+> `.issues/open-issues.md` → "Bulk write paths / SQLITE_BUSY".
+
+---
+
+## `POST /api/admin/moderation/bulk`
+
+Acts over the **review queue**. The filter resolves to **submitted** rows only
+(returned files are deliberately excluded from bulk selection so a bulk approve
+right after a return cannot republish them — see
+`docs/architecture/moderation.md`).
+
+### Request
+
+```json
+{
+  "action": "approve" | "return" | "discard",
+  "hashes": ["…"],
+  "filter": { "q": "", "field": "" },
+  "all": true,
+  "note": "Please fix the album tag."
+}
+```
+
+| `action` | Effect | Permission |
+|----------|--------|------------|
+| `approve` | Publish the submitted rows into the library. | `content.moderate` |
+| `return` | Send back to the uploader with a **required** `note` (1–1000 bytes). | `content.moderate` |
+| `discard` | Soft-delete to Trash. | `content.moderate` **and** `file.delete` |
+
+Loops the same guarded per-row transitions the single-hash endpoints
+(`…/{hash}/approve`, `…/{hash}/return`) use, so the from-state guards are
+identical. Returns `{ "ok": true, "affected": N }`.
+
+---
+
+## `POST /api/my/uploads/bulk`
+
+Acts over the **caller's own staged files** (`draft` + `returned`; a `submitted`
+file can't be withdrawn). Owner-scoped — a hash the caller doesn't own is simply
+not found (counts toward neither `affected` nor an error).
+
+### Request
+
+```json
+{
+  "action": "submit" | "remove",
+  "hashes": ["…"],
+  "filter": { "q": "", "field": "" },
+  "all": true
+}
+```
+
+| `action` | Effect |
+|----------|--------|
+| `submit` | Send to approval. Shares the `/api/my/uploads/submit` semantics: a `content.moderate` holder **self-approves** their own non-duplicate submissions, but a **duplicate-flagged** one always goes to the queue for a human look (recordings P3). |
+| `remove` | Discard the staged file to Trash (the owner-scoped soft delete). |
+
+### Response
+
+- `submit`: `{ "ok": true, "submitted": N, "approved": <bool>, "flagged": M }`.
+  `approved` is true only when the caller can self-approve **and** nothing was
+  flagged. When `flagged > 0`, a `warning` string is added (explaining, for a
+  moderator, why self-approve was withheld; for a regular uploader, that a
+  moderator will look).
+- `remove`: `{ "ok": true, "removed": N }`.
+
+---
+
+## The edit patch
+
+`action: "edit"` (on `files/bulk` and `trash/bulk`) carries a `patch` object
+applied to **every** file in the resolved set. It is the same change-only,
+never-clear contract as the per-file tag editor: **only the keys present are
+written**; an absent key leaves that column untouched across the whole selection
+(so a value the selection disagrees on is left alone). At least one tag or access
+field must be present, else `400 "nothing to update"`.
+
+```json
+"patch": {
+  "title": "…", "album": "…", "album_artist": "…", "artist": "…",
+  "genre": "…", "composer": "…", "comment": "…",
+  "track_number": "3", "track_total": "12", "disc_number": "1", "year": "1991",
+  "license": "CC-BY-4.0",
+  "guest": true
+}
+```
+
+- **Tag fields** — the same set the per-file `PATCH /api/files/{hash}/metadata`
+  accepts (numeric fields carried as strings; see `docs/api/metadata.md`). The
+  four base tags re-resolve each file's artist/album entity FKs, so a bulk
+  `album_artist`/`album` edit **reclassifies** every file in the set into that
+  album.
+- **`license`** (string) / **`guest`** (bool) — the access fields, mirroring the
+  per-file access endpoints. They need the content-access store wired; if it is
+  not, an access-bearing patch is `400 "access editing unavailable"`. `license`
+  is applied before `guest` (an explicit `guest` wins over any license
+  auto-derive).
+
+Because the edit re-resolves entities per file, it applies one file at a time and
+can **partially** succeed: the response is
+`{ "ok": true, "affected": N, "failed": [{ "hash": "…", "error": "…" }] }`, and a
+single `metadata.bulk_edit` summary audit row records the count. (Tags don't
+clear when absent, so a "set the album for these 40 tracks" edit leaves their
+differing titles intact.)
+
+---
+
+## Error responses (all four endpoints)
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Malformed JSON; unknown `action`; both/neither of `hashes`/`filter`; an invalid hash or over-cap hash list; `q` over 200 chars; empty filter without `"all": true`; `edit` with an empty patch or an access field with no access store; `return` with a missing/over-long `note`. |
+| 401 | Anonymous request (auth configured) — `my/uploads/bulk`. |
+| 403 | Authenticated but missing the action's permission. |
+| 500 | Storage or database error. |
+
+On success every endpoint returns `200` with `"ok": true` and an action-specific
+count (`affected` / `removed` / `submitted`).
+
+---
+
+## Examples
+
+```bash
+# Move every file matching "bootleg" to Trash (admin library)
+curl -X POST -H "Content-Type: application/json" -b cookies.txt \
+  -d '{"action":"trash","filter":{"q":"bootleg"}}' \
+  "http://localhost:3000/api/admin/files/bulk"
+
+# Set the album-artist on a hand-picked selection (reclassifies them)
+curl -X POST -H "Content-Type: application/json" -b cookies.txt \
+  -d '{"action":"edit","hashes":["<h1>","<h2>"],"patch":{"album_artist":"Nirvana"}}' \
+  "http://localhost:3000/api/admin/files/bulk"
+
+# Restore everything in Trash (the whole-set guardrail)
+curl -X POST -H "Content-Type: application/json" -b cookies.txt \
+  -d '{"action":"restore","filter":{"q":""},"all":true}' \
+  "http://localhost:3000/api/admin/trash/bulk"
+
+# Approve all submitted files matching a filter (moderation)
+curl -X POST -H "Content-Type: application/json" -b cookies.txt \
+  -d '{"action":"approve","filter":{"q":"live at"}}' \
+  "http://localhost:3000/api/admin/moderation/bulk"
+
+# Send all of my staged files for review
+curl -X POST -H "Content-Type: application/json" -b cookies.txt \
+  -d '{"action":"submit","filter":{"q":""},"all":true}' \
+  "http://localhost:3000/api/my/uploads/bulk"
+```
+
+---
+
+## See also
+
+- `docs/api/metadata.md` — the per-file `PATCH …/metadata` the `edit` patch
+  mirrors (tag fields, presence semantics, entity reclassification).
+- `docs/architecture/file-list-scaling.md` — server-side paging, the
+  "Select all N matching" selection model, and the transactional batch design.
+- `docs/architecture/moderation.md` — the review/staging flow `moderation/bulk`
+  and `my/uploads/bulk` act on (why returned files are excluded, self-approve,
+  duplicate-flagging).
+- `docs/architecture/file-management-view.md` — the shared scope-driven file list
+  whose bulk toolbar drives these endpoints.

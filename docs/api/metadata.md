@@ -280,3 +280,5 @@ curl -X POST -H "Content-Type: application/json" \
 - `docs/architecture/file-management-view.md` — the shared file-list view and the
   **bulk** tag editor (this same PATCH applied across a selection; shared values
   pre-filled, only changed fields written, base + extended tags).
+- `docs/api/bulk.md` — the bulk endpoints that apply this patch (and trash /
+  restore / moderation / staging actions) across a selection or a whole filter.
