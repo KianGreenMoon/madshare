@@ -180,10 +180,14 @@ func (h *handler) adminBulkFiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
 }
 
-// bulkEditFiles applies a tag/access patch across the resolved hash set, one
-// file at a time, and reports the count plus any per-file failures. Tags go
-// through the repository; access (license/guest) through the content-access
-// store, so an access edit needs h.manage to be wired.
+// bulkEditFiles applies a tag/access patch across the resolved hash set and
+// reports the count plus any per-file failures. Tags go through the repository's
+// batched BulkUpdateFileMetadata (one transaction per chunk — the per-file entity
+// re-resolution can't collapse to a single UPDATE, but the transactions can);
+// access (license/guest) carries one value for the whole set, so it collapses to
+// a single guarded UPDATE through the content-access store, which an access edit
+// needs h.manage to be wired for. License is applied before guest so an explicit
+// guest wins over any license auto-derive.
 func (h *handler) bulkEditFiles(w http.ResponseWriter, r *http.Request, hashes []string, patch *bulkEditPatch) {
 	tags := patch != nil && patch.hasTags()
 	access := patch.hasAccess()
@@ -200,45 +204,54 @@ func (h *handler) bulkEditFiles(w http.ResponseWriter, r *http.Request, hashes [
 		return
 	}
 
-	mp := database.MetadataPatch{
-		Title: patch.Title, Album: patch.Album, AlbumArtist: patch.AlbumArtist, Artist: patch.Artist,
-		Genre: patch.Genre, Composer: patch.Composer, Comment: patch.Comment,
-		TrackNumber: patch.TrackNumber, TrackTotal: patch.TrackTotal, DiscNumber: patch.DiscNumber, Year: patch.Year,
-	}
-	affected := 0
 	failed := make([]map[string]string, 0)
-	for _, hsh := range hashes {
-		err := h.applyOneBulkEdit(r.Context(), hsh, mp, tags, access, patch)
-		if err != nil {
-			failed = append(failed, map[string]string{"hash": hsh, "error": err.Error()})
-			continue
+	affected := 0
+	if tags {
+		mp := database.MetadataPatch{
+			Title: patch.Title, Album: patch.Album, AlbumArtist: patch.AlbumArtist, Artist: patch.Artist,
+			Genre: patch.Genre, Composer: patch.Composer, Comment: patch.Comment,
+			TrackNumber: patch.TrackNumber, TrackTotal: patch.TrackTotal, DiscNumber: patch.DiscNumber, Year: patch.Year,
 		}
-		affected++
+		n, notFound, err := h.repo.BulkUpdateFileMetadata(r.Context(), hashes, mp)
+		if errors.Is(err, database.ErrInvalidMetadata) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+			return
+		}
+		affected = n
+		for _, hsh := range notFound {
+			failed = append(failed, map[string]string{"hash": hsh, "error": database.ErrFileNotFound.Error()})
+		}
+	}
+	if access {
+		var accN int
+		if patch.License != nil {
+			n, err := h.manage.BulkSetLicense(r.Context(), hashes, *patch.License)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+				return
+			}
+			accN = n
+		}
+		if patch.Guest != nil {
+			n, err := h.manage.BulkSetGuestPlayable(r.Context(), hashes, *patch.Guest)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+				return
+			}
+			accN = n
+		}
+		// When only access changed, the affected count is the rows the access
+		// UPDATE matched (tag-mode already reports the metadata rows updated).
+		if !tags {
+			affected = accN
+		}
 	}
 	h.audit(r.Context(), "metadata.bulk_edit", "files", fmt.Sprintf("%d updated", affected))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected, "failed": failed})
-}
-
-// applyOneBulkEdit writes the patch to a single file: tags first (re-resolving
-// its artist/album entities), then license, then guest — license before guest so
-// an explicit guest wins over any license auto-derive (the per-file order).
-func (h *handler) applyOneBulkEdit(ctx context.Context, hash string, mp database.MetadataPatch, tags, access bool, patch *bulkEditPatch) error {
-	if tags {
-		if _, err := h.repo.UpdateFileMetadata(ctx, hash, mp); err != nil {
-			return err
-		}
-	}
-	if access && patch.License != nil {
-		if _, err := h.manage.SetLicense(ctx, hash, *patch.License); err != nil {
-			return err
-		}
-	}
-	if access && patch.Guest != nil {
-		if _, err := h.manage.SetGuestPlayable(ctx, hash, *patch.Guest); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // adminTrashList handles GET /api/admin/trash — soft-deleted files, paged +

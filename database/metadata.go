@@ -68,15 +68,67 @@ func (db *DB) UpdateFileMetadata(ctx context.Context, hash string, p MetadataPat
 	}
 	defer tx.Rollback()
 
-	// Resolve the file id first so an unknown hash is a clean ErrFileNotFound
-	// even for an empty patch (where no UPDATE would otherwise run).
+	fileID, err := applyMetadataPatchTx(ctx, tx, hash, p)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("update metadata: commit: %w", err)
+	}
+	return db.getMetadataByFileID(ctx, fileID)
+}
+
+// BulkUpdateFileMetadata applies the same patch to every hash, sharing a
+// transaction across a chunk of files instead of opening one (or three) per file
+// — the metadata write genuinely re-resolves each file's artist/album entities so
+// it can't collapse to a single UPDATE, but batching the transactions cuts the
+// write-lock-acquire count that made the per-file loop a SQLITE_BUSY source over
+// the "select all matching" scope. Returns the number of rows updated and the
+// hashes that matched no file (skipped, not fatal — mirrors the per-file
+// ErrFileNotFound the handler reported as a per-row failure). A patch-level error
+// (e.g. ErrInvalidMetadata, identical for every file) or a real storage error
+// aborts the current chunk and is returned.
+func (db *DB) BulkUpdateFileMetadata(ctx context.Context, hashes []string, p MetadataPatch) (affected int, notFound []string, err error) {
+	const chunk = 500 // bound how long one transaction holds the write lock
+	for i := 0; i < len(hashes); i += chunk {
+		end := i + chunk
+		if end > len(hashes) {
+			end = len(hashes)
+		}
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return affected, notFound, fmt.Errorf("update metadata: begin: %w", err)
+		}
+		for _, hash := range hashes[i:end] {
+			if _, e := applyMetadataPatchTx(ctx, tx, hash, p); e != nil {
+				if errors.Is(e, ErrFileNotFound) {
+					notFound = append(notFound, hash)
+					continue
+				}
+				tx.Rollback()
+				return affected, notFound, e
+			}
+			affected++
+		}
+		if e := tx.Commit(); e != nil {
+			return affected, notFound, fmt.Errorf("update metadata: commit: %w", e)
+		}
+	}
+	return affected, notFound, nil
+}
+
+// applyMetadataPatchTx writes one file's patch within tx (no commit), returning
+// the file id. It resolves the file id first so an unknown hash is a clean
+// ErrFileNotFound even for an empty patch, then writes the supplied fields and —
+// when an identity field changed — re-resolves the artist/album entity FKs.
+func applyMetadataPatchTx(ctx context.Context, tx *sql.Tx, hash string, p MetadataPatch) (int64, error) {
 	var fileID int64
-	err = tx.QueryRowContext(ctx, `SELECT id FROM files WHERE hash = ?`, hash).Scan(&fileID)
+	err := tx.QueryRowContext(ctx, `SELECT id FROM files WHERE hash = ?`, hash).Scan(&fileID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrFileNotFound
+		return 0, ErrFileNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("update metadata: lookup file: %w", err)
+		return 0, fmt.Errorf("update metadata: lookup file: %w", err)
 	}
 
 	if !p.IsEmpty() {
@@ -90,7 +142,7 @@ func (db *DB) UpdateFileMetadata(ctx context.Context, hash string, p MetadataPat
 			if strings.TrimSpace(title) == "" {
 				fn, err := firstFilenameTx(ctx, tx, fileID)
 				if err != nil {
-					return nil, err
+					return 0, err
 				}
 				title = titleFromFilename(fn)
 			}
@@ -137,7 +189,7 @@ func (db *DB) UpdateFileMetadata(ctx context.Context, hash string, p MetadataPat
 			}
 			n, err := metaNullInt(*nf.val)
 			if err != nil {
-				return nil, fmt.Errorf("update metadata: %s: %w", nf.col, err)
+				return 0, fmt.Errorf("update metadata: %s: %w", nf.col, err)
 			}
 			sets = append(sets, nf.col+" = ?")
 			args = append(args, n)
@@ -147,7 +199,7 @@ func (db *DB) UpdateFileMetadata(ctx context.Context, hash string, p MetadataPat
 			`UPDATE media_metadata SET `+strings.Join(sets, ", ")+` WHERE file_id = ?`,
 			args...,
 		); err != nil {
-			return nil, fmt.Errorf("update metadata: %w", err)
+			return 0, fmt.Errorf("update metadata: %w", err)
 		}
 
 		// Re-resolve entities only when an identity-affecting field changed.
@@ -159,7 +211,7 @@ func (db *DB) UpdateFileMetadata(ctx context.Context, hash string, p MetadataPat
 				`SELECT artist, album_artist, album, year FROM media_metadata WHERE file_id = ?`,
 				fileID,
 			).Scan(&artist, &albumArtist, &album, &year); err != nil {
-				return nil, fmt.Errorf("update metadata: reload tags: %w", err)
+				return 0, fmt.Errorf("update metadata: reload tags: %w", err)
 			}
 			t = AlbumArtistTags{
 				Artist:      artist.String,
@@ -169,21 +221,18 @@ func (db *DB) UpdateFileMetadata(ctx context.Context, hash string, p MetadataPat
 			}
 			albumArtistID, trackArtistID, albumID, err := resolveAlbumArtistTx(ctx, tx, t)
 			if err != nil {
-				return nil, fmt.Errorf("update metadata: resolve entities: %w", err)
+				return 0, fmt.Errorf("update metadata: resolve entities: %w", err)
 			}
 			if _, err := tx.ExecContext(ctx,
 				`UPDATE media_metadata SET album_artist_id = ?, artist_id = ?, album_id = ? WHERE file_id = ?`,
 				albumArtistID, trackArtistID, albumID, fileID,
 			); err != nil {
-				return nil, fmt.Errorf("update metadata: set entity fks: %w", err)
+				return 0, fmt.Errorf("update metadata: set entity fks: %w", err)
 			}
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("update metadata: commit: %w", err)
-	}
-	return db.getMetadataByFileID(ctx, fileID)
+	return fileID, nil
 }
 
 // getMetadataByFileID loads the full media_metadata row for a file id.

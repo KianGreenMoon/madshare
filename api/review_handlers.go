@@ -262,7 +262,7 @@ func (h *handler) submitMyUploads(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	submitted, _, flagged, results, err := h.submitStaged(r.Context(), id, hashes)
+	submitted, flagged, err := h.submitStaged(r.Context(), id, hashes)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -275,7 +275,6 @@ func (h *handler) submitMyUploads(w http.ResponseWriter, r *http.Request) {
 		// duplicate — i.e. everything actually reached the library.
 		"approved": canSelfApprove && flagged == 0,
 		"flagged":  flagged,
-		"results":  results,
 	}
 	if flagged > 0 {
 		resp["warning"] = duplicateWarning(flagged, canSelfApprove)
@@ -283,59 +282,68 @@ func (h *handler) submitMyUploads(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// submitResult is the per-hash outcome of a submit (ok=false when the hash was
-// not the caller's editable file). Surfaced by the single /submit endpoint.
-type submitResult struct {
-	Hash string `json:"hash"`
-	OK   bool   `json:"ok"`
-}
-
 // submitStaged applies the "send to approval" transition to a set of the
-// caller's already-validated staged hashes, returning aggregate counts and
-// per-hash results. content.moderate holders self-approve their own submissions
-// — except a duplicate-flagged one, which always goes to the queue for a human
-// look (recordings P3, docs/architecture/recordings.md). Shared by the single
-// /submit endpoint and the /bulk submit action so their semantics stay identical.
-func (h *handler) submitStaged(ctx context.Context, id *auth.Identity, hashes []string) (submitted, approved, flagged int, results []submitResult, err error) {
+// caller's staged hashes, returning the totals: submitted (rows that actually
+// transitioned, queued or self-approved) and flagged (duplicate-flagged rows
+// among them). content.moderate holders self-approve their own submissions —
+// except a duplicate-flagged one, which always goes to the queue for a human look
+// (recordings P3, docs/architecture/recordings.md). Shared by the single /submit
+// endpoint and the /bulk submit action so their semantics stay identical.
+//
+// The files are partitioned by the per-file duplicate check into buckets that
+// share a transition, and each bucket is one batched UPDATE + one summary audit
+// row — instead of an UPDATE plus an audit INSERT per hash, which was a
+// SQLITE_BUSY source over the "select all matching" scope. The dup check is a
+// read (no write lock), so looping it is cheap.
+func (h *handler) submitStaged(ctx context.Context, id *auth.Identity, hashes []string) (submitted, flagged int, err error) {
 	canSelfApprove := id.Has(auth.PermContentModerate)
-	results = make([]submitResult, 0, len(hashes))
+
+	var approveHashes, submitHashes, flaggedHashes []string
 	for _, hash := range hashes {
 		dup, derr := h.repo.IsDuplicateSubmission(ctx, hash)
 		if derr != nil {
-			return submitted, approved, flagged, results, derr
+			return 0, 0, derr
 		}
-		selfApprove := canSelfApprove && !dup
-		target := database.ReviewSubmitted
-		if selfApprove {
-			target = database.ReviewApproved
+		switch {
+		case dup: // a duplicate always goes to the queue, even for a moderator
+			flaggedHashes = append(flaggedHashes, hash)
+		case canSelfApprove:
+			approveHashes = append(approveHashes, hash)
+		default:
+			submitHashes = append(submitHashes, hash)
 		}
-		found, uerr := h.repo.UpdateReviewState(ctx, hash, database.ReviewTransition{
-			From:             []string{database.ReviewDraft, database.ReviewReturned},
-			To:               target,
-			OwnerID:          id.UserID,
-			StampSubmittedAt: true,
-		})
-		if uerr != nil {
-			return submitted, approved, flagged, results, uerr
-		}
-		if found {
-			submitted++
-			if dup {
-				flagged++
-			}
-			switch {
-			case selfApprove:
-				approved++
-				h.audit(ctx, "file.approve", hash, "self")
-			case dup:
-				h.audit(ctx, "file.submit", hash, "duplicate-flagged")
-			default:
-				h.audit(ctx, "file.submit", hash, "")
-			}
-		}
-		results = append(results, submitResult{Hash: hash, OK: found})
 	}
-	return submitted, approved, flagged, results, nil
+
+	from := []string{database.ReviewDraft, database.ReviewReturned}
+	apply := func(set []string, to, action, detail string) (int, error) {
+		if len(set) == 0 {
+			return 0, nil
+		}
+		n, aerr := h.repo.BulkUpdateReviewState(ctx, set, database.ReviewTransition{
+			From: from, To: to, OwnerID: id.UserID, StampSubmittedAt: true,
+		})
+		if aerr != nil {
+			return 0, aerr
+		}
+		if n > 0 {
+			h.audit(ctx, action, "files", fmt.Sprintf("%d %s", n, detail))
+		}
+		return n, nil
+	}
+
+	approved, err := apply(approveHashes, database.ReviewApproved, "file.bulk_approve", "self-approved")
+	if err != nil {
+		return 0, 0, err
+	}
+	submittedClean, err := apply(submitHashes, database.ReviewSubmitted, "file.bulk_submit", "submitted")
+	if err != nil {
+		return 0, 0, err
+	}
+	flaggedFound, err := apply(flaggedHashes, database.ReviewSubmitted, "file.bulk_submit", "submitted (duplicate-flagged)")
+	if err != nil {
+		return 0, 0, err
+	}
+	return approved + submittedClean + flaggedFound, flaggedFound, nil
 }
 
 // normalizeBulkHashes lower-cases + validates an explicit bulk hash list,
@@ -401,7 +409,7 @@ func (h *handler) myUploadsBulk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Action == "submit" {
-		submitted, _, flagged, _, err := h.submitStaged(r.Context(), id, hashes)
+		submitted, flagged, err := h.submitStaged(r.Context(), id, hashes)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
 			return

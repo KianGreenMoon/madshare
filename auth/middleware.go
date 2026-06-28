@@ -19,31 +19,52 @@ type Store interface {
 }
 
 // Identify resolves the request's credential (session cookie first, then a
-// Bearer token) to an *Identity and stores it in the context. It never rejects:
-// an unresolved request is simply anonymous. Authorization is enforced
-// downstream by RequirePermission.
+// Bearer token) to an *Identity and stores it in the context. A request with no
+// (or an unknown/expired) credential is simply anonymous; authorization is
+// enforced downstream by RequirePermission. But when a credential *is* presented
+// and the store lookup fails with a transient error (e.g. a SQLITE_BUSY hiccup),
+// it fails closed with 503 rather than silently downgrading to anonymous — the
+// latter renders an authenticated user logged-out (and would, mid-session, throw
+// them off the admin page on any DB blip).
 func Identify(store Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			id := resolve(r, store)
+			id, err := resolve(r, store)
+			if err != nil {
+				http.Error(w, "authentication temporarily unavailable", http.StatusServiceUnavailable)
+				return
+			}
 			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), id)))
 		})
 	}
 }
 
-func resolve(r *http.Request, store Store) *Identity {
+// resolve maps a presented credential to an identity. It returns (nil, nil) for
+// no/unknown/expired credential (anonymous), (id, nil) on a hit, and (nil, err)
+// when a presented credential's store lookup errors — a transient DB failure the
+// caller must surface, not swallow as anonymous. A store error on the cookie
+// short-circuits (the token lookup would hit the same ailing DB).
+func resolve(r *http.Request, store Store) (*Identity, error) {
 	ctx := r.Context()
 	if c, err := r.Cookie(SessionCookieName); err == nil && c.Value != "" {
-		if id, err := store.SessionIdentity(ctx, HashSecret(c.Value)); err == nil && id != nil {
-			return id
+		id, err := store.SessionIdentity(ctx, HashSecret(c.Value))
+		if err != nil {
+			return nil, err
+		}
+		if id != nil {
+			return id, nil
 		}
 	}
 	if raw, ok := bearerToken(r); ok {
-		if id, err := store.TokenIdentity(ctx, HashSecret(raw)); err == nil && id != nil {
-			return id
+		id, err := store.TokenIdentity(ctx, HashSecret(raw))
+		if err != nil {
+			return nil, err
+		}
+		if id != nil {
+			return id, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 func bearerToken(r *http.Request) (string, bool) {

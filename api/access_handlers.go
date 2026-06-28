@@ -38,6 +38,9 @@ type ManageStore interface {
 
 	SetGuestPlayable(ctx context.Context, hash string, guest bool) (bool, error)
 	SetLicense(ctx context.Context, hash, license string) (bool, error)
+	// Bulk single-value variants for the bulk editor (one value across the set).
+	BulkSetGuestPlayable(ctx context.Context, hashes []string, guest bool) (int, error)
+	BulkSetLicense(ctx context.Context, hashes []string, license string) (int, error)
 
 	GetAutoDerivePolicy(ctx context.Context) (database.AutoDerivePolicy, error)
 	SetAutoDerivePolicy(ctx context.Context, p database.AutoDerivePolicy) error

@@ -3,6 +3,8 @@ package database
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"strings"
 )
 
 // licenseClause is the SQL predicate (no bind args) that is true when a file's
@@ -77,4 +79,66 @@ func (db *DB) SetLicense(ctx context.Context, hash, license string) (found bool,
 	}
 	n, _ := res.RowsAffected()
 	return n > 0, nil
+}
+
+// BulkSetGuestPlayable sets the same guest-playable flag on every live file in
+// the hash set, in one chunked transaction. A bulk edit carries a single value
+// for all files, so this collapses what was a write transaction per file into one
+// guarded UPDATE per chunk. Returns the number of live rows changed.
+func (db *DB) BulkSetGuestPlayable(ctx context.Context, hashes []string, guest bool) (int, error) {
+	return db.bulkSetFileColumn(ctx, hashes,
+		`UPDATE files SET guest_playable = ?, guest_playable_manual = 1 WHERE deleted_at IS NULL AND hash IN `,
+		boolToInt(guest))
+}
+
+// BulkSetLicense sets (or clears, with "") the same license on every live file in
+// the hash set, in one chunked transaction — the bulk counterpart to SetLicense.
+func (db *DB) BulkSetLicense(ctx context.Context, hashes []string, license string) (int, error) {
+	var lic sql.NullString
+	if license != "" {
+		lic = sql.NullString{String: license, Valid: true}
+	}
+	return db.bulkSetFileColumn(ctx, hashes,
+		`UPDATE files SET license = ? WHERE deleted_at IS NULL AND hash IN `, lic)
+}
+
+// bulkSetFileColumn runs a single-value guarded UPDATE (prefix ending in
+// `hash IN `) over the hash set in one transaction, chunked to stay within
+// SQLite's bound-parameter limit. lead are the SET-clause args that precede the
+// hash placeholders. Returns the total rows affected.
+func (db *DB) bulkSetFileColumn(ctx context.Context, hashes []string, updatePrefix string, lead ...any) (int, error) {
+	if len(hashes) == 0 {
+		return 0, nil
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	total := 0
+	const chunk = 400
+	for i := 0; i < len(hashes); i += chunk {
+		end := i + chunk
+		if end > len(hashes) {
+			end = len(hashes)
+		}
+		batch := hashes[i:end]
+		placeholders := make([]string, len(batch))
+		args := append([]any{}, lead...)
+		for j, h := range batch {
+			placeholders[j] = "?"
+			args = append(args, h)
+		}
+		res, err := tx.ExecContext(ctx, updatePrefix+`(`+strings.Join(placeholders, ",")+`)`, args...)
+		if err != nil {
+			return 0, fmt.Errorf("bulk set file column: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		total += int(n)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit: %w", err)
+	}
+	return total, nil
 }

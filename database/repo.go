@@ -324,6 +324,12 @@ type Repository interface {
 	// wrapping ErrInvalidMetadata when a numeric field carries a bad value.
 	UpdateFileMetadata(ctx context.Context, hash string, p MetadataPatch) (*MediaMetadata, error)
 
+	// BulkUpdateFileMetadata applies the same patch to every hash, sharing a
+	// transaction per chunk. Returns the rows updated and the hashes that matched
+	// no file (skipped). Backs the bulk metadata editor — fewer write-lock
+	// acquisitions than the per-file UpdateFileMetadata loop.
+	BulkUpdateFileMetadata(ctx context.Context, hashes []string, p MetadataPatch) (affected int, notFound []string, err error)
+
 	// FileMetadataByHash loads the editable media_metadata row for the file with
 	// the given content hash. Returns ErrFileNotFound when no file matches.
 	FileMetadataByHash(ctx context.Context, hash string) (*MediaMetadata, error)

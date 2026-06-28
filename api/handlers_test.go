@@ -424,6 +424,7 @@ type fakeRepo struct {
 	bulkReviewErr      error
 	bulkDiscardHashes  []string
 	bulkDiscardErr     error
+	bulkMetaHashes     []string
 
 	breakdown    database.StorageByteBreakdown
 	breakdownErr error
@@ -814,6 +815,16 @@ func (f *fakeRepo) UpdateFileMetadata(_ context.Context, hash string, p database
 		return f.metaResult, nil
 	}
 	return &database.MediaMetadata{}, nil
+}
+
+func (f *fakeRepo) BulkUpdateFileMetadata(_ context.Context, hashes []string, p database.MetadataPatch) (int, []string, error) {
+	f.metaCalls++
+	f.lastMetaPatch = p
+	f.bulkMetaHashes = append(f.bulkMetaHashes, hashes...)
+	if f.metaErr != nil {
+		return 0, nil, f.metaErr
+	}
+	return len(hashes), nil, nil
 }
 
 func (f *fakeRepo) FileMetadataByHash(_ context.Context, hash string) (*database.MediaMetadata, error) {

@@ -257,19 +257,21 @@ slowness / `SQLITE_BUSY` / transient-logout cascade. The audit INSERT per row is
 half the write traffic and is the easiest part to collapse (one summary row, as
 the trash and edit paths already do).
 
-**Fixed for the two Medium `moderationBulk` / `myUploadsBulk` cases** (2026-06-28):
-new `database.BulkUpdateReviewState` (one chunked guarded transaction, backs bulk
-approve/return) and `database.BulkDiscardOwnUploads` (owner-scoped batched soft
-delete, backs My-uploads remove); discard reuses `BulkSoftDeleteByHashes`. Each
-action now collapses to one transaction + one summary audit row
-(`file.bulk_approve` / `file.bulk_return` / `file.bulk_trash`). Verified by
-`go test -race` + a live on-disk smoke (no `SQLITE_BUSY`, one audit row per call).
-The two Low cases below remain.
+**All of this is now fixed** (2026-06-28). New batched DB methods:
+`BulkUpdateReviewState` (guarded transition, backs bulk approve/return and the
+submit buckets), `BulkDiscardOwnUploads` (owner-scoped soft delete, backs
+My-uploads remove), `BulkUpdateFileMetadata` (one tx per 500-file chunk via the
+extracted `applyMetadataPatchTx`), and `BulkSetLicense` / `BulkSetGuestPlayable`
+(single-valued guarded `UPDATE`). Each bulk action now runs under O(1)
+transactions + one summary audit row instead of `2N`. The independent
+session-drop fragility (`auth/middleware.go`) is fixed separately by failing
+closed with 503. Verified by `go test -race` + two live on-disk smokes (no
+`SQLITE_BUSY`, one audit row per call). See the per-row statuses below.
 
 | Severity | Issue | Status |
 |---|---|---|
-| Medium | **Session silently drops on a transient session-lookup DB error.** `auth/middleware.go` `resolve()` treats *any* error from `store.SessionIdentity` (or `TokenIdentity`) the same as "no session" → returns an anonymous identity, so the admin page renders logged-out. This is what turned the restore-time `SQLITE_BUSY` into the visible "thrown off the admin page, reload fixes it" symptom. Removing the write-lock storm (restore fix) removes the *trigger*, but the fragility is independent: any transient DB hiccup mid-session still appears as a logout. Consider distinguishing a transient DB error from a genuine no-session and failing closed (503) rather than appearing unauthenticated. | open |
+| Medium | **Session silently drops on a transient session-lookup DB error.** `resolve()` now returns `(*Identity, error)`: a *presented* credential whose store lookup errors fails closed with **503** (`Identify`), instead of downgrading to anonymous (which rendered an authenticated user logged-out). A missing/unknown/expired credential is still anonymous. Covered by `auth.TestIdentify_StoreErrorFailsClosed`. | **fixed (2026-06-28)** |
 | Medium | **`moderationBulk` loops per row (approve / return / discard).** approve/return now go through `BulkUpdateReviewState` (one guarded `UPDATE … WHERE hash IN (…)` per chunk, like restore); discard reuses `BulkSoftDeleteByHashes`; one summary audit row each. | **fixed (2026-06-28)** |
 | Medium | **`myUploadsBulk` remove loops per row.** Now one `BulkDiscardOwnUploads` chunked transaction (owner + draft/returned guard) + one summary audit row. | **fixed (2026-06-28)** |
-| Low | **`myUploadsBulk` submit loops per row (`submitStaged`).** `api/review_handlers.go:302` — per hash: `IsDuplicateSubmission` (read) + `UpdateReviewState` (write) + a per-row audit. Harder to fully batch because the target state is decided per file by the duplicate check, but the write + audit can still be grouped (e.g. partition into self-approve / submitted / flagged buckets and issue one guarded `UPDATE` + one audit row per bucket). | open |
-| Low | **`bulkEditFiles` loops per row (`applyOneBulkEdit`).** `api/admin_handlers.go:210` — per hash: `UpdateFileMetadata` (+ `SetLicense` / `SetGuestPlayable`) → up to 3 write transactions/file (the audit *is* already a single summary row). The metadata write genuinely re-resolves per-file artist/album entities so it can't collapse to one `UPDATE`, but each file's writes could share one transaction, and the whole batch could run under fewer transactions to cut the lock-acquire count. Lower priority than the pure-state-flip handlers above. | open |
+| Low | **`myUploadsBulk` submit loops per row (`submitStaged`).** `submitStaged` now keeps the per-hash duplicate *read* (no write lock) but partitions into self-approve / submitted / duplicate-flagged buckets and issues one `BulkUpdateReviewState` + one summary audit row per bucket (`file.bulk_approve` / `file.bulk_submit`). Exact submitted/flagged counts preserved; the unused per-hash `results` field was dropped. | **fixed (2026-06-28)** |
+| Low | **`bulkEditFiles` loops per row (`applyOneBulkEdit`).** Tags now go through `BulkUpdateFileMetadata` (one transaction per 500-file chunk; `applyMetadataPatchTx` shares the tx — the per-file entity re-resolution still can't be one `UPDATE`, but the transactions are batched). The single-valued license/guest collapse to one guarded `UPDATE … hash IN (…)` each (`BulkSetLicense` / `BulkSetGuestPlayable`). | **fixed (2026-06-28)** |

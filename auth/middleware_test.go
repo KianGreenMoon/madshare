@@ -1,10 +1,76 @@
 package auth
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+// fakeStore drives Identify: a configurable session/token lookup result.
+type fakeStore struct {
+	id  *Identity
+	err error
+}
+
+func (s fakeStore) SessionIdentity(context.Context, string) (*Identity, error) {
+	return s.id, s.err
+}
+func (s fakeStore) TokenIdentity(context.Context, string) (*Identity, error) {
+	return s.id, s.err
+}
+
+// runIdentify wraps a next handler with Identify and a request carrying a session
+// cookie, returning whether next ran (and with which identity) plus the response.
+func runIdentify(t *testing.T, store Store) (ran bool, gotID *Identity, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ran = true
+		gotID = FromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "some-token"})
+	rec = httptest.NewRecorder()
+	Identify(store)(next).ServeHTTP(rec, req)
+	return ran, gotID, rec
+}
+
+// A transient store error on a presented credential must fail closed (503), not
+// silently downgrade the request to anonymous.
+func TestIdentify_StoreErrorFailsClosed(t *testing.T) {
+	ran, _, rec := runIdentify(t, fakeStore{err: errors.New("database is locked")})
+	if ran {
+		t.Fatal("next must not run when the session lookup errored")
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}
+
+// An unknown/expired credential (nil, nil) is anonymous, not an error.
+func TestIdentify_UnknownCredentialIsAnonymous(t *testing.T) {
+	ran, gotID, rec := runIdentify(t, fakeStore{})
+	if !ran || rec.Code != http.StatusOK {
+		t.Fatalf("next ran=%v status=%d, want true/200", ran, rec.Code)
+	}
+	if gotID != nil {
+		t.Errorf("identity = %+v, want anonymous (nil)", gotID)
+	}
+}
+
+// A resolving credential reaches next as that identity.
+func TestIdentify_ResolvedIdentityPassesThrough(t *testing.T) {
+	want := &Identity{UserID: 7, Username: "alice"}
+	ran, gotID, rec := runIdentify(t, fakeStore{id: want})
+	if !ran || rec.Code != http.StatusOK {
+		t.Fatalf("next ran=%v status=%d, want true/200", ran, rec.Code)
+	}
+	if gotID == nil || gotID.UserID != 7 {
+		t.Errorf("identity = %+v, want UserID 7", gotID)
+	}
+}
 
 // run executes mw-wrapped handler against a request carrying id and reports
 // whether next ran plus the recorded response.

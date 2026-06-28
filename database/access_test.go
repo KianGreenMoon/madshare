@@ -63,3 +63,49 @@ func TestAccess_UnknownHashDenied(t *testing.T) {
 		t.Error("unknown hash should be denied")
 	}
 }
+
+// TestBulkSetLicenseAndGuest sets one license + one guest flag across a set in a
+// single guarded UPDATE each: live files change, an unknown/trashed hash is
+// skipped, and the count reflects what was actually written.
+func TestBulkSetLicenseAndGuest(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	h1 := hash64("bacc1")
+	h2 := hash64("bacc2")
+	trashed := hash64("bacc-trashed")
+	insertAccessFile(t, db, h1)
+	insertAccessFile(t, db, h2)
+	insertAccessFile(t, db, trashed)
+	if _, _, err := db.SoftDeleteFileByHash(ctx, trashed); err != nil {
+		t.Fatalf("trash setup: %v", err)
+	}
+	missing := hash64("bacc-missing")
+
+	n, err := db.BulkSetLicense(ctx, []string{h1, h2, trashed, missing}, "CC0-1.0")
+	if err != nil {
+		t.Fatalf("BulkSetLicense: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("license affected = %d, want 2 (trashed + missing skipped)", n)
+	}
+
+	g, err := db.BulkSetGuestPlayable(ctx, []string{h1, h2}, true)
+	if err != nil {
+		t.Fatalf("BulkSetGuestPlayable: %v", err)
+	}
+	if g != 2 {
+		t.Fatalf("guest affected = %d, want 2", g)
+	}
+
+	for _, h := range []string{h1, h2} {
+		var lic string
+		var guest, manual int
+		if err := db.QueryRow(`SELECT COALESCE(license,''), guest_playable, guest_playable_manual FROM files WHERE hash=?`, h).
+			Scan(&lic, &guest, &manual); err != nil {
+			t.Fatalf("read %s: %v", h, err)
+		}
+		if lic != "CC0-1.0" || guest != 1 || manual != 1 {
+			t.Errorf("%s license=%q guest=%d manual=%d, want CC0-1.0/1/1", h, lic, guest, manual)
+		}
+	}
+}
