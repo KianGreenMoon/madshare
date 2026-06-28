@@ -420,6 +420,10 @@ type fakeRepo struct {
 	bulkRestoreErr     error
 	bulkDeletedHashes  []string
 	bulkDeleteErr      error
+	bulkReviewHashes   []string
+	bulkReviewErr      error
+	bulkDiscardHashes  []string
+	bulkDiscardErr     error
 
 	breakdown    database.StorageByteBreakdown
 	breakdownErr error
@@ -558,6 +562,23 @@ func (f *fakeRepo) StageRestoredFile(_ context.Context, _ string, _ sql.NullInt6
 
 func (f *fakeRepo) DiscardOwnUpload(_ context.Context, _ string, _ int64) (bool, error) {
 	return f.reviewUpdateFound, f.reviewUpdateErr
+}
+
+func (f *fakeRepo) BulkUpdateReviewState(_ context.Context, hashes []string, t database.ReviewTransition) (int, error) {
+	f.bulkReviewHashes = append(f.bulkReviewHashes, hashes...)
+	f.lastReviewTrans = t
+	if f.bulkReviewErr != nil {
+		return 0, f.bulkReviewErr
+	}
+	return len(hashes), nil
+}
+
+func (f *fakeRepo) BulkDiscardOwnUploads(_ context.Context, hashes []string, _ int64) (int, error) {
+	f.bulkDiscardHashes = append(f.bulkDiscardHashes, hashes...)
+	if f.bulkDiscardErr != nil {
+		return 0, f.bulkDiscardErr
+	}
+	return len(hashes), nil
 }
 
 func (f *fakeRepo) RecordAudit(_ context.Context, actor sql.NullInt64, action, target, _ string) error {

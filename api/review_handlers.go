@@ -415,18 +415,15 @@ func (h *handler) myUploadsBulk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// action == "remove"
-	removed := 0
-	for _, hash := range hashes {
-		found, err := h.repo.DiscardOwnUpload(r.Context(), hash, id.UserID)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
-			return
-		}
-		if found {
-			removed++
-			h.audit(r.Context(), "file.trash", hash, "owner-discard")
-		}
+	// action == "remove" — one batched owner-scoped soft delete + one summary
+	// audit row, replacing the per-hash loop (two autocommit writes per file).
+	removed, err := h.repo.BulkDiscardOwnUploads(r.Context(), hashes, id.UserID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+		return
+	}
+	if removed > 0 {
+		h.audit(r.Context(), "file.bulk_trash", "files", fmt.Sprintf("%d removed (owner-discard)", removed))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": removed})
 }
@@ -583,39 +580,37 @@ func (h *handler) moderationBulk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	affected := 0
-	for _, hash := range hashes {
-		var found bool
-		var err error
-		switch req.Action {
-		case "approve":
-			found, err = h.repo.UpdateReviewState(r.Context(), hash, database.ReviewTransition{
-				From: []string{database.ReviewSubmitted, database.ReviewReturned}, To: database.ReviewApproved,
-			})
-			if found {
-				h.audit(r.Context(), "file.approve", hash, "")
-			}
-		case "return":
-			found, err = h.repo.UpdateReviewState(r.Context(), hash, database.ReviewTransition{
-				From: []string{database.ReviewSubmitted, database.ReviewReturned}, To: database.ReviewReturned, Note: note,
-			})
-			if found {
-				h.audit(r.Context(), "file.return", hash, note)
-			}
-		case "discard":
-			var filenames []string
-			filenames, found, err = h.repo.SoftDeleteFileByHash(r.Context(), hash)
-			if found {
-				h.audit(r.Context(), "file.trash", hash, strings.Join(filenames, ", "))
-			}
+	// Each action is one batched transaction over the resolved set (the per-row
+	// loop opened two autocommit writes — the state flip + a per-row audit — per
+	// hash, a SQLITE_BUSY source under the "select all matching" scope). The audit
+	// collapses to one summary row, as the other bulk paths already do.
+	var affected int
+	var err error
+	switch req.Action {
+	case "approve":
+		affected, err = h.repo.BulkUpdateReviewState(r.Context(), hashes, database.ReviewTransition{
+			From: []string{database.ReviewSubmitted, database.ReviewReturned}, To: database.ReviewApproved,
+		})
+		if affected > 0 {
+			h.audit(r.Context(), "file.bulk_approve", "files", fmt.Sprintf("%d approved", affected))
 		}
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
-			return
+	case "return":
+		affected, err = h.repo.BulkUpdateReviewState(r.Context(), hashes, database.ReviewTransition{
+			From: []string{database.ReviewSubmitted, database.ReviewReturned}, To: database.ReviewReturned, Note: note,
+		})
+		if affected > 0 {
+			h.audit(r.Context(), "file.bulk_return", "files", fmt.Sprintf("%d returned: %s", affected, note))
 		}
-		if found {
-			affected++
+	case "discard":
+		// Discard is a soft delete; reuse the batched send-to-trash path.
+		affected, err = h.repo.BulkSoftDeleteByHashes(r.Context(), hashes)
+		if affected > 0 {
+			h.audit(r.Context(), "file.bulk_trash", "files", fmt.Sprintf("%d discarded", affected))
 		}
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
 }

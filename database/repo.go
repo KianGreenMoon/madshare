@@ -230,6 +230,12 @@ type Repository interface {
 	// OwnerID is set). found is false when no row satisfies the guard.
 	UpdateReviewState(ctx context.Context, hash string, t ReviewTransition) (found bool, err error)
 
+	// BulkUpdateReviewState applies one guarded transition to a hash set in a
+	// single chunked transaction (same guard as UpdateReviewState), returning the
+	// number of rows that actually transitioned. Backs the bulk moderation
+	// approve/return — one transaction instead of one write + audit per hash.
+	BulkUpdateReviewState(ctx context.Context, hashes []string, t ReviewTransition) (int, error)
+
 	// FileReviewInfo is the narrow (state, uploader, trashed) lookup used by
 	// the blob-access gate and ownership checks. found is false on unknown hash.
 	FileReviewInfo(ctx context.Context, hash string) (state string, uploadedBy sql.NullInt64, deleted bool, found bool, err error)
@@ -243,6 +249,12 @@ type Repository interface {
 	// DiscardOwnUpload soft-deletes the owner's editable (draft/returned)
 	// staged file; found=false for submitted, foreign, or unknown files.
 	DiscardOwnUpload(ctx context.Context, hash string, ownerID int64) (bool, error)
+
+	// BulkDiscardOwnUploads soft-deletes a set of the owner's editable
+	// (draft/returned) staged files in one chunked transaction (same guard as
+	// DiscardOwnUpload), returning how many were removed. Backs the My-uploads
+	// bulk "remove" — one transaction instead of one write + audit per hash.
+	BulkDiscardOwnUploads(ctx context.Context, hashes []string, ownerID int64) (int, error)
 
 	// --- Cover image variants & async job queue (Phase 1: upload & covers) ---
 

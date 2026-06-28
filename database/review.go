@@ -313,6 +313,76 @@ func (db *DB) UpdateReviewState(ctx context.Context, hash string, t ReviewTransi
 	return n > 0, nil
 }
 
+// BulkUpdateReviewState applies one guarded review-state transition to a set of
+// hashes in a single transaction, chunked to stay within SQLite's bound-parameter
+// limit. It is the batch counterpart to UpdateReviewState — same per-row guard
+// (non-trashed, current state in From, owner matching when OwnerID is set) — so
+// rows that don't satisfy the guard are simply skipped, and the returned count is
+// how many actually transitioned. Replacing the per-hash loop (one autocommit
+// write plus a per-row audit each) with one transaction is the SQLITE_BUSY fix the
+// bulk soft-delete/restore paths already use.
+func (db *DB) BulkUpdateReviewState(ctx context.Context, hashes []string, t ReviewTransition) (int, error) {
+	if len(t.From) == 0 {
+		return 0, errors.New("bulk update review state: empty From set")
+	}
+	if len(hashes) == 0 {
+		return 0, nil
+	}
+	var note sql.NullString
+	if t.To == ReviewReturned && t.Note != "" {
+		note = sql.NullString{String: t.Note, Valid: true}
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	total := 0
+	const chunk = 400
+	for i := 0; i < len(hashes); i += chunk {
+		end := i + chunk
+		if end > len(hashes) {
+			end = len(hashes)
+		}
+		batch := hashes[i:end]
+
+		// SET-clause args first, then the guard args (From states, optional owner),
+		// then the hash batch — the order the placeholders appear in the query.
+		set := `review_state = ?, review_note = ?`
+		args := []any{t.To, note}
+		if t.StampSubmittedAt {
+			set += `, submitted_at = ?`
+			args = append(args, time.Now().Unix())
+		}
+		where := `deleted_at IS NULL AND review_state IN (?` + strings.Repeat(",?", len(t.From)-1) + `)`
+		for _, s := range t.From {
+			args = append(args, s)
+		}
+		if t.OwnerID != 0 {
+			where += ` AND uploaded_by = ?`
+			args = append(args, t.OwnerID)
+		}
+		placeholders := make([]string, len(batch))
+		for j, h := range batch {
+			placeholders[j] = "?"
+			args = append(args, h)
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE files SET `+set+` WHERE `+where+` AND hash IN (`+strings.Join(placeholders, ",")+`)`, args...)
+		if err != nil {
+			return 0, fmt.Errorf("bulk update review state: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		total += int(n)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit: %w", err)
+	}
+	return total, nil
+}
+
 // DiscardOwnUpload soft-deletes one of the owner's *editable* staged files
 // (draft or returned) — the "Remove" action on the My-uploads tab. Submitted
 // files are excluded (no withdraw once sent to approval) and so is anything
@@ -329,6 +399,54 @@ func (db *DB) DiscardOwnUpload(ctx context.Context, hash string, ownerID int64) 
 	}
 	n, _ := res.RowsAffected()
 	return n > 0, nil
+}
+
+// BulkDiscardOwnUploads soft-deletes a set of the owner's editable (draft or
+// returned) staged files in a single transaction, chunked to stay within SQLite's
+// bound-parameter limit. It is the batch counterpart to DiscardOwnUpload — same
+// guard (non-trashed, owned, draft/returned) — so submitted, foreign, and unknown
+// hashes are skipped, and the returned count is how many were removed. One
+// transaction instead of one autocommit write (plus a per-row audit) per hash,
+// the SQLITE_BUSY fix the other bulk paths use.
+func (db *DB) BulkDiscardOwnUploads(ctx context.Context, hashes []string, ownerID int64) (int, error) {
+	if len(hashes) == 0 {
+		return 0, nil
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := time.Now().Unix()
+	total := 0
+	const chunk = 400
+	for i := 0; i < len(hashes); i += chunk {
+		end := i + chunk
+		if end > len(hashes) {
+			end = len(hashes)
+		}
+		batch := hashes[i:end]
+		args := make([]any, 0, len(batch)+4)
+		args = append(args, now, ownerID, ReviewDraft, ReviewReturned)
+		placeholders := make([]string, len(batch))
+		for j, h := range batch {
+			placeholders[j] = "?"
+			args = append(args, h)
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE files SET deleted_at = ? WHERE deleted_at IS NULL AND uploaded_by = ?
+			   AND review_state IN (?, ?) AND hash IN (`+strings.Join(placeholders, ",")+`)`, args...)
+		if err != nil {
+			return 0, fmt.Errorf("bulk discard own uploads: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		total += int(n)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit: %w", err)
+	}
+	return total, nil
 }
 
 // StageRestoredFile re-stages a just-restored file as the restorer's draft:

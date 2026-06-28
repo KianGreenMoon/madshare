@@ -269,6 +269,112 @@ func TestReviewVisibility_StagedFilesHiddenEverywhere(t *testing.T) {
 	}
 }
 
+// TestBulkUpdateReviewState_ApproveSkipsNonMatching covers the batched moderation
+// approve: only rows whose current state is in From transition; a draft (not in
+// From) is left alone, and the count reflects what actually changed.
+func TestBulkUpdateReviewState_ApproveSkipsNonMatching(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	uid := makeReviewUser(t, db, "up")
+
+	hs := hash64("bsub1")
+	hr := hash64("bsub2")
+	hd := hash64("bdraft")
+	insertStagedFile(t, db, hs, ReviewSubmitted, uid)
+	insertStagedFile(t, db, hr, ReviewSubmitted, uid)
+	insertStagedFile(t, db, hd, ReviewDraft, uid) // not in From -> skipped
+
+	// Empty From is rejected (guards against an unscoped UPDATE).
+	if _, err := db.BulkUpdateReviewState(ctx, []string{hs}, ReviewTransition{To: ReviewApproved}); err == nil {
+		t.Error("empty From should error")
+	}
+
+	n, err := db.BulkUpdateReviewState(ctx, []string{hs, hr, hd}, ReviewTransition{
+		From: []string{ReviewSubmitted, ReviewReturned}, To: ReviewApproved,
+	})
+	if err != nil {
+		t.Fatalf("BulkUpdateReviewState: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("affected = %d, want 2 (draft skipped)", n)
+	}
+	if reviewState(t, db, hs) != ReviewApproved || reviewState(t, db, hr) != ReviewApproved {
+		t.Error("submitted files should be approved")
+	}
+	if reviewState(t, db, hd) != ReviewDraft {
+		t.Error("draft should be untouched (not in From)")
+	}
+}
+
+// TestBulkUpdateReviewState_ReturnNoteSkipsTrashed covers the batched return: the
+// note lands on the live row, and a trashed row (deleted_at set) is skipped by the
+// same guard the single-hash path uses.
+func TestBulkUpdateReviewState_ReturnNoteSkipsTrashed(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	uid := makeReviewUser(t, db, "up")
+	hLive := hash64("bret-live")
+	hTrash := hash64("bret-trash")
+	insertStagedFile(t, db, hLive, ReviewSubmitted, uid)
+	insertStagedFile(t, db, hTrash, ReviewSubmitted, uid)
+	if _, found, err := db.SoftDeleteFileByHash(ctx, hTrash); err != nil || !found {
+		t.Fatalf("trash setup: found=%v err=%v", found, err)
+	}
+
+	n, err := db.BulkUpdateReviewState(ctx, []string{hLive, hTrash}, ReviewTransition{
+		From: []string{ReviewSubmitted, ReviewReturned}, To: ReviewReturned, Note: "fix tags",
+	})
+	if err != nil {
+		t.Fatalf("BulkUpdateReviewState: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("affected = %d, want 1 (trashed skipped)", n)
+	}
+	if f, _ := db.GetFileByHash(ctx, hLive); f.ReviewState != ReviewReturned || f.ReviewNote.String != "fix tags" {
+		t.Errorf("live file = %q note=%q, want returned + note", f.ReviewState, f.ReviewNote.String)
+	}
+	if ft, _ := db.GetFileByHash(ctx, hTrash); ft.ReviewState != ReviewSubmitted || !ft.DeletedAt.Valid {
+		t.Errorf("trashed file changed: state=%q deleted=%v", ft.ReviewState, ft.DeletedAt.Valid)
+	}
+}
+
+// TestBulkDiscardOwnUploads_OwnerAndStateScoped covers the batched My-uploads
+// remove: only the caller's editable (draft/returned) files are soft-deleted;
+// submitted and foreign rows are left untouched.
+func TestBulkDiscardOwnUploads_OwnerAndStateScoped(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	uid := makeReviewUser(t, db, "owner")
+	other := makeReviewUser(t, db, "other")
+
+	hDraft := hash64("disc-draft")
+	hReturned := hash64("disc-returned")
+	hSubmitted := hash64("disc-submitted")
+	hForeign := hash64("disc-foreign")
+	insertStagedFile(t, db, hDraft, ReviewDraft, uid)
+	insertStagedFile(t, db, hReturned, ReviewReturned, uid)
+	insertStagedFile(t, db, hSubmitted, ReviewSubmitted, uid) // submitted: not withdrawable
+	insertStagedFile(t, db, hForeign, ReviewDraft, other)     // not owned
+
+	n, err := db.BulkDiscardOwnUploads(ctx, []string{hDraft, hReturned, hSubmitted, hForeign}, uid)
+	if err != nil {
+		t.Fatalf("BulkDiscardOwnUploads: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("affected = %d, want 2 (own draft+returned only)", n)
+	}
+	for _, h := range []string{hDraft, hReturned} {
+		if f, _ := db.GetFileByHash(ctx, h); !f.DeletedAt.Valid {
+			t.Errorf("%s should be trashed", h)
+		}
+	}
+	for _, h := range []string{hSubmitted, hForeign} {
+		if f, _ := db.GetFileByHash(ctx, h); f.DeletedAt.Valid {
+			t.Errorf("%s should be untouched (submitted or foreign)", h)
+		}
+	}
+}
+
 func TestMigration017_GrantsModeratorPermissions(t *testing.T) {
 	db := openMem(t)
 	for _, tc := range []struct{ role, perm string }{
