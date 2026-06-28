@@ -41,8 +41,14 @@ pidfile="/run/${RC_SVCNAME}.pid"
 
 # Built-in supervisor: restart on unexpected exit (parity with the systemd
 # unit's Restart=on-failure / RestartSec=5s). Requires OpenRC >= 0.21.
+# supervise-daemon gives up only if the daemon dies more than respawn_max
+# times within respawn_period seconds; respawn_period must exceed
+# respawn_delay*respawn_max (here 5*5=25) or supervise-daemon warns about
+# possible infinite respawning.
 supervisor="supervise-daemon"
 respawn_delay=5
+respawn_max=5
+respawn_period=60
 
 output_log="${madshare_logdir}/madshare.log"
 error_log="${madshare_logdir}/madshare.log"
