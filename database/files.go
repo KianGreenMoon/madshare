@@ -547,6 +547,101 @@ func (db *DB) BulkRestoreByHashes(ctx context.Context, hashes []string) (int, er
 	return total, nil
 }
 
+// DeletedBlob identifies one hard-deleted file's physical bytes for post-commit
+// reclamation: Hash locates the blob and StorageBackend selects the reclaim path
+// (local DeleteAll of a hash dir vs unlinking a links symlink). It is the batch
+// counterpart to the (GetFileByHash → storage_backend) lookup the single-hash
+// delete does before the row is gone.
+type DeletedBlob struct {
+	Hash           string
+	StorageBackend string
+}
+
+// BulkHardDeleteTrashedByHashes permanently removes the trashed rows matching the
+// given hashes in a single transaction, returning each deleted row's hash +
+// storage backend so the caller can reclaim the physical bytes afterwards (the
+// filesystem unlink stays out of the transaction). Live (non-trashed) and unknown
+// hashes are skipped — the deleted_at guard mirrors HardDeleteTrashedFileByHash,
+// so a concurrent restore cannot be hard-deleted out from under the user. It is
+// the batch counterpart to HardDeleteTrashedFileByHash: one transaction + FK
+// cascade instead of one autocommit write (plus a per-row audit) per hash, which
+// is what made bulk permanent delete slow and a SQLITE_BUSY source under write
+// pressure (mirroring the BulkRestoreByHashes fix).
+func (db *DB) BulkHardDeleteTrashedByHashes(ctx context.Context, hashes []string) ([]DeletedBlob, error) {
+	if len(hashes) == 0 {
+		return nil, nil
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	const chunk = 400
+	ids := make([]int64, 0, len(hashes))
+	blobs := make([]DeletedBlob, 0, len(hashes))
+	// Resolve the trashed rows first (collecting id + storage kind) so storage
+	// reclamation can run after the row is gone, just as the single-hash path
+	// learns storage_backend before deleting.
+	for i := 0; i < len(hashes); i += chunk {
+		end := i + chunk
+		if end > len(hashes) {
+			end = len(hashes)
+		}
+		batch := hashes[i:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, 0, len(batch))
+		for j, h := range batch {
+			placeholders[j] = "?"
+			args = append(args, h)
+		}
+		rows, err := tx.QueryContext(ctx,
+			`SELECT id, hash, storage_backend FROM files WHERE deleted_at IS NOT NULL AND hash IN (`+strings.Join(placeholders, ",")+`)`, args...)
+		if err != nil {
+			return nil, fmt.Errorf("select trashed: %w", err)
+		}
+		for rows.Next() {
+			var id int64
+			var b DeletedBlob
+			if err := rows.Scan(&id, &b.Hash, &b.StorageBackend); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan trashed: %w", err)
+			}
+			ids = append(ids, id)
+			blobs = append(blobs, b)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("iterate trashed: %w", err)
+		}
+		rows.Close()
+	}
+
+	// Delete by the resolved ids; FK cascade (foreign_keys is ON per-connection)
+	// drops file_uploads, media_metadata, source_files, etc.
+	for i := 0; i < len(ids); i += chunk {
+		end := i + chunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		batch := ids[i:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, 0, len(batch))
+		for j, id := range batch {
+			placeholders[j] = "?"
+			args = append(args, id)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM files WHERE id IN (`+strings.Join(placeholders, ",")+`)`, args...); err != nil {
+			return nil, fmt.Errorf("bulk hard delete: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+	return blobs, nil
+}
+
 // uploadFilenamesInTx returns the recorded filenames for a file (ordered by
 // upload id) within an open transaction. It is a shared helper for the two
 // delete variants that need to report filenames before mutating the row.

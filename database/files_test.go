@@ -895,3 +895,58 @@ func TestListFiles_FilenameFromFirstUpload(t *testing.T) {
 		t.Error("Filename is empty; COALESCE fallback to hash not working")
 	}
 }
+
+// ---- BulkHardDeleteTrashedByHashes ------------------------------------------
+
+func TestBulkHardDeleteTrashedByHashes_SkipsLiveReportsBackend(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	// One trashed local, one trashed links, one LIVE local (must be skipped).
+	hashOf := func(prefix string) string { return prefix + strings.Repeat("0", 64-len(prefix)) }
+	trashedLocal := hashOf("bd0a")
+	trashedLinks := hashOf("bd0b")
+	liveLocal := hashOf("bd0c")
+
+	linksFile := newFile(trashedLinks)
+	linksFile.StorageBackend = StorageBackendLinks
+	for _, f := range []*File{newFile(trashedLocal), linksFile, newFile(liveLocal)} {
+		if err := db.InsertFile(ctx, f, newUpload("t.mp3"), newMeta()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, h := range []string{trashedLocal, trashedLinks} {
+		if _, _, err := db.SoftDeleteFileByHash(ctx, h); err != nil {
+			t.Fatalf("SoftDeleteFileByHash %s: %v", h, err)
+		}
+	}
+
+	// Pass all three hashes; only the two trashed rows may be deleted.
+	blobs, err := db.BulkHardDeleteTrashedByHashes(ctx, []string{trashedLocal, trashedLinks, liveLocal})
+	if err != nil {
+		t.Fatalf("BulkHardDeleteTrashedByHashes: %v", err)
+	}
+	if len(blobs) != 2 {
+		t.Fatalf("deleted %d blobs, want 2 (live row must be skipped)", len(blobs))
+	}
+	got := map[string]string{}
+	for _, b := range blobs {
+		got[b.Hash] = b.StorageBackend
+	}
+	if got[trashedLocal] != StorageBackendLocal {
+		t.Errorf("trashedLocal backend = %q, want %q", got[trashedLocal], StorageBackendLocal)
+	}
+	if got[trashedLinks] != StorageBackendLinks {
+		t.Errorf("trashedLinks backend = %q, want %q", got[trashedLinks], StorageBackendLinks)
+	}
+
+	// The live row survives; the trashed rows are gone.
+	if f, err := db.GetFileByHash(ctx, liveLocal); err != nil || f == nil {
+		t.Fatalf("live row missing after bulk delete: f=%v err=%v", f, err)
+	}
+	for _, h := range []string{trashedLocal, trashedLinks} {
+		if f, err := db.GetFileByHash(ctx, h); err != nil || f != nil {
+			t.Errorf("trashed row %s still present after delete: f=%v err=%v", h, f, err)
+		}
+	}
+}

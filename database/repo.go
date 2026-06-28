@@ -164,6 +164,14 @@ type Repository interface {
 	// transaction, preventing a concurrent restore from racing the delete.
 	HardDeleteTrashedFileByHash(ctx context.Context, hash string) (filenames []string, found bool, err error)
 
+	// BulkHardDeleteTrashedByHashes permanently removes the trashed rows for a
+	// hash set in one transaction, returning each deleted row's hash + storage
+	// backend so the caller can reclaim the blobs afterwards (the filesystem
+	// unlink stays outside the transaction). It is the batch counterpart to
+	// HardDeleteTrashedFileByHash, backing the Trash "Delete selected" bulk
+	// action — one commit instead of a per-hash delete + audit write.
+	BulkHardDeleteTrashedByHashes(ctx context.Context, hashes []string) ([]DeletedBlob, error)
+
 	// RestoreFileByHash clears deleted_at on a trashed file, returning it to
 	// the live library. found is false (no error) when no trashed row matches.
 	RestoreFileByHash(ctx context.Context, hash string) (found bool, err error)

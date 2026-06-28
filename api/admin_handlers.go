@@ -515,31 +515,25 @@ func (h *handler) trashBulk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// delete: per-hash, since each needs its storage kind learned before the row
-	// is gone and its blob reclaimed.
-	affected := 0
-	for _, hash := range hashes {
-		f, err := h.repo.GetFileByHash(r.Context(), hash)
-		var found bool
-		if err == nil {
-			var filenames []string
-			filenames, found, err = h.repo.HardDeleteTrashedFileByHash(r.Context(), hash)
-			if found && err == nil {
-				if _, rerr := h.reclaimStorage(f, hash); rerr != nil {
-					log.Printf("orphan blob: hash=%s err=%v", hash, rerr)
-				}
-				h.audit(r.Context(), "file.delete", hash, strings.Join(filenames, ", "))
-			}
-		}
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
-			return
-		}
-		if found {
-			affected++
+	// delete: the DB rows go in one batched transaction (each carrying its storage
+	// kind out so the blob can be reclaimed once the row is gone), replacing the
+	// old per-hash loop that opened two autocommit writes per file (delete + audit)
+	// — the same slowness/SQLITE_BUSY fix already applied to bulk restore. Storage
+	// reclamation (a local DeleteAll or a links unlink) is a filesystem op, so it
+	// runs after the commit; a failure only orphans bytes (reconciled by prune),
+	// never the reverse.
+	blobs, err := h.repo.BulkHardDeleteTrashedByHashes(r.Context(), hashes)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+		return
+	}
+	for _, b := range blobs {
+		if _, rerr := h.reclaimStorage(&database.File{StorageBackend: b.StorageBackend}, b.Hash); rerr != nil {
+			log.Printf("orphan blob: hash=%s err=%v", b.Hash, rerr)
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
+	h.audit(r.Context(), "file.bulk_delete", "files", fmt.Sprintf("%d deleted", len(blobs)))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": len(blobs)})
 }
 
 // adminPrune handles POST /api/admin/prune — it *starts* the single, server-wide

@@ -418,6 +418,8 @@ type fakeRepo struct {
 	bulkTrashErr       error
 	bulkRestoredHashes []string
 	bulkRestoreErr     error
+	bulkDeletedHashes  []string
+	bulkDeleteErr      error
 
 	breakdown    database.StorageByteBreakdown
 	breakdownErr error
@@ -815,6 +817,18 @@ func (f *fakeRepo) HardDeleteFileByHash(_ context.Context, _ string) ([]string, 
 
 func (f *fakeRepo) HardDeleteTrashedFileByHash(_ context.Context, _ string) ([]string, bool, error) {
 	return f.deleteFilenames, f.deleteFound, f.deleteErr
+}
+
+func (f *fakeRepo) BulkHardDeleteTrashedByHashes(_ context.Context, hashes []string) ([]database.DeletedBlob, error) {
+	f.bulkDeletedHashes = append(f.bulkDeletedHashes, hashes...)
+	if f.bulkDeleteErr != nil {
+		return nil, f.bulkDeleteErr
+	}
+	blobs := make([]database.DeletedBlob, len(hashes))
+	for i, h := range hashes {
+		blobs[i] = database.DeletedBlob{Hash: h, StorageBackend: database.StorageBackendLocal}
+	}
+	return blobs, nil
 }
 
 func (f *fakeRepo) RestoreFileByHash(_ context.Context, _ string) (bool, error) {
