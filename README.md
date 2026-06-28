@@ -285,16 +285,25 @@ Madshare as a dedicated `madshare` system user with `WorkingDirectory=/var/lib/m
 (so the default relative data paths land there), reads config from
 `/etc/madshare/`, takes the first-run admin password from an optional
 `/etc/madshare/madshare.env`, and applies the usual sandboxing directives. The
-file header lists the full setup steps; in short:
+file header lists the full setup steps. The file-placement parts are automated
+by `sudo make install` (builds if needed, installs the binary to
+`/usr/local/bin`, seeds `/etc/madshare/{madshare,webui}.toml` without clobbering
+an existing config, and installs the systemd unit when `systemctl` is present —
+overridable via `PREFIX` / `SYSCONFDIR` / `DESTDIR`; see
+[`docs/building.md`](docs/building.md#installing-make-install)). It deliberately
+does **not** create the service user or enable the unit; do those by hand:
 
 ```bash
-go build -o /usr/local/bin/madshare ./
+sudo make install                                  # binary + config + unit
 sudo useradd --system --home /var/lib/madshare --shell /usr/sbin/nologin madshare
 sudo install -d -o madshare -g madshare /var/lib/madshare
-sudo cp contrib/systemd/madshare.service /etc/systemd/system/
+echo 'MADSHARE_INITIAL_ADMIN_PASSWORD=...' | sudo tee /etc/madshare/madshare.env >/dev/null
+sudo chmod 600 /etc/madshare/madshare.env
 sudo systemctl daemon-reload
 sudo systemctl enable --now madshare
 ```
+
+`make uninstall` reverses the file placement, keeping your live config and data.
 
 **Data & backups.** Everything stateful lives under the paths in `[database]` and
 `[storage]` (by default `./data/`): the SQLite DB (`madshare.db*` — note the WAL

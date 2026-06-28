@@ -102,6 +102,56 @@ A plain `go build ./` / `go run madshare.go` is still fine for development — t
 About box just falls back to the embedded commit hash (and to an em-dash when
 even that is unavailable, e.g. a `-buildvcs=false` build).
 
+## Installing (`make install`)
+
+On POSIX systems `make install` puts a built server in place system-wide:
+
+```bash
+sudo make install
+```
+
+It will:
+
+- **build first only if `./madshare` is missing** (otherwise it installs the
+  existing binary — run `make build` yourself to force a fresh one);
+- install the binary to `$(BINDIR)` (`/usr/local/bin/madshare`, mode `0755`);
+- create `$(CONFDIR)` (`/etc/madshare`) and copy `madshare.toml.example` /
+  `webui.toml.example` there, then seed the live `madshare.toml` / `webui.toml`
+  from them **only if absent** — re-running never clobbers an edited config;
+- when `systemctl` is on `PATH` (or `DESTDIR` is set), install
+  [`contrib/systemd/madshare.service`](../contrib/systemd/madshare.service) to
+  `$(SYSTEMD_UNIT_DIR)` (`/etc/systemd/system`), rewriting its `/usr/local/bin`
+  and `/etc/madshare` paths to match `BINDIR` / `CONFDIR`.
+
+It intentionally does **not** create the `madshare` service user, write the
+admin-password env file, or `daemon-reload`/`enable` the unit — those need root
+decisions and aren't idempotent. The exact commands are printed at the end (and
+listed in the [README deployment section](../README.md#deployment)).
+
+Overridable variables (GNU-style, plus `DESTDIR` for staged/packaging installs):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PREFIX` | `/usr/local` | install root; `BINDIR` derives as `$(PREFIX)/bin` |
+| `BINDIR` | `$(PREFIX)/bin` | where the binary lands |
+| `SYSCONFDIR` | `/etc` | config root; `CONFDIR` derives as `$(SYSCONFDIR)/madshare` |
+| `CONFDIR` | `$(SYSCONFDIR)/madshare` | config directory |
+| `SYSTEMD_UNIT_DIR` | `/etc/systemd/system` | unit destination |
+| `DESTDIR` | *(empty)* | staging prefix prepended to every path |
+| `INSTALL` | `install` | the install(1) program |
+
+```bash
+make install PREFIX=/usr               # /usr/bin/madshare
+make install DESTDIR=/tmp/pkg          # stage a package tree (forces unit install)
+```
+
+`make uninstall` removes the binary, the unit, and the installed `*.example`
+files; it deliberately keeps the live `*.toml` config and any data directory.
+
+There is **no Windows install target** — Windows has no `/usr/local` or systemd
+and `make` is uncommon there. On Windows just `go build -o madshare.exe ./` and
+run the binary with a `madshare.toml` beside it (or pass `-config <path>`).
+
 ## Build variants
 
 `nowebui` is the only build tag you choose by hand; the server-only / UI-only
