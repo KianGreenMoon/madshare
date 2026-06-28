@@ -106,7 +106,9 @@ async function filesBulkApply(hashes, patch) {
   if (data.failed?.length) throw new Error(`updated ${data.affected}, ${data.failed.length} failed`);
 }
 async function bulkApplyAll(filter, patch) {
-  const data = await bulkEdit({ filter, patch });
+  // Mirror bulkTrashAll: an empty filter is the whole library, which the server
+  // refuses unless the request explicitly opts in with all:true.
+  const data = await bulkEdit({ filter, patch, all: !filter.q });
   if (data.failed?.length) throw new Error(`updated ${data.affected}, ${data.failed.length} failed`);
   toast(`Updated ${data.affected} ${data.affected === 1 ? 'file' : 'files'}.`, 'success');
 }
