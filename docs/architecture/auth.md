@@ -281,9 +281,12 @@ ALTER TABLE files ADD COLUMN license        TEXT;
 Authorization is **middleware composed in `buildHandler`** (`madshare.go`),
 inserted into the chain after `Recoverer`/`CORS` and before the route groups:
 
-1. **`identify`** (always runs, never rejects): resolves the session cookie or
-   Bearer token to a user and stashes `(user, permissions)` — or "anonymous" — in
-   the request context.
+1. **`identify`** (always runs): resolves the session cookie or Bearer token to a
+   user and stashes `(user, permissions)` — or "anonymous" — in the request
+   context. A missing/unknown/expired credential is anonymous, **but** a
+   *presented* credential whose store lookup fails with a transient error (e.g. a
+   `SQLITE_BUSY` hiccup) fails closed with **503** rather than silently
+   downgrading to anonymous (which would render a logged-in user logged-out).
 2. **`requirePermission(perm)`**: per-route guard; 401 if anonymous, 403 if the
    permission is absent. This is what fills the existing `// r.Use(adminGate)`
    TODO in `api.RegisterAdmin`, and wraps the upload (`file.upload`), delete

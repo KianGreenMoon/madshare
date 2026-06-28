@@ -137,10 +137,12 @@ Acts over the **Trash** (soft-deleted) bucket. The filter resolves over
 `restore` / `delete`: `{ "ok": true, "affected": N }`. `edit`:
 `{ "ok": true, "affected": N, "failed": [...] }` (same shape as the library edit).
 
-> Restore and permanent-delete were originally per-row loops (two write
-> transactions each) and produced `SQLITE_BUSY` under load over large
-> "select all matching" sets; both are now single batched transactions. See
-> `.issues/open-issues.md` → "Bulk write paths / SQLITE_BUSY".
+> Every bulk action across all four endpoints runs under one batched transaction
+> per action (chunked) + one summary audit row — never a write-per-row loop, which
+> produced `SQLITE_BUSY` under load over large "select all matching" sets. (Bulk
+> tag edits re-resolve entities per file, so they share a transaction per chunk
+> rather than one `UPDATE`.) See `.issues/open-issues.md` → "Bulk write paths /
+> SQLITE_BUSY".
 
 ---
 
@@ -169,9 +171,10 @@ right after a return cannot republish them — see
 | `return` | Send back to the uploader with a **required** `note` (1–1000 bytes). | `content.moderate` |
 | `discard` | Soft-delete to Trash. | `content.moderate` **and** `file.delete` |
 
-Loops the same guarded per-row transitions the single-hash endpoints
-(`…/{hash}/approve`, `…/{hash}/return`) use, so the from-state guards are
-identical. Returns `{ "ok": true, "affected": N }`.
+Applies the same guarded transitions the single-hash endpoints
+(`…/{hash}/approve`, `…/{hash}/return`) use — one batched transaction per action
+plus a single summary audit row — so the from-state guards are identical.
+Returns `{ "ok": true, "affected": N }`.
 
 ---
 
@@ -238,12 +241,14 @@ field must be present, else `400 "nothing to update"`.
   is applied before `guest` (an explicit `guest` wins over any license
   auto-derive).
 
-Because the edit re-resolves entities per file, it applies one file at a time and
-can **partially** succeed: the response is
+Because the edit re-resolves each file's entities, the tag write applies per file
+(sharing one transaction per chunk, not one `UPDATE`) and can **partially**
+succeed: the response is
 `{ "ok": true, "affected": N, "failed": [{ "hash": "…", "error": "…" }] }`, and a
-single `metadata.bulk_edit` summary audit row records the count. (Tags don't
-clear when absent, so a "set the album for these 40 tracks" edit leaves their
-differing titles intact.)
+single `metadata.bulk_edit` summary audit row records the count. The single-valued
+`license`/`guest` instead collapse to one guarded `UPDATE … hash IN (…)` each.
+(Tags don't clear when absent, so a "set the album for these 40 tracks" edit
+leaves their differing titles intact.)
 
 ---
 
