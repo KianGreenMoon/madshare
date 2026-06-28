@@ -28,16 +28,25 @@ let nextBulkId = 1;
 const GUEST_KEEP = '';      // sentinel: leave guest as-is
 const GUEST_ON   = 'on';
 const GUEST_OFF  = 'off';
-const LICENSE_KEEP = '\x00keep'; // sentinel distinct from "" (= clear), unused here
+const LICENSE_KEEP = '\x00keep'; // "keep" sentinel — "" is a real license value (— none —), so it can't double as keep the way GUEST_KEEP does
 
 // Field placeholders. MIXED marks a field whose selected files disagree (shown
 // blank, so leaving it blank keeps each file's own value).
 const MIXED_PLACEHOLDER = 'Multiple values — leave blank to keep';
-const KEEP_PLACEHOLDER  = 'Leave blank to keep each file’s value';
+const KEEP_PLACEHOLDER  = 'Leave blank to keep unchanged';
 
 // EXT_PREFILL_CAP bounds how many files we'll fetch full tags for to compute the
 // extended modal's shared values; above it the extended fields stay set-only.
 const EXT_PREFILL_CAP = 100;
+
+// The always-present base text fields (key → label). Their keys drive the
+// builder, pre-fill, change-detection, and patch loops, so the list lives once.
+const BASE_FIELDS = [
+  ['artist', 'Artist'],
+  ['album_artist', 'Album artist'],
+  ['album', 'Album'],
+];
+const BASE_KEYS = BASE_FIELDS.map(([key]) => key);
 
 /**
  * createBulkEditor builds the modal (hidden) and returns its controls.
@@ -98,17 +107,13 @@ export function createBulkEditor({ access = null, onApply, onError, loadDetails 
   form.appendChild(countLine);
 
   const inputs = {};
-  for (const [key, label] of [
-    ['artist', 'Artist'],
-    ['album_artist', 'Album artist'],
-    ['album', 'Album'],
-  ]) {
+  for (const [key, label] of BASE_FIELDS) {
     const wrap = document.createElement('label');
     wrap.append(document.createTextNode(label));
     const input = document.createElement('input');
     input.type = 'text';
     input.autocomplete = 'off';
-    input.placeholder = 'Leave blank to keep each file’s value';
+    input.placeholder = KEEP_PLACEHOLDER;
     wrap.appendChild(input);
     inputs[key] = input;
     form.appendChild(wrap);
@@ -345,7 +350,7 @@ export function createBulkEditor({ access = null, onApply, onError, loadDetails 
 
     // Base text fields: pre-fill the shared value, or blank + a "multiple values"
     // hint when they vary. Record the starting value for change detection.
-    for (const key of ['artist', 'album_artist', 'album']) {
+    for (const key of BASE_KEYS) {
       const v = key in common ? String(common[key]) : '';
       inputs[key].value = v;
       inputs[key].placeholder = mixed.has(key) ? MIXED_PLACEHOLDER : KEEP_PLACEHOLDER;
@@ -397,7 +402,7 @@ export function createBulkEditor({ access = null, onApply, onError, loadDetails 
   // along as strings (the server parses them).
   function buildPatch() {
     const patch = {};
-    for (const key of ['artist', 'album_artist', 'album']) {
+    for (const key of BASE_KEYS) {
       const v = inputs[key].value.trim();
       if (v && v !== initial[key]) patch[key] = v;
     }
