@@ -124,3 +124,14 @@ plaintext across an untrusted/public network. Same-origin keeps cookie auth and
 gated `<audio>` streaming working with no CORS/token plumbing. Full design, phases
 P0–P4 (PWA stepping stone → shell+safety gate → background audio → multi-server):
 `docs/architecture/android-app.md`.
+
+## Native desktop/mobile client (designed, not built)
+
+A **separate, native pure-Go GUI** (Gio/Fyne leaning) for desktop and mobile that
+**embeds** the madshare backend *and* a Yggdrasil node as in-process libraries —
+local-first music player by default, **federation peer** to other nodes as the
+milestone. The web UI stays HTML/JS (best tool for the browser), so this is a
+second, deliberately-accepted UI over the same HTTP API. Deferred until the backend
+and the federation model are stable; the cross-node trust model
+(`docs/architecture/federation.md`, see Federation above) is the prerequisite.
+Full design: `docs/ui/native-client.md`.
