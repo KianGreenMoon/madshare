@@ -69,3 +69,17 @@
 
 /* Keep recording cards clear of the fixed player bar when it is shown. */
 .admin-main { padding-bottom: 96px; }
+
+/* Absorb — the primary dedup action (keep one blob, preserve every appearance).
+   Accent-filled to stand out from the neutral/destructive controls beside it. */
+.btn-absorb {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.btn-absorb:hover:not(:disabled) { background: var(--accent-dim); border-color: var(--accent-dim); }
+
+/* Keep radio — picks the master rendition an Absorb keeps. */
+.dup-keepcell { text-align: center; width: 3rem; white-space: nowrap; }
+.dup-keepcell .dup-keep { cursor: pointer; accent-color: var(--accent); }
+th.dup-keepcell { font-size: 12px; color: var(--text-muted); font-weight: 500; }

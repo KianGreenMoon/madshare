@@ -417,8 +417,11 @@ func (db *DB) RecordingRenditionsByTagsetID(ctx context.Context, tagsetID int64)
 // the resolver never re-merges it (the "save as another composition" action).
 // The file's offered tagsets move with it (its appearance follows the audio),
 // becoming the new recording's primary; the recording it left is repaired
-// (primary re-promoted; removed if the split emptied it). found is false (no
-// error) when no live file matches the id. Atomic.
+// (primary re-promoted; removed if the split emptied it). When the file has no
+// tagset of its own (an absorbed rendition — recording-tagsets P3), the new
+// recording instead takes a *copy* of the source recording's primary appearance
+// so it stays browsable (the moderator fixes its tags afterward). found is false
+// (no error) when no live file matches the id. Atomic.
 func (db *DB) SplitRendition(ctx context.Context, fileID int64) (newRecordingID int64, found bool, err error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -428,9 +431,7 @@ func (db *DB) SplitRendition(ctx context.Context, fileID int64) (newRecordingID 
 
 	var oldRecordingID int64
 	err = tx.QueryRowContext(ctx,
-		`SELECT f.recording_id FROM files f
-		  WHERE f.id = ? AND f.deleted_at IS NULL
-		    AND EXISTS (SELECT 1 FROM tagsets t WHERE t.origin_file_id = f.id AND t.deleted_at IS NULL)`,
+		`SELECT f.recording_id FROM files f WHERE f.id = ? AND f.deleted_at IS NULL`,
 		fileID,
 	).Scan(&oldRecordingID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -464,6 +465,28 @@ func (db *DB) SplitRendition(ctx context.Context, fileID int64) (newRecordingID 
 		newRecordingID, newRecordingID,
 	); err != nil {
 		return 0, false, fmt.Errorf("split rendition: primary: %w", err)
+	}
+	// Tagset-less split (the file carried no appearance of its own): copy the
+	// source recording's primary so the new recording is browsable, not invalid.
+	var newTagsetCount int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tagsets WHERE recording_id=?`, newRecordingID,
+	).Scan(&newTagsetCount); err != nil {
+		return 0, false, fmt.Errorf("split rendition: count tagsets: %w", err)
+	}
+	if newTagsetCount == 0 {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO tagsets (recording_id, title, artist, album_artist, album, genre, year,
+				track_number, track_total, disc_number, composer, comment,
+				artist_id, album_artist_id, album_id, review_state, created_by, origin_file_id, is_primary, created_at)
+			SELECT ?, title, artist, album_artist, album, genre, year,
+				track_number, track_total, disc_number, composer, comment,
+				artist_id, album_artist_id, album_id, review_state, created_by, ?, 1, ?
+			  FROM tagsets WHERE recording_id=? AND is_primary=1 LIMIT 1`,
+			newRecordingID, fileID, time.Now().Unix(), oldRecordingID,
+		); err != nil {
+			return 0, false, fmt.Errorf("split rendition: copy primary: %w", err)
+		}
 	}
 	if err := repairRecordingTx(ctx, tx, oldRecordingID); err != nil {
 		return 0, false, err

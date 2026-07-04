@@ -287,6 +287,10 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		// and split a rendition off; delete reuses the soft-delete above.
 		r.With(moderate).Get("/duplicates", h.duplicatesList)
 		r.With(moderate).Post("/duplicates/{file_id}/split", h.duplicatesSplit)
+		// Absorb (recording-tagsets P3): keep the best blob, preserve every
+		// appearance. Bulk ("keep best" over a set) + single-recording forms.
+		r.With(moderate).Post("/duplicates/absorb", h.duplicatesAbsorbBulk)
+		r.With(moderate).Post("/duplicates/absorb/{recording_id}", h.duplicatesAbsorb)
 
 		// Symlink data sources (import in place). The admin group is already
 		// file.delete-gated at the listener; adding/scanning a source is a

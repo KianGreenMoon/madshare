@@ -310,6 +310,17 @@ type Repository interface {
 	// another composition" action). found is false when no live file matches.
 	SplitRendition(ctx context.Context, fileID int64) (newRecordingID int64, found bool, err error)
 
+	// AbsorbRenditions keeps keepFileID's blob and absorbs absorbFileIDs into the
+	// recording — their blobs soft-removed, their distinct appearances preserved,
+	// redundant/nameless ones dropped (recording-tagsets P3). AbsorbOutcome.Found
+	// is false (no error) on a stale selection (a non-live-rendition id).
+	AbsorbRenditions(ctx context.Context, recordingID, keepFileID int64, absorbFileIDs []int64) (AbsorbOutcome, error)
+
+	// BulkAbsorbKeepBest absorbs each recording's non-best live renditions into
+	// its ladder-best in one transaction ("keep best" over a set); single-rendition
+	// recordings are skipped. Returns recordings absorbed + renditions removed.
+	BulkAbsorbKeepBest(ctx context.Context, recordingIDs []int64) (recordingsAbsorbed, renditionsRemoved int, err error)
+
 	// IsDuplicateSubmission reports whether the file duplicates already-approved
 	// content (recordings P3): by fingerprint/recording when one exists, else a
 	// non-default tag collision. Suppresses self-approve and flags the queue.

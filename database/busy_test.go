@@ -82,6 +82,64 @@ func TestHardDelete_ConcurrentWritesNoBusy(t *testing.T) {
 	}
 }
 
+// TestAbsorb_ConcurrentWritesNoBusy checks the P3 absorb (a read-then-write
+// single transaction: load renditions/appearances → drop tagsets → soft-remove
+// files → repair) holds under contention with other writers, taking the write
+// lock at BEGIN (_txlock=immediate) rather than failing the upgrade with
+// SQLITE_BUSY. Each of N recordings is absorbed concurrently while four writers
+// hammer the DB; no op may fail.
+func TestAbsorb_ConcurrentWritesNoBusy(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(filepath.Join(dir, "busy_absorb.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	ctx := context.Background()
+	const n = 30
+	type pair struct {
+		rec  int64
+		keep int64
+		drop int64
+	}
+	pairs := make([]pair, n)
+	for i := range pairs {
+		a := insertTaggedFile(t, db, fmt.Sprintf("%064x", 2*i+1), fmt.Sprintf("keep%d.flac", i), "Band", fmt.Sprintf("Studio %d", i))
+		b := insertTaggedFile(t, db, fmt.Sprintf("%064x", 2*i+2), fmt.Sprintf("drop%d.mp3", i), "Band", fmt.Sprintf("Best %d", i))
+		rec := groupIntoRecording(t, db, a.ID, b.ID)
+		pairs[i] = pair{rec: rec, keep: a.ID, drop: b.ID}
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 5*n)
+	for _, p := range pairs {
+		wg.Add(1)
+		go func(p pair) {
+			defer wg.Done()
+			if _, err := db.AbsorbRenditions(ctx, p.rec, p.keep, []int64{p.drop}); err != nil {
+				errCh <- fmt.Errorf("absorb: %w", err)
+			}
+		}(p)
+	}
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < 100; i++ {
+				if err := db.SetSetting(ctx, "k"+strconv.Itoa(w), strconv.Itoa(i)); err != nil {
+					errCh <- fmt.Errorf("setSetting: %w", err)
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Errorf("concurrent op failed: %v", err)
+	}
+}
+
 // TestBulkHardDeleteTagsets_ConcurrentWritesNoBusy is the P2 counterpart: the
 // tagset-first cascade (BulkHardDeleteTrashedByHashes) is a longer read-then-write
 // transaction (resolve trashed tagsets → delete → count remaining → GC files),

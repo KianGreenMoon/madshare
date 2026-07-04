@@ -234,8 +234,14 @@ video rendition can *be* an HLS manifest without reshaping this model.
 ## Duplicates / variants admin page
 
 **✅ Implemented** as `/admin/duplicates` (`webui/static/js/admin/duplicates.js`)
-backed by `GET /api/admin/duplicates` + `POST /api/admin/duplicates/{file_id}/split`
-(both gated **`content.moderate`**). It reuses the shared building blocks: the
+backed by `GET /api/admin/duplicates`, `POST /api/admin/duplicates/{file_id}/split`,
+and — since recording-tagsets P3 — **absorb**:
+`POST /api/admin/duplicates/absorb/{recording_id}` (keep one blob, preserve every
+appearance) and `POST /api/admin/duplicates/absorb` (bulk "keep best" over
+`recording_ids` or `all:true`). All gated **`content.moderate`**. The page's
+**Keep** radio picks the master rendition; **Absorb into ★** and **Absorb all →
+keep best** drive the endpoints. See
+[recording-tagsets.md](recording-tagsets.md) (Absorb). It reuses the shared building blocks: the
 **player core** (`player.js`, the same bar as the listening pages) driven by a
 page-local play context — playing a rendition queues the recording's renditions
 so Prev/Next/auto-advance walk them — and the shared **`track-edit.js`** modal for

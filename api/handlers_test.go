@@ -461,8 +461,17 @@ type fakeRepo struct {
 	duplicateRecordings []database.DuplicateRecording
 	splitFileID         int64
 	splitNotFound       bool
-	duplicateHashes     map[string]bool               // hashes IsDuplicateSubmission reports true
-	renditions          []database.DuplicateRendition // RecordingRenditionsByTagsetID result
+
+	absorbRecordingID int64
+	absorbKeepFileID  int64
+	absorbFileIDs     []int64
+	absorbNotFound    bool
+	absorbDropped     int
+	absorbErr         error
+	bulkAbsorbIDs     []int64
+	bulkAbsorbErr     error
+	duplicateHashes   map[string]bool               // hashes IsDuplicateSubmission reports true
+	renditions        []database.DuplicateRendition // RecordingRenditionsByTagsetID result
 
 	// Base-metadata edit stubs (Phase 5).
 	metaCalls     int
@@ -784,6 +793,27 @@ func (f *fakeRepo) SplitRendition(_ context.Context, fileID int64) (int64, bool,
 		return 0, false, nil
 	}
 	return 999, true, nil
+}
+
+func (f *fakeRepo) AbsorbRenditions(_ context.Context, recordingID, keepFileID int64, absorbFileIDs []int64) (database.AbsorbOutcome, error) {
+	f.absorbRecordingID = recordingID
+	f.absorbKeepFileID = keepFileID
+	f.absorbFileIDs = absorbFileIDs
+	if f.absorbErr != nil {
+		return database.AbsorbOutcome{}, f.absorbErr
+	}
+	if f.absorbNotFound {
+		return database.AbsorbOutcome{Found: false}, nil
+	}
+	return database.AbsorbOutcome{Found: true, RenditionsRemoved: len(absorbFileIDs), AppearancesDropped: f.absorbDropped}, nil
+}
+
+func (f *fakeRepo) BulkAbsorbKeepBest(_ context.Context, recordingIDs []int64) (int, int, error) {
+	f.bulkAbsorbIDs = recordingIDs
+	if f.bulkAbsorbErr != nil {
+		return 0, 0, f.bulkAbsorbErr
+	}
+	return len(recordingIDs), len(recordingIDs), nil
 }
 
 func (f *fakeRepo) IsDuplicateSubmission(_ context.Context, hash string) (bool, error) {

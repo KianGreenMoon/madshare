@@ -99,11 +99,11 @@ type RunSummary struct {
 	Kind       string    `json:"kind"` // KindScan | KindPrune
 	Deep       bool      `json:"deep"`
 	Scanned    int       `json:"scanned"`
-	Dangling   int       `json:"dangling_count,omitempty"`      // scan
-	Pruned     int       `json:"pruned_count,omitempty"`        // prune
-	Failed     int       `json:"failed_count,omitempty"`        // prune
-	Invalid    int       `json:"invalid_recordings,omitempty"`  // prune (recordings GC'd)
-	Outcome    string    `json:"outcome"`                       // OutcomeCompleted | ...
+	Dangling   int       `json:"dangling_count,omitempty"`     // scan
+	Pruned     int       `json:"pruned_count,omitempty"`       // prune
+	Failed     int       `json:"failed_count,omitempty"`       // prune
+	Invalid    int       `json:"invalid_recordings,omitempty"` // prune (recordings GC'd)
+	Outcome    string    `json:"outcome"`                      // OutcomeCompleted | ...
 	Error      string    `json:"error,omitempty"`
 	By         string    `json:"by,omitempty"`
 	FinishedAt time.Time `json:"finished_at"`

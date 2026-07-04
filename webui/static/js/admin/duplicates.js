@@ -23,6 +23,7 @@ const dispArtist = r => r.album_artist || r.artist || '';
 
 // ── Bulk selection toolbar ────────────────────────────────────────────────────
 const toolbar           = document.getElementById('dupToolbar');
+const btnAbsorbAll      = document.getElementById('absorbAll');
 const btnSelectExtras   = document.getElementById('selectExtras');
 const btnClearSel       = document.getElementById('clearSel');
 const btnDeleteSelected = document.getElementById('deleteSelected');
@@ -71,6 +72,7 @@ btnClearSel.addEventListener('click', () => {
   updateSelCount();
 });
 btnDeleteSelected.addEventListener('click', deleteSelected);
+btnAbsorbAll.addEventListener('click', absorbAll);
 
 // ── Shared preview player ─────────────────────────────────────────────────────
 // One player-bar for the page (createPlayer), driven by a page-local play
@@ -115,19 +117,22 @@ function editTags(r) {
   });
 }
 
-// ── Delete confirmation modal ─────────────────────────────────────────────────
+// ── Confirmation modal (shared by delete + absorb) ────────────────────────────
 const delModal   = document.getElementById('delModal');
+const delTitle   = document.getElementById('delModalTitle');
 const delBody    = document.getElementById('delModalBody');
 const delConfirm = document.getElementById('delConfirm');
 const delCancel  = document.getElementById('delCancel');
 const delClose   = document.getElementById('delClose');
 
-function confirmDelete(n) {
+// confirmModal resolves true/false. danger styles the confirm button red (delete);
+// otherwise it is the neutral primary (absorb, which is reversible).
+function confirmModal({ title, body, confirmLabel, danger = false }) {
   return new Promise(resolve => {
-    delBody.textContent = n === 1
-      ? 'Send 1 rendition to Trash? The blob is kept and can be restored.'
-      : `Send ${n} renditions to Trash? The blobs are kept and can be restored.`;
-    delConfirm.textContent = n === 1 ? 'Delete to Trash' : `Delete ${n} to Trash`;
+    delTitle.textContent = title;
+    delBody.textContent = body;
+    delConfirm.textContent = confirmLabel;
+    delConfirm.className = 'btn ' + (danger ? 'btn-destructive-solid' : 'btn-neutral');
     delModal.classList.remove('hidden');
     delConfirm.focus();
     const cleanup = () => {
@@ -146,6 +151,17 @@ function confirmDelete(n) {
     delClose.addEventListener('click', onCancel);
     delModal.addEventListener('click', onBackdrop);
     document.addEventListener('keydown', onKey);
+  });
+}
+
+function confirmDelete(n) {
+  return confirmModal({
+    title: 'Delete to Trash?',
+    body: n === 1
+      ? 'Send 1 rendition to Trash? The blob is kept and can be restored.'
+      : `Send ${n} renditions to Trash? The blobs are kept and can be restored.`,
+    confirmLabel: n === 1 ? 'Delete to Trash' : `Delete ${n} to Trash`,
+    danger: true,
   });
 }
 
@@ -188,6 +204,62 @@ async function splitRendition(r) {
   load();
 }
 
+// absorbCard keeps the card's checked master rendition and absorbs the rest:
+// their files are removed (restorable) but every distinct release is preserved,
+// with duplicate / blank releases dropped. The keep radio defaults to the best.
+async function absorbCard(group, cardEl) {
+  const keepRadio = cardEl.querySelector('.dup-keep:checked');
+  const keepId = keepRadio ? Number(keepRadio.dataset.fileId) : group.renditions[0].file_id;
+  const absorbIds = group.renditions.map(r => r.file_id).filter(id => id !== keepId);
+  if (!absorbIds.length) { toast('Only one rendition — nothing to absorb.', 'error'); return; }
+  const keep = group.renditions.find(r => r.file_id === keepId) || group.renditions[0];
+  const ok = await confirmModal({
+    title: 'Absorb into the kept rendition?',
+    body: `Keep “${keep.title || keep.hash}” (${keep.format || 'audio'}) as the master and absorb the other `
+      + `${absorbIds.length} rendition${absorbIds.length === 1 ? '' : 's'}. Their files are removed (restorable), `
+      + `but every distinct release is preserved as a separate track; duplicate or blank releases are dropped.`,
+    confirmLabel: 'Absorb',
+  });
+  if (!ok) return;
+  let res;
+  try {
+    res = await fetch(`${API}/api/admin/duplicates/absorb/${group.recording_id}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keep_file_id: keepId, absorb_file_ids: absorbIds }),
+    });
+  } catch { toast('Network error absorbing.', 'error'); return; }
+  if (handleAuthError(res)) return;
+  if (res.status === 404) { toast('The renditions changed — reloading.', 'error'); load(); return; }
+  if (!res.ok) { toast(`Absorb failed (HTTP ${res.status}).`, 'error'); return; }
+  const j = await res.json().catch(() => ({}));
+  const kept = absorbIds.length - (j.appearances_dropped || 0);
+  toast(`Absorbed ${j.renditions_removed ?? absorbIds.length} rendition(s); kept ${kept} extra release(s).`, 'success');
+  load();
+}
+
+// absorbAll runs the "keep best" absorb across every duplicate recording at once.
+async function absorbAll() {
+  const ok = await confirmModal({
+    title: 'Absorb all duplicates?',
+    body: 'For every recording with more than one rendition, keep its best-quality audio and absorb the rest. '
+      + 'The removed files are restorable, and every distinct release is preserved.',
+    confirmLabel: 'Absorb all → keep best',
+  });
+  if (!ok) return;
+  let res;
+  try {
+    res = await fetch(`${API}/api/admin/duplicates/absorb`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ all: true }),
+    });
+  } catch { toast('Network error.', 'error'); return; }
+  if (handleAuthError(res)) return;
+  if (!res.ok) { toast(`Absorb failed (HTTP ${res.status}).`, 'error'); return; }
+  const j = await res.json().catch(() => ({}));
+  toast(`Absorbed ${j.recordings_absorbed || 0} recording(s), removed ${j.renditions_removed || 0} rendition(s).`, 'success');
+  load();
+}
+
 // ── Rendering ─────────────────────────────────────────────────────────────────
 function techCell(r) {
   const parts = [];
@@ -211,8 +283,14 @@ function renditionRow(group, r, index) {
     type: 'checkbox', class: 'dup-check', 'data-hash': r.hash, 'data-best': r.best ? '1' : '',
     'aria-label': `Select ${r.title || r.hash} for deletion`,
   });
+  const keep = el('input', {
+    type: 'radio', class: 'dup-keep', name: `keep-${group.recording_id}`,
+    'data-file-id': String(r.file_id), 'aria-label': `Keep ${r.title || r.hash} as the master rendition`,
+  });
+  if (r.best) keep.checked = true;
   return el('tr', { 'data-hash': r.hash }, [
     el('td', { class: 'dup-checkcell' }, [check]),
+    el('td', { class: 'dup-keepcell' }, [keep]),
     el('td', { class: 'dup-rank' }, [r.best ? el('span', { class: 'dup-best', title: 'Best by the quality ladder' }, ['★ best']) : `#${r.rank}`]),
     el('td', {}, [
       el('div', { class: 'dup-title' }, [r.title || '(untitled)']),
@@ -230,6 +308,7 @@ function recordingCard(group) {
   const table = el('table', { class: 'dup-table' }, [
     el('thead', {}, [el('tr', {}, [
       el('th', { class: 'dup-checkcell', 'aria-label': 'Select' }, ['']),
+      el('th', { class: 'dup-keepcell', title: 'Master rendition kept on absorb' }, ['Keep']),
       el('th', {}, ['Rank']), el('th', {}, ['Track']), el('th', {}, ['Format']),
       el('th', {}, ['Quality']), el('th', {}, ['Length']), el('th', {}, ['Size']),
       el('th', {}, ['']),
@@ -238,6 +317,11 @@ function recordingCard(group) {
   ]);
   return el('section', { class: 'dup-card' }, [
     el('div', { class: 'dup-card-head' }, [
+      el('button', {
+        class: 'btn btn-sm btn-absorb',
+        title: 'Keep the selected master rendition and absorb the rest, preserving every distinct release',
+        onclick: e => absorbCard(group, e.target.closest('.dup-card')),
+      }, ['Absorb into ★']),
       el('button', {
         class: 'btn btn-sm btn-neutral',
         title: 'Tick this recording’s non-best renditions; click again to clear them',

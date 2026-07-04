@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"daemonlord.ygg/madshare/database"
@@ -118,6 +119,101 @@ func TestDuplicatesSplit_NotFound(t *testing.T) {
 	h.duplicatesSplit(rr, splitRequest("5"))
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rr.Code)
+	}
+}
+
+// absorbRequest builds a single-recording absorb request with the {recording_id}
+// route param set and a JSON body.
+func absorbRequest(recID, body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/duplicates/absorb/"+recID, strings.NewReader(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("recording_id", recID)
+	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+}
+
+func TestDuplicatesAbsorb_OK(t *testing.T) {
+	repo := &fakeRepo{absorbDropped: 1}
+	h := &handler{repo: repo}
+	rr := httptest.NewRecorder()
+	h.duplicatesAbsorb(rr, absorbRequest("7", `{"keep_file_id":3,"absorb_file_ids":[4,5]}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rr.Code, rr.Body)
+	}
+	if repo.absorbRecordingID != 7 || repo.absorbKeepFileID != 3 || len(repo.absorbFileIDs) != 2 {
+		t.Errorf("absorb called with rec=%d keep=%d absorb=%v", repo.absorbRecordingID, repo.absorbKeepFileID, repo.absorbFileIDs)
+	}
+	var resp struct {
+		OK                 bool `json:"ok"`
+		RenditionsRemoved  int  `json:"renditions_removed"`
+		AppearancesDropped int  `json:"appearances_dropped"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.OK || resp.RenditionsRemoved != 2 || resp.AppearancesDropped != 1 {
+		t.Errorf("resp = %+v, want ok, 2 removed, 1 dropped", resp)
+	}
+}
+
+func TestDuplicatesAbsorb_BadInput(t *testing.T) {
+	h := &handler{repo: &fakeRepo{}}
+	for _, tc := range []struct{ name, body string }{
+		{"no keep", `{"absorb_file_ids":[4]}`},
+		{"empty absorb", `{"keep_file_id":3,"absorb_file_ids":[]}`},
+		{"malformed", `{`},
+	} {
+		rr := httptest.NewRecorder()
+		h.duplicatesAbsorb(rr, absorbRequest("7", tc.body))
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", tc.name, rr.Code)
+		}
+	}
+}
+
+func TestDuplicatesAbsorb_StaleNotFound(t *testing.T) {
+	h := &handler{repo: &fakeRepo{absorbNotFound: true}}
+	rr := httptest.NewRecorder()
+	h.duplicatesAbsorb(rr, absorbRequest("7", `{"keep_file_id":3,"absorb_file_ids":[4]}`))
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rr.Code)
+	}
+}
+
+func TestDuplicatesAbsorbBulk_ExplicitIDs(t *testing.T) {
+	repo := &fakeRepo{}
+	h := &handler{repo: repo}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/duplicates/absorb", strings.NewReader(`{"recording_ids":[1,2,3]}`))
+	h.duplicatesAbsorbBulk(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rr.Code, rr.Body)
+	}
+	if len(repo.bulkAbsorbIDs) != 3 {
+		t.Errorf("bulk absorb ids = %v, want 3", repo.bulkAbsorbIDs)
+	}
+}
+
+func TestDuplicatesAbsorbBulk_All(t *testing.T) {
+	repo := &fakeRepo{duplicateRecordings: []database.DuplicateRecording{{RecordingID: 11}, {RecordingID: 22}}}
+	h := &handler{repo: repo}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/duplicates/absorb", strings.NewReader(`{"all":true}`))
+	h.duplicatesAbsorbBulk(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if len(repo.bulkAbsorbIDs) != 2 || repo.bulkAbsorbIDs[0] != 11 || repo.bulkAbsorbIDs[1] != 22 {
+		t.Errorf("all:true resolved ids = %v, want [11 22]", repo.bulkAbsorbIDs)
+	}
+}
+
+func TestDuplicatesAbsorbBulk_NeitherIsBadRequest(t *testing.T) {
+	h := &handler{repo: &fakeRepo{}}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/duplicates/absorb", strings.NewReader(`{}`))
+	h.duplicatesAbsorbBulk(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rr.Code)
 	}
 }
 

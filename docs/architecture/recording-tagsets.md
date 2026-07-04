@@ -1,7 +1,8 @@
 # Recording tagsets — multiple metadata appearances per audio
 
 **Status:** ✅ **Design decided (owner review 2026-07-04). P0 (migration 024),
-P1 (library & addressing, migration 025), and P2 (lifecycle & GC) are built.**
+P1 (library & addressing, migration 025), P2 (lifecycle & GC), and P3
+(operations layer + absorb) are built.**
 Tagsets exist, `media_metadata` is tech-only, review/trash live on the tagset,
 license/guest on the recording, every file has a recording; the library lists
 tagsets and a track is addressed by `tagset_id` end-to-end (browse/search rows,
@@ -600,12 +601,26 @@ regressions isolate to the data move.
   `SweepInvalidRecordings` backstop each confirmed pass (reported as
   `InvalidRecordings`). The `deleted`-count return let the Trash "N removed"
   tally and blob reclaim stay correct when a non-last delete frees no bytes.*
-- **P3 — Operations layer + absorb.** The shared primitives
-  (attach/move/set-primary/add-remove-rendition/split-with-tagset); the
-  `/admin/duplicates` absorb UI + endpoint; meaningful rule + appearance
-  dedup.
-  *Result: "keep the best blob, preserve every appearance" — the original
-  motivator — is usable in the library.*
+- **P3 — Operations layer + absorb. ✅ Done.** Absorb (`database/absorb.go`:
+  `AbsorbRenditions` + `BulkAbsorbKeepBest`), the meaningful rule + appearance
+  dedup helpers (`loadAppearances` resolves the reserved-bucket check;
+  `appearanceKey` does the NULL-safe identity dedup in Go), and the
+  `/admin/duplicates` absorb UI + endpoints
+  (`POST /api/admin/duplicates/absorb/{recording_id}` single;
+  `POST /api/admin/duplicates/absorb` bulk keep-best over `recording_ids` or
+  `all:true`). `SplitRendition` gained the tagset-less fallback (copies the
+  source's primary appearance so a split absorbed-blob stays browsable).
+  *Result: "keep the best blob, preserve every appearance" is usable in the
+  library.* Scope notes: same-recording absorb keeps each absorbed file's
+  existing appearance in place (no tagset creation needed) and drops it only if
+  nameless or a duplicate identity — soft-removing the absorbed blobs
+  (`files.deleted_at`, restorable); the kept rendition and its appearance are
+  never touched (primary re-promoted if a dropped tagset held it). The endpoint
+  URL is `/duplicates/absorb/{recording_id}` (not the design's
+  `/duplicates/{recording_id}/absorb`) to avoid a chi wildcard-name clash with
+  `/duplicates/{file_id}/split`. `MoveTagset` / `SetPrimaryTagset` are **deferred
+  to P5** — their only surface is the recordings view; building them now would
+  yield unwired, untestable primitives.
 - **P4 — Review & upload rework.** The classified queue (cases A/B/C with
   ladder compare and the appearance-vs-rendition decision), upload's offered
   tagset (incl. byte-dup → draft tagset), My-uploads on tagsets, bulk + audit.

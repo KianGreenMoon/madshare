@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -163,6 +165,92 @@ func (h *handler) trackRenditions(w http.ResponseWriter, r *http.Request) {
 	}
 	dto := buildDuplicateDTO(database.DuplicateRecording{Renditions: rends})
 	writeJSON(w, http.StatusOK, dto.Renditions)
+}
+
+// duplicatesAbsorb handles POST /api/admin/duplicates/absorb/{recording_id} —
+// keep one rendition's blob and absorb the others (recording-tagsets P3): their
+// bytes are soft-removed but their distinct appearances are preserved (redundant
+// / nameless ones dropped). Body: {keep_file_id, absorb_file_ids}. Gated on
+// content.moderate. A stale selection (a non-live rendition of this recording)
+// returns 404 so the page reloads.
+func (h *handler) duplicatesAbsorb(w http.ResponseWriter, r *http.Request) {
+	recordingID, err := strconv.ParseInt(chi.URLParam(r, "recording_id"), 10, 64)
+	if err != nil || recordingID <= 0 {
+		http.Error(w, "recording_id must be a positive integer", http.StatusBadRequest)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req struct {
+		KeepFileID    int64   `json:"keep_file_id"`
+		AbsorbFileIDs []int64 `json:"absorb_file_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid JSON body"})
+		return
+	}
+	if req.KeepFileID <= 0 || len(req.AbsorbFileIDs) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "keep_file_id and a non-empty absorb_file_ids are required"})
+		return
+	}
+
+	out, err := h.repo.AbsorbRenditions(r.Context(), recordingID, req.KeepFileID, req.AbsorbFileIDs)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if !out.Found {
+		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "recording or a selected rendition is no longer available; reload"})
+		return
+	}
+	h.audit(r.Context(), "recording.absorb", strconv.FormatInt(recordingID, 10),
+		fmt.Sprintf("kept %d, absorbed %d rendition(s), dropped %d appearance(s)",
+			req.KeepFileID, out.RenditionsRemoved, out.AppearancesDropped))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "renditions_removed": out.RenditionsRemoved, "appearances_dropped": out.AppearancesDropped,
+	})
+}
+
+// duplicatesAbsorbBulk handles POST /api/admin/duplicates/absorb — absorb each
+// listed recording's non-best renditions into its ladder-best ("keep best" over
+// a set). Body: {recording_ids:[…]} or {all:true} (every duplicate recording).
+// Gated on content.moderate.
+func (h *handler) duplicatesAbsorbBulk(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req struct {
+		RecordingIDs []int64 `json:"recording_ids"`
+		All          bool    `json:"all"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid JSON body"})
+		return
+	}
+
+	recIDs := req.RecordingIDs
+	if req.All {
+		groups, err := h.repo.ListDuplicateRecordings(r.Context())
+		if err != nil {
+			http.Error(w, "storage error", http.StatusInternalServerError)
+			return
+		}
+		recIDs = make([]int64, 0, len(groups))
+		for _, g := range groups {
+			recIDs = append(recIDs, g.RecordingID)
+		}
+	} else if len(recIDs) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": `provide recording_ids or "all": true`})
+		return
+	}
+
+	recs, rends, err := h.repo.BulkAbsorbKeepBest(r.Context(), recIDs)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	h.audit(r.Context(), "recording.bulk_absorb", "duplicates",
+		fmt.Sprintf("%d recording(s), %d rendition(s) absorbed", recs, rends))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "recordings_absorbed": recs, "renditions_removed": rends,
+	})
 }
 
 // duplicatesSplit handles POST /api/admin/duplicates/{file_id}/split — detach a
