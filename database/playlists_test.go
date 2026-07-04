@@ -7,9 +7,10 @@ import (
 	"testing"
 )
 
-// plFixture creates a user and n live files, returning the user id and the
-// files' content hashes in insertion order.
-func plFixture(t *testing.T, db *DB, n int) (userID int64, hashes []string) {
+// plFixture creates a user and n live files, returning the user id, the files'
+// content hashes (the trash/file operations stay hash-addressed), and their
+// offered tagsets' ids (the playlist/favorites identity) in insertion order.
+func plFixture(t *testing.T, db *DB, n int) (userID int64, hashes []string, tagsetIDs []int64) {
 	t.Helper()
 	ctx := context.Background()
 	userID, err := db.CreateUser(ctx, fmt.Sprintf("user-%s", t.Name()), "x", false)
@@ -18,20 +19,26 @@ func plFixture(t *testing.T, db *DB, n int) (userID int64, hashes []string) {
 	}
 	for i := range n {
 		hash := fmt.Sprintf("%064d", i+1)
-		if err := db.InsertFile(ctx, newFile(hash), newUpload(fmt.Sprintf("t%d.mp3", i+1)), newMeta()); err != nil {
+		f := newFile(hash)
+		if err := db.InsertFile(ctx, f, newUpload(fmt.Sprintf("t%d.mp3", i+1)), newMeta()); err != nil {
 			t.Fatalf("InsertFile %d: %v", i, err)
 		}
 		hashes = append(hashes, hash)
+		var tsID int64
+		if err := db.QueryRow(`SELECT id FROM tagsets WHERE origin_file_id = ?`, f.ID).Scan(&tsID); err != nil {
+			t.Fatalf("tagset id %d: %v", i, err)
+		}
+		tagsetIDs = append(tagsetIDs, tsID)
 	}
-	return userID, hashes
+	return userID, hashes, tagsetIDs
 }
 
 func TestPlaylist_CreateGetRoundtrip(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
-	userID, hashes := plFixture(t, db, 3)
+	userID, _, tagsetIDs := plFixture(t, db, 3)
 
-	p, err := db.CreatePlaylist(ctx, userID, "Road Trip", hashes)
+	p, err := db.CreatePlaylist(ctx, userID, "Road Trip", tagsetIDs)
 	if err != nil {
 		t.Fatalf("CreatePlaylist: %v", err)
 	}
@@ -47,8 +54,8 @@ func TestPlaylist_CreateGetRoundtrip(t *testing.T) {
 		t.Errorf("playlist = %+v, want name Road Trip, 3 tracks", got)
 	}
 	for i, e := range items {
-		if e.Hash != hashes[i] {
-			t.Errorf("items[%d].Hash = %s, want %s", i, e.Hash, hashes[i])
+		if e.TagsetID != tagsetIDs[i] {
+			t.Errorf("items[%d].TagsetID = %d, want %d", i, e.TagsetID, tagsetIDs[i])
 		}
 		if e.Trashed {
 			t.Errorf("items[%d] unexpectedly trashed", i)
@@ -59,13 +66,13 @@ func TestPlaylist_CreateGetRoundtrip(t *testing.T) {
 func TestPlaylist_OwnershipIsScoped(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
-	owner, hashes := plFixture(t, db, 1)
+	owner, _, tagsetIDs := plFixture(t, db, 1)
 	other, err := db.CreateUser(ctx, "other", "x", false)
 	if err != nil {
 		t.Fatalf("CreateUser other: %v", err)
 	}
 
-	p, err := db.CreatePlaylist(ctx, owner, "Mine", hashes)
+	p, err := db.CreatePlaylist(ctx, owner, "Mine", tagsetIDs)
 	if err != nil {
 		t.Fatalf("CreatePlaylist: %v", err)
 	}
@@ -79,26 +86,25 @@ func TestPlaylist_OwnershipIsScoped(t *testing.T) {
 	if err := db.DeletePlaylist(ctx, other, p.ID); !errors.Is(err, ErrPlaylistNotFound) {
 		t.Errorf("DeletePlaylist as other user: err = %v, want ErrPlaylistNotFound", err)
 	}
-	if _, err := db.AddPlaylistItemsByHash(ctx, other, p.ID, hashes); !errors.Is(err, ErrPlaylistNotFound) {
-		t.Errorf("AddPlaylistItemsByHash as other user: err = %v, want ErrPlaylistNotFound", err)
+	if _, err := db.AddPlaylistItems(ctx, other, p.ID, tagsetIDs); !errors.Is(err, ErrPlaylistNotFound) {
+		t.Errorf("AddPlaylistItems as other user: err = %v, want ErrPlaylistNotFound", err)
 	}
 }
 
 func TestPlaylist_AddRejectsUnknownAndTrashed(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
-	userID, hashes := plFixture(t, db, 2)
+	userID, hashes, tagsetIDs := plFixture(t, db, 2)
 
 	p, err := db.CreatePlaylist(ctx, userID, "Strict", nil)
 	if err != nil {
 		t.Fatalf("CreatePlaylist: %v", err)
 	}
 
-	unknown := fmt.Sprintf("%064d", 999)
-	if _, err := db.AddPlaylistItemsByHash(ctx, userID, p.ID, []string{hashes[0], unknown}); !errors.Is(err, ErrFileNotFound) {
-		t.Fatalf("add with unknown hash: err = %v, want ErrFileNotFound", err)
+	if _, err := db.AddPlaylistItems(ctx, userID, p.ID, []int64{tagsetIDs[0], 99999}); !errors.Is(err, ErrFileNotFound) {
+		t.Fatalf("add with unknown tagset: err = %v, want ErrFileNotFound", err)
 	}
-	// The batch is atomic: the valid first hash must not have been added.
+	// The batch is atomic: the valid first id must not have been added.
 	_, items, err := db.GetPlaylist(ctx, userID, p.ID)
 	if err != nil {
 		t.Fatalf("GetPlaylist: %v", err)
@@ -110,17 +116,17 @@ func TestPlaylist_AddRejectsUnknownAndTrashed(t *testing.T) {
 	if _, found, err := db.SoftDeleteFileByHash(ctx, hashes[1]); err != nil || !found {
 		t.Fatalf("SoftDeleteFileByHash: found=%v err=%v", found, err)
 	}
-	if _, err := db.AddPlaylistItemsByHash(ctx, userID, p.ID, []string{hashes[1]}); !errors.Is(err, ErrFileNotFound) {
-		t.Errorf("add trashed hash: err = %v, want ErrFileNotFound", err)
+	if _, err := db.AddPlaylistItems(ctx, userID, p.ID, []int64{tagsetIDs[1]}); !errors.Is(err, ErrFileNotFound) {
+		t.Errorf("add trashed appearance: err = %v, want ErrFileNotFound", err)
 	}
 }
 
 func TestPlaylist_TrashedAndHardDeletedItems(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
-	userID, hashes := plFixture(t, db, 3)
+	userID, hashes, tagsetIDs := plFixture(t, db, 3)
 
-	p, err := db.CreatePlaylist(ctx, userID, "Decay", hashes)
+	p, err := db.CreatePlaylist(ctx, userID, "Decay", tagsetIDs)
 	if err != nil {
 		t.Fatalf("CreatePlaylist: %v", err)
 	}
@@ -158,7 +164,7 @@ func TestPlaylist_TrashedAndHardDeletedItems(t *testing.T) {
 func TestFavorites_ToggleAndDedupe(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
-	userID, hashes := plFixture(t, db, 2)
+	userID, hashes, tagsetIDs := plFixture(t, db, 2)
 
 	favA, err := db.EnsureFavoritesPlaylist(ctx, userID)
 	if err != nil {
@@ -169,41 +175,41 @@ func TestFavorites_ToggleAndDedupe(t *testing.T) {
 		t.Fatalf("EnsureFavoritesPlaylist not idempotent: %d vs %d (err %v)", favA, favB, err)
 	}
 
-	if liked, err := db.ToggleFavorite(ctx, userID, hashes[0]); err != nil || !liked {
+	if liked, err := db.ToggleFavorite(ctx, userID, tagsetIDs[0]); err != nil || !liked {
 		t.Fatalf("first toggle: liked=%v err=%v, want liked", liked, err)
 	}
-	// Adding the same file through the batch path dedupes on favorites.
-	if added, err := db.AddPlaylistItemsByHash(ctx, userID, favA, []string{hashes[0], hashes[1]}); err != nil || added != 1 {
+	// Adding the same appearance through the batch path dedupes on favorites.
+	if added, err := db.AddPlaylistItems(ctx, userID, favA, []int64{tagsetIDs[0], tagsetIDs[1]}); err != nil || added != 1 {
 		t.Fatalf("batch add to favorites: added=%d err=%v, want 1 (dedupe)", added, err)
 	}
-	got, err := db.ListFavoriteHashes(ctx, userID)
+	got, err := db.ListFavoriteTagsetIDs(ctx, userID)
 	if err != nil {
-		t.Fatalf("ListFavoriteHashes: %v", err)
+		t.Fatalf("ListFavoriteTagsetIDs: %v", err)
 	}
 	if len(got) != 2 {
 		t.Fatalf("favorites = %v, want 2 entries", got)
 	}
 
-	// Un-like removes; trashed favorites drop out of the listed hashes.
-	if liked, err := db.ToggleFavorite(ctx, userID, hashes[0]); err != nil || liked {
+	// Un-like removes; trashed favorites drop out of the listed ids.
+	if liked, err := db.ToggleFavorite(ctx, userID, tagsetIDs[0]); err != nil || liked {
 		t.Fatalf("second toggle: liked=%v err=%v, want un-liked", liked, err)
 	}
 	if _, found, err := db.SoftDeleteFileByHash(ctx, hashes[1]); err != nil || !found {
 		t.Fatalf("SoftDeleteFileByHash: found=%v err=%v", found, err)
 	}
-	if got, err = db.ListFavoriteHashes(ctx, userID); err != nil || len(got) != 0 {
+	if got, err = db.ListFavoriteTagsetIDs(ctx, userID); err != nil || len(got) != 0 {
 		t.Errorf("favorites after unlike+trash = %v (err %v), want empty", got, err)
 	}
 
-	if _, err := db.ToggleFavorite(ctx, userID, fmt.Sprintf("%064d", 999)); !errors.Is(err, ErrFileNotFound) {
-		t.Errorf("toggle unknown hash: err = %v, want ErrFileNotFound", err)
+	if _, err := db.ToggleFavorite(ctx, userID, 99999); !errors.Is(err, ErrFileNotFound) {
+		t.Errorf("toggle unknown tagset: err = %v, want ErrFileNotFound", err)
 	}
 }
 
 func TestFavorites_SystemPlaylistGuards(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
-	userID, _ := plFixture(t, db, 0)
+	userID, _, _ := plFixture(t, db, 0)
 
 	fav, err := db.EnsureFavoritesPlaylist(ctx, userID)
 	if err != nil {
@@ -220,9 +226,9 @@ func TestFavorites_SystemPlaylistGuards(t *testing.T) {
 func TestPlaylist_ReorderAndRemove(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
-	userID, hashes := plFixture(t, db, 3)
+	userID, _, tagsetIDs := plFixture(t, db, 3)
 
-	p, err := db.CreatePlaylist(ctx, userID, "Order", hashes)
+	p, err := db.CreatePlaylist(ctx, userID, "Order", tagsetIDs)
 	if err != nil {
 		t.Fatalf("CreatePlaylist: %v", err)
 	}
@@ -240,8 +246,8 @@ func TestPlaylist_ReorderAndRemove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPlaylist after reorder: %v", err)
 	}
-	if items[0].Hash != hashes[2] || items[2].Hash != hashes[0] {
-		t.Errorf("order after reorder = [%s %s %s], want reversed", items[0].Hash, items[1].Hash, items[2].Hash)
+	if items[0].TagsetID != tagsetIDs[2] || items[2].TagsetID != tagsetIDs[0] {
+		t.Errorf("order after reorder = [%d %d %d], want reversed", items[0].TagsetID, items[1].TagsetID, items[2].TagsetID)
 	}
 
 	// Non-permutations are rejected.
@@ -275,12 +281,12 @@ func TestPlaylist_ReorderAndRemove(t *testing.T) {
 func TestPlaylist_ListIncludesCountsAndFavoritesFirst(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
-	userID, hashes := plFixture(t, db, 2)
+	userID, _, tagsetIDs := plFixture(t, db, 2)
 
-	if _, err := db.ToggleFavorite(ctx, userID, hashes[0]); err != nil {
+	if _, err := db.ToggleFavorite(ctx, userID, tagsetIDs[0]); err != nil {
 		t.Fatalf("ToggleFavorite: %v", err)
 	}
-	if _, err := db.CreatePlaylist(ctx, userID, "Beta", hashes); err != nil {
+	if _, err := db.CreatePlaylist(ctx, userID, "Beta", tagsetIDs); err != nil {
 		t.Fatalf("CreatePlaylist Beta: %v", err)
 	}
 	if _, err := db.CreatePlaylist(ctx, userID, "alpha", nil); err != nil {

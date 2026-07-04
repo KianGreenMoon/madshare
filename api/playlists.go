@@ -28,11 +28,11 @@ func registerPlaylists(r chi.Router, d Deps, h *handler) {
 	r.With(guard).Post("/api/playlists/{id}/items", h.addPlaylistItems)
 	r.With(guard).Delete("/api/playlists/{id}/items/{itemID}", h.removePlaylistItem)
 	r.With(guard).Put("/api/playlists/{id}/items", h.reorderPlaylist)
-	r.With(guard).Post("/api/favorites/{hash}", h.toggleFavorite)
+	r.With(guard).Post("/api/favorites/{tagsetID}", h.toggleFavorite)
 	r.With(guard).Get("/api/favorites", h.listFavorites)
 }
 
-// maxPlaylistName caps playlist names; maxPlaylistBatch caps the hashes/ids
+// maxPlaylistName caps playlist names; maxPlaylistBatch caps the ids
 // accepted per request, so a single call can't insert unbounded rows.
 const (
 	maxPlaylistName  = 200
@@ -96,7 +96,7 @@ func (h *handler) listPlaylists(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
-// createPlaylist handles POST /api/playlists {name, hashes?} — also the
+// createPlaylist handles POST /api/playlists {name, tagset_ids?} — also the
 // "save current queue as playlist" path.
 func (h *handler) createPlaylist(w http.ResponseWriter, r *http.Request) {
 	userID, ok := playlistUser(w, r)
@@ -104,8 +104,8 @@ func (h *handler) createPlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name   string   `json:"name"`
-		Hashes []string `json:"hashes"`
+		Name      string  `json:"name"`
+		TagsetIDs []int64 `json:"tagset_ids"`
 	}
 	if !decodePlaylistBody(w, r, &body) {
 		return
@@ -115,11 +115,11 @@ func (h *handler) createPlaylist(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "name is required", http.StatusBadRequest)
 		return
 	}
-	if len(body.Hashes) > maxPlaylistBatch {
+	if len(body.TagsetIDs) > maxPlaylistBatch {
 		http.Error(w, "too many tracks", http.StatusBadRequest)
 		return
 	}
-	p, err := h.repo.CreatePlaylist(r.Context(), userID, name, body.Hashes)
+	p, err := h.repo.CreatePlaylist(r.Context(), userID, name, body.TagsetIDs)
 	if errors.Is(err, database.ErrFileNotFound) {
 		http.Error(w, "unknown or unavailable track", http.StatusBadRequest)
 		return
@@ -155,7 +155,7 @@ func (h *handler) getPlaylist(w http.ResponseWriter, r *http.Request) {
 
 	type playlistItem struct {
 		ItemID   int64    `json:"item_id"`
-		Hash     string   `json:"hash"`
+		TagsetID int64    `json:"tagset_id"`
 		URL      string   `json:"url"`
 		MimeType string   `json:"mime_type"`
 		Title    string   `json:"title"`
@@ -171,13 +171,17 @@ func (h *handler) getPlaylist(w http.ResponseWriter, r *http.Request) {
 			dur = &e.DurationSeconds.Float64
 		}
 		status := "ok"
+		url := ""
 		if e.Trashed {
 			status = "trashed"
 		}
+		if e.ObjectKey != "" {
+			url = "/files/" + e.ObjectKey
+		}
 		items = append(items, playlistItem{
 			ItemID:   e.ItemID,
-			Hash:     e.Hash,
-			URL:      "/files/" + e.ObjectKey,
+			TagsetID: e.TagsetID,
+			URL:      url,
 			MimeType: e.MimeType,
 			Title:    e.Title.String,
 			Artist:   e.Artist.String,
@@ -249,8 +253,9 @@ func (h *handler) deletePlaylist(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// addPlaylistItems handles POST /api/playlists/{id}/items {hashes}. The batch
-// is atomic: any unknown or trashed hash rejects the whole request.
+// addPlaylistItems handles POST /api/playlists/{id}/items {tagset_ids}. The
+// batch is atomic: any unknown or unavailable appearance rejects the whole
+// request.
 func (h *handler) addPlaylistItems(w http.ResponseWriter, r *http.Request) {
 	userID, ok := playlistUser(w, r)
 	if !ok {
@@ -261,16 +266,16 @@ func (h *handler) addPlaylistItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Hashes []string `json:"hashes"`
+		TagsetIDs []int64 `json:"tagset_ids"`
 	}
 	if !decodePlaylistBody(w, r, &body) {
 		return
 	}
-	if len(body.Hashes) == 0 || len(body.Hashes) > maxPlaylistBatch {
-		http.Error(w, "hashes are required", http.StatusBadRequest)
+	if len(body.TagsetIDs) == 0 || len(body.TagsetIDs) > maxPlaylistBatch {
+		http.Error(w, "tagset_ids are required", http.StatusBadRequest)
 		return
 	}
-	added, err := h.repo.AddPlaylistItemsByHash(r.Context(), userID, id, body.Hashes)
+	added, err := h.repo.AddPlaylistItems(r.Context(), userID, id, body.TagsetIDs)
 	switch {
 	case errors.Is(err, database.ErrPlaylistNotFound):
 		http.NotFound(w, r)
@@ -344,15 +349,20 @@ func (h *handler) reorderPlaylist(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// toggleFavorite handles POST /api/favorites/{hash} — the Like button. Flips
-// membership in the favorites playlist and reports the resulting state.
+// toggleFavorite handles POST /api/favorites/{tagsetID} — the Like button.
+// Flips the appearance's membership in the favorites playlist and reports the
+// resulting state.
 func (h *handler) toggleFavorite(w http.ResponseWriter, r *http.Request) {
 	userID, ok := playlistUser(w, r)
 	if !ok {
 		return
 	}
-	hash := chi.URLParam(r, "hash")
-	liked, err := h.repo.ToggleFavorite(r.Context(), userID, hash)
+	tagsetID, err0 := strconv.ParseInt(chi.URLParam(r, "tagsetID"), 10, 64)
+	if err0 != nil || tagsetID <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	liked, err := h.repo.ToggleFavorite(r.Context(), userID, tagsetID)
 	switch {
 	case errors.Is(err, database.ErrFileNotFound):
 		http.NotFound(w, r)
@@ -363,19 +373,19 @@ func (h *handler) toggleFavorite(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// listFavorites handles GET /api/favorites — the user's liked hashes, for
+// listFavorites handles GET /api/favorites — the user's liked tagset ids, for
 // painting hearts on rows and the player bar.
 func (h *handler) listFavorites(w http.ResponseWriter, r *http.Request) {
 	userID, ok := playlistUser(w, r)
 	if !ok {
 		return
 	}
-	hashes, err := h.repo.ListFavoriteHashes(r.Context(), userID)
+	ids, err := h.repo.ListFavoriteTagsetIDs(r.Context(), userID)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"hashes": hashes})
+	writeJSON(w, http.StatusOK, map[string]any{"tagset_ids": ids})
 }
 
 // decodePlaylistBody decodes a small JSON body with the standard size cap,

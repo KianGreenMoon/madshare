@@ -7,7 +7,7 @@
 import { fmtTime } from './player.js';
 import { openLoginModal } from './auth.js';
 import { loadDurCache } from './dur-cache.js';
-import { trackHash } from './favorites.js';
+import { trackKey } from './favorites.js';
 
 const API = document.querySelector('meta[name="api-url"]')?.content || '';
 
@@ -77,13 +77,13 @@ export function initQueuePanel(controller, showToast) {
     e.preventDefault();
     const name = saveName.value.trim();
     const { tracks } = controller.getQueue();
-    const hashes = tracks.map(trackHash).filter(Boolean);
-    if (!name || !hashes.length) return;
+    const tagsetIDs = tracks.map(trackKey).filter(Boolean);
+    if (!name || !tagsetIDs.length) return;
     try {
       const res = await fetch(`${API}/api/playlists`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, hashes }),
+        body: JSON.stringify({ name, tagset_ids: tagsetIDs }),
       });
       if (res.status === 401 || res.status === 403) { openLoginModal(); return; }
       if (!res.ok) {

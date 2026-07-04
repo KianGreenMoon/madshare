@@ -65,8 +65,8 @@ func TestGetPlaylist_TrashedItemStatus(t *testing.T) {
 	repo := &fakeRepo{
 		playlistGet: &database.Playlist{ID: 1, Name: "L", Kind: database.PlaylistRegular},
 		playlistItems: []*database.PlaylistItemEntry{
-			{ItemID: 1, Hash: "aa", ObjectKey: "aa/x.mp3", MimeType: "audio/mpeg"},
-			{ItemID: 2, Hash: "bb", ObjectKey: "bb/y.mp3", MimeType: "audio/mpeg", Trashed: true},
+			{ItemID: 1, TagsetID: 11, ObjectKey: "aa/x.mp3", MimeType: "audio/mpeg"},
+			{ItemID: 2, TagsetID: 12, ObjectKey: "bb/y.mp3", MimeType: "audio/mpeg", Trashed: true},
 		},
 	}
 	h := plHandler(repo)
@@ -100,12 +100,12 @@ func TestCreatePlaylist_Validation(t *testing.T) {
 		t.Errorf("blank name: status = %d, want 400", rr.Code)
 	}
 
-	// Unknown/trashed seed hash → 400, not 500.
+	// Unknown/unavailable seed appearance → 400, not 500.
 	h = plHandler(&fakeRepo{playlistErr: database.ErrFileNotFound})
 	rr = httptest.NewRecorder()
-	h.createPlaylist(rr, plReq(http.MethodPost, "/api/playlists", `{"name":"x","hashes":["nope"]}`))
+	h.createPlaylist(rr, plReq(http.MethodPost, "/api/playlists", `{"name":"x","tagset_ids":[999]}`))
 	if rr.Code != http.StatusBadRequest {
-		t.Errorf("bad hash: status = %d, want 400", rr.Code)
+		t.Errorf("bad tagset: status = %d, want 400", rr.Code)
 	}
 }
 
@@ -125,19 +125,19 @@ func TestRenameDeletePlaylist_FavoritesIs403(t *testing.T) {
 	}
 }
 
-func TestAddPlaylistItems_BadHashIs400(t *testing.T) {
+func TestAddPlaylistItems_BadTagsetIs400(t *testing.T) {
 	h := plHandler(&fakeRepo{playlistErr: database.ErrFileNotFound})
 	rr := httptest.NewRecorder()
-	h.addPlaylistItems(rr, plReq(http.MethodPost, "/api/playlists/1/items", `{"hashes":["zz"]}`, "id", "1"))
+	h.addPlaylistItems(rr, plReq(http.MethodPost, "/api/playlists/1/items", `{"tagset_ids":[999]}`, "id", "1"))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rr.Code)
 	}
 
 	h = plHandler(&fakeRepo{})
 	rr = httptest.NewRecorder()
-	h.addPlaylistItems(rr, plReq(http.MethodPost, "/api/playlists/1/items", `{"hashes":[]}`, "id", "1"))
+	h.addPlaylistItems(rr, plReq(http.MethodPost, "/api/playlists/1/items", `{"tagset_ids":[]}`, "id", "1"))
 	if rr.Code != http.StatusBadRequest {
-		t.Errorf("empty hashes: status = %d, want 400", rr.Code)
+		t.Errorf("empty tagset_ids: status = %d, want 400", rr.Code)
 	}
 }
 
@@ -153,7 +153,7 @@ func TestReorderPlaylist_BadPermutationIs400(t *testing.T) {
 func TestToggleFavorite_ResponseShape(t *testing.T) {
 	h := plHandler(&fakeRepo{favoriteLiked: true})
 	rr := httptest.NewRecorder()
-	h.toggleFavorite(rr, plReq(http.MethodPost, "/api/favorites/aa", "", "hash", "aa"))
+	h.toggleFavorite(rr, plReq(http.MethodPost, "/api/favorites/11", "", "tagsetID", "11"))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
@@ -169,26 +169,26 @@ func TestToggleFavorite_ResponseShape(t *testing.T) {
 
 	h = plHandler(&fakeRepo{playlistErr: database.ErrFileNotFound})
 	rr = httptest.NewRecorder()
-	h.toggleFavorite(rr, plReq(http.MethodPost, "/api/favorites/zz", "", "hash", "zz"))
+	h.toggleFavorite(rr, plReq(http.MethodPost, "/api/favorites/999", "", "tagsetID", "999"))
 	if rr.Code != http.StatusNotFound {
-		t.Errorf("unknown hash: status = %d, want 404", rr.Code)
+		t.Errorf("unknown tagset: status = %d, want 404", rr.Code)
 	}
 }
 
-func TestListFavorites_ReturnsHashes(t *testing.T) {
-	h := plHandler(&fakeRepo{favoriteHashes: []string{"aa", "bb"}})
+func TestListFavorites_ReturnsTagsetIDs(t *testing.T) {
+	h := plHandler(&fakeRepo{favoriteTagsetIDs: []int64{11, 12}})
 	rr := httptest.NewRecorder()
 	h.listFavorites(rr, plReq(http.MethodGet, "/api/favorites", ""))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 	var resp struct {
-		Hashes []string `json:"hashes"`
+		TagsetIDs []int64 `json:"tagset_ids"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(resp.Hashes) != 2 || resp.Hashes[0] != "aa" {
-		t.Errorf("hashes = %v, want [aa bb]", resp.Hashes)
+	if len(resp.TagsetIDs) != 2 || resp.TagsetIDs[0] != 11 {
+		t.Errorf("tagset_ids = %v, want [11 12]", resp.TagsetIDs)
 	}
 }

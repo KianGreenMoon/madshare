@@ -1,11 +1,12 @@
 # Recording tagsets — multiple metadata appearances per audio
 
-**Status:** ✅ **Design decided (owner review 2026-07-04). P0 (data model &
-migration, 024) is built** — tagsets exist, `media_metadata` is tech-only,
-review/trash live on the tagset, license/guest on the recording, every file has
-a recording; behavior verified identical against the pre-P0 server (sole
-intended exception: the decision-9 license collapse on multi-rendition
-recordings). P1+ not started. This document is
+**Status:** ✅ **Design decided (owner review 2026-07-04). P0 (migration 024)
+and P1 (library & addressing, migration 025) are built.** Tagsets exist,
+`media_metadata` is tech-only, review/trash live on the tagset, license/guest
+on the recording, every file has a recording; the library lists tagsets and a
+track is addressed by `tagset_id` end-to-end (browse/search rows, player queue,
+hearts, playlists, renditions), with the play URL resolved server-side to the
+ladder-best surviving rendition. P2+ not started. This document is
 the reference design and the implementation plan. Extends
 [Recordings](recordings.md) (same-audio grouping & renditions) and the
 [artist/album overlay](artist-album-model.md); the metadata payload defined here
@@ -559,10 +560,23 @@ regressions isolate to the data move.
   interface and its DTOs kept their exact shapes, so the api layer and its
   fakes needed no changes. Sole visible change, per decision 9: conflicting
   per-rendition guest/license values collapsed to the best rendition's.*
-- **P1 — Library & addressing on tagsets.** Re-point browse/search/covers/
+- **P1 — Library & addressing on tagsets. ✅ Done (migration
+  `025_playlist_tagsets.sql`).** Re-point browse/search/covers/
   visibility; `tagset_id` addressing through player, queue, playlists,
   favorites; play-URL resolution; renditions endpoint re-key.
-  *Result: identical UX, tagset-addressed; the hash-keyed track dies.*
+  *Result: identical UX, tagset-addressed; the hash-keyed track dies (as the
+  listening identity — `hash` stays on track rows as the origin file, the
+  admin/file identity the file surfaces keep). Library queries are
+  tagset-rooted (`visibleTagset` + `bestRenditionJoin`: approved non-trashed
+  appearance with ≥1 surviving rendition, playing the ladder-best);
+  playlists/favorites reference the tagset (`playlist_items.tagset_id`,
+  existing rows migrated 1:1); the blob gate is recording-level
+  (`BlobPubliclyVisible`); renditions moved to
+  `GET /api/tagsets/{id}/renditions`; the persisted queue key bumped to
+  `madshare-queue-v2` so stale hash-keyed queues drop once. My-uploads
+  ownership checks stay on the file's own tagset (`FileReviewInfo`) —
+  deliberately narrower than the recording-level gate, so a pending duplicate
+  stays editable by its uploader.*
 - **P2 — Lifecycle & GC.** Tagset Trash/restore; the last-tagset hard-delete
   cascade (single + bulk, one tx); rendition removal + last-rendition refusal;
   prune's recording repair + invalid-recording sweep; audit actions.

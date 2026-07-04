@@ -362,43 +362,40 @@ func (db *DB) ListDuplicateRecordings(ctx context.Context) ([]DuplicateRecording
 	return out, rows.Err()
 }
 
-// RecordingRenditionsByHash returns the approved, non-trashed renditions of the
-// recording that the file with the given hash belongs to — the data the player's
-// Auto/High/Low quality control walks (recordings P4). An unknown /
-// non-approved / trashed hash yields nil (the caller 404s).
-func (db *DB) RecordingRenditionsByHash(ctx context.Context, hash string) ([]DuplicateRendition, error) {
-	var recID int64
+// RecordingRenditionsByTagsetID returns the surviving renditions of the
+// appearance's recording — the data the player's quality control walks. The
+// display fields come from the addressed tagset (renditions are interchangeable
+// audio; the appearance the user entered from names them). An unknown or
+// unavailable (trashed / unapproved / dormant) tagset yields nil (the caller
+// 404s).
+func (db *DB) RecordingRenditionsByTagsetID(ctx context.Context, tagsetID int64) ([]DuplicateRendition, error) {
+	var (
+		recID                      int64
+		title                      string
+		artist, albumArtist, album sql.NullString
+	)
 	err := db.QueryRowContext(ctx,
-		`SELECT f.recording_id FROM files f
-		   JOIN tagsets t ON t.origin_file_id = f.id
-		  WHERE f.hash=? AND f.deleted_at IS NULL
-		    AND t.deleted_at IS NULL AND t.review_state='approved'`, hash,
-	).Scan(&recID)
+		`SELECT m.recording_id, m.title, m.artist, m.album_artist, m.album
+		   FROM tagsets m
+		  WHERE m.id = ? AND `+visibleTagset, tagsetID,
+	).Scan(&recID, &title, &artist, &albumArtist, &album)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("renditions: load file: %w", err)
+		return nil, fmt.Errorf("renditions: load tagset: %w", err)
 	}
-	return db.renditionsWhere(ctx, "f.recording_id = ?", recID)
-}
 
-// renditionsWhere selects approved, non-trashed renditions matching cond (a
-// single-arg WHERE fragment), ordered by file id. Shared by the by-hash lookup.
-func (db *DB) renditionsWhere(ctx context.Context, cond string, arg int64) ([]DuplicateRendition, error) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT f.id, f.hash, f.object_key, f.byte_size, f.mime_type,
-		        t.title, COALESCE(t.artist, ''), COALESCE(t.album_artist, ''),
-		        COALESCE(t.album, ''),
 		        COALESCE(mm.codec, ''), COALESCE(mm.bitrate, 0),
 		        COALESCE(mm.sample_rate, 0), COALESCE(mm.bit_depth, 0),
 		        COALESCE(mm.duration_seconds, 0)
 		   FROM files f
-		   JOIN tagsets t ON t.origin_file_id = f.id
 		   LEFT JOIN media_metadata mm ON mm.file_id = f.id
-		  WHERE f.deleted_at IS NULL AND t.deleted_at IS NULL AND t.review_state='approved' AND `+cond+`
+		  WHERE f.recording_id = ? AND f.deleted_at IS NULL
 		  ORDER BY f.id`,
-		arg,
+		recID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("renditions: query: %w", err)
@@ -406,10 +403,9 @@ func (db *DB) renditionsWhere(ctx context.Context, cond string, arg int64) ([]Du
 	defer rows.Close()
 	var out []DuplicateRendition
 	for rows.Next() {
-		var r DuplicateRendition
+		r := DuplicateRendition{Title: title, Artist: artist.String, AlbumArtist: albumArtist.String, Album: album.String}
 		if err := rows.Scan(&r.FileID, &r.Hash, &r.ObjectKey, &r.ByteSize, &r.MimeType,
-			&r.Title, &r.Artist, &r.AlbumArtist, &r.Album, &r.Codec, &r.Bitrate, &r.SampleRate,
-			&r.BitDepth, &r.DurationSeconds); err != nil {
+			&r.Codec, &r.Bitrate, &r.SampleRate, &r.BitDepth, &r.DurationSeconds); err != nil {
 			return nil, fmt.Errorf("renditions: scan: %w", err)
 		}
 		out = append(out, r)

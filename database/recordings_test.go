@@ -358,7 +358,19 @@ func TestIsDuplicateSubmission_TagFallbackExcludesUntagged(t *testing.T) {
 	}
 }
 
-func TestRecordingRenditionsByHash(t *testing.T) {
+// tagsetOf returns the offered tagset's id for the file with the given hash.
+func tagsetOf(t *testing.T, db *DB, hash string) int64 {
+	t.Helper()
+	var id int64
+	if err := db.QueryRow(
+		`SELECT t.id FROM tagsets t JOIN files f ON f.id = t.origin_file_id WHERE f.hash = ?`,
+		hash).Scan(&id); err != nil {
+		t.Fatalf("tagset of %s: %v", hash, err)
+	}
+	return id
+}
+
+func TestRecordingRenditionsByTagsetID(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 	fp := repeated(0x1A2B3C4D, 120)
@@ -368,38 +380,42 @@ func TestRecordingRenditionsByHash(t *testing.T) {
 	b := insertFP(t, db, "r2", 200, fp) // grouped with a
 	db.ResolveRecording(ctx, b)
 
-	// Either member returns both renditions of the recording.
-	rends, err := db.RecordingRenditionsByHash(ctx, hash64("r1"))
+	// Either appearance returns both renditions of the recording.
+	rends, err := db.RecordingRenditionsByTagsetID(ctx, tagsetOf(t, db, hash64("r1")))
 	if err != nil {
 		t.Fatalf("renditions: %v", err)
 	}
 	if len(rends) != 2 {
 		t.Errorf("recording renditions = %d, want 2", len(rends))
 	}
+	if rends2, _ := db.RecordingRenditionsByTagsetID(ctx, tagsetOf(t, db, hash64("r2"))); len(rends2) != 2 {
+		t.Errorf("sibling appearance renditions = %d, want 2", len(rends2))
+	}
 
 	// A lone file (its own recording) returns just itself.
 	c := insertFP(t, db, "r3", 90, repeated(0x99999999, 120))
 	db.ResolveRecording(ctx, c)
-	if rends, _ := db.RecordingRenditionsByHash(ctx, hash64("r3")); len(rends) != 1 {
+	if rends, _ := db.RecordingRenditionsByTagsetID(ctx, tagsetOf(t, db, hash64("r3"))); len(rends) != 1 {
 		t.Errorf("lone renditions = %d, want 1", len(rends))
 	}
 
-	// Unknown hash → nil.
-	if rends, _ := db.RecordingRenditionsByHash(ctx, hash64("zz")); rends != nil {
-		t.Errorf("unknown hash returned %v, want nil", rends)
+	// Unknown tagset → nil.
+	if rends, _ := db.RecordingRenditionsByTagsetID(ctx, 99999); rends != nil {
+		t.Errorf("unknown tagset returned %v, want nil", rends)
 	}
 }
 
-func TestRecordingRenditionsByHash_ExcludesNonApproved(t *testing.T) {
+func TestRecordingRenditionsByTagsetID_ExcludesNonApproved(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
-	// A staged (submitted) file is not yet listenable, so its renditions 404.
+	// A staged (submitted) appearance is not yet listenable, so its renditions 404.
 	h := insertApprovedTagged(t, db, "n1", "x", "A", "B")
-	if _, err := db.ExecContext(ctx, `UPDATE tagsets SET review_state='submitted' WHERE origin_file_id IN (SELECT id FROM files WHERE hash=?)`, h); err != nil {
+	tsID := tagsetOf(t, db, h)
+	if _, err := db.ExecContext(ctx, `UPDATE tagsets SET review_state='submitted' WHERE id=?`, tsID); err != nil {
 		t.Fatalf("set submitted: %v", err)
 	}
-	if rends, _ := db.RecordingRenditionsByHash(ctx, h); rends != nil {
-		t.Errorf("non-approved file returned %v, want nil", rends)
+	if rends, _ := db.RecordingRenditionsByTagsetID(ctx, tsID); rends != nil {
+		t.Errorf("non-approved appearance returned %v, want nil", rends)
 	}
 }
 

@@ -31,7 +31,7 @@ also outside the shell.
   **"Undo — restore my queue"**.
 - **Edits in the panel:** click row = play, hover **×** = remove, drag or
   Ctrl/Alt+Arrow = reorder, **Clear**, **Save as playlist…** (POSTs the queue's
-  hashes to `/api/playlists`). The panel auto-closes on clicks outside it (the
+  tagset ids to `/api/playlists`). The panel auto-closes on clicks outside it (the
   player bar is exempt, so play/pause/seek don't dismiss it).
 
 ## Shuffle — reorders the queue itself
@@ -71,7 +71,7 @@ audio in different encodings — see
 [`../architecture/recordings.md`](../architecture/recordings.md)), a quality
 dropdown appears on the player bar: **Auto** (the quality ladder's best) plus
 each rendition, best-to-worst. On track change `player-controller.js` fetches
-`GET /api/tracks/{hash}/renditions` (best-effort; a single-rendition track leaves
+`GET /api/tagsets/{id}/renditions` (best-effort; a single-rendition track leaves
 the control hidden); picking an option swaps the audio source **in place**,
 preserving the playback position and play/pause state. Delivery is plain HTTP
 range requests over `/files/*` — no transcoding or segmenting.

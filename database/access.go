@@ -40,17 +40,22 @@ var accessClause = `(
 )`
 
 // FileAccessibleByHash reports whether an anonymous / capability-less request
-// may play/download the file with the given content hash (the guest-playable /
-// license policy, evaluated on its recording). It returns false for unknown
-// hashes, for trashed tracks, and for tracks pending review. Callers must
-// short-circuit this for identities holding the content.access permission,
-// which may reach any live approved file.
+// may play/download the blob with the given content hash. The gate is
+// recording-level (recording-tagsets P1): the blob serves publicly iff it is a
+// surviving rendition of a recording with at least one approved, non-trashed
+// appearance AND the recording passes the guest-playable / license policy.
+// Callers must short-circuit this for identities holding the content.access
+// permission, which may reach any live approved blob.
 func (db *DB) FileAccessibleByHash(ctx context.Context, hash string) (bool, error) {
 	var ok bool
 	err := db.QueryRowContext(ctx, `
 		SELECT EXISTS (
-			SELECT 1 FROM files f`+tagsetJoin+`
-			WHERE f.hash = ? AND `+visibleFile+` AND `+accessClause+`
+			SELECT 1 FROM files f
+			JOIN recordings r ON r.id = f.recording_id
+			WHERE f.hash = ? AND f.deleted_at IS NULL
+			  AND EXISTS (SELECT 1 FROM tagsets t WHERE t.recording_id = r.id
+			                AND t.deleted_at IS NULL AND t.review_state = 'approved')
+			  AND `+accessClause+`
 		)`, hash).Scan(&ok)
 	return ok, err
 }

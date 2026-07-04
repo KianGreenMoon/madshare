@@ -185,8 +185,8 @@ const heartSvg =
 // repaintHearts syncs every rendered heart with the shared liked set; runs on
 // each render and whenever the set changes (any heart, any page, player bar).
 function repaintHearts() {
-  document.querySelectorAll('.row-heart[data-hash]').forEach(b => {
-    const on = isLiked(b.dataset.hash);
+  document.querySelectorAll('.row-heart[data-tagset]').forEach(b => {
+    const on = isLiked(b.dataset.tagset);
     b.classList.toggle('liked', on);
     b.setAttribute('aria-pressed', String(on));
     const label = on ? 'Remove from Favorites' : 'Add to Favorites';
@@ -197,11 +197,13 @@ function repaintHearts() {
 onLikedChange(repaintHearts);
 
 // trackObjFromApi maps a browse-endpoint track to a controller track object.
+// tagsetId is the listening identity (hearts, playlists, renditions); the url
+// is the server-resolved best rendition (recording-tagsets P1).
 function trackObjFromApi(t, artistName, durCache) {
   const url = `${API}${t.url}`;
   return {
     url,
-    hash:   t.url.split('/')[2] || null,
+    tagsetId: t.tagset_id || null,
     title:  t.title || 'Unknown',
     // Per-track performer when present; else the album/artist passed by the caller.
     artist: t.artist_name || artistName || '',
@@ -240,7 +242,7 @@ async function queueAdd(collect, how) {
 }
 
 // addToPlaylistMenu replaces the open row menu with a playlist picker (plus
-// "New playlist…"), then posts the collected tracks' hashes.
+// "New playlist…"), then posts the collected tracks' tagset ids.
 async function addToPlaylistMenu(anchor, collect) {
   let lists, tracks;
   try {
@@ -250,20 +252,20 @@ async function addToPlaylistMenu(anchor, collect) {
     lists = await res.json();
     tracks = await collect();
   } catch { showToast('Failed to load playlists.', { type: 'error' }); return; }
-  const hashes = tracks.map(t => t.hash).filter(Boolean);
-  if (!hashes.length) return;
+  const tagsetIDs = tracks.map(t => t.tagsetId).filter(Boolean);
+  if (!tagsetIDs.length) return;
 
   const add = async (id, name) => {
     try {
       const res = await fetch(`${API}/api/playlists/${id}/items`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hashes }),
+        body: JSON.stringify({ tagset_ids: tagsetIDs }),
       });
       if (!res.ok) throw new Error((await res.text().catch(() => '')).trim() || `HTTP ${res.status}`);
       const { added } = await res.json();
       showToast(`Added ${added} track${added !== 1 ? 's' : ''} to "${name}".`, { type: 'success' });
-      if (added === 0 && hashes.length) showToast(`Already in "${name}".`, { type: 'status' });
+      if (added === 0 && tagsetIDs.length) showToast(`Already in "${name}".`, { type: 'status' });
     } catch (err) {
       showToast(`Couldn't add to "${name}": ${err.message}`, { type: 'error' });
     }
@@ -279,10 +281,10 @@ async function addToPlaylistMenu(anchor, collect) {
         const res = await fetch(`${API}/api/playlists`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, hashes }),
+          body: JSON.stringify({ name, tagset_ids: tagsetIDs }),
         });
         if (!res.ok) throw new Error((await res.text().catch(() => '')).trim() || `HTTP ${res.status}`);
-        showToast(`Created "${name}" with ${hashes.length} track${hashes.length !== 1 ? 's' : ''}.`, { type: 'success' });
+        showToast(`Created "${name}" with ${tagsetIDs.length} track${tagsetIDs.length !== 1 ? 's' : ''}.`, { type: 'success' });
       } catch (err) {
         showToast(`Couldn't create playlist: ${err.message}`, { type: 'error' });
       }
@@ -293,16 +295,16 @@ async function addToPlaylistMenu(anchor, collect) {
 
 // quickAddItems builds the "⋯" menu for a row. collect yields the row's tracks
 // (a single track, an album, or a whole artist).
-function quickAddItems(anchor, collect, { likeHash } = {}) {
+function quickAddItems(anchor, collect, { likeTagset } = {}) {
   const items = [
     { label: 'Play next',       onClick: () => queueAdd(collect, 'next') },
     { label: 'Add to queue',    onClick: () => queueAdd(collect, 'queue') },
     { label: 'Add to playlist…', keepOpen: true, onClick: () => addToPlaylistMenu(anchor, collect) },
   ];
-  if (likeHash) {
+  if (likeTagset) {
     items.push({
-      label: isLiked(likeHash) ? 'Remove from Favorites' : 'Add to Favorites',
-      onClick: () => toggleLike(likeHash),
+      label: isLiked(likeTagset) ? 'Remove from Favorites' : 'Add to Favorites',
+      onClick: () => toggleLike(likeTagset),
     });
   }
   return items;
@@ -323,18 +325,19 @@ function mkMoreBtn(label, makeItems) {
   return btn;
 }
 
-// mkHeartBtn returns a heart button for a track row (state via repaintHearts).
-function mkHeartBtn(hash) {
+// mkHeartBtn returns a heart button for a track row (state via repaintHearts),
+// keyed by the track's tagset id.
+function mkHeartBtn(tagsetId) {
   const btn = document.createElement('button');
   btn.className = 'row-heart';
-  btn.dataset.hash = hash || '';
+  btn.dataset.tagset = tagsetId || '';
   btn.setAttribute('aria-pressed', 'false');
   btn.setAttribute('aria-label', 'Add to Favorites');
   btn.title = 'Add to Favorites';
   btn.innerHTML = heartSvg;
   btn.addEventListener('click', e => {
     e.stopPropagation();
-    if (hash) toggleLike(hash);
+    if (tagsetId) toggleLike(tagsetId);
   });
   return btn;
 }
@@ -488,9 +491,9 @@ function renderTrackList(tracks) {
       : (durCache[url] || '—');
     libraryPlaylist.push({
       url,
-      // hash rides on the track for the queue panel's "Save as playlist"
-      // (t.url is /files/<hash>/<filename>).
-      hash:   t.url.split('/')[2] || null,
+      // The tagset id rides on the track for the queue panel's "Save as
+      // playlist", the hearts, and the quality-dropdown renditions fetch.
+      tagsetId: t.tagset_id || null,
       title:  t.title  || t.filename || 'Unknown',
       // Per-track performer (matches the playlists page); falls back to the
       // album-grouping artist from the breadcrumb when a row has no performer.
@@ -540,10 +543,10 @@ function renderTrackList(tracks) {
       `</div>` +
       `<span class="track-dur">${esc(track.dur)}</span>`;
     const durEl = row.querySelector('.track-dur');
-    row.insertBefore(mkHeartBtn(track.hash), durEl);
+    row.insertBefore(mkHeartBtn(track.tagsetId), durEl);
     row.insertBefore(
       mkMoreBtn(`More actions for ${track.title}`,
-        btn => quickAddItems(btn, () => [track], { likeHash: track.hash })),
+        btn => quickAddItems(btn, () => [track], { likeTagset: track.tagsetId })),
       durEl);
     const play = () => controller.setQueue(libraryPlaylist, i);
     row.addEventListener('click', play);
@@ -828,7 +831,7 @@ function renderSearchResults(results, q) {
     // Build the queue a search-result click would play (controller.setQueue).
     const searchPlaylist = tracks.map(t => ({
       url:    `${API}${t.url}`,
-      hash:   t.url.split('/')[2] || null,
+      tagsetId: t.tagset_id || null,
       title:  t.title       || 'Unknown',
       artist: t.artist_name || '',
     }));
@@ -862,7 +865,7 @@ function renderSearchResults(results, q) {
       });
 
       // Heart between the row body and the duration (matches the library rows).
-      row.insertBefore(mkHeartBtn(searchPlaylist[i].hash),
+      row.insertBefore(mkHeartBtn(searchPlaylist[i].tagsetId),
         row.querySelector('.search-row__duration'));
 
       const play = () => controller.setQueue(searchPlaylist, i);

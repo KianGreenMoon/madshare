@@ -35,7 +35,7 @@ func (db *DB) ListArtistsGuest(ctx context.Context) ([]*ArtistEntry, error) {
 // (norm_name = normalizeKey(DefaultArtistName)) sorts last, after the named
 // artists, via the leading ORDER BY key.
 func (db *DB) listArtists(ctx context.Context, guest bool) ([]*ArtistEntry, error) {
-	where := "WHERE " + visibleFile
+	where := "WHERE " + visibleTagset
 	if guest {
 		where += " AND " + accessClause
 	}
@@ -43,9 +43,7 @@ func (db *DB) listArtists(ctx context.Context, guest bool) ([]*ArtistEntry, erro
 		SELECT a.id, a.name, COUNT(*) AS track_count,
 		       CASE WHEN ai.artist_id IS NOT NULL THEN 1 ELSE 0 END AS has_image
 		FROM artists a
-		JOIN tagsets m ON m.album_artist_id = a.id
-		JOIN files f ON f.id = m.origin_file_id
-		JOIN recordings r ON r.id = f.recording_id
+		JOIN tagsets m ON m.album_artist_id = a.id` + recordingJoin + `
 		LEFT JOIN artist_images ai ON ai.artist_id = a.id
 		` + where + `
 		GROUP BY a.id
@@ -123,7 +121,7 @@ func (db *DB) ListArtistsPage(ctx context.Context, cursor string, limit int, gue
 	}
 	unknown := normalizeKey(DefaultArtistName)
 
-	where := "WHERE " + visibleFile
+	where := "WHERE " + visibleTagset
 	if guest {
 		where += " AND " + accessClause
 	}
@@ -144,9 +142,7 @@ func (db *DB) ListArtistsPage(ctx context.Context, cursor string, limit int, gue
 		       CASE WHEN ai.artist_id IS NOT NULL THEN 1 ELSE 0 END AS has_image,
 		       (a.norm_name = ?) AS is_unknown, LOWER(a.name) AS sort_name
 		FROM artists a
-		JOIN tagsets m ON m.album_artist_id = a.id
-		JOIN files f ON f.id = m.origin_file_id
-		JOIN recordings r ON r.id = f.recording_id
+		JOIN tagsets m ON m.album_artist_id = a.id` + recordingJoin + `
 		LEFT JOIN artist_images ai ON ai.artist_id = a.id
 		` + where + `
 		GROUP BY a.id
@@ -203,7 +199,7 @@ func (db *DB) ListAlbumsByArtistIDGuest(ctx context.Context, artistID int64) ([]
 // comps / features they appear on. The unknown-album bucket (norm_title =
 // normalizeKey(DefaultAlbumTitle)) sorts last via the leading ORDER BY key.
 func (db *DB) listAlbumsByArtistID(ctx context.Context, artistID int64, guest bool) ([]*AlbumEntry, error) {
-	where := "WHERE " + visibleFile
+	where := "WHERE " + visibleTagset
 	if guest {
 		where += " AND " + accessClause
 	}
@@ -213,9 +209,7 @@ func (db *DB) listAlbumsByArtistID(ctx context.Context, artistID int64, guest bo
 		       CASE WHEN ali.album_id IS NOT NULL THEN 1 ELSE 0 END AS has_image
 		FROM albums al
 		JOIN artists ar ON ar.id = al.artist_id
-		JOIN tagsets m ON m.album_id = al.id AND (al.artist_id = ? OR m.artist_id = ?)
-		JOIN files f ON f.id = m.origin_file_id
-		JOIN recordings r ON r.id = f.recording_id
+		JOIN tagsets m ON m.album_id = al.id AND (al.artist_id = ? OR m.artist_id = ?)` + recordingJoin + `
 		LEFT JOIN album_images ali ON ali.album_id = al.id
 		` + where + `
 		GROUP BY al.id
@@ -259,19 +253,23 @@ func (db *DB) ListTracksByAlbumIDGuest(ctx context.Context, albumID int64) ([]*T
 
 // listTracksByAlbumID is the shared track listing for a single album entity,
 // identified by its stable surrogate id (which already pins the album-artist,
-// since an album belongs to one artist). The "Other" bucket's tracks are reached
-// the same way — by passing the unknown-album entity's id. Each row carries the
-// track's *performer* name (its artist_id entity), which differs from the
-// album-artist on a compilation; matches the playlists page's per-track artist.
+// since an album belongs to one artist). One row per *tagset* (appearance,
+// recording-tagsets P1); each plays its recording's ladder-best rendition and
+// carries the origin file's hash for the admin/file operations. The "Other"
+// bucket's tracks are reached the same way — by passing the unknown-album
+// entity's id. Each row carries the track's *performer* name (its artist_id
+// entity), which differs from the album-artist on a compilation; matches the
+// playlists page's per-track artist.
 func (db *DB) listTracksByAlbumID(ctx context.Context, albumID int64, guest bool) ([]*TrackEntry, error) {
-	where := "WHERE " + visibleFile + " AND m.album_id = ?"
+	where := "WHERE " + visibleTagset + " AND m.album_id = ?"
 	if guest {
 		where += " AND " + accessClause
 	}
 	q := `
 		SELECT
 		    f.id,
-		    f.hash,
+		    m.id,
+		    COALESCE(orig.hash, ''),
 		    m.title,
 		    COALESCE(par.name, '') AS artist_name,
 		    m.track_number,
@@ -279,8 +277,9 @@ func (db *DB) listTracksByAlbumID(ctx context.Context, albumID int64, guest bool
 		    mm.duration_seconds,
 		    f.object_key,
 		    f.mime_type
-		FROM files f` + tagsetJoin + `
+		FROM tagsets m` + recordingJoin + bestRenditionJoin(false) + `
 		LEFT JOIN media_metadata mm ON mm.file_id = f.id
+		LEFT JOIN files orig ON orig.id = m.origin_file_id
 		LEFT JOIN artists par ON par.id = m.artist_id
 		` + where + `
 		ORDER BY (m.disc_number IS NULL) ASC, m.disc_number ASC, m.track_number ASC, LOWER(m.title) ASC`
@@ -294,7 +293,7 @@ func (db *DB) listTracksByAlbumID(ctx context.Context, albumID int64, guest bool
 	var out []*TrackEntry
 	for rows.Next() {
 		var e TrackEntry
-		if err := rows.Scan(&e.ID, &e.Hash, &e.Title, &e.ArtistName, &e.TrackNumber, &e.DiscNumber, &e.DurationSeconds, &e.ObjectKey, &e.MimeType); err != nil {
+		if err := rows.Scan(&e.ID, &e.TagsetID, &e.Hash, &e.Title, &e.ArtistName, &e.TrackNumber, &e.DiscNumber, &e.DurationSeconds, &e.ObjectKey, &e.MimeType); err != nil {
 			return nil, fmt.Errorf("scan track entry: %w", err)
 		}
 		out = append(out, &e)
@@ -322,7 +321,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 	like := "%" + escaped + "%"
 
 	// ── Artists ──────────────────────────────────────────────────────────────
-	artistWhere := "WHERE " + visibleFile + " AND unicode_lower(a.name) LIKE unicode_lower(?) ESCAPE '\\'"
+	artistWhere := "WHERE " + visibleTagset + " AND unicode_lower(a.name) LIKE unicode_lower(?) ESCAPE '\\'"
 	artistArgs := []any{like}
 	if filtered {
 		artistWhere += " AND " + accessClause
@@ -331,9 +330,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 		SELECT a.id, a.name, COUNT(*) AS track_count,
 		       CASE WHEN ai.artist_id IS NOT NULL THEN 1 ELSE 0 END AS has_image
 		FROM artists a
-		JOIN tagsets m ON (m.album_artist_id = a.id OR m.artist_id = a.id)
-		JOIN files f ON f.id = m.origin_file_id
-		JOIN recordings r ON r.id = f.recording_id
+		JOIN tagsets m ON (m.album_artist_id = a.id OR m.artist_id = a.id)` + recordingJoin + `
 		LEFT JOIN artist_images ai ON ai.artist_id = a.id
 		` + artistWhere + `
 		GROUP BY a.id
@@ -360,7 +357,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 	}
 
 	// ── Albums ───────────────────────────────────────────────────────────────
-	albumWhere := "WHERE " + visibleFile + " AND unicode_lower(al.title) LIKE unicode_lower(?) ESCAPE '\\'"
+	albumWhere := "WHERE " + visibleTagset + " AND unicode_lower(al.title) LIKE unicode_lower(?) ESCAPE '\\'"
 	albumArgs := []any{like}
 	if filtered {
 		albumWhere += " AND " + accessClause
@@ -371,9 +368,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 		       CASE WHEN ali.album_id IS NOT NULL THEN 1 ELSE 0 END AS has_image
 		FROM albums al
 		JOIN artists ar ON ar.id = al.artist_id
-		JOIN tagsets m ON m.album_id = al.id
-		JOIN files f ON f.id = m.origin_file_id
-		JOIN recordings r ON r.id = f.recording_id
+		JOIN tagsets m ON m.album_id = al.id` + recordingJoin + `
 		LEFT JOIN album_images ali ON ali.album_id = al.id
 		` + albumWhere + `
 		GROUP BY al.id
@@ -408,7 +403,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 	// their tracks even on a "Various Artists" compilation. The displayed
 	// artist_name is the performer (par.name, the track's artist_id entity), not the
 	// album-artist — consistent with the track list and the playlists page.
-	trackWhere := "WHERE " + visibleFile +
+	trackWhere := "WHERE " + visibleTagset +
 		" AND (unicode_lower(m.title) LIKE unicode_lower(?) ESCAPE '\\' OR unicode_lower(par.name) LIKE unicode_lower(?) ESCAPE '\\')"
 	trackArgs := []any{like, like}
 	if filtered {
@@ -417,6 +412,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 	trackQ := `
 		SELECT
 		    f.id,
+		    m.id,
 		    m.title,
 		    m.track_number,
 		    mm.duration_seconds,
@@ -424,7 +420,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 		    f.mime_type,
 		    par.name AS artist_name,
 		    al.title AS album_title
-		FROM files f` + tagsetJoin + `
+		FROM tagsets m` + recordingJoin + bestRenditionJoin(false) + `
 		LEFT JOIN media_metadata mm ON mm.file_id = f.id
 		JOIN albums al ON al.id = m.album_id
 		JOIN artists par ON par.id = m.artist_id
@@ -440,7 +436,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 	var tracks []*SearchTrackEntry
 	for tRows.Next() {
 		var e SearchTrackEntry
-		if err := tRows.Scan(&e.ID, &e.Title, &e.TrackNumber, &e.DurationSeconds, &e.ObjectKey, &e.MimeType, &e.ArtistName, &e.AlbumTitle); err != nil {
+		if err := tRows.Scan(&e.ID, &e.TagsetID, &e.Title, &e.TrackNumber, &e.DurationSeconds, &e.ObjectKey, &e.MimeType, &e.ArtistName, &e.AlbumTitle); err != nil {
 			return nil, fmt.Errorf("scan search track: %w", err)
 		}
 		tracks = append(tracks, &e)

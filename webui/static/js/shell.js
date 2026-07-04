@@ -12,7 +12,7 @@
 import { initAuth, openLoginModal, applyNavPermissions } from './auth.js';
 import { getController } from './player-controller.js';
 import { initQueuePanel } from './queue-panel.js';
-import { ensureLiked, isLiked, toggleLike, trackHash, onLikedChange } from './favorites.js';
+import { ensureLiked, isLiked, toggleLike, trackKey, onLikedChange } from './favorites.js';
 import { initAboutMenu } from './about-menu.js';
 import { initNavMenu } from './nav-menu.js';
 import { showToast } from './toast.js';
@@ -195,9 +195,9 @@ function wireLikeButton(controller) {
   if (!btn) return; // page without the listening player chrome
   const sync = () => {
     const cur = controller.current();
-    const hash = cur ? trackHash(cur.track) : null;
-    const on = isLiked(hash);
-    btn.disabled = !hash;
+    const key = cur ? trackKey(cur.track) : null;
+    const on = isLiked(key);
+    btn.disabled = !key;
     btn.classList.toggle('liked', on);
     btn.setAttribute('aria-pressed', String(on));
     const label = on ? 'Remove from Favorites' : 'Add to Favorites';
@@ -208,7 +208,7 @@ function wireLikeButton(controller) {
   onLikedChange(sync);
   btn.addEventListener('click', () => {
     const cur = controller.current();
-    if (cur) toggleLike(trackHash(cur.track)); // sync runs via onLikedChange
+    if (cur) toggleLike(trackKey(cur.track)); // sync runs via onLikedChange
   });
   ensureLiked(); // resolves to an empty set for anonymous users — no prompt
   sync();

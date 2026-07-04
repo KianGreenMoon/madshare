@@ -238,9 +238,17 @@ type Repository interface {
 	// approve/return — one transaction instead of one write + audit per hash.
 	BulkUpdateReviewState(ctx context.Context, hashes []string, t ReviewTransition) (int, error)
 
-	// FileReviewInfo is the narrow (state, uploader, trashed) lookup used by
-	// the blob-access gate and ownership checks. found is false on unknown hash.
+	// FileReviewInfo is the narrow (state, uploader, trashed) lookup on the
+	// file's own offered tagset, used by the My-uploads ownership/editability
+	// checks. found is false on unknown hash.
 	FileReviewInfo(ctx context.Context, hash string) (state string, uploadedBy sql.NullInt64, deleted bool, found bool, err error)
+
+	// BlobPubliclyVisible reports whether the blob belongs to the public
+	// library: a surviving rendition of a recording with ≥1 approved,
+	// non-trashed appearance (the recording-level half of the blob gate;
+	// FileAccessibleByHash adds the guest/license policy for anonymous
+	// callers).
+	BlobPubliclyVisible(ctx context.Context, hash string) (visible, found bool, err error)
 
 	// StageRestoredFile demotes a just-restored approved file to the
 	// restorer's draft so an upload-initiated restore re-enters the staging
@@ -297,10 +305,11 @@ type Repository interface {
 	// non-default tag collision. Suppresses self-approve and flags the queue.
 	IsDuplicateSubmission(ctx context.Context, hash string) (bool, error)
 
-	// RecordingRenditionsByHash returns the approved renditions of the file's
-	// recording (recordings P4, the player's quality control). A file with no
-	// recording yields just itself; an unknown/non-approved hash yields nil.
-	RecordingRenditionsByHash(ctx context.Context, hash string) ([]DuplicateRendition, error)
+	// RecordingRenditionsByTagsetID returns the surviving renditions of the
+	// appearance's recording (the player's quality control), display fields
+	// filled from the addressed tagset. An unknown/unavailable tagset yields
+	// nil.
+	RecordingRenditionsByTagsetID(ctx context.Context, tagsetID int64) ([]DuplicateRendition, error)
 
 	// SetAlbumCover inserts/replaces an album cover row (keyed by albums.id) with
 	// variant-tracking fields (variants_ready reset to 0).
@@ -349,12 +358,13 @@ type Repository interface {
 	EnsureFavoritesPlaylist(ctx context.Context, userID int64) (int64, error)
 
 	// CreatePlaylist creates a regular playlist, optionally seeded with items
-	// (content hashes, in order). Any unknown/trashed hash fails the whole
-	// create with ErrFileNotFound.
-	CreatePlaylist(ctx context.Context, userID int64, name string, hashes []string) (*Playlist, error)
+	// (tagset ids, in order). Any unknown/unavailable appearance fails the
+	// whole create with ErrFileNotFound.
+	CreatePlaylist(ctx context.Context, userID int64, name string, tagsetIDs []int64) (*Playlist, error)
 
-	// GetPlaylist returns the playlist and its items in order. Trashed files
-	// stay listed (Trashed=true); hard-deleted files vanish via FK cascade.
+	// GetPlaylist returns the playlist and its items in order. Unavailable
+	// appearances stay listed (Trashed=true); hard-deleted tagsets vanish via
+	// FK cascade.
 	GetPlaylist(ctx context.Context, userID, playlistID int64) (*Playlist, []*PlaylistItemEntry, error)
 
 	// RenamePlaylist / DeletePlaylist operate on regular playlists only;
@@ -362,10 +372,10 @@ type Repository interface {
 	RenamePlaylist(ctx context.Context, userID, playlistID int64, name string) error
 	DeletePlaylist(ctx context.Context, userID, playlistID int64) error
 
-	// AddPlaylistItemsByHash atomically appends tracks by content hash; any
-	// unknown/trashed hash fails the batch with ErrFileNotFound. On the
-	// favorites playlist, already-present files are skipped.
-	AddPlaylistItemsByHash(ctx context.Context, userID, playlistID int64, hashes []string) (added int, err error)
+	// AddPlaylistItems atomically appends tracks by tagset id; any
+	// unknown/unavailable appearance fails the batch with ErrFileNotFound. On
+	// the favorites playlist, already-present appearances are skipped.
+	AddPlaylistItems(ctx context.Context, userID, playlistID int64, tagsetIDs []int64) (added int, err error)
 
 	// RemovePlaylistItem removes one item by its id; found is false (no error)
 	// when the item is not in that playlist.
@@ -375,11 +385,12 @@ type Repository interface {
 	// the playlist's current item ids (ErrBadReorder otherwise).
 	ReorderPlaylist(ctx context.Context, userID, playlistID int64, itemIDs []int64) error
 
-	// ToggleFavorite flips the file's membership in the user's favorites
+	// ToggleFavorite flips the appearance's membership in the user's favorites
 	// playlist (created on first use) and returns the resulting state.
-	// Unknown or trashed hashes return ErrFileNotFound.
-	ToggleFavorite(ctx context.Context, userID int64, hash string) (liked bool, err error)
+	// Unknown or unavailable tagsets return ErrFileNotFound.
+	ToggleFavorite(ctx context.Context, userID, tagsetID int64) (liked bool, err error)
 
-	// ListFavoriteHashes returns the user's live favorite hashes in order.
-	ListFavoriteHashes(ctx context.Context, userID int64) ([]string, error)
+	// ListFavoriteTagsetIDs returns the user's visible favorite tagset ids in
+	// order.
+	ListFavoriteTagsetIDs(ctx context.Context, userID int64) ([]int64, error)
 }

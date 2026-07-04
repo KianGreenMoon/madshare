@@ -170,7 +170,7 @@ func RegisterAPI(r chi.Router, d Deps) {
 	r.Get("/api/tracks", h.listTracks)
 	// Renditions of a track's recording for the player's quality control
 	// (recordings P4). Read-only; playback is still gated by /files/*.
-	r.Get("/api/tracks/{hash}/renditions", h.trackRenditions)
+	r.Get("/api/tagsets/{tagsetID}/renditions", h.trackRenditions)
 	r.Get("/api/search", h.search)
 	r.Get("/api/ui/config", h.getUIConfig)
 	// Cover reads are id-addressed (browse DTOs carry the entity id). chi routes
@@ -518,12 +518,12 @@ func (d Deps) fileAccessGuard() func(http.Handler) http.Handler {
 			rest := chi.URLParam(r, "*")
 			seg, _, _ := strings.Cut(rest, "/")
 			id := auth.FromContext(r.Context())
-			state, _, _, found, err := d.Repo.FileReviewInfo(r.Context(), seg)
+			visible, found, err := d.Repo.BlobPubliclyVisible(r.Context(), seg)
 			if err != nil {
 				http.Error(w, "storage error", http.StatusInternalServerError)
 				return
 			}
-			if found && state != database.ReviewApproved {
+			if found && !visible {
 				if id.Has(auth.PermFileUpload) || id.Has(auth.PermContentModerate) {
 					next.ServeHTTP(w, r)
 					return

@@ -40,13 +40,16 @@ type Playlist struct {
 	UpdatedAt  int64
 }
 
-// PlaylistItemEntry is a playlist item joined with its file and tags. Trashed
-// reports the underlying file is soft-deleted: metadata stays visible but the
-// track is not playable (docs/api/playlists.md).
+// PlaylistItemEntry is a playlist item joined with its tagset (the appearance
+// the user picked — recording-tagsets P1, decision 4) and the recording's
+// ladder-best rendition (ObjectKey/MimeType/DurationSeconds — what the row
+// plays; zero values when no rendition survives). Trashed reports the
+// appearance is unavailable (tagset trashed / not approved / recording
+// dormant): metadata stays visible but the track is not playable
+// (docs/api/playlists.md).
 type PlaylistItemEntry struct {
 	ItemID          int64
-	FileID          int64
-	Hash            string
+	TagsetID        int64
 	ObjectKey       string
 	MimeType        string
 	Title           sql.NullString
@@ -110,10 +113,10 @@ func (db *DB) EnsureFavoritesPlaylist(ctx context.Context, userID int64) (int64,
 }
 
 // CreatePlaylist creates a regular playlist for the user, optionally seeded
-// with items (content hashes, in order). Hash validation matches
-// AddPlaylistItemsByHash: every hash must name a live (non-trashed) file or
+// with items (tagset ids, in order). Validation matches AddPlaylistItems:
+// every id must name a visible (approved, non-trashed, playable) appearance or
 // the whole create fails with ErrFileNotFound.
-func (db *DB) CreatePlaylist(ctx context.Context, userID int64, name string, hashes []string) (*Playlist, error) {
+func (db *DB) CreatePlaylist(ctx context.Context, userID int64, name string, tagsetIDs []int64) (*Playlist, error) {
 	now := time.Now().Unix()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -131,7 +134,7 @@ func (db *DB) CreatePlaylist(ctx context.Context, userID int64, name string, has
 	if err != nil {
 		return nil, err
 	}
-	added, err := addItemsTx(ctx, tx, id, hashes, false, now)
+	added, err := addItemsTx(ctx, tx, id, tagsetIDs, false, now)
 	if err != nil {
 		return nil, err
 	}
@@ -142,8 +145,10 @@ func (db *DB) CreatePlaylist(ctx context.Context, userID int64, name string, has
 		TrackCount: added, CreatedAt: now, UpdatedAt: now}, nil
 }
 
-// GetPlaylist returns the user's playlist and its items in order. Trashed files
-// stay listed (Trashed=true); hard-deleted files are gone via FK cascade.
+// GetPlaylist returns the user's playlist and its items in order. Unavailable
+// appearances (trashed / unapproved tagset, or a dormant recording with no
+// surviving rendition) stay listed with Trashed=true; hard-deleted tagsets are
+// gone via FK cascade.
 func (db *DB) GetPlaylist(ctx context.Context, userID, playlistID int64) (*Playlist, []*PlaylistItemEntry, error) {
 	p := &Playlist{}
 	err := db.QueryRowContext(ctx, `
@@ -158,12 +163,11 @@ func (db *DB) GetPlaylist(ctx context.Context, userID, playlistID int64) (*Playl
 	}
 
 	rows, err := db.QueryContext(ctx, `
-		SELECT i.id, f.id, f.hash, f.object_key, f.mime_type,
+		SELECT i.id, m.id, COALESCE(f.object_key, ''), COALESCE(f.mime_type, ''),
 		       m.title, m.artist, m.album, mm.duration_seconds,
-		       (f.deleted_at IS NOT NULL OR m.id IS NULL OR m.deleted_at IS NOT NULL OR m.review_state <> 'approved')
+		       (m.deleted_at IS NOT NULL OR m.review_state <> 'approved' OR f.id IS NULL)
 		FROM playlist_items i
-		JOIN files f          ON f.id = i.file_id
-		LEFT JOIN tagsets m ON m.origin_file_id = f.id
+		JOIN tagsets m ON m.id = i.tagset_id`+recordingJoin+bestRenditionJoin(true)+`
 		LEFT JOIN media_metadata mm ON mm.file_id = f.id
 		WHERE i.playlist_id = ?
 		ORDER BY i.position, i.id`, playlistID)
@@ -174,7 +178,7 @@ func (db *DB) GetPlaylist(ctx context.Context, userID, playlistID int64) (*Playl
 	items := make([]*PlaylistItemEntry, 0)
 	for rows.Next() {
 		e := &PlaylistItemEntry{}
-		if err := rows.Scan(&e.ItemID, &e.FileID, &e.Hash, &e.ObjectKey, &e.MimeType,
+		if err := rows.Scan(&e.ItemID, &e.TagsetID, &e.ObjectKey, &e.MimeType,
 			&e.Title, &e.Artist, &e.Album, &e.DurationSeconds, &e.Trashed); err != nil {
 			return nil, nil, err
 		}
@@ -213,11 +217,11 @@ func (db *DB) DeletePlaylist(ctx context.Context, userID, playlistID int64) erro
 	return err
 }
 
-// AddPlaylistItemsByHash appends tracks (by content hash, in order) to the
-// user's playlist. Every hash must name a live (non-trashed) file or the whole
-// batch fails with ErrFileNotFound — the add is atomic. On the favorites
-// playlist, hashes already present are skipped (Like is idempotent).
-func (db *DB) AddPlaylistItemsByHash(ctx context.Context, userID, playlistID int64, hashes []string) (added int, err error) {
+// AddPlaylistItems appends tracks (by tagset id, in order) to the user's
+// playlist. Every id must name a visible appearance or the whole batch fails
+// with ErrFileNotFound — the add is atomic. On the favorites playlist, tagsets
+// already present are skipped (Like is idempotent).
+func (db *DB) AddPlaylistItems(ctx context.Context, userID, playlistID int64, tagsetIDs []int64) (added int, err error) {
 	kind, err := db.playlistKind(ctx, userID, playlistID)
 	if err != nil {
 		return 0, err
@@ -227,7 +231,7 @@ func (db *DB) AddPlaylistItemsByHash(ctx context.Context, userID, playlistID int
 		return 0, err
 	}
 	defer tx.Rollback()
-	added, err = addItemsTx(ctx, tx, playlistID, hashes, kind == PlaylistFavorites, time.Now().Unix())
+	added, err = addItemsTx(ctx, tx, playlistID, tagsetIDs, kind == PlaylistFavorites, time.Now().Unix())
 	if err != nil {
 		return 0, err
 	}
@@ -237,11 +241,11 @@ func (db *DB) AddPlaylistItemsByHash(ctx context.Context, userID, playlistID int
 	return added, nil
 }
 
-// addItemsTx resolves each hash to a live file and appends items after the
-// playlist's current max position. dedupe skips files already in the list
-// (favorites semantics). Touches updated_at when anything was added.
-func addItemsTx(ctx context.Context, tx *sql.Tx, playlistID int64, hashes []string, dedupe bool, now int64) (int, error) {
-	if len(hashes) == 0 {
+// addItemsTx verifies each tagset is a visible appearance and appends items
+// after the playlist's current max position. dedupe skips tagsets already in
+// the list (favorites semantics). Touches updated_at when anything was added.
+func addItemsTx(ctx context.Context, tx *sql.Tx, playlistID int64, tagsetIDs []int64, dedupe bool, now int64) (int, error) {
+	if len(tagsetIDs) == 0 {
 		return 0, nil
 	}
 	var pos int64
@@ -250,11 +254,10 @@ func addItemsTx(ctx context.Context, tx *sql.Tx, playlistID int64, hashes []stri
 		return 0, err
 	}
 	added := 0
-	for _, hash := range hashes {
-		var fileID int64
+	for _, tagsetID := range tagsetIDs {
+		var ok int
 		err := tx.QueryRowContext(ctx,
-			`SELECT f.id FROM files f JOIN tagsets m ON m.origin_file_id = f.id
-			  WHERE f.hash = ? AND `+visibleFile, hash).Scan(&fileID)
+			`SELECT 1 FROM tagsets m WHERE m.id = ? AND `+visibleTagset, tagsetID).Scan(&ok)
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, ErrFileNotFound
 		}
@@ -264,8 +267,8 @@ func addItemsTx(ctx context.Context, tx *sql.Tx, playlistID int64, hashes []stri
 		if dedupe {
 			var n int
 			if err := tx.QueryRowContext(ctx,
-				`SELECT COUNT(*) FROM playlist_items WHERE playlist_id = ? AND file_id = ?`,
-				playlistID, fileID).Scan(&n); err != nil {
+				`SELECT COUNT(*) FROM playlist_items WHERE playlist_id = ? AND tagset_id = ?`,
+				playlistID, tagsetID).Scan(&n); err != nil {
 				return 0, err
 			}
 			if n > 0 {
@@ -274,8 +277,8 @@ func addItemsTx(ctx context.Context, tx *sql.Tx, playlistID int64, hashes []stri
 		}
 		pos++
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO playlist_items (playlist_id, file_id, position, added_at) VALUES (?, ?, ?, ?)`,
-			playlistID, fileID, pos, now); err != nil {
+			`INSERT INTO playlist_items (playlist_id, tagset_id, position, added_at) VALUES (?, ?, ?, ?)`,
+			playlistID, tagsetID, pos, now); err != nil {
 			return 0, err
 		}
 		added++
@@ -366,18 +369,17 @@ func (db *DB) ReorderPlaylist(ctx context.Context, userID, playlistID int64, ite
 	return tx.Commit()
 }
 
-// ToggleFavorite flips the membership of the file (by content hash) in the
+// ToggleFavorite flips the membership of the appearance (by tagset id) in the
 // user's favorites playlist, creating the playlist on first use. Returns the
-// resulting state. Unknown or trashed hashes return ErrFileNotFound.
-func (db *DB) ToggleFavorite(ctx context.Context, userID int64, hash string) (liked bool, err error) {
+// resulting state. Unknown or unavailable tagsets return ErrFileNotFound.
+func (db *DB) ToggleFavorite(ctx context.Context, userID, tagsetID int64) (liked bool, err error) {
 	favID, err := db.EnsureFavoritesPlaylist(ctx, userID)
 	if err != nil {
 		return false, err
 	}
-	var fileID int64
+	var ok int
 	err = db.QueryRowContext(ctx,
-		`SELECT f.id FROM files f JOIN tagsets m ON m.origin_file_id = f.id
-		  WHERE f.hash = ? AND `+visibleFile, hash).Scan(&fileID)
+		`SELECT 1 FROM tagsets m WHERE m.id = ? AND `+visibleTagset, tagsetID).Scan(&ok)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, ErrFileNotFound
 	}
@@ -386,7 +388,7 @@ func (db *DB) ToggleFavorite(ctx context.Context, userID int64, hash string) (li
 	}
 	now := time.Now().Unix()
 	res, err := db.ExecContext(ctx,
-		`DELETE FROM playlist_items WHERE playlist_id = ? AND file_id = ?`, favID, fileID)
+		`DELETE FROM playlist_items WHERE playlist_id = ? AND tagset_id = ?`, favID, tagsetID)
 	if err != nil {
 		return false, err
 	}
@@ -397,38 +399,37 @@ func (db *DB) ToggleFavorite(ctx context.Context, userID int64, hash string) (li
 		return false, err
 	}
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO playlist_items (playlist_id, file_id, position, added_at)
+		INSERT INTO playlist_items (playlist_id, tagset_id, position, added_at)
 		VALUES (?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM playlist_items WHERE playlist_id = ?), ?)`,
-		favID, fileID, favID, now); err != nil {
+		favID, tagsetID, favID, now); err != nil {
 		return false, err
 	}
 	_, err = db.ExecContext(ctx, `UPDATE playlists SET updated_at = ? WHERE id = ?`, now, favID)
 	return true, err
 }
 
-// ListFavoriteHashes returns the content hashes of the user's live favorites
-// (trashed files excluded — a grayed heart would suggest the track is likable).
-// A user with no favorites playlist simply gets an empty list.
-func (db *DB) ListFavoriteHashes(ctx context.Context, userID int64) ([]string, error) {
+// ListFavoriteTagsetIDs returns the tagset ids of the user's visible favorites
+// (unavailable appearances excluded — a grayed heart would suggest the track is
+// likable). A user with no favorites playlist simply gets an empty list.
+func (db *DB) ListFavoriteTagsetIDs(ctx context.Context, userID int64) ([]int64, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT f.hash
+		SELECT m.id
 		FROM playlists p
 		JOIN playlist_items i ON i.playlist_id = p.id
-		JOIN files f          ON f.id = i.file_id
-		JOIN tagsets m        ON m.origin_file_id = f.id
-		WHERE p.user_id = ? AND p.kind = 'favorites' AND `+visibleFile+`
+		JOIN tagsets m        ON m.id = i.tagset_id
+		WHERE p.user_id = ? AND p.kind = 'favorites' AND `+visibleTagset+`
 		ORDER BY i.position`, userID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := make([]string, 0)
+	out := make([]int64, 0)
 	for rows.Next() {
-		var h string
-		if err := rows.Scan(&h); err != nil {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
-		out = append(out, h)
+		out = append(out, id)
 	}
 	return out, rows.Err()
 }

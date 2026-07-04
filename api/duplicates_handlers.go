@@ -3,7 +3,6 @@ package api
 import (
 	"net/http"
 	"strconv"
-	"strings"
 
 	"daemonlord.ygg/madshare/database"
 	"github.com/go-chi/chi/v5"
@@ -141,18 +140,19 @@ func codecClassOf(codec string) int {
 	}
 }
 
-// trackRenditions handles GET /api/tracks/{hash}/renditions — the renditions of
-// the recording the given track belongs to, ranked by the quality ladder, for
-// the player's Auto/High/Low control (recordings P4). A single-rendition track
-// returns a one-element list; an unknown/non-approved hash 404s. Read-only;
+// trackRenditions handles GET /api/tagsets/{tagsetID}/renditions — the
+// surviving renditions of the appearance's recording, ranked by the quality
+// ladder, for the player's Auto/High/Low control (recordings P4,
+// tagset-addressed since recording-tagsets P1). A single-rendition track
+// returns a one-element list; an unknown/unavailable tagset 404s. Read-only;
 // playback of any listed URL is still gated by /files/*.
 func (h *handler) trackRenditions(w http.ResponseWriter, r *http.Request) {
-	hash := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "hash")))
-	if !isSHA256Hex(hash) {
-		http.Error(w, "invalid hash", http.StatusBadRequest)
+	tagsetID, perr := strconv.ParseInt(chi.URLParam(r, "tagsetID"), 10, 64)
+	if perr != nil || tagsetID <= 0 {
+		http.Error(w, "tagset id must be a positive integer", http.StatusBadRequest)
 		return
 	}
-	rends, err := h.repo.RecordingRenditionsByHash(r.Context(), hash)
+	rends, err := h.repo.RecordingRenditionsByTagsetID(r.Context(), tagsetID)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return

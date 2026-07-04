@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"daemonlord.ygg/madshare/database"
@@ -122,10 +121,10 @@ func TestDuplicatesSplit_NotFound(t *testing.T) {
 	}
 }
 
-func renditionsRequest(hash string) *http.Request {
-	req := httptest.NewRequest(http.MethodGet, "/api/tracks/"+hash+"/renditions", nil)
+func renditionsRequest(tagsetID string) *http.Request {
+	req := httptest.NewRequest(http.MethodGet, "/api/tagsets/"+tagsetID+"/renditions", nil)
 	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("hash", hash)
+	rctx.URLParams.Add("tagsetID", tagsetID)
 	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 }
 
@@ -136,7 +135,7 @@ func TestTrackRenditions_OKRanked(t *testing.T) {
 	}}
 	h := &handler{repo: repo}
 	rr := httptest.NewRecorder()
-	h.trackRenditions(rr, renditionsRequest(strings.Repeat("a", 64)))
+	h.trackRenditions(rr, renditionsRequest("11"))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
@@ -160,16 +159,16 @@ func TestTrackRenditions_OKRanked(t *testing.T) {
 func TestTrackRenditions_NotFound(t *testing.T) {
 	h := &handler{repo: &fakeRepo{}} // renditions nil
 	rr := httptest.NewRecorder()
-	h.trackRenditions(rr, renditionsRequest(strings.Repeat("a", 64)))
+	h.trackRenditions(rr, renditionsRequest("11"))
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rr.Code)
 	}
 }
 
-func TestTrackRenditions_BadHash(t *testing.T) {
+func TestTrackRenditions_BadID(t *testing.T) {
 	h := &handler{repo: &fakeRepo{}}
 	rr := httptest.NewRecorder()
-	h.trackRenditions(rr, renditionsRequest("nothex"))
+	h.trackRenditions(rr, renditionsRequest("nope"))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rr.Code)
 	}

@@ -194,11 +194,17 @@ type AlbumEntry struct {
 	HasImage   bool
 }
 
-// TrackEntry is a row returned by ListTracksByAlbumID. ArtistName is the track's
-// performer (its media_metadata.artist_id entity), which may differ from the
+// TrackEntry is a row returned by ListTracksByAlbumID — one library track = one
+// tagset (appearance) since recording-tagsets P1. TagsetID is the listening
+// identity (favorites, playlists, renditions); Hash is the *origin* file's
+// content hash — the admin/file identity for edit/delete — and "" when that
+// blob is gone; ObjectKey/MimeType/DurationSeconds describe the recording's
+// ladder-best surviving rendition, which is what the row plays. ArtistName is
+// the track's performer (its artist_id entity), which may differ from the
 // album's album-artist on a compilation; "" when unresolved.
 type TrackEntry struct {
-	ID              int64
+	ID              int64 // serving rendition's file id (display/debug only)
+	TagsetID        int64
 	Hash            string
 	Title           string
 	ArtistName      string
@@ -244,7 +250,8 @@ type SearchResults struct {
 // context. ArtistName is the track's performer (its artist_id entity), matching
 // the track list; AlbumTitle lets the frontend navigate to the right drill level.
 type SearchTrackEntry struct {
-	ID              int64
+	ID              int64 // serving rendition's file id (display/debug only)
+	TagsetID        int64
 	Title           string
 	TrackNumber     sql.NullInt64
 	DurationSeconds sql.NullFloat64

@@ -18,18 +18,22 @@ Playlists are scoped to the calling user: another user's playlist id returns
 | Action | Endpoint | Body |
 |--------|----------|------|
 | List my playlists | `GET /api/playlists` | — |
-| Create | `POST /api/playlists` | `{"name", "hashes"?: []}` |
+| Create | `POST /api/playlists` | `{"name", "tagset_ids"?: []}` |
 | Detail (with items) | `GET /api/playlists/{id}` | — |
 | Rename | `PATCH /api/playlists/{id}` | `{"name"}` |
 | Delete | `DELETE /api/playlists/{id}` | — |
-| Append items | `POST /api/playlists/{id}/items` | `{"hashes": []}` |
+| Append items | `POST /api/playlists/{id}/items` | `{"tagset_ids": []}` |
 | Remove one item | `DELETE /api/playlists/{id}/items/{itemId}` | — |
 | Reorder | `PUT /api/playlists/{id}/items` | `{"item_ids": []}` |
-| Toggle Like | `POST /api/favorites/{hash}` | — |
-| Liked hashes | `GET /api/favorites` | — |
+| Toggle Like | `POST /api/favorites/{tagsetId}` | — |
+| Liked tagset ids | `GET /api/favorites` | — |
+
+A track is addressed by its **tagset id** — the specific appearance the user
+picked (docs/architecture/recording-tagsets.md, decision 4); the item's play
+URL is resolved server-side to the recording's ladder-best surviving rendition.
 
 Limits: playlist names ≤ 200 characters (trimmed, non-blank); at most 5000
-hashes / item ids per request.
+ids per request.
 
 ---
 
@@ -46,8 +50,8 @@ favorites row is created on first call), then regular playlists by name:
 ```
 
 `POST /api/playlists` creates a regular playlist, optionally seeded with items
-(`hashes`, in order — this is the web UI's "Save queue as playlist" path) and
-returns **201** with the same summary shape.
+(`tagset_ids`, in order — this is the web UI's "Save queue as playlist" path)
+and returns **201** with the same summary shape.
 
 `GET /api/playlists/{id}` adds the items in playlist order:
 
@@ -57,7 +61,7 @@ returns **201** with the same summary shape.
   "items": [
     {
       "item_id": 17,
-      "hash": "0f017b…",
+      "tagset_id": 42,
       "url": "/files/0f017b…/track.flac",
       "mime_type": "audio/flac",
       "title": "Ezio's Family",
@@ -74,14 +78,14 @@ returns **201** with the same summary shape.
 | Item field | Notes |
 |------------|-------|
 | `item_id`  | Stable id for remove/reorder. Regular playlists may contain the same track twice, hence item-level ids. |
-| `status`   | `"ok"` or `"trashed"`. Trashed tracks stay listed with their metadata but are not playable (the UI grays them out); restoring from Trash revives them in place. **Hard-deleted** files disappear from playlists entirely (FK cascade). |
+| `status`   | `"ok"` or `"trashed"`. Unavailable appearances (trashed/unapproved tagset, or a dormant recording with no surviving rendition) stay listed with their metadata but are not playable (the UI grays them out); restoring revives them in place. A **hard-deleted** tagset disappears from playlists entirely (FK cascade). |
 
 ## Item operations
 
-- **Append** (`POST …/items {"hashes": […]}`): atomic — every hash must name a
-  live (non-trashed) file the user may access, or the whole batch is rejected
-  with 400. On the favorites playlist, already-present tracks are skipped.
-  Response: `{"ok": true, "added": n}`.
+- **Append** (`POST …/items {"tagset_ids": […]}`): atomic — every id must name
+  a visible appearance (approved, non-trashed, playable), or the whole batch is
+  rejected with 400. On the favorites playlist, already-present appearances are
+  skipped. Response: `{"ok": true, "added": n}`.
 - **Remove** (`DELETE …/items/{itemId}`): 404 when the item isn't in that
   playlist.
 - **Reorder** (`PUT …/items {"item_ids": […]}`): the list must be a permutation
@@ -90,20 +94,20 @@ returns **201** with the same summary shape.
 
 ## Favorites / Like
 
-- `POST /api/favorites/{hash}` toggles the file's membership in the user's
-  favorites playlist (creating it on first use) and returns the new state:
-  `{"liked": true|false}`. Unknown or trashed hashes → 404.
-- `GET /api/favorites` returns `{"hashes": [ … ]}` — the user's liked content
-  hashes in playlist order, **excluding trashed files** (used by the web UI to
-  paint the hearts).
+- `POST /api/favorites/{tagsetId}` toggles the appearance's membership in the
+  user's favorites playlist (creating it on first use) and returns the new
+  state: `{"liked": true|false}`. Unknown or unavailable tagsets → 404.
+- `GET /api/favorites` returns `{"tagset_ids": [ … ]}` — the user's liked
+  appearances in playlist order, **excluding unavailable ones** (used by the
+  web UI to paint the hearts).
 
 ## Error responses
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Blank/overlong name; empty or oversized batch; unknown/trashed hash in an add or create; reorder ids not a permutation. |
+| 400 | Blank/overlong name; empty or oversized batch; unknown/unavailable tagset in an add or create; reorder ids not a permutation. |
 | 401 / 403 | Anonymous / missing `content.access`; **403** also for rename/delete of the favorites playlist. |
-| 404 | Playlist id not owned by the caller; unknown item id; unknown/trashed hash on Like. |
+| 404 | Playlist id not owned by the caller; unknown item id; unknown/unavailable tagset on Like. |
 | 500 | Internal storage error. |
 
 ## Examples
@@ -112,10 +116,10 @@ returns **201** with the same summary shape.
 # Save a playlist with two tracks
 curl -b "madshare_session=<token>" -X POST http://localhost:3000/api/playlists \
   -H 'Content-Type: application/json' \
-  -d '{"name":"Road Trip","hashes":["0f017b…","9c2ad1…"]}'
+  -d '{"name":"Road Trip","tagset_ids":[42, 57]}'
 
 # Like a track / un-like it (same call)
-curl -b "madshare_session=<token>" -X POST http://localhost:3000/api/favorites/0f017b…
+curl -b "madshare_session=<token>" -X POST http://localhost:3000/api/favorites/42
 
 # Reorder: full new ordering by item id
 curl -b "madshare_session=<token>" -X PUT http://localhost:3000/api/playlists/3/items \

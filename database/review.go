@@ -502,9 +502,10 @@ func (db *DB) StageRestoredFile(ctx context.Context, hash string, ownerID sql.Nu
 }
 
 // FileReviewInfo returns the review state, uploader, and trash flag for the
-// file with the given content hash (state and trash read from its tagset) —
-// the narrow lookup used by the blob-access gate and ownership checks. found
-// is false (no error) on unknown hashes.
+// file with the given content hash (state and trash read from its *own*
+// offered tagset — the ownership/editability lookup for the My-uploads flows;
+// the blob-serving gate uses the recording-level BlobPubliclyVisible instead).
+// found is false (no error) on unknown hashes.
 func (db *DB) FileReviewInfo(ctx context.Context, hash string) (state string, uploadedBy sql.NullInt64, deleted bool, found bool, err error) {
 	var deletedAt sql.NullInt64
 	err = db.QueryRowContext(ctx, `
@@ -522,4 +523,27 @@ func (db *DB) FileReviewInfo(ctx context.Context, hash string) (state string, up
 		return "", sql.NullInt64{}, false, false, fmt.Errorf("file review info: %w", err)
 	}
 	return state, uploadedBy, deletedAt.Valid, true, nil
+}
+
+// BlobPubliclyVisible reports whether the blob with the given content hash is
+// part of the public library: it is a surviving (non-removed) rendition of a
+// recording with at least one approved, non-trashed appearance
+// (recording-tagsets P1 — the blob gate is recording-level, so a pending
+// re-encode of already-published audio serves like its published siblings).
+// found is false (no error) on unknown hashes. Access policy (guest/license)
+// is a separate layer (FileAccessibleByHash).
+func (db *DB) BlobPubliclyVisible(ctx context.Context, hash string) (visible, found bool, err error) {
+	var v bool
+	err = db.QueryRowContext(ctx, `
+		SELECT f.deleted_at IS NULL
+		   AND EXISTS (SELECT 1 FROM tagsets t WHERE t.recording_id = f.recording_id
+		                 AND t.deleted_at IS NULL AND t.review_state = 'approved')
+		FROM files f WHERE f.hash = ?`, hash).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("blob publicly visible: %w", err)
+	}
+	return v, true, nil
 }

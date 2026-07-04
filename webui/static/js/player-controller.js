@@ -32,7 +32,10 @@ import { createMediaSession } from './media-session.js';
 
 // QUEUE_KEY persists { tracks, index, dirty } so a reload resumes the queue
 // (paused — see restoreFromStorage). localStorage only, per Decision §4.
-const QUEUE_KEY = 'madshare-queue';
+// v2: tracks carry tagsetId (recording-tagsets P1) — the version bump drops
+// stale hash-keyed queues once instead of reviving tracks whose hearts and
+// quality control would be dead.
+const QUEUE_KEY = 'madshare-queue-v2';
 
 let instance = null;
 
@@ -128,19 +131,20 @@ function createController() {
   // skipped on — only the latest go() wins (recordings P4).
   let renditionGen = 0;
 
-  // loadRenditions fetches the current track's recording renditions and hands
-  // them to the player so its quality control reflects them. Best-effort: any
-  // failure (or a single-rendition track) simply leaves the control hidden. The
-  // renditions endpoint shares the track URL's origin, so it needs no API base.
+  // loadRenditions fetches the current track's recording renditions (by its
+  // tagset id — the listening identity) and hands them to the player so its
+  // quality control reflects them. Best-effort: any failure (or a track with
+  // no tagset id, e.g. a preview blob or a stale persisted queue) simply
+  // leaves the control hidden. The renditions endpoint shares the track URL's
+  // origin, so it needs no API base.
   async function loadRenditions(track) {
     const gen = ++renditionGen;
-    const url = track && track.url;
-    const at = url ? url.indexOf('/files/') : -1;
-    const m = at >= 0 ? /\/files\/([0-9a-f]{64})\//.exec(url) : null;
-    if (!m) return; // not a content-hash URL (e.g. a preview blob) — no renditions
-    const base = url.slice(0, at); // "" (same-origin) or "https://host"
+    if (!track || !track.tagsetId) return;
+    const url = track.url || '';
+    const at = url.indexOf('/files/');
+    const base = at >= 0 ? url.slice(0, at) : ''; // "" (same-origin) or "https://host"
     try {
-      const res = await fetch(`${base}/api/tracks/${m[1]}/renditions`);
+      const res = await fetch(`${base}/api/tagsets/${track.tagsetId}/renditions`);
       if (!res.ok || gen !== renditionGen) return;
       const list = await res.json();
       if (gen !== renditionGen) return; // superseded by a newer go()

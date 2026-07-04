@@ -410,10 +410,10 @@ type fakeRepo struct {
 	listFilesErr error
 
 	// Paginated listing + bulk-trash fakes (file-list-scaling).
-	pageFiles         []*database.FileListEntry
-	countFiles        int
-	filterHashes      []string
-	filterHashesErr   error
+	pageFiles          []*database.FileListEntry
+	countFiles         int
+	filterHashes       []string
+	filterHashesErr    error
 	bulkTrashedHashes  []string
 	bulkTrashErr       error
 	bulkRestoredHashes []string
@@ -459,7 +459,7 @@ type fakeRepo struct {
 	splitFileID         int64
 	splitNotFound       bool
 	duplicateHashes     map[string]bool               // hashes IsDuplicateSubmission reports true
-	renditions          []database.DuplicateRendition // RecordingRenditionsByHash result
+	renditions          []database.DuplicateRendition // RecordingRenditionsByTagsetID result
 
 	// Base-metadata edit stubs (Phase 5).
 	metaCalls     int
@@ -478,7 +478,7 @@ type fakeRepo struct {
 	playlistItems     []*database.PlaylistItemEntry
 	playlistItemFound bool
 	favoriteLiked     bool
-	favoriteHashes    []string
+	favoriteTagsetIDs []int64
 
 	// Review-bucket stubs (moderation review). lastReviewState captures the
 	// state InsertFile received; reviewInfoFound=false means "unknown hash"
@@ -554,6 +554,13 @@ func (f *fakeRepo) UpdateReviewState(_ context.Context, hash string, t database.
 
 func (f *fakeRepo) FileReviewInfo(_ context.Context, _ string) (string, sql.NullInt64, bool, bool, error) {
 	return f.reviewInfoState, f.reviewInfoOwner, f.reviewInfoDeleted, f.reviewInfoFound, f.reviewInfoErr
+}
+
+// BlobPubliclyVisible mirrors the review-info stub: visible iff the stubbed
+// state is approved (the recording-level gate collapses to that in the fakes'
+// one-file world).
+func (f *fakeRepo) BlobPubliclyVisible(_ context.Context, _ string) (bool, bool, error) {
+	return f.reviewInfoState == database.ReviewApproved || f.reviewInfoState == "", f.reviewInfoFound, f.reviewInfoErr
 }
 
 func (f *fakeRepo) StageRestoredFile(_ context.Context, _ string, _ sql.NullInt64) (bool, error) {
@@ -780,7 +787,7 @@ func (f *fakeRepo) IsDuplicateSubmission(_ context.Context, hash string) (bool, 
 	return f.duplicateHashes[hash], nil
 }
 
-func (f *fakeRepo) RecordingRenditionsByHash(_ context.Context, _ string) ([]database.DuplicateRendition, error) {
+func (f *fakeRepo) RecordingRenditionsByTagsetID(_ context.Context, _ int64) ([]database.DuplicateRendition, error) {
 	return f.renditions, nil
 }
 
@@ -918,11 +925,11 @@ func (f *fakeRepo) EnsureFavoritesPlaylist(_ context.Context, _ int64) (int64, e
 	return 1, f.playlistErr
 }
 
-func (f *fakeRepo) CreatePlaylist(_ context.Context, userID int64, name string, hashes []string) (*database.Playlist, error) {
+func (f *fakeRepo) CreatePlaylist(_ context.Context, userID int64, name string, tagsetIDs []int64) (*database.Playlist, error) {
 	if f.playlistErr != nil {
 		return nil, f.playlistErr
 	}
-	return &database.Playlist{ID: 2, UserID: userID, Name: name, Kind: database.PlaylistRegular, TrackCount: len(hashes)}, nil
+	return &database.Playlist{ID: 2, UserID: userID, Name: name, Kind: database.PlaylistRegular, TrackCount: len(tagsetIDs)}, nil
 }
 
 func (f *fakeRepo) GetPlaylist(_ context.Context, _, _ int64) (*database.Playlist, []*database.PlaylistItemEntry, error) {
@@ -940,11 +947,11 @@ func (f *fakeRepo) DeletePlaylist(_ context.Context, _, _ int64) error {
 	return f.playlistErr
 }
 
-func (f *fakeRepo) AddPlaylistItemsByHash(_ context.Context, _, _ int64, hashes []string) (int, error) {
+func (f *fakeRepo) AddPlaylistItems(_ context.Context, _, _ int64, tagsetIDs []int64) (int, error) {
 	if f.playlistErr != nil {
 		return 0, f.playlistErr
 	}
-	return len(hashes), nil
+	return len(tagsetIDs), nil
 }
 
 func (f *fakeRepo) RemovePlaylistItem(_ context.Context, _, _, _ int64) (bool, error) {
@@ -955,12 +962,12 @@ func (f *fakeRepo) ReorderPlaylist(_ context.Context, _, _ int64, _ []int64) err
 	return f.playlistErr
 }
 
-func (f *fakeRepo) ToggleFavorite(_ context.Context, _ int64, _ string) (bool, error) {
+func (f *fakeRepo) ToggleFavorite(_ context.Context, _, _ int64) (bool, error) {
 	return f.favoriteLiked, f.playlistErr
 }
 
-func (f *fakeRepo) ListFavoriteHashes(_ context.Context, _ int64) ([]string, error) {
-	return f.favoriteHashes, f.playlistErr
+func (f *fakeRepo) ListFavoriteTagsetIDs(_ context.Context, _ int64) ([]int64, error) {
+	return f.favoriteTagsetIDs, f.playlistErr
 }
 
 // TestUploadFile_InsertFailureLeavesOrphan verifies that when storage.Put

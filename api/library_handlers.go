@@ -171,14 +171,15 @@ func (h *handler) listTracks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type trackItem struct {
-		ID          int64    `json:"id"`
-		Hash        string   `json:"hash"` // lets the admin By-entity view edit/delete a track without a whole-table fetch
+		ID          int64    `json:"id"`        // serving rendition's file id
+		TagsetID    int64    `json:"tagset_id"` // the listening identity (favorites / playlists / renditions)
+		Hash        string   `json:"hash"`      // the ORIGIN file — lets the admin By-entity view edit/delete a track; "" when that blob is gone
 		Title       string   `json:"title"`
 		ArtistName  string   `json:"artist_name"`
 		TrackNumber *int64   `json:"track_number"`
 		DiscNumber  *int64   `json:"disc_number"`
 		Duration    *float64 `json:"duration_seconds"`
-		URL         string   `json:"url"`
+		URL         string   `json:"url"` // the recording's ladder-best rendition (server-resolved)
 		MimeType    string   `json:"mime_type"`
 	}
 
@@ -198,6 +199,7 @@ func (h *handler) listTracks(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, trackItem{
 			ID:          t.ID,
+			TagsetID:    t.TagsetID,
 			Hash:        t.Hash,
 			Title:       t.Title,
 			ArtistName:  t.ArtistName,
@@ -249,6 +251,7 @@ func (h *handler) search(w http.ResponseWriter, r *http.Request) {
 	}
 	type trackItem struct {
 		ID          int64    `json:"id"`
+		TagsetID    int64    `json:"tagset_id"`
 		Title       string   `json:"title"`
 		TrackNumber *int64   `json:"track_number"`
 		Duration    *float64 `json:"duration_seconds"`
@@ -288,7 +291,7 @@ func (h *handler) search(w http.ResponseWriter, r *http.Request) {
 			dur = &t.DurationSeconds.Float64
 		}
 		resp.Tracks = append(resp.Tracks, trackItem{
-			ID: t.ID, Title: t.Title, TrackNumber: trackNum, Duration: dur,
+			ID: t.ID, TagsetID: t.TagsetID, Title: t.Title, TrackNumber: trackNum, Duration: dur,
 			URL: "/files/" + t.ObjectKey, MimeType: t.MimeType,
 			ArtistName: t.ArtistName, AlbumTitle: t.AlbumTitle,
 		})

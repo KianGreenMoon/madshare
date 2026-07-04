@@ -154,7 +154,7 @@ function playableQueue() {
     queueIndexOf.set(i, tracks.length);
     tracks.push({
       url: `${API}${it.url}`,
-      hash: it.hash,
+      tagsetId: it.tagset_id || null,
       title: it.title || 'Unknown',
       artist: it.artist || '',
       dur: it.duration_seconds || undefined,

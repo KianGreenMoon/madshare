@@ -239,8 +239,8 @@ func TestReviewVisibility_StagedFilesHiddenEverywhere(t *testing.T) {
 	if accessible(t, db, h) {
 		t.Error("staged file accessible anonymously despite pending review")
 	}
-	// Playlists and favorites refuse staged files.
-	if _, err := db.ToggleFavorite(ctx, uid, h); err != ErrFileNotFound {
+	// Playlists and favorites refuse staged appearances.
+	if _, err := db.ToggleFavorite(ctx, uid, tagsetOf(t, db, h)); err != ErrFileNotFound {
 		t.Errorf("ToggleFavorite on draft err = %v, want ErrFileNotFound", err)
 	}
 
@@ -264,7 +264,7 @@ func TestReviewVisibility_StagedFilesHiddenEverywhere(t *testing.T) {
 	if !accessible(t, db, h) {
 		t.Error("approved guest-playable file should be reachable anonymously")
 	}
-	if _, err := db.ToggleFavorite(ctx, uid, h); err != nil {
+	if _, err := db.ToggleFavorite(ctx, uid, tagsetOf(t, db, h)); err != nil {
 		t.Errorf("ToggleFavorite after approve: %v", err)
 	}
 }
