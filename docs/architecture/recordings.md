@@ -49,7 +49,9 @@ CREATE TABLE recordings (
 );
 
 -- Overlay FK on the blob (recording identity is content-derived, so it lives on
--- files, next to hash — not on media_metadata, which carries tag-derived ids).
+-- files, next to hash — not on the tag-derived tagset). NOT NULL since
+-- migration 024 (trigger-enforced): every file belongs to a recording; inserts
+-- create a singleton the resolver may later merge (recording-tagsets.md).
 ALTER TABLE files ADD COLUMN recording_id INTEGER REFERENCES recordings(id);
 -- A file the moderator has manually split/pinned: the resolver must never
 -- re-merge it on a future pass (see Split-off).
@@ -71,8 +73,10 @@ CREATE TABLE audio_fingerprints (
 
 The recording is an **editable overlay**: it groups files, but the files' bytes,
 hashes, and tags are never mutated. A recording carries no tags of its own — its
-display name is derived from its best rendition's `media_metadata` (so renaming
-is still an artist/album/track-tag concern, unchanged).
+display identity is its **primary tagset** (recording-tagsets.md; renaming
+is still an artist/album/track-tag concern, unchanged). Since migration 024 the
+recording also owns `license` / `guest_playable` (one audio identity, one
+license — recording-tagsets.md decision 9).
 
 Recordings are **independent of tags and of artist/album**. Two files with
 slightly different tags but the same audio are one recording; a recording's
@@ -128,8 +132,8 @@ canonical MIME, size from the `files` row, both available with no binary — and
 the duplicates / moderation side-by-side compare shows only format + size, not
 bitrate or sample rate.
 
-**`fpcalc` absent** → no `audio_fingerprints` row, the resolver leaves
-`recording_id` NULL (every file is its own implicit recording), and the
+**`fpcalc` absent** → no `audio_fingerprints` row, every file stays on the
+singleton recording it was inserted with (nothing ever groups), and the
 recordings overlay lies dormant: the duplicates admin page, which lists
 multi-rendition *recordings*, is necessarily empty because nothing is grouped.
 
@@ -290,13 +294,14 @@ machine, and `IsDuplicateSubmission` is recomputed at submit/listing time:
 Mirrors the artist/album startup reconcile pass exactly (the orphan-blob /
 `FoldUnknownBuckets` pattern in `madshare.go`):
 
-- **Inline at upload** — after the analysis job computes the fingerprint, the
-  resolver matches it against existing fingerprints and either assigns the file
-  to the matched recording or creates a new one. Pinned files are skipped.
-- **Startup backfill** — idempotent, processes only `files` with NULL
-  `recording_id` (and `recording_pinned = 0`). For existing blobs that predate
-  fingerprinting it must first compute the fingerprint (a one-time, heavier
-  pass — runs through the analysis job queue below, not inline at boot).
+- **Inline at upload** — every insert creates a singleton recording; after the
+  analysis job computes the fingerprint, the resolver either moves the file
+  (with its offered tagsets) into the matched recording — garbage-collecting
+  the emptied singleton — or leaves it where it is. Pinned files are skipped.
+- **Startup reconcile** — `db.ReconcileTagsets` repairs invariant violations
+  (files without a recording or tagset, fileless recordings, missing primary
+  appearances); blobs that predate fingerprinting get their fingerprint through
+  the analysis-job backfill and group inline as those jobs complete.
 
 Single-rendition recordings are the norm; the resolver creating "a recording per
 file" for unmatched audio is expected and cheap.

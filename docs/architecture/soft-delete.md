@@ -3,8 +3,9 @@
 ## Overview
 
 Instead of immediately destroying a file on admin delete, the system marks it as
-*trashed* (`deleted_at` timestamp in the DB). Trashed files are hidden from all
-user-facing listings and access-checked endpoints. Admins can review trashed
+*trashed* (a `deleted_at` timestamp — since migration 024 on the file's
+**tagset**, the catalog unit; see `recording-tagsets.md`). Trashed files are
+hidden from all user-facing listings and access-checked endpoints. Admins can review trashed
 files in a dedicated Trash tab, restore them to the library, or permanently
 remove them (blob + DB row).
 
@@ -18,14 +19,14 @@ had, so a discarded submission re-enters the queue, not the library.
 
 ---
 
-## Database — migration 007
+## Database — migration 007 (moved by migration 024)
 
-```sql
-ALTER TABLE files ADD COLUMN deleted_at INTEGER DEFAULT NULL;
-CREATE INDEX idx_files_deleted ON files(deleted_at);
-```
-
-`NULL` = live file. Non-null = Unix timestamp of soft deletion.
+The Trash mark lives on `tagsets.deleted_at` (`NULL` = live, non-null = Unix
+timestamp of soft deletion); the delete/restore/list methods below now target
+the file's tagset via `origin_file_id`. `files.deleted_at` still exists but is
+reserved for *rendition removal* (`recording-tagsets.md`, P2) — nothing sets it
+yet. Hard delete cascades per the tagset invariant: the file's tagsets go with
+it, and a recording left fileless is removed.
 
 ---
 

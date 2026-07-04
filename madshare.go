@@ -101,7 +101,16 @@ func main() {
 		log.Printf("reconcile orphans: %v", err)
 	}
 
-	// Populate artist/album entity FKs for any media_metadata rows that predate
+	// Repair the recording/tagset invariants (files without a recording or
+	// tagset, fileless recordings, missing primary appearances) before anything
+	// reads through them. Idempotent; a healthy library is a fast no-op.
+	if n, err := db.ReconcileTagsets(context.Background()); err != nil {
+		log.Printf("reconcile tagsets: %v", err)
+	} else if n > 0 {
+		log.Printf("reconciled %d tagset/recording invariant violation(s)", n)
+	}
+
+	// Populate artist/album entity FKs for any tagsets that predate
 	// the overlay (idempotent; new uploads resolve entities inline at import).
 	if n, err := db.BackfillEntities(context.Background()); err != nil {
 		log.Printf("backfill entities: %v", err)
@@ -221,16 +230,6 @@ func main() {
 			log.Printf("enqueued %d file(s) for media analysis backfill", len(ids))
 			mediaPool.Notify()
 		}
-	}
-
-	// Resolve recordings for files whose fingerprints already exist but predate
-	// the recording overlay (idempotent; new uploads resolve inline as their
-	// analysis job completes). Fingerprints freshly enqueued above are resolved
-	// inline by the worker, not here.
-	if n, err := db.BackfillRecordings(ctx); err != nil {
-		log.Printf("backfill recordings: %v", err)
-	} else if n > 0 {
-		log.Printf("resolved recordings for %d existing file(s)", n)
 	}
 
 	limiter := api.NewUploadLimiter(

@@ -14,7 +14,7 @@ import (
 
 // Default display names for the "unknown" buckets. Untagged tracks resolve to
 // these canonical entities instead of empty strings: artists.name / albums.title
-// and media_metadata.title are required non-empty (migration 016). normalizeKey
+// and tagsets.title are required non-empty (migration 016). normalizeKey
 // of each is the bucket's dedup key ("unknown artist" / "other"), so a track
 // tagged literally this way converges on the same bucket.
 const (
@@ -73,7 +73,7 @@ func effectiveArtist(albumArtist, artist string) string {
 }
 
 // effectiveTrackArtist is the track's *performer*, used for the per-track artist
-// (media_metadata.artist_id): the first of artist, then album_artist, whose
+// (tagsets.artist_id): the first of artist, then album_artist, whose
 // normalized key is non-empty, else DefaultArtistName. Note the precedence is the
 // reverse of effectiveArtist — the track's own `artist` tag wins, and it falls
 // back to the album artist when the track carries no performer tag — so for a
@@ -101,7 +101,7 @@ func effectiveAlbum(album string) string {
 	return strings.TrimSpace(norm.NFC.String(album))
 }
 
-// tagsFromMeta extracts the resolver inputs from a media_metadata struct. NULL
+// tagsFromMeta extracts the resolver inputs from a MediaMetadata value. NULL
 // fields read back as their zero value (empty string / 0), which the resolver
 // treats as the unknown buckets.
 func tagsFromMeta(m *MediaMetadata) AlbumArtistTags {
@@ -324,7 +324,7 @@ func (db *DB) RenameAlbum(ctx context.Context, albumID int64, newTitle string) e
 // Returns ErrMergeSelf when the ids are equal, ErrEntityNotFound when either id
 // is unknown. Runs in one transaction so a failure leaves both entities intact.
 //
-// media_metadata.{artist,album}_id are RESTRICT (no cascade), so every track is
+// tagsets.{artist,album}_id are RESTRICT (no cascade), so every track is
 // repointed off from before from (and any collapsed album) is deleted; deleting
 // an artist/album cascades only its cover rows.
 func (db *DB) MergeArtists(ctx context.Context, fromID, intoID int64) error {
@@ -378,7 +378,7 @@ func (db *DB) MergeArtists(ctx context.Context, fromID, intoID int64) error {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE media_metadata SET album_id = ?, album_artist_id = ? WHERE album_id = ?`,
+			`UPDATE tagsets SET album_id = ?, album_artist_id = ? WHERE album_id = ?`,
 			c.intoAlbum, intoID, c.fromAlbum); err != nil {
 			return fmt.Errorf("merge artists: repoint collapsed tracks: %w", err)
 		}
@@ -395,10 +395,10 @@ func (db *DB) MergeArtists(ctx context.Context, fromID, intoID int64) error {
 	//    tracks of the moved albums) and as performer (e.g. from is a performer on a
 	//    compilation owned by another album-artist). Both refs must clear before the
 	//    RESTRICT delete of from below.
-	if _, err := tx.ExecContext(ctx, `UPDATE media_metadata SET album_artist_id = ? WHERE album_artist_id = ?`, intoID, fromID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE tagsets SET album_artist_id = ? WHERE album_artist_id = ?`, intoID, fromID); err != nil {
 		return fmt.Errorf("merge artists: repoint album-artist tracks: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE media_metadata SET artist_id = ? WHERE artist_id = ?`, intoID, fromID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE tagsets SET artist_id = ? WHERE artist_id = ?`, intoID, fromID); err != nil {
 		return fmt.Errorf("merge artists: repoint performer tracks: %w", err)
 	}
 	// 4. Give into from's artist cover only if into has none.
@@ -459,7 +459,7 @@ func (db *DB) MergeAlbums(ctx context.Context, fromID, intoID int64) error {
 	// (artist_id) is intentionally left untouched: moving a track to a different
 	// album never changes who performed it.
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE media_metadata SET album_id = ?, album_artist_id = ? WHERE album_id = ?`,
+		`UPDATE tagsets SET album_id = ?, album_artist_id = ? WHERE album_id = ?`,
 		intoID, intoArtist, fromID); err != nil {
 		return fmt.Errorf("merge albums: repoint tracks: %w", err)
 	}
@@ -498,7 +498,7 @@ func (db *DB) MergeArtistsPreview(ctx context.Context, fromID, intoID int64) (*M
 	// A row is moved if from is its album-artist OR its performer; a single row
 	// matching in both roles counts once (it is one UPDATE target either way).
 	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM media_metadata WHERE album_artist_id = ? OR artist_id = ?`,
+		`SELECT COUNT(*) FROM tagsets WHERE album_artist_id = ? OR artist_id = ?`,
 		fromID, fromID).Scan(&p.TracksMoved); err != nil {
 		return nil, fmt.Errorf("merge artists preview: tracks: %w", err)
 	}
@@ -567,7 +567,7 @@ func (db *DB) MergeAlbumsPreview(ctx context.Context, fromID, intoID int64) (*Me
 	}
 
 	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM media_metadata WHERE album_id = ?`, fromID).Scan(&p.TracksMoved); err != nil {
+		`SELECT COUNT(*) FROM tagsets WHERE album_id = ?`, fromID).Scan(&p.TracksMoved); err != nil {
 		return nil, fmt.Errorf("merge albums preview: tracks: %w", err)
 	}
 
@@ -592,11 +592,11 @@ func (db *DB) MergeAlbumsPreview(ctx context.Context, fromID, intoID int64) (*Me
 		if err != nil {
 			return nil, fmt.Errorf("merge albums preview: other albums: %w", err)
 		}
-		otherAlbumArtistTracks, err := db.exists(ctx, `SELECT 1 FROM media_metadata WHERE album_artist_id = ? AND album_id <> ?`, fromArtist, fromID)
+		otherAlbumArtistTracks, err := db.exists(ctx, `SELECT 1 FROM tagsets WHERE album_artist_id = ? AND album_id <> ?`, fromArtist, fromID)
 		if err != nil {
 			return nil, fmt.Errorf("merge albums preview: other album-artist tracks: %w", err)
 		}
-		performerTracks, err := db.exists(ctx, `SELECT 1 FROM media_metadata WHERE artist_id = ?`, fromArtist)
+		performerTracks, err := db.exists(ctx, `SELECT 1 FROM tagsets WHERE artist_id = ?`, fromArtist)
 		if err != nil {
 			return nil, fmt.Errorf("merge albums preview: performer tracks: %w", err)
 		}
@@ -673,8 +673,8 @@ func resolveAlbumArtistTx(ctx context.Context, tx *sql.Tx, t AlbumArtistTags) (a
 	return albumArtistID, trackArtistID, albumID, nil
 }
 
-// BackfillEntities resolves and sets artist_id/album_id on every media_metadata
-// row that still has either FK NULL, returning the number of rows updated. It is
+// BackfillEntities resolves and sets artist_id/album_id on every tagset
+// that still has any FK NULL, returning the number of rows updated. It is
 // idempotent and re-runnable (already-resolved rows are skipped), and is run as a
 // startup reconcile pass next to ReconcileOrphans. New uploads resolve entities
 // inline at import time (Phase 2), so this is only for pre-existing rows.
@@ -684,30 +684,30 @@ func resolveAlbumArtistTx(ctx context.Context, tx *sql.Tx, t AlbumArtistTags) (a
 // the resolver opens its own transaction would deadlock.
 func (db *DB) BackfillEntities(ctx context.Context) (int, error) {
 	rows, err := db.QueryContext(ctx,
-		`SELECT file_id, artist, album_artist, album, year
-		 FROM media_metadata
+		`SELECT id, artist, album_artist, album, year
+		 FROM tagsets
 		 WHERE album_artist_id IS NULL OR artist_id IS NULL OR album_id IS NULL`)
 	if err != nil {
 		return 0, fmt.Errorf("backfill entities: query: %w", err)
 	}
 
 	type pending struct {
-		fileID int64
-		tags   AlbumArtistTags
+		tagsetID int64
+		tags     AlbumArtistTags
 	}
 	var todo []pending
 	for rows.Next() {
 		var (
-			fileID                     int64
+			tagsetID                   int64
 			artist, albumArtist, album sql.NullString
 			year                       sql.NullInt64
 		)
-		if err := rows.Scan(&fileID, &artist, &albumArtist, &album, &year); err != nil {
+		if err := rows.Scan(&tagsetID, &artist, &albumArtist, &album, &year); err != nil {
 			rows.Close()
 			return 0, fmt.Errorf("backfill entities: scan: %w", err)
 		}
 		todo = append(todo, pending{
-			fileID: fileID,
+			tagsetID: tagsetID,
 			tags: AlbumArtistTags{
 				Artist:      artist.String,
 				AlbumArtist: albumArtist.String,
@@ -726,13 +726,13 @@ func (db *DB) BackfillEntities(ctx context.Context) (int, error) {
 	for _, p := range todo {
 		albumArtistID, trackArtistID, albumID, err := db.resolveAlbumArtist(ctx, p.tags)
 		if err != nil {
-			return done, fmt.Errorf("backfill entities: resolve file %d: %w", p.fileID, err)
+			return done, fmt.Errorf("backfill entities: resolve tagset %d: %w", p.tagsetID, err)
 		}
 		if _, err := db.ExecContext(ctx,
-			`UPDATE media_metadata SET album_artist_id = ?, artist_id = ?, album_id = ? WHERE file_id = ?`,
-			albumArtistID, trackArtistID, albumID, p.fileID,
+			`UPDATE tagsets SET album_artist_id = ?, artist_id = ?, album_id = ? WHERE id = ?`,
+			albumArtistID, trackArtistID, albumID, p.tagsetID,
 		); err != nil {
-			return done, fmt.Errorf("backfill entities: update file %d: %w", p.fileID, err)
+			return done, fmt.Errorf("backfill entities: update tagset %d: %w", p.tagsetID, err)
 		}
 		done++
 	}

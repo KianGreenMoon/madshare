@@ -11,10 +11,12 @@ import (
 
 // reviewEntryColumns is the shared SELECT list for the two staging listings.
 // Keep in sync with scanReviewEntry.
-// reviewJoins adds the artist/album cover-presence joins reviewEntryColumns
-// depends on. Appended to each staging query's FROM (after the media_metadata
-// join) so the shared column list can reference aimg/alimg.
+// reviewJoins adds the tech row plus the artist/album cover-presence joins
+// reviewEntryColumns depends on. Appended to each staging query's FROM (after
+// the tagsets join aliased m) so the shared column list can reference
+// mm/aimg/alimg.
 const reviewJoins = `
+	LEFT JOIN media_metadata mm ON mm.file_id = f.id
 	LEFT JOIN artist_images aimg ON aimg.artist_id = m.album_artist_id
 	LEFT JOIN album_images  alimg ON alimg.album_id  = m.album_id`
 
@@ -22,8 +24,8 @@ const reviewEntryColumns = `
 	f.hash, f.mime_type, f.byte_size, f.object_key, f.created_at,
 	COALESCE((SELECT filename FROM file_uploads WHERE file_id = f.id ORDER BY id LIMIT 1), f.hash) AS filename,
 	COALESCE(m.title, '') AS title,
-	m.artist, m.album, m.album_artist, m.track_number, m.disc_number, m.year, m.duration_seconds,
-	f.review_state, f.review_note, f.submitted_at, f.uploaded_by,
+	m.artist, m.album, m.album_artist, m.track_number, m.disc_number, m.year, mm.duration_seconds,
+	m.review_state, m.review_note, m.submitted_at, m.created_by,
 	CASE WHEN aimg.artist_id IS NOT NULL THEN 1 ELSE 0 END AS artist_has_image,
 	CASE WHEN alimg.album_id  IS NOT NULL THEN 1 ELSE 0 END AS album_has_image`
 
@@ -79,7 +81,7 @@ func reviewSortOrder(token string) string {
 	case "uploader":
 		return "u.username IS NULL, LOWER(u.username), f.created_at DESC, f.id DESC"
 	case "state":
-		return "CASE f.review_state WHEN 'returned' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END, f.created_at DESC, f.id DESC"
+		return "CASE m.review_state WHEN 'returned' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END, f.created_at DESC, f.id DESC"
 	case "created_asc":
 		return "f.created_at ASC, f.id ASC"
 	case "grouped":
@@ -96,7 +98,7 @@ func reviewSortOrder(token string) string {
 // fixed predicate (non-approved, non-trashed, optionally one owner).
 func appendReviewFilter(where string, args []any, f ReviewFilter) (string, []any) {
 	if len(f.States) > 0 {
-		where += " AND f.review_state IN (?" + strings.Repeat(",?", len(f.States)-1) + ")"
+		where += " AND m.review_state IN (?" + strings.Repeat(",?", len(f.States)-1) + ")"
 		for _, s := range f.States {
 			args = append(args, s)
 		}
@@ -109,9 +111,17 @@ func appendReviewFilter(where string, args []any, f ReviewFilter) (string, []any
 }
 
 // pendingReviewBase / uploadsBase are the scope predicates the staging queries
-// share between their page, count, and hash-resolver forms.
-const pendingReviewBase = "f.deleted_at IS NULL AND f.review_state <> 'approved'"
-const uploadsBase = "f.uploaded_by = ? AND f.deleted_at IS NULL AND f.review_state <> 'approved'"
+// share between their page, count, and hash-resolver forms. The lifecycle lives
+// on the tagset (aliased m): non-trashed, in a non-approved state, owned — for
+// the My-uploads scope — by the tagset's creator.
+const pendingReviewBase = "m.deleted_at IS NULL AND m.review_state <> 'approved'"
+const uploadsBase = "m.created_by = ? AND m.deleted_at IS NULL AND m.review_state <> 'approved'"
+
+// reviewFrom is the staging queries' shared FROM: the files row with its
+// offered tagset (alias m — the reviewable unit).
+const reviewFrom = `
+		FROM files f
+		JOIN tagsets m ON m.origin_file_id = f.id`
 
 func scanReviewRows(rows *sql.Rows, withUploader bool) ([]*ReviewEntry, error) {
 	out := make([]*ReviewEntry, 0)
@@ -163,9 +173,7 @@ func (db *DB) ListUploadsByUser(ctx context.Context, userID int64) ([]*ReviewEnt
 func (db *DB) ListUploadsByUserPage(ctx context.Context, q ReviewListQuery) ([]*ReviewEntry, error) {
 	where, args := appendReviewFilter(uploadsBase, []any{q.OwnerID}, q.ReviewFilter)
 	sqlText := `
-		SELECT ` + reviewEntryColumns + `
-		FROM files f
-		LEFT JOIN media_metadata m ON m.file_id = f.id` + reviewJoins + `
+		SELECT ` + reviewEntryColumns + reviewFrom + reviewJoins + `
 		WHERE ` + where + `
 		ORDER BY ` + reviewSortOrder(q.Sort)
 	sqlText, args = pageWindow(sqlText, args, q.Limit, q.Offset)
@@ -183,7 +191,7 @@ func (db *DB) CountUploadsByUser(ctx context.Context, f ReviewFilter) (int, erro
 	where, args := appendReviewFilter(uploadsBase, []any{f.OwnerID}, f)
 	var n int
 	err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM files f LEFT JOIN media_metadata m ON m.file_id = f.id WHERE `+where, args...).Scan(&n)
+		`SELECT COUNT(*)`+reviewFrom+` WHERE `+where, args...).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("count uploads by user: %w", err)
 	}
@@ -196,7 +204,7 @@ func (db *DB) CountUploadsByUser(ctx context.Context, f ReviewFilter) (int, erro
 func (db *DB) UploadHashesByUserFilter(ctx context.Context, f ReviewFilter) ([]string, error) {
 	where, args := appendReviewFilter(uploadsBase, []any{f.OwnerID}, f)
 	rows, err := db.QueryContext(ctx,
-		`SELECT f.hash FROM files f LEFT JOIN media_metadata m ON m.file_id = f.id WHERE `+where+` ORDER BY f.id`, args...)
+		`SELECT f.hash`+reviewFrom+` WHERE `+where+` ORDER BY f.id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("upload hashes by filter: %w", err)
 	}
@@ -216,10 +224,8 @@ func (db *DB) ListPendingReview(ctx context.Context) ([]*ReviewEntry, error) {
 func (db *DB) ListPendingReviewPage(ctx context.Context, q ReviewListQuery) ([]*ReviewEntry, error) {
 	where, args := appendReviewFilter(pendingReviewBase, nil, q.ReviewFilter)
 	sqlText := `
-		SELECT ` + reviewEntryColumns + `, u.username
-		FROM files f
-		LEFT JOIN media_metadata m ON m.file_id = f.id` + reviewJoins + `
-		LEFT JOIN users u ON u.id = f.uploaded_by
+		SELECT ` + reviewEntryColumns + `, u.username` + reviewFrom + reviewJoins + `
+		LEFT JOIN users u ON u.id = m.created_by
 		WHERE ` + where + `
 		ORDER BY ` + reviewSortOrder(q.Sort)
 	sqlText, args = pageWindow(sqlText, args, q.Limit, q.Offset)
@@ -237,7 +243,7 @@ func (db *DB) CountPendingReview(ctx context.Context, f ReviewFilter) (int, erro
 	where, args := appendReviewFilter(pendingReviewBase, nil, f)
 	var n int
 	err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM files f LEFT JOIN media_metadata m ON m.file_id = f.id WHERE `+where, args...).Scan(&n)
+		`SELECT COUNT(*)`+reviewFrom+` WHERE `+where, args...).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("count pending review: %w", err)
 	}
@@ -250,7 +256,7 @@ func (db *DB) CountPendingReview(ctx context.Context, f ReviewFilter) (int, erro
 func (db *DB) PendingReviewHashesByFilter(ctx context.Context, f ReviewFilter) ([]string, error) {
 	where, args := appendReviewFilter(pendingReviewBase, nil, f)
 	rows, err := db.QueryContext(ctx,
-		`SELECT f.hash FROM files f LEFT JOIN media_metadata m ON m.file_id = f.id WHERE `+where+` ORDER BY f.id`, args...)
+		`SELECT f.hash`+reviewFrom+` WHERE `+where+` ORDER BY f.id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("pending review hashes by filter: %w", err)
 	}
@@ -258,10 +264,10 @@ func (db *DB) PendingReviewHashesByFilter(ctx context.Context, f ReviewFilter) (
 	return scanHashes(rows)
 }
 
-// ReviewTransition describes one guarded review-state change. The update only
-// applies when the file is non-trashed, its current state is in From, and —
-// when OwnerID is non-zero — it was uploaded by that user. To==returned stores
-// Note; every other target state clears the note.
+// ReviewTransition describes one guarded review-state change on the tagset.
+// The update only applies when the tagset is non-trashed, its current state is
+// in From, and — when OwnerID is non-zero — it was offered by that user.
+// To==returned stores Note; every other target state clears the note.
 type ReviewTransition struct {
 	From []string
 	To   string
@@ -275,10 +281,11 @@ type ReviewTransition struct {
 	StampSubmittedAt bool
 }
 
-// UpdateReviewState applies a guarded state transition to the file with the
-// given content hash. The guard and update are a single UPDATE, so concurrent
-// transitions cannot double-apply. found is false (no error) when no row
-// satisfies the guard (unknown hash, trashed, wrong state, or wrong owner).
+// UpdateReviewState applies a guarded state transition to the tagset of the
+// file with the given content hash. The guard and update are a single UPDATE,
+// so concurrent transitions cannot double-apply. found is false (no error) when
+// no row satisfies the guard (unknown hash, trashed, wrong state, or wrong
+// owner).
 func (db *DB) UpdateReviewState(ctx context.Context, hash string, t ReviewTransition) (bool, error) {
 	if len(t.From) == 0 {
 		return false, errors.New("update review state: empty From set")
@@ -289,19 +296,20 @@ func (db *DB) UpdateReviewState(ctx context.Context, hash string, t ReviewTransi
 	}
 
 	args := []any{t.To, note}
-	q := `UPDATE files SET review_state = ?, review_note = ?`
+	q := `UPDATE tagsets SET review_state = ?, review_note = ?`
 	if t.StampSubmittedAt {
 		q += `, submitted_at = ?`
 		args = append(args, time.Now().Unix())
 	}
-	q += ` WHERE hash = ? AND deleted_at IS NULL AND review_state IN (?` +
+	q += ` WHERE origin_file_id IN (SELECT id FROM files WHERE hash = ?)
+	   AND deleted_at IS NULL AND review_state IN (?` +
 		strings.Repeat(",?", len(t.From)-1) + `)`
 	args = append(args, hash)
 	for _, s := range t.From {
 		args = append(args, s)
 	}
 	if t.OwnerID != 0 {
-		q += ` AND uploaded_by = ?`
+		q += ` AND created_by = ?`
 		args = append(args, t.OwnerID)
 	}
 
@@ -361,7 +369,7 @@ func (db *DB) BulkUpdateReviewState(ctx context.Context, hashes []string, t Revi
 			args = append(args, s)
 		}
 		if t.OwnerID != 0 {
-			where += ` AND uploaded_by = ?`
+			where += ` AND created_by = ?`
 			args = append(args, t.OwnerID)
 		}
 		placeholders := make([]string, len(batch))
@@ -370,7 +378,8 @@ func (db *DB) BulkUpdateReviewState(ctx context.Context, hashes []string, t Revi
 			args = append(args, h)
 		}
 		res, err := tx.ExecContext(ctx,
-			`UPDATE files SET `+set+` WHERE `+where+` AND hash IN (`+strings.Join(placeholders, ",")+`)`, args...)
+			`UPDATE tagsets SET `+set+` WHERE `+where+
+				` AND origin_file_id IN (SELECT id FROM files WHERE hash IN (`+strings.Join(placeholders, ",")+`))`, args...)
 		if err != nil {
 			return 0, fmt.Errorf("bulk update review state: %w", err)
 		}
@@ -390,8 +399,9 @@ func (db *DB) BulkUpdateReviewState(ctx context.Context, hashes []string, t Revi
 // UPDATE, so a concurrent submit cannot slip through.
 func (db *DB) DiscardOwnUpload(ctx context.Context, hash string, ownerID int64) (bool, error) {
 	res, err := db.ExecContext(ctx, `
-		UPDATE files SET deleted_at = ?
-		WHERE hash = ? AND deleted_at IS NULL AND uploaded_by = ?
+		UPDATE tagsets SET deleted_at = ?
+		WHERE origin_file_id IN (SELECT id FROM files WHERE hash = ?)
+		  AND deleted_at IS NULL AND created_by = ?
 		  AND review_state IN (?, ?)`,
 		time.Now().Unix(), hash, ownerID, ReviewDraft, ReviewReturned)
 	if err != nil {
@@ -435,8 +445,9 @@ func (db *DB) BulkDiscardOwnUploads(ctx context.Context, hashes []string, ownerI
 			args = append(args, h)
 		}
 		res, err := tx.ExecContext(ctx,
-			`UPDATE files SET deleted_at = ? WHERE deleted_at IS NULL AND uploaded_by = ?
-			   AND review_state IN (?, ?) AND hash IN (`+strings.Join(placeholders, ",")+`)`, args...)
+			`UPDATE tagsets SET deleted_at = ? WHERE deleted_at IS NULL AND created_by = ?
+			   AND review_state IN (?, ?)
+			   AND origin_file_id IN (SELECT id FROM files WHERE hash IN (`+strings.Join(placeholders, ",")+`))`, args...)
 		if err != nil {
 			return 0, fmt.Errorf("bulk discard own uploads: %w", err)
 		}
@@ -453,31 +464,56 @@ func (db *DB) BulkDiscardOwnUploads(ctx context.Context, hashes []string, ownerI
 // an approved-then-trashed file brought back by a re-upload (or an uploader
 // restore) must re-enter the staging pipeline, not the live library — anyone
 // with file.upload could otherwise republish any trashed file by re-sending
-// its bytes. Ownership moves to the restorer so the file lands in *their*
-// "My uploads" tab. Files trashed while pending are left untouched (their
-// state already re-enters the queue) — hence the review_state guard. Returns
-// whether a row was re-staged.
+// its bytes. Ownership (the tagset's created_by, mirrored to files.uploaded_by)
+// moves to the restorer so the file lands in *their* "My uploads" tab. Tagsets
+// trashed while pending are left untouched (their state already re-enters the
+// queue) — hence the review_state guard. Returns whether a row was re-staged.
 func (db *DB) StageRestoredFile(ctx context.Context, hash string, ownerID sql.NullInt64) (bool, error) {
-	res, err := db.ExecContext(ctx, `
-		UPDATE files
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("stage restored file: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE tagsets
 		SET review_state = ?, review_note = NULL, submitted_at = NULL,
-		    uploaded_by = COALESCE(?, uploaded_by)
-		WHERE hash = ? AND deleted_at IS NULL AND review_state = ?`,
+		    created_by = COALESCE(?, created_by)
+		WHERE origin_file_id IN (SELECT id FROM files WHERE hash = ?)
+		  AND deleted_at IS NULL AND review_state = ?`,
 		ReviewDraft, ownerID, hash, ReviewApproved)
 	if err != nil {
 		return false, fmt.Errorf("stage restored file: %w", err)
 	}
 	n, _ := res.RowsAffected()
+	if n > 0 {
+		// Keep the file's upload attribution in step with the tagset owner so
+		// the blob-access gate (FileReviewInfo) recognises the restorer.
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE files SET uploaded_by = COALESCE(?, uploaded_by) WHERE hash = ?`,
+			ownerID, hash); err != nil {
+			return false, fmt.Errorf("stage restored file: attribution: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("stage restored file: commit: %w", err)
+	}
 	return n > 0, nil
 }
 
 // FileReviewInfo returns the review state, uploader, and trash flag for the
-// file with the given content hash — the narrow lookup used by the blob-access
-// gate and ownership checks. found is false (no error) on unknown hashes.
+// file with the given content hash (state and trash read from its tagset) —
+// the narrow lookup used by the blob-access gate and ownership checks. found
+// is false (no error) on unknown hashes.
 func (db *DB) FileReviewInfo(ctx context.Context, hash string) (state string, uploadedBy sql.NullInt64, deleted bool, found bool, err error) {
 	var deletedAt sql.NullInt64
 	err = db.QueryRowContext(ctx, `
-		SELECT review_state, uploaded_by, deleted_at FROM files WHERE hash = ?`, hash).
+		SELECT COALESCE(t.review_state, 'approved'), f.uploaded_by, t.deleted_at
+		FROM files f
+		LEFT JOIN tagsets t ON t.origin_file_id = f.id
+		WHERE f.hash = ?
+		ORDER BY t.id
+		LIMIT 1`, hash).
 		Scan(&state, &uploadedBy, &deletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", sql.NullInt64{}, false, false, nil

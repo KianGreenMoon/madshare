@@ -1,7 +1,8 @@
 # License-based guest access
 
-**Status:** implemented (migration 008)
-**Relates to:** `docs/architecture/auth.md` §5.1, §5.3
+**Status:** implemented (migration 008; moved onto the recording by migration 024)
+**Relates to:** `docs/architecture/auth.md` §5.1, §5.3;
+`docs/architecture/recording-tagsets.md` (decision 9)
 
 ## Problem with the original design
 
@@ -19,7 +20,10 @@ things: explicit admin decisions and implicit policy side effects.
 ## New design: live query-time check
 
 `guest_playable` now means only one thing: **the admin explicitly allowed this
-file for anonymous access** (set via `POST /api/admin/files/:hash/guest`).
+content for anonymous access** (set via `POST /api/admin/files/:hash/guest`).
+Since migration 024 the flag — and `license` / `guest_playable_manual` beside it
+— lives on the **recording** (one audio identity, one license; all renditions
+and appearances share it, and by-hash setters resolve hash → recording).
 License-based access is never written to the database; it is evaluated at query
 time as an additional OR branch inside `accessClause`.
 
@@ -32,19 +36,19 @@ entirely. It takes no bind parameters and has two branches:
 
 ```sql
 (
-  -- 1. Explicit admin grant.
-  f.guest_playable = 1
+  -- 1. Explicit admin grant (r = the track's recording, see tagsetJoin).
+  r.guest_playable = 1
 
   -- 2. License-based: live check against the current policy in settings.
-  --    guest_playable_manual = 0 means the admin has never touched this file's
-  --    guest flag, so the policy may apply. If the admin set it explicitly
-  --    (to either true or false), their decision wins.
+  --    guest_playable_manual = 0 means the admin has never touched this
+  --    recording's guest flag, so the policy may apply. If the admin set it
+  --    explicitly (to either true or false), their decision wins.
   OR (
-    f.guest_playable_manual = 0
-    AND f.license IS NOT NULL AND f.license != ''
+    r.guest_playable_manual = 0
+    AND r.license IS NOT NULL AND r.license != ''
     AND EXISTS (SELECT 1 FROM settings WHERE key = 'access.autoderive.enabled' AND value = '1')
     AND INSTR(',' || COALESCE((SELECT value FROM settings WHERE key = 'access.autoderive.licenses'), '') || ',',
-              ',' || f.license || ',') > 0
+              ',' || r.license || ',') > 0
   )
 )
 ```
@@ -69,10 +73,16 @@ admin UI "Save & apply now" button has been removed; "Save policy" is the only
 action.
 
 **Manual override semantics are preserved.** `guest_playable_manual = 1`
-indicates the admin explicitly set the file's guest flag. The license branch is
-skipped for such files, so the admin's decision — whether grant or deny — always
-wins over the policy. A typical new file has `guest_playable_manual = 0`
-(default), so the policy applies freely.
+indicates the admin explicitly set the recording's guest flag. The license
+branch is skipped for such recordings, so the admin's decision — whether grant
+or deny — always wins over the policy. A typical new recording has
+`guest_playable_manual = 0` (default), so the policy applies freely.
+
+**Per-file values collapsed at migration 024.** Where the renditions of one
+recording carried conflicting values, the best rendition's won (the quality
+ladder's pick) — deliberately the restrictive direction for the common case of
+a private lossless master alongside public lossy encodes: the recording stays
+private rather than the master leaking public.
 
 ## Migration 008
 

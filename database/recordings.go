@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"sort"
 	"strings"
@@ -26,20 +27,23 @@ const (
 	recordingDurationTolerance = 7.0 // seconds
 )
 
-// ResolveRecording assigns the file a recording_id: the recording of the closest
-// matching fingerprint within threshold, or a brand-new recording when nothing
-// matches. Idempotent and safe to re-run. Returns the assigned recording id, or
-// 0 (no-op) when the file has no fingerprint (it stays its own implicit
-// recording) or is pinned (a human split it — the resolver must never re-merge).
+// ResolveRecording re-homes the file onto the recording of the closest matching
+// fingerprint within threshold. Every file already owns a (usually singleton)
+// recording from insert time, so a match *moves* the file — together with its
+// offered tagsets — into the matched recording and garbage-collects the emptied
+// one; no match leaves the file where it is. Idempotent and safe to re-run.
+// Returns the file's (possibly new) recording id, or 0 (no-op) when the file
+// has no fingerprint or is pinned (a human split it — the resolver must never
+// re-merge).
 func (db *DB) ResolveRecording(ctx context.Context, fileID int64) (int64, error) {
 	raw, dur, found, err := db.fileFingerprint(ctx, fileID)
 	if err != nil {
 		return 0, err
 	}
 	if !found {
-		return 0, nil // no fingerprint → its own implicit recording
+		return 0, nil // no fingerprint → stays on its own singleton recording
 	}
-	pinned, err := db.fileRecordingPinned(ctx, fileID)
+	pinned, currentRec, err := db.fileRecordingState(ctx, fileID)
 	if err != nil {
 		return 0, err
 	}
@@ -47,7 +51,7 @@ func (db *DB) ResolveRecording(ctx context.Context, fileID int64) (int64, error)
 		return 0, nil // human-pinned split; never re-merge
 	}
 
-	candidates, err := db.recordingShortlist(ctx, fileID, dur)
+	candidates, err := db.recordingShortlist(ctx, fileID, currentRec, dur)
 	if err != nil {
 		return 0, err
 	}
@@ -58,60 +62,159 @@ func (db *DB) ResolveRecording(ctx context.Context, fileID int64) (int64, error)
 			bestBER, bestRec = ber, c.recordingID
 		}
 	}
-
-	if bestRec == 0 {
-		if bestRec, err = db.createRecording(ctx, time.Now().Unix()); err != nil {
-			return 0, err
-		}
+	if bestRec == 0 || bestRec == currentRec {
+		return currentRec, nil // no match (or already grouped): nothing to move
 	}
-	if _, err := db.ExecContext(ctx,
+
+	// Move the file and its offered tagsets into the matched recording, then
+	// repair the one it left (usually: delete the emptied singleton). One tx.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("resolve recording: begin: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
 		`UPDATE files SET recording_id=? WHERE id=?`, bestRec, fileID,
 	); err != nil {
 		return 0, fmt.Errorf("assign recording: %w", err)
 	}
+	// The target keeps its primary appearance; a moving tagset only stays
+	// primary when the target has none yet.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE tagsets SET is_primary = 0
+		  WHERE origin_file_id = ?
+		    AND EXISTS (SELECT 1 FROM tagsets p WHERE p.recording_id = ? AND p.is_primary = 1)`,
+		fileID, bestRec,
+	); err != nil {
+		return 0, fmt.Errorf("resolve recording: demote primary: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE tagsets SET recording_id = ? WHERE origin_file_id = ?`, bestRec, fileID,
+	); err != nil {
+		return 0, fmt.Errorf("resolve recording: move tagsets: %w", err)
+	}
+	if err := repairRecordingTx(ctx, tx, currentRec); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("resolve recording: commit: %w", err)
+	}
 	return bestRec, nil
 }
 
-// BackfillRecordings resolves every non-trashed, unpinned, fingerprinted file
-// that has no recording_id yet — the idempotent startup pass for blobs whose
-// fingerprints predate the overlay. Processed sequentially so each resolved file
-// becomes a candidate for the next (the inline resolver in mediaproc covers new
-// uploads). Returns the number of files processed.
-func (db *DB) BackfillRecordings(ctx context.Context) (int, error) {
-	ids, err := db.FilesNeedingRecording(ctx)
+// ReconcileTagsets is the startup invariant sweep (recording-tagsets P0): it
+// repairs whatever a crash or bug left behind so nothing rots silently.
+//   - a file with no recording gets a fresh singleton (belt for rows that
+//     somehow bypassed the trigger),
+//   - a file with no tagset gets one derived from its first upload filename
+//     (approved — such a row predates the staging flow by construction),
+//   - a recording with no files is deleted (remaining tagsets cascade),
+//   - a recording without a primary appearance promotes its oldest tagset.
+//
+// Returns the number of repairs applied. Idempotent; a healthy library is a
+// fast no-op.
+func (db *DB) ReconcileTagsets(ctx context.Context) (int, error) {
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("reconcile tagsets: begin: %w", err)
 	}
-	for _, id := range ids {
-		if _, err := db.ResolveRecording(ctx, id); err != nil {
-			return 0, fmt.Errorf("resolve recording file=%d: %w", id, err)
+	defer tx.Rollback()
+
+	repairs := 0
+	now := time.Now().Unix()
+
+	// 1. Files without a recording → fresh singletons (one by one; violating
+	// rows are rare to nonexistent).
+	orphanFiles, err := scanIDs(tx.QueryContext(ctx,
+		`SELECT id FROM files WHERE recording_id IS NULL ORDER BY id`))
+	if err != nil {
+		return 0, fmt.Errorf("reconcile tagsets: orphan files: %w", err)
+	}
+	for _, id := range orphanFiles {
+		var recID int64
+		if err := tx.QueryRowContext(ctx,
+			`INSERT INTO recordings (created_at) VALUES (?) RETURNING id`, now,
+		).Scan(&recID); err != nil {
+			return 0, fmt.Errorf("reconcile tagsets: create recording: %w", err)
 		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE files SET recording_id = ? WHERE id = ?`, recID, id); err != nil {
+			return 0, fmt.Errorf("reconcile tagsets: assign recording: %w", err)
+		}
+		log.Printf("reconcile tagsets: file %d had no recording; created singleton %d", id, recID)
+		repairs++
 	}
-	return len(ids), nil
+
+	// 2. Files without any tagset → a filename-derived approved appearance.
+	bare, err := scanIDs(tx.QueryContext(ctx,
+		`SELECT f.id FROM files f
+		  WHERE NOT EXISTS (SELECT 1 FROM tagsets t WHERE t.origin_file_id = f.id)
+		  ORDER BY f.id`))
+	if err != nil {
+		return 0, fmt.Errorf("reconcile tagsets: bare files: %w", err)
+	}
+	for _, id := range bare {
+		var fname sql.NullString
+		if err := tx.QueryRowContext(ctx,
+			`SELECT filename FROM file_uploads WHERE file_id = ? ORDER BY id LIMIT 1`, id,
+		).Scan(&fname); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return 0, fmt.Errorf("reconcile tagsets: filename: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO tagsets (recording_id, title, review_state, created_by, origin_file_id, is_primary, created_at)
+			 SELECT f.recording_id, ?, 'approved', f.uploaded_by, f.id, 0, ?
+			   FROM files f WHERE f.id = ?`,
+			titleFromFilename(fname.String), now, id); err != nil {
+			return 0, fmt.Errorf("reconcile tagsets: create tagset: %w", err)
+		}
+		log.Printf("reconcile tagsets: file %d had no tagset; created one", id)
+		repairs++
+	}
+
+	// 3. Recordings with no files → invalid, remove (tagsets cascade via FK).
+	res, err := tx.ExecContext(ctx,
+		`DELETE FROM recordings WHERE NOT EXISTS
+		   (SELECT 1 FROM files f WHERE f.recording_id = recordings.id)`)
+	if err != nil {
+		return 0, fmt.Errorf("reconcile tagsets: invalid recordings: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("reconcile tagsets: removed %d fileless recording(s)", n)
+		repairs += int(n)
+	}
+
+	// 4. Recordings without a primary appearance → promote the oldest tagset.
+	res, err = tx.ExecContext(ctx,
+		`UPDATE tagsets SET is_primary = 1 WHERE id IN (
+		   SELECT MIN(t.id) FROM tagsets t
+		    WHERE NOT EXISTS (SELECT 1 FROM tagsets p
+		                       WHERE p.recording_id = t.recording_id AND p.is_primary = 1)
+		    GROUP BY t.recording_id)`)
+	if err != nil {
+		return 0, fmt.Errorf("reconcile tagsets: promote primaries: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("reconcile tagsets: promoted %d primary tagset(s)", n)
+		repairs += int(n)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("reconcile tagsets: commit: %w", err)
+	}
+	return repairs, nil
 }
 
-// FilesNeedingRecording returns ids of non-trashed, unpinned files that have a
-// fingerprint but no recording_id yet. A file without a fingerprint is skipped
-// (nothing to resolve — it is its own implicit recording).
-func (db *DB) FilesNeedingRecording(ctx context.Context) ([]int64, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT f.id
-		   FROM files f
-		   JOIN audio_fingerprints af ON af.file_id = f.id
-		  WHERE f.deleted_at IS NULL
-		    AND f.recording_pinned = 0
-		    AND f.recording_id IS NULL
-		  ORDER BY f.id`,
-	)
+// scanIDs drains a single-int64-column query result.
+func scanIDs(rows *sql.Rows, err error) ([]int64, error) {
 	if err != nil {
-		return nil, fmt.Errorf("files needing recording: %w", err)
+		return nil, err
 	}
 	defer rows.Close()
 	var ids []int64
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("files needing recording: scan: %w", err)
+			return nil, err
 		}
 		ids = append(ids, id)
 	}
@@ -135,14 +238,14 @@ func (db *DB) fileFingerprint(ctx context.Context, fileID int64) (raw []uint32, 
 	return media.DecodeFingerprint(blob), d.Float64, true, nil
 }
 
-func (db *DB) fileRecordingPinned(ctx context.Context, fileID int64) (bool, error) {
-	var pinned int
+func (db *DB) fileRecordingState(ctx context.Context, fileID int64) (pinned bool, recordingID int64, err error) {
+	var p int
 	if err := db.QueryRowContext(ctx,
-		`SELECT recording_pinned FROM files WHERE id=?`, fileID,
-	).Scan(&pinned); err != nil {
-		return false, fmt.Errorf("read recording pin: %w", err)
+		`SELECT recording_pinned, recording_id FROM files WHERE id=?`, fileID,
+	).Scan(&p, &recordingID); err != nil {
+		return false, 0, fmt.Errorf("read recording state: %w", err)
 	}
-	return pinned == 1, nil
+	return p == 1, recordingID, nil
 }
 
 type recordingCandidate struct {
@@ -150,19 +253,19 @@ type recordingCandidate struct {
 	fingerprint []byte
 }
 
-// recordingShortlist returns the fingerprints of other established recordings
-// (recording_id set) within the duration tolerance — the set the new file is
-// bit-compared against. A zero/unknown dur disables the duration filter.
-func (db *DB) recordingShortlist(ctx context.Context, fileID int64, dur float64) ([]recordingCandidate, error) {
+// recordingShortlist returns the fingerprints of files on *other* recordings
+// within the duration tolerance — the set the file is bit-compared against.
+// A zero/unknown dur disables the duration filter.
+func (db *DB) recordingShortlist(ctx context.Context, fileID, currentRec int64, dur float64) ([]recordingCandidate, error) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT f.recording_id, af.fingerprint
 		   FROM audio_fingerprints af
 		   JOIN files f ON f.id = af.file_id
 		  WHERE af.file_id != ?
 		    AND f.deleted_at IS NULL
-		    AND f.recording_id IS NOT NULL
+		    AND f.recording_id <> ?
 		    AND (? = 0 OR af.duration IS NULL OR ABS(af.duration - ?) <= ?)`,
-		fileID, dur, dur, recordingDurationTolerance,
+		fileID, currentRec, dur, dur, recordingDurationTolerance,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("recording shortlist: %w", err)
@@ -177,16 +280,6 @@ func (db *DB) recordingShortlist(ctx context.Context, fileID int64, dur float64)
 		out = append(out, c)
 	}
 	return out, rows.Err()
-}
-
-func (db *DB) createRecording(ctx context.Context, now int64) (int64, error) {
-	var id int64
-	if err := db.QueryRowContext(ctx,
-		`INSERT INTO recordings (created_at) VALUES (?) RETURNING id`, now,
-	).Scan(&id); err != nil {
-		return 0, fmt.Errorf("create recording: %w", err)
-	}
-	return id, nil
 }
 
 // DuplicateRendition is a single rendition of a duplicate recording, enriched
@@ -223,19 +316,20 @@ type DuplicateRecording struct {
 func (db *DB) ListDuplicateRecordings(ctx context.Context) ([]DuplicateRecording, error) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT f.recording_id, f.id, f.hash, f.object_key, f.byte_size, f.mime_type,
-		        mm.title, COALESCE(mm.artist, ''), COALESCE(mm.album_artist, ''),
-		        COALESCE(mm.album, ''),
+		        t.title, COALESCE(t.artist, ''), COALESCE(t.album_artist, ''),
+		        COALESCE(t.album, ''),
 		        COALESCE(mm.codec, ''), COALESCE(mm.bitrate, 0),
 		        COALESCE(mm.sample_rate, 0), COALESCE(mm.bit_depth, 0),
 		        COALESCE(mm.duration_seconds, 0)
 		   FROM files f
-		   JOIN media_metadata mm ON mm.file_id = f.id
-		  WHERE f.recording_id IS NOT NULL
-		    AND f.deleted_at IS NULL
+		   JOIN tagsets t ON t.origin_file_id = f.id AND t.deleted_at IS NULL
+		   LEFT JOIN media_metadata mm ON mm.file_id = f.id
+		  WHERE f.deleted_at IS NULL
 		    AND f.recording_id IN (
-		        SELECT recording_id FROM files
-		         WHERE recording_id IS NOT NULL AND deleted_at IS NULL
-		         GROUP BY recording_id HAVING COUNT(*) > 1)
+		        SELECT f2.recording_id FROM files f2
+		         JOIN tagsets t2 ON t2.origin_file_id = f2.id AND t2.deleted_at IS NULL
+		         WHERE f2.deleted_at IS NULL
+		         GROUP BY f2.recording_id HAVING COUNT(*) > 1)
 		  ORDER BY f.recording_id, f.id`,
 	)
 	if err != nil {
@@ -270,28 +364,23 @@ func (db *DB) ListDuplicateRecordings(ctx context.Context) ([]DuplicateRecording
 
 // RecordingRenditionsByHash returns the approved, non-trashed renditions of the
 // recording that the file with the given hash belongs to — the data the player's
-// Auto/High/Low quality control walks (recordings P4). A file with no
-// recording_id (no fingerprint / its own recording) yields just itself. An
-// unknown / non-approved / trashed hash yields nil (the caller 404s).
+// Auto/High/Low quality control walks (recordings P4). An unknown /
+// non-approved / trashed hash yields nil (the caller 404s).
 func (db *DB) RecordingRenditionsByHash(ctx context.Context, hash string) ([]DuplicateRendition, error) {
-	var (
-		fileID int64
-		recID  sql.NullInt64
-	)
+	var recID int64
 	err := db.QueryRowContext(ctx,
-		`SELECT id, recording_id FROM files
-		  WHERE hash=? AND deleted_at IS NULL AND review_state='approved'`, hash,
-	).Scan(&fileID, &recID)
+		`SELECT f.recording_id FROM files f
+		   JOIN tagsets t ON t.origin_file_id = f.id
+		  WHERE f.hash=? AND f.deleted_at IS NULL
+		    AND t.deleted_at IS NULL AND t.review_state='approved'`, hash,
+	).Scan(&recID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("renditions: load file: %w", err)
 	}
-	if recID.Valid {
-		return db.renditionsWhere(ctx, "f.recording_id = ?", recID.Int64)
-	}
-	return db.renditionsWhere(ctx, "f.id = ?", fileID)
+	return db.renditionsWhere(ctx, "f.recording_id = ?", recID)
 }
 
 // renditionsWhere selects approved, non-trashed renditions matching cond (a
@@ -299,14 +388,15 @@ func (db *DB) RecordingRenditionsByHash(ctx context.Context, hash string) ([]Dup
 func (db *DB) renditionsWhere(ctx context.Context, cond string, arg int64) ([]DuplicateRendition, error) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT f.id, f.hash, f.object_key, f.byte_size, f.mime_type,
-		        mm.title, COALESCE(mm.artist, ''), COALESCE(mm.album_artist, ''),
-		        COALESCE(mm.album, ''),
+		        t.title, COALESCE(t.artist, ''), COALESCE(t.album_artist, ''),
+		        COALESCE(t.album, ''),
 		        COALESCE(mm.codec, ''), COALESCE(mm.bitrate, 0),
 		        COALESCE(mm.sample_rate, 0), COALESCE(mm.bit_depth, 0),
 		        COALESCE(mm.duration_seconds, 0)
 		   FROM files f
-		   JOIN media_metadata mm ON mm.file_id = f.id
-		  WHERE f.deleted_at IS NULL AND f.review_state='approved' AND `+cond+`
+		   JOIN tagsets t ON t.origin_file_id = f.id
+		   LEFT JOIN media_metadata mm ON mm.file_id = f.id
+		  WHERE f.deleted_at IS NULL AND t.deleted_at IS NULL AND t.review_state='approved' AND `+cond+`
 		  ORDER BY f.id`,
 		arg,
 	)
@@ -329,7 +419,10 @@ func (db *DB) renditionsWhere(ctx context.Context, cond string, arg int64) ([]Du
 
 // SplitRendition detaches a file into its own brand-new recording and pins it so
 // the resolver never re-merges it (the "save as another composition" action).
-// found is false (no error) when no live file matches the id. Atomic.
+// The file's offered tagsets move with it (its appearance follows the audio),
+// becoming the new recording's primary; the recording it left is repaired
+// (primary re-promoted; removed if the split emptied it). found is false (no
+// error) when no live file matches the id. Atomic.
 func (db *DB) SplitRendition(ctx context.Context, fileID int64) (newRecordingID int64, found bool, err error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -337,24 +430,47 @@ func (db *DB) SplitRendition(ctx context.Context, fileID int64) (newRecordingID 
 	}
 	defer tx.Rollback()
 
+	var oldRecordingID int64
+	err = tx.QueryRowContext(ctx,
+		`SELECT f.recording_id FROM files f
+		  WHERE f.id = ? AND f.deleted_at IS NULL
+		    AND EXISTS (SELECT 1 FROM tagsets t WHERE t.origin_file_id = f.id AND t.deleted_at IS NULL)`,
+		fileID,
+	).Scan(&oldRecordingID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil // no live file with that id
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("split rendition: load file: %w", err)
+	}
+
 	if err := tx.QueryRowContext(ctx,
 		`INSERT INTO recordings (created_at) VALUES (?) RETURNING id`, time.Now().Unix(),
 	).Scan(&newRecordingID); err != nil {
 		return 0, false, fmt.Errorf("split rendition: create recording: %w", err)
 	}
-	res, err := tx.ExecContext(ctx,
-		`UPDATE files SET recording_id=?, recording_pinned=1 WHERE id=? AND deleted_at IS NULL`,
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE files SET recording_id=?, recording_pinned=1 WHERE id=?`,
 		newRecordingID, fileID,
-	)
-	if err != nil {
+	); err != nil {
 		return 0, false, fmt.Errorf("split rendition: reassign: %w", err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, false, fmt.Errorf("split rendition: rows affected: %w", err)
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE tagsets SET recording_id=?, is_primary=1 WHERE origin_file_id=?`,
+		newRecordingID, fileID,
+	); err != nil {
+		return 0, false, fmt.Errorf("split rendition: move tagsets: %w", err)
 	}
-	if n == 0 {
-		return 0, false, nil // no live file with that id; the new recording rolls back
+	// Multiple moved tagsets can't all be primary; keep only the oldest.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE tagsets SET is_primary=0
+		  WHERE recording_id=? AND id <> (SELECT MIN(id) FROM tagsets WHERE recording_id=?)`,
+		newRecordingID, newRecordingID,
+	); err != nil {
+		return 0, false, fmt.Errorf("split rendition: primary: %w", err)
+	}
+	if err := repairRecordingTx(ctx, tx, oldRecordingID); err != nil {
+		return 0, false, err
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, false, fmt.Errorf("split rendition: commit: %w", err)
@@ -376,10 +492,13 @@ func (db *DB) SplitRendition(ctx context.Context, fileID int64) (newRecordingID 
 func (db *DB) IsDuplicateSubmission(ctx context.Context, hash string) (bool, error) {
 	var (
 		fileID int64
-		recID  sql.NullInt64
+		recID  int64
 	)
 	err := db.QueryRowContext(ctx,
-		`SELECT id, recording_id FROM files WHERE hash=? AND deleted_at IS NULL`, hash,
+		`SELECT f.id, f.recording_id FROM files f
+		  WHERE f.hash=? AND f.deleted_at IS NULL
+		    AND EXISTS (SELECT 1 FROM tagsets t WHERE t.origin_file_id=f.id AND t.deleted_at IS NULL)`,
+		hash,
 	).Scan(&fileID, &recID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -397,14 +516,13 @@ func (db *DB) IsDuplicateSubmission(ctx context.Context, hash string) (bool, err
 
 	if hasFP {
 		// Fingerprint identity: another approved rendition in the same recording.
-		if !recID.Valid {
-			return false, nil
-		}
 		var n int
 		if err := db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM files
-			  WHERE recording_id=? AND id<>? AND deleted_at IS NULL AND review_state='approved'`,
-			recID.Int64, fileID,
+			`SELECT COUNT(*) FROM files f
+			   JOIN tagsets t ON t.origin_file_id=f.id
+			  WHERE f.recording_id=? AND f.id<>? AND f.deleted_at IS NULL
+			    AND t.deleted_at IS NULL AND t.review_state='approved'`,
+			recID, fileID,
 		).Scan(&n); err != nil {
 			return false, fmt.Errorf("duplicate check: recording siblings: %w", err)
 		}
@@ -418,7 +536,7 @@ func (db *DB) IsDuplicateSubmission(ctx context.Context, hash string) (bool, err
 		artist, album sql.NullString
 	)
 	if err := db.QueryRowContext(ctx,
-		`SELECT title, artist, album FROM media_metadata WHERE file_id=?`, fileID,
+		`SELECT title, artist, album FROM tagsets WHERE origin_file_id=? ORDER BY id LIMIT 1`, fileID,
 	).Scan(&title, &artist, &album); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
@@ -431,9 +549,10 @@ func (db *DB) IsDuplicateSubmission(ctx context.Context, hash string) (bool, err
 	var n int
 	if err := db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM files f
-		   JOIN media_metadata mm ON mm.file_id=f.id
-		  WHERE f.id<>? AND f.deleted_at IS NULL AND f.review_state='approved'
-		    AND mm.title=? AND mm.artist=? AND mm.album=?`,
+		   JOIN tagsets t ON t.origin_file_id=f.id
+		  WHERE f.id<>? AND f.deleted_at IS NULL
+		    AND t.deleted_at IS NULL AND t.review_state='approved'
+		    AND t.title=? AND t.artist=? AND t.album=?`,
 		fileID, title, artist.String, album.String,
 	).Scan(&n); err != nil {
 		return false, fmt.Errorf("duplicate check: tag collision: %w", err)

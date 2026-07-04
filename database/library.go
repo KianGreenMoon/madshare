@@ -23,12 +23,13 @@ func (db *DB) ListArtistsGuest(ctx context.Context) ([]*ArtistEntry, error) {
 
 // listArtists is the shared artist listing over the entity overlay — the library
 // browse list. One row per artists entity that is the ALBUM-ARTIST of at least one
-// live (and, when guest, reachable) track (m.album_artist_id = a.id). A pure
+// live (and, when guest, reachable) track (m.album_artist_id = a.id; m is the
+// tagsets join, the library's row unit). A pure
 // performer who only appears on a compilation (its album_artist owned by someone
 // else) is intentionally NOT listed here — the library groups by album-artist —
 // but it stays findable via search (which matches both roles) and browsable by id
 // (ListAlbumsByArtistID unions the performer role, so a search hit isn't a dead
-// end). The INNER JOIN on media_metadata means orphan entities with no tracks (e.g.
+// end). The INNER JOIN on tagsets means orphan entities with no tracks (e.g.
 // left behind by a rename) never appear. has_image joins the now id-keyed
 // artist_images directly on artist_id (exact). The unknown-artist bucket
 // (norm_name = normalizeKey(DefaultArtistName)) sorts last, after the named
@@ -42,8 +43,9 @@ func (db *DB) listArtists(ctx context.Context, guest bool) ([]*ArtistEntry, erro
 		SELECT a.id, a.name, COUNT(*) AS track_count,
 		       CASE WHEN ai.artist_id IS NOT NULL THEN 1 ELSE 0 END AS has_image
 		FROM artists a
-		JOIN media_metadata m ON m.album_artist_id = a.id
-		JOIN files f ON f.id = m.file_id
+		JOIN tagsets m ON m.album_artist_id = a.id
+		JOIN files f ON f.id = m.origin_file_id
+		JOIN recordings r ON r.id = f.recording_id
 		LEFT JOIN artist_images ai ON ai.artist_id = a.id
 		` + where + `
 		GROUP BY a.id
@@ -142,8 +144,9 @@ func (db *DB) ListArtistsPage(ctx context.Context, cursor string, limit int, gue
 		       CASE WHEN ai.artist_id IS NOT NULL THEN 1 ELSE 0 END AS has_image,
 		       (a.norm_name = ?) AS is_unknown, LOWER(a.name) AS sort_name
 		FROM artists a
-		JOIN media_metadata m ON m.album_artist_id = a.id
-		JOIN files f ON f.id = m.file_id
+		JOIN tagsets m ON m.album_artist_id = a.id
+		JOIN files f ON f.id = m.origin_file_id
+		JOIN recordings r ON r.id = f.recording_id
 		LEFT JOIN artist_images ai ON ai.artist_id = a.id
 		` + where + `
 		GROUP BY a.id
@@ -192,7 +195,7 @@ func (db *DB) ListAlbumsByArtistIDGuest(ctx context.Context, artistID int64) ([]
 
 // listAlbumsByArtistID is the shared album listing over the entity overlay,
 // filtered to one artist by its stable surrogate id — in EITHER role. The artist
-// filter lives in the media_metadata join condition (al.artist_id = ? OR
+// filter lives in the tagsets join condition (al.artist_id = ? OR
 // m.artist_id = ?), which yields a useful hybrid track_count: an album the artist
 // owns as album-artist counts all its tracks (every row matches the first branch),
 // while a compilation the artist only performs on counts just their tracks on it
@@ -210,8 +213,9 @@ func (db *DB) listAlbumsByArtistID(ctx context.Context, artistID int64, guest bo
 		       CASE WHEN ali.album_id IS NOT NULL THEN 1 ELSE 0 END AS has_image
 		FROM albums al
 		JOIN artists ar ON ar.id = al.artist_id
-		JOIN media_metadata m ON m.album_id = al.id AND (al.artist_id = ? OR m.artist_id = ?)
-		JOIN files f ON f.id = m.file_id
+		JOIN tagsets m ON m.album_id = al.id AND (al.artist_id = ? OR m.artist_id = ?)
+		JOIN files f ON f.id = m.origin_file_id
+		JOIN recordings r ON r.id = f.recording_id
 		LEFT JOIN album_images ali ON ali.album_id = al.id
 		` + where + `
 		GROUP BY al.id
@@ -272,11 +276,11 @@ func (db *DB) listTracksByAlbumID(ctx context.Context, albumID int64, guest bool
 		    COALESCE(par.name, '') AS artist_name,
 		    m.track_number,
 		    m.disc_number,
-		    m.duration_seconds,
+		    mm.duration_seconds,
 		    f.object_key,
 		    f.mime_type
-		FROM files f
-		JOIN media_metadata m ON m.file_id = f.id
+		FROM files f` + tagsetJoin + `
+		LEFT JOIN media_metadata mm ON mm.file_id = f.id
 		LEFT JOIN artists par ON par.id = m.artist_id
 		` + where + `
 		ORDER BY (m.disc_number IS NULL) ASC, m.disc_number ASC, m.track_number ASC, LOWER(m.title) ASC`
@@ -327,8 +331,9 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 		SELECT a.id, a.name, COUNT(*) AS track_count,
 		       CASE WHEN ai.artist_id IS NOT NULL THEN 1 ELSE 0 END AS has_image
 		FROM artists a
-		JOIN media_metadata m ON (m.album_artist_id = a.id OR m.artist_id = a.id)
-		JOIN files f ON f.id = m.file_id
+		JOIN tagsets m ON (m.album_artist_id = a.id OR m.artist_id = a.id)
+		JOIN files f ON f.id = m.origin_file_id
+		JOIN recordings r ON r.id = f.recording_id
 		LEFT JOIN artist_images ai ON ai.artist_id = a.id
 		` + artistWhere + `
 		GROUP BY a.id
@@ -366,8 +371,9 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 		       CASE WHEN ali.album_id IS NOT NULL THEN 1 ELSE 0 END AS has_image
 		FROM albums al
 		JOIN artists ar ON ar.id = al.artist_id
-		JOIN media_metadata m ON m.album_id = al.id
-		JOIN files f ON f.id = m.file_id
+		JOIN tagsets m ON m.album_id = al.id
+		JOIN files f ON f.id = m.origin_file_id
+		JOIN recordings r ON r.id = f.recording_id
 		LEFT JOIN album_images ali ON ali.album_id = al.id
 		` + albumWhere + `
 		GROUP BY al.id
@@ -413,13 +419,13 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 		    f.id,
 		    m.title,
 		    m.track_number,
-		    m.duration_seconds,
+		    mm.duration_seconds,
 		    f.object_key,
 		    f.mime_type,
 		    par.name AS artist_name,
 		    al.title AS album_title
-		FROM files f
-		JOIN media_metadata m ON m.file_id = f.id
+		FROM files f` + tagsetJoin + `
+		LEFT JOIN media_metadata mm ON mm.file_id = f.id
 		JOIN albums al ON al.id = m.album_id
 		JOIN artists par ON par.id = m.artist_id
 		` + trackWhere + `

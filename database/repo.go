@@ -11,9 +11,11 @@ type Repository interface {
 	// GetFileByHash returns the file row for hash, or (nil, nil) on miss.
 	GetFileByHash(ctx context.Context, hash string) (*File, error)
 
-	// InsertFile creates a files row plus its initial file_uploads and
-	// media_metadata rows in a single transaction. On success, f.ID is
-	// populated with the new row id.
+	// InsertFile creates a files row plus everything the tagset invariant
+	// demands — a singleton recording, the offered tagset (from meta's
+	// descriptive fields + f.ReviewState/f.UploadedBy), the file_uploads row,
+	// and the tech media_metadata row — in a single transaction. On success,
+	// f.ID and f.RecordingID are populated.
 	InsertFile(ctx context.Context, f *File, upload *FileUpload, meta *MediaMetadata) error
 
 	// RecordUpload inserts a new file_uploads row for an existing file.
@@ -153,9 +155,9 @@ type Repository interface {
 	SoftDeleteFileByHash(ctx context.Context, hash string) (filenames []string, found bool, err error)
 
 	// HardDeleteFileByHash permanently removes the files row for hash (cascading
-	// to its file_uploads and media_metadata rows). Works on both live and
-	// trashed files. Used by PruneDangling. found is false (no error) when no
-	// row matches.
+	// to its file_uploads, media_metadata, and tagset rows; a recording left
+	// fileless goes with it). Works on both live and trashed files. Used by
+	// PruneDangling. found is false (no error) when no row matches.
 	HardDeleteFileByHash(ctx context.Context, hash string) (filenames []string, found bool, err error)
 
 	// HardDeleteTrashedFileByHash permanently removes a trashed files row.
@@ -186,7 +188,7 @@ type Repository interface {
 	GetTrashRestorePolicy(ctx context.Context) (string, error)
 
 	// ListTrashedFiles returns all soft-deleted files ordered by deletion time
-	// descending, joined with the first filename and media_metadata tags.
+	// descending, joined with the first filename and tagset tags.
 	ListTrashedFiles(ctx context.Context) ([]*FileListEntry, error)
 
 	// ListFileRefs returns one FileRef per files row, each carrying the
@@ -319,8 +321,8 @@ type Repository interface {
 	// --- Base metadata editing (Phase 5: upload & covers) ---
 
 	// UpdateFileMetadata writes the provided fields (nil = leave unchanged) onto
-	// the media_metadata row of the file with the given content hash and returns
-	// the updated row. Returns ErrFileNotFound when no file matches, or an error
+	// the tagset of the file with the given content hash and returns
+	// the updated combined row. Returns ErrFileNotFound when no file matches, or an error
 	// wrapping ErrInvalidMetadata when a numeric field carries a bad value.
 	UpdateFileMetadata(ctx context.Context, hash string, p MetadataPatch) (*MediaMetadata, error)
 
@@ -330,8 +332,8 @@ type Repository interface {
 	// acquisitions than the per-file UpdateFileMetadata loop.
 	BulkUpdateFileMetadata(ctx context.Context, hashes []string, p MetadataPatch) (affected int, notFound []string, err error)
 
-	// FileMetadataByHash loads the editable media_metadata row for the file with
-	// the given content hash. Returns ErrFileNotFound when no file matches.
+	// FileMetadataByHash loads the editable metadata (tagset + tech) for the file
+	// with the given content hash. Returns ErrFileNotFound when no file matches.
 	FileMetadataByHash(ctx context.Context, hash string) (*MediaMetadata, error)
 
 	// --- Playlists & favorites (docs/api/playlists.md) ---

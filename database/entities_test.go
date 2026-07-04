@@ -383,7 +383,7 @@ func TestBackfillEntities(t *testing.T) {
 	insertSearchFile(t, db, "hashaaa4", "T4", "", "", "") // fully untagged
 
 	for _, stmt := range []string{
-		`UPDATE media_metadata SET album_artist_id = NULL, artist_id = NULL, album_id = NULL`,
+		`UPDATE tagsets SET album_artist_id = NULL, artist_id = NULL, album_id = NULL`,
 		`DELETE FROM albums`,
 		`DELETE FROM artists`,
 	} {
@@ -403,7 +403,7 @@ func TestBackfillEntities(t *testing.T) {
 	// Every row now has all three FKs set.
 	var nullCount int
 	if err := db.QueryRow(
-		`SELECT COUNT(*) FROM media_metadata WHERE album_artist_id IS NULL OR artist_id IS NULL OR album_id IS NULL`,
+		`SELECT COUNT(*) FROM tagsets WHERE album_artist_id IS NULL OR artist_id IS NULL OR album_id IS NULL`,
 	).Scan(&nullCount); err != nil {
 		t.Fatalf("count nulls: %v", err)
 	}
@@ -437,8 +437,8 @@ func TestBackfillEntities(t *testing.T) {
 func fileEntityIDs(t *testing.T, db *DB, hash string) (artistID, albumID sql.NullInt64) {
 	t.Helper()
 	if err := db.QueryRow(
-		`SELECT m.album_artist_id, m.album_id FROM media_metadata m
-		 JOIN files f ON f.id = m.file_id WHERE f.hash = ?`, hash,
+		`SELECT m.album_artist_id, m.album_id FROM tagsets m
+		 JOIN files f ON f.id = m.origin_file_id WHERE f.hash = ?`, hash,
 	).Scan(&artistID, &albumID); err != nil {
 		t.Fatalf("read entity ids for %s: %v", hash, err)
 	}
@@ -962,7 +962,7 @@ func TestRenameAlbum_SameTitleDifferentArtistAllowed(t *testing.T) {
 func tracksUnderAlbum(t *testing.T, db *DB, albumID int64) int {
 	t.Helper()
 	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM media_metadata WHERE album_id = ?`, albumID).Scan(&n); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tagsets WHERE album_id = ?`, albumID).Scan(&n); err != nil {
 		t.Fatalf("count tracks under album: %v", err)
 	}
 	return n
@@ -990,7 +990,7 @@ func TestMergeArtists_NonCollidingMovesEverything(t *testing.T) {
 	// No track (in either role) or album still references the deleted source.
 	var dangling int
 	db.QueryRow(`SELECT
-		(SELECT COUNT(*) FROM media_metadata WHERE album_artist_id = ?1 OR artist_id = ?1)
+		(SELECT COUNT(*) FROM tagsets WHERE album_artist_id = ?1 OR artist_id = ?1)
 		+ (SELECT COUNT(*) FROM albums WHERE artist_id = ?1)`, bID).Scan(&dangling)
 	if dangling != 0 {
 		t.Errorf("%d rows still reference the source artist", dangling)
@@ -1141,8 +1141,8 @@ func TestMergeAlbums_CrossArtistRepointsAlbumArtist(t *testing.T) {
 	// who performed it.
 	var albumArtistID, performerID, albumID int64
 	if err := db.QueryRow(
-		`SELECT m.album_artist_id, m.artist_id, m.album_id FROM media_metadata m
-		 JOIN files f ON f.id = m.file_id WHERE f.hash = ?`, "mg00g001").
+		`SELECT m.album_artist_id, m.artist_id, m.album_id FROM tagsets m
+		 JOIN files f ON f.id = m.origin_file_id WHERE f.hash = ?`, "mg00g001").
 		Scan(&albumArtistID, &performerID, &albumID); err != nil {
 		t.Fatalf("read moved track: %v", err)
 	}

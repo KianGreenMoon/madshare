@@ -1,8 +1,12 @@
 # Recording tagsets — multiple metadata appearances per audio
 
-**Status:** ✅ **Design decided (owner review 2026-07-04) — nothing built yet.**
-The first draft's nine open questions were resolved with Kian; this document is
-now the reference design and the implementation plan. Extends
+**Status:** ✅ **Design decided (owner review 2026-07-04). P0 (data model &
+migration, 024) is built** — tagsets exist, `media_metadata` is tech-only,
+review/trash live on the tagset, license/guest on the recording, every file has
+a recording; behavior verified identical against the pre-P0 server (sole
+intended exception: the decision-9 license collapse on multi-rendition
+recordings). P1+ not started. This document is
+the reference design and the implementation plan. Extends
 [Recordings](recordings.md) (same-audio grouping & renditions) and the
 [artist/album overlay](artist-album-model.md); the metadata payload defined here
 is what will travel in [Federation](federation.md) (deferred). A short list of
@@ -158,22 +162,37 @@ CREATE TABLE tagsets (
   origin_file_id   INTEGER REFERENCES files(id) ON DELETE SET NULL,
 
   is_primary       INTEGER NOT NULL DEFAULT 0,  -- the recording's default appearance
-  created_at       INTEGER NOT NULL,
-
-  -- Appearance identity (see Tagset identity):
-  UNIQUE (recording_id, album_id, album_artist_id, disc_number, track_number)
+  created_at       INTEGER NOT NULL
 );
-CREATE INDEX idx_tagsets_recording ON tagsets(recording_id);
-CREATE INDEX idx_tagsets_album_id  ON tagsets(album_id);
-CREATE INDEX idx_tagsets_artist_id ON tagsets(artist_id);
+
+-- Appearance identity (see Tagset identity). Deliberately NOT a UNIQUE
+-- constraint — see the implementation note below.
+CREATE INDEX idx_tagsets_identity ON tagsets(recording_id, album_id, album_artist_id, disc_number, track_number);
+CREATE INDEX idx_tagsets_album_id        ON tagsets(album_id);
+CREATE INDEX idx_tagsets_artist_id       ON tagsets(artist_id);
+CREATE INDEX idx_tagsets_album_artist_id ON tagsets(album_artist_id);
+CREATE INDEX idx_tagsets_origin          ON tagsets(origin_file_id);
+CREATE INDEX idx_tagsets_deleted         ON tagsets(deleted_at);
 CREATE INDEX idx_tagsets_review    ON tagsets(review_state) WHERE review_state <> 'approved';
 ```
+
+**Implementation note (P0): the identity key is a plain index, not UNIQUE.**
+The draft's `UNIQUE` constraint contradicted the design's own review flow: in
+cases B/C a *draft* appearance whose key collides with an existing approved one
+must sit in the queue until the moderator denies it — so identical keys
+legitimately coexist across review states. It would also have aborted the
+migration wherever two renditions of one recording carry identical tags (the
+FLAC+MP3-of-one-rip case), and SQLite `UNIQUE` can't cover the NULL disc/track
+identities anyway. Identity dedup is therefore enforced entirely by the
+attach/absorb operations (the `IS NOT DISTINCT FROM`-style transactional check
+already mandated below); the index is their fast path.
 
 ### `media_metadata` (reduced)
 
 Keeps **only** the tech columns (`duration_seconds`, `bitrate`, `sample_rate`,
-`channels`, `codec`, `bit_depth`) plus `tag_format`, PK `file_id`. Filled by
-`ffprobe` as today; a property of the blob.
+`channels`, `codec`, `bit_depth`) plus `tag_format` and the `extracted_at`
+bookkeeping stamp, PK `file_id`. Filled by `ffprobe` as today; a property of
+the blob.
 
 ### `files` (changed)
 
@@ -521,15 +540,25 @@ Sequenced so each phase lands green and behavior-identical until its feature
 switches on; P0+P1 are pure re-plumbing staged **before** any visible change so
 regressions isolate to the data move.
 
-- **P0 — Data model & migration.** The `tagsets` table; decompose
+- **P0 — Data model & migration. ✅ Done (migration `024_tagsets.sql`).** The
+  `tagsets` table; decompose
   `media_metadata`; move `review_state`/`review_note`/`submitted_at` to
   tagsets and `license`/`guest_playable` to recordings; `files.recording_id`
   NOT NULL + singleton-recording backfill; one primary tagset per file
   backfilled from its old row (a **trashed file maps to a trashed tagset**
   with the file row kept live — preserving today's restore semantics exactly);
-  invariant triggers + startup reconcile.
-  *Result: identical behavior on new foundations. The project's largest single
-  migration — lands alone.*
+  invariant triggers + startup reconcile (`db.ReconcileTagsets`).
+  *Result: identical behavior on new foundations — verified by diffing every
+  listing/staging/admin endpoint against the pre-P0 server on a copy of the
+  real library. All queries join tags through the file's offered tagset
+  (`tagsetJoin`: alias `m`, 1:1 via `origin_file_id` until P1 re-keys
+  addressing); every insert path creates recording + file + tagset + tech row
+  in one transaction; hard delete cascades through the shared
+  `hardDeleteFilesTx`; the fingerprint resolver moves files (with their
+  tagsets) between recordings and GCs emptied singletons. The `Repository`
+  interface and its DTOs kept their exact shapes, so the api layer and its
+  fakes needed no changes. Sole visible change, per decision 9: conflicting
+  per-rendition guest/license values collapsed to the best rendition's.*
 - **P1 — Library & addressing on tagsets.** Re-point browse/search/covers/
   visibility; `tagset_id` addressing through player, queue, playlists,
   favorites; play-URL resolution; renditions endpoint re-key.

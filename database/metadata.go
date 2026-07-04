@@ -13,8 +13,10 @@ import (
 // ErrFileNotFound is returned when no files row matches a given content hash.
 var ErrFileNotFound = errors.New("file not found")
 
-// MetadataPatch carries the media_metadata fields editable via
-// PATCH /api/files/{hash}/metadata. A nil pointer leaves that column unchanged;
+// MetadataPatch carries the descriptive tag fields editable via
+// PATCH /api/files/{hash}/metadata — written onto the file's tagset (the
+// descriptive columns moved there in migration 024; tech fields are blob-owned
+// and read-only). A nil pointer leaves that column unchanged;
 // a non-nil pointer writes its value, so a pointer to "" clears the field.
 //
 // The numeric fields are carried as *string (the raw form input) rather than
@@ -44,11 +46,11 @@ func (p MetadataPatch) IsEmpty() bool {
 		p.TrackNumber == nil && p.TrackTotal == nil && p.DiscNumber == nil && p.Year == nil
 }
 
-// UpdateFileMetadata writes the provided base fields onto the media_metadata row
-// of the file identified by hash, then returns the resulting row. A nil field in
-// the patch is left unchanged; a non-nil field is written (empty string stored
-// as NULL, matching how tags are extracted). An empty patch is a no-op that
-// still returns the current row, so callers get a consistent echo. Returns
+// UpdateFileMetadata writes the provided base fields onto the tagset of the
+// file identified by hash, then returns the resulting combined row. A nil field
+// in the patch is left unchanged; a non-nil field is written (empty string
+// stored as NULL, matching how tags are extracted). An empty patch is a no-op
+// that still returns the current row, so callers get a consistent echo. Returns
 // ErrFileNotFound when no files row matches hash.
 //
 // When the patch changes artist, album_artist, or album, the artist_id/album_id
@@ -196,7 +198,7 @@ func applyMetadataPatchTx(ctx context.Context, tx *sql.Tx, hash string, p Metada
 		}
 		args = append(args, fileID)
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE media_metadata SET `+strings.Join(sets, ", ")+` WHERE file_id = ?`,
+			`UPDATE tagsets SET `+strings.Join(sets, ", ")+` WHERE origin_file_id = ?`,
 			args...,
 		); err != nil {
 			return 0, fmt.Errorf("update metadata: %w", err)
@@ -208,7 +210,7 @@ func applyMetadataPatchTx(ctx context.Context, tx *sql.Tx, hash string, p Metada
 			var artist, albumArtist, album sql.NullString
 			var year sql.NullInt64
 			if err := tx.QueryRowContext(ctx,
-				`SELECT artist, album_artist, album, year FROM media_metadata WHERE file_id = ?`,
+				`SELECT artist, album_artist, album, year FROM tagsets WHERE origin_file_id = ?`,
 				fileID,
 			).Scan(&artist, &albumArtist, &album, &year); err != nil {
 				return 0, fmt.Errorf("update metadata: reload tags: %w", err)
@@ -224,7 +226,7 @@ func applyMetadataPatchTx(ctx context.Context, tx *sql.Tx, hash string, p Metada
 				return 0, fmt.Errorf("update metadata: resolve entities: %w", err)
 			}
 			if _, err := tx.ExecContext(ctx,
-				`UPDATE media_metadata SET album_artist_id = ?, artist_id = ?, album_id = ? WHERE file_id = ?`,
+				`UPDATE tagsets SET album_artist_id = ?, artist_id = ?, album_id = ? WHERE origin_file_id = ?`,
 				albumArtistID, trackArtistID, albumID, fileID,
 			); err != nil {
 				return 0, fmt.Errorf("update metadata: set entity fks: %w", err)
@@ -235,15 +237,21 @@ func applyMetadataPatchTx(ctx context.Context, tx *sql.Tx, hash string, p Metada
 	return fileID, nil
 }
 
-// getMetadataByFileID loads the full media_metadata row for a file id.
+// getMetadataByFileID loads the combined metadata view for a file id: the
+// descriptive tags from its tagset joined with the tech columns from
+// media_metadata (which may be absent for legacy rows — tech reads back NULL).
 func (db *DB) getMetadataByFileID(ctx context.Context, fileID int64) (*MediaMetadata, error) {
 	m := &MediaMetadata{FileID: fileID}
 	err := db.QueryRowContext(ctx, `
-		SELECT title, artist, album, album_artist, genre, year,
-		       track_number, track_total, disc_number, composer, comment,
-		       duration_seconds, bitrate, sample_rate, channels, codec,
-		       tag_format, extracted_at
-		FROM media_metadata WHERE file_id = ?`, fileID,
+		SELECT t.title, t.artist, t.album, t.album_artist, t.genre, t.year,
+		       t.track_number, t.track_total, t.disc_number, t.composer, t.comment,
+		       mm.duration_seconds, mm.bitrate, mm.sample_rate, mm.channels, mm.codec,
+		       mm.tag_format, COALESCE(mm.extracted_at, t.created_at)
+		FROM tagsets t
+		LEFT JOIN media_metadata mm ON mm.file_id = t.origin_file_id
+		WHERE t.origin_file_id = ?
+		ORDER BY t.id
+		LIMIT 1`, fileID,
 	).Scan(
 		&m.Title, &m.Artist, &m.Album, &m.AlbumArtist, &m.Genre, &m.Year,
 		&m.TrackNumber, &m.TrackTotal, &m.DiscNumber, &m.Composer, &m.Comment,
@@ -251,8 +259,8 @@ func (db *DB) getMetadataByFileID(ctx context.Context, fileID int64) (*MediaMeta
 		&m.TagFormat, &m.ExtractedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
-		// A files row always gets a media_metadata row at insert time, so this
-		// should not happen; treat it as not-found rather than a 500.
+		// A files row always gets a tagset at insert time, so this should not
+		// happen; treat it as not-found rather than a 500.
 		return nil, ErrFileNotFound
 	}
 	if err != nil {
@@ -286,8 +294,9 @@ func metaNullInt(s string) (sql.NullInt64, error) {
 	return sql.NullInt64{Int64: n, Valid: true}, nil
 }
 
-// FileMetadataByHash loads the editable media_metadata row for the file with the
-// given content hash. Returns ErrFileNotFound when no files row matches.
+// FileMetadataByHash loads the editable metadata (tagset + tech view) for the
+// file with the given content hash. Returns ErrFileNotFound when no files row
+// matches.
 func (db *DB) FileMetadataByHash(ctx context.Context, hash string) (*MediaMetadata, error) {
 	var fileID int64
 	err := db.QueryRowContext(ctx, `SELECT id FROM files WHERE hash = ?`, hash).Scan(&fileID)
@@ -301,7 +310,7 @@ func (db *DB) FileMetadataByHash(ctx context.Context, hash string) (*MediaMetada
 }
 
 // titleFromFilename derives a display title from an upload filename: the base
-// name with its extension stripped. It is the default media_metadata.title when a
+// name with its extension stripped. It is the default tagsets.title when a
 // file carries no title tag (upload) or its title is cleared (PATCH), so the
 // column is never empty. Falls back to "Untitled" for an all-extension/blank
 // name, matching migration 016's backfill.

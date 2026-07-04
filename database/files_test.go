@@ -540,9 +540,9 @@ func TestListFiles_NullMetadataCoalesces(t *testing.T) {
 			t.Errorf("hash %s: Year = %d, want 0", e.Hash, e.Year)
 		}
 		switch e.Hash {
-		case hash: // nil meta → no media_metadata row → coalesced to ''
-			if e.Title != "" {
-				t.Errorf("nil-meta file: Title = %q, want empty string", e.Title)
+		case hash: // nil meta → the offered tagset defaults its title from the filename
+			if e.Title != "x" {
+				t.Errorf("nil-meta file: Title = %q, want %q (filename default)", e.Title, "x")
 			}
 		case hash2: // all-null meta → title defaulted from filename "y.ogg"
 			if e.Title != "y" {

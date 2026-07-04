@@ -100,7 +100,7 @@ func TestBulkSetLicenseAndGuest(t *testing.T) {
 	for _, h := range []string{h1, h2} {
 		var lic string
 		var guest, manual int
-		if err := db.QueryRow(`SELECT COALESCE(license,''), guest_playable, guest_playable_manual FROM files WHERE hash=?`, h).
+		if err := db.QueryRow(`SELECT COALESCE(r.license,''), r.guest_playable, r.guest_playable_manual FROM recordings r JOIN files f ON f.recording_id = r.id WHERE f.hash=?`, h).
 			Scan(&lic, &guest, &manual); err != nil {
 			t.Fatalf("read %s: %v", h, err)
 		}

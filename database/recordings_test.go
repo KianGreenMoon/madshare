@@ -98,8 +98,10 @@ func TestResolveRecording_NoFingerprintNoOp(t *testing.T) {
 	if rec != 0 {
 		t.Errorf("resolve returned %d, want 0 (no fingerprint)", rec)
 	}
-	if _, ok := recordingOf(t, db, id); ok {
-		t.Error("file without a fingerprint should keep recording_id NULL")
+	// Every file owns a (singleton) recording from insert; without a
+	// fingerprint the resolver simply leaves it there.
+	if _, ok := recordingOf(t, db, id); !ok {
+		t.Error("file should keep its insert-time singleton recording")
 	}
 }
 
@@ -124,37 +126,72 @@ func TestResolveRecording_SkipsPinned(t *testing.T) {
 	if rec != 0 {
 		t.Errorf("resolve pinned returned %d, want 0 (skip)", rec)
 	}
-	if got, ok := recordingOf(t, db, b); ok {
-		t.Errorf("pinned file got recording_id %d (= A's %d?), want left untouched (NULL)", got, recA)
+	if got, ok := recordingOf(t, db, b); !ok || got == recA {
+		t.Errorf("pinned file recording = %d (ok=%v), want its own singleton, never A's %d", got, ok, recA)
 	}
 }
 
-func TestBackfillRecordings_GroupsExisting(t *testing.T) {
+func TestReconcileTagsets_RepairsInvariants(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
-	fp := repeated(0x55AA55AA, 120)
 
-	// Two same-audio files with fingerprints but no recording_id yet (predate
-	// the overlay): the backfill should resolve both into one recording.
-	a := insertFP(t, db, "h1", 180, fp)
-	b := insertFP(t, db, "h2", 180.3, fp)
+	// (a) A file stripped of its tagset gets a filename-derived one back.
+	bare, _ := insertAnalysisFile(t, db, "h1")
+	if _, err := db.ExecContext(ctx, `DELETE FROM tagsets WHERE origin_file_id=?`, bare); err != nil {
+		t.Fatalf("strip tagset: %v", err)
+	}
+	// (b) A fileless recording (raw DELETE bypassing the cascade) is removed.
+	orphanFile, _ := insertAnalysisFile(t, db, "h2")
+	var orphanRec int64
+	if err := db.QueryRow(`SELECT recording_id FROM files WHERE id=?`, orphanFile).Scan(&orphanRec); err != nil {
+		t.Fatalf("read recording: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM tagsets WHERE origin_file_id=?`, orphanFile); err != nil {
+		t.Fatalf("strip tagsets: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM files WHERE id=?`, orphanFile); err != nil {
+		t.Fatalf("raw file delete: %v", err)
+	}
+	// (c) A recording whose primary flag was lost gets one promoted.
+	demoted, _ := insertAnalysisFile(t, db, "h3")
+	if _, err := db.ExecContext(ctx, `UPDATE tagsets SET is_primary=0 WHERE origin_file_id=?`, demoted); err != nil {
+		t.Fatalf("demote primary: %v", err)
+	}
 
-	n, err := db.BackfillRecordings(ctx)
+	n, err := db.ReconcileTagsets(ctx)
 	if err != nil {
-		t.Fatalf("backfill: %v", err)
+		t.Fatalf("reconcile: %v", err)
 	}
-	if n != 2 {
-		t.Errorf("backfill processed %d, want 2", n)
+	if n == 0 {
+		t.Fatal("reconcile reported 0 repairs, want > 0")
 	}
-	recA, okA := recordingOf(t, db, a)
-	recB, okB := recordingOf(t, db, b)
-	if !okA || !okB || recA != recB {
-		t.Errorf("backfill grouping: recA=%d(%v) recB=%d(%v), want equal & set", recA, okA, recB, okB)
+
+	var tagsetCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tagsets WHERE origin_file_id=?`, bare).Scan(&tagsetCount); err != nil {
+		t.Fatalf("count tagsets: %v", err)
+	}
+	if tagsetCount != 1 {
+		t.Errorf("bare file has %d tagsets after reconcile, want 1", tagsetCount)
+	}
+	var recExists bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM recordings WHERE id=?)`, orphanRec).Scan(&recExists); err != nil {
+		t.Fatalf("recording exists: %v", err)
+	}
+	if recExists {
+		t.Error("fileless recording survived reconcile")
+	}
+	var primaries int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tagsets t JOIN files f ON f.id=t.origin_file_id
+		WHERE f.id=? AND t.is_primary=1`, demoted).Scan(&primaries); err != nil {
+		t.Fatalf("count primaries: %v", err)
+	}
+	if primaries != 1 {
+		t.Errorf("demoted recording has %d primary tagsets after reconcile, want 1", primaries)
 	}
 
 	// Idempotent: a second run finds nothing to do.
-	if n2, _ := db.BackfillRecordings(ctx); n2 != 0 {
-		t.Errorf("second backfill processed %d, want 0 (idempotent)", n2)
+	if n2, _ := db.ReconcileTagsets(ctx); n2 != 0 {
+		t.Errorf("second reconcile repaired %d, want 0 (idempotent)", n2)
 	}
 }
 
@@ -280,7 +317,7 @@ func TestIsDuplicateSubmission_SiblingMustBeApproved(t *testing.T) {
 	b := insertFP(t, db, "s4", 200, fp)
 	db.ResolveRecording(ctx, b)
 	// The sibling is itself still in review (not approved) → no duplicate yet.
-	if _, err := db.ExecContext(ctx, `UPDATE files SET review_state='submitted' WHERE hash=?`, hash64("s3")); err != nil {
+	if _, err := db.ExecContext(ctx, `UPDATE tagsets SET review_state='submitted' WHERE origin_file_id IN (SELECT id FROM files WHERE hash=?)`, hash64("s3")); err != nil {
 		t.Fatalf("set submitted: %v", err)
 	}
 	if dup, _ := db.IsDuplicateSubmission(ctx, hash64("s4")); dup {
@@ -358,7 +395,7 @@ func TestRecordingRenditionsByHash_ExcludesNonApproved(t *testing.T) {
 	ctx := context.Background()
 	// A staged (submitted) file is not yet listenable, so its renditions 404.
 	h := insertApprovedTagged(t, db, "n1", "x", "A", "B")
-	if _, err := db.ExecContext(ctx, `UPDATE files SET review_state='submitted' WHERE hash=?`, h); err != nil {
+	if _, err := db.ExecContext(ctx, `UPDATE tagsets SET review_state='submitted' WHERE origin_file_id IN (SELECT id FROM files WHERE hash=?)`, h); err != nil {
 		t.Fatalf("set submitted: %v", err)
 	}
 	if rends, _ := db.RecordingRenditionsByHash(ctx, h); rends != nil {

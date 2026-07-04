@@ -34,10 +34,11 @@ type APIToken struct {
 	RawToken   string `json:"-"`
 }
 
-// Review states for files.review_state (migration 017). Draft and returned are
-// editable by the uploader; submitted awaits a moderator; only approved files
-// are visible in the library. The state is orthogonal to DeletedAt: a trashed
-// file keeps its review state and re-enters it on restore.
+// Review states for tagsets.review_state (migration 017, moved onto the tagset
+// by migration 024). Draft and returned are editable by the uploader; submitted
+// awaits a moderator; only approved tagsets are visible in the library. The
+// state is orthogonal to DeletedAt: a trashed tagset keeps its review state and
+// re-enters it on restore.
 const (
 	ReviewDraft     = "draft"
 	ReviewSubmitted = "submitted"
@@ -54,6 +55,13 @@ const (
 )
 
 // File is a row in the files table — one record per unique content hash.
+//
+// The catalog lifecycle (trash, review) lives on the file's tagset since
+// migration 024 (docs/architecture/recording-tagsets.md); DeletedAt,
+// ReviewState, ReviewNote, and SubmittedAt are *derived* from the file's
+// offered tagset (origin_file_id = this file) so the upload/dedup flows keep
+// their one-lookup shape. Writers go through the tagset-targeting methods
+// (SoftDeleteFileByHash, UpdateReviewState, …), never these fields.
 type File struct {
 	ID             int64
 	Hash           string
@@ -66,18 +74,23 @@ type File struct {
 	// See docs/architecture/data-sources.md.
 	LinkTarget sql.NullString
 	CreatedAt  int64
+	// RecordingID is the audio identity the file is a rendition of. Every file
+	// belongs to a recording (NOT NULL, enforced by trigger); InsertFile creates
+	// a singleton recording, which the fingerprint resolver may later merge.
+	RecordingID int64
 	// UploadedBy is the id of the uploading user, or invalid for pre-auth /
 	// federated files.
 	UploadedBy sql.NullInt64
-	// DeletedAt is set when the file has been soft-deleted (moved to trash).
-	// NULL means the file is live.
+	// DeletedAt (derived, tagsets.deleted_at): set when the file's tagset has
+	// been soft-deleted (moved to trash). NULL means the tagset is live.
 	DeletedAt sql.NullInt64
-	// ReviewState is one of the Review* constants.
+	// ReviewState (derived, tagsets.review_state) is one of the Review*
+	// constants. On insert it seeds the offered tagset's state.
 	ReviewState string
-	// ReviewNote carries the moderator's message on a returned file; cleared
-	// on submit and approve.
+	// ReviewNote (derived) carries the moderator's message on a returned
+	// tagset; cleared on submit and approve.
 	ReviewNote sql.NullString
-	// SubmittedAt is the time of the last transition to submitted.
+	// SubmittedAt (derived) is the time of the last transition to submitted.
 	SubmittedAt sql.NullInt64
 }
 
@@ -241,10 +254,13 @@ type SearchTrackEntry struct {
 	AlbumTitle      string
 }
 
-// MediaMetadata is a row in the media_metadata table. Tag fields are nullable
-// because uploads may carry incomplete (or no) tags — except Title, which is
-// required non-empty (migration 016): it defaults to the filename (extension
-// stripped) when the file has no title tag.
+// MediaMetadata is the combined per-file metadata view: the descriptive tag
+// fields live on the file's offered tagset and the tech fields (duration,
+// bitrate, …) on the media_metadata table (blob-owned, ffprobe-filled) since
+// migration 024 — InsertFile splits a value into the two rows and the readers
+// join them back. Tag fields are nullable because uploads may carry incomplete
+// (or no) tags — except Title, which is required non-empty (migration 016): it
+// defaults to the filename (extension stripped) when the file has no title tag.
 type MediaMetadata struct {
 	FileID          int64
 	Title           string

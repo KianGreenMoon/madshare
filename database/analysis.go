@@ -164,9 +164,10 @@ func (db *DB) InsertAudioFingerprint(ctx context.Context, fileID int64, fp media
 	return nil
 }
 
-// FilesNeedingAnalysis returns the ids of non-trashed files that still lack
-// analysis — no fingerprint row, or NULL tech columns (codec unset is the
-// proxy). Drives the idempotent startup backfill; new uploads enqueue inline.
+// FilesNeedingAnalysis returns the ids of non-trashed files (tagset not in the
+// Trash) that still lack analysis — no fingerprint row, or NULL tech columns
+// (codec unset is the proxy). Drives the idempotent startup backfill; new
+// uploads enqueue inline.
 func (db *DB) FilesNeedingAnalysis(ctx context.Context) ([]int64, error) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT f.id
@@ -174,6 +175,7 @@ func (db *DB) FilesNeedingAnalysis(ctx context.Context) ([]int64, error) {
 		   LEFT JOIN audio_fingerprints af ON af.file_id = f.id
 		   LEFT JOIN media_metadata    mm ON mm.file_id = f.id
 		  WHERE f.deleted_at IS NULL
+		    AND EXISTS (SELECT 1 FROM tagsets t WHERE t.origin_file_id = f.id AND t.deleted_at IS NULL)
 		    AND (af.file_id IS NULL OR mm.codec IS NULL)
 		  ORDER BY f.id`,
 	)
