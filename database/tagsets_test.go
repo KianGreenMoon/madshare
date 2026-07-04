@@ -83,7 +83,7 @@ func TestHardDelete_CascadesSingletonRecording(t *testing.T) {
 		t.Fatalf("after trash: recording=%d tagset=%d, want 1/1 (soft delete never cascades)", recCount, tagCount)
 	}
 
-	if _, found, err := db.HardDeleteTrashedFileByHash(ctx, f.Hash); err != nil || !found {
+	if _, _, found, err := db.HardDeleteTrashedFileByHash(ctx, f.Hash); err != nil || !found {
 		t.Fatalf("hard delete: found=%v err=%v", found, err)
 	}
 	if err := db.QueryRow(`SELECT

@@ -81,3 +81,61 @@ func TestHardDelete_ConcurrentWritesNoBusy(t *testing.T) {
 		t.Errorf("concurrent op failed: %v", err)
 	}
 }
+
+// TestBulkHardDeleteTagsets_ConcurrentWritesNoBusy is the P2 counterpart: the
+// tagset-first cascade (BulkHardDeleteTrashedByHashes) is a longer read-then-write
+// transaction (resolve trashed tagsets → delete → count remaining → GC files),
+// so it is the most exposed to the WAL upgrade deadlock. It must take the write
+// lock at BEGIN (_txlock=immediate) so concurrent settings writers wait rather
+// than fail. Each trashed appearance is deleted in its own bulk call while four
+// writers hammer the DB; no op may fail.
+func TestBulkHardDeleteTagsets_ConcurrentWritesNoBusy(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(filepath.Join(dir, "busy_tagsets.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	ctx := context.Background()
+	const n = 40
+	hashes := make([]string, n)
+	for i := range hashes {
+		h := fmt.Sprintf("%064x", i+1)
+		hashes[i] = h
+		seedFile(t, db, h, fmt.Sprintf("f%d.mp3", i))
+		if _, _, err := db.SoftDeleteFileByHash(ctx, h); err != nil {
+			t.Fatalf("trash %s: %v", h, err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 5*n)
+
+	for _, h := range hashes {
+		wg.Add(1)
+		go func(h string) {
+			defer wg.Done()
+			if _, _, err := db.BulkHardDeleteTrashedByHashes(ctx, []string{h}); err != nil {
+				errCh <- fmt.Errorf("bulk hard delete: %w", err)
+			}
+		}(h)
+	}
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < 100; i++ {
+				if err := db.SetSetting(ctx, "k"+strconv.Itoa(w), strconv.Itoa(i)); err != nil {
+					errCh <- fmt.Errorf("setSetting: %w", err)
+				}
+			}
+		}(w)
+	}
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Errorf("concurrent op failed: %v", err)
+	}
+}

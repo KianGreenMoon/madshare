@@ -474,6 +474,60 @@ func (db *DB) SplitRendition(ctx context.Context, fileID int64) (newRecordingID 
 	return newRecordingID, true, nil
 }
 
+// SweepInvalidRecordings garbage-collects recordings that violate the hardlink
+// invariant by having no files left to play (recording-tagsets P2 — the prune
+// backstop). Their tagsets cascade via FK. This is the standing sweep that keeps
+// a bug or crash from leaving a fileless recording (and its orphaned appearances)
+// to rot silently; the per-row prune cascade already removes a recording when it
+// prunes that recording's last file, so on a healthy library this is a fast
+// no-op. Returns the number of recordings removed. (A recording that still has
+// files but lost all its tagsets is a *heal* case, not a GC — startup
+// ReconcileTagsets re-creates an appearance rather than destroying the blob.)
+func (db *DB) SweepInvalidRecordings(ctx context.Context) (int, error) {
+	res, err := db.ExecContext(ctx,
+		`DELETE FROM recordings WHERE NOT EXISTS
+		   (SELECT 1 FROM files f WHERE f.recording_id = recordings.id)`)
+	if err != nil {
+		return 0, fmt.Errorf("sweep invalid recordings: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// RemoveRendition soft-removes a rendition — the file-side (blob) removal, the
+// counterpart to the tagset-side Trash (recording-tagsets P2). It sets
+// files.deleted_at (bytes kept on disk, restorable via RestoreRendition); the
+// recording and its tagsets are untouched — soft removal never cascades.
+// Removing the LAST surviving rendition is allowed and makes the recording
+// dormant: it keeps its appearances but drops out of the library (visibleTagset
+// requires ≥1 surviving file to play) until a rendition is restored. Returns
+// found=false (no error) when no live file matches the id.
+func (db *DB) RemoveRendition(ctx context.Context, fileID int64) (bool, error) {
+	res, err := db.ExecContext(ctx,
+		`UPDATE files SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`,
+		time.Now().Unix(), fileID)
+	if err != nil {
+		return false, fmt.Errorf("remove rendition: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// RestoreRendition clears a rendition's removal mark (files.deleted_at), bringing
+// the blob back as a playable rendition of its recording; a recording that went
+// dormant when its last rendition was removed re-enters the library. Returns
+// found=false (no error) when no removed file matches the id.
+func (db *DB) RestoreRendition(ctx context.Context, fileID int64) (bool, error) {
+	res, err := db.ExecContext(ctx,
+		`UPDATE files SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL`,
+		fileID)
+	if err != nil {
+		return false, fmt.Errorf("restore rendition: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
 // IsDuplicateSubmission reports whether the file with the given hash duplicates
 // content already approved in the library — the derived flag that suppresses a
 // moderator's self-approve and highlights the moderation queue (recordings P3,

@@ -609,37 +609,33 @@ type DeletedBlob struct {
 	StorageBackend string
 }
 
-// BulkHardDeleteTrashedByHashes permanently removes the trashed rows matching the
-// given hashes in a single transaction, returning each deleted row's hash +
-// storage backend so the caller can reclaim the physical bytes afterwards (the
-// filesystem unlink stays out of the transaction). Live (non-trashed) and unknown
-// hashes are skipped — the trashed-tagset guard mirrors HardDeleteTrashedFileByHash,
-// so a concurrent restore cannot be hard-deleted out from under the user. It is
-// the batch counterpart to HardDeleteTrashedFileByHash: one transaction + the
-// shared recording cascade instead of one autocommit write (plus a per-row
-// audit) per hash, which is what made bulk permanent delete slow and a
-// SQLITE_BUSY source under write pressure (mirroring the BulkRestoreByHashes fix).
-func (db *DB) BulkHardDeleteTrashedByHashes(ctx context.Context, hashes []string) ([]DeletedBlob, error) {
+// BulkHardDeleteTrashedByHashes permanently removes the trashed appearances of
+// the given hashes in a single transaction (recording-tagsets P2), returning the
+// count of tagsets removed and the blobs of every file a last-appearance cascade
+// took down, so the caller can reclaim those bytes after commit (the filesystem
+// unlink stays out of the transaction). Live (non-trashed) and unknown hashes
+// are skipped — the trashed-tagset guard mirrors HardDeleteTrashedFileByHash, so
+// a concurrent restore cannot be hard-deleted out from under the user. It is the
+// batch counterpart to HardDeleteTrashedFileByHash: one transaction + the shared
+// tagset cascade instead of one autocommit write (plus a per-row audit) per hash,
+// which is what made bulk permanent delete slow and a SQLITE_BUSY source under
+// write pressure (mirroring the BulkRestoreByHashes fix).
+func (db *DB) BulkHardDeleteTrashedByHashes(ctx context.Context, hashes []string) (int, []DeletedBlob, error) {
 	if len(hashes) == 0 {
-		return nil, nil
+		return 0, nil, nil
 	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("begin tx: %w", err)
+		return 0, nil, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
 
 	const chunk = 400
-	ids := make([]int64, 0, len(hashes))
-	blobs := make([]DeletedBlob, 0, len(hashes))
-	// Resolve the trashed rows first (collecting id + storage kind) so storage
-	// reclamation can run after the row is gone, just as the single-hash path
-	// learns storage_backend before deleting.
+	tagsetIDs := make([]int64, 0, len(hashes))
+	// Resolve the trashed appearances first; the cascade then decides, per
+	// recording, whether any files (and their blobs) go with them.
 	for i := 0; i < len(hashes); i += chunk {
-		end := i + chunk
-		if end > len(hashes) {
-			end = len(hashes)
-		}
+		end := min(i+chunk, len(hashes))
 		batch := hashes[i:end]
 		placeholders := make([]string, len(batch))
 		args := make([]any, 0, len(batch))
@@ -647,37 +643,24 @@ func (db *DB) BulkHardDeleteTrashedByHashes(ctx context.Context, hashes []string
 			placeholders[j] = "?"
 			args = append(args, h)
 		}
-		rows, err := tx.QueryContext(ctx,
-			`SELECT f.id, f.hash, f.storage_backend FROM files f
-			  WHERE EXISTS (SELECT 1 FROM tagsets t WHERE t.origin_file_id = f.id AND t.deleted_at IS NOT NULL)
-			    AND f.hash IN (`+strings.Join(placeholders, ",")+`)`, args...)
+		ids, err := scanIDs(tx.QueryContext(ctx,
+			`SELECT t.id FROM tagsets t
+			   JOIN files f ON f.id = t.origin_file_id
+			  WHERE t.deleted_at IS NOT NULL AND f.hash IN (`+strings.Join(placeholders, ",")+`)`, args...))
 		if err != nil {
-			return nil, fmt.Errorf("select trashed: %w", err)
+			return 0, nil, fmt.Errorf("select trashed tagsets: %w", err)
 		}
-		for rows.Next() {
-			var id int64
-			var b DeletedBlob
-			if err := rows.Scan(&id, &b.Hash, &b.StorageBackend); err != nil {
-				rows.Close()
-				return nil, fmt.Errorf("scan trashed: %w", err)
-			}
-			ids = append(ids, id)
-			blobs = append(blobs, b)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("iterate trashed: %w", err)
-		}
-		rows.Close()
+		tagsetIDs = append(tagsetIDs, ids...)
 	}
 
-	if err := hardDeleteFilesTx(ctx, tx, ids); err != nil {
-		return nil, err
+	blobs, err := hardDeleteTagsetsTx(ctx, tx, tagsetIDs)
+	if err != nil {
+		return 0, nil, err
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit: %w", err)
+		return 0, nil, fmt.Errorf("commit: %w", err)
 	}
-	return blobs, nil
+	return len(tagsetIDs), blobs, nil
 }
 
 // hardDeleteFilesTx permanently removes the given file ids inside tx, keeping
@@ -762,6 +745,121 @@ func repairRecordingTx(ctx context.Context, tx *sql.Tx, recordingID int64) error
 	return nil
 }
 
+// hardDeleteTagsetsTx is the tagset-first hard-delete cascade (recording-tagsets
+// P2) — the Trash permanent-delete op, symmetric to hardDeleteFilesTx. It
+// removes the given tagset rows and enforces the hardlink invariant per
+// recording: a recording that loses its LAST tagset is invalid (no appearance
+// left) and is garbage-collected together with all of its files (rows + blobs +
+// FK children), the deleted blobs returned so the caller can reclaim the bytes
+// after commit; a recording that keeps tagsets but lost its primary promotes the
+// oldest survivor. It deletes by recording membership (never origin_file_id), so
+// it stays correct once appearances decouple from their origin file (absorb,
+// P3). One tx — the single path every tagset hard-delete entry point goes
+// through, so no second code path can strand a recording or a blob.
+func hardDeleteTagsetsTx(ctx context.Context, tx *sql.Tx, tagsetIDs []int64) ([]DeletedBlob, error) {
+	const chunk = 400
+	recIDs := make(map[int64]struct{})
+	// 1. Collect the affected recordings, then drop the tagset rows.
+	for i := 0; i < len(tagsetIDs); i += chunk {
+		end := min(i+chunk, len(tagsetIDs))
+		batch := tagsetIDs[i:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, 0, len(batch))
+		for j, id := range batch {
+			placeholders[j] = "?"
+			args = append(args, id)
+		}
+		in := "(" + strings.Join(placeholders, ",") + ")"
+
+		rows, err := tx.QueryContext(ctx,
+			`SELECT DISTINCT recording_id FROM tagsets WHERE id IN `+in, args...)
+		if err != nil {
+			return nil, fmt.Errorf("hard delete tagsets: recordings: %w", err)
+		}
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("hard delete tagsets: scan recording: %w", err)
+			}
+			recIDs[id] = struct{}{}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("hard delete tagsets: recording rows: %w", err)
+		}
+		rows.Close()
+
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM tagsets WHERE id IN `+in, args...); err != nil {
+			return nil, fmt.Errorf("hard delete tagsets: delete: %w", err)
+		}
+	}
+
+	// 2. Per affected recording: GC it (with all its files) if it lost its last
+	//    tagset, else re-promote a primary. GC collects blobs for reclamation.
+	var blobs []DeletedBlob
+	for recID := range recIDs {
+		var remaining int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM tagsets WHERE recording_id = ?`, recID).Scan(&remaining); err != nil {
+			return nil, fmt.Errorf("hard delete tagsets: count remaining: %w", err)
+		}
+		if remaining > 0 {
+			if err := repairRecordingTx(ctx, tx, recID); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		// Last tagset gone → the recording is invalid: reclaim every file's blob,
+		// then drop the recording (files first — files.recording_id has no
+		// cascade; the recording delete then cascades any stray tagsets).
+		recBlobs, err := deleteRecordingFilesTx(ctx, tx, recID)
+		if err != nil {
+			return nil, err
+		}
+		blobs = append(blobs, recBlobs...)
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM recordings WHERE id = ?`, recID); err != nil {
+			return nil, fmt.Errorf("hard delete tagsets: delete recording %d: %w", recID, err)
+		}
+	}
+	return blobs, nil
+}
+
+// deleteRecordingFilesTx deletes every files row of a recording and returns
+// their blobs (hash + storage backend) for post-commit reclamation. FK cascade
+// drops media_metadata / file_uploads / audio_fingerprints / source_files;
+// tagsets.origin_file_id is SET NULL, so an appearance on another recording that
+// merely read its tags from one of these blobs (absorb, P3) is never destroyed.
+func deleteRecordingFilesTx(ctx context.Context, tx *sql.Tx, recordingID int64) ([]DeletedBlob, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT hash, storage_backend FROM files WHERE recording_id = ?`, recordingID)
+	if err != nil {
+		return nil, fmt.Errorf("recording %d files: %w", recordingID, err)
+	}
+	var blobs []DeletedBlob
+	for rows.Next() {
+		var b DeletedBlob
+		if err := rows.Scan(&b.Hash, &b.StorageBackend); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("recording %d file scan: %w", recordingID, err)
+		}
+		blobs = append(blobs, b)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("recording %d file rows: %w", recordingID, err)
+	}
+	rows.Close()
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM files WHERE recording_id = ?`, recordingID); err != nil {
+		return nil, fmt.Errorf("delete recording %d files: %w", recordingID, err)
+	}
+	return blobs, nil
+}
+
 // uploadFilenamesInTx returns the recorded filenames for a file (ordered by
 // upload id) within an open transaction. It is a shared helper for the two
 // delete variants that need to report filenames before mutating the row.
@@ -828,15 +926,53 @@ func (db *DB) HardDeleteFileByHash(ctx context.Context, hash string) ([]string, 
 	return db.hardDelete(ctx, `SELECT id FROM files WHERE hash = ?`, hash)
 }
 
-// HardDeleteTrashedFileByHash permanently removes a trashed files row. Live
-// (non-trashed) files return found=false, making the check and delete atomic
-// within the same transaction so a concurrent restore cannot race the delete.
-// Returns found=false (no error) when no trashed row matches.
-func (db *DB) HardDeleteTrashedFileByHash(ctx context.Context, hash string) ([]string, bool, error) {
-	return db.hardDelete(ctx, `
-		SELECT f.id FROM files f
-		WHERE f.hash = ? AND EXISTS (SELECT 1 FROM tagsets t WHERE t.origin_file_id = f.id AND t.deleted_at IS NOT NULL)`,
-		hash)
+// HardDeleteTrashedFileByHash permanently removes the trashed appearance of the
+// file identified by hash — the Trash "Delete Forever" op (recording-tagsets
+// P2). It cascades from the *tagset*: a non-last appearance drops just the
+// tagset row (the blob stays — another appearance may still play it); the last
+// appearance of a recording takes the recording and all its files with it, and
+// those blobs come back in the returned slice for post-commit reclamation. The
+// trashed-tagset guard makes the check and cascade atomic within one
+// transaction, so a concurrent restore cannot race the delete. Returns
+// found=false (no error) when the file has no trashed appearance.
+func (db *DB) HardDeleteTrashedFileByHash(ctx context.Context, hash string) ([]string, []DeletedBlob, bool, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var fileID int64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM files WHERE hash = ?`, hash).Scan(&fileID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, false, nil
+	}
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("select file id: %w", err)
+	}
+
+	tagsetIDs, err := scanIDs(tx.QueryContext(ctx,
+		`SELECT id FROM tagsets WHERE origin_file_id = ? AND deleted_at IS NOT NULL`, fileID))
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("select trashed tagsets: %w", err)
+	}
+	if len(tagsetIDs) == 0 {
+		return nil, nil, false, nil
+	}
+
+	filenames, err := uploadFilenamesInTx(ctx, tx, fileID)
+	if err != nil {
+		return nil, nil, false, err
+	}
+
+	blobs, err := hardDeleteTagsetsTx(ctx, tx, tagsetIDs)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, false, fmt.Errorf("commit: %w", err)
+	}
+	return filenames, blobs, true, nil
 }
 
 // hardDelete is the shared implementation for the two hard-delete variants; the

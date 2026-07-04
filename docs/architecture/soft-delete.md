@@ -23,10 +23,22 @@ had, so a discarded submission re-enters the queue, not the library.
 
 The Trash mark lives on `tagsets.deleted_at` (`NULL` = live, non-null = Unix
 timestamp of soft deletion); the delete/restore/list methods below now target
-the file's tagset via `origin_file_id`. `files.deleted_at` still exists but is
-reserved for *rendition removal* (`recording-tagsets.md`, P2) — nothing sets it
-yet. Hard delete cascades per the tagset invariant: the file's tagsets go with
-it, and a recording left fileless is removed.
+the file's tagset via `origin_file_id`. `files.deleted_at` is the separate
+*rendition removal* mark (`recording-tagsets.md`): `RemoveRendition` /
+`RestoreRendition` set and clear it (bytes kept on disk, restorable), and
+soft-removing a recording's last surviving rendition is allowed — the recording
+goes *dormant* (its appearances stay but drop out of the library until a
+rendition is restored). Soft delete on either mark never cascades.
+
+Permanent delete (Trash "Delete Forever") cascades from the **tagset** (P2,
+`hardDeleteTagsetsTx`): a **non-last** appearance drops only its tagset row — the
+recording and every file (blob) survive, because another appearance may still
+play them; the **last** appearance of a recording takes the recording and all
+its files with it (blobs reclaimed after commit). The single
+(`HardDeleteTrashedFileByHash`) and bulk (`BulkHardDeleteTrashedByHashes`) paths
+both run this one shared cascade in a single transaction. The prune / files-side
+direction is symmetric (`hardDeleteFilesTx`): removing the last *file* of a
+recording GCs the recording and all its appearances.
 
 ---
 

@@ -345,8 +345,11 @@ func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
 }
 
 // adminTrashHardDelete handles DELETE /api/admin/trash/{hash}. It permanently
-// removes the DB row and the blob. HardDeleteFileByHash only matches trashed
-// files, so live files return 404 atomically — no TOCTOU window.
+// removes the trashed appearance and cascades from the tagset (recording-tagsets
+// P2): a non-last appearance keeps the blob, a last appearance takes the
+// recording and all its files, whose bytes are reclaimed here after the row is
+// gone. HardDeleteTrashedFileByHash only matches a trashed appearance, so live
+// files return 404 atomically — no TOCTOU window.
 func (h *handler) adminTrashHardDelete(w http.ResponseWriter, r *http.Request) {
 	hash := chi.URLParam(r, "hash")
 	if !adminHashPattern.MatchString(hash) {
@@ -354,17 +357,7 @@ func (h *handler) adminTrashHardDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Learn the storage kind before the row is gone, so the byte reclaim is
-	// storage-aware: a links import is unlinked (the symlink only — never the
-	// external target), a local blob is os.RemoveAll'd. GetFileByHash returns the
-	// trashed row (deleted_at set); the atomic guard stays on the delete below.
-	f, err := h.repo.GetFileByHash(r.Context(), hash)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
-		return
-	}
-
-	filenames, found, err := h.repo.HardDeleteTrashedFileByHash(r.Context(), hash)
+	filenames, blobs, found, err := h.repo.HardDeleteTrashedFileByHash(r.Context(), hash)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
 		return
@@ -374,9 +367,19 @@ func (h *handler) adminTrashHardDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	blobRemoved, err := h.reclaimStorage(f, hash)
-	if err != nil {
-		log.Printf("orphan blob: hash=%s err=%v", hash, err)
+	// Reclaim only the blobs the cascade actually took down (empty when a
+	// non-last appearance was dropped and the recording's files survive). Each
+	// blob carries its storage kind, so the reclaim is storage-aware: a links
+	// import is unlinked (the symlink only — never the external target), a local
+	// blob is os.RemoveAll'd.
+	blobRemoved := false
+	for _, b := range blobs {
+		removed, rerr := h.reclaimStorage(&database.File{StorageBackend: b.StorageBackend}, b.Hash)
+		if rerr != nil {
+			log.Printf("orphan blob: hash=%s err=%v", b.Hash, rerr)
+			continue
+		}
+		blobRemoved = blobRemoved || removed
 	}
 
 	if filenames == nil {
@@ -535,7 +538,7 @@ func (h *handler) trashBulk(w http.ResponseWriter, r *http.Request) {
 	// reclamation (a local DeleteAll or a links unlink) is a filesystem op, so it
 	// runs after the commit; a failure only orphans bytes (reconciled by prune),
 	// never the reverse.
-	blobs, err := h.repo.BulkHardDeleteTrashedByHashes(r.Context(), hashes)
+	deleted, blobs, err := h.repo.BulkHardDeleteTrashedByHashes(r.Context(), hashes)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
 		return
@@ -545,8 +548,8 @@ func (h *handler) trashBulk(w http.ResponseWriter, r *http.Request) {
 			log.Printf("orphan blob: hash=%s err=%v", b.Hash, rerr)
 		}
 	}
-	h.audit(r.Context(), "file.bulk_delete", "files", fmt.Sprintf("%d deleted", len(blobs)))
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": len(blobs)})
+	h.audit(r.Context(), "file.bulk_delete", "files", fmt.Sprintf("%d deleted", deleted))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": deleted})
 }
 
 // adminPrune handles POST /api/admin/prune — it *starts* the single, server-wide

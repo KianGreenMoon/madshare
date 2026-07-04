@@ -1,12 +1,16 @@
 # Recording tagsets — multiple metadata appearances per audio
 
-**Status:** ✅ **Design decided (owner review 2026-07-04). P0 (migration 024)
-and P1 (library & addressing, migration 025) are built.** Tagsets exist,
-`media_metadata` is tech-only, review/trash live on the tagset, license/guest
-on the recording, every file has a recording; the library lists tagsets and a
-track is addressed by `tagset_id` end-to-end (browse/search rows, player queue,
-hearts, playlists, renditions), with the play URL resolved server-side to the
-ladder-best surviving rendition. P2+ not started. This document is
+**Status:** ✅ **Design decided (owner review 2026-07-04). P0 (migration 024),
+P1 (library & addressing, migration 025), and P2 (lifecycle & GC) are built.**
+Tagsets exist, `media_metadata` is tech-only, review/trash live on the tagset,
+license/guest on the recording, every file has a recording; the library lists
+tagsets and a track is addressed by `tagset_id` end-to-end (browse/search rows,
+player queue, hearts, playlists, renditions), with the play URL resolved
+server-side to the ladder-best surviving rendition. The hardlink lifecycle is
+live: the Trash permanent-delete cascades from the tagset (non-last drops just
+the appearance and keeps the blob; last takes the recording + all its files),
+renditions can be soft-removed (last one → dormant recording), and prune repairs
+blob-loss recordings and sweeps invalid ones. P3+ not started. This document is
 the reference design and the implementation plan. Extends
 [Recordings](recordings.md) (same-audio grouping & renditions) and the
 [artist/album overlay](artist-album-model.md); the metadata payload defined here
@@ -577,10 +581,25 @@ regressions isolate to the data move.
   ownership checks stay on the file's own tagset (`FileReviewInfo`) —
   deliberately narrower than the recording-level gate, so a pending duplicate
   stays editable by its uploader.*
-- **P2 — Lifecycle & GC.** Tagset Trash/restore; the last-tagset hard-delete
-  cascade (single + bulk, one tx); rendition removal + last-rendition refusal;
-  prune's recording repair + invalid-recording sweep; audit actions.
-  *Result: the hardlink semantics are live and safe end-to-end.*
+- **P2 — Lifecycle & GC. ✅ Done.** Tagset Trash/restore; the last-tagset
+  hard-delete cascade (single + bulk, one tx); rendition removal + last-rendition
+  dormancy; prune's recording repair + invalid-recording sweep.
+  *Result: the hardlink semantics are live and safe end-to-end. The Trash
+  permanent-delete (single `HardDeleteTrashedFileByHash` + bulk
+  `BulkHardDeleteTrashedByHashes`) now cascades from the tagset through the
+  shared `hardDeleteTagsetsTx`: a non-last appearance drops only its tagset (the
+  blob survives — another appearance may play it), the last appearance GCs the
+  recording and all its files (blobs reclaimed post-commit). The API stays
+  hash-addressed (the tagset/files scopes are P5); the cascade underneath is
+  tagset-first, so a multi-rendition recording's blobs are never destroyed by
+  trashing one appearance. `RemoveRendition`/`RestoreRendition` soft-remove a
+  blob (files.deleted_at); removing the last surviving rendition is allowed and
+  makes the recording dormant (hidden by `visibleTagset`, fully reversible) —
+  per decision 9, superseding the phase one-liner's "refusal". Prune GCs a
+  blob-loss recording via the existing file-first cascade and runs a standing
+  `SweepInvalidRecordings` backstop each confirmed pass (reported as
+  `InvalidRecordings`). The `deleted`-count return let the Trash "N removed"
+  tally and blob reclaim stay correct when a non-last delete frees no bytes.*
 - **P3 — Operations layer + absorb.** The shared primitives
   (attach/move/set-primary/add-remove-rendition/split-with-tagset); the
   `/admin/duplicates` absorb UI + endpoint; meaningful rule + appearance

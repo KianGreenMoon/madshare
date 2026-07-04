@@ -184,7 +184,9 @@ function pruneWording(s) {
   if (s.outcome === 'cancelled') return ['warn', 'Last prune cancelled'];
   if (s.outcome === 'failed')    return ['error', 'Last prune failed'];
   const n = s.pruned_count || 0;
-  const t = `Last prune removed ${n} record${n === 1 ? '' : 's'}`;
+  let t = `Last prune removed ${n} record${n === 1 ? '' : 's'}`;
+  const inv = s.invalid_recordings || 0;
+  if (inv) t += `, GC'd ${inv} invalid recording${inv === 1 ? '' : 's'}`;
   if (s.failed_count) return ['warn', `${t}, ${s.failed_count} failed`];
   return ['ok', t];
 }

@@ -922,9 +922,12 @@ func TestBulkHardDeleteTrashedByHashes_SkipsLiveReportsBackend(t *testing.T) {
 	}
 
 	// Pass all three hashes; only the two trashed rows may be deleted.
-	blobs, err := db.BulkHardDeleteTrashedByHashes(ctx, []string{trashedLocal, trashedLinks, liveLocal})
+	deleted, blobs, err := db.BulkHardDeleteTrashedByHashes(ctx, []string{trashedLocal, trashedLinks, liveLocal})
 	if err != nil {
 		t.Fatalf("BulkHardDeleteTrashedByHashes: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted %d tagsets, want 2 (live row must be skipped)", deleted)
 	}
 	if len(blobs) != 2 {
 		t.Fatalf("deleted %d blobs, want 2 (live row must be skipped)", len(blobs))

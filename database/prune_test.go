@@ -127,6 +127,62 @@ func TestPruneDangling_ConfirmDeletesDanglingOnly(t *testing.T) {
 	}
 }
 
+// TestPruneDangling_RepairsRecordingAndSweepsInvalid verifies the two P2
+// recording-awareness rules: pruning a dangling file GCs its now-fileless
+// recording (the per-row cascade), and the standing invalid-recording sweep GCs
+// a separate crash-orphaned fileless recording, reported in InvalidRecordings.
+func TestPruneDangling_RepairsRecordingAndSweepsInvalid(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	seedFile(t, db, hashHealthy, "healthy.mp3")
+	seedFile(t, db, hashDangling, "gone.mp3")
+
+	var danglingRec int64
+	if err := db.QueryRow(`SELECT recording_id FROM files WHERE hash=?`, hashDangling).Scan(&danglingRec); err != nil {
+		t.Fatalf("read dangling recording: %v", err)
+	}
+
+	// A crash-orphaned fileless recording the standing sweep must GC (the per-row
+	// cascade never reaches it — it owns no file to prune).
+	var orphanRec int64
+	if err := db.QueryRow(`INSERT INTO recordings (created_at) VALUES (1700000000) RETURNING id`).Scan(&orphanRec); err != nil {
+		t.Fatalf("insert orphan recording: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO tagsets (recording_id, title, review_state, is_primary, created_at) VALUES (?, 'orphan', 'approved', 1, 1700000000)`,
+		orphanRec); err != nil {
+		t.Fatalf("insert orphan tagset: %v", err)
+	}
+
+	probe := &fakeProbe{present: map[string]bool{hashHealthy: true}}
+	res, err := PruneDangling(ctx, db, probe, nil, true, false)
+	if err != nil {
+		t.Fatalf("PruneDangling: %v", err)
+	}
+	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, danglingRec); n != 0 {
+		t.Errorf("dangling file's recording survived prune: count=%d", n)
+	}
+	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, orphanRec); n != 0 {
+		t.Errorf("orphan recording survived the prune sweep: count=%d", n)
+	}
+	if res.InvalidRecordings != 1 {
+		t.Errorf("InvalidRecordings = %d, want 1 (the crash-orphaned recording)", res.InvalidRecordings)
+	}
+	if got := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, hashHealthyRec(t, db)); got != 1 {
+		t.Errorf("healthy recording swept: count=%d", got)
+	}
+	assertInvariants(t, db)
+}
+
+func hashHealthyRec(t *testing.T, db *DB) int64 {
+	t.Helper()
+	var id int64
+	if err := db.QueryRow(`SELECT recording_id FROM files WHERE hash=?`, hashHealthy).Scan(&id); err != nil {
+		t.Fatalf("read healthy recording: %v", err)
+	}
+	return id
+}
+
 // TestPruneDangling_DeepDetectsCorruption verifies the opt-in deep scan flags a
 // present-but-corrupted blob (Issue 1) while the cheap scan leaves it alone, and
 // that the reason is reported and the blob swept on confirm.

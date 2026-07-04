@@ -437,6 +437,9 @@ type fakeRepo struct {
 	fileRefs    []database.FileRef
 	fileRefsErr error
 
+	sweepInvalidRecordings int
+	sweepInvalidErr        error
+
 	auditCalls   int
 	lastAudit    string // "action|target"
 	lastUploaded sql.NullInt64
@@ -854,20 +857,23 @@ func (f *fakeRepo) HardDeleteFileByHash(_ context.Context, _ string) ([]string, 
 	return f.deleteFilenames, f.deleteFound, f.deleteErr
 }
 
-func (f *fakeRepo) HardDeleteTrashedFileByHash(_ context.Context, _ string) ([]string, bool, error) {
-	return f.deleteFilenames, f.deleteFound, f.deleteErr
+func (f *fakeRepo) HardDeleteTrashedFileByHash(_ context.Context, hash string) ([]string, []database.DeletedBlob, bool, error) {
+	if !f.deleteFound || f.deleteErr != nil {
+		return f.deleteFilenames, nil, f.deleteFound, f.deleteErr
+	}
+	return f.deleteFilenames, []database.DeletedBlob{{Hash: hash, StorageBackend: database.StorageBackendLocal}}, f.deleteFound, f.deleteErr
 }
 
-func (f *fakeRepo) BulkHardDeleteTrashedByHashes(_ context.Context, hashes []string) ([]database.DeletedBlob, error) {
+func (f *fakeRepo) BulkHardDeleteTrashedByHashes(_ context.Context, hashes []string) (int, []database.DeletedBlob, error) {
 	f.bulkDeletedHashes = append(f.bulkDeletedHashes, hashes...)
 	if f.bulkDeleteErr != nil {
-		return nil, f.bulkDeleteErr
+		return 0, nil, f.bulkDeleteErr
 	}
 	blobs := make([]database.DeletedBlob, len(hashes))
 	for i, h := range hashes {
 		blobs[i] = database.DeletedBlob{Hash: h, StorageBackend: database.StorageBackendLocal}
 	}
-	return blobs, nil
+	return len(hashes), blobs, nil
 }
 
 func (f *fakeRepo) RestoreFileByHash(_ context.Context, _ string) (bool, error) {
@@ -892,6 +898,10 @@ func (f *fakeRepo) ListTrashedFiles(_ context.Context) ([]*database.FileListEntr
 
 func (f *fakeRepo) ListFileRefs(_ context.Context) ([]database.FileRef, error) {
 	return f.fileRefs, f.fileRefsErr
+}
+
+func (f *fakeRepo) SweepInvalidRecordings(_ context.Context) (int, error) {
+	return f.sweepInvalidRecordings, f.sweepInvalidErr
 }
 
 func (f *fakeRepo) Search(_ context.Context, _ string) (*database.SearchResults, error) {

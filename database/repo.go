@@ -160,19 +160,24 @@ type Repository interface {
 	// PruneDangling. found is false (no error) when no row matches.
 	HardDeleteFileByHash(ctx context.Context, hash string) (filenames []string, found bool, err error)
 
-	// HardDeleteTrashedFileByHash permanently removes a trashed files row.
-	// Live (non-trashed) files return found=false so the caller cannot bypass
-	// the soft-delete step. The check and delete are atomic within one
-	// transaction, preventing a concurrent restore from racing the delete.
-	HardDeleteTrashedFileByHash(ctx context.Context, hash string) (filenames []string, found bool, err error)
+	// HardDeleteTrashedFileByHash permanently removes the trashed appearance of a
+	// file — the Trash "Delete Forever" op, cascading from the tagset
+	// (recording-tagsets P2): a non-last appearance drops just its tagset (blob
+	// kept), the last appearance takes the recording and all its files, whose
+	// blobs come back for reclamation. Live (non-trashed) files return
+	// found=false so the caller cannot bypass the soft-delete step. The check and
+	// cascade are atomic within one transaction, preventing a concurrent restore
+	// from racing the delete.
+	HardDeleteTrashedFileByHash(ctx context.Context, hash string) (filenames []string, blobs []DeletedBlob, found bool, err error)
 
-	// BulkHardDeleteTrashedByHashes permanently removes the trashed rows for a
-	// hash set in one transaction, returning each deleted row's hash + storage
-	// backend so the caller can reclaim the blobs afterwards (the filesystem
-	// unlink stays outside the transaction). It is the batch counterpart to
-	// HardDeleteTrashedFileByHash, backing the Trash "Delete selected" bulk
-	// action — one commit instead of a per-hash delete + audit write.
-	BulkHardDeleteTrashedByHashes(ctx context.Context, hashes []string) ([]DeletedBlob, error)
+	// BulkHardDeleteTrashedByHashes permanently removes the trashed appearances of
+	// a hash set in one transaction, returning how many tagsets were removed and
+	// the blobs of every file a last-appearance cascade took down so the caller
+	// can reclaim them afterwards (the filesystem unlink stays outside the
+	// transaction). It is the batch counterpart to HardDeleteTrashedFileByHash,
+	// backing the Trash "Delete selected" bulk action — one commit instead of a
+	// per-hash delete + audit write.
+	BulkHardDeleteTrashedByHashes(ctx context.Context, hashes []string) (deleted int, blobs []DeletedBlob, err error)
 
 	// RestoreFileByHash clears deleted_at on a trashed file, returning it to
 	// the live library. found is false (no error) when no trashed row matches.
@@ -194,6 +199,11 @@ type Repository interface {
 	// ListFileRefs returns one FileRef per files row, each carrying the
 	// content hash and the filenames recorded for it, ordered by file id.
 	ListFileRefs(ctx context.Context) ([]FileRef, error)
+
+	// SweepInvalidRecordings GCs recordings left with no files (their tagsets
+	// cascade), returning the count removed — the prune pass's standing hardlink
+	// invariant backstop (recording-tagsets P2). A healthy library reports 0.
+	SweepInvalidRecordings(ctx context.Context) (int, error)
 
 	// RecordAudit appends a row to the audit log. actorUserID is invalid for
 	// system/anonymous actions.

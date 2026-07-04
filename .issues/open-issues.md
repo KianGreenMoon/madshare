@@ -275,3 +275,13 @@ closed with 503. Verified by `go test -race` + two live on-disk smokes (no
 | Medium | **`myUploadsBulk` remove loops per row.** Now one `BulkDiscardOwnUploads` chunked transaction (owner + draft/returned guard) + one summary audit row. | **fixed (2026-06-28)** |
 | Low | **`myUploadsBulk` submit loops per row (`submitStaged`).** `submitStaged` now keeps the per-hash duplicate *read* (no write lock) but partitions into self-approve / submitted / duplicate-flagged buckets and issues one `BulkUpdateReviewState` + one summary audit row per bucket (`file.bulk_approve` / `file.bulk_submit`). Exact submitted/flagged counts preserved; the unused per-hash `results` field was dropped. | **fixed (2026-06-28)** |
 | Low | **`bulkEditFiles` loops per row (`applyOneBulkEdit`).** Tags now go through `BulkUpdateFileMetadata` (one transaction per 500-file chunk; `applyMetadataPatchTx` shares the tx — the per-file entity re-resolution still can't be one `UPDATE`, but the transactions are batched). The single-valued license/guest collapse to one guarded `UPDATE … hash IN (…)` each (`BulkSetLicense` / `BulkSetGuestPlayable`). | **fixed (2026-06-28)** |
+
+## Recording-tagsets P2 — interim states / follow-ups (2026-07-04)
+
+Non-blocking observations from building P2 (lifecycle & GC). None are defects;
+all are anticipated by the design and resolve in later phases.
+
+| Severity | Issue | Status |
+|---|---|---|
+| Info | **Orphan renditions after a non-last appearance permanent-delete.** Deleting a non-last tagset from Trash keeps the file (blob) — correct per the hardlink model — but that file now has no tagset of its own (the recording still has others). Valid interim state; such orphan renditions are only cleanable via the P3 duplicates/absorb surface (rendition removal). No data at risk. | open (P3) |
+| Info | **Audit action name imprecise for appearance-only delete.** The hash-addressed Trash permanent-delete audits `file.delete` even when only the appearance was dropped (the file survived). Acceptable while Trash is hash-addressed; the P5 recordings view should introduce explicit `recording.delete` / appearance-delete audit actions. | open (P5) |

@@ -275,6 +275,14 @@ moderators to prune, that is a separate role-permission change, out of scope her
     the on-disk database with `_txlock=immediate` so every (read-write) transaction
     takes the write lock at `BEGIN` — see `database/database.go`
     (`withConnectionPragmas`) and the regression in `database/busy_test.go`.
+  - **Recording awareness (recording-tagsets P2).** Pruning a dangling file goes
+    through the shared file-side cascade (`hardDeleteFilesTx`), so a recording
+    left with no files is GC'd with it (its appearances cascade). After the pass,
+    `PruneRefs` runs a standing `SweepInvalidRecordings` backstop that GCs any
+    fileless recording a bug or crash stranded; the count comes back as
+    `PruneResult.InvalidRecordings` and is persisted in the summary
+    (`invalid_recordings`) / shown on the prune page. See
+    `docs/architecture/recording-tagsets.md`.
 - **API (`api/admin_handlers.go`, gated `file.delete`)** — `adminPrune` (async
   start → 202 / 409), `adminPruneStatus`, `adminPruneCancel`; the response is
   shaped by `pruneStatusJSON`. Wired via `Deps.PruneManager` → `handler.pruneMgr`

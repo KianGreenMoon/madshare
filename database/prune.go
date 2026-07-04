@@ -50,6 +50,10 @@ type PruneResult struct {
 	Dangling []DanglingRef
 	Pruned   []DanglingRef
 	Failed   []PruneFailure
+	// InvalidRecordings is how many fileless recordings the post-prune
+	// invariant sweep garbage-collected (recording-tagsets P2). Set only on a
+	// confirmed prune (PruneRefs); a healthy library reports 0.
+	InvalidRecordings int
 }
 
 // blobProbe is the slice of a local storage backend the prune needs. Declared
@@ -245,6 +249,17 @@ func PruneRefs(ctx context.Context, repo Repository, probe blobProbe, link linkP
 			log.Printf("prune sweep: hash=%s err=%v", ref.Hash, err)
 		}
 		result.Pruned = append(result.Pruned, d)
+	}
+
+	// Standing invariant backstop (recording-tagsets P2): GC any recording left
+	// with no files — the per-row cascade above already removes a recording when
+	// it prunes that recording's last file, so this only catches violations a bug
+	// or crash slipped through. Best-effort: a sweep failure must not fail the
+	// prune whose deletes already committed.
+	if removed, err := repo.SweepInvalidRecordings(ctx); err != nil {
+		log.Printf("prune: invalid-recording sweep: %v", err)
+	} else {
+		result.InvalidRecordings = removed
 	}
 	return result, nil
 }
