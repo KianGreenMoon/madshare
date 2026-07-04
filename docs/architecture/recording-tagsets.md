@@ -178,8 +178,12 @@ Keeps **only** the tech columns (`duration_seconds`, `bitrate`, `sample_rate`,
 ### `files` (changed)
 
 - `recording_id` becomes **NOT NULL** (singleton-recording backfill, below).
-- `review_state` / `review_note` / `submitted_at` **move to `tagsets`** — a
-  file is no longer the reviewable unit.
+- `review_state` / `review_note` / `submitted_at` **move to `tagsets`** — the
+  tagset is the unit that carries the review *state*. This changes bookkeeping
+  only: the submitted **file stays fully accessible to the moderator** — the
+  queue's preview plays it, and the pending-blob gate (Visibility, below)
+  serves it to owner + `content.moderate` exactly as today. Validating the
+  audio is validating *that file*.
 - `deleted_at` **stays**, but its meaning narrows to *rendition removal*
   (absorb, files-view delete): bytes kept until GC, restorable as a rendition.
   It is **not** the user-facing Trash anymore (that is `tagsets.deleted_at`).
@@ -340,6 +344,29 @@ one place. Each submission is classified server-side (evolving
 In B and C, if the offered tagset collides with an existing appearance
 (identity key) there is nothing new at all — the queue says so, and deny is the
 natural action. Deny = discard to Trash (tagset soft delete), as today.
+
+**The classification is a suggestion, not a verdict.** The moderator validates
+all three pieces himself and can override each independently:
+
+- **The file** — the preview always plays the *submitted blob* (never the
+  matched recording's existing best), because the audio under review *is* that
+  file; the ladder compare sits beside it for A/B listening against the
+  current best.
+- **The recording assignment** — the queue states plainly where the submission
+  will land ("creates a new recording" / "joins *recording X*"), and the
+  moderator can **change it**: reassign to a different recording
+  (search/pick), or force "this is actually new" when the fingerprint match is
+  wrong — which pins the result (`recording_pinned`, same mechanism as split)
+  so the resolver never re-merges it.
+- **The tagset** — edit it in place (the shared modal) before approving, or
+  return it to the uploader with a note for *them* to fix.
+
+And the decisions per piece combine freely: approve the appearance while
+dropping the bytes, keep the bytes while returning the tagset for rework,
+accept one and deny the other. Approve, return-with-note, and deny remain the
+terminal actions, exactly as in [moderation.md](moderation.md) — the rework
+adds the recording context and the per-piece control, it does not change the
+state machine.
 
 Everything else carries over from [moderation.md](moderation.md): per-uploader
 collapsible groups, return-with-note, preview plays the **submitted file**
@@ -561,8 +588,10 @@ the api `fakeRepo`, `tests/js`, `tests/playwright`, `tests/k6`).
   dedup no-op, authz (403/400/404/409), one audit row.
 - **Review classification (P4):** cases A/B/C derived correctly (fingerprint,
   hash-dup, tag-fallback when fpcalc absent); B's keep-vs-drop-blob outcomes;
-  identity-collision reported; self-approve suppressed on duplicates; bulk
-  semantics.
+  identity-collision reported; self-approve suppressed on duplicates; the
+  moderator's overrides — reassign to another recording, force-new with
+  `recording_pinned` (resolver never re-merges), tagset edit before approve —
+  and free combination of per-piece decisions; bulk semantics.
 - **Visibility & access (P1):** N-tagset recording = N library tracks, each
   playing the ladder-best blob; zero-surviving-rendition recording hidden,
   restore re-surfaces; a tagset can never widen access.
