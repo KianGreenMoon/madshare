@@ -89,7 +89,7 @@ Genuinely open questions for the session:
   of that metadata payload — per-recording **tagsets** (the several album/artist
   appearances of one audio identity), with origin-node provenance so peer
   appearances stay trust-weighted and revocable — is designed in
-  `docs/architecture/recording-tagsets.md` (draft).
+  `docs/architecture/recording-tagsets.md` (design decided, not yet built).
 - **Availability / replication.** A peer (especially mobile) is often offline, so
   remote content is only reachable while the peer is up — unless we **replicate**.
   Future model: **subscribe / favourite → replicate** the content you care about so
@@ -132,9 +132,10 @@ backbone + the subscribe→replicate model, not from expecting phones to be reac
   (Phase 4).
 - `docs/architecture/recordings.md` §"Federation" (cross-node fingerprint index,
   rendition negotiation).
-- `docs/architecture/recording-tagsets.md` (draft — the per-recording **tagset**
-  metadata payload federated catalog sync carries; origin-node provenance, trust
-  weighting, and the access-never-imported-from-a-tagset constraint).
+- `docs/architecture/recording-tagsets.md` (design decided — the per-recording
+  **tagset** metadata payload federated catalog sync carries; origin-node
+  provenance, trust weighting, local review of peer-offered tagsets, and the
+  access-never-imported-from-a-tagset constraint).
 - `docs/ui/native-client.md` (the client that consumes federation; topology
   asymmetry).
 - Yggdrasil deployment context: the project already runs over the `.ygg` mesh.

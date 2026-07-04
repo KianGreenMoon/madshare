@@ -1,120 +1,130 @@
 # Recording tagsets — multiple metadata appearances per audio
 
-**Status:** ⚠️ **DRAFT for review — nothing built.** Design only; needs Kian's
-sign-off (see [Open questions](#open-questions)) before any migration or code.
-Extends [Recordings](recordings.md) (same-audio grouping & renditions) and the
-[artist/album overlay](artist-album-model.md); the metadata payload it defines is
-what travels in [Federation](federation.md) (seed doc), so it's flagged throughout.
+**Status:** ✅ **Design decided (owner review 2026-07-04) — nothing built yet.**
+The first draft's nine open questions were resolved with Kian; this document is
+now the reference design and the implementation plan. Extends
+[Recordings](recordings.md) (same-audio grouping & renditions) and the
+[artist/album overlay](artist-album-model.md); the metadata payload defined here
+is what will travel in [Federation](federation.md) (deferred). A short list of
+*remaining* open points is at the end — everything else is settled.
 
 ## Problem
 
-The recordings overlay groups same-audio `files` into a **recording**; each member
-file is a **rendition** (a specific encoding). Dedup on the `/admin/duplicates`
-page today offers a moderator exactly two outcomes:
+The recordings overlay groups same-audio `files` into a **recording**; each
+member file is a **rendition** (a specific encoding). Two gaps follow from tags
+living 1:1 on the file (`media_metadata`, PK `file_id`):
 
-- **Delete** the redundant rendition (soft-delete the blob). This frees storage —
-  but it also **destroys that rendition's tags**, because tags live 1:1 on the
-  file (`media_metadata` is PK `file_id`). If the deleted copy was *track 3 on a
-  compilation* while the kept copy was *track 5 on the studio album*, the
-  compilation appearance is gone with the blob.
-- **Split** the rendition into its own recording (it was a genuinely different
-  recording mis-grouped — a live take, a cover).
-
-There is no third outcome — and it's the one that actually matters for a media
-library: **the same recording legitimately appears on several releases.** A song
-ships as a single, on the studio album, on a "best of", on a label compilation —
-each with a *different* album, often a different album-artist (a "Various
-Artists" comp), a different track/disc number, sometimes a different title. And
-the duplicates are usually *also* different encodings (a pure 128 kbps MP3 from
-the comp vs. a FLAC from the album). The moderator wants to **keep the one best
-blob and preserve every distinct appearance** — not choose between storage and
-metadata.
+1. **Dedup destroys metadata.** On `/admin/duplicates` a moderator can only
+   *delete* a redundant rendition (which destroys its tags with the blob) or
+   *split* it into its own recording. There is no third outcome — the one that
+   actually matters: **the same recording legitimately appears on several
+   releases** (single, studio album, "best of", VA compilation), each with a
+   different album / album-artist / track number, and usually in different
+   encodings. The moderator wants to **keep the one best blob and preserve every
+   distinct appearance** — not choose between storage and metadata.
+2. **Moderation can't express the common decision.** The review queue can only
+   approve/return/discard a *file*. It cannot say "this is a duplicate of what
+   we already hold — take its metadata as a new appearance, and keep or drop its
+   bytes on their own merits", which is the most frequent real decision once a
+   library matures.
 
 For federation this is the same need, sharpened: a node wants to hold **one
-best-quality master** of a recording and carry the **union of metadata
+best-quality master** per recording and carry the **union of metadata
 appearances** the network knows about, rather than N redundant blobs.
 
-## Goal — the moderator's flow
+## The model — tagsets are hardlinks
 
-From `/admin/duplicates`, for a recording with several renditions:
+The design's core mental model (owner's framing, adopted as the invariant):
 
-1. Keep the best rendition (the quality ladder's `#1`, or a manual pick).
-2. **Absorb** the other renditions' tags onto the recording as **additional
-   tagsets** — so the song still appears under their albums/artists.
-3. Trash the absorbed renditions' **blobs** (existing soft-delete; storage
-   reclaimed on prune).
-4. **Drop** any absorbed tagset that carries **no real artist/album** — no point
-   inflating the "Unknown artist / Other" bucket with a nameless duplicate.
-
-The result: one audio identity, one surviving blob, **N library appearances**,
-each playing that blob.
-
-## Model: a recording owns N tagsets
-
-Two **independent** one-to-many relationships hang off a recording:
+- A **recording** is like an *inode* (or an archive file): one audio identity
+  that owns the stored data. It has no name of its own.
+- Its **files** are the stored data — the renditions (encodings). Primarily
+  one, the best; possibly more for streaming quality tiers
+  ([recordings.md](recordings.md) quality ladder, future derived transcodes in
+  [variants.md](variants.md)).
+- A **tagset** is like a *hardlink*: a named catalog entry pointing at the
+  recording. Title + artist + album-artist + album + track/disc/year/genre,
+  resolving to `artists`/`albums` entities via the existing resolver. **The
+  tagset is what users and moderators handle** — the library, search,
+  playlists, the review queue, and Trash all operate on tagsets, the same way a
+  filesystem user only ever touches links, never inodes.
 
 ```
-                         ┌─────────────────────────────┐
-              renditions │  recording  (audio identity) │ tagsets
-        (physical: which │     id, preferred_file_id     │ (logical: where it
-         blob to serve)  └──────┬───────────────┬────────┘  appears in library)
-                                │               │
-         ┌──────────┬───────────┘               └───────────┬──────────────┐
-      files (blob) files (blob)            recording_tagset   recording_tagset
-      FLAC master  MP3 320               "Studio Album, trk5"  "VA Comp, trk3"
-      (tech specs)  (tech specs)          → artist/album ids    → artist/album ids
+                        ┌──────────────────────────────┐
+             renditions │  recording  (audio identity) │ tagsets
+       (physical: which │     id, preferred_file_id    │ (logical: where it
+        blob to serve)  └──────┬───────────────┬───────┘  appears in library)
+                               │               │
+        ┌──────────┬───────────┘               └───────────┬──────────────┐
+     files (blob) files (blob)                   tagset               tagset
+     FLAC master  MP3 320                 "Studio Album, trk5"   "VA Comp, trk3"
+     (tech specs) (tech specs)             → artist/album ids    → artist/album ids
 ```
 
-- **Renditions** = `files` rows with the same `recording_id` (today's model,
-  unchanged). They carry the **physical** properties: bytes, hash, and the
-  *tech* columns (duration, bitrate, sample-rate, codec, bit-depth).
-- **Tagsets** = the **logical** appearances: title + artist + album-artist +
-  album + track/disc/year/genre, each resolving to `artists`/`albums` entities
-  via the existing resolver. New.
+**The invariant, both directions:** a live recording has **≥ 1 tagset and
+≥ 1 file** — always at least one link and at least one blob.
 
-This decomposition is the conceptual core: **tech specs belong to the blob;
-descriptive tags belong to the appearance.** Today `media_metadata` conflates
-them in one file-keyed row because every file had exactly one appearance. To let
-one audio appear several times we must split that conflation.
+- Hard-deleting a **non-last** tagset removes just that appearance; the
+  recording and its files stay (other links exist).
+- Hard-deleting the **last** tagset removes the recording **and all its files**
+  (blobs reclaimed) — like the filesystem freeing an inode when its last link
+  goes.
+- A recording with **zero files** is *invalid* — nothing to play. Prune detects
+  it and removes the recording, any corrupt file rows, and all its tagsets.
 
-### Where the descriptive tags live — the central decision
+Tech specs (duration, bitrate, sample-rate, codec, bit-depth) belong to the
+**blob**; descriptive tags belong to the **appearance**. Today `media_metadata`
+conflates them in one file-keyed row because every file had exactly one
+appearance. Splitting that conflation is the migration's core.
 
-Two ways to introduce tagsets; this is **[Open question 1](#open-questions)** and
-drives the whole migration's size. I recommend **A**.
+## Decision record (owner review, 2026-07-04)
 
-**Approach A — decompose `media_metadata` (recommended target).** Split the table
-along the physical/logical line:
+1. **Approach A** — decompose `media_metadata` (tech stays file-keyed;
+   descriptive columns move to a new `tagsets` table). The alternative additive
+   `recording_tagsets` union was rejected: pre-release, clean model wins.
+2. **Every file belongs to a recording** — `files.recording_id` becomes
+   NOT NULL; the resolver creates a singleton recording for any unmatched file,
+   including fpcalc-absent installs (supersedes recordings.md's "NULL =
+   implicit recording" rule). Every tagset belongs to a recording (NOT NULL FK).
+3. **Appearance identity includes `album_artist_id`** — the dedup key is
+   `(recording_id, album_id, album_artist_id, disc_number, track_number)`.
+4. **Playlists / favorites / queue reference a tagset** (the specific
+   appearance the user picked), not the recording.
+5. **The lifecycle is tagset-centric** (the hardlink model above). Review,
+   Trash, and the file-management surfaces list tagsets; restore restores a
+   tagset; the last-tagset hard delete cascades to the recording and its files;
+   prune garbage-collects invalid recordings. This **supersedes** the draft's
+   "blocked hard-delete + moderator override" guard entirely.
+6. **Upload & review are reworked around tagsets** — an upload *offers a
+   tagset*; the moderator's queue classifies each submission (new recording /
+   new appearance on an existing recording / better rendition) and acts
+   accordingly. A large work item, designed below.
+7. **Federation / external-source tagsets stay open** — peer- or
+   data-source-offered tagsets must be locally reviewable; design deferred to
+   the [federation.md](federation.md) session. The P0 schema only reserves
+   provenance.
+8. **The DB guarantees the invariants where it can**; every mutation is a
+   single transaction; prune is the enforcement backstop. Two new admin
+   perspectives — a **recordings view** and a **files view** — complement the
+   tagset surfaces; recording **merge and split** are wanted (mechanics still
+   open); **every new operation gets a bulk API** ([docs/api/bulk.md](../api/bulk.md)).
+9. **The cascade is symmetric** (follow-up decision, same review):
+   hard-deleting the **last file** of a recording cascades to the recording and
+   all its tagsets, behind a count-aware confirm — mirror of the last-tagset
+   rule. And **`license` / `guest_playable` move to `recordings`** in the P0
+   migration (one audio identity, one license).
 
-- `media_metadata` (PK `file_id`) keeps **only tech columns** + `tag_format`.
-- A new **`tagsets`** table (one-to-many on `recording_id`) holds the
-  **descriptive** columns + the resolved `artist_id` / `album_artist_id` /
-  `album_id`. Every file's original tags migrate to **one** tagset (its
-  `is_primary` appearance).
-- Requires every file to have a `recording_id` (see [Singleton
-  recordings](#every-file-becomes-a-recording)).
-- The library browses **tagsets**, not `media_metadata`. Cleaner end-state, but
-  it touches the whole library/search/cover/review query layer — a real cost,
-  acceptable pre-release (the project already favors clean models over carried
-  legacy paths).
+## Data model
 
-**Approach B — additive `recording_tagsets` (lighter).** Leave `media_metadata`
-1:1 with files exactly as today (it stays the "primary" appearance of a surviving
-file). Add a `recording_tagsets` table that holds **only the extra** appearances
-created by absorb. The library browses the **union** of the two. Less migration,
-but two parallel sources of "a library track" that every browse/search/cover/
-access query must union forever — and a fragility: the primary appearance is
-pinned to a *file* that may itself later be trashed.
-
-The rest of this doc is written for **Approach A** (with notes where B differs).
-The new table:
+### `tagsets` (new)
 
 ```sql
 CREATE TABLE tagsets (
   id               INTEGER PRIMARY KEY,
   recording_id     INTEGER NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
 
-  -- Raw tag text (overlay — never silently mutated, survives re-import & sync),
-  -- exactly the descriptive columns moved off media_metadata:
+  -- Raw tag text (overlay — never silently mutated), exactly the descriptive
+  -- columns moved off media_metadata:
   title            TEXT    NOT NULL,        -- required-name default applies
   artist           TEXT,
   album_artist     TEXT,
@@ -127,484 +137,506 @@ CREATE TABLE tagsets (
   composer         TEXT,
   comment          TEXT,
 
-  -- Resolved overlay FKs (the SAME resolver as media_metadata used: effectiveArtist
+  -- Resolved overlay FKs (the SAME resolver media_metadata used: effectiveArtist
   -- / effectiveTrackArtist / album identity, docs/architecture/artist-album-model.md):
   artist_id        INTEGER REFERENCES artists(id),   -- performer
   album_artist_id  INTEGER REFERENCES artists(id),   -- album-grouping artist
   album_id         INTEGER REFERENCES albums(id),
 
+  -- Catalog lifecycle (moved from files — the tagset is the reviewable,
+  -- trashable unit; see Lifecycle):
+  review_state     TEXT    NOT NULL DEFAULT 'draft'
+                     CHECK (review_state IN ('draft','submitted','returned','approved')),
+  review_note      TEXT,
+  submitted_at     INTEGER,
+  created_by       INTEGER REFERENCES users(id),  -- who offered this appearance
+  deleted_at       INTEGER,                        -- tagset-level Trash
+
   -- Provenance: the file this appearance's tags were read from. Kept for audit /
-  -- federation attribution; SET NULL when that blob is finally purged.
+  -- federation attribution; SET NULL when that blob is purged. A future
+  -- origin_node column (federation) sits beside it.
   origin_file_id   INTEGER REFERENCES files(id) ON DELETE SET NULL,
 
   is_primary       INTEGER NOT NULL DEFAULT 0,  -- the recording's default appearance
   created_at       INTEGER NOT NULL,
 
-  -- Dedup appearances within a recording (see Tagset identity):
-  UNIQUE (recording_id, album_id, disc_number, track_number)
+  -- Appearance identity (see Tagset identity):
+  UNIQUE (recording_id, album_id, album_artist_id, disc_number, track_number)
 );
 CREATE INDEX idx_tagsets_recording ON tagsets(recording_id);
 CREATE INDEX idx_tagsets_album_id  ON tagsets(album_id);
 CREATE INDEX idx_tagsets_artist_id ON tagsets(artist_id);
+CREATE INDEX idx_tagsets_review    ON tagsets(review_state) WHERE review_state <> 'approved';
 ```
 
-### Every file becomes a recording
+### `media_metadata` (reduced)
 
-Approach A needs tags to hang off a recording, so **every file must resolve to a
-recording** — including fpcalc-absent installs where today `recording_id` stays
-NULL ("its own implicit recording"). Change: the resolver creates a **singleton
-recording** for any file that matches nothing (it already does this when a
-fingerprint matches nothing — we'd extend it to the no-fingerprint case). Cost:
-one extra `recordings` row per file (cheap). Benefit: one uniform place for tags,
-no polymorphic "tagset belongs to a file *or* a recording". This is a small but
-real change to [recordings.md](recordings.md)'s "NULL = implicit recording" rule
-and should be confirmed ([Open question 2](#open-questions)).
+Keeps **only** the tech columns (`duration_seconds`, `bitrate`, `sample_rate`,
+`channels`, `codec`, `bit_depth`) plus `tag_format`, PK `file_id`. Filled by
+`ffprobe` as today; a property of the blob.
 
-## Tagset identity (dedup of appearances)
+### `files` (changed)
 
-Absorb must not create a **second copy of the same appearance**. Two renditions
-of one recording that were both *track 5 on the studio album* must collapse to a
-single tagset, not two identical ones. Proposed identity key (the `UNIQUE` above):
+- `recording_id` becomes **NOT NULL** (singleton-recording backfill, below).
+- `review_state` / `review_note` / `submitted_at` **move to `tagsets`** — a
+  file is no longer the reviewable unit.
+- `deleted_at` **stays**, but its meaning narrows to *rendition removal*
+  (absorb, files-view delete): bytes kept until GC, restorable as a rendition.
+  It is **not** the user-facing Trash anymore (that is `tagsets.deleted_at`).
+- `license` and `guest_playable` **move to `recordings`** (decision 9).
+- `uploaded_by`, `hash`, `storage_backend` unchanged.
 
-> `(recording_id, album_id, disc_number, track_number)`
+### `recordings` (gains access/license)
 
-When absorbing a tagset whose resolved key already exists on the recording, **keep
-the existing one** (it's the same appearance) — do not insert. This is the
-appearance-level analogue of content-hash dedup on blobs.
+`preferred_file_id` stays as the ladder override. A recording still carries no
+tags — its display identity is its **primary tagset** — but it becomes the home
+of **`license`** and **`guest_playable`** (one audio identity, one license; the
+migration collapses per-file values, conflicts resolved by the best rendition's
+values). The federation rule is untouched: access is a **local recording**
+property, never imported from a tagset.
 
-The primary tagset is whichever the surviving (kept) rendition contributes;
-absorbed tagsets that *differ* in album/disc/track become additional rows. Open
-sub-question: should the key include `album_artist_id` (a comp vs. a same-titled
-studio album under different album-artists)? Likely yes — folded into [Open
-question 3](#open-questions).
+### Invariant enforcement
 
-## The "meaningful tagset" rule (drop nameless appearances)
+"If the DB can guarantee it, let it guarantee it":
 
-Kian's constraint: *don't save a tagset with no artist information — no reason to
-grow the "Unknown artist" scope.* Precise predicate, proposed:
+- **Creation is atomic** — every path that creates a recording creates it *with*
+  its first file and first tagset in one transaction (upload, import, split).
+- **Deletion is atomic** — the cascade ops below run the whole
+  last-tagset → recording → files chain in one transaction
+  (`_txlock=immediate`, the [bulk pattern](../api/bulk.md)).
+- **Triggers as a belt** where SQLite allows (e.g. reject a plain `DELETE` on
+  the last tagset of a recording outside the cascade op), app-layer checks as
+  suspenders.
+- **Prune is the backstop**: a standing sweep finds invalid recordings (zero
+  files, zero tagsets, dangling `recording_id`) and GCs them with a summary
+  report — nothing can rot silently even if a bug slips a violation through.
 
-> A tagset is **meaningful** iff it resolves to a **non-default artist or a
-> non-default album** — i.e. *not* (`album_artist_id` and `artist_id` both the
-> reserved `Unknown artist` entity **and** `album_id` the artist's reserved
-> `Other` album).
+## Tagset identity (appearance dedup)
 
-A nameless duplicate adds nothing the surviving blob doesn't already have, so on
-absorb it is **dropped** (its blob is trashed; its empty tagset is discarded). The
-reserved-key test reuses `DefaultArtistName` / `DefaultAlbumTitle`
-(`database/entities.go`), the exact mechanism the library already uses to pin the
-Unknown buckets last — so "nameless" is an exact check, not a heuristic.
+Two appearances are **the same** when they share
+`(recording_id, album_id, album_artist_id, disc_number, track_number)` — all
+locally-resolved ids, never raw tag text (and never peer-supplied ids —
+federation's dedup-spoofing defense). Attaching an appearance whose key already
+exists on the recording keeps the existing one; it is the appearance-level
+analogue of content-hash dedup on blobs.
 
-This rule applies **only at absorb time**. A normal single-tagset upload that
-happens to be untagged still gets its (Unknown/Other) primary tagset as today —
-we never strip a file's own appearance, we just don't *manufacture extra* empty
-ones.
+SQLite caveat: `UNIQUE` treats NULLs as distinct, and `disc_number` /
+`track_number` are legitimately NULL ([disc-numbering.md](disc-numbering.md)
+keeps untagged distinct from 0/N). The attach/absorb ops therefore do their own
+`IS NOT DISTINCT FROM`-style duplicate check inside the transaction; the
+`UNIQUE` index is the fast path and the backstop for the non-NULL common case.
 
-## Serving & playback
+## The "meaningful tagset" rule
 
-All tagsets of a recording share the recording's renditions. Playing **any**
-appearance resolves: tagset → recording → ladder-best rendition (or
-`preferred_file_id`) → stream that blob. The quality dropdown
-(`GET /api/tracks/{hash}/renditions`, [recordings.md](recordings.md) P4) is
-unchanged — it's a property of the recording, orthogonal to which appearance you
-entered from.
+*Don't manufacture nameless appearances.* A tagset is **meaningful** iff it
+resolves to a non-default artist **or** a non-default album — i.e. not
+(`artist_id` and `album_artist_id` both the reserved `Unknown artist` entity
+**and** `album_id` the reserved `Other` album). The reserved-entity test reuses
+`DefaultArtistName` / `DefaultAlbumTitle` (`database/entities.go`) — an exact
+check, not a heuristic.
 
-**Addressing shift (API impact).** Today a library track is addressed by **file
-hash** and its play URL is `/files/<hash>/<name>`. An absorbed appearance has *no
-blob of its own*, so the library track identity must become the **tagset id**, and
-its play URL resolves server-side to the recording's best rendition hash. This is
-the single biggest client-facing change — every place that keys a track row on
-`hash` (library list, queue, playlists, favorites, player) gains a `tagset_id`.
-**Playlists/favorites in particular**: do they reference a tagset (a specific
-appearance) or a recording (the audio)? Proposed: a **tagset** — a user who
-favorited the comp version meant that appearance. [Open question 4](#open-questions).
+Scope of the rule, precisely:
 
-## Covers
+- **An upload's own tagset is always kept**, even all-null — it resolves to
+  Unknown artist / Other, the UI highlights it as poor, but "a null tagset is
+  just a tagset". Every recording keeps ≥ 1 tagset by invariant.
+- Only when **absorbing extra appearances** (dedup paths: absorb, merge, the
+  review flow's "take metadata, drop blob") is a **nameless** extra dropped —
+  it adds nothing the surviving appearance doesn't already have, and there is
+  no reason to grow the Unknown-artist bucket.
 
-No new work: covers attach to `album_id` (entity), so different albums already
-carry different covers, and each tagset resolves its own `album_id`. The recording
-itself has no cover (it has no single identity — consistent with
-[recordings.md](recordings.md): "a recording carries no tags of its own").
+## Lifecycle — tagset-centric
 
-## Library / browse / search impact
+### Upload
 
-Under Approach A the browse/search queries (`database/library.go`,
-`ListArtists` / `ListAlbumsByArtistID` / `ListTracksByAlbumID` / search) re-point
-their `media_metadata` joins to **`tagsets`**, joining `files` only for the
-*serving* rendition and `deleted_at`/access filtering of the **recording's**
-renditions. A recording with no surviving (non-trashed) rendition has nothing to
-play — its tagsets must drop out of the library even though the tagset rows
-persist (so a future restore re-surfaces them). The guest/access filter (below)
-must therefore evaluate against *the renditions*, not the tagset.
+An upload is a **file plus an offered tagset** (read from its tags; possibly
+empty → Unknown artist / Other):
 
-This is the bulk of the implementation cost and why this is "bigger than it
-looks."
+- **New audio** (no fingerprint match) → new recording + file + draft tagset,
+  one transaction.
+- **Same audio, new bytes** (fingerprint matches an existing recording) → the
+  file lands as a candidate rendition of that recording, the offered tagset as
+  a draft on it.
+- **Same bytes** (content-hash dedup) → no new file; the offered tagset lands
+  as a draft on the blob's recording. (A re-upload of trashed content becomes
+  simply a new draft tagset — the `StageRestoredFile` demotion generalizes.)
 
-## Editing & the track-edit modal
+The draft tagset carries `created_by` = the uploader; "My uploads" lists the
+caller's non-approved tagsets.
 
-`track-edit.js` + `applyMetadataPatchTx` edit a **file's** `media_metadata`. Under
-A they edit a **tagset** (descriptive fields) — mechanical, but the patch target
-becomes `tagset_id` not `file_id`, and re-resolution of `artist_id`/`album_id` on
-an identity-affecting change is unchanged. Tech-only fields (read-only in the
-modal anyway) stay file-keyed. The duplicates page's per-rendition "Edit tags"
-becomes per-**tagset**.
+### Review states
 
-## The absorb operation (new moderator action)
+The `draft → submitted → (returned ⇄) → approved` machine from
+[moderation.md](moderation.md) moves unchanged onto the tagset — same guarded
+transitions, same self-approve rule for `content.moderate` holders, same
+duplicate exception (a duplicate-flagged submission always queues).
 
-New, gated **`content.moderate`**, on `/admin/duplicates`. Proposed shape:
+### Visibility
 
-`POST /api/admin/duplicates/{recording_id}/absorb` with a body naming the **kept**
-rendition (`keep_file_id`) and the renditions to absorb-and-trash
-(`absorb_file_ids`). Atomic (one tx):
+A tagset appears in the library iff it is **approved, non-trashed, and its
+recording has ≥ 1 surviving (non-removed) file**. The blob gate follows: a blob
+serves publicly iff its recording has ≥ 1 approved, non-trashed tagset;
+otherwise only to the owner / `content.moderate` (the pending-blob rule,
+re-expressed). A recording whose renditions are all removed keeps its tagsets
+but drops out of the library until a rendition is restored.
 
-1. For each `absorb_file_id`: read its descriptive tags, resolve the appearance
-   key, and **if meaningful and not a duplicate appearance**, insert a `tagset`
-   on the recording (`origin_file_id` = that file). Otherwise skip the tagset.
-2. **Soft-delete the absorbed blobs** (existing soft-delete → Trash; storage
-   reclaimed on prune, exactly like a normal duplicate delete).
-3. The kept rendition stays; its tagset is the recording's `is_primary`.
+### Trash (soft delete)
 
-One `file.bulk_delete`-style audit row (mirrors the batched bulk-delete pattern).
-The selection is always the human's — never auto-absorb (same principle as
-"fingerprint grouping is a suggestion, never an auto-delete").
+`tagsets.deleted_at`. Trash lists **tagsets**; restore restores the tagset,
+which re-enters its prior review state (badge rule unchanged). Trashing the
+last live tagset of a recording makes the recording dormant — files stay on
+disk, nothing is lost, restore brings it all back. Soft delete never cascades.
 
-### Reversibility
+### Hard delete (the cascade)
 
-Absorbed blobs go to **Trash**, so restoring a trashed rendition re-adds it as a
-playable rendition of the recording. Open: on restore, does its **original tagset**
-come back too (and would it then duplicate an already-absorbed tagset)? Proposed:
-the absorbed tagset already represents it; restore only re-adds the **blob**
-(rendition), and the appearance-dedup key prevents a double. [Open question
-5](#open-questions).
+From Trash permanent-delete, single or bulk:
 
-## Split interaction
+- **Non-last tagset** → delete the tagset row. Done.
+- **Last tagset** → delete the recording **and all its files** (rows + blobs,
+  via the existing storage-aware reclaim — symlinked externals are unlinked
+  only, per the data-sources invariant). The UI confirm is count-aware:
+  *"…also permanently removes the recording and its N files."*
 
-`SplitRendition` (the inverse: detach a mis-grouped rendition into its own pinned
-recording) must now also decide **which tagsets travel with the split-off
-rendition**. Proposed: the split-off rendition takes a **copy of the primary
-tagset** (so the new recording is browsable), and the moderator fixes it via the
-edit modal (the existing "split is usually paired with a tag fix" flow). Absorbed
-tagsets stay with the original recording unless explicitly moved. Worth confirming
-but low-risk.
+Both run in one transaction per batch + one summary audit row
+(`BulkHardDeleteTrashedByHashes` becomes tagset-id-based and folds the cascade
+into the same tx — the standing SQLITE_BUSY lesson).
 
-## Recordings admin page — managing tagsets under a recording
+### Rendition removal (the file side)
 
-A second admin surface, **recording-centric**, complementing `/admin/duplicates`
-(which is blob/dedup-centric). Proposed route `/admin/recordings`, gated
-**`content.moderate`**, in the admin shell (separate tab, page-local preview
-player — same pattern as the duplicates page). Where the duplicates page asks
-*"which recordings hold redundant blobs?"*, this page asks *"what does this
-recording look like — all its appearances and all its renditions — and how do I
-curate it?"*
+Renditions are removed on the duplicates/files/recordings surfaces (absorb, or
+an explicit per-rendition delete): `files.deleted_at`, bytes kept, restorable
+as a rendition. **Soft-removing the last surviving rendition is allowed** — the
+recording goes dormant (tagsets kept, hidden from the library, fully
+reversible). **Hard-deleting the last file cascades**, symmetric with the
+tagset side (decision 9): behind a count-aware confirm (*"…also permanently
+removes the recording and its N appearances"*) the recording and all its
+tagsets go with it. The invariant holds because *both* hard-delete directions
+cascade — neither side can strand the other.
 
-Per recording it shows **both arms of the model**:
+### Prune / GC
 
-- **Renditions** (the blobs): tech + quality-ladder rank, best marked, preview via
-  the shared player, trash (reuses the duplicates delete, subject to the
-  [deletion guard](#deletion-safety-never-orphan-an-appearance) below).
-- **Tagsets** (the appearances): album-artist / album / title / disc·track, the
-  primary marked. Per tagset: **Edit** (shared `track-edit.js` modal), **Set
-  primary**, **Remove appearance**, and **Move to another recording** (the
-  appearance-level analogue of split — reassign a mis-attached appearance).
+Prune gains recording-awareness:
 
-Default scope: recordings with **>1 tagset or >1 rendition** (the ones worth
-curating), plus a search box; single-everything recordings are the long tail and
-hidden by default. Reuses the shared **player core** + **`track-edit.js`** modal
-(no new player/editor) and follows the established admin-page conventions — nav
-link + dashboard card with a count, `nowebui` compiles it out — same as
-`/admin/sources` and `/admin/duplicates`.
+- A **missing/corrupt blob** removes that file row (as today) **and repairs
+  the recording**: if other files survive, the recording just lost a
+  rendition; if it was the last file, the recording is invalid → prune removes
+  the recording and **all its tagsets**, reported in the prune summary.
+- A standing **invalid-recording sweep** (zero files / zero tagsets) is part of
+  every prune scan — the invariant's backstop.
 
-This page is also **where a blocked hard-delete is resolved** (below): remove or
-move the appearances off a recording, or merge it into one that keeps a blob, then
-the redundant blob prunes cleanly. A recording-level **merge** (fold one
-recording's tagsets + renditions into another) is the natural heavy operation here
-but is deferred to a follow-up ([Open question 8](#open-questions)).
+## Upload & review rework (the big work item)
 
-## Deletion safety: never orphan an appearance
+The moderation queue becomes a **tagset queue with recording context** — the
+moderator gets the toolset to manage incoming files, tagsets, and recordings in
+one place. Each submission is classified server-side (evolving
+`IsDuplicateSubmission` from a boolean into a classification + compare):
 
-A tagset has no bytes of its own — it plays through the recording's renditions. So
-**permanently deleting the last rendition of a recording that still carries
-appearances would silently discard curated metadata** (exactly the album
-appearances absorb exists to preserve). That must not happen by accident.
+| Case | What arrived | Queue shows | Moderator can |
+|---|---|---|---|
+| **A — new recording** | new audio, new bytes | "new recording" | approve (publishes tagset + recording + file), return, deny |
+| **B — existing recording, new file** | same audio, different encoding | matched recording + **quality-ladder compare** (new file vs. current best) | approve the **appearance** and choose the bytes' fate: **drop the blob** (pure metadata absorb) or **keep it as a rendition** (it's better / a wanted tier); return; deny |
+| **C — existing recording, existing file** | byte-identical (hash dedup) | matched recording, "no new bytes" | approve the appearance only; return; deny |
 
-**The guard** runs at every hard-delete boundary — prune, Trash permanent-delete,
-and the batched bulk hard-delete (`BulkHardDeleteTrashedByHashes`). Before removing
-a `files` row, check its recording:
+In B and C, if the offered tagset collides with an existing appearance
+(identity key) there is nothing new at all — the queue says so, and deny is the
+natural action. Deny = discard to Trash (tagset soft delete), as today.
 
-- The recording keeps **≥1 other surviving rendition** → safe; proceed (the
-  appearances still play).
-- This is the recording's **last** rendition, and:
-  - its only tagset is **this file's own appearance** (`origin_file_id` = the file
-    being deleted) → a normal whole-track delete; remove that tagset along with the
-    file. **Allowed.**
-  - the recording has **other** tagsets (`origin_file_id` ≠ this file, or NULL —
-    appearances absorbed from already-purged copies) → deleting the blob would
-    orphan them. **Blocked.**
+Everything else carries over from [moderation.md](moderation.md): per-uploader
+collapsible groups, return-with-note, preview plays the **submitted file**
+through the page-local player, edit via the shared `track-edit.js` modal (now
+patching the tagset), bulk approve/return/discard over `submitted` rows with
+the filter/`all:true` select-all machinery, `selectable_total`, one audit row
+per bulk action. The uploader's "My uploads" mirrors the same reshaping
+(tagset rows, states, notes, remove = tagset trash).
 
-A blocked delete is **not** a dead end: the moderator resolves it on the recordings
-page — **remove** the extra appearances (if unwanted), **move** them to another
-recording that has a blob, or **merge** recordings — after which the blob prunes
-normally. For the deliberate case, a `content.moderate` **override** ("permanently
-delete and discard N appearances") is offered behind a count-aware confirm, so
-curated metadata is never thrown away without an explicit choice
-([Open question 9](#open-questions)).
+**Federation preview (not designed now):** peer- or data-source-suggested
+tagsets/recordings/files enter this *same* queue with extra verification steps
+(provenance shown, re-check against the local library). The flow is built for
+that shape; the steps themselves wait for the federation session.
 
-The invariant, precisely: **a recording with appearances always retains a playable
-rendition, unless a moderator explicitly discards those appearances.** Trash
-(soft-delete) is reversible, so it never triggers the guard — only permanent
-removal does.
+## Absorb (library-side dedup)
 
-This is reachable *only* under the tagset model: today tags cascade away with their
-file (`media_metadata` PK `file_id`), so there is nothing to orphan. Once tags
-outlive blobs, this guard is what keeps the model honest.
+The review rework handles duplication **at the gate**; absorb handles it for
+what is **already in the library** — the original motivator. On
+`/admin/duplicates`, gated `content.moderate`:
 
-## Access control, license, review state
+`POST /api/admin/duplicates/{recording_id}/absorb` — body names the kept
+rendition (`keep_file_id`) and the renditions to absorb (`absorb_file_ids`).
+One transaction:
 
-Today these are **file-level** (`files.license`, `guest_playable`, `review_state`,
-`deleted_at`). With one blob serving N appearances, the natural home is the
-**rendition** (file) that actually serves — a tagset has no bytes to license or
-gate. So:
+1. Per absorbed file: read its tags, resolve the appearance key; if
+   **meaningful** and **not a duplicate appearance**, attach a tagset to the
+   recording (`origin_file_id` = that file). Otherwise no tagset.
+2. Remove the absorbed renditions (`files.deleted_at` — bytes reclaimed later).
+3. The kept rendition stays; the recording's primary tagset is unchanged.
 
-- **Guest/access/license** of an appearance = that of the rendition it streams
-  (the recording's served blob). The library access filter evaluates the
-  **renditions**, not the tagset.
-- **Review state**: an absorbed tagset comes from an *already-reviewed*
-  duplicate. Does it need its own moderation, or does it inherit the recording's
-  approved state? Federation makes this sharper (an appearance arriving from a
-  peer). This is **[Open question 6](#open-questions)** and the trickiest — see
-  Federation.
+One summary audit row. The selection is always the human's — never auto-absorb
+(same principle as "fingerprint grouping is a suggestion, never an
+auto-delete"). Restoring an absorbed rendition later re-adds only the **blob**;
+appearance dedup prevents a doubled tagset.
 
-## Federation notes (and security)
+## Shared operations layer
 
-A recording is "the first content identity portable across nodes"
-([recordings.md](recordings.md)). Tagsets are the **catalog-metadata half** of the
-metadata-vs-stream split [Federation](federation.md) plans ("pull/cache a peer's
-catalog metadata so a friend's library is browsable, stream audio on demand by
-hash"): a node advertises *"recording `<fingerprint>` — I hold a FLAC master and
-these appearances"*, peers join on the **cross-node fingerprint index**
-([recordings.md](recordings.md), [federation.md](federation.md) open Q6) and
-reconcile the **union** of appearances. The optimization story the user named —
-keep the best master, drop redundant blobs, but never lose an album appearance —
-falls straight out of this model, and rides the same content-hash "just another
-holder of hash X" dedup federation already leans on for replication.
+All surfaces (review, duplicates, recordings view) compose the same primitives —
+each a single transaction, each with a bulk variant and one audit row:
 
-**Security / trust (designed in [federation.md](federation.md); the constraints
-tagsets place on that design, noted now):**
+- `AttachTagset(recording, tags, …)` — resolve + identity-dedup + meaningful
+  rule; used by upload, review-approve, absorb, merge.
+- `MoveTagset(tagset → recording)` — reassign a mis-attached appearance (the
+  appearance-level split).
+- `SetPrimaryTagset(recording, tagset)`.
+- `RemoveTagset` / `RestoreTagset` (soft) and `HardDeleteTagsets` (the cascade).
+- `AddRendition(recording, file)` / `RemoveRendition` (soft; last one allowed →
+  dormant recording) / `HardDeleteFiles` (cascades on the last file).
+- `SoftDeleteRecording` / `HardDeleteRecording` — the whole-recording delete on
+  the recordings view: soft trashes **all** its tagsets (recording dormant,
+  fully reversible); hard removes the recording **with all tagsets and all
+  files** in one transaction, behind the count-aware confirm. The same cascade
+  the last-tagset/last-file rules reach piecemeal, offered directly.
+- `SplitRendition` — as today, plus: the split-off recording takes a **copy of
+  the primary tagset** (so it is browsable); the moderator fixes tags after
+  (the existing "split pairs with a tag fix" flow). Absorbed tagsets stay put
+  unless explicitly moved.
+- `MergeRecordings(a ← b)` — union renditions + tagsets; appearance dedup
+  collapses identical appearances; ladder re-ranks. **Wanted; UX/mechanics
+  still open** (below) — the primitive is designed, the surface is not.
 
-- **Tagset poisoning.** A malicious or sloppy peer could attach bogus or abusive
-  appearances to a recording another node holds (wrong/defamatory artist, NSFW
-  album art via a poisoned `album_id`). A peer-contributed tagset therefore records
-  its **origin node** — the appearance-level analogue of the per-file origin-node
-  reference federation.md already plans (`auth.md` §8) — and is shown/merged only
-  per the **trusted-peer** policy: local tagsets trusted, peer tagsets
-  weighted/filtered by the federation trust layer. A local moderator must be able to
-  **reject** a peer-contributed appearance (it routes through moderation's
-  "federation approvals" audit hook).
-- **Cross-context license/access leak.** An appearance arriving from a peer must
-  **not** silently widen local access (e.g. mark a recording guest-playable
-  because a peer's tagset said so). Access stays a property of the **local
-  rendition**, never imported from a tagset. (This is why access lives on the
-  rendition, not the tagset — above.)
-- **Dedup-key spoofing.** A peer crafting a tagset whose `(album_id, track)` key
-  collides to suppress a real appearance — mitigated by keying appearance dedup on
-  **locally-resolved** entity ids, not peer-supplied ones.
-- **Revocation.** federation.md treats clean peer revocation as a hard requirement:
-  removing a peer from the trusted table must cut its content access *and* drop or
-  hide the appearances it contributed. A peer-sourced tagset must therefore stay
-  attributable to its `origin_node` rather than silently folding into the local
-  union — revocation is a filter on origin, not a destructive merge to undo.
+## Admin surfaces
 
-All federation behavior is **deferred** to [federation.md](federation.md)'s design
-session — this section only fixes the data model (provenance columns, access on the
-rendition) so it doesn't have to be reshaped when Phase 4 arrives (the same way the
-fingerprint table was "storage now, index later").
+Deliberately **two perspectives** (owner accepts the added admin complexity):
 
-## Phase plan (proposed)
+- **Tagset surfaces = the existing pages, re-pointed.** Library, All files,
+  Review, Trash, My uploads — the unified file-list
+  ([file-management-view.md](file-management-view.md)) keeps its scopes,
+  paging, select-all and bulk toolbars, but rows are **tagsets** ("a track as
+  a regular user perceives it"). This is where day-to-day work stays.
+- **`/admin/recordings` (new)** — the recording-centric view: **all**
+  recordings, searchable, with quick filters (e.g. ">1 rendition",
+  ">1 tagset", "invalid"). A recording row expands to show **both arms**: its
+  renditions (tech + ladder rank, best marked, preview, add/remove) and its
+  tagsets (appearance list, primary marked, edit / set-primary / move /
+  remove), plus **whole-recording delete** (soft = trash all its tagsets;
+  hard = the full cascade, recording + tagsets + files, count-aware confirm).
+  Merge and split live here. Admin-shell page, `content.moderate`,
+  page-local player, nav link + dashboard card, `nowebui` compiles it out —
+  the `/admin/sources` / `/admin/duplicates` conventions.
+- **Files view (new)** — the physical perspective: file rows (hash, storage
+  backend, tech, size, removal state) with their recording link. Likely a new
+  scope of the unified file-list rather than a separate page — it reuses the
+  paging/bulk machinery as-is.
 
-- **P0 — Data model.** Migration: introduce `tagsets`, decompose `media_metadata`
-  (descriptive → tagsets, tech stays), backfill one primary tagset per file,
-  give every file a singleton recording. Resolver + backfill (mirrors the
-  `BackfillRecordings` / `FoldUnknownBuckets` startup-pass pattern). Data layer
-  only; library still reads the primary tagset, so behavior is identical.
-- **P1 — Library/serving on tagsets.** Re-point browse/search/cover/access
-  queries to tagsets; tagset-id addressing + play-URL resolution; player/queue/
-  playlists carry `tagset_id`. No behavior change yet (one tagset each).
-- **P2 — Absorb action + deletion guard.** `/admin/duplicates` "Keep best + absorb
-  others" UI + `POST …/absorb`; meaningful-tagset drop rule; appearance dedup;
-  audit. The deletion guard (prune / Trash permanent-delete / bulk hard-delete)
-  lands here too — absorb is what first creates a single-blob, multi-appearance
-  recording, so the guard must exist before it can be orphaned. The visible feature
-  lands here.
-- **P3 — Recordings admin page + split-with-tagsets.** `/admin/recordings`
-  (recording-centric: renditions + tagsets, edit / set-primary / remove / move
-  appearance), the resolution surface for blocked deletes; split carries a copy of
-  the primary tagset; edit-modal-on-tagset polish. (Recording-level merge deferred.)
-- **P4 (future) — Federation.** Tagset sync, provenance/trust, union reconcile.
+`/admin/duplicates` stays as the focused dedup workbench (multi-rendition
+recordings + absorb).
+
+Every list/bulk operation across all three perspectives gets the batch
+endpoints + filter/`all:true` semantics of [docs/api/bulk.md](../api/bulk.md)
+from day one.
+
+## Library, serving & addressing
+
+- **Browse/search re-point to tagsets.** `ListArtists` /
+  `ListAlbumsByArtistID` / `ListTracksByAlbumID` / search join `tagsets`
+  instead of `media_metadata`, joining `files` only for the serving rendition
+  and the visibility rule. This is the bulk of the implementation cost.
+- **A library track is addressed by `tagset_id`** — an absorbed appearance has
+  no blob of its own, so the file-hash identity no longer works. Every surface
+  that keys a row on `hash` (library, queue, playlists, favorites, player)
+  carries `tagset_id`; the play URL resolves server-side: tagset → recording →
+  ladder-best rendition (or `preferred_file_id`) → blob. Playlists/favorites
+  reference the **tagset** (decision 4); existing rows migrate 1:1.
+- **The quality dropdown is unchanged** — renditions are a property of the
+  recording, orthogonal to which appearance you entered from
+  (`GET /api/tracks/{…}/renditions` re-keys accordingly).
+- **Covers: no new work.** Covers attach to `album_id`; each tagset resolves
+  its own album, so appearances carry their own covers. A recording has no
+  cover of its own.
+- **Editing:** `track-edit.js` + the metadata PATCH target a **tagset**
+  (descriptive fields; re-resolution on identity-affecting changes unchanged).
+  Tech fields stay file-keyed and read-only.
+
+## Access control & license
+
+**Decided (decision 9):** `license` and `guest_playable` live on the
+**recording** — all renditions are the same content, so one license and one
+guest flag per audio identity. The P0 migration collapses today's per-file
+values (conflicts resolved by the best rendition's values). The visibility
+rule stays byte-anchored: an appearance is playable iff its recording allows
+it *and* has a surviving rendition — and a tagset can never widen access (the
+federation lock: an imported appearance must never flip `guest_playable`).
+Bulk license/guest edits on the tagset surfaces resolve to the recording, so
+`BulkSetLicense` / `BulkSetGuestPlayable` re-target `recordings`.
+
+## Federation notes (deferred, schema-ready)
+
+Tagsets are the catalog-metadata half of federation's metadata-vs-stream split:
+a node advertises *"recording `<fingerprint>` — I hold these renditions and
+these appearances"*; peers reconcile the **union** of appearances over the
+cross-node fingerprint index. Constraints this design already locks in so the
+schema won't reshape later:
+
+- **Provenance** — a peer-contributed tagset records its origin node
+  (`origin_file_id` now; an `origin_node` column beside it when federation
+  lands), so trust weighting and clean **revocation** (filter by origin, not
+  destructive un-merge) are possible.
+- **Local review** — peer- and data-source-offered tagsets/recordings/files go
+  through the *local* review queue (the flow above), never auto-merge.
+- **Access never imported** — a peer's tagset cannot change local
+  access/license/guest flags.
+- **Dedup keys are locally resolved** — a peer can't spoof
+  `(album, track)` collisions to suppress a real appearance.
+
+Everything else (sync, trust model, union mechanics) belongs to the
+[federation.md](federation.md) design session.
+
+## Phase plan (the decomposition)
+
+Sequenced so each phase lands green and behavior-identical until its feature
+switches on; P0+P1 are pure re-plumbing staged **before** any visible change so
+regressions isolate to the data move.
+
+- **P0 — Data model & migration.** The `tagsets` table; decompose
+  `media_metadata`; move `review_state`/`review_note`/`submitted_at` to
+  tagsets and `license`/`guest_playable` to recordings; `files.recording_id`
+  NOT NULL + singleton-recording backfill; one primary tagset per file
+  backfilled from its old row (a **trashed file maps to a trashed tagset**
+  with the file row kept live — preserving today's restore semantics exactly);
+  invariant triggers + startup reconcile.
+  *Result: identical behavior on new foundations. The project's largest single
+  migration — lands alone.*
+- **P1 — Library & addressing on tagsets.** Re-point browse/search/covers/
+  visibility; `tagset_id` addressing through player, queue, playlists,
+  favorites; play-URL resolution; renditions endpoint re-key.
+  *Result: identical UX, tagset-addressed; the hash-keyed track dies.*
+- **P2 — Lifecycle & GC.** Tagset Trash/restore; the last-tagset hard-delete
+  cascade (single + bulk, one tx); rendition removal + last-rendition refusal;
+  prune's recording repair + invalid-recording sweep; audit actions.
+  *Result: the hardlink semantics are live and safe end-to-end.*
+- **P3 — Operations layer + absorb.** The shared primitives
+  (attach/move/set-primary/add-remove-rendition/split-with-tagset); the
+  `/admin/duplicates` absorb UI + endpoint; meaningful rule + appearance
+  dedup.
+  *Result: "keep the best blob, preserve every appearance" — the original
+  motivator — is usable in the library.*
+- **P4 — Review & upload rework.** The classified queue (cases A/B/C with
+  ladder compare and the appearance-vs-rendition decision), upload's offered
+  tagset (incl. byte-dup → draft tagset), My-uploads on tagsets, bulk + audit.
+  *Result: moderation resolves duplication at the gate, with a full toolset
+  for incoming files, tagsets, and recordings.*
+- **P5 — Recordings + files admin views.** `/admin/recordings` (all
+  recordings, both arms, move/set-primary/remove; merge + split surfaces —
+  **after** the merge/split mini-design, open point 1); the files scope.
+  *Result: full curation from every perspective.*
+- **P6 (deferred) — Federation.** Tagset sync, trust, union reconcile,
+  peer-review steps — per the federation design session.
 
 ## Test plan
 
-Tests land **with each phase**, not after. The two highest-risk areas — the
-**deletion guard** and the **meaningful-tagset / appearance-dedup rules** — are
-table-driven and exhaustive; they decide whether curated metadata or audio gets
-silently lost, so they get the most coverage. Layers map onto the project's
-existing surfaces (`database/*_test.go`, the `api` package's `fakeRepo`,
-`tests/js`, `tests/playwright`, `tests/k6`).
+Tests land **with each phase**. Highest-risk: the **cascade/GC rules** and the
+**identity/meaningful rules** — they decide whether curated metadata or audio
+is silently lost. Layers map onto the existing surfaces (`database/*_test.go`,
+the api `fakeRepo`, `tests/js`, `tests/playwright`, `tests/k6`).
 
-### Migration & backfill (P0) — `database`
-
-- **Decomposition round-trip**: a fixture DB at the pre-migration schema, after
-  migrate, has every file's old descriptive tags on exactly **one** primary tagset,
-  tech columns still on `media_metadata`, and **no data loss** (assert column-by-
-  column equality against the pre-migration snapshot).
-- **Singleton recordings**: every file ends with a non-null `recording_id` (incl.
-  fpcalc-absent fixtures); no file is left tag-homeless.
-- **Idempotent backfill**: the startup pass re-run is a no-op (mirrors the existing
-  `BackfillRecordings` / `FoldUnknownBuckets` idempotency tests).
-- **Standing regression updates** (the migration/repo gotcha): bump
-  `database_test.go`'s schema-version + table-set assertions for the new `tagsets`
-  table; extend the `api` package's `fakeRepo` for every new `Repository` method
-  (absorb, tagset CRUD, guard check) or the api tests won't compile.
-
-### Resolver, identity & rules (P0/P2) — `database`
-
-- **Resolver parity**: the tagset resolver produces the *same* `artist_id` /
-  `album_artist_id` / `album_id` as the `media_metadata` resolver for identical
-  tags (shared code — assert they can't drift).
-- **Appearance dedup** (the `UNIQUE` key): inserting two tagsets with the same
-  `(recording_id, album_id, disc, track[, album_artist])` collapses to one.
-- **Meaningful-tagset predicate** — table-driven, including the literal-reserved-key
-  cases (a tagset literally tagged `Unknown Artist` / `Other` is *dropped*; one
-  with any real artist **or** real album is *kept*; album-only and artist-only both
-  kept).
-
-### Absorb operation (P2) — `database` + `api`
-
-- Happy path: keep best, absorb N → recording gains the meaningful tagsets,
-  absorbed blobs go to Trash, **one** audit row.
-- **Atomic rollback**: an injected mid-absorb failure leaves no partial tagsets and
-  no half-trashed blobs (single-tx assertion).
-- Drop rule: absorbing a nameless duplicate trashes its blob but creates **no**
-  tagset.
-- Dedup: absorbing an identical-album/track copy adds no new appearance.
-- Authz: non-`content.moderate` → `403`; bad ids → `400/404/409`.
-
-### Deletion guard (P2) — `database` + `api` *(critical path)*
-
-Exhaustive matrix:
-
-- last rendition + only the file's own tagset → **allowed**, tagset removed with it;
-- last rendition + extra tagsets (`origin_file_id` ≠ file, **and** the NULL case) →
-  **blocked**, nothing deleted;
-- non-last rendition (≥1 other survives) → **allowed** regardless of tagsets;
-- override flag + `content.moderate` → deletes blob **and** discards N appearances;
-  without the permission → still blocked;
-- **all three entry points** enforce it — single prune, Trash permanent-delete, and
-  the batched `BulkHardDeleteTrashedByHashes` (a bulk set mixing safe + guarded rows
-  behaves per Open Q9's decided semantics);
-- Trash (soft-delete) never trips the guard.
-
-### Library, serving & access (P1) — `database` + `api`
-
-- A 1-blob / N-tagset recording surfaces as **N** library tracks; browse by each
-  `album_id` shows its appearance; each appearance's play URL resolves to the
-  recording's ladder-best rendition hash.
-- A recording with tagsets but **zero** surviving renditions drops out of the
-  library; restoring a rendition re-surfaces them.
-- **Access on the rendition, not the tagset**: an appearance is guest-hidden /
-  gated iff its serving rendition is — assert a tagset can never widen access (also
-  the cheap federation-safety lock to land now: an imported tagset must not flip
-  `guest_playable`).
-- Tagset-id addressing: playlists / favorites / queue carry `tagset_id` and resolve
-  to the right appearance (per Open Q4).
-
-### Concurrency (P2) — `database/busy_test.go`
-
-Absorb and guarded bulk-delete are multi-row single-tx ops; add a regression that
-they run under `_txlock=immediate` with **no `SQLITE_BUSY`** (the bulk paths have
-bitten us before — the guard must be folded *into* the bulk tx, not a second one).
-
-### Client (P2/P3) — `tests/js` + `tests/playwright`
-
-- **`tests/js`** (node `--test`, the `queue-ops` style): the recordings-page
-  selection arithmetic — the "keep best + absorb others" selection model and
-  rendition-vs-tagset selection — as pure functions, no DOM.
-- **`tests/playwright`** (chromium-only): the moderator end-to-end —
-  (a) `/admin/duplicates` keep-best + absorb → the song then appears under **both**
-  albums in the library and both play the same blob;
-  (b) `/admin/recordings` edit an appearance, remove an appearance, hit a **blocked**
-  delete and see it refused, then resolve it and prune cleanly.
-  (Reuse the known login DOM facts; never run PW install-deps on Fedora.)
-
-### Performance (P1) — `tests/k6` (light)
-
-The feature is moderator-side, so load testing is minimal — but Approach A re-points
-the hot `ListTracksByAlbumID` / search joins onto `tagsets`. One k6 check that
-browse-by-album latency does **not** regress against the pre-migration baseline
-guards the only player-facing perf risk.
+- **Migration round-trip (P0):** pre-migration fixture → post-migration:
+  every file's descriptive tags on exactly one primary tagset (column-level
+  equality), tech still on `media_metadata`, every file with a non-null
+  `recording_id`, trashed files mapped to trashed tagsets, idempotent re-run.
+  Bump the `database_test.go` version/table assertions; extend `fakeRepo`.
+- **Resolver parity (P0):** the tagset resolver yields the same
+  `artist_id`/`album_artist_id`/`album_id` as the old path for identical tags
+  (shared code — assert no drift).
+- **Identity & meaningful rules (P0/P3):** table-driven — appearance dedup
+  incl. the NULL disc/track cases; nameless-extra dropped on absorb but an
+  upload's own null tagset kept.
+- **Cascade & GC matrix (P2, critical):** non-last tagset delete → row only;
+  last-tagset delete → recording + files gone, blobs reclaimed
+  (storage-aware: external symlinks unlinked, originals intact); bulk sets
+  mixing last/non-last in one tx; soft delete never cascades; restore
+  re-enters prior state; soft-removing the last rendition → dormant recording
+  (hidden, reversible); hard-deleting the last file cascades to recording +
+  tagsets; whole-recording soft delete trashes all its tagsets (reversible)
+  and hard delete removes recording + tagsets + files in one tx; prune repairs
+  a blob-loss recording and sweeps invalid recordings; invariants hold after
+  every operation (a generic post-op assertion helper).
+- **Absorb (P3):** happy path, atomic rollback on injected failure, drop rule,
+  dedup no-op, authz (403/400/404/409), one audit row.
+- **Review classification (P4):** cases A/B/C derived correctly (fingerprint,
+  hash-dup, tag-fallback when fpcalc absent); B's keep-vs-drop-blob outcomes;
+  identity-collision reported; self-approve suppressed on duplicates; bulk
+  semantics.
+- **Visibility & access (P1):** N-tagset recording = N library tracks, each
+  playing the ladder-best blob; zero-surviving-rendition recording hidden,
+  restore re-surfaces; a tagset can never widen access.
+- **Concurrency (P2/P3):** cascade + absorb + bulk under `_txlock=immediate`,
+  no `SQLITE_BUSY` (`database/busy_test.go`).
+- **Client (P3–P5):** `tests/js` for the selection/classification arithmetic
+  as pure functions; Playwright end-to-end — absorb → song appears under both
+  albums playing one blob; review case B both outcomes; trash-restore of a
+  tagset; last-tagset permanent delete with the count-aware confirm. (Known
+  login DOM facts; never PW install-deps on Fedora.)
+- **Performance (P1):** one k6 check that browse-by-album latency does not
+  regress after the join re-point — the only player-facing perf risk.
 
 ## Non-goals (v0)
 
-- **Auto-absorb / auto-merge appearances** — like grouping, absorb is always a
-  human action on the duplicates page.
-- **A track-level "work" entity** (one composition across different recordings) —
-  still out, same as [recordings.md](recordings.md). Tagsets are appearances of
-  **one** recording, not a cross-recording grouping.
-- **Multi-credit "feat." parsing** in a tagset — a tagset still has one performer,
-  same limitation as today's `media_metadata`.
-- **Federation sync itself** — model only (above).
-- **Per-appearance quality preference** — every appearance plays the recording's
-  ladder-best; no per-tagset rendition pin.
+- **Auto-absorb / auto-merge** — every absorb, merge, and deletion is a human
+  action.
+- **A track-level "work" entity** (one composition across recordings) — out,
+  as in recordings.md. Tagsets are appearances of **one** recording.
+- **Multi-credit "feat." parsing** — a tagset has one performer, same as today.
+- **Per-appearance quality preference** — every appearance plays the
+  recording's ladder-best; no per-tagset rendition pin.
+- **Federation sync itself** — model + provenance only.
 
-## Open questions
+## Open points (small — everything else is decided)
 
-1. **Approach A (decompose `media_metadata`) vs. B (additive
-   `recording_tagsets`)?** A is the clean end-state and what this doc assumes, but
-   it's a library-wide migration; B is lighter but carries two parallel "library
-   track" sources forever. *Recommendation: A* (pre-release; the project favors
-   clean models over legacy paths).
-2. **Make `recording_id` non-null for every file** (singleton recording even
-   without a fingerprint)? Needed for A. *Recommendation: yes* — small cost, big
-   simplification. Confirms a change to recordings.md's "NULL = implicit
-   recording".
-3. **Appearance dedup key** — `(recording_id, album_id, disc_number,
-   track_number)`, and should `album_artist_id` be in it? *Recommendation: include
-   album_artist_id* (distinguishes a comp from a same-titled studio album).
-4. **Do playlists/favorites/queue reference a tagset (appearance) or a recording
-   (audio)?** *Recommendation: tagset* — the user picked a specific appearance.
-5. **On restoring a trashed absorbed rendition, re-add only the blob, relying on
-   appearance-dedup to avoid a duplicate tagset?** *Recommendation: yes.*
-6. **Review state of an absorbed tagset** — inherit the recording's approved state,
-   or require its own moderation pass? Sharper under federation (a peer-contributed
-   appearance routes through moderation's "federation approvals" hook,
-   [federation.md](federation.md)). *Leaning: inherit for locally-absorbed, gate for
-   peer-sourced — but this needs Kian's call.*
-7. **Federation trust for tagsets** — confirm the direction (provenance +
-   trust-weighted union, revocable by `origin_node`, access never imported from a
-   tagset) so the P0 schema carries the right columns even though sync is deferred to
-   [federation.md](federation.md). Open there: whether the sharing-scope model needs
-   **per-album/artist** federated scopes ([federation.md](federation.md) open Q3) —
-   tagsets are album/artist-grained, so they're the level such a scope would bite.
-8. **`/admin/recordings` default scope** — show only recordings with >1 tagset or
-   >1 rendition (+ search), and **defer** recording-level merge to a follow-up?
-   *Recommendation: yes to both* (the long tail of single-everything recordings is
-   noise; merge is a heavier op best designed on its own).
-9. **Blocked hard-delete behavior** — hard-block with an explicit `content.moderate`
-   "discard N appearances" override, vs. always-allow behind a confirm?
-   *Recommendation: block + explicit override* — losing curated appearances should
-   require an intentional act, not a reflexive "yes".
+1. **Merge/split mechanics & UX** on `/admin/recordings` — wanted, but "how"
+   is undesigned. Needs its own short design pass before P5 (the primitives
+   above are the starting point).
+2. **External-source & federation tagset review details** — deferred by
+   decision 7 to the federation session (includes data-sources linked imports
+   offering tagsets/recordings for local review).
+
+## Impact on existing docs
+
+Per the project's prune-legacy rule, each doc is updated when its phase ships
+(no "migration history" sections):
+
+- [recordings.md](recordings.md) — "NULL = implicit recording" dies at P0;
+  duplicates page gains absorb at P3; display-name source becomes the primary
+  tagset.
+- [moderation.md](moderation.md) — rewritten at P4 (tagset queue,
+  classification, states on tagsets).
+- [soft-delete.md](soft-delete.md) — tagset-level Trash + the cascade at P2.
+- [license-access.md](license-access.md) — license/guest on the recording (P0).
+- [file-management-view.md](file-management-view.md) — tagset scopes at P1,
+  files scope at P5.
+- [docs/api](../api/) `metadata.md`, `playlists.md`, `search.md`, `bulk.md`,
+  `upload.md` — tagset addressing (P1), new bulk ops (P2–P5), offered-tagset
+  upload semantics (P4).
+- [docs/ui/player-and-queue.md](../ui/player-and-queue.md) — `tagset_id` in
+  the queue model (P1).
+- [federation.md](federation.md) — keeps pointing here for the payload shape.
 
 ## Gotchas
 
-- The P0 migration bumps `database_test.go`'s version/table assertions and any new
-  `Repository` method breaks the `api` package's `fakeRepo` (the standing
-  migration/repo gotcha).
-- Decomposing `media_metadata` touches **every** query that reads descriptive tags
-  — this is the largest single change in the project's library layer. Stage it
-  behind P0/P1 (identical behavior) before the visible P2 feature so a regression
-  is isolated to the data move, not the new action.
-- The required-name default for a tagset `title` has no filename to fall back to
-  when the origin blob is gone — but the meaningful-tagset rule drops nameless
-  tagsets anyway, so a kept tagset always has real tags. Confirm the edge.
-- The deletion guard must cover **all three** hard-delete paths — single prune,
-  Trash permanent-delete, and the batched `BulkHardDeleteTrashedByHashes` — or a
-  bulk prune silently reintroduces the orphan it's meant to prevent. The bulk path
-  needs the recording check folded into its single-tx delete, not bolted on after.
+- The P0 migration bumps `database_test.go`'s version/table assertions, and
+  every new `Repository` method breaks the api package's `fakeRepo` (the
+  standing gotcha) — P0 and P3/P4 add many.
+- Decomposing `media_metadata` + moving review state touches **every** query
+  that reads descriptive tags or filters on `visibleFile` — the largest single
+  change in the library layer. Keep P0/P1 behavior-identical and land them
+  alone.
+- The `visibleFile` SQL fragment (`f.deleted_at IS NULL AND f.review_state =
+  'approved'`) is joined in many places; its replacement (approved non-trashed
+  tagset + surviving rendition) must be a single shared fragment again, or the
+  surfaces will drift.
+- All hard-delete entry points (Trash permanent single, bulk, prune) must go
+  through the **same cascade op** — a second code path reintroduces the orphan
+  risk the invariant exists to prevent, and the bulk path must fold the
+  cascade into its one transaction (SQLITE_BUSY lesson).
+- The required-name default for a tagset `title` has no filename to fall back
+  to once the origin blob is gone — acceptable because an upload's own tagset
+  is created while the file exists, and absorbed nameless tagsets are dropped;
+  assert the edge in tests.
+- SQLite `UNIQUE` + NULL disc/track: identity dedup cannot rely on the index
+  alone (see Tagset identity).
