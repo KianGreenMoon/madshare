@@ -13,6 +13,22 @@ const ACTIONABLE  = new Set(['submitted', 'returned']);
 const STATE_LABEL = { submitted: 'Awaiting review', returned: 'Returned', draft: 'Draft' };
 const displayTitle = f => f.title || f.filename || 'this file';
 
+// Classification chip (recording-tagsets P4): the case the queue derived for a
+// submission. A collision (offered appearance already exists) trumps the case
+// label — there is nothing new to add.
+const CLASS_CHIP = {
+  new_recording:  { text: 'new recording',  cls: 'cls-new' },
+  new_appearance: { text: 'new appearance', cls: 'cls-appear' },
+  no_new_bytes:   { text: 'no new bytes',   cls: 'cls-bytes' },
+};
+function classChip(f) {
+  if (f.collides) return { text: 'nothing new', cls: 'cls-warn', title: 'The offered appearance already exists on this recording' };
+  return CLASS_CHIP[f.class] || null;
+}
+// A case-B submission (new appearance backed by a new blob) is the one where the
+// moderator can keep the appearance but drop the blob (absorb at the gate).
+const canDropBlob = f => f.class === 'new_appearance' && !f.collides;
+
 export function createReviewScope({ play, perms }) {
   const canEdit = perms.includes('metadata.edit');
   let fileList = null;
@@ -34,8 +50,8 @@ export function createReviewScope({ play, perms }) {
     return { total: data.total || 0, selectable_total: data.selectable_total, items: data.items || [] };
   }
 
-  // moderationBulkCall is the single batched action over an explicit hash list OR
-  // a filter ("select all N matching"). Returns the count actually affected.
+  // moderationBulkCall is the single batched action over an explicit tagset-id
+  // list OR a filter ("select all N matching"). Returns the count affected.
   async function moderationBulkCall(body) {
     const res = await fetch(`${API}/api/admin/moderation/bulk`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -46,25 +62,45 @@ export function createReviewScope({ play, perms }) {
     return data.affected || 0;
   }
   const filterBody = filter => ({ filter: { q: filter.q, field: filter.field }, all: !filter.q });
+  const toIDs = keys => keys.map(Number);   // selection keys are tagset-id strings
 
-  function toastApproved(n) { if (n) toast(`Approved ${n} ${n === 1 ? 'file' : 'files'} into the library.`, 'success'); }
-  function toastReturned(n) { if (n) toast(`Returned ${n} ${n === 1 ? 'file' : 'files'} to the uploader.`, 'success'); }
-  function toastDiscarded(n) { if (n) toast(`Discarded ${n} ${n === 1 ? 'file' : 'files'} to Trash.`, 'success'); }
+  // Per-row actions hit the single-appearance endpoints (approve carries the
+  // moderator's per-piece decisions: drop_bytes / force_new).
+  async function callOne(tid, action, body) {
+    const res = await fetch(`${API}/api/admin/moderation/${tid}/${action}`, {
+      method: 'POST', headers: body ? { 'Content-Type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (handleAuthError(res)) throw new Error('Your session expired.');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return 1;
+  }
+  const approveOne = (tid, opts) => callOne(tid, 'approve', opts || {});
+  const discardOne = tid => callOne(tid, 'discard');
 
-  const approveHashes = hashes => moderationBulkCall({ action: 'approve', hashes });
+  function toastApproved(n, drop) {
+    if (n) toast(drop ? `Published ${n === 1 ? 'the appearance' : n + ' appearances'}, dropped the blob${n === 1 ? '' : 's'}.`
+                      : `Approved ${n} ${n === 1 ? 'appearance' : 'appearances'} into the library.`, 'success');
+  }
+  function toastReturned(n) { if (n) toast(`Returned ${n} ${n === 1 ? 'submission' : 'submissions'} to the uploader.`, 'success'); }
+  function toastDiscarded(n) { if (n) toast(`Discarded ${n} ${n === 1 ? 'appearance' : 'appearances'} to Trash.`, 'success'); }
+
+  const approveIDs = keys => moderationBulkCall({ action: 'approve', tagset_ids: toIDs(keys) });
   const approveAll = filter => moderationBulkCall({ action: 'approve', ...filterBody(filter) });
-  const returnHashes = (hashes, note) => moderationBulkCall({ action: 'return', hashes, note });
+  const returnIDs = (keys, note) => moderationBulkCall({ action: 'return', tagset_ids: toIDs(keys), note });
   const returnAll = (filter, note) => moderationBulkCall({ action: 'return', ...filterBody(filter), note });
-  const discardHashes = hashes => moderationBulkCall({ action: 'discard', hashes });
+  const discardIDs = keys => moderationBulkCall({ action: 'discard', tagset_ids: toIDs(keys) });
   const discardAll = filter => moderationBulkCall({ action: 'discard', ...filterBody(filter) });
 
-  // Explicit-selection metadata edit (per-hash PATCH); there is no edit-by-filter
-  // for staged files, so the component disables "Edit tags…" in select-all mode.
-  async function moderationBulkPatch(hashes, patch) {
+  // Explicit-selection metadata edit (per-appearance PATCH); there is no
+  // edit-by-filter for staged appearances, so the component disables "Edit
+  // tags…" in select-all mode.
+  async function moderationBulkPatch(keys, patch) {
     let ok = 0, fail = 0;
-    for (const h of hashes) {
+    for (const tid of keys) {
       try {
-        const res = await fetch(`${API}/api/files/${encodeURIComponent(h)}/metadata`, {
+        const res = await fetch(`${API}/api/admin/moderation/${tid}/metadata`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
         });
         const data = await res.json().catch(() => ({}));
@@ -166,9 +202,9 @@ export function createReviewScope({ play, perms }) {
 
   // ── Preview (via the shared player) ─────────────────────────────────────────
   function playFile(f, visible) {
-    const items = (visible || []).map(x => ({ url: x.url, title: displayTitle(x), artist: x.artist || '', key: x.hash }));
-    let idx = items.findIndex(x => x.key === f.hash);
-    if (idx < 0) { items.length = 0; items.push({ url: f.url, title: displayTitle(f), artist: f.artist || '', key: f.hash }); idx = 0; }
+    const items = (visible || []).map(x => ({ url: x.url, title: displayTitle(x), artist: x.artist || '', key: String(x.tagset_id) }));
+    let idx = items.findIndex(x => x.key === String(f.tagset_id));
+    if (idx < 0) { items.length = 0; items.push({ url: f.url, title: displayTitle(f), artist: f.artist || '', key: String(f.tagset_id) }); idx = 0; }
     play(items, idx, k => fileList.setPlaying(k));
   }
 
@@ -187,11 +223,15 @@ export function createReviewScope({ play, perms }) {
     apiBase: API,
     metaLabel: 'Submitted',
     metaValue: f => (f.submitted_at ? fmtDate(f.submitted_at) : ''),
-    // A duplicate-flagged row (recordings P3) is marked so the moderator looks
-    // before publishing; full side-by-side tech compare lives on /admin/duplicates.
-    badge: f => f.duplicate
-      ? { text: (STATE_LABEL[f.state] || f.state) + ' · possible duplicate', cls: 'is-' + f.state + ' is-duplicate' }
-      : { text: STATE_LABEL[f.state] || f.state, cls: 'is-' + f.state },
+    // rows are appearances, keyed by tagset id (a byte-dup makes two rows share
+    // one blob hash — recording-tagsets P4).
+    rowKey: f => String(f.tagset_id),
+    // State badge + the classification chip the moderator acts on.
+    badge: f => {
+      const state = { text: STATE_LABEL[f.state] || f.state, cls: 'is-' + f.state };
+      const chip = classChip(f);
+      return chip ? [state, chip] : [state];
+    },
     accessEditable: false,
     // Server-paged: the queue can be large, so it loads pages by infinite scroll
     // (file-list-scaling.md). The by-uploader grouping streams non-collapsible
@@ -208,53 +248,57 @@ export function createReviewScope({ play, perms }) {
     },
     selectable: f => f.state === 'submitted',
     editable: f => canEdit && ACTIONABLE.has(f.state),
-    editPatchURL: f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`,
-    editDetailURL: f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`,
-    editNote: 'Edits this submission’s tags before approval.',
+    editPatchURL: f => `${API}/api/admin/moderation/${f.tagset_id}/metadata`,
+    editDetailURL: f => `${API}/api/admin/moderation/${f.tagset_id}/metadata`,
+    editNote: 'Edits this appearance’s tags before approval.',
     rowActions: [
-      { id: 'approve', label: 'Approve', kind: 'neutral', show: f => ACTIONABLE.has(f.state), run: async f => { toastApproved(await approveHashes([f.hash])); } },
+      { id: 'approve', label: 'Approve', kind: 'neutral', show: f => ACTIONABLE.has(f.state),
+        run: async f => { toastApproved(await approveOne(f.tagset_id), false); } },
+      // Case B: keep the appearance, drop the submitted blob (absorb at the gate).
+      { id: 'approve-drop', label: 'Approve · drop blob', kind: 'neutral', show: f => ACTIONABLE.has(f.state) && canDropBlob(f),
+        run: async f => { toastApproved(await approveOne(f.tagset_id, { drop_bytes: true }), true); } },
       {
         id: 'return', label: 'Return…', kind: 'neutral', show: f => ACTIONABLE.has(f.state),
         run: async f => {
-          const note = await promptReturnNote('Send this file back to its uploader to fix?');
+          const note = await promptReturnNote('Send this submission back to its uploader to fix?');
           if (note == null) return false;
-          toastReturned(await returnHashes([f.hash], note));
+          toastReturned(await returnIDs([f.tagset_id], note));
         },
       },
       {
         id: 'discard', label: 'Discard', kind: 'danger',
         confirm: 'inline', confirmPrompt: 'Discard to Trash?', confirmLabel: 'Discard',
         show: f => ACTIONABLE.has(f.state),
-        run: async f => { toastDiscarded(await discardHashes([f.hash])); },
+        run: async f => { toastDiscarded(await discardOne(f.tagset_id)); },
       },
     ],
     bulkActions: [
       {
         id: 'approve', label: 'Approve selected', kind: 'neutral',
-        run: async hashes => { toastApproved(await approveHashes(hashes)); },
-        runAll: async filter => { toastApproved(await approveAll(filter)); },
+        run: async keys => { toastApproved(await approveIDs(keys), false); },
+        runAll: async filter => { toastApproved(await approveAll(filter), false); },
       },
       {
         id: 'return', label: 'Return selected…', kind: 'neutral',
-        run: async hashes => {
-          const note = await promptReturnNote(`Send ${hashes.length} files back to their uploader with one note?`);
+        run: async keys => {
+          const note = await promptReturnNote(`Send ${keys.length} submissions back to their uploader with one note?`);
           if (note == null) return false;
-          toastReturned(await returnHashes(hashes, note));
+          toastReturned(await returnIDs(keys, note));
         },
         runAll: async filter => {
-          const note = await promptReturnNote('Send all matching files back to their uploaders with one note?');
+          const note = await promptReturnNote('Send all matching submissions back to their uploaders with one note?');
           if (note == null) return false;
           toastReturned(await returnAll(filter, note));
         },
       },
       {
         id: 'discard', label: 'Discard selected', kind: 'danger',
-        run: async hashes => {
-          if (!await confirmDiscard(`Discard ${hashes.length} ${hashes.length === 1 ? 'file' : 'files'} to Trash?`, `Discard ${hashes.length}`)) return false;
-          toastDiscarded(await discardHashes(hashes));
+        run: async keys => {
+          if (!await confirmDiscard(`Discard ${keys.length} ${keys.length === 1 ? 'appearance' : 'appearances'} to Trash?`, `Discard ${keys.length}`)) return false;
+          toastDiscarded(await discardIDs(keys));
         },
         runAll: async filter => {
-          if (!await confirmDiscard('Discard all matching files to Trash?', 'Discard all')) return false;
+          if (!await confirmDiscard('Discard all matching appearances to Trash?', 'Discard all')) return false;
           toastDiscarded(await discardAll(filter));
         },
       },

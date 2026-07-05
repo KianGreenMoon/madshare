@@ -280,6 +280,8 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		moderate := d.protect(auth.PermContentModerate)
 		r.With(moderate).Get("/moderation", h.moderationList)
 		r.With(moderate).Post("/moderation/bulk", h.moderationBulk)
+		r.With(moderate).Get("/moderation/{tagsetID}/metadata", h.moderationMetadataGet)
+		r.With(moderate).Patch("/moderation/{tagsetID}/metadata", h.moderationMetadata)
 		r.With(moderate).Get("/moderation/{tagsetID}/classify", h.moderationClassify)
 		r.With(moderate).Post("/moderation/{tagsetID}/approve", h.moderationApprove)
 		r.With(moderate).Post("/moderation/{tagsetID}/return", h.moderationReturn)

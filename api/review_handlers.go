@@ -860,6 +860,40 @@ func (h *handler) moderationReturn(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tagset_id": tagsetID, "state": database.ReviewReturned})
 }
 
+// moderationMetadataGet handles GET /api/admin/moderation/{tagsetID}/metadata —
+// the full editable tags of one submission's appearance, for the moderator's
+// edit modal to prefill. Gated on content.moderate.
+func (h *handler) moderationMetadataGet(w http.ResponseWriter, r *http.Request) {
+	tagsetID, ok := parseTagsetID(r)
+	if !ok {
+		http.Error(w, "invalid tagset id", http.StatusBadRequest)
+		return
+	}
+	meta, err := h.repo.TagsetMetadataByID(r.Context(), tagsetID)
+	if errors.Is(err, database.ErrFileNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, metadataJSONTagset(tagsetID, meta))
+}
+
+// moderationMetadata handles PATCH /api/admin/moderation/{tagsetID}/metadata —
+// the moderator edits one submission's appearance tags before approving.
+// Gated on content.moderate (a moderator may edit any submission's tags — the
+// tagset addressing scopes it to the exact appearance under review).
+func (h *handler) moderationMetadata(w http.ResponseWriter, r *http.Request) {
+	tagsetID, ok := parseTagsetID(r)
+	if !ok {
+		http.Error(w, "invalid tagset id", http.StatusBadRequest)
+		return
+	}
+	h.applyTagsetMetadataPatch(w, r, tagsetID, "moderator edit")
+}
+
 // moderationClassify handles GET /api/admin/moderation/{tagsetID}/classify — the
 // full classification of one staged submission (recording-tagsets P4): case
 // A/B/C, the recording it lands on, the appearance-collision flag, and the

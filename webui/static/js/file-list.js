@@ -101,7 +101,12 @@ export function createFileList(scope) {
                                  // on every selection change (not just full render), so it
                                  // appears the moment the loaded page is fully ticked
 
-  const selected = new Set();    // selected file hashes (shared list ⇄ browse)
+  // rowKey is the row's identity for selection/DOM (the file hash for the
+  // files-rooted scopes; the tagset id for the tagset-rooted review/My-uploads
+  // scopes, where a byte-dup makes two rows share one blob hash — P4). Always a
+  // string. The selection set and data-hash attribute carry this key.
+  const rowKey = scope.rowKey || (f => f.hash);
+  const selected = new Set();    // selected row keys (shared list ⇄ browse)
   const collapsed = new Set();   // collapsed group keys (collapsible grouping)
   const br = { level: 'artists', artist: null, album: null, items: [] };
 
@@ -358,7 +363,7 @@ export function createFileList(scope) {
     loading = false;
     // autoSelect pre-checks every selectable row after a load (the My-uploads
     // convention: "send the lot unless you untick").
-    if (scope.autoSelect) { selected.clear(); rows.filter(isSelectable).forEach(f => selected.add(f.hash)); }
+    if (scope.autoSelect) { selected.clear(); rows.filter(isSelectable).forEach(f => selected.add(rowKey(f))); }
     render();
   }
   async function loadBrowse() {
@@ -414,8 +419,12 @@ export function createFileList(scope) {
     const line = [titleSpan];
     // The badge fn gets whether the list is in the grouped view, so a scope can
     // show a state badge only when its native (sectioned) grouping is hidden.
-    const b = scope.badge ? scope.badge(f, groupedActive()) : null;
-    if (b) line.push(el('span', { class: `state-badge ${b.cls || ''}`, title: b.title || null, text: b.text }));
+    // A scope may return one badge or several (e.g. the review queue's state
+    // badge plus a classification chip).
+    const bs = scope.badge ? scope.badge(f, groupedActive()) : null;
+    for (const b of Array.isArray(bs) ? bs : bs ? [bs] : []) {
+      line.push(el('span', { class: `state-badge ${b.cls || ''}`, title: b.title || null, text: b.text }));
+    }
     const kids = [el('span', { class: 'cell-title-line' }, line)];
     kids.push(el('span', { class: 'cell-hash', title: f.hash || '', text: shortHash(f.hash) }));
     if (f.note) kids.push(el('span', { class: 'mod-note', text: `Note: ${f.note}` }));
@@ -495,7 +504,7 @@ export function createFileList(scope) {
   // { common: {field: value}, mixed: Set<field> }.
   function selectionTags(hashes) {
     const set = new Set(hashes);
-    const files = rows.filter(f => set.has(f.hash));
+    const files = rows.filter(f => set.has(rowKey(f)));
     const common = {}, mixed = new Set();
     // Only pre-fill when every selected file's data is in hand; a partial subset
     // (e.g. a browse group whose hashes aren't all loaded here) could otherwise
@@ -524,10 +533,10 @@ export function createFileList(scope) {
   }
   function rowCheckbox(f) {
     const cb = el('input', { type: 'checkbox', class: 'fl-rowcheck', 'aria-label': `Select ${displayTitle(f)}` });
-    cb.dataset.hash = f.hash;
-    cb.checked = selected.has(f.hash);
+    cb.dataset.hash = rowKey(f);
+    cb.checked = selected.has(rowKey(f));
     cb.addEventListener('change', () => {
-      cb.checked ? selected.add(f.hash) : selected.delete(f.hash);
+      cb.checked ? selected.add(rowKey(f)) : selected.delete(rowKey(f));
       // A manual tick narrows the selection back to explicit rows — drop the
       // "all matching" mode and re-render so the banner/count reflect it.
       if (selectAllMatching) { selectAllMatching = false; render(); return; }
@@ -578,7 +587,7 @@ export function createFileList(scope) {
 
   function selectAllVisible(on) {
     if (!on) selectAllMatching = false;   // unchecking select-all clears the whole-set mode too
-    visibleFiles().filter(isSelectable).forEach(f => on ? selected.add(f.hash) : selected.delete(f.hash));
+    visibleFiles().filter(isSelectable).forEach(f => on ? selected.add(rowKey(f)) : selected.delete(rowKey(f)));
     afterSelectionChange();
   }
 
@@ -597,7 +606,7 @@ export function createFileList(scope) {
   // needsMeta flags a file with neither an artist nor an album-artist tag, so
   // editors can see at a glance which rows want metadata first.
   function needsMeta(f) { return !(f.artist || '').trim() && !(f.album_artist || '').trim(); }
-  function rowAttrs(f) { return { 'data-hash': f.hash, class: needsMeta(f) ? 'fl-needs-meta' : null }; }
+  function rowAttrs(f) { return { 'data-hash': rowKey(f), class: needsMeta(f) ? 'fl-needs-meta' : null }; }
 
   function headRow(withSelectAll) {
     const ths = scope.columns.map(c => {
@@ -1163,7 +1172,7 @@ export function createFileList(scope) {
     // matches remain unfetched. selectableTotal (= total unless the scope reports
     // a smaller actionable count, e.g. moderation's submitted-only set) bounds it.
     const loadedSel = rows.filter(isSelectable);
-    if (loadedSel.length && loadedSel.every(f => selected.has(f.hash)) && selectableTotal > loadedSel.length) {
+    if (loadedSel.length && loadedSel.every(f => selected.has(rowKey(f))) && selectableTotal > loadedSel.length) {
       return el('div', { class: 'select-all-banner' }, [
         `All ${loadedSel.length} loaded file${loadedSel.length === 1 ? '' : 's'} selected. `,
         el('button', { type: 'button', class: 'linklike', text: `Select all ${selectableTotal} matching`, onclick: () => { selectAllMatching = true; render(); } }),

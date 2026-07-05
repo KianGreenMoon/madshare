@@ -447,6 +447,21 @@
 .state-badge.is-submitted { color: var(--accent); border-color: var(--accent); }
 .state-badge.is-returned  { color: var(--error);  border-color: var(--error); }
 
+/* Classification chips (recording-tagsets P4) — the case a submission derived,
+   an information layer distinct from the violet review-state accent. */
+.state-badge.cls-new    { color: var(--success); border-color: var(--success); }
+.state-badge.cls-appear { color: #2a7fc4; border-color: #2a7fc4; }
+.state-badge.cls-bytes  { color: var(--text-muted); }
+.state-badge.cls-warn   { color: #b6791f; border-color: #b6791f; }
+@media (prefers-color-scheme: dark) {
+  .state-badge.cls-appear { color: #5aa9e6; border-color: #5aa9e6; }
+  .state-badge.cls-warn   { color: #e0b24a; border-color: #e0b24a; }
+}
+:root[data-theme="dark"] .state-badge.cls-appear { color: #5aa9e6; border-color: #5aa9e6; }
+:root[data-theme="dark"] .state-badge.cls-warn   { color: #e0b24a; border-color: #e0b24a; }
+:root[data-theme="light"] .state-badge.cls-appear { color: #2a7fc4; border-color: #2a7fc4; }
+:root[data-theme="light"] .state-badge.cls-warn   { color: #b6791f; border-color: #b6791f; }
+
 /* Table-level states. */
 .table-state-row {
   text-align: center;

@@ -306,8 +306,10 @@ function mineScope() {
     },
     selectable: MINE_EDITABLE,
     editable: MINE_EDITABLE,
-    editPatchURL: f => `${API}/api/my/uploads/${encodeURIComponent(f.hash)}/metadata`,
-    editDetailURL: f => `${API}/api/my/uploads/${encodeURIComponent(f.hash)}/metadata`,
+    // Rows are appearances, keyed by tagset id (recording-tagsets P4).
+    rowKey: f => String(f.tagset_id),
+    editPatchURL: f => `${API}/api/my/uploads/${f.tagset_id}/metadata`,
+    editDetailURL: f => `${API}/api/my/uploads/${f.tagset_id}/metadata`,
     editNote: 'Fix the tags before sending to approval — title, artist and album decide where the track lands in the library.',
     accessEditable: false,            // an uploader sets tags on drafts, not access
     badge: (f, grouped) => grouped && f.state !== 'submitted'
@@ -319,22 +321,22 @@ function mineScope() {
         id: 'remove', label: 'Remove', kind: 'danger',
         confirm: 'inline', confirmPrompt: 'Remove?', confirmLabel: 'Remove',
         show: MINE_EDITABLE,
-        run: async f => { await mineDelete(f.hash); showToast(`Removed “${mineTitle(f)}”.`, { type: 'success' }); },
+        run: async f => { await mineDelete(f.tagset_id); showToast(`Removed “${mineTitle(f)}”.`, { type: 'success' }); },
       },
     ],
     bulkActions: [
       {
         id: 'send', label: 'Send to approval', kind: 'neutral',
-        run: async hashes => { sendToast(await mineBulkCall({ action: 'submit', hashes })); },
+        run: async keys => { sendToast(await mineBulkCall({ action: 'submit', tagset_ids: keys.map(Number) })); },
         runAll: async filter => { sendToast(await mineBulkCall({ action: 'submit', ...mineFilterBody(filter) })); },
       },
       {
         id: 'remove', label: 'Remove selected', kind: 'danger',
-        run: async hashes => { removeToast(await mineBulkCall({ action: 'remove', hashes })); },
+        run: async keys => { removeToast(await mineBulkCall({ action: 'remove', tagset_ids: keys.map(Number) })); },
         runAll: async filter => { removeToast(await mineBulkCall({ action: 'remove', ...mineFilterBody(filter) })); },
       },
     ],
-    bulkApply: (hashes, patch) => mineBulkPatch(hashes, patch),
+    bulkApply: (keys, patch) => mineBulkPatch(keys, patch),
 
     onPlay: playMine,
     toast: msg => showToast(msg),
@@ -391,17 +393,17 @@ function updateMineCount(n) {
   mineCountEl.hidden = n === 0;
 }
 
-async function mineDelete(hash) {
-  const res = await fetch(`${API}/api/my/uploads/${encodeURIComponent(hash)}`, { method: 'DELETE' });
+async function mineDelete(tagsetID) {
+  const res = await fetch(`${API}/api/my/uploads/${tagsetID}`, { method: 'DELETE' });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
 }
 
-async function mineBulkPatch(hashes, patch) {
+async function mineBulkPatch(keys, patch) {
   let ok = 0, fail = 0;
-  for (const hash of hashes) {
+  for (const tid of keys) {
     try {
-      const res = await fetch(`${API}/api/my/uploads/${encodeURIComponent(hash)}/metadata`, {
+      const res = await fetch(`${API}/api/my/uploads/${tid}/metadata`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
       });
       const data = await res.json().catch(() => ({}));
