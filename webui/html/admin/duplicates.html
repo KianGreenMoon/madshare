@@ -22,20 +22,21 @@
     <p class="muted">
       Recordings that hold more than one rendition of the same audio (matched by
       acoustic fingerprint). The best rendition by the quality ladder is marked.
-      <strong>Absorb into ★</strong> keeps one rendition's audio (the ★ master by
-      default — pick another with the <em>Keep</em> radio) and drops the others'
-      files while <em>preserving every distinct release as its own track</em>;
-      duplicate or blank releases are removed. <strong>Absorb all → keep best</strong>
-      does this for every recording at once. <strong>Split off</strong> detaches a
-      rendition when the fingerprint grouped two genuinely different versions, and
-      <strong>Delete</strong> sends a rendition to Trash.
+      Tick the redundant renditions, then <strong>Absorb selected</strong> folds
+      them into the best <em>un</em>ticked rendition of each recording &mdash;
+      dropping their files (restorable) while <em>preserving every distinct
+      release as its own track</em>; duplicate or blank releases are removed.
+      <strong>Select all non-best</strong> ticks exactly the redundant copies, so
+      it + Absorb keeps each recording's best across the page. <strong>Split off</strong>
+      detaches a rendition when the fingerprint grouped two genuinely different
+      versions, and <strong>Delete selected</strong> sends renditions to Trash.
     </p>
 
     <div class="dup-toolbar hidden" id="dupToolbar" role="region" aria-label="Bulk actions">
-      <button class="btn btn-sm btn-absorb" id="absorbAll" title="Keep each recording's best rendition and absorb the rest, preserving every release">Absorb all &rarr; keep best</button>
-      <span class="dup-toolbar-spacer"></span>
       <button class="btn btn-sm btn-neutral" id="selectExtras" title="Tick every rendition except each recording's best, across all recordings">Select all non-best</button>
       <button class="btn btn-sm btn-neutral" id="clearSel">Clear</button>
+      <span class="dup-toolbar-spacer"></span>
+      <button class="btn btn-sm btn-absorb" id="absorbSelected" title="Fold the ticked renditions into the best unticked rendition of each recording, preserving every release" disabled>Absorb selected</button>
       <button class="btn btn-sm btn-destructive-solid" id="deleteSelected" disabled>Delete selected</button>
     </div>
 

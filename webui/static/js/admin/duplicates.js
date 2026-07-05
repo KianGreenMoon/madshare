@@ -22,19 +22,29 @@ const loading = document.getElementById('dupLoading');
 const dispArtist = r => r.album_artist || r.artist || '';
 
 // ── Bulk selection toolbar ────────────────────────────────────────────────────
+// One selection drives both bulk actions: ticked renditions are the redundant
+// copies you want gone. "Absorb selected" folds them into the best UNticked
+// rendition of each recording (preserving every distinct release); "Delete
+// selected" sends them to Trash. "Select all non-best" ticks exactly the
+// redundant copies, so it + Absorb = keep-best across the whole page.
 const toolbar           = document.getElementById('dupToolbar');
-const btnAbsorbAll      = document.getElementById('absorbAll');
+const btnAbsorbSelected = document.getElementById('absorbSelected');
 const btnSelectExtras   = document.getElementById('selectExtras');
 const btnClearSel       = document.getElementById('clearSel');
 const btnDeleteSelected = document.getElementById('deleteSelected');
 
+let currentGroups = []; // the recordings from the last load(), for absorb planning
+
 const allChecks      = () => [...results.querySelectorAll('.dup-check')];
 const selectedHashes = () => allChecks().filter(c => c.checked).map(c => c.dataset.hash);
+const isChecked      = fileId => !!results.querySelector(`.dup-check[data-file-id="${fileId}"]`)?.checked;
 
 function updateSelCount() {
   const n = selectedHashes().length;
   btnDeleteSelected.textContent = n ? `Delete selected (${n})` : 'Delete selected';
   btnDeleteSelected.disabled = n === 0;
+  btnAbsorbSelected.textContent = n ? `Absorb selected (${n})` : 'Absorb selected';
+  btnAbsorbSelected.disabled = n === 0;
 }
 // One delegated listener on the stable container survives every reload.
 results.addEventListener('change', e => {
@@ -72,7 +82,7 @@ btnClearSel.addEventListener('click', () => {
   updateSelCount();
 });
 btnDeleteSelected.addEventListener('click', deleteSelected);
-btnAbsorbAll.addEventListener('click', absorbAll);
+btnAbsorbSelected.addEventListener('click', absorbSelected);
 
 // ── Shared preview player ─────────────────────────────────────────────────────
 // One player-bar for the page (createPlayer), driven by a page-local play
@@ -204,59 +214,140 @@ async function splitRendition(r) {
   load();
 }
 
-// absorbCard keeps the card's checked master rendition and absorbs the rest:
-// their files are removed (restorable) but every distinct release is preserved,
-// with duplicate / blank releases dropped. The keep radio defaults to the best.
-async function absorbCard(group, cardEl) {
-  const keepRadio = cardEl.querySelector('.dup-keep:checked');
-  const keepId = keepRadio ? Number(keepRadio.dataset.fileId) : group.renditions[0].file_id;
-  const absorbIds = group.renditions.map(r => r.file_id).filter(id => id !== keepId);
-  if (!absorbIds.length) { toast('Only one rendition — nothing to absorb.', 'error'); return; }
-  const keep = group.renditions.find(r => r.file_id === keepId) || group.renditions[0];
-  const ok = await confirmModal({
-    title: 'Absorb into the kept rendition?',
-    body: `Keep “${keep.title || keep.hash}” (${keep.format || 'audio'}) as the master and absorb the other `
-      + `${absorbIds.length} rendition${absorbIds.length === 1 ? '' : 's'}. Their files are removed (restorable), `
-      + `but every distinct release is preserved as a separate track; duplicate or blank releases are dropped.`,
-    confirmLabel: 'Absorb',
-  });
-  if (!ok) return;
+// planAbsorb turns a recording's checkbox selection into an absorb request:
+// the ticked renditions are folded into the best UNticked one. group.renditions
+// is ordered best-first, so the first unticked rendition is the keep target.
+// With no selection, `fallbackNonBest` (the per-card one-click path) treats the
+// non-best renditions as if ticked. If every rendition is ticked, the overall
+// best is kept and the rest absorbed. Returns {keepId, absorbIds, keep} or null
+// when there is nothing to fold in (single rendition, or only the best ticked).
+function planAbsorb(group, { fallbackNonBest = false } = {}) {
+  const rows = group.renditions;
+  let ticked = new Set(rows.filter(r => isChecked(r.file_id)).map(r => r.file_id));
+  if (!ticked.size && fallbackNonBest) ticked = new Set(rows.filter(r => !r.best).map(r => r.file_id));
+  if (!ticked.size) return null;
+  const keep = rows.find(r => !ticked.has(r.file_id)) || rows[0]; // best unticked, else overall best
+  const absorbIds = rows.map(r => r.file_id).filter(id => id !== keep.file_id && ticked.has(id));
+  if (!absorbIds.length) return null;
+  return { keepId: keep.file_id, absorbIds, keep };
+}
+
+// isKeepBestSelection is true when a recording's ticks are exactly its non-best
+// renditions (the ladder-best left untouched) — the "keep best over a set" shape
+// the bulk endpoint runs in a single transaction. absorbSelected routes these
+// through /absorb (one request, one audit entry) and only falls back to the
+// per-recording /absorb/{id} loop for custom selections it can't express.
+function isKeepBestSelection(group) {
+  const nonBest = group.renditions.filter(r => !r.best);
+  const best    = group.renditions.find(r => r.best);
+  return !!best && nonBest.length > 0
+    && !isChecked(best.file_id)
+    && nonBest.every(r => isChecked(r.file_id));
+}
+
+// absorbOne POSTs a single recording's plan and reports the outcome.
+async function absorbOne(recordingID, plan) {
   let res;
   try {
-    res = await fetch(`${API}/api/admin/duplicates/absorb/${group.recording_id}`, {
+    res = await fetch(`${API}/api/admin/duplicates/absorb/${recordingID}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ keep_file_id: keepId, absorb_file_ids: absorbIds }),
+      body: JSON.stringify({ keep_file_id: plan.keepId, absorb_file_ids: plan.absorbIds }),
     });
   } catch { toast('Network error absorbing.', 'error'); return; }
   if (handleAuthError(res)) return;
   if (res.status === 404) { toast('The renditions changed — reloading.', 'error'); load(); return; }
   if (!res.ok) { toast(`Absorb failed (HTTP ${res.status}).`, 'error'); return; }
   const j = await res.json().catch(() => ({}));
-  const kept = absorbIds.length - (j.appearances_dropped || 0);
-  toast(`Absorbed ${j.renditions_removed ?? absorbIds.length} rendition(s); kept ${kept} extra release(s).`, 'success');
+  const kept = plan.absorbIds.length - (j.appearances_dropped || 0);
+  toast(`Absorbed ${j.renditions_removed ?? plan.absorbIds.length} rendition(s); kept ${kept} extra release(s).`, 'success');
   load();
 }
 
-// absorbAll runs the "keep best" absorb across every duplicate recording at once.
-async function absorbAll() {
+// absorbCard folds a single recording's selection (or its non-best, if nothing
+// is ticked in the card) into the best remaining rendition.
+async function absorbCard(group) {
+  const plan = planAbsorb(group, { fallbackNonBest: true });
+  if (!plan) { toast('Tick the renditions to fold in — or this recording has a single copy.', 'error'); return; }
   const ok = await confirmModal({
-    title: 'Absorb all duplicates?',
-    body: 'For every recording with more than one rendition, keep its best-quality audio and absorb the rest. '
-      + 'The removed files are restorable, and every distinct release is preserved.',
-    confirmLabel: 'Absorb all → keep best',
+    title: 'Absorb into the best remaining rendition?',
+    body: `Keep “${plan.keep.title || plan.keep.hash}” (${plan.keep.format || 'audio'}) and absorb `
+      + `${plan.absorbIds.length} rendition${plan.absorbIds.length === 1 ? '' : 's'} into it. Their files are removed `
+      + `(restorable), but every distinct release is preserved as a separate track; duplicate or blank releases are dropped.`,
+    confirmLabel: 'Absorb',
   });
   if (!ok) return;
-  let res;
-  try {
-    res = await fetch(`${API}/api/admin/duplicates/absorb`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ all: true }),
-    });
-  } catch { toast('Network error.', 'error'); return; }
-  if (handleAuthError(res)) return;
-  if (!res.ok) { toast(`Absorb failed (HTTP ${res.status}).`, 'error'); return; }
-  const j = await res.json().catch(() => ({}));
-  toast(`Absorbed ${j.recordings_absorbed || 0} recording(s), removed ${j.renditions_removed || 0} rendition(s).`, 'success');
+  await absorbOne(group.recording_id, plan);
+}
+
+// absorbSelected folds the whole page's selection: for every recording with a
+// ticked rendition, keep its best UNticked rendition and absorb the ticked ones.
+// Recordings ticked as plain "keep best" (all non-best, best untouched) go
+// through the bulk endpoint in one atomic request; recordings whose keep target
+// isn't the ladder-best need the per-recording endpoint, one request each.
+// Selection is explicit here (no non-best fallback) — pair with "Select all
+// non-best" to keep each recording's best across the page.
+async function absorbSelected() {
+  const bulkRecIDs  = []; // plain keep-best recordings → one bulk request
+  const customPlans = []; // non-ladder-best keep target → per-recording request
+  for (const g of currentGroups) {
+    const plan = planAbsorb(g);
+    if (!plan) continue;
+    if (isKeepBestSelection(g)) bulkRecIDs.push(g.recording_id);
+    else customPlans.push({ recordingID: g.recording_id, plan });
+  }
+  const affected = bulkRecIDs.length + customPlans.length;
+  if (!affected) return;
+  const totalAbsorb = customPlans.reduce((n, p) => n + p.plan.absorbIds.length, 0)
+    + bulkRecIDs.reduce((n, id) => n + currentGroups.find(g => g.recording_id === id).renditions.filter(r => !r.best).length, 0);
+  const ok = await confirmModal({
+    title: 'Absorb selected renditions?',
+    body: `Fold ${totalAbsorb} selected rendition${totalAbsorb === 1 ? '' : 's'} across ${affected} `
+      + `recording${affected === 1 ? '' : 's'} into the best remaining rendition of each. The removed files are `
+      + `restorable, and every distinct release is preserved.`,
+    confirmLabel: `Absorb ${totalAbsorb}`,
+  });
+  if (!ok) return;
+
+  let recOk = 0, rendOk = 0, fail = 0, authFailed = false;
+
+  // Plain keep-best recordings: one bulk transaction, one audit entry.
+  if (bulkRecIDs.length) {
+    let res;
+    try {
+      res = await fetch(`${API}/api/admin/duplicates/absorb`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recording_ids: bulkRecIDs }),
+      });
+    } catch { res = null; fail += bulkRecIDs.length; }
+    if (res) {
+      if (res.status === 401) { handleAuthError(res); authFailed = true; }
+      else if (res.ok) {
+        const j = await res.json().catch(() => ({}));
+        recOk  += j.recordings_absorbed || bulkRecIDs.length;
+        rendOk += j.renditions_removed || 0;
+      } else fail += bulkRecIDs.length;
+    }
+  }
+
+  // Custom selections keep a non-ladder-best rendition — one request each.
+  if (!authFailed) {
+    for (const { recordingID, plan } of customPlans) {
+      let res;
+      try {
+        res = await fetch(`${API}/api/admin/duplicates/absorb/${recordingID}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keep_file_id: plan.keepId, absorb_file_ids: plan.absorbIds }),
+        });
+      } catch { fail++; continue; }
+      if (res.status === 401) { handleAuthError(res); authFailed = true; break; }
+      if (res.ok) { recOk++; const j = await res.json().catch(() => ({})); rendOk += j.renditions_removed ?? plan.absorbIds.length; }
+      else fail++;
+    }
+  }
+
+  if (authFailed)   { if (recOk) toast(`Absorbed ${recOk} recording(s) before the session expired.`, 'error'); }
+  else if (fail)    toast(`Absorbed ${recOk} recording(s); ${fail} failed.`, 'error');
+  else if (recOk)   toast(`Absorbed ${rendOk} rendition(s) across ${recOk} recording(s).`, 'success');
   load();
 }
 
@@ -281,16 +372,11 @@ function renditionRow(group, r, index) {
   );
   const check = el('input', {
     type: 'checkbox', class: 'dup-check', 'data-hash': r.hash, 'data-best': r.best ? '1' : '',
-    'aria-label': `Select ${r.title || r.hash} for deletion`,
+    'data-file-id': String(r.file_id),
+    'aria-label': `Select ${r.title || r.hash} to absorb or delete`,
   });
-  const keep = el('input', {
-    type: 'radio', class: 'dup-keep', name: `keep-${group.recording_id}`,
-    'data-file-id': String(r.file_id), 'aria-label': `Keep ${r.title || r.hash} as the master rendition`,
-  });
-  if (r.best) keep.checked = true;
   return el('tr', { 'data-hash': r.hash }, [
     el('td', { class: 'dup-checkcell' }, [check]),
-    el('td', { class: 'dup-keepcell' }, [keep]),
     el('td', { class: 'dup-rank' }, [r.best ? el('span', { class: 'dup-best', title: 'Best by the quality ladder' }, ['★ best']) : `#${r.rank}`]),
     el('td', {}, [
       el('div', { class: 'dup-title' }, [r.title || '(untitled)']),
@@ -308,7 +394,6 @@ function recordingCard(group) {
   const table = el('table', { class: 'dup-table' }, [
     el('thead', {}, [el('tr', {}, [
       el('th', { class: 'dup-checkcell', 'aria-label': 'Select' }, ['']),
-      el('th', { class: 'dup-keepcell', title: 'Master rendition kept on absorb' }, ['Keep']),
       el('th', {}, ['Rank']), el('th', {}, ['Track']), el('th', {}, ['Format']),
       el('th', {}, ['Quality']), el('th', {}, ['Length']), el('th', {}, ['Size']),
       el('th', {}, ['']),
@@ -319,9 +404,9 @@ function recordingCard(group) {
     el('div', { class: 'dup-card-head' }, [
       el('button', {
         class: 'btn btn-sm btn-absorb',
-        title: 'Keep the selected master rendition and absorb the rest, preserving every distinct release',
-        onclick: e => absorbCard(group, e.target.closest('.dup-card')),
-      }, ['Absorb into ★']),
+        title: 'Fold this recording’s ticked renditions into the best remaining one; with none ticked, absorbs the non-best',
+        onclick: () => absorbCard(group),
+      }, ['Absorb']),
       el('button', {
         class: 'btn btn-sm btn-neutral',
         title: 'Tick this recording’s non-best renditions; click again to clear them',
@@ -342,6 +427,7 @@ async function load() {
   if (handleAuthError(res)) return;
   if (!res.ok) { results.replaceChildren(el('p', { class: 'error' }, [`Failed to load (HTTP ${res.status}).`])); return; }
   const groups = await res.json();
+  currentGroups = groups;
   if (!groups.length) {
     toolbar.classList.add('hidden');
     results.replaceChildren(el('p', { class: 'muted' }, ['No duplicate renditions — every recording has a single copy.']));
