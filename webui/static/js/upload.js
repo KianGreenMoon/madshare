@@ -1,7 +1,6 @@
 import { gatePage, PAGE_PERMS } from './auth.js';
-import { createFileList } from './file-list.js';
+import { createMineList } from './mine-list.js';
 import { getController } from './player-controller.js';
-import { showToast } from './toast.js';
 import { getUploadController } from './upload-controller.js';
 
 // Upload page (/upload, /admin/upload) — the VIEW.
@@ -55,7 +54,7 @@ function queryRefs() {
 
 // ── State (view-local) ────────────────────────────────────────────────────────
 let ctrl = null;                  // the shared upload controller
-let canEditMeta = false;          // metadata.edit (mirrors ctrl; drives mineScope)
+let canEditMeta = false;          // metadata.edit (mirrors ctrl; passed to mine-list)
 let fileList = null;              // the "My uploads" component (file-list.js)
 let wireAbort = null;            // AbortController for this activation's chrome listeners
 let unsubs = [];                 // controller event unsubscribers
@@ -85,7 +84,12 @@ export async function init(opts = {}) {
 
   // Block the page for anyone without upload rights (the API enforces it too).
   if (!gatePage(PAGE_PERMS.upload)) return;
-  fileList = createFileList(mineScope());
+  fileList = createMineList({
+    API,
+    preview: (tracks, idx) => previewPlay(tracks, idx),
+    canEditMeta,
+    onCount: updateMineCount,
+  });
   fileList.mount(mineFileListEl);
 }
 
@@ -266,164 +270,15 @@ function addFileList(files) {
 }
 
 // ── My uploads tab (staging / review bucket) ────────────────────────────────
-// The owner's non-approved files (GET /api/my/uploads), rendered through the
-// shared file-management component (file-list.js) grouped by review state:
-// returned files (with the moderator's note), editable drafts, and locked
-// submitted rows. Draft/returned rows edit via the owner-scoped endpoint and
-// send to approval; every row previews through the shared shell player.
+// The owner's non-approved appearances (GET /api/my/uploads) are rendered by the
+// bespoke staging list (mine-list.js), grouped by review state — returned (with
+// the moderator's note), drafts, and locked submitted rows. This module only
+// wires it up (see init) and keeps the tab's count badge in sync.
 
-const MINE_EDITABLE = f => f.state === 'draft' || f.state === 'returned';
-const mineTitle = f => f.title || f.filename || 'this file';
-
-function mineScope() {
-  return {
-    title: 'My uploads',
-    desc: 'Files you uploaded that aren’t in the library yet. Check their tags (Edit), then send '
-        + 'them to approval — a moderator reviews them, or, if you have moderation rights, they '
-        + 'publish immediately. A file sent back shows the moderator’s note; Remove discards one '
-        + 'you don’t want to publish.',
-    emptyText: 'Nothing staged. Files you upload appear here for a metadata check before they reach the library.',
-    columns: ['check', 'title', 'artist', 'album', 'size', 'actions'],
-    artistAlbumSort: true,
-    allowCoverAdd: true,            // uploaders may add a missing artist/album cover (server enforces add-only)
-    allowCoverEdit: canEditMeta,    // replacing an existing cover needs metadata.edit (server enforces it too)
-    apiBase: API,
-    // Server-paged (file-list-scaling.md): the state sections stream as
-    // non-collapsible section headers in server order (sort=state). Paging means
-    // unloaded rows can't be pre-checked, so autoSelect is gone — "Select all N
-    // matching" is the equivalent.
-    paged: true,
-    pageSize: 100,
-    loadPage: loadMinePage,
-    grouping: {
-      kind: 'sections',
-      groupSort: 'state',
-      sections: [
-        { key: 'returned',  label: 'Returned by a moderator', match: f => f.state === 'returned' },
-        { key: 'draft',     label: 'Drafts',                  match: f => f.state === 'draft' },
-        { key: 'submitted', label: 'Awaiting review',         match: f => f.state === 'submitted' },
-      ],
-    },
-    selectable: MINE_EDITABLE,
-    editable: MINE_EDITABLE,
-    // Rows are appearances, keyed by tagset id (recording-tagsets P4).
-    rowKey: f => String(f.tagset_id),
-    editPatchURL: f => `${API}/api/my/uploads/${f.tagset_id}/metadata`,
-    editDetailURL: f => `${API}/api/my/uploads/${f.tagset_id}/metadata`,
-    editNote: 'Fix the tags before sending to approval — title, artist and album decide where the track lands in the library.',
-    accessEditable: false,            // an uploader sets tags on drafts, not access
-    badge: (f, grouped) => grouped && f.state !== 'submitted'
-      ? { text: f.state === 'returned' ? 'Returned' : 'Draft', cls: 'is-' + f.state }
-      : null,
-
-    rowActions: [
-      {
-        id: 'remove', label: 'Remove', kind: 'danger',
-        confirm: 'inline', confirmPrompt: 'Remove?', confirmLabel: 'Remove',
-        show: MINE_EDITABLE,
-        run: async f => { await mineDelete(f.tagset_id); showToast(`Removed “${mineTitle(f)}”.`, { type: 'success' }); },
-      },
-    ],
-    bulkActions: [
-      {
-        id: 'send', label: 'Send to approval', kind: 'neutral',
-        run: async keys => { sendToast(await mineBulkCall({ action: 'submit', tagset_ids: keys.map(Number) })); },
-        runAll: async filter => { sendToast(await mineBulkCall({ action: 'submit', ...mineFilterBody(filter) })); },
-      },
-      {
-        id: 'remove', label: 'Remove selected', kind: 'danger',
-        run: async keys => { removeToast(await mineBulkCall({ action: 'remove', tagset_ids: keys.map(Number) })); },
-        runAll: async filter => { removeToast(await mineBulkCall({ action: 'remove', ...mineFilterBody(filter) })); },
-      },
-    ],
-    bulkApply: (keys, patch) => mineBulkPatch(keys, patch),
-
-    onPlay: playMine,
-    toast: msg => showToast(msg),
-  };
-}
-
-// loadMinePage backs the paged component: one server page of the caller's staged
-// files as {total, selectable_total, items}. selectable_total is the editable set
-// (draft + returned) so the "Select all N matching" banner counts only sendable /
-// removable rows. It also refreshes the "My uploads" tab badge from the total.
-async function loadMinePage({ limit, offset, q, field, sort }) {
-  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-  if (sort) params.set('sort', sort);
-  if (q) params.set('q', q);
-  if (field) params.set('field', field);
-  const res = await fetch(`${API}/api/my/uploads?${params.toString()}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = await res.json();
-  updateMineCount(data.total || 0);
-  return { total: data.total || 0, selectable_total: data.selectable_total, items: data.items || [] };
-}
-
-// mineBulkCall is the single batched submit/remove over an explicit hash list OR a
-// filter ("select all N matching"). mineFilterBody turns the component's filter
-// into the request body (all:true only when there is no search term).
-const mineFilterBody = filter => ({ filter: { q: filter.q, field: filter.field }, all: !filter.q });
-async function mineBulkCall(body) {
-  const res = await fetch(`${API}/api/my/uploads/bulk`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return data;
-}
-function sendToast(data) {
-  const n = data.submitted ?? 0;
-  showToast(data.approved
-    ? `Published ${n} file${n === 1 ? '' : 's'} to the library.`
-    : `Sent ${n} file${n === 1 ? '' : 's'} for review.`, { type: 'success' });
-  // A duplicate-flagged submission never auto-publishes (recordings P3); surface
-  // the server's explanation so the uploader knows why it went to review.
-  if (data.warning) showToast(data.warning, { type: 'info' });
-  announce(data.approved ? 'Published to the library.' : 'Sent for review.');
-}
-function removeToast(data) {
-  const n = data.removed ?? 0;
-  if (n) showToast(`Removed ${n} file${n === 1 ? '' : 's'}.`, { type: 'success' });
-  announce(`Removed ${n} file${n === 1 ? '' : 's'}.`);
-}
-
+// updateMineCount refreshes the "My uploads" tab badge; passed to mine-list.js as
+// its onCount hook and called on load/removal.
 function updateMineCount(n) {
   if (!mineCountEl) return;
   mineCountEl.textContent = String(n);
   mineCountEl.hidden = n === 0;
-}
-
-async function mineDelete(tagsetID) {
-  const res = await fetch(`${API}/api/my/uploads/${tagsetID}`, { method: 'DELETE' });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-}
-
-async function mineBulkPatch(keys, patch) {
-  let ok = 0, fail = 0;
-  for (const tid of keys) {
-    try {
-      const res = await fetch(`${API}/api/my/uploads/${tid}/metadata`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.ok) ok++; else fail++;
-    } catch { fail++; }
-  }
-  if (fail) throw new Error(`updated ${ok}, ${fail} failed`);
-}
-
-// playMine queues the visible staging list into the preview sink (the shell player
-// by default; a page-local one under the admin shell), starting at the clicked row.
-function playMine(entry, visible) {
-  const list = (visible && visible.length) ? visible : [entry];
-  const tracks = list.map(e => ({
-    url: `${API}${e.url}`,
-    hash: e.hash,
-    title: e.title || e.filename,
-    artist: e.artist || '',
-    dur: e.duration || undefined,
-  }));
-  const idx = list.findIndex(e => e.hash === entry.hash);
-  previewPlay(tracks, idx < 0 ? 0 : idx);
 }
