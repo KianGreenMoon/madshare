@@ -62,7 +62,7 @@ func TestModerationBulk_FilterApproveStateScoped(t *testing.T) {
 	h2 := stageBytes(t, up, srv.URL, "s2.mp3", "beta two content")
 	stageBytes(t, up, srv.URL, "s3.mp3", "gamma three content") // stays a draft
 	doJSON(t, up, http.MethodPost, srv.URL+"/api/my/uploads/submit",
-		map[string]any{"hashes": []string{h1, h2}}, nil)
+		map[string]any{"tagset_ids": []int64{stagedTagsetID(t, up, srv.URL, h1), stagedTagsetID(t, up, srv.URL, h2)}}, nil)
 
 	// total = all non-approved (2 submitted + 1 draft); selectable = submitted only.
 	env := getEnvelope(t, admin, srv.URL+"/api/admin/moderation")
@@ -107,12 +107,14 @@ func TestModerationBulk_ReturnByHashes(t *testing.T) {
 
 	h1 := stageBytes(t, up, srv.URL, "r1.mp3", "return one content")
 	h2 := stageBytes(t, up, srv.URL, "r2.mp3", "return two content")
+	tid1 := stagedTagsetID(t, up, srv.URL, h1)
+	tid2 := stagedTagsetID(t, up, srv.URL, h2)
 	doJSON(t, up, http.MethodPost, srv.URL+"/api/my/uploads/submit",
-		map[string]any{"hashes": []string{h1, h2}}, nil)
+		map[string]any{"tagset_ids": []int64{tid1, tid2}}, nil)
 
 	// A return with no note is rejected.
 	if code := doJSON(t, admin, http.MethodPost, srv.URL+"/api/admin/moderation/bulk",
-		map[string]any{"action": "return", "hashes": []string{h1, h2}}, nil); code != http.StatusBadRequest {
+		map[string]any{"action": "return", "tagset_ids": []int64{tid1, tid2}}, nil); code != http.StatusBadRequest {
 		t.Errorf("return without note = %d, want 400", code)
 	}
 
@@ -120,7 +122,7 @@ func TestModerationBulk_ReturnByHashes(t *testing.T) {
 		Affected int `json:"affected"`
 	}
 	doJSON(t, admin, http.MethodPost, srv.URL+"/api/admin/moderation/bulk",
-		map[string]any{"action": "return", "hashes": []string{h1, h2}, "note": "fix the artist tag"}, &res)
+		map[string]any{"action": "return", "tagset_ids": []int64{tid1, tid2}, "note": "fix the artist tag"}, &res)
 	if res.Affected != 2 {
 		t.Fatalf("bulk return affected = %d, want 2", res.Affected)
 	}
@@ -167,13 +169,13 @@ func TestMyUploadsBulk_SubmitAndRemove(t *testing.T) {
 		t.Errorf("queue submitted after bulk submit = %d, want 2", env.Selectable)
 	}
 
-	// Remove a fresh draft by hash → it leaves staging for Trash.
+	// Remove a fresh draft by id → it leaves staging for Trash.
 	h := stageBytes(t, up, srv.URL, "d3.mp3", "draft three content")
 	var rem struct {
 		Removed int `json:"removed"`
 	}
 	if code := doJSON(t, up, http.MethodPost, srv.URL+"/api/my/uploads/bulk",
-		map[string]any{"action": "remove", "hashes": []string{h}}, &rem); code != http.StatusOK {
+		map[string]any{"action": "remove", "tagset_ids": []int64{stagedTagsetID(t, up, srv.URL, h)}}, &rem); code != http.StatusOK {
 		t.Fatalf("bulk remove = %d, want 200", code)
 	}
 	if rem.Removed != 1 {
@@ -252,7 +254,7 @@ func TestModerationBulk_FilterByTerm(t *testing.T) {
 	h1 := stageBytes(t, up, srv.URL, "zebra-track.mp3", "zebra content")
 	h2 := stageBytes(t, up, srv.URL, "lion-track.mp3", "lion content")
 	doJSON(t, up, http.MethodPost, srv.URL+"/api/my/uploads/submit",
-		map[string]any{"hashes": []string{h1, h2}}, nil)
+		map[string]any{"tagset_ids": []int64{stagedTagsetID(t, up, srv.URL, h1), stagedTagsetID(t, up, srv.URL, h2)}}, nil)
 
 	// Approve only files whose filename matches "zebra".
 	var res struct {

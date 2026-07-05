@@ -21,6 +21,7 @@ const reviewJoins = `
 	LEFT JOIN album_images  alimg ON alimg.album_id  = m.album_id`
 
 const reviewEntryColumns = `
+	m.id AS tagset_id,
 	f.hash, f.mime_type, f.byte_size, f.object_key, f.created_at,
 	COALESCE((SELECT filename FROM file_uploads WHERE file_id = f.id ORDER BY id LIMIT 1), f.hash) AS filename,
 	COALESCE(m.title, '') AS title,
@@ -33,6 +34,7 @@ func scanReviewEntry(rows *sql.Rows, withUploader bool) (*ReviewEntry, error) {
 	var e ReviewEntry
 	var artistImg, albumImg int
 	dest := []any{
+		&e.TagsetID,
 		&e.Hash, &e.MimeType, &e.ByteSize, &e.ObjectKey, &e.CreatedAt,
 		&e.Filename, &e.Title, &e.Artist, &e.Album, &e.AlbumArtist, &e.TrackNumber, &e.DiscNumber, &e.Year, &e.DurationSeconds,
 		&e.ReviewState, &e.ReviewNote, &e.SubmittedAt, &e.UploaderID,
@@ -79,17 +81,17 @@ type ReviewListQuery struct {
 func reviewSortOrder(token string) string {
 	switch token {
 	case "uploader":
-		return "u.username IS NULL, LOWER(u.username), f.created_at DESC, f.id DESC"
+		return "u.username IS NULL, LOWER(u.username), m.created_at DESC, m.id DESC"
 	case "state":
-		return "CASE m.review_state WHEN 'returned' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END, f.created_at DESC, f.id DESC"
+		return "CASE m.review_state WHEN 'returned' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END, m.created_at DESC, m.id DESC"
 	case "created_asc":
-		return "f.created_at ASC, f.id ASC"
+		return "m.created_at ASC, m.id ASC"
 	case "grouped":
 		return groupedSortOrder
 	case "title_asc", "title_desc", "artist_asc", "artist_desc", "size_asc", "size_desc", "untagged_first":
 		return fileSortOrder(token)
 	default: // created_desc
-		return "f.created_at DESC, f.id DESC"
+		return "m.created_at DESC, m.id DESC"
 	}
 }
 
@@ -117,11 +119,13 @@ func appendReviewFilter(where string, args []any, f ReviewFilter) (string, []any
 const pendingReviewBase = "m.deleted_at IS NULL AND m.review_state <> 'approved'"
 const uploadsBase = "m.created_by = ? AND m.deleted_at IS NULL AND m.review_state <> 'approved'"
 
-// reviewFrom is the staging queries' shared FROM: the files row with its
-// offered tagset (alias m — the reviewable unit).
+// reviewFrom is the staging queries' shared FROM: the tagset (alias m — the
+// reviewable unit, one queue row per appearance) with the blob it was read from
+// (alias f — for preview + tech). A blob can carry several appearances after a
+// byte-dup upload, so the queue is tagset-rooted (recording-tagsets P4).
 const reviewFrom = `
-		FROM files f
-		JOIN tagsets m ON m.origin_file_id = f.id`
+		FROM tagsets m
+		JOIN files f ON f.id = m.origin_file_id`
 
 func scanReviewRows(rows *sql.Rows, withUploader bool) ([]*ReviewEntry, error) {
 	out := make([]*ReviewEntry, 0)
@@ -198,18 +202,18 @@ func (db *DB) CountUploadsByUser(ctx context.Context, f ReviewFilter) (int, erro
 	return n, nil
 }
 
-// UploadHashesByUserFilter returns the owner's matching staged hashes (ordered by
-// id) for "select all N matching". Callers set States to the editable/selectable
-// set (draft + returned) so a bulk action never targets a submitted file.
-func (db *DB) UploadHashesByUserFilter(ctx context.Context, f ReviewFilter) ([]string, error) {
+// UploadTagsetIDsByUserFilter returns the owner's matching staged tagset ids
+// (ordered by id) for "select all N matching". Callers set States to the
+// editable/selectable set (draft + returned) so a bulk action never targets a
+// submitted appearance.
+func (db *DB) UploadTagsetIDsByUserFilter(ctx context.Context, f ReviewFilter) ([]int64, error) {
 	where, args := appendReviewFilter(uploadsBase, []any{f.OwnerID}, f)
-	rows, err := db.QueryContext(ctx,
-		`SELECT f.hash`+reviewFrom+` WHERE `+where+` ORDER BY f.id`, args...)
+	ids, err := scanIDs(db.QueryContext(ctx,
+		`SELECT m.id`+reviewFrom+` WHERE `+where+` ORDER BY m.id`, args...))
 	if err != nil {
-		return nil, fmt.Errorf("upload hashes by filter: %w", err)
+		return nil, fmt.Errorf("upload tagset ids by filter: %w", err)
 	}
-	defer rows.Close()
-	return scanHashes(rows)
+	return ids, nil
 }
 
 // ListPendingReview returns every staged (non-trashed, non-approved) file with
@@ -250,18 +254,18 @@ func (db *DB) CountPendingReview(ctx context.Context, f ReviewFilter) (int, erro
 	return n, nil
 }
 
-// PendingReviewHashesByFilter returns the matching staged hashes (ordered by id)
-// for "select all N matching". Callers set States to the actionable/selectable
-// set (submitted) so a bulk action never targets a draft or returned file.
-func (db *DB) PendingReviewHashesByFilter(ctx context.Context, f ReviewFilter) ([]string, error) {
+// PendingReviewTagsetIDsByFilter returns the matching staged tagset ids (ordered
+// by id) for "select all N matching". Callers set States to the
+// actionable/selectable set (submitted) so a bulk action never targets a draft
+// or returned appearance.
+func (db *DB) PendingReviewTagsetIDsByFilter(ctx context.Context, f ReviewFilter) ([]int64, error) {
 	where, args := appendReviewFilter(pendingReviewBase, nil, f)
-	rows, err := db.QueryContext(ctx,
-		`SELECT f.hash`+reviewFrom+` WHERE `+where+` ORDER BY f.id`, args...)
+	ids, err := scanIDs(db.QueryContext(ctx,
+		`SELECT m.id`+reviewFrom+` WHERE `+where+` ORDER BY m.id`, args...))
 	if err != nil {
-		return nil, fmt.Errorf("pending review hashes by filter: %w", err)
+		return nil, fmt.Errorf("pending review tagset ids by filter: %w", err)
 	}
-	defer rows.Close()
-	return scanHashes(rows)
+	return ids, nil
 }
 
 // ReviewTransition describes one guarded review-state change on the tagset.
@@ -281,12 +285,12 @@ type ReviewTransition struct {
 	StampSubmittedAt bool
 }
 
-// UpdateReviewState applies a guarded state transition to the tagset of the
-// file with the given content hash. The guard and update are a single UPDATE,
-// so concurrent transitions cannot double-apply. found is false (no error) when
-// no row satisfies the guard (unknown hash, trashed, wrong state, or wrong
-// owner).
-func (db *DB) UpdateReviewState(ctx context.Context, hash string, t ReviewTransition) (bool, error) {
+// UpdateReviewState applies a guarded state transition to the tagset with the
+// given id (the appearance under review). The guard and update are a single
+// UPDATE, so concurrent transitions cannot double-apply. found is false (no
+// error) when no row satisfies the guard (unknown id, trashed, wrong state, or
+// wrong owner).
+func (db *DB) UpdateReviewState(ctx context.Context, tagsetID int64, t ReviewTransition) (bool, error) {
 	if len(t.From) == 0 {
 		return false, errors.New("update review state: empty From set")
 	}
@@ -301,10 +305,10 @@ func (db *DB) UpdateReviewState(ctx context.Context, hash string, t ReviewTransi
 		q += `, submitted_at = ?`
 		args = append(args, time.Now().Unix())
 	}
-	q += ` WHERE origin_file_id IN (SELECT id FROM files WHERE hash = ?)
+	q += ` WHERE id = ?
 	   AND deleted_at IS NULL AND review_state IN (?` +
 		strings.Repeat(",?", len(t.From)-1) + `)`
-	args = append(args, hash)
+	args = append(args, tagsetID)
 	for _, s := range t.From {
 		args = append(args, s)
 	}
@@ -329,11 +333,11 @@ func (db *DB) UpdateReviewState(ctx context.Context, hash string, t ReviewTransi
 // how many actually transitioned. Replacing the per-hash loop (one autocommit
 // write plus a per-row audit each) with one transaction is the SQLITE_BUSY fix the
 // bulk soft-delete/restore paths already use.
-func (db *DB) BulkUpdateReviewState(ctx context.Context, hashes []string, t ReviewTransition) (int, error) {
+func (db *DB) BulkUpdateReviewState(ctx context.Context, tagsetIDs []int64, t ReviewTransition) (int, error) {
 	if len(t.From) == 0 {
 		return 0, errors.New("bulk update review state: empty From set")
 	}
-	if len(hashes) == 0 {
+	if len(tagsetIDs) == 0 {
 		return 0, nil
 	}
 	var note sql.NullString
@@ -349,15 +353,15 @@ func (db *DB) BulkUpdateReviewState(ctx context.Context, hashes []string, t Revi
 
 	total := 0
 	const chunk = 400
-	for i := 0; i < len(hashes); i += chunk {
+	for i := 0; i < len(tagsetIDs); i += chunk {
 		end := i + chunk
-		if end > len(hashes) {
-			end = len(hashes)
+		if end > len(tagsetIDs) {
+			end = len(tagsetIDs)
 		}
-		batch := hashes[i:end]
+		batch := tagsetIDs[i:end]
 
 		// SET-clause args first, then the guard args (From states, optional owner),
-		// then the hash batch — the order the placeholders appear in the query.
+		// then the id batch — the order the placeholders appear in the query.
 		set := `review_state = ?, review_note = ?`
 		args := []any{t.To, note}
 		if t.StampSubmittedAt {
@@ -373,13 +377,13 @@ func (db *DB) BulkUpdateReviewState(ctx context.Context, hashes []string, t Revi
 			args = append(args, t.OwnerID)
 		}
 		placeholders := make([]string, len(batch))
-		for j, h := range batch {
+		for j, id := range batch {
 			placeholders[j] = "?"
-			args = append(args, h)
+			args = append(args, id)
 		}
 		res, err := tx.ExecContext(ctx,
 			`UPDATE tagsets SET `+set+` WHERE `+where+
-				` AND origin_file_id IN (SELECT id FROM files WHERE hash IN (`+strings.Join(placeholders, ",")+`))`, args...)
+				` AND id IN (`+strings.Join(placeholders, ",")+`)`, args...)
 		if err != nil {
 			return 0, fmt.Errorf("bulk update review state: %w", err)
 		}
@@ -397,13 +401,13 @@ func (db *DB) BulkUpdateReviewState(ctx context.Context, hashes []string, t Revi
 // files are excluded (no withdraw once sent to approval) and so is anything
 // the caller doesn't own; both report found=false. Guard and delete are one
 // UPDATE, so a concurrent submit cannot slip through.
-func (db *DB) DiscardOwnUpload(ctx context.Context, hash string, ownerID int64) (bool, error) {
+func (db *DB) DiscardOwnUpload(ctx context.Context, tagsetID, ownerID int64) (bool, error) {
 	res, err := db.ExecContext(ctx, `
 		UPDATE tagsets SET deleted_at = ?
-		WHERE origin_file_id IN (SELECT id FROM files WHERE hash = ?)
+		WHERE id = ?
 		  AND deleted_at IS NULL AND created_by = ?
 		  AND review_state IN (?, ?)`,
-		time.Now().Unix(), hash, ownerID, ReviewDraft, ReviewReturned)
+		time.Now().Unix(), tagsetID, ownerID, ReviewDraft, ReviewReturned)
 	if err != nil {
 		return false, fmt.Errorf("discard own upload: %w", err)
 	}
@@ -418,8 +422,8 @@ func (db *DB) DiscardOwnUpload(ctx context.Context, hash string, ownerID int64) 
 // hashes are skipped, and the returned count is how many were removed. One
 // transaction instead of one autocommit write (plus a per-row audit) per hash,
 // the SQLITE_BUSY fix the other bulk paths use.
-func (db *DB) BulkDiscardOwnUploads(ctx context.Context, hashes []string, ownerID int64) (int, error) {
-	if len(hashes) == 0 {
+func (db *DB) BulkDiscardOwnUploads(ctx context.Context, tagsetIDs []int64, ownerID int64) (int, error) {
+	if len(tagsetIDs) == 0 {
 		return 0, nil
 	}
 	tx, err := db.BeginTx(ctx, nil)
@@ -431,25 +435,69 @@ func (db *DB) BulkDiscardOwnUploads(ctx context.Context, hashes []string, ownerI
 	now := time.Now().Unix()
 	total := 0
 	const chunk = 400
-	for i := 0; i < len(hashes); i += chunk {
+	for i := 0; i < len(tagsetIDs); i += chunk {
 		end := i + chunk
-		if end > len(hashes) {
-			end = len(hashes)
+		if end > len(tagsetIDs) {
+			end = len(tagsetIDs)
 		}
-		batch := hashes[i:end]
+		batch := tagsetIDs[i:end]
 		args := make([]any, 0, len(batch)+4)
 		args = append(args, now, ownerID, ReviewDraft, ReviewReturned)
 		placeholders := make([]string, len(batch))
-		for j, h := range batch {
+		for j, id := range batch {
 			placeholders[j] = "?"
-			args = append(args, h)
+			args = append(args, id)
 		}
 		res, err := tx.ExecContext(ctx,
 			`UPDATE tagsets SET deleted_at = ? WHERE deleted_at IS NULL AND created_by = ?
 			   AND review_state IN (?, ?)
-			   AND origin_file_id IN (SELECT id FROM files WHERE hash IN (`+strings.Join(placeholders, ",")+`))`, args...)
+			   AND id IN (`+strings.Join(placeholders, ",")+`)`, args...)
 		if err != nil {
 			return 0, fmt.Errorf("bulk discard own uploads: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		total += int(n)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit: %w", err)
+	}
+	return total, nil
+}
+
+// BulkTrashTagsets soft-deletes a set of appearances by id in one chunked
+// transaction — the moderator's bulk discard (tagset Trash). Only non-trashed
+// rows change; the returned count is how many were trashed. Soft delete never
+// cascades (recording-tagsets P2 — the blob and recording stay).
+func (db *DB) BulkTrashTagsets(ctx context.Context, tagsetIDs []int64) (int, error) {
+	if len(tagsetIDs) == 0 {
+		return 0, nil
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := time.Now().Unix()
+	total := 0
+	const chunk = 400
+	for i := 0; i < len(tagsetIDs); i += chunk {
+		end := i + chunk
+		if end > len(tagsetIDs) {
+			end = len(tagsetIDs)
+		}
+		batch := tagsetIDs[i:end]
+		args := make([]any, 0, len(batch)+1)
+		args = append(args, now)
+		placeholders := make([]string, len(batch))
+		for j, id := range batch {
+			placeholders[j] = "?"
+			args = append(args, id)
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE tagsets SET deleted_at = ? WHERE deleted_at IS NULL AND id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+		if err != nil {
+			return 0, fmt.Errorf("bulk trash tagsets: %w", err)
 		}
 		n, _ := res.RowsAffected()
 		total += int(n)
@@ -501,28 +549,23 @@ func (db *DB) StageRestoredFile(ctx context.Context, hash string, ownerID sql.Nu
 	return n > 0, nil
 }
 
-// FileReviewInfo returns the review state, uploader, and trash flag for the
-// file with the given content hash (state and trash read from its *own*
-// offered tagset — the ownership/editability lookup for the My-uploads flows;
-// the blob-serving gate uses the recording-level BlobPubliclyVisible instead).
-// found is false (no error) on unknown hashes.
-func (db *DB) FileReviewInfo(ctx context.Context, hash string) (state string, uploadedBy sql.NullInt64, deleted bool, found bool, err error) {
+// TagsetReviewInfo returns the review state, owner (the tagset's created_by),
+// and trash flag for the appearance with the given id — the ownership /
+// editability lookup for the My-uploads flows (the blob-serving gate uses the
+// recording-level BlobPubliclyVisible instead). found is false (no error) on an
+// unknown id.
+func (db *DB) TagsetReviewInfo(ctx context.Context, tagsetID int64) (state string, owner sql.NullInt64, deleted bool, found bool, err error) {
 	var deletedAt sql.NullInt64
 	err = db.QueryRowContext(ctx, `
-		SELECT COALESCE(t.review_state, 'approved'), f.uploaded_by, t.deleted_at
-		FROM files f
-		LEFT JOIN tagsets t ON t.origin_file_id = f.id
-		WHERE f.hash = ?
-		ORDER BY t.id
-		LIMIT 1`, hash).
-		Scan(&state, &uploadedBy, &deletedAt)
+		SELECT review_state, created_by, deleted_at FROM tagsets WHERE id = ?`, tagsetID).
+		Scan(&state, &owner, &deletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", sql.NullInt64{}, false, false, nil
 	}
 	if err != nil {
-		return "", sql.NullInt64{}, false, false, fmt.Errorf("file review info: %w", err)
+		return "", sql.NullInt64{}, false, false, fmt.Errorf("tagset review info: %w", err)
 	}
-	return state, uploadedBy, deletedAt.Valid, true, nil
+	return state, owner, deletedAt.Valid, true, nil
 }
 
 // BlobPubliclyVisible reports whether the blob with the given content hash is

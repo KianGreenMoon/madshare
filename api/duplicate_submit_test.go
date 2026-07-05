@@ -5,17 +5,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/database"
 )
 
-// submitReq builds a POST /api/my/uploads/submit for one hash, with an identity
-// that always holds file.upload and, when moderator, content.moderate.
-func submitReq(hash string, moderator bool) *http.Request {
-	body, _ := json.Marshal(map[string][]string{"hashes": {hash}})
+// submitReq builds a POST /api/my/uploads/submit for one appearance, with an
+// identity that always holds file.upload and, when moderator, content.moderate.
+func submitReq(tagsetID int64, moderator bool) *http.Request {
+	body, _ := json.Marshal(map[string][]int64{"tagset_ids": {tagsetID}})
 	req := httptest.NewRequest(http.MethodPost, "/api/my/uploads/submit", bytes.NewReader(body))
 	perms := map[string]bool{auth.PermFileUpload: true}
 	if moderator {
@@ -32,11 +31,11 @@ type submitResp struct {
 	Warning   string `json:"warning"`
 }
 
-func runSubmit(t *testing.T, repo *fakeRepo, hash string, moderator bool) submitResp {
+func runSubmit(t *testing.T, repo *fakeRepo, tagsetID int64, moderator bool) submitResp {
 	t.Helper()
 	h := &handler{repo: repo, authzEnabled: true}
 	rr := httptest.NewRecorder()
-	h.submitMyUploads(rr, submitReq(hash, moderator))
+	h.submitMyUploads(rr, submitReq(tagsetID, moderator))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
 	}
@@ -48,9 +47,12 @@ func runSubmit(t *testing.T, repo *fakeRepo, hash string, moderator bool) submit
 }
 
 func TestSubmit_DuplicateSuppressesSelfApprove(t *testing.T) {
-	hash := strings.Repeat("a", 64)
-	repo := &fakeRepo{reviewUpdateFound: true, duplicateHashes: map[string]bool{hash: true}}
-	resp := runSubmit(t, repo, hash, true) // moderator
+	// The submission matches already-published audio (classified as a matched new
+	// appearance) — the duplicate that always queues, even for a moderator.
+	repo := &fakeRepo{reviewUpdateFound: true, classify: map[int64]database.SubmissionClass{
+		1: {Case: database.SubmissionNewAppearance, MatchedExisting: true},
+	}}
+	resp := runSubmit(t, repo, 1, true) // moderator
 
 	if resp.Approved {
 		t.Error("approved=true; a duplicate must not self-approve even for a moderator")
@@ -64,9 +66,8 @@ func TestSubmit_DuplicateSuppressesSelfApprove(t *testing.T) {
 }
 
 func TestSubmit_ModeratorNonDuplicateSelfApproves(t *testing.T) {
-	hash := strings.Repeat("b", 64)
-	repo := &fakeRepo{reviewUpdateFound: true} // duplicateHashes nil → not a duplicate
-	resp := runSubmit(t, repo, hash, true)
+	repo := &fakeRepo{reviewUpdateFound: true} // classify nil → default new_recording (not matched)
+	resp := runSubmit(t, repo, 2, true)
 
 	if !resp.Approved || resp.Flagged != 0 {
 		t.Errorf("approved=%v flagged=%d, want true/0 (non-duplicate moderator submit)", resp.Approved, resp.Flagged)
@@ -77,9 +78,8 @@ func TestSubmit_ModeratorNonDuplicateSelfApproves(t *testing.T) {
 }
 
 func TestSubmit_NonModeratorAlwaysQueues(t *testing.T) {
-	hash := strings.Repeat("c", 64)
 	repo := &fakeRepo{reviewUpdateFound: true}
-	resp := runSubmit(t, repo, hash, false) // no content.moderate
+	resp := runSubmit(t, repo, 3, false) // no content.moderate
 
 	if resp.Approved {
 		t.Error("a non-moderator can never self-approve")

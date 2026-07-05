@@ -100,6 +100,8 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		// pre-017 rows can't occur, but cheap to guard) counts as approved.
 		pending := existing.ReviewState != "" && existing.ReviewState != database.ReviewApproved
 		restored := false
+		var dedupTags *media.Tags // set when a byte-dup offered a new draft appearance
+		var offeredTagset int64
 		if existing.DeletedAt.Valid {
 			// File is in the trash. Whether re-uploading the bytes restores it is
 			// governed by the admin trash-restore policy (default reupload_restores,
@@ -137,6 +139,25 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 			} else {
 				h.audit(ctx, "file.upload", hash, "dedup-trashed (policy="+policy+", not restored): "+filename)
 			}
+		} else if h.authzEnabled {
+			// Live byte-dup with moderation configured: the re-upload adds no new
+			// blob but offers a NEW appearance on the held recording as a draft the
+			// uploader reviews (recording-tagsets P4), unless it duplicates an
+			// appearance already on the recording.
+			tags := extractTagsOrEmpty(content, mimeType)
+			tid, created, aerr := h.repo.AttachDraftTagset(ctx, existing.ID, actorID(ctx), tagsToMetadata(tags, time.Now().Unix()), filename)
+			if aerr != nil {
+				http.Error(w, "storage error", http.StatusInternalServerError)
+				return
+			}
+			if created {
+				pending = true
+				dedupTags = tags
+				offeredTagset = tid
+				h.audit(ctx, "file.upload", hash, "dedup: offered new appearance (draft): "+filename)
+			} else {
+				h.audit(ctx, "file.upload", hash, "dedup: appearance already present: "+filename)
+			}
 		} else {
 			h.audit(ctx, "file.upload", hash, "dedup: "+filename)
 		}
@@ -149,9 +170,13 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		// Embedded art is not re-processed for duplicate content — the cover (if
-		// any) was already handled when the bytes were first ingested.
-		// album/artist are left empty on dedup: tags aren't re-extracted for
-		// already-stored bytes, and any cover was handled at first ingest.
+		// any) was already handled when the bytes were first ingested. title/album/
+		// artist are echoed only when this re-upload offered a new draft appearance
+		// (dedupTags set); a plain dedup leaves them empty.
+		title, album, artist := "", "", ""
+		if dedupTags != nil {
+			title, album, artist = dedupTags.Title, dedupTags.Album, effectiveAlbumArtist(dedupTags)
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":               true,
 			"existed":          true,
@@ -159,11 +184,12 @@ func (h *handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 			"trashed":          existing.DeletedAt.Valid && !restored,
 			"pending":          pending && (!existing.DeletedAt.Valid || restored),
 			"hash":             hash,
+			"tagset_id":        offeredTagset,
 			"filename":         filename,
 			"size":             size,
-			"title":            "",
-			"album":            "",
-			"artist":           "",
+			"title":            title,
+			"album":            album,
+			"artist":           artist,
 			"cover_found":      false,
 			"cover_processing": false,
 		})

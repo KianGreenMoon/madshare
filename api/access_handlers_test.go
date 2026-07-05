@@ -82,12 +82,13 @@ func uploadAndHash(t *testing.T, client *http.Client, base, name string) (hash, 
 // must hold content.moderate (e.g. the admin) so the submit self-approves.
 func approveUpload(t *testing.T, client *http.Client, base, hash string) {
 	t.Helper()
+	tid := stagedTagsetID(t, client, base, hash)
 	var out struct {
 		Approved  bool `json:"approved"`
 		Submitted int  `json:"submitted"`
 	}
 	if code := doJSON(t, client, http.MethodPost, base+"/api/my/uploads/submit",
-		map[string]any{"hashes": []string{hash}}, &out); code != http.StatusOK {
+		map[string]any{"tagset_ids": []int64{tid}}, &out); code != http.StatusOK {
 		t.Fatalf("submit upload = %d, want 200", code)
 	}
 	if !out.Approved || out.Submitted != 1 {

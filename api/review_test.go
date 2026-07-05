@@ -3,11 +3,23 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"testing"
 
 	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/database"
 )
+
+// URL builders for the tagset-addressed review endpoints (recording-tagsets P4).
+func muMeta(base string, tid int64) string {
+	return base + "/api/my/uploads/" + strconv.FormatInt(tid, 10) + "/metadata"
+}
+func muItem(base string, tid int64) string {
+	return base + "/api/my/uploads/" + strconv.FormatInt(tid, 10)
+}
+func modAction(base string, tid int64, action string) string {
+	return base + "/api/admin/moderation/" + strconv.FormatInt(tid, 10) + "/" + action
+}
 
 // mineRow / queueRow are the staging-list fields the tests assert on; the paged
 // endpoints now return a {total, selectable_total, items} envelope.
@@ -58,6 +70,30 @@ func uploadStaged(t *testing.T, client *http.Client, base, name string) (hash, p
 	return body.Hash, "/files/" + body.Hash + "/" + body.Filename
 }
 
+// stagedTagsetID resolves a staged blob's appearance id by reading the caller's
+// My-uploads listing (which carries tagset_id). The upload/submit/approve flows
+// address the appearance, not the blob (recording-tagsets P4). The lookup must
+// use the owner's client (My-uploads is owner-scoped).
+func stagedTagsetID(t *testing.T, c *http.Client, base, hash string) int64 {
+	t.Helper()
+	var env struct {
+		Items []struct {
+			TagsetID int64  `json:"tagset_id"`
+			Hash     string `json:"hash"`
+		} `json:"items"`
+	}
+	if code := doJSON(t, c, http.MethodGet, base+"/api/my/uploads?limit=1000", nil, &env); code != http.StatusOK {
+		t.Fatalf("my uploads for tagset lookup = %d, want 200", code)
+	}
+	for _, it := range env.Items {
+		if it.Hash == hash {
+			return it.TagsetID
+		}
+	}
+	t.Fatalf("no staged appearance for hash %s", hash)
+	return 0
+}
+
 func TestReview_UploaderModeratorFlow(t *testing.T) {
 	srv, db := newAuthTestServer(t)
 	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
@@ -96,20 +132,21 @@ func TestReview_UploaderModeratorFlow(t *testing.T) {
 	if len(mine) != 1 || mine[0].State != "draft" {
 		t.Fatalf("my uploads = %+v, want one draft", mine)
 	}
-	if code := doJSON(t, up, http.MethodPatch, srv.URL+"/api/my/uploads/"+hash+"/metadata",
+	tid := stagedTagsetID(t, up, srv.URL, hash)
+	if code := doJSON(t, up, http.MethodPatch, muMeta(srv.URL, tid),
 		map[string]any{"title": "Fixed Title"}, nil); code != http.StatusOK {
 		t.Errorf("owner edit of draft = %d, want 200", code)
 	}
 	// The owner can GET the full editable tag set (for the modal to prefill),
 	// including the extended fields, and a rich PATCH round-trips.
 	var draftMeta map[string]any
-	if code := doJSON(t, up, http.MethodGet, srv.URL+"/api/my/uploads/"+hash+"/metadata", nil, &draftMeta); code != http.StatusOK {
+	if code := doJSON(t, up, http.MethodGet, muMeta(srv.URL, tid), nil, &draftMeta); code != http.StatusOK {
 		t.Errorf("owner GET draft metadata = %d, want 200", code)
 	}
 	if _, ok := draftMeta["track_number"]; !ok {
 		t.Errorf("owner GET metadata missing track_number: %+v", draftMeta)
 	}
-	if code := doJSON(t, up, http.MethodPatch, srv.URL+"/api/my/uploads/"+hash+"/metadata",
+	if code := doJSON(t, up, http.MethodPatch, muMeta(srv.URL, tid),
 		map[string]any{"track_number": "7", "genre": "Jazz"}, nil); code != http.StatusOK {
 		t.Errorf("owner rich edit of draft = %d, want 200", code)
 	}
@@ -125,15 +162,15 @@ func TestReview_UploaderModeratorFlow(t *testing.T) {
 		Submitted int  `json:"submitted"`
 	}
 	doJSON(t, up, http.MethodPost, srv.URL+"/api/my/uploads/submit",
-		map[string]any{"hashes": []string{hash}}, &sub)
+		map[string]any{"tagset_ids": []int64{tid}}, &sub)
 	if sub.Approved || sub.Submitted != 1 {
 		t.Fatalf("submit: approved=%v submitted=%d, want queued 1", sub.Approved, sub.Submitted)
 	}
-	if code := doJSON(t, up, http.MethodPatch, srv.URL+"/api/my/uploads/"+hash+"/metadata",
+	if code := doJSON(t, up, http.MethodPatch, muMeta(srv.URL, tid),
 		map[string]any{"title": "Too Late"}, nil); code != http.StatusNotFound {
 		t.Errorf("owner edit after submit = %d, want 404 (locked)", code)
 	}
-	if code := doJSON(t, up, http.MethodGet, srv.URL+"/api/my/uploads/"+hash+"/metadata", nil, nil); code != http.StatusNotFound {
+	if code := doJSON(t, up, http.MethodGet, muMeta(srv.URL, tid), nil, nil); code != http.StatusNotFound {
 		t.Errorf("owner GET metadata after submit = %d, want 404 (locked)", code)
 	}
 
@@ -142,7 +179,7 @@ func TestReview_UploaderModeratorFlow(t *testing.T) {
 	if len(queue) != 1 || queue[0].State != "submitted" || queue[0].Uploader != "up" {
 		t.Fatalf("moderation queue = %+v, want up's submitted file", queue)
 	}
-	if code := doJSON(t, admin, http.MethodPost, srv.URL+"/api/admin/moderation/"+hash+"/return",
+	if code := doJSON(t, admin, http.MethodPost, modAction(srv.URL, tid, "return"),
 		map[string]any{"note": "fix the artist tag"}, nil); code != http.StatusOK {
 		t.Fatalf("return = %d, want 200", code)
 	}
@@ -151,19 +188,19 @@ func TestReview_UploaderModeratorFlow(t *testing.T) {
 		t.Fatalf("my uploads after return = %+v, want returned with the note", mine)
 	}
 	// Returned is editable again; resubmit re-queues.
-	if code := doJSON(t, up, http.MethodPatch, srv.URL+"/api/my/uploads/"+hash+"/metadata",
+	if code := doJSON(t, up, http.MethodPatch, muMeta(srv.URL, tid),
 		map[string]any{"artist": "Right Artist"}, nil); code != http.StatusOK {
 		t.Errorf("owner edit of returned file = %d, want 200", code)
 	}
 	doJSON(t, up, http.MethodPost, srv.URL+"/api/my/uploads/submit",
-		map[string]any{"hashes": []string{hash}}, &sub)
+		map[string]any{"tagset_ids": []int64{tid}}, &sub)
 	if sub.Submitted != 1 {
 		t.Fatalf("resubmit failed: %+v", sub)
 	}
 
 	// Approve publishes: library lists it, the listener can stream it, the
 	// staging list is empty.
-	if code := doJSON(t, admin, http.MethodPost, srv.URL+"/api/admin/moderation/"+hash+"/approve", nil, nil); code != http.StatusOK {
+	if code := doJSON(t, admin, http.MethodPost, modAction(srv.URL, tid, "approve"), nil, nil); code != http.StatusOK {
 		t.Fatalf("approve = %d, want 200", code)
 	}
 	files = getFileItems(t, admin, srv.URL+"/api/files")
@@ -193,13 +230,14 @@ func TestReview_ModeratorSelfApproves(t *testing.T) {
 	mod := clientFor(t, srv.URL, "mod", "moderator-pass-1")
 
 	hash, _ := uploadStaged(t, mod, srv.URL, "trusted.mp3")
+	tid := stagedTagsetID(t, mod, srv.URL, hash)
 
 	var sub struct {
 		Approved  bool `json:"approved"`
 		Submitted int  `json:"submitted"`
 	}
 	doJSON(t, mod, http.MethodPost, srv.URL+"/api/my/uploads/submit",
-		map[string]any{"hashes": []string{hash}}, &sub)
+		map[string]any{"tagset_ids": []int64{tid}}, &sub)
 	if !sub.Approved || sub.Submitted != 1 {
 		t.Fatalf("moderator submit: approved=%v submitted=%d, want self-approve", sub.Approved, sub.Submitted)
 	}
@@ -217,7 +255,7 @@ func TestReview_DiscardToTrashAndBack(t *testing.T) {
 
 	hash, _ := uploadStaged(t, up, srv.URL, "discard.mp3")
 	doJSON(t, up, http.MethodPost, srv.URL+"/api/my/uploads/submit",
-		map[string]any{"hashes": []string{hash}}, nil)
+		map[string]any{"tagset_ids": []int64{stagedTagsetID(t, up, srv.URL, hash)}}, nil)
 
 	// Discard = the existing soft delete; the file leaves the queue.
 	if code := doJSON(t, admin, http.MethodDelete, srv.URL+"/api/admin/files/"+hash, nil, nil); code != http.StatusOK {
@@ -244,9 +282,10 @@ func TestReview_DiscardToTrashAndBack(t *testing.T) {
 // approveViaQueue pushes an uploaded draft through submit + moderator approve.
 func approveViaQueue(t *testing.T, up, admin *http.Client, base, hash string) {
 	t.Helper()
+	tid := stagedTagsetID(t, up, base, hash)
 	doJSON(t, up, http.MethodPost, base+"/api/my/uploads/submit",
-		map[string]any{"hashes": []string{hash}}, nil)
-	if code := doJSON(t, admin, http.MethodPost, base+"/api/admin/moderation/"+hash+"/approve", nil, nil); code != http.StatusOK {
+		map[string]any{"tagset_ids": []int64{tid}}, nil)
+	if code := doJSON(t, admin, http.MethodPost, modAction(base, tid, "approve"), nil, nil); code != http.StatusOK {
 		t.Fatalf("approve = %d, want 200", code)
 	}
 }
@@ -348,13 +387,14 @@ func TestReview_OwnerRemovesStagedFile(t *testing.T) {
 	up2 := clientFor(t, srv.URL, "up2", "uploader-pass-2")
 
 	hash, _ := uploadStaged(t, up, srv.URL, "song.mp3")
+	tid := stagedTagsetID(t, up, srv.URL, hash)
 
 	// Another uploader cannot remove it.
-	if code := doJSON(t, up2, http.MethodDelete, srv.URL+"/api/my/uploads/"+hash, nil, nil); code != http.StatusNotFound {
+	if code := doJSON(t, up2, http.MethodDelete, muItem(srv.URL, tid), nil, nil); code != http.StatusNotFound {
 		t.Errorf("foreign remove = %d, want 404", code)
 	}
 	// The owner removes the draft → it leaves staging and lands in Trash.
-	if code := doJSON(t, up, http.MethodDelete, srv.URL+"/api/my/uploads/"+hash, nil, nil); code != http.StatusOK {
+	if code := doJSON(t, up, http.MethodDelete, muItem(srv.URL, tid), nil, nil); code != http.StatusOK {
 		t.Fatalf("owner remove = %d, want 200", code)
 	}
 	mine := getStaged[map[string]any](t, up, srv.URL+"/api/my/uploads")
@@ -380,9 +420,10 @@ func TestReview_OwnerRemovesStagedFile(t *testing.T) {
 		t.Fatalf("decode second upload: %v", err)
 	}
 	resp.Body.Close()
+	tid2 := stagedTagsetID(t, up, srv.URL, body2.Hash)
 	doJSON(t, up, http.MethodPost, srv.URL+"/api/my/uploads/submit",
-		map[string]any{"hashes": []string{body2.Hash}}, nil)
-	if code := doJSON(t, up, http.MethodDelete, srv.URL+"/api/my/uploads/"+body2.Hash, nil, nil); code != http.StatusNotFound {
+		map[string]any{"tagset_ids": []int64{tid2}}, nil)
+	if code := doJSON(t, up, http.MethodDelete, muItem(srv.URL, tid2), nil, nil); code != http.StatusNotFound {
 		t.Errorf("remove of submitted file = %d, want 404 (no withdraw)", code)
 	}
 }
@@ -397,7 +438,7 @@ func TestReview_ReuploadOfTrashedPendingFileKeepsState(t *testing.T) {
 
 	hash, _ := uploadStaged(t, up, srv.URL, "song.mp3")
 	doJSON(t, up, http.MethodPost, srv.URL+"/api/my/uploads/submit",
-		map[string]any{"hashes": []string{hash}}, nil)
+		map[string]any{"tagset_ids": []int64{stagedTagsetID(t, up, srv.URL, hash)}}, nil)
 	// Discard the submission, then re-upload the bytes.
 	if code := doJSON(t, admin, http.MethodDelete, srv.URL+"/api/admin/files/"+hash, nil, nil); code != http.StatusOK {
 		t.Fatalf("discard = %d, want 200", code)

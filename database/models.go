@@ -149,6 +149,7 @@ type FileListEntry struct {
 // review flows: the uploader's "My uploads" staging list and the moderation
 // queue. UploaderName is populated only by ListPendingReview.
 type ReviewEntry struct {
+	TagsetID        int64 // the appearance under review — the row's identity (P4)
 	Hash            string
 	Filename        string
 	MimeType        string

@@ -132,109 +132,204 @@ func applyMetadataPatchTx(ctx context.Context, tx *sql.Tx, hash string, p Metada
 	if err != nil {
 		return 0, fmt.Errorf("update metadata: lookup file: %w", err)
 	}
+	// The file's representative appearance — the one the files-rooted surfaces
+	// edit (a byte-dup upload may have attached extra draft appearances to the
+	// blob; those are edited only through the tagset-addressed review paths).
+	var tagsetID int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT id FROM tagsets WHERE origin_file_id = ? ORDER BY is_primary DESC, id ASC LIMIT 1`,
+		fileID,
+	).Scan(&tagsetID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrFileNotFound
+		}
+		return 0, fmt.Errorf("update metadata: representative tagset: %w", err)
+	}
+	if err := applyMetadataPatchTagsetTx(ctx, tx, tagsetID, p); err != nil {
+		return 0, err
+	}
+	return fileID, nil
+}
 
-	if !p.IsEmpty() {
-		var sets []string
-		var args []any
-		if p.Title != nil {
-			// Title is required non-empty (migration 016). Clearing it (or a
-			// whitespace-only value) re-derives from the filename, the same default
-			// the upload path uses, rather than storing NULL/''.
-			title := *p.Title
-			if strings.TrimSpace(title) == "" {
-				fn, err := firstFilenameTx(ctx, tx, fileID)
-				if err != nil {
-					return 0, err
-				}
-				title = titleFromFilename(fn)
-			}
-			sets = append(sets, "title = ?")
-			args = append(args, title)
-		}
-		if p.Album != nil {
-			sets = append(sets, "album = ?")
-			args = append(args, metaNullString(*p.Album))
-		}
-		if p.AlbumArtist != nil {
-			sets = append(sets, "album_artist = ?")
-			args = append(args, metaNullString(*p.AlbumArtist))
-		}
-		if p.Artist != nil {
-			sets = append(sets, "artist = ?")
-			args = append(args, metaNullString(*p.Artist))
-		}
-		// Extended string tags.
-		if p.Genre != nil {
-			sets = append(sets, "genre = ?")
-			args = append(args, metaNullString(*p.Genre))
-		}
-		if p.Composer != nil {
-			sets = append(sets, "composer = ?")
-			args = append(args, metaNullString(*p.Composer))
-		}
-		if p.Comment != nil {
-			sets = append(sets, "comment = ?")
-			args = append(args, metaNullString(*p.Comment))
-		}
-		// Extended numeric tags (blank → NULL, else a non-negative integer).
-		for _, nf := range []struct {
-			col string
-			val *string
-		}{
-			{"track_number", p.TrackNumber},
-			{"track_total", p.TrackTotal},
-			{"disc_number", p.DiscNumber},
-			{"year", p.Year},
-		} {
-			if nf.val == nil {
-				continue
-			}
-			n, err := metaNullInt(*nf.val)
-			if err != nil {
-				return 0, fmt.Errorf("update metadata: %s: %w", nf.col, err)
-			}
-			sets = append(sets, nf.col+" = ?")
-			args = append(args, n)
-		}
-		args = append(args, fileID)
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE tagsets SET `+strings.Join(sets, ", ")+` WHERE origin_file_id = ?`,
-			args...,
-		); err != nil {
-			return 0, fmt.Errorf("update metadata: %w", err)
-		}
-
-		// Re-resolve entities only when an identity-affecting field changed.
-		if p.Artist != nil || p.AlbumArtist != nil || p.Album != nil {
-			var t AlbumArtistTags
-			var artist, albumArtist, album sql.NullString
-			var year sql.NullInt64
+// applyMetadataPatchTagsetTx writes one appearance's patch within tx, addressed
+// by tagset id — the shared core of both the hash-addressed file edit (via its
+// representative appearance) and the tagset-addressed review/My-uploads edits.
+// An empty patch is a no-op; an identity-affecting change re-resolves the
+// artist/album entity FKs.
+func applyMetadataPatchTagsetTx(ctx context.Context, tx *sql.Tx, tagsetID int64, p MetadataPatch) error {
+	if p.IsEmpty() {
+		return nil
+	}
+	var sets []string
+	var args []any
+	if p.Title != nil {
+		// Title is required non-empty (migration 016). Clearing it (or a
+		// whitespace-only value) re-derives from the origin blob's filename, the
+		// same default the upload path uses, rather than storing NULL/''.
+		title := *p.Title
+		if strings.TrimSpace(title) == "" {
+			var originFile sql.NullInt64
 			if err := tx.QueryRowContext(ctx,
-				`SELECT artist, album_artist, album, year FROM tagsets WHERE origin_file_id = ?`,
-				fileID,
-			).Scan(&artist, &albumArtist, &album, &year); err != nil {
-				return 0, fmt.Errorf("update metadata: reload tags: %w", err)
+				`SELECT origin_file_id FROM tagsets WHERE id = ?`, tagsetID,
+			).Scan(&originFile); err != nil {
+				return fmt.Errorf("update metadata: origin file: %w", err)
 			}
-			t = AlbumArtistTags{
-				Artist:      artist.String,
-				AlbumArtist: albumArtist.String,
-				Album:       album.String,
-				Year:        int(year.Int64),
+			fn := ""
+			if originFile.Valid {
+				var e error
+				if fn, e = firstFilenameTx(ctx, tx, originFile.Int64); e != nil {
+					return e
+				}
 			}
-			albumArtistID, trackArtistID, albumID, err := resolveAlbumArtistTx(ctx, tx, t)
-			if err != nil {
-				return 0, fmt.Errorf("update metadata: resolve entities: %w", err)
-			}
-			if _, err := tx.ExecContext(ctx,
-				`UPDATE tagsets SET album_artist_id = ?, artist_id = ?, album_id = ? WHERE origin_file_id = ?`,
-				albumArtistID, trackArtistID, albumID, fileID,
-			); err != nil {
-				return 0, fmt.Errorf("update metadata: set entity fks: %w", err)
-			}
+			title = titleFromFilename(fn)
 		}
+		sets = append(sets, "title = ?")
+		args = append(args, title)
+	}
+	if p.Album != nil {
+		sets = append(sets, "album = ?")
+		args = append(args, metaNullString(*p.Album))
+	}
+	if p.AlbumArtist != nil {
+		sets = append(sets, "album_artist = ?")
+		args = append(args, metaNullString(*p.AlbumArtist))
+	}
+	if p.Artist != nil {
+		sets = append(sets, "artist = ?")
+		args = append(args, metaNullString(*p.Artist))
+	}
+	// Extended string tags.
+	if p.Genre != nil {
+		sets = append(sets, "genre = ?")
+		args = append(args, metaNullString(*p.Genre))
+	}
+	if p.Composer != nil {
+		sets = append(sets, "composer = ?")
+		args = append(args, metaNullString(*p.Composer))
+	}
+	if p.Comment != nil {
+		sets = append(sets, "comment = ?")
+		args = append(args, metaNullString(*p.Comment))
+	}
+	// Extended numeric tags (blank → NULL, else a non-negative integer).
+	for _, nf := range []struct {
+		col string
+		val *string
+	}{
+		{"track_number", p.TrackNumber},
+		{"track_total", p.TrackTotal},
+		{"disc_number", p.DiscNumber},
+		{"year", p.Year},
+	} {
+		if nf.val == nil {
+			continue
+		}
+		n, err := metaNullInt(*nf.val)
+		if err != nil {
+			return fmt.Errorf("update metadata: %s: %w", nf.col, err)
+		}
+		sets = append(sets, nf.col+" = ?")
+		args = append(args, n)
+	}
+	args = append(args, tagsetID)
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE tagsets SET `+strings.Join(sets, ", ")+` WHERE id = ?`,
+		args...,
+	); err != nil {
+		return fmt.Errorf("update metadata: %w", err)
 	}
 
-	return fileID, nil
+	// Re-resolve entities only when an identity-affecting field changed.
+	if p.Artist != nil || p.AlbumArtist != nil || p.Album != nil {
+		var artist, albumArtist, album sql.NullString
+		var year sql.NullInt64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT artist, album_artist, album, year FROM tagsets WHERE id = ?`,
+			tagsetID,
+		).Scan(&artist, &albumArtist, &album, &year); err != nil {
+			return fmt.Errorf("update metadata: reload tags: %w", err)
+		}
+		t := AlbumArtistTags{
+			Artist:      artist.String,
+			AlbumArtist: albumArtist.String,
+			Album:       album.String,
+			Year:        int(year.Int64),
+		}
+		albumArtistID, trackArtistID, albumID, err := resolveAlbumArtistTx(ctx, tx, t)
+		if err != nil {
+			return fmt.Errorf("update metadata: resolve entities: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE tagsets SET album_artist_id = ?, artist_id = ?, album_id = ? WHERE id = ?`,
+			albumArtistID, trackArtistID, albumID, tagsetID,
+		); err != nil {
+			return fmt.Errorf("update metadata: set entity fks: %w", err)
+		}
+	}
+	return nil
+}
+
+// UpdateTagsetMetadata writes the patch onto the appearance with the given id
+// and returns the resulting combined row (tags + tech). Addressed by tagset id
+// — the review / My-uploads edit target (recording-tagsets P4). Returns
+// ErrFileNotFound when no tagset matches.
+func (db *DB) UpdateTagsetMetadata(ctx context.Context, tagsetID int64, p MetadataPatch) (*MediaMetadata, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("update tagset metadata: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	var one int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM tagsets WHERE id = ?`, tagsetID).Scan(&one); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrFileNotFound
+		}
+		return nil, fmt.Errorf("update tagset metadata: lookup: %w", err)
+	}
+	if err := applyMetadataPatchTagsetTx(ctx, tx, tagsetID, p); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("update tagset metadata: commit: %w", err)
+	}
+	return db.getMetadataByTagsetID(ctx, tagsetID)
+}
+
+// TagsetMetadataByID loads the editable metadata (tags + tech view) for one
+// appearance, for the edit modal to prefill. ErrFileNotFound when no tagset
+// matches.
+func (db *DB) TagsetMetadataByID(ctx context.Context, tagsetID int64) (*MediaMetadata, error) {
+	return db.getMetadataByTagsetID(ctx, tagsetID)
+}
+
+// getMetadataByTagsetID loads the combined metadata view for one appearance: its
+// descriptive tags joined with the tech columns of its origin blob (absent for a
+// blobless appearance — tech reads back NULL). FileID is the origin blob id (0
+// when purged).
+func (db *DB) getMetadataByTagsetID(ctx context.Context, tagsetID int64) (*MediaMetadata, error) {
+	m := &MediaMetadata{}
+	err := db.QueryRowContext(ctx, `
+		SELECT COALESCE(t.origin_file_id, 0), t.title, t.artist, t.album, t.album_artist, t.genre, t.year,
+		       t.track_number, t.track_total, t.disc_number, t.composer, t.comment,
+		       mm.duration_seconds, mm.bitrate, mm.sample_rate, mm.channels, mm.codec,
+		       mm.tag_format, COALESCE(mm.extracted_at, t.created_at)
+		FROM tagsets t
+		LEFT JOIN media_metadata mm ON mm.file_id = t.origin_file_id
+		WHERE t.id = ?`, tagsetID,
+	).Scan(
+		&m.FileID, &m.Title, &m.Artist, &m.Album, &m.AlbumArtist, &m.Genre, &m.Year,
+		&m.TrackNumber, &m.TrackTotal, &m.DiscNumber, &m.Composer, &m.Comment,
+		&m.DurationSeconds, &m.Bitrate, &m.SampleRate, &m.Channels, &m.Codec,
+		&m.TagFormat, &m.ExtractedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrFileNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get tagset metadata: %w", err)
+	}
+	return m, nil
 }
 
 // getMetadataByFileID loads the combined metadata view for a file id: the
@@ -250,7 +345,7 @@ func (db *DB) getMetadataByFileID(ctx context.Context, fileID int64) (*MediaMeta
 		FROM tagsets t
 		LEFT JOIN media_metadata mm ON mm.file_id = t.origin_file_id
 		WHERE t.origin_file_id = ?
-		ORDER BY t.id
+		ORDER BY t.is_primary DESC, t.id ASC
 		LIMIT 1`, fileID,
 	).Scan(
 		&m.Title, &m.Artist, &m.Album, &m.AlbumArtist, &m.Genre, &m.Year,

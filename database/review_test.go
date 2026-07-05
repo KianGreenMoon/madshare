@@ -35,9 +35,9 @@ func makeReviewUser(t *testing.T, db *DB, name string) int64 {
 
 func reviewState(t *testing.T, db *DB, hash string) string {
 	t.Helper()
-	state, _, _, found, err := db.FileReviewInfo(context.Background(), hash)
+	state, _, _, found, err := db.TagsetReviewInfo(context.Background(), tagsetOf(t, db, hash))
 	if err != nil || !found {
-		t.Fatalf("FileReviewInfo: found=%v err=%v", found, err)
+		t.Fatalf("TagsetReviewInfo: found=%v err=%v", found, err)
 	}
 	return state
 }
@@ -60,7 +60,7 @@ func TestUpdateReviewState_Transitions(t *testing.T) {
 	insertStagedFile(t, db, h, ReviewDraft, uid)
 
 	// Owner submit: draft -> submitted, stamps submitted_at.
-	found, err := db.UpdateReviewState(ctx, h, ReviewTransition{
+	found, err := db.UpdateReviewState(ctx, tagsetOf(t, db, h), ReviewTransition{
 		From: []string{ReviewDraft, ReviewReturned}, To: ReviewSubmitted,
 		OwnerID: uid, StampSubmittedAt: true,
 	})
@@ -76,7 +76,7 @@ func TestUpdateReviewState_Transitions(t *testing.T) {
 	}
 
 	// Return with note.
-	found, err = db.UpdateReviewState(ctx, h, ReviewTransition{
+	found, err = db.UpdateReviewState(ctx, tagsetOf(t, db, h), ReviewTransition{
 		From: []string{ReviewSubmitted, ReviewReturned}, To: ReviewReturned, Note: "fix the album tag",
 	})
 	if err != nil || !found {
@@ -87,7 +87,7 @@ func TestUpdateReviewState_Transitions(t *testing.T) {
 	}
 
 	// Resubmit clears the note; approve clears it too and lands approved.
-	if found, _ = db.UpdateReviewState(ctx, h, ReviewTransition{
+	if found, _ = db.UpdateReviewState(ctx, tagsetOf(t, db, h), ReviewTransition{
 		From: []string{ReviewDraft, ReviewReturned}, To: ReviewSubmitted, OwnerID: uid, StampSubmittedAt: true,
 	}); !found {
 		t.Fatal("resubmit returned found=false")
@@ -95,7 +95,7 @@ func TestUpdateReviewState_Transitions(t *testing.T) {
 	if f, _ = db.GetFileByHash(ctx, h); f.ReviewNote.Valid {
 		t.Errorf("note after resubmit = %q, want cleared", f.ReviewNote.String)
 	}
-	if found, _ = db.UpdateReviewState(ctx, h, ReviewTransition{
+	if found, _ = db.UpdateReviewState(ctx, tagsetOf(t, db, h), ReviewTransition{
 		From: []string{ReviewSubmitted, ReviewReturned}, To: ReviewApproved,
 	}); !found {
 		t.Fatal("approve returned found=false")
@@ -115,13 +115,13 @@ func TestUpdateReviewState_Guards(t *testing.T) {
 
 	// Wrong source state: approving a draft directly (moderator path) is not a
 	// legal transition.
-	if found, _ := db.UpdateReviewState(ctx, h, ReviewTransition{
+	if found, _ := db.UpdateReviewState(ctx, tagsetOf(t, db, h), ReviewTransition{
 		From: []string{ReviewSubmitted, ReviewReturned}, To: ReviewApproved,
 	}); found {
 		t.Error("approve of a draft applied, want guard rejection")
 	}
 	// Wrong owner.
-	if found, _ := db.UpdateReviewState(ctx, h, ReviewTransition{
+	if found, _ := db.UpdateReviewState(ctx, tagsetOf(t, db, h), ReviewTransition{
 		From: []string{ReviewDraft, ReviewReturned}, To: ReviewSubmitted, OwnerID: other,
 	}); found {
 		t.Error("submit by non-owner applied, want guard rejection")
@@ -130,13 +130,13 @@ func TestUpdateReviewState_Guards(t *testing.T) {
 	if _, found, err := db.SoftDeleteFileByHash(ctx, h); err != nil || !found {
 		t.Fatalf("SoftDeleteFileByHash: found=%v err=%v", found, err)
 	}
-	if found, _ := db.UpdateReviewState(ctx, h, ReviewTransition{
+	if found, _ := db.UpdateReviewState(ctx, tagsetOf(t, db, h), ReviewTransition{
 		From: []string{ReviewDraft, ReviewReturned}, To: ReviewSubmitted, OwnerID: uid,
 	}); found {
 		t.Error("transition on a trashed file applied, want guard rejection")
 	}
 	// Unknown hash.
-	if found, _ := db.UpdateReviewState(ctx, hash64("nope"), ReviewTransition{
+	if found, _ := db.UpdateReviewState(ctx, 999999, ReviewTransition{
 		From: []string{ReviewDraft}, To: ReviewSubmitted,
 	}); found {
 		t.Error("transition on unknown hash applied")
@@ -245,12 +245,12 @@ func TestReviewVisibility_StagedFilesHiddenEverywhere(t *testing.T) {
 	}
 
 	// Approval flips all of it.
-	if found, _ := db.UpdateReviewState(ctx, h, ReviewTransition{
+	if found, _ := db.UpdateReviewState(ctx, tagsetOf(t, db, h), ReviewTransition{
 		From: []string{ReviewDraft}, To: ReviewSubmitted, OwnerID: uid, StampSubmittedAt: true,
 	}); !found {
 		t.Fatal("submit failed")
 	}
-	if found, _ := db.UpdateReviewState(ctx, h, ReviewTransition{
+	if found, _ := db.UpdateReviewState(ctx, tagsetOf(t, db, h), ReviewTransition{
 		From: []string{ReviewSubmitted}, To: ReviewApproved,
 	}); !found {
 		t.Fatal("approve failed")
@@ -285,11 +285,11 @@ func TestBulkUpdateReviewState_ApproveSkipsNonMatching(t *testing.T) {
 	insertStagedFile(t, db, hd, ReviewDraft, uid) // not in From -> skipped
 
 	// Empty From is rejected (guards against an unscoped UPDATE).
-	if _, err := db.BulkUpdateReviewState(ctx, []string{hs}, ReviewTransition{To: ReviewApproved}); err == nil {
+	if _, err := db.BulkUpdateReviewState(ctx, []int64{tagsetOf(t, db, hs)}, ReviewTransition{To: ReviewApproved}); err == nil {
 		t.Error("empty From should error")
 	}
 
-	n, err := db.BulkUpdateReviewState(ctx, []string{hs, hr, hd}, ReviewTransition{
+	n, err := db.BulkUpdateReviewState(ctx, []int64{tagsetOf(t, db, hs), tagsetOf(t, db, hr), tagsetOf(t, db, hd)}, ReviewTransition{
 		From: []string{ReviewSubmitted, ReviewReturned}, To: ReviewApproved,
 	})
 	if err != nil {
@@ -321,7 +321,7 @@ func TestBulkUpdateReviewState_ReturnNoteSkipsTrashed(t *testing.T) {
 		t.Fatalf("trash setup: found=%v err=%v", found, err)
 	}
 
-	n, err := db.BulkUpdateReviewState(ctx, []string{hLive, hTrash}, ReviewTransition{
+	n, err := db.BulkUpdateReviewState(ctx, []int64{tagsetOf(t, db, hLive), tagsetOf(t, db, hTrash)}, ReviewTransition{
 		From: []string{ReviewSubmitted, ReviewReturned}, To: ReviewReturned, Note: "fix tags",
 	})
 	if err != nil {
@@ -356,7 +356,7 @@ func TestBulkDiscardOwnUploads_OwnerAndStateScoped(t *testing.T) {
 	insertStagedFile(t, db, hSubmitted, ReviewSubmitted, uid) // submitted: not withdrawable
 	insertStagedFile(t, db, hForeign, ReviewDraft, other)     // not owned
 
-	n, err := db.BulkDiscardOwnUploads(ctx, []string{hDraft, hReturned, hSubmitted, hForeign}, uid)
+	n, err := db.BulkDiscardOwnUploads(ctx, []int64{tagsetOf(t, db, hDraft), tagsetOf(t, db, hReturned), tagsetOf(t, db, hSubmitted), tagsetOf(t, db, hForeign)}, uid)
 	if err != nil {
 		t.Fatalf("BulkDiscardOwnUploads: %v", err)
 	}

@@ -420,9 +420,9 @@ type fakeRepo struct {
 	bulkRestoreErr     error
 	bulkDeletedHashes  []string
 	bulkDeleteErr      error
-	bulkReviewHashes   []string
+	bulkReviewTagsets  []int64
 	bulkReviewErr      error
-	bulkDiscardHashes  []string
+	bulkDiscardTagsets []int64
 	bulkDiscardErr     error
 	bulkMetaHashes     []string
 
@@ -471,12 +471,18 @@ type fakeRepo struct {
 	bulkAbsorbIDs     []int64
 	bulkAbsorbErr     error
 	duplicateHashes   map[string]bool               // hashes IsDuplicateSubmission reports true
+	classify          map[int64]database.SubmissionClass // per-tagset ClassifySubmission override
+	attachCalls       int
+	attachTagsetID    int64
+	attachCreated     bool
+	attachErr         error
 	renditions        []database.DuplicateRendition // RecordingRenditionsByTagsetID result
 
 	// Base-metadata edit stubs (Phase 5).
 	metaCalls     int
-	lastMetaHash  string
-	lastMetaPatch database.MetadataPatch
+	lastMetaHash   string
+	lastMetaTagset int64
+	lastMetaPatch  database.MetadataPatch
 	metaResult    *database.MediaMetadata
 	metaErr       error
 	metaGetResult *database.MediaMetadata // FileMetadataByHash result
@@ -501,7 +507,9 @@ type fakeRepo struct {
 	reviewUpdateFound bool
 	reviewUpdateErr   error
 	reviewUpdateCalls int
-	lastReviewHash    string
+	lastReviewTagset    int64
+	lastApproveDrop     bool
+	lastApproveForceNew bool
 	lastReviewTrans   database.ReviewTransition
 	reviewInfoState   string
 	reviewInfoOwner   sql.NullInt64
@@ -516,7 +524,7 @@ type fakeRepo struct {
 	// return reviewEntries/pageFiles unless a dedicated slice is set; the count /
 	// hash-resolver knobs back the "select all N matching" path.
 	countReview        int
-	reviewFilterHashes []string
+	reviewFilterTagsets []int64
 	lastReviewFilter   database.ReviewFilter
 	pageTrash          []*database.FileListEntry
 	countTrash         int
@@ -539,9 +547,9 @@ func (f *fakeRepo) CountUploadsByUser(_ context.Context, _ database.ReviewFilter
 	return f.countReview, f.reviewErr
 }
 
-func (f *fakeRepo) UploadHashesByUserFilter(_ context.Context, fl database.ReviewFilter) ([]string, error) {
+func (f *fakeRepo) UploadTagsetIDsByUserFilter(_ context.Context, fl database.ReviewFilter) ([]int64, error) {
 	f.lastReviewFilter = fl
-	return f.reviewFilterHashes, f.reviewErr
+	return f.reviewFilterTagsets, f.reviewErr
 }
 
 func (f *fakeRepo) ListPendingReviewPage(_ context.Context, _ database.ReviewListQuery) ([]*database.ReviewEntry, error) {
@@ -552,20 +560,28 @@ func (f *fakeRepo) CountPendingReview(_ context.Context, _ database.ReviewFilter
 	return f.countReview, f.reviewErr
 }
 
-func (f *fakeRepo) PendingReviewHashesByFilter(_ context.Context, fl database.ReviewFilter) ([]string, error) {
+func (f *fakeRepo) PendingReviewTagsetIDsByFilter(_ context.Context, fl database.ReviewFilter) ([]int64, error) {
 	f.lastReviewFilter = fl
-	return f.reviewFilterHashes, f.reviewErr
+	return f.reviewFilterTagsets, f.reviewErr
 }
 
-func (f *fakeRepo) UpdateReviewState(_ context.Context, hash string, t database.ReviewTransition) (bool, error) {
+func (f *fakeRepo) UpdateReviewState(_ context.Context, tagsetID int64, t database.ReviewTransition) (bool, error) {
 	f.reviewUpdateCalls++
-	f.lastReviewHash = hash
+	f.lastReviewTagset = tagsetID
 	f.lastReviewTrans = t
 	return f.reviewUpdateFound, f.reviewUpdateErr
 }
 
-func (f *fakeRepo) FileReviewInfo(_ context.Context, _ string) (string, sql.NullInt64, bool, bool, error) {
+func (f *fakeRepo) TagsetReviewInfo(_ context.Context, _ int64) (string, sql.NullInt64, bool, bool, error) {
 	return f.reviewInfoState, f.reviewInfoOwner, f.reviewInfoDeleted, f.reviewInfoFound, f.reviewInfoErr
+}
+
+func (f *fakeRepo) ApproveSubmission(_ context.Context, tagsetID int64, dropBytes, forceNew bool) (bool, error) {
+	f.reviewUpdateCalls++
+	f.lastReviewTagset = tagsetID
+	f.lastApproveDrop = dropBytes
+	f.lastApproveForceNew = forceNew
+	return f.reviewUpdateFound, f.reviewUpdateErr
 }
 
 // BlobPubliclyVisible mirrors the review-info stub: visible iff the stubbed
@@ -580,25 +596,38 @@ func (f *fakeRepo) StageRestoredFile(_ context.Context, _ string, _ sql.NullInt6
 	return f.stageRestored, f.stageRestoredErr
 }
 
-func (f *fakeRepo) DiscardOwnUpload(_ context.Context, _ string, _ int64) (bool, error) {
+func (f *fakeRepo) DiscardOwnUpload(_ context.Context, _ int64, _ int64) (bool, error) {
 	return f.reviewUpdateFound, f.reviewUpdateErr
 }
 
-func (f *fakeRepo) BulkUpdateReviewState(_ context.Context, hashes []string, t database.ReviewTransition) (int, error) {
-	f.bulkReviewHashes = append(f.bulkReviewHashes, hashes...)
+func (f *fakeRepo) BulkUpdateReviewState(_ context.Context, tagsetIDs []int64, t database.ReviewTransition) (int, error) {
+	f.bulkReviewTagsets = append(f.bulkReviewTagsets, tagsetIDs...)
 	f.lastReviewTrans = t
 	if f.bulkReviewErr != nil {
 		return 0, f.bulkReviewErr
 	}
-	return len(hashes), nil
+	return len(tagsetIDs), nil
 }
 
-func (f *fakeRepo) BulkDiscardOwnUploads(_ context.Context, hashes []string, _ int64) (int, error) {
-	f.bulkDiscardHashes = append(f.bulkDiscardHashes, hashes...)
+func (f *fakeRepo) BulkDiscardOwnUploads(_ context.Context, tagsetIDs []int64, _ int64) (int, error) {
+	f.bulkDiscardTagsets = append(f.bulkDiscardTagsets, tagsetIDs...)
 	if f.bulkDiscardErr != nil {
 		return 0, f.bulkDiscardErr
 	}
-	return len(hashes), nil
+	return len(tagsetIDs), nil
+}
+
+func (f *fakeRepo) BulkTrashTagsets(_ context.Context, tagsetIDs []int64) (int, error) {
+	f.bulkDiscardTagsets = append(f.bulkDiscardTagsets, tagsetIDs...)
+	if f.bulkDiscardErr != nil {
+		return 0, f.bulkDiscardErr
+	}
+	return len(tagsetIDs), nil
+}
+
+func (f *fakeRepo) AttachDraftTagset(_ context.Context, _ int64, _ sql.NullInt64, _ *database.MediaMetadata, _ string) (int64, bool, error) {
+	f.attachCalls++
+	return f.attachTagsetID, f.attachCreated, f.attachErr
 }
 
 func (f *fakeRepo) RecordAudit(_ context.Context, actor sql.NullInt64, action, target, _ string) error {
@@ -820,6 +849,14 @@ func (f *fakeRepo) IsDuplicateSubmission(_ context.Context, hash string) (bool, 
 	return f.duplicateHashes[hash], nil
 }
 
+func (f *fakeRepo) ClassifySubmission(_ context.Context, tagsetID int64) (database.SubmissionClass, bool, error) {
+	if sc, ok := f.classify[tagsetID]; ok {
+		return sc, true, nil
+	}
+	// Default: a fresh, unmatched submission (new recording).
+	return database.SubmissionClass{Case: database.SubmissionNewRecording}, true, nil
+}
+
 func (f *fakeRepo) RecordingRenditionsByTagsetID(_ context.Context, _ int64) ([]database.DuplicateRendition, error) {
 	return f.renditions, nil
 }
@@ -869,6 +906,30 @@ func (f *fakeRepo) BulkUpdateFileMetadata(_ context.Context, hashes []string, p 
 
 func (f *fakeRepo) FileMetadataByHash(_ context.Context, hash string) (*database.MediaMetadata, error) {
 	f.lastMetaHash = hash
+	if f.metaGetErr != nil {
+		return nil, f.metaGetErr
+	}
+	if f.metaGetResult != nil {
+		return f.metaGetResult, nil
+	}
+	return &database.MediaMetadata{}, nil
+}
+
+func (f *fakeRepo) UpdateTagsetMetadata(_ context.Context, tagsetID int64, p database.MetadataPatch) (*database.MediaMetadata, error) {
+	f.metaCalls++
+	f.lastMetaTagset = tagsetID
+	f.lastMetaPatch = p
+	if f.metaErr != nil {
+		return nil, f.metaErr
+	}
+	if f.metaResult != nil {
+		return f.metaResult, nil
+	}
+	return &database.MediaMetadata{}, nil
+}
+
+func (f *fakeRepo) TagsetMetadataByID(_ context.Context, tagsetID int64) (*database.MediaMetadata, error) {
+	f.lastMetaTagset = tagsetID
 	if f.metaGetErr != nil {
 		return nil, f.metaGetErr
 	}

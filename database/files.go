@@ -17,15 +17,24 @@ import (
 // intentionally do not use it.
 const visibleFile = "f.deleted_at IS NULL AND m.deleted_at IS NULL AND m.review_state = 'approved'"
 
+// reprTagset selects a file's *representative* appearance — the single tagset
+// the files-rooted surfaces display, so those surfaces stay 1:1 with the file
+// even after a byte-dup upload attaches extra draft appearances to a blob
+// (recording-tagsets P4, byte-dup → draft tagset): the file's primary
+// appearance, else its oldest. Requires the files row aliased `f`.
+const reprTagset = `(SELECT rt.id FROM tagsets rt WHERE rt.origin_file_id = f.id
+		ORDER BY rt.is_primary DESC, rt.id ASC LIMIT 1)`
+
 // tagsetJoin binds the aliases the shared predicates (visibleFile,
 // accessClause, qFieldClause) expect around a files row aliased `f`: `m` is the
-// file's offered tagset — descriptive tags plus the review/trash lifecycle
-// (origin_file_id = f.id, exactly one per file in the P0 1:1 world) — and `r`
-// its recording (access/license). INNER joins on purpose: both exist by
-// invariant, and a violating row must drop out of every surface rather than
+// file's *representative* offered tagset — descriptive tags plus the
+// review/trash lifecycle — and `r` its recording (access/license). A file may
+// carry several appearances after a byte-dup upload; the files surfaces show
+// only the representative one (reprTagset). INNER joins on purpose: both exist
+// by invariant, and a violating row must drop out of every surface rather than
 // leak half-formed.
 const tagsetJoin = `
-	JOIN tagsets m ON m.origin_file_id = f.id
+	JOIN tagsets m ON m.id = ` + reprTagset + `
 	JOIN recordings r ON r.id = f.recording_id`
 
 // StorageByteBreakdown partitions the logical byte size of stored blobs by
@@ -56,7 +65,7 @@ func (db *DB) StorageByteBreakdown(ctx context.Context) (StorageByteBreakdown, e
 		  COALESCE(SUM(CASE WHEN t.deleted_at IS NULL AND t.review_state <> 'approved' THEN f.byte_size END), 0),
 		  COALESCE(SUM(CASE WHEN t.id IS NULL OR t.deleted_at IS NOT NULL               THEN f.byte_size END), 0)
 		FROM files f
-		LEFT JOIN tagsets t ON t.origin_file_id = f.id
+		LEFT JOIN tagsets t ON t.id = ` + reprTagset + `
 		WHERE f.storage_backend <> 'links'`,
 	).Scan(&b.Library, &b.Review, &b.Trash)
 	if err != nil {
@@ -211,6 +220,85 @@ func (db *DB) InsertFile(ctx context.Context, f *File, upload *FileUpload, meta 
 		return fmt.Errorf("commit: %w", err)
 	}
 	return nil
+}
+
+// AttachDraftTagset offers a new appearance on the recording of an existing blob
+// (recording-tagsets P4, byte-dup upload → draft tagset): a content-hash dedup
+// re-upload adds no new file, but its tags land as a draft appearance the
+// uploader reviews. It resolves the tags to entities and, unless a live
+// appearance with the same identity (album / album-artist / disc / track)
+// already exists on the recording, inserts a draft tagset owned by ownerID with
+// origin_file_id = fileID. Returns the tagset id and whether it was created
+// (created=false when an identical live appearance already exists — nothing new
+// to offer, so the re-upload is a plain no-op). A trashed or unknown file yields
+// (0, false, nil). Atomic.
+func (db *DB) AttachDraftTagset(ctx context.Context, fileID int64, ownerID sql.NullInt64, meta *MediaMetadata, filename string) (tagsetID int64, created bool, err error) {
+	if meta == nil {
+		meta = &MediaMetadata{}
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, false, fmt.Errorf("attach draft tagset: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	var recID int64
+	err = tx.QueryRowContext(ctx,
+		`SELECT recording_id FROM files WHERE id = ? AND deleted_at IS NULL`, fileID).Scan(&recID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil // trashed or unknown blob — nothing to attach to
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("attach draft tagset: load file: %w", err)
+	}
+
+	albumArtistID, trackArtistID, albumID, err := resolveAlbumArtistTx(ctx, tx, tagsFromMeta(meta))
+	if err != nil {
+		return 0, false, fmt.Errorf("attach draft tagset: resolve entities: %w", err)
+	}
+
+	// Identity dedup: a live appearance with the same key already offered? (NULL-safe
+	// via SQLite IS, so an untagged disc/track matches another untagged one.)
+	err = tx.QueryRowContext(ctx, `
+		SELECT id FROM tagsets
+		 WHERE recording_id = ? AND deleted_at IS NULL
+		   AND album_id IS ? AND album_artist_id IS ? AND disc_number IS ? AND track_number IS ?
+		 ORDER BY id LIMIT 1`,
+		recID, albumID, albumArtistID, meta.DiscNumber, meta.TrackNumber,
+	).Scan(&tagsetID)
+	if err == nil {
+		if cerr := tx.Commit(); cerr != nil {
+			return 0, false, fmt.Errorf("attach draft tagset: commit: %w", cerr)
+		}
+		return tagsetID, false, nil // identical appearance already present
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, false, fmt.Errorf("attach draft tagset: dedup: %w", err)
+	}
+
+	title := meta.Title
+	if strings.TrimSpace(title) == "" {
+		title = titleFromFilename(filename)
+	}
+	now := time.Now().Unix()
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO tagsets (
+			recording_id, title, artist, album_artist, album, genre, year,
+			track_number, track_total, disc_number, composer, comment,
+			artist_id, album_artist_id, album_id,
+			review_state, created_by, origin_file_id, is_primary, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, 0, ?)
+		RETURNING id`,
+		recID, title, meta.Artist, meta.AlbumArtist, meta.Album, meta.Genre, meta.Year,
+		meta.TrackNumber, meta.TrackTotal, meta.DiscNumber, meta.Composer, meta.Comment,
+		trackArtistID, albumArtistID, albumID, ownerID, fileID, now,
+	).Scan(&tagsetID); err != nil {
+		return 0, false, fmt.Errorf("attach draft tagset: insert: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, false, fmt.Errorf("attach draft tagset: commit: %w", err)
+	}
+	return tagsetID, true, nil
 }
 
 // ListFiles returns all files ordered by created_at DESC, joined with

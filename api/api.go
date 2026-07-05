@@ -243,11 +243,11 @@ func RegisterAPI(r chi.Router, d Deps) {
 		registerPlaylists(r, d, h)
 		fileUpload := d.protect(auth.PermFileUpload)
 		r.With(fileUpload).Get("/api/my/uploads", h.myUploads)
-		r.With(fileUpload).Get("/api/my/uploads/{hash}/metadata", h.myUploadMetadataGet)
-		r.With(fileUpload).Patch("/api/my/uploads/{hash}/metadata", h.myUploadMetadata)
+		r.With(fileUpload).Get("/api/my/uploads/{tagsetID}/metadata", h.myUploadMetadataGet)
+		r.With(fileUpload).Patch("/api/my/uploads/{tagsetID}/metadata", h.myUploadMetadata)
 		r.With(fileUpload).Post("/api/my/uploads/submit", h.submitMyUploads)
 		r.With(fileUpload).Post("/api/my/uploads/bulk", h.myUploadsBulk)
-		r.With(fileUpload).Delete("/api/my/uploads/{hash}", h.myUploadDiscard)
+		r.With(fileUpload).Delete("/api/my/uploads/{tagsetID}", h.myUploadDiscard)
 	}
 }
 
@@ -280,8 +280,10 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		moderate := d.protect(auth.PermContentModerate)
 		r.With(moderate).Get("/moderation", h.moderationList)
 		r.With(moderate).Post("/moderation/bulk", h.moderationBulk)
-		r.With(moderate).Post("/moderation/{hash}/approve", h.moderationApprove)
-		r.With(moderate).Post("/moderation/{hash}/return", h.moderationReturn)
+		r.With(moderate).Get("/moderation/{tagsetID}/classify", h.moderationClassify)
+		r.With(moderate).Post("/moderation/{tagsetID}/approve", h.moderationApprove)
+		r.With(moderate).Post("/moderation/{tagsetID}/return", h.moderationReturn)
+		r.With(moderate).Post("/moderation/{tagsetID}/discard", h.moderationDiscard)
 
 		// Duplicates / variants (recordings P2). List multi-rendition recordings
 		// and split a rendition off; delete reuses the soft-delete above.

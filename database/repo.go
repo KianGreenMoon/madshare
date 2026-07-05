@@ -227,31 +227,41 @@ type Repository interface {
 
 	// The two staging listings are paged like the live library. The *Page forms
 	// return one filtered/sorted window; the Count* forms return the total (set
-	// ReviewFilter.States to scope it to the selectable subset); the *HashesBy*
-	// forms resolve the "select all N matching" set for the bulk endpoints. See
+	// ReviewFilter.States to scope it to the selectable subset); the
+	// *TagsetIDsBy* forms resolve the "select all N matching" set (tagset ids —
+	// the review row identity) for the bulk endpoints. See
 	// docs/architecture/file-list-scaling.md.
 	ListUploadsByUserPage(ctx context.Context, q ReviewListQuery) ([]*ReviewEntry, error)
 	CountUploadsByUser(ctx context.Context, f ReviewFilter) (int, error)
-	UploadHashesByUserFilter(ctx context.Context, f ReviewFilter) ([]string, error)
+	UploadTagsetIDsByUserFilter(ctx context.Context, f ReviewFilter) ([]int64, error)
 	ListPendingReviewPage(ctx context.Context, q ReviewListQuery) ([]*ReviewEntry, error)
 	CountPendingReview(ctx context.Context, f ReviewFilter) (int, error)
-	PendingReviewHashesByFilter(ctx context.Context, f ReviewFilter) ([]string, error)
+	PendingReviewTagsetIDsByFilter(ctx context.Context, f ReviewFilter) ([]int64, error)
 
-	// UpdateReviewState applies a guarded review-state transition (single
-	// UPDATE: state must be in From, file non-trashed, owner matching when
-	// OwnerID is set). found is false when no row satisfies the guard.
-	UpdateReviewState(ctx context.Context, hash string, t ReviewTransition) (found bool, err error)
+	// UpdateReviewState applies a guarded review-state transition to one
+	// appearance by tagset id (single UPDATE: state must be in From, non-trashed,
+	// owner matching when OwnerID is set). found is false when no row satisfies
+	// the guard.
+	UpdateReviewState(ctx context.Context, tagsetID int64, t ReviewTransition) (found bool, err error)
 
-	// BulkUpdateReviewState applies one guarded transition to a hash set in a
-	// single chunked transaction (same guard as UpdateReviewState), returning the
-	// number of rows that actually transitioned. Backs the bulk moderation
-	// approve/return — one transaction instead of one write + audit per hash.
-	BulkUpdateReviewState(ctx context.Context, hashes []string, t ReviewTransition) (int, error)
+	// ApproveSubmission publishes one appearance with the moderator's per-piece
+	// decisions applied atomically (recording-tagsets P4): forceNew splits the
+	// blob into a new pinned recording first; dropBytes soft-removes the submitted
+	// rendition after publishing (keep-appearance-drop-blob). found is false for a
+	// non-actionable tagset.
+	ApproveSubmission(ctx context.Context, tagsetID int64, dropBytes, forceNew bool) (found bool, err error)
 
-	// FileReviewInfo is the narrow (state, uploader, trashed) lookup on the
-	// file's own offered tagset, used by the My-uploads ownership/editability
-	// checks. found is false on unknown hash.
-	FileReviewInfo(ctx context.Context, hash string) (state string, uploadedBy sql.NullInt64, deleted bool, found bool, err error)
+	// BulkUpdateReviewState applies one guarded transition to a tagset-id set in
+	// a single chunked transaction (same guard as UpdateReviewState), returning
+	// the number of appearances that actually transitioned. Backs the bulk
+	// moderation approve/return — one transaction instead of one write + audit
+	// per row.
+	BulkUpdateReviewState(ctx context.Context, tagsetIDs []int64, t ReviewTransition) (int, error)
+
+	// TagsetReviewInfo is the narrow (state, owner, trashed) lookup on one
+	// appearance, used by the My-uploads ownership/editability checks. found is
+	// false on unknown id.
+	TagsetReviewInfo(ctx context.Context, tagsetID int64) (state string, owner sql.NullInt64, deleted bool, found bool, err error)
 
 	// BlobPubliclyVisible reports whether the blob belongs to the public
 	// library: a surviving rendition of a recording with ≥1 approved,
@@ -267,14 +277,25 @@ type Repository interface {
 	StageRestoredFile(ctx context.Context, hash string, ownerID sql.NullInt64) (bool, error)
 
 	// DiscardOwnUpload soft-deletes the owner's editable (draft/returned)
-	// staged file; found=false for submitted, foreign, or unknown files.
-	DiscardOwnUpload(ctx context.Context, hash string, ownerID int64) (bool, error)
+	// appearance by tagset id; found=false for submitted, foreign, or unknown.
+	DiscardOwnUpload(ctx context.Context, tagsetID, ownerID int64) (bool, error)
 
 	// BulkDiscardOwnUploads soft-deletes a set of the owner's editable
-	// (draft/returned) staged files in one chunked transaction (same guard as
+	// (draft/returned) appearances in one chunked transaction (same guard as
 	// DiscardOwnUpload), returning how many were removed. Backs the My-uploads
-	// bulk "remove" — one transaction instead of one write + audit per hash.
-	BulkDiscardOwnUploads(ctx context.Context, hashes []string, ownerID int64) (int, error)
+	// bulk "remove" — one transaction instead of one write + audit per row.
+	BulkDiscardOwnUploads(ctx context.Context, tagsetIDs []int64, ownerID int64) (int, error)
+
+	// BulkTrashTagsets soft-deletes a set of appearances by id in one chunked
+	// transaction — the moderator's bulk discard (tagset Trash, no owner guard).
+	// Returns how many were trashed. Soft delete never cascades.
+	BulkTrashTagsets(ctx context.Context, tagsetIDs []int64) (int, error)
+
+	// AttachDraftTagset offers a new draft appearance on an existing blob's
+	// recording (recording-tagsets P4, byte-dup upload → draft tagset), unless an
+	// identical live appearance already exists. Returns the tagset id and whether
+	// it was created; (0,false,nil) for a trashed/unknown file.
+	AttachDraftTagset(ctx context.Context, fileID int64, ownerID sql.NullInt64, meta *MediaMetadata, filename string) (tagsetID int64, created bool, err error)
 
 	// --- Cover image variants & async job queue (Phase 1: upload & covers) ---
 
@@ -326,6 +347,11 @@ type Repository interface {
 	// non-default tag collision. Suppresses self-approve and flags the queue.
 	IsDuplicateSubmission(ctx context.Context, hash string) (bool, error)
 
+	// ClassifySubmission classifies the staged submission with the given tagset
+	// id — case A/B/C, appearance-collision, and the ladder compare
+	// (recording-tagsets P4). found is false for an unknown/trashed/approved id.
+	ClassifySubmission(ctx context.Context, tagsetID int64) (SubmissionClass, bool, error)
+
 	// RecordingRenditionsByTagsetID returns the surviving renditions of the
 	// appearance's recording (the player's quality control), display fields
 	// filled from the addressed tagset. An unknown/unavailable tagset yields
@@ -361,6 +387,15 @@ type Repository interface {
 	// no file (skipped). Backs the bulk metadata editor — fewer write-lock
 	// acquisitions than the per-file UpdateFileMetadata loop.
 	BulkUpdateFileMetadata(ctx context.Context, hashes []string, p MetadataPatch) (affected int, notFound []string, err error)
+
+	// UpdateTagsetMetadata writes the patch onto one appearance by tagset id and
+	// returns the combined row (recording-tagsets P4 — the review / My-uploads
+	// edit target). ErrFileNotFound when no tagset matches.
+	UpdateTagsetMetadata(ctx context.Context, tagsetID int64, p MetadataPatch) (*MediaMetadata, error)
+
+	// TagsetMetadataByID loads the editable metadata (tags + tech) for one
+	// appearance, for the edit modal to prefill. ErrFileNotFound when unknown.
+	TagsetMetadataByID(ctx context.Context, tagsetID int64) (*MediaMetadata, error)
 
 	// FileMetadataByHash loads the editable metadata (tagset + tech) for the file
 	// with the given content hash. Returns ErrFileNotFound when no file matches.
