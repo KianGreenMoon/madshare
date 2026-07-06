@@ -17,15 +17,26 @@ before editing (so it can save the extended fields without clobbering ones the
 user never sees). Requires `metadata.edit`. The response body is identical to the
 `PATCH` echo below; `404` when no file matches `hash`.
 
-The owner-scoped twin `GET /api/my/uploads/{hash}/metadata` returns the same shape
-for the uploader's own staged (draft/returned) files; gated by `file.upload` +
-ownership, `404` on anything the caller may not see (same guard as the PATCH).
+Two staging-side twins return the same shape, but are addressed by **`tagset_id`**
+(the appearance), because a byte-dup blob can host more than one appearance
+(`docs/architecture/recording-tagsets.md`):
+
+- `GET /api/my/uploads/{tagsetID}/metadata` — the uploader's own staged
+  (draft/returned) appearance; gated by `file.upload` + ownership, `404` on
+  anything the caller may not see (same guard as its `PATCH`).
+- `GET /api/admin/moderation/{tagsetID}/metadata` — a moderator reading one
+  queued appearance's tags; gated `content.moderate`.
 
 ---
 
 ## `PATCH /api/files/{hash}/metadata`
 
-Updates the tags on one file's `media_metadata` row.
+Updates the descriptive tags on one file's **representative appearance** — the
+`tagsets` row the file surfaces show (its primary appearance, else its oldest).
+Descriptive tags live on the appearance since the recording-tagsets rework;
+`media_metadata` is now tech-only (duration/bitrate/codec/…, read-only here).
+The endpoint stays hash-addressed for library files; the staging twins above are
+`tagset_id`-addressed. See `docs/architecture/recording-tagsets.md`.
 
 ### Request
 
@@ -86,9 +97,9 @@ Anonymous requests get `401`; an authenticated user lacking the permission gets
 
 ### Behaviour
 
-- Writes the supplied fields to the file's `media_metadata` row and returns the
-  resulting base fields. An empty body (no fields) is a no-op that still echoes
-  the current values.
+- Writes the supplied fields to the file's representative appearance (its
+  `tagsets` row) and returns the resulting base fields. An empty body (no fields)
+  is a no-op that still echoes the current values.
 - **Editing a track's tags reclassifies that track.** The `album_artist`/`album`
   strings resolve to artist/album entities, so changing them moves the track to
   whichever artist/album its new tags resolve to (its `artist_id`/`album_id` are

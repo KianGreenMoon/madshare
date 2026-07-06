@@ -1,8 +1,8 @@
 # Recording tagsets — multiple metadata appearances per audio
 
 **Status:** ✅ **Design decided (owner review 2026-07-04). P0 (migration 024),
-P1 (library & addressing, migration 025), P2 (lifecycle & GC), and P3
-(operations layer + absorb) are built.**
+P1 (library & addressing, migration 025), P2 (lifecycle & GC), P3 (operations
+layer + absorb), and P4 (review & upload rework) are built.**
 Tagsets exist, `media_metadata` is tech-only, review/trash live on the tagset,
 license/guest on the recording, every file has a recording; the library lists
 tagsets and a track is addressed by `tagset_id` end-to-end (browse/search rows,
@@ -11,8 +11,13 @@ server-side to the ladder-best surviving rendition. The hardlink lifecycle is
 live: the Trash permanent-delete cascades from the tagset (non-last drops just
 the appearance and keeps the blob; last takes the recording + all its files),
 renditions can be soft-removed (last one → dormant recording), and prune repairs
-blob-loss recordings and sweeps invalid ones. P3+ not started. This document is
-the reference design and the implementation plan. Extends
+blob-loss recordings and sweeps invalid ones. Review & upload are tagset-rooted:
+uploads offer a draft appearance (byte-dups included), the queue classifies each
+submission (new recording / new appearance / no new bytes) and the moderator
+approves per-piece — with case-B drop-bytes (absorb-at-the-gate) and force-new
+(pinned split) overrides. P5+ (recordings/files admin views + federation) not
+started. This document is the reference design and the implementation plan.
+Extends
 [Recordings](recordings.md) (same-audio grouping & renditions) and the
 [artist/album overlay](artist-album-model.md); the metadata payload defined here
 is what will travel in [Federation](federation.md) (deferred). A short list of
@@ -458,10 +463,17 @@ each a single transaction, each with a bulk variant and one audit row:
 Deliberately **two perspectives** (owner accepts the added admin complexity):
 
 - **Tagset surfaces = the existing pages, re-pointed.** Library, All files,
-  Review, Trash, My uploads — the unified file-list
+  Trash — the unified file-list
   ([file-management-view.md](file-management-view.md)) keeps its scopes,
   paging, select-all and bulk toolbars, but rows are **tagsets** ("a track as
   a regular user perceives it"). This is where day-to-day work stays.
+  *Shipped divergence (P4):* **Review** and **My uploads** did **not** stay
+  file-list scopes — they were rebuilt as bespoke standalone modules
+  (`admin/moderation.js`, `mine-list.js`) so the moderator gets the per-piece
+  decision card (ladder compare, drop-bytes, force-new) and the uploader sees
+  review state/notes, which the shared component couldn't express;
+  `file-list.js` was rolled back to pre-P4e. They keep their own paging,
+  select-all and bulk toolbars and still edit through `track-edit.js`.
 - **`/admin/recordings` (new)** — the recording-centric view: **all**
   recordings, searchable, with quick filters (e.g. ">1 rendition",
   ">1 tagset", "invalid"). A recording row expands to show **both arms**: its
@@ -621,11 +633,38 @@ regressions isolate to the data move.
   `/duplicates/{file_id}/split`. `MoveTagset` / `SetPrimaryTagset` are **deferred
   to P5** — their only surface is the recordings view; building them now would
   yield unwired, untestable primitives.
-- **P4 — Review & upload rework.** The classified queue (cases A/B/C with
-  ladder compare and the appearance-vs-rendition decision), upload's offered
+- **P4 — Review & upload rework. ✅ Done.** The classified queue (cases A/B/C
+  with ladder compare and the appearance-vs-rendition decision), upload's offered
   tagset (incl. byte-dup → draft tagset), My-uploads on tagsets, bulk + audit.
-  *Result: moderation resolves duplication at the gate, with a full toolset
-  for incoming files, tagsets, and recordings.*
+  *Result: moderation resolves duplication at the gate, per-piece. The queue and
+  My-uploads are tagset-addressed (`ReviewEntry.TagsetID`; ~12 repository methods
+  + handlers + routes re-keyed hash→`tagset_id`; submit/bulk bodies take
+  `{tagset_ids}`; metadata edit via `UpdateTagsetMetadata`/`TagsetMetadataByID`).
+  `ClassifySubmission` (`GET /api/admin/moderation/{tagsetID}/classify`) derives
+  the case off the file's already-resolved recording — `blobPublished` → C
+  (`no_new_bytes`), else `recordingPublished` → B (`new_appearance`), else A
+  (`new_recording`) — plus the NULL-safe appearance-collision flag and the
+  ladder compare (`CurrentBest` vs `Submitted`, `SubmittedIsNewBest`).
+  `ApproveSubmission(tagsetID, dropBytes, forceNew)` publishes the appearance in
+  one tx and applies the per-piece overrides atomically: `forceNew` splits the
+  blob into a new `recording_pinned` recording (skipped when the blob already
+  carries an approved appearance — a byte-dup can't be "actually new"); `dropBytes`
+  soft-removes the submitted rendition after publishing (case-B absorb-at-the-gate;
+  dropping the only rendition → dormant recording). A byte-dup upload calls
+  `AttachDraftTagset` (NULL-safe identity dedup) to offer a draft appearance on
+  the held recording (enabling case C); a `reprTagset` "representative appearance"
+  pick keeps every files-rooted surface 1:1 with the blob. Moderator per-appearance
+  edit lands at `GET`/`PATCH /api/admin/moderation/{tagsetID}/metadata`.
+  Scope note: the Review queue and My-uploads shipped as **bespoke standalone
+  modules** (`admin/moderation.js` rewritten + new `mine-list.js`), **not** the
+  re-pointed `file-list.js` scopes the "Admin surfaces" section sketched —
+  `file-list.js` was rolled back to pre-P4e and now serves only Files/Trash/
+  Library/Duplicates. The review card is per-piece (per-uploader collapsible
+  groups → collapsed submission cards → expandable 3-piece decision card with the
+  ladder compare + keep/drop-bytes + force-new for case B). `/admin/duplicates`
+  absorb was also unified into the checkbox selection flow (ticked renditions
+  folded into the best unticked one; plain keep-best routes through the bulk
+  `/absorb` endpoint, custom selections loop the per-recording endpoint).*
 - **P5 — Recordings + files admin views.** `/admin/recordings` (all
   recordings, both arms, move/set-primary/remove; merge + split surfaces —
   **after** the merge/split mini-design, open point 1); the files scope.
@@ -710,8 +749,8 @@ Per the project's prune-legacy rule, each doc is updated when its phase ships
 - [recordings.md](recordings.md) — "NULL = implicit recording" dies at P0;
   duplicates page gains absorb at P3; display-name source becomes the primary
   tagset.
-- [moderation.md](moderation.md) — rewritten at P4 (tagset queue,
-  classification, states on tagsets).
+- [moderation.md](moderation.md) — ✅ rewritten at P4 (tagset queue,
+  classification cases A/B/C, per-piece approve, states on tagsets).
 - [soft-delete.md](soft-delete.md) — tagset-level Trash + the cascade at P2.
 - [license-access.md](license-access.md) — license/guest on the recording (P0).
 - [file-management-view.md](file-management-view.md) — tagset scopes at P1,

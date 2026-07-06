@@ -14,8 +14,10 @@ duplicate (subject to the trash-restore policy, `docs/api/upload.md`). With
 moderation configured, an upload-initiated restore of a previously *approved*
 file is demoted to the restorer's draft instead of republishing — restores
 must not bypass the review queue (`docs/architecture/moderation.md`). The
-admin Trash-page restore brings a file back with whatever `review_state` it
-had, so a discarded submission re-enters the queue, not the library.
+admin Trash-page restore brings a file's **appearance** back with whatever
+`review_state` it had — review/trash live on the `tagsets` row (the catalog
+unit) since migration 024, not the file (`recording-tagsets.md`) — so a
+discarded submission re-enters the queue, not the library.
 
 ---
 

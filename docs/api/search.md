@@ -25,7 +25,7 @@ An artist matches in **either role** — as an album-artist or as a track perfor
 The endpoint respects the caller's identity:
 
 - **Users holding `content.access`** (admins and the built-in content roles) see the full library.
-- **Anonymous callers (and authenticated users without `content.access`)** receive only guest-playable content (files with `guest_playable = 1` or auto-derived from a guest license). See `docs/architecture/auth.md` §5.
+- **Anonymous callers (and authenticated users without `content.access`)** receive only guest-playable content (recordings with `guest_playable = 1` or auto-derived from a guest license — access/license live on the recording since the recording-tagsets rework). See `docs/architecture/auth.md` §5.
 
 ---
 
@@ -84,6 +84,7 @@ All three arrays are always present (never `null`). Each is capped at **50 resul
 ```json
 {
   "id":               68,
+  "tagset_id":        42,
   "title":            "Ezio's Family - Ascending to Valhalla",
   "track_number":     47,
   "duration_seconds": null,
@@ -96,12 +97,13 @@ All three arrays are always present (never `null`). Each is capped at **50 resul
 
 | Field              | Type          | Description |
 |--------------------|---------------|-------------|
-| `id`               | integer       | File ID. |
+| `id`               | integer       | File ID of the resolved rendition (the ladder-best surviving file the `url` streams). |
+| `tagset_id`        | integer       | The **appearance** — the listening identity used for favorites / playlists / renditions (`docs/architecture/recording-tagsets.md`). A search result is one appearance of a recording; several appearances can resolve to the same blob. |
 | `title`            | string        | Track title (falls back to filename if untagged). |
 | `track_number`     | integer\|null | Track number from tags, or `null`. |
 | `duration_seconds` | float\|null   | Duration in seconds, or `null` if not yet determined. |
-| `url`              | string        | Relative URL to stream or download the file. |
-| `mime_type`        | string        | Audio MIME type (e.g. `audio/flac`, `audio/mpeg`). |
+| `url`              | string        | Relative URL streaming the recording's ladder-best surviving rendition (resolved server-side from the appearance). |
+| `mime_type`        | string        | Audio MIME type of that rendition (e.g. `audio/flac`, `audio/mpeg`). |
 | `artist_name`      | string        | The track's **performer** (its `artist_id` entity), which may differ from the album-artist on a compilation. |
 | `album_title`      | string        | Album title, or empty string if untagged. |
 

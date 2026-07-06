@@ -112,10 +112,11 @@ is no staging and inserts are immediately approved.
 |--------------------|---------|-------------|
 | `ok`               | boolean | Always `true` on a 2xx response. |
 | `existed`          | boolean | `false` when the bytes were newly stored; `true` when they already existed (dedup or restore). |
-| `pending`          | boolean | The file is staged (awaiting review) after this request — a fresh draft, a dedup against someone's staged file, or a restore that re-staged. `false` for library-live or still-trashed content. |
+| `pending`          | boolean | The content is staged (awaiting review) after this request — a fresh draft, a dedup against someone's staged file, a byte-dup that offered a **new draft appearance** (see [Deduplication](#deduplication)), or a restore that re-staged. `false` for library-live or still-trashed content. |
 | `restored`         | boolean | Dedup/restore path only: this request restored a trashed file (see [Trash-restore policy](#trash-restore-policy)). |
 | `trashed`          | boolean | Dedup path only: the content exists but stays soft-deleted (policy did not restore it). |
 | `hash`             | string  | SHA-256 of the file contents (the content address). |
+| `tagset_id`        | integer | Dedup path only: the id of the **new draft appearance** offered on the held recording when a byte-dup carried distinct tags (`0` when none was offered — new upload, plain dedup, or the appearance already existed). See [Deduplication](#deduplication). |
 | `filename`         | string  | The sanitised filename recorded for this upload. |
 | `size`             | integer | File size in bytes. |
 | `title`            | string  | Title tag, echoed for client display. Same emptiness rules as `album`. |
@@ -171,6 +172,26 @@ Files are content-addressed by hash, so **the same bytes are stored once**.
 Re-uploading identical content does not write a second blob — it returns
 `200` with `existed: true` and records the (possibly new) filename against the
 existing file, so the same audio can be known under multiple names.
+
+### Byte-dup → offered appearance (auth configured)
+
+Since the recording-tagsets rework a blob can carry more than one **appearance**
+(a `tagsets` row — one title/artist/album entry the library shows), and the
+review unit is the appearance, not the file (`docs/architecture/moderation.md`,
+`docs/architecture/recording-tagsets.md`). So a byte-dup against a **live**
+(non-trashed) blob does more than record a filename: the server reads the
+re-uploaded file's tags and, if they resolve to an appearance the blob's
+recording does **not** already have, attaches a **new draft appearance** owned by
+the re-uploader (`AttachDraftTagset`). The response then carries `pending: true`
+and `tagset_id: <new appearance>`, and it lands in the re-uploader's "My uploads"
+to be submitted and reviewed like any other draft.
+
+Identity dedup (album / album-artist / disc / track, NULL-safe) means this is a
+**no-op for a plain re-upload**: a file with the same embedded tags resolves to
+the appearance already present, so no draft is created (`tagset_id: 0`). The
+draft-offer path fires only when the re-upload genuinely describes a different
+release than what is already catalogued for that audio. Without auth configured
+there is no staging, so a byte-dup only records the filename.
 
 Embedded cover art is **not** re-processed on the dedup path: a duplicate upload
 returns `cover_found: false` and `cover_processing: false` regardless of what the

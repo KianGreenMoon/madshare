@@ -175,13 +175,15 @@ See `docs/architecture/license-access.md` for implementation details.
 
 ### 5.2 The access decision
 
-For a request to play/download file *F*:
+For a request to play/download file *F* — access/license live on its **recording**
+*R* (one audio identity, one license; decision 9 of the recording-tagsets rework),
+so the decision reads *R*'s columns:
 
 - **Authenticated user holding `content.access`:** allowed for any live file.
 - **Anonymous (or a user without `content.access`):** allowed iff
-  `F.guest_playable = 1` (explicit admin grant) **or** the auto-derive policy is
-  enabled and `F.license` is on the allowlist with no manual override
-  (`guest_playable_manual = 0`). Otherwise **deny** (404, not 403, to avoid
+  `R.guest_playable = 1` (explicit admin grant) **or** the auto-derive policy is
+  enabled and `R.license` is on the allowlist with no manual override
+  (`R.guest_playable_manual = 0`). Otherwise **deny** (404, not 403, to avoid
   leaking existence).
 
 The same guest predicate (`accessClause`, no bind parameters) filters library
@@ -195,11 +197,14 @@ unfiltered listings.
 `content.access` (admin, moderator, …) pass through so the Trash tab can preview
 them. See `docs/architecture/soft-delete.md`.
 
-**Staged (pending-review) files** (`review_state <> 'approved'`, migration 017)
-are likewise excluded from every listing, search, playlist and the guest
-predicate. At `/files/*` their blobs serve only to identities holding
-`file.upload` or `content.moderate` (uploaders, moderators, admins) and 404
-for everyone else, including `content.access`-only listeners.
+**Staged (pending-review) appearances** (`tagsets.review_state <> 'approved'`,
+migration 024 — the review lifecycle lives on the tagset, not the file) are
+likewise excluded from every listing, search, playlist and the guest predicate.
+At `/files/*` the gate is recording-level (`BlobPubliclyVisible`): a blob whose
+recording has no approved, non-trashed appearance serves only to identities
+holding `file.upload` or `content.moderate` (uploaders, moderators, admins) and
+404s for everyone else, including `content.access`-only listeners. See
+`docs/architecture/moderation.md`.
 
 > **⚠ Potentially dangerous, may be tightened later (owner-accepted,
 > 2026-06-11):** the pending-blob check is *not owner-scoped*. Any identity
@@ -410,8 +415,10 @@ will extend.
    **Deferred:** username rename (unique-constraint + live-session implications),
    and custom roles via `role.manage` (still future).
 3. **Content access** — **IMPLEMENTED** (roles-only):
-   - `files.guest_playable`/`license` columns + the access predicate
-     (`database.FileAccessibleByHash`).
+   - `recordings.guest_playable`/`license` columns (moved off `files` in the
+     recording-tagsets rework — one audio identity, one license, decision 9) +
+     the access predicate (`database.FileAccessibleByHash`, which resolves the
+     file's recording).
    - **Default-deny** on `/files/*` play/download via `Deps.fileAccessGuard`
      (`content.access` bypass, else the guest/license predicate; 404 on denial;
      cover images not gated; pass-through when auth unconfigured).
@@ -422,8 +429,8 @@ will extend.
      queries for identities without `content.access` (anonymous sees only
      guest-playable / free-licensed), pass-through when auth is unconfigured. The
      opt-in license→guest **auto-derivation** is a DB-backed `settings` key/value
-     policy (`access.autoderive.*`); it only ever *grants* and skips files whose
-     `guest_playable` was set manually (`files.guest_playable_manual`). The admin
+     policy (`access.autoderive.*`); it only ever *grants* and skips recordings whose
+     `guest_playable` was set manually (`recordings.guest_playable_manual`). The admin
      files table carries per-file guest/license controls plus an auto-publish
      policy panel.
    - Every built-in content role holds `content.access` (the whole library);

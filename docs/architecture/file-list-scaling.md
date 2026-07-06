@@ -144,9 +144,12 @@ visibility + `q` filter (ignoring `limit`/`offset`), so the client can render
 album-artist, album, and filename — via SQLite `LIKE` with the existing
 `ESCAPE '\\'` metacharacter handling (mirror `database/library.go` `search`).
 Visibility is unchanged: the `visibleFile` predicate
-(`deleted_at IS NULL AND review_state = 'approved'`) always applies, and the
-guest-listing path (`ListFilesGuest` / `accessClause`) still narrows for
-capability-less identities.
+(`f.deleted_at IS NULL AND m.deleted_at IS NULL AND m.review_state = 'approved'`,
+where `m` is the file's **representative appearance** — its `tagsets` row, since
+review/trash moved onto the tagset in migration 024,
+`docs/architecture/recording-tagsets.md`) always applies, and the guest-listing
+path (`ListFilesGuest` / `accessClause`) still narrows for capability-less
+identities.
 
 **Backward-compatibility.** The bare-array → envelope change is breaking, but
 the only consumers are internal: `admin/files.js` (the All-files scope) and

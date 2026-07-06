@@ -73,6 +73,11 @@ Two different numbers, sourced separately:
       `docs/architecture/moderation.md`);
     - `trash` = soft-deleted, awaiting prune.
 
+    The state (approved / review / trash) is read from each file's
+    **representative appearance** — its `tagsets` row (primary, else oldest),
+    since review/trash moved onto the tagset in migration 024
+    (`docs/architecture/recording-tagsets.md`); the query joins that appearance
+    via `reprTagset`, so a blob carrying several appearances still counts once.
     The three are **mutually exclusive** (trash takes precedence over review
     state) and together equal the whole files-table byte total, so they never
     double-count. Files are content-addressed (one row per hash), so each bucket

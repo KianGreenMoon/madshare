@@ -1,37 +1,50 @@
 # Bulk Operations API
 
-Acting on **many files at once** from the scope-driven file lists (`file-list.js`):
-the admin library and Trash views, the moderation queue, and the uploader's own
-staging tab. Each surface has a bulk toolbar that operates over either a
-**hand-picked selection** or the whole **"Select all N matching"** set, and posts
-to one of the four endpoints below.
+Acting on **many rows at once** from the file-management surfaces: the admin
+library and Trash views (the shared `file-list.js`), the review queue
+(`admin/moderation.js`) and the uploader's own staging tab (`mine-list.js`) —
+the latter two rebuilt as bespoke modules in the recording-tagsets rework. Each
+surface has a bulk toolbar that operates over either a **hand-picked selection**
+or the whole **"Select all N matching"** set, and posts to one of the four
+endpoints below.
 
 There are four bulk endpoints, one per surface:
 
-| Endpoint | Surface | Actions | Gate |
-|----------|---------|---------|------|
-| `POST /api/admin/files/bulk` | live library (`/admin/library`) | `trash`, `edit` | `file.delete` **or** `metadata.edit` (per action) |
-| `POST /api/admin/trash/bulk` | Trash (`/admin/library#trash`) | `restore`, `delete`, `edit` | `file.delete` **or** `metadata.edit` (per action) |
-| `POST /api/admin/moderation/bulk` | review queue (`/admin/library#review`) | `approve`, `return`, `discard` | `content.moderate` (`discard` also needs `file.delete`) |
-| `POST /api/my/uploads/bulk` | "My uploads" staging tab | `submit`, `remove` | `file.upload` (owner-scoped) |
+| Endpoint | Surface | Row identity | Actions | Gate |
+|----------|---------|--------------|---------|------|
+| `POST /api/admin/files/bulk` | live library (`/admin/library`) | `hashes` | `trash`, `edit` | `file.delete` **or** `metadata.edit` (per action) |
+| `POST /api/admin/trash/bulk` | Trash (`/admin/library#trash`) | `hashes` | `restore`, `delete`, `edit` | `file.delete` **or** `metadata.edit` (per action) |
+| `POST /api/admin/moderation/bulk` | review queue (`/admin/library#review`) | `tagset_ids` | `approve`, `return`, `discard` | `content.moderate` (`discard` also needs `file.delete`) |
+| `POST /api/my/uploads/bulk` | "My uploads" staging tab | `tagset_ids` | `submit`, `remove` | `file.upload` (owner-scoped) |
+
+**Row identity differs by surface.** The files-rooted surfaces (library, Trash)
+address rows by content **`hash`**; the review/staging surfaces address the
+**appearance** by **`tagset_id`** — since the recording-tagsets rework the
+reviewable unit is the tagset, not the file, and a byte-dup blob can host several
+appearances (`docs/architecture/recording-tagsets.md`,
+`docs/architecture/moderation.md`). Below, "the id list" means whichever of the
+two a given endpoint takes.
 
 All four share the same **target-set resolution** and **guardrail** described
-next; the differences are which actions they accept and which set the filter
-resolves to. The concept lives in `docs/architecture/file-list-scaling.md`; this
-page is the request/response reference.
+next; the differences are the id list, which actions they accept, and which set
+the filter resolves to. The concept lives in
+`docs/architecture/file-list-scaling.md`; this page is the request/response
+reference.
 
 ---
 
 ## Common concepts
 
-### Target set: `hashes` **xor** `filter`
+### Target set: the id list **xor** `filter`
 
 Every bulk request names its target set in exactly **one** of two ways
 (supplying both, or neither, is a `400`):
 
-- **`hashes`** — an explicit array of content hashes (a hand-picked selection).
-  Each must be 64 lowercase hex chars. The list is capped at **5000** entries
-  (`bulkHashCap`) to bound the request body; over the cap is a `400`.
+- **the id list** — an explicit array of a hand-picked selection: **`hashes`**
+  for `files/bulk` and `trash/bulk` (each 64 lowercase hex chars), or
+  **`tagset_ids`** for `moderation/bulk` and `my/uploads/bulk` (each a positive
+  integer). The list is capped at **5000** entries (`bulkHashCap`) to bound the
+  request body; over the cap is a `400`.
 - **`filter`** — an object the server resolves to the matching set on its side
   (the "Select all N matching" path). No cap — it is a server-side `WHERE`.
 
@@ -50,8 +63,8 @@ on `q` + `field` only.
 
 The filter resolves only to the rows that surface actually owns: live
 (non-deleted) files for `files/bulk`, trashed files for `trash/bulk`, **submitted**
-rows for `moderation/bulk`, and the caller's own **draft + returned** files for
-`my/uploads/bulk`.
+appearances for `moderation/bulk`, and the caller's own **draft + returned**
+appearances for `my/uploads/bulk`.
 
 ### The empty-filter guardrail (`all`)
 
@@ -59,7 +72,7 @@ A blank `filter.q` (with no `artist_id`/`album_id`) means **"everything in this
 surface"**. That is refused with a `400` unless the request also sets
 `"all": true` — the explicit confirmation the UI pairs with a strong "act on all
 N" dialog. It prevents an accidental trash-the-whole-library. `all` has no effect
-in `hashes` mode or when the filter term is non-empty.
+in id-list mode or when the filter term is non-empty.
 
 ### Per-action authorization
 
@@ -148,9 +161,9 @@ Acts over the **Trash** (soft-deleted) bucket. The filter resolves over
 
 ## `POST /api/admin/moderation/bulk`
 
-Acts over the **review queue**. The filter resolves to **submitted** rows only
-(returned files are deliberately excluded from bulk selection so a bulk approve
-right after a return cannot republish them — see
+Acts over the **review queue**, addressed by `tagset_ids`. The filter resolves to
+**submitted** appearances only (returned ones are deliberately excluded from bulk
+selection so a bulk approve right after a return cannot republish them — see
 `docs/architecture/moderation.md`).
 
 ### Request
@@ -158,7 +171,7 @@ right after a return cannot republish them — see
 ```json
 {
   "action": "approve" | "return" | "discard",
-  "hashes": ["…"],
+  "tagset_ids": [17, 42],
   "filter": { "q": "", "field": "" },
   "all": true,
   "note": "Please fix the album tag."
@@ -167,29 +180,30 @@ right after a return cannot republish them — see
 
 | `action` | Effect | Permission |
 |----------|--------|------------|
-| `approve` | Publish the submitted rows into the library. | `content.moderate` |
+| `approve` | Publish the submitted appearances into the library. This is the plain publish — the per-piece drop-bytes / force-new overrides are single-row, expanded-card decisions on `…/{tagsetID}/approve`, not bulk. | `content.moderate` |
 | `return` | Send back to the uploader with a **required** `note` (1–1000 bytes). | `content.moderate` |
-| `discard` | Soft-delete to Trash. | `content.moderate` **and** `file.delete` |
+| `discard` | Trash the appearance (tagset soft delete — keeps the blob). | `content.moderate` **and** `file.delete` |
 
-Applies the same guarded transitions the single-hash endpoints
-(`…/{hash}/approve`, `…/{hash}/return`) use — one batched transaction per action
-plus a single summary audit row — so the from-state guards are identical.
-Returns `{ "ok": true, "affected": N }`.
+Applies the same guarded transitions the single-row endpoints
+(`…/{tagsetID}/approve`, `…/{tagsetID}/return`, `…/{tagsetID}/discard`) use — one
+batched transaction per action plus a single summary audit row — so the
+from-state guards are identical. Returns `{ "ok": true, "affected": N }`.
 
 ---
 
 ## `POST /api/my/uploads/bulk`
 
-Acts over the **caller's own staged files** (`draft` + `returned`; a `submitted`
-file can't be withdrawn). Owner-scoped — a hash the caller doesn't own is simply
-not found (counts toward neither `affected` nor an error).
+Acts over the **caller's own staged appearances** (`draft` + `returned`; a
+`submitted` one can't be withdrawn), addressed by `tagset_ids`. Owner-scoped — a
+tagset the caller doesn't own is simply not found (counts toward neither
+`affected` nor an error).
 
 ### Request
 
 ```json
 {
   "action": "submit" | "remove",
-  "hashes": ["…"],
+  "tagset_ids": [17, 42],
   "filter": { "q": "", "field": "" },
   "all": true
 }
@@ -197,8 +211,8 @@ not found (counts toward neither `affected` nor an error).
 
 | `action` | Effect |
 |----------|--------|
-| `submit` | Send to approval. Shares the `/api/my/uploads/submit` semantics: a `content.moderate` holder **self-approves** their own non-duplicate submissions, but a **duplicate-flagged** one always goes to the queue for a human look (recordings P3). |
-| `remove` | Discard the staged file to Trash (the owner-scoped soft delete). |
+| `submit` | Send to approval. Shares the `/api/my/uploads/submit` semantics: a `content.moderate` holder **self-approves** their own non-duplicate submissions, but a **duplicate-flagged** one (its audio already in the library — classification case B/C) always goes to the queue for a human look. |
+| `remove` | Discard the staged appearance to Trash (the owner-scoped tagset soft delete). |
 
 ### Response
 
@@ -256,7 +270,7 @@ leaves their differing titles intact.)
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Malformed JSON; unknown `action`; both/neither of `hashes`/`filter`; an invalid hash or over-cap hash list; `q` over 200 chars; empty filter without `"all": true`; `edit` with an empty patch or an access field with no access store; `return` with a missing/over-long `note`. |
+| 400 | Malformed JSON; unknown `action`; both/neither of the id list / `filter`; an invalid id or over-cap id list; `q` over 200 chars; empty filter without `"all": true`; `edit` with an empty patch or an access field with no access store; `return` with a missing/over-long `note`. |
 | 401 | Anonymous request (auth configured) — `my/uploads/bulk`. |
 | 403 | Authenticated but missing the action's permission. |
 | 500 | Storage or database error. |

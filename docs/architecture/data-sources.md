@@ -231,10 +231,14 @@ Endpoints under `/api/admin/sources*` — admin group (`file.delete`) + gated
   then **scan** (prune-job-style worker): walk `root`, pick `acceptedAudioTypes`
   extensions, hash, **skip if `links` already has the hash**, else `os.Symlink`
   into `links/audio/<hash>/<name>`, insert/locate the `files` row
-  (`storage_backend='links'`, `link_target`, `review_state='approved'`,
-  `uploaded_by`; if a row already exists for the hash, reuse it — content-addressed
-  catalog), `file_uploads`, `media_metadata`, enqueue analysis, resolve the
-  recording. Covers (read-once-derive): decode the cover — sidecar `cover.jpg` or
+  (`storage_backend='links'`, `link_target`, `uploaded_by`; if a row already
+  exists for the hash, reuse it — content-addressed catalog) via `InsertFile`,
+  which bundles it with its recording and an **approved appearance**
+  (`tagsets.review_state='approved'` — review/trash live on the tagset since
+  migration 024, `recording-tagsets.md`; symlink imports land approved because
+  they come from an admin behind the allow-list, not the public staging flow)
+  and the tech `media_metadata` row in one transaction, then `file_uploads`,
+  enqueue analysis, resolve the recording. Covers (read-once-derive): decode the cover — sidecar `cover.jpg` or
   embedded picture — once into owned variants under the cover-variant tree
   (`variants/images/<image_hash>/`; see `docs/architecture/variants.md`) and attach
   the album image (owned/`local`); **no `links/images` symlink is kept**. Record a
