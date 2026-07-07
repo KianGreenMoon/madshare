@@ -283,5 +283,15 @@ all are anticipated by the design and resolve in later phases.
 
 | Severity | Issue | Status |
 |---|---|---|
-| Info | **Orphan renditions after a non-last appearance permanent-delete.** Deleting a non-last tagset from Trash keeps the file (blob) — correct per the hardlink model — but that file now has no tagset of its own (the recording still has others). Valid interim state; such orphan renditions are only cleanable via the P3 duplicates/absorb surface (rendition removal). No data at risk. | open (P3) |
-| Info | **Audit action name imprecise for appearance-only delete.** The hash-addressed Trash permanent-delete audits `file.delete` even when only the appearance was dropped (the file survived). Acceptable while Trash is hash-addressed; the P5 recordings view should introduce explicit `recording.delete` / appearance-delete audit actions. | open (P5) |
+| Info | **Orphan renditions after a non-last appearance permanent-delete.** Deleting a non-last tagset from Trash keeps the file (blob) — correct per the hardlink model — but that file now has no tagset of its own (the recording still has others). Valid interim state; such orphan renditions are only cleanable via the P3 duplicates/absorb surface (rendition removal). No data at risk. | **resolved by P5** (2026-07-07): `/admin/recordings` lists every rendition of a recording — incl. tagset-less and soft-removed blobs — with per-row Remove/Restore, so orphans are visible and cleanable there. |
+| Info | **Audit action name imprecise for appearance-only delete.** The hash-addressed Trash permanent-delete audits `file.delete` even when only the appearance was dropped (the file survived). Acceptable while Trash is hash-addressed; the P5 recordings view should introduce explicit `recording.delete` / appearance-delete audit actions. | **mostly fixed by P5** (2026-07-07): the recordings view audits `recording.delete` / `recording.trash` / `recording.merge` / `tagset.move` / `rendition.remove|restore`. The legacy hash-addressed Trash path still writes `file.delete` for an appearance-only drop — acceptable, low. |
+
+## Recording-tagsets P5 — follow-ups (2026-07-07)
+
+Non-blocking notes from building P5 (`/admin/recordings` + the All-files
+physical view). Neither blocks the v0.5.0 feature; both are polish candidates.
+
+| Severity | Issue | Status |
+|---|---|---|
+| Low | **Trashed appearance of an absorbed blob has no restore path of its own.** The recordings view's per-appearance "Remove" reuses `POST /api/admin/moderation/{tagsetID}/discard` (= tagset soft-delete) — correct trash semantics, but restore is only reachable through the hash-addressed Trash page, which lists a trashed tagset via its origin *file's* hash. An appearance whose origin blob was absorbed (soft-removed) or purged therefore can't be restored from Trash. Wanted: a tagset-addressed restore (endpoint + either a Trash tagset scope or a "restore appearance" action on the recording card's trashed rows). | open |
+| Info | **`MoveTagset` deliberately has no "move to new recording".** An appearance without a blob can't play; the "detach into a new recording" shape is Split off (rendition-level, takes the blob along). Design decision per the P5 mock review — recorded here so it isn't re-reported as a gap. If a real need appears ("appearance-only new recording"), it would need a rendition choice anyway → revisit as a variant of Split off. | by design |

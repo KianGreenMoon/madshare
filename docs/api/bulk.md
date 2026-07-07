@@ -17,6 +17,15 @@ There are four bulk endpoints, one per surface:
 | `POST /api/admin/moderation/bulk` | review queue (`/admin/library#review`) | `tagset_ids` | `approve`, `return`, `discard` | `content.moderate` (`discard` also needs `file.delete`) |
 | `POST /api/my/uploads/bulk` | "My uploads" staging tab | `tagset_ids` | `submit`, `remove` | `file.upload` (owner-scoped) |
 
+The recordings curation view (`/admin/recordings`, recording-tagsets P5) adds
+two set-shaped operations of its own, addressed by **`recording_ids`** and
+documented in `docs/architecture/recording-tagsets.md`: `POST
+/api/admin/recordings/trash` (`{recording_ids}`, whole-recording soft trash,
+`file.delete`) and `POST /api/admin/recordings/merge` (`{target_id,
+source_ids}`, `content.moderate`). They act on explicit id lists only — a
+merge or whole-recording trash is always a deliberate hand-picked selection,
+so the filter/`all:true` machinery below does not apply to them.
+
 **Row identity differs by surface.** The files-rooted surfaces (library, Trash)
 address rows by content **`hash`**; the review/staging surfaces address the
 **appearance** by **`tagset_id`** — since the recording-tagsets rework the

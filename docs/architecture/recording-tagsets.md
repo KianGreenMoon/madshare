@@ -15,8 +15,13 @@ blob-loss recordings and sweeps invalid ones. Review & upload are tagset-rooted:
 uploads offer a draft appearance (byte-dups included), the queue classifies each
 submission (new recording / new appearance / no new bytes) and the moderator
 approves per-piece — with case-B drop-bytes (absorb-at-the-gate) and force-new
-(pinned split) overrides. P5+ (recordings/files admin views + federation) not
-started. This document is the reference design and the implementation plan.
+(pinned split) overrides. P5 (recordings/files admin views) is **built**: the
+`/admin/recordings` curation page (both arms, selection-based merge, appearance
+move/set-primary, whole-recording trash + count-aware hard delete, editable
+license/guest) and the All-files physical columns with the "Show removed"
+toggle — UX per the owner-signed mock of 2026-07-07, which also resolved open
+point 1 (merge/move mechanics). Federation (P6) not started.
+This document is the reference design and the implementation plan.
 Extends
 [Recordings](recordings.md) (same-audio grouping & renditions) and the
 [artist/album overlay](artist-album-model.md); the metadata payload defined here
@@ -474,20 +479,39 @@ Deliberately **two perspectives** (owner accepts the added admin complexity):
   review state/notes, which the shared component couldn't express;
   `file-list.js` was rolled back to pre-P4e. They keep their own paging,
   select-all and bulk toolbars and still edit through `track-edit.js`.
-- **`/admin/recordings` (new)** — the recording-centric view: **all**
-  recordings, searchable, with quick filters (e.g. ">1 rendition",
-  ">1 tagset", "invalid"). A recording row expands to show **both arms**: its
-  renditions (tech + ladder rank, best marked, preview, add/remove) and its
-  tagsets (appearance list, primary marked, edit / set-primary / move /
-  remove), plus **whole-recording delete** (soft = trash all its tagsets;
-  hard = the full cascade, recording + tagsets + files, count-aware confirm).
-  Merge and split live here. Admin-shell page, `content.moderate`,
-  page-local player, nav link + dashboard card, `nowebui` compiles it out —
-  the `/admin/sources` / `/admin/duplicates` conventions.
-- **Files view (new)** — the physical perspective: file rows (hash, storage
-  backend, tech, size, removal state) with their recording link. Likely a new
-  scope of the unified file-list rather than a separate page — it reuses the
-  paging/bulk machinery as-is.
+- **`/admin/recordings` (new, P5 — UX settled 2026-07-07)** — the
+  recording-centric view: **all** recordings, newest first (`id DESC` — the
+  ones an admin edits first), searchable (title/artist/album/`#id`), quick
+  filter pills (**All** default / >1 rendition / >1 appearance / dormant /
+  pinned), paged with the existing windowed infinite-scroll machinery
+  (Admin·Library style). A recording row is a collapsed card (checkbox, `#id`,
+  primary name, count chips, ★ best format, dormant/pinned badges, an
+  **editable license/guest chip** opening a small recording-level editor, Play
+  = ladder-best preview); it expands to **both arms stacked** — renditions
+  first (ladder rank, tech, live/removed state; Play / Split off / Remove /
+  Restore), the appearance list under it full-width (primary marked, review
+  state; Edit / Set primary / Move… / Remove) — plus the card footer's
+  **whole-recording delete** (soft = trash all its tagsets; hard = the full
+  cascade, recording + tagsets + files, count-aware confirm spelling out
+  appearances / files / bytes / playlist losses). **Merge is selection-based**:
+  it lives only in the bulk bar, disabled until ≥2 recordings are ticked, so
+  it adds no everyday weight; the confirm modal picks the surviving target
+  (default = the recording holding the union's ladder-best rendition,
+  switchable) and previews the result (renditions re-ranked, identical
+  appearances collapse, target keeps its primary). **Move…** (MoveTagset)
+  re-homes an appearance onto another *existing* recording via a search
+  picker — an identical appearance on the target refuses the move; there is
+  deliberately no "move to new recording" (an appearance without a blob can't
+  play — that shape is Split off). Admin-shell page, `content.moderate`,
+  page-local player, nav link (after Duplicates) + dashboard card, `nowebui`
+  compiles it out — the `/admin/sources` / `/admin/duplicates` conventions.
+- **Files view (P5 — settled)** — the physical perspective is **not a new
+  page**: the existing Admin·Library "All files" table gains three columns —
+  storage **backend**, file **state** (live / removed / trashed; removed =
+  absorbed/dormant blobs, until now visible nowhere outside Trash) behind a
+  **"Show removed" toggle (off by default)**, and the **recording link**
+  jumping to `/admin/recordings` with that recording expanded. Paging/bulk
+  machinery reused as-is.
 
 `/admin/duplicates` stays as the focused dedup workbench (multi-rendition
 recordings + absorb).
@@ -665,10 +689,37 @@ regressions isolate to the data move.
   absorb was also unified into the checkbox selection flow (ticked renditions
   folded into the best unticked one; plain keep-best routes through the bulk
   `/absorb` endpoint, custom selections loop the per-recording endpoint).*
-- **P5 — Recordings + files admin views.** `/admin/recordings` (all
-  recordings, both arms, move/set-primary/remove; merge + split surfaces —
-  **after** the merge/split mini-design, open point 1); the files scope.
-  *Result: full curation from every perspective.*
+- **P5 — Recordings + files admin views. ✅ Done.** UX settled 2026-07-07
+  (clickable mock, owner-reviewed; open point 1 resolved — see "Admin
+  surfaces"). Primitives (`database/curate.go`, each one transaction, one
+  audit row): `MergeRecordings(target, sources)` — appearances move with
+  identity dedup (target's copy wins, nameless dropped, same rules as absorb),
+  renditions move **pinned** (a manual merge is a human identity decision the
+  resolver must never regroup), target keeps primary + license/guest, sources
+  removed; `MoveTagset` (refusals are typed outcomes: same-recording /
+  last-appearance — "merge instead" — / NULL-safe identity collision);
+  `SetPrimaryTagset`; `TrashRecording` + `BulkTrashRecordings` (soft = all
+  appearances to Trash); `HardDeleteRecording` (routes through the shared
+  `hardDeleteTagsetsTx` cascade, returns blobs + counts);
+  `SetRecordingAccess` (license vocab + manual-guest semantics of the
+  hash-addressed setters); `ListRecordings`/`CountRecordings` (newest first,
+  filter pills, `#id`/any-tagset substring search, limit/offset) +
+  `GetRecordingDetail` (both arms incl. removed blobs + trashed appearances).
+  `RemoveRendition`/`RestoreRendition` promoted into the `Repository`.
+  Endpoints under `/api/admin`: `GET/POST /recordings…` (list / merge / bulk
+  trash), `GET/DELETE /recordings/{id}` (+ `/primary`, `/trash`, PATCH
+  `/access`), `POST /tagsets/{id}/move`, `POST /renditions/{id}/{remove,
+  restore}`; gates: curation = `content.moderate`, deletes = `file.delete`,
+  access = `metadata.edit`. UI: bespoke `admin/recordings.js` (windowed
+  virtual-list page scroll, expandable two-arm cards, merge/move/access
+  modals, page-local player, `#<id>` deep link) + nav link and dashboard card;
+  All-files gained the `storage` column (backend, removed state, recording
+  link) via the new generic `scope.cells`/`rowClass` hooks in `file-list.js`,
+  fed by `FileFilter.ShowRemoved` (`show_removed=1`, moderation-gated) and
+  `FileListEntry.StorageBackend/RecordingID`.
+  *Result: full curation from every perspective — verified live (merge / move
+  refusals / dormancy round-trip / show-removed / whole-recording deletes /
+  browser smoke with zero console errors).*
 - **P6 (deferred) — Federation.** Tagset sync, trust, union reconcile,
   peer-review steps — per the federation design session.
 
@@ -734,9 +785,12 @@ the api `fakeRepo`, `tests/js`, `tests/playwright`, `tests/k6`).
 
 ## Open points (small — everything else is decided)
 
-1. **Merge/split mechanics & UX** on `/admin/recordings` — wanted, but "how"
-   is undesigned. Needs its own short design pass before P5 (the primitives
-   above are the starting point).
+1. ~~**Merge/split mechanics & UX** on `/admin/recordings`~~ — **resolved
+   2026-07-07** (owner review of the clickable mock): merge is selection-based
+   from the bulk bar with a target-picker confirm (default target = holder of
+   the union's ladder-best rendition); appearance-level split = **Move…**
+   (MoveTagset) with a search picker over existing recordings; blob-level
+   split stays **Split off** (SplitRendition). Details in "Admin surfaces".
 2. **External-source & federation tagset review details** — deferred by
    decision 7 to the federation session (includes data-sources linked imports
    offering tagsets/recordings for local review).
