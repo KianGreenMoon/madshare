@@ -288,22 +288,6 @@ async function restoreAppearance(rec, a) {
   reload();
 }
 
-async function hardDeleteAppearance(rec, a) {
-  const ok = await confirmModal({
-    title: 'Delete this appearance permanently?',
-    body: `“${a.title}” is removed for good, along with any playlist or favorites entries pointing here. `
-      + `If it is this recording’s last appearance, the recording and its audio files are deleted too. This cannot be undone.`,
-    confirmLabel: 'Delete permanently',
-  });
-  if (!ok) return;
-  const res = await post(`${API}/api/admin/tagsets/${a.tagset_id}`, { method: 'DELETE' });
-  if (!res) return;
-  if (!res.ok) { toast(`Delete failed (HTTP ${res.status}).`, 'error'); return; }
-  toast('Appearance permanently deleted.', 'success');
-  expanded.delete(rec.id);
-  reload();
-}
-
 async function setPrimary(rec, a) {
   const res = await post(`${API}/api/admin/recordings/${rec.id}/primary`, { body: { tagset_id: a.tagset_id } });
   if (!res) return;
@@ -326,27 +310,6 @@ async function trashRecording(rec) {
   if (!res.ok) { toast(`Trash failed (HTTP ${res.status}).`, 'error'); return; }
   toast('Recording trashed — restorable from Trash.', 'success');
   expanded.delete(rec.id);
-  reload();
-}
-
-async function hardDeleteRecording(rec, detail) {
-  const files = detail?.renditions?.length ?? (rec.live_renditions + rec.removed_files);
-  const bytes = (detail?.renditions || []).reduce((n, f) => n + (f.size || 0), 0);
-  const apps = detail ? detail.appearances.length : rec.appearances + rec.trashed_appearances;
-  const ok = await confirmModal({
-    title: 'Delete recording permanently?',
-    body: `“${dispName(rec)}” and everything it holds: ${apps} appearance${apps === 1 ? '' : 's'} (library tracks), `
-      + `${files} file${files === 1 ? '' : 's'} deleted from disk${bytes ? ` (~${fmtBytes(bytes)} reclaimed)` : ''}, `
-      + `and any playlist or favorites entries pointing here. This cannot be undone.`,
-    confirmLabel: 'Delete permanently',
-  });
-  if (!ok) return;
-  const res = await post(`${API}/api/admin/recordings/${rec.id}`, { method: 'DELETE' });
-  if (!res) return;
-  if (!res.ok) { toast(`Delete failed (HTTP ${res.status}).`, 'error'); return; }
-  toast('Recording, appearances and files removed.', 'success');
-  expanded.delete(rec.id);
-  selected.delete(rec.id);
   reload();
 }
 
@@ -629,10 +592,8 @@ function appearanceRow(rec, a) {
       class: 'btn btn-sm btn-neutral', title: 'Bring this appearance back into the library',
       onclick: () => restoreAppearance(rec, a),
     }, ['Restore']));
-    actions.push(el('button', {
-      class: 'btn btn-sm btn-destructive-solid', title: 'Permanently delete this trashed appearance',
-      onclick: () => hardDeleteAppearance(rec, a),
-    }, ['Delete…']));
+    // Permanent delete lives only on the Trash page (soft-delete.md) — the
+    // Appearances lens there. No hard delete here.
   }
   const albumBits = [a.album || '—'];
   if (a.disc != null || a.track != null) albumBits.push(` · ${a.disc ?? '–'}-${a.track ?? '–'}`);
@@ -671,9 +632,8 @@ function expandedBody(rec) {
   const foot = el('div', { class: 'rec-foot' }, [
     el('span', { class: 'muted rec-foot-note' }, [rec.dormant
       ? 'Dormant: no playable rendition. Restore a rendition to bring it back to the library.'
-      : 'Trash = every appearance to Trash (reversible). Permanent delete removes recording, appearances and files.']),
+      : 'Trash = every appearance to Trash (reversible). Permanent delete lives on the Trash page.']),
     canDelete ? el('button', { class: 'btn btn-sm btn-destructive-outline', onclick: () => trashRecording(rec) }, ['Trash recording']) : null,
-    canDelete ? el('button', { class: 'btn btn-sm btn-destructive-solid', onclick: () => hardDeleteRecording(rec, detail) }, ['Delete permanently…']) : null,
   ]);
   return el('div', { class: 'rec-body' }, [
     el('h4', { class: 'rec-arm-h' }, ['Renditions ', el('span', { class: 'muted' }, ['· the audio files'])]),

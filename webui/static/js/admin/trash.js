@@ -5,8 +5,10 @@
 // shared preview player is injected as `play`. Requires file.delete.
 //
 // Design: docs/architecture/file-management-view.md.
-import { API, fmtDate, toast, handleAuthError } from './shared.js';
+import { API, el, fmtDate, toast, handleAuthError } from './shared.js';
 import { createFileList } from '../file-list.js';
+import { createTrashRecordings } from './trash-recordings.js';
+import { createTrashFiles } from './trash-files.js';
 
 const displayTitle = f => f.title || f.filename || 'this file';
 
@@ -177,11 +179,58 @@ export function createTrashScope({ play, perms }) {
 
   fileList = createFileList(scope);
 
+  // ── Sub-mode coordinator (soft-delete.md) ───────────────────────────────────
+  // The Trash panel has three perspectives over the same not-in-library set:
+  // Appearances (the file-list.js scope above), Recordings, and Files (bespoke
+  // lists sharing this page's one preview player). Each is its own lens — never
+  // merged. Permanent delete lives here and nowhere else.
+  const confirmDelete = count => confirmBulkDelete(
+    count === 1 ? 'Permanently delete this item?' : `Permanently delete ${count} items?`,
+    count === 1 ? 'Delete forever' : `Delete ${count} forever`);
+
+  const recordings = createTrashRecordings({ host: document.getElementById('trashRecordingsList'), confirmDelete });
+  const files = createTrashFiles({ host: document.getElementById('trashFilesList'), play, confirmDelete });
+
+  const modes = [
+    { id: 'appearances', label: 'Appearances', panel: 'trashMode-appearances', ctrl: { mount: () => fileList.mount(document.getElementById('fileListTrash')), reload: () => fileList.reload() } },
+    { id: 'recordings', label: 'Recordings', panel: 'trashMode-recordings', ctrl: recordings },
+    { id: 'files', label: 'Files', panel: 'trashMode-files', ctrl: files },
+  ];
+  const mounted = new Set();
+  let activeMode = null;
+
+  function showMode(id) {
+    if (activeMode === id) return;
+    activeMode = id;
+    for (const m of modes) {
+      const on = m.id === id;
+      document.getElementById(m.panel).hidden = !on;
+      const btn = switchEl.querySelector(`[data-mode="${m.id}"]`);
+      if (btn) { btn.classList.toggle('is-active', on); btn.setAttribute('aria-selected', String(on)); }
+      if (on) {
+        if (mounted.has(m.id)) m.ctrl.reload();
+        else { mounted.add(m.id); m.ctrl.mount(); }
+      }
+    }
+  }
+
+  let switchEl = null;
+  function buildSwitch() {
+    switchEl = document.getElementById('trashModeSwitch');
+    if (switchEl.childElementCount) return; // already built
+    for (const m of modes) {
+      switchEl.appendChild(el('button', {
+        class: 'scope-btn', 'data-mode': m.id, type: 'button', role: 'tab', 'aria-selected': 'false',
+        onclick: () => showMode(m.id),
+      }, [m.label]));
+    }
+  }
+
   return {
     id: 'trash',
     label: 'Trash',
     available: perms.includes('file.delete'),
-    mount: () => fileList.mount(document.getElementById('fileListTrash')),
-    reload: () => fileList.reload(),
+    mount: () => { buildSwitch(); showMode('appearances'); },
+    reload: () => { if (activeMode) modes.find(m => m.id === activeMode).ctrl.reload(); },
   };
 }

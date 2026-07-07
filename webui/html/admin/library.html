@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="/static/css/admin-files.css">
   <link rel="stylesheet" href="/static/css/admin-moderation.css">
   <link rel="stylesheet" href="/static/css/file-view.css">
+  <link rel="stylesheet" href="/static/css/admin-trash.css">
   <link rel="stylesheet" href="/static/css/player.css">
 </head>
 <body>
@@ -61,9 +62,18 @@
     <div id="fileListReview" aria-busy="true" aria-live="polite"></div>
   </section>
 
-  <!-- ── Scope: Trash ─────────────────────────────────────────────────────── -->
+  <!-- ── Scope: Trash — three perspectives (soft-delete.md) ───────────────── -->
   <section id="scope-trash" hidden aria-label="Trash">
-    <div id="fileListTrash" aria-busy="true" aria-live="polite"></div>
+    <div class="scope-switch trash-subswitch" id="trashModeSwitch" role="tablist" aria-label="Trash view"></div>
+    <div id="trashMode-appearances" role="tabpanel">
+      <div id="fileListTrash" aria-busy="true" aria-live="polite"></div>
+    </div>
+    <div id="trashMode-recordings" role="tabpanel" hidden>
+      <div id="trashRecordingsList" aria-busy="true" aria-live="polite"></div>
+    </div>
+    <div id="trashMode-files" role="tabpanel" hidden>
+      <div id="trashFilesList" aria-busy="true" aria-live="polite"></div>
+    </div>
   </section>
 </main>
 

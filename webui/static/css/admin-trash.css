@@ -1,0 +1,37 @@
+/* Admin · Trash — the three-perspective sub-switch (Appearances / Recordings /
+   Files) and the two bespoke sub-lists (Recordings, Files). New class names
+   only; the sub-switch reuses .scope-switch/.scope-btn, the tables reuse
+   .files-table, the bulk bar reuses .bulk-toolbar (all from file-view.css). */
+
+.trash-subswitch { margin-bottom: var(--space-4); }
+
+.trash-list-wrap { margin-top: var(--space-2); }
+
+.trash-empty,
+.trash-loading { color: var(--text-muted); padding: var(--space-6) var(--space-2); text-align: center; }
+
+/* Row chips (dormant / counts / storage backend). */
+.trash-chips { display: inline-flex; flex-wrap: wrap; gap: var(--space-1); }
+
+.trash-chip {
+  display: inline-block;
+  padding: 1px var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.trash-chip--dorm { color: var(--error); border-color: var(--error); }
+.trash-chip--n    { color: var(--accent); border-color: var(--accent); }
+
+.trash-sub {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.trash-rec-link { color: var(--accent); text-decoration: none; }
+.trash-rec-link:hover { text-decoration: underline; }
+
+/* Load-more footer. */
+.trash-more { display: flex; justify-content: center; margin-top: var(--space-3); }
