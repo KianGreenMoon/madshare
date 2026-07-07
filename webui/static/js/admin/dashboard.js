@@ -202,5 +202,6 @@ async function fillStorage() {
   fillCount('countModeration', '/api/admin/moderation?limit=0');
   fillCount('countTrash', '/api/admin/trash?limit=0');
   fillCount('countDuplicates', '/api/admin/duplicates');
+  fillCount('countRecordings', '/api/admin/recordings?limit=0');
   fillCount('countUsers', '/api/admin/users');
 })();

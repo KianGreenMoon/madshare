@@ -1,0 +1,246 @@
+/* Admin · Recordings (recording-tagsets P5). One collapsed card per recording,
+   expanding to the two stacked arms (renditions over appearances) and the
+   whole-recording footer; a windowed list (virtual-list.js) in page scroll.
+   Reuses app.css/admin-shell.css tokens, buttons & modal. */
+
+.muted { color: var(--text-muted); font-size: 14px; }
+
+/* ── Search + filter pills ── */
+.rec-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.rec-search {
+  flex: 1 1 220px;
+  max-width: 340px;
+  padding: 6px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.rec-search:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.rec-pills { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.rec-pill {
+  padding: 3px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-muted);
+}
+.rec-pill:hover { background: var(--surface-hover); }
+.rec-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rec-pill--on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.rec-count { margin-left: auto; white-space: nowrap; font-size: 13px; }
+
+/* ── Bulk bar ── */
+.rec-bulk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 13px;
+}
+.rec-bulk-spacer { flex: 1; }
+
+/* Accent-filled primary action (merge / modal confirms) — same accent button
+   the duplicates page uses for absorb. */
+.btn-absorb {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.btn-absorb:hover:not(:disabled) { background: var(--accent-dim); border-color: var(--accent-dim); }
+
+/* ── Recording card ── */
+.rec-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  margin-bottom: var(--space-3);
+  overflow: hidden;
+}
+.rec-card--dormant { border-style: dashed; }
+
+.rec-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  cursor: pointer;
+}
+.rec-head:hover { background: var(--surface-hover); }
+.rec-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.rec-sel { cursor: pointer; flex-shrink: 0; }
+.rec-caret { flex-shrink: 0; font-size: 11px; color: var(--text-muted); transition: transform .15s; }
+.rec-card--open .rec-caret { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .rec-caret { transition: none; } }
+.rec-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.rec-name {
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rec-by { font-weight: 400; color: var(--text-muted); }
+.rec-chips { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-left: auto; }
+.rec-play { flex-shrink: 0; }
+
+.rec-chip {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  padding: 1px 8px;
+  white-space: nowrap;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  background: none;
+}
+.rec-chip--n    { color: var(--accent); border-color: var(--accent); }
+.rec-chip--best { color: var(--success); border-color: var(--success); }
+.rec-chip--dorm { color: var(--error); border-color: var(--error); }
+.rec-chip--lic  { border-style: dashed; }
+button.rec-chip--lic { cursor: pointer; font-family: inherit; }
+button.rec-chip--lic:hover { background: var(--surface-hover); color: var(--text); }
+button.rec-chip--lic:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ── Expanded body: the two stacked arms ── */
+.rec-body {
+  border-top: 1px solid var(--border);
+  padding: var(--space-4);
+  display: grid;
+  gap: var(--space-3);
+}
+.rec-arm-h {
+  font-size: 12px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--text);
+  margin: 0;
+}
+.rec-arm-h .muted { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 12px; }
+.rec-tblwrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+.rec-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.rec-table th {
+  text-align: left;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.rec-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.rec-table tbody tr:last-child td { border-bottom: none; }
+tr.rec-row--removed td { opacity: .55; }
+tr.rec-row--playing { background: var(--accent-glow, var(--surface-hover)); }
+
+.rec-rank { white-space: nowrap; color: var(--text-muted); }
+.rec-best { color: var(--accent); font-weight: 600; white-space: nowrap; }
+.rec-pin-mark { color: var(--text-muted); }
+.rec-tech { white-space: nowrap; color: var(--text-muted); }
+.rec-prim-cell { width: 1%; text-align: center; }
+.rec-prim { color: var(--accent); font-weight: 700; }
+.rec-app-title { font-weight: 500; }
+.rec-app-artist { font-size: 12px; }
+.rec-actions { white-space: nowrap; text-align: right; }
+.rec-actions .btn { margin-left: var(--space-1); }
+
+.rec-state {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.rec-state.st-ok   { color: var(--success); border-color: var(--success); }
+.rec-state.st-warn { color: var(--accent); border-color: var(--accent); }
+.rec-state.st-off  { color: var(--text-muted); }
+
+.rec-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px dashed var(--border);
+}
+.rec-foot-note { font-size: 12.5px; margin-right: auto; max-width: 56ch; }
+
+/* ── Modal internals (merge target picker / move search / access editor) ── */
+.rec-pick {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin: var(--space-3) 0;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.rec-pick-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  font-size: 14px;
+  border-bottom: 1px solid var(--border);
+  min-width: 0;
+}
+.rec-pick-row:last-child { border-bottom: none; }
+.rec-pick-row:hover { background: var(--surface-hover); }
+.rec-pick-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rec-pick-meta { margin-left: auto; font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.rec-pick-empty { padding: var(--space-3); margin: 0; }
+.rec-merge-sum {
+  font-size: 13px;
+  background: var(--accent-glow, var(--surface-hover));
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+}
+.rec-move-search { max-width: none; width: 100%; margin-top: var(--space-3); }
+.rec-move-note, .rec-access-note { margin-top: var(--space-3); }
+.rec-access-field { display: block; font-size: 14px; margin: var(--space-3) 0; }
+.rec-access-field select {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 10px;
+  font-size: 14px;
+  font-family: inherit;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.rec-access-guest { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+
+/* Keep cards clear of the fixed player bar when it is shown. */
+.admin-main { padding-bottom: 96px; }
+
+/* Narrow screens: the chips wrap under the name instead of truncating it. */
+@media (max-width: 720px) {
+  .rec-head { flex-wrap: wrap; }
+  .rec-chips { margin-left: 0; width: 100%; }
+}

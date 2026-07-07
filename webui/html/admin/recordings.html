@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Madshare &mdash; Admin &middot; Recordings</title>
+  <meta name="api-url" content="{{.APIURL}}">
+  {{template "theme-guard" .}}
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/admin-shell.css">
+  <link rel="stylesheet" href="/static/css/player.css">
+  <link rel="stylesheet" href="/static/css/admin-recordings.css">
+</head>
+<body>
+
+{{template "header" .}}
+{{template "admin-shell" .}}
+
+<main class="admin-main">
+  <section aria-labelledby="recHeading">
+    <h2 class="section-title" id="recHeading">Recordings</h2>
+    <p class="muted">
+      Every recording &mdash; the same-audio grouping behind the library. A recording holds
+      <strong>renditions</strong> (the audio files, ranked by the quality ladder) and
+      <strong>appearances</strong> (the tagsets listeners see as tracks). Expand a recording to curate
+      both arms; tick two or more and <strong>Merge</strong> folds them into one. <strong>Dormant</strong>
+      recordings (no playable rendition) are hidden from the library &mdash; this page is where you find
+      and revive them.
+    </p>
+
+    <div class="rec-filter-row">
+      <input class="rec-search" id="recSearch" type="search" placeholder="Search title, artist, album, #id&hellip;" aria-label="Search recordings">
+      <div class="rec-pills" role="group" aria-label="Filter recordings">
+        <button class="rec-pill rec-pill--on" data-filter="">All</button>
+        <button class="rec-pill" data-filter="multi_rendition">&gt;1 rendition</button>
+        <button class="rec-pill" data-filter="multi_appearance">&gt;1 appearance</button>
+        <button class="rec-pill" data-filter="dormant">Dormant</button>
+        <button class="rec-pill" data-filter="pinned">Pinned</button>
+      </div>
+      <span class="rec-count muted" id="recCount"></span>
+    </div>
+
+    <div class="rec-bulk" id="recBulk" role="region" aria-label="Bulk actions">
+      <span class="muted" id="recSelInfo">Tick recordings to merge or trash them.</span>
+      <span class="rec-bulk-spacer"></span>
+      <button class="btn btn-sm btn-absorb" id="recMergeBtn" title="Union the selected recordings into one — renditions re-ranked, identical appearances collapsed" disabled>Merge selected</button>
+      <button class="btn btn-sm btn-destructive-outline" id="recTrashBtn" title="Trash every appearance of the selected recordings (reversible)" disabled hidden>Trash selected</button>
+      <button class="btn btn-sm btn-neutral" id="recClearBtn">Clear</button>
+    </div>
+
+    <div id="recList" aria-live="polite">
+      <p class="muted" id="recLoading">Loading&hellip;</p>
+    </div>
+  </section>
+</main>
+
+<!-- Merge modal -->
+<div class="modal-backdrop hidden" id="mergeModal" role="dialog" aria-modal="true" aria-labelledby="mergeTitle">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="mergeTitle">Merge recordings</h2>
+      <button class="btn-close" id="mergeClose" aria-label="Close">&times;</button>
+    </div>
+    <p class="modal-body">The other recordings fold <strong>into the target</strong>: renditions union and
+      re-rank on the quality ladder, identical appearances collapse (the target&rsquo;s copy wins), the
+      target keeps its primary. Reversible only piecewise (Split off / Move) &mdash; merge has no single undo.</p>
+    <div class="rec-pick" id="mergePick"></div>
+    <p class="rec-merge-sum" id="mergeSum"></p>
+    <div class="modal-actions">
+      <button class="btn btn-neutral" id="mergeCancel">Cancel</button>
+      <button class="btn btn-absorb" id="mergeGo">Merge</button>
+    </div>
+  </div>
+</div>
+
+<!-- Move-appearance modal -->
+<div class="modal-backdrop hidden" id="moveModal" role="dialog" aria-modal="true" aria-labelledby="moveTitle">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="moveTitle">Move appearance</h2>
+      <button class="btn-close" id="moveClose" aria-label="Close">&times;</button>
+    </div>
+    <p class="modal-body" id="moveBody"></p>
+    <input class="rec-search rec-move-search" id="moveSearch" type="search" placeholder="Search recordings by title, artist, #id&hellip;" aria-label="Search target recording">
+    <div class="rec-pick" id="movePick"><p class="muted rec-pick-empty">Type to search for the target recording.</p></div>
+    <p class="modal-body rec-move-note">The appearance will play the target recording&rsquo;s best rendition.
+      An identical appearance already there refuses the move.</p>
+    <div class="modal-actions">
+      <button class="btn btn-neutral" id="moveCancel">Cancel</button>
+      <button class="btn btn-absorb" id="moveGo" disabled>Move</button>
+    </div>
+  </div>
+</div>
+
+<!-- License & guest modal -->
+<div class="modal-backdrop hidden" id="accessModal" role="dialog" aria-modal="true" aria-labelledby="accessTitle">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="accessTitle">License &amp; guest access</h2>
+      <button class="btn-close" id="accessClose" aria-label="Close">&times;</button>
+    </div>
+    <p class="modal-body" id="accessBody"></p>
+    <label class="rec-access-field">License
+      <select id="accessLicense">
+        <option value="">&mdash; none &mdash;</option>
+        <option value="CC0-1.0">CC0-1.0</option>
+        <option value="CC-BY-4.0">CC-BY-4.0</option>
+        <option value="CC-BY-SA-4.0">CC-BY-SA-4.0</option>
+        <option value="public-domain">public-domain</option>
+        <option value="all-rights-reserved">all-rights-reserved</option>
+        <option value="unknown">unknown</option>
+      </select>
+    </label>
+    <label class="rec-access-guest">
+      <input type="checkbox" id="accessGuest"> Guest playable &mdash; listeners without an account can stream it
+    </label>
+    <p class="modal-body rec-access-note">Recording-level: applies to every appearance and every rendition at
+      once. An explicit guest setting is a manual decision the license auto-derive policy never overrides.</p>
+    <div class="modal-actions">
+      <button class="btn btn-neutral" id="accessCancel">Cancel</button>
+      <button class="btn btn-absorb" id="accessGo">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirmation modal (trash / permanent delete) -->
+<div class="modal-backdrop hidden" id="confModal" role="dialog" aria-modal="true" aria-labelledby="confTitle" aria-describedby="confBody">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="confTitle"></h2>
+      <button class="btn-close" id="confClose" aria-label="Close">&times;</button>
+    </div>
+    <p class="modal-body" id="confBody"></p>
+    <div class="modal-actions">
+      <button class="btn btn-neutral" id="confCancel">Cancel</button>
+      <button class="btn btn-destructive-solid" id="confGo"></button>
+    </div>
+  </div>
+</div>
+
+{{template "player-bar" .}}
+{{template "auth-modals" .}}
+
+<script type="module" src="/static/js/admin/recordings.js"></script>
+</body>
+</html>

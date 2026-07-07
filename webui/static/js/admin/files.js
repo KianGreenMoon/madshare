@@ -44,12 +44,18 @@ function playFile(f, visible) {
 const PLAY_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
 const displayTitle = f => f.title || f.filename || 'this file';
 
+// showRemoved is the All-files physical-view toggle (recording-tagsets P5):
+// when on, the listing also carries soft-removed blobs (absorbed / removed
+// renditions), dimmed with a "removed" state. Off by default.
+let showRemoved = false;
+
 // loadFilesPage backs the All-files component's paged mode: one server page,
 // filtered + sorted, as {total, items} (docs/architecture/file-list-scaling.md).
 async function loadFilesPage({ limit, offset, q, field, sort }) {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset), sort: sort || 'created_desc' });
   if (q) params.set('q', q);
   if (field) params.set('field', field);
+  if (showRemoved) params.set('show_removed', '1');
   const res = await fetch(`${API}/api/files?${params.toString()}`);
   if (handleAuthError(res)) throw new Error('Your session expired.');
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -135,11 +141,28 @@ async function bulkTrashAll({ q, field }) {
 // Access is a read-only summary column; editing tags + access happens in the
 // per-file Edit modal and the bulk Edit-tags modal. Selection + bulk actions
 // (Move to Trash, Edit tags…) are gated on the relevant permission.
+// storageCell renders the physical column: backend, live/removed state, and
+// the recording link jumping to /admin/recordings with that recording expanded.
+function storageCell(f) {
+  const bits = [el('span', { class: 'files-backend', text: f.storage_backend || 'local' })];
+  if (f.removed) bits.push(el('span', { class: 'files-removed-badge', text: 'removed' }));
+  if (f.recording_id) {
+    bits.push(el('a', {
+      class: 'files-rec-link', href: `/admin/recordings#${f.recording_id}`,
+      title: 'Open this file’s recording (renditions & appearances)',
+      text: `#${f.recording_id} →`,
+    }));
+  }
+  return el('td', { class: 'cell-text files-storage-cell', 'data-label': 'Storage' }, bits);
+}
+
 function filesScope() {
   return {
     title: 'Files',
     emptyText: 'No files yet. Add music from the Upload page.',
-    columns: ['check', 'title', 'artist', 'album', 'size', 'access', 'actions'],
+    columns: ['check', 'title', 'artist', 'album', 'size', 'access', 'storage', 'actions'],
+    cells: { storage: { label: 'Storage', cls: 'col-storage', render: storageCell } },
+    rowClass: f => (f.removed ? 'files-row--removed' : ''),
     // Server-paged: the flat list can be huge, so it loads pages by infinite
     // scroll (windowed DOM). The grouped "By artist / album" view loads the whole
     // set once and windows it (docs/architecture/infinite-scroll-virtualization.md).
@@ -791,6 +814,18 @@ const tabFiles   = document.getElementById('tabFiles');
 const entityView = document.getElementById('entityView');
 const filesView  = document.getElementById('filesView');
 const fileListEl = document.getElementById('fileList');
+
+// "Show removed" — moderation-capability toggle for the physical view. Hidden
+// for admins without it (the server would ignore the param anyway).
+const showRemovedToggle = document.getElementById('showRemovedToggle');
+if (showRemovedToggle) {
+  const canSeeRemoved = perms.includes('content.moderate') || canDelete;
+  if (!canSeeRemoved) showRemovedToggle.closest('.files-show-removed').hidden = true;
+  showRemovedToggle.addEventListener('change', () => {
+    showRemoved = showRemovedToggle.checked;
+    if (filesMounted) fileList.reload();
+  });
+}
 
 function showEntityView() {
   tabEntity.classList.add('view-tab--active'); tabEntity.setAttribute('aria-selected', 'true');

@@ -46,6 +46,12 @@
 
     <!-- All files: the shared file-management component -->
     <section id="filesView" class="hidden" aria-label="All files">
+      <!-- Physical-view toggle (recording-tagsets P5): also list soft-removed
+           blobs (absorbed / removed renditions) with backend + state columns. -->
+      <label class="files-show-removed">
+        <input type="checkbox" id="showRemovedToggle"> Show removed files
+        <span class="files-show-removed-hint">absorbed or removed renditions — restorable on their recording</span>
+      </label>
       <div id="fileList" aria-busy="true" aria-live="polite"></div>
     </section>
   </section>

@@ -57,6 +57,10 @@ const PLAY_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="current
  *   desc             one-line description under the heading
  *   emptyText        message when the scope has no files
  *   columns          ['check','title','artist','album','size','access','meta','actions'] (required)
+ *                    — plus any scope-defined token declared in `cells`
+ *   cells            { token: { label, render(file)=>td } } — scope-defined
+ *                    columns (e.g. the All-files 'storage' column)
+ *   rowClass(file)   → extra class for the whole <tr> (e.g. removed-row dimming)
  *   metaLabel        header for the 'meta' column
  *   metaValue(file)  → string for the 'meta' cell
  *   badge(file)      → { text, cls } | null  (the title-cell pill)
@@ -442,6 +446,12 @@ export function createFileList(scope) {
         actionsHolder.wrap = wrap;
         return el('td', { class: 'cell-actions', 'data-label': 'Actions' }, [wrap]);
       }
+      default: {
+        // Scope-defined column (scope.cells = { token: { label, render(f) } }) —
+        // the escape hatch for one-scope columns (e.g. All-files "Storage").
+        const custom = scope.cells?.[col];
+        return custom ? custom.render(f) : el('td');
+      }
     }
   }
 
@@ -597,7 +607,15 @@ export function createFileList(scope) {
   // needsMeta flags a file with neither an artist nor an album-artist tag, so
   // editors can see at a glance which rows want metadata first.
   function needsMeta(f) { return !(f.artist || '').trim() && !(f.album_artist || '').trim(); }
-  function rowAttrs(f) { return { 'data-hash': f.hash, class: needsMeta(f) ? 'fl-needs-meta' : null }; }
+  function rowAttrs(f) {
+    const classes = [];
+    if (needsMeta(f)) classes.push('fl-needs-meta');
+    // scope.rowClass lets a scope mark whole rows (e.g. the All-files "removed"
+    // dimming) without owning the row builder.
+    const extra = scope.rowClass ? scope.rowClass(f) : '';
+    if (extra) classes.push(extra);
+    return { 'data-hash': f.hash, class: classes.length ? classes.join(' ') : null };
+  }
 
   function headRow(withSelectAll) {
     const ths = scope.columns.map(c => {
@@ -607,8 +625,10 @@ export function createFileList(scope) {
         sa.addEventListener('change', () => selectAllVisible(sa.checked));
         return el('th', { class: 'col-check' }, [sa]);
       }
-      const label = { title: 'Title', artist: 'Artist', album: 'Album', size: 'Size', access: 'Access', meta: scope.metaLabel || 'Meta', actions: 'Actions' }[c] || '';
-      const cls = c === 'size' ? 'col-size' : c === 'access' ? 'col-access' : c === 'actions' ? 'col-actions' : null;
+      const label = { title: 'Title', artist: 'Artist', album: 'Album', size: 'Size', access: 'Access', meta: scope.metaLabel || 'Meta', actions: 'Actions' }[c]
+        ?? scope.cells?.[c]?.label ?? '';
+      const cls = c === 'size' ? 'col-size' : c === 'access' ? 'col-access' : c === 'actions' ? 'col-actions'
+        : scope.cells?.[c]?.cls ?? null;
       return el('th', { scope: 'col', class: cls, text: label });
     });
     return el('tr', {}, ths);
