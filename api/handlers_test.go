@@ -507,6 +507,18 @@ type fakeRepo struct {
 	restoreRendID         int64
 	rendNotFound          bool
 
+	// Files perspective of Trash (soft-delete.md): removed-blob listing + purge.
+	pageRemoved           []*database.FileListEntry
+	countRemoved          int
+	removedFilterIDs      []int64
+	hardDelRemovedFileID  int64
+	hardDelRemovedBlobs   []database.DeletedBlob
+	hardDelRemovedFound   bool
+	hardDelRemovedErr     error
+	bulkHardDelRemovedIDs []int64
+	bulkHardDelRemovedN   int
+	bulkHardDelRemovedErr error
+
 	// Base-metadata edit stubs (Phase 5).
 	metaCalls      int
 	lastMetaHash   string
@@ -722,6 +734,28 @@ func (f *fakeRepo) CountTrashedFiles(_ context.Context, _ database.FileFilter) (
 
 func (f *fakeRepo) TrashedFileHashesByFilter(_ context.Context, _ database.FileFilter) ([]string, error) {
 	return f.trashFilterHashes, f.filterHashesErr
+}
+
+func (f *fakeRepo) ListRemovedFilesPage(_ context.Context, _ database.FileListQuery) ([]*database.FileListEntry, error) {
+	return f.pageRemoved, f.listFilesErr
+}
+
+func (f *fakeRepo) CountRemovedFiles(_ context.Context, _ database.FileFilter) (int, error) {
+	return f.countRemoved, f.listFilesErr
+}
+
+func (f *fakeRepo) RemovedFileIDsByFilter(_ context.Context, _ database.FileFilter) ([]int64, error) {
+	return f.removedFilterIDs, f.filterHashesErr
+}
+
+func (f *fakeRepo) HardDeleteRemovedFile(_ context.Context, fileID int64) ([]database.DeletedBlob, bool, error) {
+	f.hardDelRemovedFileID = fileID
+	return f.hardDelRemovedBlobs, f.hardDelRemovedFound, f.hardDelRemovedErr
+}
+
+func (f *fakeRepo) BulkHardDeleteRemovedFiles(_ context.Context, fileIDs []int64) (int, []database.DeletedBlob, error) {
+	f.bulkHardDelRemovedIDs = fileIDs
+	return f.bulkHardDelRemovedN, f.hardDelRemovedBlobs, f.bulkHardDelRemovedErr
 }
 
 func (f *fakeRepo) StorageByteBreakdown(_ context.Context) (database.StorageByteBreakdown, error) {

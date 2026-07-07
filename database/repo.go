@@ -47,6 +47,19 @@ type Repository interface {
 	CountTrashedFiles(ctx context.Context, f FileFilter) (int, error)
 	TrashedFileHashesByFilter(ctx context.Context, f FileFilter) ([]string, error)
 
+	// Files perspective of Trash (soft-delete.md): the file-grain lens over
+	// soft-removed blobs (files.deleted_at). Paged like the other listings;
+	// RemovedFileIDsByFilter resolves the "select all N matching" set (file ids,
+	// not hashes — the Files ops are file-id-addressed like the renditions
+	// endpoints). HardDeleteRemovedFile / BulkHardDeleteRemovedFiles are the only
+	// per-file purge (non-last drops the blob, last file cascades the recording);
+	// they return the blobs to reclaim after commit.
+	ListRemovedFilesPage(ctx context.Context, q FileListQuery) ([]*FileListEntry, error)
+	CountRemovedFiles(ctx context.Context, f FileFilter) (int, error)
+	RemovedFileIDsByFilter(ctx context.Context, f FileFilter) ([]int64, error)
+	HardDeleteRemovedFile(ctx context.Context, fileID int64) (blobs []DeletedBlob, found bool, err error)
+	BulkHardDeleteRemovedFiles(ctx context.Context, fileIDs []int64) (deleted int, blobs []DeletedBlob, err error)
+
 	// StorageByteBreakdown partitions the files table's logical byte_size total
 	// by state (live library / on review / in trash). Backs the audio, review,
 	// and trash disk-usage categories (see adminStorageStats).
