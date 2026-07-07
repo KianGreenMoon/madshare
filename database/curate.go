@@ -64,6 +64,15 @@ func recordingFilterClause(filter string) string {
 		return `NOT EXISTS (SELECT 1 FROM files f WHERE f.recording_id = r.id AND f.deleted_at IS NULL)`
 	case "pinned":
 		return `EXISTS (SELECT 1 FROM files f WHERE f.recording_id = r.id AND f.recording_pinned = 1)`
+	case "trashed":
+		// Recordings perspective of Trash (soft-delete.md): wholly out of the
+		// library — once had an approved appearance, but none is visible now (all
+		// trashed and/or the recording is dormant). Reuses visibleTagset (alias
+		// m) so "visible" means exactly what the library shows. Pure-draft
+		// recordings (never approved) are excluded — those are moderation, not
+		// trash.
+		return `EXISTS (SELECT 1 FROM tagsets t WHERE t.recording_id = r.id AND t.review_state = 'approved')
+			AND NOT EXISTS (SELECT 1 FROM tagsets m WHERE m.recording_id = r.id AND ` + visibleTagset + `)`
 	default:
 		return `0`
 	}

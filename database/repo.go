@@ -409,6 +409,17 @@ type Repository interface {
 	// reclaim after commit.
 	HardDeleteRecording(ctx context.Context, recordingID int64) (RecordingDeleteOutcome, error)
 
+	// Recordings perspective of Trash (soft-delete.md): the recording-grain lens
+	// over recordings wholly out of the library. List/Count force the "trashed"
+	// membership; RestoreRecording un-trashes every appearance and restores a
+	// rendition when dormant; the bulk variants back the Recordings bin's
+	// "Restore selected" / "Delete selected" (one transaction each).
+	ListTrashedRecordings(ctx context.Context, search string, limit, offset int) ([]RecordingRow, error)
+	CountTrashedRecordings(ctx context.Context, search string) (int, error)
+	RestoreRecording(ctx context.Context, recordingID int64) (found bool, err error)
+	BulkRestoreRecordings(ctx context.Context, recordingIDs []int64) (restored int, err error)
+	BulkHardDeleteRecordings(ctx context.Context, recordingIDs []int64) (deleted int, blobs []DeletedBlob, err error)
+
 	// SetRecordingAccess updates the recording-level license / guest-playable
 	// fields (nil = unchanged; explicit guest sets the manual override).
 	SetRecordingAccess(ctx context.Context, recordingID int64, license *string, guest *bool) (bool, error)

@@ -519,6 +519,16 @@ type fakeRepo struct {
 	bulkHardDelRemovedN   int
 	bulkHardDelRemovedErr error
 
+	// Recordings perspective of Trash (soft-delete.md): trashed-recording bin.
+	trashedRecRows    []database.RecordingRow
+	countTrashedRec   int
+	restoreRecID      int64
+	restoreRecFound   bool
+	bulkRestoreRecIDs []int64
+	bulkRestoreRecN   int
+	bulkHardDelRecIDs []int64
+	bulkHardDelRecN   int
+
 	// Base-metadata edit stubs (Phase 5).
 	metaCalls      int
 	lastMetaHash   string
@@ -971,6 +981,29 @@ func (f *fakeRepo) BulkTrashRecordings(_ context.Context, recordingIDs []int64) 
 func (f *fakeRepo) HardDeleteRecording(_ context.Context, recordingID int64) (database.RecordingDeleteOutcome, error) {
 	f.hardDelRecordingID = recordingID
 	return f.hardDelOutcome, nil
+}
+
+func (f *fakeRepo) ListTrashedRecordings(_ context.Context, _ string, _, _ int) ([]database.RecordingRow, error) {
+	return f.trashedRecRows, nil
+}
+
+func (f *fakeRepo) CountTrashedRecordings(_ context.Context, _ string) (int, error) {
+	return f.countTrashedRec, nil
+}
+
+func (f *fakeRepo) RestoreRecording(_ context.Context, recordingID int64) (bool, error) {
+	f.restoreRecID = recordingID
+	return f.restoreRecFound, nil
+}
+
+func (f *fakeRepo) BulkRestoreRecordings(_ context.Context, recordingIDs []int64) (int, error) {
+	f.bulkRestoreRecIDs = recordingIDs
+	return f.bulkRestoreRecN, nil
+}
+
+func (f *fakeRepo) BulkHardDeleteRecordings(_ context.Context, recordingIDs []int64) (int, []database.DeletedBlob, error) {
+	f.bulkHardDelRecIDs = recordingIDs
+	return f.bulkHardDelRecN, f.hardDelOutcome.Blobs, nil
 }
 
 func (f *fakeRepo) SetRecordingAccess(_ context.Context, recordingID int64, license *string, guest *bool) (bool, error) {
