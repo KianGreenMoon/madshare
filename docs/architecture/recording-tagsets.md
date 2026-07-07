@@ -17,8 +17,8 @@ submission (new recording / new appearance / no new bytes) and the moderator
 approves per-piece — with case-B drop-bytes (absorb-at-the-gate) and force-new
 (pinned split) overrides. P5 (recordings/files admin views) is **built**: the
 `/admin/recordings` curation page (both arms, selection-based merge, appearance
-move/set-primary, whole-recording trash + count-aware hard delete, editable
-license/guest) and the All-files physical columns with the "Show removed"
+move/set-primary, whole-recording trash [hard delete moved to the Trash page —
+`soft-delete.md`], editable license/guest) and the All-files physical columns with the "Show removed"
 toggle — UX per the owner-signed mock of 2026-07-07, which also resolved open
 point 1 (merge/move mechanics). Federation (P6) not started.
 This document is the reference design and the implementation plan.
@@ -326,6 +326,11 @@ which re-enters its prior review state (badge rule unchanged). Trashing the
 last live tagset of a recording makes the recording dormant — files stay on
 disk, nothing is lost, restore brings it all back. Soft delete never cascades.
 
+> The Trash **page** now has three perspectives over the same not-in-library
+> set — Appearances (this tagset mark), Recordings (whole recordings out of the
+> library), and Files (soft-removed blobs) — and is the **only** place permanent
+> delete happens. Full model: `docs/architecture/soft-delete.md`.
+
 ### Hard delete (the cascade)
 
 From Trash permanent-delete, single or bulk:
@@ -491,13 +496,12 @@ Deliberately **two perspectives** (owner accepts the added admin complexity):
   first (ladder rank, tech, live/removed state; Play / Split off / Remove /
   Restore), the appearance list under it full-width (primary marked, review
   state; a live appearance offers Edit / Set primary / Move… / Remove, a
-  trashed one Restore / Delete permanently — the tagset-addressed inverse and
-  hard delete, so an appearance whose origin blob was absorbed/purged is still
-  restorable/removable here even though the hash-addressed Trash can't reach
-  it) — plus the card footer's
-  **whole-recording delete** (soft = trash all its tagsets; hard = the full
-  cascade, recording + tagsets + files, count-aware confirm spelling out
-  appearances / files / bytes / playlist losses). **Merge is selection-based**:
+  trashed one **Restore** only) — plus the card footer's **Trash recording**
+  (soft = trash all its tagsets; the whole recording then shows in the Trash
+  page's Recordings lens). **Permanent delete lives only on the Trash page now**
+  (`soft-delete.md`): `/admin/recordings` does soft ops + curation, and every
+  hard delete — appearance, recording, or removed file — happens in the three
+  Trash perspectives. **Merge is selection-based**:
   it lives only in the bulk bar, disabled until ≥2 recordings are ticked, so
   it adds no everyday weight; the confirm modal picks the surviving target
   (default = the recording holding the union's ladder-best rendition,
