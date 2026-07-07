@@ -414,6 +414,75 @@ func TestGetRecordingDetail(t *testing.T) {
 	}
 }
 
+// TestRestoreAndHardDeleteTagset covers the tagset-addressed trash inverse and
+// permanent delete (the recordings view's trashed-appearance actions): restore
+// un-trashes one appearance; hard delete refuses a live one, drops a trashed
+// non-last one keeping the recording, and GCs the recording + reclaims the blob
+// when it was the last appearance.
+func TestRestoreAndHardDeleteTagset(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	f1 := insertTaggedFile(t, db, hash64("ta1"), "a.flac", "The Band", "Studio Album")
+	f2 := insertTaggedFile(t, db, hash64("ta2"), "b.mp3", "The Band", "Best Of")
+	rec := groupIntoRecording(t, db, f1.ID, f2.ID)
+	ts1, ts2 := tagsetOfFile(t, db, f1.ID), tagsetOfFile(t, db, f2.ID)
+
+	// Restore un-trashes a trashed appearance; a live one / unknown id → false.
+	if n, err := db.BulkTrashTagsets(ctx, []int64{ts2}); err != nil || n != 1 {
+		t.Fatalf("trash: n=%d err=%v", n, err)
+	}
+	if found, err := db.RestoreTagset(ctx, ts2); err != nil || !found {
+		t.Fatalf("restore trashed: found=%v err=%v", found, err)
+	}
+	if found, _ := db.RestoreTagset(ctx, ts1); found {
+		t.Error("restore of a live appearance should report not-found")
+	}
+	if found, _ := db.RestoreTagset(ctx, 99999); found {
+		t.Error("restore of an unknown id should report not-found")
+	}
+	if d, _ := db.GetRecordingDetail(ctx, rec); d == nil || d.Appearances[0].Trashed || d.Appearances[1].Trashed {
+		t.Fatalf("both appearances should be live after restore: %+v", d)
+	}
+
+	// Hard delete refuses a live appearance (trash it first).
+	if out, err := db.HardDeleteTrashedTagset(ctx, ts2); err != nil || !out.Found || out.Trashed {
+		t.Fatalf("live hard-delete: %+v err=%v, want Found && !Trashed", out, err)
+	}
+	if out, _ := db.HardDeleteTrashedTagset(ctx, 99999); out.Found {
+		t.Error("hard-delete of an unknown id should report not-found")
+	}
+
+	// Trashed non-last appearance: dropped, recording survives, no blob freed.
+	if _, err := db.BulkTrashTagsets(ctx, []int64{ts2}); err != nil {
+		t.Fatalf("trash ts2: %v", err)
+	}
+	out, err := db.HardDeleteTrashedTagset(ctx, ts2)
+	if err != nil || !out.Found || !out.Trashed || len(out.Blobs) != 0 {
+		t.Fatalf("non-last hard-delete: %+v err=%v, want Found && Trashed && no blobs", out, err)
+	}
+	d, _ := db.GetRecordingDetail(ctx, rec)
+	if d == nil || len(d.Appearances) != 1 {
+		t.Fatalf("recording should keep its one appearance: %+v", d)
+	}
+
+	// Trashing + hard-deleting the LAST appearance GCs the recording and returns
+	// its files' blobs for reclamation.
+	if _, err := db.BulkTrashTagsets(ctx, []int64{ts1}); err != nil {
+		t.Fatalf("trash ts1: %v", err)
+	}
+	last, err := db.HardDeleteTrashedTagset(ctx, ts1)
+	if err != nil || !last.Found || !last.Trashed {
+		t.Fatalf("last hard-delete: %+v err=%v", last, err)
+	}
+	if len(last.Blobs) == 0 {
+		t.Error("deleting the last appearance should return the recording's blobs to reclaim")
+	}
+	if gone, _ := db.GetRecordingDetail(ctx, rec); gone != nil {
+		t.Errorf("recording should be gone after its last appearance was deleted: %+v", gone)
+	}
+}
+
 // recordingIDOf returns a file's recording id.
 func recordingIDOf(t *testing.T, db *DB, fileID int64) int64 {
 	t.Helper()

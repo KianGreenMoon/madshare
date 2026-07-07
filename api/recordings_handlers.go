@@ -206,9 +206,9 @@ func (h *handler) recordingsDetail(w http.ResponseWriter, r *http.Request) {
 		dto.Appearances = append(dto.Appearances, recordingAppearanceDTO{
 			TagsetID: a.TagsetID, Title: a.Title, Artist: a.Artist,
 			AlbumArtist: a.AlbumArtist, Album: a.Album,
-			Disc:  nullable(a.DiscNumber.Int64, a.DiscNumber.Valid),
-			Track: nullable(a.TrackNumber.Int64, a.TrackNumber.Valid),
-			Year:  nullable(a.Year.Int64, a.Year.Valid),
+			Disc:        nullable(a.DiscNumber.Int64, a.DiscNumber.Valid),
+			Track:       nullable(a.TrackNumber.Int64, a.TrackNumber.Valid),
+			Year:        nullable(a.Year.Int64, a.Year.Valid),
 			ReviewState: a.ReviewState, Trashed: a.Trashed,
 			IsPrimary: a.IsPrimary, CreatedAt: a.CreatedAt,
 		})
@@ -248,7 +248,7 @@ func (h *handler) recordingsMerge(w http.ResponseWriter, r *http.Request) {
 			out.SourcesMerged, out.RenditionsMoved, out.AppearancesMoved, out.AppearancesDropped))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "sources_merged": out.SourcesMerged,
-		"renditions_moved": out.RenditionsMoved,
+		"renditions_moved":  out.RenditionsMoved,
 		"appearances_moved": out.AppearancesMoved, "appearances_dropped": out.AppearancesDropped,
 	})
 }
@@ -493,4 +493,68 @@ func (h *handler) renditionSetRemoved(w http.ResponseWriter, r *http.Request, re
 	}
 	h.audit(r.Context(), action, strconv.FormatInt(fileID, 10), "")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// tagsetRestore handles POST /api/admin/tagsets/{tagsetID}/restore — the
+// appearances arm's inverse of Remove (discard): it un-trashes one appearance by
+// id. The hash-addressed Trash page can't restore an appearance whose origin
+// blob was absorbed/purged; this can. Gated file.delete.
+func (h *handler) tagsetRestore(w http.ResponseWriter, r *http.Request) {
+	tagsetID, ok := parseTagsetID(r)
+	if !ok {
+		http.Error(w, "invalid tagset id", http.StatusBadRequest)
+		return
+	}
+	found, err := h.repo.RestoreTagset(r.Context(), tagsetID)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	h.audit(r.Context(), "appearance.restore", strconv.FormatInt(tagsetID, 10), "")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tagset_id": tagsetID})
+}
+
+// tagsetHardDelete handles DELETE /api/admin/tagsets/{tagsetID} — the
+// appearances arm's permanent delete: it removes one trashed appearance through
+// the shared cascade (last one → recording + files GC'd), reclaiming freed blobs
+// after commit. Refuses a live appearance with 409 (trash it first). Gated
+// file.delete.
+func (h *handler) tagsetHardDelete(w http.ResponseWriter, r *http.Request) {
+	tagsetID, ok := parseTagsetID(r)
+	if !ok {
+		http.Error(w, "invalid tagset id", http.StatusBadRequest)
+		return
+	}
+	out, err := h.repo.HardDeleteTrashedTagset(r.Context(), tagsetID)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if !out.Found {
+		http.NotFound(w, r)
+		return
+	}
+	if !out.Trashed {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"ok": false, "error": "appearance is live — trash it before permanent delete"})
+		return
+	}
+	blobsRemoved := 0
+	for _, b := range out.Blobs {
+		removed, rerr := h.reclaimStorage(&database.File{StorageBackend: b.StorageBackend}, b.Hash)
+		if rerr != nil {
+			log.Printf("orphan blob: hash=%s err=%v", b.Hash, rerr)
+			continue
+		}
+		if removed {
+			blobsRemoved++
+		}
+	}
+	h.audit(r.Context(), "appearance.delete", strconv.FormatInt(tagsetID, 10),
+		fmt.Sprintf("%d file(s) reclaimed", blobsRemoved))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tagset_id": tagsetID, "blobs_removed": blobsRemoved})
 }

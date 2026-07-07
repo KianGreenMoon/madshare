@@ -470,7 +470,7 @@ type fakeRepo struct {
 	absorbErr         error
 	bulkAbsorbIDs     []int64
 	bulkAbsorbErr     error
-	duplicateHashes   map[string]bool               // hashes IsDuplicateSubmission reports true
+	duplicateHashes   map[string]bool                    // hashes IsDuplicateSubmission reports true
 	classify          map[int64]database.SubmissionClass // per-tagset ClassifySubmission override
 	attachCalls       int
 	attachTagsetID    int64
@@ -479,39 +479,43 @@ type fakeRepo struct {
 	renditions        []database.DuplicateRendition // RecordingRenditionsByTagsetID result
 
 	// Recording-curation stubs (/admin/recordings, recording-tagsets P5).
-	recordingRows      []database.RecordingRow      // ListRecordings result
-	recordingDetail    *database.RecordingDetail    // GetRecordingDetail result (nil = 404)
-	lastListOpts       database.RecordingListOptions
-	mergeTargetID      int64
-	mergeSourceIDs     []int64
-	mergeNotFound      bool
-	moveTagsetID       int64
-	moveTargetID       int64
-	moveOutcome        database.MoveTagsetOutcome // zero value = not found
-	primaryRecordingID int64
-	primaryTagsetID    int64
-	primaryNotFound    bool
-	trashRecordingIDs  []int64
-	trashRecNotFound   bool
-	hardDelRecordingID int64
-	hardDelOutcome     database.RecordingDeleteOutcome
-	accessRecordingID  int64
-	accessLicense      *string
-	accessGuest        *bool
-	accessNotFound     bool
-	removeRendID       int64
-	restoreRendID      int64
-	rendNotFound       bool
+	recordingRows         []database.RecordingRow   // ListRecordings result
+	recordingDetail       *database.RecordingDetail // GetRecordingDetail result (nil = 404)
+	lastListOpts          database.RecordingListOptions
+	mergeTargetID         int64
+	mergeSourceIDs        []int64
+	mergeNotFound         bool
+	moveTagsetID          int64
+	moveTargetID          int64
+	moveOutcome           database.MoveTagsetOutcome // zero value = not found
+	primaryRecordingID    int64
+	primaryTagsetID       int64
+	primaryNotFound       bool
+	trashRecordingIDs     []int64
+	trashRecNotFound      bool
+	hardDelRecordingID    int64
+	hardDelOutcome        database.RecordingDeleteOutcome
+	restoreTagsetID       int64
+	restoreTagsetNotFound bool
+	hardDelTagsetID       int64
+	hardDelTagsetOutcome  database.HardDeleteTagsetOutcome
+	accessRecordingID     int64
+	accessLicense         *string
+	accessGuest           *bool
+	accessNotFound        bool
+	removeRendID          int64
+	restoreRendID         int64
+	rendNotFound          bool
 
 	// Base-metadata edit stubs (Phase 5).
-	metaCalls     int
+	metaCalls      int
 	lastMetaHash   string
 	lastMetaTagset int64
 	lastMetaPatch  database.MetadataPatch
-	metaResult    *database.MediaMetadata
-	metaErr       error
-	metaGetResult *database.MediaMetadata // FileMetadataByHash result
-	metaGetErr    error
+	metaResult     *database.MediaMetadata
+	metaErr        error
+	metaGetResult  *database.MediaMetadata // FileMetadataByHash result
+	metaGetErr     error
 
 	// Playlist stubs (UI roadmap Phase 5). playlistErr is returned by every
 	// playlist method, so each error branch is one knob away.
@@ -526,34 +530,34 @@ type fakeRepo struct {
 	// Review-bucket stubs (moderation review). lastReviewState captures the
 	// state InsertFile received; reviewInfoFound=false means "unknown hash"
 	// (the blob gate passes unknowns through to the file server).
-	lastReviewState   string
-	reviewEntries     []*database.ReviewEntry
-	reviewErr         error
-	reviewUpdateFound bool
-	reviewUpdateErr   error
-	reviewUpdateCalls int
+	lastReviewState     string
+	reviewEntries       []*database.ReviewEntry
+	reviewErr           error
+	reviewUpdateFound   bool
+	reviewUpdateErr     error
+	reviewUpdateCalls   int
 	lastReviewTagset    int64
 	lastApproveDrop     bool
 	lastApproveForceNew bool
-	lastReviewTrans   database.ReviewTransition
-	reviewInfoState   string
-	reviewInfoOwner   sql.NullInt64
-	reviewInfoDeleted bool
-	reviewInfoFound   bool
-	reviewInfoErr     error
-	stageRestored     bool
-	stageRestoredErr  error
-	stageRestoreCalls int
+	lastReviewTrans     database.ReviewTransition
+	reviewInfoState     string
+	reviewInfoOwner     sql.NullInt64
+	reviewInfoDeleted   bool
+	reviewInfoFound     bool
+	reviewInfoErr       error
+	stageRestored       bool
+	stageRestoredErr    error
+	stageRestoreCalls   int
 
 	// Paged review/trash stubs (select-all-matching + batch). The *Page methods
 	// return reviewEntries/pageFiles unless a dedicated slice is set; the count /
 	// hash-resolver knobs back the "select all N matching" path.
-	countReview        int
+	countReview         int
 	reviewFilterTagsets []int64
-	lastReviewFilter   database.ReviewFilter
-	pageTrash          []*database.FileListEntry
-	countTrash         int
-	trashFilterHashes  []string
+	lastReviewFilter    database.ReviewFilter
+	pageTrash           []*database.FileListEntry
+	countTrash          int
+	trashFilterHashes   []string
 }
 
 func (f *fakeRepo) ListUploadsByUser(_ context.Context, _ int64) ([]*database.ReviewEntry, error) {
@@ -905,6 +909,16 @@ func (f *fakeRepo) SetPrimaryTagset(_ context.Context, recordingID, tagsetID int
 	f.primaryRecordingID = recordingID
 	f.primaryTagsetID = tagsetID
 	return !f.primaryNotFound, nil
+}
+
+func (f *fakeRepo) RestoreTagset(_ context.Context, tagsetID int64) (bool, error) {
+	f.restoreTagsetID = tagsetID
+	return !f.restoreTagsetNotFound, nil
+}
+
+func (f *fakeRepo) HardDeleteTrashedTagset(_ context.Context, tagsetID int64) (database.HardDeleteTagsetOutcome, error) {
+	f.hardDelTagsetID = tagsetID
+	return f.hardDelTagsetOutcome, nil
 }
 
 func (f *fakeRepo) TrashRecording(_ context.Context, recordingID int64) (int, bool, error) {

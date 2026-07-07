@@ -490,7 +490,11 @@ Deliberately **two perspectives** (owner accepts the added admin complexity):
   = ladder-best preview); it expands to **both arms stacked** — renditions
   first (ladder rank, tech, live/removed state; Play / Split off / Remove /
   Restore), the appearance list under it full-width (primary marked, review
-  state; Edit / Set primary / Move… / Remove) — plus the card footer's
+  state; a live appearance offers Edit / Set primary / Move… / Remove, a
+  trashed one Restore / Delete permanently — the tagset-addressed inverse and
+  hard delete, so an appearance whose origin blob was absorbed/purged is still
+  restorable/removable here even though the hash-addressed Trash can't reach
+  it) — plus the card footer's
   **whole-recording delete** (soft = trash all its tagsets; hard = the full
   cascade, recording + tagsets + files, count-aware confirm spelling out
   appearances / files / bytes / playlist losses). **Merge is selection-based**:
@@ -706,9 +710,15 @@ regressions isolate to the data move.
   filter pills, `#id`/any-tagset substring search, limit/offset) +
   `GetRecordingDetail` (both arms incl. removed blobs + trashed appearances).
   `RemoveRendition`/`RestoreRendition` promoted into the `Repository`.
+  `RestoreTagset` (soft-undelete one appearance) + `HardDeleteTrashedTagset`
+  (permanent delete of a trashed appearance through the same
+  `hardDeleteTagsetsTx` cascade — last one → recording + files GC'd, blobs
+  returned; refuses a live appearance) close the trashed-appearance loop the
+  recordings view exposes.
   Endpoints under `/api/admin`: `GET/POST /recordings…` (list / merge / bulk
   trash), `GET/DELETE /recordings/{id}` (+ `/primary`, `/trash`, PATCH
-  `/access`), `POST /tagsets/{id}/move`, `POST /renditions/{id}/{remove,
+  `/access`), `POST /tagsets/{id}/move`, `POST /tagsets/{id}/restore`, `DELETE
+  /tagsets/{id}` (409 on a live appearance), `POST /renditions/{id}/{remove,
   restore}`; gates: curation = `content.moderate`, deletes = `file.delete`,
   access = `metadata.edit`. UI: bespoke `admin/recordings.js` (windowed
   virtual-list page scroll, expandable two-arm cards, merge/move/access

@@ -279,6 +279,31 @@ async function removeAppearance(rec, a) {
   reload();
 }
 
+async function restoreAppearance(rec, a) {
+  const res = await post(`${API}/api/admin/tagsets/${a.tagset_id}/restore`);
+  if (!res) return;
+  if (!res.ok) { toast(`Restore failed (HTTP ${res.status}).`, 'error'); return; }
+  toast('Appearance restored to the library.', 'success');
+  await refreshDetail(rec.id);
+  reload();
+}
+
+async function hardDeleteAppearance(rec, a) {
+  const ok = await confirmModal({
+    title: 'Delete this appearance permanently?',
+    body: `“${a.title}” is removed for good, along with any playlist or favorites entries pointing here. `
+      + `If it is this recording’s last appearance, the recording and its audio files are deleted too. This cannot be undone.`,
+    confirmLabel: 'Delete permanently',
+  });
+  if (!ok) return;
+  const res = await post(`${API}/api/admin/tagsets/${a.tagset_id}`, { method: 'DELETE' });
+  if (!res) return;
+  if (!res.ok) { toast(`Delete failed (HTTP ${res.status}).`, 'error'); return; }
+  toast('Appearance permanently deleted.', 'success');
+  expanded.delete(rec.id);
+  reload();
+}
+
 async function setPrimary(rec, a) {
   const res = await post(`${API}/api/admin/recordings/${rec.id}/primary`, { body: { tagset_id: a.tagset_id } });
   if (!res) return;
@@ -599,6 +624,15 @@ function appearanceRow(rec, a) {
       class: 'btn btn-sm btn-destructive-outline', title: 'Trash this appearance (reversible)',
       onclick: () => removeAppearance(rec, a),
     }, ['Remove']));
+  } else if (canDelete) {
+    actions.push(el('button', {
+      class: 'btn btn-sm btn-neutral', title: 'Bring this appearance back into the library',
+      onclick: () => restoreAppearance(rec, a),
+    }, ['Restore']));
+    actions.push(el('button', {
+      class: 'btn btn-sm btn-destructive-solid', title: 'Permanently delete this trashed appearance',
+      onclick: () => hardDeleteAppearance(rec, a),
+    }, ['Delete…']));
   }
   const albumBits = [a.album || '—'];
   if (a.disc != null || a.track != null) albumBits.push(` · ${a.disc ?? '–'}-${a.track ?? '–'}`);

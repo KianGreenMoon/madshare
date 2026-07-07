@@ -369,6 +369,19 @@ type Repository interface {
 	// is false when it does not belong to the recording.
 	SetPrimaryTagset(ctx context.Context, recordingID, tagsetID int64) (bool, error)
 
+	// RestoreTagset clears one appearance's trash mark (the tagset-addressed
+	// inverse of the per-appearance discard), so a trashed appearance whose
+	// origin blob was absorbed/purged — unreachable from the hash-addressed
+	// Trash — is restorable from the recordings view. found is false when no
+	// trashed tagset matches the id.
+	RestoreTagset(ctx context.Context, tagsetID int64) (bool, error)
+
+	// HardDeleteTrashedTagset permanently removes one trashed appearance via the
+	// shared tagset-first cascade (last one → recording + files GC'd), returning
+	// the blobs to reclaim after commit. It refuses a live appearance
+	// (Found && !Trashed) — permanent delete is Trash-only.
+	HardDeleteTrashedTagset(ctx context.Context, tagsetID int64) (HardDeleteTagsetOutcome, error)
+
 	// TrashRecording soft-deletes every non-trashed appearance of the recording
 	// (whole-recording Trash — dormant, fully restorable), returning the count
 	// newly trashed; found is false for an unknown id.

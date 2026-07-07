@@ -307,3 +307,52 @@ func TestRenditionRemoveRestore(t *testing.T) {
 		t.Errorf("unknown rendition: status = %d, want 404", rr.Code)
 	}
 }
+
+func TestTagsetRestore(t *testing.T) {
+	repo := &fakeRepo{}
+	h := &handler{repo: repo}
+	rr := httptest.NewRecorder()
+	h.tagsetRestore(rr, paramRequest(http.MethodPost,
+		"/api/admin/tagsets/7/restore", "tagsetID", "7", ""))
+	if rr.Code != http.StatusOK || repo.restoreTagsetID != 7 {
+		t.Errorf("restore: status=%d id=%d", rr.Code, repo.restoreTagsetID)
+	}
+	rr = httptest.NewRecorder()
+	(&handler{repo: &fakeRepo{restoreTagsetNotFound: true}}).tagsetRestore(rr, paramRequest(
+		http.MethodPost, "/api/admin/tagsets/7/restore", "tagsetID", "7", ""))
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("unknown tagset: status = %d, want 404", rr.Code)
+	}
+}
+
+func TestTagsetHardDelete(t *testing.T) {
+	// A trashed appearance whose delete freed the last blob routes through the
+	// storage-aware reclaim (last-tagset cascade).
+	repo := &fakeRepo{hardDelTagsetOutcome: database.HardDeleteTagsetOutcome{
+		Found: true, Trashed: true,
+		Blobs: []database.DeletedBlob{{Hash: "abc"}},
+	}}
+	h := &handler{repo: repo, storage: storage.NewLocal(t.TempDir())}
+	rr := httptest.NewRecorder()
+	h.tagsetHardDelete(rr, paramRequest(http.MethodDelete,
+		"/api/admin/tagsets/7", "tagsetID", "7", ""))
+	if rr.Code != http.StatusOK || repo.hardDelTagsetID != 7 {
+		t.Fatalf("delete: status=%d id=%d body=%s", rr.Code, repo.hardDelTagsetID, rr.Body.String())
+	}
+
+	// A live appearance is refused (409): permanent delete is Trash-only.
+	rr = httptest.NewRecorder()
+	(&handler{repo: &fakeRepo{hardDelTagsetOutcome: database.HardDeleteTagsetOutcome{Found: true}}}).
+		tagsetHardDelete(rr, paramRequest(http.MethodDelete, "/api/admin/tagsets/7", "tagsetID", "7", ""))
+	if rr.Code != http.StatusConflict {
+		t.Errorf("live appearance: status = %d, want 409", rr.Code)
+	}
+
+	// Unknown id → 404.
+	rr = httptest.NewRecorder()
+	(&handler{repo: &fakeRepo{}}).tagsetHardDelete(rr, paramRequest(
+		http.MethodDelete, "/api/admin/tagsets/7", "tagsetID", "7", ""))
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("unknown tagset: status = %d, want 404", rr.Code)
+	}
+}

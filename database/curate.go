@@ -258,7 +258,7 @@ func (db *DB) GetRecordingDetail(ctx context.Context, recordingID int64) (*Recor
 		   FROM files f
 		   LEFT JOIN media_metadata mm ON mm.file_id = f.id
 		  WHERE f.recording_id = ?
-		  ORDER BY ` + renditionLadderOrder("f", "mm",
+		  ORDER BY `+renditionLadderOrder("f", "mm",
 			"(SELECT preferred_file_id FROM recordings WHERE id = f.recording_id)"),
 		recordingID)
 	if err != nil {
@@ -741,4 +741,76 @@ func (db *DB) SetRecordingAccess(ctx context.Context, recordingID int64, license
 	}
 	n, _ := res.RowsAffected()
 	return n > 0, nil
+}
+
+// ── Trashed-appearance restore / permanent delete ──────────────────────────────
+
+// RestoreTagset clears a single appearance's trash mark (tagsets.deleted_at),
+// bringing it back into the library — the tagset-addressed inverse of the
+// discard (BulkTrashTagsets) the recordings view uses for per-appearance Remove.
+// It exists because the hash-addressed Trash page reaches a trashed appearance
+// only through its origin file's hash, which an absorbed/purged blob no longer
+// offers (RestoreFileByHash matches origin_file_id); this restores by tagset id
+// instead. review_state is left untouched — restore re-enters the prior review
+// state (moderation.md). Returns found=false (no error) when no trashed tagset
+// matches the id.
+func (db *DB) RestoreTagset(ctx context.Context, tagsetID int64) (bool, error) {
+	res, err := db.ExecContext(ctx,
+		`UPDATE tagsets SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL`,
+		tagsetID)
+	if err != nil {
+		return false, fmt.Errorf("restore tagset: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// HardDeleteTagsetOutcome reports a single-appearance permanent delete: whether
+// the id exists at all, whether it was trashed (only a trashed appearance is
+// permanently deletable — the symmetry with the hash-addressed Trash, which only
+// hard-deletes trashed blobs), and the blobs to reclaim after commit (non-empty
+// only when this was the recording's last appearance, so the shared cascade GC'd
+// the recording and its files).
+type HardDeleteTagsetOutcome struct {
+	Found   bool
+	Trashed bool
+	Blobs   []DeletedBlob
+}
+
+// HardDeleteTrashedTagset permanently removes one trashed appearance through the
+// shared tagset-first cascade (hardDeleteTagsetsTx): the recording keeps its
+// other appearances (primary re-promoted if needed), or — if this was the last
+// one — is GC'd with all its files, the blobs returned for post-commit
+// reclamation. It refuses a live appearance (Found && !Trashed): permanent
+// delete is a Trash-only op, so the caller must trash it first (a live
+// appearance is removed via the whole-recording delete or MoveTagset instead).
+func (db *DB) HardDeleteTrashedTagset(ctx context.Context, tagsetID int64) (HardDeleteTagsetOutcome, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return HardDeleteTagsetOutcome{}, fmt.Errorf("delete tagset: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	var deleted sql.NullInt64
+	err = tx.QueryRowContext(ctx,
+		`SELECT deleted_at FROM tagsets WHERE id = ?`, tagsetID).Scan(&deleted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return HardDeleteTagsetOutcome{}, nil
+	}
+	if err != nil {
+		return HardDeleteTagsetOutcome{}, fmt.Errorf("delete tagset: lookup: %w", err)
+	}
+	out := HardDeleteTagsetOutcome{Found: true, Trashed: deleted.Valid}
+	if !deleted.Valid {
+		return out, nil // refuse: live appearance, trash it first
+	}
+
+	out.Blobs, err = hardDeleteTagsetsTx(ctx, tx, []int64{tagsetID})
+	if err != nil {
+		return HardDeleteTagsetOutcome{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return HardDeleteTagsetOutcome{}, fmt.Errorf("delete tagset: commit: %w", err)
+	}
+	return out, nil
 }

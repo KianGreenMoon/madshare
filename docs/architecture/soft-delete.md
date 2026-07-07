@@ -42,6 +42,15 @@ both run this one shared cascade in a single transaction. The prune / files-side
 direction is symmetric (`hardDeleteFilesTx`): removing the last *file* of a
 recording GCs the recording and all its appearances.
 
+The hash-addressed Trash page reaches a trashed appearance only through its
+origin file's hash (`RestoreFileByHash` / the hard-delete-by-hash paths match
+`origin_file_id`), so an appearance whose origin blob was absorbed or purged is
+unreachable there. The recordings view (`recording-tagsets.md`) closes that gap
+with **tagset-addressed** equivalents — `RestoreTagset` (un-trash one
+appearance) and `HardDeleteTrashedTagset` (permanent delete through the same
+`hardDeleteTagsetsTx` cascade; refuses a live appearance) — surfaced as
+Restore / Delete permanently on a trashed appearance row.
+
 ---
 
 ## Model changes (`database/models.go`)
