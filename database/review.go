@@ -142,18 +142,6 @@ func scanReviewRows(rows *sql.Rows, withUploader bool) ([]*ReviewEntry, error) {
 	return out, nil
 }
 
-func scanHashes(rows *sql.Rows) ([]string, error) {
-	var out []string
-	for rows.Next() {
-		var h string
-		if err := rows.Scan(&h); err != nil {
-			return nil, fmt.Errorf("scan review hash: %w", err)
-		}
-		out = append(out, h)
-	}
-	return out, rows.Err()
-}
-
 func pageWindow(sqlText string, args []any, limit, offset int) (string, []any) {
 	if limit > 0 {
 		if offset < 0 {

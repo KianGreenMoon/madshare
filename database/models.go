@@ -143,6 +143,11 @@ type FileListEntry struct {
 	// ReviewState is populated by the trash listing so the UI can badge a
 	// discarded submission (it re-enters the review queue on restore).
 	ReviewState string
+	// StorageBackend / RecordingID feed the All-files physical columns
+	// (recording-tagsets P5): where the blob lives and which recording it is a
+	// rendition of (the link into /admin/recordings).
+	StorageBackend string
+	RecordingID    int64
 }
 
 // ReviewEntry is a staged (non-approved, non-trashed) file as listed by the

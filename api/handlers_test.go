@@ -478,6 +478,31 @@ type fakeRepo struct {
 	attachErr         error
 	renditions        []database.DuplicateRendition // RecordingRenditionsByTagsetID result
 
+	// Recording-curation stubs (/admin/recordings, recording-tagsets P5).
+	recordingRows      []database.RecordingRow      // ListRecordings result
+	recordingDetail    *database.RecordingDetail    // GetRecordingDetail result (nil = 404)
+	lastListOpts       database.RecordingListOptions
+	mergeTargetID      int64
+	mergeSourceIDs     []int64
+	mergeNotFound      bool
+	moveTagsetID       int64
+	moveTargetID       int64
+	moveOutcome        database.MoveTagsetOutcome // zero value = not found
+	primaryRecordingID int64
+	primaryTagsetID    int64
+	primaryNotFound    bool
+	trashRecordingIDs  []int64
+	trashRecNotFound   bool
+	hardDelRecordingID int64
+	hardDelOutcome     database.RecordingDeleteOutcome
+	accessRecordingID  int64
+	accessLicense      *string
+	accessGuest        *bool
+	accessNotFound     bool
+	removeRendID       int64
+	restoreRendID      int64
+	rendNotFound       bool
+
 	// Base-metadata edit stubs (Phase 5).
 	metaCalls     int
 	lastMetaHash   string
@@ -843,6 +868,78 @@ func (f *fakeRepo) BulkAbsorbKeepBest(_ context.Context, recordingIDs []int64) (
 		return 0, 0, f.bulkAbsorbErr
 	}
 	return len(recordingIDs), len(recordingIDs), nil
+}
+
+func (f *fakeRepo) ListRecordings(_ context.Context, opts database.RecordingListOptions) ([]database.RecordingRow, error) {
+	f.lastListOpts = opts
+	return f.recordingRows, nil
+}
+
+func (f *fakeRepo) CountRecordings(_ context.Context, _ database.RecordingListOptions) (int, error) {
+	return len(f.recordingRows), nil
+}
+
+func (f *fakeRepo) GetRecordingDetail(_ context.Context, _ int64) (*database.RecordingDetail, error) {
+	return f.recordingDetail, nil
+}
+
+func (f *fakeRepo) MergeRecordings(_ context.Context, targetID int64, sourceIDs []int64) (database.MergeOutcome, error) {
+	f.mergeTargetID = targetID
+	f.mergeSourceIDs = sourceIDs
+	if f.mergeNotFound {
+		return database.MergeOutcome{}, nil
+	}
+	return database.MergeOutcome{
+		Found: true, SourcesMerged: len(sourceIDs),
+		RenditionsMoved: len(sourceIDs), AppearancesMoved: len(sourceIDs),
+	}, nil
+}
+
+func (f *fakeRepo) MoveTagset(_ context.Context, tagsetID, targetRecordingID int64) (database.MoveTagsetOutcome, error) {
+	f.moveTagsetID = tagsetID
+	f.moveTargetID = targetRecordingID
+	return f.moveOutcome, nil
+}
+
+func (f *fakeRepo) SetPrimaryTagset(_ context.Context, recordingID, tagsetID int64) (bool, error) {
+	f.primaryRecordingID = recordingID
+	f.primaryTagsetID = tagsetID
+	return !f.primaryNotFound, nil
+}
+
+func (f *fakeRepo) TrashRecording(_ context.Context, recordingID int64) (int, bool, error) {
+	f.trashRecordingIDs = append(f.trashRecordingIDs, recordingID)
+	if f.trashRecNotFound {
+		return 0, false, nil
+	}
+	return 1, true, nil
+}
+
+func (f *fakeRepo) BulkTrashRecordings(_ context.Context, recordingIDs []int64) (int, int, error) {
+	f.trashRecordingIDs = append(f.trashRecordingIDs, recordingIDs...)
+	return len(recordingIDs), len(recordingIDs), nil
+}
+
+func (f *fakeRepo) HardDeleteRecording(_ context.Context, recordingID int64) (database.RecordingDeleteOutcome, error) {
+	f.hardDelRecordingID = recordingID
+	return f.hardDelOutcome, nil
+}
+
+func (f *fakeRepo) SetRecordingAccess(_ context.Context, recordingID int64, license *string, guest *bool) (bool, error) {
+	f.accessRecordingID = recordingID
+	f.accessLicense = license
+	f.accessGuest = guest
+	return !f.accessNotFound, nil
+}
+
+func (f *fakeRepo) RemoveRendition(_ context.Context, fileID int64) (bool, error) {
+	f.removeRendID = fileID
+	return !f.rendNotFound, nil
+}
+
+func (f *fakeRepo) RestoreRendition(_ context.Context, fileID int64) (bool, error) {
+	f.restoreRendID = fileID
+	return !f.rendNotFound, nil
 }
 
 func (f *fakeRepo) IsDuplicateSubmission(_ context.Context, hash string) (bool, error) {

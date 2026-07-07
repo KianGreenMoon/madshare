@@ -17,6 +17,13 @@ import (
 // intentionally do not use it.
 const visibleFile = "f.deleted_at IS NULL AND m.deleted_at IS NULL AND m.review_state = 'approved'"
 
+// visibleFileOrRemoved is visibleFile without the file-liveness leg: it
+// additionally admits soft-removed blobs (absorbed / removed renditions) whose
+// representative appearance is still live — the All-files "Show removed"
+// toggle (recording-tagsets P5). Trashed appearances stay excluded (Trash
+// owns those).
+const visibleFileOrRemoved = "m.deleted_at IS NULL AND m.review_state = 'approved'"
+
 // reprTagset selects a file's *representative* appearance — the single tagset
 // the files-rooted surfaces display, so those surfaces stay 1:1 with the file
 // even after a byte-dup upload attaches extra draft appearances to a blob
@@ -333,7 +340,8 @@ var fileListSelect = `
 		` + guestAccessibleExpr + ` AS guest_playable,
 		r.license,
 		CASE WHEN aimg.artist_id IS NOT NULL THEN 1 ELSE 0 END AS artist_has_image,
-		CASE WHEN alimg.album_id  IS NOT NULL THEN 1 ELSE 0 END AS album_has_image
+		CASE WHEN alimg.album_id  IS NOT NULL THEN 1 ELSE 0 END AS album_has_image,
+		f.storage_backend, f.recording_id, f.deleted_at
 	FROM files f` + tagsetJoin + `
 	LEFT JOIN media_metadata mm ON mm.file_id = f.id
 	LEFT JOIN artist_images aimg ON aimg.artist_id = m.album_artist_id
@@ -349,6 +357,7 @@ func scanFileList(rows *sql.Rows) ([]*FileListEntry, error) {
 			&e.ID, &e.Hash, &e.MimeType, &e.ByteSize, &e.ObjectKey, &e.CreatedAt,
 			&e.Filename, &e.Title, &e.Artist, &e.AlbumArtist, &e.Album, &e.TrackNumber, &e.DiscNumber, &e.Year, &e.DurationSeconds,
 			&guest, &e.License, &artistImg, &albumImg,
+			&e.StorageBackend, &e.RecordingID, &e.DeletedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan file list entry: %w", err)
 		}
@@ -399,6 +408,11 @@ type FileFilter struct {
 	QField   string
 	ArtistID *int64
 	AlbumID  *int64
+	// ShowRemoved additionally lists soft-removed blobs whose representative
+	// appearance is live (the All-files physical view, recording-tagsets P5).
+	// Never set on guest/bulk paths — the API gates it on a moderation
+	// capability.
+	ShowRemoved bool
 }
 
 // FileListQuery is a FileFilter plus presentation: a sort token (allow-listed in
@@ -463,6 +477,9 @@ func qFieldClause(q, field string) (string, []any) {
 // shared by the page query, the count, and the bulk hash resolver.
 func fileFilterWhere(f FileFilter) (string, []any) {
 	where := visibleFile
+	if f.ShowRemoved {
+		where = visibleFileOrRemoved
+	}
 	var args []any
 	if f.Guest {
 		where += " AND " + accessClause

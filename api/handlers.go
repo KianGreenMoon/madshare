@@ -161,6 +161,17 @@ func (h *handler) guestListing(ctx context.Context) bool {
 	return !auth.FromContext(ctx).Has(auth.PermContentAccess)
 }
 
+// canSeeRemoved reports whether this request may list soft-removed blobs (the
+// All-files "Show removed" toggle): a moderation/curation capability, passed
+// through when authz is off (open embedding).
+func (h *handler) canSeeRemoved(ctx context.Context) bool {
+	if !h.authzEnabled {
+		return true
+	}
+	id := auth.FromContext(ctx)
+	return id.Has(auth.PermContentModerate) || id.Has(auth.PermFileDelete)
+}
+
 // fileListDefaultLimit / fileListMaxLimit bound the page window. A missing
 // limit defaults to fileListDefaultLimit; limit=0 is a count-only request (the
 // dashboard reads just total); anything above the max is clamped.
@@ -192,6 +203,13 @@ func (h *handler) listFiles(w http.ResponseWriter, r *http.Request) {
 		Guest:  h.guestListing(r.Context()),
 		Q:      query,
 		QField: normalizeQField(q.Get("field")),
+	}
+	// show_removed additionally lists soft-removed blobs (absorbed / removed
+	// renditions) with their state — the All-files physical view
+	// (recording-tagsets P5). Moderation-capability only: removal state is
+	// curation detail, not library content.
+	if q.Get("show_removed") == "1" && h.canSeeRemoved(r.Context()) {
+		filter.ShowRemoved = true
 	}
 	limit := clampInt(q.Get("limit"), fileListDefaultLimit, 0, fileListMaxLimit)
 	offset := clampInt(q.Get("offset"), 0, 0, 1<<30)
@@ -235,6 +253,12 @@ func (h *handler) listFiles(w http.ResponseWriter, r *http.Request) {
 		// affordance (offered only when the entity has no cover yet).
 		ArtistHasImage bool `json:"artist_has_image"`
 		AlbumHasImage  bool `json:"album_has_image"`
+		// Physical columns (recording-tagsets P5): storage backend, the
+		// recording link, and whether the blob is soft-removed (only ever true
+		// under show_removed).
+		StorageBackend string `json:"storage_backend"`
+		RecordingID    int64  `json:"recording_id"`
+		Removed        bool   `json:"removed"`
 	}
 
 	items := make([]fileItem, 0, len(entries))
@@ -270,6 +294,9 @@ func (h *handler) listFiles(w http.ResponseWriter, r *http.Request) {
 			License:        e.License.String,
 			ArtistHasImage: e.ArtistHasImage,
 			AlbumHasImage:  e.AlbumHasImage,
+			StorageBackend: e.StorageBackend,
+			RecordingID:    e.RecordingID,
+			Removed:        e.DeletedAt.Valid,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

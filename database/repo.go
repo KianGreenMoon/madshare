@@ -342,6 +342,57 @@ type Repository interface {
 	// recordings are skipped. Returns recordings absorbed + renditions removed.
 	BulkAbsorbKeepBest(ctx context.Context, recordingIDs []int64) (recordingsAbsorbed, renditionsRemoved int, err error)
 
+	// --- Recording curation (/admin/recordings, recording-tagsets P5) ---
+
+	// ListRecordings returns one page of the recordings admin listing (newest
+	// first) with the primary appearance's display fields and the count chips.
+	ListRecordings(ctx context.Context, opts RecordingListOptions) ([]RecordingRow, error)
+
+	// CountRecordings returns the total matching the listing's filter + search.
+	CountRecordings(ctx context.Context, opts RecordingListOptions) (int, error)
+
+	// GetRecordingDetail loads one recording with both arms (renditions incl.
+	// soft-removed blobs, appearances incl. trashed); nil when unknown.
+	GetRecordingDetail(ctx context.Context, recordingID int64) (*RecordingDetail, error)
+
+	// MergeRecordings folds the source recordings into the target: renditions
+	// move pinned, appearances move with identity dedup (target's copy wins,
+	// nameless dropped), sources removed. Found is false on a stale selection.
+	MergeRecordings(ctx context.Context, targetID int64, sourceIDs []int64) (MergeOutcome, error)
+
+	// MoveTagset re-homes an appearance onto another existing recording; the
+	// refusals (last appearance, identity collision, same recording) are
+	// outcomes, not errors.
+	MoveTagset(ctx context.Context, tagsetID, targetRecordingID int64) (MoveTagsetOutcome, error)
+
+	// SetPrimaryTagset makes the appearance the one naming its recording; found
+	// is false when it does not belong to the recording.
+	SetPrimaryTagset(ctx context.Context, recordingID, tagsetID int64) (bool, error)
+
+	// TrashRecording soft-deletes every non-trashed appearance of the recording
+	// (whole-recording Trash — dormant, fully restorable), returning the count
+	// newly trashed; found is false for an unknown id.
+	TrashRecording(ctx context.Context, recordingID int64) (appearances int, found bool, err error)
+
+	// BulkTrashRecordings is TrashRecording over a set in one transaction
+	// (unknown ids skipped).
+	BulkTrashRecordings(ctx context.Context, recordingIDs []int64) (recordings, appearances int, err error)
+
+	// HardDeleteRecording permanently removes the recording with all appearances
+	// and files via the shared tagset-first cascade, returning the blobs to
+	// reclaim after commit.
+	HardDeleteRecording(ctx context.Context, recordingID int64) (RecordingDeleteOutcome, error)
+
+	// SetRecordingAccess updates the recording-level license / guest-playable
+	// fields (nil = unchanged; explicit guest sets the manual override).
+	SetRecordingAccess(ctx context.Context, recordingID int64, license *string, guest *bool) (bool, error)
+
+	// RemoveRendition soft-removes a blob (files.deleted_at; last one → dormant
+	// recording) and RestoreRendition brings it back — the renditions arm's
+	// per-row actions. found is false when no matching live/removed file exists.
+	RemoveRendition(ctx context.Context, fileID int64) (bool, error)
+	RestoreRendition(ctx context.Context, fileID int64) (bool, error)
+
 	// IsDuplicateSubmission reports whether the file duplicates already-approved
 	// content (recordings P3): by fingerprint/recording when one exists, else a
 	// non-default tag collision. Suppresses self-approve and flags the queue.

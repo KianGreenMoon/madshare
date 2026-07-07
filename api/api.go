@@ -296,6 +296,24 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(moderate).Post("/duplicates/absorb", h.duplicatesAbsorbBulk)
 		r.With(moderate).Post("/duplicates/absorb/{recording_id}", h.duplicatesAbsorb)
 
+		// Recording curation (/admin/recordings, recording-tagsets P5): the
+		// paged listing + both-arms detail, merge, appearance move/set-primary,
+		// rendition remove/restore, whole-recording trash + hard delete, and the
+		// recording-level access edit. Same gate split as the file-addressed
+		// equivalents: curation = content.moderate, deletes = file.delete,
+		// access = metadata.edit.
+		r.With(moderate).Get("/recordings", h.recordingsList)
+		r.With(moderate).Post("/recordings/merge", h.recordingsMerge)
+		r.With(fileDelete).Post("/recordings/trash", h.recordingsTrashBulk)
+		r.With(moderate).Get("/recordings/{recordingID}", h.recordingsDetail)
+		r.With(moderate).Post("/recordings/{recordingID}/primary", h.recordingsSetPrimary)
+		r.With(d.protect(auth.PermMetadataEdit)).Patch("/recordings/{recordingID}/access", h.recordingsAccess)
+		r.With(fileDelete).Post("/recordings/{recordingID}/trash", h.recordingsTrash)
+		r.With(fileDelete).Delete("/recordings/{recordingID}", h.recordingsHardDelete)
+		r.With(moderate).Post("/tagsets/{tagsetID}/move", h.tagsetMove)
+		r.With(fileDelete).Post("/renditions/{fileID}/remove", h.renditionRemove)
+		r.With(fileDelete).Post("/renditions/{fileID}/restore", h.renditionRestore)
+
 		// Symlink data sources (import in place). The admin group is already
 		// file.delete-gated at the listener; adding/scanning a source is a
 		// content.moderate capability. See docs/architecture/data-sources.md.

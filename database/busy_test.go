@@ -140,6 +140,62 @@ func TestAbsorb_ConcurrentWritesNoBusy(t *testing.T) {
 	}
 }
 
+// TestMergeRecordings_ConcurrentWritesNoBusy is the P5 counterpart: merge is
+// the widest read-then-write transaction (existence checks → load appearances
+// of target + sources → move/drop tagsets → move files → drop sources →
+// repair), so it must take the write lock at BEGIN. N disjoint merges run
+// concurrently while four settings writers hammer the DB; no op may fail.
+func TestMergeRecordings_ConcurrentWritesNoBusy(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(filepath.Join(dir, "busy_merge.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	ctx := context.Background()
+	const n = 30
+	type pair struct{ target, source int64 }
+	pairs := make([]pair, n)
+	for i := range pairs {
+		a := insertTaggedFile(t, db, fmt.Sprintf("%064x", 4000+2*i+1), fmt.Sprintf("t%d.flac", i), "Band", fmt.Sprintf("Target %d", i))
+		b := insertTaggedFile(t, db, fmt.Sprintf("%064x", 4000+2*i+2), fmt.Sprintf("s%d.mp3", i), "Band", fmt.Sprintf("Source %d", i))
+		pairs[i] = pair{target: recordingIDOf(t, db, a.ID), source: recordingIDOf(t, db, b.ID)}
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 5*n)
+	for _, p := range pairs {
+		wg.Add(1)
+		go func(p pair) {
+			defer wg.Done()
+			out, err := db.MergeRecordings(ctx, p.target, []int64{p.source})
+			if err != nil {
+				errCh <- fmt.Errorf("merge: %w", err)
+			} else if !out.Found {
+				errCh <- fmt.Errorf("merge %d<-%d reported not found", p.target, p.source)
+			}
+		}(p)
+	}
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < 100; i++ {
+				if err := db.SetSetting(ctx, "mk"+strconv.Itoa(w), strconv.Itoa(i)); err != nil {
+					errCh <- fmt.Errorf("setSetting: %w", err)
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Errorf("concurrent op failed: %v", err)
+	}
+	assertInvariants(t, db)
+}
+
 // TestBulkHardDeleteTagsets_ConcurrentWritesNoBusy is the P2 counterpart: the
 // tagset-first cascade (BulkHardDeleteTrashedByHashes) is a longer read-then-write
 // transaction (resolve trashed tagsets → delete → count remaining → GC files),
