@@ -515,6 +515,8 @@ type fakeRepo struct {
 	hardDelRemovedBlobs   []database.DeletedBlob
 	hardDelRemovedFound   bool
 	hardDelRemovedErr     error
+	bulkRestoreRemovedIDs []int64
+	bulkRestoreRemovedN   int
 	bulkHardDelRemovedIDs []int64
 	bulkHardDelRemovedN   int
 	bulkHardDelRemovedErr error
@@ -756,6 +758,11 @@ func (f *fakeRepo) CountRemovedFiles(_ context.Context, _ database.FileFilter) (
 
 func (f *fakeRepo) RemovedFileIDsByFilter(_ context.Context, _ database.FileFilter) ([]int64, error) {
 	return f.removedFilterIDs, f.filterHashesErr
+}
+
+func (f *fakeRepo) BulkRestoreRemovedFiles(_ context.Context, fileIDs []int64) (int, error) {
+	f.bulkRestoreRemovedIDs = fileIDs
+	return f.bulkRestoreRemovedN, nil
 }
 
 func (f *fakeRepo) HardDeleteRemovedFile(_ context.Context, fileID int64) ([]database.DeletedBlob, bool, error) {

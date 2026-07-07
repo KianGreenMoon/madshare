@@ -274,6 +274,14 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(d.protectAny(auth.PermFileDelete, auth.PermMetadataEdit)).Post("/trash/bulk", h.trashBulk)
 		r.With(fileDelete).Delete("/trash/{hash}", h.adminTrashHardDelete)
 		r.With(fileDelete).Post("/trash/{hash}/restore", h.adminTrashRestore)
+		// Trash — the Recordings and Files perspectives (soft-delete.md). Lists +
+		// explicit-id bulk restore/delete; the single-row restore/delete reuse the
+		// recordings/renditions routes below. All file.delete (Trash is the one
+		// place permanent delete lives).
+		r.With(fileDelete).Get("/trash/recordings", h.adminTrashRecordingsList)
+		r.With(fileDelete).Post("/trash/recordings/bulk", h.trashRecordingsBulk)
+		r.With(fileDelete).Get("/trash/files", h.adminTrashFilesList)
+		r.With(fileDelete).Post("/trash/files/bulk", h.trashFilesBulk)
 
 		// Moderation queue (review bucket). Discard is not a distinct endpoint —
 		// it is the soft delete above (moderators hold file.delete).
@@ -309,12 +317,14 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(moderate).Post("/recordings/{recordingID}/primary", h.recordingsSetPrimary)
 		r.With(d.protect(auth.PermMetadataEdit)).Patch("/recordings/{recordingID}/access", h.recordingsAccess)
 		r.With(fileDelete).Post("/recordings/{recordingID}/trash", h.recordingsTrash)
+		r.With(fileDelete).Post("/recordings/{recordingID}/restore", h.recordingsRestore)
 		r.With(fileDelete).Delete("/recordings/{recordingID}", h.recordingsHardDelete)
 		r.With(moderate).Post("/tagsets/{tagsetID}/move", h.tagsetMove)
 		r.With(fileDelete).Post("/tagsets/{tagsetID}/restore", h.tagsetRestore)
 		r.With(fileDelete).Delete("/tagsets/{tagsetID}", h.tagsetHardDelete)
 		r.With(fileDelete).Post("/renditions/{fileID}/remove", h.renditionRemove)
 		r.With(fileDelete).Post("/renditions/{fileID}/restore", h.renditionRestore)
+		r.With(fileDelete).Delete("/renditions/{fileID}", h.renditionHardDelete)
 
 		// Symlink data sources (import in place). The admin group is already
 		// file.delete-gated at the listener; adding/scanning a source is a

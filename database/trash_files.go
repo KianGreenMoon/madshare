@@ -14,6 +14,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // removedFileFilterWhere builds the WHERE predicate (always the removed base
@@ -99,6 +100,36 @@ func (db *DB) RemovedFileIDsByFilter(ctx context.Context, f FileFilter) ([]int64
 	where, args := removedFileFilterWhere(f)
 	return scanIDs(db.QueryContext(ctx,
 		`SELECT f.id FROM files f`+tagsetJoin+` WHERE `+where+` ORDER BY f.id`, args...))
+}
+
+// BulkRestoreRemovedFiles clears the removal mark on the given blobs in one
+// guarded UPDATE — the Files "Restore selected". Non-removed / unknown ids are
+// no-ops. Returns the count restored. A dormant recording whose rendition is
+// restored re-enters the library automatically (visibleTagset).
+func (db *DB) BulkRestoreRemovedFiles(ctx context.Context, fileIDs []int64) (int, error) {
+	if len(fileIDs) == 0 {
+		return 0, nil
+	}
+	restored := 0
+	const chunk = 400
+	for i := 0; i < len(fileIDs); i += chunk {
+		batch := fileIDs[i:min(i+chunk, len(fileIDs))]
+		ph := make([]string, len(batch))
+		args := make([]any, len(batch))
+		for j, id := range batch {
+			ph[j] = "?"
+			args[j] = id
+		}
+		res, err := db.ExecContext(ctx,
+			`UPDATE files SET deleted_at = NULL WHERE deleted_at IS NOT NULL AND id IN (`+strings.Join(ph, ",")+`)`,
+			args...)
+		if err != nil {
+			return 0, fmt.Errorf("bulk restore removed files: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		restored += int(n)
+	}
+	return restored, nil
 }
 
 // HardDeleteRemovedFile permanently removes a single soft-removed blob (the

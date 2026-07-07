@@ -57,6 +57,7 @@ type Repository interface {
 	ListRemovedFilesPage(ctx context.Context, q FileListQuery) ([]*FileListEntry, error)
 	CountRemovedFiles(ctx context.Context, f FileFilter) (int, error)
 	RemovedFileIDsByFilter(ctx context.Context, f FileFilter) ([]int64, error)
+	BulkRestoreRemovedFiles(ctx context.Context, fileIDs []int64) (restored int, err error)
 	HardDeleteRemovedFile(ctx context.Context, fileID int64) (blobs []DeletedBlob, found bool, err error)
 	BulkHardDeleteRemovedFiles(ctx context.Context, fileIDs []int64) (deleted int, blobs []DeletedBlob, err error)
 
