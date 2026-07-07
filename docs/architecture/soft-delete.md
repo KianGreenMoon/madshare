@@ -50,27 +50,27 @@ The Trash page carries a sub-mode switch: **Appearances · Recordings · Files.*
 
 ### 1. Appearances (default)
 
-**Membership** — approved appearances that are *not currently in the library*:
+**Membership** — individually trashed appearances (`tagsets.deleted_at IS NOT
+NULL`). This is the existing hash-addressed Trash listing, **unchanged**: the
+tagset-grain "trash bin of tracks".
 
-```
-m.review_state = 'approved' AND NOT (visibleTagset)
-  ≡  m.review_state = 'approved'
-     AND ( m.deleted_at IS NOT NULL                        -- trashed appearance
-           OR NOT EXISTS surviving file for its recording ) -- dormant
-```
-
-(Drafts / submitted appearances are excluded — those live in the moderation
-queue, not Trash.) This is the tagset-grain "trash bin of tracks", and it now
-includes **dormant** appearances (recording lost its last file) as well as
-individually trashed ones.
-
-- **Restore** — clear `deleted_at`; **and if the recording is dormant, also
-  restore its ladder-best removed rendition** so the appearance actually plays.
-  ("Restore the appearance restores the file too.")
-- **Delete forever** — tagset-addressed hard delete through the shared
+- **Restore** — clear `deleted_at` (re-enters the appearance's prior review
+  state; moderation.md).
+- **Delete forever** — tagset/hash-addressed hard delete through the shared
   `hardDeleteTagsetsTx` cascade (last appearance GCs the recording + its files).
-  The guard refuses only a **visible** appearance (never one shown here).
-- **Edit** — tags only (unchanged; access is meaningless on a non-served file).
+- **Edit** — tags only (access is meaningless on a non-served file).
+
+> **Dormant appearances are handled by Recordings + Files, not here.** When a
+> recording loses its last surviving file its appearances drop out of the
+> library (dormant) but their `tagsets.deleted_at` is still `NULL`. Rather than
+> widen this shipped, hash-addressed listing *and its restore path* (a
+> hash-addressed restore no-ops on a non-trashed tagset, so it would need
+> dormant-aware, tagset-addressed logic) for a capability of unclear value, the
+> dormant recording surfaces under **Recordings** (restore brings a rendition
+> back) and its removed blob under **Files** (restore the blob). The three
+> lenses still cover both soft-delete marks — Appearances just stays scoped to
+> its own mark. Broadening it (tagset-addressed, dormant-aware) remains a
+> possible follow-up.
 
 ### 2. Recordings
 
@@ -82,8 +82,11 @@ EXISTS (approved appearance of r)  AND  NOT EXISTS (visible appearance of r)
 ```
 
 (Recordings that only ever had drafts are excluded — moderation, not trash.)
-This is the whole-recording bin; it overlaps the other two views by design (its
-appearances also show under Appearances, its removed files under Files).
+This is the whole-recording bin; it overlaps the other views by design (its
+*trashed* appearances also show under Appearances, its removed files under
+Files). A **dormant** recording — live tagsets, no surviving file — is reachable
+*only* here and under Files, which is the point: this lens is where the whole
+thing (appearances included) comes back or gets purged.
 
 - **Restore** — un-trash every trashed appearance **and** ensure ≥1 rendition is
   surviving (restore the best removed one if none) → fully back in the library.
@@ -150,22 +153,24 @@ work; the rest already exist.
 
 | Perspective | List | Restore | Delete forever |
 |---|---|---|---|
-| Appearances | `GET /api/admin/trash` — **broaden** to the membership predicate above (tagset-rooted; today it is file-rooted via `reprTagset` and misses dormant + absorbed-blob appearances) | `POST /api/admin/tagsets/{id}/restore` — **extend** `RestoreTagset` to also restore a rendition when the recording is dormant | `DELETE /api/admin/tagsets/{id}` — **relax** guard to refuse only a *visible* appearance |
+| Appearances | `GET /api/admin/trash` — existing (unchanged) | `POST /api/admin/trash/{hash}/restore` — existing | `DELETE /api/admin/trash/{hash}` — existing |
 | Recordings | `GET /api/admin/trash/recordings` — **new** (trashed-recording membership) | `POST /api/admin/recordings/{id}/restore` — **new** `RestoreRecording` (un-trash appearances + ensure a rendition) | `DELETE /api/admin/recordings/{id}` — existing `HardDeleteRecording` |
 | Files | `GET /api/admin/trash/files` — **new** (removed-blob listing) | `POST /api/admin/renditions/{id}/restore` — existing `RestoreRendition` | `DELETE /api/admin/renditions/{id}` — **new** (reclaim blob; last file → recording cascade; repoint live origin refs) |
 
-Bulk variants mirror the existing `POST /api/admin/trash/bulk` shape per mode
-(select-all-N-matching uses `all:true`, per `file-list-scaling.md`).
+Bulk variants: Appearances via the existing `POST /api/admin/trash/bulk`; the
+new Recordings / Files modes take their own `POST …/trash/recordings/bulk` and
+`POST …/trash/files/bulk` (select-all-N-matching uses `all:true`, per
+`file-list-scaling.md`).
 
 ---
 
 ## UI
 
 - **Trash panel** (`webui/static/js/admin/trash.js`, hosted by `library.js`)
-  gains a three-way sub-mode switch. Appearances reuses the existing
-  `file-list.js` scope (membership just broadens). Recordings and Files are
-  lighter bespoke lists (recording card / removed-blob row) sharing the page's
-  one preview player — not `file-list.js` scopes.
+  gains a three-way sub-mode switch. Appearances is the existing `file-list.js`
+  scope, unchanged. Recordings and Files are lighter bespoke lists (recording
+  card / removed-blob row) sharing the page's one preview player — not
+  `file-list.js` scopes.
 - **`/admin/recordings`** (`webui/static/js/admin/recordings.js`) drops the
   whole-recording and per-appearance "Delete permanently" buttons; keeps
   everything else.
