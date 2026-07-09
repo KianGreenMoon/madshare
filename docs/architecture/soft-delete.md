@@ -47,6 +47,9 @@ is its own view over the same facts.
 ## The three Trash perspectives
 
 The Trash page carries a sub-mode switch: **Appearances · Recordings · Files.**
+It is the same underlined tab strip (`.view-tabs`) the All-files scope uses for
+its By-entity ⇄ All-files sub-view — a tab strip switches lenses *within* a
+scope, the segmented pill row (`.scope-switch`) switches scopes.
 
 ### 1. Appearances (default)
 

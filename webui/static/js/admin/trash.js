@@ -7,6 +7,7 @@
 // Design: docs/architecture/file-management-view.md.
 import { API, el, fmtDate, toast, handleAuthError } from './shared.js';
 import { createFileList } from '../file-list.js';
+import { RESTORE_ICON, TRASH_ICON } from '../icons.js';
 import { createTrashRecordings } from './trash-recordings.js';
 import { createTrashFiles } from './trash-files.js';
 
@@ -130,7 +131,7 @@ export function createTrashScope({ play, perms }) {
     editNote: 'Fix a tag before restoring — the corrected tags decide where the file lands when it returns to the library.',
     rowActions: [
       {
-        id: 'restore', label: 'Restore', kind: 'neutral',
+        id: 'restore', label: 'Restore', icon: RESTORE_ICON, kind: 'neutral',
         run: async f => {
           await restoreOne(f.hash);
           const pending = f.review_state && f.review_state !== 'approved';
@@ -138,9 +139,14 @@ export function createTrashScope({ play, perms }) {
         },
       },
       {
-        id: 'delete', label: 'Delete forever', kind: 'danger',
-        confirm: 'inline', confirmPrompt: 'Delete forever?', confirmLabel: 'Delete forever',
-        run: async f => { await hardDeleteOne(f.hash); toast(`“${displayTitle(f)}” permanently deleted.`, 'success'); },
+        // Permanent delete confirms in the same modal the Recordings and Files
+        // lenses use, so all three ask the same way before the irreversible step.
+        id: 'delete', label: 'Delete forever', icon: TRASH_ICON, kind: 'danger',
+        run: async f => {
+          if (!await confirmBulkDelete(`Permanently delete “${displayTitle(f)}”?`, 'Delete forever')) return false;
+          await hardDeleteOne(f.hash);
+          toast(`“${displayTitle(f)}” permanently deleted.`, 'success');
+        },
       },
     ],
     bulkActions: [
@@ -206,7 +212,7 @@ export function createTrashScope({ play, perms }) {
       const on = m.id === id;
       document.getElementById(m.panel).hidden = !on;
       const btn = switchEl.querySelector(`[data-mode="${m.id}"]`);
-      if (btn) { btn.classList.toggle('is-active', on); btn.setAttribute('aria-selected', String(on)); }
+      if (btn) { btn.classList.toggle('view-tab--active', on); btn.setAttribute('aria-selected', String(on)); }
       if (on) {
         if (mounted.has(m.id)) m.ctrl.reload();
         else { mounted.add(m.id); m.ctrl.mount(); }
@@ -220,7 +226,8 @@ export function createTrashScope({ play, perms }) {
     if (switchEl.childElementCount) return; // already built
     for (const m of modes) {
       switchEl.appendChild(el('button', {
-        class: 'scope-btn', 'data-mode': m.id, type: 'button', role: 'tab', 'aria-selected': 'false',
+        class: 'view-tab', 'data-mode': m.id, type: 'button', role: 'tab',
+        'aria-selected': 'false', 'aria-controls': m.panel,
         onclick: () => showMode(m.id),
       }, [m.label]));
     }

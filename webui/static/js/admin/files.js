@@ -8,6 +8,7 @@ import {
 } from './shared.js';
 import { createTrackEditor } from '../track-edit.js';
 import { createFileList } from '../file-list.js';
+import { TRASH_ICON } from '../icons.js';
 import { discKey, discLabel, isMultiDisc } from '../disc.js';
 
 // createFilesScope builds the "All files" Library scope: the flat list (shared
@@ -181,10 +182,18 @@ function filesScope() {
     saveAccess: canEditMeta ? saveFileAccess : undefined,
     bulkApply: canEditMeta ? filesBulkApply : undefined,
     bulkApplyAll: canEditMeta ? bulkApplyAll : undefined,   // "select all N matching" → server-side edit
+    // The row action confirms in the same modal the By-entity deletes use, which
+    // owns the request and the reload — hence `false` (nothing left to reload).
     rowActions: canDelete ? [{
-      id: 'trash', label: 'Move to Trash', kind: 'danger',
-      confirm: 'inline', confirmPrompt: 'Move to Trash?', confirmLabel: 'Confirm',
-      run: f => trashOne(f),
+      id: 'trash', label: 'Move to Trash', icon: TRASH_ICON, kind: 'danger',
+      run: f => {
+        confirmDelete({
+          title: 'Move file to Trash',
+          body: `Move “${displayTitle(f)}” to Trash?`,
+          run: async () => { await trashOne(f); fileList?.reload(); reloadEntityLevel(); },
+        });
+        return false;
+      },
     }] : [],
     bulkActions: canDelete ? [{
       id: 'trash', label: 'Move to Trash', kind: 'danger',

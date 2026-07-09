@@ -60,6 +60,7 @@ export function el(tag, props = {}, children = []) {
   for (const [k, v] of Object.entries(props)) {
     if (k === 'class') node.className = v;
     else if (k === 'text') node.textContent = v;
+    else if (k === 'html') node.innerHTML = v;            // trusted markup only (icons.js)
     else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2), v);
     else node.setAttribute(k, v);
   }

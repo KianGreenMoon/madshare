@@ -49,6 +49,7 @@ export function createTrashFiles({ host, play, confirmDelete }) {
     emptyText: 'No removed files.',
     columns: ['File', 'Size', 'Storage', 'Removed'],
     rowKey: f => f.id,
+    rowLabel: dispName,
     rowClass: () => 'rec-row--removed',
     renderCells: cells,
     onPlay: playFile,

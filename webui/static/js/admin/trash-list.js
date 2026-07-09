@@ -5,12 +5,14 @@
 // the full file-list.js component; these two only need a simple table, so this
 // stays small and reuses the shared table/toolbar CSS (file-view.css).
 import { el, handleAuthError, toast } from './shared.js';
+import { PLAY_ICON, RESTORE_ICON, TRASH_ICON } from '../icons.js';
 
 // createTrashList(cfg) mounts one sub-list into cfg.host. cfg:
 //   fetchPage(offset, limit) -> Promise<{total, items}>
 //   columns:   [label, …]                     header labels (data columns)
 //   renderCells(item) -> [<td>, …]            the data cells for one row
 //   rowKey(item) -> number                    unique id (selection + de-dup)
+//   rowLabel(item) -> string                  name for the icon buttons' aria-label
 //   rowClass(item) -> string|null             optional row class
 //   onPlay(item, visibleItems)                optional — adds a Play action
 //   restoreOne(item) -> Promise<bool>         single restore (true = ok)
@@ -109,19 +111,24 @@ export function createTrashList(cfg) {
 
     const rows = items.map(it => {
       const key = keyOf(it);
+      const name = cfg.rowLabel?.(it) || 'this item';
+      // Icon-only, like every other row-action set (file-view.css .icon-btn).
       const actions = [];
       if (cfg.onPlay) {
-        actions.push(el('button', { class: 'btn btn-sm btn-neutral', onclick: () => cfg.onPlay(it, items) }, ['Play']));
+        actions.push(el('button', { class: 'play-btn', title: 'Preview', 'aria-label': `Preview ${name}`, html: PLAY_ICON,
+          onclick: () => cfg.onPlay(it, items) }));
       }
-      actions.push(el('button', { class: 'btn btn-sm btn-neutral', onclick: () => doRestoreOne(it) }, ['Restore']));
-      actions.push(el('button', { class: 'btn btn-sm btn-destructive-solid', onclick: () => doDeleteOne(it) }, ['Delete forever']));
+      actions.push(el('button', { class: 'icon-btn', title: 'Restore', 'aria-label': `Restore ${name}`, html: RESTORE_ICON,
+        onclick: () => doRestoreOne(it) }));
+      actions.push(el('button', { class: 'icon-btn icon-btn--danger', title: 'Delete forever', 'aria-label': `Delete ${name} forever`, html: TRASH_ICON,
+        onclick: () => doDeleteOne(it) }));
       return el('tr', { class: cfg.rowClass?.(it) || '', 'data-key': String(key) }, [
         el('td', { class: 'cell-check' }, [el('input', {
           type: 'checkbox', 'aria-label': 'Select row', ...(sel.has(key) ? { checked: '' } : {}),
           onchange: e => { if (e.target.checked) sel.add(key); else sel.delete(key); render(); },
         })]),
         ...cfg.renderCells(it),
-        el('td', { class: 'cell-actions' }, actions),
+        el('td', { class: 'cell-actions' }, [el('div', { class: 'trash-actions' }, actions)]),
       ]);
     });
 

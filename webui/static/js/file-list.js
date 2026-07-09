@@ -5,8 +5,8 @@
 //
 // It is parameterised by a SCOPE descriptor and owns only presentation:
 // rendering (flat list, grouped list, or artist/album browse), selection, the
-// bulk toolbar, badges, inline two-step confirms, and wiring to the shared
-// track-edit.js + bulk-edit.js modals. Everything domain-specific — what to
+// bulk toolbar, badges, and wiring to the shared track-edit.js + bulk-edit.js
+// modals. Everything domain-specific — what to
 // load, which endpoints an action hits, how to play a row — is injected by the
 // scope, so the component is reusable from both the admin pages and the
 // (shell-native) upload page without importing either's helpers.
@@ -14,6 +14,7 @@
 import { createTrackEditor } from './track-edit.js';
 import { createBulkEditor } from './bulk-edit.js';
 import { createCoverPicker } from './cover-edit.js';
+import { PLAY_ICON, EDIT_ICON } from './icons.js';
 import { discKey, discSort, discLabel, isMultiDisc } from './disc.js';
 import { createVirtualList } from './virtual-list.js';
 import { createGroupedStream } from './grouped-stream.js';
@@ -47,8 +48,6 @@ function fmtBytes(n) {
   return (mb / 1024).toFixed(1) + ' GB';
 }
 
-const PLAY_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
-
 /**
  * createFileList builds a file-management view from a scope descriptor.
  *
@@ -70,9 +69,12 @@ const PLAY_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="current
  *   selectable(file) → bool — which rows enter bulk selection (default: none)
  *   autoSelect       pre-check every selectable row after each load
  *   editable(file)   → bool — gate the built-in Edit per row (default: all)
- *   rowActions       [{ id,label,kind:'neutral'|'danger',confirm?:'inline',
- *                       confirmPrompt?,confirmLabel?, show?(file)=>bool,
- *                       run:async(file)=>void|false }]
+ *   rowActions       [{ id,label,icon (icons.js markup),kind:'neutral'|'danger',
+ *                       show?(file)=>bool, run:async(file)=>void|false }]
+ *                    Icon-only: `label` becomes the title + aria-label. A
+ *                    destructive action confirms in the scope's own modal —
+ *                    `run` returns false to skip the reload (cancelled, or the
+ *                    modal owns the run).
  *   bulkActions      [{ id,label,kind, run:async(hashes)=>void }]
  *   editPatchURL(file) → url        (enables the built-in Edit action)
  *   editDetailURL(file) → url       (GET full tags; enables track #/extended edit)
@@ -426,7 +428,7 @@ export function createFileList(scope) {
     return el('td', { class: 'cell-title-td', 'data-label': 'Title' }, kids);
   }
 
-  function bodyCell(col, f, actionsHolder) {
+  function bodyCell(col, f) {
     switch (col) {
       case 'check':
         if (!isSelectable(f)) return el('td', { class: 'cell-check' });
@@ -440,12 +442,9 @@ export function createFileList(scope) {
         const v = scope.metaValue ? scope.metaValue(f) : '';
         return v ? el('td', { class: 'cell-text', title: v, 'data-label': scope.metaLabel || 'Meta', text: v }) : el('td', { class: 'cell-text cell-muted', 'data-label': scope.metaLabel || 'Meta', text: '—' });
       }
-      case 'actions': {
-        const wrap = el('div', { class: 'trash-actions' });
-        wrap.append(...actionButtons(f, wrap));
-        actionsHolder.wrap = wrap;
-        return el('td', { class: 'cell-actions', 'data-label': 'Actions' }, [wrap]);
-      }
+      case 'actions':
+        return el('td', { class: 'cell-actions', 'data-label': 'Actions' },
+          [el('div', { class: 'trash-actions' }, actionButtons(f))]);
       default: {
         // Scope-defined column (scope.cells = { token: { label, render(f) } }) —
         // the escape hatch for one-scope columns (e.g. All-files "Storage").
@@ -455,34 +454,28 @@ export function createFileList(scope) {
     }
   }
 
-  // ── Row actions (built-in play/edit + scope actions, with inline confirm) ───
-  function actionButtons(f, wrap) {
+  // ── Row actions (built-in play/edit + scope actions) ────────────────────────
+  // All icon-only, so the whole row fits the actions column at every scope; the
+  // label rides along as title + aria-label. A destructive action confirms in
+  // the scope's modal, not inline — an inline two-step confirm is wider than the
+  // column it lives in.
+  function actionButtons(f) {
     const out = [];
     if (scope.onPlay) {
       out.push(el('button', { class: 'play-btn', title: 'Preview', 'aria-label': `Preview ${displayTitle(f)}`, html: PLAY_ICON,
         onclick: () => scope.onPlay(f, visibleFiles()) }));
     }
     if (scope.editPatchURL && (!scope.editable || scope.editable(f))) {
-      out.push(el('button', { class: 'btn btn-neutral btn-sm btn-edit', text: 'Edit', onclick: () => editor().open(f) }));
+      out.push(el('button', { class: 'icon-btn btn-edit', title: 'Edit tags', 'aria-label': `Edit ${displayTitle(f)}`, html: EDIT_ICON,
+        onclick: () => editor().open(f) }));
     }
     for (const a of scope.rowActions || []) {
       if (a.show && !a.show(f)) continue;
-      const cls = a.kind === 'danger' ? 'btn btn-destructive-outline btn-sm' : 'btn btn-neutral btn-sm';
-      out.push(el('button', { class: cls, text: a.label, onclick: () => a.confirm === 'inline' ? enterInlineConfirm(a, f, wrap) : runRowAction(a, f) }));
+      const cls = a.kind === 'danger' ? 'icon-btn icon-btn--danger' : 'icon-btn';
+      out.push(el('button', { class: cls, title: a.label, 'aria-label': `${a.label}: ${displayTitle(f)}`, html: a.icon,
+        onclick: () => runRowAction(a, f) }));
     }
     return out;
-  }
-
-  function enterInlineConfirm(action, f, wrap) {
-    const restore = () => { wrap.replaceChildren(...actionButtons(f, wrap)); wrap.querySelector('button')?.focus(); };
-    const cancel = el('button', { class: 'btn btn-neutral btn-sm', text: 'Cancel', onclick: restore });
-    const confirm = el('button', {
-      class: action.kind === 'danger' ? 'btn btn-destructive-solid btn-sm' : 'btn btn-neutral btn-sm',
-      text: action.confirmLabel || action.label, onclick: () => runRowAction(action, f),
-    });
-    wrap.replaceChildren(el('span', { class: 'delete-confirm-label', text: action.confirmPrompt || `${action.label}?` }), cancel, confirm);
-    wrap.addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); restore(); } });
-    cancel.focus();
   }
 
   async function runRowAction(action, f) {
@@ -637,8 +630,7 @@ export function createFileList(scope) {
   // rowTr builds one flat data row for the windowed renderer. groupedTrack() is the
   // grouped-mode variant (it prefixes a track #).
   function rowTr(f) {
-    const holder = {};
-    return el('tr', rowAttrs(f), scope.columns.map(c => bodyCell(c, f, holder)));
+    return el('tr', rowAttrs(f), scope.columns.map(c => bodyCell(c, f)));
   }
 
   // ── Artist → album → track grouped sort (scope.artistAlbumSort, grouped mode) ──
@@ -712,8 +704,7 @@ export function createFileList(scope) {
   }
 
   function groupedTrack(f) {
-    const holder = {};
-    const tr = el('tr', rowAttrs(f), scope.columns.map(c => bodyCell(c, f, holder)));
+    const tr = el('tr', rowAttrs(f), scope.columns.map(c => bodyCell(c, f)));
     const titleTd = tr.querySelector('.cell-title-td');
     if (titleTd) titleTd.insertBefore(el('span', { class: 'tracknum', text: f.track_number != null ? String(f.track_number) : '' }), titleTd.firstChild);
     return tr;

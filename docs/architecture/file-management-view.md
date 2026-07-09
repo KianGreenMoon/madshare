@@ -20,12 +20,19 @@ with a different shape (tech compare + quality-ladder rank). See
 ## The component
 
 `createFileList(scope)` owns presentation only: rendering, selection, the bulk
-toolbar, badges, inline two-step confirms, and the empty/loading/error states.
+toolbar, badges, and the empty/loading/error states.
 It imports no page-specific helpers — the scope injects everything domain-
 specific (loaders, action handlers, `onPlay`, `toast`, `handleAuthError`), so it
 runs unchanged on the admin pages and the shell-native upload page. Built-in
 **Play** + **Edit** row actions and an **Edit tags…** bulk action appear
 automatically from the scope's capabilities.
+
+Row actions are **icon-only** (`icons.js` glyphs on `.icon-btn`, label carried as
+`title` + `aria-label`). Text buttons never fit: a table cell ellipsises its text,
+but a button row simply overflows onto the neighbouring column, so the actions
+column is sized per table via `--col-actions` (`file-view.css`) to exactly the icon
+row it holds. For the same reason a destructive action confirms in the scope's own
+**modal** — an inline two-step confirm is wider than the column it lives in.
 
 Presentations: a flat **list** (optionally grouped — by-uploader for Review, state
 sections for My uploads, or By artist / album) and an artist→album→track **browse**

@@ -1,11 +1,18 @@
 /* Admin · Trash — the three-perspective sub-switch (Appearances / Recordings /
    Files) and the two bespoke sub-lists (Recordings, Files). New class names
-   only; the sub-switch reuses .scope-switch/.scope-btn, the tables reuse
-   .files-table, the bulk bar reuses .bulk-toolbar (all from file-view.css). */
-
-.trash-subswitch { margin-bottom: var(--space-4); }
+   only; the sub-switch reuses .view-tabs/.view-tab (same tab strip as the
+   All-files "By entity ⇄ All files" switch), the tables reuse .files-table, the
+   bulk bar reuses .bulk-toolbar (all from file-view.css). */
 
 .trash-list-wrap { margin-top: var(--space-2); }
+
+/* Actions columns (file-view.css --col-actions). Each lens carries a different
+   icon row, and buttons overflow rather than ellipsise, so each table sizes its
+   own column: Appearances = play + Edit + Restore + Delete (4 × 30px + gaps),
+   Files = play + Restore + Delete, Recordings = the same minus play. */
+#fileListTrash .files-table       { --col-actions: 12rem; }
+#trashFilesList .files-table      { --col-actions: 9rem; }
+#trashRecordingsList .files-table { --col-actions: 7rem; }
 
 .trash-empty,
 .trash-loading { color: var(--text-muted); padding: var(--space-6) var(--space-2); text-align: center; }

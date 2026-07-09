@@ -41,6 +41,7 @@ export function createTrashRecordings({ host, confirmDelete }) {
     emptyText: 'No trashed recordings.',
     columns: ['Recording', 'State'],
     rowKey: rec => rec.id,
+    rowLabel: dispName,
     renderCells: cells,
     confirmDelete,
     async fetchPage(offset, limit) {

@@ -23,33 +23,17 @@
    component (also used outside /admin) plus this page's rename/merge modals. */
 
 /* ── View tabs (entity ⇄ all files) ─────────────────────────────────────────── */
+/* .view-tabs / .view-tab live in file-view.css — the Trash sub-switch shares them. */
 /* `.hidden` is not a global utility here (it's defined only as
    .modal-backdrop.hidden / #player-bar.hidden), so the inactive view section
    needs its own hide rule — otherwise both views stack. */
 #entityView.hidden,
 #filesView.hidden { display: none; }
 
-.view-tabs {
-  display: flex;
-  gap: var(--space-1);
-  margin-bottom: var(--space-4);
-  border-bottom: 1px solid var(--border);
-}
-.view-tab {
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  font: inherit;
-  font-weight: 500;
-  padding: var(--space-2) var(--space-3);
-  margin-bottom: -1px;
-  transition: color 120ms ease, border-color 120ms ease;
-}
-.view-tab:hover { color: var(--text); }
-.view-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.view-tab--active { color: var(--text); border-bottom-color: var(--accent); }
+/* Actions column (file-view.css --col-actions): play + Edit + Move to Trash,
+   three 30px icons. This table carries the most fixed columns (size, access,
+   storage), so the text columns need every pixel the actions cell doesn't. */
+#fileList .files-table { --col-actions: 9rem; }
 
 /* ── Entity breadcrumb ──────────────────────────────────────────────────────── */
 .entity-breadcrumb {

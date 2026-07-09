@@ -4,13 +4,19 @@
 
    It carries only what the component INTRODUCES or what isn't guaranteed on
    every consuming page. The files-table / bulk-toolbar / state-badge /
-   delete-confirm / trash-actions chrome still lives in admin-shell.css, and the
-   entity-row / mod-group chrome in admin-files.css / admin-moderation.css; those
-   are consolidated here as each call site migrates (docs plan, phase 5). The
-   Trash page, for one, gains a preview Play button it never had — so .play-btn
-   must live here, not only in admin-files.css. */
+   trash-actions chrome still lives in admin-shell.css, and the entity-row /
+   mod-group chrome in admin-files.css / admin-moderation.css; those are
+   consolidated here as each call site migrates (docs plan, phase 5). The row
+   icon buttons (.play-btn / .icon-btn) live here rather than in admin-files.css:
+   the Trash page and the bespoke admin lists use them too. */
 
-/* ── Per-row preview play button ── */
+/* ── Row icon buttons ───────────────────────────────────────────────────────
+   Row actions are icon-only (icons.js): a text button row does not fit the
+   actions column, and buttons — unlike text cells — overflow rather than
+   ellipsise, so they used to spill onto the neighbouring column. Every one of
+   them carries its label as title + aria-label. .play-btn is the same shape,
+   kept as its own class because the playing-row highlight keys off it. */
+.icon-btn,
 .play-btn {
   background: none;
   border: none;
@@ -24,16 +30,25 @@
   justify-content: center;
   transition: color 120ms ease, background 120ms ease;
 }
-.play-btn:hover { color: var(--accent); background: var(--surface-hover); }
+.icon-btn:hover { color: var(--text); background: var(--surface-hover); }
+.icon-btn:focus-visible,
 .play-btn:focus-visible { outline: 2px solid var(--accent); }
+.play-btn:hover { color: var(--accent); background: var(--surface-hover); }
 
 .files-table tbody tr.playing-row,
 .entity-row.playing-row { background: var(--accent-glow); }
 .playing-row .play-btn { color: var(--accent); }
 
-/* Edit reads as the through-line action across every scope (incl. Trash). */
+/* Destructive actions (Move to Trash, Delete forever) stay muted at rest so a
+   list of rows isn't a wall of red, and turn red under the cursor. Both confirm
+   through a modal, so the icon itself is never the point of no return. */
+.icon-btn--danger:hover { color: var(--error); background: var(--surface-hover); }
+
+/* Edit reads as the through-line action across every scope (incl. Trash), so it
+   keeps the accent in icon form too. Ordered after .icon-btn to win on colour. */
 .btn-edit { border-color: var(--accent); color: var(--accent); }
 .btn-edit:hover:not(:disabled) { background: var(--accent-glow); }
+.icon-btn.btn-edit:hover { color: var(--accent); }
 
 /* ── Scope / view switches ── */
 /* Browse ⇄ List, inside the All-files scope. */
@@ -61,6 +76,32 @@
 .vm-btn:hover { color: var(--text); }
 .vm-btn.is-active { background: var(--accent-glow); color: var(--accent); }
 .vm-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* View tabs (underlined tab strip) — the sub-view switch *inside* one scope:
+   All-files' "By entity ⇄ All files" and Trash's "Appearances / Recordings /
+   Files". Distinct from .scope-switch below on purpose: the pill row switches
+   scopes, the tab strip switches lenses within one. */
+.view-tabs {
+  display: flex;
+  gap: var(--space-1);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.view-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 500;
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: -1px;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.view-tab:hover { color: var(--text); }
+.view-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.view-tab--active { color: var(--text); border-bottom-color: var(--accent); }
 
 /* Scope switch (segmented pill row): All · Review · Trash. Used by the admin
    Library page that hosts the component (wired when that page is built). */
@@ -335,8 +376,13 @@
 .files-table .cell-size { width: 6rem; }
 .files-table .col-access,
 .files-table .cell-access { width: 9.5rem; }
+/* The actions column is the one fixed width that depends on what the scope puts
+   in it — buttons don't ellipsise, they overflow the cell and land on top of the
+   neighbouring column (or push a horizontal scrollbar onto .files-table-wrap).
+   So every table sets --col-actions to fit its own button row; the 13rem default
+   covers a play + Edit + one short action. */
 .files-table .col-actions,
-.files-table .cell-actions { width: 13rem; }
+.files-table .cell-actions { width: var(--col-actions, 13rem); }
 .files-table tbody tr { transition: background 120ms ease; }
 .files-table tbody tr:hover { background: var(--surface-hover); }
 .files-table tbody td {
@@ -393,7 +439,6 @@
   white-space: nowrap;
 }
 .cell-actions { text-align: right; white-space: nowrap; }
-.cell-actions .btn + .btn { margin-left: var(--space-2); }
 
 .files-table .col-check,
 .files-table .cell-check { width: 2.75rem; text-align: center; padding-right: 0; }
@@ -411,15 +456,13 @@
 .bulk-selcount { color: var(--text-muted); font-size: 13px; }
 .bulk-spacer { flex: 1; }
 
-/* Inline two-step confirm + the row action wrapper. */
-.delete-confirm {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  justify-content: flex-end;
-}
-.delete-confirm-label { font-size: 13px; color: var(--text); }
-.trash-actions { display: flex; gap: var(--space-2); justify-content: flex-end; }
+/* The row action wrapper. Every actions cell wraps its buttons in this row, so
+   the gap is the only spacing between them. `flex: none` keeps a button at its
+   natural size rather than letting flex squeeze it (an overflowing flex row
+   shrinks its items to min-content — that is what used to squash .play-btn from
+   30px down to the width of its glyph). */
+.trash-actions { display: flex; align-items: center; gap: var(--space-2); justify-content: flex-end; }
+.trash-actions > * { flex: none; }
 
 /* The moderator's return note, shown under a row title (admin-moderation.css). */
 .mod-note {
@@ -517,10 +560,7 @@
   .cell-title { overflow: visible; text-overflow: clip; white-space: normal; }
   .cell-title-line { flex-wrap: wrap; }
   .cell-size { text-align: right; }
-  .cell-actions { display: block; }
-  .cell-actions .btn,
-  .cell-actions .delete-confirm { width: 100%; }
-  .cell-actions .btn + .btn { margin-left: 0; margin-top: var(--space-2); }
-  .cell-actions .delete-confirm { justify-content: stretch; flex-wrap: wrap; }
-  .cell-actions .delete-confirm .btn { flex: 1; }
+  /* The icon row needs no card-mode special case: the cell's own flex layout
+     puts the "Actions" label left and the icons right, like every other cell. */
+  .trash-actions { flex-wrap: wrap; }
 }
