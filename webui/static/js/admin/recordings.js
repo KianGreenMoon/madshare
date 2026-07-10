@@ -37,7 +37,9 @@ let filter = '';
 let query = '';
 let canDelete = false;   // file.delete
 let canEdit = false;     // metadata.edit
-let editor = null;       // track-edit modal (created when canEdit)
+let canModerate = false; // content.moderate (gates Add appearance, like Move/Merge)
+let editor = null;       // track-edit modal for editing an appearance (canEdit)
+let adder = null;        // track-edit modal in create mode for Add appearance
 
 const selected = new Set();   // recording ids ticked for merge/trash
 const expanded = new Map();   // recording id → detail object | null (loading)
@@ -622,12 +624,23 @@ function expandedBody(rec) {
     ])]),
     el('tbody', {}, detail.renditions.map(f => renditionRow(rec, detail, f))),
   ]);
+  // The "Add appearance" affordance is the appearances table's own footer row
+  // (a hand-authored, blobless appearance on this recording, recording-tagsets
+  // P7d) — sitting inside the table so it reads as "add a row here", not as a
+  // detached card control. Gated content.moderate, like Move / Set primary.
   const appTable = el('table', { class: 'rec-table' }, [
     el('thead', {}, [el('tr', {}, [
       el('th', { 'aria-label': 'Primary' }, ['']), el('th', {}, ['Track']),
       el('th', {}, ['Album · disc-track']), el('th', {}, ['State']), el('th', {}, ['']),
     ])]),
     el('tbody', {}, detail.appearances.map(a => appearanceRow(rec, a))),
+    adder ? el('tfoot', {}, [el('tr', { class: 'rec-app-add-row' }, [
+      el('td', { colspan: '5' }, [el('button', {
+        class: 'btn btn-sm btn-neutral rec-add-app',
+        title: 'Add a metadata-only appearance to this recording (plays its best rendition)',
+        onclick: () => adder.openCreate(rec),
+      }, ['+ Add appearance'])]),
+    ])]) : null,
   ]);
   const foot = el('div', { class: 'rec-foot' }, [
     el('span', { class: 'muted rec-foot-note' }, [rec.dormant
@@ -699,6 +712,7 @@ searchEl.addEventListener('input', () => {
   const perms = identity.permissions || [];
   canDelete = perms.includes('file.delete');
   canEdit = perms.includes('metadata.edit');
+  canModerate = perms.includes('content.moderate');
   trashBtn.hidden = !canDelete;
 
   if (canEdit) {
@@ -709,6 +723,25 @@ searchEl.addEventListener('input', () => {
       checkAuth: handleAuthError,
       onSaved: async f => { toast('Tags updated.', 'success'); await refreshDetail(f._rec); reload(); },
       onError: () => toast('Couldn’t save tags.', 'error'),
+    });
+  }
+
+  // Add appearance is content.moderate — the page's own gate, matching Move /
+  // Set primary / Merge. The created appearance is blobless (it plays the
+  // recording's best rendition) and immediately approved.
+  if (canModerate) {
+    adder = createTrackEditor({
+      create: true,
+      createTitle: 'Add appearance',
+      createNote: 'A metadata-only appearance on this recording — it carries no audio of its own and '
+        + 'plays the recording’s best rendition. Give it at least an artist or an album.',
+      createURL: rec => `${API}/api/admin/recordings/${rec.id}/appearances`,
+      checkAuth: handleAuthError,
+      onCreated: async (_data, rec) => {
+        toast('Appearance added.', 'success');
+        await refreshDetail(rec.id);
+        reload();
+      },
     });
   }
 

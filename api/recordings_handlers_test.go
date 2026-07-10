@@ -356,3 +356,82 @@ func TestTagsetHardDelete(t *testing.T) {
 		t.Errorf("unknown tagset: status = %d, want 404", rr.Code)
 	}
 }
+
+// TestRecordingsAddAppearance covers the "Add appearance" handler (P7d): the
+// happy path passes the input through to CreateAppearance, and each DB refusal
+// maps to its status.
+func TestRecordingsAddAppearance(t *testing.T) {
+	// Numeric fields arrive as strings (the shared track-edit.js form).
+	body := `{"title":"Same Song","artist":"The Band","album":"Best Of","track_number":"4"}`
+
+	t.Run("success", func(t *testing.T) {
+		repo := &fakeRepo{createAppOutcome: database.CreateAppearanceOutcome{TagsetID: 42}}
+		h := &handler{repo: repo}
+		rr := httptest.NewRecorder()
+		h.recordingsAddAppearance(rr, paramRequest(http.MethodPost,
+			"/api/admin/recordings/5/appearances", "recordingID", "5", body))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+		}
+		if repo.createAppRecordingID != 5 {
+			t.Errorf("recording id = %d, want 5", repo.createAppRecordingID)
+		}
+		if repo.createAppInput.Title != "Same Song" || repo.createAppInput.Album != "Best Of" ||
+			repo.createAppInput.TrackNumber == nil || *repo.createAppInput.TrackNumber != 4 {
+			t.Errorf("input not passed through: %+v", repo.createAppInput)
+		}
+		var resp map[string]any
+		json.NewDecoder(rr.Body).Decode(&resp)
+		if resp["tagset_id"].(float64) != 42 {
+			t.Errorf("tagset_id = %v, want 42", resp["tagset_id"])
+		}
+	})
+
+	for _, tc := range []struct {
+		name    string
+		outcome database.CreateAppearanceOutcome
+		status  int
+	}{
+		{"unknown recording", database.CreateAppearanceOutcome{NotFound: true}, http.StatusNotFound},
+		{"empty title", database.CreateAppearanceOutcome{EmptyTitle: true}, http.StatusBadRequest},
+		{"nameless", database.CreateAppearanceOutcome{Nameless: true}, http.StatusUnprocessableEntity},
+		{"collision", database.CreateAppearanceOutcome{Collides: true}, http.StatusConflict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &handler{repo: &fakeRepo{createAppOutcome: tc.outcome}}
+			rr := httptest.NewRecorder()
+			h.recordingsAddAppearance(rr, paramRequest(http.MethodPost,
+				"/api/admin/recordings/5/appearances", "recordingID", "5", body))
+			if rr.Code != tc.status {
+				t.Errorf("status = %d, want %d; body=%s", rr.Code, tc.status, rr.Body.String())
+			}
+		})
+	}
+
+	t.Run("bad recording id", func(t *testing.T) {
+		h := &handler{repo: &fakeRepo{}}
+		rr := httptest.NewRecorder()
+		h.recordingsAddAppearance(rr, paramRequest(http.MethodPost,
+			"/api/admin/recordings/0/appearances", "recordingID", "0", body))
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", rr.Code)
+		}
+	})
+}
+
+// TestRecordingsAddAppearance_RejectsNonNumeric: a non-numeric year/track is a
+// clean 400, not a 500 from the DB layer.
+func TestRecordingsAddAppearance_RejectsNonNumeric(t *testing.T) {
+	repo := &fakeRepo{createAppOutcome: database.CreateAppearanceOutcome{TagsetID: 1}}
+	h := &handler{repo: repo}
+	rr := httptest.NewRecorder()
+	h.recordingsAddAppearance(rr, paramRequest(http.MethodPost,
+		"/api/admin/recordings/5/appearances", "recordingID", "5",
+		`{"title":"T","artist":"A","year":"not-a-year"}`))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rr.Code)
+	}
+	if repo.createAppRecordingID != 0 {
+		t.Error("CreateAppearance was called despite an unparseable numeric field")
+	}
+}

@@ -132,6 +132,9 @@ button.rec-chip--lic:focus-visible { outline: 2px solid var(--accent); outline-o
   gap: var(--space-3);
 }
 .rec-arm-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 12px;
   font-weight: 650;
   text-transform: uppercase;
@@ -165,6 +168,16 @@ tr.rec-row--playing { background: var(--accent-glow, var(--surface-hover)); }
 .rec-app-title { font-weight: 500; }
 .rec-app-artist { font-size: 12px; }
 .rec-actions { white-space: nowrap; text-align: right; }
+
+/* "Add appearance" is the appearances table's footer row: a faint action strip
+   under the last appearance (a top border keeps it from reading as data), so it
+   clearly belongs to the table above the recording's Trash footer. */
+.rec-app-add-row td {
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-hover);
+}
+.rec-app-add-row .rec-add-app { width: 100%; }
 .rec-actions .btn { margin-left: var(--space-1); }
 
 .rec-state {

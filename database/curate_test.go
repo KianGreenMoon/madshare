@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"slices"
 	"testing"
 )
@@ -588,5 +589,132 @@ func TestMergeRecordings_OrphanedRenditionStaysManageable(t *testing.T) {
 	// Control: serving was always recording-rooted and must stay that way.
 	if ok, err := db.FileAccessibleByHash(ctx, f2.Hash); err != nil || !ok {
 		t.Errorf("FileAccessibleByHash(orphan) = %v (err %v), want true", ok, err)
+	}
+}
+
+// TestCreateAppearance covers the hand-authored appearance (recording-tagsets
+// P7d): a blobless, approved, non-primary appearance on an existing recording,
+// plus the meaningful-rule / dedup / empty-title / unknown-recording refusals.
+func TestCreateAppearance(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	f := insertTaggedFile(t, db, hash64("ca1"), "studio.flac", "The Band", "Studio Album")
+	rec := recordingIDOf(t, db, f.ID)
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO users (id, username, password_hash, created_at) VALUES (7, 'mod', 'x', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	actor := sql.NullInt64{Int64: 7, Valid: true}
+
+	// Happy path: a distinct release on the same recording.
+	out, err := db.CreateAppearance(ctx, rec, AppearanceInput{
+		Title: "Same Song", Artist: "The Band", AlbumArtist: "The Band", Album: "Best Of",
+	}, actor)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if out.TagsetID == 0 {
+		t.Fatalf("outcome = %+v, want a created tagset", out)
+	}
+	var (
+		album, state         string
+		primary              int
+		origin, createdBy    sql.NullInt64
+		albumID, albumArtID  sql.NullInt64
+	)
+	if err := db.QueryRowContext(ctx,
+		`SELECT COALESCE(album,''), review_state, is_primary, origin_file_id, created_by, album_id, album_artist_id
+		   FROM tagsets WHERE id = ?`, out.TagsetID).Scan(
+		&album, &state, &primary, &origin, &createdBy, &albumID, &albumArtID); err != nil {
+		t.Fatal(err)
+	}
+	if album != "Best Of" || state != "approved" || primary != 0 || origin.Valid {
+		t.Errorf("created row: album=%q state=%q primary=%d originValid=%v; want Best Of/approved/0/false",
+			album, state, primary, origin.Valid)
+	}
+	if createdBy.Int64 != 7 {
+		t.Errorf("created_by = %v, want 7", createdBy)
+	}
+	if !albumID.Valid || !albumArtID.Valid {
+		t.Error("entity FKs not resolved on the created appearance")
+	}
+
+	// It is now a library-visible track of the recording (plays the recording's
+	// rendition, though it carries no blob of its own).
+	tracks, err := db.ListTracksByAlbumID(ctx, albumID.Int64)
+	if err != nil {
+		t.Fatalf("list tracks: %v", err)
+	}
+	if len(tracks) != 1 || tracks[0].TagsetID != out.TagsetID {
+		t.Errorf("blobless appearance not browsable: got %d track(s)", len(tracks))
+	}
+
+	// Dedup: the identical release is refused.
+	dup, err := db.CreateAppearance(ctx, rec, AppearanceInput{
+		Title: "Whatever", Artist: "The Band", AlbumArtist: "The Band", Album: "Best Of",
+	}, actor)
+	if err != nil {
+		t.Fatalf("dup: %v", err)
+	}
+	if !dup.Collides || dup.TagsetID != 0 {
+		t.Errorf("dup outcome = %+v, want Collides", dup)
+	}
+
+	// Meaningful rule: an all-blank appearance resolves to Unknown/Other → refused.
+	nameless, err := db.CreateAppearance(ctx, rec, AppearanceInput{Title: "Untitled"}, actor)
+	if err != nil {
+		t.Fatalf("nameless: %v", err)
+	}
+	if !nameless.Nameless || nameless.TagsetID != 0 {
+		t.Errorf("nameless outcome = %+v, want Nameless", nameless)
+	}
+
+	// Empty title is refused (the CHECK would abort anyway).
+	empty, err := db.CreateAppearance(ctx, rec, AppearanceInput{Title: "   ", Artist: "X"}, actor)
+	if err != nil {
+		t.Fatalf("empty: %v", err)
+	}
+	if !empty.EmptyTitle {
+		t.Errorf("empty-title outcome = %+v, want EmptyTitle", empty)
+	}
+
+	// Unknown recording → NotFound.
+	nf, err := db.CreateAppearance(ctx, 99999, AppearanceInput{Title: "T", Artist: "A"}, actor)
+	if err != nil {
+		t.Fatalf("notfound: %v", err)
+	}
+	if !nf.NotFound {
+		t.Errorf("unknown-recording outcome = %+v, want NotFound", nf)
+	}
+
+	// The recording still has exactly its two live appearances (original + the
+	// one successful add) — the refusals inserted nothing.
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=? AND deleted_at IS NULL`, rec); n != 2 {
+		t.Errorf("live appearances = %d, want 2", n)
+	}
+}
+
+// TestCreateAppearance_DiscTrackDistinguish: two appearances that differ only by
+// disc/track are NOT duplicates (NULL-safe identity — untagged stays distinct
+// from a numbered one, disc-numbering.md).
+func TestCreateAppearance_DiscTrackDistinguish(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	f := insertTaggedFile(t, db, hash64("ca2"), "a.flac", "The Band", "Anthology")
+	rec := recordingIDOf(t, db, f.ID)
+	one := int64(1)
+
+	a, err := db.CreateAppearance(ctx, rec, AppearanceInput{Title: "T", Artist: "The Band", Album: "Anthology", TrackNumber: &one}, sql.NullInt64{})
+	if err != nil || a.TagsetID == 0 {
+		t.Fatalf("first: %+v err=%v", a, err)
+	}
+	two := int64(2)
+	b, err := db.CreateAppearance(ctx, rec, AppearanceInput{Title: "T2", Artist: "The Band", Album: "Anthology", TrackNumber: &two}, sql.NullInt64{})
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if b.TagsetID == 0 || b.Collides {
+		t.Errorf("track 2 outcome = %+v, want a distinct create (not a collision)", b)
 	}
 }

@@ -823,3 +823,148 @@ func (db *DB) HardDeleteTrashedTagset(ctx context.Context, tagsetID int64) (Hard
 	}
 	return out, nil
 }
+
+// ── Manual appearance creation (recording-tagsets P7d) ────────────────────────
+
+// AppearanceInput carries the descriptive tags for a hand-authored appearance —
+// the /admin/recordings "Add appearance" form. Blank optional fields resolve to
+// the reserved Unknown-artist / Other buckets, exactly as an untagged upload
+// does. Numeric fields are pointers so "unset" is distinct from 0.
+type AppearanceInput struct {
+	Title       string
+	Artist      string
+	AlbumArtist string
+	Album       string
+	Genre       string
+	Composer    string
+	Comment     string
+	Year        *int64
+	TrackNumber *int64
+	TrackTotal  *int64
+	DiscNumber  *int64
+}
+
+// CreateAppearanceOutcome reports a CreateAppearance attempt. Exactly one of the
+// refusals is set when !TagsetID; the API maps them to specific responses.
+type CreateAppearanceOutcome struct {
+	TagsetID   int64 // >0 on success
+	NotFound   bool  // the recording does not exist
+	Nameless   bool  // refused: resolves to Unknown artist / Other (meaningful rule)
+	Collides   bool  // refused: an identical live appearance already exists here
+	EmptyTitle bool  // refused: title is required non-empty (migration 016)
+}
+
+// CreateAppearance adds a hand-authored appearance to an existing recording —
+// the appearance-level analogue of an upload's offered tagset, minus the file.
+// It carries no blob (origin_file_id NULL: provenance is "the file these tags
+// were read from", and these were typed), plays the recording's ladder-best
+// rendition like any other appearance, and is born **approved**: a moderator
+// curating on /admin/recordings is the reviewer, and a blobless draft would be
+// invisible in the review queue (which INNER-joins files) — so review would
+// strand it. It is never primary (SetPrimaryTagset promotes it deliberately).
+//
+// Refusals mirror the neighbouring curation ops: the meaningful-tagset rule
+// (don't manufacture a nameless Unknown-artist appearance — that rule exists to
+// stop absorb/merge growing the bucket, and applies doubly to a manual add) and
+// the NULL-safe identity dedup (an identical live appearance already says this).
+func (db *DB) CreateAppearance(ctx context.Context, recordingID int64, in AppearanceInput, createdBy sql.NullInt64) (CreateAppearanceOutcome, error) {
+	title := strings.TrimSpace(in.Title)
+	if title == "" {
+		return CreateAppearanceOutcome{EmptyTitle: true}, nil
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return CreateAppearanceOutcome{}, fmt.Errorf("create appearance: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	var exists bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM recordings WHERE id = ?)`, recordingID).Scan(&exists); err != nil {
+		return CreateAppearanceOutcome{}, fmt.Errorf("create appearance: check recording: %w", err)
+	}
+	if !exists {
+		return CreateAppearanceOutcome{NotFound: true}, nil
+	}
+
+	year := 0
+	if in.Year != nil {
+		year = int(*in.Year)
+	}
+	albumArtistID, trackArtistID, albumID, err := resolveAlbumArtistTx(ctx, tx, AlbumArtistTags{
+		Artist: in.Artist, AlbumArtist: in.AlbumArtist, Album: in.Album, Year: year,
+	})
+	if err != nil {
+		return CreateAppearanceOutcome{}, fmt.Errorf("create appearance: resolve entities: %w", err)
+	}
+
+	// Meaningful rule: refuse an appearance that resolves to Unknown artist AND
+	// Other — it says nothing. Reuses the reserved-bucket check by name (the same
+	// exact test loadAppearances uses), not a heuristic.
+	var nameless bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(aa.name,'') = ? AND COALESCE(ar.name,'') = ? AND COALESCE(al.title,'') = ?
+		   FROM (SELECT 1) x
+		   LEFT JOIN artists aa ON aa.id = ?
+		   LEFT JOIN artists ar ON ar.id = ?
+		   LEFT JOIN albums  al ON al.id = ?`,
+		DefaultArtistName, DefaultArtistName, DefaultAlbumTitle,
+		albumArtistID, trackArtistID, albumID).Scan(&nameless); err != nil {
+		return CreateAppearanceOutcome{}, fmt.Errorf("create appearance: meaningful check: %w", err)
+	}
+	if nameless {
+		return CreateAppearanceOutcome{Nameless: true}, nil
+	}
+
+	// NULL-safe identity dedup on live appearances of this recording — the same
+	// (album_id, album_artist_id, disc, track) key MoveTagset/absorb use.
+	disc := nullPtrInt(in.DiscNumber)
+	track := nullPtrInt(in.TrackNumber)
+	var collides bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM tagsets t
+		  WHERE t.recording_id = ? AND t.deleted_at IS NULL
+		    AND t.album_id IS ? AND t.album_artist_id IS ?
+		    AND t.disc_number IS ? AND t.track_number IS ?)`,
+		recordingID, sql.NullInt64{Int64: albumID, Valid: albumID != 0},
+		sql.NullInt64{Int64: albumArtistID, Valid: albumArtistID != 0}, disc, track).Scan(&collides); err != nil {
+		return CreateAppearanceOutcome{}, fmt.Errorf("create appearance: collision check: %w", err)
+	}
+	if collides {
+		return CreateAppearanceOutcome{Collides: true}, nil
+	}
+
+	var tagsetID int64
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO tagsets (
+			recording_id, title, artist, album_artist, album, genre, year,
+			track_number, track_total, disc_number, composer, comment,
+			artist_id, album_artist_id, album_id,
+			review_state, created_by, origin_file_id, is_primary, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, NULL, 0, ?)
+		RETURNING id`,
+		recordingID, title,
+		nullStr(strings.TrimSpace(in.Artist)), nullStr(strings.TrimSpace(in.AlbumArtist)), nullStr(strings.TrimSpace(in.Album)), nullStr(strings.TrimSpace(in.Genre)),
+		nullPtrInt(in.Year), track, nullPtrInt(in.TrackTotal), disc, nullStr(strings.TrimSpace(in.Composer)), nullStr(strings.TrimSpace(in.Comment)),
+		nullI64(trackArtistID), nullI64(albumArtistID), nullI64(albumID),
+		createdBy, time.Now().Unix(),
+	).Scan(&tagsetID); err != nil {
+		return CreateAppearanceOutcome{}, fmt.Errorf("create appearance: insert: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return CreateAppearanceOutcome{}, fmt.Errorf("create appearance: commit: %w", err)
+	}
+	return CreateAppearanceOutcome{TagsetID: tagsetID}, nil
+}
+
+// nullPtrInt maps an optional manual-input number to its nullable column form:
+// an unset (nil) value → NULL. Blank strings and 0 entity ids reuse the package
+// helpers nullStr / nullI64.
+func nullPtrInt(v *int64) sql.NullInt64 {
+	if v == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: *v, Valid: true}
+}

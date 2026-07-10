@@ -936,6 +936,13 @@ input[type="range"]::-moz-range-thumb {
 .edit-form input:focus-visible,
 .edit-form select:focus-visible,
 .edit-form textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Inline refusal message (create mode: nameless / identical appearance / bad
+   number). Uses the shared destructive color so it reads as a blocker. */
+.edit-form .edit-error {
+  margin: 0;
+  color: var(--danger, #d33);
+  font-size: 0.9em;
+}
 /* "Extended edit" disclosure: a quiet text button that opens the wide modal. */
 .edit-extended-toggle {
   justify-self: start;

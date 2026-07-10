@@ -367,6 +367,12 @@ type Repository interface {
 	// is false when it does not belong to the recording.
 	SetPrimaryTagset(ctx context.Context, recordingID, tagsetID int64) (bool, error)
 
+	// CreateAppearance adds a hand-authored, blobless, approved appearance to an
+	// existing recording (the /admin/recordings "Add appearance" form). The
+	// refusals — unknown recording, nameless (meaningful rule), identity
+	// collision, empty title — are outcomes, not errors.
+	CreateAppearance(ctx context.Context, recordingID int64, in AppearanceInput, createdBy sql.NullInt64) (CreateAppearanceOutcome, error)
+
 	// RestoreTagset clears one appearance's trash mark (the tagset-addressed
 	// inverse of the per-appearance discard), so a trashed appearance whose
 	// origin blob was absorbed/purged — unreachable from the hash-addressed

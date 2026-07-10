@@ -318,6 +318,7 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(fileDelete).Post("/recordings/trash", h.recordingsTrashBulk)
 		r.With(moderate).Get("/recordings/{recordingID}", h.recordingsDetail)
 		r.With(moderate).Post("/recordings/{recordingID}/primary", h.recordingsSetPrimary)
+		r.With(moderate).Post("/recordings/{recordingID}/appearances", h.recordingsAddAppearance)
 		r.With(d.protect(auth.PermMetadataEdit)).Patch("/recordings/{recordingID}/access", h.recordingsAccess)
 		r.With(fileDelete).Post("/recordings/{recordingID}/trash", h.recordingsTrash)
 		r.With(fileDelete).Post("/recordings/{recordingID}/restore", h.recordingsRestore)

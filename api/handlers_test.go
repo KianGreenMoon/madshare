@@ -492,6 +492,10 @@ type fakeRepo struct {
 	primaryRecordingID    int64
 	primaryTagsetID       int64
 	primaryNotFound       bool
+	createAppRecordingID  int64
+	createAppInput        database.AppearanceInput
+	createAppOutcome      database.CreateAppearanceOutcome
+	createAppErr          error
 	trashRecordingIDs     []int64
 	trashRecNotFound      bool
 	hardDelRecordingID    int64
@@ -961,6 +965,12 @@ func (f *fakeRepo) SetPrimaryTagset(_ context.Context, recordingID, tagsetID int
 	f.primaryRecordingID = recordingID
 	f.primaryTagsetID = tagsetID
 	return !f.primaryNotFound, nil
+}
+
+func (f *fakeRepo) CreateAppearance(_ context.Context, recordingID int64, in database.AppearanceInput, _ sql.NullInt64) (database.CreateAppearanceOutcome, error) {
+	f.createAppRecordingID = recordingID
+	f.createAppInput = in
+	return f.createAppOutcome, f.createAppErr
 }
 
 func (f *fakeRepo) RestoreTagset(_ context.Context, tagsetID int64) (bool, error) {

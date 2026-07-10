@@ -496,7 +496,9 @@ Deliberately **two perspectives** (owner accepts the added admin complexity):
   first (ladder rank, tech, live/removed state; Play / Split off / Remove /
   Restore), the appearance list under it full-width (primary marked, review
   state; a live appearance offers Edit / Set primary / Move… / Remove, a
-  trashed one **Restore** only) — plus the card footer's **Trash recording**
+  trashed one **Restore** only, and a footer row **+ Add appearance** for a
+  hand-authored blobless appearance, P7d) — plus the card footer's **Trash
+  recording**
   (soft = trash all its tagsets; the whole recording then shows in the Trash
   page's Recordings lens). **Permanent delete lives only on the Trash page now**
   (`soft-delete.md`): `/admin/recordings` does soft ops + curation, and every
@@ -734,7 +736,10 @@ regressions isolate to the data move.
   *Result: full curation from every perspective — verified live (merge / move
   refusals / dormancy round-trip / show-removed / whole-recording deletes /
   browser smoke with zero console errors).*
-- **P7 — Re-root the file surfaces on `recording_id`. 🔴 Open (2026-07-10).**
+- **P7 — Re-root the file surfaces on `recording_id`. ✅ Done (2026-07-10).**
+  P7a–P7d all landed (P7b/P7c committed; P7d + this doc uncommitted). The only
+  deferral is cosmetic: `review.go`'s `reviewFrom` stays an INNER JOIN because a
+  blobless *draft* cannot exist (P7d note).
   **Files belong to recordings, not to appearances.** `files.recording_id` is
   the structural link (P0); `tagsets.origin_file_id` is *provenance* — an audit
   column, nullable, `ON DELETE SET NULL`. Several queries nevertheless
@@ -796,10 +801,31 @@ regressions isolate to the data move.
     two trashed appearances of one blob list as two rows, ticking one selects
     one, the bulk call carries `tagset_ids`, a blobless appearance lists and
     deletes, zero console errors.
-  - **P7d** — *then* "Add appearance" on the recording card becomes small and
-    safe (`CreateAppearance`: resolve entities → meaningful rule → identity
-    dedup → insert non-primary). Blocked on P7b, because a blobless appearance
-    is invisible in the review queue while `reviewFrom` INNER-joins `files`.
+  - **P7d — "Add appearance" on the recording card. ✅ Done (2026-07-10).**
+    `CreateAppearance` (`database/curate.go`): recording exists → resolve
+    entities → **meaningful rule** (refuse a nameless Unknown/Other appearance)
+    → NULL-safe identity dedup → insert `approved`, `is_primary = 0`,
+    `origin_file_id NULL`. `POST /api/admin/recordings/{id}/appearances` gated
+    `content.moderate`, refusals mapped to statuses (404 / 400 empty-title /
+    422 nameless / 409 collides), audit `appearance.create`. UI: a "+ Add
+    appearance" button that is the appearances table's own footer row (a
+    full-width action row under the last appearance, above the recording's Trash
+    footer, so it reads as "add a row here") opens `track-edit.js` in a new
+    **create mode** (POST not PATCH, extended fields blank, server refusals
+    shown inline). Live-verified: the created blobless appearance is browsable
+    as its own album and plays the recording's rendition (empty admin hash, a
+    resolved play URL); the duplicate submit shows the collision inline and
+    inserts nothing.
+
+    **The review-queue LEFT JOIN turned out unnecessary.** The appearance is
+    born `approved` (a moderator curating is the reviewer), and no path produces
+    a blobless *draft* — every file-delete cascade drops or repoints referencing
+    tagsets before the row dies, so `origin_file_id` never reaches NULL on a
+    live draft. `review.go`'s INNER JOIN therefore never has to see a blobless
+    row, and a blobless approved appearance is visible everywhere it must be:
+    the library plays it via `bestRenditionJoin` (keyed on `recording_id`, the
+    `orig` join is already LEFT), the recording detail reads `FROM tagsets`, and
+    the Trash lens is tagset-rooted (P7c).
 
   **Open decision:** whether P7b should *surface* orphan renditions in All
   files (with a "no appearance" badge), or whether merge/absorb should stop

@@ -64,8 +64,15 @@ export const EXTENDED_FIELDS = [
  *   `access` it also reads { guest_playable, license }. `ctx` is passed through
  *   to onSaved untouched (e.g. "which view opened me").
  */
-export function createTrackEditor({ patchURL, detailURL = null, note = '', checkAuth = null, onSaved, onError, access = null }) {
+export function createTrackEditor({ patchURL, createURL = null, detailURL = null, note = '',
+  create = false, createTitle = 'Add appearance', createNote = '', onCreated = null,
+  checkAuth = null, onSaved, onError, access = null }) {
   const titleId = `trackEditTitle${nextEditorId++}`;
+  // Create mode: submit POSTs a brand-new record (no detail fetch — the extended
+  // fields start blank and editable), and server refusals show inline so the
+  // user can fix and retry rather than the modal vanishing. A create-mode editor
+  // shows the track-number + extended fields even without a detailURL.
+  const wantsExtended = !!detailURL || create;
 
   // labelled builds a <label>text + control</label> and returns the <label>.
   function labelled(parent, text, control, cls = '') {
@@ -108,7 +115,7 @@ export function createTrackEditor({ patchURL, detailURL = null, note = '', check
   const backdrop = makeBackdrop();
   const modal = document.createElement('div');
   modal.className = 'modal';
-  const { header: mainHeader, heading } = makeHeader('Edit metadata', () => closeAll());
+  const { header: mainHeader, heading } = makeHeader(create ? createTitle : 'Edit metadata', () => closeAll());
   heading.id = titleId;
   backdrop.setAttribute('aria-labelledby', titleId);
 
@@ -167,16 +174,22 @@ export function createTrackEditor({ patchURL, detailURL = null, note = '', check
     form.appendChild(split);
   }
 
-  if (note) {
-    const p = document.createElement('p');
-    p.className = 'modal-body';
-    p.textContent = note;
-    form.appendChild(p);
-  }
+  // Explanatory note — its text is set per open (create/edit can differ).
+  const noteEl = document.createElement('p');
+  noteEl.className = 'modal-body';
+  noteEl.textContent = create ? (createNote || note) : note;
+  if (noteEl.textContent) form.appendChild(noteEl);
 
-  // "Extended edit" — opens the wide modal (only in detail mode).
+  // Inline error slot — populated on a create-mode refusal (nameless / identical
+  // / bad number), so the modal stays open with the reason shown.
+  const errorEl = document.createElement('p');
+  errorEl.className = 'edit-error hidden';
+  errorEl.setAttribute('role', 'alert');
+  form.appendChild(errorEl);
+
+  // "Extended edit" — opens the wide modal (detail edit, or any create).
   let extendedBtn = null;
-  if (detailURL) {
+  if (wantsExtended) {
     extendedBtn = document.createElement('button');
     extendedBtn.type = 'button';
     extendedBtn.className = 'edit-extended-toggle';
@@ -200,10 +213,10 @@ export function createTrackEditor({ patchURL, detailURL = null, note = '', check
   backdrop.appendChild(modal);
   document.body.appendChild(backdrop);
 
-  // ── Wide secondary modal: the extended tags (only built in detail mode) ─────
+  // ── Wide secondary modal: the extended tags (built in detail-edit or create) ─
   let extBackdrop = null, extForm = null, extSubmitBtn = null;
   const extInputs = {};
-  if (detailURL) {
+  if (wantsExtended) {
     extBackdrop = makeBackdrop('is-stacked');
     const extModal = document.createElement('div');
     extModal.className = 'modal modal-wide';
@@ -247,8 +260,8 @@ export function createTrackEditor({ patchURL, detailURL = null, note = '', check
     document.body.appendChild(extBackdrop);
   }
 
-  let editing = null;       // { file, ctx } while open
-  let detailLoaded = false; // true once a GET populated the extended/track fields
+  let editing = null;       // { file, ctx, mode } while open ('edit' | 'create')
+  let detailLoaded = false; // true once the extended/track fields carry values
   const mainOpen = () => !backdrop.classList.contains('hidden');
   const extOpen = () => extBackdrop && !extBackdrop.classList.contains('hidden');
 
@@ -266,6 +279,19 @@ export function createTrackEditor({ patchURL, detailURL = null, note = '', check
     detailLoaded = true;
   }
 
+  // seedExtendedEmpty reveals the track-number + extended controls with blank
+  // values — the create-mode counterpart of setExtendedFrom (no server payload).
+  function seedExtendedEmpty() {
+    trackNumberInput.value = '';
+    trackNumberWrap.classList.remove('hidden');
+    for (const [key] of EXTENDED_FIELDS) extInputs[key].value = '';
+    if (extendedBtn) extendedBtn.classList.remove('hidden');
+    detailLoaded = true;
+  }
+
+  function showError(msg) { errorEl.textContent = msg; errorEl.classList.remove('hidden'); }
+  function clearError() { errorEl.textContent = ''; errorEl.classList.add('hidden'); }
+
   // hideExtended keeps the modal base-fields-only (no detailURL, or a failed load).
   function hideExtended() {
     detailLoaded = false;
@@ -282,7 +308,8 @@ export function createTrackEditor({ patchURL, detailURL = null, note = '', check
   }
 
   async function open(file, ctx = null) {
-    editing = { file, ctx };
+    editing = { file, ctx, mode: 'edit' };
+    clearError();
     inputs.title.value        = file.title || '';
     inputs.artist.value       = file.artist || '';
     inputs.album_artist.value = file.album_artist || '';
@@ -314,6 +341,18 @@ export function createTrackEditor({ patchURL, detailURL = null, note = '', check
     }
   }
 
+  // openCreate opens the modal blank for a brand-new record; `ctx` is passed
+  // through to onCreated (e.g. the recording the appearance is added to). All
+  // fields — base + track-number + extended — start empty and editable.
+  function openCreate(ctx = null) {
+    editing = { file: null, ctx, mode: 'create' };
+    clearError();
+    for (const k of ['title', 'artist', 'album_artist', 'album']) inputs[k].value = '';
+    seedExtendedEmpty();
+    backdrop.classList.remove('hidden');
+    inputs.title.focus();
+  }
+
   function closeAll() {
     backdrop.classList.add('hidden');
     if (extBackdrop) extBackdrop.classList.add('hidden');
@@ -331,7 +370,8 @@ export function createTrackEditor({ patchURL, detailURL = null, note = '', check
   async function submit(e) {
     if (e) e.preventDefault();
     if (!editing) return;
-    const { file, ctx } = editing;
+    const { file, ctx, mode } = editing;
+    const isCreate = mode === 'create';
     const body = {
       title:        inputs.title.value,
       artist:       inputs.artist.value,
@@ -339,28 +379,38 @@ export function createTrackEditor({ patchURL, detailURL = null, note = '', check
       album:        inputs.album.value,
     };
     // Only send the track-number + extended fields once they were loaded, so a
-    // base-only edit (or a failed detail fetch) never blanks them.
+    // base-only edit (or a failed detail fetch) never blanks them. Create mode
+    // always seeds them, so they always ride along.
     if (detailLoaded) {
       body.track_number = trackNumberInput.value;
       for (const [key] of EXTENDED_FIELDS) body[key] = extInputs[key].value;
     }
+    clearError();
     submitBtn.disabled = true;
     if (extSubmitBtn) extSubmitBtn.disabled = true;
     try {
-      const res = await fetch(patchURL(file), {
-        method: 'PATCH',
+      const url = isCreate ? (createURL ? createURL(ctx) : patchURL(ctx)) : patchURL(file);
+      const res = await fetch(url, {
+        method: isCreate ? 'POST' : 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
       if (checkAuth && checkAuth(res)) return;
       const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (!res.ok || !data.ok) {
+        // A create refusal (nameless / identical / bad number) stays on the form
+        // with its reason shown; an edit failure defers to onError, as before.
+        if (isCreate) { showError(data.error || `Couldn’t add the appearance (HTTP ${res.status}).`); return; }
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
       // Access writes hit their own endpoints; run them after the tag PATCH.
-      if (access) await access.save(file, { guest: guestCb.checked, license: licenseSel.value });
+      if (!isCreate && access) await access.save(file, { guest: guestCb.checked, license: licenseSel.value });
       closeAll();
-      onSaved(file, data, ctx);
+      if (isCreate) (onCreated || onSaved)(data, ctx);
+      else onSaved(file, data, ctx);
     } catch (err) {
-      if (onError) onError(err, file);
+      if (isCreate) showError(err.message || 'Network error.');
+      else if (onError) onError(err, file);
       else console.error('track-edit save failed:', err);
     } finally {
       submitBtn.disabled = false;
@@ -380,5 +430,5 @@ export function createTrackEditor({ patchURL, detailURL = null, note = '', check
     editing = null;
   }
 
-  return { open, close: closeAll, destroy };
+  return { open, openCreate, close: closeAll, destroy };
 }

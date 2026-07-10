@@ -9,11 +9,13 @@ package api
 // edit is metadata.edit (the same gates the equivalent file-addressed ops use).
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"daemonlord.ygg/madshare/database"
 	"github.com/go-chi/chi/v5"
@@ -326,6 +328,74 @@ func (h *handler) recordingsSetPrimary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// recordingsAddAppearance handles POST /api/admin/recordings/{recordingID}/appearances
+// — the "Add appearance" form: a hand-authored, blobless, approved appearance on
+// an existing recording (recording-tagsets P7d). Gated content.moderate (the
+// same gate as merge / move / set-primary — it publishes a library-visible row).
+// The DB refusals map to specific statuses so the form can explain them; the new
+// appearance is never primary (Set primary promotes it deliberately).
+func (h *handler) recordingsAddAppearance(w http.ResponseWriter, r *http.Request) {
+	recID := parseRecordingID(r)
+	if recID == 0 {
+		http.Error(w, "recording id must be a positive integer", http.StatusBadRequest)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	// The numeric fields arrive as strings (the shared track-edit.js form sends
+	// every input's value verbatim, the same convention MetadataPatch uses); an
+	// empty or absent one is "unset", a non-numeric one is a 400.
+	var req struct {
+		Title       string `json:"title"`
+		Artist      string `json:"artist"`
+		AlbumArtist string `json:"album_artist"`
+		Album       string `json:"album"`
+		Genre       string `json:"genre"`
+		Composer    string `json:"composer"`
+		Comment     string `json:"comment"`
+		Year        string `json:"year"`
+		TrackNumber string `json:"track_number"`
+		TrackTotal  string `json:"track_total"`
+		DiscNumber  string `json:"disc_number"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid JSON body"})
+		return
+	}
+	year, err1 := parseOptInt(req.Year)
+	track, err2 := parseOptInt(req.TrackNumber)
+	total, err3 := parseOptInt(req.TrackTotal)
+	disc, err4 := parseOptInt(req.DiscNumber)
+	if err := cmp.Or(err1, err2, err3, err4); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "year, track, and disc must be whole numbers"})
+		return
+	}
+	out, err := h.repo.CreateAppearance(r.Context(), recID, database.AppearanceInput{
+		Title: req.Title, Artist: req.Artist, AlbumArtist: req.AlbumArtist, Album: req.Album,
+		Genre: req.Genre, Composer: req.Composer, Comment: req.Comment,
+		Year: year, TrackNumber: track, TrackTotal: total, DiscNumber: disc,
+	}, actorID(r.Context()))
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	switch {
+	case out.NotFound:
+		http.NotFound(w, r)
+	case out.EmptyTitle:
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "a title is required"})
+	case out.Nameless:
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"ok": false, "reason": "nameless",
+			"error": "give the appearance an artist or an album — a nameless one adds nothing"})
+	case out.Collides:
+		writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "reason": "collides",
+			"error": "an identical appearance already exists on this recording"})
+	default:
+		h.audit(r.Context(), "appearance.create", strconv.FormatInt(recID, 10),
+			"tagset "+strconv.FormatInt(out.TagsetID, 10))
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tagset_id": out.TagsetID})
+	}
+}
+
 // recordingsAccess handles PATCH /api/admin/recordings/{recordingID}/access —
 // the editable license/guest chip. Body {license?, guest_playable?}; absent
 // fields stay unchanged; the license must be in the controlled vocabulary.
@@ -557,4 +627,19 @@ func (h *handler) tagsetHardDelete(w http.ResponseWriter, r *http.Request) {
 	h.audit(r.Context(), "appearance.delete", strconv.FormatInt(tagsetID, 10),
 		fmt.Sprintf("%d file(s) reclaimed", blobsRemoved))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tagset_id": tagsetID, "blobs_removed": blobsRemoved})
+}
+
+// parseOptInt parses an optional integer form field: "" (or whitespace) → nil,
+// a valid integer → its pointer, anything else → error. The shared track-edit.js
+// form sends numeric inputs as strings.
+func parseOptInt(s string) (*int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return nil, err
+	}
+	return &n, nil
 }
