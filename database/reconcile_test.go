@@ -203,3 +203,57 @@ func TestReconcileImageOrphans_MissingDirOK(t *testing.T) {
 		t.Errorf("removed = %d, want 0", n)
 	}
 }
+
+// TestReconcileTagsets_DoesNotManufactureAppearance pins recording-tagsets P7.
+// Merge and absorb deliberately drop a redundant appearance while keeping the
+// blob — that is what appearance dedup is. The startup sweep must not undo the
+// dedup by inventing a filename-derived, approved, library-visible replacement
+// (the "meaningful tagset" rule: don't manufacture nameless appearances). It
+// heals at *recording* grain; a rendition needs no appearance of its own.
+func TestReconcileTagsets_DoesNotManufactureAppearance(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		removeOrphan  bool // absorb shape: the redundant blob is soft-removed
+	}{
+		{"merge leaves a live orphan rendition", false},
+		{"absorb leaves a soft-removed orphan rendition", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := openMem(t)
+			ctx := context.Background()
+
+			f1 := insertTaggedFile(t, db, hash64("p7r1"), "studio.flac", "The Band", "Studio Album")
+			f2 := insertTaggedFile(t, db, hash64("p7r2"), "reissue.mp3", "The Band", "Studio Album")
+			target := recordingIDOf(t, db, f1.ID)
+			src := recordingIDOf(t, db, f2.ID)
+			if _, err := db.MergeRecordings(ctx, target, []int64{src}); err != nil {
+				t.Fatalf("merge: %v", err)
+			}
+			if tc.removeOrphan {
+				if _, err := db.RemoveRendition(ctx, f2.ID); err != nil {
+					t.Fatalf("remove rendition: %v", err)
+				}
+			}
+			before := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=?`, target)
+			if before != 1 {
+				t.Fatalf("setup: %d tagset(s) after merge, want 1", before)
+			}
+
+			repairs, err := db.ReconcileTagsets(ctx) // = a server restart
+			if err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			if repairs != 0 {
+				t.Errorf("ReconcileTagsets repaired %d row(s); an orphaned rendition is valid, not a violation", repairs)
+			}
+			if after := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=?`, target); after != 1 {
+				t.Errorf("tagsets on the recording = %d after restart, want 1 — the dedup was undone", after)
+			}
+			if n := countRow(t, db,
+				`SELECT COUNT(*) FROM tagsets WHERE recording_id=? AND deleted_at IS NULL AND review_state='approved'`,
+				target); n != 1 {
+				t.Errorf("library-visible appearances = %d, want 1 — a nameless appearance was manufactured", n)
+			}
+		})
+	}
+}

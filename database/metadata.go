@@ -132,12 +132,20 @@ func applyMetadataPatchTx(ctx context.Context, tx *sql.Tx, hash string, p Metada
 	if err != nil {
 		return 0, fmt.Errorf("update metadata: lookup file: %w", err)
 	}
-	// The file's representative appearance — the one the files-rooted surfaces
-	// edit (a byte-dup upload may have attached extra draft appearances to the
-	// blob; those are edited only through the tagset-addressed review paths).
+	// The appearance a *file-addressed* edit targets. Provenance first: the
+	// tagset actually read from this blob (a byte-dup upload may have attached
+	// extra draft appearances; those are edited only through the
+	// tagset-addressed review paths). Appearance dedup can leave a rendition
+	// with no tagset of its own, so fall back to the recording's representative
+	// appearance rather than 404 (recording-tagsets P7).
 	var tagsetID int64
 	if err := tx.QueryRowContext(ctx,
-		`SELECT id FROM tagsets WHERE origin_file_id = ? ORDER BY is_primary DESC, id ASC LIMIT 1`,
+		`SELECT rt.id FROM tagsets rt
+		   JOIN files f ON f.id = ?
+		  WHERE rt.recording_id = f.recording_id
+		  ORDER BY COALESCE(rt.origin_file_id = f.id, 0) DESC,
+		           (rt.deleted_at IS NULL) DESC, rt.is_primary DESC, rt.id ASC
+		  LIMIT 1`,
 		fileID,
 	).Scan(&tagsetID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

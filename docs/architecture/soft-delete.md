@@ -54,8 +54,17 @@ scope, the segmented pill row (`.scope-switch`) switches scopes.
 ### 1. Appearances (default)
 
 **Membership** — individually trashed appearances (`tagsets.deleted_at IS NOT
-NULL`). This is the existing hash-addressed Trash listing, **unchanged**: the
-tagset-grain "trash bin of tracks".
+NULL`). This is the existing hash-addressed Trash listing, **unchanged**.
+
+> **⚠ It is not actually tagset-grain (P7, 2026-07-10).** `trashListSelect`
+> reads `FROM files f` + the INNER `tagsetJoin`, so it emits **one row per
+> file**, carrying that file's *representative* appearance (`reprTagset` =
+> primary, else oldest). A trashed appearance that is not its file's
+> representative — a byte-dup draft, or any second appearance on a blob — is
+> listed nowhere, and the hash-addressed row actions act on **every** trashed
+> tagset of that file while showing a single row. Re-rooting the lens
+> `FROM tagsets` is P7c in
+> [recording-tagsets.md](recording-tagsets.md#phase-plan-the-decomposition).
 
 - **Restore** — clear `deleted_at` (re-enters the appearance's prior review
   state; moderation.md).

@@ -25,23 +25,52 @@ const visibleFile = "f.deleted_at IS NULL AND m.deleted_at IS NULL AND m.review_
 const visibleFileOrRemoved = "m.deleted_at IS NULL AND m.review_state = 'approved'"
 
 // reprTagset selects a file's *representative* appearance — the single tagset
-// the files-rooted surfaces display, so those surfaces stay 1:1 with the file
-// even after a byte-dup upload attaches extra draft appearances to a blob
-// (recording-tagsets P4, byte-dup → draft tagset): the file's primary
-// appearance, else its oldest. Requires the files row aliased `f`.
-const reprTagset = `(SELECT rt.id FROM tagsets rt WHERE rt.origin_file_id = f.id
+// the files-rooted surfaces display, so those surfaces stay 1:1 with the file.
+//
+// It searches the file's *recording* (`files.recording_id`), not just the
+// appearances read from this blob (recording-tagsets P7). A file is a rendition
+// of a recording; the recording carries the appearances. `origin_file_id` is
+// only provenance, and it does not cover every file: appearance dedup — merge,
+// absorb — deliberately drops a redundant appearance while keeping its blob, so
+// a live rendition with no tagset of its own is a normal, by-design state.
+// Rooting solely on the provenance column made such renditions vanish from
+// every files-rooted surface.
+//
+// The blob's **own** offered appearance still wins when it has one, because the
+// per-blob lifecycle lives there: a rendition awaiting review must not borrow
+// the recording's approved primary and read as live (it would leak into the
+// All-files listing and the Library byte bucket). Only when the blob has no
+// appearance of its own does it fall back to the recording's — live over
+// trashed, then primary, then oldest. Requires the files row aliased `f`.
+const reprTagset = `(SELECT rt.id FROM tagsets rt WHERE rt.recording_id = f.recording_id
+		ORDER BY COALESCE(rt.origin_file_id = f.id, 0) DESC,
+		         (rt.deleted_at IS NULL) DESC, rt.is_primary DESC, rt.id ASC LIMIT 1)`
+
+// originTagset selects the appearance whose tags were read from this very blob
+// — the provenance link. It is *not* a cover of the files table (see
+// reprTagset). Only two kinds of surface may use it: the Trash Appearances
+// listing, which is addressed by the origin blob's hash, and the
+// file-addressed metadata edit. Requires the files row aliased `f`.
+const originTagset = `(SELECT rt.id FROM tagsets rt WHERE rt.origin_file_id = f.id
 		ORDER BY rt.is_primary DESC, rt.id ASC LIMIT 1)`
 
 // tagsetJoin binds the aliases the shared predicates (visibleFile,
 // accessClause, qFieldClause) expect around a files row aliased `f`: `m` is the
-// file's *representative* offered tagset — descriptive tags plus the
-// review/trash lifecycle — and `r` its recording (access/license). A file may
-// carry several appearances after a byte-dup upload; the files surfaces show
-// only the representative one (reprTagset). INNER joins on purpose: both exist
-// by invariant, and a violating row must drop out of every surface rather than
-// leak half-formed.
+// appearance the file's recording is displayed under (reprTagset) and `r` its
+// recording (access/license). INNER joins on purpose: a recording always has at
+// least one tagset and every file has a recording (both invariants, enforced by
+// the cascade ops and healed by ReconcileTagsets), so every file is covered.
 const tagsetJoin = `
 	JOIN tagsets m ON m.id = ` + reprTagset + `
+	JOIN recordings r ON r.id = f.recording_id`
+
+// originTagsetJoin is tagsetJoin for the hash-addressed Trash listing, where
+// the row *is* the appearance offered from that blob and its `deleted_at` is
+// the Trash mark being filtered on — so it must not fall back to a sibling
+// appearance the way reprTagset does. Superseded once the Trash Appearances
+// lens is re-rooted `FROM tagsets` (P7c).
+const originTagsetJoin = `
+	JOIN tagsets m ON m.id = ` + originTagset + `
 	JOIN recordings r ON r.id = f.recording_id`
 
 // StorageByteBreakdown partitions the logical byte size of stored blobs by
@@ -53,10 +82,14 @@ const tagsetJoin = `
 // docs/architecture/storage.md. It backs the audio/review/trash disk-usage
 // categories (files hold audio in v0); one indexed sum, so it is instant and
 // needs no caching, unlike the image walk.
+// The state is read off the blob's recording (reprTagset): a rendition whose
+// recording still has a live approved appearance counts as Library even when no
+// tagset was read from that particular blob (recording-tagsets P7) — previously
+// such orphaned renditions were misfiled as Trash bytes.
 type StorageByteBreakdown struct {
-	Library int64 // tagset approved & not trashed — the live library
-	Review  int64 // tagset not trashed, review_state <> 'approved' — staged uploads
-	Trash   int64 // tagset trashed (or missing), awaiting prune
+	Library int64 // recording's appearance approved & not trashed — the live library
+	Review  int64 // appearance not trashed, review_state <> 'approved' — staged uploads
+	Trash   int64 // every appearance of the recording trashed, awaiting prune
 }
 
 // StorageByteBreakdown computes the per-state byte totals in a single query. It
@@ -1146,7 +1179,7 @@ const trashListSelect = `
 		m.review_state,
 		CASE WHEN aimg.artist_id IS NOT NULL THEN 1 ELSE 0 END AS artist_has_image,
 		CASE WHEN alimg.album_id  IS NOT NULL THEN 1 ELSE 0 END AS album_has_image
-	FROM files f` + tagsetJoin + `
+	FROM files f` + originTagsetJoin + `
 	LEFT JOIN media_metadata mm ON mm.file_id = f.id
 	LEFT JOIN artist_images aimg ON aimg.artist_id = m.album_artist_id
 	LEFT JOIN album_images  alimg ON alimg.album_id  = m.album_id`
@@ -1247,7 +1280,7 @@ func (db *DB) CountTrashedFiles(ctx context.Context, f FileFilter) (int, error) 
 	where, args := trashFilterWhere(f)
 	var n int
 	err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM files f`+tagsetJoin+` WHERE `+where, args...).Scan(&n)
+		`SELECT COUNT(*) FROM files f`+originTagsetJoin+` WHERE `+where, args...).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("count trashed files: %w", err)
 	}
@@ -1260,7 +1293,7 @@ func (db *DB) CountTrashedFiles(ctx context.Context, f FileFilter) (int, error) 
 func (db *DB) TrashedFileHashesByFilter(ctx context.Context, f FileFilter) ([]string, error) {
 	where, args := trashFilterWhere(f)
 	rows, err := db.QueryContext(ctx,
-		`SELECT f.hash FROM files f`+tagsetJoin+` WHERE `+where+` ORDER BY f.id`, args...)
+		`SELECT f.hash FROM files f`+originTagsetJoin+` WHERE `+where+` ORDER BY f.id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("trashed file hashes by filter: %w", err)
 	}

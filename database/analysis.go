@@ -175,7 +175,7 @@ func (db *DB) FilesNeedingAnalysis(ctx context.Context) ([]int64, error) {
 		   LEFT JOIN audio_fingerprints af ON af.file_id = f.id
 		   LEFT JOIN media_metadata    mm ON mm.file_id = f.id
 		  WHERE f.deleted_at IS NULL
-		    AND EXISTS (SELECT 1 FROM tagsets t WHERE t.origin_file_id = f.id AND t.deleted_at IS NULL)
+		    AND EXISTS (SELECT 1 FROM tagsets t WHERE t.recording_id = f.recording_id AND t.deleted_at IS NULL)
 		    AND (af.file_id IS NULL OR mm.codec IS NULL)
 		  ORDER BY f.id`,
 	)

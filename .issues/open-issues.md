@@ -293,6 +293,87 @@ physical view). Neither blocks the v0.5.0 feature; both are polish candidates.
 
 | Severity | Issue | Status |
 |---|---|---|
-| Low | **Trashed appearance of an absorbed blob had no restore *or* permanent-delete path of its own.** The recordings view's per-appearance "Remove" reuses `POST /api/admin/moderation/{tagsetID}/discard` (= tagset soft-delete) — correct trash semantics, but both restore and permanent delete were only reachable through the hash-addressed Trash page, which lists a trashed tagset via its origin *file's* hash. An appearance whose origin blob was absorbed (soft-removed) or purged therefore could neither be restored nor hard-deleted from Trash. | **fixed (2026-07-08)**: tagset-addressed `POST /api/admin/tagsets/{id}/restore` (`RestoreTagset`) and `DELETE /api/admin/tagsets/{id}` (`HardDeleteTrashedTagset` — routes through the shared `hardDeleteTagsetsTx` cascade, reclaims blobs, 409 on a live appearance), surfaced as **Restore / Delete permanently** on the recording card's trashed appearance rows (`file.delete`-gated). Covered by `TestRestoreAndHardDeleteTagset` (DB) + `TestTagsetRestore`/`TestTagsetHardDelete` (api). |
+| Low | **Trashed appearance of an absorbed blob had no restore *or* permanent-delete path of its own.** The recordings view's per-appearance "Remove" reuses `POST /api/admin/moderation/{tagsetID}/discard` (= tagset soft-delete) — correct trash semantics, but both restore and permanent delete were only reachable through the hash-addressed Trash page, which lists a trashed tagset via its origin *file's* hash. An appearance whose origin blob was absorbed (soft-removed) or purged therefore could neither be restored nor hard-deleted from Trash. | **fixed (2026-07-08)**: tagset-addressed `POST /api/admin/tagsets/{id}/restore` (`RestoreTagset`) and `DELETE /api/admin/tagsets/{id}` (`HardDeleteTrashedTagset` — routes through the shared `hardDeleteTagsetsTx` cascade, reclaims blobs, 409 on a live appearance), surfaced as **Restore / Delete permanently** on the recording card's trashed appearance rows (`file.delete`-gated). Covered by `TestRestoreAndHardDeleteTagset` (DB) + `TestTagsetRestore`/`TestTagsetHardDelete` (api). — **partly regressed (2026-07-10)**: `b3200c8` removed `hardDeleteAppearance` from the recording card, so `DELETE /api/admin/tagsets/{id}` is now called by no UI code. The strip assumed the Trash Appearances lens covers those rows; it does not (it is files-rooted). Restore still works from the card. See P7 below. |
 | Info | **`MoveTagset` deliberately has no "move to new recording".** An appearance without a blob can't play; the "detach into a new recording" shape is Split off (rendition-level, takes the blob along). Design decision per the P5 mock review — recorded here so it isn't re-reported as a gap. If a real need appears ("appearance-only new recording"), it would need a rendition choice anyway → revisit as a variant of Split off. | by design |
-| Low | **Soft-removed *files* don't appear on the Trash page.** The Trash listing is tagset-addressed — its base predicate is `m.deleted_at IS NOT NULL` (the *tagset* carries the Trash mark), so it lists trashed **appearances** only. A soft-**removed file** (`files.deleted_at` — a removed rendition, an absorbed/dormant blob) whose tagset is still live never shows up there. Such blobs are currently surfaced only in the Admin·Library "All files" table behind the moderation-gated **"Show removed"** toggle (P5), with per-rendition Remove/Restore on `/admin/recordings`. So there *is* a place to see/manage them — just not Trash. The two-perspective split (Trash = appearance view, All files = physical/file view) is by design; open question is whether Trash should also surface the file-removal mark (a "Removed files" scope, or removed renditions listed alongside trashed appearances) so one page covers both soft-delete marks. | **fixed (2026-07-08)**: Trash now has **three perspectives** (`docs/architecture/soft-delete.md`) — **Appearances** (existing `file-list.js` scope), **Recordings** (trashed-recording bin: whole-recording restore/delete), **Files** (soft-removed blobs: the missing per-file permanent delete; last file → cascade-prune the recording). All permanent deletion consolidated onto the Trash page; `/admin/recordings` lost both hard-delete buttons. Backend `database/trash_files.go` + `trash_recordings.go` + the `"trashed"` recording filter; API `trash_perspectives_handlers.go`; UI `admin/trash-{list,recordings,files}.js` + the sub-switch. DB + handler tests + live smoke green. **Deferred:** broadening the Appearances lens to *dormant* appearances (kept scoped to its own mark — dormant is covered by Recordings + Files; would need a tagset-addressed, dormant-aware restore). |
+| Low | **Soft-removed *files* don't appear on the Trash page.** The Trash listing is tagset-addressed — its base predicate is `m.deleted_at IS NOT NULL` (the *tagset* carries the Trash mark), so it lists trashed **appearances** only. A soft-**removed file** (`files.deleted_at` — a removed rendition, an absorbed/dormant blob) whose tagset is still live never shows up there. Such blobs are currently surfaced only in the Admin·Library "All files" table behind the moderation-gated **"Show removed"** toggle (P5), with per-rendition Remove/Restore on `/admin/recordings`. So there *is* a place to see/manage them — just not Trash. The two-perspective split (Trash = appearance view, All files = physical/file view) is by design; open question is whether Trash should also surface the file-removal mark (a "Removed files" scope, or removed renditions listed alongside trashed appearances) so one page covers both soft-delete marks. | **fixed (2026-07-08)**: Trash now has **three perspectives** (`docs/architecture/soft-delete.md`) — **Appearances** (existing `file-list.js` scope), **Recordings** (trashed-recording bin: whole-recording restore/delete), **Files** (soft-removed blobs: the missing per-file permanent delete; last file → cascade-prune the recording). All permanent deletion consolidated onto the Trash page; `/admin/recordings` lost both hard-delete buttons. Backend `database/trash_files.go` + `trash_recordings.go` + the `"trashed"` recording filter; API `trash_perspectives_handlers.go`; UI `admin/trash-{list,recordings,files}.js` + the sub-switch. DB + handler tests + live smoke green. **Deferred:** broadening the Appearances lens to *dormant* appearances (kept scoped to its own mark — dormant is covered by Recordings + Files; would need a tagset-addressed, dormant-aware restore). — **claim corrected (2026-07-10)**: "all permanent deletion consolidated onto the Trash page" holds only for an appearance that is its origin file's *representative* (`reprTagset` = primary, else oldest). The Appearances lens is rooted `FROM files f` + INNER `tagsetJoin`, so it emits one row per **file**, not per appearance. See P7 below. |
+
+## Recording-tagsets P7 — `origin_file_id` is provenance, not structure (2026-07-10)
+
+Found while scoping an "Add appearance" button for `/admin/recordings`. Owner's
+framing: *under the tagset model, files belong to **recordings**, not to
+appearances.* The schema agrees — `files.recording_id` (mig `020`, `NOT NULL`
+since `024`), while `tagsets.origin_file_id` is documented in `024_tagsets.sql`
+lines 119–121 as *"Provenance: the file this appearance's tags were read from.
+Kept for audit / federation attribution."* Several queries nonetheless treat
+that audit column as the structural link, via `reprTagset` (`files.go:32`) and
+the INNER `tagsetJoin` (`files.go:44`).
+
+**Orphan renditions themselves are by design** (see the P2 entry above — a blob
+with no tagset of its own is a valid interim state, and `/admin/recordings`
+lists them). The defect is that the files-rooted surfaces silently *drop* them.
+
+Reproduced on `HEAD` with a throwaway test (`MergeRecordings` on two recordings
+sharing an appearance key: the source's appearance is dropped as a duplicate,
+its file moves to the target as a live rendition with zero tagsets pointing at
+it):
+
+```
+merge outcome: {Found:true SourcesMerged:1 RenditionsMoved:1 AppearancesMoved:0 AppearancesDropped:1}
+f2 is a live rendition of the target: true
+tagsets with origin_file_id = f2: 0
+ListFilesPage: 1 row(s); contains f2: false
+CountFiles: 1
+FilesNeedingAnalysis: [1]; contains f2: false
+SetGuestPlayable found: via f1.hash=true, via f2.hash=false
+FileAccessibleByHash: f1=true, f2=true       <- control: serving is recording-rooted
+```
+
+The control is the point: the orphaned blob **streams fine** (access is
+recording-rooted and correct) while being absent from the file-management
+surfaces. `AbsorbRenditions` produces the same shape.
+
+| Severity | Issue | Status |
+|---|---|---|
+| **Medium** | **Files-rooted surfaces drop tagset-less renditions.** `fileListSelect` (`files.go:345`), `CountFiles`/select-all-hashes (`files.go:585`,`:598`) and `trashListSelect` (`files.go:1149`) all read `FROM files f` + INNER `tagsetJoin`. A rendition with no tagset of its own is invisible in Admin·Library "All files" (even behind *Show removed*), uncounted, and unselectable in bulk. Visible only per-recording on `/admin/recordings`. | **fixed (2026-07-10, P7b)** — `reprTagset` now searches the file's *recording*, so every file is covered and the INNER join stays valid. **Deviation from the plan:** not a `LEFT JOIN`. A flat recording-rooted lookup was tried first and leaked a *pending-review* rendition into the live listing (it borrowed the recording's approved primary) and misfiled its bytes from Review into Library. The shipped rule gives the blob's **own** offered appearance precedence, falling back to the recording's only when it has none — per-blob lifecycle preserved, orphans covered, no `m.* IS NULL` branches needed. Pinned by `TestReprTagset_OwnAppearanceWinsOverRecording` + `TestMergeRecordings_OrphanedRenditionStaysManageable`. |
+| **Medium** | **Media analysis skips tagset-less renditions.** `FilesNeedingAnalysis` (`analysis.go:178`) gates on `EXISTS (tagsets WHERE origin_file_id = f.id AND deleted_at IS NULL)`. An orphaned rendition never gets a fingerprint or `codec`, so `RankRenditions` silently degrades to the format/size fallback for that blob — the quality ladder mis-ranks. | **fixed (2026-07-10, P7b)** — gates on `t.recording_id = f.recording_id`, mirroring `FileAccessibleByHash` (`access.go:49`). |
+| **Medium** | **Trash Appearances lens is one row per *file*, not per appearance.** `trashListSelect` joins the file's *representative* tagset (`reprTagset` = primary, else oldest). A trashed **non-representative** appearance is listed nowhere — reachable today by trashing a byte-dup draft (`AttachDraftTagset` sets `is_primary = 0`) while the original stays live. Worse, the row actions are hash-addressed: restore updates **all** trashed tagsets of that file (`files.go:1121`) and delete collects **all** of them (`files.go:1060`), while the UI showed a single row. | **open** — P7c: re-root `FROM tagsets m LEFT JOIN files f`, switch row actions to the existing `POST /api/admin/tagsets/{id}/restore` + `DELETE /api/admin/tagsets/{id}`. |
+| Low | **Hash-addressed access setters no-op on tagset-less renditions.** `liveFileRecordingSubquery` (`access.go:69`, `:164`) defines "live file" as *has a live tagset via `origin_file_id`*. `SetGuestPlayable`/license by such a blob's hash returns `found = false` silently. Mitigated: the recording-level chip on `/admin/recordings` still works, and any sibling rendition's hash flips the same recording. | **fixed (2026-07-10, P7b)** — `liveFileRecordingSubquery` gates on recording membership. Live-verified: `POST /api/admin/files/{orphan_hash}/guest` → 200 (was a no-op). |
+| Low | **Purged-origin appearances drop out of the review queue.** `reviewFrom` (`review.go:127`) is `JOIN files f ON f.id = m.origin_file_id` — INNER. `origin_file_id` is `ON DELETE SET NULL`, so an appearance whose origin blob was hard-purged disappears from both the moderation queue and My uploads while still `draft`/`submitted` — unapprovable, unreachable. Also blocks any future blobless appearance (e.g. a hand-added one). | **deferred to P7d** — currently **unreachable**: every file-delete path removes the referencing tagsets before the row dies (`hardDeleteFilesTx` deletes by `origin_file_id`; `HardDeleteRemovedFile` re-points or drops the recording; `hardDeleteTagsetsTx` GCs), so `origin_file_id` never actually reaches NULL and nothing is stranded today. Making it a `LEFT JOIN` means teaching `scanReviewRows` to handle NULL `f.*`, which is only worth doing when blobless appearances exist — i.e. with "Add appearance". |
+| Info | **File ops mutate appearance sets by provenance.** `files.go:647`/`:693`/`:812` trash / restore / hard-delete tagsets `WHERE origin_file_id IN (…)`. Contrast `hardDeleteTagsetsTx` (`files.go:864`), whose doc comment already states the rule — it deletes by recording membership, *"never `origin_file_id`"*. The rule was written down and then not followed elsewhere. | **open** — P7c: these are the hash-addressed Trash actions; they get resolved when the Appearances lens is re-rooted `FROM tagsets`. Left untouched by P7b on purpose (`trashListSelect` keeps the origin-rooted `originTagsetJoin`, so Trash behaviour is byte-for-byte unchanged). |
+
+### P7 follow-up — the startup sweep resurrects deduped appearances (2026-07-10)
+
+Found while checking whether orphan renditions persist. They don't — and the
+way they're "healed" is the real bug.
+
+| Severity | Issue | Status |
+|---|---|---|
+| **High** | **`ReconcileTagsets` manufactures a nameless, approved, library-visible appearance on every restart.** Step 2 (`recordings.go:148`) selects *files* with no tagset via `origin_file_id` and inserts a filename-derived tagset with `review_state = 'approved'`, `is_primary = 0` — **with no `f.deleted_at` filter**. Merge and absorb both deliberately drop a redundant appearance while keeping the blob (that is what appearance dedup *is*), so the next server start re-creates it. The dedup is undone, and the replacement violates the design's **"Don't manufacture nameless appearances"** rule: no artist, no album → Unknown artist / Other. It fires for **soft-removed** blobs too, resurrecting a live appearance for a blob that is not even served. | **fixed (2026-07-10, P7b)** — heals at **recording** grain (a recording with zero tagsets); a file needs no tagset of its own. Pinned by `TestReconcileTagsets_DoesNotManufactureAppearance` (merge + absorb shapes). Live-verified: merge, restart, no `reconcile tagsets:` log line, recording still has exactly 1 appearance. |
+
+Reproduced on `HEAD` (throwaway test, both shapes):
+
+```
+-- merge shape --
+after merge:   tagsets on target = 1
+reconcile tagsets: file 2 had no tagset; created one
+after restart: tagsets on target = 2
+  #1 title="studio.flac" artist="The Band" album="Studio Album" approved primary=1
+  #2 title="reissue"     artist=<null>     album=<null>          approved primary=0
+library-visible appearances: 2 (was 1 right after merge)
+
+-- absorb shape (blob soft-removed) --
+f2 soft-removed = true
+reconcile tagsets: file 2 had no tagset; created one
+live tagsets created for the SOFT-REMOVED blob f2: 1
+library-visible appearances on the recording: 2
+```
+
+**Why the "just re-point `origin_file_id`" fix cannot work.** After a merge the
+target holds 2 files and 1 appearance. A tagset points at exactly one file, so
+by pigeonhole no re-pointing gives both files a tagset — it only moves the hole.
+The `HardDeleteRemovedFile` precedent (`trash_files.go:190`) re-points because
+there the *file* dies and its appearances would dangle; here the *appearance*
+dies and the file survives. Orphan renditions are therefore **unavoidable** as
+long as dedup drops appearances — which is the whole point of dedup. The fix is
+to stop asking "which tagset points at this file" and ask "what recording is
+this file a rendition of".

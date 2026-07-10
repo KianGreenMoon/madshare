@@ -61,12 +61,14 @@ func (db *DB) FileAccessibleByHash(ctx context.Context, hash string) (bool, erro
 }
 
 // liveFileRecordingSubquery resolves a live (non-trashed) file's recording id —
-// the shared guard for the access setters, addressed by content hash. A file
-// whose tagset sits in the Trash matches nothing, mirroring the old
-// deleted_at-guarded per-file UPDATE.
+// the shared guard for the access setters, addressed by content hash. "Live"
+// means the file's *recording* still has a non-trashed appearance, the same
+// rule FileAccessibleByHash enforces below: a rendition that no tagset was read
+// from (appearance dedup dropped it — merge, absorb) is still a rendition of a
+// live recording, so its hash must reach the setters (recording-tagsets P7).
 const liveFileRecordingSubquery = `
 	SELECT f.recording_id FROM files f
-	WHERE EXISTS (SELECT 1 FROM tagsets t WHERE t.origin_file_id = f.id AND t.deleted_at IS NULL)`
+	WHERE EXISTS (SELECT 1 FROM tagsets t WHERE t.recording_id = f.recording_id AND t.deleted_at IS NULL)`
 
 // SetGuestPlayable sets the guest-playable flag on the recording of the file
 // with the given hash. Any explicit set is a manual decision
@@ -161,7 +163,7 @@ func (db *DB) bulkSetRecordingColumn(ctx context.Context, hashes []string, updat
 		var matched int
 		if err := tx.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM files f
-			  WHERE EXISTS (SELECT 1 FROM tagsets t WHERE t.origin_file_id = f.id AND t.deleted_at IS NULL)
+			  WHERE EXISTS (SELECT 1 FROM tagsets t WHERE t.recording_id = f.recording_id AND t.deleted_at IS NULL)
 			    AND f.hash IN (`+strings.Join(placeholders, ",")+`)`, hashArgs...).Scan(&matched); err != nil {
 			return 0, fmt.Errorf("bulk set recording column: count: %w", err)
 		}

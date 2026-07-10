@@ -145,29 +145,45 @@ func (db *DB) ReconcileTagsets(ctx context.Context) (int, error) {
 		repairs++
 	}
 
-	// 2. Files without any tagset → a filename-derived approved appearance.
+	// 2. Recordings without any tagset → a filename-derived approved appearance,
+	// read from the recording's oldest file.
+	//
+	// The grain is the *recording*, not the file (recording-tagsets P7). A file
+	// with no tagset of its own is not a violation: appearance dedup (merge,
+	// absorb) drops a redundant appearance and keeps its blob, so a rendition
+	// that no tagset was read from is a normal state. Healing at file grain
+	// undid every dedup on the next restart, and did it by manufacturing a
+	// nameless Unknown-artist appearance — exactly what the "meaningful tagset"
+	// rule forbids. A recording with no tagset at all *is* a violation: it has
+	// no catalog entry and nothing can reach it.
 	bare, err := scanIDs(tx.QueryContext(ctx,
-		`SELECT f.id FROM files f
-		  WHERE NOT EXISTS (SELECT 1 FROM tagsets t WHERE t.origin_file_id = f.id)
-		  ORDER BY f.id`))
+		`SELECT r.id FROM recordings r
+		  WHERE NOT EXISTS (SELECT 1 FROM tagsets t WHERE t.recording_id = r.id)
+		  ORDER BY r.id`))
 	if err != nil {
-		return 0, fmt.Errorf("reconcile tagsets: bare files: %w", err)
+		return 0, fmt.Errorf("reconcile tagsets: bare recordings: %w", err)
 	}
-	for _, id := range bare {
+	for _, recID := range bare {
+		// Fileless recordings are step 3's job (they are removed, not repaired).
+		var fileID, uploadedBy sql.NullInt64
 		var fname sql.NullString
 		if err := tx.QueryRowContext(ctx,
-			`SELECT filename FROM file_uploads WHERE file_id = ? ORDER BY id LIMIT 1`, id,
-		).Scan(&fname); err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return 0, fmt.Errorf("reconcile tagsets: filename: %w", err)
+			`SELECT f.id, f.uploaded_by,
+			        (SELECT filename FROM file_uploads WHERE file_id = f.id ORDER BY id LIMIT 1)
+			   FROM files f WHERE f.recording_id = ? ORDER BY f.id LIMIT 1`, recID,
+		).Scan(&fileID, &uploadedBy, &fname); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return 0, fmt.Errorf("reconcile tagsets: recording %d origin file: %w", recID, err)
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO tagsets (recording_id, title, review_state, created_by, origin_file_id, is_primary, created_at)
-			 SELECT f.recording_id, ?, 'approved', f.uploaded_by, f.id, 0, ?
-			   FROM files f WHERE f.id = ?`,
-			titleFromFilename(fname.String), now, id); err != nil {
+			 VALUES (?, ?, 'approved', ?, ?, 1, ?)`,
+			recID, titleFromFilename(fname.String), uploadedBy, fileID, now); err != nil {
 			return 0, fmt.Errorf("reconcile tagsets: create tagset: %w", err)
 		}
-		log.Printf("reconcile tagsets: file %d had no tagset; created one", id)
+		log.Printf("reconcile tagsets: recording %d had no appearance; created one from file %d", recID, fileID.Int64)
 		repairs++
 	}
 

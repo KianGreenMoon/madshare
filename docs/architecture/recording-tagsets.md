@@ -734,6 +734,68 @@ regressions isolate to the data move.
   *Result: full curation from every perspective — verified live (merge / move
   refusals / dormancy round-trip / show-removed / whole-recording deletes /
   browser smoke with zero console errors).*
+- **P7 — Re-root the file surfaces on `recording_id`. 🔴 Open (2026-07-10).**
+  **Files belong to recordings, not to appearances.** `files.recording_id` is
+  the structural link (P0); `tagsets.origin_file_id` is *provenance* — an audit
+  column, nullable, `ON DELETE SET NULL`. Several queries nevertheless
+  reconstruct "this file's appearance" through it, via `reprTagset`
+  (`files.go:32`) and the **INNER** `tagsetJoin` (`files.go:44`). A rendition
+  with no tagset of its own — a valid, by-design state that `MergeRecordings`
+  and `AbsorbRenditions` both produce, since appearance dedup drops the
+  duplicate tagset while the blob moves — then silently vanishes from every
+  files-rooted surface, while still streaming fine (access is recording-rooted
+  and correct). Reproduced on `HEAD`; findings and evidence in
+  `.issues/open-issues.md` ("Recording-tagsets P7").
+
+  P5's "Admin surfaces" text above describes a Trash Appearances lens the
+  implementation never delivered: it is one row per file, not per appearance.
+
+  - **P7a** — log the gap, reopen this doc, correct `soft-delete.md` and the
+    over-stated "fixed" claims in `.issues/open-issues.md`. *(done)*
+  - **P7b — re-root the query layer. ✅ Done (2026-07-10).**
+    `reprTagset` searches the file's **recording**, so every file is covered and
+    the INNER `tagsetJoin` stays valid — no file can drop out of a surface.
+    `analysis.go` and `access.go`'s `liveFileRecordingSubquery` gate on
+    `t.recording_id = f.recording_id`, mirroring the already-correct
+    `FileAccessibleByHash`; `visibleFile` and that gate now agree, where before
+    a blob could be servable yet unlisted. `ReconcileTagsets` heals at
+    **recording** grain, so a rendition never gets an invented appearance.
+
+    **The precedence rule** (learned the hard way — a flat recording-rooted
+    lookup shipped a bug in draft): the blob's **own** offered appearance wins
+    when it has one, because the *per-blob lifecycle* — review state, trash
+    mark — lives there. A rendition awaiting review on an already-published
+    recording must not borrow the recording's approved primary; it would leak
+    into the live All-files listing and its bytes would be misfiled from Review
+    into Library. Only a blob with no appearance of its own falls back to the
+    recording's. Pinned by `TestReprTagset_OwnAppearanceWinsOverRecording`.
+
+    So the split is: **descriptive identity + recording-level facts** resolve
+    through `recording_id`; **per-blob lifecycle** stays with the blob's own
+    appearance. `originTagset` / `originTagsetJoin` keep the provenance lookup
+    for the two surfaces that genuinely need it — the hash-addressed Trash
+    listing (untouched by P7b; P7c re-roots it) and the file-addressed metadata
+    edit, which prefers the blob's own appearance and falls back rather than
+    404-ing.
+
+    `review.go`'s `reviewFrom` INNER JOIN is **deferred to P7d**: it can strand
+    nothing today, because every file-delete path removes the referencing
+    tagsets before the row dies, so `origin_file_id` never reaches NULL.
+  - **P7c** — Trash Appearances lens `FROM tagsets m LEFT JOIN files f`, one
+    row per appearance, switched onto the tagset-addressed
+    `POST /api/admin/tagsets/{id}/restore` + `DELETE /api/admin/tagsets/{id}`.
+    The latter is currently **dead code**: `b3200c8` stripped its only caller.
+  - **P7d** — *then* "Add appearance" on the recording card becomes small and
+    safe (`CreateAppearance`: resolve entities → meaningful rule → identity
+    dedup → insert non-primary). Blocked on P7b, because a blobless appearance
+    is invisible in the review queue while `reviewFrom` INNER-joins `files`.
+
+  **Open decision:** whether P7b should *surface* orphan renditions in All
+  files (with a "no appearance" badge), or whether merge/absorb should stop
+  creating them — re-pointing the dropped appearance's `origin_file_id` at the
+  surviving blob, as `HardDeleteRemovedFile` already does
+  (`trash_files.go:190`). The second changes merge's behaviour; owner's call.
+
 - **P6 (deferred) — Federation.** Tagset sync, trust, union reconcile,
   peer-review steps — per the federation design session.
 

@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"slices"
 	"testing"
 )
 
@@ -514,4 +515,78 @@ func itoa(n int64) string {
 		n /= 10
 	}
 	return string(b)
+}
+
+// TestMergeRecordings_OrphanedRenditionStaysManageable pins recording-tagsets
+// P7. Appearance dedup drops the source's duplicate tagset while its blob moves
+// to the target, leaving a live rendition that no tagset points at — a valid,
+// by-design state. The file surfaces must still see it: they root on
+// files.recording_id, not on the provenance column tagsets.origin_file_id.
+func TestMergeRecordings_OrphanedRenditionStaysManageable(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	// Identical artist+album ⇒ identical appearance key ⇒ the source's
+	// appearance is dropped as a duplicate, its blob survives and moves.
+	f1 := insertTaggedFile(t, db, hash64("p7m1"), "studio.flac", "The Band", "Studio Album")
+	f2 := insertTaggedFile(t, db, hash64("p7m2"), "reissue.mp3", "The Band", "Studio Album")
+	target := recordingIDOf(t, db, f1.ID)
+	src := recordingIDOf(t, db, f2.ID)
+
+	if _, err := db.MergeRecordings(ctx, target, []int64{src}); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	// Precondition: f2 really is an orphaned rendition of the target.
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE origin_file_id=?`, f2.ID); n != 0 {
+		t.Fatalf("setup: f2 still has %d tagset(s); the dedup did not drop it", n)
+	}
+	if n := countRow(t, db,
+		`SELECT COUNT(*) FROM files WHERE id=? AND recording_id=? AND deleted_at IS NULL`, f2.ID, target); n != 1 {
+		t.Fatalf("setup: f2 is not a live rendition of the target")
+	}
+
+	// 1. Admin·Library "All files" must list both renditions.
+	rows, err := db.ListFilesPage(ctx, FileListQuery{})
+	if err != nil {
+		t.Fatalf("ListFilesPage: %v", err)
+	}
+	seen := false
+	for _, r := range rows {
+		if r.Hash == f2.Hash {
+			seen = true
+		}
+	}
+	if !seen || len(rows) != 2 {
+		t.Errorf("ListFilesPage = %d row(s), contains orphan = %v; want 2 rows containing it", len(rows), seen)
+	}
+
+	// 2. The count must agree with the listing (bulk select-all reads it).
+	if n, err := db.CountFiles(ctx, FileFilter{}); err != nil || n != 2 {
+		t.Errorf("CountFiles = %d (err %v), want 2", n, err)
+	}
+
+	// 3. The analysis backfill must still fingerprint it, or the quality ladder
+	//    silently degrades to the format/size fallback for that blob.
+	ids, err := db.FilesNeedingAnalysis(ctx)
+	if err != nil {
+		t.Fatalf("FilesNeedingAnalysis: %v", err)
+	}
+	if !slices.Contains(ids, f2.ID) {
+		t.Errorf("FilesNeedingAnalysis = %v, want it to contain the orphaned rendition %d", ids, f2.ID)
+	}
+
+	// 4. The hash-addressed access setter must reach it (it is a live rendition
+	//    of a live recording), rather than silently reporting found=false.
+	found, err := db.SetGuestPlayable(ctx, f2.Hash, true)
+	if err != nil {
+		t.Fatalf("SetGuestPlayable: %v", err)
+	}
+	if !found {
+		t.Error("SetGuestPlayable(orphan rendition hash) = not found; want found")
+	}
+
+	// Control: serving was always recording-rooted and must stay that way.
+	if ok, err := db.FileAccessibleByHash(ctx, f2.Hash); err != nil || !ok {
+		t.Errorf("FileAccessibleByHash(orphan) = %v (err %v), want true", ok, err)
+	}
 }
