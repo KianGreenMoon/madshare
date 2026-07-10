@@ -75,7 +75,10 @@ function fmtBytes(n) {
  *                    destructive action confirms in the scope's own modal —
  *                    `run` returns false to skip the reload (cancelled, or the
  *                    modal owns the run).
- *   bulkActions      [{ id,label,kind, run:async(hashes)=>void }]
+ *   rowKey           (f)=>string|number — the row's identity, default f.hash.
+ *                    Trash keys on tagset_id: one blob can host several
+ *                    appearances, so a hash names no single row there.
+ *   bulkActions      [{ id,label,kind, run:async(keys)=>void }]
  *   editPatchURL(file) → url        (enables the built-in Edit action)
  *   editDetailURL(file) → url       (GET full tags; enables track #/extended edit)
  *   editNote         note shown in the edit modal
@@ -87,10 +90,12 @@ function fmtBytes(n) {
  *                             coverURL(level,item,artist)?, groupHashes(level,item,artist),
  *                             trackHash(track) }
  *   onPlay(file, files)  play a row within the visible set (page owns the player)
+ *   canPlay(file)     optional — false hides Preview for that row (a trashed
+ *                     appearance whose origin blob was absorbed/purged has none)
  *   toast(msg,type)      notifier
  *   handleAuthError(res) → bool
  *
- * @returns {{ mount(el), reload(), setPlaying(hash), getVisible(), destroy() }}
+ * @returns {{ mount(el), reload(), setPlaying(key), getVisible(), destroy() }}
  */
 export function createFileList(scope) {
   const toast = scope.toast || (() => {});
@@ -101,13 +106,23 @@ export function createFileList(scope) {
   let loading = false, loadError = false;
   let filterText = '';
   let view = hasBrowse ? 'browse' : 'list';
-  let playingHash = null;
+  let playingKey = null;
   let bodyHost = null;           // persistent body container (survives chrome rebuilds)
   let bannerHost = null;         // persistent "select all N matching" banner slot — updated
                                  // on every selection change (not just full render), so it
                                  // appears the moment the loaded page is fully ticked
 
-  const selected = new Set();    // selected file hashes (shared list ⇄ browse)
+  // keyOf is the row identity used by selection, checkboxes and the playing
+  // highlight. Files-rooted scopes key on the content hash; the Trash scope keys
+  // on tagset_id (recording-tagsets P7c). The `cell-hash` column still shows the
+  // real blob hash — identity and display are different things.
+  // Always a string: keys round-trip through `dataset` attributes, so a numeric
+  // id (tagset_id) must compare equal coming back out. Scopes convert at their
+  // own API boundary (Trash sends Number(k) as tagset_ids).
+  const rawKey = scope.rowKey || (f => f.hash);
+  const keyOf = f => String(rawKey(f));
+
+  const selected = new Set();    // selected row keys (shared list ⇄ browse)
   const collapsed = new Set();   // collapsed group keys (collapsible grouping)
   const br = { level: 'artists', artist: null, album: null, items: [] };
 
@@ -364,7 +379,7 @@ export function createFileList(scope) {
     loading = false;
     // autoSelect pre-checks every selectable row after a load (the My-uploads
     // convention: "send the lot unless you untick").
-    if (scope.autoSelect) { selected.clear(); rows.filter(isSelectable).forEach(f => selected.add(f.hash)); }
+    if (scope.autoSelect) { selected.clear(); rows.filter(isSelectable).forEach(f => selected.add(keyOf(f))); }
     render();
   }
   async function loadBrowse() {
@@ -461,7 +476,7 @@ export function createFileList(scope) {
   // column it lives in.
   function actionButtons(f) {
     const out = [];
-    if (scope.onPlay) {
+    if (scope.onPlay && (!scope.canPlay || scope.canPlay(f))) {
       out.push(el('button', { class: 'play-btn', title: 'Preview', 'aria-label': `Preview ${displayTitle(f)}`, html: PLAY_ICON,
         onclick: () => scope.onPlay(f, visibleFiles()) }));
     }
@@ -496,9 +511,9 @@ export function createFileList(scope) {
   // payload actually carries (artist/album_artist/album + access) are considered;
   // a field absent from the data is simply not reported. Returns
   // { common: {field: value}, mixed: Set<field> }.
-  function selectionTags(hashes) {
-    const set = new Set(hashes);
-    const files = rows.filter(f => set.has(f.hash));
+  function selectionTags(keys) {
+    const set = new Set(keys);
+    const files = rows.filter(f => set.has(keyOf(f)));
     const common = {}, mixed = new Set();
     // Only pre-fill when every selected file's data is in hand; a partial subset
     // (e.g. a browse group whose hashes aren't all loaded here) could otherwise
@@ -517,9 +532,13 @@ export function createFileList(scope) {
   // loadSelectionDetails fetches the full tag set for each selected hash via the
   // scope's detail endpoint, so the bulk editor's Extended modal can compute the
   // shared values for fields the list payload doesn't carry (genre, composer, …).
-  async function loadSelectionDetails(hashes) {
-    return Promise.all(hashes.map(async hash => {
-      const res = await fetch(scope.editDetailURL({ hash }));
+  async function loadSelectionDetails(keys) {
+    return Promise.all(keys.map(async key => {
+      // Prefer the loaded row (the scope's detail URL may need more than the
+      // key); fall back to a shim carrying the key under both identities, for a
+      // "select all N matching" set whose rows are not all in hand.
+      const row = rows.find(r => keyOf(r) === key) || { hash: key, tagset_id: Number(key) };
+      const res = await fetch(scope.editDetailURL(row));
       if (scope.handleAuthError && scope.handleAuthError(res)) throw new Error('Your session expired.');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
@@ -527,10 +546,10 @@ export function createFileList(scope) {
   }
   function rowCheckbox(f) {
     const cb = el('input', { type: 'checkbox', class: 'fl-rowcheck', 'aria-label': `Select ${displayTitle(f)}` });
-    cb.dataset.hash = f.hash;
-    cb.checked = selected.has(f.hash);
+    cb.dataset.key = keyOf(f);
+    cb.checked = selected.has(keyOf(f));
     cb.addEventListener('change', () => {
-      cb.checked ? selected.add(f.hash) : selected.delete(f.hash);
+      cb.checked ? selected.add(keyOf(f)) : selected.delete(keyOf(f));
       // A manual tick narrows the selection back to explicit rows — drop the
       // "all matching" mode and re-render so the banner/count reflect it.
       if (selectAllMatching) { selectAllMatching = false; render(); return; }
@@ -558,7 +577,7 @@ export function createFileList(scope) {
     const checks = [...mountEl.querySelectorAll('.fl-rowcheck')];
     // Reconcile each row checkbox from the selection Set so a group-checkbox
     // (artist/album separator) cascade is reflected on the track rows it governs.
-    checks.forEach(c => { if (c.dataset.hash) c.checked = selected.has(c.dataset.hash); });
+    checks.forEach(c => { if (c.dataset.key) c.checked = selected.has(c.dataset.key); });
     const visSel = checks.filter(c => c.checked).length;
     const selectAll = mountEl.querySelector('.fl-selectall');
     if (selectAll) { selectAll.checked = checks.length > 0 && visSel === checks.length; selectAll.indeterminate = visSel > 0 && visSel < checks.length; }
@@ -567,7 +586,7 @@ export function createFileList(scope) {
     // album, uploader): checked when all governed hashes are selected,
     // indeterminate when some — works for off-screen rows too (hash-set based).
     mountEl.querySelectorAll('.grp-check').forEach(cb => {
-      const hs = cb.dataset.hashes ? cb.dataset.hashes.split(',').filter(Boolean) : [];
+      const hs = cb.dataset.keys ? cb.dataset.keys.split(',').filter(Boolean) : [];
       const n = hs.filter(h => selected.has(h)).length;
       cb.checked = hs.length > 0 && n === hs.length;
       cb.indeterminate = n > 0 && n < hs.length;
@@ -581,7 +600,7 @@ export function createFileList(scope) {
 
   function selectAllVisible(on) {
     if (!on) selectAllMatching = false;   // unchecking select-all clears the whole-set mode too
-    visibleFiles().filter(isSelectable).forEach(f => on ? selected.add(f.hash) : selected.delete(f.hash));
+    visibleFiles().filter(isSelectable).forEach(f => on ? selected.add(keyOf(f)) : selected.delete(keyOf(f)));
     afterSelectionChange();
   }
 
@@ -607,7 +626,7 @@ export function createFileList(scope) {
     // dimming) without owning the row builder.
     const extra = scope.rowClass ? scope.rowClass(f) : '';
     if (extra) classes.push(extra);
-    return { 'data-hash': f.hash, class: classes.length ? classes.join(' ') : null };
+    return { 'data-key': keyOf(f), class: classes.length ? classes.join(' ') : null };
   }
 
   function headRow(withSelectAll) {
@@ -666,12 +685,12 @@ export function createFileList(scope) {
     return artList;
   }
 
-  function grpSepRow(kind, label, meta, hashes, fallback, extra) {
+  function grpSepRow(kind, label, meta, keys, fallback, extra) {
     const kids = [];
-    if (hashes.length) {
+    if (keys.length) {
       const cb = el('input', { type: 'checkbox', class: 'grp-check', 'aria-label': `Select all in ${label}` });
-      cb.dataset.hashes = hashes.join(',');
-      cb.addEventListener('change', () => { hashes.forEach(h => cb.checked ? selected.add(h) : selected.delete(h)); syncSelectionUI(); });
+      cb.dataset.keys = keys.join(',');
+      cb.addEventListener('change', () => { keys.forEach(h => cb.checked ? selected.add(h) : selected.delete(h)); syncSelectionUI(); });
       kids.push(cb);
     }
     // The label/meta/cover button live in an inner flex row; the <td> stays a
@@ -721,14 +740,14 @@ export function createFileList(scope) {
       items.push({
         kind: 'sep', sep: 'artist', label: art.key || 'Unknown artist',
         meta: `${art.albumList.length} album${art.albumList.length === 1 ? '' : 's'} · ${artFiles.length} track${artFiles.length === 1 ? '' : 's'}`,
-        hashes: artFiles.filter(isSelectable).map(f => f.hash), fallback: !art.key,
+        hashes: artFiles.filter(isSelectable).map(keyOf), fallback: !art.key,
         cover: { kind: 'artist', target: { artist: art.key }, hasImage: artFiles[0]?.artist_has_image },
       });
       for (const al of art.albumList) {
         const y = albumYear(al.files);
         items.push({
           kind: 'sep', sep: 'album', label: al.key || 'Other', meta: y < 9999 ? String(y) : '',
-          hashes: al.files.filter(isSelectable).map(f => f.hash), fallback: !al.key,
+          hashes: al.files.filter(isSelectable).map(keyOf), fallback: !al.key,
           cover: { kind: 'album', target: { artist: art.key, album: al.key }, hasImage: al.files[0]?.album_has_image },
         });
         // Multi-disc album → a quiet "Disc N" separator before each disc (purely
@@ -840,7 +859,7 @@ export function createFileList(scope) {
       items.push({
         kind: 'ghead', key: grp.key, label: grp.label, collapsed: isCollapsed,
         counts: g.counts ? g.counts(grp.items) : String(grp.items.length),
-        hashes: grp.items.filter(isSelectable).map(f => f.hash),
+        hashes: grp.items.filter(isSelectable).map(keyOf),
       });
       if (!isCollapsed) for (const f of grp.items) items.push({ kind: 'row', file: f });
     }
@@ -867,7 +886,7 @@ export function createFileList(scope) {
     const checkKids = [];
     if (item.hashes.length) {
       const cb = el('input', { type: 'checkbox', class: 'grp-check', 'aria-label': `Select all in ${item.label}` });
-      cb.dataset.hashes = item.hashes.join(',');
+      cb.dataset.keys = item.hashes.join(',');
       cb.addEventListener('change', () => { item.hashes.forEach(h => cb.checked ? selected.add(h) : selected.delete(h)); afterSelectionChange(); });
       checkKids.push(cb);
     }
@@ -987,7 +1006,9 @@ export function createFileList(scope) {
     const kids = [];
     if (hash && isSelectableTrack()) {
       const cb = el('input', { type: 'checkbox', class: 'fl-rowcheck', 'aria-label': `Select ${t.title || 'track'}` });
-      cb.dataset.hash = hash;
+      // The browse view exists only on hash-keyed scopes, so the row key IS the
+      // hash here; the attribute name must still match syncSelectionUI.
+      cb.dataset.key = hash;
       cb.checked = selected.has(hash);
       cb.addEventListener('change', () => { cb.checked ? selected.add(hash) : selected.delete(hash); syncSelectionUI(); });
       kids.push(cb);
@@ -1000,7 +1021,7 @@ export function createFileList(scope) {
         el('button', { class: 'btn btn-neutral btn-sm btn-edit', text: 'Edit', onclick: () => editBrowseTrack(t) }),
       ]));
     }
-    return el('div', { class: 'entity-row entity-row--track', 'data-hash': hash || '' }, kids);
+    return el('div', { class: 'entity-row entity-row--track', 'data-key': hash || '' }, kids);
   }
   function isSelectableTrack() { return !!scope.bulkApply; }
 
@@ -1312,10 +1333,10 @@ export function createFileList(scope) {
   function applyPlayingHighlight() {
     if (!mountEl) return;
     mountEl.querySelectorAll('.playing-row').forEach(r => r.classList.remove('playing-row'));
-    if (!playingHash) return;
-    mountEl.querySelector(`[data-hash="${CSS.escape(playingHash)}"]`)?.classList.add('playing-row');
+    if (playingKey === null) return;
+    mountEl.querySelector(`[data-key="${CSS.escape(playingKey)}"]`)?.classList.add('playing-row');
   }
-  function setPlaying(hash) { playingHash = hash || null; applyPlayingHighlight(); }
+  function setPlaying(key) { playingKey = (key === null || key === undefined) ? null : String(key); applyPlayingHighlight(); }
 
   // ── Public surface ────────────────────────────────────────────────────────────
   function mount(node) { mountEl = node; reload(); }

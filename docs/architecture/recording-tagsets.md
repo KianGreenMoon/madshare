@@ -781,10 +781,21 @@ regressions isolate to the data move.
     `review.go`'s `reviewFrom` INNER JOIN is **deferred to P7d**: it can strand
     nothing today, because every file-delete path removes the referencing
     tagsets before the row dies, so `origin_file_id` never reaches NULL.
-  - **P7c** — Trash Appearances lens `FROM tagsets m LEFT JOIN files f`, one
-    row per appearance, switched onto the tagset-addressed
-    `POST /api/admin/tagsets/{id}/restore` + `DELETE /api/admin/tagsets/{id}`.
-    The latter is currently **dead code**: `b3200c8` stripped its only caller.
+  - **P7c — Trash Appearances lens `FROM tagsets`. ✅ Done (2026-07-10).** One
+    row per appearance, keyed by tagset id (`database/trash_tagsets.go`). The
+    row actions are the tagset-addressed `POST /api/admin/tagsets/{id}/restore`
+    + `DELETE /api/admin/tagsets/{id}` (the latter was dead code after
+    `b3200c8` stripped its only caller — now the lens's Delete forever), plus
+    `PATCH /api/admin/tagsets/{id}/metadata` (re-registered under the tagset
+    prefix with the `metadata.edit` gate) and bulk `trash/bulk` carrying
+    `tagset_ids`. The hash-addressed `/trash/{hash}[/restore]` pair and its DB
+    methods are gone; `RestoreFileByHash` stays for the uploader's
+    restore-via-reupload (a re-upload only knows the bytes). `file-list.js`
+    gained a `rowKey` hook (default = hash; Trash = tagset_id) so one blob's
+    several trashed appearances are distinct rows. Live-verified in a browser:
+    two trashed appearances of one blob list as two rows, ticking one selects
+    one, the bulk call carries `tagset_ids`, a blobless appearance lists and
+    deletes, zero console errors.
   - **P7d** — *then* "Add appearance" on the recording card becomes small and
     safe (`CreateAppearance`: resolve entities → meaningful rule → identity
     dedup → insert non-primary). Blocked on P7b, because a blobless appearance

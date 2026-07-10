@@ -47,6 +47,23 @@ func getStaged[T any](t *testing.T, c *http.Client, url string) []T {
 	return env.Items
 }
 
+// trashedAppearanceID finds the trashed appearance offered from `hash` in the
+// Trash Appearances lens — the lens is where an appearance's id is published.
+func trashedAppearanceID(t *testing.T, c *http.Client, base, hash string) int64 {
+	t.Helper()
+	type row struct {
+		TagsetID int64  `json:"tagset_id"`
+		Hash     string `json:"hash"`
+	}
+	for _, r := range getStaged[row](t, c, base+"/api/admin/trash") {
+		if r.Hash == hash {
+			return r.TagsetID
+		}
+	}
+	t.Fatalf("no trashed appearance for hash %s", hash)
+	return 0
+}
+
 // uploadStaged uploads as the given client and returns the staged file's hash
 // and blob path, asserting the response reports the pending (draft) state.
 func uploadStaged(t *testing.T, client *http.Client, base, name string) (hash, path string) {
@@ -265,8 +282,12 @@ func TestReview_DiscardToTrashAndBack(t *testing.T) {
 	if len(queue) != 0 {
 		t.Errorf("queue after discard = %d, want 0", len(queue))
 	}
-	// Trash restore re-enters the queue (state survived), not the library.
-	if code := doJSON(t, admin, http.MethodPost, srv.URL+"/api/admin/trash/"+hash+"/restore", nil, nil); code != http.StatusOK {
+	// Trash restore re-enters the queue (state survived), not the library. The
+	// Trash Appearances lens is tagset-addressed (recording-tagsets P7c), so the
+	// restore names the appearance, not the blob.
+	tid := trashedAppearanceID(t, admin, srv.URL, hash)
+	if code := doJSON(t, admin, http.MethodPost,
+		srv.URL+"/api/admin/tagsets/"+strconv.FormatInt(tid, 10)+"/restore", nil, nil); code != http.StatusOK {
 		t.Fatalf("trash restore = %d, want 200", code)
 	}
 	queue = getStaged[map[string]any](t, admin, srv.URL+"/api/admin/moderation")

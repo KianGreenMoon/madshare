@@ -254,10 +254,52 @@ func (h *handler) bulkEditFiles(w http.ResponseWriter, r *http.Request, hashes [
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected, "failed": failed})
 }
 
-// adminTrashList handles GET /api/admin/trash — soft-deleted files, paged +
-// filtered + sorted like the live library (docs/architecture/file-list-scaling.md).
-// Returns {total, items}; every trashed row is selectable, so there is no
-// separate selectable_total. Default order is newest-deleted-first.
+// bulkEditAppearances is bulkEditFiles addressed by tagset id — the Trash lens's
+// "fix a tag before restoring". Tags only: access (license / guest) is a
+// recording-level property and is meaningless on a trashed appearance, so the
+// Trash scope never offers it and a patch carrying it is rejected.
+func (h *handler) bulkEditAppearances(w http.ResponseWriter, r *http.Request, tagsetIDs []int64, patch *bulkEditPatch) {
+	if !patch.hasTags() {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "nothing to update"})
+		return
+	}
+	if patch.hasAccess() {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "error": "access is a recording property; it cannot be edited from Trash"})
+		return
+	}
+	if len(tagsetIDs) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": 0, "failed": []any{}})
+		return
+	}
+
+	mp := database.MetadataPatch{
+		Title: patch.Title, Album: patch.Album, AlbumArtist: patch.AlbumArtist, Artist: patch.Artist,
+		Genre: patch.Genre, Composer: patch.Composer, Comment: patch.Comment,
+		TrackNumber: patch.TrackNumber, TrackTotal: patch.TrackTotal, DiscNumber: patch.DiscNumber, Year: patch.Year,
+	}
+	affected, notFound, err := h.repo.BulkUpdateTagsetMetadata(r.Context(), tagsetIDs, mp)
+	if errors.Is(err, database.ErrInvalidMetadata) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+		return
+	}
+	failed := make([]map[string]any, 0, len(notFound))
+	for _, id := range notFound {
+		failed = append(failed, map[string]any{"tagset_id": id, "error": "appearance not found"})
+	}
+	h.audit(r.Context(), "metadata.bulk_edit", "appearances", fmt.Sprintf("%d updated", affected))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected, "failed": failed})
+}
+
+// adminTrashList handles GET /api/admin/trash — the Trash page's **Appearances**
+// lens: soft-deleted appearances, paged + filtered + sorted like the live library
+// (docs/architecture/file-list-scaling.md). One row per appearance, keyed by
+// tagset id (recording-tagsets P7c). Returns {total, items}; every trashed row is
+// selectable, so there is no separate selectable_total. Newest-deleted first.
 func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if len(q.Get("q")) > 200 {
@@ -268,19 +310,19 @@ func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
 	limit := clampInt(q.Get("limit"), fileListDefaultLimit, 0, fileListMaxLimit)
 	offset := clampInt(q.Get("offset"), 0, 0, 1<<30)
 
-	total, err := h.repo.CountTrashedFiles(r.Context(), filter)
+	total, err := h.repo.CountTrashedAppearances(r.Context(), filter)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
 		return
 	}
 
-	var entries []*database.FileListEntry
+	var entries []*database.TrashEntry
 	if limit > 0 {
 		sort := q.Get("sort")
 		if sort == "" {
 			sort = "deleted_desc"
 		}
-		entries, err = h.repo.ListTrashedFilesPage(r.Context(), database.FileListQuery{
+		entries, err = h.repo.ListTrashedAppearancesPage(r.Context(), database.FileListQuery{
 			FileFilter: filter, Sort: sort, Limit: limit, Offset: offset,
 		})
 		if err != nil {
@@ -289,12 +331,17 @@ func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The row is an APPEARANCE (recording-tagsets P7c): tagset_id is its identity,
+	// not hash — two trashed appearances can share one blob, and an appearance
+	// whose origin blob was absorbed or purged has no hash at all (empty string,
+	// so the UI hides preview and size).
 	type trashItem struct {
-		ID       int64  `json:"id"`
-		Hash     string `json:"hash"`
-		Filename string `json:"filename"`
-		Title    string `json:"title"`
-		Artist   string `json:"artist"`
+		TagsetID    int64  `json:"tagset_id"`
+		RecordingID int64  `json:"recording_id"`
+		Hash        string `json:"hash"`
+		Filename    string `json:"filename"`
+		Title       string `json:"title"`
+		Artist      string `json:"artist"`
 		// AlbumArtist is needed so the Trash page's metadata editor can prefill
 		// it — the editor writes all four base tags, so an absent prefill would
 		// silently clear album_artist on save.
@@ -321,8 +368,13 @@ func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
 		if e.TrackNumber.Valid {
 			trackNum = &e.TrackNumber.Int64
 		}
+		url := ""
+		if e.ObjectKey != "" {
+			url = "/files/" + e.ObjectKey
+		}
 		items = append(items, trashItem{
-			ID:             e.ID,
+			TagsetID:       e.TagsetID,
+			RecordingID:    e.RecordingID,
 			Hash:           e.Hash,
 			Filename:       e.Filename,
 			Title:          e.Title,
@@ -332,7 +384,7 @@ func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
 			TrackNumber:    trackNum,
 			Year:           e.Year,
 			ByteSize:       e.ByteSize,
-			URL:            "/files/" + e.ObjectKey,
+			URL:            url,
 			DeletedAt:      e.DeletedAt.Int64,
 			ReviewState:    e.ReviewState,
 			ArtistHasImage: e.ArtistHasImage,
@@ -341,56 +393,6 @@ func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"total": total, "limit": limit, "offset": offset, "items": items,
-	})
-}
-
-// adminTrashHardDelete handles DELETE /api/admin/trash/{hash}. It permanently
-// removes the trashed appearance and cascades from the tagset (recording-tagsets
-// P2): a non-last appearance keeps the blob, a last appearance takes the
-// recording and all its files, whose bytes are reclaimed here after the row is
-// gone. HardDeleteTrashedFileByHash only matches a trashed appearance, so live
-// files return 404 atomically — no TOCTOU window.
-func (h *handler) adminTrashHardDelete(w http.ResponseWriter, r *http.Request) {
-	hash := chi.URLParam(r, "hash")
-	if !adminHashPattern.MatchString(hash) {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid hash"})
-		return
-	}
-
-	filenames, blobs, found, err := h.repo.HardDeleteTrashedFileByHash(r.Context(), hash)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
-		return
-	}
-	if !found {
-		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not found"})
-		return
-	}
-
-	// Reclaim only the blobs the cascade actually took down (empty when a
-	// non-last appearance was dropped and the recording's files survive). Each
-	// blob carries its storage kind, so the reclaim is storage-aware: a links
-	// import is unlinked (the symlink only — never the external target), a local
-	// blob is os.RemoveAll'd.
-	blobRemoved := false
-	for _, b := range blobs {
-		removed, rerr := h.reclaimStorage(&database.File{StorageBackend: b.StorageBackend}, b.Hash)
-		if rerr != nil {
-			log.Printf("orphan blob: hash=%s err=%v", b.Hash, rerr)
-			continue
-		}
-		blobRemoved = blobRemoved || removed
-	}
-
-	if filenames == nil {
-		filenames = []string{}
-	}
-	h.audit(r.Context(), "file.delete", hash, strings.Join(filenames, ", "))
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":           true,
-		"hash":         hash,
-		"blob_removed": blobRemoved,
-		"filenames":    filenames,
 	})
 }
 
@@ -417,40 +419,20 @@ func (h *handler) reclaimStorage(f *database.File, hash string) (removed bool, e
 	return h.storage.DeleteAll(hash)
 }
 
-// adminTrashRestore handles POST /api/admin/trash/{hash}/restore. It restores
-// a trashed file back to the live library.
-func (h *handler) adminTrashRestore(w http.ResponseWriter, r *http.Request) {
-	hash := chi.URLParam(r, "hash")
-	if !adminHashPattern.MatchString(hash) {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid hash"})
-		return
-	}
-
-	found, err := h.repo.RestoreFileByHash(r.Context(), hash)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
-		return
-	}
-	if !found {
-		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not found"})
-		return
-	}
-
-	h.audit(r.Context(), "file.restore", hash, "")
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "hash": hash})
-}
-
 // trashBulk handles POST /api/admin/trash/bulk — a bulk Trash action ("restore"
-// / "delete" / "edit") over an explicit hash list OR everything trashed matching
-// a filter ("select all N matching"). Gated on file.delete. It loops the same
-// per-row logic the single-hash endpoints use (restore, storage-aware hard
-// delete, tag edit), so the trashed/live guards are unchanged.
+// / "delete" / "edit") over an explicit **tagset_ids** list OR everything trashed
+// matching a filter ("select all N matching"). The unit is the appearance, not
+// the blob (recording-tagsets P7c): two trashed appearances can share one blob,
+// so the old hash-addressed bulk acted on both while the UI showed one row.
+// Per-action gate: restore/delete → file.delete, edit → metadata.edit. Each
+// action is one transaction; the trashed/live guards live in the DB ops (the
+// delete path skips a live appearance).
 func (h *handler) trashBulk(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req struct {
-		Action string   `json:"action"`
-		Hashes []string `json:"hashes"`
-		Filter *struct {
+		Action    string  `json:"action"`
+		TagsetIDs []int64 `json:"tagset_ids"`
+		Filter    *struct {
 			Q     string `json:"q"`
 			Field string `json:"field"`
 		} `json:"filter"`
@@ -477,17 +459,17 @@ func (h *handler) trashBulk(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Resolve the target set: exactly one of {hashes, filter}.
-	hasHashes := len(req.Hashes) > 0
+	// Resolve the target set: exactly one of {tagset_ids, filter}.
+	hasIDs := len(req.TagsetIDs) > 0
 	hasFilter := req.Filter != nil
-	if hasHashes == hasFilter {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "provide exactly one of hashes or filter"})
+	if hasIDs == hasFilter {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "provide exactly one of tagset_ids or filter"})
 		return
 	}
-	var hashes []string
-	if hasHashes {
+	var tagsetIDs []int64
+	if hasIDs {
 		var err error
-		hashes, err = normalizeBulkHashes(req.Hashes)
+		tagsetIDs, err = normalizeBulkTagsetIDs(req.TagsetIDs)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 			return
@@ -503,7 +485,7 @@ func (h *handler) trashBulk(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var err error
-		hashes, err = h.repo.TrashedFileHashesByFilter(r.Context(), database.FileFilter{Q: q, QField: normalizeQField(req.Filter.Field)})
+		tagsetIDs, err = h.repo.TrashedAppearanceIDsByFilter(r.Context(), database.FileFilter{Q: q, QField: normalizeQField(req.Filter.Field)})
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
 			return
@@ -511,7 +493,7 @@ func (h *handler) trashBulk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Action == "edit" {
-		h.bulkEditFiles(w, r, hashes, req.Patch)
+		h.bulkEditAppearances(w, r, tagsetIDs, req.Patch)
 		return
 	}
 
@@ -521,12 +503,12 @@ func (h *handler) trashBulk(w http.ResponseWriter, r *http.Request) {
 	// write transactions per file (restore + audit), which made restore far slower
 	// than trashing and produced SQLITE_BUSY under concurrent write pressure.
 	if req.Action == "restore" {
-		affected, err := h.repo.BulkRestoreByHashes(r.Context(), hashes)
+		affected, err := h.repo.BulkRestoreTagsets(r.Context(), tagsetIDs)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
 			return
 		}
-		h.audit(r.Context(), "file.bulk_restore", "files", fmt.Sprintf("%d restored", affected))
+		h.audit(r.Context(), "appearance.bulk_restore", "appearances", fmt.Sprintf("%d restored", affected))
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
 		return
 	}
@@ -538,7 +520,7 @@ func (h *handler) trashBulk(w http.ResponseWriter, r *http.Request) {
 	// reclamation (a local DeleteAll or a links unlink) is a filesystem op, so it
 	// runs after the commit; a failure only orphans bytes (reconciled by prune),
 	// never the reverse.
-	deleted, blobs, err := h.repo.BulkHardDeleteTrashedByHashes(r.Context(), hashes)
+	deleted, blobs, err := h.repo.BulkHardDeleteTagsets(r.Context(), tagsetIDs)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
 		return
@@ -548,7 +530,7 @@ func (h *handler) trashBulk(w http.ResponseWriter, r *http.Request) {
 			log.Printf("orphan blob: hash=%s err=%v", b.Hash, rerr)
 		}
 	}
-	h.audit(r.Context(), "file.bulk_delete", "files", fmt.Sprintf("%d deleted", deleted))
+	h.audit(r.Context(), "appearance.bulk_delete", "appearances", fmt.Sprintf("%d deleted", deleted))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": deleted})
 }
 

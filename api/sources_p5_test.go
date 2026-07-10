@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"daemonlord.ygg/madshare/database"
@@ -47,17 +48,22 @@ func TestAdminTrashHardDelete_LinksUnlinksOnly(t *testing.T) {
 
 	hash, external := seedLinkedFile(t, h, h.linker, "song.flac", "external audio bytes")
 
-	// Soft-delete (trash) then hard-delete.
+	// Soft-delete (trash), then read the trashed appearance's id from the lens
+	// and hard-delete it by tagset id (recording-tagsets P7c: permanent delete is
+	// tagset-addressed — one blob can host several trashed appearances).
 	h.adminDeleteFile(httptest.NewRecorder(), deleteReq(hash))
+	tagsetID := trashedTagsetID(t, h, hash)
+
 	rr := httptest.NewRecorder()
-	h.adminTrashHardDelete(rr, trashHardDeleteReq(hash))
+	h.tagsetHardDelete(rr, paramRequest(http.MethodDelete,
+		"/api/admin/tagsets/"+strconv.FormatInt(tagsetID, 10), "tagsetID", strconv.FormatInt(tagsetID, 10), ""))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
 	}
 	var resp map[string]any
 	json.NewDecoder(rr.Body).Decode(&resp)
-	if resp["blob_removed"] != true {
-		t.Errorf("blob_removed = %v, want true", resp["blob_removed"])
+	if n, _ := resp["blobs_removed"].(float64); n != 1 {
+		t.Errorf("blobs_removed = %v, want 1", resp["blobs_removed"])
 	}
 
 	// DB row gone.
@@ -137,4 +143,31 @@ func TestAdminSourcesList_LinksHealth(t *testing.T) {
 	if resp.Links.ExternalBytes != uint64(len("live")) {
 		t.Errorf("external_bytes = %d, want %d (only the live link)", resp.Links.ExternalBytes, len("live"))
 	}
+}
+
+// trashedTagsetID reads the appearance id of the (single) trashed row from the
+// Trash Appearances lens — the lens is the only place that names it.
+func trashedTagsetID(t *testing.T, h *handler, hash string) int64 {
+	t.Helper()
+	rr := httptest.NewRecorder()
+	h.adminTrashList(rr, httptest.NewRequest(http.MethodGet, "/api/admin/trash", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("trash list status = %d", rr.Code)
+	}
+	var env struct {
+		Items []struct {
+			TagsetID int64  `json:"tagset_id"`
+			Hash     string `json:"hash"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&env); err != nil {
+		t.Fatalf("decode trash list: %v", err)
+	}
+	for _, it := range env.Items {
+		if it.Hash == hash {
+			return it.TagsetID
+		}
+	}
+	t.Fatalf("no trashed appearance for hash %s", hash)
+	return 0
 }

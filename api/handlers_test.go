@@ -416,9 +416,10 @@ type fakeRepo struct {
 	filterHashesErr    error
 	bulkTrashedHashes  []string
 	bulkTrashErr       error
-	bulkRestoredHashes []string
+	bulkRestoredTagsets []int64
+	bulkMetaTagsets     []int64
 	bulkRestoreErr     error
-	bulkDeletedHashes  []string
+	bulkDeletedTagsets []int64
 	bulkDeleteErr      error
 	bulkReviewTagsets  []int64
 	bulkReviewErr      error
@@ -579,9 +580,9 @@ type fakeRepo struct {
 	countReview         int
 	reviewFilterTagsets []int64
 	lastReviewFilter    database.ReviewFilter
-	pageTrash           []*database.FileListEntry
+	pageTrash           []*database.TrashEntry
 	countTrash          int
-	trashFilterHashes   []string
+	trashFilterIDs      []int64
 }
 
 func (f *fakeRepo) ListUploadsByUser(_ context.Context, _ int64) ([]*database.ReviewEntry, error) {
@@ -736,16 +737,16 @@ func (f *fakeRepo) BulkSoftDeleteByHashes(_ context.Context, hashes []string) (i
 	return len(hashes), nil
 }
 
-func (f *fakeRepo) ListTrashedFilesPage(_ context.Context, _ database.FileListQuery) ([]*database.FileListEntry, error) {
+func (f *fakeRepo) ListTrashedAppearancesPage(_ context.Context, _ database.FileListQuery) ([]*database.TrashEntry, error) {
 	return f.pageTrash, f.listFilesErr
 }
 
-func (f *fakeRepo) CountTrashedFiles(_ context.Context, _ database.FileFilter) (int, error) {
+func (f *fakeRepo) CountTrashedAppearances(_ context.Context, _ database.FileFilter) (int, error) {
 	return f.countTrash, f.listFilesErr
 }
 
-func (f *fakeRepo) TrashedFileHashesByFilter(_ context.Context, _ database.FileFilter) ([]string, error) {
-	return f.trashFilterHashes, f.filterHashesErr
+func (f *fakeRepo) TrashedAppearanceIDsByFilter(_ context.Context, _ database.FileFilter) ([]int64, error) {
+	return f.trashFilterIDs, f.filterHashesErr
 }
 
 func (f *fakeRepo) ListRemovedFilesPage(_ context.Context, _ database.FileListQuery) ([]*database.FileListEntry, error) {
@@ -1133,43 +1134,42 @@ func (f *fakeRepo) HardDeleteFileByHash(_ context.Context, _ string) ([]string, 
 	return f.deleteFilenames, f.deleteFound, f.deleteErr
 }
 
-func (f *fakeRepo) HardDeleteTrashedFileByHash(_ context.Context, hash string) ([]string, []database.DeletedBlob, bool, error) {
-	if !f.deleteFound || f.deleteErr != nil {
-		return f.deleteFilenames, nil, f.deleteFound, f.deleteErr
-	}
-	return f.deleteFilenames, []database.DeletedBlob{{Hash: hash, StorageBackend: database.StorageBackendLocal}}, f.deleteFound, f.deleteErr
-}
-
-func (f *fakeRepo) BulkHardDeleteTrashedByHashes(_ context.Context, hashes []string) (int, []database.DeletedBlob, error) {
-	f.bulkDeletedHashes = append(f.bulkDeletedHashes, hashes...)
+func (f *fakeRepo) BulkHardDeleteTagsets(_ context.Context, ids []int64) (int, []database.DeletedBlob, error) {
+	f.bulkDeletedTagsets = append(f.bulkDeletedTagsets, ids...)
 	if f.bulkDeleteErr != nil {
 		return 0, nil, f.bulkDeleteErr
 	}
-	blobs := make([]database.DeletedBlob, len(hashes))
-	for i, h := range hashes {
-		blobs[i] = database.DeletedBlob{Hash: h, StorageBackend: database.StorageBackendLocal}
+	blobs := make([]database.DeletedBlob, len(ids))
+	for i, id := range ids {
+		blobs[i] = database.DeletedBlob{Hash: fmt.Sprintf("blob-%d", id), StorageBackend: database.StorageBackendLocal}
 	}
-	return len(hashes), blobs, nil
+	return len(ids), blobs, nil
 }
 
 func (f *fakeRepo) RestoreFileByHash(_ context.Context, _ string) (bool, error) {
 	return true, nil
 }
 
-func (f *fakeRepo) BulkRestoreByHashes(_ context.Context, hashes []string) (int, error) {
-	f.bulkRestoredHashes = append(f.bulkRestoredHashes, hashes...)
+func (f *fakeRepo) BulkRestoreTagsets(_ context.Context, ids []int64) (int, error) {
+	f.bulkRestoredTagsets = append(f.bulkRestoredTagsets, ids...)
 	if f.bulkRestoreErr != nil {
 		return 0, f.bulkRestoreErr
 	}
-	return len(hashes), nil
+	return len(ids), nil
+}
+
+func (f *fakeRepo) BulkUpdateTagsetMetadata(_ context.Context, ids []int64, p database.MetadataPatch) (int, []int64, error) {
+	f.metaCalls++
+	f.lastMetaPatch = p
+	f.bulkMetaTagsets = append(f.bulkMetaTagsets, ids...)
+	if f.metaErr != nil {
+		return 0, nil, f.metaErr
+	}
+	return len(ids), nil, nil
 }
 
 func (f *fakeRepo) GetTrashRestorePolicy(_ context.Context) (string, error) {
 	return database.TrashReuploadRestores, nil
-}
-
-func (f *fakeRepo) ListTrashedFiles(_ context.Context) ([]*database.FileListEntry, error) {
-	return nil, nil
 }
 
 func (f *fakeRepo) ListFileRefs(_ context.Context) ([]database.FileRef, error) {

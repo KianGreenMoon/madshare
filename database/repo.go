@@ -39,13 +39,22 @@ type Repository interface {
 	FileHashesByFilter(ctx context.Context, f FileFilter) ([]string, error)
 	BulkSoftDeleteByHashes(ctx context.Context, hashes []string) (int, error)
 
-	// The Trash listing is paged like the live library: ListTrashedFilesPage +
-	// CountTrashedFiles drive the page/total, and TrashedFileHashesByFilter
-	// resolves the Trash "select all N matching" set for the bulk restore /
-	// delete / edit endpoint.
-	ListTrashedFilesPage(ctx context.Context, q FileListQuery) ([]*FileListEntry, error)
-	CountTrashedFiles(ctx context.Context, f FileFilter) (int, error)
-	TrashedFileHashesByFilter(ctx context.Context, f FileFilter) ([]string, error)
+	// Trash · Appearances lens (recording-tagsets P7c) — tagset-rooted, one row
+	// per appearance. Paged like the live library: ListTrashedAppearancesPage +
+	// CountTrashedAppearances drive the page/total, and
+	// TrashedAppearanceIDsByFilter resolves the "select all N matching" set.
+	// Everything is addressed by tagset id: a blob can host several trashed
+	// appearances, and an absorbed/purged one has no blob at all.
+	ListTrashedAppearancesPage(ctx context.Context, q FileListQuery) ([]*TrashEntry, error)
+	CountTrashedAppearances(ctx context.Context, f FileFilter) (int, error)
+	TrashedAppearanceIDsByFilter(ctx context.Context, f FileFilter) ([]int64, error)
+
+	// The lens's bulk actions, each one transaction: restore (deleted_at flip),
+	// permanent delete (shared tagset-first cascade; live ids skipped, freed
+	// blobs returned for post-commit reclaim), and the tag edit.
+	BulkRestoreTagsets(ctx context.Context, tagsetIDs []int64) (int, error)
+	BulkHardDeleteTagsets(ctx context.Context, tagsetIDs []int64) (int, []DeletedBlob, error)
+	BulkUpdateTagsetMetadata(ctx context.Context, tagsetIDs []int64, p MetadataPatch) (affected int, notFound []int64, err error)
 
 	// Files perspective of Trash (soft-delete.md): the file-grain lens over
 	// soft-removed blobs (files.deleted_at). Paged like the other listings;
@@ -174,41 +183,16 @@ type Repository interface {
 	// PruneDangling. found is false (no error) when no row matches.
 	HardDeleteFileByHash(ctx context.Context, hash string) (filenames []string, found bool, err error)
 
-	// HardDeleteTrashedFileByHash permanently removes the trashed appearance of a
-	// file — the Trash "Delete Forever" op, cascading from the tagset
-	// (recording-tagsets P2): a non-last appearance drops just its tagset (blob
-	// kept), the last appearance takes the recording and all its files, whose
-	// blobs come back for reclamation. Live (non-trashed) files return
-	// found=false so the caller cannot bypass the soft-delete step. The check and
-	// cascade are atomic within one transaction, preventing a concurrent restore
-	// from racing the delete.
-	HardDeleteTrashedFileByHash(ctx context.Context, hash string) (filenames []string, blobs []DeletedBlob, found bool, err error)
-
-	// BulkHardDeleteTrashedByHashes permanently removes the trashed appearances of
-	// a hash set in one transaction, returning how many tagsets were removed and
-	// the blobs of every file a last-appearance cascade took down so the caller
-	// can reclaim them afterwards (the filesystem unlink stays outside the
-	// transaction). It is the batch counterpart to HardDeleteTrashedFileByHash,
-	// backing the Trash "Delete selected" bulk action — one commit instead of a
-	// per-hash delete + audit write.
-	BulkHardDeleteTrashedByHashes(ctx context.Context, hashes []string) (deleted int, blobs []DeletedBlob, err error)
-
-	// RestoreFileByHash clears deleted_at on a trashed file, returning it to
-	// the live library. found is false (no error) when no trashed row matches.
-	RestoreFileByHash(ctx context.Context, hash string) (found bool, err error)
-
-	// BulkRestoreByHashes clears deleted_at on a hash set in one transaction
-	// (returning the count actually restored) — the restore counterpart to
-	// BulkSoftDeleteByHashes, backing the Trash "Restore selected" bulk action.
-	BulkRestoreByHashes(ctx context.Context, hashes []string) (int, error)
+	// RestoreFileByHash clears the trash mark on the appearances offered from the
+	// blob with this hash — the uploader-facing restore-via-reupload path
+	// (docs/architecture/moderation.md). The admin Trash lens restores by tagset
+	// id instead (BulkRestoreTagsets / RestoreTagset); this one is addressed by
+	// content hash because a re-upload only knows the bytes.
+	RestoreFileByHash(ctx context.Context, hash string) (bool, error)
 
 	// GetTrashRestorePolicy reads the trash-restore policy (reupload_restores /
 	// inform / uploader_restore); defaults to reupload_restores when unset.
 	GetTrashRestorePolicy(ctx context.Context) (string, error)
-
-	// ListTrashedFiles returns all soft-deleted files ordered by deletion time
-	// descending, joined with the first filename and tagset tags.
-	ListTrashedFiles(ctx context.Context) ([]*FileListEntry, error)
 
 	// ListFileRefs returns one FileRef per files row, each carrying the
 	// content hash and the filenames recorded for it, ordered by file id.

@@ -1,8 +1,13 @@
-// Admin · Library — Trash scope. A factory over the shared file-management
-// component (file-list.js), mounted by library.js into the Library page's Trash
-// panel. Trash has per-file Edit (tags only — access endpoints reject
-// soft-deleted rows), Play, Restore, Delete forever, and bulk actions. The
+// Admin · Library — Trash scope: the **Appearances** lens. A factory over the
+// shared file-management component (file-list.js), mounted by library.js into
+// the Library page's Trash panel. Per-appearance Edit (tags only — access is a
+// recording property), Play, Restore, Delete forever, and bulk actions. The
 // shared preview player is injected as `play`. Requires file.delete.
+//
+// The row is an APPEARANCE, keyed by tagset_id (recording-tagsets P7c). A blob
+// can host several trashed appearances, so a hash names no single row; and an
+// appearance whose origin blob was absorbed or purged has no hash at all — it
+// still belongs in Trash, just without preview or size.
 //
 // Design: docs/architecture/file-management-view.md.
 import { API, el, fmtDate, toast, handleAuthError } from './shared.js';
@@ -31,21 +36,22 @@ export function createTrashScope({ play, perms }) {
     const data = await res.json();
     return { total: data.total || 0, items: data.items || [] };
   }
-  async function restoreOne(hash) {
-    const res = await fetch(`${API}/api/admin/trash/${encodeURIComponent(hash)}/restore`, { method: 'POST' });
+  async function restoreOne(tagsetID) {
+    const res = await fetch(`${API}/api/admin/tagsets/${tagsetID}/restore`, { method: 'POST' });
     if (handleAuthError(res)) throw new Error('Your session expired.');
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
   }
-  async function hardDeleteOne(hash) {
-    const res = await fetch(`${API}/api/admin/trash/${encodeURIComponent(hash)}`, { method: 'DELETE' });
+  async function hardDeleteOne(tagsetID) {
+    const res = await fetch(`${API}/api/admin/tagsets/${tagsetID}`, { method: 'DELETE' });
     if (handleAuthError(res)) throw new Error('Your session expired.');
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
   }
 
   // trashBulkCall is the single batched Trash action (restore / delete / edit)
-  // over an explicit hash list OR a filter ("select all N matching").
+  // over an explicit tagset_ids list OR a filter ("select all N matching").
+  // file-list.js hands selection keys back as strings; the API wants numbers.
   async function trashBulkCall(body) {
     const res = await fetch(`${API}/api/admin/trash/bulk`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -56,8 +62,10 @@ export function createTrashScope({ play, perms }) {
     return data;
   }
   const trashFilterBody = filter => ({ filter: { q: filter.q, field: filter.field }, all: !filter.q });
-  const restoreToast = n => { if (n) toast(`Restored ${n} ${n === 1 ? 'file' : 'files'}.`, 'success'); };
-  const deleteToast = n => { if (n) toast(`Permanently deleted ${n} ${n === 1 ? 'file' : 'files'}.`, 'success'); };
+  const asIDs = keys => keys.map(Number);
+  const noun = n => (n === 1 ? 'appearance' : 'appearances');
+  const restoreToast = n => { if (n) toast(`Restored ${n} ${noun(n)}.`, 'success'); };
+  const deleteToast = n => { if (n) toast(`Permanently deleted ${n} ${noun(n)}.`, 'success'); };
 
   // ── Bulk permanent-delete confirm modal (in library.html) ──────────────────
   const delModal   = document.getElementById('trashDeleteModal');
@@ -96,24 +104,31 @@ export function createTrashScope({ play, perms }) {
   }
 
   // ── Preview (via the shared player) ─────────────────────────────────────────
+  // A trashed appearance whose origin blob is gone has no url — it cannot be
+  // previewed, and it must not sit in the queue as a dead entry.
   function playFile(f, visible) {
-    const items = (visible || []).map(x => ({ url: x.url, title: displayTitle(x), artist: x.artist || '', key: x.hash }));
-    let idx = items.findIndex(x => x.key === f.hash);
-    if (idx < 0) { items.length = 0; items.push({ url: f.url, title: displayTitle(f), artist: f.artist || '', key: f.hash }); idx = 0; }
+    if (!f.url) { toast('This appearance has no audio of its own — the blob was absorbed or purged.', 'error'); return; }
+    const items = (visible || []).filter(x => x.url)
+      .map(x => ({ url: x.url, title: displayTitle(x), artist: x.artist || '', key: x.tagset_id }));
+    let idx = items.findIndex(x => x.key === f.tagset_id);
+    if (idx < 0) { items.length = 0; items.push({ url: f.url, title: displayTitle(f), artist: f.artist || '', key: f.tagset_id }); idx = 0; }
     play(items, idx, k => fileList.setPlaying(k));
   }
 
   // ── Scope descriptor ────────────────────────────────────────────────────────
   const scope = {
     title: 'Trash',
-    desc: 'Files moved to trash are hidden from the library but their blobs remain on disk. '
-        + 'Fix a tag before restoring, restore to bring a file back, or delete forever to remove it permanently.',
+    desc: 'Appearances moved to trash are hidden from the library; the audio stays on disk. '
+        + 'Fix a tag before restoring, restore to bring one back, or delete forever to remove it permanently '
+        + '(the last appearance of a recording takes the recording and its files with it).',
     emptyText: 'Trash is empty.',
     columns: ['check', 'title', 'artist', 'album', 'size', 'meta', 'actions'],
     artistAlbumSort: true,
     allowCoverAdd: perms.includes('metadata.edit'),   // grouped "Add cover" on coverless separators
     allowCoverEdit: perms.includes('metadata.edit'),  // "Edit cover" on separators that already have one
     apiBase: API,
+    // The row identity is the appearance, not the blob.
+    rowKey: f => f.tagset_id,
     metaLabel: 'Deleted',
     metaValue: f => fmtDate(f.deleted_at),
     badge: f => (f.review_state && f.review_state !== 'approved')
@@ -127,13 +142,14 @@ export function createTrashScope({ play, perms }) {
     pageSize: 100,
     loadPage: loadTrashPage,
     selectable: () => true,
-    editPatchURL: f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`,
+    editPatchURL: f => `${API}/api/admin/tagsets/${f.tagset_id}/metadata`,
+    editDetailURL: f => `${API}/api/admin/tagsets/${f.tagset_id}/metadata`,
     editNote: 'Fix a tag before restoring — the corrected tags decide where the file lands when it returns to the library.',
     rowActions: [
       {
         id: 'restore', label: 'Restore', icon: RESTORE_ICON, kind: 'neutral',
         run: async f => {
-          await restoreOne(f.hash);
+          await restoreOne(f.tagset_id);
           const pending = f.review_state && f.review_state !== 'approved';
           toast(`“${displayTitle(f)}” restored to ${pending ? 'the moderation queue' : 'library'}.`, 'success');
         },
@@ -144,7 +160,7 @@ export function createTrashScope({ play, perms }) {
         id: 'delete', label: 'Delete forever', icon: TRASH_ICON, kind: 'danger',
         run: async f => {
           if (!await confirmBulkDelete(`Permanently delete “${displayTitle(f)}”?`, 'Delete forever')) return false;
-          await hardDeleteOne(f.hash);
+          await hardDeleteOne(f.tagset_id);
           toast(`“${displayTitle(f)}” permanently deleted.`, 'success');
         },
       },
@@ -152,17 +168,17 @@ export function createTrashScope({ play, perms }) {
     bulkActions: [
       {
         id: 'restoreSel', label: 'Restore selected', kind: 'neutral',
-        run: async hashes => { restoreToast((await trashBulkCall({ action: 'restore', hashes })).affected); },
+        run: async keys => { restoreToast((await trashBulkCall({ action: 'restore', tagset_ids: asIDs(keys) })).affected); },
         runAll: async filter => { restoreToast((await trashBulkCall({ action: 'restore', ...trashFilterBody(filter) })).affected); },
       },
       {
         id: 'deleteSel', label: 'Delete selected', kind: 'danger',
-        run: async hashes => {
-          if (!await confirmBulkDelete(`Permanently delete ${hashes.length} ${hashes.length === 1 ? 'file' : 'files'}?`, `Delete ${hashes.length} forever`)) return false;
-          deleteToast((await trashBulkCall({ action: 'delete', hashes })).affected);
+        run: async keys => {
+          if (!await confirmBulkDelete(`Permanently delete ${keys.length} ${noun(keys.length)}?`, `Delete ${keys.length} forever`)) return false;
+          deleteToast((await trashBulkCall({ action: 'delete', tagset_ids: asIDs(keys) })).affected);
         },
         runAll: async filter => {
-          if (!await confirmBulkDelete('Permanently delete all matching files?', 'Delete all forever')) return false;
+          if (!await confirmBulkDelete('Permanently delete all matching appearances?', 'Delete all forever')) return false;
           deleteToast((await trashBulkCall({ action: 'delete', ...trashFilterBody(filter) })).affected);
         },
       },
@@ -170,16 +186,18 @@ export function createTrashScope({ play, perms }) {
     // Explicit-selection tag edit and "select all N matching" edit both go through
     // the Trash bulk endpoint (action:"edit"); the component owns the success toast
     // for the page selection, bulkApplyAll owns its own.
-    bulkApply: async (hashes, patch) => {
-      const data = await trashBulkCall({ action: 'edit', hashes, patch });
+    bulkApply: async (keys, patch) => {
+      const data = await trashBulkCall({ action: 'edit', tagset_ids: asIDs(keys), patch });
       if (data.failed?.length) throw new Error(`updated ${data.affected}, ${data.failed.length} failed`);
     },
     bulkApplyAll: async (filter, patch) => {
       const data = await trashBulkCall({ action: 'edit', ...trashFilterBody(filter), patch });
       if (data.failed?.length) throw new Error(`updated ${data.affected}, ${data.failed.length} failed`);
-      toast(`Updated ${data.affected} ${data.affected === 1 ? 'file' : 'files'}.`, 'success');
+      toast(`Updated ${data.affected} ${noun(data.affected)}.`, 'success');
     },
     onPlay: playFile,
+    // No origin blob (absorbed / purged) → nothing to preview.
+    canPlay: f => !!f.url,
     toast, handleAuthError,
   };
 

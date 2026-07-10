@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"daemonlord.ygg/madshare/api/storage"
@@ -35,22 +36,6 @@ func uploadAudio(t *testing.T, h *handler, filename string, body []byte) string 
 // deleteReq builds a DELETE /api/admin/files/{hash} request.
 func deleteReq(hash string) *http.Request {
 	req := httptest.NewRequest(http.MethodDelete, "/api/admin/files/"+hash, nil)
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("hash", hash)
-	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-}
-
-// trashHardDeleteReq builds a DELETE /api/admin/trash/{hash} request.
-func trashHardDeleteReq(hash string) *http.Request {
-	req := httptest.NewRequest(http.MethodDelete, "/api/admin/trash/"+hash, nil)
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("hash", hash)
-	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-}
-
-// trashRestoreReq builds a POST /api/admin/trash/{hash}/restore request.
-func trashRestoreReq(hash string) *http.Request {
-	req := httptest.NewRequest(http.MethodPost, "/api/admin/trash/"+hash+"/restore", nil)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("hash", hash)
 	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
@@ -538,134 +523,81 @@ func TestAdminTrashList_ReturnsTrashedFiles(t *testing.T) {
 	if env.Items[0]["hash"] != hash {
 		t.Errorf("hash = %v, want %s", env.Items[0]["hash"], hash)
 	}
+	// The row identity is the appearance, not the blob (recording-tagsets P7c).
+	if id, ok := env.Items[0]["tagset_id"].(float64); !ok || id == 0 {
+		t.Errorf("tagset_id = %v, want a non-zero appearance id", env.Items[0]["tagset_id"])
+	}
 	if env.Items[0]["deleted_at"] == nil || env.Items[0]["deleted_at"].(float64) == 0 {
 		t.Error("deleted_at not set in trash list response")
 	}
 }
 
-// ---- adminTrashHardDelete ---------------------------------------------------
+// ---- trashBulk: the unit is the appearance (recording-tagsets P7c) ----------
 
-func TestAdminTrashHardDelete_InvalidHash(t *testing.T) {
-	h, _, _ := newTestHandler(t)
-	rr := httptest.NewRecorder()
-	h.adminTrashHardDelete(rr, trashHardDeleteReq("not-valid"))
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rr.Code)
-	}
+// jsonReq builds a request carrying a JSON body.
+func jsonReq(method, url, body string) *http.Request {
+	req := httptest.NewRequest(method, url, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	return req
 }
 
-func TestAdminTrashHardDelete_NotFound(t *testing.T) {
-	h, _, _ := newTestHandler(t)
-	unknown := "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+// TestTrashBulk_RestoreAddressedByTagsetIDs: the explicit-id form names
+// appearances. A blob can host several trashed appearances, so the old
+// hash-addressed body could not name the row the UI was showing.
+func TestTrashBulk_RestoreAddressedByTagsetIDs(t *testing.T) {
+	repo := &fakeRepo{}
+	h := &handler{repo: repo}
 	rr := httptest.NewRecorder()
-	h.adminTrashHardDelete(rr, trashHardDeleteReq(unknown))
-	if rr.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rr.Code)
-	}
-}
-
-// TestAdminTrashHardDelete_LiveFileRejected is the key invariant: calling the
-// permanent-delete endpoint on a live (non-trashed) file must fail with 404
-// so that only the two-step soft-delete → hard-delete path is possible.
-func TestAdminTrashHardDelete_LiveFileRejected(t *testing.T) {
-	h, _, _ := newTestHandler(t)
-	hash := uploadAudio(t, h, "live.mp3", []byte("live audio"))
-
-	rr := httptest.NewRecorder()
-	h.adminTrashHardDelete(rr, trashHardDeleteReq(hash))
-	if rr.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404 for live (non-trashed) file", rr.Code)
-	}
-}
-
-func TestAdminTrashHardDelete_Success(t *testing.T) {
-	h, db, base := newTestHandler(t)
-	hash := uploadAudio(t, h, "delete-forever.mp3", []byte("gone for good"))
-
-	// Soft-delete first.
-	h.adminDeleteFile(httptest.NewRecorder(), deleteReq(hash))
-
-	rr := httptest.NewRecorder()
-	h.adminTrashHardDelete(rr, trashHardDeleteReq(hash))
+	h.trashBulk(rr, jsonReq(http.MethodPost, "/api/admin/trash/bulk",
+		`{"action":"restore","tagset_ids":[7,9]}`))
 	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
 	}
-	var resp map[string]any
-	json.NewDecoder(rr.Body).Decode(&resp)
-	if resp["ok"] != true {
-		t.Errorf("ok = %v, want true", resp["ok"])
-	}
-
-	// DB row gone.
-	if got, _ := db.GetFileByHash(context.Background(), hash); got != nil {
-		t.Error("files row still present after hard delete from trash")
-	}
-	// Blob dir gone.
-	if _, err := os.Stat(filepath.Join(base, hash)); !os.IsNotExist(err) {
-		t.Errorf("blob dir still present after hard delete: %v", err)
+	if len(repo.bulkRestoredTagsets) != 2 ||
+		repo.bulkRestoredTagsets[0] != 7 || repo.bulkRestoredTagsets[1] != 9 {
+		t.Errorf("restored %v, want [7 9]", repo.bulkRestoredTagsets)
 	}
 }
 
-// ---- adminTrashRestore ------------------------------------------------------
-
-func TestAdminTrashRestore_InvalidHash(t *testing.T) {
-	h, _, _ := newTestHandler(t)
+// A body carrying the retired `hashes` key names no target set, so it is a 400
+// rather than a silent no-op over the whole Trash.
+func TestTrashBulk_RejectsRetiredHashesBody(t *testing.T) {
+	repo := &fakeRepo{}
+	h := &handler{repo: repo}
 	rr := httptest.NewRecorder()
-	h.adminTrashRestore(rr, trashRestoreReq("not-valid"))
+	h.trashBulk(rr, jsonReq(http.MethodPost, "/api/admin/trash/bulk",
+		`{"action":"restore","hashes":["`+strings.Repeat("a", 64)+`"]}`))
 	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rr.Code)
+		t.Errorf("status = %d, want 400 for a hash-addressed body", rr.Code)
+	}
+	if len(repo.bulkRestoredTagsets) != 0 {
+		t.Errorf("restored %v, want nothing", repo.bulkRestoredTagsets)
 	}
 }
 
-func TestAdminTrashRestore_NotFound(t *testing.T) {
-	h, _, _ := newTestHandler(t)
-	unknown := "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+// Exactly one of {tagset_ids, filter} — supplying both is ambiguous.
+func TestTrashBulk_RejectsBothIDsAndFilter(t *testing.T) {
+	h := &handler{repo: &fakeRepo{}}
 	rr := httptest.NewRecorder()
-	h.adminTrashRestore(rr, trashRestoreReq(unknown))
-	if rr.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rr.Code)
+	h.trashBulk(rr, jsonReq(http.MethodPost, "/api/admin/trash/bulk",
+		`{"action":"delete","tagset_ids":[1],"filter":{"q":""}}`))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rr.Code)
 	}
 }
 
-func TestAdminTrashRestore_Success(t *testing.T) {
-	h, db, _ := newTestHandler(t)
-	hash := uploadAudio(t, h, "restore-me.mp3", []byte("restore content"))
-
-	// Soft-delete then restore.
-	h.adminDeleteFile(httptest.NewRecorder(), deleteReq(hash))
-
+// Access (license / guest) is a recording property; the Trash lens must refuse
+// to edit it on a trashed appearance rather than half-apply the patch.
+func TestTrashBulk_EditRejectsAccessPatch(t *testing.T) {
+	repo := &fakeRepo{}
+	h := &handler{repo: repo}
 	rr := httptest.NewRecorder()
-	h.adminTrashRestore(rr, trashRestoreReq(hash))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	h.trashBulk(rr, jsonReq(http.MethodPost, "/api/admin/trash/bulk",
+		`{"action":"edit","tagset_ids":[3],"patch":{"artist":"X","guest":true}}`))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rr.Code, rr.Body.String())
 	}
-	var resp map[string]any
-	json.NewDecoder(rr.Body).Decode(&resp)
-	if resp["ok"] != true {
-		t.Errorf("ok = %v, want true", resp["ok"])
-	}
-	if resp["hash"] != hash {
-		t.Errorf("hash = %v, want %s", resp["hash"], hash)
-	}
-
-	// Row must be live again (no deleted_at).
-	got, _ := db.GetFileByHash(context.Background(), hash)
-	if got == nil {
-		t.Fatal("files row missing after restore")
-	}
-	if got.DeletedAt.Valid {
-		t.Errorf("DeletedAt still set after restore: %d", got.DeletedAt.Int64)
-	}
-
-	// File must appear in ListFiles.
-	entries, _ := db.ListFiles(context.Background())
-	var found bool
-	for _, e := range entries {
-		if e.Hash == hash {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("restored file not present in ListFiles")
+	if len(repo.bulkMetaTagsets) != 0 {
+		t.Errorf("patched %v, want nothing", repo.bulkMetaTagsets)
 	}
 }

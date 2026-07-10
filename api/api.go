@@ -272,8 +272,11 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		// Bulk Trash admits either capability; the handler enforces the per-action
 		// gate (restore/delete → file.delete, edit → metadata.edit).
 		r.With(d.protectAny(auth.PermFileDelete, auth.PermMetadataEdit)).Post("/trash/bulk", h.trashBulk)
-		r.With(fileDelete).Delete("/trash/{hash}", h.adminTrashHardDelete)
-		r.With(fileDelete).Post("/trash/{hash}/restore", h.adminTrashRestore)
+		// The Appearances lens's single-row Restore / Delete forever are the
+		// tagset-addressed endpoints registered below (`/tagsets/{tagsetID}`).
+		// The old hash-addressed pair is gone: a blob can host several trashed
+		// appearances, so a hash could not name the row the UI was showing
+		// (recording-tagsets P7c).
 		// Trash — the Recordings and Files perspectives (soft-delete.md). Lists +
 		// explicit-id bulk restore/delete; the single-row restore/delete reuse the
 		// recordings/renditions routes below. All file.delete (Trash is the one
@@ -319,6 +322,14 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(fileDelete).Post("/recordings/{recordingID}/trash", h.recordingsTrash)
 		r.With(fileDelete).Post("/recordings/{recordingID}/restore", h.recordingsRestore)
 		r.With(fileDelete).Delete("/recordings/{recordingID}", h.recordingsHardDelete)
+		// Tag edit on one appearance by id. Same handlers as the review queue's
+		// /moderation/{tagsetID}/metadata, re-registered under the tagset prefix
+		// with the *metadata.edit* gate: the Trash Appearances lens edits a
+		// trashed appearance ("fix a tag before restoring") and its editors are
+		// not necessarily moderators. Hash addressing cannot serve it — the
+		// trashed row may not be its blob's representative appearance (P7c).
+		r.With(d.protect(auth.PermMetadataEdit)).Get("/tagsets/{tagsetID}/metadata", h.moderationMetadataGet)
+		r.With(d.protect(auth.PermMetadataEdit)).Patch("/tagsets/{tagsetID}/metadata", h.moderationMetadata)
 		r.With(moderate).Post("/tagsets/{tagsetID}/move", h.tagsetMove)
 		r.With(fileDelete).Post("/tagsets/{tagsetID}/restore", h.tagsetRestore)
 		r.With(fileDelete).Delete("/tagsets/{tagsetID}", h.tagsetHardDelete)

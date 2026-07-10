@@ -13,7 +13,7 @@ There are four bulk endpoints, one per surface:
 | Endpoint | Surface | Row identity | Actions | Gate |
 |----------|---------|--------------|---------|------|
 | `POST /api/admin/files/bulk` | live library (`/admin/library`) | `hashes` | `trash`, `edit` | `file.delete` **or** `metadata.edit` (per action) |
-| `POST /api/admin/trash/bulk` | Trash (`/admin/library#trash`) | `hashes` | `restore`, `delete`, `edit` | `file.delete` **or** `metadata.edit` (per action) |
+| `POST /api/admin/trash/bulk` | Trash · Appearances (`/admin/library#trash`) | `tagset_ids` | `restore`, `delete`, `edit` | `file.delete` **or** `metadata.edit` (per action) |
 | `POST /api/admin/moderation/bulk` | review queue (`/admin/library#review`) | `tagset_ids` | `approve`, `return`, `discard` | `content.moderate` (`discard` also needs `file.delete`) |
 | `POST /api/my/uploads/bulk` | "My uploads" staging tab | `tagset_ids` | `submit`, `remove` | `file.upload` (owner-scoped) |
 
@@ -50,10 +50,13 @@ Every bulk request names its target set in exactly **one** of two ways
 (supplying both, or neither, is a `400`):
 
 - **the id list** — an explicit array of a hand-picked selection: **`hashes`**
-  for `files/bulk` and `trash/bulk` (each 64 lowercase hex chars), or
-  **`tagset_ids`** for `moderation/bulk` and `my/uploads/bulk` (each a positive
-  integer). The list is capped at **5000** entries (`bulkHashCap`) to bound the
-  request body; over the cap is a `400`.
+  for `files/bulk` (each 64 lowercase hex chars), or **`tagset_ids`** for
+  `trash/bulk`, `moderation/bulk` and `my/uploads/bulk` (each a positive
+  integer). `trash/bulk` is tagset-addressed because its rows are appearances,
+  not blobs (recording-tagsets P7c): one blob can host several trashed
+  appearances, and an absorbed/purged one has no hash at all. The list is capped
+  at **5000** entries (`bulkHashCap`) to bound the request body; over the cap is
+  a `400`.
 - **`filter`** — an object the server resolves to the matching set on its side
   (the "Select all N matching" path). No cap — it is a server-side `WHERE`.
 
@@ -71,7 +74,7 @@ filter (the By-entity delete-album / delete-artist path); the other three resolv
 on `q` + `field` only.
 
 The filter resolves only to the rows that surface actually owns: live
-(non-deleted) files for `files/bulk`, trashed files for `trash/bulk`, **submitted**
+(non-deleted) files for `files/bulk`, trashed **appearances** for `trash/bulk`, **submitted**
 appearances for `moderation/bulk`, and the caller's own **draft + returned**
 appearances for `my/uploads/bulk`.
 
@@ -132,16 +135,18 @@ Acts over the **live library**. Backs the admin library bulk toolbar.
 
 ## `POST /api/admin/trash/bulk`
 
-Acts over the **Trash** (soft-deleted) bucket. The filter resolves over
-`deleted_at IS NOT NULL` (`field` may be `artist`/`album`/`title`; no
-`artist_id`/`album_id`).
+Acts over the **Trash · Appearances** lens (`tagsets.deleted_at IS NOT NULL`).
+The unit is the appearance, so the id list is **`tagset_ids`** (`field` may be
+`artist`/`album`/`title`; no `artist_id`/`album_id`). `delete` skips a live
+appearance and reclaims a shared blob only once its last trashed appearance is
+gone; `edit` is tags only (access is a recording property).
 
 ### Request
 
 ```json
 {
   "action": "restore" | "delete" | "edit",
-  "hashes": ["…"],
+  "tagset_ids": [12, 34],
   "filter": { "q": "", "field": "" },
   "all": true,
   "patch": { "title": "…" }

@@ -54,35 +54,42 @@ scope, the segmented pill row (`.scope-switch`) switches scopes.
 ### 1. Appearances (default)
 
 **Membership** — individually trashed appearances (`tagsets.deleted_at IS NOT
-NULL`). This is the existing hash-addressed Trash listing, **unchanged**.
+NULL`). The listing is rooted **`FROM tagsets`** (recording-tagsets P7c): one
+row per appearance, keyed by **tagset id**. Everything on this lens is
+tagset-addressed.
 
-> **⚠ It is not actually tagset-grain (P7, 2026-07-10).** `trashListSelect`
-> reads `FROM files f` + the INNER `tagsetJoin`, so it emits **one row per
-> file**, carrying that file's *representative* appearance (`reprTagset` =
-> primary, else oldest). A trashed appearance that is not its file's
-> representative — a byte-dup draft, or any second appearance on a blob — is
-> listed nowhere, and the hash-addressed row actions act on **every** trashed
-> tagset of that file while showing a single row. Re-rooting the lens
-> `FROM tagsets` is P7c in
-> [recording-tagsets.md](recording-tagsets.md#phase-plan-the-decomposition).
+> Until P7c the lens was rooted `FROM files` + the INNER `tagsetJoin`, so it
+> emitted one row per *file* carrying that file's representative appearance.
+> Two trashed appearances of one blob (a byte-dup draft alongside the original)
+> collapsed to a single row, and the hash-addressed restore/delete then acted
+> on **both** while the UI showed one; an appearance whose origin blob was
+> absorbed or purged was unreachable entirely. Rooting on the tagset fixes all
+> three: a blobless appearance simply has an empty `hash`/`url` (no preview, no
+> size) and is restored / deleted by its id like any other.
 
-- **Restore** — clear `deleted_at` (re-enters the appearance's prior review
-  state; moderation.md).
-- **Delete forever** — tagset/hash-addressed hard delete through the shared
-  `hardDeleteTagsetsTx` cascade (last appearance GCs the recording + its files).
-- **Edit** — tags only (access is meaningless on a non-served file).
+- **Restore** — `POST /api/admin/tagsets/{id}/restore` (`RestoreTagset`);
+  bulk `POST /api/admin/trash/bulk {action:"restore", tagset_ids}`. The
+  appearance re-enters its prior review state (moderation.md).
+- **Delete forever** — `DELETE /api/admin/tagsets/{id}`
+  (`HardDeleteTrashedTagset`); bulk `{action:"delete", tagset_ids}`. Both route
+  through the shared `hardDeleteTagsetsTx` cascade (a non-last appearance keeps
+  the blob; the last one GCs the recording + its files) and refuse a live
+  appearance. A blob hosting several appearances is only reclaimed once the
+  last of them is deleted.
+- **Edit** — tags only, `PATCH /api/admin/tagsets/{id}/metadata`
+  (`metadata.edit`-gated). Access (license / guest) is a recording property and
+  is not offered here.
 
 > **Dormant appearances are handled by Recordings + Files, not here.** When a
 > recording loses its last surviving file its appearances drop out of the
-> library (dormant) but their `tagsets.deleted_at` is still `NULL`. Rather than
-> widen this shipped, hash-addressed listing *and its restore path* (a
-> hash-addressed restore no-ops on a non-trashed tagset, so it would need
-> dormant-aware, tagset-addressed logic) for a capability of unclear value, the
-> dormant recording surfaces under **Recordings** (restore brings a rendition
-> back) and its removed blob under **Files** (restore the blob). The three
-> lenses still cover both soft-delete marks — Appearances just stays scoped to
-> its own mark. Broadening it (tagset-addressed, dormant-aware) remains a
-> possible follow-up.
+> library (dormant) but their `tagsets.deleted_at` is still `NULL`, so this lens
+> (whose base predicate *is* that mark) does not list them. The dormant
+> recording surfaces under **Recordings** (restore brings a rendition back) and
+> its removed blob under **Files** (restore the blob). The three lenses cover
+> both soft-delete marks — Appearances stays scoped to its own. Now that the
+> lens is tagset-addressed (P7c), broadening it to dormant appearances is
+> mechanically simpler than before, but remains a deliberate non-goal: dormancy
+> is a recording-level state, better shown where the recording is.
 
 ### 2. Recordings
 
@@ -165,12 +172,13 @@ work; the rest already exist.
 
 | Perspective | List | Restore | Delete forever |
 |---|---|---|---|
-| Appearances | `GET /api/admin/trash` — existing (unchanged) | `POST /api/admin/trash/{hash}/restore` — existing | `DELETE /api/admin/trash/{hash}` — existing |
+| Appearances | `GET /api/admin/trash` — tagset-rooted (P7c) | `POST /api/admin/tagsets/{id}/restore` | `DELETE /api/admin/tagsets/{id}` |
 | Recordings | `GET /api/admin/trash/recordings` — **new** (trashed-recording membership) | `POST /api/admin/recordings/{id}/restore` — **new** `RestoreRecording` (un-trash appearances + ensure a rendition) | `DELETE /api/admin/recordings/{id}` — existing `HardDeleteRecording` |
 | Files | `GET /api/admin/trash/files` — **new** (removed-blob listing) | `POST /api/admin/renditions/{id}/restore` — existing `RestoreRendition` | `DELETE /api/admin/renditions/{id}` — **new** (reclaim blob; last file → recording cascade; repoint live origin refs) |
 
-Bulk variants: Appearances via the existing `POST /api/admin/trash/bulk`; the
-new Recordings / Files modes take their own `POST …/trash/recordings/bulk` and
+Bulk variants: Appearances via `POST /api/admin/trash/bulk` — its explicit-id
+form now carries **`tagset_ids`**, not `hashes` (P7c); the new Recordings /
+Files modes take their own `POST …/trash/recordings/bulk` and
 `POST …/trash/files/bulk` (select-all-N-matching uses `all:true`, per
 `file-list-scaling.md`).
 
