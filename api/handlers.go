@@ -238,6 +238,7 @@ func (h *handler) listFiles(w http.ResponseWriter, r *http.Request) {
 		Filename      string   `json:"filename"`
 		MimeType      string   `json:"mime_type"`
 		ByteSize      int64    `json:"byte_size"`
+		CreatedAt     int64    `json:"created_at"`
 		URL           string   `json:"url"`
 		Title         string   `json:"title"`
 		Artist        string   `json:"artist"`
@@ -281,6 +282,7 @@ func (h *handler) listFiles(w http.ResponseWriter, r *http.Request) {
 			Filename:       e.Filename,
 			MimeType:       e.MimeType,
 			ByteSize:       e.ByteSize,
+			CreatedAt:      e.CreatedAt,
 			URL:            "/files/" + e.ObjectKey,
 			Title:          e.Title,
 			Artist:         e.Artist,

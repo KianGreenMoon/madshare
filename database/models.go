@@ -145,7 +145,7 @@ type FileListEntry struct {
 	ReviewState string
 	// StorageBackend / RecordingID feed the All-files physical columns
 	// (recording-tagsets P5): where the blob lives and which recording it is a
-	// rendition of (the link into /admin/recordings).
+	// rendition of (the link into /admin/library#recordings).
 	StorageBackend string
 	RecordingID    int64
 }

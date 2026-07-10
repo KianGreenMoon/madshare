@@ -2,7 +2,7 @@ package api
 
 // /api/admin/recordings — the recording-centric curation surface
 // (recording-tagsets P5, docs/architecture/recording-tagsets.md "Admin
-// surfaces"): the paged listing behind /admin/recordings, the both-arms
+// surfaces"): the paged listing behind /admin/library#recordings, the both-arms
 // detail, and the curation operations (merge, appearance move / set-primary,
 // rendition remove/restore, whole-recording trash + hard delete, access edit).
 // Listing/curation is content.moderate; deletes are file.delete; the access

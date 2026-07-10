@@ -1,17 +1,21 @@
 package database
 
-// Trash · Appearances lens — tagset-rooted (recording-tagsets P7c).
+// Appearance-rooted listings: the Trash · Appearances lens (recording-tagsets
+// P7c) and the Full Library · All Appearances lens — both one row per
+// **appearance**, rooted `FROM tagsets` and addressed by tagset id.
 //
-// The lens lists **appearances**, so it is rooted `FROM tagsets`. The previous
-// implementation was rooted `FROM files` and joined each file's representative
-// tagset, which made it one row per *file*: a trashed appearance that was not
-// its blob's representative (a byte-dup draft, any second appearance) was
-// listed nowhere, and the hash-addressed row actions acted on **every** trashed
-// tagset of that blob while the UI showed a single row.
+// A files-rooted listing joined to each file's representative tagset is one
+// row per *file*: an appearance that is not its blob's representative (a
+// byte-dup draft, any second appearance) is listed nowhere, and hash-addressed
+// row actions act on **every** matching tagset of that blob while the UI shows
+// a single row. Rooting on the tagset fixes both.
 //
-// `origin_file_id` is provenance, so the blob join is a LEFT JOIN: an
-// appearance whose origin blob was absorbed or purged still belongs in Trash,
-// just without preview/size. Everything here is addressed by tagset id.
+// The two lenses bind `f` differently. Trash reads the **origin blob**
+// (`origin_file_id` is provenance; LEFT JOIN — an appearance whose origin was
+// absorbed or purged still belongs in Trash, just without preview/size). The
+// live lens reads the recording's **ladder-best surviving rendition**, the
+// same play resolution as the listening surfaces (LEFT — a dormant recording,
+// all renditions removed, still lists its appearances, just unplayable).
 
 import (
 	"context"
@@ -20,9 +24,10 @@ import (
 	"strings"
 )
 
-// TrashEntry is one trashed appearance. Blob-derived fields are zero when the
-// appearance has no surviving origin blob (Hash == "" ⇒ no preview, no size).
-type TrashEntry struct {
+// AppearanceEntry is one appearance row. Blob-derived fields are zero when no
+// blob backs the row (Hash == "" ⇒ no preview, no size): in Trash a purged /
+// absorbed origin, in the live lens a dormant recording.
+type AppearanceEntry struct {
 	TagsetID    int64
 	FileID      sql.NullInt64
 	Hash        string
@@ -34,19 +39,25 @@ type TrashEntry struct {
 	AlbumArtist sql.NullString
 	Album       string
 	TrackNumber sql.NullInt64
+	DiscNumber  sql.NullInt64
 	Year        int64
+	CreatedAt   int64
 	DeletedAt   sql.NullInt64
 	ReviewState string
 	RecordingID int64
+	// License / GuestPlayable mirror the recording's access (read-only here;
+	// access is edited per recording) — the live lens's Access column.
+	License       sql.NullString
+	GuestPlayable bool
 	// ArtistHasImage / AlbumHasImage drive the grouped view's "Add cover" hint.
 	ArtistHasImage bool
 	AlbumHasImage  bool
 }
 
-// trashAppearanceFrom roots the lens on the tagset. `m` is the appearance (the
-// row), `r` its recording, `f` the origin blob when one survives. The alias
-// names match the shared predicates (qFieldClause reads `m.*` and `f.id`), so
-// filtering behaves exactly as on the other file surfaces.
+// trashAppearanceFrom roots the Trash lens on the tagset. `m` is the appearance
+// (the row), `r` its recording, `f` the origin blob when one survives. The
+// alias names match the shared predicates (qFieldClause reads `m.*` and
+// `f.id`), so filtering behaves exactly as on the other file surfaces.
 const trashAppearanceFrom = `
 	FROM tagsets m
 	JOIN recordings r ON r.id = m.recording_id
@@ -54,8 +65,9 @@ const trashAppearanceFrom = `
 	LEFT JOIN artist_images aimg ON aimg.artist_id = m.album_artist_id
 	LEFT JOIN album_images  alimg ON alimg.album_id  = m.album_id`
 
-const trashAppearanceSelect = `
-	SELECT
+// appearanceColumns is the shared SELECT list over the (m, r, f, aimg, alimg)
+// aliases — each lens prepends SELECT and appends its own FROM.
+const appearanceColumns = `
 		m.id, m.origin_file_id,
 		COALESCE(f.hash, ''), COALESCE(f.byte_size, 0), COALESCE(f.object_key, ''),
 		COALESCE((SELECT filename FROM file_uploads WHERE file_id = f.id ORDER BY id LIMIT 1), COALESCE(f.hash, '')) AS filename,
@@ -64,25 +76,33 @@ const trashAppearanceSelect = `
 		m.album_artist,
 		COALESCE(m.album,  '') AS album,
 		m.track_number,
+		m.disc_number,
 		COALESCE(m.year, 0) AS year,
+		m.created_at,
 		m.deleted_at,
 		m.review_state,
 		m.recording_id,
+		r.license,
+		r.guest_playable,
 		CASE WHEN aimg.artist_id IS NOT NULL THEN 1 ELSE 0 END AS artist_has_image,
-		CASE WHEN alimg.album_id  IS NOT NULL THEN 1 ELSE 0 END AS album_has_image` + trashAppearanceFrom
+		CASE WHEN alimg.album_id  IS NOT NULL THEN 1 ELSE 0 END AS album_has_image`
 
-func scanTrashAppearances(rows *sql.Rows, err error) ([]*TrashEntry, error) {
+const trashAppearanceSelect = `
+	SELECT` + appearanceColumns + trashAppearanceFrom
+
+func scanAppearances(rows *sql.Rows, err error) ([]*AppearanceEntry, error) {
 	if err != nil {
-		return nil, fmt.Errorf("list trashed appearances: %w", err)
+		return nil, fmt.Errorf("list appearances: %w", err)
 	}
 	defer rows.Close()
-	out := make([]*TrashEntry, 0)
+	out := make([]*AppearanceEntry, 0)
 	for rows.Next() {
-		var e TrashEntry
+		var e AppearanceEntry
 		if err := rows.Scan(&e.TagsetID, &e.FileID, &e.Hash, &e.ByteSize, &e.ObjectKey, &e.Filename,
-			&e.Title, &e.Artist, &e.AlbumArtist, &e.Album, &e.TrackNumber, &e.Year,
-			&e.DeletedAt, &e.ReviewState, &e.RecordingID, &e.ArtistHasImage, &e.AlbumHasImage); err != nil {
-			return nil, fmt.Errorf("scan trashed appearance: %w", err)
+			&e.Title, &e.Artist, &e.AlbumArtist, &e.Album, &e.TrackNumber, &e.DiscNumber, &e.Year, &e.CreatedAt,
+			&e.DeletedAt, &e.ReviewState, &e.RecordingID, &e.License, &e.GuestPlayable,
+			&e.ArtistHasImage, &e.AlbumHasImage); err != nil {
+			return nil, fmt.Errorf("scan appearance: %w", err)
 		}
 		out = append(out, &e)
 	}
@@ -129,6 +149,8 @@ func appearanceTrashSort(token string) string {
 		return "COALESCE(f.byte_size, 0) ASC, m.id ASC"
 	case "size_desc":
 		return "COALESCE(f.byte_size, 0) DESC, m.id DESC"
+	case "untagged_first":
+		return untaggedExpr + " DESC, m.deleted_at DESC, m.id DESC"
 	case "grouped":
 		return `LOWER(COALESCE(m.album_artist, m.artist, '')) ASC, LOWER(COALESCE(m.album, '')) ASC,
 		        (m.track_number IS NULL) ASC, m.track_number ASC, m.id ASC`
@@ -139,7 +161,7 @@ func appearanceTrashSort(token string) string {
 
 // ListTrashedAppearancesPage returns one filtered, sorted page of the lens.
 // With Limit <= 0 it returns every match (no window).
-func (db *DB) ListTrashedAppearancesPage(ctx context.Context, q FileListQuery) ([]*TrashEntry, error) {
+func (db *DB) ListTrashedAppearancesPage(ctx context.Context, q FileListQuery) ([]*AppearanceEntry, error) {
 	where, args := appearanceTrashWhere(q.FileFilter)
 	sqlText := trashAppearanceSelect + "\n\t\tWHERE " + where + "\n\t\tORDER BY " + appearanceTrashSort(q.Sort)
 	if q.Limit > 0 {
@@ -147,7 +169,105 @@ func (db *DB) ListTrashedAppearancesPage(ctx context.Context, q FileListQuery) (
 		sqlText += "\n\t\tLIMIT ? OFFSET ?"
 		args = append(args, q.Limit, offset)
 	}
-	return scanTrashAppearances(db.QueryContext(ctx, sqlText, args...))
+	return scanAppearances(db.QueryContext(ctx, sqlText, args...))
+}
+
+// ── Full Library · All Appearances (the live lens) ──────────────────────────
+
+// liveAppearanceFrom roots the live lens on the tagset: `f` is the recording's
+// ladder-best surviving rendition (bestRenditionJoin — the same play resolution
+// the listening surfaces use), LEFT so a dormant recording's appearances still
+// list (unplayable, Hash == ""). The rendition join is bound even for the
+// count/ids queries: qFieldClause's filename term reads f.id.
+var liveAppearanceFrom = `
+	FROM tagsets m` + recordingJoin + bestRenditionJoin(true) + `
+	LEFT JOIN artist_images aimg ON aimg.artist_id = m.album_artist_id
+	LEFT JOIN album_images  alimg ON alimg.album_id  = m.album_id`
+
+var liveAppearanceSelect = `
+	SELECT` + appearanceColumns + liveAppearanceFrom
+
+// appearanceLiveWhere is the live-lens predicate: approved and not trashed
+// (drafts/submissions belong to Review, trashed rows to Trash). Same filter
+// fragments as the Trash lens, so search behaves identically.
+func appearanceLiveWhere(f FileFilter) (string, []any) {
+	where := "m.deleted_at IS NULL AND m.review_state = 'approved'"
+	var args []any
+	if frag, fragArgs := qFieldClause(f.Q, f.QField); frag != "" {
+		where += " AND " + frag
+		args = append(args, fragArgs...)
+	}
+	if f.ArtistID != nil {
+		where += " AND (m.album_artist_id = ? OR m.artist_id = ?)"
+		args = append(args, *f.ArtistID, *f.ArtistID)
+	}
+	if f.AlbumID != nil {
+		where += " AND m.album_id = ?"
+		args = append(args, *f.AlbumID)
+	}
+	return where, args
+}
+
+// appearanceLiveSort maps a sort token to a safe ORDER BY — the Trash mapping
+// with the deleted_* tokens swapped for created_* (the live meta column).
+func appearanceLiveSort(token string) string {
+	switch token {
+	case "created_asc":
+		return "m.created_at ASC, m.id ASC"
+	case "title_asc":
+		return "LOWER(COALESCE(m.title, '')) ASC, m.id ASC"
+	case "title_desc":
+		return "LOWER(COALESCE(m.title, '')) DESC, m.id DESC"
+	case "artist_asc":
+		return "LOWER(COALESCE(m.album_artist, m.artist, '')) ASC, m.id ASC"
+	case "artist_desc":
+		return "LOWER(COALESCE(m.album_artist, m.artist, '')) DESC, m.id DESC"
+	case "size_asc":
+		return "COALESCE(f.byte_size, 0) ASC, m.id ASC"
+	case "size_desc":
+		return "COALESCE(f.byte_size, 0) DESC, m.id DESC"
+	case "untagged_first":
+		// Untagged rows first, then newest — surfaces appearances that still
+		// want tags (same needs-metadata rule as the file listing).
+		return untaggedExpr + " DESC, m.created_at DESC, m.id DESC"
+	case "grouped":
+		return `LOWER(COALESCE(m.album_artist, m.artist, '')) ASC, LOWER(COALESCE(m.album, '')) ASC,
+		        (m.track_number IS NULL) ASC, m.track_number ASC, m.id ASC`
+	default: // created_desc
+		return "m.created_at DESC, m.id DESC"
+	}
+}
+
+// ListAppearancesPage returns one filtered, sorted page of the live lens.
+// With Limit <= 0 it returns every match (no window).
+func (db *DB) ListAppearancesPage(ctx context.Context, q FileListQuery) ([]*AppearanceEntry, error) {
+	where, args := appearanceLiveWhere(q.FileFilter)
+	sqlText := liveAppearanceSelect + "\n\t\tWHERE " + where + "\n\t\tORDER BY " + appearanceLiveSort(q.Sort)
+	if q.Limit > 0 {
+		offset := max(q.Offset, 0)
+		sqlText += "\n\t\tLIMIT ? OFFSET ?"
+		args = append(args, q.Limit, offset)
+	}
+	return scanAppearances(db.QueryContext(ctx, sqlText, args...))
+}
+
+// CountAppearances returns how many live appearances match the filter,
+// ignoring paging — the total for the list and "select all N matching".
+func (db *DB) CountAppearances(ctx context.Context, f FileFilter) (int, error) {
+	where, args := appearanceLiveWhere(f)
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*)`+liveAppearanceFrom+` WHERE `+where, args...).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count appearances: %w", err)
+	}
+	return n, nil
+}
+
+// AppearanceIDsByFilter returns the tagset ids of every live appearance
+// matching the filter (no paging). Backs "select all N matching".
+func (db *DB) AppearanceIDsByFilter(ctx context.Context, f FileFilter) ([]int64, error) {
+	where, args := appearanceLiveWhere(f)
+	return scanIDs(db.QueryContext(ctx, `SELECT m.id`+liveAppearanceFrom+` WHERE `+where+` ORDER BY m.id`, args...))
 }
 
 // CountTrashedAppearances returns how many trashed appearances match the filter,

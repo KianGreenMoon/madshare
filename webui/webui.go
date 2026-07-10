@@ -69,8 +69,11 @@ var (
 // value; the value is the template. The /admin landing is the dashboard
 // (adminTmpl, SubPage ""). See docs/ui/shells.md.
 var adminSubPages = map[string]*template.Template{
-	// "library" is the unified file-management page (the All files / Review /
+	// "library" is the unified file-management page (the Full Library / Review /
 	// Trash scopes folded together — docs/architecture/file-management-view.md).
+	// Full Library carries four lenses (By entity / All Appearances / Recordings
+	// / Files); the recording-centric curation view (recording-tagsets P5) lives
+	// at /admin/library#recordings.
 	"library": buildPageTmpl("html/admin/library.html"),
 	// "upload" is the same upload body as /upload wrapped in the admin shell, so
 	// the upload page renders in whichever shell it was reached from
@@ -81,10 +84,6 @@ var adminSubPages = map[string]*template.Template{
 	// "duplicates" lists same-audio recordings with >1 rendition (recordings P2,
 	// docs/architecture/recordings.md). Moderator-accessible.
 	"duplicates": buildPageTmpl("html/admin/duplicates.html"),
-	// "recordings" is the recording-centric curation view — both arms, merge,
-	// move/set-primary, whole-recording delete (recording-tagsets P5,
-	// docs/architecture/recording-tagsets.md). Moderator-accessible.
-	"recordings": buildPageTmpl("html/admin/recordings.html"),
 	// "sources" manages in-place symlink imports (data-sources P6,
 	// docs/architecture/data-sources.md). Moderator-accessible.
 	"sources":  buildPageTmpl("html/admin/sources.html"),

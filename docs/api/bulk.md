@@ -8,16 +8,17 @@ surface has a bulk toolbar that operates over either a **hand-picked selection**
 or the whole **"Select all N matching"** set, and posts to one of the four
 endpoints below.
 
-There are four bulk endpoints, one per surface:
+There are five bulk endpoints, one per surface:
 
 | Endpoint | Surface | Row identity | Actions | Gate |
 |----------|---------|--------------|---------|------|
-| `POST /api/admin/files/bulk` | live library (`/admin/library`) | `hashes` | `trash`, `edit` | `file.delete` **or** `metadata.edit` (per action) |
+| `POST /api/admin/appearances/bulk` | Full Library · All Appearances (`/admin/library`) | `tagset_ids` | `trash`, `edit` | `file.delete` **or** `metadata.edit` (per action) |
+| `POST /api/admin/files/bulk` | live library, file/entity-addressed (the By-entity deletes) | `hashes` | `trash`, `edit` | `file.delete` **or** `metadata.edit` (per action) |
 | `POST /api/admin/trash/bulk` | Trash · Appearances (`/admin/library#trash`) | `tagset_ids` | `restore`, `delete`, `edit` | `file.delete` **or** `metadata.edit` (per action) |
 | `POST /api/admin/moderation/bulk` | review queue (`/admin/library#review`) | `tagset_ids` | `approve`, `return`, `discard` | `content.moderate` (`discard` also needs `file.delete`) |
 | `POST /api/my/uploads/bulk` | "My uploads" staging tab | `tagset_ids` | `submit`, `remove` | `file.upload` (owner-scoped) |
 
-The recordings curation view (`/admin/recordings`, recording-tagsets P5) adds
+The recordings curation view (`/admin/library#recordings`, recording-tagsets P5) adds
 two set-shaped operations of its own, addressed by **`recording_ids`** and
 documented in `docs/architecture/recording-tagsets.md`: `POST
 /api/admin/recordings/trash` (`{recording_ids}`, whole-recording soft trash,
@@ -26,15 +27,16 @@ source_ids}`, `content.moderate`). They act on explicit id lists only — a
 merge or whole-recording trash is always a deliberate hand-picked selection,
 so the filter/`all:true` machinery below does not apply to them.
 
-**Row identity differs by surface.** The files-rooted surfaces (library, Trash)
-address rows by content **`hash`**; the review/staging surfaces address the
-**appearance** by **`tagset_id`** — since the recording-tagsets rework the
-reviewable unit is the tagset, not the file, and a byte-dup blob can host several
-appearances (`docs/architecture/recording-tagsets.md`,
-`docs/architecture/moderation.md`). Below, "the id list" means whichever of the
-two a given endpoint takes.
+**Row identity differs by surface.** `files/bulk` addresses rows by content
+**`hash`** (it backs the file/entity-addressed paths — the By-entity
+delete-album/-artist filters); every appearance-rooted surface (All
+Appearances, Trash, review, staging) addresses the **appearance** by
+**`tagset_id`** — since the recording-tagsets rework the catalog unit is the
+tagset, not the file, and a byte-dup blob can host several appearances
+(`docs/architecture/recording-tagsets.md`, `docs/architecture/moderation.md`).
+Below, "the id list" means whichever of the two a given endpoint takes.
 
-All four share the same **target-set resolution** and **guardrail** described
+All five share the same **target-set resolution** and **guardrail** described
 next; the differences are the id list, which actions they accept, and which set
 the filter resolves to. The concept lives in
 `docs/architecture/file-list-scaling.md`; this page is the request/response
@@ -51,10 +53,11 @@ Every bulk request names its target set in exactly **one** of two ways
 
 - **the id list** — an explicit array of a hand-picked selection: **`hashes`**
   for `files/bulk` (each 64 lowercase hex chars), or **`tagset_ids`** for
-  `trash/bulk`, `moderation/bulk` and `my/uploads/bulk` (each a positive
-  integer). `trash/bulk` is tagset-addressed because its rows are appearances,
-  not blobs (recording-tagsets P7c): one blob can host several trashed
-  appearances, and an absorbed/purged one has no hash at all. The list is capped
+  `appearances/bulk`, `trash/bulk`, `moderation/bulk` and `my/uploads/bulk`
+  (each a positive integer). The appearance surfaces are tagset-addressed
+  because their rows are appearances, not blobs (recording-tagsets P7c): one
+  blob can host several appearances, and an absorbed/purged one has no hash at
+  all. The list is capped
   at **5000** entries (`bulkHashCap`) to bound the request body; over the cap is
   a `400`.
 - **`filter`** — an object the server resolves to the matching set on its side
@@ -74,7 +77,8 @@ filter (the By-entity delete-album / delete-artist path); the other three resolv
 on `q` + `field` only.
 
 The filter resolves only to the rows that surface actually owns: live
-(non-deleted) files for `files/bulk`, trashed **appearances** for `trash/bulk`, **submitted**
+approved **appearances** for `appearances/bulk`, live (non-deleted) files for
+`files/bulk`, trashed **appearances** for `trash/bulk`, **submitted**
 appearances for `moderation/bulk`, and the caller's own **draft + returned**
 appearances for `my/uploads/bulk`.
 
@@ -88,7 +92,7 @@ in id-list mode or when the filter term is non-empty.
 
 ### Per-action authorization
 
-The `files/bulk` and `trash/bulk` routes admit **either** `file.delete` **or**
+The `appearances/bulk`, `files/bulk` and `trash/bulk` routes admit **either** `file.delete` **or**
 `metadata.edit`, and the handler enforces the gate the chosen action actually
 needs (destructive actions → `file.delete`; `edit` → `metadata.edit`). A caller
 holding only one capability is `403` for actions requiring the other. The
@@ -103,9 +107,40 @@ Each request body is capped at **1 MiB** (a 5000-hash list is well under it).
 
 ---
 
+## `POST /api/admin/appearances/bulk`
+
+Acts over **Full Library · All Appearances** (live approved appearances, one
+row per tagset). Backs that lens's bulk toolbar and its per-row Move to Trash.
+
+### Request
+
+```json
+{
+  "action": "trash" | "edit",
+  "tagset_ids": [12, 34],
+  "filter": { "q": "beatles", "field": "artist" },
+  "all": false,
+  "patch": { "artist": "…", "license": "…", "guest": true }
+}
+```
+
+| `action` | Effect | Permission |
+|----------|--------|------------|
+| `trash` | Soft-delete (move to Trash) the resolved appearances. One batched `BulkTrashTagsets` transaction + a single `appearance.bulk_trash` audit row. The blobs and recordings stay. | `file.delete` |
+| `edit` | Apply `patch` (tags **and access**) across the set — see [The edit patch](#the-edit-patch). Unlike the Trash edit, access is allowed: license/guest forward to each appearance's **recording** (`BulkSet…ByTagsets`, live approved appearances only). | `metadata.edit` |
+
+### Response
+
+- `trash`: `{ "ok": true, "affected": N }`.
+- `edit`: `{ "ok": true, "affected": N, "failed": [{ "tagset_id": 12, "error": "…" }] }`.
+
+---
+
 ## `POST /api/admin/files/bulk`
 
-Acts over the **live library**. Backs the admin library bulk toolbar.
+Acts over the **live library**, hash/entity-addressed. Backs the By-entity
+view's delete-track/-album/-artist paths (the visible flat-list toolbar is the
+tagset-addressed `appearances/bulk` above).
 
 ### Request
 
@@ -241,7 +276,7 @@ tagset the caller doesn't own is simply not found (counts toward neither
 
 ## The edit patch
 
-`action: "edit"` (on `files/bulk` and `trash/bulk`) carries a `patch` object
+`action: "edit"` (on `appearances/bulk`, `files/bulk` and `trash/bulk`) carries a `patch` object
 applied to **every** file in the resolved set. It is the same change-only,
 never-clear contract as the per-file tag editor: **only the keys present are
 written**; an absent key leaves that column untouched across the whole selection
@@ -280,7 +315,7 @@ leaves their differing titles intact.)
 
 ---
 
-## Error responses (all four endpoints)
+## Error responses (all five endpoints)
 
 | Status | Condition |
 |--------|-----------|

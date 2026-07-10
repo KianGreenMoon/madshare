@@ -410,22 +410,22 @@ type fakeRepo struct {
 	listFilesErr error
 
 	// Paginated listing + bulk-trash fakes (file-list-scaling).
-	pageFiles          []*database.FileListEntry
-	countFiles         int
-	filterHashes       []string
-	filterHashesErr    error
-	bulkTrashedHashes  []string
-	bulkTrashErr       error
+	pageFiles           []*database.FileListEntry
+	countFiles          int
+	filterHashes        []string
+	filterHashesErr     error
+	bulkTrashedHashes   []string
+	bulkTrashErr        error
 	bulkRestoredTagsets []int64
 	bulkMetaTagsets     []int64
-	bulkRestoreErr     error
-	bulkDeletedTagsets []int64
-	bulkDeleteErr      error
-	bulkReviewTagsets  []int64
-	bulkReviewErr      error
-	bulkDiscardTagsets []int64
-	bulkDiscardErr     error
-	bulkMetaHashes     []string
+	bulkRestoreErr      error
+	bulkDeletedTagsets  []int64
+	bulkDeleteErr       error
+	bulkReviewTagsets   []int64
+	bulkReviewErr       error
+	bulkDiscardTagsets  []int64
+	bulkDiscardErr      error
+	bulkMetaHashes      []string
 
 	breakdown    database.StorageByteBreakdown
 	breakdownErr error
@@ -581,12 +581,19 @@ type fakeRepo struct {
 	// Paged review/trash stubs (select-all-matching + batch). The *Page methods
 	// return reviewEntries/pageFiles unless a dedicated slice is set; the count /
 	// hash-resolver knobs back the "select all N matching" path.
-	countReview         int
-	reviewFilterTagsets []int64
-	lastReviewFilter    database.ReviewFilter
-	pageTrash           []*database.TrashEntry
-	countTrash          int
-	trashFilterIDs      []int64
+	countReview          int
+	reviewFilterTagsets  []int64
+	lastReviewFilter     database.ReviewFilter
+	pageTrash            []*database.AppearanceEntry
+	countTrash           int
+	trashFilterIDs       []int64
+	pageAppearances      []*database.AppearanceEntry
+	countAppearances     int
+	appearanceFilterIDs  []int64
+	bulkLicenseTagsetIDs []int64
+	bulkLicense          string
+	bulkGuestTagsetIDs   []int64
+	bulkGuest            bool
 }
 
 func (f *fakeRepo) ListUploadsByUser(_ context.Context, _ int64) ([]*database.ReviewEntry, error) {
@@ -741,7 +748,7 @@ func (f *fakeRepo) BulkSoftDeleteByHashes(_ context.Context, hashes []string) (i
 	return len(hashes), nil
 }
 
-func (f *fakeRepo) ListTrashedAppearancesPage(_ context.Context, _ database.FileListQuery) ([]*database.TrashEntry, error) {
+func (f *fakeRepo) ListTrashedAppearancesPage(_ context.Context, _ database.FileListQuery) ([]*database.AppearanceEntry, error) {
 	return f.pageTrash, f.listFilesErr
 }
 
@@ -751,6 +758,30 @@ func (f *fakeRepo) CountTrashedAppearances(_ context.Context, _ database.FileFil
 
 func (f *fakeRepo) TrashedAppearanceIDsByFilter(_ context.Context, _ database.FileFilter) ([]int64, error) {
 	return f.trashFilterIDs, f.filterHashesErr
+}
+
+func (f *fakeRepo) ListAppearancesPage(_ context.Context, _ database.FileListQuery) ([]*database.AppearanceEntry, error) {
+	return f.pageAppearances, f.listFilesErr
+}
+
+func (f *fakeRepo) CountAppearances(_ context.Context, _ database.FileFilter) (int, error) {
+	return f.countAppearances, f.listFilesErr
+}
+
+func (f *fakeRepo) AppearanceIDsByFilter(_ context.Context, _ database.FileFilter) ([]int64, error) {
+	return f.appearanceFilterIDs, f.filterHashesErr
+}
+
+func (f *fakeRepo) BulkSetLicenseByTagsets(_ context.Context, tagsetIDs []int64, license string) (int, error) {
+	f.bulkLicenseTagsetIDs = tagsetIDs
+	f.bulkLicense = license
+	return len(tagsetIDs), nil
+}
+
+func (f *fakeRepo) BulkSetGuestPlayableByTagsets(_ context.Context, tagsetIDs []int64, guest bool) (int, error) {
+	f.bulkGuestTagsetIDs = tagsetIDs
+	f.bulkGuest = guest
+	return len(tagsetIDs), nil
 }
 
 func (f *fakeRepo) ListRemovedFilesPage(_ context.Context, _ database.FileListQuery) ([]*database.FileListEntry, error) {

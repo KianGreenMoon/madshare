@@ -1,8 +1,10 @@
 // Admin · Library — the unified file-management page. One page, one scope switch
-// (All files · Review · Trash), one shared preview player. Each scope is a
-// factory over the shared component (file-list.js); this module owns the page:
-// it boots auth once, creates the shared player, builds the available scopes,
-// and swaps panels in place (no reload). My uploads stays on /upload.
+// (Full Library · Review · Trash), one shared preview player. Each scope is a
+// factory (files.js builds Full Library's four lenses over file-list.js and the
+// bespoke modules); this module owns the page: it boots auth once, creates the
+// shared player, builds the available scopes, routes the location hash
+// (#review, #trash, #recordings, #recordings-<id>), and swaps panels in place
+// (no reload). My uploads stays on /upload.
 //
 // Design: docs/architecture/file-management-view.md (Hybrid).
 import { bootAdmin, API, toast } from './shared.js';
@@ -84,8 +86,24 @@ function playAt(i) {
     switchEl.appendChild(pill);
   }
 
-  // Initial scope: honor a #review / #trash deep-link (the dashboard cards),
-  // else the first available scope (All files).
-  const want = location.hash.replace('#', '');
-  show(controllers.some(c => c.id === want) ? want : controllers[0].id);
+  // Hash routing: #review / #trash pick a scope (the dashboard cards);
+  // #recordings / #recordings-<id> open Full Library › Recordings (the
+  // recording links on the file lenses — also fired via hashchange, so an
+  // in-page link switches lenses without a reload). Anything else lands on the
+  // first available scope (Full Library).
+  function applyHash() {
+    const want = location.hash.replace('#', '');
+    const rec = want.match(/^recordings(?:-(\d+))?$/);
+    if (rec) {
+      const all = controllers.find(c => c.id === 'all');
+      if (all?.openRecording) {
+        show('all');
+        all.openRecording(rec[1] ? Number(rec[1]) : 0);
+        return;
+      }
+    }
+    show(controllers.some(c => c.id === want) ? want : controllers[0].id);
+  }
+  window.addEventListener('hashchange', applyHash);
+  applyHash();
 })();

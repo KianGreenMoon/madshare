@@ -180,3 +180,71 @@ func (db *DB) bulkSetRecordingColumn(ctx context.Context, hashes []string, updat
 	}
 	return total, nil
 }
+
+// BulkSetGuestPlayableByTagsets / BulkSetLicenseByTagsets are the bulk access
+// setters addressed by **tagset id** — the Full Library · All Appearances
+// lens's bulk edit. Access lives on the recording, so each live approved
+// appearance in the set forwards the value to its recording; the returned
+// count is the number of matched appearances (appearances sharing a recording
+// each count, mirroring the hash-addressed setters).
+func (db *DB) BulkSetGuestPlayableByTagsets(ctx context.Context, tagsetIDs []int64, guest bool) (int, error) {
+	return db.bulkSetRecordingColumnByTagsets(ctx, tagsetIDs,
+		`UPDATE recordings SET guest_playable = ?, guest_playable_manual = 1 WHERE id IN `,
+		boolToInt(guest))
+}
+
+func (db *DB) BulkSetLicenseByTagsets(ctx context.Context, tagsetIDs []int64, license string) (int, error) {
+	var lic sql.NullString
+	if license != "" {
+		lic = sql.NullString{String: license, Valid: true}
+	}
+	return db.bulkSetRecordingColumnByTagsets(ctx, tagsetIDs,
+		`UPDATE recordings SET license = ? WHERE id IN `, lic)
+}
+
+// bulkSetRecordingColumnByTagsets is bulkSetRecordingColumn keyed by tagset id,
+// guarded to live approved appearances (a trashed or staged row never edits
+// access from this path).
+func (db *DB) bulkSetRecordingColumnByTagsets(ctx context.Context, tagsetIDs []int64, updatePrefix string, lead ...any) (int, error) {
+	if len(tagsetIDs) == 0 {
+		return 0, nil
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	const liveApproved = `t.deleted_at IS NULL AND t.review_state = 'approved'`
+	total := 0
+	const chunk = 400
+	for i := 0; i < len(tagsetIDs); i += chunk {
+		batch := tagsetIDs[i:min(i+chunk, len(tagsetIDs))]
+		placeholders := make([]string, len(batch))
+		idArgs := make([]any, 0, len(batch))
+		for j, id := range batch {
+			placeholders[j] = "?"
+			idArgs = append(idArgs, id)
+		}
+		ph := strings.Join(placeholders, ",")
+
+		var matched int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM tagsets t WHERE `+liveApproved+` AND t.id IN (`+ph+`)`,
+			idArgs...).Scan(&matched); err != nil {
+			return 0, fmt.Errorf("bulk set recording column by tagsets: count: %w", err)
+		}
+
+		in := `(SELECT DISTINCT t.recording_id FROM tagsets t WHERE ` + liveApproved + ` AND t.id IN (` + ph + `))`
+		args := append([]any{}, lead...)
+		args = append(args, idArgs...)
+		if _, err := tx.ExecContext(ctx, updatePrefix+in, args...); err != nil {
+			return 0, fmt.Errorf("bulk set recording column by tagsets: %w", err)
+		}
+		total += matched
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit: %w", err)
+	}
+	return total, nil
+}

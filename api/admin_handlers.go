@@ -316,7 +316,7 @@ func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var entries []*database.TrashEntry
+	var entries []*database.AppearanceEntry
 	if limit > 0 {
 		sort := q.Get("sort")
 		if sort == "" {
@@ -347,8 +347,9 @@ func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
 		// silently clear album_artist on save.
 		AlbumArtist string `json:"album_artist"`
 		Album       string `json:"album"`
-		// TrackNumber + Year feed the grouped "By artist / album" sort.
+		// TrackNumber + DiscNumber + Year feed the grouped "By artist / album" sort.
 		TrackNumber *int64 `json:"track_number"`
+		DiscNumber  *int64 `json:"disc_number"`
 		Year        int64  `json:"year,omitempty"`
 		ByteSize    int64  `json:"byte_size"`
 		URL         string `json:"url"`
@@ -364,9 +365,12 @@ func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]trashItem, 0, len(entries))
 	for _, e := range entries {
-		var trackNum *int64
+		var trackNum, discNum *int64
 		if e.TrackNumber.Valid {
 			trackNum = &e.TrackNumber.Int64
+		}
+		if e.DiscNumber.Valid {
+			discNum = &e.DiscNumber.Int64
 		}
 		url := ""
 		if e.ObjectKey != "" {
@@ -382,6 +386,7 @@ func (h *handler) adminTrashList(w http.ResponseWriter, r *http.Request) {
 			AlbumArtist:    e.AlbumArtist.String,
 			Album:          e.Album,
 			TrackNumber:    trackNum,
+			DiscNumber:     discNum,
 			Year:           e.Year,
 			ByteSize:       e.ByteSize,
 			URL:            url,

@@ -16,11 +16,12 @@ uploads offer a draft appearance (byte-dups included), the queue classifies each
 submission (new recording / new appearance / no new bytes) and the moderator
 approves per-piece — with case-B drop-bytes (absorb-at-the-gate) and force-new
 (pinned split) overrides. P5 (recordings/files admin views) is **built**: the
-`/admin/recordings` curation page (both arms, selection-based merge, appearance
+recordings curation view (both arms, selection-based merge, appearance
 move/set-primary, whole-recording trash [hard delete moved to the Trash page —
-`soft-delete.md`], editable license/guest) and the All-files physical columns with the "Show removed"
-toggle — UX per the owner-signed mock of 2026-07-07, which also resolved open
-point 1 (merge/move mechanics). Federation (P6) not started.
+`soft-delete.md`], editable license/guest) — now the Full Library › Recordings
+lens of Admin·Library (`/admin/library#recordings`) — and the physical file
+perspective, now the Full Library › Files lens. UX per the owner-signed mock of
+2026-07-07, which also resolved open point 1 (merge/move mechanics). Federation (P6) not started.
 This document is the reference design and the implementation plan.
 Extends
 [Recordings](recordings.md) (same-audio grouping & renditions) and the
@@ -472,8 +473,8 @@ each a single transaction, each with a bulk variant and one audit row:
 
 Deliberately **two perspectives** (owner accepts the added admin complexity):
 
-- **Tagset surfaces = the existing pages, re-pointed.** Library, All files,
-  Trash — the unified file-list
+- **Tagset surfaces = the existing pages, re-pointed.** Library, All
+  Appearances, Trash — the unified file-list
   ([file-management-view.md](file-management-view.md)) keeps its scopes,
   paging, select-all and bulk toolbars, but rows are **tagsets** ("a track as
   a regular user perceives it"). This is where day-to-day work stays.
@@ -484,7 +485,7 @@ Deliberately **two perspectives** (owner accepts the added admin complexity):
   review state/notes, which the shared component couldn't express;
   `file-list.js` was rolled back to pre-P4e. They keep their own paging,
   select-all and bulk toolbars and still edit through `track-edit.js`.
-- **`/admin/recordings` (new, P5 — UX settled 2026-07-07)** — the
+- **`/admin/library#recordings` (new, P5 — UX settled 2026-07-07)** — the
   recording-centric view: **all** recordings, newest first (`id DESC` — the
   ones an admin edits first), searchable (title/artist/album/`#id`), quick
   filter pills (**All** default / >1 rendition / >1 appearance / dormant /
@@ -501,7 +502,7 @@ Deliberately **two perspectives** (owner accepts the added admin complexity):
   recording**
   (soft = trash all its tagsets; the whole recording then shows in the Trash
   page's Recordings lens). **Permanent delete lives only on the Trash page now**
-  (`soft-delete.md`): `/admin/recordings` does soft ops + curation, and every
+  (`soft-delete.md`): `/admin/library#recordings` does soft ops + curation, and every
   hard delete — appearance, recording, or removed file — happens in the three
   Trash perspectives. **Merge is selection-based**:
   it lives only in the bulk bar, disabled until ≥2 recordings are ticked, so
@@ -512,16 +513,18 @@ Deliberately **two perspectives** (owner accepts the added admin complexity):
   re-homes an appearance onto another *existing* recording via a search
   picker — an identical appearance on the target refuses the move; there is
   deliberately no "move to new recording" (an appearance without a blob can't
-  play — that shape is Split off). Admin-shell page, `content.moderate`,
-  page-local player, nav link (after Duplicates) + dashboard card, `nowebui`
-  compiles it out — the `/admin/sources` / `/admin/duplicates` conventions.
-- **Files view (P5 — settled)** — the physical perspective is **not a new
-  page**: the existing Admin·Library "All files" table gains three columns —
-  storage **backend**, file **state** (live / removed / trashed; removed =
-  absorbed/dormant blobs, until now visible nowhere outside Trash) behind a
-  **"Show removed" toggle (off by default)**, and the **recording link**
-  jumping to `/admin/recordings` with that recording expanded. Paging/bulk
-  machinery reused as-is.
+  play — that shape is Split off). The view is a **lens of Admin·Library**
+  (Full Library › Recordings, `/admin/library#recordings`;
+  `#recordings-<id>` deep-links one recording expanded), offered to
+  `content.moderate` holders, wired to the Library page's shared preview
+  player; the dashboard card deep-links it. `nowebui` compiles the page out.
+- **Files view — the physical perspective** is the **Files lens** of the same
+  scope (Full Library › Files, `library-files.js` over the lean
+  `trash-list.js` core): every live blob with storage **backend**, size,
+  upload time, the **recording link** (`#recordings-<id>`), Play, and a
+  reversible **Remove** (`file.delete`). Soft-removed blobs
+  (absorbed/dormant) live exactly one place — **Trash › Files** — so there is
+  no "show removed" toggle anywhere.
 
 `/admin/duplicates` stays as the focused dedup workbench (multi-rendition
 recordings + absorb).
@@ -728,11 +731,11 @@ regressions isolate to the data move.
   restore}`; gates: curation = `content.moderate`, deletes = `file.delete`,
   access = `metadata.edit`. UI: bespoke `admin/recordings.js` (windowed
   virtual-list page scroll, expandable two-arm cards, merge/move/access
-  modals, page-local player, `#<id>` deep link) + nav link and dashboard card;
-  All-files gained the `storage` column (backend, removed state, recording
-  link) via the new generic `scope.cells`/`rowClass` hooks in `file-list.js`,
-  fed by `FileFilter.ShowRemoved` (`show_removed=1`, moderation-gated) and
-  `FileListEntry.StorageBackend/RecordingID`.
+  modals), a mountable factory serving the Full Library › Recordings lens of
+  Admin·Library on the page's shared player (`#recordings` /
+  `#recordings-<id>` deep links; dashboard card); the physical blob
+  perspective is the Full Library › Files lens (`library-files.js`: backend,
+  size, recording link, reversible Remove).
   *Result: full curation from every perspective — verified live (merge / move
   refusals / dormancy round-trip / show-removed / whole-recording deletes /
   browser smoke with zero console errors).*
@@ -898,7 +901,7 @@ the api `fakeRepo`, `tests/js`, `tests/playwright`, `tests/k6`).
 
 ## Open points (small — everything else is decided)
 
-1. ~~**Merge/split mechanics & UX** on `/admin/recordings`~~ — **resolved
+1. ~~**Merge/split mechanics & UX** on `/admin/library#recordings`~~ — **resolved
    2026-07-07** (owner review of the clickable mock): merge is selection-based
    from the bulk bar with a target-picker confirm (default target = holder of
    the union's ladder-best rendition); appearance-level split = **Move…**

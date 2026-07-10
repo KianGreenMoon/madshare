@@ -6,7 +6,7 @@ package api
 // listing the trashed-recording bin / removed blobs, restoring them back into
 // the library, and the Trash-only permanent delete (all file.delete-gated,
 // matching the rest of the Trash page). Permanent deletion lives only here —
-// /admin/recordings does soft ops only.
+// /admin/library#recordings does soft ops only.
 
 import (
 	"encoding/json"

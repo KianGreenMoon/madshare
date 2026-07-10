@@ -1,7 +1,7 @@
 # File-List Scaling — server-side pagination + bulk operations
 
-The admin **All files** list (`/admin/library` → All files) freezes at ~1500
-files. This doc is the design for fixing it: server-side **pagination + filter +
+The admin flat file list (`/admin/library`, today the Full Library › All
+Appearances lens) freezes at ~1500 rows without windowing. This doc is the design for fixing it: server-side **pagination + filter +
 sort** for the flat list, a transactional **bulk-action endpoint** so large
 groups can be deleted/edited in one request, and the decoupling that makes both
 possible. The grouped/drill-down experience stays in the **By-entity Browse**

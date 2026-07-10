@@ -1,7 +1,7 @@
 package database
 
 // Recording curation operations (recording-tagsets P5) — the primitives behind
-// /admin/recordings: the paged recording listing with both-arms detail, merge,
+// /admin/library#recordings: the paged recording listing with both-arms detail, merge,
 // appearance move / set-primary, whole-recording trash + hard delete, and the
 // recording-level access edit. Each mutation is a single transaction; audit
 // rows are written by the api layer. Design:
@@ -31,7 +31,7 @@ type RecordingListOptions struct {
 	Offset int // < 0 clamps to 0
 }
 
-// RecordingRow is one collapsed card on /admin/recordings: identity, the
+// RecordingRow is one collapsed card on /admin/library#recordings: identity, the
 // primary appearance's display fields, and the count/state chips.
 type RecordingRow struct {
 	ID             int64
@@ -338,7 +338,7 @@ type MergeOutcome struct {
 }
 
 // MergeRecordings folds the source recordings into the target (the
-// selection-based merge on /admin/recordings): renditions move over and are
+// selection-based merge on /admin/library#recordings): renditions move over and are
 // pinned (a manual merge is a human identity decision — the resolver must never
 // regroup them), appearances move with identity dedup (the target's copy wins;
 // nameless source appearances are dropped, same rules as absorb), the target
@@ -717,7 +717,7 @@ func (db *DB) HardDeleteRecording(ctx context.Context, recordingID int64) (Recor
 // ── Access ────────────────────────────────────────────────────────────────────
 
 // SetRecordingAccess updates the recording-level access fields (the editable
-// license/guest chip on /admin/recordings). nil leaves a field unchanged; an
+// license/guest chip on /admin/library#recordings). nil leaves a field unchanged; an
 // empty license clears it. Setting guest marks the manual override, so the
 // license auto-derive policy never overrides an explicit admin decision — the
 // same semantics as the hash-addressed setters (auth.md §5.1).
@@ -827,7 +827,7 @@ func (db *DB) HardDeleteTrashedTagset(ctx context.Context, tagsetID int64) (Hard
 // ── Manual appearance creation (recording-tagsets P7d) ────────────────────────
 
 // AppearanceInput carries the descriptive tags for a hand-authored appearance —
-// the /admin/recordings "Add appearance" form. Blank optional fields resolve to
+// the /admin/library#recordings "Add appearance" form. Blank optional fields resolve to
 // the reserved Unknown-artist / Other buckets, exactly as an untagged upload
 // does. Numeric fields are pointers so "unset" is distinct from 0.
 type AppearanceInput struct {
@@ -859,7 +859,7 @@ type CreateAppearanceOutcome struct {
 // It carries no blob (origin_file_id NULL: provenance is "the file these tags
 // were read from", and these were typed), plays the recording's ladder-best
 // rendition like any other appearance, and is born **approved**: a moderator
-// curating on /admin/recordings is the reviewer, and a blobless draft would be
+// curating on /admin/library#recordings is the reviewer, and a blobless draft would be
 // invisible in the review queue (which INNER-joins files) — so review would
 // strand it. It is never primary (SetPrimaryTagset promotes it deliberately).
 //

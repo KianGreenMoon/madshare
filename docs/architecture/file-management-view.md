@@ -1,14 +1,31 @@
 # File-Management View — the unified file list
 
-Every place that lists files and edits their metadata is one component
+Every place that lists tracks/files and edits their metadata is one component
 (`webui/static/js/file-list.js`), parameterised by a **scope**. The admin
 **Library** page (`/admin/library`) hosts three scopes behind a client-side
-switch — **All files · Review · Trash** — sharing one preview player; the
+switch — **Full Library · Review · Trash** — sharing one preview player; the
 uploader's **My uploads** (on `/upload`) is the same component in owner mode.
 
+The **Full Library** and **Trash** scopes are each a sub-switch of **lenses**
+over the same set (live / not-in-library respectively):
+
+| Lens | Full Library | Trash | Grain |
+|---|---|---|---|
+| By entity | ✓ (drill-down, rename/merge/cover) | – | entity |
+| Appearances | ✓ **All Appearances** (`file-list.js`) | ✓ (`file-list.js`) | tagset |
+| Recordings | ✓ (`admin/recordings.js`, curation view) | ✓ (`trash-recordings.js`) | recording |
+| Files | ✓ (`library-files.js`) | ✓ (`trash-files.js`) | blob |
+
+The Recordings and Files lenses are **bespoke** (the file/recording-grain lists
+share the lean `admin/trash-list.js` core; the Full Library Recordings lens is
+the recording-centric curation view, recording-tagsets P5, reached at
+`/admin/library#recordings`). Each state has exactly one home: live blobs on
+Full Library › Files, soft-removed blobs on Trash › Files — there is no
+"show removed" toggle.
+
 This is the reference for the shipped system. It unified the former standalone
-`/admin/files` page and the separate Files / Moderation / Trash admin pages into
-this one scope-driven component.
+`/admin/files`, `/admin/moderation`, `/admin/trash`, and `/admin/recordings`
+pages into this one scope-driven page.
 
 The **`/admin/duplicates`** page (same-audio recordings with >1 rendition) is a
 *separate* page, not a scope here — its rows are renditions grouped by recording
@@ -84,25 +101,25 @@ admin CSS — renders correctly; the admin pages load it too.
 
 | Scope | Endpoint | Group | Selectable | Access edit | Notes |
 |---|---|---|---|---|---|
-| **All files** (admin) | `GET /api/files` (paged) | – (opt.) | all | ✓ (modal + bulk) | **windowed** flat list (infinite scroll + server **sort dropdown**, incl. Untagged first); access is a **read-only column**, edited in the modals. Bulk Move to Trash + Edit tags… (selection or "select all N matching"). Grouped **By artist / album** via a separate toggle pill (streams in `sort=grouped` order; below). The By-entity drill-down is a separate sub-view (below). **Physical view (recording-tagsets P5):** a `Storage` column (backend chip, removed state, `#recording →` link into `/admin/recordings`) plus a **"Show removed"** toggle (off by default, hidden without a moderation capability) that adds `show_removed=1` — the listing then also carries soft-removed blobs (absorbed / removed renditions, dimmed via `rowClass`), the only surface outside a recording's own card where they are visible. |
+| **All Appearances** (admin, Full Library) | `GET /api/admin/appearances` (paged) | – (opt.) | all | ✓ (modal + bulk) | **windowed** list of every **live approved appearance**, keyed by `tagset_id` — the live twin of the Trash Appearances lens (both `FROM tagsets`; a blob can host several appearances). Play resolves to the recording's ladder-best rendition (like the listening surfaces); a **dormant** recording's appearance rows badge `dormant` and can't preview. Infinite scroll + server **sort dropdown** (incl. Untagged first); access is a **read-only column**, edited in the modals. Bulk Move to Trash + Edit tags… via `POST …/appearances/bulk` (selection or "select all N matching"). Grouped **By artist / album** via a separate toggle pill (streams in `sort=grouped` order; below). |
 | **Review** (admin) | `GET /api/admin/moderation` (paged) | by uploader (streamed separators) | `submitted` | ✗ (tags only) | Approve / Return-with-note / Discard; bulk via `POST …/moderation/bulk` (selection or "select all N matching"); `show()` gates per state (drafts preview-only), `editable()` gates Edit. |
-| **Trash** (admin) | `GET /api/admin/trash` (paged) | – | all | ✗ (tags only)¹ | The **Appearances** lens of the three-perspective Trash (`soft-delete.md`): Restore / Delete forever / Edit, bulk via `POST …/trash/bulk` (selection or "select all N matching"); gained Play. The Trash panel wraps it in a sub-switch with two **bespoke** lenses — Recordings and Files (`admin/trash-recordings.js` / `trash-files.js` over the lean `trash-list.js` core, not this component) — the recording-grain and file-grain views of the same not-in-library set. |
+| **Trash** (admin) | `GET /api/admin/trash` (paged) | – | all | ✗ (tags only)¹ | The **Appearances** lens of the three-perspective Trash (`soft-delete.md`): Restore / Delete forever / Edit, bulk via `POST …/trash/bulk` (selection or "select all N matching"); gained Play. |
 | **My uploads** (owner, `/upload`) | `GET /api/my/uploads` (paged) | by state (streamed sections) | draft/returned | ✗ (tags only) | state sections; Send to approval / Remove via `POST …/my/uploads/bulk` (selection or "select all N matching"); owner-scoped edit endpoint. |
 
-¹ **Trash edits tags only.** `UpdateFileMetadata` resolves by hash with no
-`deleted_at` filter (so a tag can be corrected before restore), but the access
-endpoints (`SetGuestPlayable`/`SetLicense`) filter `deleted_at IS NULL` — and
-access is meaningless on a non-served file. Review is tags-only by choice
-(behaviour-preserving); the backend would allow access there (the access routes
-are `metadata.edit`-gated, the files aren't deleted), so it is a possible
-additive follow-up.
+¹ **Trash edits tags only.** Access lives on the recording and is meaningless on
+a trashed appearance (the Trash bulk rejects an access patch). Review is
+tags-only by choice (behaviour-preserving); an access section there is a
+possible additive follow-up.
 
-Access writes hit their own endpoints (`POST /api/admin/files/{hash}/license`
-then `…/guest`, so an explicit guest wins over license auto-derive); the bulk
-applier loops PATCH-metadata + the access endpoints, writing only the filled
-fields. Every editable list DTO carries `album_artist` (the editor writes all
-four base tags, so an absent prefill would silently clear it — the trash DTO was
-extended for this).
+**Access is a recording property.** The All Appearances per-row access editor
+writes `PATCH /api/admin/recordings/{id}/access` (license + guest in one
+request); the bulk edit forwards license/guest through
+`POST /api/admin/appearances/bulk` (action `edit`), which resolves each tagset's
+recording server-side — license before guest, so an explicit guest wins over
+license auto-derive. Tag edits are tagset-addressed
+(`PATCH /api/admin/tagsets/{id}/metadata`). Every editable list DTO carries
+`album_artist` (the editor writes all four base tags, so an absent prefill would
+silently clear it).
 
 ### Sort dropdown + grouped-view toggle + needs-metadata flag
 
@@ -173,7 +190,7 @@ permission. The cover routes accept **`metadata.edit` OR `file.upload`**
 (`RequireAnyPermission`), then the handler enforces add-only for a
 `file.upload`-only caller — adding a missing cover is allowed, overwriting one
 returns **403** (`coverReplaceBlocked`). So `allowCoverAdd` follows whichever
-permission a scope grants (**All files, Review, Trash** via `metadata.edit`; **My
+permission a scope grants (**All Appearances, Review, Trash** via `metadata.edit`; **My
 uploads** via every uploader's `file.upload`), while `allowCoverEdit` is set only
 where the caller holds `metadata.edit` — so an uploader with just `file.upload`
 can dress a coverless staged draft but is never offered **Edit cover** on one
@@ -182,20 +199,31 @@ that already has art.
 ## The Library page (Hybrid nav)
 
 `/admin/library` (`webui/html/admin/library.html` + `library.js`) folds the
-former `/admin/files`, `/admin/moderation`, and `/admin/trash` pages into one
-secondary-nav entry. `library.js` boots auth once, owns the single shared player
-(injected into each scope as `play(items, index, highlight)`; next/prev/ended are
-generic), builds only the scopes the admin can use (Review needs
-`content.moderate`, Trash needs `file.delete`), and swaps panels in place. Each
-scope is an exported factory — `createFilesScope` / `createReviewScope` /
-`createTrashScope` (in `admin/files.js` / `moderation.js` / `trash.js`) — and all
-scope modals coexist in `library.html`. The dashboard cards deep-link via
-`#review` / `#trash`.
+former `/admin/files`, `/admin/moderation`, `/admin/trash`, and
+`/admin/recordings` pages into one secondary-nav entry. `library.js` boots auth
+once, owns the single shared player (injected into each scope/lens as
+`play(items, index, highlight)`; next/prev/ended are generic), builds only the
+scopes the admin can use (Review needs `content.moderate`, Trash needs
+`file.delete`), and swaps panels in place. Each scope is an exported factory —
+`createFilesScope` / `createReviewScope` / `createTrashScope` (in
+`admin/files.js` / `moderation.js` / `trash.js`) — and all scope/lens modals
+coexist in `library.html`. `createFilesScope` is itself the Full Library
+coordinator: it builds the four lenses (the Recordings lens only for
+`content.moderate` holders — `createRecordingsView` in `admin/recordings.js`,
+refactored from the former standalone page into a mountable factory using the
+page's shared player) behind the `#libModeSwitch` sub-tabs, mirroring the Trash
+sub-switch.
+
+**Hash routing:** `#review` / `#trash` pick a scope (the dashboard cards);
+`#recordings` opens Full Library › Recordings and `#recordings-<id>` also
+searches + expands that recording — the `#recording →` links on the Files
+lenses (both pages) use this form. `library.js` listens on `hashchange`, so an
+in-page link switches lenses without a reload.
 
 ## Out of scope (the entity axis)
 
 Artist/album **rename** and **merge** operate on entities, not per-file tags.
-They stay in the **By-entity** drill-down inside the All-files scope
+They stay in the **By-entity** drill-down inside the Full Library scope
 (`admin/files.js`, its own renderer over `/api/artists`, `/api/albums?artist=`,
 `/api/tracks?…` + the rename/merge/cover/delete endpoints in
 `docs/api/metadata.md` and `docs/api/cover-images.md`). The component's own browse
@@ -214,6 +242,6 @@ gates server-side.
 
 ## See also
 
-- `docs/architecture/file-list-scaling.md` — server-side pagination + filter/sort + the bulk-action endpoint for the **All files** scope (the fix for the flat list freezing at scale; grouping moves to the Browse view).
+- `docs/architecture/file-list-scaling.md` — server-side pagination + filter/sort + the bulk-action endpoint for the flat file listings (the fix for the flat list freezing at scale; grouping moves to the Browse view).
 - `docs/architecture/moderation.md` — the review state machine the Review scope drives.
 - `docs/api/metadata.md` — the per-file tag edit + entity rename/merge endpoints.

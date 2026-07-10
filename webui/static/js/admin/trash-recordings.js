@@ -29,7 +29,7 @@ export function createTrashRecordings({ host, confirmDelete }) {
       el('td', {}, [
         el('div', {}, [dispName(rec)]),
         rec.artist ? el('div', { class: 'trash-sub' }, [rec.artist]) : null,
-        el('a', { class: 'trash-rec-link', href: `/admin/recordings#${rec.id}`, title: 'Open in the recordings curation view' }, [`recording #${rec.id} →`]),
+        el('a', { class: 'trash-rec-link', href: `/admin/library#recordings-${rec.id}`, title: 'Open in the recordings curation lens' }, [`recording #${rec.id} →`]),
       ]),
       el('td', {}, [el('span', { class: 'trash-chips' }, chips)]),
     ];

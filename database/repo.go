@@ -45,7 +45,7 @@ type Repository interface {
 	// TrashedAppearanceIDsByFilter resolves the "select all N matching" set.
 	// Everything is addressed by tagset id: a blob can host several trashed
 	// appearances, and an absorbed/purged one has no blob at all.
-	ListTrashedAppearancesPage(ctx context.Context, q FileListQuery) ([]*TrashEntry, error)
+	ListTrashedAppearancesPage(ctx context.Context, q FileListQuery) ([]*AppearanceEntry, error)
 	CountTrashedAppearances(ctx context.Context, f FileFilter) (int, error)
 	TrashedAppearanceIDsByFilter(ctx context.Context, f FileFilter) ([]int64, error)
 
@@ -55,6 +55,19 @@ type Repository interface {
 	BulkRestoreTagsets(ctx context.Context, tagsetIDs []int64) (int, error)
 	BulkHardDeleteTagsets(ctx context.Context, tagsetIDs []int64) (int, []DeletedBlob, error)
 	BulkUpdateTagsetMetadata(ctx context.Context, tagsetIDs []int64, p MetadataPatch) (affected int, notFound []int64, err error)
+
+	// Full Library · All Appearances — the live twin of the Trash lens: one row
+	// per live approved appearance, playing its recording's ladder-best
+	// rendition. Same paging/filter/select-all triple, addressed by tagset id.
+	ListAppearancesPage(ctx context.Context, q FileListQuery) ([]*AppearanceEntry, error)
+	CountAppearances(ctx context.Context, f FileFilter) (int, error)
+	AppearanceIDsByFilter(ctx context.Context, f FileFilter) ([]int64, error)
+
+	// The live lens's bulk access edit: access lives on the recording, so each
+	// live approved appearance forwards the value to its recording (the
+	// tagset-addressed counterparts of BulkSetLicense/BulkSetGuestPlayable).
+	BulkSetLicenseByTagsets(ctx context.Context, tagsetIDs []int64, license string) (int, error)
+	BulkSetGuestPlayableByTagsets(ctx context.Context, tagsetIDs []int64, guest bool) (int, error)
 
 	// Files perspective of Trash (soft-delete.md): the file-grain lens over
 	// soft-removed blobs (files.deleted_at). Paged like the other listings;
@@ -340,7 +353,7 @@ type Repository interface {
 	// recordings are skipped. Returns recordings absorbed + renditions removed.
 	BulkAbsorbKeepBest(ctx context.Context, recordingIDs []int64) (recordingsAbsorbed, renditionsRemoved int, err error)
 
-	// --- Recording curation (/admin/recordings, recording-tagsets P5) ---
+	// --- Recording curation (/admin/library#recordings, recording-tagsets P5) ---
 
 	// ListRecordings returns one page of the recordings admin listing (newest
 	// first) with the primary appearance's display fields and the count chips.
@@ -368,7 +381,7 @@ type Repository interface {
 	SetPrimaryTagset(ctx context.Context, recordingID, tagsetID int64) (bool, error)
 
 	// CreateAppearance adds a hand-authored, blobless, approved appearance to an
-	// existing recording (the /admin/recordings "Add appearance" form). The
+	// existing recording (the /admin/library#recordings "Add appearance" form). The
 	// refusals — unknown recording, nameless (meaningful rule), identity
 	// collision, empty title — are outcomes, not errors.
 	CreateAppearance(ctx context.Context, recordingID int64, in AppearanceInput, createdBy sql.NullInt64) (CreateAppearanceOutcome, error)

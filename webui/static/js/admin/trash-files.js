@@ -28,7 +28,7 @@ export function createTrashFiles({ host, play, confirmDelete }) {
       el('td', {}, [
         el('div', {}, [dispName(f)]),
         f.artist ? el('div', { class: 'trash-sub' }, [f.artist]) : null,
-        el('a', { class: 'trash-rec-link', href: `/admin/recordings#${f.recording_id}`, title: 'Open the recording this blob belongs to' }, [`recording #${f.recording_id} →`]),
+        el('a', { class: 'trash-rec-link', href: `/admin/library#recordings-${f.recording_id}`, title: 'Open the recording this blob belongs to' }, [`recording #${f.recording_id} →`]),
       ]),
       el('td', { class: 'cell-size' }, [fmtBytes(f.byte_size)]),
       el('td', {}, [el('span', { class: 'trash-chip' }, [f.storage_backend || 'local'])]),

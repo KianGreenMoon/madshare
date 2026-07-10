@@ -32,11 +32,11 @@ Owner steering folded the two efforts together for the **admin + upload** file
 lists (the public library `/` stays on the future cursor-paginated path below).
 Decisions:
 
-- **One engine for every file-list scope.** All files · Review · Trash · My
-  uploads all render through the same windowed core in `file-list.js`; the
+- **One engine for every file-list scope.** All Appearances · Review · Trash ·
+  My uploads all render through the same windowed core in `file-list.js`; the
   `/admin/duplicates` page stays a separate renderer (recordings→renditions is a
   different row shape) but may reuse the scroller module if it grows.
-- **Flat All-files becomes infinite scroll**, superseding the numbered pager from
+- **The flat list becomes infinite scroll**, superseding the numbered pager from
   [`file-list-scaling.md`](file-list-scaling.md) (v0.4.8). The offset backend
   (`GET /api/files` envelope) is unchanged — the scroller's `fetchMore` walks
   `offset` and appends; numbered Prev/Next is removed.

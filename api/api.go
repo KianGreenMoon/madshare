@@ -286,6 +286,13 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(fileDelete).Get("/trash/files", h.adminTrashFilesList)
 		r.With(fileDelete).Post("/trash/files/bulk", h.trashFilesBulk)
 
+		// Full Library · All Appearances — the live twin of the Trash lens.
+		// Listing admits any admin capability that can use the Library page; the
+		// bulk handler enforces the per-action gate (trash → file.delete,
+		// edit → metadata.edit).
+		r.With(d.protectAny(auth.PermFileDelete, auth.PermMetadataEdit, auth.PermContentModerate)).Get("/appearances", h.adminAppearancesList)
+		r.With(d.protectAny(auth.PermFileDelete, auth.PermMetadataEdit)).Post("/appearances/bulk", h.appearancesBulk)
+
 		// Moderation queue (review bucket). Discard is not a distinct endpoint —
 		// it is the soft delete above (moderators hold file.delete).
 		moderate := d.protect(auth.PermContentModerate)
@@ -307,7 +314,7 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(moderate).Post("/duplicates/absorb", h.duplicatesAbsorbBulk)
 		r.With(moderate).Post("/duplicates/absorb/{recording_id}", h.duplicatesAbsorb)
 
-		// Recording curation (/admin/recordings, recording-tagsets P5): the
+		// Recording curation (/admin/library#recordings, recording-tagsets P5): the
 		// paged listing + both-arms detail, merge, appearance move/set-primary,
 		// rendition remove/restore, whole-recording trash + hard delete, and the
 		// recording-level access edit. Same gate split as the file-addressed

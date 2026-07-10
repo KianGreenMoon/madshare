@@ -1,26 +1,32 @@
-// Admin · Files — two views: the flat "All files" list (the shared
-// file-management component, file-list.js) and the "By entity" drill-down
-// (artist → album → track with rename / merge / cover / delete, kept here as a
-// separate entity-management axis). A page-local preview player serves both.
+// Admin · Full Library — the live-library scope of the Library page, four
+// lenses over the same live set (mirroring the Trash scope's perspectives):
+//   By entity        artist → album → track drill-down (rename / merge / cover)
+//   All Appearances  every live appearance (the shared file-list.js component,
+//                    keyed by tagset id — the descriptive/admin table)
+//   Recordings       the recording-centric curation view (recordings.js)
+//   Files            the physical blob-grain lens (library-files.js)
+// The page's shared preview player is injected as `play`; `perms` gates the
+// actions. Design: docs/architecture/file-management-view.md.
 import {
   API, LICENSE_OPTIONS,
-  fmtTime, toast, handleAuthError, el,
+  fmtDate, fmtTime, toast, handleAuthError, el,
 } from './shared.js';
 import { createTrackEditor } from '../track-edit.js';
 import { createFileList } from '../file-list.js';
 import { TRASH_ICON } from '../icons.js';
 import { discKey, discLabel, isMultiDisc } from '../disc.js';
+import { createRecordingsView } from './recordings.js';
+import { createLibraryFiles } from './library-files.js';
 
-// createFilesScope builds the "All files" Library scope: the flat list (shared
-// component) plus the By-entity drill-down (rename / merge / cover / delete).
-// The shared preview player is injected as `play`; `perms` gates the actions.
+// createFilesScope builds the "Full Library" scope: the four lenses above
+// behind one sub-tab switch (#libModeSwitch), coordinated like the Trash scope.
 export function createFilesScope({ play, perms }) {
 let canEditMeta = perms.includes('metadata.edit');  // metadata + access edit + rename/merge
 let canDelete   = perms.includes('file.delete');    // move-to-trash
+let canModerate = perms.includes('content.moderate'); // the Recordings lens's gate
 
-// The flat table is the shared component, mounted lazily into #fileList.
+// The All Appearances table is the shared component, mounted lazily.
 let fileList     = null;
-let filesMounted = false;
 let entityPlayingKey = null;   // track-id of the entity row currently previewing
 
 // ── Preview (via the shared player) ──────────────────────────────────────────
@@ -34,38 +40,39 @@ function entityHighlight(key) {
 function playEntity(navItems, idx) {
   play(navItems, idx, k => { entityPlayingKey = k; entityHighlight(k); fileList?.setPlaying(null); });
 }
+// playFile previews an All Appearances row — the row is an appearance, keyed by
+// tagset id; a dormant recording's appearance has no url and can't preview.
 function playFile(f, visible) {
-  const items = (visible || []).map(x => ({ url: x.url, title: displayTitle(x), artist: x.artist || '', key: x.hash }));
-  let idx = items.findIndex(x => x.key === f.hash);
-  if (idx < 0) { items.length = 0; items.push({ url: f.url, title: displayTitle(f), artist: f.artist || '', key: f.hash }); idx = 0; }
+  if (!f.url) { toast('No playable rendition — the recording is dormant.', 'error'); return; }
+  const items = (visible || []).filter(x => x.url)
+    .map(x => ({ url: x.url, title: displayTitle(x), artist: x.artist || '', key: x.tagset_id }));
+  let idx = items.findIndex(x => x.key === f.tagset_id);
+  if (idx < 0) { items.length = 0; items.push({ url: f.url, title: displayTitle(f), artist: f.artist || '', key: f.tagset_id }); idx = 0; }
   play(items, idx, k => { entityPlayingKey = null; entityHighlight(null); fileList?.setPlaying(k); });
 }
 
-// ── Shared bits (used by the All-files scope + the entity view) ──────────────
+// ── Shared bits (used by the All Appearances scope + the entity view) ────────
 const PLAY_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
 const displayTitle = f => f.title || f.filename || 'this file';
 
-// showRemoved is the All-files physical-view toggle (recording-tagsets P5):
-// when on, the listing also carries soft-removed blobs (absorbed / removed
-// renditions), dimmed with a "removed" state. Off by default.
-let showRemoved = false;
-
-// loadFilesPage backs the All-files component's paged mode: one server page,
-// filtered + sorted, as {total, items} (docs/architecture/file-list-scaling.md).
-async function loadFilesPage({ limit, offset, q, field, sort }) {
+// loadAppearancesPage backs the component's paged mode: one server page of the
+// live appearance lens, filtered + sorted, as {total, items}
+// (docs/architecture/file-list-scaling.md).
+async function loadAppearancesPage({ limit, offset, q, field, sort }) {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset), sort: sort || 'created_desc' });
   if (q) params.set('q', q);
   if (field) params.set('field', field);
-  if (showRemoved) params.set('show_removed', '1');
-  const res = await fetch(`${API}/api/files?${params.toString()}`);
+  const res = await fetch(`${API}/api/admin/appearances?${params.toString()}`);
   if (handleAuthError(res)) throw new Error('Your session expired.');
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
   return { total: data.total || 0, items: data.items || [] };
 }
 
-// bulkTrash moves a set to Trash in one transactional request — an explicit hash
-// list, or a filter ("everything matching"). Returns the count actually trashed.
+// bulkTrash moves a set of FILES to Trash in one transactional request — an
+// explicit hash list, or a filter ("everything matching"). The entity view's
+// deletes speak this hash/entity-addressed dialect (artist_id/album_id filters).
+// Returns the count actually trashed.
 async function bulkTrash(body) {
   const res = await fetch(`${API}/api/admin/files/bulk`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -77,130 +84,113 @@ async function bulkTrash(body) {
   return data.affected || 0;
 }
 
-// ── Access writes (per file). License first, then guest, so the explicit guest
-//    wins over any auto-derive the license change triggers. ────────────────────
-async function saveFileAccess(f, { guest, license }) {
-  const r1 = await fetch(`${API}/api/admin/files/${encodeURIComponent(f.hash)}/license`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ license }),
-  });
-  if (!r1.ok) throw new Error((await r1.text()).trim() || `HTTP ${r1.status}`);
-  const r2 = await fetch(`${API}/api/admin/files/${encodeURIComponent(f.hash)}/guest`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ guest_playable: guest }),
-  });
-  if (!r2.ok) throw new Error((await r2.text()).trim() || `HTTP ${r2.status}`);
-}
-
-// bulkEdit applies a tag/access patch in one request, over an explicit hash list
-// or a filter ("select all matching"). The bulk editor's patch object already
-// carries exactly the tag keys + license/guest, so it is forwarded as-is.
-async function bulkEdit(body) {
-  const res = await fetch(`${API}/api/admin/files/bulk`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'edit', ...body }),
+// ── Appearance-addressed plumbing (the All Appearances lens) ─────────────────
+// appearancesBulkCall is the single batched action (trash / edit) over an
+// explicit tagset_ids list OR a filter ("select all N matching"). file-list.js
+// hands selection keys back as strings; the API wants numbers.
+async function appearancesBulkCall(body) {
+  const res = await fetch(`${API}/api/admin/appearances/bulk`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
   if (handleAuthError(res)) throw new Error('Your session expired.');
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return data; // { affected, failed:[{hash,error}] }
+  return data; // { affected, failed:[{tagset_id,error}] }
 }
+const appearancesFilterBody = filter => ({ filter: { q: filter.q, field: filter.field }, all: !filter.q });
+const asIDs = keys => keys.map(Number);
+const appearanceNoun = n => (n === 1 ? 'appearance' : 'appearances');
+const trashToast = n => { if (n) toast(`Moved ${n} ${appearanceNoun(n)} to Trash.`, 'success'); };
 
-// filesBulkApply edits the explicitly-selected page rows; bulkApplyAll edits the
-// whole filtered set. Both surface a partial failure as a throw (the editor shows
-// it). bulkApplyAll owns its own success toast (the component doesn't, in filter
-// mode); filesBulkApply lets the component toast the page count.
-async function filesBulkApply(hashes, patch) {
-  const data = await bulkEdit({ hashes, patch });
-  if (data.failed?.length) throw new Error(`updated ${data.affected}, ${data.failed.length} failed`);
-}
-async function bulkApplyAll(filter, patch) {
-  // Mirror bulkTrashAll: an empty filter is the whole library, which the server
-  // refuses unless the request explicitly opts in with all:true.
-  const data = await bulkEdit({ filter, patch, all: !filter.q });
-  if (data.failed?.length) throw new Error(`updated ${data.affected}, ${data.failed.length} failed`);
-  toast(`Updated ${data.affected} ${data.affected === 1 ? 'file' : 'files'}.`, 'success');
-}
-
-async function trashOne(f) {
-  const res = await fetch(`${API}/api/admin/files/${encodeURIComponent(f.hash)}`, { method: 'DELETE' });
+// Access is a recording-level property (license + guest), so the per-row access
+// editor writes through the appearance's recording. One request; the server
+// applies license before deriving so the explicit guest always wins.
+async function saveAppearanceAccess(f, { guest, license }) {
+  const res = await fetch(`${API}/api/admin/recordings/${f.recording_id}/access`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ license, guest_playable: guest }),
+  });
   if (handleAuthError(res)) throw new Error('Your session expired.');
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  toast(`“${displayTitle(f)}” moved to Trash.`, 'success');
-}
-// bulkTrashSelection trashes the explicitly-selected page rows (one request);
-// bulkTrashAll trashes the whole filtered set ("select all N matching").
-async function bulkTrashSelection(hashes) {
-  const n = await bulkTrash({ hashes });
-  toast(`Moved ${n} ${n === 1 ? 'file' : 'files'} to Trash.`, 'success');
-}
-async function bulkTrashAll({ q, field }) {
-  const n = await bulkTrash({ filter: { q, field }, all: !q });
-  toast(`Moved ${n} ${n === 1 ? 'file' : 'files'} to Trash.`, 'success');
+  if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
 }
 
-// ── The All-files scope (the flat list, via the shared component) ────────────
-// Access is a read-only summary column; editing tags + access happens in the
-// per-file Edit modal and the bulk Edit-tags modal. Selection + bulk actions
-// (Move to Trash, Edit tags…) are gated on the relevant permission.
-// storageCell renders the physical column: backend, live/removed state, and
-// the recording link jumping to /admin/recordings with that recording expanded.
-function storageCell(f) {
-  const bits = [el('span', { class: 'files-backend', text: f.storage_backend || 'local' })];
-  if (f.removed) bits.push(el('span', { class: 'files-removed-badge', text: 'removed' }));
-  if (f.recording_id) {
-    bits.push(el('a', {
-      class: 'files-rec-link', href: `/admin/recordings#${f.recording_id}`,
-      title: 'Open this file’s recording (renditions & appearances)',
-      text: `#${f.recording_id} →`,
-    }));
-  }
-  return el('td', { class: 'cell-text files-storage-cell', 'data-label': 'Storage' }, bits);
+// appearancesBulkApply edits the explicitly-selected page rows; the ...All
+// variant edits the whole filtered set. Both surface a partial failure as a
+// throw (the editor shows it). The All variant owns its own success toast (the
+// component doesn't, in filter mode).
+async function appearancesBulkApply(keys, patch) {
+  const data = await appearancesBulkCall({ action: 'edit', tagset_ids: asIDs(keys), patch });
+  if (data.failed?.length) throw new Error(`updated ${data.affected}, ${data.failed.length} failed`);
+}
+async function appearancesBulkApplyAll(filter, patch) {
+  const data = await appearancesBulkCall({ action: 'edit', patch, ...appearancesFilterBody(filter) });
+  if (data.failed?.length) throw new Error(`updated ${data.affected}, ${data.failed.length} failed`);
+  toast(`Updated ${data.affected} ${appearanceNoun(data.affected)}.`, 'success');
 }
 
-function filesScope() {
+// ── The All Appearances scope (the shared component) ─────────────────────────
+// The row is an APPEARANCE, keyed by tagset_id: a blob can host several
+// appearances, and an appearance whose recording is dormant has no audio to
+// preview. Access is a summary column edited per row (recording-level);
+// editing tags happens in the per-row Edit modal and the bulk Edit-tags modal.
+// Selection + bulk actions (Move to Trash, Edit tags…) are gated on the
+// relevant permission. The physical blob view is the Files lens.
+function appearancesScope() {
   return {
-    title: 'Files',
-    emptyText: 'No files yet. Add music from the Upload page.',
-    columns: ['check', 'title', 'artist', 'album', 'size', 'access', 'storage', 'actions'],
-    cells: { storage: { label: 'Storage', cls: 'col-storage', render: storageCell } },
-    rowClass: f => (f.removed ? 'files-row--removed' : ''),
-    // Server-paged: the flat list can be huge, so it loads pages by infinite
-    // scroll (windowed DOM). The grouped "By artist / album" view loads the whole
-    // set once and windows it (docs/architecture/infinite-scroll-virtualization.md).
+    title: 'All Appearances',
+    emptyText: 'No tracks yet. Add music from the Upload page.',
+    columns: ['check', 'title', 'artist', 'album', 'size', 'access', 'meta', 'actions'],
+    metaLabel: 'Added',
+    metaValue: f => fmtDate(f.created_at),
+    // A dormant recording's appearance has nothing to play until a rendition
+    // is restored (Recordings lens / Trash › Files).
+    badge: f => (f.url ? null
+      : { text: 'dormant', cls: 'is-returned', title: 'No playable rendition — restore one on the Recordings lens' }),
+    // The row identity is the appearance, not the blob.
+    rowKey: f => f.tagset_id,
+    // Server-paged: the list can be huge, so it loads pages by infinite scroll
+    // (windowed DOM). The grouped "By artist / album" view loads the whole set
+    // once and windows it (docs/architecture/infinite-scroll-virtualization.md).
     paged: true,
     pageSize: 100,
     artistAlbumSort: true,
     apiBase: API,
     accessEditable: canEditMeta,
     licenses: LICENSE_OPTIONS,
-    loadPage: loadFilesPage,
+    loadPage: loadAppearancesPage,
     selectable: () => canEditMeta || canDelete,
-    editPatchURL: canEditMeta ? (f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`) : undefined,
-    editDetailURL: canEditMeta ? (f => `${API}/api/files/${encodeURIComponent(f.hash)}/metadata`) : undefined,
-    editNote: 'Edits one track’s tags + access, and reclassifies just that track. ' +
+    editPatchURL: canEditMeta ? (f => `${API}/api/admin/tagsets/${f.tagset_id}/metadata`) : undefined,
+    editDetailURL: canEditMeta ? (f => `${API}/api/admin/tagsets/${f.tagset_id}/metadata`) : undefined,
+    editNote: 'Edits one appearance’s tags, and reclassifies just that appearance. ' +
               'To rename a whole album or artist (cover and tracks stay attached), use Rename in the By-entity view.',
-    saveAccess: canEditMeta ? saveFileAccess : undefined,
-    bulkApply: canEditMeta ? filesBulkApply : undefined,
-    bulkApplyAll: canEditMeta ? bulkApplyAll : undefined,   // "select all N matching" → server-side edit
+    saveAccess: canEditMeta ? saveAppearanceAccess : undefined,
+    bulkApply: canEditMeta ? appearancesBulkApply : undefined,
+    bulkApplyAll: canEditMeta ? appearancesBulkApplyAll : undefined, // "select all N matching" → server-side edit
     // The row action confirms in the same modal the By-entity deletes use, which
     // owns the request and the reload — hence `false` (nothing left to reload).
     rowActions: canDelete ? [{
       id: 'trash', label: 'Move to Trash', icon: TRASH_ICON, kind: 'danger',
       run: f => {
         confirmDelete({
-          title: 'Move file to Trash',
+          title: 'Move appearance to Trash',
           body: `Move “${displayTitle(f)}” to Trash?`,
-          run: async () => { await trashOne(f); fileList?.reload(); reloadEntityLevel(); },
+          run: async () => {
+            await appearancesBulkCall({ action: 'trash', tagset_ids: [f.tagset_id] });
+            toast(`“${displayTitle(f)}” moved to Trash.`, 'success');
+            fileList?.reload(); reloadEntityLevel();
+          },
         });
         return false;
       },
     }] : [],
     bulkActions: canDelete ? [{
       id: 'trash', label: 'Move to Trash', kind: 'danger',
-      run: hashes => bulkTrashSelection(hashes),   // explicit page selection
-      runAll: filter => bulkTrashAll(filter),       // "select all N matching"
+      // Explicit page selection / "select all N matching".
+      run: async keys => { trashToast((await appearancesBulkCall({ action: 'trash', tagset_ids: asIDs(keys) })).affected); },
+      runAll: async filter => { trashToast((await appearancesBulkCall({ action: 'trash', ...appearancesFilterBody(filter) })).affected); },
     }] : [],
     onPlay: playFile,
+    canPlay: f => !!f.url,
     toast, handleAuthError,
   };
 }
@@ -817,49 +807,69 @@ function deleteArtist(a) {
   });
 }
 
-// ── View tabs (entity ⇄ all files) ───────────────────────────────────────────
-const tabEntity  = document.getElementById('tabEntity');
-const tabFiles   = document.getElementById('tabFiles');
-const entityView = document.getElementById('entityView');
-const filesView  = document.getElementById('filesView');
-const fileListEl = document.getElementById('fileList');
+// ── Sub-mode coordinator (mirrors the Trash scope's) ─────────────────────────
+// Four lenses over the live library, swapped in place. Each mounts lazily on
+// first open and reloads on re-show. The Recordings lens is offered only to
+// content.moderate holders (its page-gate before the move under Full Library).
+fileList = createFileList(appearancesScope());
 
-// "Show removed" — moderation-capability toggle for the physical view. Hidden
-// for admins without it (the server would ignore the param anyway).
-const showRemovedToggle = document.getElementById('showRemovedToggle');
-if (showRemovedToggle) {
-  const canSeeRemoved = perms.includes('content.moderate') || canDelete;
-  if (!canSeeRemoved) showRemovedToggle.closest('.files-show-removed').hidden = true;
-  showRemovedToggle.addEventListener('change', () => {
-    showRemoved = showRemovedToggle.checked;
-    if (filesMounted) fileList.reload();
-  });
+const recordings = canModerate ? createRecordingsView({ play, perms }) : null;
+const libFiles = createLibraryFiles({ host: document.getElementById('libFilesList'), play, perms });
+
+const modes = [
+  { id: 'entity', label: 'By entity', panel: 'libMode-entity', ctrl: { mount: () => loadEntityArtists(), reload: () => reloadEntityLevel() } },
+  { id: 'appearances', label: 'All Appearances', panel: 'libMode-appearances', ctrl: { mount: () => fileList.mount(document.getElementById('fileListAppearances')), reload: () => fileList.reload() } },
+  ...(recordings ? [{ id: 'recordings', label: 'Recordings', panel: 'libMode-recordings', ctrl: recordings }] : []),
+  { id: 'files', label: 'Files', panel: 'libMode-files', ctrl: libFiles },
+];
+const mounted = new Set();
+let activeMode = null;
+
+function showMode(id) {
+  if (activeMode === id) return;
+  activeMode = id;
+  for (const m of modes) {
+    const on = m.id === id;
+    document.getElementById(m.panel).hidden = !on;
+    const btn = switchEl.querySelector(`[data-mode="${m.id}"]`);
+    if (btn) { btn.classList.toggle('view-tab--active', on); btn.setAttribute('aria-selected', String(on)); }
+    if (on) {
+      if (mounted.has(m.id)) m.ctrl.reload();
+      else { mounted.add(m.id); m.ctrl.mount(); }
+    }
+  }
 }
 
-function showEntityView() {
-  tabEntity.classList.add('view-tab--active'); tabEntity.setAttribute('aria-selected', 'true');
-  tabFiles.classList.remove('view-tab--active'); tabFiles.setAttribute('aria-selected', 'false');
-  entityView.classList.remove('hidden'); filesView.classList.add('hidden');
+let switchEl = null;
+function buildSwitch() {
+  switchEl = document.getElementById('libModeSwitch');
+  if (switchEl.childElementCount) return; // already built
+  for (const m of modes) {
+    switchEl.appendChild(el('button', {
+      class: 'view-tab', 'data-mode': m.id, type: 'button', role: 'tab',
+      'aria-selected': 'false', 'aria-controls': m.panel,
+      onclick: () => showMode(m.id),
+    }, [m.label]));
+  }
 }
-function showFilesView() {
-  tabFiles.classList.add('view-tab--active'); tabFiles.setAttribute('aria-selected', 'true');
-  tabEntity.classList.remove('view-tab--active'); tabEntity.setAttribute('aria-selected', 'false');
-  filesView.classList.remove('hidden'); entityView.classList.add('hidden');
-  // Mount the component on first open; refresh on subsequent visits.
-  if (!filesMounted) { filesMounted = true; fileList.mount(fileListEl); }
-  else fileList.reload();
-}
-tabEntity.addEventListener('click', showEntityView);
-tabFiles.addEventListener('click', showFilesView);
 
 // ── Controller (mounted by library.js) ───────────────────────────────────────
-fileList = createFileList(filesScope());     // flat list; mounted on the All-files sub-tab
-
 return {
   id: 'all',
-  label: 'All files',
+  label: 'Full Library',
   available: true,
-  mount() { loadEntityArtists(); },          // By-entity is the default sub-view
-  reload() { reloadEntityLevel(); if (filesMounted) fileList.reload(); },
+  mount: () => { buildSwitch(); showMode(activeMode || 'entity'); }, // By entity is the default lens
+  reload: () => { if (activeMode) modes.find(m => m.id === activeMode).ctrl.reload(); },
+  // openRecording deep-links Full Library › Recordings (#recordings-<id> /
+  // #recordings) — used by library.js's hash routing. Marks the mode mounted so
+  // showMode doesn't re-mount over the deep-linked state.
+  openRecording(id) {
+    if (!recordings) { showMode('entity'); return; }
+    buildSwitch();
+    mounted.add('recordings');            // the calls below wire the lens themselves
+    showMode('recordings');
+    if (id) recordings.openRecording(id); // wires + searches + expands
+    else recordings.mount();              // plain open (no-op when already wired)
+  },
 };
 }

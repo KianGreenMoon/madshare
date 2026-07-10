@@ -135,7 +135,7 @@ renditions and absorbed/dormant blobs. The file grain.
 Hard/permanent deletion is available **only on the Trash page**, across the three
 perspectives above. Every other surface does **soft** operations only:
 
-- **`/admin/recordings`** loses *all* permanent-delete affordances — both the
+- **`/admin/library#recordings`** loses *all* permanent-delete affordances — both the
   whole-recording "Delete permanently" and the per-trashed-appearance "Delete
   permanently". It keeps Trash / Remove-rendition / Restore / Merge / Move / edit
   (curation + soft ops). Restore stays everywhere (harmless).
@@ -191,7 +191,7 @@ Files modes take their own `POST …/trash/recordings/bulk` and
   scope, unchanged. Recordings and Files are lighter bespoke lists (recording
   card / removed-blob row) sharing the page's one preview player — not
   `file-list.js` scopes.
-- **`/admin/recordings`** (`webui/static/js/admin/recordings.js`) drops the
+- **`/admin/library#recordings`** (`webui/static/js/admin/library#recordings.js`) drops the
   whole-recording and per-appearance "Delete permanently" buttons; keeps
   everything else.
 
