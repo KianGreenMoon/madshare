@@ -522,7 +522,9 @@ Deliberately **two perspectives** (owner accepts the added admin complexity):
   scope (Full Library › Files, `library-files.js` over the lean
   `trash-list.js` core): every live blob with storage **backend**, size,
   upload time, the **recording link** (`#recordings-<id>`), Play, and a
-  reversible **Remove** (`file.delete`). Soft-removed blobs
+  reversible **Remove** (`file.delete`) — per row and as a select-all bulk
+  (`POST /api/admin/renditions/bulk`, `{action:"remove", ids}` or
+  `{action:"remove", all:true}` for the whole set). Soft-removed blobs
   (absorbed/dormant) live exactly one place — **Trash › Files** — so there is
   no "show removed" toggle anywhere.
 
@@ -728,7 +730,9 @@ regressions isolate to the data move.
   trash), `GET/DELETE /recordings/{id}` (+ `/primary`, `/trash`, PATCH
   `/access`), `POST /tagsets/{id}/move`, `POST /tagsets/{id}/restore`, `DELETE
   /tagsets/{id}` (409 on a live appearance), `POST /renditions/{id}/{remove,
-  restore}`; gates: curation = `content.moderate`, deletes = `file.delete`,
+  restore}`, `POST /renditions/bulk` (`{action:"remove", ids}` xor
+  `{…, all:true}` — the Files lens's Remove selected / Select all N); gates:
+  curation = `content.moderate`, deletes = `file.delete`,
   access = `metadata.edit`. UI: bespoke `admin/recordings.js` (windowed
   virtual-list page scroll, expandable two-arm cards, merge/move/access
   modals), a mountable factory serving the Full Library › Recordings lens of

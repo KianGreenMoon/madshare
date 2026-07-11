@@ -1195,7 +1195,7 @@ export function createFileList(scope) {
     // matches remain unfetched. selectableTotal (= total unless the scope reports
     // a smaller actionable count, e.g. moderation's submitted-only set) bounds it.
     const loadedSel = rows.filter(isSelectable);
-    if (loadedSel.length && loadedSel.every(f => selected.has(f.hash)) && selectableTotal > loadedSel.length) {
+    if (loadedSel.length && loadedSel.every(f => selected.has(keyOf(f))) && selectableTotal > loadedSel.length) {
       return el('div', { class: 'select-all-banner' }, [
         `All ${loadedSel.length} loaded file${loadedSel.length === 1 ? '' : 's'} selected. `,
         el('button', { type: 'button', class: 'linklike', text: `Select all ${selectableTotal} matching`, onclick: () => { selectAllMatching = true; render(); } }),

@@ -46,6 +46,7 @@ export function createTrashFiles({ host, play, confirmDelete }) {
   list = createTrashList({
     host,
     pageSize: 100,
+    itemNoun: 'file',
     emptyText: 'No removed files.',
     columns: ['File', 'Size', 'Storage', 'Removed'],
     rowKey: f => f.id,
@@ -68,12 +69,12 @@ export function createTrashFiles({ host, play, confirmDelete }) {
       toast(`“${dispName(f)}” permanently deleted.`, 'success');
       return true;
     },
-    async bulkRestore(ids) {
-      const d = await req(`${API}/api/admin/trash/files/bulk`, bulkBody('restore', ids));
+    async bulkRestore(ids, all) {
+      const d = await req(`${API}/api/admin/trash/files/bulk`, bulkBody('restore', ids, all));
       return d ? d.affected : null;
     },
-    async bulkDelete(ids) {
-      const d = await req(`${API}/api/admin/trash/files/bulk`, bulkBody('delete', ids));
+    async bulkDelete(ids, all) {
+      const d = await req(`${API}/api/admin/trash/files/bulk`, bulkBody('delete', ids, all));
       return d ? d.affected : null;
     },
   });
@@ -81,6 +82,6 @@ export function createTrashFiles({ host, play, confirmDelete }) {
   return list;
 }
 
-function bulkBody(action, ids) {
-  return { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, ids }) };
+function bulkBody(action, ids, all) {
+  return { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(all ? { action, all: true } : { action, ids }) };
 }

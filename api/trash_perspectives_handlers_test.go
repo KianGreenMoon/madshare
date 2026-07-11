@@ -204,4 +204,29 @@ func TestTrashFilesBulk(t *testing.T) {
 	if len(repo.bulkHardDelRemovedIDs) != 2 {
 		t.Errorf("delete ids = %v, want 2", repo.bulkHardDelRemovedIDs)
 	}
+
+	// all:true restores the whole bin ("Select all N") — ids resolved server-side.
+	repo = &fakeRepo{removedFilterIDs: []int64{7, 8, 9}}
+	h = &handler{repo: repo}
+	rr = httptest.NewRecorder()
+	h.trashFilesBulk(rr, postJSON("/api/admin/trash/files/bulk", `{"action":"restore","all":true}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("all restore status = %d, want 200", rr.Code)
+	}
+	if len(repo.bulkRestoreRemovedIDs) != 3 {
+		t.Errorf("all restore ids = %v, want the 3 removed ids", repo.bulkRestoreRemovedIDs)
+	}
+}
+
+func TestTrashRecordingsBulkAll(t *testing.T) {
+	repo := &fakeRepo{trashedRecordingIDs: []int64{4, 5}}
+	h := &handler{repo: repo}
+	rr := httptest.NewRecorder()
+	h.trashRecordingsBulk(rr, postJSON("/api/admin/trash/recordings/bulk", `{"action":"restore","all":true}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("all restore status = %d, want 200", rr.Code)
+	}
+	if len(repo.bulkRestoreRecIDs) != 2 {
+		t.Errorf("all restore ids = %v, want the 2 trashed recording ids", repo.bulkRestoreRecIDs)
+	}
 }

@@ -30,6 +30,14 @@ func (db *DB) CountTrashedRecordings(ctx context.Context, search string) (int, e
 	return db.CountRecordings(ctx, RecordingListOptions{Filter: "trashed", Search: search})
 }
 
+// TrashedRecordingIDs returns the id of every recording in the trashed bin (no
+// paging), ordered by id — the Recordings bin's "select all N" bulk target
+// (body {action, all:true}).
+func (db *DB) TrashedRecordingIDs(ctx context.Context) ([]int64, error) {
+	return scanIDs(db.QueryContext(ctx,
+		`SELECT r.id FROM recordings r WHERE `+recordingFilterClause("trashed")+` ORDER BY r.id`))
+}
+
 // restoreRecordingTx brings one recording back into the library: it un-trashes
 // every trashed appearance and, if the recording is dormant (no surviving
 // rendition), restores its ladder-best removed blob so the appearances can play.

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"slices"
 	"strconv"
 
 	"daemonlord.ygg/madshare/database"
@@ -105,11 +106,19 @@ func (h *handler) recordingsRestore(w http.ResponseWriter, r *http.Request) {
 
 // trashRecordingsBulk handles POST /api/admin/trash/recordings/bulk — the
 // Recordings bin's "Restore selected" / "Delete selected" over an explicit id
-// list (body {action, ids}). Gated file.delete.
+// list or the whole bin (body {action, ids} / {action, all:true}). Gated
+// file.delete.
 func (h *handler) trashRecordingsBulk(w http.ResponseWriter, r *http.Request) {
-	action, ids, ok := decodeBulkIDs(w, r)
+	action, ids, all, ok := decodeBulkIDs(w, r)
 	if !ok {
 		return
+	}
+	if all {
+		var err error
+		if ids, err = h.repo.TrashedRecordingIDs(r.Context()); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+			return
+		}
 	}
 	switch action {
 	case "restore":
@@ -218,12 +227,19 @@ func (h *handler) renditionHardDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // trashFilesBulk handles POST /api/admin/trash/files/bulk — the Files bin's
-// "Restore selected" / "Delete selected" over an explicit file-id list (body
-// {action, ids}). Gated file.delete.
+// "Restore selected" / "Delete selected" over an explicit file-id list or the
+// whole bin (body {action, ids} / {action, all:true}). Gated file.delete.
 func (h *handler) trashFilesBulk(w http.ResponseWriter, r *http.Request) {
-	action, ids, ok := decodeBulkIDs(w, r)
+	action, ids, all, ok := decodeBulkIDs(w, r)
 	if !ok {
 		return
+	}
+	if all {
+		var err error
+		if ids, err = h.repo.RemovedFileIDsByFilter(r.Context(), database.FileFilter{}); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+			return
+		}
 	}
 	switch action {
 	case "restore":
@@ -245,30 +261,42 @@ func (h *handler) trashFilesBulk(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// decodeBulkIDs parses the shared {action, ids} bulk body for the Recordings /
-// Files bins (action ∈ {restore, delete}, a non-empty id list within the cap).
-// It writes the error response itself and returns ok=false on any problem.
-func decodeBulkIDs(w http.ResponseWriter, r *http.Request) (action string, ids []int64, ok bool) {
+// decodeBulkIDs parses the shared bulk body for the id-addressed bulk
+// endpoints: {action, ids} (a non-empty id list within the cap) or
+// {action, all:true} (the whole bin — the UI's "Select all N"; the handler
+// resolves the id set server-side). ids and all are mutually exclusive. The
+// caller passes its allowed actions (default: restore, delete — the Trash
+// bins' pair). It writes the error response itself and returns ok=false on
+// any problem.
+func decodeBulkIDs(w http.ResponseWriter, r *http.Request, actions ...string) (action string, ids []int64, all bool, ok bool) {
+	if len(actions) == 0 {
+		actions = []string{"restore", "delete"}
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req struct {
 		Action string  `json:"action"`
 		IDs    []int64 `json:"ids"`
+		All    bool    `json:"all"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid JSON body"})
-		return "", nil, false
+		return "", nil, false, false
 	}
-	if req.Action != "restore" && req.Action != "delete" {
+	if !slices.Contains(actions, req.Action) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown action"})
-		return "", nil, false
+		return "", nil, false, false
 	}
-	if len(req.IDs) == 0 {
+	if req.All && len(req.IDs) > 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "ids and all are mutually exclusive"})
+		return "", nil, false, false
+	}
+	if !req.All && len(req.IDs) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "ids is required"})
-		return "", nil, false
+		return "", nil, false, false
 	}
 	if len(req.IDs) > bulkIDsMax {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "too many ids"})
-		return "", nil, false
+		return "", nil, false, false
 	}
-	return req.Action, req.IDs, true
+	return req.Action, req.IDs, req.All, true
 }

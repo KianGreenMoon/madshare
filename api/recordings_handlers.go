@@ -565,6 +565,33 @@ func (h *handler) renditionSetRemoved(w http.ResponseWriter, r *http.Request, re
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// renditionsBulk handles POST /api/admin/renditions/bulk — the Full Library
+// Files lens's "Remove selected" over an explicit live-file-id list or every
+// live blob (body {action:"remove", ids} / {action:"remove", all:true};
+// already-removed / unknown ids are no-ops). The same reversible soft removal
+// as the per-row Remove: bytes kept, restorable from Trash › Files, a
+// recording losing its last rendition goes dormant. Gated file.delete.
+func (h *handler) renditionsBulk(w http.ResponseWriter, r *http.Request) {
+	_, ids, all, ok := decodeBulkIDs(w, r, "remove")
+	if !ok {
+		return
+	}
+	if all {
+		var err error
+		if ids, err = h.repo.LiveFileIDs(r.Context()); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+			return
+		}
+	}
+	n, err := h.repo.BulkRemoveRenditions(r.Context(), ids)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+		return
+	}
+	h.audit(r.Context(), "rendition.bulk_remove", "files", strconv.Itoa(n)+" removed")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": n})
+}
+
 // tagsetRestore handles POST /api/admin/tagsets/{tagsetID}/restore — the
 // appearances arm's inverse of Remove (discard): it un-trashes one appearance by
 // id. The hash-addressed Trash page can't restore an appearance whose origin

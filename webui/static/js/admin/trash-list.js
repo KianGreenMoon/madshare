@@ -27,17 +27,26 @@ import { PLAY_ICON, RESTORE_ICON, TRASH_ICON } from '../icons.js';
 // verbs passes its own instead:
 //   rowActions: [{icon, title, kind:'danger'|null, run(item)->Promise<bool>}]
 //               (true = reload the list; label via title + rowLabel)
-//   bulkActions: [{label(n), kind, run(ids)->Promise<number|null>}]
-//               (count toasts are the action's job; null = error surfaced)
-// The checkbox column + bulk bar render only when bulk actions exist.
+//   bulkActions: [{label(n), kind, run(ids, all)->Promise<number|null>}]
+//               (count toasts are the action's job; null = error surfaced;
+//               all=true targets the whole bin — ids is empty then, the
+//               action sends {action, all:true} and the server resolves the
+//               set)
+//   itemNoun — the banner's noun ('file', 'recording'; default 'item')
+// The checkbox column + bulk bar render only when bulk actions exist. Once
+// every loaded row is ticked and more remain unfetched, a "Select all N"
+// banner flips bulk actions onto the whole bin (parity with file-list.js's
+// cross-page select-all).
 export function createTrashList(cfg) {
   const pageSize = cfg.pageSize || 100;
+  const noun = cfg.itemNoun || 'item';
   const sel = new Set();
   let items = [];
   let total = 0;
   let offset = 0;
   let loading = false;
   let mounted = false;
+  let allMatching = false; // bulk acts on the whole bin, not just checked rows
 
   const host = cfg.host;
 
@@ -72,14 +81,14 @@ export function createTrashList(cfg) {
     },
   ];
   const bulkActions = cfg.bulkActions || [
-    { label: n => `Restore selected (${n})`, run: ids => runDefaultBulk('restore', ids) },
-    { label: n => `Delete selected (${n})`, kind: 'danger', run: ids => runDefaultBulk('delete', ids) },
+    { label: n => `Restore selected (${n})`, run: (ids, all) => runDefaultBulk('restore', ids, all) },
+    { label: n => `Delete selected (${n})`, kind: 'danger', run: (ids, all) => runDefaultBulk('delete', ids, all) },
   ];
   const selectable = bulkActions.length > 0;
 
-  async function runDefaultBulk(kind, ids) {
-    if (kind === 'delete' && !await cfg.confirmDelete(ids.length)) return null;
-    const n = kind === 'delete' ? await cfg.bulkDelete(ids) : await cfg.bulkRestore(ids);
+  async function runDefaultBulk(kind, ids, all) {
+    if (kind === 'delete' && !await cfg.confirmDelete(all ? total : ids.length)) return null;
+    const n = kind === 'delete' ? await cfg.bulkDelete(ids, all) : await cfg.bulkRestore(ids, all);
     if (n == null) return null; // error already surfaced
     const verb = kind === 'delete' ? 'Permanently deleted' : 'Restored';
     if (n) toast(`${verb} ${n} item${n === 1 ? '' : 's'}.`, 'success');
@@ -90,10 +99,12 @@ export function createTrashList(cfg) {
     if (await action.run(it)) { sel.delete(keyOf(it)); await loadPage(true); }
   }
   async function doBulk(action) {
-    const ids = [...sel];
-    if (!ids.length) return;
-    if (await action.run(ids) == null) return;
+    const all = allMatching;
+    const ids = all ? [] : [...sel];
+    if (!all && !ids.length) return;
+    if (await action.run(ids, all) == null) return;
     sel.clear();
+    allMatching = false;
     await loadPage(true);
   }
 
@@ -110,22 +121,38 @@ export function createTrashList(cfg) {
 
     // Bulk toolbar (only while something is selected).
     if (sel.size) {
+      const n = allMatching ? total : sel.size;
       host.appendChild(el('div', { class: 'bulk-toolbar' }, [
-        el('span', { class: 'bulk-selcount' }, [`${sel.size} selected`]),
+        el('span', { class: 'bulk-selcount' }, [allMatching ? `All ${total} selected` : `${sel.size} selected`]),
         el('span', { class: 'bulk-spacer' }),
         ...bulkActions.map(a => el('button', {
           class: 'btn btn-sm ' + (a.kind === 'danger' ? 'btn-destructive-solid' : 'btn-neutral'),
           onclick: () => doBulk(a),
-        }, [a.label(sel.size)])),
-        el('button', { class: 'btn btn-sm btn-neutral', onclick: () => { sel.clear(); render(); } }, ['Clear']),
+        }, [a.label(n)])),
+        el('button', { class: 'btn btn-sm btn-neutral', onclick: () => { sel.clear(); allMatching = false; render(); } }, ['Clear']),
       ]));
     }
 
+    // Cross-page select-all (parity with file-list.js): once every loaded row
+    // is ticked and more remain unfetched, offer the whole bin.
     const allSelected = items.every(it => sel.has(keyOf(it)));
+    if (allMatching) {
+      host.appendChild(el('div', { class: 'select-all-banner is-active' }, [
+        `All ${total} ${noun}${total === 1 ? '' : 's'} selected. `,
+        el('button', { type: 'button', class: 'linklike', onclick: () => { sel.clear(); allMatching = false; render(); } }, ['Clear selection']),
+      ]));
+    } else if (sel.size && allSelected && items.length < total) {
+      host.appendChild(el('div', { class: 'select-all-banner' }, [
+        `All ${items.length} loaded ${noun}${items.length === 1 ? '' : 's'} selected. `,
+        el('button', { type: 'button', class: 'linklike', onclick: () => { allMatching = true; render(); } }, [`Select all ${total}`]),
+      ]));
+    }
+
     const head = el('tr', {}, [
       selectable ? el('th', { class: 'cell-check' }, [el('input', {
         type: 'checkbox', 'aria-label': 'Select all', ...(allSelected ? { checked: '' } : {}),
         onchange: e => {
+          allMatching = false;
           if (e.target.checked) items.forEach(it => sel.add(keyOf(it)));
           else sel.clear();
           render();
@@ -154,7 +181,7 @@ export function createTrashList(cfg) {
       return el('tr', { class: cfg.rowClass?.(it) || '', 'data-key': String(key) }, [
         selectable ? el('td', { class: 'cell-check' }, [el('input', {
           type: 'checkbox', 'aria-label': 'Select row', ...(sel.has(key) ? { checked: '' } : {}),
-          onchange: e => { if (e.target.checked) sel.add(key); else sel.delete(key); render(); },
+          onchange: e => { allMatching = false; if (e.target.checked) sel.add(key); else sel.delete(key); render(); },
         })]) : null,
         ...cfg.renderCells(it),
         el('td', { class: 'cell-actions' }, [el('div', { class: 'trash-actions' }, actions)]),

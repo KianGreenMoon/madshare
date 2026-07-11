@@ -47,9 +47,25 @@ export function createLibraryFiles({ host, play, perms }) {
     rowLabel: dispName,
     renderCells: cells,
     onPlay: playFile,
-    // Lean physical view: no selection/bulk; the one verb is the reversible
-    // soft-remove (file.delete — the same gate as the recordings-arm Remove).
-    bulkActions: [],
+    // The one verb — per row and in bulk — is the reversible soft-remove
+    // (file.delete, the same gate as the recordings-arm Remove). Without the
+    // permission there is no bulk action, so no selection column renders.
+    itemNoun: 'file',
+    bulkActions: canDelete ? [{
+      label: n => `Remove selected (${n})`, kind: 'danger',
+      async run(ids, all) {
+        const res = await fetch(`${API}/api/admin/renditions/bulk`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(all ? { action: 'remove', all: true } : { action: 'remove', ids }),
+        });
+        if (handleAuthError(res)) return null;
+        if (!res.ok) { toast(`Remove failed (HTTP ${res.status}).`, 'error'); return null; }
+        const n = (await res.json()).affected || 0;
+        toast(`Removed ${n} file${n === 1 ? '' : 's'} — restorable from Trash › Files.`, 'success');
+        return n;
+      },
+    }] : [],
     rowActions: canDelete ? [{
       icon: TRASH_ICON, title: 'Remove file', kind: 'danger',
       async run(f) {
