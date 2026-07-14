@@ -23,6 +23,8 @@ lens of Admin·Library (`/admin/library#recordings`) — and the physical file
 perspective, now the Full Library › Files lens. UX per the owner-signed mock of
 2026-07-07, which also resolved open point 1 (merge/move mechanics). Federation (P6) not started.
 This document is the reference design and the implementation plan.
+The resulting schema triangle (tables, FKs, multiplicities) is drawn in
+[files · recordings · tagsets](files-recording-tagsets.md).
 Extends
 [Recordings](recordings.md) (same-audio grouping & renditions) and the
 [artist/album overlay](artist-album-model.md); the metadata payload defined here
