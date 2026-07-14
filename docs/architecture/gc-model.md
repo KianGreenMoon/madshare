@@ -93,6 +93,68 @@ exist with the required actions; what changes is code semantics (and what code
 gets deleted). Migration 026 (`recordings.primary_tagset_id`) is never
 created.
 
+### The DB diagram (target state)
+
+Structurally identical to today's triangle — the differences are all in the
+annotations: no `primary_tagset_id`, no "≥ 1" invariants (replaced by reaper
+convergence), and the two non-structural pointers demoted to
+preference/provenance.
+
+```
+                          ┌─────────────────────────────────┐
+                          │           recordings            │
+                          │  the identity ("inode"): owns   │
+                          │  license/access; NO lifecycle   │
+                          │  column, NO direct delete op —  │
+                          │  empty husk removed by reaper P3│
+                          ├─────────────────────────────────┤
+                          │ id                     PK       │
+                          │ created_at                      │
+                   ┌──────│ preferred_file_id      FK ──────│──┐  PREFERENCE only: manual
+                   │      │ license                         │  │  best-rendition override
+                   │      │ guest_playable                  │  │  (nullable, ON DELETE SET
+                   │      │ guest_playable_manual           │  │  NULL; NULL = quality ladder)
+                   │      └─────────────────────────────────┘  │
+                   │          ▲                    ▲           │
+  files.recording_id          │                    │        tagsets.recording_id
+  NOT NULL — structural       │                    │        NOT NULL, ON DELETE CASCADE
+  edge 1: every blob is a     │                    │        — structural edge 2: every
+  rendition of exactly one    │                    │        appearance names exactly one
+  recording; rows die only    │                    │        recording; no "≥ 1" rule —
+  via PURGE                   │                    │        zero rows = garbage, reaped
+                   ▼          │                    │           ▼
+┌───────────────────────────────┐       ┌──────────────────────────────────────┐
+│            files              │       │               tagsets                │
+│  rendition ("data block") —   │       │  appearance ("directory entry") —    │
+│  a storage object, NOT a      │       │  the only thing users see, name,     │
+│  curation object              │       │  and delete                          │
+├───────────────────────────────┤       ├──────────────────────────────────────┤
+│ id                         PK │       │ id                               PK  │
+│ hash     (content address)    │       │ recording_id  NOT NULL   FK ─────────│─→ recordings
+│ recording_id  NOT NULL FK ────│─→ rec │ title/artist/album/…     (raw tags)  │
+│ recording_pinned              │       │ artist_id / album_artist_id /        │
+│ storage_backend               │       │   album_id      (resolved overlay)   │
+│ deleted_at  = TRASH mark      │       │ review_state / review_note /         │
+│   (Trash › Files — the        │       │   submitted_at / created_by          │
+│    quarantine window)         │       │ deleted_at  = TRASH mark             │
+│ uploaded_by, mime, size, …    │       │   (Trash › Appearances)              │
+└───────────────────────────────┘       │ is_primary  — PREFERENCE only:       │
+              ▲                         │   manual override of the derived     │
+              │                         │   default (oldest live appearance);  │
+              │                         │   no exactly-one rule, no repair     │
+              │                         │ origin_file_id            FK ────────│─┐
+              │                         │ created_at                           │ │
+              │                         └──────────────────────────────────────┘ │
+              │                                                                  │
+              └──────────────────────────────────────────────────────────────────┘
+                origin_file_id → files.id   (nullable, ON DELETE SET NULL)
+                SUBMISSION PAIRING only: meaningful while review_state ≠
+                'approved' (moderation queue, duplicate classify, absorb);
+                after approval it is inert audit data — never re-pointed,
+                never a delete key; a draft dies with its origin blob
+```
+
+
 ## Operations: unlink and mark only
 
 Every user- or admin-facing delete touches **exactly one kind of row** and
