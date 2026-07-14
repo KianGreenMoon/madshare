@@ -804,10 +804,17 @@ func (db *DB) BulkHardDeleteTrashedByHashes(ctx context.Context, hashes []string
 // hardDeleteFilesTx permanently removes the given file ids inside tx, keeping
 // the tagset invariant in one transaction (the shared cascade every hard-delete
 // entry point must go through — a second code path would reintroduce the orphan
-// risk): each file's offered tagsets go with it, a recording left with no files
-// is deleted (its remaining tagsets cascade via FK), and a surviving recording
-// that lost its primary appearance promotes its oldest remaining tagset. FK
-// cascade drops file_uploads, media_metadata, source_files, etc. as before.
+// risk). Appearances offered from a dying file are NOT deleted with it —
+// origin_file_id is provenance, never a delete key: each one is re-pointed to a
+// surviving rendition of its own recording (live first; the
+// HardDeleteRemovedFile precedent), so blob-loss with survivors means "the
+// recording just lost a rendition", never "the library lost a curated
+// appearance". With no survivor the origin goes NULL: either the tagset's
+// recording also emptied and repairRecordingTx below removes it (remaining
+// tagsets cascade via FK), or the appearance legitimately lives on blobless
+// (P7d). Repair covers the dying files' recordings AND the recordings of moved
+// appearances whose origin died here. FK cascade drops file_uploads,
+// media_metadata, source_files, etc. as before.
 func hardDeleteFilesTx(ctx context.Context, tx *sql.Tx, ids []int64) error {
 	const chunk = 400
 	recIDs := make(map[int64]struct{})
@@ -821,9 +828,11 @@ func hardDeleteFilesTx(ctx context.Context, tx *sql.Tx, ids []int64) error {
 			args = append(args, id)
 		}
 		in := "(" + strings.Join(placeholders, ",") + ")"
+		twice := append(append(make([]any, 0, 2*len(batch)), args...), args...)
 
 		rows, err := tx.QueryContext(ctx,
-			`SELECT DISTINCT recording_id FROM files WHERE id IN `+in, args...)
+			`SELECT recording_id FROM files WHERE id IN `+in+`
+			 UNION SELECT recording_id FROM tagsets WHERE origin_file_id IN `+in, twice...)
 		if err != nil {
 			return fmt.Errorf("hard delete: recordings: %w", err)
 		}
@@ -842,8 +851,12 @@ func hardDeleteFilesTx(ctx context.Context, tx *sql.Tx, ids []int64) error {
 		rows.Close()
 
 		if _, err := tx.ExecContext(ctx,
-			`DELETE FROM tagsets WHERE origin_file_id IN `+in, args...); err != nil {
-			return fmt.Errorf("hard delete: tagsets: %w", err)
+			`UPDATE tagsets SET origin_file_id = (
+			    SELECT s.id FROM files s
+			     WHERE s.recording_id = tagsets.recording_id AND s.id NOT IN `+in+`
+			     ORDER BY (s.deleted_at IS NULL) DESC, s.id ASC LIMIT 1)
+			  WHERE origin_file_id IN `+in, twice...); err != nil {
+			return fmt.Errorf("hard delete: repoint tagsets: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM files WHERE id IN `+in, args...); err != nil {

@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 )
 
@@ -408,6 +409,128 @@ func TestSweepInvalidRecordings(t *testing.T) {
 	}
 	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, healthy.RecordingID); n != 1 {
 		t.Errorf("healthy recording swept: count=%d", n)
+	}
+	assertInvariants(t, db)
+}
+
+// originOf reads a tagset's origin_file_id (0 when NULL).
+func originOf(t *testing.T, db *DB, tagsetID int64) int64 {
+	t.Helper()
+	var origin sql.NullInt64
+	if err := db.QueryRow(`SELECT origin_file_id FROM tagsets WHERE id=?`, tagsetID).Scan(&origin); err != nil {
+		t.Fatalf("origin of tagset %d: %v", tagsetID, err)
+	}
+	return origin.Int64
+}
+
+// TestHardDeleteFile_RepointsPreservedAppearance: prune of an absorbed blob must
+// not destroy the appearance absorb preserved. Two releases of the same audio
+// are absorbed down to one blob; the absorbed (soft-removed) blob then goes
+// corrupt and prune hard-deletes it — its appearance is re-pointed to the kept
+// rendition instead of dying with the origin file.
+func TestHardDeleteFile_RepointsPreservedAppearance(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	f1 := insertTaggedFile(t, db, hash64("rp1"), "studio.flac", "The Band", "Studio Album")
+	f2 := insertTaggedFile(t, db, hash64("rp2"), "bestof.mp3", "The Band", "Best Of")
+	rec := groupIntoRecording(t, db, f1.ID, f2.ID)
+	if _, err := db.AbsorbRenditions(ctx, rec, f1.ID, []int64{f2.ID}); err != nil {
+		t.Fatalf("absorb: %v", err)
+	}
+
+	if _, found, err := db.HardDeleteFileByHash(ctx, f2.Hash); err != nil || !found {
+		t.Fatalf("hard delete absorbed blob: found=%v err=%v", found, err)
+	}
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=?`, rec); n != 2 {
+		t.Errorf("appearances = %d after pruning the absorbed blob, want 2 (both releases preserved)", n)
+	}
+	if got := visibleTagsetCount(t, db, rec); got != 2 {
+		t.Errorf("visible appearances = %d, want 2", got)
+	}
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=? AND origin_file_id=?`, rec, f1.ID); n != 2 {
+		t.Errorf("appearances pointing at the kept rendition = %d, want 2", n)
+	}
+	assertInvariants(t, db)
+}
+
+// TestHardDeleteFile_OrphanSurvivorKeepsAppearance: identical-identity absorb
+// leaves the surviving rendition an orphan (its own appearance was deduped);
+// pruning the origin blob of the recording's ONLY appearance must re-point that
+// appearance to the orphan rendition, not strand the recording with a live file
+// and zero tagsets.
+func TestHardDeleteFile_OrphanSurvivorKeepsAppearance(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	f1 := insertTaggedFile(t, db, hash64("os1"), "track.flac", "The Band", "Studio Album")
+	f2 := insertTaggedFile(t, db, hash64("os2"), "track.mp3", "The Band", "Studio Album")
+	rec := groupIntoRecording(t, db, f1.ID, f2.ID)
+	out, err := db.AbsorbRenditions(ctx, rec, f1.ID, []int64{f2.ID})
+	if err != nil {
+		t.Fatalf("absorb: %v", err)
+	}
+	if out.AppearancesDropped != 1 {
+		t.Fatalf("absorb dropped %d appearances, want 1 (identical identity)", out.AppearancesDropped)
+	}
+
+	// f1 now hosts the only appearance; f2 is a soft-removed orphan rendition.
+	// Prune f1 (blob loss): the appearance must move to f2, the recording must
+	// keep 1 file + 1 tagset.
+	if _, found, err := db.HardDeleteFileByHash(ctx, f1.Hash); err != nil || !found {
+		t.Fatalf("hard delete appearance origin: found=%v err=%v", found, err)
+	}
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=?`, rec); n != 1 {
+		t.Errorf("appearances = %d after pruning the origin, want 1 (re-pointed, not destroyed)", n)
+	}
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=? AND origin_file_id=?`, rec, f2.ID); n != 1 {
+		t.Errorf("appearance not re-pointed to the surviving rendition f2")
+	}
+	if n := countRow(t, db, `SELECT COUNT(*) FROM files WHERE recording_id=?`, rec); n != 1 {
+		t.Errorf("recording file count=%d, want 1", n)
+	}
+	assertInvariants(t, db)
+}
+
+// TestHardDeleteFile_MovedAppearanceSurvives: an appearance moved to another
+// recording (MoveTagset) whose origin file stays behind must survive that
+// file's hard delete — re-pointed to a rendition of its OWN recording — and its
+// recording must be included in the invariant repair.
+func TestHardDeleteFile_MovedAppearanceSurvives(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	fA1 := insertTaggedFile(t, db, hash64("mv1"), "a1.flac", "Artist A", "Album A")
+	fA2 := insertTaggedFile(t, db, hash64("mv2"), "a2.mp3", "Artist A", "Live Album")
+	recA := groupIntoRecording(t, db, fA1.ID, fA2.ID)
+	fB := insertTaggedFile(t, db, hash64("mv3"), "b1.flac", "Artist B", "Album B")
+	recB := fB.RecordingID
+
+	// Move fA2's appearance onto recording B (its origin file stays on A).
+	var movedTagset int64
+	if err := db.QueryRow(`SELECT id FROM tagsets WHERE origin_file_id=?`, fA2.ID).Scan(&movedTagset); err != nil {
+		t.Fatalf("moved tagset id: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE tagsets SET recording_id=?, is_primary=0 WHERE id=?`, recB, movedTagset); err != nil {
+		t.Fatalf("move tagset: %v", err)
+	}
+
+	if _, found, err := db.HardDeleteFileByHash(ctx, fA2.Hash); err != nil || !found {
+		t.Fatalf("hard delete fA2: found=%v err=%v", found, err)
+	}
+	// The moved appearance lives on, offered from B's own rendition.
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE id=?`, movedTagset); n != 1 {
+		t.Fatalf("moved appearance destroyed by its origin file's hard delete")
+	}
+	if got := originOf(t, db, movedTagset); got != fB.ID {
+		t.Errorf("moved appearance origin=%d, want %d (a rendition of its own recording)", got, fB.ID)
+	}
+	// Recording A keeps its remaining rendition + appearance.
+	if n := countRow(t, db, `SELECT COUNT(*) FROM files WHERE recording_id=?`, recA); n != 1 {
+		t.Errorf("recording A file count=%d, want 1", n)
+	}
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=?`, recA); n != 1 {
+		t.Errorf("recording A appearance count=%d, want 1", n)
 	}
 	assertInvariants(t, db)
 }
