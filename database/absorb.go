@@ -156,7 +156,7 @@ func absorbRenditionsTx(ctx context.Context, tx *sql.Tx, recordingID, keepFileID
 	}
 
 	// A dropped tagset may have been the primary; re-promote deterministically.
-	if err := repairRecordingTx(ctx, tx, recordingID); err != nil {
+	if err := reapRecordingsTx(ctx, tx, []int64{recordingID}); err != nil {
 		return AbsorbOutcome{}, err
 	}
 	return AbsorbOutcome{Found: true, RenditionsRemoved: removed, AppearancesDropped: len(dropIDs)}, nil

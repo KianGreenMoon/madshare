@@ -5,14 +5,13 @@ package database
 // absorbed/dormant blobs). Listing reuses the shared fileListSelect/scanFileList
 // row shape (it already carries storage_backend / recording_id / deleted_at);
 // restore is RestoreRendition (recordings.go). Permanent delete
-// (HardDeleteRemovedFile) is the only per-file purge in the system: a non-last
-// file drops just its blob (live appearances repointed to a surviving
-// rendition), the last file of a recording cascade-prunes the whole recording.
+// (HardDeleteRemovedFile) purges the trashed row + blob and lets the scoped
+// reap converge the recording (GC model): losing the last file row trashes
+// the recording's appearances — catalog entries survive blobless in Trash,
+// only the bytes are destroyed.
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 )
@@ -141,18 +140,14 @@ func (db *DB) BulkRestoreRemovedFiles(ctx context.Context, fileIDs []int64) (int
 }
 
 // HardDeleteRemovedFile permanently removes a single soft-removed blob (the
-// Files-perspective "Delete forever"). It is the only per-file purge path:
-//
-//   - Not the last file of its recording → reclaim just this blob + row; any
-//     appearance whose origin was this file is repointed onto a surviving
-//     rendition first, so a live appearance is never destroyed (unlike the
-//     files-first cascade, which deletes tagsets by origin_file_id).
-//   - Last file of its recording → the recording has nothing left to play, so
-//     the whole recording (+ every appearance) cascades away (owner decision:
-//     "last file → just prune everything").
-//
-// Refuses a file that is not soft-removed (a live file is not in this bucket) —
-// found=false. Returns the blob(s) to reclaim after commit.
+// Files-perspective "Delete forever") through the GC purge primitives: the
+// trashed row and its bytes go; drafts whose origin this blob was are
+// discarded, approved appearances just lose their (inert) provenance pointer.
+// The scoped reap then converges the recording — if this was its last file
+// row, its appearances are TRASHED (Trash › Appearances), never destroyed:
+// the catalog entry survives blobless and restorable, only the bytes are
+// gone. Refuses a file that is not soft-removed (a live file is not in this
+// bucket) — found=false. Returns the blob(s) to reclaim after commit.
 func (db *DB) HardDeleteRemovedFile(ctx context.Context, fileID int64) (blobs []DeletedBlob, found bool, err error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -160,53 +155,24 @@ func (db *DB) HardDeleteRemovedFile(ctx context.Context, fileID int64) (blobs []
 	}
 	defer tx.Rollback()
 
-	var recID int64
-	var blob DeletedBlob
+	var trashed bool
 	err = tx.QueryRowContext(ctx,
-		`SELECT recording_id, hash, storage_backend FROM files
-		  WHERE id = ? AND deleted_at IS NOT NULL`, fileID).Scan(&recID, &blob.Hash, &blob.StorageBackend)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, false, nil
-	}
+		`SELECT EXISTS (SELECT 1 FROM files WHERE id = ? AND deleted_at IS NOT NULL)`,
+		fileID).Scan(&trashed)
 	if err != nil {
 		return nil, false, fmt.Errorf("hard delete removed file: load: %w", err)
 	}
-
-	var survivor int64
-	err = tx.QueryRowContext(ctx,
-		`SELECT id FROM files WHERE recording_id = ? AND id <> ?
-		  ORDER BY (deleted_at IS NULL) DESC, id ASC LIMIT 1`, recID, fileID).Scan(&survivor)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		// Last file of the recording: nothing left to play → prune the whole
-		// recording. Reclaim this file's blob, drop the file, then drop the
-		// recording (its tagsets cascade via FK).
-		blobs, err = deleteRecordingFilesTx(ctx, tx, recID)
-		if err != nil {
-			return nil, false, err
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM recordings WHERE id = ?`, recID); err != nil {
-			return nil, false, fmt.Errorf("hard delete removed file: drop recording: %w", err)
-		}
-	case err != nil:
-		return nil, false, fmt.Errorf("hard delete removed file: survivor: %w", err)
-	default:
-		// A sibling rendition survives: repoint any appearance offered from this
-		// blob onto it (provenance only), then drop just this file. FK cascade
-		// clears media_metadata / file_uploads / fingerprints / source_files.
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE tagsets SET origin_file_id = ? WHERE origin_file_id = ?`, survivor, fileID); err != nil {
-			return nil, false, fmt.Errorf("hard delete removed file: repoint: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM files WHERE id = ?`, fileID); err != nil {
-			return nil, false, fmt.Errorf("hard delete removed file: drop file: %w", err)
-		}
-		if err := repairRecordingTx(ctx, tx, recID); err != nil {
-			return nil, false, err
-		}
-		blobs = []DeletedBlob{blob}
+	if !trashed {
+		return nil, false, nil
 	}
 
+	blobs, recIDs, err := deleteFileRowsTx(ctx, tx, []int64{fileID})
+	if err != nil {
+		return nil, false, err
+	}
+	if err := reapRecordingsTx(ctx, tx, recIDs); err != nil {
+		return nil, false, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, false, fmt.Errorf("hard delete removed file: commit: %w", err)
 	}
@@ -215,8 +181,9 @@ func (db *DB) HardDeleteRemovedFile(ctx context.Context, fileID int64) (blobs []
 
 // BulkHardDeleteRemovedFiles permanently removes the given soft-removed blobs in
 // one transaction — the Files "Delete selected". Non-removed / unknown ids are
-// skipped (the removed guard mirrors HardDeleteRemovedFile). Returns the count
-// purged and every blob to reclaim after commit.
+// skipped (the removed guard mirrors HardDeleteRemovedFile); the same purge +
+// scoped-reap semantics apply. Returns the count purged and every blob to
+// reclaim after commit.
 func (db *DB) BulkHardDeleteRemovedFiles(ctx context.Context, fileIDs []int64) (int, []DeletedBlob, error) {
 	if len(fileIDs) == 0 {
 		return 0, nil, nil
@@ -227,55 +194,31 @@ func (db *DB) BulkHardDeleteRemovedFiles(ctx context.Context, fileIDs []int64) (
 	}
 	defer tx.Rollback()
 
-	var blobs []DeletedBlob
-	deleted := 0
-	for _, fileID := range fileIDs {
-		var recID int64
-		var blob DeletedBlob
-		err := tx.QueryRowContext(ctx,
-			`SELECT recording_id, hash, storage_backend FROM files
-			  WHERE id = ? AND deleted_at IS NOT NULL`, fileID).Scan(&recID, &blob.Hash, &blob.StorageBackend)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
+	// Keep only the ids that are actually soft-removed.
+	trashed := make([]int64, 0, len(fileIDs))
+	for i := 0; i < len(fileIDs); i += idChunk {
+		batch := fileIDs[i:min(i+idChunk, len(fileIDs))]
+		in, args := inClause(batch)
+		ids, err := scanIDs(tx.QueryContext(ctx,
+			`SELECT id FROM files WHERE deleted_at IS NOT NULL AND id IN `+in, args...))
 		if err != nil {
-			return 0, nil, fmt.Errorf("bulk hard delete removed files: load %d: %w", fileID, err)
+			return 0, nil, fmt.Errorf("bulk hard delete removed files: filter: %w", err)
 		}
-
-		var survivor int64
-		err = tx.QueryRowContext(ctx,
-			`SELECT id FROM files WHERE recording_id = ? AND id <> ?
-			  ORDER BY (deleted_at IS NULL) DESC, id ASC LIMIT 1`, recID, fileID).Scan(&survivor)
-		switch {
-		case errors.Is(err, sql.ErrNoRows):
-			recBlobs, err := deleteRecordingFilesTx(ctx, tx, recID)
-			if err != nil {
-				return 0, nil, err
-			}
-			if _, err := tx.ExecContext(ctx, `DELETE FROM recordings WHERE id = ?`, recID); err != nil {
-				return 0, nil, fmt.Errorf("bulk hard delete removed files: drop recording %d: %w", recID, err)
-			}
-			blobs = append(blobs, recBlobs...)
-		case err != nil:
-			return 0, nil, fmt.Errorf("bulk hard delete removed files: survivor %d: %w", fileID, err)
-		default:
-			if _, err := tx.ExecContext(ctx,
-				`UPDATE tagsets SET origin_file_id = ? WHERE origin_file_id = ?`, survivor, fileID); err != nil {
-				return 0, nil, fmt.Errorf("bulk hard delete removed files: repoint %d: %w", fileID, err)
-			}
-			if _, err := tx.ExecContext(ctx, `DELETE FROM files WHERE id = ?`, fileID); err != nil {
-				return 0, nil, fmt.Errorf("bulk hard delete removed files: drop file %d: %w", fileID, err)
-			}
-			if err := repairRecordingTx(ctx, tx, recID); err != nil {
-				return 0, nil, err
-			}
-			blobs = append(blobs, blob)
-		}
-		deleted++
+		trashed = append(trashed, ids...)
+	}
+	if len(trashed) == 0 {
+		return 0, nil, nil
 	}
 
+	blobs, recIDs, err := deleteFileRowsTx(ctx, tx, trashed)
+	if err != nil {
+		return 0, nil, err
+	}
+	if err := reapRecordingsTx(ctx, tx, recIDs); err != nil {
+		return 0, nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return 0, nil, fmt.Errorf("bulk hard delete removed files: commit: %w", err)
 	}
-	return deleted, blobs, nil
+	return len(trashed), blobs, nil
 }

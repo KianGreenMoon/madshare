@@ -85,7 +85,7 @@ func (db *DB) ApproveSubmission(ctx context.Context, tagsetID int64, dropBytes, 
 				newRec, newRec); err != nil {
 				return false, fmt.Errorf("approve submission: primary: %w", err)
 			}
-			if err := repairRecordingTx(ctx, tx, recID); err != nil {
+			if err := reapRecordingsTx(ctx, tx, []int64{recID}); err != nil {
 				return false, err
 			}
 		}

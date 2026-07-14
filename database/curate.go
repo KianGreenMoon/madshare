@@ -448,7 +448,7 @@ func (db *DB) MergeRecordings(ctx context.Context, targetID int64, sourceIDs []i
 	}
 
 	// The target gained members; re-assert the primary invariant.
-	if err := repairRecordingTx(ctx, tx, targetID); err != nil {
+	if err := reapRecordingsTx(ctx, tx, []int64{targetID}); err != nil {
 		return MergeOutcome{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -533,7 +533,7 @@ func (db *DB) MoveTagset(ctx context.Context, tagsetID, targetRecordingID int64)
 		targetRecordingID, tagsetID); err != nil {
 		return MoveTagsetOutcome{}, fmt.Errorf("move tagset: move: %w", err)
 	}
-	if err := repairRecordingTx(ctx, tx, srcRec); err != nil {
+	if err := reapRecordingsTx(ctx, tx, []int64{srcRec}); err != nil {
 		return MoveTagsetOutcome{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -691,21 +691,17 @@ func (db *DB) HardDeleteRecording(ctx context.Context, recordingID int64) (Recor
 	out.Appearances = len(tagsetIDs)
 
 	if len(tagsetIDs) > 0 {
-		// The shared cascade: deleting every tagset trips its last-tagset branch,
-		// which removes the recording and all files and collects the blobs.
-		out.Blobs, err = hardDeleteTagsetsTx(ctx, tx, tagsetIDs)
+		// The purge composition: dropping every appearance leaves the recording
+		// abandoned, so the reclaim takes its files, blobs, and husk with it.
+		out.Blobs, err = purgeTagsetsTx(ctx, tx, tagsetIDs)
 		if err != nil {
 			return RecordingDeleteOutcome{}, err
 		}
 	} else {
-		// Invalid state (no appearance at all): remove files + row directly.
-		out.Blobs, err = deleteRecordingFilesTx(ctx, tx, recordingID)
+		// Already appearance-less (garbage): reclaim files + husk directly.
+		out.Blobs, err = reclaimAbandonedRecordingsTx(ctx, tx, []int64{recordingID})
 		if err != nil {
 			return RecordingDeleteOutcome{}, err
-		}
-		if _, err := tx.ExecContext(ctx,
-			`DELETE FROM recordings WHERE id = ?`, recordingID); err != nil {
-			return RecordingDeleteOutcome{}, fmt.Errorf("delete recording: drop: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -814,7 +810,7 @@ func (db *DB) HardDeleteTrashedTagset(ctx context.Context, tagsetID int64) (Hard
 		return out, nil // refuse: live appearance, trash it first
 	}
 
-	out.Blobs, err = hardDeleteTagsetsTx(ctx, tx, []int64{tagsetID})
+	out.Blobs, err = purgeTagsetsTx(ctx, tx, []int64{tagsetID})
 	if err != nil {
 		return HardDeleteTagsetOutcome{}, err
 	}

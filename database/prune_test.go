@@ -127,11 +127,12 @@ func TestPruneDangling_ConfirmDeletesDanglingOnly(t *testing.T) {
 	}
 }
 
-// TestPruneDangling_RepairsRecordingAndReaps verifies the two recording-
-// awareness rules: pruning a dangling file GCs its now-fileless recording
-// (the per-row cascade), and the standing post-prune reap collects a separate
-// crash-orphaned fileless recording — by quarantining its appearance (GC
-// model), reported in InvalidRecordings.
+// TestPruneDangling_RepairsRecordingAndReaps verifies the GC-model recording
+// awareness: pruning a dangling last file leaves its recording file-less, so
+// its appearance is TRASHED (the in-tx scoped reap — the catalog entry is
+// preserved, only the lying row and its lost bytes go); and the standing
+// post-prune reap likewise quarantines a separate crash-orphaned fileless
+// recording's appearance, reported in InvalidRecordings.
 func TestPruneDangling_RepairsRecordingAndReaps(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
@@ -160,8 +161,14 @@ func TestPruneDangling_RepairsRecordingAndReaps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PruneDangling: %v", err)
 	}
-	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, danglingRec); n != 0 {
-		t.Errorf("dangling file's recording survived prune: count=%d", n)
+	if n := countRow(t, db, `SELECT COUNT(*) FROM files WHERE recording_id=?`, danglingRec); n != 0 {
+		t.Errorf("dangling file row survived prune: count=%d", n)
+	}
+	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, danglingRec); n != 1 {
+		t.Errorf("dangling file's recording destroyed, want kept (appearance in Trash): count=%d", n)
+	}
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=? AND deleted_at IS NOT NULL`, danglingRec); n != 1 {
+		t.Errorf("dangling file's appearance not trashed by the scoped reap: count=%d", n)
 	}
 	// Quarantined, not destroyed (GC model): the orphan's appearance moved to
 	// Trash and the recording row remains until its last row is purged.

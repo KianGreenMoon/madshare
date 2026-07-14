@@ -165,21 +165,18 @@ func (db *DB) BulkHardDeleteRecordings(ctx context.Context, recordingIDs []int64
 			return 0, nil, fmt.Errorf("bulk hard delete recordings: tagsets %d: %w", id, err)
 		}
 		if len(tagsetIDs) > 0 {
-			recBlobs, err := hardDeleteTagsetsTx(ctx, tx, tagsetIDs)
+			recBlobs, err := purgeTagsetsTx(ctx, tx, tagsetIDs)
 			if err != nil {
 				return 0, nil, err
 			}
 			blobs = append(blobs, recBlobs...)
 		} else {
-			// Invalid state (no appearance): drop files + row directly.
-			recBlobs, err := deleteRecordingFilesTx(ctx, tx, id)
+			// Already appearance-less (garbage): reclaim files + husk directly.
+			recBlobs, err := reclaimAbandonedRecordingsTx(ctx, tx, []int64{id})
 			if err != nil {
 				return 0, nil, err
 			}
 			blobs = append(blobs, recBlobs...)
-			if _, err := tx.ExecContext(ctx, `DELETE FROM recordings WHERE id = ?`, id); err != nil {
-				return 0, nil, fmt.Errorf("bulk hard delete recordings: drop %d: %w", id, err)
-			}
 		}
 		deleted++
 	}

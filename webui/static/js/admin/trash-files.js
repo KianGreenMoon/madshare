@@ -2,8 +2,9 @@
 // (removed renditions, absorbed/dormant blobs). A config over the shared
 // trash-list core, plus Play via the page's shared preview player. Restore
 // un-removes the blob (a dormant recording re-enters the library); Delete
-// forever reclaims the blob — and if it was the recording's last file, cascade-
-// prunes the whole recording. Requires file.delete (the Trash panel gate).
+// forever reclaims the blob — if it was the recording's last file, the
+// appearances move to Trash › Appearances (GC model: bytes are destroyed,
+// catalog entries only demoted). Requires file.delete (the Trash panel gate).
 import { API, el, fmtBytes, fmtDate, handleAuthError, toast } from './shared.js';
 import { createTrashList } from './trash-list.js';
 

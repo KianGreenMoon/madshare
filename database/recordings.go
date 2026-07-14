@@ -92,7 +92,7 @@ func (db *DB) ResolveRecording(ctx context.Context, fileID int64) (int64, error)
 	); err != nil {
 		return 0, fmt.Errorf("resolve recording: move tagsets: %w", err)
 	}
-	if err := repairRecordingTx(ctx, tx, currentRec); err != nil {
+	if err := reapRecordingsTx(ctx, tx, []int64{currentRec}); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -385,7 +385,7 @@ func (db *DB) SplitRendition(ctx context.Context, fileID int64) (newRecordingID 
 			return 0, false, fmt.Errorf("split rendition: copy primary: %w", err)
 		}
 	}
-	if err := repairRecordingTx(ctx, tx, oldRecordingID); err != nil {
+	if err := reapRecordingsTx(ctx, tx, []int64{oldRecordingID}); err != nil {
 		return 0, false, err
 	}
 	if err := tx.Commit(); err != nil {

@@ -50,10 +50,10 @@ func TestListRemovedFiles(t *testing.T) {
 	}
 }
 
-// TestHardDeleteRemovedFile_NonLastRepointsAndKeeps: purging a non-last removed
-// rendition drops only its blob; its (live) appearance is repointed onto the
-// surviving rendition, so nothing that was playable is destroyed.
-func TestHardDeleteRemovedFile_NonLastRepointsAndKeeps(t *testing.T) {
+// TestHardDeleteRemovedFile_NonLastKeepsAppearance: purging a non-last removed
+// rendition drops only its blob; its (live, approved) appearance survives with
+// a NULL provenance pointer — nothing that was playable is destroyed.
+func TestHardDeleteRemovedFile_NonLastKeepsAppearance(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
@@ -82,9 +82,9 @@ func TestHardDeleteRemovedFile_NonLastRepointsAndKeeps(t *testing.T) {
 	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, rec); n != 1 {
 		t.Errorf("recording was pruned but a rendition survives")
 	}
-	// The appearance survives, repointed onto f1 (never deleted).
-	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE id=? AND origin_file_id=?`, t2, f1.ID); n != 1 {
-		t.Errorf("appearance not repointed onto surviving rendition")
+	// The appearance survives live, its provenance pointer cleared.
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE id=? AND origin_file_id IS NULL AND deleted_at IS NULL`, t2); n != 1 {
+		t.Errorf("appearance not preserved live with NULL origin")
 	}
 	if n := visibleTagsetCount(t, db, rec); n != 2 {
 		t.Errorf("visible appearances = %d, want 2 (both play f1)", n)
@@ -92,9 +92,11 @@ func TestHardDeleteRemovedFile_NonLastRepointsAndKeeps(t *testing.T) {
 	assertInvariants(t, db)
 }
 
-// TestHardDeleteRemovedFile_LastCascades: purging the last file of a recording
-// takes the whole recording (+ every appearance) with it — nothing left to play.
-func TestHardDeleteRemovedFile_LastCascades(t *testing.T) {
+// TestHardDeleteRemovedFile_LastTrashesAppearance: purging the last file of a
+// recording destroys only the bytes; the recording's appearance is TRASHED by
+// the scoped reap (GC model: demote, never destroy) and stays reachable in
+// Trash › Appearances, restorable or purgeable from there.
+func TestHardDeleteRemovedFile_LastTrashesAppearance(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
@@ -112,14 +114,14 @@ func TestHardDeleteRemovedFile_LastCascades(t *testing.T) {
 	if len(blobs) != 1 || blobs[0].Hash != h {
 		t.Errorf("blobs = %+v, want one with hash %s", blobs, h)
 	}
-	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, rec); n != 0 {
-		t.Errorf("recording survived a last-file delete")
-	}
 	if n := countRow(t, db, `SELECT COUNT(*) FROM files WHERE id=?`, f.ID); n != 0 {
 		t.Errorf("file row survived")
 	}
-	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=?`, rec); n != 0 {
-		t.Errorf("appearances survived the cascade")
+	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, rec); n != 1 {
+		t.Errorf("recording destroyed by last-file delete, want it kept (its appearance references it)")
+	}
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=? AND deleted_at IS NOT NULL`, rec); n != 1 {
+		t.Errorf("appearance not trashed by the scoped reap")
 	}
 	assertInvariants(t, db)
 }
@@ -146,7 +148,8 @@ func TestHardDeleteRemovedFile_RefusesLiveOrUnknown(t *testing.T) {
 }
 
 // TestBulkHardDeleteRemovedFiles: one transaction over a mix — a non-last purge,
-// a last-file cascade, plus a live and an unknown id (both skipped).
+// a last-file purge (appearance demoted to Trash), plus a live and an unknown
+// id (both skipped).
 func TestBulkHardDeleteRemovedFiles(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
@@ -180,8 +183,11 @@ func TestBulkHardDeleteRemovedFiles(t *testing.T) {
 	if n := countRow(t, db, `SELECT COUNT(*) FROM files WHERE id IN (?,?)`, f2.ID, f3.ID); n != 0 {
 		t.Errorf("removed files survived bulk purge")
 	}
-	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, recB); n != 0 {
-		t.Errorf("recording B survived its last-file cascade")
+	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, recB); n != 1 {
+		t.Errorf("recording B destroyed, want it kept with its appearance in Trash")
+	}
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=? AND deleted_at IS NOT NULL`, recB); n != 1 {
+		t.Errorf("recording B's appearance not trashed by the scoped reap")
 	}
 	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, recA); n != 1 {
 		t.Errorf("recording A pruned but f1 survives")

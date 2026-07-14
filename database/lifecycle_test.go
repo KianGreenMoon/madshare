@@ -351,10 +351,12 @@ func TestBulkRemoveRenditions(t *testing.T) {
 	}
 }
 
-// TestHardDeleteFile_LastFileCascades exercises the file-side (prune) direction:
-// removing a non-last file leaves the recording; removing the last file cascades
-// to the recording and all its appearances — symmetric with the tagset side.
-func TestHardDeleteFile_LastFileCascades(t *testing.T) {
+// TestHardDeleteFile_LastFileTrashesAppearances exercises the file-side
+// (prune blob-loss) direction under the GC model: removing a non-last file
+// leaves the recording; removing the last file leaves the recording file-less,
+// so the scoped reap TRASHES its appearances (demote, never destroy) — the
+// catalog entries survive blobless in Trash › Appearances.
+func TestHardDeleteFile_LastFileTrashesAppearances(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
@@ -376,11 +378,14 @@ func TestHardDeleteFile_LastFileCascades(t *testing.T) {
 	if _, found, err := db.HardDeleteFileByHash(ctx, f2.Hash); err != nil || !found {
 		t.Fatalf("hard delete f2 (last): found=%v err=%v", found, err)
 	}
-	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, rec); n != 0 {
-		t.Errorf("recording survived last-file delete: count=%d", n)
+	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, rec); n != 1 {
+		t.Errorf("recording destroyed by last-file delete: count=%d, want 1 (appearances still reference it)", n)
 	}
-	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=?`, rec); n != 0 {
-		t.Errorf("appearances survived last-file delete: count=%d", n)
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=? AND deleted_at IS NOT NULL`, rec); n != 2 {
+		t.Errorf("trashed appearances = %d after last-file delete, want 2 (demoted, not destroyed)", n)
+	}
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=? AND deleted_at IS NULL`, rec); n != 0 {
+		t.Errorf("live appearances = %d after last-file delete, want 0", n)
 	}
 	assertInvariants(t, db)
 }
@@ -457,12 +462,13 @@ func originOf(t *testing.T, db *DB, tagsetID int64) int64 {
 	return origin.Int64
 }
 
-// TestHardDeleteFile_RepointsPreservedAppearance: prune of an absorbed blob must
-// not destroy the appearance absorb preserved. Two releases of the same audio
-// are absorbed down to one blob; the absorbed (soft-removed) blob then goes
-// corrupt and prune hard-deletes it — its appearance is re-pointed to the kept
-// rendition instead of dying with the origin file.
-func TestHardDeleteFile_RepointsPreservedAppearance(t *testing.T) {
+// TestHardDeleteFile_PreservesAbsorbedAppearance: prune of an absorbed blob
+// must not destroy the appearance absorb preserved. Two releases of the same
+// audio are absorbed down to one blob; the absorbed (soft-removed) blob then
+// goes corrupt and prune hard-deletes it — its appearance survives with a NULL
+// provenance pointer (GC model: origin_file_id is inert after approval, never
+// re-pointed and never a delete key).
+func TestHardDeleteFile_PreservesAbsorbedAppearance(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
@@ -482,17 +488,17 @@ func TestHardDeleteFile_RepointsPreservedAppearance(t *testing.T) {
 	if got := visibleTagsetCount(t, db, rec); got != 2 {
 		t.Errorf("visible appearances = %d, want 2", got)
 	}
-	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=? AND origin_file_id=?`, rec, f1.ID); n != 2 {
-		t.Errorf("appearances pointing at the kept rendition = %d, want 2", n)
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=? AND origin_file_id IS NULL`, rec); n != 1 {
+		t.Errorf("appearances with NULL origin = %d, want 1 (provenance cleared, not re-pointed)", n)
 	}
 	assertInvariants(t, db)
 }
 
 // TestHardDeleteFile_OrphanSurvivorKeepsAppearance: identical-identity absorb
 // leaves the surviving rendition an orphan (its own appearance was deduped);
-// pruning the origin blob of the recording's ONLY appearance must re-point that
-// appearance to the orphan rendition, not strand the recording with a live file
-// and zero tagsets.
+// pruning the origin blob of the recording's ONLY appearance must keep that
+// appearance alive (origin NULL — blobless is legal), not strand the recording
+// with a file and zero tagsets.
 func TestHardDeleteFile_OrphanSurvivorKeepsAppearance(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
@@ -509,16 +515,16 @@ func TestHardDeleteFile_OrphanSurvivorKeepsAppearance(t *testing.T) {
 	}
 
 	// f1 now hosts the only appearance; f2 is a soft-removed orphan rendition.
-	// Prune f1 (blob loss): the appearance must move to f2, the recording must
-	// keep 1 file + 1 tagset.
+	// Prune f1 (blob loss): the appearance survives blobless (origin NULL); the
+	// recording keeps 1 file row + 1 tagset.
 	if _, found, err := db.HardDeleteFileByHash(ctx, f1.Hash); err != nil || !found {
 		t.Fatalf("hard delete appearance origin: found=%v err=%v", found, err)
 	}
 	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=?`, rec); n != 1 {
-		t.Errorf("appearances = %d after pruning the origin, want 1 (re-pointed, not destroyed)", n)
+		t.Errorf("appearances = %d after pruning the origin, want 1 (preserved, not destroyed)", n)
 	}
-	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=? AND origin_file_id=?`, rec, f2.ID); n != 1 {
-		t.Errorf("appearance not re-pointed to the surviving rendition f2")
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=? AND origin_file_id IS NULL AND deleted_at IS NULL`, rec); n != 1 {
+		t.Errorf("appearance not preserved live with NULL origin")
 	}
 	if n := countRow(t, db, `SELECT COUNT(*) FROM files WHERE recording_id=?`, rec); n != 1 {
 		t.Errorf("recording file count=%d, want 1", n)
@@ -528,8 +534,8 @@ func TestHardDeleteFile_OrphanSurvivorKeepsAppearance(t *testing.T) {
 
 // TestHardDeleteFile_MovedAppearanceSurvives: an appearance moved to another
 // recording (MoveTagset) whose origin file stays behind must survive that
-// file's hard delete — re-pointed to a rendition of its OWN recording — and its
-// recording must be included in the invariant repair.
+// file's hard delete — provenance cleared to NULL, the appearance itself
+// untouched (it belongs to its recording, not to its origin blob).
 func TestHardDeleteFile_MovedAppearanceSurvives(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
@@ -552,12 +558,12 @@ func TestHardDeleteFile_MovedAppearanceSurvives(t *testing.T) {
 	if _, found, err := db.HardDeleteFileByHash(ctx, fA2.Hash); err != nil || !found {
 		t.Fatalf("hard delete fA2: found=%v err=%v", found, err)
 	}
-	// The moved appearance lives on, offered from B's own rendition.
-	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE id=?`, movedTagset); n != 1 {
-		t.Fatalf("moved appearance destroyed by its origin file's hard delete")
+	// The moved appearance lives on, its provenance pointer cleared.
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE id=? AND deleted_at IS NULL`, movedTagset); n != 1 {
+		t.Fatalf("moved appearance destroyed or trashed by its origin file's hard delete")
 	}
-	if got := originOf(t, db, movedTagset); got != fB.ID {
-		t.Errorf("moved appearance origin=%d, want %d (a rendition of its own recording)", got, fB.ID)
+	if got := originOf(t, db, movedTagset); got != 0 {
+		t.Errorf("moved appearance origin=%d, want NULL (provenance inert, never re-pointed)", got)
 	}
 	// Recording A keeps its remaining rendition + appearance.
 	if n := countRow(t, db, `SELECT COUNT(*) FROM files WHERE recording_id=?`, recA); n != 1 {

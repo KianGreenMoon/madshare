@@ -148,7 +148,10 @@ func TestPlaylist_TrashedAndHardDeletedItems(t *testing.T) {
 		t.Errorf("trashed item lost its title metadata")
 	}
 
-	// Hard-delete it → the item disappears via FK cascade.
+	// Hard-delete the blob (prune blob-loss) → the appearance survives in
+	// Trash (GC model: purge destroys bytes, never catalog entries), so the
+	// item stays, still flagged Trashed. Only purging the appearance row
+	// itself (Trash "Delete forever") would cascade the item away.
 	if _, found, err := db.HardDeleteFileByHash(ctx, hashes[1]); err != nil || !found {
 		t.Fatalf("HardDeleteFileByHash: found=%v err=%v", found, err)
 	}
@@ -156,8 +159,20 @@ func TestPlaylist_TrashedAndHardDeletedItems(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPlaylist after hard delete: %v", err)
 	}
+	if len(items) != 3 || !items[1].Trashed {
+		t.Errorf("items after blob hard delete = %d (trashed=%v), want 3 with #1 trashed", len(items), items[1].Trashed)
+	}
+
+	// Purge the trashed appearance row → now the item disappears via FK cascade.
+	if n, _, err := db.BulkHardDeleteTagsets(ctx, []int64{tagsetIDs[1]}); err != nil || n != 1 {
+		t.Fatalf("purge trashed appearance: n=%d err=%v", n, err)
+	}
+	_, items, err = db.GetPlaylist(ctx, userID, p.ID)
+	if err != nil {
+		t.Fatalf("GetPlaylist after purge: %v", err)
+	}
 	if len(items) != 2 {
-		t.Errorf("items after hard delete = %d, want 2 (cascade)", len(items))
+		t.Errorf("items after appearance purge = %d, want 2 (cascade)", len(items))
 	}
 }
 

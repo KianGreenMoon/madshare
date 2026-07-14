@@ -366,7 +366,7 @@ func (db *DB) BulkHardDeleteTagsets(ctx context.Context, tagsetIDs []int64) (int
 	if len(trashed) == 0 {
 		return 0, nil, nil
 	}
-	blobs, err := hardDeleteTagsetsTx(ctx, tx, trashed)
+	blobs, err := purgeTagsetsTx(ctx, tx, trashed)
 	if err != nil {
 		return 0, nil, err
 	}

@@ -1,7 +1,7 @@
 # The GC deletion model — unlink, derive, reap, purge
 
-Status: **agreed design** (owner decision 2026-07-15); phase P1 (the reaper)
-implemented, P2–P5 pending.
+Status: **agreed design** (owner decision 2026-07-15); phases P1 (reaper) and
+P2 (unlink-only write paths) implemented, P3–P5 pending.
 Once implemented, this document is the durable reference for the content
 lifecycle; it supersedes the *cascade* deletion philosophy described in
 [soft-delete.md](soft-delete.md) and the invariants section of
@@ -286,12 +286,22 @@ Each phase leaves the system running; tests accompany each phase.
   the safety invariant + convergence ("after reap: no zero-reference
   recording retains non-trashed children"); the exactly-one-primary check
   and the startup primary promotion dropped (preference, not invariant).
-- **P2 — unlink-only write paths.** Rewrite delete/discard/trash entry points
-  to the single-row primitives; purge endpoints reduce to "delete trashed
-  rows + blob reclaim + draft-discard rule + nudge". Delete the shared
-  cascade web (`repairRecordingTx`, `hardDeleteFilesTx`'s repoint logic,
-  `deleteRecordingFilesTx` ordering constraints) and the origin re-point
-  machinery.
+- **P2 — unlink-only write paths (DONE 2026-07-15).** `database/purge.go`
+  holds the only row-destroyers: `deleteTagsetRowsTx` / `deleteFileRowsTx`
+  (with the draft-dies-with-its-blob rule) / `reclaimAbandonedRecordingsTx`,
+  composed by `purgeTagsetsTx` (the sanctioned purge → reap → purge, so
+  appearance delete-forever still frees bytes immediately), plus
+  `reapRecordingsTx` — the in-tx scoped reap every op that may leave a
+  recording unreferenced calls on the recordings it touched (move, merge,
+  split, dedup, file purge). Being transactional, this is *stronger* than the
+  async nudge, which remains for paths that cannot reap inline. The cascade
+  web (`repairRecordingTx`, `hardDeleteFilesTx`, `hardDeleteTagsetsTx`,
+  `deleteRecordingFilesTx`) and the origin re-point machinery are deleted.
+  Two deliberate behavior changes: purging a recording's **last file** now
+  trashes its appearances instead of destroying the recording (catalog
+  entries survive blobless in Trash › Appearances — restorable, re-stageable
+  when the bytes return), and a move/dedup that empties a recording trashes
+  stranded appearances instead of cascade-eating them.
 - **P3 — demotions.** Remove `is_primary` enforcement/repair (keep the column
   and the existing `reprTagset` ordering; "Set primary" stays as the
   override's UI). Re-address the remaining hash-addressed
