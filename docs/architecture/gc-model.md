@@ -1,6 +1,7 @@
 # The GC deletion model — unlink, derive, reap, purge
 
-Status: **agreed design** (owner decision 2026-07-15), not yet implemented.
+Status: **agreed design** (owner decision 2026-07-15); phase P1 (the reaper)
+implemented, P2–P5 pending.
 Once implemented, this document is the durable reference for the content
 lifecycle; it supersedes the *cascade* deletion philosophy described in
 [soft-delete.md](soft-delete.md) and the invariants section of
@@ -277,12 +278,14 @@ fire child `BEFORE DELETE` triggers with the parent row already gone.
 
 Each phase leaves the system running; tests accompany each phase.
 
-- **P1 — the reaper.** New `database` reap functions (P1/P2/P3 passes as
-  guarded bulk statements) + a nudge hook (post-commit, single-flight
-  goroutine); startup runs reap instead of `ReconcileTagsets` healing;
-  `SweepInvalidRecordings` folds in. `assertInvariants` rewritten to the
-  safety invariant + convergence ("after reap: no zero-reference recording
-  retains non-trashed children").
+- **P1 — the reaper (DONE 2026-07-15).** `database/reap.go`: `db.Reap`
+  (the three passes as guarded bulk statements in one transaction) + the
+  `Reaper` single-flight nudge runner; startup runs reap instead of the
+  removed `ReconcileTagsets`; `SweepInvalidRecordings` folded into the
+  post-prune backstop (`Repository.Reap`). `assertInvariants` rewritten to
+  the safety invariant + convergence ("after reap: no zero-reference
+  recording retains non-trashed children"); the exactly-one-primary check
+  and the startup primary promotion dropped (preference, not invariant).
 - **P2 — unlink-only write paths.** Rewrite delete/discard/trash entry points
   to the single-row primitives; purge endpoints reduce to "delete trashed
   rows + blob reclaim + draft-discard rule + nudge". Delete the shared

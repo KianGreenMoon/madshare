@@ -131,16 +131,24 @@ func TestResolveRecording_SkipsPinned(t *testing.T) {
 	}
 }
 
-func TestReconcileTagsets_RepairsInvariants(t *testing.T) {
+// TestReap_CollectsGarbageStates seeds the three garbage shapes of the GC
+// model (docs/architecture/gc-model.md) and checks each converges by
+// demotion, never destruction or manufacture:
+//   - appearance-less recording with a live file → the file is quarantined
+//     (soft-removed), NOT given a manufactured filename appearance;
+//   - empty husk (no tagsets, no files) → the recording row is dropped;
+//   - a lost is_primary flag is NOT repaired — primary is a preference, the
+//     representative appearance derives as oldest-live.
+func TestReap_CollectsGarbageStates(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
-	// (a) A file stripped of its tagset gets a filename-derived one back.
+	// (a) A file stripped of its appearance leaves its recording unreachable.
 	bare, _ := insertAnalysisFile(t, db, "h1")
 	if _, err := db.ExecContext(ctx, `DELETE FROM tagsets WHERE origin_file_id=?`, bare); err != nil {
 		t.Fatalf("strip tagset: %v", err)
 	}
-	// (b) A fileless recording (raw DELETE bypassing the cascade) is removed.
+	// (b) An empty husk (raw DELETEs bypassing everything).
 	orphanFile, _ := insertAnalysisFile(t, db, "h2")
 	var orphanRec int64
 	if err := db.QueryRow(`SELECT recording_id FROM files WHERE id=?`, orphanFile).Scan(&orphanRec); err != nil {
@@ -152,47 +160,43 @@ func TestReconcileTagsets_RepairsInvariants(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `DELETE FROM files WHERE id=?`, orphanFile); err != nil {
 		t.Fatalf("raw file delete: %v", err)
 	}
-	// (c) A recording whose primary flag was lost gets one promoted.
+	// (c) A recording whose primary flag was lost.
 	demoted, _ := insertAnalysisFile(t, db, "h3")
 	if _, err := db.ExecContext(ctx, `UPDATE tagsets SET is_primary=0 WHERE origin_file_id=?`, demoted); err != nil {
 		t.Fatalf("demote primary: %v", err)
 	}
 
-	n, err := db.ReconcileTagsets(ctx)
+	stats, err := db.Reap(ctx)
 	if err != nil {
-		t.Fatalf("reconcile: %v", err)
+		t.Fatalf("reap: %v", err)
 	}
-	if n == 0 {
-		t.Fatal("reconcile reported 0 repairs, want > 0")
+	if stats.QuarantinedFiles != 1 || stats.DeletedHusks != 1 || stats.TrashedTagsets != 0 {
+		t.Errorf("reap stats = %+v, want 1 quarantined file + 1 deleted husk", stats)
 	}
 
-	var tagsetCount int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM tagsets WHERE origin_file_id=?`, bare).Scan(&tagsetCount); err != nil {
-		t.Fatalf("count tagsets: %v", err)
+	// (a) quarantined, not healed: no appearance was manufactured, the blob
+	// row survives soft-removed (Trash › Files), its recording remains.
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE origin_file_id=?`, bare); n != 0 {
+		t.Errorf("bare file has %d tagsets after reap, want 0 (nothing manufactured)", n)
 	}
-	if tagsetCount != 1 {
-		t.Errorf("bare file has %d tagsets after reconcile, want 1", tagsetCount)
+	if n := countRow(t, db, `SELECT COUNT(*) FROM files WHERE id=? AND deleted_at IS NOT NULL`, bare); n != 1 {
+		t.Errorf("bare file not quarantined: soft-removed count=%d, want 1", n)
 	}
-	var recExists bool
-	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM recordings WHERE id=?)`, orphanRec).Scan(&recExists); err != nil {
-		t.Fatalf("recording exists: %v", err)
+	// (b) the husk is gone.
+	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, orphanRec); n != 0 {
+		t.Errorf("empty husk survived reap: count=%d", n)
 	}
-	if recExists {
-		t.Error("fileless recording survived reconcile")
-	}
-	var primaries int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM tagsets t JOIN files f ON f.id=t.origin_file_id
-		WHERE f.id=? AND t.is_primary=1`, demoted).Scan(&primaries); err != nil {
-		t.Fatalf("count primaries: %v", err)
-	}
-	if primaries != 1 {
-		t.Errorf("demoted recording has %d primary tagsets after reconcile, want 1", primaries)
+	// (c) untouched: primary is a preference, not an invariant.
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets t JOIN files f ON f.id=t.origin_file_id
+		WHERE f.id=? AND t.is_primary=1`, demoted); n != 0 {
+		t.Errorf("reap promoted a primary flag (%d), want 0 — primary is not repaired", n)
 	}
 
 	// Idempotent: a second run finds nothing to do.
-	if n2, _ := db.ReconcileTagsets(ctx); n2 != 0 {
-		t.Errorf("second reconcile repaired %d, want 0 (idempotent)", n2)
+	if stats2, _ := db.Reap(ctx); stats2.Total() != 0 {
+		t.Errorf("second reap collected %+v, want nothing (idempotent)", stats2)
 	}
+	assertInvariants(t, db)
 }
 
 func TestListDuplicateRecordings(t *testing.T) {

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"sort"
 	"strings"
@@ -100,124 +99,6 @@ func (db *DB) ResolveRecording(ctx context.Context, fileID int64) (int64, error)
 		return 0, fmt.Errorf("resolve recording: commit: %w", err)
 	}
 	return bestRec, nil
-}
-
-// ReconcileTagsets is the startup invariant sweep (recording-tagsets P0): it
-// repairs whatever a crash or bug left behind so nothing rots silently.
-//   - a file with no recording gets a fresh singleton (belt for rows that
-//     somehow bypassed the trigger),
-//   - a file with no tagset gets one derived from its first upload filename
-//     (approved — such a row predates the staging flow by construction),
-//   - a recording with no files is deleted (remaining tagsets cascade),
-//   - a recording without a primary appearance promotes its oldest tagset.
-//
-// Returns the number of repairs applied. Idempotent; a healthy library is a
-// fast no-op.
-func (db *DB) ReconcileTagsets(ctx context.Context) (int, error) {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("reconcile tagsets: begin: %w", err)
-	}
-	defer tx.Rollback()
-
-	repairs := 0
-	now := time.Now().Unix()
-
-	// 1. Files without a recording → fresh singletons (one by one; violating
-	// rows are rare to nonexistent).
-	orphanFiles, err := scanIDs(tx.QueryContext(ctx,
-		`SELECT id FROM files WHERE recording_id IS NULL ORDER BY id`))
-	if err != nil {
-		return 0, fmt.Errorf("reconcile tagsets: orphan files: %w", err)
-	}
-	for _, id := range orphanFiles {
-		var recID int64
-		if err := tx.QueryRowContext(ctx,
-			`INSERT INTO recordings (created_at) VALUES (?) RETURNING id`, now,
-		).Scan(&recID); err != nil {
-			return 0, fmt.Errorf("reconcile tagsets: create recording: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE files SET recording_id = ? WHERE id = ?`, recID, id); err != nil {
-			return 0, fmt.Errorf("reconcile tagsets: assign recording: %w", err)
-		}
-		log.Printf("reconcile tagsets: file %d had no recording; created singleton %d", id, recID)
-		repairs++
-	}
-
-	// 2. Recordings without any tagset → a filename-derived approved appearance,
-	// read from the recording's oldest file.
-	//
-	// The grain is the *recording*, not the file (recording-tagsets P7). A file
-	// with no tagset of its own is not a violation: appearance dedup (merge,
-	// absorb) drops a redundant appearance and keeps its blob, so a rendition
-	// that no tagset was read from is a normal state. Healing at file grain
-	// undid every dedup on the next restart, and did it by manufacturing a
-	// nameless Unknown-artist appearance — exactly what the "meaningful tagset"
-	// rule forbids. A recording with no tagset at all *is* a violation: it has
-	// no catalog entry and nothing can reach it.
-	bare, err := scanIDs(tx.QueryContext(ctx,
-		`SELECT r.id FROM recordings r
-		  WHERE NOT EXISTS (SELECT 1 FROM tagsets t WHERE t.recording_id = r.id)
-		  ORDER BY r.id`))
-	if err != nil {
-		return 0, fmt.Errorf("reconcile tagsets: bare recordings: %w", err)
-	}
-	for _, recID := range bare {
-		// Fileless recordings are step 3's job (they are removed, not repaired).
-		var fileID, uploadedBy sql.NullInt64
-		var fname sql.NullString
-		if err := tx.QueryRowContext(ctx,
-			`SELECT f.id, f.uploaded_by,
-			        (SELECT filename FROM file_uploads WHERE file_id = f.id ORDER BY id LIMIT 1)
-			   FROM files f WHERE f.recording_id = ? ORDER BY f.id LIMIT 1`, recID,
-		).Scan(&fileID, &uploadedBy, &fname); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			return 0, fmt.Errorf("reconcile tagsets: recording %d origin file: %w", recID, err)
-		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO tagsets (recording_id, title, review_state, created_by, origin_file_id, is_primary, created_at)
-			 VALUES (?, ?, 'approved', ?, ?, 1, ?)`,
-			recID, titleFromFilename(fname.String), uploadedBy, fileID, now); err != nil {
-			return 0, fmt.Errorf("reconcile tagsets: create tagset: %w", err)
-		}
-		log.Printf("reconcile tagsets: recording %d had no appearance; created one from file %d", recID, fileID.Int64)
-		repairs++
-	}
-
-	// 3. Recordings with no files → invalid, remove (tagsets cascade via FK).
-	res, err := tx.ExecContext(ctx,
-		`DELETE FROM recordings WHERE NOT EXISTS
-		   (SELECT 1 FROM files f WHERE f.recording_id = recordings.id)`)
-	if err != nil {
-		return 0, fmt.Errorf("reconcile tagsets: invalid recordings: %w", err)
-	}
-	if n, _ := res.RowsAffected(); n > 0 {
-		log.Printf("reconcile tagsets: removed %d fileless recording(s)", n)
-		repairs += int(n)
-	}
-
-	// 4. Recordings without a primary appearance → promote the oldest tagset.
-	res, err = tx.ExecContext(ctx,
-		`UPDATE tagsets SET is_primary = 1 WHERE id IN (
-		   SELECT MIN(t.id) FROM tagsets t
-		    WHERE NOT EXISTS (SELECT 1 FROM tagsets p
-		                       WHERE p.recording_id = t.recording_id AND p.is_primary = 1)
-		    GROUP BY t.recording_id)`)
-	if err != nil {
-		return 0, fmt.Errorf("reconcile tagsets: promote primaries: %w", err)
-	}
-	if n, _ := res.RowsAffected(); n > 0 {
-		log.Printf("reconcile tagsets: promoted %d primary tagset(s)", n)
-		repairs += int(n)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("reconcile tagsets: commit: %w", err)
-	}
-	return repairs, nil
 }
 
 // scanIDs drains a single-int64-column query result.
@@ -511,26 +392,6 @@ func (db *DB) SplitRendition(ctx context.Context, fileID int64) (newRecordingID 
 		return 0, false, fmt.Errorf("split rendition: commit: %w", err)
 	}
 	return newRecordingID, true, nil
-}
-
-// SweepInvalidRecordings garbage-collects recordings that violate the hardlink
-// invariant by having no files left to play (recording-tagsets P2 — the prune
-// backstop). Their tagsets cascade via FK. This is the standing sweep that keeps
-// a bug or crash from leaving a fileless recording (and its orphaned appearances)
-// to rot silently; the per-row prune cascade already removes a recording when it
-// prunes that recording's last file, so on a healthy library this is a fast
-// no-op. Returns the number of recordings removed. (A recording that still has
-// files but lost all its tagsets is a *heal* case, not a GC — startup
-// ReconcileTagsets re-creates an appearance rather than destroying the blob.)
-func (db *DB) SweepInvalidRecordings(ctx context.Context) (int, error) {
-	res, err := db.ExecContext(ctx,
-		`DELETE FROM recordings WHERE NOT EXISTS
-		   (SELECT 1 FROM files f WHERE f.recording_id = recordings.id)`)
-	if err != nil {
-		return 0, fmt.Errorf("sweep invalid recordings: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	return int(n), nil
 }
 
 // RemoveRendition soft-removes a rendition — the file-side (blob) removal, the

@@ -204,13 +204,14 @@ func TestReconcileImageOrphans_MissingDirOK(t *testing.T) {
 	}
 }
 
-// TestReconcileTagsets_DoesNotManufactureAppearance pins recording-tagsets P7.
-// Merge and absorb deliberately drop a redundant appearance while keeping the
-// blob — that is what appearance dedup is. The startup sweep must not undo the
-// dedup by inventing a filename-derived, approved, library-visible replacement
-// (the "meaningful tagset" rule: don't manufacture nameless appearances). It
-// heals at *recording* grain; a rendition needs no appearance of its own.
-func TestReconcileTagsets_DoesNotManufactureAppearance(t *testing.T) {
+// TestReap_DoesNotManufactureAppearance pins recording-tagsets P7 under the
+// GC model. Merge and absorb deliberately drop a redundant appearance while
+// keeping the blob — that is what appearance dedup is. The startup reap must
+// not undo the dedup by inventing a filename-derived, approved,
+// library-visible replacement (the "meaningful tagset" rule: don't
+// manufacture nameless appearances); an orphaned rendition on a recording
+// that still has an appearance is a valid state, not garbage.
+func TestReap_DoesNotManufactureAppearance(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		removeOrphan  bool // absorb shape: the redundant blob is soft-removed
@@ -239,12 +240,12 @@ func TestReconcileTagsets_DoesNotManufactureAppearance(t *testing.T) {
 				t.Fatalf("setup: %d tagset(s) after merge, want 1", before)
 			}
 
-			repairs, err := db.ReconcileTagsets(ctx) // = a server restart
+			stats, err := db.Reap(ctx) // = a server restart
 			if err != nil {
-				t.Fatalf("reconcile: %v", err)
+				t.Fatalf("reap: %v", err)
 			}
-			if repairs != 0 {
-				t.Errorf("ReconcileTagsets repaired %d row(s); an orphaned rendition is valid, not a violation", repairs)
+			if stats.Total() != 0 {
+				t.Errorf("Reap collected %+v; an orphaned rendition is valid, not garbage", stats)
 			}
 			if after := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=?`, target); after != 1 {
 				t.Errorf("tagsets on the recording = %d after restart, want 1 — the dedup was undone", after)

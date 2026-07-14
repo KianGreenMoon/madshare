@@ -215,10 +215,11 @@ type Repository interface {
 	// content hash and the filenames recorded for it, ordered by file id.
 	ListFileRefs(ctx context.Context) ([]FileRef, error)
 
-	// SweepInvalidRecordings GCs recordings left with no files (their tagsets
-	// cascade), returning the count removed — the prune pass's standing hardlink
-	// invariant backstop (recording-tagsets P2). A healthy library reports 0.
-	SweepInvalidRecordings(ctx context.Context) (int, error)
+	// Reap runs the GC-model collection passes (docs/architecture/gc-model.md):
+	// quarantine the files of appearance-less recordings, trash the appearances
+	// of file-less recordings, delete empty recording husks. The prune pass's
+	// standing backstop; a converged library reports zero stats.
+	Reap(ctx context.Context) (ReapStats, error)
 
 	// RecordAudit appends a row to the audit log. actorUserID is invalid for
 	// system/anonymous actions.

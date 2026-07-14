@@ -127,11 +127,12 @@ func TestPruneDangling_ConfirmDeletesDanglingOnly(t *testing.T) {
 	}
 }
 
-// TestPruneDangling_RepairsRecordingAndSweepsInvalid verifies the two P2
-// recording-awareness rules: pruning a dangling file GCs its now-fileless
-// recording (the per-row cascade), and the standing invalid-recording sweep GCs
-// a separate crash-orphaned fileless recording, reported in InvalidRecordings.
-func TestPruneDangling_RepairsRecordingAndSweepsInvalid(t *testing.T) {
+// TestPruneDangling_RepairsRecordingAndReaps verifies the two recording-
+// awareness rules: pruning a dangling file GCs its now-fileless recording
+// (the per-row cascade), and the standing post-prune reap collects a separate
+// crash-orphaned fileless recording — by quarantining its appearance (GC
+// model), reported in InvalidRecordings.
+func TestPruneDangling_RepairsRecordingAndReaps(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 	seedFile(t, db, hashHealthy, "healthy.mp3")
@@ -142,8 +143,8 @@ func TestPruneDangling_RepairsRecordingAndSweepsInvalid(t *testing.T) {
 		t.Fatalf("read dangling recording: %v", err)
 	}
 
-	// A crash-orphaned fileless recording the standing sweep must GC (the per-row
-	// cascade never reaches it — it owns no file to prune).
+	// A crash-orphaned fileless recording the standing reap must collect (the
+	// per-row cascade never reaches it — it owns no file to prune).
 	var orphanRec int64
 	if err := db.QueryRow(`INSERT INTO recordings (created_at) VALUES (1700000000) RETURNING id`).Scan(&orphanRec); err != nil {
 		t.Fatalf("insert orphan recording: %v", err)
@@ -162,11 +163,16 @@ func TestPruneDangling_RepairsRecordingAndSweepsInvalid(t *testing.T) {
 	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, danglingRec); n != 0 {
 		t.Errorf("dangling file's recording survived prune: count=%d", n)
 	}
-	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, orphanRec); n != 0 {
-		t.Errorf("orphan recording survived the prune sweep: count=%d", n)
+	// Quarantined, not destroyed (GC model): the orphan's appearance moved to
+	// Trash and the recording row remains until its last row is purged.
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=? AND deleted_at IS NOT NULL`, orphanRec); n != 1 {
+		t.Errorf("orphan appearance not quarantined by the post-prune reap: trashed count=%d, want 1", n)
+	}
+	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, orphanRec); n != 1 {
+		t.Errorf("orphan recording destroyed instead of quarantined: count=%d, want 1", n)
 	}
 	if res.InvalidRecordings != 1 {
-		t.Errorf("InvalidRecordings = %d, want 1 (the crash-orphaned recording)", res.InvalidRecordings)
+		t.Errorf("InvalidRecordings = %d, want 1 (the quarantined orphan appearance)", res.InvalidRecordings)
 	}
 	if got := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, hashHealthyRec(t, db)); got != 1 {
 		t.Errorf("healthy recording swept: count=%d", got)

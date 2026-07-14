@@ -438,8 +438,8 @@ type fakeRepo struct {
 	fileRefs    []database.FileRef
 	fileRefsErr error
 
-	sweepInvalidRecordings int
-	sweepInvalidErr        error
+	reapStats database.ReapStats
+	reapErr   error
 
 	auditCalls   int
 	lastAudit    string // "action|target"
@@ -1233,8 +1233,8 @@ func (f *fakeRepo) ListFileRefs(_ context.Context) ([]database.FileRef, error) {
 	return f.fileRefs, f.fileRefsErr
 }
 
-func (f *fakeRepo) SweepInvalidRecordings(_ context.Context) (int, error) {
-	return f.sweepInvalidRecordings, f.sweepInvalidErr
+func (f *fakeRepo) Reap(_ context.Context) (database.ReapStats, error) {
+	return f.reapStats, f.reapErr
 }
 
 func (f *fakeRepo) Search(_ context.Context, _ string) (*database.SearchResults, error) {

@@ -101,13 +101,13 @@ func main() {
 		log.Printf("reconcile orphans: %v", err)
 	}
 
-	// Repair the recording/tagset invariants (files without a recording or
-	// tagset, fileless recordings, missing primary appearances) before anything
-	// reads through them. Idempotent; a healthy library is a fast no-op.
-	if n, err := db.ReconcileTagsets(context.Background()); err != nil {
-		log.Printf("reconcile tagsets: %v", err)
-	} else if n > 0 {
-		log.Printf("reconciled %d tagset/recording invariant violation(s)", n)
+	// Collect whatever a crash or bug left unreferenced before anything reads
+	// through it (GC model, docs/architecture/gc-model.md): quarantine the
+	// blobs of appearance-less recordings, trash the appearances of file-less
+	// ones, drop empty husks. Idempotent; logs when it finds anything (with the
+	// write-path cascades still in place, a non-zero count is a bug signal).
+	if _, err := db.Reap(context.Background()); err != nil {
+		log.Printf("reap: %v", err)
 	}
 
 	// Populate artist/album entity FKs for any tagsets that predate
@@ -237,6 +237,12 @@ func main() {
 		cfg.Storage.UserMaxParallelWorkers,
 	)
 
+	// The background reaper (GC model): write paths nudge it after committing a
+	// delete/purge/move and it coalesces bursts into one collection pass. The
+	// startup reap above and the prune backstop keep correctness independent of
+	// nudges; call sites arrive with the unlink-only write paths (phase P2).
+	reaper := database.NewReaper(ctx, db)
+
 	// The Linker is the write side of the links storage (symlink create/remove)
 	// and the prune's broken-link probe. Built before the prune manager so prune
 	// can detect/reclaim broken symlink imports (data-sources P5).
@@ -304,7 +310,8 @@ func main() {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
 	log.Println("Shutting down...")
-	cancel() // stop the background worker pools (image variants + media analysis)
+	cancel() // stop the background worker pools (image variants, media analysis, reaper)
+	reaper.Stop()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	var wg sync.WaitGroup

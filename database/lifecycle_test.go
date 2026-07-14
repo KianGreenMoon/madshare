@@ -26,15 +26,26 @@ func assertInvariants(t *testing.T, db *DB) {
 			t.Errorf("invariant violated: %s (%d offending rows)", what, n)
 		}
 	}
-	check(`SELECT COUNT(*) FROM recordings r WHERE NOT EXISTS (SELECT 1 FROM files f WHERE f.recording_id=r.id)`,
-		"recording with no files")
-	check(`SELECT COUNT(*) FROM recordings r WHERE NOT EXISTS (SELECT 1 FROM tagsets t WHERE t.recording_id=r.id)`,
-		"recording with no tagsets")
+	// Structural edges (NOT NULL, trigger-backed since 024).
 	check(`SELECT COUNT(*) FROM files WHERE recording_id IS NULL`, "file with no recording")
 	check(`SELECT COUNT(*) FROM tagsets WHERE recording_id IS NULL`, "tagset with no recording")
+	// GC-model convergence (docs/architecture/gc-model.md): no garbage awaits
+	// collection. A zero-tagset recording may only retain trashed (quarantined)
+	// files, a zero-file recording only trashed appearances, and an empty husk
+	// may not exist. Call after ops that keep the library converged (the
+	// cascade-era write paths do; otherwise Reap first).
 	check(`SELECT COUNT(*) FROM recordings r
-	         WHERE (SELECT COUNT(*) FROM tagsets t WHERE t.recording_id=r.id AND t.is_primary=1) <> 1`,
-		"recording without exactly one primary tagset")
+	         WHERE NOT EXISTS (SELECT 1 FROM tagsets t WHERE t.recording_id=r.id)
+	           AND EXISTS (SELECT 1 FROM files f WHERE f.recording_id=r.id AND f.deleted_at IS NULL)`,
+		"appearance-less recording retaining live files (unreaped)")
+	check(`SELECT COUNT(*) FROM recordings r
+	         WHERE NOT EXISTS (SELECT 1 FROM files f WHERE f.recording_id=r.id)
+	           AND EXISTS (SELECT 1 FROM tagsets t WHERE t.recording_id=r.id AND t.deleted_at IS NULL)`,
+		"file-less recording retaining live appearances (unreaped)")
+	check(`SELECT COUNT(*) FROM recordings r
+	         WHERE NOT EXISTS (SELECT 1 FROM tagsets t WHERE t.recording_id=r.id)
+	           AND NOT EXISTS (SELECT 1 FROM files f WHERE f.recording_id=r.id)`,
+		"empty recording husk (unreaped)")
 }
 
 // insertApproved inserts a live, approved file (artist/album non-default, so its
@@ -374,16 +385,18 @@ func TestHardDeleteFile_LastFileCascades(t *testing.T) {
 	assertInvariants(t, db)
 }
 
-// TestSweepInvalidRecordings GCs a fileless recording (and its orphaned
-// appearance) while leaving healthy recordings untouched — the prune backstop.
-func TestSweepInvalidRecordings(t *testing.T) {
+// TestReap_FilelessRecordingIsQuarantinedNotDestroyed: the reaper's safety
+// invariant (GC model) — a crash-orphaned fileless recording has its dangling
+// appearance TRASHED (restorable), never deleted; the recording husk only
+// falls once its last row is purged. Healthy recordings are untouched.
+func TestReap_FilelessRecordingIsQuarantinedNotDestroyed(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
 	healthy := insertApproved(t, db, hash64("b5"), "keep.mp3")
 
 	// Craft a fileless recording with a dangling appearance (a crash orphan the
-	// cascade paths never produce, but the backstop must clean up).
+	// cascade paths never produce, but the backstop must collect).
 	var badRec int64
 	if err := db.QueryRow(`INSERT INTO recordings (created_at) VALUES (1700000000) RETURNING id`).Scan(&badRec); err != nil {
 		t.Fatalf("insert orphan recording: %v", err)
@@ -394,21 +407,42 @@ func TestSweepInvalidRecordings(t *testing.T) {
 		t.Fatalf("insert orphan tagset: %v", err)
 	}
 
-	removed, err := db.SweepInvalidRecordings(ctx)
+	stats, err := db.Reap(ctx)
 	if err != nil {
-		t.Fatalf("sweep: %v", err)
+		t.Fatalf("reap: %v", err)
 	}
-	if removed != 1 {
-		t.Errorf("swept %d recordings, want 1", removed)
+	if stats.TrashedTagsets != 1 || stats.QuarantinedFiles != 0 || stats.DeletedHusks != 0 {
+		t.Errorf("reap stats = %+v, want exactly 1 trashed tagset", stats)
 	}
-	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, badRec); n != 0 {
-		t.Errorf("orphan recording survived sweep: count=%d", n)
+	// Demoted, not destroyed: the appearance sits in Trash, the husk remains.
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=? AND deleted_at IS NOT NULL`, badRec); n != 1 {
+		t.Errorf("orphan appearance not quarantined: trashed count=%d, want 1", n)
 	}
-	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=?`, badRec); n != 0 {
-		t.Errorf("orphan appearance survived sweep (FK cascade): count=%d", n)
+	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, badRec); n != 1 {
+		t.Errorf("recording husk deleted while a trashed row still references it: count=%d", n)
 	}
 	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, healthy.RecordingID); n != 1 {
-		t.Errorf("healthy recording swept: count=%d", n)
+		t.Errorf("healthy recording reaped: count=%d", n)
+	}
+	// Idempotent: a converged library is a no-op.
+	if stats, _ := db.Reap(ctx); stats.Total() != 0 {
+		t.Errorf("second reap collected %+v, want nothing (idempotent)", stats)
+	}
+
+	// Purge the trashed appearance (raw row delete = what purge does) → the
+	// empty husk is collected on the next reap.
+	if _, err := db.Exec(`DELETE FROM tagsets WHERE recording_id=?`, badRec); err != nil {
+		t.Fatalf("purge trashed tagset: %v", err)
+	}
+	stats, err = db.Reap(ctx)
+	if err != nil {
+		t.Fatalf("reap after purge: %v", err)
+	}
+	if stats.DeletedHusks != 1 {
+		t.Errorf("reap stats after purge = %+v, want 1 deleted husk", stats)
+	}
+	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, badRec); n != 0 {
+		t.Errorf("empty husk survived reap: count=%d", n)
 	}
 	assertInvariants(t, db)
 }

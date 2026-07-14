@@ -119,8 +119,8 @@ type RunDetail struct {
 	Dangling []database.DanglingRef  `json:"dangling,omitempty"` // scan
 	Pruned   []database.DanglingRef  `json:"pruned,omitempty"`   // prune
 	Failed   []database.PruneFailure `json:"failed,omitempty"`   // prune
-	// InvalidRecordings is how many fileless recordings the post-prune invariant
-	// sweep GC'd (recording-tagsets P2).
+	// InvalidRecordings is how many rows the post-prune reap collected
+	// (GC model, docs/architecture/gc-model.md).
 	InvalidRecordings int    `json:"invalid_recordings,omitempty"` // prune
 	Outcome           string `json:"outcome"`
 }

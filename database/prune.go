@@ -50,9 +50,10 @@ type PruneResult struct {
 	Dangling []DanglingRef
 	Pruned   []DanglingRef
 	Failed   []PruneFailure
-	// InvalidRecordings is how many fileless recordings the post-prune
-	// invariant sweep garbage-collected (recording-tagsets P2). Set only on a
-	// confirmed prune (PruneRefs); a healthy library reports 0.
+	// InvalidRecordings is how many rows the post-prune reap collected
+	// (quarantined files/appearances + removed empty recordings — GC model,
+	// docs/architecture/gc-model.md). Set only on a confirmed prune
+	// (PruneRefs); a converged library reports 0.
 	InvalidRecordings int
 }
 
@@ -251,15 +252,15 @@ func PruneRefs(ctx context.Context, repo Repository, probe blobProbe, link linkP
 		result.Pruned = append(result.Pruned, d)
 	}
 
-	// Standing invariant backstop (recording-tagsets P2): GC any recording left
-	// with no files — the per-row cascade above already removes a recording when
-	// it prunes that recording's last file, so this only catches violations a bug
-	// or crash slipped through. Best-effort: a sweep failure must not fail the
+	// Standing backstop (GC model): collect whatever the deletes above left
+	// unreferenced — the per-row cascade already removes a recording when it
+	// prunes that recording's last file, so this only catches what a bug or
+	// crash slipped through. Best-effort: a reap failure must not fail the
 	// prune whose deletes already committed.
-	if removed, err := repo.SweepInvalidRecordings(ctx); err != nil {
-		log.Printf("prune: invalid-recording sweep: %v", err)
+	if stats, err := repo.Reap(ctx); err != nil {
+		log.Printf("prune: post-prune reap: %v", err)
 	} else {
-		result.InvalidRecordings = removed
+		result.InvalidRecordings = stats.Total()
 	}
 	return result, nil
 }

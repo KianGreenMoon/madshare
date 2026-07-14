@@ -57,9 +57,10 @@ const originTagset = `(SELECT rt.id FROM tagsets rt WHERE rt.origin_file_id = f.
 // tagsetJoin binds the aliases the shared predicates (visibleFile,
 // accessClause, qFieldClause) expect around a files row aliased `f`: `m` is the
 // appearance the file's recording is displayed under (reprTagset) and `r` its
-// recording (access/license). INNER joins on purpose: a recording always has at
-// least one tagset and every file has a recording (both invariants, enforced by
-// the cascade ops and healed by ReconcileTagsets), so every file is covered.
+// recording (access/license). INNER joins on purpose: every file has a
+// recording (NOT NULL) and a recording without any tagset is garbage the
+// reaper quarantines (GC model) — its files leave the live surfaces anyway,
+// so nothing reachable is dropped by the join.
 const tagsetJoin = `
 	JOIN tagsets m ON m.id = ` + reprTagset + `
 	JOIN recordings r ON r.id = f.recording_id`
