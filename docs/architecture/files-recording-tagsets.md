@@ -81,9 +81,12 @@ Checked by `assertInvariants` (`database/lifecycle_test.go`), repaired by
 Invariants 1–3 are application-enforced (shared cascades:
 `hardDeleteTagsetsTx` / `hardDeleteFilesTx` / `repairRecordingTx` — every
 hard-delete entry point must go through them; a second code path is how
-orphans happen). Making invariant 2 **database-enforced** (deferred FK via
-`recordings.primary_tagset_id`) is planned:
-`docs/plans/recording-tagset-db-invariant.md`.
+orphans happen). **Successor design (agreed 2026-07-15, not yet
+implemented):** the [GC deletion model](gc-model.md) replaces the cascade
+philosophy — zero-reference states become collectable garbage instead of
+forbidden corruption, invariants 1–3 dissolve into the reaper's convergence
+rules, and the formerly planned DB-enforced deferred FK
+(`recordings.primary_tagset_id`) is superseded and will not be built.
 
 ## Lifecycle state, per table
 

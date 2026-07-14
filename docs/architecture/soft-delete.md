@@ -1,5 +1,11 @@
 # Soft Delete & Trash — three perspectives
 
+> **Status note (2026-07-15):** the soft-delete marks and derived visibility
+> described here carry over unchanged, but the *hard-delete* side (synchronous
+> cascades) is superseded by the agreed [GC deletion model](gc-model.md)
+> (unlink → reap → quarantine → purge), not yet implemented. This page will be
+> folded into that document's terms during its P5.
+
 ## Model
 
 The system never destroys content on an admin delete. It sets one of **two
