@@ -13,7 +13,6 @@ import (
 
 	"daemonlord.ygg/madshare/api/storage"
 	"daemonlord.ygg/madshare/database"
-	"github.com/go-chi/chi/v5"
 )
 
 // uploadAudio uploads one audio file through the handler and returns its hash.
@@ -31,126 +30,6 @@ func uploadAudio(t *testing.T, h *handler, filename string, body []byte) string 
 		t.Fatalf("upload %s returned empty hash", filename)
 	}
 	return hash
-}
-
-// deleteReq builds a DELETE /api/admin/files/{hash} request.
-func deleteReq(hash string) *http.Request {
-	req := httptest.NewRequest(http.MethodDelete, "/api/admin/files/"+hash, nil)
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("hash", hash)
-	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-}
-
-// ---- adminDeleteFile ---------------------------------------------------------
-
-func TestAdminDeleteFile_InvalidHash(t *testing.T) {
-	h, _, _ := newTestHandler(t)
-	rr := httptest.NewRecorder()
-	h.adminDeleteFile(rr, deleteReq("not-a-valid-hash"))
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rr.Code)
-	}
-	var resp map[string]any
-	json.NewDecoder(rr.Body).Decode(&resp)
-	if resp["error"] != "invalid hash" {
-		t.Errorf("error = %v, want \"invalid hash\"", resp["error"])
-	}
-}
-
-func TestAdminDeleteFile_NotFound(t *testing.T) {
-	h, _, _ := newTestHandler(t)
-	unknown := "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-	rr := httptest.NewRecorder()
-	h.adminDeleteFile(rr, deleteReq(unknown))
-	if rr.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404; body: %s", rr.Code, rr.Body.String())
-	}
-	var resp map[string]any
-	json.NewDecoder(rr.Body).Decode(&resp)
-	if resp["ok"] != false || resp["error"] != "not found" {
-		t.Errorf("body = %v, want {ok:false, error:not found}", resp)
-	}
-}
-
-func TestAdminDeleteFile_Success(t *testing.T) {
-	h, db, base := newTestHandler(t)
-	hash := uploadAudio(t, h, "song.mp3", []byte("delete this audio"))
-
-	rr := httptest.NewRecorder()
-	h.adminDeleteFile(rr, deleteReq(hash))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
-	}
-	var resp struct {
-		OK        bool     `json:"ok"`
-		Hash      string   `json:"hash"`
-		Filenames []string `json:"filenames"`
-	}
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if !resp.OK || resp.Hash != hash {
-		t.Errorf("resp = %+v, want ok=true hash=%s", resp, hash)
-	}
-	if len(resp.Filenames) != 1 || resp.Filenames[0] != "song.mp3" {
-		t.Errorf("filenames = %v, want [song.mp3]", resp.Filenames)
-	}
-
-	// DB row still present with deleted_at set (soft delete).
-	got, _ := db.GetFileByHash(context.Background(), hash)
-	if got == nil {
-		t.Fatal("files row should still exist after soft delete")
-	}
-	if !got.DeletedAt.Valid {
-		t.Error("files row should have deleted_at set after soft delete")
-	}
-	// Blob still on disk.
-	if _, err := os.Stat(filepath.Join(base, hash)); os.IsNotExist(err) {
-		t.Error("blob dir should still be present after soft delete")
-	}
-}
-
-// TestAdminDeleteFile_BlobAlreadyMissing verifies that soft-deleting a file
-// whose blob is already missing still returns 200 — the DB row is marked as
-// trashed regardless of blob presence.
-func TestAdminDeleteFile_BlobAlreadyMissing(t *testing.T) {
-	h, db, base := newTestHandler(t)
-	hash := uploadAudio(t, h, "song.mp3", []byte("blob will vanish"))
-
-	// Remove the blob before soft-deleting.
-	if err := os.RemoveAll(filepath.Join(base, hash)); err != nil {
-		t.Fatal(err)
-	}
-
-	rr := httptest.NewRecorder()
-	h.adminDeleteFile(rr, deleteReq(hash))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
-	}
-	var resp map[string]any
-	json.NewDecoder(rr.Body).Decode(&resp)
-	if resp["ok"] != true {
-		t.Errorf("ok = %v, want true", resp["ok"])
-	}
-
-	// Row still present with deleted_at set.
-	got, _ := db.GetFileByHash(context.Background(), hash)
-	if got == nil || !got.DeletedAt.Valid {
-		t.Error("files row should exist and have deleted_at set after soft delete")
-	}
-}
-
-// TestAdminDeleteFile_DBErrorReturns500 uses a fakeRepo to force a delete error.
-func TestAdminDeleteFile_DBErrorReturns500(t *testing.T) {
-	repo := &fakeRepo{deleteErr: context.DeadlineExceeded}
-	h := &handler{storage: storage.NewLocal(t.TempDir()), repo: repo, spoolDir: t.TempDir(), maxUploadSize: testMaxUpload}
-	hash := "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-
-	rr := httptest.NewRecorder()
-	h.adminDeleteFile(rr, deleteReq(hash))
-	if rr.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rr.Code)
-	}
 }
 
 // ---- adminStorageStats -------------------------------------------------------
@@ -437,8 +316,8 @@ func TestAdminPruneCancel_IdleNoop(t *testing.T) {
 }
 
 // TestAdminRoutes_Wired exercises the endpoints through the full router so the
-// route registration and hash param are covered. (CORS preflight, incl. the
-// DELETE method advertisement, is covered by TestCORS_Preflight.)
+// admin route registration is covered. (CORS preflight, incl. the DELETE
+// method advertisement, is covered by TestCORS_Preflight.)
 func TestAdminRoutes_Wired(t *testing.T) {
 	dir := t.TempDir()
 	db, err := database.Open(":memory:")
@@ -460,15 +339,26 @@ func TestAdminRoutes_Wired(t *testing.T) {
 	up.Body.Close()
 	hash, _ := upResp["hash"].(string)
 
-	// DELETE via the router.
-	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/files/"+hash, nil)
-	resp, err := http.DefaultClient.Do(req)
+	if hash == "" {
+		t.Fatal("upload returned no hash")
+	}
+
+	// Trash the appearance via the router (the tagset-addressed bulk endpoint).
+	body2, _ := json.Marshal(map[string]any{
+		"action": "trash", "filter": map[string]any{}, "all": true,
+	})
+	resp, err := http.Post(srv.URL+"/api/admin/appearances/bulk", "application/json", bytes.NewReader(body2))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("DELETE status = %d, want 200", resp.StatusCode)
+	var out struct {
+		OK       bool `json:"ok"`
+		Affected int  `json:"affected"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	if resp.StatusCode != http.StatusOK || !out.OK || out.Affected != 1 {
+		t.Fatalf("bulk trash via router = %d ok=%v affected=%d, want 200/true/1", resp.StatusCode, out.OK, out.Affected)
 	}
 }
 
@@ -494,15 +384,11 @@ func TestAdminTrashList_Empty(t *testing.T) {
 }
 
 func TestAdminTrashList_ReturnsTrashedFiles(t *testing.T) {
-	h, _, _ := newTestHandler(t)
+	h, db, _ := newTestHandler(t)
 	hash := uploadAudio(t, h, "trash-me.mp3", []byte("trash content"))
 
-	// Soft-delete the file.
-	rr := httptest.NewRecorder()
-	h.adminDeleteFile(rr, deleteReq(hash))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("soft-delete status = %d", rr.Code)
-	}
+	// Trash the appearance (production does this by tagset id).
+	trashAppearancesOf(t, db, hash)
 
 	// Trash list must contain the file.
 	rr2 := httptest.NewRecorder()

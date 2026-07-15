@@ -44,12 +44,12 @@ func TestMergeRecordings_UnionDedupAndPin(t *testing.T) {
 	if n := countRow(t, db, `SELECT COUNT(*) FROM files WHERE id IN (?,?) AND recording_pinned=1`, f2.ID, f3.ID); n != 2 {
 		t.Errorf("moved renditions not pinned: %d of 2", n)
 	}
-	// Appearances: target's original (still primary) + f2's moved one.
+	// Appearances: target's original + f2's moved one.
 	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=?`, target); n != 2 {
 		t.Errorf("target appearances = %d, want 2", n)
 	}
-	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE origin_file_id=? AND is_primary=1`, f1.ID); n != 1 {
-		t.Errorf("target lost its primary")
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE origin_file_id=?`, f1.ID); n != 1 {
+		t.Errorf("target lost its own appearance")
 	}
 	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE origin_file_id=?`, f3.ID); n != 0 {
 		t.Errorf("duplicate-identity appearance survived")
@@ -121,8 +121,8 @@ func TestMoveTagset(t *testing.T) {
 	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE id=? AND recording_id=? AND is_primary=0`, moving, target); n != 1 {
 		t.Errorf("tagset not moved (or arrived primary)")
 	}
-	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=? AND is_primary=1`, src); n != 1 {
-		t.Errorf("source primary not intact after move")
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE recording_id=?`, src); n != 1 {
+		t.Errorf("source appearance count after move = %d, want 1", n)
 	}
 
 	// Collision: an identical appearance (same resolved album identity) already

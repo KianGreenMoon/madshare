@@ -46,14 +46,6 @@ const reprTagset = `(SELECT rt.id FROM tagsets rt WHERE rt.recording_id = f.reco
 		ORDER BY COALESCE(rt.origin_file_id = f.id, 0) DESC,
 		         (rt.deleted_at IS NULL) DESC, rt.is_primary DESC, rt.id ASC LIMIT 1)`
 
-// originTagset selects the appearance whose tags were read from this very blob
-// — the provenance link. It is *not* a cover of the files table (see
-// reprTagset). Only two kinds of surface may use it: the Trash Appearances
-// listing, which is addressed by the origin blob's hash, and the
-// file-addressed metadata edit. Requires the files row aliased `f`.
-const originTagset = `(SELECT rt.id FROM tagsets rt WHERE rt.origin_file_id = f.id
-		ORDER BY rt.is_primary DESC, rt.id ASC LIMIT 1)`
-
 // tagsetJoin binds the aliases the shared predicates (visibleFile,
 // accessClause, qFieldClause) expect around a files row aliased `f`: `m` is the
 // appearance the file's recording is displayed under (reprTagset) and `r` its
@@ -63,15 +55,6 @@ const originTagset = `(SELECT rt.id FROM tagsets rt WHERE rt.origin_file_id = f.
 // so nothing reachable is dropped by the join.
 const tagsetJoin = `
 	JOIN tagsets m ON m.id = ` + reprTagset + `
-	JOIN recordings r ON r.id = f.recording_id`
-
-// originTagsetJoin is tagsetJoin for the hash-addressed Trash listing, where
-// the row *is* the appearance offered from that blob and its `deleted_at` is
-// the Trash mark being filtered on — so it must not fall back to a sibling
-// appearance the way reprTagset does. Superseded once the Trash Appearances
-// lens is re-rooted `FROM tagsets` (P7c).
-const originTagsetJoin = `
-	JOIN tagsets m ON m.id = ` + originTagset + `
 	JOIN recordings r ON r.id = f.recording_id`
 
 // StorageByteBreakdown partitions the logical byte size of stored blobs by
@@ -106,7 +89,7 @@ func (db *DB) StorageByteBreakdown(ctx context.Context) (StorageByteBreakdown, e
 		  COALESCE(SUM(CASE WHEN t.deleted_at IS NULL AND t.review_state <> 'approved' THEN f.byte_size END), 0),
 		  COALESCE(SUM(CASE WHEN t.id IS NULL OR t.deleted_at IS NOT NULL               THEN f.byte_size END), 0)
 		FROM files f
-		LEFT JOIN tagsets t ON t.id = ` + reprTagset + `
+		LEFT JOIN tagsets t ON t.id = `+reprTagset+`
 		WHERE f.storage_backend <> 'links'`,
 	).Scan(&b.Library, &b.Review, &b.Trash)
 	if err != nil {
@@ -117,19 +100,21 @@ func (db *DB) StorageByteBreakdown(ctx context.Context) (StorageByteBreakdown, e
 
 // GetFileByHash looks up a files row by content hash. Returns (nil, nil) if
 // no row matches — callers treat that as "new upload". The lifecycle fields
-// (DeletedAt, ReviewState, …) are derived from the file's offered tagset, so a
-// trashed tagset reads back as a trashed file for the restore/dedup flows. A
-// file somehow missing its tagset (invariant violation, repaired at startup)
-// reads as approved so the dedup path still short-circuits.
+// are derived from the blob's representative appearance (reprTagset — the
+// blob's own offered appearance first, else its recording's), so a trashed
+// catalog reads back as a trashed file for the restore/dedup flows. DeletedAt
+// additionally reflects a soft-removed rendition (files.deleted_at): either
+// mark means the bytes are not serving and a re-upload may restore them. A
+// recording with no tagset at all (garbage awaiting the reaper) reads as
+// approved so the dedup path still short-circuits.
 func (db *DB) GetFileByHash(ctx context.Context, hash string) (*File, error) {
 	const q = `
 		SELECT f.id, f.hash, f.byte_size, f.mime_type, f.storage_backend, f.object_key, f.link_target,
-		       f.created_at, f.recording_id, t.deleted_at,
+		       f.created_at, f.recording_id, COALESCE(f.deleted_at, t.deleted_at),
 		       COALESCE(t.review_state, 'approved'), t.review_note, t.submitted_at
 		FROM files f
-		LEFT JOIN tagsets t ON t.origin_file_id = f.id
+		LEFT JOIN tagsets t ON t.id = ` + reprTagset + `
 		WHERE f.hash = ?
-		ORDER BY t.id
 		LIMIT 1`
 
 	var f File
@@ -151,9 +136,9 @@ func (db *DB) GetFileByHash(ctx context.Context, hash string) (*File, error) {
 // a single transaction: its recording (a fresh singleton — the fingerprint
 // resolver may later merge it into a matched one), the files row, the
 // file_uploads row, the offered tagset (descriptive tags, seeded with
-// f.ReviewState and owned by f.UploadedBy, primary appearance of the new
-// recording), and the tech media_metadata row. f.ID and f.RecordingID are
-// populated on success.
+// f.ReviewState and owned by f.UploadedBy; is_primary stays 0 — the flag is a
+// manual preference, the representative appearance is derived), and the tech
+// media_metadata row. f.ID and f.RecordingID are populated on success.
 func (db *DB) InsertFile(ctx context.Context, f *File, upload *FileUpload, meta *MediaMetadata) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -238,7 +223,7 @@ func (db *DB) InsertFile(ctx context.Context, f *File, upload *FileUpload, meta 
 			track_number, track_total, disc_number, composer, comment,
 			artist_id, album_artist_id, album_id,
 			review_state, created_by, origin_file_id, is_primary, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
 		f.RecordingID, meta.Title, meta.Artist, meta.AlbumArtist, meta.Album,
 		meta.Genre, meta.Year, meta.TrackNumber, meta.TrackTotal, meta.DiscNumber,
 		meta.Composer, meta.Comment, trackArtistID, albumArtistID, albumID,
@@ -623,121 +608,6 @@ func (db *DB) CountFiles(ctx context.Context, f FileFilter) (int, error) {
 	return n, nil
 }
 
-// FileHashesByFilter returns the content hashes of every file matching the
-// filter (no paging), ordered by id. Backs "select all N matching" bulk actions:
-// the handler resolves the set here, then acts on the hashes.
-func (db *DB) FileHashesByFilter(ctx context.Context, f FileFilter) ([]string, error) {
-	where, args := fileFilterWhere(f)
-	rows, err := db.QueryContext(ctx,
-		`SELECT f.hash FROM files f`+tagsetJoin+` WHERE `+where+` ORDER BY f.id`, args...)
-	if err != nil {
-		return nil, fmt.Errorf("file hashes by filter: %w", err)
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var h string
-		if err := rows.Scan(&h); err != nil {
-			return nil, fmt.Errorf("scan file hash: %w", err)
-		}
-		out = append(out, h)
-	}
-	return out, rows.Err()
-}
-
-// BulkSoftDeleteByHashes soft-deletes (moves to Trash) the given hashes in a
-// single transaction, chunked to stay within SQLite's bound-parameter limit.
-// The Trash lives on the tagset (tagsets.deleted_at); the guard mirrors
-// SoftDeleteFileByHash, so already-trashed and unknown hashes are simply
-// skipped and the returned count is how many were actually trashed. Blobs and
-// DB rows are preserved for the Trash flow.
-func (db *DB) BulkSoftDeleteByHashes(ctx context.Context, hashes []string) (int, error) {
-	if len(hashes) == 0 {
-		return 0, nil
-	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	now := time.Now().Unix()
-	total := 0
-	const chunk = 400
-	for i := 0; i < len(hashes); i += chunk {
-		end := i + chunk
-		if end > len(hashes) {
-			end = len(hashes)
-		}
-		batch := hashes[i:end]
-		placeholders := make([]string, len(batch))
-		args := make([]any, 0, len(batch)+1)
-		args = append(args, now)
-		for j, h := range batch {
-			placeholders[j] = "?"
-			args = append(args, h)
-		}
-		res, err := tx.ExecContext(ctx,
-			`UPDATE tagsets SET deleted_at = ? WHERE deleted_at IS NULL AND origin_file_id IN
-			   (SELECT id FROM files WHERE hash IN (`+strings.Join(placeholders, ",")+`))`, args...)
-		if err != nil {
-			return 0, fmt.Errorf("bulk soft delete: %w", err)
-		}
-		n, _ := res.RowsAffected()
-		total += int(n)
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit: %w", err)
-	}
-	return total, nil
-}
-
-// BulkRestoreByHashes clears deleted_at on the given hashes in a single
-// transaction, chunked to stay within SQLite's bound-parameter limit. It mirrors
-// RestoreFileByHash's deleted_at-only guard, so live and unknown hashes are
-// simply skipped; the returned count is how many trashed rows were restored.
-// This is the restore counterpart to BulkSoftDeleteByHashes — one transaction
-// instead of one autocommit write per hash, which is what made bulk restore both
-// slow and a SQLITE_BUSY source under concurrent write pressure.
-func (db *DB) BulkRestoreByHashes(ctx context.Context, hashes []string) (int, error) {
-	if len(hashes) == 0 {
-		return 0, nil
-	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	total := 0
-	const chunk = 400
-	for i := 0; i < len(hashes); i += chunk {
-		end := i + chunk
-		if end > len(hashes) {
-			end = len(hashes)
-		}
-		batch := hashes[i:end]
-		placeholders := make([]string, len(batch))
-		args := make([]any, 0, len(batch))
-		for j, h := range batch {
-			placeholders[j] = "?"
-			args = append(args, h)
-		}
-		res, err := tx.ExecContext(ctx,
-			`UPDATE tagsets SET deleted_at = NULL WHERE deleted_at IS NOT NULL AND origin_file_id IN
-			   (SELECT id FROM files WHERE hash IN (`+strings.Join(placeholders, ",")+`))`, args...)
-		if err != nil {
-			return 0, fmt.Errorf("bulk restore: %w", err)
-		}
-		n, _ := res.RowsAffected()
-		total += int(n)
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit: %w", err)
-	}
-	return total, nil
-}
-
 // DeletedBlob identifies one hard-deleted file's physical bytes for post-commit
 // reclamation: Hash locates the blob and StorageBackend selects the reclaim path
 // (local DeleteAll of a hash dir vs unlinking a links symlink). It is the batch
@@ -746,60 +616,6 @@ func (db *DB) BulkRestoreByHashes(ctx context.Context, hashes []string) (int, er
 type DeletedBlob struct {
 	Hash           string
 	StorageBackend string
-}
-
-// BulkHardDeleteTrashedByHashes permanently removes the trashed appearances of
-// the given hashes in a single transaction (recording-tagsets P2), returning the
-// count of tagsets removed and the blobs of every file a last-appearance cascade
-// took down, so the caller can reclaim those bytes after commit (the filesystem
-// unlink stays out of the transaction). Live (non-trashed) and unknown hashes
-// are skipped — the trashed-tagset guard mirrors HardDeleteTrashedFileByHash, so
-// a concurrent restore cannot be hard-deleted out from under the user. It is the
-// batch counterpart to HardDeleteTrashedFileByHash: one transaction + the shared
-// tagset cascade instead of one autocommit write (plus a per-row audit) per hash,
-// which is what made bulk permanent delete slow and a SQLITE_BUSY source under
-// write pressure (mirroring the BulkRestoreByHashes fix).
-func (db *DB) BulkHardDeleteTrashedByHashes(ctx context.Context, hashes []string) (int, []DeletedBlob, error) {
-	if len(hashes) == 0 {
-		return 0, nil, nil
-	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, nil, fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	const chunk = 400
-	tagsetIDs := make([]int64, 0, len(hashes))
-	// Resolve the trashed appearances first; the cascade then decides, per
-	// recording, whether any files (and their blobs) go with them.
-	for i := 0; i < len(hashes); i += chunk {
-		end := min(i+chunk, len(hashes))
-		batch := hashes[i:end]
-		placeholders := make([]string, len(batch))
-		args := make([]any, 0, len(batch))
-		for j, h := range batch {
-			placeholders[j] = "?"
-			args = append(args, h)
-		}
-		ids, err := scanIDs(tx.QueryContext(ctx,
-			`SELECT t.id FROM tagsets t
-			   JOIN files f ON f.id = t.origin_file_id
-			  WHERE t.deleted_at IS NOT NULL AND f.hash IN (`+strings.Join(placeholders, ",")+`)`, args...))
-		if err != nil {
-			return 0, nil, fmt.Errorf("select trashed tagsets: %w", err)
-		}
-		tagsetIDs = append(tagsetIDs, ids...)
-	}
-
-	blobs, err := purgeTagsetsTx(ctx, tx, tagsetIDs)
-	if err != nil {
-		return 0, nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, nil, fmt.Errorf("commit: %w", err)
-	}
-	return len(tagsetIDs), blobs, nil
 }
 
 // uploadFilenamesInTx returns the recorded filenames for a file (ordered by
@@ -822,99 +638,12 @@ func uploadFilenamesInTx(ctx context.Context, tx *sql.Tx, fileID int64) ([]strin
 	return names, rows.Err()
 }
 
-// SoftDeleteFileByHash marks the file as trashed by setting deleted_at on its
-// tagset. The blob is left on disk; every row is preserved. Returns
-// found=false (no error) when no live (non-trashed) row matches.
-func (db *DB) SoftDeleteFileByHash(ctx context.Context, hash string) ([]string, bool, error) {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, false, fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	var id int64
-	err = tx.QueryRowContext(ctx, `
-		SELECT f.id FROM files f
-		WHERE f.hash = ? AND EXISTS (SELECT 1 FROM tagsets t WHERE t.origin_file_id = f.id AND t.deleted_at IS NULL)`,
-		hash).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, fmt.Errorf("select file id: %w", err)
-	}
-
-	filenames, err := uploadFilenamesInTx(ctx, tx, id)
-	if err != nil {
-		return nil, false, err
-	}
-
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE tagsets SET deleted_at = ? WHERE origin_file_id = ? AND deleted_at IS NULL`,
-		time.Now().Unix(), id); err != nil {
-		return nil, false, fmt.Errorf("soft delete file: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, false, fmt.Errorf("commit: %w", err)
-	}
-	return filenames, true, nil
-}
-
 // HardDeleteFileByHash permanently removes any files row identified by hash,
 // regardless of trash state. Used by PruneDangling, which must be able to
 // clean up both live and trashed rows whose blobs are gone.
 // Returns found=false (no error) when no row matches.
 func (db *DB) HardDeleteFileByHash(ctx context.Context, hash string) ([]string, bool, error) {
 	return db.hardDelete(ctx, `SELECT id FROM files WHERE hash = ?`, hash)
-}
-
-// HardDeleteTrashedFileByHash permanently removes the trashed appearance of the
-// file identified by hash — the Trash "Delete Forever" op (recording-tagsets
-// P2). It cascades from the *tagset*: a non-last appearance drops just the
-// tagset row (the blob stays — another appearance may still play it); the last
-// appearance of a recording takes the recording and all its files with it, and
-// those blobs come back in the returned slice for post-commit reclamation. The
-// trashed-tagset guard makes the check and cascade atomic within one
-// transaction, so a concurrent restore cannot race the delete. Returns
-// found=false (no error) when the file has no trashed appearance.
-func (db *DB) HardDeleteTrashedFileByHash(ctx context.Context, hash string) ([]string, []DeletedBlob, bool, error) {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, nil, false, fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	var fileID int64
-	err = tx.QueryRowContext(ctx, `SELECT id FROM files WHERE hash = ?`, hash).Scan(&fileID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil, false, nil
-	}
-	if err != nil {
-		return nil, nil, false, fmt.Errorf("select file id: %w", err)
-	}
-
-	tagsetIDs, err := scanIDs(tx.QueryContext(ctx,
-		`SELECT id FROM tagsets WHERE origin_file_id = ? AND deleted_at IS NOT NULL`, fileID))
-	if err != nil {
-		return nil, nil, false, fmt.Errorf("select trashed tagsets: %w", err)
-	}
-	if len(tagsetIDs) == 0 {
-		return nil, nil, false, nil
-	}
-
-	filenames, err := uploadFilenamesInTx(ctx, tx, fileID)
-	if err != nil {
-		return nil, nil, false, err
-	}
-
-	blobs, err := purgeTagsetsTx(ctx, tx, tagsetIDs)
-	if err != nil {
-		return nil, nil, false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, nil, false, fmt.Errorf("commit: %w", err)
-	}
-	return filenames, blobs, true, nil
 }
 
 // hardDelete is the shared implementation for the two hash-addressed
@@ -960,184 +689,54 @@ func (db *DB) hardDelete(ctx context.Context, selectQ, hash string) ([]string, b
 	return filenames, true, nil
 }
 
-// RestoreFileByHash clears the trash mark (tagsets.deleted_at) on a trashed
-// file, returning it to its prior review state. Returns found=false (no error)
-// when no trashed row matches.
+// RestoreFileByHash brings re-offered bytes back from the Trash. The entry
+// point is hash-addressed (an upload only knows its bytes); the rows it acts
+// on are found via the recording edge, never origin_file_id (GC model P3):
+// every trashed appearance of the blob's recording is restored to its prior
+// review state, and the rendition itself is revived (files.deleted_at
+// cleared) so the bytes serve again. Returns found=false (no error) when
+// nothing was in the Trash.
 func (db *DB) RestoreFileByHash(ctx context.Context, hash string) (bool, error) {
-	res, err := db.ExecContext(ctx, `
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("restore file: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	resT, err := tx.ExecContext(ctx, `
 		UPDATE tagsets SET deleted_at = NULL
-		WHERE deleted_at IS NOT NULL AND origin_file_id IN (SELECT id FROM files WHERE hash = ?)`, hash)
+		WHERE deleted_at IS NOT NULL
+		  AND recording_id = (SELECT recording_id FROM files WHERE hash = ?)`, hash)
 	if err != nil {
-		return false, fmt.Errorf("restore file: %w", err)
+		return false, fmt.Errorf("restore file: appearances: %w", err)
 	}
-	n, _ := res.RowsAffected()
-	return n > 0, nil
-}
-
-// trashListSelect is the shared SELECT for the Trash listings (the trash
-// timestamp / review state now live on the tagset; no disc_number, matching the
-// historical trash payload). Keep in sync with scanTrashList.
-const trashListSelect = `
-	SELECT
-		f.id, f.hash, f.mime_type, f.byte_size, f.object_key, f.created_at,
-		COALESCE((SELECT filename FROM file_uploads WHERE file_id = f.id ORDER BY id LIMIT 1), f.hash) AS filename,
-		COALESCE(m.title,  '') AS title,
-		COALESCE(m.artist, '') AS artist,
-		m.album_artist,
-		COALESCE(m.album,  '') AS album,
-		m.track_number,
-		COALESCE(m.year,    0) AS year,
-		mm.duration_seconds,
-		r.guest_playable,
-		r.license,
-		m.deleted_at,
-		m.review_state,
-		CASE WHEN aimg.artist_id IS NOT NULL THEN 1 ELSE 0 END AS artist_has_image,
-		CASE WHEN alimg.album_id  IS NOT NULL THEN 1 ELSE 0 END AS album_has_image
-	FROM files f` + originTagsetJoin + `
-	LEFT JOIN media_metadata mm ON mm.file_id = f.id
-	LEFT JOIN artist_images aimg ON aimg.artist_id = m.album_artist_id
-	LEFT JOIN album_images  alimg ON alimg.album_id  = m.album_id`
-
-func scanTrashList(rows *sql.Rows) ([]*FileListEntry, error) {
-	out := make([]*FileListEntry, 0)
-	for rows.Next() {
-		var e FileListEntry
-		var guest, artistImg, albumImg int
-		if err := rows.Scan(
-			&e.ID, &e.Hash, &e.MimeType, &e.ByteSize, &e.ObjectKey, &e.CreatedAt,
-			&e.Filename, &e.Title, &e.Artist, &e.AlbumArtist, &e.Album, &e.TrackNumber, &e.Year, &e.DurationSeconds,
-			&guest, &e.License, &e.DeletedAt, &e.ReviewState, &artistImg, &albumImg,
-		); err != nil {
-			return nil, fmt.Errorf("scan trashed file: %w", err)
-		}
-		e.GuestPlayable = guest == 1
-		e.ArtistHasImage = artistImg == 1
-		e.AlbumHasImage = albumImg == 1
-		out = append(out, &e)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list trashed files rows: %w", err)
-	}
-	return out, nil
-}
-
-// trashFilterWhere builds the WHERE predicate (always the trashed base
-// m.deleted_at IS NOT NULL — the tagset carries the Trash) and binds for a
-// FileFilter over the Trash bucket. It reuses qFieldClause + the artist/album
-// pins so Trash matches identically to the live library, just over soft-deleted
-// rows. Guest is never applied (Trash is admin-only).
-func trashFilterWhere(f FileFilter) (string, []any) {
-	where := "m.deleted_at IS NOT NULL"
-	var args []any
-	if frag, fragArgs := qFieldClause(f.Q, f.QField); frag != "" {
-		where += " AND " + frag
-		args = append(args, fragArgs...)
-	}
-	if f.ArtistID != nil {
-		where += " AND (m.album_artist_id = ? OR m.artist_id = ?)"
-		args = append(args, *f.ArtistID, *f.ArtistID)
-	}
-	if f.AlbumID != nil {
-		where += " AND m.album_id = ?"
-		args = append(args, *f.AlbumID)
-	}
-	return where, args
-}
-
-// trashSortOrder maps a sort token to a safe ORDER BY for the Trash list. It adds
-// deletion-time orders (the Trash default) and otherwise delegates to the shared
-// flat / grouped orders. Unknown tokens fall back to newest-deleted-first.
-func trashSortOrder(token string) string {
-	switch token {
-	case "deleted_asc":
-		return "m.deleted_at ASC, f.id ASC"
-	case "deleted_desc":
-		return "m.deleted_at DESC, f.id DESC"
-	case "created_asc", "created_desc", "title_asc", "title_desc",
-		"artist_asc", "artist_desc", "size_asc", "size_desc", "untagged_first", "grouped":
-		return fileSortOrder(token)
-	default:
-		return "m.deleted_at DESC, f.id DESC"
-	}
-}
-
-// ListTrashedFiles returns all soft-deleted files ordered by deletion time
-// descending — the non-paged wrapper over ListTrashedFilesPage (Limit <= 0).
-func (db *DB) ListTrashedFiles(ctx context.Context) ([]*FileListEntry, error) {
-	return db.ListTrashedFilesPage(ctx, FileListQuery{})
-}
-
-// ListTrashedFilesPage returns one filtered, sorted page of the Trash listing.
-// With Limit <= 0 it returns every match (no window).
-func (db *DB) ListTrashedFilesPage(ctx context.Context, q FileListQuery) ([]*FileListEntry, error) {
-	where, args := trashFilterWhere(q.FileFilter)
-	sqlText := trashListSelect + "\n\t\tWHERE " + where + "\n\t\tORDER BY " + trashSortOrder(q.Sort)
-	if q.Limit > 0 {
-		offset := q.Offset
-		if offset < 0 {
-			offset = 0
-		}
-		sqlText += "\n\t\tLIMIT ? OFFSET ?"
-		args = append(args, q.Limit, offset)
-	}
-	rows, err := db.QueryContext(ctx, sqlText, args...)
+	resF, err := tx.ExecContext(ctx, `
+		UPDATE files SET deleted_at = NULL
+		WHERE deleted_at IS NOT NULL AND hash = ?`, hash)
 	if err != nil {
-		return nil, fmt.Errorf("list trashed files page: %w", err)
+		return false, fmt.Errorf("restore file: rendition: %w", err)
 	}
-	defer rows.Close()
-	return scanTrashList(rows)
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("restore file: commit: %w", err)
+	}
+	nT, _ := resT.RowsAffected()
+	nF, _ := resF.RowsAffected()
+	return nT+nF > 0, nil
 }
 
-// CountTrashedFiles returns how many trashed files match the filter, ignoring
-// paging — the total for the Trash list and "select all N matching".
-func (db *DB) CountTrashedFiles(ctx context.Context, f FileFilter) (int, error) {
-	where, args := trashFilterWhere(f)
-	var n int
-	err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM files f`+originTagsetJoin+` WHERE `+where, args...).Scan(&n)
-	if err != nil {
-		return 0, fmt.Errorf("count trashed files: %w", err)
-	}
-	return n, nil
-}
-
-// TrashedFileHashesByFilter returns the content hashes of every trashed file
-// matching the filter (no paging), ordered by id. Backs the Trash "select all N
-// matching" bulk restore / delete / edit.
-func (db *DB) TrashedFileHashesByFilter(ctx context.Context, f FileFilter) ([]string, error) {
-	where, args := trashFilterWhere(f)
-	rows, err := db.QueryContext(ctx,
-		`SELECT f.hash FROM files f`+originTagsetJoin+` WHERE `+where+` ORDER BY f.id`, args...)
-	if err != nil {
-		return nil, fmt.Errorf("trashed file hashes by filter: %w", err)
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var h string
-		if err := rows.Scan(&h); err != nil {
-			return nil, fmt.Errorf("scan trashed file hash: %w", err)
-		}
-		out = append(out, h)
-	}
-	return out, rows.Err()
-}
-
-// ListFileRefs returns one FileRef per live (non-trashed) files row with the
+// ListFileRefs returns one FileRef per live (non-removed) files row with the
 // filenames recorded for it, ordered by file id. Files with no upload rows
-// carry an empty slice. Trashed files (tagset in the Trash) are excluded so
-// PruneDangling does not permanently delete files the admin placed in the trash
-// intentionally; a file with no tagset at all (invariant violation) IS listed,
-// so the prune sweep can flag and clean it.
+// carry an empty slice. Soft-removed renditions (files.deleted_at — the
+// Trash › Files quarantine) are excluded so PruneDangling never permanently
+// deletes what an admin placed in the Trash; their rows are the purge path's
+// business, not the sweep's (GC model P3).
 func (db *DB) ListFileRefs(ctx context.Context) ([]FileRef, error) {
 	const q = `
 		SELECT f.hash, f.storage_backend, COALESCE(f.link_target, ''),
 		       COALESCE(GROUP_CONCAT(u.filename, char(10)), '')
 		FROM files f
 		LEFT JOIN file_uploads u ON u.file_id = f.id
-		WHERE EXISTS (SELECT 1 FROM tagsets t WHERE t.origin_file_id = f.id AND t.deleted_at IS NULL)
-		   OR NOT EXISTS (SELECT 1 FROM tagsets t WHERE t.origin_file_id = f.id)
+		WHERE f.deleted_at IS NULL
 		GROUP BY f.id
 		ORDER BY f.id`
 

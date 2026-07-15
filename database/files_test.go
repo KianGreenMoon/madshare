@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestStorageByteBreakdown verifies the per-state byte partition: approved/live
@@ -35,9 +36,7 @@ func TestStorageByteBreakdown(t *testing.T) {
 	ins(trashUnapprovedHash, 4, ReviewSubmitted) // trashed AND unapproved → Trash
 
 	for _, h := range []string{trashHash, trashUnapprovedHash} {
-		if _, _, err := db.SoftDeleteFileByHash(ctx, h); err != nil {
-			t.Fatalf("SoftDeleteFileByHash %s: %v", h, err)
-		}
+		trashAppearancesByHash(t, db, h)
 	}
 
 	bd, err := db.StorageByteBreakdown(ctx)
@@ -78,6 +77,44 @@ func newMeta() *MediaMetadata {
 		TagFormat:   sql.NullString{String: "ID3v2.4", Valid: true},
 		ExtractedAt: 1700000000,
 	}
+}
+
+// trashAppearancesByHash is the tests' stand-in for the removed hash-addressed
+// soft delete: it trashes the live appearances offered from the blob — the
+// state the old SoftDeleteFileByHash produced. Production trashes by tagset id
+// (GC model P3); tests keep the hash shorthand because they created the file.
+func trashAppearancesByHash(t *testing.T, db *DB, hash string) {
+	t.Helper()
+	res, err := db.ExecContext(context.Background(), `
+		UPDATE tagsets SET deleted_at = ?
+		WHERE deleted_at IS NULL
+		  AND origin_file_id IN (SELECT id FROM files WHERE hash = ?)`,
+		time.Now().Unix(), hash)
+	if err != nil {
+		t.Fatalf("trash appearances of %s: %v", hash, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		t.Fatalf("trash appearances of %s: no live appearance matched", hash)
+	}
+}
+
+// trashedTagsetIDsByHash resolves the trashed appearances offered from the
+// given blobs, in id order — the tagset addressing the purge ops take.
+func trashedTagsetIDsByHash(t *testing.T, db *DB, hashes ...string) []int64 {
+	t.Helper()
+	var ids []int64
+	for _, h := range hashes {
+		got, err := scanIDs(db.QueryContext(context.Background(), `
+			SELECT t.id FROM tagsets t
+			  JOIN files f ON f.id = t.origin_file_id
+			 WHERE t.deleted_at IS NOT NULL AND f.hash = ?
+			 ORDER BY t.id`, h))
+		if err != nil {
+			t.Fatalf("trashed tagsets of %s: %v", h, err)
+		}
+		ids = append(ids, got...)
+	}
+	return ids
 }
 
 func TestInsertFile_WritesAllThreeRows(t *testing.T) {
@@ -552,85 +589,9 @@ func TestListFiles_NullMetadataCoalesces(t *testing.T) {
 	}
 }
 
-// ---- SoftDeleteFileByHash ---------------------------------------------------
+// ---- Trash visibility -------------------------------------------------------
 
-func TestSoftDeleteFileByHash_SetsDeletedAt(t *testing.T) {
-	db := openMem(t)
-	ctx := context.Background()
-
-	hash := "soft0000000000000000000000000000000000000000000000000000000000000"
-	f := newFile(hash)
-	if err := db.InsertFile(ctx, f, newUpload("track.mp3"), newMeta()); err != nil {
-		t.Fatalf("InsertFile: %v", err)
-	}
-
-	filenames, found, err := db.SoftDeleteFileByHash(ctx, hash)
-	if err != nil {
-		t.Fatalf("SoftDeleteFileByHash: %v", err)
-	}
-	if !found {
-		t.Fatal("found = false, want true")
-	}
-	if len(filenames) != 1 || filenames[0] != "track.mp3" {
-		t.Errorf("filenames = %v, want [track.mp3]", filenames)
-	}
-
-	// Row still present.
-	got, err := db.GetFileByHash(ctx, hash)
-	if err != nil || got == nil {
-		t.Fatalf("GetFileByHash after soft-delete: got=%v err=%v", got, err)
-	}
-	if !got.DeletedAt.Valid {
-		t.Error("DeletedAt should be set after soft-delete")
-	}
-
-	// Child rows preserved (no cascade).
-	var uploads, meta int
-	db.QueryRow(`SELECT COUNT(*) FROM file_uploads WHERE file_id = ?`, got.ID).Scan(&uploads)
-	db.QueryRow(`SELECT COUNT(*) FROM media_metadata WHERE file_id = ?`, got.ID).Scan(&meta)
-	if uploads != 1 {
-		t.Errorf("file_uploads rows = %d, want 1 (should survive soft-delete)", uploads)
-	}
-	if meta != 1 {
-		t.Errorf("media_metadata rows = %d, want 1 (should survive soft-delete)", meta)
-	}
-}
-
-func TestSoftDeleteFileByHash_NotFound(t *testing.T) {
-	db := openMem(t)
-	_, found, err := db.SoftDeleteFileByHash(context.Background(),
-		"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
-	if err != nil {
-		t.Fatalf("SoftDeleteFileByHash on miss: %v", err)
-	}
-	if found {
-		t.Error("found = true on miss, want false")
-	}
-}
-
-func TestSoftDeleteFileByHash_AlreadyTrashed(t *testing.T) {
-	db := openMem(t)
-	ctx := context.Background()
-
-	hash := "trash000000000000000000000000000000000000000000000000000000000000"
-	if err := db.InsertFile(ctx, newFile(hash), newUpload("a.mp3"), newMeta()); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := db.SoftDeleteFileByHash(ctx, hash); err != nil {
-		t.Fatalf("first SoftDeleteFileByHash: %v", err)
-	}
-
-	// Second soft-delete on the same hash must return found=false (not an error).
-	_, found, err := db.SoftDeleteFileByHash(ctx, hash)
-	if err != nil {
-		t.Fatalf("second SoftDeleteFileByHash: %v", err)
-	}
-	if found {
-		t.Error("found = true on already-trashed file, want false")
-	}
-}
-
-func TestSoftDeleteFileByHash_ExcludesFromListFiles(t *testing.T) {
+func TestListFiles_ExcludesTrashed(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
@@ -643,9 +604,7 @@ func TestSoftDeleteFileByHash_ExcludesFromListFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := db.SoftDeleteFileByHash(ctx, hashA); err != nil {
-		t.Fatalf("SoftDeleteFileByHash: %v", err)
-	}
+	trashAppearancesByHash(t, db, hashA)
 
 	entries, err := db.ListFiles(ctx)
 	if err != nil {
@@ -669,9 +628,7 @@ func TestRestoreFileByHash_ClearsDeletedAt(t *testing.T) {
 	if err := db.InsertFile(ctx, newFile(hash), newUpload("track.mp3"), newMeta()); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := db.SoftDeleteFileByHash(ctx, hash); err != nil {
-		t.Fatalf("SoftDeleteFileByHash: %v", err)
-	}
+	trashAppearancesByHash(t, db, hash)
 
 	found, err := db.RestoreFileByHash(ctx, hash)
 	if err != nil {
@@ -731,115 +688,7 @@ func TestRestoreFileByHash_LiveFileReturnsFalse(t *testing.T) {
 	}
 }
 
-// ---- ListTrashedFiles -------------------------------------------------------
-
-func TestListTrashedFiles_Empty(t *testing.T) {
-	db := openMem(t)
-	entries, err := db.ListTrashedFiles(context.Background())
-	if err != nil {
-		t.Fatalf("ListTrashedFiles: %v", err)
-	}
-	if entries == nil {
-		t.Fatal("ListTrashedFiles returned nil; want non-nil empty slice")
-	}
-	if len(entries) != 0 {
-		t.Errorf("len = %d, want 0", len(entries))
-	}
-}
-
-func TestListTrashedFiles_ReturnsTrashedPopulatesDeletedAt(t *testing.T) {
-	db := openMem(t)
-	ctx := context.Background()
-
-	hash := "tlist00000000000000000000000000000000000000000000000000000000000"
-	if err := db.InsertFile(ctx, newFile(hash), newUpload("song.mp3"), newMeta()); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := db.SoftDeleteFileByHash(ctx, hash); err != nil {
-		t.Fatalf("SoftDeleteFileByHash: %v", err)
-	}
-
-	entries, err := db.ListTrashedFiles(ctx)
-	if err != nil {
-		t.Fatalf("ListTrashedFiles: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("len = %d, want 1", len(entries))
-	}
-	e := entries[0]
-	if e.Hash != hash {
-		t.Errorf("Hash = %q, want %q", e.Hash, hash)
-	}
-	if e.Filename != "song.mp3" {
-		t.Errorf("Filename = %q, want song.mp3", e.Filename)
-	}
-	if !e.DeletedAt.Valid || e.DeletedAt.Int64 == 0 {
-		t.Error("DeletedAt should be set and non-zero")
-	}
-}
-
-func TestListTrashedFiles_ExcludesLiveFiles(t *testing.T) {
-	db := openMem(t)
-	ctx := context.Background()
-
-	hashLive := "live0001000000000000000000000000000000000000000000000000000000000"
-	hashTrash := "trash001000000000000000000000000000000000000000000000000000000000"
-	if err := db.InsertFile(ctx, newFile(hashLive), newUpload("live.mp3"), newMeta()); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.InsertFile(ctx, newFile(hashTrash), newUpload("gone.mp3"), newMeta()); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := db.SoftDeleteFileByHash(ctx, hashTrash); err != nil {
-		t.Fatal(err)
-	}
-
-	entries, err := db.ListTrashedFiles(ctx)
-	if err != nil {
-		t.Fatalf("ListTrashedFiles: %v", err)
-	}
-	if len(entries) != 1 || entries[0].Hash != hashTrash {
-		t.Errorf("entries = %v, want only trashed file %s", entries, hashTrash)
-	}
-}
-
-func TestListTrashedFiles_OrderByDeletedAtDesc(t *testing.T) {
-	db := openMem(t)
-	ctx := context.Background()
-
-	hashA := "order0a0000000000000000000000000000000000000000000000000000000000"
-	hashB := "order0b0000000000000000000000000000000000000000000000000000000000"
-	if err := db.InsertFile(ctx, newFile(hashA), newUpload("a.mp3"), newMeta()); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.InsertFile(ctx, newFile(hashB), newUpload("b.mp3"), newMeta()); err != nil {
-		t.Fatal(err)
-	}
-
-	// Soft-delete both, then pin their timestamps so the ordering is deterministic.
-	if _, _, err := db.SoftDeleteFileByHash(ctx, hashA); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := db.SoftDeleteFileByHash(ctx, hashB); err != nil {
-		t.Fatal(err)
-	}
-	// A was deleted at t=1000, B at t=2000 → B (more recent) should appear first.
-	db.ExecContext(ctx, `UPDATE files SET deleted_at = 1000 WHERE hash = ?`, hashA)
-	db.ExecContext(ctx, `UPDATE files SET deleted_at = 2000 WHERE hash = ?`, hashB)
-
-	entries, err := db.ListTrashedFiles(ctx)
-	if err != nil {
-		t.Fatalf("ListTrashedFiles: %v", err)
-	}
-	if len(entries) != 2 {
-		t.Fatalf("len = %d, want 2", len(entries))
-	}
-	if entries[0].Hash != hashB {
-		t.Errorf("entries[0].Hash = %q, want %q (most recently deleted first)", entries[0].Hash, hashB)
-	}
-}
-
-// ---- ListTrashedFiles + ListFiles interaction --------------------------------
+// ---- GetFileByHash trash view -------------------------------------------------
 
 func TestGetFileByHash_ReturnsSoftDeletedFile(t *testing.T) {
 	db := openMem(t)
@@ -849,9 +698,7 @@ func TestGetFileByHash_ReturnsSoftDeletedFile(t *testing.T) {
 	if err := db.InsertFile(ctx, newFile(hash), newUpload("t.mp3"), newMeta()); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := db.SoftDeleteFileByHash(ctx, hash); err != nil {
-		t.Fatal(err)
-	}
+	trashAppearancesByHash(t, db, hash)
 
 	got, err := db.GetFileByHash(ctx, hash)
 	if err != nil {
@@ -893,63 +740,5 @@ func TestListFiles_FilenameFromFirstUpload(t *testing.T) {
 	// Document rather than assert a specific value.
 	if entries[0].Filename == "" {
 		t.Error("Filename is empty; COALESCE fallback to hash not working")
-	}
-}
-
-// ---- BulkHardDeleteTrashedByHashes ------------------------------------------
-
-func TestBulkHardDeleteTrashedByHashes_SkipsLiveReportsBackend(t *testing.T) {
-	db := openMem(t)
-	ctx := context.Background()
-
-	// One trashed local, one trashed links, one LIVE local (must be skipped).
-	hashOf := func(prefix string) string { return prefix + strings.Repeat("0", 64-len(prefix)) }
-	trashedLocal := hashOf("bd0a")
-	trashedLinks := hashOf("bd0b")
-	liveLocal := hashOf("bd0c")
-
-	linksFile := newFile(trashedLinks)
-	linksFile.StorageBackend = StorageBackendLinks
-	for _, f := range []*File{newFile(trashedLocal), linksFile, newFile(liveLocal)} {
-		if err := db.InsertFile(ctx, f, newUpload("t.mp3"), newMeta()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, h := range []string{trashedLocal, trashedLinks} {
-		if _, _, err := db.SoftDeleteFileByHash(ctx, h); err != nil {
-			t.Fatalf("SoftDeleteFileByHash %s: %v", h, err)
-		}
-	}
-
-	// Pass all three hashes; only the two trashed rows may be deleted.
-	deleted, blobs, err := db.BulkHardDeleteTrashedByHashes(ctx, []string{trashedLocal, trashedLinks, liveLocal})
-	if err != nil {
-		t.Fatalf("BulkHardDeleteTrashedByHashes: %v", err)
-	}
-	if deleted != 2 {
-		t.Fatalf("deleted %d tagsets, want 2 (live row must be skipped)", deleted)
-	}
-	if len(blobs) != 2 {
-		t.Fatalf("deleted %d blobs, want 2 (live row must be skipped)", len(blobs))
-	}
-	got := map[string]string{}
-	for _, b := range blobs {
-		got[b.Hash] = b.StorageBackend
-	}
-	if got[trashedLocal] != StorageBackendLocal {
-		t.Errorf("trashedLocal backend = %q, want %q", got[trashedLocal], StorageBackendLocal)
-	}
-	if got[trashedLinks] != StorageBackendLinks {
-		t.Errorf("trashedLinks backend = %q, want %q", got[trashedLinks], StorageBackendLinks)
-	}
-
-	// The live row survives; the trashed rows are gone.
-	if f, err := db.GetFileByHash(ctx, liveLocal); err != nil || f == nil {
-		t.Fatalf("live row missing after bulk delete: f=%v err=%v", f, err)
-	}
-	for _, h := range []string{trashedLocal, trashedLinks} {
-		if f, err := db.GetFileByHash(ctx, h); err != nil || f != nil {
-			t.Errorf("trashed row %s still present after delete: f=%v err=%v", h, f, err)
-		}
 	}
 }

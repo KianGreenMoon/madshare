@@ -69,22 +69,7 @@ async function loadAppearancesPage({ limit, offset, q, field, sort }) {
   return { total: data.total || 0, items: data.items || [] };
 }
 
-// bulkTrash moves a set of FILES to Trash in one transactional request — an
-// explicit hash list, or a filter ("everything matching"). The entity view's
-// deletes speak this hash/entity-addressed dialect (artist_id/album_id filters).
-// Returns the count actually trashed.
-async function bulkTrash(body) {
-  const res = await fetch(`${API}/api/admin/files/bulk`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'trash', ...body }),
-  });
-  if (handleAuthError(res)) throw new Error('Your session expired.');
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return data.affected || 0;
-}
-
-// ── Appearance-addressed plumbing (the All Appearances lens) ─────────────────
+// ── Appearance-addressed plumbing (shared by both lenses) ────────────────────
 // appearancesBulkCall is the single batched action (trash / edit) over an
 // explicit tagset_ids list OR a filter ("select all N matching"). file-list.js
 // hands selection keys back as strings; the API wants numbers.
@@ -723,10 +708,10 @@ mergeForm.addEventListener('submit', async e => {
   }
 });
 
-// ── Delete (track / album / artist) — move files to Trash, batched ───────────
-// Reuses the per-file endpoint DELETE /api/admin/files/{hash} (move to Trash,
-// reversible from the Trash page). Entity deletes gather their tracks' hashes via
-// the browse endpoints (so they match exactly what's shown) + the url→file index.
+// ── Delete (track / album / artist) — move appearances to Trash, batched ─────
+// Everything goes through POST /api/admin/appearances/bulk (GC model P3): a
+// single track by its tagset_id, a whole album/artist by an entity-pinned
+// filter. Reversible from the Trash page.
 const deleteModal     = document.getElementById('deleteModal');
 const deleteTitleEl   = document.getElementById('deleteTitle');
 const deleteBodyEl    = document.getElementById('deleteBody');
@@ -766,22 +751,23 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && !deleteModal.classList.contains('hidden')) closeDelete();
 });
 
-// trashByFilter moves a whole entity's tracks to Trash in one request and
+// trashByFilter moves a whole entity's appearances to Trash in one request and
 // refreshes both views. It throws on failure so the confirm modal surfaces it.
 async function trashByFilter(filter) {
-  const n = await bulkTrash({ filter });
+  const data = await appearancesBulkCall({ action: 'trash', filter });
+  const n = data.affected || 0;
   fileList?.reload();
   reloadEntityLevel();
   toast(`Moved ${n} ${n === 1 ? 'track' : 'tracks'} to Trash.`, 'success');
 }
 
 async function deleteTrack(t) {
-  if (!t.hash) { toast('Couldn’t find this file’s details.', 'error'); return; }
+  if (!t.tagset_id) { toast('Couldn’t find this file’s details.', 'error'); return; }
   confirmDelete({
     title: 'Move track to Trash',
     body: `Move “${t.title || 'this track'}” to Trash?`,
     run: async () => {
-      await bulkTrash({ hashes: [t.hash] });
+      await appearancesBulkCall({ action: 'trash', tagset_ids: [t.tagset_id] });
       fileList?.reload();
       reloadEntityLevel();
       toast('Moved to Trash.', 'success');

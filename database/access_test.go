@@ -64,8 +64,9 @@ func TestAccess_UnknownHashDenied(t *testing.T) {
 	}
 }
 
-// TestBulkSetLicenseAndGuest sets one license + one guest flag across a set in a
-// single guarded UPDATE each: live files change, an unknown/trashed hash is
+// TestBulkSetLicenseAndGuest sets one license + one guest flag across a set in
+// a single guarded UPDATE each (tagset-addressed — the GC model's bulk access
+// path): live appearances forward to their recordings, a trashed/unknown id is
 // skipped, and the count reflects what was actually written.
 func TestBulkSetLicenseAndGuest(t *testing.T) {
 	db := openMem(t)
@@ -76,22 +77,20 @@ func TestBulkSetLicenseAndGuest(t *testing.T) {
 	insertAccessFile(t, db, h1)
 	insertAccessFile(t, db, h2)
 	insertAccessFile(t, db, trashed)
-	if _, _, err := db.SoftDeleteFileByHash(ctx, trashed); err != nil {
-		t.Fatalf("trash setup: %v", err)
-	}
-	missing := hash64("bacc-missing")
+	trashAppearancesByHash(t, db, trashed)
+	ids := []int64{tagsetOf(t, db, h1), tagsetOf(t, db, h2), tagsetOf(t, db, trashed), 999999}
 
-	n, err := db.BulkSetLicense(ctx, []string{h1, h2, trashed, missing}, "CC0-1.0")
+	n, err := db.BulkSetLicenseByTagsets(ctx, ids, "CC0-1.0")
 	if err != nil {
-		t.Fatalf("BulkSetLicense: %v", err)
+		t.Fatalf("BulkSetLicenseByTagsets: %v", err)
 	}
 	if n != 2 {
 		t.Fatalf("license affected = %d, want 2 (trashed + missing skipped)", n)
 	}
 
-	g, err := db.BulkSetGuestPlayable(ctx, []string{h1, h2}, true)
+	g, err := db.BulkSetGuestPlayableByTagsets(ctx, ids[:2], true)
 	if err != nil {
-		t.Fatalf("BulkSetGuestPlayable: %v", err)
+		t.Fatalf("BulkSetGuestPlayableByTagsets: %v", err)
 	}
 	if g != 2 {
 		t.Fatalf("guest affected = %d, want 2", g)

@@ -32,13 +32,6 @@ type Repository interface {
 	ListFilesPage(ctx context.Context, q FileListQuery) ([]*FileListEntry, error)
 	CountFiles(ctx context.Context, f FileFilter) (int, error)
 
-	// FileHashesByFilter resolves a filter to the matching content hashes (no
-	// paging), and BulkSoftDeleteByHashes moves a hash set to Trash in one
-	// transaction (returning the count actually trashed). Together they back the
-	// "select all N matching → Move to Trash" bulk action.
-	FileHashesByFilter(ctx context.Context, f FileFilter) ([]string, error)
-	BulkSoftDeleteByHashes(ctx context.Context, hashes []string) (int, error)
-
 	// Trash · Appearances lens (recording-tagsets P7c) — tagset-rooted, one row
 	// per appearance. Paged like the live library: ListTrashedAppearancesPage +
 	// CountTrashedAppearances drive the page/total, and
@@ -189,22 +182,18 @@ type Repository interface {
 	MergeArtistsPreview(ctx context.Context, fromID, intoID int64) (*MergePreview, error)
 	MergeAlbumsPreview(ctx context.Context, fromID, intoID int64) (*MergePreview, error)
 
-	// SoftDeleteFileByHash marks the file as trashed (sets deleted_at). The
-	// blob and DB row are preserved. Returns the recorded filenames for audit.
-	// found is false (no error) when no live file matches the hash.
-	SoftDeleteFileByHash(ctx context.Context, hash string) (filenames []string, found bool, err error)
-
 	// HardDeleteFileByHash permanently removes the files row for hash (cascading
 	// to its file_uploads, media_metadata, and tagset rows; a recording left
 	// fileless goes with it). Works on both live and trashed files. Used by
 	// PruneDangling. found is false (no error) when no row matches.
 	HardDeleteFileByHash(ctx context.Context, hash string) (filenames []string, found bool, err error)
 
-	// RestoreFileByHash clears the trash mark on the appearances offered from the
-	// blob with this hash — the uploader-facing restore-via-reupload path
-	// (docs/architecture/moderation.md). The admin Trash lens restores by tagset
-	// id instead (BulkRestoreTagsets / RestoreTagset); this one is addressed by
-	// content hash because a re-upload only knows the bytes.
+	// RestoreFileByHash restores every trashed appearance of the blob's
+	// recording and revives the rendition itself — the uploader-facing
+	// restore-via-reupload path (docs/architecture/moderation.md). The admin
+	// Trash lens restores by tagset id instead (BulkRestoreTagsets /
+	// RestoreTagset); this one is addressed by content hash because a re-upload
+	// only knows the bytes (the rows are found via the recording edge, GC model).
 	RestoreFileByHash(ctx context.Context, hash string) (bool, error)
 
 	// GetTrashRestorePolicy reads the trash-restore policy (reupload_restores /
@@ -486,12 +475,6 @@ type Repository interface {
 	// the updated combined row. Returns ErrFileNotFound when no file matches, or an error
 	// wrapping ErrInvalidMetadata when a numeric field carries a bad value.
 	UpdateFileMetadata(ctx context.Context, hash string, p MetadataPatch) (*MediaMetadata, error)
-
-	// BulkUpdateFileMetadata applies the same patch to every hash, sharing a
-	// transaction per chunk. Returns the rows updated and the hashes that matched
-	// no file (skipped). Backs the bulk metadata editor — fewer write-lock
-	// acquisitions than the per-file UpdateFileMetadata loop.
-	BulkUpdateFileMetadata(ctx context.Context, hashes []string, p MetadataPatch) (affected int, notFound []string, err error)
 
 	// UpdateTagsetMetadata writes the patch onto one appearance by tagset id and
 	// returns the combined row (recording-tagsets P4 — the review / My-uploads

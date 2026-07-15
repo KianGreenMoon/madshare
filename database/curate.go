@@ -121,8 +121,9 @@ func recordingWhere(opts RecordingListOptions) (string, []any) {
 }
 
 // ListRecordings returns one page of the recordings admin listing, newest
-// first. The primary appearance (is_primary, else oldest) provides the display
-// fields; count subqueries fill the chips.
+// first. The derived representative appearance (live first, then the manual
+// is_primary override, then oldest) provides the display fields; count
+// subqueries fill the chips.
 func (db *DB) ListRecordings(ctx context.Context, opts RecordingListOptions) ([]RecordingRow, error) {
 	where, args := recordingWhere(opts)
 	query := `
@@ -143,7 +144,7 @@ func (db *DB) ListRecordings(ctx context.Context, opts RecordingListOptions) ([]
 		  FROM recordings r
 		  LEFT JOIN tagsets pt ON pt.id = (
 		       SELECT t2.id FROM tagsets t2 WHERE t2.recording_id = r.id
-		        ORDER BY t2.is_primary DESC, t2.id ASC LIMIT 1)` +
+		        ORDER BY (t2.deleted_at IS NULL) DESC, t2.is_primary DESC, t2.id ASC LIMIT 1)` +
 		where + `
 		 ORDER BY r.id DESC`
 	if opts.Limit > 0 {
@@ -309,6 +310,7 @@ func (db *DB) GetRecordingDetail(ctx context.Context, recordingID int64) (*Recor
 		return nil, fmt.Errorf("recording detail: tagsets: %w", err)
 	}
 	defer tRows.Close()
+	var flagged []bool
 	for tRows.Next() {
 		var a RecordingAppearance
 		var trashed, primary int
@@ -318,10 +320,39 @@ func (db *DB) GetRecordingDetail(ctx context.Context, recordingID int64) (*Recor
 			return nil, fmt.Errorf("recording detail: scan tagset: %w", err)
 		}
 		a.Trashed = trashed != 0
-		a.IsPrimary = primary != 0
+		flagged = append(flagged, primary != 0)
 		d.Appearances = append(d.Appearances, a)
 	}
-	return d, tRows.Err()
+	if err := tRows.Err(); err != nil {
+		return nil, err
+	}
+	// The reported primary is DERIVED (GC model): live first, then the manual
+	// is_primary override, then oldest. If the flagged appearance is trashed,
+	// the derived default silently takes over — no repair, no enforcement.
+	best := -1
+	for i := range d.Appearances {
+		if best < 0 {
+			best = i
+			continue
+		}
+		a, b := d.Appearances[i], d.Appearances[best]
+		switch {
+		case a.Trashed != b.Trashed:
+			if !a.Trashed {
+				best = i
+			}
+		case flagged[i] != flagged[best]:
+			if flagged[i] {
+				best = i
+			}
+		case a.TagsetID < b.TagsetID:
+			best = i
+		}
+	}
+	if best >= 0 {
+		d.Appearances[best].IsPrimary = true
+	}
+	return d, nil
 }
 
 // ── Merge ─────────────────────────────────────────────────────────────────────
@@ -447,7 +478,8 @@ func (db *DB) MergeRecordings(ctx context.Context, targetID int64, sourceIDs []i
 		out.AppearancesDropped += len(dropIDs)
 	}
 
-	// The target gained members; re-assert the primary invariant.
+	// Belt-and-braces: the target gained members, but a merge of husks could
+	// still leave it empty — let the scoped reap decide.
 	if err := reapRecordingsTx(ctx, tx, []int64{targetID}); err != nil {
 		return MergeOutcome{}, err
 	}
@@ -472,8 +504,9 @@ type MoveTagsetOutcome struct {
 
 // MoveTagset re-homes an appearance onto another existing recording (the
 // appearance-level split — a mis-attached release moves to the audio it
-// belongs to). The moved appearance is never primary on arrival; the source's
-// primary is re-promoted if it left. Moving the last appearance is refused —
+// belongs to). Moving clears the manual is_primary override (its context was
+// the old recording); both sides fall back to their derived representative.
+// Moving the last appearance is refused —
 // it would leave the source invisible with no catalog entry (that shape is a
 // merge). An identical non-trashed appearance on the target refuses the move
 // (nothing new to say — same rule as attach/absorb dedup).
@@ -753,11 +786,8 @@ func (db *DB) SetRecordingAccess(ctx context.Context, recordingID int64, license
 // RestoreTagset clears a single appearance's trash mark (tagsets.deleted_at),
 // bringing it back into the library — the tagset-addressed inverse of the
 // discard (BulkTrashTagsets) the recordings view uses for per-appearance Remove.
-// It exists because the hash-addressed Trash page reaches a trashed appearance
-// only through its origin file's hash, which an absorbed/purged blob no longer
-// offers (RestoreFileByHash matches origin_file_id); this restores by tagset id
-// instead. review_state is left untouched — restore re-enters the prior review
-// state (moderation.md). Returns found=false (no error) when no trashed tagset
+// review_state is left untouched — restore re-enters the prior review state
+// (moderation.md). Returns found=false (no error) when no trashed tagset
 // matches the id.
 func (db *DB) RestoreTagset(ctx context.Context, tagsetID int64) (bool, error) {
 	res, err := db.ExecContext(ctx,
@@ -782,13 +812,13 @@ type HardDeleteTagsetOutcome struct {
 	Blobs   []DeletedBlob
 }
 
-// HardDeleteTrashedTagset permanently removes one trashed appearance through the
-// shared tagset-first cascade (hardDeleteTagsetsTx): the recording keeps its
-// other appearances (primary re-promoted if needed), or — if this was the last
-// one — is GC'd with all its files, the blobs returned for post-commit
-// reclamation. It refuses a live appearance (Found && !Trashed): permanent
-// delete is a Trash-only op, so the caller must trash it first (a live
-// appearance is removed via the whole-recording delete or MoveTagset instead).
+// HardDeleteTrashedTagset permanently removes one trashed appearance through
+// the shared purge (purgeTagsetsTx): the recording keeps its other appearances,
+// or — if this was the last one — its files are reclaimed and the husk reaped,
+// the blobs returned for post-commit reclamation. It refuses a live appearance
+// (Found && !Trashed): permanent delete is a Trash-only op, so the caller must
+// trash it first (a live appearance is removed via the whole-recording delete
+// or MoveTagset instead).
 func (db *DB) HardDeleteTrashedTagset(ctx context.Context, tagsetID int64) (HardDeleteTagsetOutcome, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {

@@ -213,10 +213,8 @@ func TestUploadFile_RestoresSoftDeletedFile(t *testing.T) {
 	json.NewDecoder(first.Body).Decode(&firstResp)
 	hash := firstResp["hash"].(string)
 
-	// Soft-delete the file directly in the DB (simulates admin "Move to Trash").
-	if _, _, err := db.SoftDeleteFileByHash(context.Background(), hash); err != nil {
-		t.Fatalf("SoftDeleteFileByHash: %v", err)
-	}
+	// Trash the appearance directly in the DB (simulates admin "Move to Trash").
+	trashAppearancesOf(t, db, hash)
 
 	// Re-upload the same bytes; must restore, not error.
 	second := httptest.NewRecorder()
@@ -739,18 +737,6 @@ func (f *fakeRepo) CountFiles(_ context.Context, _ database.FileFilter) (int, er
 	return f.countFiles, f.listFilesErr
 }
 
-func (f *fakeRepo) FileHashesByFilter(_ context.Context, _ database.FileFilter) ([]string, error) {
-	return f.filterHashes, f.filterHashesErr
-}
-
-func (f *fakeRepo) BulkSoftDeleteByHashes(_ context.Context, hashes []string) (int, error) {
-	f.bulkTrashedHashes = append(f.bulkTrashedHashes, hashes...)
-	if f.bulkTrashErr != nil {
-		return 0, f.bulkTrashErr
-	}
-	return len(hashes), nil
-}
-
 func (f *fakeRepo) ListTrashedAppearancesPage(_ context.Context, _ database.FileListQuery) ([]*database.AppearanceEntry, error) {
 	return f.pageTrash, f.listFilesErr
 }
@@ -1137,16 +1123,6 @@ func (f *fakeRepo) UpdateFileMetadata(_ context.Context, hash string, p database
 	return &database.MediaMetadata{}, nil
 }
 
-func (f *fakeRepo) BulkUpdateFileMetadata(_ context.Context, hashes []string, p database.MetadataPatch) (int, []string, error) {
-	f.metaCalls++
-	f.lastMetaPatch = p
-	f.bulkMetaHashes = append(f.bulkMetaHashes, hashes...)
-	if f.metaErr != nil {
-		return 0, nil, f.metaErr
-	}
-	return len(hashes), nil, nil
-}
-
 func (f *fakeRepo) FileMetadataByHash(_ context.Context, hash string) (*database.MediaMetadata, error) {
 	f.lastMetaHash = hash
 	if f.metaGetErr != nil {
@@ -1180,11 +1156,6 @@ func (f *fakeRepo) TagsetMetadataByID(_ context.Context, tagsetID int64) (*datab
 		return f.metaGetResult, nil
 	}
 	return &database.MediaMetadata{}, nil
-}
-
-func (f *fakeRepo) SoftDeleteFileByHash(_ context.Context, _ string) ([]string, bool, error) {
-	f.deleteCalls++
-	return f.deleteFilenames, f.deleteFound, f.deleteErr
 }
 
 func (f *fakeRepo) HardDeleteFileByHash(_ context.Context, _ string) ([]string, bool, error) {
@@ -2307,5 +2278,21 @@ func TestSearch_DBError_Returns500(t *testing.T) {
 
 	if rr.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500 on DB error", rr.Code)
+	}
+}
+
+// trashAppearancesOf trashes the appearances offered from the blob — test
+// setup for "file in Trash" states (production trashes by tagset id; the GC
+// model P3 removed the hash-addressed soft delete).
+func trashAppearancesOf(t *testing.T, db *database.DB, hash string) {
+	t.Helper()
+	res, err := db.ExecContext(context.Background(), `
+		UPDATE tagsets SET deleted_at = strftime('%s','now')
+		WHERE deleted_at IS NULL AND origin_file_id IN (SELECT id FROM files WHERE hash = ?)`, hash)
+	if err != nil {
+		t.Fatalf("trash appearances of %s: %v", hash, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		t.Fatalf("trash appearances of %s: no live appearance matched", hash)
 	}
 }

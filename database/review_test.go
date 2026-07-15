@@ -127,9 +127,7 @@ func TestUpdateReviewState_Guards(t *testing.T) {
 		t.Error("submit by non-owner applied, want guard rejection")
 	}
 	// Trashed files are untouchable.
-	if _, found, err := db.SoftDeleteFileByHash(ctx, h); err != nil || !found {
-		t.Fatalf("SoftDeleteFileByHash: found=%v err=%v", found, err)
-	}
+	trashAppearancesByHash(t, db, h)
 	if found, _ := db.UpdateReviewState(ctx, tagsetOf(t, db, h), ReviewTransition{
 		From: []string{ReviewDraft, ReviewReturned}, To: ReviewSubmitted, OwnerID: uid,
 	}); found {
@@ -150,13 +148,11 @@ func TestReview_TrashRestoreKeepsState(t *testing.T) {
 	h := hash64("restore")
 	insertStagedFile(t, db, h, ReviewSubmitted, uid)
 
-	if _, found, err := db.SoftDeleteFileByHash(ctx, h); err != nil || !found {
-		t.Fatalf("SoftDeleteFileByHash: found=%v err=%v", found, err)
-	}
+	trashAppearancesByHash(t, db, h)
 	// The trash listing badges the staged state.
-	trashed, err := db.ListTrashedFiles(ctx)
+	trashed, err := db.ListTrashedAppearancesPage(ctx, FileListQuery{})
 	if err != nil || len(trashed) != 1 {
-		t.Fatalf("ListTrashedFiles: n=%d err=%v", len(trashed), err)
+		t.Fatalf("ListTrashedAppearancesPage: n=%d err=%v", len(trashed), err)
 	}
 	if trashed[0].ReviewState != ReviewSubmitted {
 		t.Errorf("trash entry state = %q, want submitted", trashed[0].ReviewState)
@@ -317,9 +313,7 @@ func TestBulkUpdateReviewState_ReturnNoteSkipsTrashed(t *testing.T) {
 	hTrash := hash64("bret-trash")
 	insertStagedFile(t, db, hLive, ReviewSubmitted, uid)
 	insertStagedFile(t, db, hTrash, ReviewSubmitted, uid)
-	if _, found, err := db.SoftDeleteFileByHash(ctx, hTrash); err != nil || !found {
-		t.Fatalf("trash setup: found=%v err=%v", found, err)
-	}
+	trashAppearancesByHash(t, db, hTrash)
 
 	n, err := db.BulkUpdateReviewState(ctx, []int64{tagsetOf(t, db, hLive), tagsetOf(t, db, hTrash)}, ReviewTransition{
 		From: []string{ReviewSubmitted, ReviewReturned}, To: ReviewReturned, Note: "fix tags",

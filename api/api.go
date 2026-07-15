@@ -260,10 +260,6 @@ func RegisterAdmin(r chi.Router, d Deps) {
 	h := d.newHandler()
 	r.Route("/api/admin", func(r chi.Router) {
 		fileDelete := d.protect(auth.PermFileDelete)
-		r.With(fileDelete).Delete("/files/{hash}", h.adminDeleteFile)
-		// Bulk admits either capability; the handler enforces the per-action gate
-		// (trash → file.delete, edit → metadata.edit).
-		r.With(d.protectAny(auth.PermFileDelete, auth.PermMetadataEdit)).Post("/files/bulk", h.adminBulkFiles)
 		r.With(fileDelete).Post("/prune", h.adminPrune)
 		r.With(fileDelete).Get("/prune/status", h.adminPruneStatus)
 		r.With(fileDelete).Post("/prune/cancel", h.adminPruneCancel)

@@ -113,9 +113,7 @@ func TestPlaylist_AddRejectsUnknownAndTrashed(t *testing.T) {
 		t.Errorf("items after failed batch = %d, want 0 (atomic add)", len(items))
 	}
 
-	if _, found, err := db.SoftDeleteFileByHash(ctx, hashes[1]); err != nil || !found {
-		t.Fatalf("SoftDeleteFileByHash: found=%v err=%v", found, err)
-	}
+	trashAppearancesByHash(t, db, hashes[1])
 	if _, err := db.AddPlaylistItems(ctx, userID, p.ID, []int64{tagsetIDs[1]}); !errors.Is(err, ErrFileNotFound) {
 		t.Errorf("add trashed appearance: err = %v, want ErrFileNotFound", err)
 	}
@@ -132,9 +130,7 @@ func TestPlaylist_TrashedAndHardDeletedItems(t *testing.T) {
 	}
 
 	// Trash one file → its item stays, flagged Trashed (grayed in the UI).
-	if _, found, err := db.SoftDeleteFileByHash(ctx, hashes[1]); err != nil || !found {
-		t.Fatalf("SoftDeleteFileByHash: found=%v err=%v", found, err)
-	}
+	trashAppearancesByHash(t, db, hashes[1])
 	_, items, err := db.GetPlaylist(ctx, userID, p.ID)
 	if err != nil {
 		t.Fatalf("GetPlaylist: %v", err)
@@ -209,9 +205,7 @@ func TestFavorites_ToggleAndDedupe(t *testing.T) {
 	if liked, err := db.ToggleFavorite(ctx, userID, tagsetIDs[0]); err != nil || liked {
 		t.Fatalf("second toggle: liked=%v err=%v, want un-liked", liked, err)
 	}
-	if _, found, err := db.SoftDeleteFileByHash(ctx, hashes[1]); err != nil || !found {
-		t.Fatalf("SoftDeleteFileByHash: found=%v err=%v", found, err)
-	}
+	trashAppearancesByHash(t, db, hashes[1])
 	if got, err = db.ListFavoriteTagsetIDs(ctx, userID); err != nil || len(got) != 0 {
 		t.Errorf("favorites after unlike+trash = %v (err %v), want empty", got, err)
 	}

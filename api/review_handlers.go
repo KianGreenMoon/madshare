@@ -451,7 +451,7 @@ func normalizeBulkHashes(raw []string) ([]string, error) {
 // reviewBulkRequest is the shared body of the two staging bulk endpoints: an
 // explicit hash list OR a filter (resolved server-side), with `all` required to
 // act on the whole (matching) set when the filter term is blank — the same
-// guardrail adminBulkFiles uses.
+// guardrail the other bulk endpoints use.
 type reviewBulkRequest struct {
 	Action    string  `json:"action"`
 	TagsetIDs []int64 `json:"tagset_ids"`

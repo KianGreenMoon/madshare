@@ -227,9 +227,7 @@ func TestListDuplicateRecordings(t *testing.T) {
 	}
 
 	// Trashing one rendition drops the recording below the >1 threshold.
-	if _, _, err := db.SoftDeleteFileByHash(ctx, hash64("p1")); err != nil {
-		t.Fatalf("soft delete: %v", err)
-	}
+	trashAppearancesByHash(t, db, hash64("p1"))
 	if dups, _ := db.ListDuplicateRecordings(ctx); len(dups) != 0 {
 		t.Errorf("after trashing one rendition, duplicates = %d, want 0", len(dups))
 	}
@@ -303,9 +301,7 @@ func TestIsDuplicateSubmission_Fingerprint(t *testing.T) {
 		t.Fatalf("want duplicate, got %v err=%v", dup, err)
 	}
 	// Trashing the only approved sibling clears the flag.
-	if _, _, err := db.SoftDeleteFileByHash(ctx, hash64("s1")); err != nil {
-		t.Fatalf("soft delete: %v", err)
-	}
+	trashAppearancesByHash(t, db, hash64("s1"))
 	if dup, _ := db.IsDuplicateSubmission(ctx, hash64("s2")); dup {
 		t.Error("a trashed sibling must not flag a duplicate")
 	}

@@ -105,82 +105,6 @@ func (db *DB) SetLicense(ctx context.Context, hash, license string) (found bool,
 	return n > 0, nil
 }
 
-// BulkSetGuestPlayable sets the same guest-playable flag on the recording of
-// every live file in the hash set, in one chunked transaction. A bulk edit
-// carries a single value for all files, so this collapses what was a write
-// transaction per file into one guarded UPDATE per chunk. Returns the number of
-// live files whose recording was addressed (renditions sharing a recording each
-// count, matching the per-file history).
-func (db *DB) BulkSetGuestPlayable(ctx context.Context, hashes []string, guest bool) (int, error) {
-	return db.bulkSetRecordingColumn(ctx, hashes,
-		`UPDATE recordings SET guest_playable = ?, guest_playable_manual = 1 WHERE id IN `,
-		boolToInt(guest))
-}
-
-// BulkSetLicense sets (or clears, with "") the same license on the recording of
-// every live file in the hash set, in one chunked transaction — the bulk
-// counterpart to SetLicense.
-func (db *DB) BulkSetLicense(ctx context.Context, hashes []string, license string) (int, error) {
-	var lic sql.NullString
-	if license != "" {
-		lic = sql.NullString{String: license, Valid: true}
-	}
-	return db.bulkSetRecordingColumn(ctx, hashes,
-		`UPDATE recordings SET license = ? WHERE id IN `, lic)
-}
-
-// bulkSetRecordingColumn runs a single-value guarded UPDATE (prefix ending in
-// `id IN `) over the recordings of the live files in the hash set, in one
-// transaction, chunked to stay within SQLite's bound-parameter limit. lead are
-// the SET-clause args that precede the hash placeholders. Returns the number of
-// matched live files (not recordings), so the reported count matches the
-// selection the caller acted on.
-func (db *DB) bulkSetRecordingColumn(ctx context.Context, hashes []string, updatePrefix string, lead ...any) (int, error) {
-	if len(hashes) == 0 {
-		return 0, nil
-	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	total := 0
-	const chunk = 400
-	for i := 0; i < len(hashes); i += chunk {
-		end := min(i+chunk, len(hashes))
-		batch := hashes[i:end]
-		placeholders := make([]string, len(batch))
-		hashArgs := make([]any, 0, len(batch))
-		for j, h := range batch {
-			placeholders[j] = "?"
-			hashArgs = append(hashArgs, h)
-		}
-		in := `(` + liveFileRecordingSubquery + ` AND f.hash IN (` + strings.Join(placeholders, ",") + `))`
-
-		// Count the matched files first: the UPDATE's RowsAffected counts
-		// recordings, which undercounts when two selected renditions share one.
-		var matched int
-		if err := tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM files f
-			  WHERE EXISTS (SELECT 1 FROM tagsets t WHERE t.recording_id = f.recording_id AND t.deleted_at IS NULL)
-			    AND f.hash IN (`+strings.Join(placeholders, ",")+`)`, hashArgs...).Scan(&matched); err != nil {
-			return 0, fmt.Errorf("bulk set recording column: count: %w", err)
-		}
-
-		args := append([]any{}, lead...)
-		args = append(args, hashArgs...)
-		if _, err := tx.ExecContext(ctx, updatePrefix+in, args...); err != nil {
-			return 0, fmt.Errorf("bulk set recording column: %w", err)
-		}
-		total += matched
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit: %w", err)
-	}
-	return total, nil
-}
-
 // BulkSetGuestPlayableByTagsets / BulkSetLicenseByTagsets are the bulk access
 // setters addressed by **tagset id** — the Full Library · All Appearances
 // lens's bulk edit. Access lives on the recording, so each live approved
@@ -202,7 +126,7 @@ func (db *DB) BulkSetLicenseByTagsets(ctx context.Context, tagsetIDs []int64, li
 		`UPDATE recordings SET license = ? WHERE id IN `, lic)
 }
 
-// bulkSetRecordingColumnByTagsets is bulkSetRecordingColumn keyed by tagset id,
+// bulkSetRecordingColumnByTagsets runs a single-value guarded UPDATE keyed by tagset id,
 // guarded to live approved appearances (a trashed or staged row never edits
 // access from this path).
 func (db *DB) bulkSetRecordingColumnByTagsets(ctx context.Context, tagsetIDs []int64, updatePrefix string, lead ...any) (int, error) {

@@ -1,7 +1,7 @@
 # The GC deletion model — unlink, derive, reap, purge
 
-Status: **agreed design** (owner decision 2026-07-15); phases P1 (reaper) and
-P2 (unlink-only write paths) implemented, P3–P5 pending.
+Status: **agreed design** (owner decision 2026-07-15); phases P1 (reaper),
+P2 (unlink-only write paths) and P3 (demotions) implemented, P4–P5 pending.
 Once implemented, this document is the durable reference for the content
 lifecycle; it supersedes the *cascade* deletion philosophy described in
 [soft-delete.md](soft-delete.md) and the invariants section of
@@ -302,12 +302,29 @@ Each phase leaves the system running; tests accompany each phase.
   entries survive blobless in Trash › Appearances — restorable, re-stageable
   when the bytes return), and a move/dedup that empties a recording trashes
   stranded appearances instead of cascade-eating them.
-- **P3 — demotions.** Remove `is_primary` enforcement/repair (keep the column
-  and the existing `reprTagset` ordering; "Set primary" stays as the
-  override's UI). Re-address the remaining hash-addressed
-  soft-delete/restore ops (`SoftDeleteFileByHash` family) by
-  tagset/recording; `origin_file_id` becomes submission-time-only per the
-  rule above.
+- **P3 — demotions (DONE 2026-07-15).** `is_primary` is never auto-set or
+  auto-demoted anymore: `InsertFile` seeds 0, the split/force-new/regroup
+  promote+demote sweeps are gone, and the reported "primary" of a recording
+  (`RecordingDetail`, recording cards) is *derived* — live first, then the
+  manual flag, then oldest — with `SetPrimaryTagset` as the only writer.
+  The hash-addressed soft-delete/restore machinery was deleted outright
+  (`SoftDeleteFileByHash`, `Bulk{SoftDelete,Restore,HardDeleteTrashed}ByHashes`,
+  `HardDeleteTrashedFileByHash`, the files-rooted Trash listing family,
+  `BulkUpdateFileMetadata`, hash-addressed bulk access setters, plus
+  `DELETE /api/admin/files/{hash}` and `POST /api/admin/files/bulk`):
+  every surface now speaks tagset/rendition ids — the entity view's deletes
+  go through `POST /api/admin/appearances/bulk` (whose filter gained
+  `artist_id`/`album_id` pins), the duplicates page's per-rendition delete
+  through `POST /api/admin/renditions/{id}/remove`. The two genuinely
+  byte-rooted entry points (re-upload restore, uploader restore) stay
+  hash-keyed at the boundary but resolve their rows via the recording edge:
+  `RestoreFileByHash` restores every trashed appearance of the blob's
+  recording *and* revives the rendition, `StageRestoredFile` re-stages by
+  recording, `GetFileByHash` derives lifecycle from the representative
+  appearance (either trash mark counts), and prune's `ListFileRefs` scans
+  live renditions by `files.deleted_at` — no delete/restore logic reads
+  `origin_file_id` any longer (it remains submission pairing + inert audit
+  data, per the rule above).
 - **P4 — UI.** Retire the Files lens from Full Library curation; keep
   Trash › Files (the quarantine window) and a maintenance surface
   (verification, prune, dedup stats, rare per-rendition removal).

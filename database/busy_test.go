@@ -197,8 +197,8 @@ func TestMergeRecordings_ConcurrentWritesNoBusy(t *testing.T) {
 }
 
 // TestBulkHardDeleteTagsets_ConcurrentWritesNoBusy is the P2 counterpart: the
-// tagset-first cascade (BulkHardDeleteTrashedByHashes) is a longer read-then-write
-// transaction (resolve trashed tagsets → delete → count remaining → GC files),
+// tagset-first purge (BulkHardDeleteTagsets) is a longer read-then-write
+// transaction (filter trashed ids → delete → reap touched recordings),
 // so it is the most exposed to the WAL upgrade deadlock. It must take the write
 // lock at BEGIN (_txlock=immediate) so concurrent settings writers wait rather
 // than fail. Each trashed appearance is deleted in its own bulk call while four
@@ -218,22 +218,24 @@ func TestBulkHardDeleteTagsets_ConcurrentWritesNoBusy(t *testing.T) {
 		h := fmt.Sprintf("%064x", i+1)
 		hashes[i] = h
 		seedFile(t, db, h, fmt.Sprintf("f%d.mp3", i))
-		if _, _, err := db.SoftDeleteFileByHash(ctx, h); err != nil {
-			t.Fatalf("trash %s: %v", h, err)
-		}
+		trashAppearancesByHash(t, db, h)
+	}
+	tagsetIDs := trashedTagsetIDsByHash(t, db, hashes...)
+	if len(tagsetIDs) != n {
+		t.Fatalf("trashed tagsets = %d, want %d", len(tagsetIDs), n)
 	}
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, 5*n)
 
-	for _, h := range hashes {
+	for _, id := range tagsetIDs {
 		wg.Add(1)
-		go func(h string) {
+		go func(id int64) {
 			defer wg.Done()
-			if _, _, err := db.BulkHardDeleteTrashedByHashes(ctx, []string{h}); err != nil {
+			if _, _, err := db.BulkHardDeleteTagsets(ctx, []int64{id}); err != nil {
 				errCh <- fmt.Errorf("bulk hard delete: %w", err)
 			}
-		}(h)
+		}(id)
 	}
 	for w := 0; w < 4; w++ {
 		wg.Add(1)

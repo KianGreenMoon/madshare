@@ -167,9 +167,31 @@ func TestFilesSort_Grouped(t *testing.T) {
 	}
 }
 
-// TestBulkTrash covers POST /api/admin/files/bulk: explicit hashes, filter mode
-// ("select all matching"), the empty-filter guardrail, and bad requests.
-func TestBulkTrash(t *testing.T) {
+// appearanceIDsByTitle resolves tagset ids from the All Appearances lens,
+// keyed by title — the id-addressed dialect the bulk endpoint takes.
+func appearanceIDsByTitle(t *testing.T, client *http.Client, base string) map[string]int64 {
+	t.Helper()
+	var e struct {
+		Items []map[string]any `json:"items"`
+	}
+	if code := doJSON(t, client, http.MethodGet, base+"/api/admin/appearances?limit=200", nil, &e); code != http.StatusOK {
+		t.Fatalf("GET appearances = %d", code)
+	}
+	out := make(map[string]int64, len(e.Items))
+	for _, it := range e.Items {
+		title, _ := it["title"].(string)
+		if id, ok := it["tagset_id"].(float64); ok {
+			out[title] = int64(id)
+		}
+	}
+	return out
+}
+
+// TestAppearancesBulkTrash covers POST /api/admin/appearances/bulk action
+// "trash": explicit tagset ids, filter mode ("select all matching"), the
+// entity-pinned filter (no "all" needed), the empty-filter guardrail, and bad
+// requests.
+func TestAppearancesBulkTrash(t *testing.T) {
 	srv, db := newAuthTestServer(t)
 	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
 
@@ -191,18 +213,30 @@ func TestBulkTrash(t *testing.T) {
 			OK       bool `json:"ok"`
 			Affected int  `json:"affected"`
 		}
-		code := doJSON(t, admin, http.MethodPost, srv.URL+"/api/admin/files/bulk", body, &out)
+		code := doJSON(t, admin, http.MethodPost, srv.URL+"/api/admin/appearances/bulk", body, &out)
 		return code, out.Affected
 	}
+	ids := appearanceIDsByTitle(t, admin, srv.URL)
 
-	// Explicit hashes: trash the two Beta files.
-	if code, n := bulk(map[string]any{"action": "trash", "hashes": []string{
-		fmt.Sprintf("%064d", 4), fmt.Sprintf("%064d", 5),
-	}}); code != http.StatusOK || n != 2 {
-		t.Fatalf("bulk hashes = %d affected=%d, want 200/2", code, n)
+	// Explicit ids: trash one Beta appearance.
+	if code, n := bulk(map[string]any{"action": "trash", "tagset_ids": []int64{ids["B4"]}}); code != http.StatusOK || n != 1 {
+		t.Fatalf("bulk ids = %d affected=%d, want 200/1", code, n)
+	}
+	if got := total(); got != 4 {
+		t.Errorf("total after id trash = %d, want 4", got)
+	}
+
+	// Entity-pinned filter: trash the rest of Beta without q and without "all"
+	// (the entity view's whole-artist delete).
+	var artistID int64
+	if err := db.QueryRow(`SELECT id FROM artists WHERE name = 'Beta'`).Scan(&artistID); err != nil {
+		t.Fatalf("artist id: %v", err)
+	}
+	if code, n := bulk(map[string]any{"action": "trash", "filter": map[string]any{"artist_id": artistID}}); code != http.StatusOK || n != 1 {
+		t.Fatalf("bulk artist filter = %d affected=%d, want 200/1", code, n)
 	}
 	if got := total(); got != 3 {
-		t.Errorf("total after hash trash = %d, want 3", got)
+		t.Errorf("total after artist trash = %d, want 3", got)
 	}
 
 	// Filter mode: trash everything matching q=Alpha.
@@ -217,20 +251,21 @@ func TestBulkTrash(t *testing.T) {
 	if code, _ := bulk(map[string]any{"action": "trash", "filter": map[string]any{}}); code != http.StatusBadRequest {
 		t.Errorf("empty filter without all = %d, want 400", code)
 	}
-	// Both hashes and filter is ambiguous → 400.
-	if code, _ := bulk(map[string]any{"action": "trash", "hashes": []string{fmt.Sprintf("%064d", 1)}, "filter": map[string]any{"q": "x"}}); code != http.StatusBadRequest {
-		t.Errorf("hashes+filter = %d, want 400", code)
+	// Both ids and filter is ambiguous → 400.
+	if code, _ := bulk(map[string]any{"action": "trash", "tagset_ids": []int64{ids["A1"]}, "filter": map[string]any{"q": "x"}}); code != http.StatusBadRequest {
+		t.Errorf("ids+filter = %d, want 400", code)
 	}
 	// Unknown action → 400.
-	if code, _ := bulk(map[string]any{"action": "explode", "hashes": []string{fmt.Sprintf("%064d", 1)}}); code != http.StatusBadRequest {
+	if code, _ := bulk(map[string]any{"action": "explode", "tagset_ids": []int64{ids["A1"]}}); code != http.StatusBadRequest {
 		t.Errorf("unknown action = %d, want 400", code)
 	}
 }
 
-// TestBulkEdit covers POST /api/admin/files/bulk action "edit": tag edits over
-// explicit hashes and over a filter, an access (license) edit, the
-// nothing-to-update guardrail, and the per-action permission gate.
-func TestBulkEdit(t *testing.T) {
+// TestAppearancesBulkEdit covers POST /api/admin/appearances/bulk action
+// "edit": tag edits over explicit tagset ids and over a filter, an access
+// (license) edit, the nothing-to-update guardrail, and the per-action
+// permission gate.
+func TestAppearancesBulkEdit(t *testing.T) {
 	srv, db := newAuthTestServer(t)
 	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
 
@@ -245,7 +280,7 @@ func TestBulkEdit(t *testing.T) {
 			Affected int              `json:"affected"`
 			Failed   []map[string]any `json:"failed"`
 		}
-		code := doJSON(t, client, http.MethodPost, srv.URL+"/api/admin/files/bulk", body, &out)
+		code := doJSON(t, client, http.MethodPost, srv.URL+"/api/admin/appearances/bulk", body, &out)
 		return code, out.Affected
 	}
 	totalQ := func(q string) int {
@@ -253,6 +288,7 @@ func TestBulkEdit(t *testing.T) {
 		doJSON(t, admin, http.MethodGet, srv.URL+"/api/files?limit=0&q="+q, nil, &e)
 		return e.Total
 	}
+	ids := appearanceIDsByTitle(t, admin, srv.URL)
 
 	// Filter-mode tag edit: re-tag the whole "Old" set to "New".
 	if code, n := bulk(admin, map[string]any{
@@ -264,12 +300,12 @@ func TestBulkEdit(t *testing.T) {
 		t.Errorf("after re-tag: New=%d Old=%d, want 3/0", totalQ("New"), totalQ("Old"))
 	}
 
-	// Explicit-hashes edit with an access field (license).
+	// Explicit-ids edit with an access field (license).
 	if code, n := bulk(admin, map[string]any{
-		"action": "edit", "hashes": []string{fmt.Sprintf("%064d", 1), fmt.Sprintf("%064d", 2)},
+		"action": "edit", "tagset_ids": []int64{ids["T1"], ids["T2"]},
 		"patch": map[string]any{"license": "CC0-1.0"},
 	}); code != http.StatusOK || n != 2 {
-		t.Fatalf("hash edit = %d affected=%d, want 200/2", code, n)
+		t.Fatalf("id edit = %d affected=%d, want 200/2", code, n)
 	}
 	var e fileEnv
 	doJSON(t, admin, http.MethodGet, srv.URL+"/api/files?limit=50", nil, &e)
@@ -284,14 +320,14 @@ func TestBulkEdit(t *testing.T) {
 	}
 
 	// Empty patch → nothing to update → 400.
-	if code, _ := bulk(admin, map[string]any{"action": "edit", "hashes": []string{fmt.Sprintf("%064d", 1)}, "patch": map[string]any{}}); code != http.StatusBadRequest {
+	if code, _ := bulk(admin, map[string]any{"action": "edit", "tagset_ids": []int64{ids["T1"]}, "patch": map[string]any{}}); code != http.StatusBadRequest {
 		t.Errorf("empty patch = %d, want 400", code)
 	}
 
 	// Permission: a listener (no metadata.edit / file.delete) is refused.
 	makeUser(t, db, "lis", "listener-pass-1", auth.RoleListener)
 	lis := clientFor(t, srv.URL, "lis", "listener-pass-1")
-	if code, _ := bulk(lis, map[string]any{"action": "edit", "hashes": []string{fmt.Sprintf("%064d", 1)}, "patch": map[string]any{"artist": "X"}}); code != http.StatusForbidden {
+	if code, _ := bulk(lis, map[string]any{"action": "edit", "tagset_ids": []int64{ids["T1"]}, "patch": map[string]any{"artist": "X"}}); code != http.StatusForbidden {
 		t.Errorf("listener edit = %d, want 403", code)
 	}
 }

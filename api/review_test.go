@@ -47,6 +47,40 @@ func getStaged[T any](t *testing.T, c *http.Client, url string) []T {
 	return env.Items
 }
 
+// trashLiveAppearance trashes the live appearance offered from `hash` through
+// the tagset-addressed bulk endpoint — the GC-model replacement for the
+// removed DELETE /api/admin/files/{hash}. Pre-approval ids come from the
+// owner's My-uploads listing, approved ones from the All Appearances lens.
+func trashLiveAppearance(t *testing.T, admin *http.Client, base string, tagsetID int64) {
+	t.Helper()
+	if code := doJSON(t, admin, http.MethodPost, base+"/api/admin/appearances/bulk",
+		map[string]any{"action": "trash", "tagset_ids": []int64{tagsetID}}, nil); code != http.StatusOK {
+		t.Fatalf("trash appearance %d = %d, want 200", tagsetID, code)
+	}
+}
+
+// liveAppearanceID resolves an approved blob's appearance id from the All
+// Appearances lens (admin-visible, keyed tagset_id).
+func liveAppearanceID(t *testing.T, admin *http.Client, base, hash string) int64 {
+	t.Helper()
+	var env struct {
+		Items []struct {
+			TagsetID int64  `json:"tagset_id"`
+			Hash     string `json:"hash"`
+		} `json:"items"`
+	}
+	if code := doJSON(t, admin, http.MethodGet, base+"/api/admin/appearances?limit=1000", nil, &env); code != http.StatusOK {
+		t.Fatalf("appearances for id lookup = %d, want 200", code)
+	}
+	for _, it := range env.Items {
+		if it.Hash == hash {
+			return it.TagsetID
+		}
+	}
+	t.Fatalf("no live appearance for hash %s", hash)
+	return 0
+}
+
 // trashedAppearanceID finds the trashed appearance offered from `hash` in the
 // Trash Appearances lens — the lens is where an appearance's id is published.
 func trashedAppearanceID(t *testing.T, c *http.Client, base, hash string) int64 {
@@ -274,10 +308,9 @@ func TestReview_DiscardToTrashAndBack(t *testing.T) {
 	doJSON(t, up, http.MethodPost, srv.URL+"/api/my/uploads/submit",
 		map[string]any{"tagset_ids": []int64{stagedTagsetID(t, up, srv.URL, hash)}}, nil)
 
-	// Discard = the existing soft delete; the file leaves the queue.
-	if code := doJSON(t, admin, http.MethodDelete, srv.URL+"/api/admin/files/"+hash, nil, nil); code != http.StatusOK {
-		t.Fatalf("discard (soft delete) = %d, want 200", code)
-	}
+	// Discard = the existing soft delete (tagset-addressed); the file leaves
+	// the queue.
+	trashLiveAppearance(t, admin, srv.URL, stagedTagsetID(t, up, srv.URL, hash))
 	queue := getStaged[map[string]any](t, admin, srv.URL+"/api/admin/moderation")
 	if len(queue) != 0 {
 		t.Errorf("queue after discard = %d, want 0", len(queue))
@@ -325,9 +358,7 @@ func TestReview_ReuploadOfTrashedFileRestages(t *testing.T) {
 
 	hash, _ := uploadStaged(t, up, srv.URL, "song.mp3")
 	approveViaQueue(t, up, admin, srv.URL, hash)
-	if code := doJSON(t, admin, http.MethodDelete, srv.URL+"/api/admin/files/"+hash, nil, nil); code != http.StatusOK {
-		t.Fatalf("trash = %d, want 200", code)
-	}
+	trashLiveAppearance(t, admin, srv.URL, liveAppearanceID(t, admin, srv.URL, hash))
 
 	// Re-upload by another uploader: restored, but staged — not in the library.
 	resp := uploadViaClient(t, up2, srv.URL, "song-again.mp3")
@@ -369,9 +400,7 @@ func TestReview_UploaderRestoreRestages(t *testing.T) {
 
 	hash, _ := uploadStaged(t, up, srv.URL, "song.mp3")
 	approveViaQueue(t, up, admin, srv.URL, hash)
-	if code := doJSON(t, admin, http.MethodDelete, srv.URL+"/api/admin/files/"+hash, nil, nil); code != http.StatusOK {
-		t.Fatalf("trash = %d, want 200", code)
-	}
+	trashLiveAppearance(t, admin, srv.URL, liveAppearanceID(t, admin, srv.URL, hash))
 	if err := db.SetTrashRestorePolicy(t.Context(), database.TrashUploaderRestore); err != nil {
 		t.Fatalf("set policy: %v", err)
 	}
@@ -461,9 +490,7 @@ func TestReview_ReuploadOfTrashedPendingFileKeepsState(t *testing.T) {
 	doJSON(t, up, http.MethodPost, srv.URL+"/api/my/uploads/submit",
 		map[string]any{"tagset_ids": []int64{stagedTagsetID(t, up, srv.URL, hash)}}, nil)
 	// Discard the submission, then re-upload the bytes.
-	if code := doJSON(t, admin, http.MethodDelete, srv.URL+"/api/admin/files/"+hash, nil, nil); code != http.StatusOK {
-		t.Fatalf("discard = %d, want 200", code)
-	}
+	trashLiveAppearance(t, admin, srv.URL, stagedTagsetID(t, up, srv.URL, hash))
 	uploadViaClient(t, up, srv.URL, "song.mp3").Body.Close()
 
 	queue := getStaged[queueRow](t, admin, srv.URL+"/api/admin/moderation")

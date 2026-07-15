@@ -128,8 +128,10 @@ func (h *handler) appearancesBulk(w http.ResponseWriter, r *http.Request) {
 		Action    string  `json:"action"`
 		TagsetIDs []int64 `json:"tagset_ids"`
 		Filter    *struct {
-			Q     string `json:"q"`
-			Field string `json:"field"`
+			Q        string `json:"q"`
+			Field    string `json:"field"`
+			ArtistID *int64 `json:"artist_id"`
+			AlbumID  *int64 `json:"album_id"`
 		} `json:"filter"`
 		All   bool           `json:"all"`
 		Patch *bulkEditPatch `json:"patch"`
@@ -174,12 +176,17 @@ func (h *handler) appearancesBulk(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "query too long"})
 			return
 		}
-		if q == "" && !req.All {
+		// An artist/album pin scopes the set (the entity view's whole-entity
+		// delete), so it needs no "all" guard; a truly empty filter does.
+		if q == "" && req.Filter.ArtistID == nil && req.Filter.AlbumID == nil && !req.All {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": `refusing to act on the whole library without "all": true`})
 			return
 		}
 		var err error
-		tagsetIDs, err = h.repo.AppearanceIDsByFilter(r.Context(), database.FileFilter{Q: q, QField: normalizeQField(req.Filter.Field)})
+		tagsetIDs, err = h.repo.AppearanceIDsByFilter(r.Context(), database.FileFilter{
+			Q: q, QField: normalizeQField(req.Filter.Field),
+			ArtistID: req.Filter.ArtistID, AlbumID: req.Filter.AlbumID,
+		})
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
 			return
@@ -202,11 +209,11 @@ func (h *handler) appearancesBulk(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
 }
 
-// bulkEditLiveAppearances is bulkEditFiles addressed by tagset id. Tags go
-// through the batched tagset patch; access (one value for the whole set)
+// bulkEditLiveAppearances applies one bulk tag/access patch by tagset id. Tags
+// go through the batched tagset patch; access (one value for the whole set)
 // collapses to a guarded UPDATE per column on the recordings behind the set —
 // license before guest, so an explicit guest wins over any license
-// auto-derive, mirroring the hash-addressed path.
+// auto-derive.
 func (h *handler) bulkEditLiveAppearances(w http.ResponseWriter, r *http.Request, tagsetIDs []int64, patch *bulkEditPatch) {
 	tags := patch != nil && patch.hasTags()
 	access := patch.hasAccess()

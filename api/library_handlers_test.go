@@ -683,9 +683,7 @@ func TestCheckFile_Trashed(t *testing.T) {
 	h, db, _ := newTestHandler(t)
 	hash := strings.Repeat("c", 64)
 	seedFileHash(t, db, hash)
-	if _, _, err := db.SoftDeleteFileByHash(context.Background(), hash); err != nil {
-		t.Fatalf("soft delete: %v", err)
-	}
+	trashAppearancesOf(t, db, hash)
 	if code, st := checkStatus(t, h, hash); code != http.StatusOK || st != "trashed" {
 		t.Fatalf("got (%d, %q), want (200, trashed)", code, st)
 	}
@@ -713,9 +711,7 @@ func TestRestoreForUploader_PolicyGate(t *testing.T) {
 	ctx := context.Background()
 	hash := strings.Repeat("d", 64)
 	seedFileHash(t, db, hash)
-	if _, _, err := db.SoftDeleteFileByHash(ctx, hash); err != nil {
-		t.Fatalf("soft delete: %v", err)
-	}
+	trashAppearancesOf(t, db, hash)
 
 	// Default policy (reupload_restores) → uploader restore is forbidden.
 	rr := httptest.NewRecorder()

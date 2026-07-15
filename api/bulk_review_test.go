@@ -201,9 +201,7 @@ func TestTrashBulk_RestoreDeleteByFilter(t *testing.T) {
 	approveViaQueue(t, up, admin, srv.URL, h1)
 	approveViaQueue(t, up, admin, srv.URL, h2)
 	for _, h := range []string{h1, h2} {
-		if code := doJSON(t, admin, http.MethodDelete, srv.URL+"/api/admin/files/"+h, nil, nil); code != http.StatusOK {
-			t.Fatalf("soft-delete %s = %d, want 200", h, code)
-		}
+		trashLiveAppearance(t, admin, srv.URL, liveAppearanceID(t, admin, srv.URL, h))
 	}
 	if env := getEnvelope(t, admin, srv.URL+"/api/admin/trash"); env.Total != 2 {
 		t.Fatalf("trash before restore = %d, want 2", env.Total)
@@ -230,7 +228,7 @@ func TestTrashBulk_RestoreDeleteByFilter(t *testing.T) {
 
 	// Re-trash, then permanently delete everything matching.
 	for _, h := range []string{h1, h2} {
-		doJSON(t, admin, http.MethodDelete, srv.URL+"/api/admin/files/"+h, nil, nil)
+		trashLiveAppearance(t, admin, srv.URL, liveAppearanceID(t, admin, srv.URL, h))
 	}
 	res.Affected = 0
 	doJSON(t, admin, http.MethodPost, srv.URL+"/api/admin/trash/bulk",

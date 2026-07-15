@@ -239,9 +239,7 @@ func TestFilesNeedingAnalysis(t *testing.T) {
 	db.InsertAudioFingerprint(ctx, id2, media.Fingerprint{Algo: "chromaprint", Raw: []uint32{1}}, 2000)
 	// File 3: trashed → excluded even though unanalyzed.
 	id3, hash3 := insertAnalysisFile(t, db, "b3")
-	if _, _, err := db.SoftDeleteFileByHash(ctx, hash3); err != nil {
-		t.Fatalf("soft delete: %v", err)
-	}
+	trashAppearancesByHash(t, db, hash3)
 
 	ids, err := db.FilesNeedingAnalysis(ctx)
 	if err != nil {

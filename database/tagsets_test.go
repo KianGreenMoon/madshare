@@ -38,8 +38,8 @@ func TestInsertFile_CreatesRecordingAndTagset(t *testing.T) {
 		Scan(&title, &state, &isPrimary, &recID, &artistID, &albumID); err != nil {
 		t.Fatalf("read tagset: %v", err)
 	}
-	if title != "bare song" || state != ReviewDraft || isPrimary != 1 || recID != f.RecordingID {
-		t.Errorf("tagset = (%q, %s, primary %d, rec %d), want (bare song, draft, 1, %d)",
+	if title != "bare song" || state != ReviewDraft || isPrimary != 0 || recID != f.RecordingID {
+		t.Errorf("tagset = (%q, %s, primary %d, rec %d), want (bare song, draft, 0, %d) — is_primary is a manual preference, never auto-set",
 			title, state, isPrimary, recID, f.RecordingID)
 	}
 	// The null appearance resolves to the reserved buckets, and is kept.
@@ -69,9 +69,7 @@ func TestHardDelete_CascadesSingletonRecording(t *testing.T) {
 	}
 
 	// Trash first (permanent delete requires it), then verify nothing was lost.
-	if _, found, err := db.SoftDeleteFileByHash(ctx, f.Hash); err != nil || !found {
-		t.Fatalf("soft delete: found=%v err=%v", found, err)
-	}
+	trashAppearancesByHash(t, db, f.Hash)
 	var recCount, tagCount int
 	if err := db.QueryRow(`SELECT
 		(SELECT COUNT(*) FROM recordings WHERE id = ?),
@@ -83,8 +81,12 @@ func TestHardDelete_CascadesSingletonRecording(t *testing.T) {
 		t.Fatalf("after trash: recording=%d tagset=%d, want 1/1 (soft delete never cascades)", recCount, tagCount)
 	}
 
-	if _, _, found, err := db.HardDeleteTrashedFileByHash(ctx, f.Hash); err != nil || !found {
-		t.Fatalf("hard delete: found=%v err=%v", found, err)
+	ids := trashedTagsetIDsByHash(t, db, f.Hash)
+	if len(ids) != 1 {
+		t.Fatalf("trashed tagsets = %d, want 1", len(ids))
+	}
+	if out, err := db.HardDeleteTrashedTagset(ctx, ids[0]); err != nil || !out.Found || !out.Trashed {
+		t.Fatalf("hard delete: out=%+v err=%v", out, err)
 	}
 	if err := db.QueryRow(`SELECT
 		(SELECT COUNT(*) FROM recordings WHERE id = ?),

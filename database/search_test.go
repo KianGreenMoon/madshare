@@ -244,9 +244,7 @@ func TestSearch_SoftDeletedFileExcluded(t *testing.T) {
 	h := hash64("del1")
 	insertSearchFile(t, db, h, "Deleted Track", "Ghost Artist", "Ghost Album", "")
 
-	if _, _, err := db.SoftDeleteFileByHash(ctx, h); err != nil {
-		t.Fatalf("SoftDeleteFileByHash: %v", err)
-	}
+	trashAppearancesByHash(t, db, h)
 
 	res, err := db.Search(ctx, "Deleted")
 	if err != nil {

@@ -77,16 +77,6 @@ func (db *DB) ResolveRecording(ctx context.Context, fileID int64) (int64, error)
 	); err != nil {
 		return 0, fmt.Errorf("assign recording: %w", err)
 	}
-	// The target keeps its primary appearance; a moving tagset only stays
-	// primary when the target has none yet.
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE tagsets SET is_primary = 0
-		  WHERE origin_file_id = ?
-		    AND EXISTS (SELECT 1 FROM tagsets p WHERE p.recording_id = ? AND p.is_primary = 1)`,
-		fileID, bestRec,
-	); err != nil {
-		return 0, fmt.Errorf("resolve recording: demote primary: %w", err)
-	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE tagsets SET recording_id = ? WHERE origin_file_id = ?`, bestRec, fileID,
 	); err != nil {
@@ -350,21 +340,15 @@ func (db *DB) SplitRendition(ctx context.Context, fileID int64) (newRecordingID 
 		return 0, false, fmt.Errorf("split rendition: reassign: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE tagsets SET recording_id=?, is_primary=1 WHERE origin_file_id=?`,
+		`UPDATE tagsets SET recording_id=? WHERE origin_file_id=?`,
 		newRecordingID, fileID,
 	); err != nil {
 		return 0, false, fmt.Errorf("split rendition: move tagsets: %w", err)
 	}
-	// Multiple moved tagsets can't all be primary; keep only the oldest.
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE tagsets SET is_primary=0
-		  WHERE recording_id=? AND id <> (SELECT MIN(id) FROM tagsets WHERE recording_id=?)`,
-		newRecordingID, newRecordingID,
-	); err != nil {
-		return 0, false, fmt.Errorf("split rendition: primary: %w", err)
-	}
 	// Tagset-less split (the file carried no appearance of its own): copy the
-	// source recording's primary so the new recording is browsable, not invalid.
+	// source recording's representative appearance (derived: live first, then
+	// the manual is_primary override, then oldest — GC model P3) so the new
+	// recording is browsable.
 	var newTagsetCount int
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM tagsets WHERE recording_id=?`, newRecordingID,
@@ -378,8 +362,9 @@ func (db *DB) SplitRendition(ctx context.Context, fileID int64) (newRecordingID 
 				artist_id, album_artist_id, album_id, review_state, created_by, origin_file_id, is_primary, created_at)
 			SELECT ?, title, artist, album_artist, album, genre, year,
 				track_number, track_total, disc_number, composer, comment,
-				artist_id, album_artist_id, album_id, review_state, created_by, ?, 1, ?
-			  FROM tagsets WHERE recording_id=? AND is_primary=1 LIMIT 1`,
+				artist_id, album_artist_id, album_id, review_state, created_by, ?, 0, ?
+			  FROM tagsets WHERE recording_id=?
+			  ORDER BY (deleted_at IS NULL) DESC, is_primary DESC, id ASC LIMIT 1`,
 			newRecordingID, fileID, time.Now().Unix(), oldRecordingID,
 		); err != nil {
 			return 0, false, fmt.Errorf("split rendition: copy primary: %w", err)

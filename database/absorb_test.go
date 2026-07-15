@@ -198,11 +198,11 @@ func TestBulkAbsorbKeepBest(t *testing.T) {
 	assertInvariants(t, db)
 }
 
-// TestSplitRendition_TagsetLessCopiesPrimary: splitting a live rendition that
+// TestSplitRendition_TagsetLessCopiesRepresentative: splitting a live rendition that
 // carries no appearance of its own (e.g. a non-last tagset was hard-deleted in
 // P2) gives the new recording a copy of the source's primary so it stays
 // browsable, instead of leaving an invalid tagset-less recording.
-func TestSplitRendition_TagsetLessCopiesPrimary(t *testing.T) {
+func TestSplitRendition_TagsetLessCopiesRepresentative(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
@@ -222,8 +222,9 @@ func TestSplitRendition_TagsetLessCopiesPrimary(t *testing.T) {
 	if newRec == rec {
 		t.Fatal("split did not create a new recording")
 	}
-	// The new recording has exactly one primary appearance, copied from the
-	// source's primary (title "one.flac"), origin_file_id = the split file.
+	// The new recording has exactly one appearance, copied from the source's
+	// derived representative (title "one.flac"), origin_file_id = the split
+	// file. The is_primary flag stays 0 — it is a manual preference (GC P3).
 	var (
 		cnt          int
 		title        string
@@ -241,8 +242,8 @@ func TestSplitRendition_TagsetLessCopiesPrimary(t *testing.T) {
 	).Scan(&title, &originFileID, &isPrimary); err != nil {
 		t.Fatalf("read copied tagset: %v", err)
 	}
-	if title != "one.flac" || originFileID != f2.ID || isPrimary != 1 {
-		t.Errorf("copied tagset = (title %q, origin %d, primary %d), want (one.flac, %d, 1)",
+	if title != "one.flac" || originFileID != f2.ID || isPrimary != 0 {
+		t.Errorf("copied tagset = (title %q, origin %d, primary %d), want (one.flac, %d, 0)",
 			title, originFileID, isPrimary, f2.ID)
 	}
 	// The new recording is browsable (its copied appearance plays f2).

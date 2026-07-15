@@ -117,15 +117,17 @@ func TestHardDeleteTagset_NonLastKeepsBlob(t *testing.T) {
 	rec := groupIntoRecording(t, db, f1.ID, f2.ID)
 
 	// Trash f2's appearance, then permanently delete it.
-	if _, _, err := db.SoftDeleteFileByHash(ctx, f2.Hash); err != nil {
-		t.Fatalf("soft delete f2: %v", err)
+	trashAppearancesByHash(t, db, f2.Hash)
+	ids := trashedTagsetIDsByHash(t, db, f2.Hash)
+	if len(ids) != 1 {
+		t.Fatalf("trashed tagsets of f2 = %d, want 1", len(ids))
 	}
-	_, blobs, found, err := db.HardDeleteTrashedFileByHash(ctx, f2.Hash)
-	if err != nil || !found {
-		t.Fatalf("hard delete f2 tagset: found=%v err=%v", found, err)
+	out, err := db.HardDeleteTrashedTagset(ctx, ids[0])
+	if err != nil || !out.Found || !out.Trashed {
+		t.Fatalf("hard delete f2 tagset: out=%+v err=%v", out, err)
 	}
-	if len(blobs) != 0 {
-		t.Fatalf("non-last tagset delete reclaimed %d blobs, want 0 (files must survive)", len(blobs))
+	if len(out.Blobs) != 0 {
+		t.Fatalf("non-last tagset delete reclaimed %d blobs, want 0 (files must survive)", len(out.Blobs))
 	}
 	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, rec); n != 1 {
 		t.Errorf("recording gone after non-last tagset delete: count=%d", n)
@@ -153,11 +155,9 @@ func TestHardDeleteTagset_LastCascades(t *testing.T) {
 	rec := groupIntoRecording(t, db, f1.ID, f2.ID)
 
 	for _, h := range []string{f1.Hash, f2.Hash} {
-		if _, _, err := db.SoftDeleteFileByHash(ctx, h); err != nil {
-			t.Fatalf("soft delete %s: %v", h, err)
-		}
+		trashAppearancesByHash(t, db, h)
 	}
-	deleted, blobs, err := db.BulkHardDeleteTrashedByHashes(ctx, []string{f1.Hash, f2.Hash})
+	deleted, blobs, err := db.BulkHardDeleteTagsets(ctx, trashedTagsetIDsByHash(t, db, f1.Hash, f2.Hash))
 	if err != nil {
 		t.Fatalf("bulk hard delete: %v", err)
 	}
@@ -190,11 +190,9 @@ func TestBulkHardDeleteTagsets_MixedLastAndNonLast(t *testing.T) {
 	recB := groupIntoRecording(t, db, f1.ID, f2.ID) // f1+f2 share recB
 
 	for _, h := range []string{fA.Hash, f1.Hash} {
-		if _, _, err := db.SoftDeleteFileByHash(ctx, h); err != nil {
-			t.Fatalf("soft delete %s: %v", h, err)
-		}
+		trashAppearancesByHash(t, db, h)
 	}
-	deleted, blobs, err := db.BulkHardDeleteTrashedByHashes(ctx, []string{fA.Hash, f1.Hash})
+	deleted, blobs, err := db.BulkHardDeleteTagsets(ctx, trashedTagsetIDsByHash(t, db, fA.Hash, f1.Hash))
 	if err != nil {
 		t.Fatalf("bulk hard delete: %v", err)
 	}
@@ -230,9 +228,7 @@ func TestRestoreTagset_KeepsReviewState(t *testing.T) {
 		t.Fatalf("InsertFile: %v", err)
 	}
 
-	if _, _, err := db.SoftDeleteFileByHash(ctx, f.Hash); err != nil {
-		t.Fatalf("soft delete: %v", err)
-	}
+	trashAppearancesByHash(t, db, f.Hash)
 	state := func() string {
 		var s string
 		if err := db.QueryRow(`SELECT review_state FROM tagsets WHERE origin_file_id=?`, f.ID).Scan(&s); err != nil {

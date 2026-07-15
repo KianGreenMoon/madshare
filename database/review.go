@@ -503,7 +503,9 @@ func (db *DB) BulkTrashTagsets(ctx context.Context, tagsetIDs []int64) (int, err
 // its bytes. Ownership (the tagset's created_by, mirrored to files.uploaded_by)
 // moves to the restorer so the file lands in *their* "My uploads" tab. Tagsets
 // trashed while pending are left untouched (their state already re-enters the
-// queue) — hence the review_state guard. Returns whether a row was re-staged.
+// queue) — hence the review_state guard. The appearances are found via the
+// blob's recording, never origin_file_id (GC model P3). Returns whether a row
+// was re-staged.
 func (db *DB) StageRestoredFile(ctx context.Context, hash string, ownerID sql.NullInt64) (bool, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -515,7 +517,7 @@ func (db *DB) StageRestoredFile(ctx context.Context, hash string, ownerID sql.Nu
 		UPDATE tagsets
 		SET review_state = ?, review_note = NULL, submitted_at = NULL,
 		    created_by = COALESCE(?, created_by)
-		WHERE origin_file_id IN (SELECT id FROM files WHERE hash = ?)
+		WHERE recording_id = (SELECT recording_id FROM files WHERE hash = ?)
 		  AND deleted_at IS NULL AND review_state = ?`,
 		ReviewDraft, ownerID, hash, ReviewApproved)
 	if err != nil {

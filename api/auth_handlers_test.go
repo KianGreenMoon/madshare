@@ -209,7 +209,7 @@ func TestAuth_AdminGate(t *testing.T) {
 	srv, _ := newAuthTestServer(t)
 
 	// Anonymous delete -> 401 (gated).
-	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/files/deadbeef", nil)
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/tagsets/999999", nil)
 	resp, _ := http.DefaultClient.Do(req)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("anonymous admin delete = %d, want 401", resp.StatusCode)
@@ -220,7 +220,7 @@ func TestAuth_AdminGate(t *testing.T) {
 	jar, _ := cookiejar.New(nil)
 	client := &http.Client{Jar: jar}
 	login(t, client, srv.URL, "admin", testAdminPassword).Body.Close()
-	req2, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/files/deadbeef", nil)
+	req2, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/tagsets/999999", nil)
 	resp2, _ := client.Do(req2)
 	if resp2.StatusCode == http.StatusUnauthorized || resp2.StatusCode == http.StatusForbidden {
 		t.Errorf("admin delete (authed) = %d, want past the gate (e.g. 404)", resp2.StatusCode)

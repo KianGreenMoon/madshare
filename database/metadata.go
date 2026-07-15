@@ -80,45 +80,6 @@ func (db *DB) UpdateFileMetadata(ctx context.Context, hash string, p MetadataPat
 	return db.getMetadataByFileID(ctx, fileID)
 }
 
-// BulkUpdateFileMetadata applies the same patch to every hash, sharing a
-// transaction across a chunk of files instead of opening one (or three) per file
-// — the metadata write genuinely re-resolves each file's artist/album entities so
-// it can't collapse to a single UPDATE, but batching the transactions cuts the
-// write-lock-acquire count that made the per-file loop a SQLITE_BUSY source over
-// the "select all matching" scope. Returns the number of rows updated and the
-// hashes that matched no file (skipped, not fatal — mirrors the per-file
-// ErrFileNotFound the handler reported as a per-row failure). A patch-level error
-// (e.g. ErrInvalidMetadata, identical for every file) or a real storage error
-// aborts the current chunk and is returned.
-func (db *DB) BulkUpdateFileMetadata(ctx context.Context, hashes []string, p MetadataPatch) (affected int, notFound []string, err error) {
-	const chunk = 500 // bound how long one transaction holds the write lock
-	for i := 0; i < len(hashes); i += chunk {
-		end := i + chunk
-		if end > len(hashes) {
-			end = len(hashes)
-		}
-		tx, err := db.BeginTx(ctx, nil)
-		if err != nil {
-			return affected, notFound, fmt.Errorf("update metadata: begin: %w", err)
-		}
-		for _, hash := range hashes[i:end] {
-			if _, e := applyMetadataPatchTx(ctx, tx, hash, p); e != nil {
-				if errors.Is(e, ErrFileNotFound) {
-					notFound = append(notFound, hash)
-					continue
-				}
-				tx.Rollback()
-				return affected, notFound, e
-			}
-			affected++
-		}
-		if e := tx.Commit(); e != nil {
-			return affected, notFound, fmt.Errorf("update metadata: commit: %w", e)
-		}
-	}
-	return affected, notFound, nil
-}
-
 // applyMetadataPatchTx writes one file's patch within tx (no commit), returning
 // the file id. It resolves the file id first so an unknown hash is a clean
 // ErrFileNotFound even for an empty patch, then writes the supplied fields and —
@@ -353,7 +314,7 @@ func (db *DB) getMetadataByFileID(ctx context.Context, fileID int64) (*MediaMeta
 		FROM tagsets t
 		LEFT JOIN media_metadata mm ON mm.file_id = t.origin_file_id
 		WHERE t.origin_file_id = ?
-		ORDER BY t.is_primary DESC, t.id ASC
+		ORDER BY (t.deleted_at IS NULL) DESC, t.is_primary DESC, t.id ASC
 		LIMIT 1`, fileID,
 	).Scan(
 		&m.Title, &m.Artist, &m.Album, &m.AlbumArtist, &m.Genre, &m.Year,

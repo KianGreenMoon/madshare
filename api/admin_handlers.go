@@ -15,44 +15,12 @@ import (
 	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/prune"
-	"github.com/go-chi/chi/v5"
 )
 
 // adminHashPattern matches a lowercase SHA-256 hex digest. The handler
 // validates the {hash} path param before touching the DB or disk so a
 // malformed value returns a clean 400 instead of a storage-layer error.
 var adminHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
-
-// adminDeleteFile handles DELETE /api/admin/files/{hash}. It soft-deletes the
-// file (sets deleted_at, blob stays on disk). The file moves to the trash
-// bucket; use DELETE /api/admin/trash/{hash} for permanent removal.
-func (h *handler) adminDeleteFile(w http.ResponseWriter, r *http.Request) {
-	hash := chi.URLParam(r, "hash")
-	if !adminHashPattern.MatchString(hash) {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid hash"})
-		return
-	}
-
-	filenames, found, err := h.repo.SoftDeleteFileByHash(r.Context(), hash)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
-		return
-	}
-	if !found {
-		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not found"})
-		return
-	}
-
-	if filenames == nil {
-		filenames = []string{}
-	}
-	h.audit(r.Context(), "file.trash", hash, strings.Join(filenames, ", "))
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":        true,
-		"hash":      hash,
-		"filenames": filenames,
-	})
-}
 
 // bulkHashCap bounds an explicit hash list in a bulk request, so a single call
 // can't carry an unbounded body. The filter path (no hashes) has no cap — it
@@ -77,184 +45,7 @@ func (p *bulkEditPatch) hasTags() bool {
 }
 func (p *bulkEditPatch) hasAccess() bool { return p != nil && (p.License != nil || p.Guest != nil) }
 
-// adminBulkFiles handles POST /api/admin/files/bulk — a bulk action over an
-// explicit hash set OR everything matching a filter
-// (docs/architecture/file-list-scaling.md). Actions: "trash" (move to Trash,
-// needs file.delete) and "edit" (apply a tag/access patch, needs metadata.edit).
-// The route admits either capability; this handler enforces the per-action gate.
-//
-// Exactly one of {hashes, filter} must be given. An empty filter means the
-// whole (matching) library, which is refused unless "all": true — the guardrail
-// the UI pairs with a strong confirm.
-func (h *handler) adminBulkFiles(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // a large hash list is still small
-	var req struct {
-		Action string   `json:"action"`
-		Hashes []string `json:"hashes"`
-		Filter *struct {
-			Q        string `json:"q"`
-			Field    string `json:"field"`
-			ArtistID *int64 `json:"artist_id"`
-			AlbumID  *int64 `json:"album_id"`
-		} `json:"filter"`
-		All   bool           `json:"all"`
-		Patch *bulkEditPatch `json:"patch"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid JSON body"})
-		return
-	}
-	if req.Action != "trash" && req.Action != "edit" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown action"})
-		return
-	}
-	// Per-action authorization (the route admits either capability).
-	if h.authzEnabled {
-		id := auth.FromContext(r.Context())
-		need := auth.PermFileDelete
-		if req.Action == "edit" {
-			need = auth.PermMetadataEdit
-		}
-		if !id.Has(need) {
-			writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "forbidden"})
-			return
-		}
-	}
-
-	hasHashes := len(req.Hashes) > 0
-	hasFilter := req.Filter != nil
-	if hasHashes == hasFilter { // both, or neither
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "provide exactly one of hashes or filter"})
-		return
-	}
-
-	// Resolve the target set to a hash list (explicit, validated; or filter).
-	var hashes []string
-	if hasHashes {
-		if len(req.Hashes) > bulkHashCap {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "too many hashes"})
-			return
-		}
-		for _, hsh := range req.Hashes {
-			if !adminHashPattern.MatchString(hsh) {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid hash"})
-				return
-			}
-		}
-		hashes = req.Hashes
-	} else {
-		filter := database.FileFilter{
-			Q:        strings.TrimSpace(req.Filter.Q),
-			QField:   normalizeQField(req.Filter.Field),
-			ArtistID: req.Filter.ArtistID,
-			AlbumID:  req.Filter.AlbumID,
-		}
-		if filter.Q == "" && filter.ArtistID == nil && filter.AlbumID == nil && !req.All {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": `refusing to act on the whole library without "all": true`})
-			return
-		}
-		var err error
-		hashes, err = h.repo.FileHashesByFilter(r.Context(), filter)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
-			return
-		}
-	}
-
-	if req.Action == "edit" {
-		h.bulkEditFiles(w, r, hashes, req.Patch)
-		return
-	}
-
-	// action == "trash"
-	if len(hashes) == 0 {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": 0})
-		return
-	}
-	affected, err := h.repo.BulkSoftDeleteByHashes(r.Context(), hashes)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
-		return
-	}
-	h.audit(r.Context(), "file.bulk_trash", "files", fmt.Sprintf("%d trashed", affected))
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
-}
-
-// bulkEditFiles applies a tag/access patch across the resolved hash set and
-// reports the count plus any per-file failures. Tags go through the repository's
-// batched BulkUpdateFileMetadata (one transaction per chunk — the per-file entity
-// re-resolution can't collapse to a single UPDATE, but the transactions can);
-// access (license/guest) carries one value for the whole set, so it collapses to
-// a single guarded UPDATE through the content-access store, which an access edit
-// needs h.manage to be wired for. License is applied before guest so an explicit
-// guest wins over any license auto-derive.
-func (h *handler) bulkEditFiles(w http.ResponseWriter, r *http.Request, hashes []string, patch *bulkEditPatch) {
-	tags := patch != nil && patch.hasTags()
-	access := patch.hasAccess()
-	if !tags && !access {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "nothing to update"})
-		return
-	}
-	if access && h.manage == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "access editing unavailable"})
-		return
-	}
-	if len(hashes) == 0 {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": 0, "failed": []any{}})
-		return
-	}
-
-	failed := make([]map[string]string, 0)
-	affected := 0
-	if tags {
-		mp := database.MetadataPatch{
-			Title: patch.Title, Album: patch.Album, AlbumArtist: patch.AlbumArtist, Artist: patch.Artist,
-			Genre: patch.Genre, Composer: patch.Composer, Comment: patch.Comment,
-			TrackNumber: patch.TrackNumber, TrackTotal: patch.TrackTotal, DiscNumber: patch.DiscNumber, Year: patch.Year,
-		}
-		n, notFound, err := h.repo.BulkUpdateFileMetadata(r.Context(), hashes, mp)
-		if errors.Is(err, database.ErrInvalidMetadata) {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
-			return
-		}
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
-			return
-		}
-		affected = n
-		for _, hsh := range notFound {
-			failed = append(failed, map[string]string{"hash": hsh, "error": database.ErrFileNotFound.Error()})
-		}
-	}
-	if access {
-		var accN int
-		if patch.License != nil {
-			n, err := h.manage.BulkSetLicense(r.Context(), hashes, *patch.License)
-			if err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
-				return
-			}
-			accN = n
-		}
-		if patch.Guest != nil {
-			n, err := h.manage.BulkSetGuestPlayable(r.Context(), hashes, *patch.Guest)
-			if err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
-				return
-			}
-			accN = n
-		}
-		// When only access changed, the affected count is the rows the access
-		// UPDATE matched (tag-mode already reports the metadata rows updated).
-		if !tags {
-			affected = accN
-		}
-	}
-	h.audit(r.Context(), "metadata.bulk_edit", "files", fmt.Sprintf("%d updated", affected))
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected, "failed": failed})
-}
-
-// bulkEditAppearances is bulkEditFiles addressed by tagset id — the Trash lens's
+// bulkEditAppearances applies one bulk tag patch by tagset id — the Trash lens's
 // "fix a tag before restoring". Tags only: access (license / guest) is a
 // recording-level property and is meaningless on a trashed appearance, so the
 // Trash scope never offers it and a patch carrying it is rejected.
@@ -503,10 +294,10 @@ func (h *handler) trashBulk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Restore is a pure deleted_at flip with no storage side-effects, so it goes
-	// through one batched transaction + one audit row (mirroring the send-to-trash
-	// BulkSoftDeleteByHashes path). The old per-hash loop opened two autocommit
-	// write transactions per file (restore + audit), which made restore far slower
-	// than trashing and produced SQLITE_BUSY under concurrent write pressure.
+	// through one batched transaction + one audit row. The old per-hash loop
+	// opened two autocommit write transactions per file (restore + audit), which
+	// made restore far slower than trashing and produced SQLITE_BUSY under
+	// concurrent write pressure.
 	if req.Action == "restore" {
 		affected, err := h.repo.BulkRestoreTagsets(r.Context(), tagsetIDs)
 		if err != nil {

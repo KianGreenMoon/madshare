@@ -36,11 +36,11 @@ const btnDeleteSelected = document.getElementById('deleteSelected');
 let currentGroups = []; // the recordings from the last load(), for absorb planning
 
 const allChecks      = () => [...results.querySelectorAll('.dup-check')];
-const selectedHashes = () => allChecks().filter(c => c.checked).map(c => c.dataset.hash);
+const selectedFileIds = () => allChecks().filter(c => c.checked).map(c => c.dataset.fileId);
 const isChecked      = fileId => !!results.querySelector(`.dup-check[data-file-id="${fileId}"]`)?.checked;
 
 function updateSelCount() {
-  const n = selectedHashes().length;
+  const n = selectedFileIds().length;
   btnDeleteSelected.textContent = n ? `Delete selected (${n})` : 'Delete selected';
   btnDeleteSelected.disabled = n === 0;
   btnAbsorbSelected.textContent = n ? `Absorb selected (${n})` : 'Absorb selected';
@@ -176,13 +176,15 @@ function confirmDelete(n) {
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────
+// Delete = soft-remove the RENDITION (files.deleted_at → Trash › Files); the
+// recording and its appearances are untouched (GC model — unlink, never cascade).
 async function deleteSelected() {
-  const hashes = selectedHashes();
-  if (!hashes.length || !(await confirmDelete(hashes.length))) return;
+  const ids = selectedFileIds();
+  if (!ids.length || !(await confirmDelete(ids.length))) return;
   let ok = 0, fail = 0, authFailed = false;
-  for (const hash of hashes) {
+  for (const id of ids) {
     let res;
-    try { res = await fetch(`${API}/api/admin/files/${encodeURIComponent(hash)}`, { method: 'DELETE' }); }
+    try { res = await fetch(`${API}/api/admin/renditions/${encodeURIComponent(id)}/remove`, { method: 'POST' }); }
     catch { fail++; continue; }
     if (res.status === 401) { handleAuthError(res); authFailed = true; break; }
     if (res.ok) ok++; else fail++;
@@ -196,7 +198,7 @@ async function deleteSelected() {
 async function deleteOne(r) {
   if (!(await confirmDelete(1))) return;
   let res;
-  try { res = await fetch(`${API}/api/admin/files/${encodeURIComponent(r.hash)}`, { method: 'DELETE' }); }
+  try { res = await fetch(`${API}/api/admin/renditions/${encodeURIComponent(r.file_id)}/remove`, { method: 'POST' }); }
   catch { toast('Network error deleting rendition.', 'error'); return; }
   if (handleAuthError(res)) return;
   if (!res.ok) { toast(`Delete failed (HTTP ${res.status}).`, 'error'); return; }

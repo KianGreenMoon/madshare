@@ -51,7 +51,7 @@ func TestAdminTrashHardDelete_LinksUnlinksOnly(t *testing.T) {
 	// Soft-delete (trash), then read the trashed appearance's id from the lens
 	// and hard-delete it by tagset id (recording-tagsets P7c: permanent delete is
 	// tagset-addressed — one blob can host several trashed appearances).
-	h.adminDeleteFile(httptest.NewRecorder(), deleteReq(hash))
+	trashAppearancesOf(t, db, hash)
 	tagsetID := trashedTagsetID(t, h, hash)
 
 	rr := httptest.NewRecorder()

@@ -56,12 +56,14 @@ const (
 
 // File is a row in the files table — one record per unique content hash.
 //
-// The catalog lifecycle (trash, review) lives on the file's tagset since
-// migration 024 (docs/architecture/recording-tagsets.md); DeletedAt,
-// ReviewState, ReviewNote, and SubmittedAt are *derived* from the file's
-// offered tagset (origin_file_id = this file) so the upload/dedup flows keep
-// their one-lookup shape. Writers go through the tagset-targeting methods
-// (SoftDeleteFileByHash, UpdateReviewState, …), never these fields.
+// The catalog lifecycle (trash, review) lives on the tagset since migration
+// 024 (docs/architecture/recording-tagsets.md); ReviewState, ReviewNote, and
+// SubmittedAt are *derived* from the blob's representative appearance
+// (reprTagset), and DeletedAt reports either mark — a soft-removed rendition
+// (files.deleted_at) or a trashed representative appearance — so the
+// upload/dedup flows keep their one-lookup shape. Writers go through the
+// tagset/rendition-targeting methods (UpdateReviewState, RemoveRendition, …),
+// never these fields.
 type File struct {
 	ID             int64
 	Hash           string

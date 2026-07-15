@@ -71,7 +71,7 @@ func TestAuthz_AdminDeleteRequiresFileDelete(t *testing.T) {
 
 	// Uploader has no file.delete -> 403.
 	up := clientFor(t, srv.URL, "up", "uploader-pass-1")
-	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/files/deadbeef", nil)
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/tagsets/999999", nil)
 	resp, _ := up.Do(req)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("uploader delete = %d, want 403", resp.StatusCode)

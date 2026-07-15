@@ -12,7 +12,7 @@ import (
 // the moderator's per-piece decisions applied atomically:
 //
 //   - forceNew: the submission's blob is split into a new pinned recording (its
-//     appearance moves with it and becomes primary) before publishing — the
+//     appearance moves with it) before publishing — the
 //     "this is actually new audio, the fingerprint match was wrong" override.
 //     Ignored when the blob already carries an approved appearance (a byte-dup
 //     shared blob — splitting it would strand the other appearance's recording);
@@ -74,16 +74,11 @@ func (db *DB) ApproveSubmission(ctx context.Context, tagsetID int64, dropBytes, 
 				`UPDATE files SET recording_id = ?, recording_pinned = 1 WHERE id = ?`, newRec, originFile.Int64); err != nil {
 				return false, fmt.Errorf("approve submission: reassign file: %w", err)
 			}
+			// No is_primary bookkeeping: the flag is a manual preference (GC
+			// model P3) and the representative appearance is derived.
 			if _, err := tx.ExecContext(ctx,
-				`UPDATE tagsets SET recording_id = ?, is_primary = 1 WHERE origin_file_id = ?`, newRec, originFile.Int64); err != nil {
+				`UPDATE tagsets SET recording_id = ? WHERE origin_file_id = ?`, newRec, originFile.Int64); err != nil {
 				return false, fmt.Errorf("approve submission: move tagsets: %w", err)
-			}
-			// Multiple moved appearances can't all be primary; keep the oldest.
-			if _, err := tx.ExecContext(ctx,
-				`UPDATE tagsets SET is_primary = 0
-				  WHERE recording_id = ? AND id <> (SELECT MIN(id) FROM tagsets WHERE recording_id = ?)`,
-				newRec, newRec); err != nil {
-				return false, fmt.Errorf("approve submission: primary: %w", err)
 			}
 			if err := reapRecordingsTx(ctx, tx, []int64{recID}); err != nil {
 				return false, err

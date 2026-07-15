@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/api/storage"
+	"daemonlord.ygg/madshare/database"
 	"github.com/go-chi/chi/v5"
 )
 
