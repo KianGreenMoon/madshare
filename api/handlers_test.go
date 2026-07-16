@@ -511,7 +511,7 @@ type fakeRepo struct {
 	trashedRecordingIDs   []int64
 	rendNotFound          bool
 
-	// Files perspective of Trash (soft-delete.md): removed-blob listing + purge.
+	// Files perspective of Trash (gc-model.md): removed-blob listing + purge.
 	pageRemoved           []*database.FileListEntry
 	countRemoved          int
 	removedFilterIDs      []int64
@@ -525,7 +525,7 @@ type fakeRepo struct {
 	bulkHardDelRemovedN   int
 	bulkHardDelRemovedErr error
 
-	// Recordings perspective of Trash (soft-delete.md): trashed-recording bin.
+	// Recordings perspective of Trash (gc-model.md): trashed-recording bin.
 	trashedRecRows    []database.RecordingRow
 	countTrashedRec   int
 	restoreRecID      int64

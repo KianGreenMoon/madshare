@@ -95,7 +95,7 @@ Trash and review are **not** on the same table, and that placement is load-beari
 - `tagsets.review_state` / `tagsets.deleted_at` — the appearance is the
   reviewable, trashable catalog unit (draft → submitted → approved; Trash
   Appearances lens). See [moderation.md](moderation.md),
-  [soft-delete.md](soft-delete.md).
+  [gc-model.md](gc-model.md).
 - `files.deleted_at` — a **soft-removed blob** (rendition pulled from the
   ladder; Trash › Files lens). Independent of appearance state: absorb keeps
   the appearance live while soft-removing its origin blob.

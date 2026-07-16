@@ -26,6 +26,13 @@ source_ids}`, `content.moderate`). They act on explicit id lists only — a
 merge or whole-recording trash is always a deliberate hand-picked selection,
 so the filter/`all:true` machinery below does not apply to them.
 
+The Trash page's **Recordings** and **Files** perspectives
+(`docs/architecture/gc-model.md`) carry two more id-addressed bulk endpoints,
+`POST /api/admin/trash/recordings/bulk` (`{action: "restore"|"delete", ids}`,
+recording ids) and `POST /api/admin/trash/files/bulk` (same shape, file ids),
+both `file.delete`-gated. They take an explicit `ids` list **xor**
+`all: true` (the whole bin) — no text filter, since those bins have none.
+
 **Every surface addresses the appearance** by **`tagset_id`** — since the
 recording-tagsets rework the catalog unit is the tagset, not the file, and a
 byte-dup blob can host several appearances

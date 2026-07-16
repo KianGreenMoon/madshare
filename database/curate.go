@@ -65,7 +65,7 @@ func recordingFilterClause(filter string) string {
 	case "pinned":
 		return `EXISTS (SELECT 1 FROM files f WHERE f.recording_id = r.id AND f.recording_pinned = 1)`
 	case "trashed":
-		// Recordings perspective of Trash (soft-delete.md): wholly out of the
+		// Recordings perspective of Trash (gc-model.md): wholly out of the
 		// library — once had an approved appearance, but none is visible now (all
 		// trashed and/or the recording is dormant). Reuses visibleTagset (alias
 		// m) so "visible" means exactly what the library shows. Pure-draft
@@ -693,9 +693,10 @@ type RecordingDeleteOutcome struct {
 
 // HardDeleteRecording permanently removes the recording with all of its
 // appearances and files — the count-aware "Delete permanently" behind the
-// confirm that spelled these numbers out. It routes through the shared
-// tagset-first cascade (hardDeleteTagsetsTx), whose last-tagset branch GCs the
-// recording and every file; blobs are returned for post-commit reclamation.
+// confirm that spelled these numbers out. It routes through the purge
+// composition (purgeTagsetsTx): dropping every appearance abandons the
+// recording, so the reclaim takes its files and husk with it; blobs are
+// returned for post-commit reclamation.
 func (db *DB) HardDeleteRecording(ctx context.Context, recordingID int64) (RecordingDeleteOutcome, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -801,11 +802,10 @@ func (db *DB) RestoreTagset(ctx context.Context, tagsetID int64) (bool, error) {
 }
 
 // HardDeleteTagsetOutcome reports a single-appearance permanent delete: whether
-// the id exists at all, whether it was trashed (only a trashed appearance is
-// permanently deletable — the symmetry with the hash-addressed Trash, which only
-// hard-deletes trashed blobs), and the blobs to reclaim after commit (non-empty
-// only when this was the recording's last appearance, so the shared cascade GC'd
-// the recording and its files).
+// the id exists at all, whether it was trashed (purge only touches trashed
+// rows), and the blobs to reclaim after commit (non-empty only when this was
+// the recording's last appearance, so the purge reclaimed the abandoned
+// recording and its files).
 type HardDeleteTagsetOutcome struct {
 	Found   bool
 	Trashed bool

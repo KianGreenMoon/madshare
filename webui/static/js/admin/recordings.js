@@ -520,7 +520,7 @@ export function createRecordingsView({ play, perms }) {
         class: 'btn btn-sm btn-neutral', title: 'Bring this appearance back into the library',
         onclick: () => restoreAppearance(rec, a),
       }, ['Restore']));
-      // Permanent delete lives only on the Trash page (soft-delete.md) — the
+      // Permanent delete lives only on the Trash page (gc-model.md) — the
       // Appearances lens there. No hard delete here.
     }
     const albumBits = [a.album || '—'];

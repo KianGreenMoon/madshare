@@ -273,7 +273,7 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		// The old hash-addressed pair is gone: a blob can host several trashed
 		// appearances, so a hash could not name the row the UI was showing
 		// (recording-tagsets P7c).
-		// Trash — the Recordings and Files perspectives (soft-delete.md). Lists +
+		// Trash — the Recordings and Files perspectives (gc-model.md). Lists +
 		// explicit-id bulk restore/delete; the single-row restore/delete reuse the
 		// recordings/renditions routes below. All file.delete (Trash is the one
 		// place permanent delete lives).

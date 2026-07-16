@@ -204,7 +204,7 @@ bytes were first ingested.
 
 Madshare uses **soft delete**: an admin "delete" only marks a file as trashed
 (sets `deleted_at`); the blob and its rows are kept until a hard delete from the
-Trash tab. Full design: `docs/architecture/soft-delete.md`.
+Trash tab. Full design: `docs/architecture/gc-model.md`.
 
 > **Re-uploading a soft-deleted file does not re-upload anything.** Because the
 > bytes are already on disk, the server simply **clears the `deleted_at` mark**
@@ -357,5 +357,5 @@ re-upload](#restore-on-re-upload-soft-deleted-files).
 
 - `docs/api/cover-images.md` — cover variant status and UI config endpoints.
 - `docs/architecture/moderation.md` — staging / review queue (where uploads land).
-- `docs/architecture/soft-delete.md` — trash / restore model.
+- `docs/architecture/gc-model.md` — trash / restore model.
 - `docs/architecture/auth.md` — upload permission and access control.

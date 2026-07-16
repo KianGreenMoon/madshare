@@ -43,8 +43,8 @@ type Repository interface {
 	TrashedAppearanceIDsByFilter(ctx context.Context, f FileFilter) ([]int64, error)
 
 	// The lens's bulk actions, each one transaction: restore (deleted_at flip),
-	// permanent delete (shared tagset-first cascade; live ids skipped, freed
-	// blobs returned for post-commit reclaim), and the tag edit.
+	// permanent delete (the purge composition, purgeTagsetsTx; live ids skipped,
+	// freed blobs returned for post-commit reclaim), and the tag edit.
 	BulkRestoreTagsets(ctx context.Context, tagsetIDs []int64) (int, error)
 	BulkHardDeleteTagsets(ctx context.Context, tagsetIDs []int64) (int, []DeletedBlob, error)
 	BulkUpdateTagsetMetadata(ctx context.Context, tagsetIDs []int64, p MetadataPatch) (affected int, notFound []int64, err error)
@@ -62,13 +62,14 @@ type Repository interface {
 	BulkSetLicenseByTagsets(ctx context.Context, tagsetIDs []int64, license string) (int, error)
 	BulkSetGuestPlayableByTagsets(ctx context.Context, tagsetIDs []int64, guest bool) (int, error)
 
-	// Files perspective of Trash (soft-delete.md): the file-grain lens over
+	// Files perspective of Trash (gc-model.md): the file-grain lens over
 	// soft-removed blobs (files.deleted_at). Paged like the other listings;
 	// RemovedFileIDsByFilter resolves the "select all N matching" set (file ids,
 	// not hashes — the Files ops are file-id-addressed like the renditions
 	// endpoints). HardDeleteRemovedFile / BulkHardDeleteRemovedFiles are the only
-	// per-file purge (non-last drops the blob, last file cascades the recording);
-	// they return the blobs to reclaim after commit.
+	// per-file purge (a recording losing its last file has its appearances
+	// trashed by the scoped reap, never destroyed); they return the blobs to
+	// reclaim after commit.
 	ListRemovedFilesPage(ctx context.Context, q FileListQuery) ([]*FileListEntry, error)
 	CountRemovedFiles(ctx context.Context, f FileFilter) (int, error)
 	RemovedFileIDsByFilter(ctx context.Context, f FileFilter) ([]int64, error)
@@ -384,9 +385,10 @@ type Repository interface {
 	RestoreTagset(ctx context.Context, tagsetID int64) (bool, error)
 
 	// HardDeleteTrashedTagset permanently removes one trashed appearance via the
-	// shared tagset-first cascade (last one → recording + files GC'd), returning
-	// the blobs to reclaim after commit. It refuses a live appearance
-	// (Found && !Trashed) — permanent delete is Trash-only.
+	// purge composition (last one → the abandoned recording is reclaimed, files
+	// and blobs included), returning the blobs to reclaim after commit. It
+	// refuses a live appearance (Found && !Trashed) — permanent delete is
+	// Trash-only.
 	HardDeleteTrashedTagset(ctx context.Context, tagsetID int64) (HardDeleteTagsetOutcome, error)
 
 	// TrashRecording soft-deletes every non-trashed appearance of the recording
@@ -399,11 +401,11 @@ type Repository interface {
 	BulkTrashRecordings(ctx context.Context, recordingIDs []int64) (recordings, appearances int, err error)
 
 	// HardDeleteRecording permanently removes the recording with all appearances
-	// and files via the shared tagset-first cascade, returning the blobs to
-	// reclaim after commit.
+	// and files via the purge composition, returning the blobs to reclaim after
+	// commit.
 	HardDeleteRecording(ctx context.Context, recordingID int64) (RecordingDeleteOutcome, error)
 
-	// Recordings perspective of Trash (soft-delete.md): the recording-grain lens
+	// Recordings perspective of Trash (gc-model.md): the recording-grain lens
 	// over recordings wholly out of the library. List/Count force the "trashed"
 	// membership; RestoreRecording un-trashes every appearance and restores a
 	// rendition when dormant; the bulk variants back the Recordings bin's

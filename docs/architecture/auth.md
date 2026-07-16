@@ -195,7 +195,7 @@ unfiltered listings.
 `deleted_at IS NOT NULL` is excluded from all listings and blocked at
 `/files/*` for any identity that lacks `content.access`. Identities holding
 `content.access` (admin, moderator, …) pass through so the Trash tab can preview
-them. See `docs/architecture/soft-delete.md`.
+them. See `docs/architecture/gc-model.md`.
 
 **Staged (pending-review) appearances** (`tagsets.review_state <> 'approved'`,
 migration 024 — the review lifecycle lives on the tagset, not the file) are

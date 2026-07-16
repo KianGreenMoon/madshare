@@ -1,6 +1,6 @@
 package database
 
-// Files perspective of Trash (soft-delete.md): the file-grain lens over
+// Files perspective of Trash (gc-model.md): the file-grain lens over
 // soft-removed blobs (files.deleted_at IS NOT NULL — removed renditions,
 // absorbed/dormant blobs). Listing reuses the shared fileListSelect/scanFileList
 // row shape (it already carries storage_backend / recording_id / deleted_at);

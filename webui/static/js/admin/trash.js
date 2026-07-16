@@ -203,7 +203,7 @@ export function createTrashScope({ play, perms }) {
 
   fileList = createFileList(scope);
 
-  // ── Sub-mode coordinator (soft-delete.md) ───────────────────────────────────
+  // ── Sub-mode coordinator (gc-model.md) ───────────────────────────────────
   // The Trash panel has three perspectives over the same not-in-library set:
   // Appearances (the file-list.js scope above), Recordings, and Files (bespoke
   // lists sharing this page's one preview player). Each is its own lens — never

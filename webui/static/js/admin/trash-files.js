@@ -1,4 +1,4 @@
-// Trash · Files — the file-grain lens (soft-delete.md): soft-removed blobs
+// Trash · Files — the file-grain lens (gc-model.md): soft-removed blobs
 // (removed renditions, absorbed/dormant blobs). A config over the shared
 // trash-list core, plus Play via the page's shared preview player. Restore
 // un-removes the blob (a dormant recording re-enters the library); Delete

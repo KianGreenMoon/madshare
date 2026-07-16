@@ -455,7 +455,7 @@ func (db *DB) BulkDiscardOwnUploads(ctx context.Context, tagsetIDs []int64, owne
 // BulkTrashTagsets soft-deletes a set of appearances by id in one chunked
 // transaction — the moderator's bulk discard (tagset Trash). Only non-trashed
 // rows change; the returned count is how many were trashed. Soft delete never
-// cascades (recording-tagsets P2 — the blob and recording stay).
+// cascades — the blob and recording stay (gc-model.md).
 func (db *DB) BulkTrashTagsets(ctx context.Context, tagsetIDs []int64) (int, error) {
 	if len(tagsetIDs) == 0 {
 		return 0, nil

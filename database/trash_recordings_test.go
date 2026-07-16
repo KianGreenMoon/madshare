@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Recordings perspective of Trash (soft-delete.md): the trashed-recording bin
+// Recordings perspective of Trash (gc-model.md): the trashed-recording bin
 // (recordings wholly out of the library), whole-recording restore (un-trash +
 // un-dormant), and the bulk restore / hard-delete.
 

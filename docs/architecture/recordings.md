@@ -258,7 +258,7 @@ recording with **>1 non-trashed rendition**:
   toolbar: **Select non-best** ticks every redundant copy across all recordings
   (keep each best, drop the rest), then **Delete selected (N)** soft-deletes them
   after a count-aware confirm. Reuses the existing soft delete
-  (`docs/architecture/soft-delete.md`); blobs and `files` rows go to Trash like
+  (`docs/architecture/gc-model.md`); blobs and `files` rows go to Trash like
   any other delete. The selection is the human's — never auto-delete.
 - **Split off as a separate recording** — the "save as another composition"
   action: detach a rendition into its own new recording and set
@@ -304,9 +304,9 @@ Mirrors the artist/album startup reconcile pass exactly (the orphan-blob /
   analysis job computes the fingerprint, the resolver either moves the file
   (with its offered tagsets) into the matched recording — garbage-collecting
   the emptied singleton — or leaves it where it is. Pinned files are skipped.
-- **Startup reconcile** — `db.ReconcileTagsets` repairs invariant violations
-  (files without a recording or tagset, fileless recordings, missing primary
-  appearances); blobs that predate fingerprinting get their fingerprint through
+- **Startup reap** — `db.Reap` ([gc-model.md](gc-model.md)) collects whatever
+  a crash or bug left unreferenced (demote-only: quarantine, trash, husk
+  removal); blobs that predate fingerprinting get their fingerprint through
   the analysis-job backfill and group inline as those jobs complete.
 
 Single-rendition recordings are the norm; the resolver creating "a recording per

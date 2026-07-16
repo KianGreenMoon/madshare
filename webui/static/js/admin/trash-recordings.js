@@ -1,4 +1,4 @@
-// Trash · Recordings — the recording-grain lens (soft-delete.md): recordings
+// Trash · Recordings — the recording-grain lens (gc-model.md): recordings
 // wholly out of the library (all appearances trashed and/or dormant). A config
 // over the shared trash-list core: whole-recording Restore (un-trash + un-dormant)
 // and Delete forever (the count-aware cascade). Requires file.delete (the Trash

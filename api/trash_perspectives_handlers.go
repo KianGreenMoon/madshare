@@ -1,6 +1,6 @@
 package api
 
-// Trash — the Recordings and Files perspectives (soft-delete.md). The
+// Trash — the Recordings and Files perspectives (gc-model.md). The
 // Appearances perspective is the pre-existing /api/admin/trash surface
 // (admin_handlers.go); these add the recording-grain and file-grain lenses:
 // listing the trashed-recording bin / removed blobs, restoring them back into

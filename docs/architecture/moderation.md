@@ -64,11 +64,11 @@ byte-dup adds more.)
 - **Approve clears `review_note`.** Submit stamps `submitted_at`.
 - **No withdraw**: once submitted, only a moderator action moves it on.
 - **Discard** = the tagset soft delete (`tagsets.deleted_at`;
-  `docs/architecture/soft-delete.md`); `review_state` is untouched, which is
+  `docs/architecture/gc-model.md`); `review_state` is untouched, which is
   what makes a Trash restore return the appearance to where it was (queue, not
-  library). Trashing a *non-last* appearance keeps the blob; trashing the last
-  one makes the recording dormant — the tagset-centric cascade, see
-  recording-tagsets.md.
+  library). Trashing never cascades — the blob and recording stay; a
+  recording whose every appearance is trashed simply leaves the library
+  (Trash › Recordings).
 - **Auth-unconfigured mode** (`Deps.Auth == nil`, pure-API/tests): no staging —
   the offered appearance is created `approved`, preserving pre-moderation
   behavior.
@@ -203,7 +203,7 @@ expanded-card decisions). Upload-flow integration (`POST /files/upload`,
 Restoring a trashed file brings back whatever review state its appearance had —
 which for a previously approved one means *live*. Who initiates matters:
 
-- **Library → Trash scope** (`POST /api/admin/trash/{hash}/restore`) —
+- **Library → Trash scope** (`POST /api/admin/tagsets/{id}/restore`) —
   prior-state restore, unchanged. An explicit moderator action; a discarded
   submission visibly re-enters the queue (Trash badges such rows "pending
   review").

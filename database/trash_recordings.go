@@ -1,6 +1,6 @@
 package database
 
-// Recordings perspective of Trash (soft-delete.md): the recording-grain lens
+// Recordings perspective of Trash (gc-model.md): the recording-grain lens
 // over recordings wholly out of the library (all appearances trashed and/or the
 // recording gone dormant). Listing reuses ListRecordings with the "trashed"
 // filter (recordingFilterClause, curate.go); restore un-trashes every appearance

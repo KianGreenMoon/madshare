@@ -19,37 +19,30 @@ designed in
 sit on the same paginated backend; this flow just renders one page at a time
 rather than a virtualized window.
 
-> **Update (2026-06-26): the numbered pager is superseded by infinite scroll.**
-> The offset **backend** described here (the `GET /api/files` envelope, `CountFiles`,
-> the bulk endpoint, the filter/sort maps) is unchanged and stays the source of
-> truth. Only the **presentation** changed: the All-files list now renders through
-> the shared virtualized scroller and loads pages by infinite scroll instead of
-> Prev/Next, and the grouped "By artist / album" view returns on that windowed
-> list. See ["This pass"](infinite-scroll-virtualization.md) in the virtualization
-> doc. The numbered-pager prose below is retained for the backend contract it
-> documents.
+> **Presentation note:** the numbered pager this doc designed is superseded by
+> infinite scroll. The offset **backend** described here (the `{total, items}`
+> envelope, `CountFiles`-style counting, the filter/sort maps) stays the source
+> of truth; the lists render through the shared virtualized scroller and load
+> pages by infinite scroll, and the grouped "By artist / album" view streams on
+> that windowed list. See
+> [infinite-scroll-virtualization.md](infinite-scroll-virtualization.md).
 >
-> **Update (2026-06-27): the same treatment now covers Review, My-uploads, and
-> Trash.** All three were non-paged (loaded the whole set, looped one HTTP request
-> per file for bulk actions). They are now server-paged with the same envelope +
-> infinite scroll, and each has its own **filter-or-hashes batch endpoint** so
-> "select all N matching" hits one request:
-> - `GET /api/admin/moderation`, `GET /api/my/uploads`, `GET /api/admin/trash`
->   return `{ total, items }` (the two staging lists also add `selectable_total` —
->   the actionable subset count, so the banner reflects only the rows the bulk
->   actions touch: submitted for moderation, draft+returned for My-uploads).
-> - `POST /api/admin/moderation/bulk` (approve / return / discard),
->   `POST /api/my/uploads/bulk` (submit / remove),
->   `POST /api/admin/trash/bulk` (restore / delete / edit) — each resolves an
->   explicit `hashes` list **or** a state-scoped `filter` (the same `all:true`
->   guardrail as `/api/admin/files/bulk`), then loops the existing per-row logic
->   server-side. DB resolvers: `PendingReviewHashesByFilter`,
->   `UploadHashesByUserFilter`, `TrashedFileHashesByFilter`.
-> - The two bespoke groupings (moderation by uploader, My-uploads by state) survive
->   paging as **non-collapsible streamed separators** via `section-stream.js`
->   (`createSectionStream`, unit-tested) — the single-level sibling of
->   `grouped-stream.js`, fed pages in `sort=uploader` / `sort=state` order.
->   Moderation loses its collapse toggle (a collapse can't hide unfetched rows).
+> **Endpoint note:** the bulk dialect is **tagset-addressed** — the concrete
+> request/response contract of the four bulk endpoints
+> (`POST /api/admin/appearances/bulk`, `…/trash/bulk`, `…/moderation/bulk`,
+> `POST /api/my/uploads/bulk`) lives in [docs/api/bulk.md](../api/bulk.md).
+> Each resolves an explicit `tagset_ids` list **or** a state-scoped `filter`
+> with the `all:true` guardrail, then applies the action server-side. DB
+> resolvers: `AppearanceIDsByFilter`, `TrashedAppearanceIDsByFilter`,
+> `PendingReviewTagsetIDsByFilter`, `UploadTagsetIDsByUserFilter`.
+> The paged staging lists (`GET /api/admin/moderation`, `GET /api/my/uploads`,
+> `GET /api/admin/trash`) return `{ total, items }` (the two staging lists also
+> add `selectable_total` — the actionable subset count, so the banner reflects
+> only the rows the bulk actions touch). The two bespoke groupings (moderation
+> by uploader, My-uploads by state) survive paging as **non-collapsible
+> streamed separators** via `section-stream.js` (`createSectionStream`,
+> unit-tested) — the single-level sibling of `grouped-stream.js`, fed pages in
+> `sort=uploader` / `sort=state` order.
 
 ---
 
@@ -103,10 +96,11 @@ bounded level per fetch (`/api/artists` → `/api/albums?artist_id=` →
    The Review / Trash / My-uploads scopes now stream the same way (2026-06-27 update
    note): Trash reuses this artist/album stream, while Review and My-uploads stream
    their native by-uploader / by-state separators through `section-stream.js`.
-3. **A transactional bulk endpoint** — `POST /api/admin/files/bulk` — runs an
-   action over either an explicit hash set **or** "everything matching the current
-   filter", in one request. This is what makes "delete a big group" real and what
-   lets selection span pages.
+3. **A transactional bulk endpoint** — `POST /api/admin/appearances/bulk`
+   ([docs/api/bulk.md](../api/bulk.md)) — runs an action over either an explicit
+   tagset-id set **or** "everything matching the current filter", in one
+   request. This is what makes "delete a big group" real and what lets
+   selection span pages.
 4. **Decouple By-entity from the full fetch.** Add `hash` to the `/api/tracks`
    DTO so entity edit/delete resolve a track to its file directly, instead of
    through a whole-table `fileByURL` index that paging would leave incomplete.
@@ -160,41 +154,17 @@ outright" stance, the envelope becomes the only shape — no dual-format. The
 (`access_handlers_test.go`, `review_test.go`, `handlers_test.go`) are updated to
 the envelope.
 
-### `POST /api/admin/files/bulk` — transactional bulk action
+### The transactional bulk endpoints
 
-Gated by `auth.RequirePermission` per action (it lives in the `admin` group).
-Body:
-
-```json
-{ "action": "trash" | "edit",
-  "hashes": ["…", …],                 // explicit set  (mutually exclusive with…)
-  "filter": { "q": "beatles" },        // …all rows matching this filter
-  "all": false,                        // required true when filter.q is empty
-  "patch": { "artist": "…", "license": "…", "guest": true }   // action:"edit" only
-}
-```
-
-- **`action:"trash"`** — soft-delete (move to Trash). Permission: `file.delete`.
-  One `UPDATE files SET deleted_at = ? WHERE …` over the resolved set — a single
-  transaction, not N requests.
-- **`action:"edit"`** — apply `patch` (tag keys + `license`/`guest`) across the
-  set. Permission: `metadata.edit`. Same change-only / never-clear rule as the
-  bulk editor (`file-management-view.md`).
-- **Set resolution.** `hashes` (explicit) **or** `filter` (server resolves the
-  matching set under the same visibility + `q` the listing uses). Exactly one
-  must be given. Explicit `hashes` is capped (e.g. 1000) to bound the request
-  body; filter-mode has no cap (it's a server-side `WHERE`).
-- **Guardrail.** Empty `filter.q` means "the whole (matching) library" — allowed
-  only with `"all": true`, and the UI gates it behind a strong confirm showing
-  the live `total`. This prevents an accidental delete-everything.
-- **Response.** `{ "ok": true, "affected": 1412 }` for the transactional path;
-  `action:"edit"` that can partially fail reports `{ "affected": N, "failed":
-  [{hash,error}] }`.
-
-`Restore` / `Delete forever` / bulk tag-edit on the Trash scope **now use their
-own batch endpoint** — `POST /api/admin/trash/bulk` (same hashes-or-filter +
-`all` shape), resolved by `TrashedFileHashesByFilter` over the trashed bucket
-(`f.deleted_at IS NOT NULL`). See the 2026-06-27 update note above.
+The full request/response contract — actions, target-set resolution
+(`tagset_ids` **xor** `filter`), the empty-filter `all:true` guardrail, the
+per-action permission gates, and the partial-failure response shape — is
+documented in [docs/api/bulk.md](../api/bulk.md) for all four endpoints
+(`appearances/bulk`, `trash/bulk`, `moderation/bulk`, `my/uploads/bulk`).
+The design principles that page implements are this document's: one request
+per bulk action (a single transaction or a server-side loop — never N HTTP
+round-trips), selection that can span pages via filter-mode, and a strong
+confirm before an empty-filter whole-set action.
 
 ### `GET /api/tracks` — add `hash`
 
@@ -222,10 +192,11 @@ By-entity hash index — `ensureFilesLoaded` / `fileByURL` / the
 - A shared **sort map** turns the `sort` token into a safe `ORDER BY` fragment
   (allow-listed columns only — never interpolate user input).
 
-Bulk: `BulkSoftDeleteByHashes(ctx, hashes)` and `BulkSoftDeleteByFilter(ctx,
-where, args)` — each a single `UPDATE … SET deleted_at` transaction returning the
-affected count. (Edit-bulk can stay a server-side loop in one tx initially; the
-win there is correctness/atomicity, the delete win is the round-trip collapse.)
+Bulk: `BulkTrashTagsets(ctx, tagsetIDs)` — one chunked `UPDATE … SET
+deleted_at` transaction returning the affected count; filter-mode resolves the
+id set first (`AppearanceIDsByFilter`). (Edit-bulk stays a server-side loop in
+one tx; the win there is correctness/atomicity, the delete win is the
+round-trip collapse.)
 
 **Migration gotcha.** No schema change — so no new migration, and the
 `database_test.go` version/table assertions are untouched. New `Repository`
@@ -256,9 +227,10 @@ Keep the component shared; add a **paged mode** rather than rewriting it.
   `data-*`) instead of per-row listeners, and make `syncSelectionUI` update only
   the toggled row + counts rather than walking the whole tree. These also help
   the still-in-memory scopes.
-- **Bulk wiring.** `bulkTrashHashes` / `filesBulkApply` in `admin/files.js` call
-  the new `POST /api/admin/files/bulk` (one request) instead of looping. The
-  By-entity `deleteAlbum` / `deleteArtist` use filter/hash-set bulk too.
+- **Bulk wiring.** `appearancesBulkCall` in `admin/files.js` posts to
+  `POST /api/admin/appearances/bulk` (one request) instead of looping. The
+  By-entity `deleteAlbum` / `deleteArtist` use the same endpoint with an
+  entity-pinned filter (`artist_id` / `album_id`).
 - **By-entity decoupling.** Drop `loadFilesList`-as-index, `fileByURL`,
   `ensureFilesLoaded`, `resolveHashes`; `editTrack` / `deleteTrack` read
   `t.hash` from the (now hash-carrying) `/api/tracks` DTO.
@@ -267,12 +239,12 @@ Keep the component shared; add a **paged mode** rather than rewriting it.
 
 Two selection modes, surfaced in the bulk toolbar:
 
-1. **Explicit** — the checked hashes on the current page (today's behaviour). The
+1. **Explicit** — the checked rows (tagset ids) on the current page. The
    header "select all" checks the visible page and shows "N selected"; a banner
    offers "Select all `<total>` matching" to switch to mode 2.
 2. **Filter-mode** — "all `<total>` rows matching the current filter". Bulk
-   actions send `{ filter }` (not `hashes`); the count shown is `total`. Changing
-   the filter or sort clears the selection.
+   actions send `{ filter }` (not an id list); the count shown is `total`.
+   Changing the filter or sort clears the selection.
 
 ## Permissions
 
@@ -304,8 +276,8 @@ visibility honour the existing guest-listing narrowing. No new permission.
   escaping.
 - **API**: `/api/files` envelope shape, clamping (`limit` 0 / >500 / negative
   `offset`), guest-listing still narrows, `sort` allow-list (unknown → default);
-  `/api/admin/files/bulk` — explicit vs filter mode, the empty-filter `all`
-  guardrail, per-action permission gating, transactional trash.
+  `/api/admin/appearances/bulk` — explicit vs filter mode, the empty-filter
+  `all` guardrail, per-action permission gating, transactional trash.
 - **JS**: existing `queue-ops` style unit coverage isn't affected; manual
   browser pass on the paged list (page controls, filter round-trip, select-all-
   matching → bulk trash) per the live-verify workflow.
@@ -314,4 +286,4 @@ visibility honour the existing guest-listing narrowing. No new permission.
 
 - [`file-management-view.md`](file-management-view.md) — the shared component and scope catalog.
 - [`../api/metadata.md`](../api/metadata.md) — the per-file + entity edit endpoints.
-- [`soft-delete.md`](soft-delete.md) — the Trash / `deleted_at` model the bulk trash writes.
+- [`gc-model.md`](gc-model.md) — the Trash / `deleted_at` model the bulk trash writes.

@@ -104,8 +104,8 @@ func main() {
 	// Collect whatever a crash or bug left unreferenced before anything reads
 	// through it (GC model, docs/architecture/gc-model.md): quarantine the
 	// blobs of appearance-less recordings, trash the appearances of file-less
-	// ones, drop empty husks. Idempotent; logs when it finds anything (with the
-	// write-path cascades still in place, a non-zero count is a bug signal).
+	// ones, drop empty husks. Idempotent; logs when it finds anything (the
+	// write paths reap inline, so a non-zero count here is a bug signal).
 	if _, err := db.Reap(context.Background()); err != nil {
 		log.Printf("reap: %v", err)
 	}

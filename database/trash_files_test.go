@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Files perspective of Trash (soft-delete.md): removed-blob listing + the
+// Files perspective of Trash (gc-model.md): removed-blob listing + the
 // per-file permanent delete (non-last repoints live appearances and keeps the
 // recording; last file cascade-prunes the whole recording).
 

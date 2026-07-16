@@ -8,19 +8,22 @@ license/guest on the recording, every file has a recording; the library lists
 tagsets and a track is addressed by `tagset_id` end-to-end (browse/search rows,
 player queue, hearts, playlists, renditions), with the play URL resolved
 server-side to the ladder-best surviving rendition. The hardlink lifecycle is
-live: the Trash permanent-delete cascades from the tagset (non-last drops just
-the appearance and keeps the blob; last takes the recording + all its files),
-renditions can be soft-removed (last one → dormant recording), and prune repairs
-blob-loss recordings and sweeps invalid ones. Review & upload are tagset-rooted:
+live and, since the [GC deletion model](gc-model.md), collector-based: deletes
+unlink one row kind, the Trash permanent-delete runs the purge composition
+(a recording losing its last appearance is reclaimed with its files),
+renditions can be soft-removed (last one → dormant recording), and the reaper
+converges whatever a crash or bug leaves unreferenced. Review & upload are tagset-rooted:
 uploads offer a draft appearance (byte-dups included), the queue classifies each
 submission (new recording / new appearance / no new bytes) and the moderator
 approves per-piece — with case-B drop-bytes (absorb-at-the-gate) and force-new
 (pinned split) overrides. P5 (recordings/files admin views) is **built**: the
 recordings curation view (both arms, selection-based merge, appearance
 move/set-primary, whole-recording trash [hard delete moved to the Trash page —
-`soft-delete.md`], editable license/guest) — now the Full Library › Recordings
-lens of Admin·Library (`/admin/library#recordings`) — and the physical file
-perspective, now the Full Library › Files lens. UX per the owner-signed mock of
+`gc-model.md`], editable license/guest) — now the Full Library › Recordings
+lens of Admin·Library (`/admin/library#recordings`). The physical file
+perspective is no longer a Full Library lens (retired, GC model P4): blobs are
+managed via the renditions arm, the maintenance surfaces, and Trash › Files.
+UX per the owner-signed mock of
 2026-07-07, which also resolved open point 1 (merge/move mechanics). Federation (P6) not started.
 This document is the reference design and the implementation plan.
 The resulting schema triangle (tables, FKs, multiplicities) is drawn in
@@ -115,8 +118,9 @@ appearance. Splitting that conflation is the migration's core.
    appearance the user picked), not the recording.
 5. **The lifecycle is tagset-centric** (the hardlink model above). Review,
    Trash, and the file-management surfaces list tagsets; restore restores a
-   tagset; the last-tagset hard delete cascades to the recording and its files;
-   prune garbage-collects invalid recordings. This **supersedes** the draft's
+   tagset; the last-tagset permanent delete reclaims the abandoned recording
+   and its files (the purge composition, [gc-model.md](gc-model.md)); the
+   reaper collects invalid recordings. This **supersedes** the draft's
    "blocked hard-delete + moderator override" guard entirely.
 6. **Upload & review are reworked around tagsets** — an upload *offers a
    tagset*; the moderator's queue classifies each submission (new recording /
@@ -126,16 +130,17 @@ appearance. Splitting that conflation is the migration's core.
    data-source-offered tagsets must be locally reviewable; design deferred to
    the [federation.md](federation.md) session. The P0 schema only reserves
    provenance.
-8. **The DB guarantees the invariants where it can**; every mutation is a
-   single transaction; prune is the enforcement backstop. Two new admin
+8. Every mutation is a single transaction, and **every new operation gets a
+   bulk API** ([docs/api/bulk.md](../api/bulk.md)). Two new admin
    perspectives — a **recordings view** and a **files view** — complement the
-   tagset surfaces; recording **merge and split** are wanted (mechanics still
-   open); **every new operation gets a bulk API** ([docs/api/bulk.md](../api/bulk.md)).
-9. **The cascade is symmetric** (follow-up decision, same review):
-   hard-deleting the **last file** of a recording cascades to the recording and
-   all its tagsets, behind a count-aware confirm — mirror of the last-tagset
-   rule. And **`license` / `guest_playable` move to `recordings`** in the P0
-   migration (one audio identity, one license).
+   tagset surfaces; recording **merge and split** are wanted. (The original
+   "DB guarantees the invariants, prune as enforcement backstop" half of this
+   decision is superseded: the [GC model](gc-model.md) replaced the
+   invariants with reaper convergence.)
+9. **`license` / `guest_playable` move to `recordings`** in the P0
+   migration (one audio identity, one license). (The "symmetric cascade"
+   half of this decision is superseded: under the GC model a recording losing
+   its last file has its appearances demoted to Trash, never destroyed.)
 
 ## Data model
 
@@ -237,21 +242,21 @@ migration collapses per-file values, conflicts resolved by the best rendition's
 values). The federation rule is untouched: access is a **local recording**
 property, never imported from a tagset.
 
-### Invariant enforcement
+### Convergence (the GC model)
 
-"If the DB can guarantee it, let it guarantee it":
+The original "≥ 1 file / ≥ 1 tagset" invariants and their trigger/backstop
+enforcement are superseded by the [GC deletion model](gc-model.md):
 
 - **Creation is atomic** — every path that creates a recording creates it *with*
   its first file and first tagset in one transaction (upload, import, split).
-- **Deletion is atomic** — the cascade ops below run the whole
-  last-tagset → recording → files chain in one transaction
-  (`_txlock=immediate`, the [bulk pattern](../api/bulk.md)).
-- **Triggers as a belt** where SQLite allows (e.g. reject a plain `DELETE` on
-  the last tagset of a recording outside the cascade op), app-layer checks as
-  suspenders.
-- **Prune is the backstop**: a standing sweep finds invalid recordings (zero
-  files, zero tagsets, dangling `recording_id`) and GCs them with a summary
-  report — nothing can rot silently even if a bug slips a violation through.
+- **Deletion never cascades** — request paths unlink/mark one row kind; the
+  Trash delete-forever endpoints run the purge composition
+  (`purge → reap → purge`) in one transaction (`_txlock=immediate`).
+- **The reaper converges**: a zero-reference recording is not corruption but
+  garbage — its children are demoted into Trash (visible, restorable) and
+  only bare husks are removed. Startup, the in-tx scoped reap, and the
+  post-prune backstop all run the same collector — nothing can rot silently
+  even if a bug strands a reference.
 
 ## Tagset identity (appearance dedup)
 
@@ -332,21 +337,21 @@ disk, nothing is lost, restore brings it all back. Soft delete never cascades.
 > The Trash **page** now has three perspectives over the same not-in-library
 > set — Appearances (this tagset mark), Recordings (whole recordings out of the
 > library), and Files (soft-removed blobs) — and is the **only** place permanent
-> delete happens. Full model: `docs/architecture/soft-delete.md`.
+> delete happens. Full model: `docs/architecture/gc-model.md`.
 
-### Hard delete (the cascade)
+### Hard delete (the purge composition)
 
-From Trash permanent-delete, single or bulk:
+From Trash permanent-delete, single or bulk (`purgeTagsetsTx`,
+purge → reap → purge — [gc-model.md](gc-model.md)):
 
-- **Non-last tagset** → delete the tagset row. Done.
-- **Last tagset** → delete the recording **and all its files** (rows + blobs,
-  via the existing storage-aware reclaim — symlinked externals are unlinked
-  only, per the data-sources invariant). The UI confirm is count-aware:
-  *"…also permanently removes the recording and its N files."*
+- **Non-last tagset** → purge the tagset row. Done.
+- **Last tagset** → the abandoned recording is reclaimed **with all its
+  files** (rows + blobs, via the existing storage-aware reclaim — symlinked
+  externals are unlinked only, per the data-sources invariant). The UI confirm
+  is count-aware: *"…also permanently removes the recording and its N files."*
 
-Both run in one transaction per batch + one summary audit row
-(`BulkHardDeleteTrashedByHashes` becomes tagset-id-based and folds the cascade
-into the same tx — the standing SQLITE_BUSY lesson).
+Both run in one transaction per batch + one summary audit row (the bulk path
+folds purge + scoped reap into the same tx — the standing SQLITE_BUSY lesson).
 
 ### Rendition removal (the file side)
 
@@ -455,14 +460,16 @@ each a single transaction, each with a bulk variant and one audit row:
 - `MoveTagset(tagset → recording)` — reassign a mis-attached appearance (the
   appearance-level split).
 - `SetPrimaryTagset(recording, tagset)`.
-- `RemoveTagset` / `RestoreTagset` (soft) and `HardDeleteTagsets` (the cascade).
+- `RemoveTagset` / `RestoreTagset` (soft) and the tagset purge
+  (`purgeTagsetsTx` — [gc-model.md](gc-model.md)).
 - `AddRendition(recording, file)` / `RemoveRendition` (soft; last one allowed →
-  dormant recording) / `HardDeleteFiles` (cascades on the last file).
-- `SoftDeleteRecording` / `HardDeleteRecording` — the whole-recording delete on
+  dormant recording) / the file purge (`HardDeleteRemovedFile`; a recording
+  losing its last file has its appearances demoted to Trash).
+- `TrashRecording` / `HardDeleteRecording` — the whole-recording delete on
   the recordings view: soft trashes **all** its tagsets (recording dormant,
-  fully reversible); hard removes the recording **with all tagsets and all
-  files** in one transaction, behind the count-aware confirm. The same cascade
-  the last-tagset/last-file rules reach piecemeal, offered directly.
+  fully reversible); hard purges the recording **with all tagsets and all
+  files** in one transaction, behind the count-aware confirm — the same purge
+  composition the last-tagset rule reaches piecemeal, offered directly.
 - `SplitRendition` — as today, plus: the split-off recording takes a **copy of
   the primary tagset** (so it is browsable); the moderator fixes tags after
   (the existing "split pairs with a tag fix" flow). Absorbed tagsets stay put
@@ -504,7 +511,7 @@ Deliberately **two perspectives** (owner accepts the added admin complexity):
   recording**
   (soft = trash all its tagsets; the whole recording then shows in the Trash
   page's Recordings lens). **Permanent delete lives only on the Trash page now**
-  (`soft-delete.md`): `/admin/library#recordings` does soft ops + curation, and every
+  (`gc-model.md`): `/admin/library#recordings` does soft ops + curation, and every
   hard delete — appearance, recording, or removed file — happens in the three
   Trash perspectives. **Merge is selection-based**:
   it lives only in the bulk bar, disabled until ≥2 recordings are ticked, so
@@ -592,6 +599,14 @@ Everything else (sync, trust model, union mechanics) belongs to the
 [federation.md](federation.md) design session.
 
 ## Phase plan (the decomposition)
+
+> **Build log.** The per-phase *Result* notes record what each phase shipped
+> **at the time**. The lifecycle/GC mechanics several of them name — invariant
+> triggers, `ReconcileTagsets`, the `hardDelete*Tx` cascades,
+> `SweepInvalidRecordings`, the hash-addressed Trash dialect — were later
+> replaced wholesale by the [GC deletion model](gc-model.md) (reap/purge,
+> tagset-/rendition-id addressing); that document, not this log, describes the
+> current deletion behavior.
 
 Sequenced so each phase lands green and behavior-identical until its feature
 switches on; P0+P1 are pure re-plumbing staged **before** any visible change so
@@ -824,19 +839,19 @@ regressions isolate to the data move.
 
     **The review-queue LEFT JOIN turned out unnecessary.** The appearance is
     born `approved` (a moderator curating is the reviewer), and no path produces
-    a blobless *draft* — every file-delete cascade drops or repoints referencing
-    tagsets before the row dies, so `origin_file_id` never reaches NULL on a
+    a blobless *draft* — a draft dies with its origin blob (the purge rule,
+    [gc-model.md](gc-model.md)), so `origin_file_id` never reaches NULL on a
     live draft. `review.go`'s INNER JOIN therefore never has to see a blobless
     row, and a blobless approved appearance is visible everywhere it must be:
     the library plays it via `bestRenditionJoin` (keyed on `recording_id`, the
     `orig` join is already LEFT), the recording detail reads `FROM tagsets`, and
     the Trash lens is tagset-rooted (P7c).
 
-  **Open decision:** whether P7b should *surface* orphan renditions in All
-  files (with a "no appearance" badge), or whether merge/absorb should stop
-  creating them — re-pointing the dropped appearance's `origin_file_id` at the
-  surviving blob, as `HardDeleteRemovedFile` already does
-  (`trash_files.go:190`). The second changes merge's behaviour; owner's call.
+  **Decided since (GC model):** `origin_file_id` is never re-pointed — it is
+  submission pairing, inert after approval, and a faked provenance would lie.
+  Orphan renditions are not surfaced in the live library either: a recording
+  with no appearances has its files quarantined by the reaper into
+  Trash › Files ([gc-model.md](gc-model.md)).
 
 - **P6 (deferred) — Federation.** Tagset sync, trust, union reconcile,
   peer-review steps — per the federation design session.
@@ -859,16 +874,17 @@ the api `fakeRepo`, `tests/js`, `tests/playwright`, `tests/k6`).
 - **Identity & meaningful rules (P0/P3):** table-driven — appearance dedup
   incl. the NULL disc/track cases; nameless-extra dropped on absorb but an
   upload's own null tagset kept.
-- **Cascade & GC matrix (P2, critical):** non-last tagset delete → row only;
-  last-tagset delete → recording + files gone, blobs reclaimed
-  (storage-aware: external symlinks unlinked, originals intact); bulk sets
-  mixing last/non-last in one tx; soft delete never cascades; restore
-  re-enters prior state; soft-removing the last rendition → dormant recording
-  (hidden, reversible); hard-deleting the last file cascades to recording +
-  tagsets; whole-recording soft delete trashes all its tagsets (reversible)
-  and hard delete removes recording + tagsets + files in one tx; prune repairs
-  a blob-loss recording and sweeps invalid recordings; invariants hold after
-  every operation (a generic post-op assertion helper).
+- **Purge & GC matrix (critical; GC model):** non-last tagset purge → row
+  only; last-tagset purge → the abandoned recording reclaimed with its files,
+  blobs freed (storage-aware: external symlinks unlinked, originals intact);
+  bulk sets mixing last/non-last in one tx; soft delete never cascades;
+  restore re-enters prior state; soft-removing the last rendition → dormant
+  recording (hidden, reversible); purging the last file demotes the
+  recording's appearances into Trash (never destroys them); whole-recording
+  soft delete trashes all its tagsets (reversible) and hard delete purges
+  recording + tagsets + files in one tx; prune purges a blob-loss file and
+  the reap converges what that strands; the safety/convergence assertions
+  hold after every operation (`assertInvariants`).
 - **Absorb (P3):** happy path, atomic rollback on injected failure, drop rule,
   dedup no-op, authz (403/400/404/409), one audit row.
 - **Review classification (P4):** cases A/B/C derived correctly (fingerprint,
@@ -880,7 +896,7 @@ the api `fakeRepo`, `tests/js`, `tests/playwright`, `tests/k6`).
 - **Visibility & access (P1):** N-tagset recording = N library tracks, each
   playing the ladder-best blob; zero-surviving-rendition recording hidden,
   restore re-surfaces; a tagset can never widen access.
-- **Concurrency (P2/P3):** cascade + absorb + bulk under `_txlock=immediate`,
+- **Concurrency (P2/P3):** purge + absorb + bulk under `_txlock=immediate`,
   no `SQLITE_BUSY` (`database/busy_test.go`).
 - **Client (P3–P5):** `tests/js` for the selection/classification arithmetic
   as pure functions; Playwright end-to-end — absorb → song appears under both
@@ -923,7 +939,8 @@ Per the project's prune-legacy rule, each doc is updated when its phase ships
   tagset.
 - [moderation.md](moderation.md) — ✅ rewritten at P4 (tagset queue,
   classification cases A/B/C, per-piece approve, states on tagsets).
-- [soft-delete.md](soft-delete.md) — tagset-level Trash + the cascade at P2.
+- [gc-model.md](gc-model.md) — the content lifecycle: Trash, restore, purge,
+  and the reaper (absorbed the former soft-delete.md).
 - [license-access.md](license-access.md) — license/guest on the recording (P0).
 - [file-management-view.md](file-management-view.md) — tagset scopes at P1,
   files scope at P5.
@@ -947,10 +964,11 @@ Per the project's prune-legacy rule, each doc is updated when its phase ships
   'approved'`) is joined in many places; its replacement (approved non-trashed
   tagset + surviving rendition) must be a single shared fragment again, or the
   surfaces will drift.
-- All hard-delete entry points (Trash permanent single, bulk, prune) must go
-  through the **same cascade op** — a second code path reintroduces the orphan
-  risk the invariant exists to prevent, and the bulk path must fold the
-  cascade into its one transaction (SQLITE_BUSY lesson).
+- All permanent-delete entry points (Trash single, bulk, prune) must go
+  through the **purge primitives** (`database/purge.go`) — a second
+  row-destroying code path reintroduces exactly the stranded-row risk the GC
+  model exists to prevent, and a bulk path must fold purge + scoped reap into
+  its one transaction (SQLITE_BUSY lesson).
 - The required-name default for a tagset `title` has no filename to fall back
   to once the origin blob is gone — acceptable because an upload's own tagset
   is created while the file exists, and absorbed nameless tagsets are dropped;

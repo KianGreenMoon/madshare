@@ -1,6 +1,6 @@
 package api
 
-// Trash Recordings + Files perspective handler tests (soft-delete.md): DTO
+// Trash Recordings + Files perspective handler tests (gc-model.md): DTO
 // shaping, id pass-through to the repo, and the outcome→status mapping.
 
 import (
