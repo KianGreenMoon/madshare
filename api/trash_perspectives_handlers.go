@@ -261,17 +261,14 @@ func (h *handler) trashFilesBulk(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// decodeBulkIDs parses the shared bulk body for the id-addressed bulk
-// endpoints: {action, ids} (a non-empty id list within the cap) or
+// decodeBulkIDs parses the shared bulk body for the Trash bins' id-addressed
+// bulk endpoints: {action, ids} (a non-empty id list within the cap) or
 // {action, all:true} (the whole bin — the UI's "Select all N"; the handler
-// resolves the id set server-side). ids and all are mutually exclusive. The
-// caller passes its allowed actions (default: restore, delete — the Trash
-// bins' pair). It writes the error response itself and returns ok=false on
-// any problem.
-func decodeBulkIDs(w http.ResponseWriter, r *http.Request, actions ...string) (action string, ids []int64, all bool, ok bool) {
-	if len(actions) == 0 {
-		actions = []string{"restore", "delete"}
-	}
+// resolves the id set server-side). ids and all are mutually exclusive.
+// Allowed actions: restore, delete. It writes the error response itself and
+// returns ok=false on any problem.
+func decodeBulkIDs(w http.ResponseWriter, r *http.Request) (action string, ids []int64, all bool, ok bool) {
+	actions := []string{"restore", "delete"}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req struct {
 		Action string  `json:"action"`

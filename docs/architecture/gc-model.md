@@ -1,7 +1,8 @@
 # The GC deletion model — unlink, derive, reap, purge
 
 Status: **agreed design** (owner decision 2026-07-15); phases P1 (reaper),
-P2 (unlink-only write paths) and P3 (demotions) implemented, P4–P5 pending.
+P2 (unlink-only write paths), P3 (demotions) and P4 (UI) implemented,
+P5 (docs fold) pending.
 Once implemented, this document is the durable reference for the content
 lifecycle; it supersedes the *cascade* deletion philosophy described in
 [soft-delete.md](soft-delete.md) and the invariants section of
@@ -325,9 +326,15 @@ Each phase leaves the system running; tests accompany each phase.
   live renditions by `files.deleted_at` — no delete/restore logic reads
   `origin_file_id` any longer (it remains submission pairing + inert audit
   data, per the rule above).
-- **P4 — UI.** Retire the Files lens from Full Library curation; keep
-  Trash › Files (the quarantine window) and a maintenance surface
-  (verification, prune, dedup stats, rare per-rendition removal).
+- **P4 — UI (DONE 2026-07-16).** The Files lens is retired from Full Library
+  curation (`library-files.js` deleted; the scope is three lenses: By entity ·
+  All Appearances · Recordings). Its exclusive backend went with it:
+  `POST /api/admin/renditions/bulk` + `LiveFileIDs` + `BulkRemoveRenditions`
+  (the per-id `renditions/{id}/{remove,restore}` pair stays — the Recordings
+  lens's renditions arm and `/admin/duplicates` use it). Blobs now surface
+  only where the model says they belong: the maintenance surfaces (prune,
+  duplicates, the renditions arm) and **Trash › Files** — the quarantine
+  window, unchanged.
 - **P5 — docs.** Fold the surviving content of `soft-delete.md` into this
   document's terms; update `files-recording-tagsets.md`'s invariants section;
   update `recordings.md` / `recording-tagsets.md` / `moderation.md`

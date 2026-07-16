@@ -337,7 +337,6 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(moderate).Post("/tagsets/{tagsetID}/move", h.tagsetMove)
 		r.With(fileDelete).Post("/tagsets/{tagsetID}/restore", h.tagsetRestore)
 		r.With(fileDelete).Delete("/tagsets/{tagsetID}", h.tagsetHardDelete)
-		r.With(fileDelete).Post("/renditions/bulk", h.renditionsBulk)
 		r.With(fileDelete).Post("/renditions/{fileID}/remove", h.renditionRemove)
 		r.With(fileDelete).Post("/renditions/{fileID}/restore", h.renditionRestore)
 		r.With(fileDelete).Delete("/renditions/{fileID}", h.renditionHardDelete)

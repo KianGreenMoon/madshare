@@ -1,10 +1,12 @@
-// Admin · Full Library — the live-library scope of the Library page, four
-// lenses over the same live set (mirroring the Trash scope's perspectives):
+// Admin · Full Library — the live-library scope of the Library page, three
+// lenses over the same live set:
 //   By entity        artist → album → track drill-down (rename / merge / cover)
 //   All Appearances  every live appearance (the shared file-list.js component,
 //                    keyed by tagset id — the descriptive/admin table)
 //   Recordings       the recording-centric curation view (recordings.js)
-//   Files            the physical blob-grain lens (library-files.js)
+// Files are not a curation object (GC model): blobs appear only on the
+// maintenance surfaces (prune, duplicates, the Recordings lens's renditions
+// arm) and in Trash › Files.
 // The page's shared preview player is injected as `play`; `perms` gates the
 // actions. Design: docs/architecture/file-management-view.md.
 import {
@@ -16,9 +18,8 @@ import { createFileList } from '../file-list.js';
 import { TRASH_ICON } from '../icons.js';
 import { discKey, discLabel, isMultiDisc } from '../disc.js';
 import { createRecordingsView } from './recordings.js';
-import { createLibraryFiles } from './library-files.js';
 
-// createFilesScope builds the "Full Library" scope: the four lenses above
+// createFilesScope builds the "Full Library" scope: the three lenses above
 // behind one sub-tab switch (#libModeSwitch), coordinated like the Trash scope.
 export function createFilesScope({ play, perms }) {
 let canEditMeta = perms.includes('metadata.edit');  // metadata + access edit + rename/merge
@@ -119,7 +120,8 @@ async function appearancesBulkApplyAll(filter, patch) {
 // preview. Access is a summary column edited per row (recording-level);
 // editing tags happens in the per-row Edit modal and the bulk Edit-tags modal.
 // Selection + bulk actions (Move to Trash, Edit tags…) are gated on the
-// relevant permission. The physical blob view is the Files lens.
+// relevant permission. Blobs are curated on the Recordings lens's renditions
+// arm; removed blobs live on Trash › Files.
 function appearancesScope() {
   return {
     title: 'All Appearances',
@@ -794,19 +796,17 @@ function deleteArtist(a) {
 }
 
 // ── Sub-mode coordinator (mirrors the Trash scope's) ─────────────────────────
-// Four lenses over the live library, swapped in place. Each mounts lazily on
+// Three lenses over the live library, swapped in place. Each mounts lazily on
 // first open and reloads on re-show. The Recordings lens is offered only to
 // content.moderate holders (its page-gate before the move under Full Library).
 fileList = createFileList(appearancesScope());
 
 const recordings = canModerate ? createRecordingsView({ play, perms }) : null;
-const libFiles = createLibraryFiles({ host: document.getElementById('libFilesList'), play, perms });
 
 const modes = [
   { id: 'entity', label: 'By entity', panel: 'libMode-entity', ctrl: { mount: () => loadEntityArtists(), reload: () => reloadEntityLevel() } },
   { id: 'appearances', label: 'All Appearances', panel: 'libMode-appearances', ctrl: { mount: () => fileList.mount(document.getElementById('fileListAppearances')), reload: () => fileList.reload() } },
   ...(recordings ? [{ id: 'recordings', label: 'Recordings', panel: 'libMode-recordings', ctrl: recordings }] : []),
-  { id: 'files', label: 'Files', panel: 'libMode-files', ctrl: libFiles },
 ];
 const mounted = new Set();
 let activeMode = null;

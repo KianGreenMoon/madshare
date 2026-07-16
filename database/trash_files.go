@@ -101,14 +101,6 @@ func (db *DB) RemovedFileIDsByFilter(ctx context.Context, f FileFilter) ([]int64
 		`SELECT f.id FROM files f`+tagsetJoin+` WHERE `+where+` ORDER BY f.id`, args...))
 }
 
-// LiveFileIDs returns the id of every live (non-removed) blob, ordered by id —
-// the Full Library Files lens's "select all N" bulk target (body
-// {action:"remove", all:true} on /api/admin/renditions/bulk).
-func (db *DB) LiveFileIDs(ctx context.Context) ([]int64, error) {
-	return scanIDs(db.QueryContext(ctx,
-		`SELECT id FROM files WHERE deleted_at IS NULL ORDER BY id`))
-}
-
 // BulkRestoreRemovedFiles clears the removal mark on the given blobs in one
 // guarded UPDATE — the Files "Restore selected". Non-removed / unknown ids are
 // no-ops. Returns the count restored. A dormant recording whose rendition is

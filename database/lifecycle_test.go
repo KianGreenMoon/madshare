@@ -311,42 +311,6 @@ func TestRemoveRendition_NonLastLeavesRecordingVisible(t *testing.T) {
 	assertInvariants(t, db)
 }
 
-// TestBulkRemoveRenditions: the Files lens's "Remove selected" — one guarded
-// UPDATE over the id list; already-removed and unknown ids are no-ops.
-func TestBulkRemoveRenditions(t *testing.T) {
-	db := openMem(t)
-	ctx := context.Background()
-
-	f1 := insertApproved(t, db, hash64("b5"), "one.flac")
-	f2 := insertApproved(t, db, hash64("c6"), "two.mp3")
-	f3 := insertApproved(t, db, hash64("d7"), "three.ogg")
-
-	// f3 is already removed; 99999 doesn't exist — neither counts.
-	if found, err := db.RemoveRendition(ctx, f3.ID); err != nil || !found {
-		t.Fatalf("pre-remove f3: found=%v err=%v", found, err)
-	}
-	// LiveFileIDs is the "select all N" target set: exactly the non-removed ids.
-	if ids, err := db.LiveFileIDs(ctx); err != nil || len(ids) != 2 || ids[0] != f1.ID || ids[1] != f2.ID {
-		t.Errorf("LiveFileIDs = %v (err %v), want [%d %d]", ids, err, f1.ID, f2.ID)
-	}
-	n, err := db.BulkRemoveRenditions(ctx, []int64{f1.ID, f2.ID, f3.ID, 99999})
-	if err != nil {
-		t.Fatalf("bulk remove: %v", err)
-	}
-	if n != 2 {
-		t.Errorf("bulk remove count=%d, want 2 (already-removed + unknown are no-ops)", n)
-	}
-	if live := countRow(t, db, `SELECT COUNT(*) FROM files WHERE deleted_at IS NULL`); live != 0 {
-		t.Errorf("live file count=%d after bulk remove, want 0", live)
-	}
-	assertInvariants(t, db)
-
-	// Empty list is a no-op, not an error.
-	if n, err := db.BulkRemoveRenditions(ctx, nil); err != nil || n != 0 {
-		t.Errorf("empty bulk remove: n=%d err=%v, want 0/nil", n, err)
-	}
-}
-
 // TestHardDeleteFile_LastFileTrashesAppearances exercises the file-side
 // (prune blob-loss) direction under the GC model: removing a non-last file
 // leaves the recording; removing the last file leaves the recording file-less,

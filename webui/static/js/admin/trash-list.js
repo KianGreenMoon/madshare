@@ -1,6 +1,6 @@
 // The lean shared list backing the file/recording-grain lenses: the Trash
-// Recordings and Files sub-modes (soft-delete.md) and the Full Library Files
-// lens. All the same shape: a paged {total, items} bin with per-row icon
+// Recordings and Files sub-modes (docs/architecture/gc-model.md).
+// All the same shape: a paged {total, items} bin with per-row icon
 // actions (+ optional Play), an optional checkbox column + bulk bar, and a
 // "Load more" footer. Bespoke on purpose — the Appearances lenses keep the
 // full file-list.js component; these only need a simple table, so this stays

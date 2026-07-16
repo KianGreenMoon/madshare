@@ -520,15 +520,13 @@ Deliberately **two perspectives** (owner accepts the added admin complexity):
   `#recordings-<id>` deep-links one recording expanded), offered to
   `content.moderate` holders, wired to the Library page's shared preview
   player; the dashboard card deep-links it. `nowebui` compiles the page out.
-- **Files view — the physical perspective** is the **Files lens** of the same
-  scope (Full Library › Files, `library-files.js` over the lean
-  `trash-list.js` core): every live blob with storage **backend**, size,
-  upload time, the **recording link** (`#recordings-<id>`), Play, and a
-  reversible **Remove** (`file.delete`) — per row and as a select-all bulk
-  (`POST /api/admin/renditions/bulk`, `{action:"remove", ids}` or
-  `{action:"remove", all:true}` for the whole set). Soft-removed blobs
-  (absorbed/dormant) live exactly one place — **Trash › Files** — so there is
-  no "show removed" toggle anywhere.
+- **Files — the physical perspective — is not a Full Library lens** (GC model
+  P4, [gc-model.md](gc-model.md)): live blobs are curated through the
+  Recordings lens's renditions arm (per-rendition Play / Remove / Restore,
+  `POST /api/admin/renditions/{id}/{remove,restore}`) and the maintenance
+  surfaces (prune, `/admin/duplicates`). Soft-removed blobs (absorbed/dormant)
+  live exactly one place — **Trash › Files**, the quarantine window — so
+  there is no "show removed" toggle anywhere.
 
 `/admin/duplicates` stays as the focused dedup workbench (multi-rendition
 recordings + absorb).
@@ -732,16 +730,14 @@ regressions isolate to the data move.
   trash), `GET/DELETE /recordings/{id}` (+ `/primary`, `/trash`, PATCH
   `/access`), `POST /tagsets/{id}/move`, `POST /tagsets/{id}/restore`, `DELETE
   /tagsets/{id}` (409 on a live appearance), `POST /renditions/{id}/{remove,
-  restore}`, `POST /renditions/bulk` (`{action:"remove", ids}` xor
-  `{…, all:true}` — the Files lens's Remove selected / Select all N); gates:
+  restore}`; gates:
   curation = `content.moderate`, deletes = `file.delete`,
   access = `metadata.edit`. UI: bespoke `admin/recordings.js` (windowed
   virtual-list page scroll, expandable two-arm cards, merge/move/access
   modals), a mountable factory serving the Full Library › Recordings lens of
   Admin·Library on the page's shared player (`#recordings` /
-  `#recordings-<id>` deep links; dashboard card); the physical blob
-  perspective is the Full Library › Files lens (`library-files.js`: backend,
-  size, recording link, reversible Remove).
+  `#recordings-<id>` deep links; dashboard card). (The Files lens this phase
+  also shipped was later retired — GC model P4, [gc-model.md](gc-model.md).)
   *Result: full curation from every perspective — verified live (merge / move
   refusals / dormancy round-trip / show-removed / whole-recording deletes /
   browser smoke with zero console errors).*

@@ -308,53 +308,6 @@ func TestRenditionRemoveRestore(t *testing.T) {
 	}
 }
 
-func TestRenditionsBulk(t *testing.T) {
-	// Remove selected — the Files lens's bulk soft-remove.
-	repo := &fakeRepo{}
-	h := &handler{repo: repo}
-	rr := httptest.NewRecorder()
-	h.renditionsBulk(rr, postJSON("/api/admin/renditions/bulk", `{"action":"remove","ids":[5,6]}`))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("remove status = %d, want 200", rr.Code)
-	}
-	if len(repo.bulkRemoveRendIDs) != 2 || repo.bulkRemoveRendIDs[1] != 6 {
-		t.Errorf("remove ids = %v, want [5 6]", repo.bulkRemoveRendIDs)
-	}
-
-	// Only "remove" is a known action here.
-	rr = httptest.NewRecorder()
-	h.renditionsBulk(rr, postJSON("/api/admin/renditions/bulk", `{"action":"restore","ids":[5]}`))
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("restore action: status = %d, want 400", rr.Code)
-	}
-
-	// Empty id list → 400.
-	rr = httptest.NewRecorder()
-	h.renditionsBulk(rr, postJSON("/api/admin/renditions/bulk", `{"action":"remove","ids":[]}`))
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("empty ids: status = %d, want 400", rr.Code)
-	}
-
-	// all:true resolves every live blob server-side ("Select all N").
-	repo = &fakeRepo{liveFileIDs: []int64{1, 2, 3}}
-	h = &handler{repo: repo}
-	rr = httptest.NewRecorder()
-	h.renditionsBulk(rr, postJSON("/api/admin/renditions/bulk", `{"action":"remove","all":true}`))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("all: status = %d, want 200", rr.Code)
-	}
-	if len(repo.bulkRemoveRendIDs) != 3 {
-		t.Errorf("all: remove ids = %v, want the 3 live ids", repo.bulkRemoveRendIDs)
-	}
-
-	// ids and all are mutually exclusive → 400.
-	rr = httptest.NewRecorder()
-	h.renditionsBulk(rr, postJSON("/api/admin/renditions/bulk", `{"action":"remove","ids":[1],"all":true}`))
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("ids+all: status = %d, want 400", rr.Code)
-	}
-}
-
 func TestTagsetRestore(t *testing.T) {
 	repo := &fakeRepo{}
 	h := &handler{repo: repo}

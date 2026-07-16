@@ -508,8 +508,6 @@ type fakeRepo struct {
 	accessNotFound        bool
 	removeRendID          int64
 	restoreRendID         int64
-	bulkRemoveRendIDs     []int64
-	liveFileIDs           []int64
 	trashedRecordingIDs   []int64
 	rendNotFound          bool
 
@@ -1059,15 +1057,6 @@ func (f *fakeRepo) RemoveRendition(_ context.Context, fileID int64) (bool, error
 func (f *fakeRepo) RestoreRendition(_ context.Context, fileID int64) (bool, error) {
 	f.restoreRendID = fileID
 	return !f.rendNotFound, nil
-}
-
-func (f *fakeRepo) BulkRemoveRenditions(_ context.Context, fileIDs []int64) (int, error) {
-	f.bulkRemoveRendIDs = fileIDs
-	return len(fileIDs), nil
-}
-
-func (f *fakeRepo) LiveFileIDs(_ context.Context) ([]int64, error) {
-	return f.liveFileIDs, nil
 }
 
 func (f *fakeRepo) TrashedRecordingIDs(_ context.Context) ([]int64, error) {

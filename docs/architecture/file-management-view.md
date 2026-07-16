@@ -14,14 +14,15 @@ over the same set (live / not-in-library respectively):
 | By entity | ✓ (drill-down, rename/merge/cover) | – | entity |
 | Appearances | ✓ **All Appearances** (`file-list.js`) | ✓ (`file-list.js`) | tagset |
 | Recordings | ✓ (`admin/recordings.js`, curation view) | ✓ (`trash-recordings.js`) | recording |
-| Files | ✓ (`library-files.js`) | ✓ (`trash-files.js`) | blob |
+| Files | – (not a curation object, gc-model.md) | ✓ (`trash-files.js`) | blob |
 
 The Recordings and Files lenses are **bespoke** (the file/recording-grain lists
 share the lean `admin/trash-list.js` core; the Full Library Recordings lens is
 the recording-centric curation view, recording-tagsets P5, reached at
-`/admin/library#recordings`). Each state has exactly one home: live blobs on
-Full Library › Files, soft-removed blobs on Trash › Files — there is no
-"show removed" toggle.
+`/admin/library#recordings`). Files are **not curated in Full Library** (GC
+model P4): live blobs are managed through the Recordings lens's renditions arm
+and the maintenance surfaces (prune, `/admin/duplicates`); soft-removed blobs
+have exactly one home, Trash › Files — the quarantine window.
 
 This is the reference for the shipped system. It unified the former standalone
 `/admin/files`, `/admin/moderation`, `/admin/trash`, and `/admin/recordings`
@@ -208,7 +209,7 @@ scopes the admin can use (Review needs `content.moderate`, Trash needs
 `createFilesScope` / `createReviewScope` / `createTrashScope` (in
 `admin/files.js` / `moderation.js` / `trash.js`) — and all scope/lens modals
 coexist in `library.html`. `createFilesScope` is itself the Full Library
-coordinator: it builds the four lenses (the Recordings lens only for
+coordinator: it builds the three lenses (the Recordings lens only for
 `content.moderate` holders — `createRecordingsView` in `admin/recordings.js`,
 refactored from the former standalone page into a mountable factory using the
 page's shared player) behind the `#libModeSwitch` sub-tabs, mirroring the Trash
@@ -216,8 +217,8 @@ sub-switch.
 
 **Hash routing:** `#review` / `#trash` pick a scope (the dashboard cards);
 `#recordings` opens Full Library › Recordings and `#recordings-<id>` also
-searches + expands that recording — the `#recording →` links on the Files
-lenses (both pages) use this form. `library.js` listens on `hashchange`, so an
+searches + expands that recording — the `#recording →` links on Trash › Files
+use this form. `library.js` listens on `hashchange`, so an
 in-page link switches lenses without a reload.
 
 ## Out of scope (the entity axis)

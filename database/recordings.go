@@ -398,39 +398,6 @@ func (db *DB) RemoveRendition(ctx context.Context, fileID int64) (bool, error) {
 	return n > 0, nil
 }
 
-// BulkRemoveRenditions soft-removes the given live blobs in one guarded UPDATE
-// per chunk — the Full Library Files lens's "Remove selected" (the bulk twin of
-// RemoveRendition, same semantics: bytes kept, restorable from Trash › Files,
-// a recording losing its last rendition goes dormant). Already-removed /
-// unknown ids are no-ops. Returns the count removed.
-func (db *DB) BulkRemoveRenditions(ctx context.Context, fileIDs []int64) (int, error) {
-	if len(fileIDs) == 0 {
-		return 0, nil
-	}
-	now := time.Now().Unix()
-	removed := 0
-	const chunk = 400
-	for i := 0; i < len(fileIDs); i += chunk {
-		batch := fileIDs[i:min(i+chunk, len(fileIDs))]
-		ph := make([]string, len(batch))
-		args := make([]any, 0, len(batch)+1)
-		args = append(args, now)
-		for j, id := range batch {
-			ph[j] = "?"
-			args = append(args, id)
-		}
-		res, err := db.ExecContext(ctx,
-			`UPDATE files SET deleted_at = ? WHERE deleted_at IS NULL AND id IN (`+strings.Join(ph, ",")+`)`,
-			args...)
-		if err != nil {
-			return 0, fmt.Errorf("bulk remove renditions: %w", err)
-		}
-		n, _ := res.RowsAffected()
-		removed += int(n)
-	}
-	return removed, nil
-}
-
 // RestoreRendition clears a rendition's removal mark (files.deleted_at), bringing
 // the blob back as a playable rendition of its recording; a recording that went
 // dormant when its last rendition was removed re-enters the library. Returns

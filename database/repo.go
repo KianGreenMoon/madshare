@@ -72,10 +72,6 @@ type Repository interface {
 	ListRemovedFilesPage(ctx context.Context, q FileListQuery) ([]*FileListEntry, error)
 	CountRemovedFiles(ctx context.Context, f FileFilter) (int, error)
 	RemovedFileIDsByFilter(ctx context.Context, f FileFilter) ([]int64, error)
-
-	// LiveFileIDs resolves the Full Library Files lens's "select all N" set:
-	// every non-removed blob id.
-	LiveFileIDs(ctx context.Context) ([]int64, error)
 	BulkRestoreRemovedFiles(ctx context.Context, fileIDs []int64) (restored int, err error)
 	HardDeleteRemovedFile(ctx context.Context, fileID int64) (blobs []DeletedBlob, found bool, err error)
 	BulkHardDeleteRemovedFiles(ctx context.Context, fileIDs []int64) (deleted int, blobs []DeletedBlob, err error)
@@ -431,10 +427,6 @@ type Repository interface {
 	// per-row actions. found is false when no matching live/removed file exists.
 	RemoveRendition(ctx context.Context, fileID int64) (bool, error)
 	RestoreRendition(ctx context.Context, fileID int64) (bool, error)
-
-	// BulkRemoveRenditions soft-removes the given live blobs (the Files lens's
-	// "Remove selected"); already-removed / unknown ids are no-ops.
-	BulkRemoveRenditions(ctx context.Context, fileIDs []int64) (removed int, err error)
 
 	// IsDuplicateSubmission reports whether the file duplicates already-approved
 	// content (recordings P3): by fingerprint/recording when one exists, else a

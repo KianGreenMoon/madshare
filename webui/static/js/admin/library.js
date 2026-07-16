@@ -1,6 +1,6 @@
 // Admin · Library — the unified file-management page. One page, one scope switch
 // (Full Library · Review · Trash), one shared preview player. Each scope is a
-// factory (files.js builds Full Library's four lenses over file-list.js and the
+// factory (files.js builds Full Library's three lenses over file-list.js and the
 // bespoke modules); this module owns the page: it boots auth once, creates the
 // shared player, builds the available scopes, routes the location hash
 // (#review, #trash, #recordings, #recordings-<id>), and swaps panels in place
