@@ -247,6 +247,7 @@ export function createFileList(scope) {
     _editor = createTrackEditor({
       patchURL: scope.editPatchURL,
       detailURL: scope.editDetailURL,
+      suggestURL: scope.suggestURL,
       note: scope.editNote || '',
       checkAuth: scope.handleAuthError,
       access: scope.accessEditable

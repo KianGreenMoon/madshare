@@ -121,6 +121,11 @@ type handler struct {
 	// limiter, when non-nil, gates concurrent uploads (global + per-user). Nil
 	// disables the gate (tests / unlimited config).
 	limiter *UploadLimiter
+	// blobReg resolves a content hash to its on-disk path across storages
+	// (local, then links) — the tag-suggestion sources re-read blobs through it,
+	// same precedence as the /files server. Never nil (Deps.blobStorages falls
+	// back to a local-only registry).
+	blobReg *storages.Registry
 	// uiConfig backs GET /api/ui/config (the upload page's worker controls).
 	// Nil-safe: getUIConfig falls back to config.DefaultUIConfig() when unset.
 	uiConfig *config.UIConfig

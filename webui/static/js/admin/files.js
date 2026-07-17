@@ -148,6 +148,7 @@ function appearancesScope() {
     selectable: () => canEditMeta || canDelete,
     editPatchURL: canEditMeta ? (f => `${API}/api/admin/tagsets/${f.tagset_id}/metadata`) : undefined,
     editDetailURL: canEditMeta ? (f => `${API}/api/admin/tagsets/${f.tagset_id}/metadata`) : undefined,
+    suggestURL: canEditMeta ? (f => `${API}/api/tagsets/${f.tagset_id}/suggestions`) : undefined,
     editNote: 'Edits one appearance’s tags, and reclassifies just that appearance. ' +
               'To rename a whole album or artist (cover and tracks stay attached), use Rename in the By-entity view.',
     saveAccess: canEditMeta ? saveAppearanceAccess : undefined,

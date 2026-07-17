@@ -961,6 +961,61 @@ input[type="range"]::-moz-range-thumb {
 .modal-backdrop.is-stacked { z-index: 110; background: rgba(0,0,0,0.45); }
 .edit-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
 .edit-grid-2 .span-2 { grid-column: 1 / -1; }
+/* Tag-suggestions panel (track-edit.js "Suggest tags…"): one chip per source,
+   a charset override for the local sources, and a current-vs-suggested field
+   table whose changed rows are highlighted. */
+.suggest-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-3); }
+.suggest-chip {
+  padding: var(--space-1) var(--space-3);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.suggest-chip.is-active { border-color: var(--accent); color: var(--accent); }
+.suggest-chip:disabled { opacity: 0.5; cursor: default; }
+.suggest-charset {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.suggest-charset select {
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: inherit;
+  font-size: 13px;
+}
+.suggest-body { max-height: 50vh; overflow-y: auto; }
+.suggest-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.suggest-table th,
+.suggest-table td {
+  text-align: left;
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.suggest-table th { color: var(--text-muted); font-weight: 500; }
+.suggest-table .suggest-cur { color: var(--text-muted); }
+.suggest-table tr.is-diff .suggest-val { color: var(--accent); font-weight: 600; }
+.suggest-use {
+  padding: 0 var(--space-2);
+  background: none;
+  border: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+.suggest-use:hover { text-decoration: underline; }
+.suggest-empty { color: var(--text-muted); font-size: 13px; margin: 0; }
 .login-form {
   display: flex;
   flex-direction: column;

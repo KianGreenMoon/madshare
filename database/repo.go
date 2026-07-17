@@ -483,6 +483,11 @@ type Repository interface {
 	// with the given content hash. Returns ErrFileNotFound when no file matches.
 	FileMetadataByHash(ctx context.Context, hash string) (*MediaMetadata, error)
 
+	// TagsetSuggestSubject loads the origin-blob identity + analysis facts behind
+	// one appearance for the tag-suggestion endpoint
+	// (docs/architecture/tag-suggestions.md). found is false on an unknown id.
+	TagsetSuggestSubject(ctx context.Context, tagsetID int64) (*SuggestSubject, bool, error)
+
 	// --- Playlists & favorites (docs/api/playlists.md) ---
 	// All playlist methods are scoped to userID; a playlist id belonging to a
 	// different user yields ErrPlaylistNotFound (mapped to 404, never 403).

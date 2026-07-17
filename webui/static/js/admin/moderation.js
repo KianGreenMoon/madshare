@@ -211,6 +211,7 @@ export function createReviewScope({ play, perms }) {
   const editor = createTrackEditor({
     patchURL: f => `${API}/api/admin/moderation/${f.tagset_id}/metadata`,
     detailURL: f => `${API}/api/admin/moderation/${f.tagset_id}/metadata`,
+    suggestURL: f => `${API}/api/tagsets/${f.tagset_id}/suggestions`,
     note: 'Edits this appearance’s tags before approval.',
     checkAuth: handleAuthError,
     onSaved: (f, data) => {

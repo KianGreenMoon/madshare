@@ -1,11 +1,17 @@
 # Tag suggestions — multi-source tagsets
 
-**Status:** designed 2026-07-17, not yet implemented. Owner decisions (consult
-round): providers for v1 = **MusicBrainz via AcoustID** (local ID3v1/ID3v2
-always included); external lookups are **user-triggered only** (never at
-ingest, never auto-applied); ID3v1 charset handling = **auto-detect with a
-manual override + live preview**; provider configuration lives in the
-**settings table / `/admin/settings`** (runtime, no restart). Builds on the
+**Status:** P0 (local sources) implemented and live-verified 2026-07-17: the
+`tagsource` package with the `id3v2`/`id3v1` providers, `media.ReadID3v1` +
+charset detect/override (`media/charset.go`), `GET
+/api/tagsets/{id}/suggestions`, and the `track-edit.js` "Suggest tags…" panel
+(wired in My uploads, moderation, Recordings lens, All Appearances). P1
+(MusicBrainz via AcoustID) and P2 (text-search fallback) not started. Owner
+decisions (consult round): providers for v1 = **MusicBrainz via AcoustID**
+(local ID3v1/ID3v2 always included); external lookups are **user-triggered
+only** (never at ingest, never auto-applied); ID3v1 charset handling =
+**auto-detect with a manual override + live preview**; provider configuration
+lives in the **settings table / `/admin/settings`** (runtime, no restart).
+Builds on the
 fingerprint pass (`docs/architecture/recordings.md` P0) and the shared edit
 modal (`track-edit.js`). Federation-relevant: a future "top tagsets from peers"
 source is just another provider behind the same interface.

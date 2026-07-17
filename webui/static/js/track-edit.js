@@ -36,6 +36,17 @@ export const EXTENDED_FIELDS = [
   ['comment', 'Comment', 'textarea', 'span'],
 ];
 
+// Every field the suggestions panel can diff/apply, in display order — the
+// base tags plus the track number plus the extended set above.
+const SUGGEST_FIELDS = [
+  ['title', 'Title'],
+  ['artist', 'Artist'],
+  ['album_artist', 'Album artist'],
+  ['album', 'Album'],
+  ['track_number', 'Track number'],
+  ...EXTENDED_FIELDS.map(([key, label]) => [key, label]),
+];
+
 /**
  * createTrackEditor builds the modal(s) (hidden) and returns its controls.
  *
@@ -46,6 +57,13 @@ export const EXTENDED_FIELDS = [
  *                                  the "Extended edit" wide modal; omit for
  *                                  base-fields-only editing.
  * @param {string}   [opts.note]    Explanatory text shown under the base fields.
+ * @param {Function} [opts.suggestURL] (file) => string|null — GET endpoint returning
+ *                                  candidate tagsets (/api/tagsets/{id}/suggestions).
+ *                                  Enables the "Suggest tags…" panel: source chips
+ *                                  (ID3v2 / ID3v1 / services) with a current-vs-
+ *                                  suggested diff table, per-field apply and a
+ *                                  charset override for the local sources. Return
+ *                                  null for rows that carry no tagset id.
  * @param {Function} [opts.checkAuth] (Response) => bool — return true when the
  *                                  response was an auth failure the caller
  *                                  already handled (the operation is abandoned).
@@ -66,7 +84,7 @@ export const EXTENDED_FIELDS = [
  */
 export function createTrackEditor({ patchURL, createURL = null, detailURL = null, note = '',
   create = false, createTitle = 'Add appearance', createNote = '', onCreated = null,
-  checkAuth = null, onSaved, onError, access = null }) {
+  checkAuth = null, onSaved, onError, access = null, suggestURL = null }) {
   const titleId = `trackEditTitle${nextEditorId++}`;
   // Create mode: submit POSTs a brand-new record (no detail fetch — the extended
   // fields start blank and editable), and server refusals show inline so the
@@ -198,6 +216,18 @@ export function createTrackEditor({ patchURL, createURL = null, detailURL = null
     form.appendChild(extendedBtn);
   }
 
+  // "Suggest tags" — opens the suggestions panel (edit mode only; hidden when
+  // the row carries no suggestions endpoint, e.g. create mode).
+  let suggestBtn = null;
+  if (suggestURL) {
+    suggestBtn = document.createElement('button');
+    suggestBtn.type = 'button';
+    suggestBtn.className = 'edit-extended-toggle';
+    suggestBtn.textContent = '✦ Suggest tags…';
+    suggestBtn.addEventListener('click', () => openSuggest());
+    form.appendChild(suggestBtn);
+  }
+
   const submitBtn = document.createElement('button');
   submitBtn.type = 'submit';
   submitBtn.className = 'btn btn-neutral';
@@ -260,6 +290,53 @@ export function createTrackEditor({ patchURL, createURL = null, detailURL = null
     document.body.appendChild(extBackdrop);
   }
 
+  // ── Suggestions panel: source chips + current-vs-suggested diff table ──────
+  // (docs/architecture/tag-suggestions.md). Read-only lookups; "Use" only fills
+  // the inputs above — Save stays the one write path.
+  let sugBackdrop = null, sugChipsRow = null, sugCharsetWrap = null, sugCharsetSel = null,
+      sugBody = null, sugUseAllBtn = null;
+  let sugData = null;  // last /suggestions response while the panel is open
+  let sugActive = -1;  // index into sugData.suggestions
+  if (suggestURL) {
+    sugBackdrop = makeBackdrop('is-stacked');
+    const sugModal = document.createElement('div');
+    sugModal.className = 'modal modal-wide';
+    const { header: sugHeader } = makeHeader('Suggested tags', () => closeSuggest());
+    sugModal.appendChild(sugHeader);
+
+    sugChipsRow = document.createElement('div');
+    sugChipsRow.className = 'suggest-chips';
+    sugCharsetWrap = document.createElement('label');
+    sugCharsetWrap.className = 'suggest-charset hidden';
+    sugCharsetWrap.append(document.createTextNode('Charset'));
+    sugCharsetSel = document.createElement('select');
+    sugCharsetWrap.appendChild(sugCharsetSel);
+    sugCharsetSel.addEventListener('change', () => refetchCharset());
+    sugBody = document.createElement('div');
+    sugBody.className = 'suggest-body';
+
+    sugUseAllBtn = document.createElement('button');
+    sugUseAllBtn.type = 'button';
+    sugUseAllBtn.className = 'btn btn-neutral';
+    sugUseAllBtn.textContent = 'Use all';
+    sugUseAllBtn.addEventListener('click', () => {
+      const s = sugData && sugData.suggestions[sugActive];
+      if (!s) return;
+      for (const [key, , , val] of suggestRows(s)) applyField(key, val);
+      closeSuggest();
+    });
+    const sugCloseBtn = document.createElement('button');
+    sugCloseBtn.type = 'button';
+    sugCloseBtn.className = 'btn btn-neutral';
+    sugCloseBtn.textContent = 'Close';
+    sugCloseBtn.addEventListener('click', () => closeSuggest());
+
+    sugModal.append(sugChipsRow, sugCharsetWrap, sugBody, makeActions([sugCloseBtn, sugUseAllBtn]));
+    sugBackdrop.appendChild(sugModal);
+    sugBackdrop.addEventListener('click', e => { if (e.target === sugBackdrop) closeSuggest(); });
+    document.body.appendChild(sugBackdrop);
+  }
+
   let editing = null;       // { file, ctx, mode } while open ('edit' | 'create')
   let detailLoaded = false; // true once the extended/track fields carry values
   const mainOpen = () => !backdrop.classList.contains('hidden');
@@ -307,6 +384,171 @@ export function createTrackEditor({ patchURL, createURL = null, detailURL = null
     if (extBackdrop) extBackdrop.classList.add('hidden');
   }
 
+  // ── Suggestions panel behavior ──────────────────────────────────────────────
+  const suggestOpenNow = () => sugBackdrop && !sugBackdrop.classList.contains('hidden');
+
+  // fieldInput maps a suggestion field key to its form control (undefined when
+  // this editor doesn't carry the control).
+  function fieldInput(key) {
+    if (key in inputs) return inputs[key];
+    if (key === 'track_number') return trackNumberInput;
+    return extInputs[key];
+  }
+  function applyField(key, val) {
+    const input = fieldInput(key);
+    if (input) input.value = val;
+  }
+
+  // suggestRows filters the active suggestion down to fields this modal can
+  // edit right now — track-number/extended only once the detail fetch seeded
+  // them, so applying never clobbers unseen stored values.
+  // → [key, label, current, suggested]
+  function suggestRows(s) {
+    const rows = [];
+    for (const [key, label] of SUGGEST_FIELDS) {
+      if (!s.tags || !(key in s.tags)) continue;
+      const input = fieldInput(key);
+      if (!input) continue;
+      if (!(key in inputs) && !detailLoaded) continue;
+      rows.push([key, label, input.value || '', String(s.tags[key])]);
+    }
+    return rows;
+  }
+
+  function setSuggestMsg(text) {
+    const p = document.createElement('p');
+    p.className = 'suggest-empty';
+    p.textContent = text;
+    sugBody.replaceChildren(p);
+  }
+
+  async function openSuggest() {
+    if (!editing || editing.mode !== 'edit') return;
+    const url = suggestURL(editing.file);
+    if (!url) return;
+    sugData = null;
+    sugActive = -1;
+    sugChipsRow.replaceChildren();
+    sugCharsetWrap.classList.add('hidden');
+    sugUseAllBtn.disabled = true;
+    setSuggestMsg('Reading tag blocks…');
+    sugBackdrop.classList.remove('hidden');
+    try {
+      const res = await fetch(url);
+      if (checkAuth && checkAuth(res)) { closeSuggest(); return; }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      sugData = data;
+      renderChips();
+      const first = (data.suggestions || []).findIndex(s => !s.error);
+      if (first >= 0) selectChip(first);
+      else setSuggestMsg('No readable tag blocks in this file.');
+    } catch (err) {
+      setSuggestMsg('Couldn’t load suggestions.');
+      if (onError) onError(err, editing && editing.file);
+    }
+  }
+
+  function renderChips() {
+    sugChipsRow.replaceChildren();
+    (sugData.suggestions || []).forEach((s, i) => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'suggest-chip' + (i === sugActive ? ' is-active' : '');
+      chip.textContent = s.label || s.source;
+      if (s.error) { chip.disabled = true; chip.title = s.error; }
+      else chip.addEventListener('click', () => selectChip(i));
+      sugChipsRow.appendChild(chip);
+    });
+  }
+
+  function selectChip(i) {
+    sugActive = i;
+    renderChips();
+    renderSuggestion();
+  }
+
+  function renderSuggestion() {
+    const s = sugData && sugData.suggestions[sugActive];
+    if (!s) return;
+    // Charset override (local sources only): re-fetches this source re-decoded.
+    if (s.charsets && s.charsets.length) {
+      sugCharsetSel.replaceChildren();
+      for (const name of s.charsets) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        sugCharsetSel.appendChild(opt);
+      }
+      sugCharsetSel.value = s.charset || s.charsets[0];
+      sugCharsetWrap.classList.remove('hidden');
+    } else {
+      sugCharsetWrap.classList.add('hidden');
+    }
+
+    const rows = suggestRows(s);
+    if (!rows.length) {
+      setSuggestMsg('This source carries no usable fields.');
+      sugUseAllBtn.disabled = true;
+      return;
+    }
+    const table = document.createElement('table');
+    table.className = 'suggest-table';
+    const thead = table.createTHead().insertRow();
+    for (const h of ['Field', 'Current', 'Suggested', '']) {
+      const th = document.createElement('th');
+      th.textContent = h;
+      thead.appendChild(th);
+    }
+    const tbody = table.createTBody();
+    for (const [key, label, cur, val] of rows) {
+      const tr = tbody.insertRow();
+      if (cur.trim() !== val.trim()) tr.className = 'is-diff';
+      tr.insertCell().textContent = label;
+      const curCell = tr.insertCell();
+      curCell.className = 'suggest-cur';
+      curCell.textContent = cur;
+      const valCell = tr.insertCell();
+      valCell.className = 'suggest-val';
+      valCell.textContent = val;
+      const useBtn = document.createElement('button');
+      useBtn.type = 'button';
+      useBtn.className = 'suggest-use';
+      useBtn.textContent = '←';
+      useBtn.title = 'Use this value';
+      useBtn.setAttribute('aria-label', `Use suggested ${label}`);
+      useBtn.addEventListener('click', () => { applyField(key, val); renderSuggestion(); });
+      tr.insertCell().appendChild(useBtn);
+    }
+    sugBody.replaceChildren(table);
+    sugUseAllBtn.disabled = false;
+  }
+
+  // refetchCharset re-queries only the active source with the chosen charset
+  // (?sources=<one>&charset=<cs>) and swaps the result in place — the live
+  // preview of the override dropdown.
+  async function refetchCharset() {
+    const s = sugData && sugData.suggestions[sugActive];
+    if (!s || !editing) return;
+    const base = suggestURL(editing.file);
+    const sep = base.includes('?') ? '&' : '?';
+    try {
+      const res = await fetch(`${base}${sep}sources=${encodeURIComponent(s.source)}&charset=${encodeURIComponent(sugCharsetSel.value)}`);
+      if (checkAuth && checkAuth(res)) { closeSuggest(); return; }
+      const data = await res.json().catch(() => ({}));
+      const repl = res.ok && data.ok && (data.suggestions || []).find(x => x.source === s.source);
+      if (!repl) throw new Error(data.error || `HTTP ${res.status}`);
+      sugData.suggestions[sugActive] = repl;
+      renderSuggestion();
+    } catch (err) {
+      if (onError) onError(err, editing && editing.file);
+    }
+  }
+
+  function closeSuggest() {
+    if (sugBackdrop) sugBackdrop.classList.add('hidden');
+  }
+
   async function open(file, ctx = null) {
     editing = { file, ctx, mode: 'edit' };
     clearError();
@@ -318,6 +560,7 @@ export function createTrackEditor({ patchURL, createURL = null, detailURL = null
       licenseSel.value = file.license || '';
       guestCb.checked  = !!file.guest_playable;
     }
+    if (suggestBtn) suggestBtn.classList.toggle('hidden', !suggestURL(file));
     hideExtended();
     backdrop.classList.remove('hidden');
     inputs.title.focus();
@@ -347,6 +590,7 @@ export function createTrackEditor({ patchURL, createURL = null, detailURL = null
   function openCreate(ctx = null) {
     editing = { file: null, ctx, mode: 'create' };
     clearError();
+    if (suggestBtn) suggestBtn.classList.add('hidden'); // no subject file yet
     for (const k of ['title', 'artist', 'album_artist', 'album']) inputs[k].value = '';
     seedExtendedEmpty();
     backdrop.classList.remove('hidden');
@@ -356,13 +600,16 @@ export function createTrackEditor({ patchURL, createURL = null, detailURL = null
   function closeAll() {
     backdrop.classList.add('hidden');
     if (extBackdrop) extBackdrop.classList.add('hidden');
+    closeSuggest();
+    sugData = null;
     editing = null;
   }
 
   backdrop.addEventListener('click', e => { if (e.target === backdrop) closeAll(); });
   const onKey = e => {
     if (e.key !== 'Escape') return;
-    if (extOpen()) closeExtended();
+    if (suggestOpenNow()) closeSuggest();
+    else if (extOpen()) closeExtended();
     else if (mainOpen()) closeAll();
   };
   document.addEventListener('keydown', onKey);
@@ -427,6 +674,7 @@ export function createTrackEditor({ patchURL, createURL = null, detailURL = null
     document.removeEventListener('keydown', onKey);
     backdrop.remove();
     if (extBackdrop) extBackdrop.remove();
+    if (sugBackdrop) sugBackdrop.remove();
     editing = null;
   }
 

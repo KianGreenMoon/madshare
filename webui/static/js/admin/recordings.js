@@ -703,6 +703,7 @@ export function createRecordingsView({ play, perms }) {
       editor = createTrackEditor({
         patchURL: f => `${API}/api/admin/moderation/${f.tagset_id}/metadata`,
         detailURL: f => `${API}/api/admin/moderation/${f.tagset_id}/metadata`,
+        suggestURL: f => `${API}/api/tagsets/${f.tagset_id}/suggestions`,
         note: 'Edits this appearance’s tags. Identity changes (album/artist) re-resolve its entities.',
         checkAuth: handleAuthError,
         onSaved: async f => { toast('Tags updated.', 'success'); await refreshDetail(f._rec); reload(); },

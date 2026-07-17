@@ -139,6 +139,7 @@ func (d Deps) newHandler() *handler {
 		sourcesMgr:      d.SourcesManager,
 		linker:          d.Linker,
 		limiter:         d.UploadLimiter,
+		blobReg:         d.blobStorages(),
 		uiConfig:        d.UIConfig,
 	}
 	if d.SourceArchive != nil || d.LicenseText != nil || d.SourceRoot != "" {
@@ -171,6 +172,10 @@ func RegisterAPI(r chi.Router, d Deps) {
 	// Renditions of a track's recording for the player's quality control
 	// (recordings P4). Read-only; playback is still gated by /files/*.
 	r.Get("/api/tagsets/{tagsetID}/renditions", h.trackRenditions)
+	// Candidate tagsets from the file's own tag blocks (and, P1, services) for
+	// the edit modal's "Suggest tags" panel. Authorization is per-tagset inside
+	// the handler: the draft's owner or metadata.edit — mirroring who may edit.
+	r.Get("/api/tagsets/{tagsetID}/suggestions", h.tagsetSuggestions)
 	r.Get("/api/search", h.search)
 	r.Get("/api/ui/config", h.getUIConfig)
 	// Cover reads are id-addressed (browse DTOs carry the entity id). chi routes

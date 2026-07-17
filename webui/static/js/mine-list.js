@@ -86,6 +86,7 @@ export function createMineList({ API = '', preview, canEditMeta = false, onCount
   const editor = createTrackEditor({
     patchURL: f => `${API}/api/my/uploads/${f.tagset_id}/metadata`,
     detailURL: f => `${API}/api/my/uploads/${f.tagset_id}/metadata`,
+    suggestURL: f => `${API}/api/tagsets/${f.tagset_id}/suggestions`,
     note: 'Fix the tags before sending to approval — title, artist and album decide where the track lands.',
     onSaved: (f, data) => {
       const row = byKey(key(f));

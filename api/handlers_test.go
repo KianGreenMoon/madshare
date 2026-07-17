@@ -577,6 +577,11 @@ type fakeRepo struct {
 	stageRestoredErr    error
 	stageRestoreCalls   int
 
+	// Tag-suggestion subject stub (GET /api/tagsets/{id}/suggestions).
+	suggestSubject      *database.SuggestSubject
+	suggestSubjectFound bool
+	suggestSubjectErr   error
+
 	// Paged review/trash stubs (select-all-matching + batch). The *Page methods
 	// return reviewEntries/pageFiles unless a dedicated slice is set; the count /
 	// hash-resolver knobs back the "select all N matching" path.
@@ -638,6 +643,10 @@ func (f *fakeRepo) UpdateReviewState(_ context.Context, tagsetID int64, t databa
 
 func (f *fakeRepo) TagsetReviewInfo(_ context.Context, _ int64) (string, sql.NullInt64, bool, bool, error) {
 	return f.reviewInfoState, f.reviewInfoOwner, f.reviewInfoDeleted, f.reviewInfoFound, f.reviewInfoErr
+}
+
+func (f *fakeRepo) TagsetSuggestSubject(_ context.Context, _ int64) (*database.SuggestSubject, bool, error) {
+	return f.suggestSubject, f.suggestSubjectFound, f.suggestSubjectErr
 }
 
 func (f *fakeRepo) ApproveSubmission(_ context.Context, tagsetID int64, dropBytes, forceNew bool) (bool, error) {
