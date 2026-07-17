@@ -14,6 +14,7 @@
 // Instantiated by upload.js; the preview sink (`preview`) is the shell player by
 // default, or a page-local one under the admin shell. Design: the P4 UX draft.
 import { createTrackEditor } from './track-edit.js';
+import { createCharsetEditor } from './charset-edit.js';
 import { showToast } from './toast.js';
 
 const PAGE_SIZE = 200;
@@ -153,6 +154,26 @@ export function createMineList({ API = '', preview, canEditMeta = false, onCount
       reload();
     } catch (err) { showToast(err.message, { type: 'error' }); }
   }
+  // Bulk charset fix (tag-suggestions): the whole-album version of the edit
+  // modal's per-file charset override. Preview = the loaded selected rows;
+  // under select-all-matching the recode still targets the full filtered set.
+  let _charset = null;
+  function charsetEditor() {
+    if (_charset) return _charset;
+    _charset = createCharsetEditor({
+      onApply: async charset => {
+        const data = await bulkCall({ action: 'recode', charset, ...actionBody() });
+        const done = data.affected ?? 0;
+        showToast(`Fixed the charset on ${done} file${done === 1 ? '' : 's'}.`, { type: 'success' });
+        reload();
+      },
+    });
+    return _charset;
+  }
+  function fixCharsetSelected() {
+    const preview = selectAllMatching ? editableRows() : [...selected].map(byKey).filter(Boolean);
+    charsetEditor().open(preview, selectAllMatching ? selectableTotal : selected.size);
+  }
   async function resendRow(f) {
     try { sendToast(await bulkCall({ action: 'submit', tagset_ids: [f.tagset_id] })); reload(); }
     catch (err) { showToast(err.message, { type: 'error' }); }
@@ -291,9 +312,10 @@ export function createMineList({ API = '', preview, canEditMeta = false, onCount
     }
     kids.push(el('span', { class: 'mu-spacer' }));
     const sendBtn = el('button', { class: 'btn btn-neutral btn-sm', text: 'Send to approval', onclick: sendSelected });
+    const csBtn = el('button', { class: 'btn btn-neutral btn-sm', text: 'Fix charset…', onclick: fixCharsetSelected });
     const rmBtn = el('button', { class: 'btn btn-destructive btn-sm', text: 'Remove selected', onclick: removeSelected });
-    sendBtn.disabled = rmBtn.disabled = count === 0;
-    kids.push(sendBtn, rmBtn);
+    sendBtn.disabled = csBtn.disabled = rmBtn.disabled = count === 0;
+    kids.push(sendBtn, csBtn, rmBtn);
     return el('div', { class: 'mu-bulkbar' }, kids);
   }
 
@@ -339,7 +361,7 @@ export function createMineList({ API = '', preview, canEditMeta = false, onCount
     reload();
   }
 
-  function destroy() { editor.destroy(); host = null; }
+  function destroy() { editor.destroy(); if (_charset) _charset.destroy(); host = null; }
 
   return { mount, reload, destroy };
 }

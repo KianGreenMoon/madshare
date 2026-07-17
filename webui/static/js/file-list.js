@@ -13,6 +13,7 @@
 
 import { createTrackEditor } from './track-edit.js';
 import { createBulkEditor } from './bulk-edit.js';
+import { createCharsetEditor } from './charset-edit.js';
 import { createCoverPicker } from './cover-edit.js';
 import { PLAY_ICON, EDIT_ICON } from './icons.js';
 import { discKey, discSort, discLabel, isMultiDisc } from './disc.js';
@@ -213,7 +214,7 @@ export function createFileList(scope) {
     if (fv === 'artist' || fv === 'album' || fv === 'title') qField = fv;
   } catch { /* ignore */ }
 
-  let _editor = null, _bulk = null, _cover = null;
+  let _editor = null, _bulk = null, _cover = null, _charset = null;
 
   // The filter box is a PERSISTENT node, created once. A paged reload rebuilds the
   // whole header bar, so a freshly-built <input> would blur after a single
@@ -281,6 +282,33 @@ export function createFileList(scope) {
       },
     });
     return _bulk;
+  }
+  // charsetEditor: the shared bulk charset-fix modal (tag-suggestions). Routes
+  // like the bulk tag editor — the filter-mode apply goes server-side via the
+  // scope's ...All variant.
+  function charsetEditor() {
+    if (_charset) return _charset;
+    _charset = createCharsetEditor({
+      onApply: async charset => {
+        if (paged && selectAllMatching && scope.charsetApplyAll) {
+          const n = await scope.charsetApplyAll({ q: filterText.trim(), field: qField }, charset);
+          toast(`Fixed the charset on ${n} file${n === 1 ? '' : 's'}.`, 'success');
+          clearPageSelection();
+          await reload();
+          return;
+        }
+        const keys = [...selected];
+        const n = await scope.charsetApply(keys, charset);
+        selected.clear();
+        toast(`Fixed the charset on ${n} file${n === 1 ? '' : 's'}.`, 'success');
+        await reload();
+      },
+    });
+    return _charset;
+  }
+  function openCharsetEditor() {
+    const previewRows = rows.filter(f => selected.has(keyOf(f)));
+    charsetEditor().open(previewRows, (paged && selectAllMatching) ? selectableTotal : selected.size);
   }
   function coverPicker() {
     if (_cover) return _cover;
@@ -1217,6 +1245,7 @@ export function createFileList(scope) {
   function bulkToolbar() {
     const buttons = [];
     if (scope.bulkApply) buttons.push(el('button', { class: 'btn btn-neutral btn-sm fl-bulk-btn fl-bulk-edit', text: 'Edit tags…', disabled: 'true', onclick: () => openBulkEditor() }));
+    if (scope.charsetApply) buttons.push(el('button', { class: 'btn btn-neutral btn-sm fl-bulk-btn', text: 'Fix charset…', disabled: 'true', onclick: () => openCharsetEditor() }));
     for (const a of scope.bulkActions || []) {
       const cls = (a.kind === 'danger' ? 'btn btn-destructive-outline btn-sm' : 'btn btn-neutral btn-sm') + ' fl-bulk-btn';
       buttons.push(el('button', { class: cls, text: a.label, disabled: 'true', onclick: () => runBulkAction(a) }));
@@ -1346,6 +1375,7 @@ export function createFileList(scope) {
     _editor?.destroy(); _editor = null;
     _bulk?.destroy(); _bulk = null;
     _cover?.destroy(); _cover = null;
+    _charset?.destroy(); _charset = null;
     bodyHost = null;
     bannerHost = null;
     mountEl = null;

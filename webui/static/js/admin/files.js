@@ -108,6 +108,18 @@ async function appearancesBulkApply(keys, patch) {
   const data = await appearancesBulkCall({ action: 'edit', tagset_ids: asIDs(keys), patch });
   if (data.failed?.length) throw new Error(`updated ${data.affected}, ${data.failed.length} failed`);
 }
+// The bulk charset fix (charset-edit.js modal); returns the affected count for
+// the caller's toast.
+async function appearancesCharsetApply(keys, charset) {
+  const data = await appearancesBulkCall({ action: 'recode', charset, tagset_ids: asIDs(keys) });
+  if (data.failed?.length) throw new Error(`fixed ${data.affected}, ${data.failed.length} failed`);
+  return data.affected ?? 0;
+}
+async function appearancesCharsetApplyAll(filter, charset) {
+  const data = await appearancesBulkCall({ action: 'recode', charset, ...appearancesFilterBody(filter) });
+  if (data.failed?.length) throw new Error(`fixed ${data.affected}, ${data.failed.length} failed`);
+  return data.affected ?? 0;
+}
 async function appearancesBulkApplyAll(filter, patch) {
   const data = await appearancesBulkCall({ action: 'edit', patch, ...appearancesFilterBody(filter) });
   if (data.failed?.length) throw new Error(`updated ${data.affected}, ${data.failed.length} failed`);
@@ -154,6 +166,8 @@ function appearancesScope() {
     saveAccess: canEditMeta ? saveAppearanceAccess : undefined,
     bulkApply: canEditMeta ? appearancesBulkApply : undefined,
     bulkApplyAll: canEditMeta ? appearancesBulkApplyAll : undefined, // "select all N matching" → server-side edit
+    charsetApply: canEditMeta ? appearancesCharsetApply : undefined,
+    charsetApplyAll: canEditMeta ? appearancesCharsetApplyAll : undefined,
     // The row action confirms in the same modal the By-entity deletes use, which
     // owns the request and the reload — hence `false` (nothing left to reload).
     rowActions: canDelete ? [{

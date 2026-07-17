@@ -4,7 +4,8 @@
 `tagsource` package with the `id3v2`/`id3v1` providers, `media.ReadID3v1` +
 charset detect/override (`media/charset.go`), `GET
 /api/tagsets/{id}/suggestions`, and the `track-edit.js` "Suggest tags…" panel
-(wired in My uploads, moderation, Recordings lens, All Appearances). P1
+(wired in My uploads, moderation, Recordings lens, All Appearances). P0.5
+(bulk charset fix, owner follow-up — see §Bulk charset fix) implemented. P1
 (MusicBrainz via AcoustID) and P2 (text-search fallback) not started. Owner
 decisions (consult round): providers for v1 = **MusicBrainz via AcoustID**
 (local ID3v1/ID3v2 always included); external lookups are **user-triggered
@@ -155,6 +156,35 @@ a suggestions panel inside the modal:
 - Create-mode ("Add appearance") and bulk-edit are out of scope: suggestions
   require a subject file.
 
+## Bulk charset fix (P0.5, owner follow-up)
+
+The per-file panel fixes one track; an uploaded album with a wrong charset is
+dozens. The bulk fix reinterprets the **stored** text tags of a whole
+selection instead of re-reading files: mojibake from a mis-decoded charset
+round-trips losslessly through Latin-1 (`media.ReencodeLatin1`), so values
+that don't fit Latin-1 — i.e. text that already reads correctly — are
+**provably untouched**, making it safe to select generously. This is
+deliberately *not* "pick a tagset source in bulk" (deferred, see below): it
+fixes decoding, it never chooses between tag blocks.
+
+- **DB:** `database.RecodeTagsetsText(ids, owner, recode)` — chunked like
+  `BulkUpdateTagsetMetadata`; changed fields go through
+  `applyMetadataPatchTagsetTx`, so artist/album identity changes re-resolve
+  the entity FKs. A valid `owner` narrows the scope to that user's own
+  non-trashed draft/returned appearances — the My-uploads path trusts its
+  explicit id list no further than ownership.
+- **API:** action `"recode"` (+ `charset`) on the two bulk endpoints —
+  `POST /api/admin/appearances/bulk` (gated `metadata.edit`) and
+  `POST /api/my/uploads/bulk` (owner-scoped). Both accept ids or a filter
+  (`all:true` guard as usual); charset validated against `media.ValidCharset`.
+- **UI:** shared `charset-edit.js` modal ("Fix charset…" in the My-uploads
+  bulk bar and the All Appearances bulk toolbar via `scope.charsetApply` /
+  `charsetApplyAll`): charset dropdown + live before-preview of the loaded
+  selected rows (title/artist/album, changed cells highlighted). The preview
+  is computed client-side with the same Latin-1→`TextDecoder` trick and
+  auto-picks the charset that changes the most fields without introducing
+  U+FFFD; the server-side apply is authoritative.
+
 ## Explicitly out of scope (v1) / deferred
 
 - **Ingest-time lookup and auto-apply** — rejected for v1 by owner decision;
@@ -162,6 +192,11 @@ a suggestions panel inside the modal:
 - **Cover art fetch** (Cover Art Archive via the matched MBID release) —
   natural follow-up once MusicBrainz IDs flow; needs its own ingest-into-
   `album_images` design.
+- **Bulk tagset-source choosing** — applying a chosen suggestion source (ID3v1
+  / a service match) across a selection, the bulk sibling of the per-file
+  chips. Owner-floated alongside the bulk charset fix; revisit once P1's
+  service source exists (a bulk service lookup also needs the rate-limit story
+  thought through).
 - **Discogs / Last.fm providers** — interface-ready; each is "a client + a
   settings key + a chip".
 - **Federation top-tagsets provider** — peers' tagsets ranked by popularity as

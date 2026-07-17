@@ -582,6 +582,15 @@ type fakeRepo struct {
 	suggestSubjectFound bool
 	suggestSubjectErr   error
 
+	// Bulk charset-fix stub (action "recode"). lastRecoded captures what the
+	// stub's recode produced per id, so tests can assert the transform.
+	recodeAffected  int
+	recodeNotFound  []int64
+	recodeErr       error
+	lastRecodeIDs   []int64
+	lastRecodeOwner sql.NullInt64
+	lastRecodeFn    func(string) (string, bool)
+
 	// Paged review/trash stubs (select-all-matching + batch). The *Page methods
 	// return reviewEntries/pageFiles unless a dedicated slice is set; the count /
 	// hash-resolver knobs back the "select all N matching" path.
@@ -647,6 +656,13 @@ func (f *fakeRepo) TagsetReviewInfo(_ context.Context, _ int64) (string, sql.Nul
 
 func (f *fakeRepo) TagsetSuggestSubject(_ context.Context, _ int64) (*database.SuggestSubject, bool, error) {
 	return f.suggestSubject, f.suggestSubjectFound, f.suggestSubjectErr
+}
+
+func (f *fakeRepo) RecodeTagsetsText(_ context.Context, ids []int64, owner sql.NullInt64, recode func(string) (string, bool)) (int, []int64, error) {
+	f.lastRecodeIDs = ids
+	f.lastRecodeOwner = owner
+	f.lastRecodeFn = recode
+	return f.recodeAffected, f.recodeNotFound, f.recodeErr
 }
 
 func (f *fakeRepo) ApproveSubmission(_ context.Context, tagsetID int64, dropBytes, forceNew bool) (bool, error) {

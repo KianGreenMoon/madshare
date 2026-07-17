@@ -6,6 +6,7 @@ package api
 // ladder-best surviving rendition, exactly like the listening surfaces.
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 
 	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/database"
+	"daemonlord.ygg/madshare/media"
 )
 
 // adminAppearancesList handles GET /api/admin/appearances — one page of the
@@ -117,11 +119,13 @@ func (h *handler) adminAppearancesList(w http.ResponseWriter, r *http.Request) {
 }
 
 // appearancesBulk handles POST /api/admin/appearances/bulk — a bulk action
-// ("trash" / "edit") over an explicit tagset_ids list OR everything live
-// matching a filter ("select all N matching"). Per-action gate mirroring the
-// files bulk: trash → file.delete, edit → metadata.edit. Unlike the Trash
-// lens's edit, the live edit may carry access (license/guest), forwarded to
-// each appearance's recording.
+// ("trash" / "edit" / "recode") over an explicit tagset_ids list OR everything
+// live matching a filter ("select all N matching"). Per-action gate mirroring
+// the files bulk: trash → file.delete, edit/recode → metadata.edit. Unlike the
+// Trash lens's edit, the live edit may carry access (license/guest), forwarded
+// to each appearance's recording. "recode" is the bulk charset fix
+// (docs/architecture/tag-suggestions.md): reinterpret each row's stored text
+// tags in the given charset; unreinterpretable/unchanged fields stay put.
 func (h *handler) appearancesBulk(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req struct {
@@ -133,20 +137,25 @@ func (h *handler) appearancesBulk(w http.ResponseWriter, r *http.Request) {
 			ArtistID *int64 `json:"artist_id"`
 			AlbumID  *int64 `json:"album_id"`
 		} `json:"filter"`
-		All   bool           `json:"all"`
-		Patch *bulkEditPatch `json:"patch"`
+		All     bool           `json:"all"`
+		Patch   *bulkEditPatch `json:"patch"`
+		Charset string         `json:"charset"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid JSON body"})
 		return
 	}
-	if req.Action != "trash" && req.Action != "edit" {
+	if req.Action != "trash" && req.Action != "edit" && req.Action != "recode" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown action"})
+		return
+	}
+	if req.Action == "recode" && !media.ValidCharset(req.Charset) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown charset"})
 		return
 	}
 	if h.authzEnabled {
 		need := auth.PermFileDelete
-		if req.Action == "edit" {
+		if req.Action == "edit" || req.Action == "recode" {
 			need = auth.PermMetadataEdit
 		}
 		if id := auth.FromContext(r.Context()); id == nil || !id.Has(need) {
@@ -195,6 +204,23 @@ func (h *handler) appearancesBulk(w http.ResponseWriter, r *http.Request) {
 
 	if req.Action == "edit" {
 		h.bulkEditLiveAppearances(w, r, tagsetIDs, req.Patch)
+		return
+	}
+
+	if req.Action == "recode" {
+		charset := req.Charset
+		affected, notFound, err := h.repo.RecodeTagsetsText(r.Context(), tagsetIDs, sql.NullInt64{},
+			func(s string) (string, bool) { return media.ReencodeLatin1(s, charset) })
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+			return
+		}
+		failed := make([]map[string]any, 0, len(notFound))
+		for _, id := range notFound {
+			failed = append(failed, map[string]any{"tagset_id": id, "error": "appearance not found"})
+		}
+		h.audit(r.Context(), "metadata.bulk_recode", "appearances", fmt.Sprintf("%d recoded as %s", affected, charset))
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected, "failed": failed})
 		return
 	}
 

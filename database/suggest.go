@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Tag-suggestion subject lookup (docs/architecture/tag-suggestions.md). The
@@ -20,6 +21,113 @@ type SuggestSubject struct {
 	MIMEType    string
 	Fingerprint []byte          // packed chromaprint sub-fingerprints; nil when not analyzed
 	Duration    sql.NullFloat64 // fingerprinted duration in seconds
+}
+
+// RecodeTagsetsText re-decodes the stored text tags (title / artist /
+// album_artist / album / genre / composer / comment) of each appearance with
+// recode — the bulk charset fix. recode returns (fixed, true) when the value
+// could be reinterpreted (media.ReencodeLatin1 with a charset closed over);
+// fields it can't reinterpret, and fields it leaves identical, are untouched,
+// so already-correct rows are safe to include. Changed fields go through
+// applyMetadataPatchTagsetTx, so identity changes re-resolve the artist/album
+// entity FKs. Chunked like BulkUpdateTagsetMetadata; ids outside the scope are
+// reported in notFound, not fatal. affected counts appearances with at least
+// one changed field.
+//
+// A valid owner narrows the scope to that user's editable staging (their own
+// non-trashed draft/returned appearances) — the My-uploads path, which trusts
+// its explicit id list no further than ownership (mirroring
+// BulkDiscardOwnUploads). An invalid owner is the unscoped metadata.edit path.
+func (db *DB) RecodeTagsetsText(ctx context.Context, tagsetIDs []int64, owner sql.NullInt64, recode func(string) (string, bool)) (affected int, notFound []int64, err error) {
+	scope := ""
+	if owner.Valid {
+		scope = ` AND created_by = ? AND deleted_at IS NULL
+			AND review_state IN ('` + ReviewDraft + `','` + ReviewReturned + `')`
+	}
+	const chunk = 500
+	for i := 0; i < len(tagsetIDs); i += chunk {
+		batch := tagsetIDs[i:min(i+chunk, len(tagsetIDs))]
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return affected, notFound, fmt.Errorf("recode appearances: begin: %w", err)
+		}
+		ph := make([]string, len(batch))
+		args := make([]any, len(batch))
+		for j, id := range batch {
+			ph[j] = "?"
+			args[j] = id
+		}
+		if owner.Valid {
+			args = append(args, owner.Int64)
+		}
+		rows, err := tx.QueryContext(ctx, `
+			SELECT id, title, artist, album_artist, album, genre, composer, comment
+			FROM tagsets WHERE id IN (`+strings.Join(ph, ",")+`)`+scope, args...)
+		if err != nil {
+			tx.Rollback()
+			return affected, notFound, fmt.Errorf("recode appearances: lookup: %w", err)
+		}
+		type patchRow struct {
+			id    int64
+			patch MetadataPatch
+		}
+		var patches []patchRow
+		found := make(map[int64]struct{}, len(batch))
+		for rows.Next() {
+			var id int64
+			var title string
+			var artist, albumArtist, album, genre, composer, comment sql.NullString
+			if err := rows.Scan(&id, &title, &artist, &albumArtist, &album, &genre, &composer, &comment); err != nil {
+				rows.Close()
+				tx.Rollback()
+				return affected, notFound, fmt.Errorf("recode appearances: scan: %w", err)
+			}
+			found[id] = struct{}{}
+			var p MetadataPatch
+			set := func(dst **string, cur sql.NullString) {
+				if !cur.Valid {
+					return
+				}
+				if out, ok := recode(cur.String); ok && out != cur.String {
+					*dst = &out
+				}
+			}
+			if out, ok := recode(title); ok && out != title {
+				p.Title = &out
+			}
+			set(&p.Artist, artist)
+			set(&p.AlbumArtist, albumArtist)
+			set(&p.Album, album)
+			set(&p.Genre, genre)
+			set(&p.Composer, composer)
+			set(&p.Comment, comment)
+			if !p.IsEmpty() {
+				patches = append(patches, patchRow{id: id, patch: p})
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			tx.Rollback()
+			return affected, notFound, fmt.Errorf("recode appearances: rows: %w", err)
+		}
+		rows.Close()
+		for _, id := range batch {
+			if _, ok := found[id]; !ok {
+				notFound = append(notFound, id)
+			}
+		}
+		for _, pr := range patches {
+			if e := applyMetadataPatchTagsetTx(ctx, tx, pr.id, pr.patch); e != nil {
+				tx.Rollback()
+				return affected, notFound, e
+			}
+			affected++
+		}
+		if err := tx.Commit(); err != nil {
+			return affected, notFound, fmt.Errorf("recode appearances: commit: %w", err)
+		}
+	}
+	return affected, notFound, nil
 }
 
 // TagsetSuggestSubject loads the suggestion subject for one appearance. found

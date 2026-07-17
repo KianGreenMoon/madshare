@@ -488,6 +488,13 @@ type Repository interface {
 	// (docs/architecture/tag-suggestions.md). found is false on an unknown id.
 	TagsetSuggestSubject(ctx context.Context, tagsetID int64) (*SuggestSubject, bool, error)
 
+	// RecodeTagsetsText re-decodes each appearance's stored text tags with recode
+	// (the bulk charset fix, docs/architecture/tag-suggestions.md); untouched
+	// unless recode reports a change. A valid owner narrows the scope to that
+	// user's own editable staging (the My-uploads path). Ids outside the scope
+	// are reported in notFound, not fatal.
+	RecodeTagsetsText(ctx context.Context, tagsetIDs []int64, owner sql.NullInt64, recode func(string) (string, bool)) (affected int, notFound []int64, err error)
+
 	// --- Playlists & favorites (docs/api/playlists.md) ---
 	// All playlist methods are scoped to userID; a playlist id belonging to a
 	// different user yields ErrPlaylistNotFound (mapped to 404, never 403).

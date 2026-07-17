@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/database"
+	"daemonlord.ygg/madshare/media"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -459,15 +461,18 @@ type reviewBulkRequest struct {
 		Q     string `json:"q"`
 		Field string `json:"field"`
 	} `json:"filter"`
-	All  bool   `json:"all"`
-	Note string `json:"note"`
+	All     bool   `json:"all"`
+	Note    string `json:"note"`
+	Charset string `json:"charset"` // action "recode" only: the target charset
 }
 
 // myUploadsBulk handles POST /api/my/uploads/bulk — a bulk action over the
-// caller's own staged files: "submit" (send to approval) or "remove" (discard to
-// Trash). Targets an explicit hash list OR everything the owner has matching a
-// filter (draft + returned only — submitted files can't be withdrawn). Gated on
-// file.upload.
+// caller's own staged files: "submit" (send to approval), "remove" (discard to
+// Trash), or "recode" (the bulk charset fix: reinterpret the stored text tags
+// in the given charset, docs/architecture/tag-suggestions.md). Targets an
+// explicit hash list OR everything the owner has matching a filter (draft +
+// returned only — submitted files can't be withdrawn or edited). Gated on
+// file.upload; ownership scoping happens in resolveOwnUploadBulk.
 func (h *handler) myUploadsBulk(w http.ResponseWriter, r *http.Request) {
 	id := auth.FromContext(r.Context())
 	if id == nil {
@@ -480,12 +485,34 @@ func (h *handler) myUploadsBulk(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid JSON body"})
 		return
 	}
-	if req.Action != "submit" && req.Action != "remove" {
+	if req.Action != "submit" && req.Action != "remove" && req.Action != "recode" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown action"})
+		return
+	}
+	if req.Action == "recode" && !media.ValidCharset(req.Charset) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown charset"})
 		return
 	}
 	ids, ok := h.resolveOwnUploadBulk(w, r.Context(), id.UserID, req)
 	if !ok {
+		return
+	}
+
+	if req.Action == "recode" {
+		// The explicit-ids path is trusted only as far as ownership: the owner
+		// scope restricts the recode to the caller's own editable staging.
+		charset := req.Charset
+		affected, _, err := h.repo.RecodeTagsetsText(r.Context(), ids,
+			sql.NullInt64{Int64: id.UserID, Valid: true},
+			func(s string) (string, bool) { return media.ReencodeLatin1(s, charset) })
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+			return
+		}
+		if affected > 0 {
+			h.audit(r.Context(), "metadata.bulk_recode", "files", fmt.Sprintf("%d recoded as %s (owner)", affected, charset))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
 		return
 	}
 

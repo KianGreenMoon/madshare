@@ -1006,6 +1006,8 @@ input[type="range"]::-moz-range-thumb {
 .suggest-table th { color: var(--text-muted); font-weight: 500; }
 .suggest-table .suggest-cur { color: var(--text-muted); }
 .suggest-table tr.is-diff .suggest-val { color: var(--accent); font-weight: 600; }
+/* Per-cell change marker (the bulk charset-fix preview, charset-edit.js). */
+.suggest-table td.is-diff { color: var(--accent); font-weight: 600; }
 .suggest-use {
   padding: 0 var(--space-2);
   background: none;
