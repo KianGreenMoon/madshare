@@ -166,16 +166,145 @@ a suggestions panel inside the modal:
 
 ## Phasing
 
-- **P0 — local sources.** `media.ReadID3v1` + raw v2 re-read + charset
-  detect/override (x/text), `tagsource` package with the two local providers,
-  the suggestions endpoint, the modal panel with diff table + charset
-  dropdown. Fully offline; no settings, no migration.
-- **P1 — MusicBrainz.** `media.CompressFingerprint` (tested against fpcalc
-  pairs), AcoustID + MusicBrainz clients, rate limiter + TTL cache, settings
-  keys + admin settings card, the MusicBrainz chip (fingerprint path).
-- **P2 — text-search fallback.** MusicBrainz search when no fingerprint or no
-  AcoustID match (seeded from current tags, editable query field in the
-  panel).
+### P0 — local sources (fully offline; no settings, no migration)
+
+**`media` package** (new `media/id3v1.go` + additions to `extract.go`):
+
+- `media.ReadID3v1(r io.ReadSeeker) (*RawID3v1, error)` — seek to the trailing
+  128 bytes, check the `TAG` magic, parse title/artist/album/year/comment/
+  genre-index; v1.1 track number when `comment[28] == 0 && comment[29] != 0`;
+  genre index resolved against the standard ID3v1 genre table. Fields come
+  back as **raw bytes**, undecoded — decoding is the charset layer's job.
+  `tag.ErrNoTagsFound`-style sentinel when the magic is absent (→ no `id3v1`
+  chip for this file).
+- `media.DetectCharset(fields [][]byte) string` — UTF-8 strict validation
+  first; otherwise a scoring pass over a fixed candidate set (Windows-1252,
+  Windows-1251, KOI8-R, Shift-JIS, ISO-8859-1) using
+  `golang.org/x/text/encoding/{charmap,japanese}` (x/text is already a direct
+  dependency). Returns the canonical name; `DecodeWith(name, b)` is the
+  decode primitive the endpoint's `?charset=` override calls into. The
+  candidate list is the single source of truth for the API's `charset`
+  allowlist and the UI dropdown.
+- v2 chip = `media.ExtractTags` re-run on the blob (unchanged code path). The
+  v2 re-decode override round-trips the already-decoded string back to
+  Latin-1 bytes (lossless for frames dhowden/tag decoded as ISO-8859-1) and
+  re-decodes with the chosen charmap — offered on the v2 chip only when the
+  file is MP3.
+- Unit tests: fixture byte strings (umlauts in cp1252, Cyrillic in cp1251 and
+  KOI8-R, Shift-JIS), a hand-built 128-byte v1.1 block, detection
+  right/wrong-but-overridable cases.
+
+**`tagsource` package** (new): the `Provider`/`Subject`/`Suggestion` types
+from §Architecture; `id3v2` + `id3v1` providers wrapping the `media` helpers;
+a small ordered registry (`id3v2`, `id3v1`, externals appended in P1). A
+provider error becomes an error entry for that source in the response — never
+a non-200.
+
+**`database`**: one new Repository method, e.g.
+`SuggestionSubject(ctx, tagsetID)` → origin-file hash, duration, packed
+fingerprint (nil if none), current tags, uploader id + review state (for
+authz). Origin file (`tagsets.origin_file_id`) is the right blob: it is the
+file whose bytes carried the tags. **Gotcha applies:** extend the `api`
+package's `fakeRepo`.
+
+**`api`**: `GET /api/tagsets/{id}/suggestions` handler — resolve subject,
+authorize (draft owner or `metadata.edit`, mirroring the metadata-PATCH
+split), validate `?charset=` against the allowlist, open the blob via the
+`storages.Registry` probe, run the local providers. Response sketch:
+
+```json
+{
+  "suggestions": [
+    {"source": "id3v2", "label": "ID3v2.3", "charset": null,
+     "tags": {"title": "…", "artist": "…", "album": "…", "…": "…"}},
+    {"source": "id3v1", "label": "ID3v1.1", "charset": "windows-1251",
+     "charsets": ["utf-8", "windows-1252", "…"], "tags": {"…": "…"}}
+  ],
+  "external_sources": []
+}
+```
+
+`external_sources` lists the enabled-but-not-yet-queried external providers
+(always empty in P0) so the UI knows which chips to render without a second
+config endpoint.
+
+**`webui`**: "Suggest tags…" button in `track-edit.js` beside "Extended edit"
+(hidden in create mode — no subject file). The panel renders inside the wide
+modal: source chips; per-candidate **diff table** (current vs. suggested,
+changed rows highlighted); "Use all" + per-row copy writing into the normal
+inputs; the charset `<select>` on local chips re-fetches with `?charset=` and
+re-renders that chip only. Styling extends the shared admin/modal CSS —
+**no page-local redefinition of shared classes** (toast lesson). Shell-module
+rule respected for free (modal code runs at `init()` time).
+
+**Done when:** a cp1251-tagged fixture MP3 uploaded to a dev server shows
+mojibake by default, and the ID3v1 chip + charset override produce correct
+Cyrillic in the inputs; `go vet`/`go test ./...` green; endpoint denies a
+non-owner without `metadata.edit`.
+
+### P1 — MusicBrainz via AcoustID (fingerprint path)
+
+**`media.CompressFingerprint(raw []uint32) string`** — chromaprint's
+documented compression (per-value XOR-delta bit encoding: 3-bit normal codes
+with 5-bit exception escape, algorithm header, base64) so the stored raw
+stream serves AcoustID directly. Tests: table of raw/compressed pairs
+captured from real `fpcalc` runs (checked-in constants, not a runtime fpcalc
+dependency). Documented fallback if real-world pairs disagree: lazy `fpcalc`
+(no `-raw`) re-run, result cached in a new nullable `audio_fingerprints`
+column — only then does a migration appear.
+
+**`tagsource/acoustid.go`** — one POST to the AcoustID `lookup` endpoint
+(client key + compressed fingerprint + duration,
+`meta=recordings+releases+tracks+compress`), which already returns enough to
+build full candidate tagsets (title/artist/album/album-artist/year/
+track/disc) **without a second service round-trip**; direct MusicBrainz API
+calls are deferred to P2 (text search). Score → `Confidence`; candidates
+sorted best-first; below-threshold matches dropped.
+
+**Plumbing** — per-provider serializing rate limiter (a token channel, not
+just a cap — MusicBrainz's 1 req/s is per-IP and shared) returning a typed
+"busy" error the handler maps to HTTP 429 + a friendly panel message; small
+mutex-guarded TTL cache (keyed by fingerprint hash / normalized query,
+~15 min, capped entries). `User-Agent: madshare/<version> (<git_repo URL>)`
+from `internal/version` — MusicBrainz/AcoustID require identification.
+
+**Settings** — keys `tagsource.musicbrainz.enabled` (default off) +
+`tagsource.acoustid.api_key` in the generic `settings` table
+(`database/settings.go` getters/setters, key/value → **no migration**); API
+key stored plaintext (it must be replayable to the service — unlike our own
+hashed tokens) and never echoed back in full (`GET` returns set/unset + last
+4 chars). Endpoints `GET/POST /api/admin/settings/tagsource` following the
+autoderive/trash-policy pattern and gating in `access_handlers.go`; a "Tag
+services" card in `admin/settings.js` with toggle, key field, and the privacy
+note (fingerprints leave the server only on explicit user request). Setting
+changes go to `audit_log` like other admin settings writes.
+
+**UI** — the MusicBrainz chip renders when `external_sources` contains it;
+clicking issues the second, explicit request (`?sources=musicbrainz`) with a
+spinner; multiple candidates listed best-first with confidence and
+release/year in the label; 429 shows "service busy — try again in a moment"
+on the chip, not a toast storm.
+
+**Done when:** with a registered AcoustID key on a dev server, a known
+commercial track uploaded with stripped tags yields correct
+title/artist/album via the chip; with the provider disabled the chip is
+absent and `?sources=musicbrainz` is refused; rapid repeat clicks hit the
+cache (one outbound request, verified by log).
+
+### P2 — text-search fallback
+
+- Trigger: subject has no fingerprint row (fpcalc absent / analysis pending)
+  **or** AcoustID returned nothing above threshold — the MusicBrainz chip
+  then offers "Search MusicBrainz" with an **editable query field** prefilled
+  from the current artist/title.
+- `tagsource/musicbrainz.go`: `GET /ws/2/recording?query=` (Lucene syntax,
+  `artist:"…" AND recording:"…"`, duration-windowed `dur:[a TO b]` when known,
+  `fmt=json`), same limiter/cache/User-Agent plumbing as P1; top N mapped to
+  suggestions with normalized confidence.
+- API: the endpoint accepts `&query=` (only honoured with
+  `sources=musicbrainz`); empty query falls back to the seeded one.
+- **Done when:** a no-fingerprint dev server (fpcalc off PATH) still produces
+  service suggestions through the search field.
 
 ## Gotchas
 
