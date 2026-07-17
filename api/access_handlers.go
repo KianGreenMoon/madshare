@@ -45,6 +45,9 @@ type ManageStore interface {
 	GetTrashRestorePolicy(ctx context.Context) (string, error)
 	SetTrashRestorePolicy(ctx context.Context, mode string) error
 
+	GetTagsourcePolicy(ctx context.Context) (database.TagsourcePolicy, error)
+	SetTagsourcePolicy(ctx context.Context, enabled bool, apiKey *string) error
+
 	RecordAudit(ctx context.Context, actorUserID sql.NullInt64, action, target, detail string) error
 }
 
@@ -87,6 +90,8 @@ func registerManage(r chi.Router, d Deps) {
 	r.With(userManage).Post("/settings/autoderive", h.setAutoDerive)
 	r.With(userManage).Get("/settings/trash-policy", h.getTrashPolicy)
 	r.With(userManage).Post("/settings/trash-policy", h.setTrashPolicy)
+	r.With(userManage).Get("/settings/tagsource", h.getTagsource)
+	r.With(userManage).Post("/settings/tagsource", h.setTagsource)
 }
 
 // mAudit records a privileged management action, logging (never failing) on
@@ -241,6 +246,76 @@ func (h *manageHandler) setTrashPolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	h.mAudit(r.Context(), "upload.trash_policy", "", req.Policy)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "policy": req.Policy})
+}
+
+// keyLast4 returns the trailing 4 characters of a stored secret for display
+// ("which key is this") without revealing it.
+func keyLast4(k string) string {
+	if len(k) <= 4 {
+		return k
+	}
+	return k[len(k)-4:]
+}
+
+// getTagsource reports the tag-services settings. The stored AcoustID key is
+// never echoed — only whether one is set, plus its last 4 characters.
+func (h *manageHandler) getTagsource(w http.ResponseWriter, r *http.Request) {
+	p, err := h.store.GetTagsourcePolicy(r.Context())
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"musicbrainz_enabled": p.MusicBrainzEnabled,
+		"api_key_set":         p.AcoustIDKey != "",
+		"api_key_last4":       keyLast4(p.AcoustIDKey),
+	})
+}
+
+// setTagsource updates the tag-services settings. api_key semantics: absent =
+// keep the stored key, "" = clear it, anything else = replace it. Enabling
+// MusicBrainz requires an effective key — the lookup cannot work without one.
+func (h *manageHandler) setTagsource(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		MusicBrainzEnabled bool    `json:"musicbrainz_enabled"`
+		APIKey             *string `json:"api_key"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	stored, err := h.store.GetTagsourcePolicy(r.Context())
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	effectiveKey := stored.AcoustIDKey
+	if req.APIKey != nil {
+		effectiveKey = strings.TrimSpace(*req.APIKey)
+	}
+	if req.MusicBrainzEnabled && effectiveKey == "" {
+		http.Error(w, "an AcoustID API key is required to enable MusicBrainz lookups", http.StatusBadRequest)
+		return
+	}
+	if err := h.store.SetTagsourcePolicy(r.Context(), req.MusicBrainzEnabled, req.APIKey); err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	// Audit the change without the key material.
+	keyChange := "key kept"
+	if req.APIKey != nil {
+		if effectiveKey == "" {
+			keyChange = "key cleared"
+		} else {
+			keyChange = "key set"
+		}
+	}
+	h.mAudit(r.Context(), "tagsource.settings", "", strconv.FormatBool(req.MusicBrainzEnabled)+"; "+keyChange)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":                  true,
+		"musicbrainz_enabled": req.MusicBrainzEnabled,
+		"api_key_set":         effectiveKey != "",
+		"api_key_last4":       keyLast4(effectiveKey),
+	})
 }
 
 // decodeJSON decodes the request body into v, writing a 400 and returning false

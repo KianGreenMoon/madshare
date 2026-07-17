@@ -295,8 +295,9 @@ export function createTrackEditor({ patchURL, createURL = null, detailURL = null
   // the inputs above — Save stays the one write path.
   let sugBackdrop = null, sugChipsRow = null, sugCharsetWrap = null, sugCharsetSel = null,
       sugBody = null, sugUseAllBtn = null;
-  let sugData = null;  // last /suggestions response while the panel is open
-  let sugActive = -1;  // index into sugData.suggestions
+  let sugData = null;       // last /suggestions response while the panel is open
+  let sugActive = -1;       // index into sugData.suggestions
+  let sugExtLoading = null; // external source name while its lookup is in flight
   if (suggestURL) {
     sugBackdrop = makeBackdrop('is-stacked');
     const sugModal = document.createElement('div');
@@ -428,6 +429,7 @@ export function createTrackEditor({ patchURL, createURL = null, detailURL = null
     if (!url) return;
     sugData = null;
     sugActive = -1;
+    sugExtLoading = null;
     sugChipsRow.replaceChildren();
     sugCharsetWrap.classList.add('hidden');
     sugUseAllBtn.disabled = true;
@@ -442,11 +444,17 @@ export function createTrackEditor({ patchURL, createURL = null, detailURL = null
       renderChips();
       const first = (data.suggestions || []).findIndex(s => !s.error);
       if (first >= 0) selectChip(first);
+      else if ((data.external_sources || []).length) setSuggestMsg('No readable tag blocks — try a service lookup above.');
       else setSuggestMsg('No readable tag blocks in this file.');
     } catch (err) {
       setSuggestMsg('Couldn’t load suggestions.');
       if (onError) onError(err, editing && editing.file);
     }
+  }
+
+  // extSourceLabel maps an external source name to its display label.
+  function extSourceLabel(src) {
+    return src === 'musicbrainz' ? 'MusicBrainz' : src;
   }
 
   function renderChips() {
@@ -456,10 +464,62 @@ export function createTrackEditor({ patchURL, createURL = null, detailURL = null
       chip.type = 'button';
       chip.className = 'suggest-chip' + (i === sugActive ? ' is-active' : '');
       chip.textContent = s.label || s.source;
+      // Service matches carry a confidence score — show it on the chip.
+      if (!s.error && s.confidence > 0 && s.confidence < 1) {
+        chip.textContent += ` · ${Math.round(s.confidence * 100)}%`;
+      }
       if (s.error) { chip.disabled = true; chip.title = s.error; }
       else chip.addEventListener('click', () => selectChip(i));
       sugChipsRow.appendChild(chip);
     });
+    // Enabled-but-not-yet-queried external sources: on-demand chips whose
+    // click issues the explicit service lookup (user-triggered only).
+    (sugData.external_sources || []).forEach(src => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'suggest-chip is-external';
+      chip.textContent = sugExtLoading === src ? `${extSourceLabel(src)}…` : `⌕ ${extSourceLabel(src)}`;
+      chip.disabled = sugExtLoading === src;
+      chip.addEventListener('click', () => loadExternal(src));
+      sugChipsRow.appendChild(chip);
+    });
+  }
+
+  // loadExternal runs one external source (?sources=<name>) and merges its
+  // candidates into the chip row, best confidence first. A 429 (shared rate
+  // limit) keeps the chip clickable with a friendly retry message.
+  async function loadExternal(src) {
+    if (!editing || sugExtLoading) return;
+    sugExtLoading = src;
+    renderChips();
+    sugUseAllBtn.disabled = true;
+    setSuggestMsg(`Looking up ${extSourceLabel(src)}…`);
+    const base = suggestURL(editing.file);
+    const sep = base.includes('?') ? '&' : '?';
+    try {
+      const res = await fetch(`${base}${sep}sources=${encodeURIComponent(src)}`);
+      if (checkAuth && checkAuth(res)) { closeSuggest(); return; }
+      if (res.status === 429) {
+        setSuggestMsg('Lookup service busy — try again in a moment.');
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      let found = (data.suggestions || []).filter(x => x.source === src);
+      if (!found.length) found = [{ source: src, label: extSourceLabel(src), error: 'no match' }];
+      sugData.external_sources = (sugData.external_sources || []).filter(x => x !== src);
+      const firstNew = sugData.suggestions.length;
+      sugData.suggestions.push(...found);
+      const firstOk = sugData.suggestions.findIndex((x, i) => i >= firstNew && !x.error);
+      if (firstOk >= 0) selectChip(firstOk);
+      else setSuggestMsg(`${extSourceLabel(src)}: ${found[0].error || 'no match for this file'}.`);
+    } catch (err) {
+      setSuggestMsg('Couldn’t reach the lookup service.');
+      if (onError) onError(err, editing && editing.file);
+    } finally {
+      sugExtLoading = null;
+      renderChips();
+    }
   }
 
   function selectChip(i) {

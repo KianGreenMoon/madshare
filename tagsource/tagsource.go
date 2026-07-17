@@ -37,6 +37,11 @@ type Subject struct {
 	// Charset overrides the detected charset for the local sources ("" = auto).
 	// Must be pre-validated (media.ValidCharset).
 	Charset string
+	// RawFingerprint is the stored chromaprint sub-fingerprint stream and
+	// Duration the fingerprinted seconds — the AcoustID lookup key (P1). Nil /
+	// zero when the file was never analyzed; local sources ignore both.
+	RawFingerprint []uint32
+	Duration       float64
 }
 
 // Suggestion is one candidate tagset with provenance, shaped for the

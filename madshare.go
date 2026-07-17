@@ -26,6 +26,7 @@ import (
 	"daemonlord.ygg/madshare/prune"
 	"daemonlord.ygg/madshare/sources"
 	"daemonlord.ygg/madshare/storages"
+	"daemonlord.ygg/madshare/tagsource"
 	"daemonlord.ygg/madshare/webui"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -295,6 +296,7 @@ func main() {
 		Linker:         linker,
 		UploadLimiter:  limiter,
 		UIConfig:       uiCfg,
+		AcoustID:       tagsource.NewAcoustID(),
 		SourceArchive:  embeddedSourceTGZ,
 		LicenseText:    licenseText,
 		SourceRoot:     sourceRoot,

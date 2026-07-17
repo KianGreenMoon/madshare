@@ -6,7 +6,16 @@ charset detect/override (`media/charset.go`), `GET
 /api/tagsets/{id}/suggestions`, and the `track-edit.js` "Suggest tags…" panel
 (wired in My uploads, moderation, Recordings lens, All Appearances). P0.5
 (bulk charset fix, owner follow-up — see §Bulk charset fix) implemented. P1
-(MusicBrainz via AcoustID) and P2 (text-search fallback) not started. Owner
+(MusicBrainz via AcoustID) implemented 2026-07-17:
+`media.CompressFingerprint` (golden-tested against real fpcalc pairs),
+`tagsource/acoustid.go` (serializing 1 req/s limiter → 429 "busy", 15-min TTL
+cache, identifying User-Agent), the `tagsource.musicbrainz.enabled` /
+`tagsource.acoustid.api_key` settings behind `GET/POST
+/api/admin/settings/tagsource` (user.manage; the key is never echoed — only
+set/unset + last 4), the "Tag services" card on `/admin/settings`, and the
+on-demand MusicBrainz chip in the panel. Live-verified against the real
+AcoustID service up to the invalid-key error path (an end-to-end match needs
+a registered key). P2 (text-search fallback) not started. Owner
 decisions (consult round): providers for v1 = **MusicBrainz via AcoustID**
 (local ID3v1/ID3v2 always included); external lookups are **user-triggered
 only** (never at ingest, never auto-applied); ID3v1 charset handling =

@@ -295,3 +295,61 @@ func TestManage_LicenseAutoDerive(t *testing.T) {
 		t.Errorf("unknown license = %d, want 400", code)
 	}
 }
+
+func TestManage_TagsourceSettings(t *testing.T) {
+	srv, _ := newAuthTestServer(t)
+	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
+	url := srv.URL + "/api/admin/settings/tagsource"
+
+	// Anonymous callers never reach the settings.
+	if code := doJSON(t, http.DefaultClient, http.MethodGet, url, nil, nil); code == http.StatusOK {
+		t.Errorf("anon GET tagsource settings = %d, want denied", code)
+	}
+
+	var got struct {
+		Enabled bool   `json:"musicbrainz_enabled"`
+		KeySet  bool   `json:"api_key_set"`
+		Last4   string `json:"api_key_last4"`
+	}
+	if code := doJSON(t, admin, http.MethodGet, url, nil, &got); code != http.StatusOK {
+		t.Fatalf("GET = %d, want 200", code)
+	}
+	if got.Enabled || got.KeySet || got.Last4 != "" {
+		t.Errorf("fresh settings = %+v, want all unset", got)
+	}
+
+	// Enabling without a key is refused — the lookup cannot work without one.
+	if code := doJSON(t, admin, http.MethodPost, url,
+		map[string]any{"musicbrainz_enabled": true}, nil); code != http.StatusBadRequest {
+		t.Errorf("enable without key = %d, want 400", code)
+	}
+
+	// Set a key and enable. The full key is never echoed back.
+	if code := doJSON(t, admin, http.MethodPost, url,
+		map[string]any{"musicbrainz_enabled": true, "api_key": "SeCrEtKeY123456"}, &got); code != http.StatusOK {
+		t.Fatalf("enable with key = %d, want 200", code)
+	}
+	if !got.Enabled || !got.KeySet || got.Last4 != "3456" {
+		t.Errorf("after set = %+v", got)
+	}
+	var raw map[string]any
+	doJSON(t, admin, http.MethodGet, url, nil, &raw)
+	if _, leaked := raw["api_key"]; leaked {
+		t.Error("GET echoes the stored api_key")
+	}
+
+	// Absent api_key keeps the stored one; explicit "" clears it (and cannot
+	// stay enabled keyless).
+	if code := doJSON(t, admin, http.MethodPost, url,
+		map[string]any{"musicbrainz_enabled": true}, &got); code != http.StatusOK || !got.KeySet {
+		t.Errorf("keep-key update: code=%d got=%+v", code, got)
+	}
+	if code := doJSON(t, admin, http.MethodPost, url,
+		map[string]any{"musicbrainz_enabled": true, "api_key": ""}, nil); code != http.StatusBadRequest {
+		t.Errorf("clear key while enabled = %d, want 400", code)
+	}
+	if code := doJSON(t, admin, http.MethodPost, url,
+		map[string]any{"musicbrainz_enabled": false, "api_key": ""}, &got); code != http.StatusOK || got.KeySet {
+		t.Errorf("disable+clear: code=%d got=%+v", code, got)
+	}
+}

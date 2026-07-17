@@ -1,7 +1,9 @@
 package api
 
 import (
+	"errors"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -54,17 +56,46 @@ func (h *handler) tagsetSuggestions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The musicbrainz source exists only when the admin enabled it AND stored
+	// an AcoustID key AND a lookup client was wired (settings + Deps.AcoustID).
+	var mbKey string
+	mbEnabled := false
+	if h.acoustid != nil && h.manage != nil {
+		p, err := h.manage.GetTagsourcePolicy(r.Context())
+		if err != nil {
+			http.Error(w, "storage error", http.StatusInternalServerError)
+			return
+		}
+		if p.MusicBrainzEnabled && p.AcoustIDKey != "" {
+			mbEnabled = true
+			mbKey = p.AcoustIDKey
+		}
+	}
+
 	q := r.URL.Query()
 	charset := q.Get("charset")
 	if charset != "" && !media.ValidCharset(charset) {
 		http.Error(w, "unknown charset", http.StatusBadRequest)
 		return
 	}
-	sources := tagsource.LocalSources()
+	// Default = local sources only. The external source runs ONLY when the
+	// request names it — user-triggered by design — and is refused outright
+	// while disabled, so no fingerprint ever leaves the server unconfigured.
+	localSources := tagsource.LocalSources()
+	wantMusicBrainz := false
 	if raw := strings.TrimSpace(q.Get("sources")); raw != "" {
-		sources = strings.Split(raw, ",")
-		for _, s := range sources {
-			if !tagsource.ValidLocalSource(s) {
+		localSources = localSources[:0]
+		for _, s := range strings.Split(raw, ",") {
+			switch {
+			case tagsource.ValidLocalSource(s):
+				localSources = append(localSources, s)
+			case s == tagsource.SourceMusicBrainz:
+				if !mbEnabled {
+					http.Error(w, "source not enabled", http.StatusBadRequest)
+					return
+				}
+				wantMusicBrainz = true
+			default:
 				http.Error(w, "unknown source", http.StatusBadRequest)
 				return
 			}
@@ -82,20 +113,51 @@ func (h *handler) tagsetSuggestions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Blob gone (reaped / dangling link) → the local sources have nothing to
-	// read; respond with an empty list rather than an error.
+	// read; respond with an empty list rather than an error. The external
+	// lookup still works — it needs only the stored fingerprint.
 	suggestions := []tagsource.Suggestion{}
-	if path, _, ok := h.blobReg.Resolve(sub.Hash); ok {
-		suggestions = tagsource.Local(sources, tagsource.Subject{
+	if path, _, ok := h.blobReg.Resolve(sub.Hash); ok && len(localSources) > 0 {
+		suggestions = tagsource.Local(localSources, tagsource.Subject{
 			OpenBlob: func() (io.ReadSeekCloser, error) { return os.Open(path) },
 			Charset:  charset,
 		})
 	}
+	if wantMusicBrainz {
+		mb, err := h.acoustid.Suggest(r.Context(), mbKey, tagsource.Subject{
+			RawFingerprint: media.DecodeFingerprint(sub.Fingerprint),
+			Duration:       sub.Duration.Float64,
+		})
+		switch {
+		case errors.Is(err, tagsource.ErrBusy):
+			// Friendly panel message, not an error chip: the user should retry.
+			http.Error(w, "lookup service busy — try again in a moment", http.StatusTooManyRequests)
+			return
+		case err != nil:
+			// Degrade to an error chip; the endpoint itself never fails on a
+			// provider error. Log the specifics server-side only.
+			log.Printf("musicbrainz suggest (tagset %d): %v", tagsetID, err)
+			msg := "lookup failed"
+			if len(sub.Fingerprint) == 0 {
+				msg = "no acoustic fingerprint (analysis pending or fpcalc unavailable)"
+			}
+			suggestions = append(suggestions, tagsource.Suggestion{
+				Source: tagsource.SourceMusicBrainz, Label: "MusicBrainz", Err: msg,
+			})
+		default:
+			suggestions = append(suggestions, mb...)
+		}
+	}
+
+	// Enabled-but-not-queried external sources — the UI renders these as
+	// on-demand chips that re-request with ?sources=<name>.
+	external := []string{}
+	if mbEnabled && !wantMusicBrainz {
+		external = append(external, tagsource.SourceMusicBrainz)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":          true,
-		"tagset_id":   tagsetID,
-		"suggestions": suggestions,
-		// Enabled-but-not-yet-queried external sources (P1: musicbrainz when the
-		// admin has configured it). The UI renders these as on-demand chips.
-		"external_sources": []string{},
+		"ok":               true,
+		"tagset_id":        tagsetID,
+		"suggestions":      suggestions,
+		"external_sources": external,
 	})
 }

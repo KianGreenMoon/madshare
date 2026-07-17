@@ -62,6 +62,31 @@
       </div>
     </form>
   </section>
+
+  <section aria-labelledby="tagsourceHeading">
+    <h2 class="section-title" id="tagsourceHeading">Tag services</h2>
+    <p class="section-copy">
+      Let the edit modal&rsquo;s &ldquo;Suggest tags&rdquo; panel look tracks up on
+      MusicBrainz via AcoustID. Enabling this sends acoustic fingerprints to the
+      external service &mdash; only when a user explicitly requests a suggestion,
+      never at upload. Requires a free
+      <a href="https://acoustid.org/new-application" target="_blank" rel="noopener">AcoustID application key</a>.
+    </p>
+    <form class="tagsource-form" id="tagsourceForm">
+      <label class="check-row">
+        <input type="checkbox" id="tagsourceEnabled">
+        <span>Enable MusicBrainz suggestions</span>
+      </label>
+      <label class="field-row">
+        <span>AcoustID API key</span>
+        <input type="text" id="tagsourceKey" autocomplete="off" spellcheck="false">
+      </label>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-neutral" id="tagsourceClearKey">Clear key</button>
+        <button type="submit" class="btn btn-neutral" id="tagsourceSave">Save</button>
+      </div>
+    </form>
+  </section>
 </main>
 
 {{template "auth-modals" .}}

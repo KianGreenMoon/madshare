@@ -13,6 +13,8 @@ const (
 	settingAutoDeriveEnabled  = "access.autoderive.enabled"
 	settingAutoDeriveLicenses = "access.autoderive.licenses"
 	settingTrashRestorePolicy = "upload.trash_restore_policy"
+	settingMusicBrainzEnabled = "tagsource.musicbrainz.enabled"
+	settingAcoustIDKey        = "tagsource.acoustid.api_key"
 )
 
 // Trash-restore policy modes — what may happen to a trashed file whose content
@@ -71,6 +73,57 @@ func (db *DB) SetSetting(ctx context.Context, key, value string) error {
 		`INSERT INTO settings (key, value) VALUES (?, ?)
 		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
 	return err
+}
+
+// TagsourcePolicy is the external tag-suggestion service configuration
+// (docs/architecture/tag-suggestions.md P1). The AcoustID key is stored
+// plaintext — it must be replayable to the service, unlike our own hashed
+// tokens — and the API layer never echoes it back in full.
+type TagsourcePolicy struct {
+	MusicBrainzEnabled bool
+	AcoustIDKey        string
+}
+
+// GetTagsourcePolicy reads the tag-service settings. Missing keys read as
+// disabled / no key.
+func (db *DB) GetTagsourcePolicy(ctx context.Context) (TagsourcePolicy, error) {
+	var p TagsourcePolicy
+	enabled, _, err := db.GetSetting(ctx, settingMusicBrainzEnabled)
+	if err != nil {
+		return p, err
+	}
+	p.MusicBrainzEnabled = enabled == "1"
+	key, _, err := db.GetSetting(ctx, settingAcoustIDKey)
+	if err != nil {
+		return p, err
+	}
+	p.AcoustIDKey = key
+	return p, nil
+}
+
+// SetTagsourcePolicy persists the tag-service settings atomically. A nil
+// apiKey keeps the stored key (the UI never round-trips it); a pointer to ""
+// clears it.
+func (db *DB) SetTagsourcePolicy(ctx context.Context, enabled bool, apiKey *string) error {
+	val := "0"
+	if enabled {
+		val = "1"
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	upsert := `INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+	if _, err := tx.ExecContext(ctx, upsert, settingMusicBrainzEnabled, val); err != nil {
+		return err
+	}
+	if apiKey != nil {
+		if _, err := tx.ExecContext(ctx, upsert, settingAcoustIDKey, strings.TrimSpace(*apiKey)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // AutoDerivePolicy is the opt-in license-based guest-access setting (auth.md

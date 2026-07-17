@@ -20,6 +20,7 @@ import (
 	"daemonlord.ygg/madshare/prune"
 	"daemonlord.ygg/madshare/sources"
 	"daemonlord.ygg/madshare/storages"
+	"daemonlord.ygg/madshare/tagsource"
 )
 
 // actorID returns the acting user's id from the request context as a nullable
@@ -129,6 +130,11 @@ type handler struct {
 	// uiConfig backs GET /api/ui/config (the upload page's worker controls).
 	// Nil-safe: getUIConfig falls back to config.DefaultUIConfig() when unset.
 	uiConfig *config.UIConfig
+	// acoustid is the shared MusicBrainz-via-AcoustID lookup client (rate
+	// limiter + cache are process-global — madshare.go wires one instance into
+	// every listener's Deps). Nil (tests / open embeddings) means the
+	// musicbrainz suggestion source is unavailable regardless of settings.
+	acoustid *tagsource.AcoustID
 	// source, when non-nil, serves the AGPL-required source archive at GET /source.
 	// Nil when no SourceRoot was configured (e.g. in tests via NewRouter).
 	source *sourceArchiver

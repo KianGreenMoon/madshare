@@ -977,6 +977,8 @@ input[type="range"]::-moz-range-thumb {
 }
 .suggest-chip.is-active { border-color: var(--accent); color: var(--accent); }
 .suggest-chip:disabled { opacity: 0.5; cursor: default; }
+/* On-demand external lookup (MusicBrainz): dashed until queried. */
+.suggest-chip.is-external { border-style: dashed; color: var(--text-muted); }
 .suggest-charset {
   display: flex;
   align-items: center;
