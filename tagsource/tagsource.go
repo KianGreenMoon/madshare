@@ -42,6 +42,9 @@ type Subject struct {
 	// zero when the file was never analyzed; local sources ignore both.
 	RawFingerprint []uint32
 	Duration       float64
+	// Current carries the tagset being edited — the text-search seed (P2).
+	// Only Title/Artist are read.
+	Current media.Tags
 }
 
 // Suggestion is one candidate tagset with provenance, shaped for the

@@ -77,11 +77,13 @@ type Deps struct {
 	// UIConfig is the parsed webui.toml served at GET /api/ui/config. When nil,
 	// the handler falls back to config.DefaultUIConfig().
 	UIConfig *config.UIConfig
-	// AcoustID is the shared MusicBrainz-via-AcoustID lookup client for the
-	// tag-suggestions endpoint (tag-suggestions.md P1). madshare.go wires ONE
-	// instance into every listener's Deps so the outbound rate limiter and TTL
-	// cache are process-global. Nil disables the musicbrainz source entirely.
-	AcoustID *tagsource.AcoustID
+	// AcoustID / MusicBrainz are the shared external tag-suggestion clients
+	// (tag-suggestions.md P1/P2): AcoustID fingerprint lookup and MusicBrainz
+	// recording text search. madshare.go wires ONE instance of each into every
+	// listener's Deps so the outbound rate limiters and TTL caches are
+	// process-global. Both nil disables the musicbrainz source entirely.
+	AcoustID    *tagsource.AcoustID
+	MusicBrainz *tagsource.MusicBrainz
 	// SourceArchive, when non-nil, is the prebuilt AGPL source tar.gz embedded
 	// into the binary at build time (make build, -tags embedsource). It is
 	// served verbatim at GET /source, so the endpoint works with no working
@@ -148,6 +150,7 @@ func (d Deps) newHandler() *handler {
 		blobReg:         d.blobStorages(),
 		uiConfig:        d.UIConfig,
 		acoustid:        d.AcoustID,
+		musicbrainz:     d.MusicBrainz,
 	}
 	if d.SourceArchive != nil || d.LicenseText != nil || d.SourceRoot != "" {
 		h.source = &sourceArchiver{

@@ -297,6 +297,7 @@ func main() {
 		UploadLimiter:  limiter,
 		UIConfig:       uiCfg,
 		AcoustID:       tagsource.NewAcoustID(),
+		MusicBrainz:    tagsource.NewMusicBrainz(),
 		SourceArchive:  embeddedSourceTGZ,
 		LicenseText:    licenseText,
 		SourceRoot:     sourceRoot,

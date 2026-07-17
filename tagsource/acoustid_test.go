@@ -130,7 +130,7 @@ func TestAcoustIDSuggest_RequestAndMapping(t *testing.T) {
 
 func TestAcoustIDSuggest_Busy(t *testing.T) {
 	a := testAcoustID("http://unreachable.invalid")
-	a.nextSlot = time.Now().Add(time.Minute) // limiter fully booked
+	a.lim.next = time.Now().Add(time.Minute) // limiter fully booked
 	if _, err := a.Suggest(context.Background(), "k", acoustidSubject); err != ErrBusy {
 		t.Errorf("err = %v, want ErrBusy", err)
 	}

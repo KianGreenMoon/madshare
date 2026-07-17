@@ -505,6 +505,11 @@ input[type="range"]::-moz-range-thumb {
   justify-content: center;
 }
 .modal-backdrop.hidden { display: none; }
+/* `.hidden` is not a global utility (see admin-files.css) — but inside a
+   modal it is the standard toggle track-edit.js uses for its conditional
+   controls (track-number wrap, extended/suggest buttons, charset + search
+   rows), so honor it for all modal content here. */
+.modal .hidden { display: none; }
 
 .modal {
   background: var(--surface);
@@ -988,6 +993,22 @@ input[type="range"]::-moz-range-thumb {
   color: var(--text-muted);
 }
 .suggest-charset select {
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: inherit;
+  font-size: 13px;
+}
+/* Text-search fallback row (revealed when the service lookup has nothing). */
+.suggest-search {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.suggest-search input {
+  flex: 1;
   padding: var(--space-1) var(--space-2);
   background: var(--bg);
   color: var(--text);

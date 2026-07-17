@@ -130,11 +130,13 @@ type handler struct {
 	// uiConfig backs GET /api/ui/config (the upload page's worker controls).
 	// Nil-safe: getUIConfig falls back to config.DefaultUIConfig() when unset.
 	uiConfig *config.UIConfig
-	// acoustid is the shared MusicBrainz-via-AcoustID lookup client (rate
-	// limiter + cache are process-global — madshare.go wires one instance into
-	// every listener's Deps). Nil (tests / open embeddings) means the
+	// acoustid / musicbrainz are the shared external tag-suggestion clients:
+	// AcoustID fingerprint lookup (P1) and MusicBrainz text search (P2). Rate
+	// limiters + caches are process-global — madshare.go wires one instance of
+	// each into every listener's Deps. Nil (tests / open embeddings) means the
 	// musicbrainz suggestion source is unavailable regardless of settings.
-	acoustid *tagsource.AcoustID
+	acoustid    *tagsource.AcoustID
+	musicbrainz *tagsource.MusicBrainz
 	// source, when non-nil, serves the AGPL-required source archive at GET /source.
 	// Nil when no SourceRoot was configured (e.g. in tests via NewRouter).
 	source *sourceArchiver

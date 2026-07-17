@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -57,10 +59,10 @@ func (h *handler) tagsetSuggestions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The musicbrainz source exists only when the admin enabled it AND stored
-	// an AcoustID key AND a lookup client was wired (settings + Deps.AcoustID).
+	// an AcoustID key AND a lookup client was wired (settings + Deps).
 	var mbKey string
 	mbEnabled := false
-	if h.acoustid != nil && h.manage != nil {
+	if (h.acoustid != nil || h.musicbrainz != nil) && h.manage != nil {
 		p, err := h.manage.GetTagsourcePolicy(r.Context())
 		if err != nil {
 			http.Error(w, "storage error", http.StatusInternalServerError)
@@ -123,10 +125,7 @@ func (h *handler) tagsetSuggestions(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if wantMusicBrainz {
-		mb, err := h.acoustid.Suggest(r.Context(), mbKey, tagsource.Subject{
-			RawFingerprint: media.DecodeFingerprint(sub.Fingerprint),
-			Duration:       sub.Duration.Float64,
-		})
+		mb, errMsg, err := h.musicBrainzSuggest(r.Context(), q, mbKey, sub)
 		switch {
 		case errors.Is(err, tagsource.ErrBusy):
 			// Friendly panel message, not an error chip: the user should retry.
@@ -136,12 +135,8 @@ func (h *handler) tagsetSuggestions(w http.ResponseWriter, r *http.Request) {
 			// Degrade to an error chip; the endpoint itself never fails on a
 			// provider error. Log the specifics server-side only.
 			log.Printf("musicbrainz suggest (tagset %d): %v", tagsetID, err)
-			msg := "lookup failed"
-			if len(sub.Fingerprint) == 0 {
-				msg = "no acoustic fingerprint (analysis pending or fpcalc unavailable)"
-			}
 			suggestions = append(suggestions, tagsource.Suggestion{
-				Source: tagsource.SourceMusicBrainz, Label: "MusicBrainz", Err: msg,
+				Source: tagsource.SourceMusicBrainz, Label: "MusicBrainz", Err: errMsg,
 			})
 		default:
 			suggestions = append(suggestions, mb...)
@@ -160,4 +155,52 @@ func (h *handler) tagsetSuggestions(w http.ResponseWriter, r *http.Request) {
 		"suggestions":      suggestions,
 		"external_sources": external,
 	})
+}
+
+// musicBrainzSuggest runs the external source: the text-search path when the
+// request carries a query parameter — P2's fallback; an empty value falls
+// back to a query seeded from the stored current tags — otherwise the P1
+// fingerprint lookup. errMsg is the user-facing error-chip text for a non-busy
+// failure (err carries the specifics, which are only logged).
+func (h *handler) musicBrainzSuggest(ctx context.Context, q url.Values, apiKey string, sub *database.SuggestSubject) (mb []tagsource.Suggestion, errMsg string, err error) {
+	if q.Has("query") {
+		if h.musicbrainz == nil {
+			return nil, "search unavailable", errors.New("musicbrainz search client not wired")
+		}
+		query := strings.TrimSpace(q.Get("query"))
+		if query == "" {
+			query = tagsource.SeedQuery(searchSeedSubject(sub))
+		}
+		if query == "" {
+			return nil, "nothing to search for — add a title or artist first", errors.New("no search terms")
+		}
+		mb, err = h.musicbrainz.Search(ctx, query)
+		return mb, "search failed", err
+	}
+	if h.acoustid == nil {
+		return nil, "lookup unavailable", errors.New("acoustid client not wired")
+	}
+	if len(sub.Fingerprint) == 0 {
+		return nil, "no acoustic fingerprint (analysis pending or fpcalc unavailable)",
+			errors.New("no acoustic fingerprint")
+	}
+	mb, err = h.acoustid.Suggest(ctx, apiKey, tagsource.Subject{
+		RawFingerprint: media.DecodeFingerprint(sub.Fingerprint),
+		Duration:       sub.Duration.Float64,
+	})
+	return mb, "lookup failed", err
+}
+
+// searchSeedSubject shapes the stored subject facts into the text-search
+// seed: current title/artist, the fingerprinted duration with ffprobe's as
+// the fallback (the search path exists precisely when fpcalc didn't run).
+func searchSeedSubject(sub *database.SuggestSubject) tagsource.Subject {
+	d := sub.Duration.Float64
+	if !sub.Duration.Valid {
+		d = sub.TechDuration.Float64
+	}
+	return tagsource.Subject{
+		Duration: d,
+		Current:  media.Tags{Title: sub.Title, Artist: sub.Artist.String},
+	}
 }

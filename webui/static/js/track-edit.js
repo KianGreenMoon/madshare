@@ -294,7 +294,8 @@ export function createTrackEditor({ patchURL, createURL = null, detailURL = null
   // (docs/architecture/tag-suggestions.md). Read-only lookups; "Use" only fills
   // the inputs above — Save stays the one write path.
   let sugBackdrop = null, sugChipsRow = null, sugCharsetWrap = null, sugCharsetSel = null,
-      sugBody = null, sugUseAllBtn = null;
+      sugBody = null, sugUseAllBtn = null, sugSearchWrap = null, sugSearchInput = null,
+      sugSearchBtn = null;
   let sugData = null;       // last /suggestions response while the panel is open
   let sugActive = -1;       // index into sugData.suggestions
   let sugExtLoading = null; // external source name while its lookup is in flight
@@ -313,6 +314,24 @@ export function createTrackEditor({ patchURL, createURL = null, detailURL = null
     sugCharsetSel = document.createElement('select');
     sugCharsetWrap.appendChild(sugCharsetSel);
     sugCharsetSel.addEventListener('change', () => refetchCharset());
+    // Text-search fallback row (P2): revealed when the service lookup finds
+    // nothing to match on (no fingerprint / no hit).
+    sugSearchWrap = document.createElement('div');
+    sugSearchWrap.className = 'suggest-search hidden';
+    sugSearchInput = document.createElement('input');
+    sugSearchInput.type = 'text';
+    sugSearchInput.placeholder = 'artist and title…';
+    sugSearchInput.setAttribute('aria-label', 'MusicBrainz search terms');
+    sugSearchInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); searchExternal('musicbrainz'); }
+    });
+    sugSearchBtn = document.createElement('button');
+    sugSearchBtn.type = 'button';
+    sugSearchBtn.className = 'btn btn-neutral';
+    sugSearchBtn.textContent = 'Search MusicBrainz';
+    sugSearchBtn.addEventListener('click', () => searchExternal('musicbrainz'));
+    sugSearchWrap.append(sugSearchInput, sugSearchBtn);
+
     sugBody = document.createElement('div');
     sugBody.className = 'suggest-body';
 
@@ -332,7 +351,7 @@ export function createTrackEditor({ patchURL, createURL = null, detailURL = null
     sugCloseBtn.textContent = 'Close';
     sugCloseBtn.addEventListener('click', () => closeSuggest());
 
-    sugModal.append(sugChipsRow, sugCharsetWrap, sugBody, makeActions([sugCloseBtn, sugUseAllBtn]));
+    sugModal.append(sugChipsRow, sugCharsetWrap, sugSearchWrap, sugBody, makeActions([sugCloseBtn, sugUseAllBtn]));
     sugBackdrop.appendChild(sugModal);
     sugBackdrop.addEventListener('click', e => { if (e.target === sugBackdrop) closeSuggest(); });
     document.body.appendChild(sugBackdrop);
@@ -432,6 +451,8 @@ export function createTrackEditor({ patchURL, createURL = null, detailURL = null
     sugExtLoading = null;
     sugChipsRow.replaceChildren();
     sugCharsetWrap.classList.add('hidden');
+    sugSearchWrap.classList.add('hidden');
+    sugSearchInput.value = '';
     sugUseAllBtn.disabled = true;
     setSuggestMsg('Reading tag blocks…');
     sugBackdrop.classList.remove('hidden');
@@ -485,19 +506,47 @@ export function createTrackEditor({ patchURL, createURL = null, detailURL = null
     });
   }
 
-  // loadExternal runs one external source (?sources=<name>) and merges its
-  // candidates into the chip row, best confidence first. A 429 (shared rate
-  // limit) keeps the chip clickable with a friendly retry message.
-  async function loadExternal(src) {
+  // mergeExternalResults replaces src's previous entries (a stale "no match"
+  // placeholder, or an earlier search's candidates) with the fresh ones and
+  // activates the best new candidate. Returns false when nothing usable came
+  // back — the caller picks the message and offers the search fallback.
+  function mergeExternalResults(src, found) {
+    const active = sugActive >= 0 ? sugData.suggestions[sugActive] : null;
+    sugData.suggestions = sugData.suggestions.filter(x => x.source !== src);
+    const firstNew = sugData.suggestions.length;
+    sugData.suggestions.push(...found);
+    sugActive = active ? sugData.suggestions.indexOf(active) : -1;
+    const firstOk = sugData.suggestions.findIndex((x, i) => i >= firstNew && !x.error);
+    if (firstOk >= 0) { selectChip(firstOk); return true; }
+    renderChips();
+    return false;
+  }
+
+  // showSearchRow reveals the text-search fallback, seeding the field from
+  // the modal's current inputs on first reveal.
+  function showSearchRow() {
+    if (sugSearchWrap.classList.contains('hidden') && !sugSearchInput.value) {
+      sugSearchInput.value = [inputs.artist.value, inputs.title.value]
+        .map(v => v.trim()).filter(Boolean).join(' ');
+    }
+    sugSearchWrap.classList.remove('hidden');
+  }
+
+  // runExternal is the shared fetch/merge cycle of the two external paths:
+  // the fingerprint lookup (loadExternal) and the text search (searchExternal).
+  // A 429 (shared rate limit) keeps the chip clickable with a friendly retry
+  // message.
+  async function runExternal(src, params, progressMsg, emptyMsg) {
     if (!editing || sugExtLoading) return;
     sugExtLoading = src;
     renderChips();
     sugUseAllBtn.disabled = true;
-    setSuggestMsg(`Looking up ${extSourceLabel(src)}…`);
+    sugSearchBtn.disabled = true;
+    setSuggestMsg(progressMsg);
     const base = suggestURL(editing.file);
     const sep = base.includes('?') ? '&' : '?';
     try {
-      const res = await fetch(`${base}${sep}sources=${encodeURIComponent(src)}`);
+      const res = await fetch(`${base}${sep}sources=${encodeURIComponent(src)}${params}`);
       if (checkAuth && checkAuth(res)) { closeSuggest(); return; }
       if (res.status === 429) {
         setSuggestMsg('Lookup service busy — try again in a moment.');
@@ -505,21 +554,34 @@ export function createTrackEditor({ patchURL, createURL = null, detailURL = null
       }
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      let found = (data.suggestions || []).filter(x => x.source === src);
-      if (!found.length) found = [{ source: src, label: extSourceLabel(src), error: 'no match' }];
+      const found = (data.suggestions || []).filter(x => x.source === src);
       sugData.external_sources = (sugData.external_sources || []).filter(x => x !== src);
-      const firstNew = sugData.suggestions.length;
-      sugData.suggestions.push(...found);
-      const firstOk = sugData.suggestions.findIndex((x, i) => i >= firstNew && !x.error);
-      if (firstOk >= 0) selectChip(firstOk);
-      else setSuggestMsg(`${extSourceLabel(src)}: ${found[0].error || 'no match for this file'}.`);
+      if (!mergeExternalResults(src, found)) {
+        const errText = found.length ? found[0].error : '';
+        setSuggestMsg(`${extSourceLabel(src)}: ${errText || emptyMsg}.`);
+        showSearchRow(); // no usable result → offer/keep the text search (P2)
+      }
     } catch (err) {
       setSuggestMsg('Couldn’t reach the lookup service.');
       if (onError) onError(err, editing && editing.file);
     } finally {
       sugExtLoading = null;
+      sugSearchBtn.disabled = false;
       renderChips();
     }
+  }
+
+  // loadExternal runs the source's default lookup (fingerprint-keyed).
+  function loadExternal(src) {
+    return runExternal(src, '', `Looking up ${extSourceLabel(src)}…`,
+      'no match for this file');
+  }
+
+  // searchExternal runs an explicit text search with the field's query (the
+  // server seeds an empty one from the stored tags).
+  function searchExternal(src) {
+    return runExternal(src, `&query=${encodeURIComponent(sugSearchInput.value.trim())}`,
+      `Searching ${extSourceLabel(src)}…`, 'no results — try different terms');
   }
 
   function selectChip(i) {

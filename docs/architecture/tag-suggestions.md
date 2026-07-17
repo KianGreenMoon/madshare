@@ -15,7 +15,16 @@ cache, identifying User-Agent), the `tagsource.musicbrainz.enabled` /
 set/unset + last 4), the "Tag services" card on `/admin/settings`, and the
 on-demand MusicBrainz chip in the panel. Live-verified against the real
 AcoustID service up to the invalid-key error path (an end-to-end match needs
-a registered key). P2 (text-search fallback) not started. Owner
+a registered key). P2 (text-search fallback) implemented 2026-07-17:
+`tagsource/musicbrainz.go` (recording search, shared limiter/cache plumbing
+extracted to `tagsource/service.go`), `&query=` on the suggestions endpoint
+(honoured only with `sources=musicbrainz`; empty query → seeded
+`recording:"…" AND artist:"…"` + `dur:` window from the stored tags, with
+ffprobe duration as the fallback), and the panel's "Search MusicBrainz" row
+(revealed when the lookup yields nothing usable, prefilled from the modal
+inputs; keyless servers work — text search needs no AcoustID key, though
+*enabling* the source still requires one). Live-verified end-to-end against
+the real musicbrainz.org with fpcalc off PATH. Owner
 decisions (consult round): providers for v1 = **MusicBrainz via AcoustID**
 (local ID3v1/ID3v2 always included); external lookups are **user-triggered
 only** (never at ingest, never auto-applied); ID3v1 charset handling =

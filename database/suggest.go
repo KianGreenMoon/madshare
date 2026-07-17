@@ -15,12 +15,18 @@ import (
 // use the origin file's acoustic fingerprint.
 
 // SuggestSubject is the origin-blob identity + analysis facts behind one
-// appearance — what the tag-suggestion sources need.
+// appearance — what the tag-suggestion sources need. Title/Artist are the
+// appearance's CURRENT tags — the text-search seed (tag-suggestions P2);
+// TechDuration is ffprobe's duration, the search window's fallback when the
+// file was never fingerprinted.
 type SuggestSubject struct {
-	Hash        string
-	MIMEType    string
-	Fingerprint []byte          // packed chromaprint sub-fingerprints; nil when not analyzed
-	Duration    sql.NullFloat64 // fingerprinted duration in seconds
+	Hash         string
+	MIMEType     string
+	Fingerprint  []byte          // packed chromaprint sub-fingerprints; nil when not analyzed
+	Duration     sql.NullFloat64 // fingerprinted duration in seconds
+	Title        string
+	Artist       sql.NullString
+	TechDuration sql.NullFloat64 // media_metadata.duration_seconds (ffprobe)
 }
 
 // RecodeTagsetsText re-decodes the stored text tags (title / artist /
@@ -135,12 +141,15 @@ func (db *DB) RecodeTagsetsText(ctx context.Context, tagsetIDs []int64, owner sq
 func (db *DB) TagsetSuggestSubject(ctx context.Context, tagsetID int64) (*SuggestSubject, bool, error) {
 	var s SuggestSubject
 	err := db.QueryRowContext(ctx, `
-		SELECT f.hash, f.mime_type, af.fingerprint, af.duration
+		SELECT f.hash, f.mime_type, af.fingerprint, af.duration,
+		       t.title, t.artist, mm.duration_seconds
 		FROM tagsets t
 		JOIN files f ON f.id = t.origin_file_id
 		LEFT JOIN audio_fingerprints af ON af.file_id = f.id
+		LEFT JOIN media_metadata mm ON mm.file_id = f.id
 		WHERE t.id = ?`, tagsetID).
-		Scan(&s.Hash, &s.MIMEType, &s.Fingerprint, &s.Duration)
+		Scan(&s.Hash, &s.MIMEType, &s.Fingerprint, &s.Duration,
+			&s.Title, &s.Artist, &s.TechDuration)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}

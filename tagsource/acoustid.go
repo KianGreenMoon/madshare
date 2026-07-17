@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"daemonlord.ygg/madshare/config"
@@ -33,23 +32,22 @@ var ErrBusy = errors.New("tagsource: lookup service busy")
 const (
 	acoustidEndpoint = "https://api.acoustid.org/v2/lookup"
 
-	// acoustidMinInterval spaces outbound request starts. AcoustID allows 3
-	// req/s per application, but the limit is per-IP and may be shared with
-	// other tools on the host, so stay at the conservative 1 req/s MusicBrainz
-	// asks for.
-	acoustidMinInterval = time.Second
-	// acoustidMaxWait is how long a caller may be queued before ErrBusy —
+	// svcMinInterval spaces outbound request starts. AcoustID allows 3 req/s
+	// per application and MusicBrainz demands 1 req/s; both limits are per-IP
+	// and may be shared with other tools on the host, so every service client
+	// stays at the conservative 1 req/s.
+	svcMinInterval = time.Second
+	// svcMaxWait is how long a caller may be queued before ErrBusy —
 	// a serializing limiter, not just a cap, but with a small waiting room.
-	acoustidMaxWait = 3 * time.Second
+	svcMaxWait = 3 * time.Second
 
-	acoustidCacheTTL = 15 * time.Minute
-	acoustidCacheCap = 128
+	svcCacheTTL = 15 * time.Minute
+	svcCacheCap = 128
 
-	// acoustidMinScore drops low-confidence matches; acoustidMaxCandidates
-	// caps the suggestion list (one recording can appear on dozens of
-	// releases).
-	acoustidMinScore      = 0.5
-	acoustidMaxCandidates = 8
+	// acoustidMinScore drops low-confidence matches; svcMaxCandidates caps
+	// each suggestion list (one recording can appear on dozens of releases).
+	acoustidMinScore = 0.5
+	svcMaxCandidates = 8
 )
 
 // AcoustID looks up the subject's Chromaprint fingerprint against the
@@ -62,31 +60,29 @@ type AcoustID struct {
 	Client    *http.Client
 	UserAgent string
 
-	limMu    sync.Mutex
-	nextSlot time.Time
-
-	cacheMu sync.Mutex
-	cache   map[string]acoustidCacheEntry
+	lim   svcLimiter
+	cache svcCache
 }
 
-type acoustidCacheEntry struct {
-	suggestions []Suggestion
-	expires     time.Time
-}
-
-// NewAcoustID returns a client with the production endpoint, a sane timeout,
-// and the identifying User-Agent MusicBrainz/AcoustID require.
-func NewAcoustID() *AcoustID {
+// serviceUserAgent is the identifying User-Agent MusicBrainz/AcoustID require.
+func serviceUserAgent() string {
 	v := version.Get()
 	ver := v.Version
 	if ver == "" {
 		ver = "dev"
 	}
+	return fmt.Sprintf("%s/%s (%s)", v.Name, ver, config.DefaultGitRepoURL)
+}
+
+// NewAcoustID returns a client with the production endpoint, a sane timeout,
+// and the standard limiter/cache plumbing.
+func NewAcoustID() *AcoustID {
 	return &AcoustID{
 		Endpoint:  acoustidEndpoint,
 		Client:    &http.Client{Timeout: 10 * time.Second},
-		UserAgent: fmt.Sprintf("%s/%s (%s)", v.Name, ver, config.DefaultGitRepoURL),
-		cache:     make(map[string]acoustidCacheEntry),
+		UserAgent: serviceUserAgent(),
+		lim:       svcLimiter{interval: svcMinInterval, maxWait: svcMaxWait},
+		cache:     svcCache{ttl: svcCacheTTL, cap: svcCacheCap},
 	}
 }
 
@@ -102,10 +98,10 @@ func (a *AcoustID) Suggest(ctx context.Context, apiKey string, sub Subject) ([]S
 	dur := int(sub.Duration + 0.5)
 	key := fp + ":" + strconv.Itoa(dur)
 
-	if s, ok := a.cached(key); ok {
+	if s, ok := a.cache.get(key); ok {
 		return s, nil
 	}
-	if err := a.acquire(ctx); err != nil {
+	if err := a.lim.acquire(ctx); err != nil {
 		return nil, err
 	}
 
@@ -151,75 +147,8 @@ func (a *AcoustID) Suggest(ctx context.Context, apiKey string, sub Subject) ([]S
 	}
 
 	out := mapAcoustID(ar.Results)
-	a.store(key, out)
+	a.cache.put(key, out)
 	return out, nil
-}
-
-// cached returns a fresh cache hit.
-func (a *AcoustID) cached(key string) ([]Suggestion, bool) {
-	a.cacheMu.Lock()
-	defer a.cacheMu.Unlock()
-	e, ok := a.cache[key]
-	if !ok || time.Now().After(e.expires) {
-		return nil, false
-	}
-	return e.suggestions, true
-}
-
-// store caches a successful lookup, evicting expired entries first and the
-// soonest-to-expire one if still at capacity.
-func (a *AcoustID) store(key string, s []Suggestion) {
-	a.cacheMu.Lock()
-	defer a.cacheMu.Unlock()
-	now := time.Now()
-	if len(a.cache) >= acoustidCacheCap {
-		for k, e := range a.cache {
-			if now.After(e.expires) {
-				delete(a.cache, k)
-			}
-		}
-	}
-	if len(a.cache) >= acoustidCacheCap {
-		var oldest string
-		var oldestExp time.Time
-		for k, e := range a.cache {
-			if oldest == "" || e.expires.Before(oldestExp) {
-				oldest, oldestExp = k, e.expires
-			}
-		}
-		delete(a.cache, oldest)
-	}
-	a.cache[key] = acoustidCacheEntry{suggestions: s, expires: now.Add(acoustidCacheTTL)}
-}
-
-// acquire reserves the next outbound slot, sleeping until it opens. Callers
-// whose slot would start beyond the wait budget get ErrBusy immediately —
-// spacing request STARTS serializes the shared per-IP rate.
-func (a *AcoustID) acquire(ctx context.Context) error {
-	a.limMu.Lock()
-	now := time.Now()
-	start := a.nextSlot
-	if start.Before(now) {
-		start = now
-	}
-	wait := start.Sub(now)
-	if wait > acoustidMaxWait {
-		a.limMu.Unlock()
-		return ErrBusy
-	}
-	a.nextSlot = start.Add(acoustidMinInterval)
-	a.limMu.Unlock()
-
-	if wait > 0 {
-		t := time.NewTimer(wait)
-		defer t.Stop()
-		select {
-		case <-t.C:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	return nil
 }
 
 // AcoustID lookup response (the fields we read). Releases nest under
@@ -345,7 +274,7 @@ func mapAcoustID(results []acoustidResult) []Suggestion {
 							"disc_number":  discNo,
 						}),
 					})
-					if len(out) >= acoustidMaxCandidates {
+					if len(out) >= svcMaxCandidates {
 						return out
 					}
 				}

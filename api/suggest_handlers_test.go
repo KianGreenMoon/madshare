@@ -148,6 +148,16 @@ func mbHandler(t *testing.T, repo *fakeRepo, endpoint string) *handler {
 	return h
 }
 
+// mbSearchHandler is suggestHandler plus an enabled musicbrainz source whose
+// TEXT-SEARCH client points at a fake endpoint (no AcoustID client wired).
+func mbSearchHandler(t *testing.T, repo *fakeRepo, endpoint string) *handler {
+	h := suggestHandler(repo, t)
+	h.manage = &fakeManage{policy: database.TagsourcePolicy{MusicBrainzEnabled: true, AcoustIDKey: "k"}}
+	h.musicbrainz = tagsource.NewMusicBrainz()
+	h.musicbrainz.Endpoint = endpoint
+	return h
+}
+
 // fingerprintedRepo is ownedDraftRepo with an analyzed origin file.
 func fingerprintedRepo() *fakeRepo {
 	r := ownedDraftRepo()
@@ -245,5 +255,90 @@ func TestSuggestions_MusicBrainzBusy(t *testing.T) {
 		tagsetSuggestions(rr, suggestReq("?sources=musicbrainz", owner, 7))
 	if rr.Code != http.StatusTooManyRequests {
 		t.Errorf("status = %d, want 429; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSuggestions_MusicBrainzTextSearch(t *testing.T) {
+	owner := map[string]bool{auth.PermFileUpload: true}
+	var calls int
+	var gotQueries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		gotQueries = append(gotQueries, r.URL.Query().Get("query"))
+		w.Write([]byte(`{"recordings":[{"score":100,"title":"Searched Title",
+			"artist-credit":[{"name":"Searched Artist","joinphrase":""}],"releases":[]}]}`))
+	}))
+	defer srv.Close()
+
+	type resp struct {
+		Suggestions []struct {
+			Source string `json:"source"`
+			Error  string `json:"error"`
+			Tags   map[string]any
+		} `json:"suggestions"`
+	}
+
+	// Explicit user query → passed through verbatim.
+	rr := httptest.NewRecorder()
+	mbSearchHandler(t, ownedDraftRepo(), srv.URL).
+		tagsetSuggestions(rr, suggestReq("?sources=musicbrainz&query=hello+world", owner, 7))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", rr.Code, rr.Body.String())
+	}
+	var got resp
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(gotQueries) != 1 || gotQueries[0] != "hello world" {
+		t.Errorf("outbound queries = %q, want [hello world]", gotQueries)
+	}
+	if len(got.Suggestions) != 1 || got.Suggestions[0].Tags["title"] != "Searched Title" {
+		t.Errorf("suggestions = %s", rr.Body.String())
+	}
+
+	// Empty query → seeded from the stored current tags (+ duration window
+	// from the ffprobe fallback).
+	seeded := ownedDraftRepo()
+	seeded.suggestSubject.Title = "Stored Title"
+	seeded.suggestSubject.Artist = sql.NullString{String: "Stored Artist", Valid: true}
+	seeded.suggestSubject.TechDuration = sql.NullFloat64{Float64: 200, Valid: true}
+	rr = httptest.NewRecorder()
+	mbSearchHandler(t, seeded, srv.URL).
+		tagsetSuggestions(rr, suggestReq("?sources=musicbrainz&query=", owner, 7))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("seeded: status = %d; body=%s", rr.Code, rr.Body.String())
+	}
+	want := `recording:"Stored Title" AND artist:"Stored Artist" AND dur:[190000 TO 210000]`
+	if len(gotQueries) != 2 || gotQueries[1] != want {
+		t.Errorf("seeded outbound query = %q, want %q", gotQueries[len(gotQueries)-1], want)
+	}
+
+	// Empty query and nothing to seed from → error chip, no outbound call.
+	rr = httptest.NewRecorder()
+	mbSearchHandler(t, ownedDraftRepo(), srv.URL).
+		tagsetSuggestions(rr, suggestReq("?sources=musicbrainz&query=", owner, 7))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unseedable: status = %d; body=%s", rr.Code, rr.Body.String())
+	}
+	got = resp{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Suggestions) != 1 || got.Suggestions[0].Error == "" {
+		t.Errorf("unseedable: want an error chip, got %s", rr.Body.String())
+	}
+	if calls != 2 {
+		t.Errorf("outbound calls = %d, want 2 (unseedable query never goes out)", calls)
+	}
+
+	// A query without sources=musicbrainz is ignored — local sources only.
+	rr = httptest.NewRecorder()
+	mbSearchHandler(t, ownedDraftRepo(), srv.URL).
+		tagsetSuggestions(rr, suggestReq("?sources=id3v1&query=hello", owner, 7))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("local+query: status = %d", rr.Code)
+	}
+	if calls != 2 {
+		t.Errorf("outbound calls after local-only request = %d, want 2", calls)
 	}
 }
