@@ -19,15 +19,64 @@ import (
 	"daemonlord.ygg/madshare/config"
 )
 
-// memStore is an in-memory PeerStore for handshake tests (the real one is
-// *database.DB, exercised in database/federation_test.go).
+// memStore is an in-memory PeerStore for handshake/sync tests (the real one is
+// *database.DB, exercised in database/federation_test.go and
+// database/madnetwork_test.go).
 type memStore struct {
 	mu    sync.Mutex
 	next  int64
 	peers map[int64]*Peer
+
+	// Catalog half (F2): published is what this node offers friends; caches
+	// holds the per-peer pulled copies.
+	published []CatalogEntry
+	caches    map[int64][]CatalogEntry
 }
 
-func newMemStore() *memStore { return &memStore{peers: map[int64]*Peer{}} }
+func newMemStore() *memStore {
+	return &memStore{peers: map[int64]*Peer{}, caches: map[int64][]CatalogEntry{}}
+}
+
+func (m *memStore) PublishedCatalog(context.Context) ([]CatalogEntry, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]CatalogEntry(nil), m.published...), nil
+}
+
+func (m *memStore) ReplacePeerCatalog(_ context.Context, peerID int64, serial string, syncedAt int64, entries []CatalogEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.peers[peerID]
+	if !ok {
+		return ErrPeerNotFound
+	}
+	m.caches[peerID] = append([]CatalogEntry(nil), entries...)
+	p.CatalogSerial, p.CatalogSyncedAt = serial, syncedAt
+	return nil
+}
+
+func (m *memStore) MarkPeerCatalogChecked(_ context.Context, peerID int64, serial string, syncedAt int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.peers[peerID]
+	if !ok {
+		return ErrPeerNotFound
+	}
+	p.CatalogSerial, p.CatalogSyncedAt = serial, syncedAt
+	return nil
+}
+
+func (m *memStore) cachedCatalog(peerID int64) []CatalogEntry {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]CatalogEntry(nil), m.caches[peerID]...)
+}
+
+func (m *memStore) setPublished(entries []CatalogEntry) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.published = entries
+}
 
 func (m *memStore) ListFederationPeers(context.Context) ([]*Peer, error) {
 	m.mu.Lock()

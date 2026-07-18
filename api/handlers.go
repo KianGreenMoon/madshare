@@ -141,6 +141,9 @@ type handler struct {
 	// federation is disabled or compiled out — the /api/admin/federation
 	// endpoints then report {enabled:false} / 503.
 	federation FederationNode
+	// madnetwork is the merged-catalog read store behind /api/madnetwork/*
+	// (federation F2). Nil skips registering those routes.
+	madnetwork MadnetworkStore
 	// source, when non-nil, serves the AGPL-required source archive at GET /source.
 	// Nil when no SourceRoot was configured (e.g. in tests via NewRouter).
 	source *sourceArchiver

@@ -56,12 +56,13 @@ func buildPageTmpl(file string) *template.Template {
 }
 
 var (
-	cmusTmpl      = template.Must(template.ParseFS(htmlFS, "html/cmus.html"))
-	libraryTmpl   = buildPageTmpl("html/library.html")
-	uploadTmpl    = buildPageTmpl("html/upload.html")
-	playlistsTmpl = buildPageTmpl("html/playlists.html")
-	settingsTmpl  = buildPageTmpl("html/settings.html")
-	adminTmpl     = buildPageTmpl("html/admin/dashboard.html") // /admin landing
+	cmusTmpl       = template.Must(template.ParseFS(htmlFS, "html/cmus.html"))
+	libraryTmpl    = buildPageTmpl("html/library.html")
+	uploadTmpl     = buildPageTmpl("html/upload.html")
+	playlistsTmpl  = buildPageTmpl("html/playlists.html")
+	madnetworkTmpl = buildPageTmpl("html/madnetwork.html")
+	settingsTmpl   = buildPageTmpl("html/settings.html")
+	adminTmpl      = buildPageTmpl("html/admin/dashboard.html") // /admin landing
 )
 
 // adminSubPages are the reworked admin sub-pages, each its own routed page under
@@ -129,11 +130,12 @@ type pageData struct {
 	Version string
 	Commit  string
 
-	SignedIn     bool
-	Username     string
-	CanUpload    bool
-	CanAdmin     bool
-	CanPlaylists bool
+	SignedIn      bool
+	Username      string
+	CanUpload     bool
+	CanAdmin      bool
+	CanPlaylists  bool
+	CanMadnetwork bool
 }
 
 // verInfo is resolved once: the build metadata is constant for the process.
@@ -152,6 +154,7 @@ func makeHandler(tmpl *template.Template, tmplName string, data pageData) http.H
 			d.CanUpload = id.Has(auth.PermFileUpload)
 			d.CanAdmin = id.Has(auth.PermFileDelete) || id.Has(auth.PermUserManage)
 			d.CanPlaylists = id.Has(auth.PermContentAccess)
+			d.CanMadnetwork = id.Has(auth.PermMadnetworkAccess)
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		// The header now carries per-user auth state — keep shared caches from
@@ -182,6 +185,11 @@ func Register(r chi.Router, apiBase, gitRepo string) {
 	r.Get("/cmus", makeHandler(cmusTmpl, "cmus.html", pageData{APIURL: apiBase, GitRepo: gitRepo}))
 	r.Get("/upload", makeHandler(uploadTmpl, "upload.html", pageData{APIURL: apiBase, Page: "upload", GitRepo: gitRepo}))
 	r.Get("/playlists", makeHandler(playlistsTmpl, "playlists.html", pageData{APIURL: apiBase, Page: "playlists", Section: "library", GitRepo: gitRepo}))
+	// The madnetwork section (federation F2): browsing the merged catalog of
+	// this node's friends. Shell-native so local playback survives browsing it;
+	// the nav link is server-gated on madnetwork.access (the API enforces the
+	// same gate on its data).
+	r.Get("/madnetwork", makeHandler(madnetworkTmpl, "madnetwork.html", pageData{APIURL: apiBase, Page: "madnetwork", Section: "madnetwork", GitRepo: gitRepo}))
 	// Settings is its own page (not part of the Library section) reached from the
 	// header's right-side user area; see docs/ui/user-settings.md.
 	r.Get("/settings", makeHandler(settingsTmpl, "settings.html", pageData{APIURL: apiBase, Page: "settings", GitRepo: gitRepo}))

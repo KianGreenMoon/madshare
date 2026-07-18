@@ -12,6 +12,7 @@ package federation
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -66,12 +67,19 @@ type Peer struct {
 	CreatedAt int64  `json:"created_at"`
 	LastSeen  int64  `json:"last_seen"` // unix seconds; 0 = never
 
+	// Catalog sync state (F2, pull-and-cache): the serial of the last snapshot
+	// applied from this friend and when it was last confirmed fresh.
+	CatalogSerial   string `json:"-"`
+	CatalogSyncedAt int64  `json:"catalog_synced_at"`
+
 	Username string `json:"username,omitempty"` // mapped account, display only
 	Address  string `json:"address,omitempty"`  // derived mesh address, display only
 }
 
-// PeerStore is the persistence the node needs for friendship. *database.DB
-// implements it (database/federation.go).
+// PeerStore is the persistence the node needs: the trusted-peer table (F1) and
+// the catalog — both what this node publishes to friends and the cached copies
+// pulled from them (F2). *database.DB implements it (database/federation.go +
+// database/madnetwork.go).
 type PeerStore interface {
 	ListFederationPeers(ctx context.Context) ([]*Peer, error)
 	GetFederationPeer(ctx context.Context, id int64) (*Peer, error)
@@ -82,6 +90,61 @@ type PeerStore interface {
 	SetFederationPeerUser(ctx context.Context, id int64, userID *int64) error
 	TouchFederationPeerSeen(ctx context.Context, id int64, when int64) error
 	DeleteFederationPeer(ctx context.Context, id int64) error
+
+	// PublishedCatalog is this node's own catalog — every approved, live
+	// appearance with its recording's renditions — in a stable order (the
+	// snapshot serial is a hash over it).
+	PublishedCatalog(ctx context.Context) ([]CatalogEntry, error)
+	// ReplacePeerCatalog atomically replaces the cached copy of a friend's
+	// catalog with a fresh snapshot and records its serial + sync time.
+	ReplacePeerCatalog(ctx context.Context, peerID int64, serial string, syncedAt int64, entries []CatalogEntry) error
+	// MarkPeerCatalogChecked records a sync round that found the cached copy
+	// still fresh (the not-modified path).
+	MarkPeerCatalogChecked(ctx context.Context, peerID int64, serial string, syncedAt int64) error
+}
+
+// CatalogRendition is one blob of a recording as advertised in a catalog
+// entry: the content hash (the future swarm id, F4) plus the quality facts the
+// ladder ranks by. Remote values are hints — bytes are verified against the
+// hash and fingerprinted locally on any future download (F3).
+type CatalogRendition struct {
+	Hash       string  `json:"hash"`
+	Size       int64   `json:"size"`
+	Codec      string  `json:"codec,omitempty"`
+	Bitrate    int64   `json:"bitrate,omitempty"`
+	SampleRate int64   `json:"sample_rate,omitempty"`
+	BitDepth   int64   `json:"bit_depth,omitempty"`
+	Duration   float64 `json:"duration,omitempty"`
+}
+
+// CatalogEntry is one published appearance (tagset) of a recording, as carried
+// by the catalog protocol and cached per peer. Key and RecordingKey are the
+// origin node's stable ids — opaque strings here (never joined onto local
+// entities; remote claims are hints).
+type CatalogEntry struct {
+	Key           string             `json:"key"`
+	RecordingKey  string             `json:"recording_key"`
+	Title         string             `json:"title"`
+	Artist        string             `json:"artist,omitempty"`
+	AlbumArtist   string             `json:"album_artist,omitempty"`
+	Album         string             `json:"album,omitempty"`
+	Genre         string             `json:"genre,omitempty"`
+	Year          *int64             `json:"year,omitempty"`
+	TrackNumber   *int64             `json:"track_number,omitempty"`
+	DiscNumber    *int64             `json:"disc_number,omitempty"`
+	Duration      float64            `json:"duration,omitempty"`
+	License       string             `json:"license,omitempty"`
+	GuestPlayable bool               `json:"guest_playable,omitempty"`
+	Renditions    []CatalogRendition `json:"renditions"`
+}
+
+// CatalogSerial is the deterministic serial of a snapshot: the SHA-256 (hex)
+// of its canonical JSON. Two identical catalogs — regardless of when or where
+// serialized — get the same serial, which is all the not-modified check needs.
+func CatalogSerial(entries []CatalogEntry) string {
+	raw, _ := json.Marshal(entries)
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
 // Card is a node card — the out-of-band introduction two admins exchange to

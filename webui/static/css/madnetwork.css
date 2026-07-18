@@ -1,0 +1,80 @@
+/* Madnetwork browse (federation F2). Reuses the library's drill-down classes
+   (.panel-row / .row-name / .track-row / .breadcrumb — app.css); this file
+   adds only the page's own pieces: the sync-status strip, the artist filter,
+   and the per-track versions expansion. */
+
+/* ── Sync status strip ──────────────────────────────────────────────────────── */
+.mn-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  margin: var(--space-4) var(--space-5) 0;
+  padding: var(--space-2) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+.mn-status-main { color: var(--text); font-weight: 600; }
+.mn-status a { color: var(--accent); text-decoration: none; }
+.mn-status a:hover { text-decoration: underline; }
+.mn-friend {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 0.1rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.mn-friend--empty { opacity: 0.6; }
+.mn-friend-name { color: var(--text); font-weight: 600; }
+.mn-friend-seen { font-size: 0.75rem; }
+
+/* ── Artist filter (right side of the library bar) ──────────────────────────── */
+.mn-search input {
+  padding: 0.35rem 0.6rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9rem;
+  width: 14rem;
+  max-width: 45vw;
+}
+.mn-search input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ── Track rows + versions expansion ────────────────────────────────────────── */
+.mn-track-body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.mn-track-body .track-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mn-track-meta { font-size: 0.8rem; color: var(--text-muted); }
+.mn-expand { transition: transform 120ms ease; }
+.mn-track--open .mn-expand { transform: rotate(180deg); }
+
+.mn-versions {
+  margin: 0 var(--space-4) var(--space-2) var(--space-6);
+  padding: var(--space-2) var(--space-4);
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.mn-version { display: flex; flex-direction: column; gap: var(--space-1); }
+.mn-version-head { display: flex; align-items: center; gap: var(--space-2); }
+.mn-version-label { font-size: 0.78rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.mn-version-license,
+.mn-version-guest {
+  font-size: 0.72rem;
+  padding: 0 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+}
+.mn-version-guest { color: var(--success); border-color: var(--success); }
+.mn-renditions { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.mn-rendition-quality { font-size: 0.82rem; color: var(--text); font-variant-numeric: tabular-nums; }
+.mn-holders { font-size: 0.8rem; color: var(--text-muted); }
+.mn-holder { color: var(--text); }
+.mn-fetch-note { font-size: 0.75rem; color: var(--text-muted); font-style: italic; }

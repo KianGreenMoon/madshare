@@ -1,10 +1,10 @@
 # Madnetwork federation — design
 
-> **Status: agreed 2026-07-18; F0 (groundwork) and F1 (friendship) are built.**
-> The remaining items in §Open questions are design-time details to settle
-> during the respective milestones, not blockers. Federation is auth Phase 4
-> (`docs/architecture/auth.md` §8) and the milestone the native client
-> (`docs/ui/native-client.md`) exists to use.
+> **Status: agreed 2026-07-18; F0 (groundwork), F1 (friendship) and F2
+> (catalog) are built.** The remaining items in §Open questions are design-time
+> details to settle during the respective milestones, not blockers. Federation
+> is auth Phase 4 (`docs/architecture/auth.md` §8) and the milestone the native
+> client (`docs/ui/native-client.md`) exists to use.
 
 ## Goal & vocabulary
 
@@ -228,27 +228,55 @@ default** — its social graph is visible to its members.
   rendition is never touched automatically; the admin may soft-delete the old
   one (Trash, normal quarantine) to keep only the best. No nagging: a page you
   visit, at most a quiet count badge.
-- **Sync mechanism = pull-and-cache (decided).** On connect and periodically, a
-  node pulls a friend's catalog as **"changed since serial N" deltas** and
-  keeps a local copy. A friend's library stays browsable while they are
-  offline, shown with a **"last seen"** indicator — no TTL-based hiding.
-  Push/gossip of deltas is a later optimization, not v1.
+- **Sync mechanism = pull-and-cache (built, F2).** Periodically (15 min) and on
+  new friendship, a node pulls a friend's catalog over the mesh
+  (`GET /madnetwork/v0/catalog?since=<serial>`, friends only — default-deny
+  toward everyone else) and keeps a local copy (`federation_catalog`, one row
+  per remote appearance, denormalized text — remote ids are opaque, never
+  joined onto local entities). **Snapshot + not-modified**, not row deltas
+  (decision 2026-07-18, superseding the earlier "changed since serial N"
+  sketch): true per-row deltas would need change tracking across five tables
+  (a rename changes catalog text), while a personal-scale catalog is a few
+  hundred KB — so the serial is a **content hash over the whole snapshot**;
+  an unchanged serial gets a tiny "unchanged" reply, a changed one the full
+  snapshot, applied as an atomic replace. The wire format carries the serial,
+  so real deltas can arrive later without a protocol break. The serving node
+  memoizes its own snapshot (~1 min) so friend syncs don't rebuild it per
+  request. A friend's library stays browsable while they are offline, shown
+  with a **"last seen"** indicator — no TTL-based hiding. What a node
+  publishes in F2 is its **whole approved live library** (the node-level
+  default scope; per-content share depth arrives in F5). Push/gossip of
+  changes is a later optimization, not v1.
 - **Playback needs a holder, not the origin.** Because the swarm is keyed by
   content hash, an offline friend's tracks stay playable whenever *any*
   reachable node holds the hash. With network scale (many redundant
   libraries), most entries have multiple holders — availability improves as
   the network grows.
-- **Merged view.** The madnetwork page shows the **deduplicated union** of all
-  synced catalogs: a recording offered by many nodes appears once, holders
-  aggregated. Which friend a tagset came from is **not surfaced while
-  browsing** — provenance stays stored (it drives trust, moderation, and a
-  details/inspect view) but does not shape the browsing experience.
-  Cross-catalog dedup keys on *claimed* recording identity (hint-level
-  fingerprint match — sufficient for display; real verification happens
-  locally on download, and a wrong hint-match simply splits then; local truth
-  wins). Identical tagset text offered by many nodes collapses to one entry,
-  and the **trust-weighted** carrier count (see §Trust graph, "Mislabeling")
-  **is** the tagset popularity score.
+- **Merged view (built, F2).** The `/madnetwork` page — its own header section,
+  gated `madnetwork.access`, **shell-native** so local playback survives
+  browsing it — shows the **deduplicated union** of all *friends'* catalogs
+  (a blocked peer's cache is kept but hidden; unblock restores the view
+  without a resync) as a **drill-down mirroring the local library** (artist →
+  album → track, album-artist grouping, case-insensitive merge, the same
+  Unknown-artist/Other buckets). Identical tagset text offered by many nodes
+  collapses to one row; which friend it came from is **not surfaced while
+  browsing** — provenance stays stored and appears only in the track's
+  expansion (holders + last seen) and the page's sync-status strip. Browse
+  is read-only in F2: playing/downloading arrives with F3 (the expansion says
+  so). At depth 0 every carrier is a direct friend, so the carrier count is
+  trivially trust-weighted; the full weighting (one branch = one voice)
+  arrives with transitive reach (F6).
+- **Catalog crossing — "N versions" (built, F2; resolves former open question
+  1).** The same tagset text on *different claimed recordings* (different
+  masters, live vs. studio, or a mislabel) stays **one track row** that
+  expands into its **versions**. Recordings are **never merged on text**:
+  two claims are folded into one version only when they **share a rendition
+  content hash** — proof of identical bytes somewhere — otherwise they stay
+  separate versions, each with its renditions and holders. Versions are
+  ordered most-widely-held first (the default pick; the quality ladder cannot
+  rank across different audio). Hint-level fingerprint matching for display
+  dedup of *unshared* rips can refine this later; local verification on
+  download (F3) stays the truth either way.
 
 ## Distribution (the swarm)
 
@@ -303,10 +331,12 @@ milestone directly after direct transfer works, and tokens ship with depth.
   (export/import), pairing handshake, trusted-peer table (+ user-level mapping
   to local accounts), block/unblock (local effect only), admin network page
   (list form).
-- **F2 — Catalog.** Pull-and-cache catalog sync with direct friends (serial
-  deltas, "last seen"), madnetwork library section (merged/deduplicated view)
-  + `madnetwork.access` permission + gated header link, tagset payload +
-  provenance storage, the "N versions" crossing UI (open question 1).
+- **F2 — Catalog** (built 2026-07-18, see §Catalog). Pull-and-cache catalog
+  sync with direct friends (snapshot + not-modified, "last seen"), madnetwork
+  library section (merged drill-down) + `madnetwork.access` permission (admin
+  default + the stackable `madnetwork` role, migration 027) + gated header
+  link, tagset payload + per-peer provenance storage, the "N versions"
+  crossing UI.
 - **F3 — Direct transfer.** Fetch-by-hash from a friend (chunked, verified),
   cache-through streaming relay for thin clients, download-to-library through
   the review bucket (streamlined approve-by-default modal) + local fingerprint
@@ -329,18 +359,12 @@ milestone directly after direct transfer works, and tokens ship with depth.
 
 ## Open questions (design-time details)
 
-1. **Catalog crossing — one tagset text, two different recordings.** Same
-   artist/album/title attached to different audio (different masters, live vs.
-   studio, or a mislabel) must display sanely in the merged view. Starting
-   ideas: **never merge recordings** (fingerprint is truth; tags are labels);
-   dedup tagsets by textual identity; show one row for the shared text with an
-   **"N versions" expansion** (like the renditions dropdown, one level up);
-   default pick = the recording with the most **trust-weighted** holders (the
-   quality ladder cannot rank across different audio). To settle with the
-   madnetwork browse UI (F2).
-2. Token lifetime / renewal cadence; exact chunk size & Merkle parameters.
-3. Gossip payload details for F6 (what exactly a friend-list/distrust message
+1. Token lifetime / renewal cadence; exact chunk size & Merkle parameters.
+2. Gossip payload details for F6 (what exactly a friend-list/distrust message
    carries).
+
+(Former question 1 — catalog crossing / one tagset text on two recordings —
+was settled with F2: see §Catalog, ""N versions"".)
 
 Decided-and-deferred: **replication** (subscribe/favourite → mirror, storage
 caps) stays out of v1 — manual download-to-library already makes a node a

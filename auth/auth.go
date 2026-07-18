@@ -19,6 +19,10 @@ const (
 	PermMetadataEdit     = "metadata.edit"
 	PermLibraryShare     = "library.share"
 	PermFederationManage = "federation.manage"
+	// PermMadnetworkAccess gates browsing the merged madnetwork catalog (the
+	// /madnetwork section; federation F2). Admin by default; grantable to
+	// trusted users via the stand-alone 'madnetwork' role (migration 027).
+	PermMadnetworkAccess = "madnetwork.access"
 	// PermContentAccess — may reach the whole library (play/download any file).
 	// Collapses the former content.play/content.download/content.all trio under
 	// the roles-only access model (docs/architecture/auth.md). Anonymous

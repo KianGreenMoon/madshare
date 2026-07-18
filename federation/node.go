@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	yggconfig "github.com/yggdrasil-network/yggdrasil-go/src/config"
@@ -43,6 +44,10 @@ type Node struct {
 	nudge      chan struct{} // wakes the refresh loop early (import/accept)
 	loopCancel context.CancelFunc
 	loopDone   chan struct{}
+
+	// Memoized own-catalog snapshot served to friends (catalog.go).
+	snapMu sync.Mutex
+	snap   *snapshot
 }
 
 // Start loads (or creates) the node key, brings up the yggdrasil core with the
@@ -186,6 +191,7 @@ func (n *Node) protocolHandler() http.Handler {
 		})
 	})
 	mux.HandleFunc("POST /madnetwork/v0/pair", n.handlePair)
+	mux.HandleFunc("GET /madnetwork/v0/catalog", n.handleCatalog)
 	return n.meshAuth(mux)
 }
 

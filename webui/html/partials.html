@@ -55,6 +55,9 @@
            permission, so an anonymous/low-priv visitor never sees a flash of links
            they can't use (the API enforces the same gates). Login/logout reload the
            page, so the server re-renders these on every auth change. */}}
+      {{/* Madnetwork (federation F2): the merged catalog of this node's friends.
+           Server-gated on madnetwork.access like the other privileged links. */}}
+      {{if .CanMadnetwork}}<a href="/madnetwork" class="nav-link{{if eq .Page "madnetwork"}} nav-link--active{{end}}"{{if eq .Page "madnetwork"}} aria-current="page"{{end}}>Madnetwork</a>{{end}}
       {{if .CanUpload}}<a href="/upload" class="nav-link{{if eq .Page "upload"}} nav-link--active{{end}}"{{if eq .Page "upload"}} aria-current="page"{{end}}>Upload</a>{{end}}
       {{/* Admin opens in the SAME tab (owner decision 2026-06-10, reversing the
            Phase-1 new-tab default). Admin pages are outside the shell, so this

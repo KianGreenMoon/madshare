@@ -13,9 +13,10 @@ export function getIdentity() { return _identity; }
 // Privileged nav links / pages and the permission(s) that unlock them. A user
 // holding ANY listed permission may see the link and open the page. These mirror
 // the server-side gates (the API still enforces them — this is UX, not security).
-const UPLOAD_PERMS    = ['file.upload'];
-const ADMIN_PERMS     = ['file.delete', 'user.manage'];
-const PLAYLISTS_PERMS = ['content.access']; // playlists are per-user, full-library
+const UPLOAD_PERMS     = ['file.upload'];
+const ADMIN_PERMS      = ['file.delete', 'user.manage'];
+const PLAYLISTS_PERMS  = ['content.access']; // playlists are per-user, full-library
+const MADNETWORK_PERMS = ['madnetwork.access']; // merged friend-catalog browse (federation F2)
 
 function hasAnyPerm(needed) {
   const perms = _identity?.permissions || [];
@@ -30,7 +31,7 @@ function hasAnyPerm(needed) {
 // (e.g. signed out in another tab), and the in-<main> subtab bar (.subtabs) after a
 // shell swap. Exported for that reason. Idempotent (already-removed links match nothing).
 export function applyNavPermissions() {
-  const gates = [['/upload', UPLOAD_PERMS], ['/admin', ADMIN_PERMS], ['/playlists', PLAYLISTS_PERMS]];
+  const gates = [['/upload', UPLOAD_PERMS], ['/admin', ADMIN_PERMS], ['/playlists', PLAYLISTS_PERMS], ['/madnetwork', MADNETWORK_PERMS]];
   for (const [href, needed] of gates) {
     if (hasAnyPerm(needed)) continue;
     document.querySelectorAll(`.main-nav a[href="${href}"], .subtabs a[href="${href}"]`).forEach(a => a.remove());
@@ -47,7 +48,7 @@ export function gatePage(neededPerms) {
   return false;
 }
 
-export const PAGE_PERMS = { upload: UPLOAD_PERMS, admin: ADMIN_PERMS, playlists: PLAYLISTS_PERMS };
+export const PAGE_PERMS = { upload: UPLOAD_PERMS, admin: ADMIN_PERMS, playlists: PLAYLISTS_PERMS, madnetwork: MADNETWORK_PERMS };
 
 function renderAccessDenied(anonymous) {
   const main = document.querySelector('main');

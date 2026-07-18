@@ -194,6 +194,7 @@ func (n *Node) handlePair(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		n.logger.Printf("federation: friendship with %q (%s) established", p.Name, p.PublicKey)
+		n.Nudge() // start the first catalog sync right away
 		result = "friend"
 	case p.State == PeerFriend:
 		result = "friend"
@@ -248,6 +249,7 @@ func (n *Node) pairWith(ctx context.Context, p *Peer) {
 			return
 		}
 		n.logger.Printf("federation: friendship with %q (%s) established", p.Name, p.PublicKey)
+		n.Nudge() // start the first catalog sync on the next sweep
 	}
 	// Backfill the display name from the peer's own if the card carried none.
 	if p.Name == "" && CleanPeerName(msg.Name) != "" {
@@ -293,8 +295,9 @@ func (n *Node) refreshLoop(ctx context.Context) {
 	}
 }
 
-// sweep runs one round: pair toward every pending_outgoing peer, ping every
-// friend. Sequential — friend lists are small and each call is bounded by the
+// sweep runs one round: pair toward every pending_outgoing peer; ping every
+// friend and, when its catalog is due (catalogSyncInterval, or never synced),
+// pull it. Sequential — friend lists are small and each call is bounded by the
 // client timeout.
 func (n *Node) sweep(ctx context.Context) {
 	peers, err := n.store.ListFederationPeers(ctx)
@@ -311,6 +314,9 @@ func (n *Node) sweep(ctx context.Context) {
 			n.pairWith(ctx, p)
 		case PeerFriend:
 			n.pingPeer(ctx, p)
+			if time.Since(time.Unix(p.CatalogSyncedAt, 0)) >= catalogSyncInterval {
+				n.syncCatalog(ctx, p)
+			}
 		}
 	}
 }

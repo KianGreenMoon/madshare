@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Madnetwork &mdash; Madshare</title>
+  <meta name="api-url" content="{{.APIURL}}">
+  {{template "theme-guard" .}}
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/player.css">
+  <link rel="stylesheet" href="/static/css/madnetwork.css">
+</head>
+<body data-page="madnetwork" data-section="madnetwork" data-module="/static/js/madnetwork.js">
+
+{{template "header" .}}
+
+<main>
+  <div class="view-panel view-panel--active" id="view-madnetwork">
+    <!-- Sync status strip: which friends contribute, how fresh, merged size. -->
+    <div class="mn-status" id="mnStatus" hidden></div>
+
+    <div class="library-bar">
+      <nav class="breadcrumb" id="mnBreadcrumb" aria-label="Madnetwork navigation">
+        <!-- populated by JS -->
+      </nav>
+      <div class="mn-search" id="mnSearch">
+        <input type="search" id="mnSearchInput" placeholder="Filter artists…"
+               aria-label="Filter madnetwork artists" autocomplete="off" spellcheck="false">
+      </div>
+    </div>
+
+    <div class="library-panel" id="mnPanel" aria-live="polite">
+      <!-- populated by JS: artist list / album list / track list -->
+    </div>
+  </div>
+</main>
+
+{{template "player-bar" .}}
+{{template "auth-modals" .}}
+
+<script type="module" src="/static/js/shell.js"></script>
+</body>
+</html>

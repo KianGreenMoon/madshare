@@ -103,6 +103,20 @@ type Deps struct {
 	// federation is disabled or compiled out — the endpoints then report
 	// enabled:false and refuse peer operations.
 	Federation FederationNode
+	// Madnetwork is the merged-catalog read store behind /api/madnetwork/*
+	// (federation F2) — *database.DB in the running server. When nil, the
+	// madnetwork browse endpoints are not registered.
+	Madnetwork MadnetworkStore
+}
+
+// MadnetworkStore reads the merged madnetwork catalog (cached friend catalogs;
+// database/madnetwork.go). A dedicated interface — not database.Repository —
+// so the browse endpoints don't force every Repository fake to grow with them.
+type MadnetworkStore interface {
+	MadnetworkArtists(ctx context.Context, q string) ([]*database.MadnetworkArtist, error)
+	MadnetworkAlbums(ctx context.Context, artist string) ([]*database.MadnetworkAlbum, error)
+	MadnetworkTracks(ctx context.Context, artist, album string) ([]*database.MadnetworkTrackRow, error)
+	MadnetworkSummary(ctx context.Context) ([]*database.MadnetworkFriend, int64, error)
 }
 
 // FederationNode is the admin-facing surface of the embedded madnetwork node
@@ -175,6 +189,7 @@ func (d Deps) newHandler() *handler {
 		acoustid:        d.AcoustID,
 		musicbrainz:     d.MusicBrainz,
 		federation:      d.Federation,
+		madnetwork:      d.Madnetwork,
 	}
 	if d.SourceArchive != nil || d.LicenseText != nil || d.SourceRoot != "" {
 		h.source = &sourceArchiver{
@@ -271,6 +286,17 @@ func RegisterAPI(r chi.Router, d Deps) {
 		pathPrefix := strings.TrimSuffix(rctx.RoutePattern(), "/*")
 		http.StripPrefix(pathPrefix, http.FileServer(imagesFS)).ServeHTTP(w, r)
 	})
+
+	// Madnetwork browse (federation F2): the merged catalog of the node's
+	// friends, gated on madnetwork.access. Read-only — playing/downloading
+	// remote content is F3.
+	if d.Madnetwork != nil {
+		mad := d.protect(auth.PermMadnetworkAccess)
+		r.With(mad).Get("/api/madnetwork/summary", h.madnetworkSummary)
+		r.With(mad).Get("/api/madnetwork/artists", h.madnetworkArtists)
+		r.With(mad).Get("/api/madnetwork/albums", h.madnetworkAlbums)
+		r.With(mad).Get("/api/madnetwork/tracks", h.madnetworkTracks)
+	}
 
 	// Authentication endpoints (login/logout/me/password/tokens) live in the
 	// api group so they are reachable wherever the API is served. Playlists are

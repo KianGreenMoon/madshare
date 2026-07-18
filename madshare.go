@@ -306,6 +306,7 @@ func main() {
 		SourceArchive:  embeddedSourceTGZ,
 		LicenseText:    licenseText,
 		SourceRoot:     sourceRoot,
+		Madnetwork:     db,
 	}
 
 	// The embedded madnetwork node (federation F0/F1): mesh identity, protocol
