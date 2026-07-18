@@ -39,13 +39,14 @@ type Config struct {
 	// docs/architecture/data-sources.md and docs/architecture/variants.md.
 	DataDir string `toml:"data_dir"`
 
-	Listen   []ListenConfig `toml:"listen"`
-	WebUI    WebUIConfig    `toml:"webui"`
-	Database DatabaseConfig `toml:"database"`
-	Storage  StorageConfig  `toml:"storage"`
-	Auth     AuthConfig     `toml:"auth"`
-	CORS     CORSConfig     `toml:"cors"`
-	Sources  SourcesConfig  `toml:"sources"`
+	Listen     []ListenConfig   `toml:"listen"`
+	WebUI      WebUIConfig      `toml:"webui"`
+	Database   DatabaseConfig   `toml:"database"`
+	Storage    StorageConfig    `toml:"storage"`
+	Auth       AuthConfig       `toml:"auth"`
+	CORS       CORSConfig       `toml:"cors"`
+	Sources    SourcesConfig    `toml:"sources"`
+	Federation FederationConfig `toml:"federation"`
 
 	// warnings accumulates non-fatal advisories produced while loading (e.g.
 	// clamped out-of-range worker counts). It is unexported so it is not a TOML
@@ -147,6 +148,34 @@ func (s SourcesConfig) SymlinkSourcesEnabled() bool {
 
 type DatabaseConfig struct {
 	Path string `toml:"path"`
+}
+
+// FederationConfig controls the embedded madnetwork node (the yggdrasil mesh
+// identity + federation listener; see docs/architecture/federation.md).
+// Disabled by default. Enabling it requires a binary built without
+// -tags nofederation (main enforces this via federation.Available).
+type FederationConfig struct {
+	// Enabled starts the embedded yggdrasil node and the mesh-side federation
+	// listener at startup.
+	Enabled bool `toml:"enabled"`
+	// KeyFile is the path of the PEM ed25519 private key that IS the node's
+	// madnetwork identity — its mesh address derives from this key, so losing
+	// the file means a new identity. Derived as <data_dir>/federation.key when
+	// unset; created (0600) on first federated start.
+	KeyFile string `toml:"key_file"`
+	// Peers are outbound underlay peering URIs (e.g. "tls://host:port") this
+	// node dials to join the mesh.
+	Peers []string `toml:"peers"`
+	// Listen are underlay listener URIs (e.g. "tls://0.0.0.0:12345") accepting
+	// incoming peerings — for backbone nodes; outbound-only nodes leave it empty.
+	Listen []string `toml:"listen"`
+}
+
+// federationSchemes are the underlay URI schemes yggdrasil accepts. socks /
+// sockstls are dial-only, hence the peersOnly flag.
+var federationSchemes = map[string]struct{ peersOnly bool }{
+	"tcp": {}, "tls": {}, "quic": {}, "ws": {}, "wss": {}, "unix": {},
+	"socks": {peersOnly: true}, "sockstls": {peersOnly: true},
 }
 
 // MaxUploadMBLimit is the largest accepted value for max_upload_mb (1 TiB
@@ -269,6 +298,9 @@ func (c *Config) resolveDataDir() {
 	if c.Storage.VariantsDir == "" {
 		c.Storage.VariantsDir = filepath.Join(c.DataDir, "variants")
 	}
+	if c.Federation.KeyFile == "" {
+		c.Federation.KeyFile = filepath.Join(c.DataDir, "federation.key")
+	}
 }
 
 // LinksDir returns the root of the shared "links" storage (the single dir of
@@ -371,7 +403,41 @@ func (c Config) validate() error {
 	if err := c.validateSources(); err != nil {
 		return err
 	}
+	if err := c.validateFederation(); err != nil {
+		return err
+	}
 	return c.validateListeners()
+}
+
+// validateFederation rejects malformed underlay URIs. Syntax is checked even
+// when federation is disabled, so a typo does not lie dormant until the flag is
+// flipped. A listen entry with a dial-only scheme (socks) is a hard error too.
+func (c Config) validateFederation() error {
+	check := func(field, uri string, listening bool) error {
+		u, err := url.Parse(uri)
+		if err != nil || u.Scheme == "" || (u.Host == "" && u.Scheme != "unix") {
+			return fmt.Errorf("config: federation.%s has invalid URI %q (want scheme://host:port)", field, uri)
+		}
+		s, ok := federationSchemes[u.Scheme]
+		if !ok {
+			return fmt.Errorf("config: federation.%s URI %q has unknown scheme %q (valid: tcp, tls, quic, ws, wss, unix, socks, sockstls)", field, uri, u.Scheme)
+		}
+		if listening && s.peersOnly {
+			return fmt.Errorf("config: federation.%s URI %q: scheme %q is dial-only and cannot be listened on", field, uri, u.Scheme)
+		}
+		return nil
+	}
+	for _, p := range c.Federation.Peers {
+		if err := check("peers", p, false); err != nil {
+			return err
+		}
+	}
+	for _, l := range c.Federation.Listen {
+		if err := check("listen", l, true); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // validateSources rejects a malformed symlink-source allow-list. Each entry is a
@@ -497,6 +563,11 @@ func (c Config) Warnings() []string {
 	}
 	if slices.Contains(c.CORS.AllowedOrigins, "*") && len(c.CORS.AllowedOrigins) > 1 {
 		w = append(w, `cors.allowed_origins contains "*" plus specific origins; "*" already allows every origin, so the specific entries are redundant`)
+	}
+	// An enabled federation node with neither outbound peers nor an underlay
+	// listener cannot reach the mesh at all (F0 has no multicast discovery).
+	if c.Federation.Enabled && len(c.Federation.Peers) == 0 && len(c.Federation.Listen) == 0 {
+		w = append(w, "federation.enabled is set but neither federation.peers nor federation.listen is configured; the node starts but is unreachable on the mesh")
 	}
 	return w
 }

@@ -20,6 +20,7 @@ import (
 	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/config"
 	"daemonlord.ygg/madshare/database"
+	"daemonlord.ygg/madshare/federation"
 	"daemonlord.ygg/madshare/imageproc"
 	"daemonlord.ygg/madshare/media"
 	"daemonlord.ygg/madshare/mediaproc"
@@ -65,6 +66,10 @@ func main() {
 		if l.Serves(config.GroupWebUI) && !webui.Available {
 			log.Fatalf("listen[%d] serves %q but this binary was built with -tags nowebui; rebuild without that tag or drop %q", i, config.GroupWebUI, config.GroupWebUI)
 		}
+	}
+	// Feature gate: federation may only be enabled if it is compiled in.
+	if cfg.Federation.Enabled && !federation.Available {
+		log.Fatalf("federation.enabled is set but this binary was built with -tags nofederation; rebuild without that tag or disable [federation]")
 	}
 
 	log.Println("Start the program")
@@ -303,6 +308,18 @@ func main() {
 		SourceRoot:     sourceRoot,
 	}
 
+	// The embedded madnetwork node (federation F0): mesh identity + protocol
+	// listener, independent of the HTTP listeners below. Started before them so
+	// a broken key file aborts startup rather than surfacing mid-flight.
+	var fedNode *federation.Node
+	if cfg.Federation.Enabled {
+		fedNode, err = federation.Start(cfg.Federation, log.Default())
+		if err != nil {
+			log.Fatalf("start federation node: %v", err)
+		}
+		log.Printf("federation: madnetwork node up — mesh address %s (key file %s)", fedNode.Address(), cfg.Federation.KeyFile)
+	}
+
 	servers, err := startListeners(cfg, deps)
 	if err != nil {
 		log.Fatalf("start listeners: %v", err)
@@ -326,6 +343,9 @@ func main() {
 		})
 	}
 	wg.Wait()
+	if fedNode != nil {
+		fedNode.Stop()
+	}
 	// Let a running Verify & Prune finish rather than killing it mid-pass (a hard
 	// kill is still safe — prune is idempotent and re-runnable). A long deep prune
 	// can hold shutdown here; an admin who needs an immediate exit can Cancel it.

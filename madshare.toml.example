@@ -82,6 +82,19 @@ max_upload_mb = 500          # per-request upload cap, in MiB
 # user_max_parallel_workers   = 0   # concurrent uploads per user (0 = unlimited; no admin bypass)
 # image_processing_workers    = 0   # cover-image resize goroutines; 0 = auto (number of CPUs)
 
+# [federation] controls the embedded madnetwork node (docs/architecture/federation.md).
+# Disabled by default; requires a binary built WITHOUT -tags nofederation.
+# key_file is the node's madnetwork identity (PEM ed25519; the mesh address
+# derives from it — back it up, losing it means a new identity). peers are
+# outbound underlay URIs to join the mesh; listen accepts incoming peerings
+# (backbone nodes). The madnetwork protocol itself is served inside the mesh
+# on port 1314 of the node's mesh address — no host port is opened.
+#[federation]
+#enabled  = false
+#key_file = "./data/federation.key"        # defaults to <data_dir>/federation.key
+#peers    = ["tls://peer.example:12345"]   # tcp/tls/quic/ws/wss/unix/socks/sockstls
+#listen   = ["tls://0.0.0.0:12345"]        # tcp/tls/quic/ws/wss/unix
+
 # [sources] controls in-place "symlink" imports: an admin points at an external
 # directory and Madshare references each audio file by a symlink in the shared
 # links storage (<data_dir>/links) — never copying, never modifying the originals.
