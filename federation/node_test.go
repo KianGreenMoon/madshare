@@ -71,7 +71,7 @@ func TestPingOverMesh(t *testing.T) {
 	a, err := Start(config.FederationConfig{
 		KeyFile: filepath.Join(dir, "a.key"),
 		Listen:  []string{underlay},
-	}, logger)
+	}, nil, logger)
 	if err != nil {
 		t.Fatalf("start node A: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestPingOverMesh(t *testing.T) {
 	b, err := Start(config.FederationConfig{
 		KeyFile: filepath.Join(dir, "b.key"),
 		Peers:   []string{underlay},
-	}, logger)
+	}, nil, logger)
 	if err != nil {
 		t.Fatalf("start node B: %v", err)
 	}

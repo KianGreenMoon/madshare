@@ -86,7 +86,11 @@ var adminSubPages = map[string]*template.Template{
 	"duplicates": buildPageTmpl("html/admin/duplicates.html"),
 	// "sources" manages in-place symlink imports (data-sources P6,
 	// docs/architecture/data-sources.md). Moderator-accessible.
-	"sources":  buildPageTmpl("html/admin/sources.html"),
+	"sources": buildPageTmpl("html/admin/sources.html"),
+	// "network" is the madnetwork friendship page (federation F1,
+	// docs/architecture/federation.md): node card export/import, the trusted-peer
+	// list, block/unblock. Gated on federation.manage at the API.
+	"network":  buildPageTmpl("html/admin/network.html"),
 	"settings": buildPageTmpl("html/admin/settings.html"),
 }
 

@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Madshare &mdash; Admin &middot; Network</title>
+  <meta name="api-url" content="{{.APIURL}}">
+  {{template "theme-guard" .}}
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/admin-shell.css">
+  <link rel="stylesheet" href="/static/css/admin-network.css">
+</head>
+<body>
+
+{{template "header" .}}
+{{template "admin-shell" .}}
+
+<main class="admin-main">
+  <section aria-labelledby="networkHeading">
+    <h2 class="section-title" id="networkHeading">Madnetwork</h2>
+    <p class="section-copy">
+      Friend other madshare nodes to build the madnetwork: exchange <strong>node
+      cards</strong> out-of-band (chat, mail — any channel you trust) and import
+      each other&rsquo;s card here. A node becomes a friend only after both
+      admins have acted.
+    </p>
+
+    <!-- Disabled note — shown when no madnetwork node is running. -->
+    <div class="net-disabled" id="disabledNote" hidden>
+      <p>
+        Federation is turned off. Set <code>[federation].enabled = true</code> in
+        <code>madshare.toml</code> and restart (requires a build <em>without</em>
+        <code>-tags nofederation</code>) to join the madnetwork.
+      </p>
+    </div>
+
+    <!-- This node -->
+    <div class="net-self" id="selfPanel" hidden>
+      <h3 class="net-subhead">This node</h3>
+      <dl class="net-self-grid">
+        <div class="net-self-row"><dt>Name</dt><dd id="selfName"></dd></div>
+        <div class="net-self-row"><dt>Mesh address</dt>
+          <dd><code id="selfAddr"></code>
+            <button class="btn btn-neutral btn-mini" id="copyAddr" type="button" title="Copy the mesh address">Copy</button>
+          </dd></div>
+        <div class="net-self-row"><dt>Public key</dt>
+          <dd><code id="selfKey" class="net-key"></code>
+            <button class="btn btn-neutral btn-mini" id="copyKey" type="button" title="Copy the public key">Copy</button>
+          </dd></div>
+      </dl>
+      <div class="net-self-actions">
+        <button class="btn btn-neutral" id="copyCard" type="button">Copy node card</button>
+        <button class="btn btn-neutral" id="downloadCard" type="button">Download node card</button>
+      </div>
+    </div>
+
+    <!-- Import a card -->
+    <form class="net-import" id="importForm" hidden>
+      <h3 class="net-subhead">Add a friend</h3>
+      <label class="net-field">
+        <span>Paste your friend&rsquo;s node card (JSON)</span>
+        <textarea id="cardInput" rows="4" spellcheck="false"
+                  placeholder='{"madshare_node_card": 0, "name": "…", "public_key": "…"}'></textarea>
+      </label>
+      <button class="btn btn-neutral" id="importBtn" type="submit">Import card</button>
+    </form>
+
+    <h3 class="net-subhead" id="peersHeading" hidden>Known nodes</h3>
+    <div class="net-peers" id="peersList" aria-live="polite"></div>
+  </section>
+</main>
+
+<!-- Confirm modal (accept / block / remove) -->
+<div class="modal-backdrop hidden" id="cfModal" role="dialog" aria-modal="true" aria-labelledby="cfModalTitle" aria-describedby="cfModalBody">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="cfModalTitle"></h2>
+      <button class="btn-close" id="cfClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body" id="cfModalBody"></div>
+    <div class="modal-actions">
+      <button class="btn btn-neutral" id="cfCancel">Cancel</button>
+      <button class="btn btn-destructive-solid" id="cfConfirm"></button>
+    </div>
+  </div>
+</div>
+
+{{template "auth-modals" .}}
+
+<script type="module" src="/static/js/admin/network.js"></script>
+</body>
+</html>

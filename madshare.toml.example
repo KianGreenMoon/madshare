@@ -89,8 +89,12 @@ max_upload_mb = 500          # per-request upload cap, in MiB
 # outbound underlay URIs to join the mesh; listen accepts incoming peerings
 # (backbone nodes). The madnetwork protocol itself is served inside the mesh
 # on port 1314 of the node's mesh address — no host port is opened.
+# name is the display name shown on this node's card and to peers during
+# pairing (host name when unset) — purely descriptive, identity is the key.
+# Friendships are managed on /admin/network (exchange node cards out-of-band).
 #[federation]
 #enabled  = false
+#name     = "my madshare"                  # defaults to the host name
 #key_file = "./data/federation.key"        # defaults to <data_dir>/federation.key
 #peers    = ["tls://peer.example:12345"]   # tcp/tls/quic/ws/wss/unix/socks/sockstls
 #listen   = ["tls://0.0.0.0:12345"]        # tcp/tls/quic/ws/wss/unix

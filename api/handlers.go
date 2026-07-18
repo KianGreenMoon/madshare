@@ -137,6 +137,10 @@ type handler struct {
 	// musicbrainz suggestion source is unavailable regardless of settings.
 	acoustid    *tagsource.AcoustID
 	musicbrainz *tagsource.MusicBrainz
+	// federation is the running madnetwork node (federation F1). Nil when
+	// federation is disabled or compiled out — the /api/admin/federation
+	// endpoints then report {enabled:false} / 503.
+	federation FederationNode
 	// source, when non-nil, serves the AGPL-required source archive at GET /source.
 	// Nil when no SourceRoot was configured (e.g. in tests via NewRouter).
 	source *sourceArchiver

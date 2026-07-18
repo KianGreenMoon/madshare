@@ -158,6 +158,10 @@ type FederationConfig struct {
 	// Enabled starts the embedded yggdrasil node and the mesh-side federation
 	// listener at startup.
 	Enabled bool `toml:"enabled"`
+	// Name is the human-readable node name shown on node cards and to peers
+	// during pairing. Defaults to the host name when unset. Purely descriptive —
+	// identity is the key, never the name.
+	Name string `toml:"name"`
 	// KeyFile is the path of the PEM ed25519 private key that IS the node's
 	// madnetwork identity — its mesh address derives from this key, so losing
 	// the file means a new identity. Derived as <data_dir>/federation.key when

@@ -36,6 +36,19 @@ async function fillPruneStatus() {
   } catch { /* network error — leave the badge hidden */ }
 }
 
+// Show the number of madnetwork pairing requests awaiting an accept on the
+// Network card (federation F1). Hidden when federation is off or none pend.
+async function fillPeerRequests() {
+  try {
+    const res = await fetch(`${API}/api/admin/federation/peers`);
+    if (!res.ok) return; // disabled / lacks federation.manage — leave it hidden
+    const data = await res.json();
+    const pending = (data.peers || []).filter((p) => p.state === 'pending_incoming').length;
+    const badge = document.getElementById('countPeerRequests');
+    if (badge && pending > 0) { badge.textContent = String(pending); badge.hidden = false; }
+  } catch { /* network error — leave the badge hidden */ }
+}
+
 // Show a "scanning" badge on the Data sources card while any symlink source is
 // mid-scan (the same shared state the /admin/sources page polls).
 async function fillSourcesStatus() {
@@ -198,6 +211,7 @@ async function fillStorage() {
   fillStorage();
   fillPruneStatus();
   fillSourcesStatus();
+  fillPeerRequests();
   fillCount('countFiles', '/api/files?limit=0');
   fillCount('countModeration', '/api/admin/moderation?limit=0');
   fillCount('countTrash', '/api/admin/trash?limit=0');

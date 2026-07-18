@@ -308,15 +308,19 @@ func main() {
 		SourceRoot:     sourceRoot,
 	}
 
-	// The embedded madnetwork node (federation F0): mesh identity + protocol
-	// listener, independent of the HTTP listeners below. Started before them so
-	// a broken key file aborts startup rather than surfacing mid-flight.
+	// The embedded madnetwork node (federation F0/F1): mesh identity, protocol
+	// listener, and the friendship layer (trusted-peer table in the DB, pairing
+	// handshake, refresh loop). Independent of the HTTP listeners below; started
+	// before them so a broken key file aborts startup rather than surfacing
+	// mid-flight. The node is also wired into Deps so /api/admin/federation and
+	// the /admin/network page can manage it.
 	var fedNode *federation.Node
 	if cfg.Federation.Enabled {
-		fedNode, err = federation.Start(cfg.Federation, log.Default())
+		fedNode, err = federation.Start(cfg.Federation, db, log.Default())
 		if err != nil {
 			log.Fatalf("start federation node: %v", err)
 		}
+		deps.Federation = fedNode
 		log.Printf("federation: madnetwork node up — mesh address %s (key file %s)", fedNode.Address(), cfg.Federation.KeyFile)
 	}
 

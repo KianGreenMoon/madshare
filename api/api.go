@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"io/fs"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/config"
 	"daemonlord.ygg/madshare/database"
+	"daemonlord.ygg/madshare/federation"
 	"daemonlord.ygg/madshare/prune"
 	"daemonlord.ygg/madshare/sources"
 	"daemonlord.ygg/madshare/storages"
@@ -96,6 +98,27 @@ type Deps struct {
 	// fallback for /source and /license when nothing is embedded (dev builds).
 	// With no embedded data and an empty SourceRoot, both endpoints are disabled.
 	SourceRoot string
+	// Federation is the running madnetwork node (federation F1), backing the
+	// /api/admin/federation endpoints and the /admin/network page. Nil when
+	// federation is disabled or compiled out — the endpoints then report
+	// enabled:false and refuse peer operations.
+	Federation FederationNode
+}
+
+// FederationNode is the admin-facing surface of the embedded madnetwork node
+// (*federation.Node implements it; see docs/architecture/federation.md F1). An
+// interface so the api package carries no yggdrasil dependency decisions — the
+// nofederation build never wires one.
+type FederationNode interface {
+	Info() federation.NodeInfo
+	Peers(ctx context.Context) ([]*federation.Peer, error)
+	ImportCard(ctx context.Context, c federation.Card) (*federation.Peer, error)
+	AcceptPeer(ctx context.Context, id int64) error
+	BlockPeer(ctx context.Context, id int64) error
+	UnblockPeer(ctx context.Context, id int64) error
+	RemovePeer(ctx context.Context, id int64) error
+	RenamePeer(ctx context.Context, id int64, name string) error
+	MapPeerUser(ctx context.Context, id int64, userID *int64) error
 }
 
 // protect returns middleware enforcing perm, but only when auth is configured
@@ -151,6 +174,7 @@ func (d Deps) newHandler() *handler {
 		uiConfig:        d.UIConfig,
 		acoustid:        d.AcoustID,
 		musicbrainz:     d.MusicBrainz,
+		federation:      d.Federation,
 	}
 	if d.SourceArchive != nil || d.LicenseText != nil || d.SourceRoot != "" {
 		h.source = &sourceArchiver{
@@ -355,6 +379,20 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(fileDelete).Post("/renditions/{fileID}/remove", h.renditionRemove)
 		r.With(fileDelete).Post("/renditions/{fileID}/restore", h.renditionRestore)
 		r.With(fileDelete).Delete("/renditions/{fileID}", h.renditionHardDelete)
+
+		// Madnetwork federation (F1): own node card, the trusted-peer table, and
+		// the friendship operations behind the /admin/network page. The status
+		// endpoint answers enabled:false (rather than 503) when no node runs, so
+		// the page can render its disabled note.
+		fedManage := d.protect(auth.PermFederationManage)
+		r.With(fedManage).Get("/federation", h.federationStatus)
+		r.With(fedManage).Get("/federation/peers", h.federationPeers)
+		r.With(fedManage).Post("/federation/peers", h.federationImportCard)
+		r.With(fedManage).Patch("/federation/peers/{peerID}", h.federationPeerPatch)
+		r.With(fedManage).Delete("/federation/peers/{peerID}", h.federationPeerRemove)
+		r.With(fedManage).Post("/federation/peers/{peerID}/accept", h.federationPeerAccept)
+		r.With(fedManage).Post("/federation/peers/{peerID}/block", h.federationPeerBlock)
+		r.With(fedManage).Post("/federation/peers/{peerID}/unblock", h.federationPeerUnblock)
 
 		// Symlink data sources (import in place). The admin group is already
 		// file.delete-gated at the listener; adding/scanning a source is a

@@ -1,10 +1,10 @@
-# Madnetwork federation — design (draft)
+# Madnetwork federation — design
 
-> **Status: draft — agreed 2026-07-18.** All session decisions are folded in;
-> the remaining items in §Open questions are design-time details to settle
+> **Status: agreed 2026-07-18; F0 (groundwork) and F1 (friendship) are built.**
+> The remaining items in §Open questions are design-time details to settle
 > during the respective milestones, not blockers. Federation is auth Phase 4
 > (`docs/architecture/auth.md` §8) and the milestone the native client
-> (`docs/ui/native-client.md`) exists to use. No code yet — doc-first.
+> (`docs/ui/native-client.md`) exists to use.
 
 ## Goal & vocabulary
 
@@ -95,6 +95,43 @@ default** — its social graph is visible to its members.
   end-to-end — an outsider gets no catalog, no stream, no swarm chunks.
   Guest-playable content is the deliberate exception (open to everyone, no
   token), and the admin who flags it owns that choice.
+
+## Friendship (F1, built)
+
+- **Node card** — the out-of-band introduction two admins exchange (chat, mail,
+  any channel they trust): a small JSON blob
+  `{"madshare_node_card": <protocol>, "name": "…", "public_key": "<hex>"}`,
+  exported (copy/download) from `/admin/network`. It deliberately carries only
+  identity — underlay connectivity is `[federation]` config's business (public
+  mesh or explicit `peers`/`listen`), not the card's. `[federation].name` sets
+  the display name (host name when unset); identity is always the key.
+- **Trusted-peer table** (`federation_peers`, migration 026): one row per known
+  node — key (identity; the mesh address is derived, never stored), local
+  label, state, `last_seen`, and the optional **user mapping** (`user_id`) that
+  binds a personal madplayer node to a local account (§Principals & access).
+  States: `pending_outgoing` (we imported their card) · `pending_incoming`
+  (their node introduced itself, awaiting our accept) · `friend` · `blocked`
+  (with the pre-block state remembered for unblock).
+- **Pairing handshake** (`POST /madnetwork/v0/pair` on the mesh): a node
+  introduces itself with `{protocol, name, public_key}`. No signatures — the
+  mesh address is derived from the node key, so the connection's source address
+  *is* proof of key possession; the handler additionally verifies the claimed
+  key derives to exactly that source address. Receiving a pair request from a
+  `pending_outgoing` peer proves mutual intent → both flip to `friend`; from an
+  unknown key it records `pending_incoming` for the admin. A background
+  **refresh loop** (1-minute tick, nudged on import/accept) retries outbound
+  pairings and pings friends, so both sides converge through any offline
+  window and `last_seen` stays fresh. **Friending is deliberate** by
+  construction: a node becomes a friend only after *both* admins acted — and
+  accepting an incoming request shows the full key so the admin can check it
+  against the card received out-of-band (never a blind one-click).
+- **Blocking (local effect, F1):** a blocked peer is refused the *entire*
+  protocol surface (even ping, HTTP 403) by the mesh-side auth wrapper.
+  Unblock returns the peer to its pre-block state. Distrust marks, branch
+  snipping, and de-peering arrive with F6.
+- **Admin surface:** `/admin/network` (own card, import form, peer list with
+  accept/block/unblock/remove/rename/user-mapping; pending-request badge on the
+  dashboard) over `/api/admin/federation*`, all gated `federation.manage`.
 
 ## Trust graph, transparency & defense
 
@@ -262,9 +299,10 @@ milestone directly after direct transfer works, and tokens ship with depth.
   2026-07-18, see §Identity & transport); node keypair lifecycle; `[federation]`
   config section; federation listener/protocol skeleton; the `nofederation`
   build tag (standalone build, mirrors `nowebui`).
-- **F1 — Friendship.** Node cards (export/import: address + key), pairing
-  handshake, trusted-peer table (+ user-level mapping to local accounts), block/
-  unblock (local effect only), admin network page (list form).
+- **F1 — Friendship** (built 2026-07-18, see §Friendship). Node cards
+  (export/import), pairing handshake, trusted-peer table (+ user-level mapping
+  to local accounts), block/unblock (local effect only), admin network page
+  (list form).
 - **F2 — Catalog.** Pull-and-cache catalog sync with direct friends (serial
   deltas, "last seen"), madnetwork library section (merged/deduplicated view)
   + `madnetwork.access` permission + gated header link, tagset payload +
