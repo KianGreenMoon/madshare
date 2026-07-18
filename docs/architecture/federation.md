@@ -35,9 +35,22 @@ default** — its social graph is visible to its members.
   self-certifying — proving you hold the address proves you hold the key — so the
   trusted-peer table is just a table of peer keys/addresses. No PKI.
 - **Transport = yggdrasil-go embedded as a library**, routing madshare's
-  federation protocol over the mesh, preferably without a system TUN (mobile
-  madplayer must not need `VpnService`/`NetworkExtension`). *Engineering to-do
-  before build: confirm the yggdrasil-go API supports library-as-transport.*
+  federation protocol over the mesh, without a system TUN (mobile madplayer
+  must not need `VpnService`/`NetworkExtension`). **Confirmed by the F0 spike
+  (2026-07-18):** upstream `yggdrasil-go` (v0.5.14) `core.Core` plus the
+  importable `github.com/yggdrasil-network/yggstack/src/netstack` wrapper
+  (gVisor userspace TCP/IP) served HTTP between two in-process nodes over the
+  mesh — no TUN, no root. `netstack.ListenTCP` returns a standard
+  `net.Listener` (drops into `startListeners` like any other listener) and
+  `DialContext` plugs into an `http.Transport` for outbound calls. Dependency
+  choice: **upstream yggdrasil-go + yggstack's netstack package** — yggstack
+  is an official yggdrasil-network project (not a third-party fork) and its
+  master tracks the latest core release, so the update-lag risk is low; the
+  wrapper is ~2 small files we could vendor if it ever stalls.
+- **Build option:** the `nofederation` build tag (mirroring `nowebui`) compiles
+  all federation code and its dependencies (yggdrasil, gVisor) out, producing
+  a standalone server; such a build aborts startup if the config enables
+  federation.
 - The same key signs application-layer artifacts where needed (capability
   tokens, distrust marks). Plain reads between direct friends need no extra
   signing — the channel already authenticates both ends.
@@ -245,9 +258,10 @@ to be reachable. A phone serves only while foregrounded.
 Swarm distribution is wanted from day one in spirit; in build order it is its own
 milestone directly after direct transfer works, and tokens ship with depth.
 
-- **F0 — Groundwork.** Embed yggdrasil-go; confirm/implement library-as-transport
-  (no TUN); node keypair lifecycle; `[federation]` config section; federation
-  listener/protocol skeleton.
+- **F0 — Groundwork.** Embed yggdrasil-go (library-as-transport spike-confirmed
+  2026-07-18, see §Identity & transport); node keypair lifecycle; `[federation]`
+  config section; federation listener/protocol skeleton; the `nofederation`
+  build tag (standalone build, mirrors `nowebui`).
 - **F1 — Friendship.** Node cards (export/import: address + key), pairing
   handshake, trusted-peer table (+ user-level mapping to local accounts), block/
   unblock (local effect only), admin network page (list form).
