@@ -24,7 +24,7 @@ var errCompiledOut = errors.New("federation compiled out (-tags nofederation)")
 type Node struct{}
 
 // Start always fails in nofederation builds.
-func Start(config.FederationConfig, PeerStore, *log.Logger) (*Node, error) {
+func Start(config.FederationConfig, PeerStore, *log.Logger, ...Option) (*Node, error) {
 	return nil, errCompiledOut
 }
 
@@ -47,4 +47,8 @@ func (n *Node) RemovePeer(context.Context, int64) error         { return errComp
 func (n *Node) RenamePeer(context.Context, int64, string) error { return errCompiledOut }
 func (n *Node) MapPeerUser(context.Context, int64, *int64) error {
 	return errCompiledOut
+}
+
+func (n *Node) EnsureBlob(context.Context, string) (Transfer, error) {
+	return nil, errCompiledOut
 }

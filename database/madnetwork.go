@@ -152,6 +152,85 @@ func (db *DB) MarkPeerCatalogChecked(ctx context.Context, peerID int64, serial s
 	return nil
 }
 
+// ── Blob lookup (federation F3) ──────────────────────────────────────────────
+
+// madnetworkRowsForHash scans friends' cached rows whose renditions advertise
+// hash, most-recently-seen friend first. The LIKE is a cheap pre-filter (a
+// content hash is plain hex — no LIKE metacharacters); the JSON parse confirms.
+func (db *DB) madnetworkRowsForHash(ctx context.Context, hash string,
+	visit func(peer *federation.Peer, entry *federation.CatalogEntry, rendition *federation.CatalogRendition) bool) error {
+	rows, err := db.QueryContext(ctx, `
+		SELECT p.id, p.public_key, p.name, p.last_seen,
+		       c.entry_key, c.recording_key, c.title, c.artist, c.album_artist,
+		       c.album, COALESCE(c.genre, ''), c.year, c.track_number, c.disc_number,
+		       COALESCE(c.duration, 0), COALESCE(c.license, ''), c.guest_playable, c.renditions
+		FROM federation_catalog c
+		JOIN federation_peers p ON p.id = c.peer_id AND p.state = 'friend'
+		WHERE c.renditions LIKE ?
+		ORDER BY p.last_seen DESC, p.id, c.entry_key`, "%"+hash+"%")
+	if err != nil {
+		return fmt.Errorf("madnetwork rows for hash: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p federation.Peer
+		var e federation.CatalogEntry
+		var year, track, disc sql.NullInt64
+		var renditions string
+		if err := rows.Scan(&p.ID, &p.PublicKey, &p.Name, &p.LastSeen,
+			&e.Key, &e.RecordingKey, &e.Title, &e.Artist, &e.AlbumArtist, &e.Album,
+			&e.Genre, &year, &track, &disc, &e.Duration, &e.License, &e.GuestPlayable,
+			&renditions); err != nil {
+			return fmt.Errorf("scan madnetwork hash row: %w", err)
+		}
+		e.Year, e.TrackNumber, e.DiscNumber = nullInt(year), nullInt(track), nullInt(disc)
+		if err := json.Unmarshal([]byte(renditions), &e.Renditions); err != nil {
+			continue // tolerate a damaged cache row
+		}
+		for i := range e.Renditions {
+			if e.Renditions[i].Hash == hash {
+				if !visit(&p, &e, &e.Renditions[i]) {
+					return nil
+				}
+				break
+			}
+		}
+	}
+	return rows.Err()
+}
+
+// MadnetworkBlobProviders returns the friends whose cached catalogs advertise
+// hash — most recently seen first (the fetch order) — plus the advertised byte
+// size. Satisfies the F3 half of federation.PeerStore.
+func (db *DB) MadnetworkBlobProviders(ctx context.Context, hash string) (int64, []*federation.Peer, error) {
+	var size int64
+	var holders []*federation.Peer
+	seen := map[int64]bool{}
+	err := db.madnetworkRowsForHash(ctx, hash, func(p *federation.Peer, _ *federation.CatalogEntry, rd *federation.CatalogRendition) bool {
+		if size == 0 {
+			size = rd.Size
+		}
+		if !seen[p.ID] {
+			seen[p.ID] = true
+			holders = append(holders, p)
+		}
+		return true
+	})
+	return size, holders, err
+}
+
+// MadnetworkEntryForHash returns the catalog entry (tagset text) behind a
+// rendition hash — from the most recently seen friend advertising it — for the
+// download-to-library staging metadata. Nil when no friend advertises it.
+func (db *DB) MadnetworkEntryForHash(ctx context.Context, hash string) (*federation.CatalogEntry, error) {
+	var entry *federation.CatalogEntry
+	err := db.madnetworkRowsForHash(ctx, hash, func(_ *federation.Peer, e *federation.CatalogEntry, _ *federation.CatalogRendition) bool {
+		entry = e
+		return false
+	})
+	return entry, err
+}
+
 // ── Merged browse (the /madnetwork drill-down) ───────────────────────────────
 
 // The browse queries group by DISPLAY identity — the grouping artist is the

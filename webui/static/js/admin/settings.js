@@ -136,6 +136,39 @@ tagsourceClearKey.addEventListener('click', () => {
   saveTagsource('');
 });
 
+// ── Madnetwork (federation F3 download behavior) ─────────────────────────────
+const madnetworkForm        = document.getElementById('madnetworkForm');
+const madnetworkAutoapprove = document.getElementById('madnetworkAutoapprove');
+
+async function loadMadnetwork() {
+  try {
+    const res = await fetch(`${API}/api/admin/settings/madnetwork`);
+    if (handleAuthError(res)) return;
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const p = await res.json();
+    madnetworkAutoapprove.checked = !!p.autoapprove_downloads;
+  } catch (err) {
+    console.error('load madnetwork settings:', err);
+    toast(`Couldn't load madnetwork settings: ${err.message}`, 'error');
+  }
+}
+
+async function saveMadnetwork() {
+  try {
+    const res = await fetch(`${API}/api/admin/settings/madnetwork`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ autoapprove_downloads: madnetworkAutoapprove.checked }),
+    });
+    if (handleAuthError(res)) return;
+    if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
+    toast('Madnetwork settings saved.', 'success');
+  } catch (err) {
+    toast(`Couldn't save madnetwork settings: ${err.message}`, 'error');
+  }
+}
+
+madnetworkForm.addEventListener('submit', e => { e.preventDefault(); saveMadnetwork(); });
+
 // ── Boot ────────────────────────────────────────────────────────────────────
 (async function boot() {
   const identity = await bootAdmin({ require: 'user.manage' });
@@ -143,4 +176,5 @@ tagsourceClearKey.addEventListener('click', () => {
   loadAutoDerive();
   loadTrashPolicy();
   loadTagsource();
+  loadMadnetwork();
 })();

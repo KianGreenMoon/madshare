@@ -204,3 +204,77 @@ func TestMadnetworkCacheAndBrowse(t *testing.T) {
 		t.Errorf("track count after block = %d, want 2", tracks)
 	}
 }
+
+// TestMadnetworkBlobLookup covers the F3 lookups: which friends advertise a
+// hash (fetch order + size) and the entry text behind it — friends only, a
+// pending or blocked peer's cache never provides.
+func TestMadnetworkBlobLookup(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	friendA := insertPeer(t, db, "a1a1", "friend-a", federation.PeerFriend)
+	friendB := insertPeer(t, db, "b2b2", "friend-b", federation.PeerFriend)
+	pending := insertPeer(t, db, "c3c3", "pending-one", federation.PeerPendingIncoming)
+
+	shared := catEntry("1", "r1", "Artist", "Album", "Shared Song", "hash-shared")
+	if err := db.ReplacePeerCatalog(ctx, friendA, "sa", 100, []federation.CatalogEntry{shared}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReplacePeerCatalog(ctx, friendB, "sb", 200, []federation.CatalogEntry{
+		catEntry("9", "r9", "Artist", "Album", "Shared Song", "hash-shared"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReplacePeerCatalog(ctx, pending, "sp", 300, []federation.CatalogEntry{
+		catEntry("50", "r50", "Ghost", "Ghost Album", "Ghost Song", "hash-ghost"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// friend-b was seen more recently → first in fetch order.
+	if err := db.TouchFederationPeerSeen(ctx, friendB, 9999); err != nil {
+		t.Fatal(err)
+	}
+
+	size, holders, err := db.MadnetworkBlobProviders(ctx, "hash-shared")
+	if err != nil {
+		t.Fatalf("MadnetworkBlobProviders: %v", err)
+	}
+	if size != 1000 {
+		t.Errorf("size = %d, want the advertised 1000", size)
+	}
+	if len(holders) != 2 || holders[0].Name != "friend-b" {
+		t.Errorf("holders = %+v, want friend-b first (seen most recently)", holders)
+	}
+
+	entry, err := db.MadnetworkEntryForHash(ctx, "hash-shared")
+	if err != nil {
+		t.Fatalf("MadnetworkEntryForHash: %v", err)
+	}
+	if entry == nil || entry.Title != "Shared Song" || entry.Artist != "Artist" {
+		t.Errorf("entry = %+v, want the advertised tagset text", entry)
+	}
+
+	// A non-friend's exclusive hash provides nothing.
+	if _, holders, _ := db.MadnetworkBlobProviders(ctx, "hash-ghost"); len(holders) != 0 {
+		t.Errorf("pending peer's hash has %d providers, want 0", len(holders))
+	}
+	if e, _ := db.MadnetworkEntryForHash(ctx, "hash-ghost"); e != nil {
+		t.Errorf("pending peer's entry surfaced: %+v", e)
+	}
+}
+
+// TestMadnetworkPolicy: the autoapprove_downloads setting round-trips and
+// defaults to off (downloads go through the review bucket).
+func TestMadnetworkPolicy(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	if p, err := db.GetMadnetworkPolicy(ctx); err != nil || p.AutoapproveDownloads {
+		t.Fatalf("default policy = %+v (err %v), want autoapprove off", p, err)
+	}
+	if err := db.SetMadnetworkPolicy(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := db.GetMadnetworkPolicy(ctx); !p.AutoapproveDownloads {
+		t.Error("policy not persisted")
+	}
+}

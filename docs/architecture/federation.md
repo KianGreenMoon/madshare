@@ -1,8 +1,9 @@
 # Madnetwork federation — design
 
-> **Status: agreed 2026-07-18; F0 (groundwork), F1 (friendship) and F2
-> (catalog) are built.** The remaining items in §Open questions are design-time
-> details to settle during the respective milestones, not blockers. Federation
+> **Status: agreed 2026-07-18; F0 (groundwork), F1 (friendship), F2 (catalog)
+> and F3 (direct transfer) are built.** The remaining items in §Open questions
+> are design-time details to settle during the respective milestones, not
+> blockers. Federation
 > is auth Phase 4 (`docs/architecture/auth.md` §8) and the milestone the native
 > client (`docs/ui/native-client.md`) exists to use.
 
@@ -66,6 +67,14 @@ default** — its social graph is visible to its members.
   parallel permission system. The point of the mapping: a personal node is
   intermittently online, but its owner's *access* to this server's library is
   stable (it's an account); only their seeding is best-effort.
+- **Unmapped friends are not a special case** (decided 2026-07-18): a friend
+  node *without* a user mapping is treated as a **default regular-user
+  identity** — it may see and fetch whatever a plain `user`-role local account
+  may. The mapping is the per-friend *override* (more or less than the
+  default), not a prerequisite. Deliberately a rule, not a magic local account
+  row — nothing to log into, rename, or accidentally delete. Enforcement
+  becomes consequential with per-content scope (F5); until then the published
+  set is uniform per the F2 decision.
 - **Thin clients have no madnetwork access by default.** Madnetwork browsing is a
   new permission (working name `madnetwork.access`), granted to admin by default
   and grantable to trusted local users. The header section for the madnetwork
@@ -261,9 +270,11 @@ default** — its social graph is visible to its members.
   Unknown-artist/Other buckets). Identical tagset text offered by many nodes
   collapses to one row; which friend it came from is **not surfaced while
   browsing** — provenance stays stored and appears only in the track's
-  expansion (holders + last seen) and the page's sync-status strip. Browse
-  is read-only in F2: playing/downloading arrives with F3 (the expansion says
-  so). At depth 0 every carrier is a direct friend, so the carrier count is
+  expansion (holders + last seen) and the page's sync-status strip. Since F3
+  the expansion carries the version actions — Play, Queue, Download to
+  library — acting on the version's **ladder-best rendition** (the server
+  sorts each version's renditions by the quality ladder before answering).
+  At depth 0 every carrier is a direct friend, so the carrier count is
   trivially trust-weighted; the full weighting (one branch = one voice)
   arrives with transitive reach (F6).
 - **Catalog crossing — "N versions" (built, F2; resolves former open question
@@ -277,6 +288,54 @@ default** — its social graph is visible to its members.
   rank across different audio). Hint-level fingerprint matching for display
   dedup of *unshared* rips can refine this later; local verification on
   download (F3) stays the truth either way.
+
+## Direct transfer (F3, built)
+
+- **Wire = plain streaming HTTP with Range** (decision 2026-07-18):
+  `GET /madnetwork/v0/blob/{hash}` on the mesh, served via `http.ServeContent`
+  (native HEAD/Range; `Content-Disposition` carries the origin filename so a
+  download lands under its real name). Between two trusted endpoints,
+  "chunked" IS HTTP ranges; **integrity is the content hash itself**, verified
+  over the full byte stream on the fetching side — bytes that do not hash to
+  the requested hash never enter the cache. The Merkle chunk protocol is
+  deferred to F4, where multi-source fetch actually needs per-chunk
+  verification.
+- **Authorization** (decision 2026-07-18): **any friend may fetch any
+  published blob** — exactly matching what the F2 catalog already shows them
+  (never advertise what you won't serve, and vice versa). Published = the same
+  predicate as the local library (live file + an approved appearance on its
+  recording); a staged, trashed, or unknown hash is 404 even for a friend.
+  Per-friend filtering via the user mapping (unmapped = default regular-user
+  rights, §Principals & access) arrives with F5, catalog and bytes together.
+- **Fetching** (`federation.Node.EnsureBlob`): one transfer per hash, joined
+  by every concurrent requester; providers come from the cached catalogs
+  (friends advertising the hash, most recently seen first — tried in order
+  until one delivers verifying bytes). A hash the local library holds
+  short-circuits to the local blob; a finished cache file is a cache hit.
+  Fetches run on the node's lifetime, not the requester's — a browser
+  disconnect never abandons a half-fetched file. Cache:
+  `<data_dir>/cache/madnetwork/<hash>` (`.part` while running, renamed only
+  after verification; no eviction in v1).
+- **Cache-through streaming relay** (`GET /api/madnetwork/stream/{hash}`,
+  gated `madnetwork.access`): bytes are relayed to the browser as they arrive
+  while the complete file lands in the cache in parallel — never
+  download-fully-then-play. The total is known up front (the origin's
+  Content-Length), so browser range requests work against the growing file: a
+  range beyond the downloaded prefix waits for the sequential fetch to reach
+  it.
+- **Download to library** (`POST /api/madnetwork/download {hash}`, gated
+  `madnetwork.access` + `file.upload`): fetch + stage, exactly as designed in
+  §Catalog — the verified file lands in blob storage and inserts as the
+  downloader's **draft** carrying the remote entry's tagset text (what the
+  user saw and chose; the origin filename is kept). The existing analysis
+  pipeline then ffprobes and fingerprints it **locally** and resolves its
+  recording — remote claims stay hints. Bytes the library already holds skip
+  the fetch: the remote tagset attaches as a new draft appearance of the held
+  recording. The **`autoapprove_downloads`** setting (settings key
+  `madnetwork.autoapprove_downloads`, admin card on `/admin/settings`, gated
+  `user.manage`, default **off**) lands downloads approved as fetched instead.
+  Progress is polled at `GET /api/madnetwork/transfers/{hash}`; the download
+  job (dedup per hash) survives the requester.
 
 ## Distribution (the swarm)
 
@@ -337,10 +396,11 @@ milestone directly after direct transfer works, and tokens ship with depth.
   default + the stackable `madnetwork` role, migration 027) + gated header
   link, tagset payload + per-peer provenance storage, the "N versions"
   crossing UI.
-- **F3 — Direct transfer.** Fetch-by-hash from a friend (chunked, verified),
+- **F3 — Direct transfer** (built 2026-07-18, see §Direct transfer).
+  Fetch-by-hash from a friend (HTTP Range wire, full-hash verified),
   cache-through streaming relay for thin clients, download-to-library through
-  the review bucket (streamlined approve-by-default modal) + local fingerprint
-  verification, ladder-based rendition selection.
+  the review bucket + local fingerprint verification via the analysis
+  pipeline, ladder-based rendition selection, `autoapprove_downloads`.
 - **F4 — Swarm.** Multi-source chunk fetch, holders lists in the catalog,
   seeding (rate cap, cache-seed toggle), swarm scope = direct friends
   (channel-auth only, no tokens yet).

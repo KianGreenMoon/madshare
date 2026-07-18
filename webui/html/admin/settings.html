@@ -87,6 +87,25 @@
       </div>
     </form>
   </section>
+
+  <section aria-labelledby="madnetworkHeading">
+    <h2 class="section-title" id="madnetworkHeading">Madnetwork</h2>
+    <p class="section-copy">
+      Downloads from the madnetwork are staged in the downloader&rsquo;s
+      &ldquo;My uploads&rdquo; for review, like uploads. Auto-approve skips the
+      review bucket and lands each download in the library exactly as fetched
+      &mdash; suited to a single-user node, not a shared server.
+    </p>
+    <form class="madnetwork-form" id="madnetworkForm">
+      <label class="check-row">
+        <input type="checkbox" id="madnetworkAutoapprove">
+        <span>Auto-approve madnetwork downloads</span>
+      </label>
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-neutral" id="madnetworkSave">Save</button>
+      </div>
+    </form>
+  </section>
 </main>
 
 {{template "auth-modals" .}}

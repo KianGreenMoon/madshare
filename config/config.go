@@ -314,6 +314,13 @@ func (c Config) LinksDir() string {
 	return filepath.Join(c.DataDir, "links")
 }
 
+// MadnetworkCacheDir is where blobs fetched from friends land (federation F3
+// cache-through streaming; created on first fetch). Derived from data_dir like
+// the links storage; no eviction in v1.
+func (c Config) MadnetworkCacheDir() string {
+	return filepath.Join(c.DataDir, "cache", "madnetwork")
+}
+
 // resolveGitRepo trims [webui].git_repo and warns (non-fatal) when a non-empty
 // value doesn't look like an http(s) URL — the UI links to it verbatim.
 func (c *Config) resolveGitRepo() {

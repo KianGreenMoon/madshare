@@ -48,6 +48,9 @@ type ManageStore interface {
 	GetTagsourcePolicy(ctx context.Context) (database.TagsourcePolicy, error)
 	SetTagsourcePolicy(ctx context.Context, enabled bool, apiKey *string) error
 
+	GetMadnetworkPolicy(ctx context.Context) (database.MadnetworkPolicy, error)
+	SetMadnetworkPolicy(ctx context.Context, autoapprove bool) error
+
 	RecordAudit(ctx context.Context, actorUserID sql.NullInt64, action, target, detail string) error
 }
 
@@ -92,6 +95,8 @@ func registerManage(r chi.Router, d Deps) {
 	r.With(userManage).Post("/settings/trash-policy", h.setTrashPolicy)
 	r.With(userManage).Get("/settings/tagsource", h.getTagsource)
 	r.With(userManage).Post("/settings/tagsource", h.setTagsource)
+	r.With(userManage).Get("/settings/madnetwork", h.getMadnetworkSettings)
+	r.With(userManage).Post("/settings/madnetwork", h.setMadnetworkSettings)
 }
 
 // mAudit records a privileged management action, logging (never failing) on
@@ -316,6 +321,33 @@ func (h *manageHandler) setTagsource(w http.ResponseWriter, r *http.Request) {
 		"api_key_set":         effectiveKey != "",
 		"api_key_last4":       keyLast4(effectiveKey),
 	})
+}
+
+// getMadnetworkSettings reports the madnetwork download settings (federation
+// F3): whether downloads skip the review bucket.
+func (h *manageHandler) getMadnetworkSettings(w http.ResponseWriter, r *http.Request) {
+	p, err := h.store.GetMadnetworkPolicy(r.Context())
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"autoapprove_downloads": p.AutoapproveDownloads})
+}
+
+// setMadnetworkSettings updates the madnetwork download settings.
+func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		AutoapproveDownloads bool `json:"autoapprove_downloads"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := h.store.SetMadnetworkPolicy(r.Context(), req.AutoapproveDownloads); err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	h.mAudit(r.Context(), "madnetwork.settings", "", "autoapprove_downloads="+strconv.FormatBool(req.AutoapproveDownloads))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "autoapprove_downloads": req.AutoapproveDownloads})
 }
 
 // decodeJSON decodes the request body into v, writing a 400 and returning false

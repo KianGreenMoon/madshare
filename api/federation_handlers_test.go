@@ -37,6 +37,9 @@ func (f *fakeFederation) ImportCard(_ context.Context, c federation.Card) (*fede
 	f.imported = &c
 	return &federation.Peer{ID: 1, PublicKey: c.PublicKey, Name: c.Name, State: federation.PeerPendingOutgoing}, nil
 }
+func (f *fakeFederation) EnsureBlob(context.Context, string) (federation.Transfer, error) {
+	return nil, federation.ErrNoHolder
+}
 func (f *fakeFederation) AcceptPeer(context.Context, int64) error  { return f.opErr }
 func (f *fakeFederation) BlockPeer(context.Context, int64) error   { return f.opErr }
 func (f *fakeFederation) UnblockPeer(context.Context, int64) error { return f.opErr }

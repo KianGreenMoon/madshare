@@ -29,6 +29,20 @@ func (f *fakeMadnetwork) MadnetworkTracks(context.Context, string, string) ([]*d
 func (f *fakeMadnetwork) MadnetworkSummary(context.Context) ([]*database.MadnetworkFriend, int64, error) {
 	return nil, 0, nil
 }
+func (f *fakeMadnetwork) MadnetworkEntryForHash(_ context.Context, hash string) (*federation.CatalogEntry, error) {
+	for _, r := range f.rows {
+		for _, rd := range r.Entry.Renditions {
+			if rd.Hash == hash {
+				e := r.Entry
+				return &e, nil
+			}
+		}
+	}
+	return nil, nil
+}
+func (f *fakeMadnetwork) GetMadnetworkPolicy(context.Context) (database.MadnetworkPolicy, error) {
+	return database.MadnetworkPolicy{}, nil
+}
 
 func madRow(peerID int64, peer, recording, title string, hashes ...string) *database.MadnetworkTrackRow {
 	e := federation.CatalogEntry{Key: recording + "-key", RecordingKey: recording, Title: title}

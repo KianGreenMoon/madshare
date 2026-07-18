@@ -117,6 +117,10 @@ type MadnetworkStore interface {
 	MadnetworkAlbums(ctx context.Context, artist string) ([]*database.MadnetworkAlbum, error)
 	MadnetworkTracks(ctx context.Context, artist, album string) ([]*database.MadnetworkTrackRow, error)
 	MadnetworkSummary(ctx context.Context) ([]*database.MadnetworkFriend, int64, error)
+	// F3 (direct transfer): the tagset text behind a rendition hash (staging
+	// metadata for download-to-library) and the download policy.
+	MadnetworkEntryForHash(ctx context.Context, hash string) (*federation.CatalogEntry, error)
+	GetMadnetworkPolicy(ctx context.Context) (database.MadnetworkPolicy, error)
 }
 
 // FederationNode is the admin-facing surface of the embedded madnetwork node
@@ -133,6 +137,9 @@ type FederationNode interface {
 	RemovePeer(ctx context.Context, id int64) error
 	RenamePeer(ctx context.Context, id int64, name string) error
 	MapPeerUser(ctx context.Context, id int64, userID *int64) error
+	// EnsureBlob joins (or starts) the fetch of a remote blob by content hash
+	// (federation F3); the stub answers with its compiled-out error.
+	EnsureBlob(ctx context.Context, hash string) (federation.Transfer, error)
 }
 
 // protect returns middleware enforcing perm, but only when auth is configured
@@ -296,6 +303,15 @@ func RegisterAPI(r chi.Router, d Deps) {
 		r.With(mad).Get("/api/madnetwork/artists", h.madnetworkArtists)
 		r.With(mad).Get("/api/madnetwork/albums", h.madnetworkAlbums)
 		r.With(mad).Get("/api/madnetwork/tracks", h.madnetworkTracks)
+		// F3 (direct transfer): the cache-through streaming relay and
+		// download-to-library, only when a federation node runs. Downloading
+		// stages content as the caller's draft — an upload in all but wire —
+		// so it additionally requires file.upload.
+		if d.Federation != nil {
+			r.With(mad).Get("/api/madnetwork/stream/{hash}", h.madnetworkStream)
+			r.With(mad).Get("/api/madnetwork/transfers/{hash}", h.madnetworkTransferStatus)
+			r.With(mad, d.protect(auth.PermFileUpload)).Post("/api/madnetwork/download", h.madnetworkDownload)
+		}
 	}
 
 	// Authentication endpoints (login/logout/me/password/tokens) live in the

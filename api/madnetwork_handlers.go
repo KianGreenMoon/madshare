@@ -221,6 +221,20 @@ func mergeVersions(group []*database.MadnetworkTrackRow) []madnetworkVersion {
 			}
 			v.Guest = v.Guest || row.Entry.GuestPlayable
 		}
+		// Ladder-best rendition first (F3: the version-level Play/Download act
+		// on renditions[0]) — the same deterministic quality ladder that ranks
+		// local renditions, fed with the advertised quality facts.
+		ranked := make([]database.Rendition, len(v.Renditions))
+		byHash2 := map[string]federation.CatalogRendition{}
+		for i, rd := range v.Renditions {
+			ranked[i] = database.Rendition{Hash: rd.Hash, Codec: rd.Codec,
+				Bitrate: int(rd.Bitrate), SampleRate: int(rd.SampleRate),
+				BitDepth: int(rd.BitDepth), ByteSize: rd.Size}
+			byHash2[rd.Hash] = rd
+		}
+		for i, rr := range database.RankRenditions(ranked) {
+			v.Renditions[i] = byHash2[rr.Hash]
+		}
 		versions = append(versions, v)
 	}
 	// Most widely held version first — the doc's default pick for a crossing.

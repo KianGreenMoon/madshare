@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -47,6 +48,10 @@ const (
 
 // ErrPeerNotFound is returned by peer lookups when no row matches.
 var ErrPeerNotFound = errors.New("federation peer not found")
+
+// ErrNoHolder marks a blob fetch that cannot start because no friend's cached
+// catalog advertises the hash. The API maps it to 404.
+var ErrNoHolder = errors.New("no friend holds this content")
 
 // ErrPeerState marks an operation refused because the peer is in the wrong
 // state (accepting a non-pending peer, importing a blocked node's card, …).
@@ -101,6 +106,65 @@ type PeerStore interface {
 	// MarkPeerCatalogChecked records a sync round that found the cached copy
 	// still fresh (the not-modified path).
 	MarkPeerCatalogChecked(ctx context.Context, peerID int64, serial string, syncedAt int64) error
+
+	// BlobPubliclyVisible reports whether the blob with this content hash is
+	// part of the published library (live file + an approved appearance on its
+	// recording) — the F3 blob-serving gate, the same predicate that governs
+	// the local library and the catalog (database/review.go).
+	BlobPubliclyVisible(ctx context.Context, hash string) (visible, found bool, err error)
+	// MadnetworkBlobProviders returns the friends whose cached catalogs
+	// advertise hash — most recently seen first, the fetch order — plus the
+	// advertised byte size (a hint; the origin's Content-Length wins).
+	MadnetworkBlobProviders(ctx context.Context, hash string) (size int64, holders []*Peer, err error)
+}
+
+// Transfer is one in-flight or completed blob fetch (federation F3). Readers
+// follow the growing cache file: WaitFor blocks until an offset is readable,
+// so the API can relay bytes to a browser while the download continues
+// (cache-through streaming — never download-fully-then-play). All methods are
+// safe for concurrent use.
+type Transfer interface {
+	Hash() string
+	// Size is the expected total in bytes (the origin's Content-Length once
+	// the fetch started; before that the catalog's advertised size). Stable
+	// after WaitFor(ctx, 0) returns.
+	Size() int64
+	// Filename is the origin's on-disk filename (from Content-Disposition);
+	// may be empty. Stable after WaitFor(ctx, 0) returns.
+	Filename() string
+	// Progress is the number of bytes readable from the cache file so far.
+	Progress() int64
+	// Done is closed when the transfer finished — verified and renamed into
+	// the cache on success, or failed (Err non-nil).
+	Done() <-chan struct{}
+	// Err is the terminal error; valid once Done is closed.
+	Err() error
+	// Open opens the underlying file for reading (the partial file while the
+	// fetch runs; the verified cache file — or a local blob — when complete).
+	Open() (*os.File, error)
+	// WaitFor blocks until at least offset+1 bytes are readable, the transfer
+	// ends, or ctx is done. An offset at or beyond EOF returns io.EOF.
+	WaitFor(ctx context.Context, offset int64) error
+}
+
+// Option configures Start with the F3 transfer wiring. Both build variants
+// accept options; the stub ignores them.
+type Option func(*nodeOptions)
+
+type nodeOptions struct {
+	cacheDir    string
+	resolveBlob func(hash string) (path string, ok bool)
+}
+
+// WithCacheDir sets the directory for fetched blobs (<data_dir>/cache/madnetwork
+// in the running server). Without it the node cannot fetch remote blobs.
+func WithCacheDir(dir string) Option { return func(o *nodeOptions) { o.cacheDir = dir } }
+
+// WithBlobResolver wires the local blob lookup (the storages registry): the
+// serving side resolves published hashes to on-disk paths with it, and a fetch
+// of a hash the library already holds short-circuits to the local copy.
+func WithBlobResolver(f func(hash string) (path string, ok bool)) Option {
+	return func(o *nodeOptions) { o.resolveBlob = f }
 }
 
 // CatalogRendition is one blob of a recording as advertised in a catalog

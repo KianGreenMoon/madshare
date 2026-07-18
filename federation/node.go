@@ -48,6 +48,17 @@ type Node struct {
 	// Memoized own-catalog snapshot served to friends (catalog.go).
 	snapMu sync.Mutex
 	snap   *snapshot
+
+	// F3 transfer wiring (transfer.go): the blob cache dir, the local blob
+	// resolver (serving side + local short-circuit), the in-flight transfer
+	// table, and the lifetime context detaching fetches from request contexts
+	// (cache-through: the download outlives the requester).
+	cacheDir       string
+	resolveBlob    func(hash string) (path string, ok bool)
+	transferMu     sync.Mutex
+	transfers      map[string]*transfer
+	transferCtx    context.Context
+	transferCancel context.CancelFunc
 }
 
 // Start loads (or creates) the node key, brings up the yggdrasil core with the
@@ -56,20 +67,24 @@ type Node struct {
 // (nil disables friendship — F0 behaviour, used by narrow tests). The returned
 // Node must be Stop()ed on shutdown. logger receives yggdrasil's info/warn/error
 // output and the node's own friendship events.
-func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger) (*Node, error) {
+func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts ...Option) (*Node, error) {
+	var o nodeOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	nodeCfg, err := loadOrCreateKey(fc.KeyFile)
 	if err != nil {
 		return nil, err
 	}
 
-	var opts []core.SetupOption
+	var coreOpts []core.SetupOption
 	for _, l := range fc.Listen {
-		opts = append(opts, core.ListenAddress(l))
+		coreOpts = append(coreOpts, core.ListenAddress(l))
 	}
 	for _, p := range fc.Peers {
-		opts = append(opts, core.Peer{URI: p})
+		coreOpts = append(coreOpts, core.Peer{URI: p})
 	}
-	c, err := core.New(nodeCfg.Certificate, &coreLogger{logger}, opts...)
+	c, err := core.New(nodeCfg.Certificate, &coreLogger{logger}, coreOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("federation: start yggdrasil core: %w", err)
 	}
@@ -90,13 +105,19 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger) (*No
 			name = CleanPeerName(host)
 		}
 	}
+	transferCtx, transferCancel := context.WithCancel(context.Background())
 	n := &Node{
-		core:   c,
-		stack:  stack,
-		store:  store,
-		name:   name,
-		logger: logger,
-		nudge:  make(chan struct{}, 1),
+		core:           c,
+		stack:          stack,
+		store:          store,
+		name:           name,
+		logger:         logger,
+		nudge:          make(chan struct{}, 1),
+		cacheDir:       o.cacheDir,
+		resolveBlob:    o.resolveBlob,
+		transfers:      map[string]*transfer{},
+		transferCtx:    transferCtx,
+		transferCancel: transferCancel,
 	}
 	n.client = &http.Client{
 		Transport: &http.Transport{DialContext: n.DialContext},
@@ -117,12 +138,14 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger) (*No
 	return n, nil
 }
 
-// Stop shuts the refresh loop, the mesh listener, and the yggdrasil core down.
+// Stop shuts the refresh loop, in-flight transfers, the mesh listener, and the
+// yggdrasil core down.
 func (n *Node) Stop() {
 	if n.loopCancel != nil {
 		n.loopCancel()
 		<-n.loopDone
 	}
+	n.transferCancel()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = n.srv.Shutdown(ctx)
@@ -175,9 +198,10 @@ func loadOrCreateKey(path string) (*yggconfig.NodeConfig, error) {
 }
 
 // protocolHandler is the madnetwork protocol surface served on the mesh:
-// the ping (F0) and the pairing endpoint (F1, friendship.go). meshAuth wraps
-// everything — a blocked peer gets nothing, not even a ping, and any request
-// from a known peer refreshes its last_seen.
+// the ping (F0), pairing (F1, friendship.go), the catalog (F2, catalog.go),
+// and the blob server (F3, transfer.go). meshAuth wraps everything — a blocked
+// peer gets nothing, not even a ping, and any request from a known peer
+// refreshes its last_seen.
 func (n *Node) protocolHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /madnetwork/v0/ping", func(w http.ResponseWriter, r *http.Request) {
@@ -192,6 +216,7 @@ func (n *Node) protocolHandler() http.Handler {
 	})
 	mux.HandleFunc("POST /madnetwork/v0/pair", n.handlePair)
 	mux.HandleFunc("GET /madnetwork/v0/catalog", n.handleCatalog)
+	mux.HandleFunc("GET /madnetwork/v0/blob/{hash}", n.handleBlob)
 	return n.meshAuth(mux)
 }
 

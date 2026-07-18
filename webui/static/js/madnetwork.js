@@ -3,12 +3,15 @@
 // local library (artist → album → track); the same tagset text offered by
 // several friends is ONE row, and a track expands into its "versions" — the
 // distinct claimed recordings behind that text — each with its renditions and
-// which friends hold it. Browse-only in F2: playing and downloading remote
-// content arrive with F3 (direct transfer).
+// which friends hold it. F3 (direct transfer) adds the version actions: Play
+// (cache-through streaming relay, /api/madnetwork/stream) and Download to
+// library (fetch + stage through the review bucket).
 //
 // Shell page module: NO page DOM at module-eval time — everything inside
 // init() (the shell swaps <main> between navigations).
 import { gatePage, PAGE_PERMS } from './auth.js';
+import { getController } from './player-controller.js';
+import { showToast } from './shell.js';
 
 const API = document.querySelector('meta[name="api-url"]')?.content || '';
 
@@ -16,6 +19,10 @@ const API = document.querySelector('meta[name="api-url"]')?.content || '';
 // a cached module, so init must not rely on module state surviving).
 let drill = null;      // { level: 'artists'|'albums'|'tracks', artist, album }
 let searchTimer = null;
+
+// In-flight download polls, keyed by hash (survive within a visit; cleared on
+// teardown — the server job keeps running and the state is re-pollable).
+const downloadPolls = new Map();
 
 export async function init() {
   if (!gatePage(PAGE_PERMS.madnetwork)) return;
@@ -33,6 +40,8 @@ export async function init() {
 
 export function teardown() {
   clearTimeout(searchTimer);
+  for (const timer of downloadPolls.values()) clearTimeout(timer);
+  downloadPolls.clear();
   drill = null;
 }
 
@@ -325,10 +334,124 @@ function renderVersions(detail, t) {
       hs.append(holder);
     });
     box.append(hs);
+
+    // F3 actions on the version's ladder-best rendition (renditions[0] — the
+    // server sorts them by the quality ladder).
+    const best = (v.renditions || [])[0];
+    if (best && best.hash) {
+      box.append(mkVersionActions(t, best));
+    }
     detail.append(box);
   });
-  const note = document.createElement('div');
-  note.className = 'mn-fetch-note';
-  note.textContent = 'Playing and downloading from the madnetwork arrives with the transfer milestone.';
-  detail.append(note);
+}
+
+// ── F3 version actions: play (streamed relay) + download to library ──────────
+
+function mkVersionActions(t, rd) {
+  const bar = document.createElement('div');
+  bar.className = 'mn-actions';
+
+  const play = document.createElement('button');
+  play.className = 'btn btn-neutral mn-action';
+  play.textContent = '▶ Play';
+  play.title = 'Stream from the madnetwork (relayed through this server)';
+  play.addEventListener('click', () => {
+    getController().setQueue([{
+      url: `${API}/api/madnetwork/stream/${rd.hash}`,
+      title: t.title || 'Unknown',
+      artist: t.artist || drill?.artist || '',
+    }], 0);
+  });
+
+  const queue = document.createElement('button');
+  queue.className = 'btn btn-neutral mn-action';
+  queue.textContent = '+ Queue';
+  queue.title = 'Add to the play queue';
+  queue.addEventListener('click', () => {
+    getController().enqueue([{
+      url: `${API}/api/madnetwork/stream/${rd.hash}`,
+      title: t.title || 'Unknown',
+      artist: t.artist || drill?.artist || '',
+    }]);
+    showToast('Added to queue.', { type: 'success' });
+  });
+
+  const dl = document.createElement('button');
+  dl.className = 'btn btn-neutral mn-action';
+  dl.textContent = '⬇ Download';
+  dl.title = 'Fetch into this server’s library (staged for review)';
+  dl.addEventListener('click', () => startDownload(dl, rd.hash));
+
+  bar.append(play, queue, dl);
+  return bar;
+}
+
+async function startDownload(btn, hash) {
+  btn.disabled = true;
+  btn.textContent = 'Downloading…';
+  let data;
+  try {
+    const res = await fetch(`${API}/api/madnetwork/download`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hash }),
+    });
+    data = await res.json().catch(() => ({}));
+    if (res.status === 401 || res.status === 403) {
+      showToast('You need upload permission to download into the library.', { type: 'error' });
+      resetDownloadBtn(btn); return;
+    }
+    if (!res.ok && !data.started) {
+      showToast(data.error || 'Download failed to start.', { type: 'error' });
+      resetDownloadBtn(btn); return;
+    }
+  } catch {
+    showToast('Download failed to start.', { type: 'error' });
+    resetDownloadBtn(btn); return;
+  }
+  if (data.existed) {
+    showToast(data.attached
+      ? 'Bytes already in the library — the tagset was staged as a new appearance.'
+      : 'Already in the library (nothing new to add).', { type: 'success' });
+    resetDownloadBtn(btn, data.attached ? 'Staged' : 'In library');
+    return;
+  }
+  pollDownload(btn, hash);
+}
+
+function pollDownload(btn, hash) {
+  const tick = async () => {
+    let data;
+    try {
+      const res = await fetch(`${API}/api/madnetwork/transfers/${hash}`);
+      if (!res.ok) throw new Error();
+      data = await res.json();
+    } catch { schedule(); return; }
+    switch (data.state) {
+      case 'staged':
+      case 'attached':
+        showToast('Downloaded — staged in My uploads for review.', { type: 'success' });
+        resetDownloadBtn(btn, 'Staged'); downloadPolls.delete(hash); return;
+      case 'approved':
+        showToast('Downloaded into the library.', { type: 'success' });
+        resetDownloadBtn(btn, 'In library'); downloadPolls.delete(hash); return;
+      case 'failed':
+        showToast(`Download failed: ${data.error || 'unknown error'}`, { type: 'error' });
+        resetDownloadBtn(btn); downloadPolls.delete(hash); return;
+      default: {
+        if (data.size > 0 && data.progress >= 0 && btn.isConnected) {
+          btn.textContent = `${Math.floor((data.progress / data.size) * 100)} %`;
+        }
+        schedule();
+      }
+    }
+  };
+  const schedule = () => downloadPolls.set(hash, setTimeout(tick, 1500));
+  schedule();
+}
+
+function resetDownloadBtn(btn, label) {
+  if (!btn.isConnected) return;
+  btn.textContent = label || '⬇ Download';
+  btn.disabled = !!label;
 }

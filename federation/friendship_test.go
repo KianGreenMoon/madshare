@@ -66,6 +66,48 @@ func (m *memStore) MarkPeerCatalogChecked(_ context.Context, peerID int64, seria
 	return nil
 }
 
+// BlobPubliclyVisible mirrors the DB predicate over the published set: a hash
+// advertised by any published entry's renditions is visible.
+func (m *memStore) BlobPubliclyVisible(_ context.Context, hash string) (bool, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, e := range m.published {
+		for _, rd := range e.Renditions {
+			if rd.Hash == hash {
+				return true, true, nil
+			}
+		}
+	}
+	return false, false, nil
+}
+
+// MadnetworkBlobProviders scans the cached friend catalogs for the hash, like
+// the DB does.
+func (m *memStore) MadnetworkBlobProviders(_ context.Context, hash string) (int64, []*Peer, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var size int64
+	var holders []*Peer
+	for peerID, entries := range m.caches {
+		p, ok := m.peers[peerID]
+		if !ok || p.State != PeerFriend {
+			continue
+		}
+		for _, e := range entries {
+			for _, rd := range e.Renditions {
+				if rd.Hash == hash {
+					if size == 0 {
+						size = rd.Size
+					}
+					cp := *p
+					holders = append(holders, &cp)
+				}
+			}
+		}
+	}
+	return size, holders, nil
+}
+
 func (m *memStore) cachedCatalog(peerID int64) []CatalogEntry {
 	m.mu.Lock()
 	defer m.mu.Unlock()

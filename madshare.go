@@ -317,7 +317,16 @@ func main() {
 	// the /admin/network page can manage it.
 	var fedNode *federation.Node
 	if cfg.Federation.Enabled {
-		fedNode, err = federation.Start(cfg.Federation, db, log.Default())
+		// F3 wiring: the blob resolver serves published hashes to friends (and
+		// short-circuits fetches of hashes the library already holds); the
+		// cache dir receives fetched blobs (cache-through streaming).
+		resolve := func(hash string) (string, bool) {
+			path, _, ok := storageRegistry.Resolve(hash)
+			return path, ok
+		}
+		fedNode, err = federation.Start(cfg.Federation, db, log.Default(),
+			federation.WithCacheDir(cfg.MadnetworkCacheDir()),
+			federation.WithBlobResolver(resolve))
 		if err != nil {
 			log.Fatalf("start federation node: %v", err)
 		}

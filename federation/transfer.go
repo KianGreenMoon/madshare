@@ -1,0 +1,379 @@
+//go:build !nofederation
+
+package federation
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"mime"
+	"net/http"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+)
+
+// Direct transfer (federation F3): fetch-by-hash between friends over the
+// mesh. The wire is a plain streaming HTTP GET with Range support (decision
+// 2026-07-18 — chunking IS HTTP ranges between two trusted endpoints);
+// integrity is the content hash itself, verified over the full byte stream,
+// with the Merkle chunk protocol deferred to F4 where multi-source fetch
+// actually needs per-chunk verification. Design: docs/architecture/federation.md.
+
+// ── Serving side: GET /madnetwork/v0/blob/{hash} ─────────────────────────────
+
+// handleBlob serves a published blob to a friend. Friends only (any friend may
+// fetch any published blob — matching exactly what the F2 catalog already
+// shows them; per-friend filtering arrives with F5 per-content scope), and
+// only blobs the published-library predicate admits — a staged, trashed, or
+// unknown hash is 404 even for a friend. http.ServeContent provides
+// HEAD/Range; Content-Disposition carries the origin filename so the fetching
+// node can land the file under its real name.
+func (n *Node) handleBlob(w http.ResponseWriter, r *http.Request) {
+	if n.store == nil {
+		http.Error(w, "transfer not configured", http.StatusServiceUnavailable)
+		return
+	}
+	p := n.peerFromRemote(r)
+	if p == nil || p.State != PeerFriend {
+		http.Error(w, "blobs are served to friends only", http.StatusForbidden)
+		return
+	}
+	hash := r.PathValue("hash")
+	if !isBlobHash(hash) {
+		http.NotFound(w, r)
+		return
+	}
+	visible, found, err := n.store.BlobPubliclyVisible(r.Context(), hash)
+	if err != nil {
+		n.logger.Printf("federation: blob visibility %s: %v", hash, err)
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if !found || !visible || n.resolveBlob == nil {
+		http.NotFound(w, r)
+		return
+	}
+	path, ok := n.resolveBlob(hash)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Disposition",
+		mime.FormatMediaType("attachment", map[string]string{"filename": filepath.Base(path)}))
+	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
+}
+
+// ── Fetching side ────────────────────────────────────────────────────────────
+
+// transfer is the concrete Transfer: one fetch of one hash, shared by every
+// concurrent requester (streams and downloads of the same hash join it).
+type transfer struct {
+	hash     string
+	path     string // final location (cache file, or a local blob short-circuit)
+	partPath string // the growing file while the fetch runs ("" when born complete)
+	done     chan struct{}
+
+	mu       sync.Mutex
+	size     int64
+	filename string
+	progress int64
+	changed  chan struct{} // recreated on every progress/terminal update
+	err      error
+	finished bool
+}
+
+func newTransfer(hash, path, partPath string) *transfer {
+	return &transfer{
+		hash:     hash,
+		path:     path,
+		partPath: partPath,
+		done:     make(chan struct{}),
+		changed:  make(chan struct{}),
+	}
+}
+
+// completedTransfer wraps an already-present file (cache hit or local blob).
+func completedTransfer(hash, path string, size int64) *transfer {
+	t := newTransfer(hash, path, "")
+	t.size, t.progress, t.finished = size, size, true
+	t.filename = filepath.Base(path)
+	close(t.done)
+	return t
+}
+
+func (t *transfer) Hash() string          { return t.hash }
+func (t *transfer) Done() <-chan struct{} { return t.done }
+
+func (t *transfer) Size() int64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.size
+}
+
+func (t *transfer) Filename() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.filename
+}
+
+func (t *transfer) Progress() int64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.progress
+}
+
+func (t *transfer) Err() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.err
+}
+
+// Open opens the file for reading: the final path once the transfer completed,
+// otherwise the growing partial. Opening the partial keeps working across the
+// completion rename (the reader holds the inode).
+func (t *transfer) Open() (*os.File, error) {
+	t.mu.Lock()
+	finished := t.finished
+	t.mu.Unlock()
+	if !finished && t.partPath != "" {
+		if f, err := os.Open(t.partPath); err == nil {
+			return f, nil
+		}
+	}
+	return os.Open(t.path)
+}
+
+func (t *transfer) WaitFor(ctx context.Context, offset int64) error {
+	for {
+		t.mu.Lock()
+		progress, finished, err, ch := t.progress, t.finished, t.err, t.changed
+		t.mu.Unlock()
+		if progress > offset {
+			return nil
+		}
+		if finished {
+			if err != nil {
+				return err
+			}
+			return io.EOF // offset at or beyond the verified end
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ch:
+		}
+	}
+}
+
+// setMeta records the origin's Content-Length and filename (first responder
+// wins; retries against another holder keep them consistent because the bytes
+// must hash identically anyway).
+func (t *transfer) setMeta(size int64, filename string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if size > 0 {
+		t.size = size
+	}
+	if filename != "" {
+		t.filename = filename
+	}
+}
+
+func (t *transfer) addProgress(n int64) {
+	t.mu.Lock()
+	t.progress += n
+	close(t.changed)
+	t.changed = make(chan struct{})
+	t.mu.Unlock()
+}
+
+func (t *transfer) resetProgress() {
+	t.mu.Lock()
+	t.progress = 0
+	close(t.changed)
+	t.changed = make(chan struct{})
+	t.mu.Unlock()
+}
+
+func (t *transfer) finish(err error) {
+	t.mu.Lock()
+	t.err = err
+	t.finished = true
+	if err == nil {
+		t.size = t.progress
+	}
+	close(t.changed)
+	t.changed = make(chan struct{})
+	t.mu.Unlock()
+	close(t.done)
+}
+
+// EnsureBlob returns the Transfer for hash, starting a fetch when needed:
+// a local library blob or an already-cached file is returned complete; an
+// in-flight fetch is joined; otherwise a new fetch starts against the friends
+// whose catalogs advertise the hash (most recently seen first). The fetch runs
+// on the node's own lifetime context — it outlives the requester on purpose
+// (cache-through: the file keeps landing in the cache after a browser
+// disconnects).
+func (n *Node) EnsureBlob(ctx context.Context, hash string) (Transfer, error) {
+	if !isBlobHash(hash) {
+		return nil, fmt.Errorf("federation: invalid content hash")
+	}
+	if n.resolveBlob != nil {
+		if path, ok := n.resolveBlob(hash); ok {
+			if info, err := os.Stat(path); err == nil {
+				return completedTransfer(hash, path, info.Size()), nil
+			}
+		}
+	}
+	if n.store == nil || n.cacheDir == "" {
+		return nil, fmt.Errorf("federation: transfers not configured")
+	}
+	final := filepath.Join(n.cacheDir, hash)
+	if info, err := os.Stat(final); err == nil {
+		return completedTransfer(hash, final, info.Size()), nil
+	}
+
+	n.transferMu.Lock()
+	defer n.transferMu.Unlock()
+	if t, ok := n.transfers[hash]; ok {
+		return t, nil
+	}
+	size, holders, err := n.store.MadnetworkBlobProviders(ctx, hash)
+	if err != nil {
+		return nil, err
+	}
+	if len(holders) == 0 {
+		return nil, ErrNoHolder
+	}
+	if err := os.MkdirAll(n.cacheDir, 0o755); err != nil {
+		return nil, fmt.Errorf("federation: create cache dir: %w", err)
+	}
+	t := newTransfer(hash, final, final+".part")
+	t.size = size
+	n.transfers[hash] = t
+	go n.runTransfer(t, holders)
+	return t, nil
+}
+
+// runTransfer tries each advertising friend in order until one delivers bytes
+// that verify against the content hash.
+func (n *Node) runTransfer(t *transfer, holders []*Peer) {
+	defer func() {
+		n.transferMu.Lock()
+		delete(n.transfers, t.hash)
+		n.transferMu.Unlock()
+	}()
+	var lastErr error
+	for _, p := range holders {
+		if n.transferCtx.Err() != nil {
+			t.finish(n.transferCtx.Err())
+			return
+		}
+		err := n.fetchFrom(t, p)
+		if err == nil {
+			n.logger.Printf("federation: fetched %s from %q (%d bytes)", t.hash, p.Name, t.Progress())
+			t.finish(nil)
+			return
+		}
+		lastErr = err
+		n.logger.Printf("federation: fetch %s from %q: %v", t.hash, p.Name, err)
+		t.resetProgress()
+	}
+	os.Remove(t.partPath)
+	t.finish(fmt.Errorf("federation: fetch %s: %w", t.hash, lastErr))
+}
+
+// fetchFrom streams the blob from one friend into the partial file, hashing as
+// it goes; matching bytes are renamed into the cache atomically.
+func (n *Node) fetchFrom(t *transfer, p *Peer) error {
+	addr, err := AddrForKeyHex(p.PublicKey)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(n.transferCtx, 30*time.Minute)
+	defer cancel()
+	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/blob/%s", addr, MeshPort, t.hash)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	// The friendship client has a short global timeout for control calls; blob
+	// fetches are bounded by ctx instead.
+	client := &http.Client{Transport: &http.Transport{DialContext: n.DialContext}}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("holder answered %s", resp.Status)
+	}
+	filename := ""
+	if _, params, err := mime.ParseMediaType(resp.Header.Get("Content-Disposition")); err == nil {
+		filename = filepath.Base(params["filename"])
+	}
+	t.setMeta(resp.ContentLength, filename)
+
+	f, err := os.OpenFile(t.partPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	hasher := sha256.New()
+	buf := make([]byte, 256<<10)
+	for {
+		nr, rerr := resp.Body.Read(buf)
+		if nr > 0 {
+			if _, werr := f.Write(buf[:nr]); werr != nil {
+				f.Close()
+				return werr
+			}
+			hasher.Write(buf[:nr])
+			t.addProgress(int64(nr))
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			f.Close()
+			return rerr
+		}
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if got := hex.EncodeToString(hasher.Sum(nil)); got != t.hash {
+		return fmt.Errorf("bytes hash to %s, not the requested content hash", got)
+	}
+	return os.Rename(t.partPath, t.path)
+}
+
+// isBlobHash reports whether s is a well-formed content hash (64 lowercase hex
+// chars) — anything else can never resolve and must not reach the filesystem.
+func isBlobHash(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}

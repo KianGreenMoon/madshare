@@ -10,11 +10,12 @@ import (
 // Settings keys (see migration 006_access_mgmt.sql; settings is a generic
 // key/value table, so new keys need no migration).
 const (
-	settingAutoDeriveEnabled  = "access.autoderive.enabled"
-	settingAutoDeriveLicenses = "access.autoderive.licenses"
-	settingTrashRestorePolicy = "upload.trash_restore_policy"
-	settingMusicBrainzEnabled = "tagsource.musicbrainz.enabled"
-	settingAcoustIDKey        = "tagsource.acoustid.api_key"
+	settingAutoDeriveEnabled     = "access.autoderive.enabled"
+	settingAutoDeriveLicenses    = "access.autoderive.licenses"
+	settingTrashRestorePolicy    = "upload.trash_restore_policy"
+	settingMusicBrainzEnabled    = "tagsource.musicbrainz.enabled"
+	settingAcoustIDKey           = "tagsource.acoustid.api_key"
+	settingMadnetworkAutoapprove = "madnetwork.autoapprove_downloads"
 )
 
 // Trash-restore policy modes — what may happen to a trashed file whose content
@@ -53,6 +54,33 @@ func (db *DB) SetTrashRestorePolicy(ctx context.Context, mode string) error {
 		return errors.New("invalid trash restore policy")
 	}
 	return db.SetSetting(ctx, settingTrashRestorePolicy, mode)
+}
+
+// MadnetworkPolicy holds the madnetwork download behavior (federation F3).
+// AutoapproveDownloads skips the review bucket: a downloaded file lands
+// approved, exactly as fetched. Default OFF on servers (the doc's default;
+// a future single-user madplayer build may flip it).
+type MadnetworkPolicy struct {
+	AutoapproveDownloads bool
+}
+
+// GetMadnetworkPolicy reads the madnetwork download settings. Missing keys
+// read as the defaults (autoapprove off — downloads go through review).
+func (db *DB) GetMadnetworkPolicy(ctx context.Context) (MadnetworkPolicy, error) {
+	v, _, err := db.GetSetting(ctx, settingMadnetworkAutoapprove)
+	if err != nil {
+		return MadnetworkPolicy{}, err
+	}
+	return MadnetworkPolicy{AutoapproveDownloads: v == "1"}, nil
+}
+
+// SetMadnetworkPolicy persists the madnetwork download settings.
+func (db *DB) SetMadnetworkPolicy(ctx context.Context, autoapprove bool) error {
+	v := "0"
+	if autoapprove {
+		v = "1"
+	}
+	return db.SetSetting(ctx, settingMadnetworkAutoapprove, v)
 }
 
 // GetSetting returns the value for key. ok is false (no error) when unset.
