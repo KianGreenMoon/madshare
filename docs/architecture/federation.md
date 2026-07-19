@@ -328,10 +328,13 @@ default** — its social graph is visible to its members.
 - **Cache-through streaming relay** (`GET /api/madnetwork/stream/{hash}`,
   gated `madnetwork.access`): bytes are relayed to the browser as they arrive
   while the complete file lands in the cache in parallel — never
-  download-fully-then-play. The total is known up front (the origin's
-  Content-Length), so browser range requests work against the growing file: a
-  range beyond the downloaded prefix waits for the sequential fetch to reach
-  it.
+  download-fully-then-play. The total is known up front (the manifest / the
+  origin's Content-Length), so browser range requests work against the growing
+  file. Reads are **per-chunk, not front-to-back**: a range for a region not
+  yet fetched (a player's tail probe for the MP4 `moov`/duration, or a seek)
+  **prioritizes the chunk covering that offset** and is served as soon as it
+  lands — it does not wait for the sequential prefix to reach it (see
+  §Distribution for the seek-priority mechanism).
 - **Download to library** (`POST /api/madnetwork/download {hash}`, gated
   `madnetwork.access` + `file.upload`): fetch + stage, exactly as designed in
   §Catalog — the verified file lands in blob storage and inserts as the
@@ -370,15 +373,26 @@ default** — its social graph is visible to its members.
   the whole-file check) — acceptable because every holder is trusted. Chunks are
   fetched with plain HTTP Range requests (the F3 blob endpoint already serves
   them).
-- **Multi-source fetch, sequential-priority** (built F4): chunks are dispatched
-  lowest-index-first (so the streaming relay's in-order prefix grows and
-  `WaitFor(offset)` unblocks) but fetched by a small worker pool **in parallel
-  across all advertising holders**. A chunk that errors or fails its per-chunk
-  hash is re-queued to a different holder (the offending holder is dropped for
-  the rest of the transfer). A **single-seeder swarm degenerates to a direct
-  transfer**, and a holder too old to speak the manifest endpoint triggers a
-  **fall-back to the F3 whole-file streaming fetch** — so F4 nodes still fetch
-  from F3 nodes.
+- **Multi-source fetch, sequential-priority + seek** (built F4): chunks are
+  dispatched lowest-index-first (so the streaming prefix grows in order) but
+  fetched by a small worker pool **in parallel across all advertising holders**.
+  The transfer tracks **per-chunk readiness**, so the relay can serve an
+  out-of-order region the instant its chunk lands; a streaming read of a
+  not-yet-fetched offset **promotes the covering chunk to the front of the
+  dispatch queue** (seek-priority), which keeps a tail probe or seek from
+  waiting out the whole file. A chunk that errors or fails its per-chunk hash is
+  re-queued to a different holder (the offending holder is dropped for the rest
+  of the transfer). A **single-seeder swarm degenerates to a direct transfer**,
+  and a holder too old to speak the manifest endpoint triggers a **fall-back to
+  the F3 whole-file streaming fetch** — so F4 nodes still fetch from F3 nodes.
+- **Fast first byte** (built F4): to avoid two serial mesh round-trips before
+  playback starts, a fetch **overlaps the manifest probe with a speculative
+  chunk-0 fetch** — chunk 0's byte range is derived from the advertised size via
+  the deterministic `chunkSizeFor`, then confirmed and per-chunk-verified once
+  the manifest lands (dropped if the guess was wrong). Manifest probes and chunk
+  fetches share **one pooled mesh connection**, so chunk fetches reuse the
+  manifest's warm path instead of paying a fresh handshake; a manifest probe is
+  bounded (20 s) so a slow holder cannot stall the transfer.
 - **Tracker = the catalog + holdings** (built F4). "Who has hash H" is the union
   of two sources: friends whose **published catalog** advertises the hash as a
   rendition (their library — already synced in F2), and friends advertising it

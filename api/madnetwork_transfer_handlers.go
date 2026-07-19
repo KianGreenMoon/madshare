@@ -160,11 +160,14 @@ func (h *handler) copyTransfer(ctx context.Context, w http.ResponseWriter, t fed
 			return // EOF (done), client gone, or the transfer failed midway
 		}
 		n := int64(len(buf))
-		if avail := t.Progress() - offset; avail < n {
+		if avail := t.Available(offset); avail < n {
 			n = avail
 		}
 		if end >= 0 && end-offset+1 < n {
 			n = end - offset + 1
+		}
+		if n <= 0 {
+			continue // offset briefly unavailable (e.g. a swarm→whole-file fallback); re-wait
 		}
 		rn, rerr := f.Read(buf[:n])
 		if rn > 0 {

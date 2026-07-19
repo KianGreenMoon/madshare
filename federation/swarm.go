@@ -37,9 +37,10 @@ const (
 	maxChunkSize = 4 << 20   // 4 MiB
 	targetChunks = 12        // rough chunk count a mid-size file aims for
 
-	maxChunkWorkers = 8               // parallel chunk fetches per transfer
-	perChunkTimeout = 5 * time.Minute // bound one chunk fetch
-	seedWriteChunk  = 32 << 10        // rate-cap granularity on the serve path
+	maxChunkWorkers = 8                // parallel chunk fetches per transfer
+	perChunkTimeout = 5 * time.Minute  // bound one chunk fetch
+	manifestTimeout = 20 * time.Second // bound one manifest probe to a holder
+	seedWriteChunk  = 32 << 10         // rate-cap granularity on the serve path
 )
 
 // chunkSizeFor picks the chunk size for a blob of the given total size: the
@@ -189,12 +190,17 @@ func (n *Node) fetchManifest(ctx context.Context, p *Peer, hash string) *blobMan
 	if err != nil {
 		return nil
 	}
+	// Share the pooled blob transport (not the short control client) so the
+	// chunk fetches that follow reuse this warm connection; bound this one probe
+	// so a slow holder doesn't stall the whole transfer.
+	cctx, cancel := context.WithTimeout(ctx, manifestTimeout)
+	defer cancel()
 	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/manifest/%s", addr, MeshPort, hash)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(cctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil
 	}
-	resp, err := n.client.Do(req)
+	resp, err := n.blobClient.Do(req)
 	if err != nil {
 		return nil
 	}
@@ -351,12 +357,109 @@ func (n *Node) seedableBlob(ctx context.Context, hash string) (string, bool) {
 
 // ── Multi-source chunk fetch ─────────────────────────────────────────────────
 
+// fetchRange fetches [start, start+length) from one holder over the mesh (a
+// plain HTTP Range request against the F3 blob endpoint) and returns the bytes.
+// The holder clamps at EOF, so a short file yields fewer than length bytes.
+func (n *Node) fetchRange(ctx context.Context, p *Peer, hash string, start, length int64) ([]byte, error) {
+	addr, err := AddrForKeyHex(p.PublicKey)
+	if err != nil {
+		return nil, err
+	}
+	cctx, cancel := context.WithTimeout(ctx, perChunkTimeout)
+	defer cancel()
+	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/blob/%s", addr, MeshPort, hash)
+	req, err := http.NewRequestWithContext(cctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, start+length-1))
+	resp, err := n.blobClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("range %d-%d: holder answered %s", start, start+length-1, resp.Status)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, length))
+}
+
+// chunk0Prefetch is a speculative chunk-0 fetch overlapped with the manifest
+// round trip. take() consumes it once the manifest is known, keeping the bytes
+// only if the guessed layout matched and chunk 0 verifies.
+type chunk0Prefetch struct {
+	active  bool
+	guessCS int64
+	ch      chan []byte // buffered(1): the fetched bytes, or nil on failure
+}
+
+// speculateChunk0 starts fetching chunk 0 from the first holder using the chunk
+// size implied by the advertised file size (deterministic via chunkSizeFor), so
+// it lands in parallel with the manifest fetch instead of after it.
+func (n *Node) speculateChunk0(t *transfer, holders []*Peer) *chunk0Prefetch {
+	pf := &chunk0Prefetch{ch: make(chan []byte, 1)}
+	if len(holders) == 0 {
+		pf.ch <- nil
+		return pf
+	}
+	size := t.Size()
+	pf.guessCS = chunkSizeFor(size)
+	length := pf.guessCS
+	if size > 0 && size < length {
+		length = size
+	}
+	pf.active = true
+	p := holders[0]
+	go func() {
+		data, err := n.fetchRange(n.transferCtx, p, t.hash, 0, length)
+		if err != nil {
+			pf.ch <- nil
+			return
+		}
+		pf.ch <- data
+	}()
+	return pf
+}
+
+// take waits for the speculative fetch and returns chunk 0's bytes iff the
+// manifest confirms the guessed layout and the bytes verify against it; nil
+// otherwise (fetchSwarm then fetches chunk 0 through the normal plan). It blocks
+// only until the speculative fetch resolves (bounded by perChunkTimeout).
+func (pf *chunk0Prefetch) take(man *blobManifest) []byte {
+	if !pf.active {
+		return nil
+	}
+	data := <-pf.ch
+	if data == nil || len(man.Chunks) == 0 || man.ChunkSize != pf.guessCS {
+		return nil
+	}
+	want := man.ChunkSize
+	if man.Size < want {
+		want = man.Size
+	}
+	if int64(len(data)) != want {
+		return nil
+	}
+	sum := sha256.Sum256(data)
+	if hex.EncodeToString(sum[:]) != man.Chunks[0] {
+		return nil
+	}
+	return data
+}
+
+// discard abandons the speculative fetch when no manifest was obtained. The
+// buffered(1) channel lets the fetch goroutine finish its single send unread, so
+// nothing leaks (it never touches the part file — only in-memory bytes).
+func (pf *chunk0Prefetch) discard() {}
+
 // fetchSwarm downloads a blob chunk-by-chunk from all advertising holders in
-// parallel, verifying each chunk against the manifest. The caller verifies the
-// assembled whole-file hash afterwards. The part file is pre-sized so chunks
-// can be written at their offsets (WriteAt is safe for concurrent
+// parallel, verifying each chunk against the manifest. prefetched0 (when
+// non-nil) is chunk 0 already fetched and verified during the manifest round
+// trip — written up front so the first byte is ready immediately. The caller
+// verifies the assembled whole-file hash afterwards. The part file is pre-sized
+// so chunks can be written at their offsets (WriteAt is safe for concurrent
 // non-overlapping writes).
-func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*Peer) error {
+func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*Peer, prefetched0 []byte) error {
 	f, err := os.OpenFile(t.partPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
@@ -367,7 +470,21 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*Peer) error
 			return err
 		}
 	}
-	plan := newChunkPlan(man, holders)
+	done0 := false
+	if len(prefetched0) > 0 {
+		if _, err := f.WriteAt(prefetched0, 0); err != nil {
+			f.Close()
+			return err
+		}
+		done0 = true
+	}
+	plan := newChunkPlan(man, holders, done0)
+	// Expose per-chunk readiness + the seek-priority hook to the streaming relay,
+	// pre-marking chunk 0 so a waiting reader is released without a round trip.
+	t.beginChunks(man.ChunkSize, len(man.Chunks), plan.prioritize)
+	if done0 {
+		t.chunkDone(0, plan.watermarkBytes())
+	}
 	workers := len(holders) * 2
 	if workers > maxChunkWorkers {
 		workers = maxChunkWorkers
@@ -480,10 +597,9 @@ type chunkPlan struct {
 	rr        int    // round-robin cursor
 }
 
-func newChunkPlan(man *blobManifest, holders []*Peer) *chunkPlan {
+func newChunkPlan(man *blobManifest, holders []*Peer, done0 bool) *chunkPlan {
 	nc := len(man.Chunks)
 	cp := &chunkPlan{
-		pending:   make([]int, nc),
 		done:      make([]bool, nc),
 		remaining: nc,
 		chunkSize: man.ChunkSize,
@@ -491,11 +607,49 @@ func newChunkPlan(man *blobManifest, holders []*Peer) *chunkPlan {
 		providers: holders,
 		dead:      make([]bool, len(holders)),
 	}
-	for i := range cp.pending {
-		cp.pending[i] = i
+	start := 0
+	if done0 && nc > 0 {
+		cp.done[0] = true
+		cp.watermark = 1
+		cp.remaining = nc - 1
+		start = 1
+	}
+	cp.pending = make([]int, 0, nc-start)
+	for i := start; i < nc; i++ {
+		cp.pending = append(cp.pending, i)
 	}
 	cp.cond = sync.NewCond(&cp.mu)
 	return cp
+}
+
+// watermarkBytes is the contiguous-from-zero readable length in bytes.
+func (cp *chunkPlan) watermarkBytes() int64 {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	b := int64(cp.watermark) * cp.chunkSize
+	if b > cp.size {
+		b = cp.size
+	}
+	return b
+}
+
+// prioritize moves the chunk covering a requested offset to the front of the
+// dispatch queue (if still pending), so the next free worker fetches it — this
+// is what makes a streaming tail/seek read fast instead of waiting out the
+// sequential prefix.
+func (cp *chunkPlan) prioritize(idx int) {
+	cp.mu.Lock()
+	if idx >= 0 && idx < len(cp.done) && !cp.done[idx] {
+		for i, p := range cp.pending {
+			if p == idx {
+				copy(cp.pending[1:i+1], cp.pending[0:i])
+				cp.pending[0] = idx
+				break
+			}
+		}
+	}
+	cp.cond.Broadcast()
+	cp.mu.Unlock()
 }
 
 // next hands out the next chunk to fetch, blocking while chunks are only
@@ -553,7 +707,7 @@ func (cp *chunkPlan) succeed(idx int, t *transfer) {
 	}
 	cp.cond.Broadcast()
 	cp.mu.Unlock()
-	t.setProgress(progress)
+	t.chunkDone(idx, progress)
 }
 
 // fail marks a provider dead (pidx < 0 = no provider to blame) and re-queues the

@@ -67,6 +67,14 @@ func (f *fakeTransfer) Progress() int64 {
 	defer f.mu.Unlock()
 	return f.progress
 }
+func (f *fakeTransfer) Available(offset int64) int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.progress > offset {
+		return f.progress - offset
+	}
+	return 0
+}
 func (f *fakeTransfer) Done() <-chan struct{}   { return f.done }
 func (f *fakeTransfer) Err() error              { return f.err }
 func (f *fakeTransfer) Open() (*os.File, error) { return os.Open(f.path) }

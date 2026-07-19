@@ -87,10 +87,20 @@ type transfer struct {
 	mu       sync.Mutex
 	size     int64
 	filename string
-	progress int64
+	progress int64         // contiguous readable prefix from offset 0 (watermark)
 	changed  chan struct{} // recreated on every progress/terminal update
 	err      error
 	finished bool
+
+	// Chunk-mode readiness (F4 swarm path): per-chunk completion so the streaming
+	// relay can read out-of-order regions (a prioritized tail/seek), the chunk
+	// size mapping an offset to its chunk, and the plan's seek-priority hook that
+	// WaitFor pokes for a not-yet-fetched offset. All zero/nil in the sequential
+	// path (F3 whole-file fallback or a born-complete transfer), which relies on
+	// the contiguous `progress` watermark instead.
+	chunkSize  int64
+	chunkOK    []bool
+	prioritize func(chunkIdx int)
 }
 
 func newTransfer(hash, path, partPath string) *transfer {
@@ -157,9 +167,11 @@ func (t *transfer) Open() (*os.File, error) {
 func (t *transfer) WaitFor(ctx context.Context, offset int64) error {
 	for {
 		t.mu.Lock()
-		progress, finished, err, ch := t.progress, t.finished, t.err, t.changed
+		avail := t.availLocked(offset)
+		finished, err, ch := t.finished, t.err, t.changed
+		chunkSize, prioritize := t.chunkSize, t.prioritize
 		t.mu.Unlock()
-		if progress > offset {
+		if avail > 0 {
 			return nil
 		}
 		if finished {
@@ -168,12 +180,62 @@ func (t *transfer) WaitFor(ctx context.Context, offset int64) error {
 			}
 			return io.EOF // offset at or beyond the verified end
 		}
+		// Seek-priority (chunk mode): nudge the swarm to fetch the chunk covering
+		// this offset next, so a tail/seek read is not gated on the sequential
+		// prefix reaching it.
+		if chunkSize > 0 && prioritize != nil {
+			prioritize(int(offset / chunkSize))
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ch:
 		}
 	}
+}
+
+// availLocked returns how many bytes are readable contiguously starting at
+// offset. In chunk mode it walks the per-chunk bitmap from offset's chunk (so an
+// out-of-order tail chunk is readable before the middle arrives); otherwise it
+// uses the contiguous watermark. Caller holds t.mu.
+func (t *transfer) availLocked(offset int64) int64 {
+	if offset < 0 {
+		return 0
+	}
+	if t.finished && t.err == nil {
+		if offset >= t.size {
+			return 0
+		}
+		return t.size - offset
+	}
+	if t.chunkSize > 0 && len(t.chunkOK) > 0 {
+		ci := int(offset / t.chunkSize)
+		if ci >= len(t.chunkOK) || !t.chunkOK[ci] {
+			return 0
+		}
+		end := int64(ci+1) * t.chunkSize
+		for j := ci + 1; j < len(t.chunkOK) && t.chunkOK[j]; j++ {
+			end = int64(j+1) * t.chunkSize
+		}
+		if t.size > 0 && end > t.size {
+			end = t.size
+		}
+		if end <= offset {
+			return 0
+		}
+		return end - offset
+	}
+	if t.progress > offset {
+		return t.progress - offset
+	}
+	return 0
+}
+
+// Available reports the readable byte count starting at offset (see availLocked).
+func (t *transfer) Available(offset int64) int64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.availLocked(offset)
 }
 
 // setMeta records the origin's Content-Length and filename (first responder
@@ -201,18 +263,37 @@ func (t *transfer) addProgress(n int64) {
 func (t *transfer) resetProgress() {
 	t.mu.Lock()
 	t.progress = 0
+	t.chunkSize = 0
+	t.chunkOK = nil
+	t.prioritize = nil
 	close(t.changed)
 	t.changed = make(chan struct{})
 	t.mu.Unlock()
 }
 
-// setProgress publishes an absolute readable-prefix length (the multi-source
-// swarm path completes chunks out of order, so progress is the contiguous
-// watermark, not a running sum). Never moves backwards.
-func (t *transfer) setProgress(abs int64) {
+// beginChunks switches the transfer into chunk mode: readability becomes
+// per-chunk (for the streaming relay's random-access reads) and WaitFor gains a
+// seek-priority hook into the fetch plan. Called by fetchSwarm before dispatch.
+func (t *transfer) beginChunks(chunkSize int64, nchunks int, prioritize func(int)) {
 	t.mu.Lock()
-	if abs > t.progress {
-		t.progress = abs
+	t.chunkSize = chunkSize
+	t.chunkOK = make([]bool, nchunks)
+	t.prioritize = prioritize
+	close(t.changed)
+	t.changed = make(chan struct{})
+	t.mu.Unlock()
+}
+
+// chunkDone marks one chunk readable and advances the contiguous watermark to
+// watermarkBytes (the swarm computes it). It publishes both, waking readers
+// blocked on this chunk's offset or on the front-of-file progress.
+func (t *transfer) chunkDone(idx int, watermarkBytes int64) {
+	t.mu.Lock()
+	if idx >= 0 && idx < len(t.chunkOK) {
+		t.chunkOK[idx] = true
+	}
+	if watermarkBytes > t.progress {
+		t.progress = watermarkBytes
 	}
 	close(t.changed)
 	t.changed = make(chan struct{})
@@ -292,9 +373,16 @@ func (n *Node) runTransfer(t *transfer, holders []*Peer) {
 		n.transferMu.Unlock()
 	}()
 
+	// Overlap the manifest fetch with a speculative chunk-0 prefetch so the first
+	// playable byte does not wait for two serial mesh round-trips: the chunk
+	// layout is deterministic from the file size (chunkSizeFor), so chunk 0 is
+	// fetched from the first holder while the manifest loads, and kept only if the
+	// manifest confirms the layout and the chunk verifies.
+	pf := n.speculateChunk0(t, holders)
+
 	if man := n.fetchAnyManifest(n.transferCtx, holders, t.hash); man != nil {
 		t.setMeta(man.Size, man.Filename)
-		err := n.fetchSwarm(t, man, holders)
+		err := n.fetchSwarm(t, man, holders, pf.take(man))
 		if err == nil {
 			if verr := verifyFileHash(t.partPath, t.hash); verr != nil {
 				err = fmt.Errorf("assembled blob failed verification: %w", verr)
@@ -310,6 +398,8 @@ func (n *Node) runTransfer(t *transfer, holders []*Peer) {
 		os.Remove(t.partPath)
 		n.logger.Printf("federation: swarm fetch %s failed (%v); falling back to whole-file", t.hash, err)
 		t.resetProgress()
+	} else {
+		pf.discard()
 	}
 
 	n.runWhole(t, holders)

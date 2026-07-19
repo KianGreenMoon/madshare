@@ -140,8 +140,15 @@ type Transfer interface {
 	// Filename is the origin's on-disk filename (from Content-Disposition);
 	// may be empty. Stable after WaitFor(ctx, 0) returns.
 	Filename() string
-	// Progress is the number of bytes readable from the cache file so far.
+	// Progress is the number of bytes readable as a contiguous prefix from the
+	// front of the file (the swarm's watermark). For a status/progress readout.
 	Progress() int64
+	// Available reports how many bytes are readable contiguously starting at
+	// offset right now (0 if that offset is not yet fetched). Unlike Progress,
+	// it accounts for out-of-order chunks — a prioritized tail/seek read can be
+	// served before the middle of the file arrives — so the streaming relay
+	// uses it to bound each read.
+	Available(offset int64) int64
 	// Done is closed when the transfer finished — verified and renamed into
 	// the cache on success, or failed (Err non-nil).
 	Done() <-chan struct{}
