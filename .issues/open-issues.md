@@ -394,3 +394,46 @@ before the pass). None fixed yet — logged for owner decisions.
 | Low | **`GetFileByHash` reads lifecycle off the oldest tagset.** `ORDER BY t.id LIMIT 1` (`database/files.go:124`): a blob whose oldest appearance is trashed but which carries a newer live approved one reads back as trashed, sending the upload dedup path down the restore/re-stage branch for a blob that is live in the library. Should mirror `reprTagset`'s live-first/primary-first precedence. | open |
 | Low | **A pending appearance can still fall out of the review queue.** The P7d claim "`origin_file_id` never reaches NULL on a live draft" does not cover: `MoveTagset` (no review-state check) moves a draft/submitted appearance cross-recording; its origin recording is later hard-deleted; `deleteRecordingFilesTx` deliberately SET-NULLs the cross-recording appearance → `reviewFrom`'s INNER JOIN (`database/review.go:127`) drops it — unapprovable and invisible while still `submitted`. | open |
 | Info | **Identity dedup is not enforced on resolver moves or `ApproveSubmission`** (collision is flagged, not blocked — per design). Consequence to expect: installing fpcalc on an established library mass-groups renditions and identical approved appearances pile up per recording; cleanup is manual via the duplicates page (see the lens gap above). Note also `UpdateTagsetMetadata` can create identity collisions unguarded. | open (by design, but expect the pile-up) |
+
+## Federation — yggstack netstack inbound reader is a single point of failure (2026-07-19)
+
+Found while investigating the madnetwork stream stalls fixed in `af30f04`
+(idle-read watchdog + resilient chunk retry). **Not the cause of those stalls** —
+they were transient, this one would be permanent and total — but it is a real
+fragility in the vendored netstack. Owner decision (2026-07-19): **leave the code
+as-is for now**, log it here for future analysis.
+
+| Severity | Issue | Status |
+|---|---|---|
+| Medium | **A single `ipv6rwc.Read` error permanently kills all inbound mesh traffic.** `third_party/yggstack/src/netstack/yggdrasil.go` (~line 46) runs the embedded netstack's **entire inbound path in one goroutine**: `for { rx, err := nic.ipv6rwc.Read(nic.readBuf); if err != nil { log.Println(err); break } … dispatcher.DeliverNetworkPacket(…) }`. The `break` ends the loop for good, so **one** read error stops packet delivery for the whole node — every mesh connection (friend pings, catalog sync, holdings, blob/manifest/chunk fetches, and serving other nodes) hangs forever until the process restarts. Federation dies silently while the rest of madshare keeps serving happily; the only trace is one `log.Println` line. This is **upstream yggstack behavior**, not something our fork introduced (our one local patch is the `writePacket` data race — see `third_party/yggstack/MADSHARE-PATCH.md`). Not observed in practice so far. | open (accepted for now) |
+
+**Detection hint (for whoever hits this).** Symptom = *all* madnetwork traffic on
+one node dead until restart, while the node otherwise runs fine and the local
+yggdrasil peering looks up. Distinguish from the transient path stalls fixed in
+`af30f04`: those fail a single chunk in ~20 s and recover; this one never
+recovers. Look for a stray read error in the node log just before it went quiet.
+
+**Possible analysis / fixes when we pick this up.**
+
+1. **Characterise the error set first.** Determine what `ipv6rwc.Read` can
+   actually return and which of those are *terminal* (core stopped / NIC closed
+   during `Stop()`, where exiting is correct) vs *transient*. Without that split,
+   any "just don't break" fix risks a hot spin loop on a permanent error. This
+   is the prerequisite for every option below.
+2. **Log-and-continue with backoff** — keep the loop alive on transient errors,
+   exit only on the shutdown signal. Smallest change; needs the error split from
+   (1) plus a backoff so a permanent failure doesn't burn a core.
+3. **Supervise the reader** — treat reader exit as a node-level fault: surface it
+   (health flag / loud log / admin `/admin/network` indicator) and optionally
+   restart the netstack or the whole embedded node, instead of failing silently.
+   More robust than (2) and it also covers a reader that dies for reasons we
+   didn't anticipate.
+4. **Independent liveness watchdog** — the refresh loop already pings friends
+   every minute; if *every* friend is unreachable for N consecutive rounds while
+   the yggdrasil core still reports peers up, that is a strong signal the local
+   inbound path is dead. Cheap, needs no yggstack change at all, and is worth
+   doing regardless of which of (2)/(3) we choose.
+5. **Upstream it.** The right long-term home is upstream yggstack. Our fork
+   already carries one patch and each additional one raises the cost of bumping
+   the dependency (`MADSHARE-PATCH.md` must be re-applied), so prefer upstreaming
+   over accumulating local patches — with (4) as the local safety net meanwhile.
