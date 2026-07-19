@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"daemonlord.ygg/madshare/config"
 )
@@ -69,7 +68,7 @@ func TestCatalogSync(t *testing.T) {
 	ctx := context.Background()
 	client := &http.Client{
 		Transport: &http.Transport{DialContext: b.DialContext},
-		Timeout:   5 * time.Second,
+		Timeout:   meshClientTimeout,
 	}
 	catalogURL := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/catalog", a.Address(), MeshPort)
 

@@ -268,13 +268,22 @@ func TestMadnetworkBlobLookup(t *testing.T) {
 func TestMadnetworkPolicy(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
-	if p, err := db.GetMadnetworkPolicy(ctx); err != nil || p.AutoapproveDownloads {
-		t.Fatalf("default policy = %+v (err %v), want autoapprove off", p, err)
+	// Defaults: autoapprove off, but seeding + cache-seeding ON.
+	p, err := db.GetMadnetworkPolicy(ctx)
+	if err != nil || p.AutoapproveDownloads || !p.SeedEnabled || !p.SeedCache {
+		t.Fatalf("default policy = %+v (err %v), want autoapprove off + seeding on", p, err)
 	}
-	if err := db.SetMadnetworkPolicy(ctx, true); err != nil {
+	if err := db.SetMadnetworkPolicy(ctx, MadnetworkPolicy{
+		AutoapproveDownloads: true, SeedEnabled: false, SeedCache: false,
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if p, _ := db.GetMadnetworkPolicy(ctx); !p.AutoapproveDownloads {
-		t.Error("policy not persisted")
+	got, _ := db.GetMadnetworkPolicy(ctx)
+	if !got.AutoapproveDownloads || got.SeedEnabled || got.SeedCache {
+		t.Errorf("policy not persisted: %+v", got)
+	}
+	// SeedingPolicy reflects the same stored flags.
+	if en, ca, _ := db.SeedingPolicy(ctx); en || ca {
+		t.Errorf("SeedingPolicy = (%v,%v), want (false,false)", en, ca)
 	}
 }

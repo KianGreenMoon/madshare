@@ -101,6 +101,22 @@
         <input type="checkbox" id="madnetworkAutoapprove">
         <span>Auto-approve madnetwork downloads</span>
       </label>
+      <label class="check-row">
+        <input type="checkbox" id="madnetworkSeedEnabled">
+        <span>Seed to friends
+          <small class="check-hint">Serve your library&rsquo;s blobs to friends over the swarm. Off = your node consumes without serving bytes.</small>
+        </span>
+      </label>
+      <label class="check-row">
+        <input type="checkbox" id="madnetworkSeedCache">
+        <span>Seed the download cache
+          <small class="check-hint">Also re-seed tracks you streamed or downloaded from friends, helping popular files spread. Off = only your library is served.</small>
+        </span>
+      </label>
+      <p class="section-copy">
+        The outbound seeding rate cap is a server setting
+        (<code>[federation] seed_rate_kib</code>); leave it at 0 for unlimited.
+      </p>
       <div class="modal-actions">
         <button type="submit" class="btn btn-neutral" id="madnetworkSave">Save</button>
       </div>

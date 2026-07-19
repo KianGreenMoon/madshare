@@ -25,13 +25,15 @@ import (
 
 // ── Serving side: GET /madnetwork/v0/blob/{hash} ─────────────────────────────
 
-// handleBlob serves a published blob to a friend. Friends only (any friend may
-// fetch any published blob — matching exactly what the F2 catalog already
-// shows them; per-friend filtering arrives with F5 per-content scope), and
-// only blobs the published-library predicate admits — a staged, trashed, or
-// unknown hash is 404 even for a friend. http.ServeContent provides
-// HEAD/Range; Content-Disposition carries the origin filename so the fetching
-// node can land the file under its real name.
+// handleBlob serves a blob this node holds and will seed to a friend. Friends
+// only (any friend may fetch any seedable blob — matching what the F2 catalog +
+// F4 holdings already advertise them; per-friend filtering arrives with F5),
+// and only blobs the seeding gate admits: a published library blob, or a cache
+// blob when cache-seeding is on (seedableBlob, swarm.go). A staged-but-unshared
+// or unknown hash is 404 even for a friend. http.ServeContent provides
+// HEAD/Range (the swarm's chunk fetches are Range requests); Content-Disposition
+// carries the origin filename so the fetching node can land it under its real
+// name; the write path honours the seed rate cap.
 func (n *Node) handleBlob(w http.ResponseWriter, r *http.Request) {
 	if n.store == nil {
 		http.Error(w, "transfer not configured", http.StatusServiceUnavailable)
@@ -47,17 +49,7 @@ func (n *Node) handleBlob(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	visible, found, err := n.store.BlobPubliclyVisible(r.Context(), hash)
-	if err != nil {
-		n.logger.Printf("federation: blob visibility %s: %v", hash, err)
-		http.Error(w, "storage error", http.StatusInternalServerError)
-		return
-	}
-	if !found || !visible || n.resolveBlob == nil {
-		http.NotFound(w, r)
-		return
-	}
-	path, ok := n.resolveBlob(hash)
+	path, ok := n.seedableBlob(r.Context(), hash)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -75,7 +67,11 @@ func (n *Node) handleBlob(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Disposition",
 		mime.FormatMediaType("attachment", map[string]string{"filename": filepath.Base(path)}))
-	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
+	out := http.ResponseWriter(w)
+	if n.seedLimiter != nil {
+		out = &throttledResponseWriter{ResponseWriter: w, rl: n.seedLimiter, ctx: r.Context()}
+	}
+	http.ServeContent(out, r, info.Name(), info.ModTime(), f)
 }
 
 // ── Fetching side ────────────────────────────────────────────────────────────
@@ -210,6 +206,19 @@ func (t *transfer) resetProgress() {
 	t.mu.Unlock()
 }
 
+// setProgress publishes an absolute readable-prefix length (the multi-source
+// swarm path completes chunks out of order, so progress is the contiguous
+// watermark, not a running sum). Never moves backwards.
+func (t *transfer) setProgress(abs int64) {
+	t.mu.Lock()
+	if abs > t.progress {
+		t.progress = abs
+	}
+	close(t.changed)
+	t.changed = make(chan struct{})
+	t.mu.Unlock()
+}
+
 func (t *transfer) finish(err error) {
 	t.mu.Lock()
 	t.err = err
@@ -271,14 +280,44 @@ func (n *Node) EnsureBlob(ctx context.Context, hash string) (Transfer, error) {
 	return t, nil
 }
 
-// runTransfer tries each advertising friend in order until one delivers bytes
-// that verify against the content hash.
+// runTransfer fetches a blob from its holders. It prefers the F4 swarm path
+// (multi-source parallel chunk fetch via the manifest); if no holder serves a
+// manifest — an older F3-only peer — it falls back to the single-source
+// whole-file streaming fetch. Either way the assembled bytes are verified
+// against the content hash before entering the cache.
 func (n *Node) runTransfer(t *transfer, holders []*Peer) {
 	defer func() {
 		n.transferMu.Lock()
 		delete(n.transfers, t.hash)
 		n.transferMu.Unlock()
 	}()
+
+	if man := n.fetchAnyManifest(n.transferCtx, holders, t.hash); man != nil {
+		t.setMeta(man.Size, man.Filename)
+		err := n.fetchSwarm(t, man, holders)
+		if err == nil {
+			if verr := verifyFileHash(t.partPath, t.hash); verr != nil {
+				err = fmt.Errorf("assembled blob failed verification: %w", verr)
+			} else if rerr := os.Rename(t.partPath, t.path); rerr != nil {
+				err = rerr
+			} else {
+				n.logger.Printf("federation: fetched %s via swarm (%d chunks, %d bytes)",
+					t.hash, len(man.Chunks), man.Size)
+				t.finish(nil)
+				return
+			}
+		}
+		os.Remove(t.partPath)
+		n.logger.Printf("federation: swarm fetch %s failed (%v); falling back to whole-file", t.hash, err)
+		t.resetProgress()
+	}
+
+	n.runWhole(t, holders)
+}
+
+// runWhole is the F3 fallback: try each advertising friend in order until one
+// delivers the whole blob with bytes that verify against the content hash.
+func (n *Node) runWhole(t *transfer, holders []*Peer) {
 	var lastErr error
 	for _, p := range holders {
 		if n.transferCtx.Err() != nil {

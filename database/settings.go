@@ -16,6 +16,8 @@ const (
 	settingMusicBrainzEnabled    = "tagsource.musicbrainz.enabled"
 	settingAcoustIDKey           = "tagsource.acoustid.api_key"
 	settingMadnetworkAutoapprove = "madnetwork.autoapprove_downloads"
+	settingMadnetworkSeedEnabled = "madnetwork.seed_enabled"
+	settingMadnetworkSeedCache   = "madnetwork.seed_cache"
 )
 
 // Trash-restore policy modes — what may happen to a trashed file whose content
@@ -56,31 +58,80 @@ func (db *DB) SetTrashRestorePolicy(ctx context.Context, mode string) error {
 	return db.SetSetting(ctx, settingTrashRestorePolicy, mode)
 }
 
-// MadnetworkPolicy holds the madnetwork download behavior (federation F3).
-// AutoapproveDownloads skips the review bucket: a downloaded file lands
-// approved, exactly as fetched. Default OFF on servers (the doc's default;
-// a future single-user madplayer build may flip it).
+// MadnetworkPolicy holds the madnetwork download + seeding behavior (federation
+// F3/F4). AutoapproveDownloads skips the review bucket: a downloaded file lands
+// approved, exactly as fetched (default OFF on servers). SeedEnabled is the
+// master switch for serving blobs to friends over the swarm; SeedCache controls
+// whether the download cache is served and advertised in holdings — both
+// default ON ("everything a node holds seeds by default"). The upload rate cap
+// is a static config knob ([federation] seed_rate_kib), not stored here.
 type MadnetworkPolicy struct {
 	AutoapproveDownloads bool
+	SeedEnabled          bool
+	SeedCache            bool
 }
 
-// GetMadnetworkPolicy reads the madnetwork download settings. Missing keys
-// read as the defaults (autoapprove off — downloads go through review).
+// GetMadnetworkPolicy reads the madnetwork settings. Missing keys read as the
+// defaults: autoapprove off (downloads go through review), seeding on, cache
+// seeding on.
 func (db *DB) GetMadnetworkPolicy(ctx context.Context) (MadnetworkPolicy, error) {
-	v, _, err := db.GetSetting(ctx, settingMadnetworkAutoapprove)
+	auto, _, err := db.GetSetting(ctx, settingMadnetworkAutoapprove)
 	if err != nil {
 		return MadnetworkPolicy{}, err
 	}
-	return MadnetworkPolicy{AutoapproveDownloads: v == "1"}, nil
+	seed, _, err := db.GetSetting(ctx, settingMadnetworkSeedEnabled)
+	if err != nil {
+		return MadnetworkPolicy{}, err
+	}
+	cache, _, err := db.GetSetting(ctx, settingMadnetworkSeedCache)
+	if err != nil {
+		return MadnetworkPolicy{}, err
+	}
+	return MadnetworkPolicy{
+		AutoapproveDownloads: auto == "1",
+		SeedEnabled:          seed != "0",  // default on
+		SeedCache:            cache != "0", // default on
+	}, nil
 }
 
-// SetMadnetworkPolicy persists the madnetwork download settings.
-func (db *DB) SetMadnetworkPolicy(ctx context.Context, autoapprove bool) error {
-	v := "0"
-	if autoapprove {
-		v = "1"
+// SetMadnetworkPolicy persists the madnetwork settings atomically.
+func (db *DB) SetMadnetworkPolicy(ctx context.Context, p MadnetworkPolicy) error {
+	bit := func(b bool) string {
+		if b {
+			return "1"
+		}
+		return "0"
 	}
-	return db.SetSetting(ctx, settingMadnetworkAutoapprove, v)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	upsert := `INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+	for _, kv := range []struct {
+		key, val string
+	}{
+		{settingMadnetworkAutoapprove, bit(p.AutoapproveDownloads)},
+		{settingMadnetworkSeedEnabled, bit(p.SeedEnabled)},
+		{settingMadnetworkSeedCache, bit(p.SeedCache)},
+	} {
+		if _, err := tx.ExecContext(ctx, upsert, kv.key, kv.val); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// SeedingPolicy reports whether this node serves blobs to friends and whether
+// it seeds its download cache — the F4 swarm-serving gate the embedded node
+// consults on every blob/manifest/holdings request. Both default on. Satisfies
+// the F4 half of federation.PeerStore.
+func (db *DB) SeedingPolicy(ctx context.Context) (enabled, cache bool, err error) {
+	p, err := db.GetMadnetworkPolicy(ctx)
+	if err != nil {
+		return false, false, err
+	}
+	return p.SeedEnabled, p.SeedCache, nil
 }
 
 // GetSetting returns the value for key. ok is false (no error) when unset.

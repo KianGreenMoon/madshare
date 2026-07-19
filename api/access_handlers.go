@@ -49,7 +49,7 @@ type ManageStore interface {
 	SetTagsourcePolicy(ctx context.Context, enabled bool, apiKey *string) error
 
 	GetMadnetworkPolicy(ctx context.Context) (database.MadnetworkPolicy, error)
-	SetMadnetworkPolicy(ctx context.Context, autoapprove bool) error
+	SetMadnetworkPolicy(ctx context.Context, p database.MadnetworkPolicy) error
 
 	RecordAudit(ctx context.Context, actorUserID sql.NullInt64, action, target, detail string) error
 }
@@ -323,31 +323,54 @@ func (h *manageHandler) setTagsource(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// getMadnetworkSettings reports the madnetwork download settings (federation
-// F3): whether downloads skip the review bucket.
+// getMadnetworkSettings reports the madnetwork download + seeding settings
+// (federation F3/F4): whether downloads skip the review bucket, and whether the
+// node seeds blobs / its download cache to friends.
 func (h *manageHandler) getMadnetworkSettings(w http.ResponseWriter, r *http.Request) {
 	p, err := h.store.GetMadnetworkPolicy(r.Context())
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"autoapprove_downloads": p.AutoapproveDownloads})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"autoapprove_downloads": p.AutoapproveDownloads,
+		"seed_enabled":          p.SeedEnabled,
+		"seed_cache":            p.SeedCache,
+	})
 }
 
-// setMadnetworkSettings updates the madnetwork download settings.
+// setMadnetworkSettings updates the madnetwork download + seeding settings. The
+// seed fields default true (missing = keep the "seed by default" stance) so an
+// older client that only sends autoapprove_downloads does not silently disable
+// seeding.
 func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Request) {
-	var req struct {
+	req := struct {
 		AutoapproveDownloads bool `json:"autoapprove_downloads"`
-	}
+		SeedEnabled          bool `json:"seed_enabled"`
+		SeedCache            bool `json:"seed_cache"`
+	}{SeedEnabled: true, SeedCache: true}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if err := h.store.SetMadnetworkPolicy(r.Context(), req.AutoapproveDownloads); err != nil {
+	p := database.MadnetworkPolicy{
+		AutoapproveDownloads: req.AutoapproveDownloads,
+		SeedEnabled:          req.SeedEnabled,
+		SeedCache:            req.SeedCache,
+	}
+	if err := h.store.SetMadnetworkPolicy(r.Context(), p); err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	h.mAudit(r.Context(), "madnetwork.settings", "", "autoapprove_downloads="+strconv.FormatBool(req.AutoapproveDownloads))
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "autoapprove_downloads": req.AutoapproveDownloads})
+	h.mAudit(r.Context(), "madnetwork.settings", "",
+		"autoapprove_downloads="+strconv.FormatBool(p.AutoapproveDownloads)+
+			" seed_enabled="+strconv.FormatBool(p.SeedEnabled)+
+			" seed_cache="+strconv.FormatBool(p.SeedCache))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":                    true,
+		"autoapprove_downloads": p.AutoapproveDownloads,
+		"seed_enabled":          p.SeedEnabled,
+		"seed_cache":            p.SeedCache,
+	})
 }
 
 // decodeJSON decodes the request body into v, writing a 400 and returning false

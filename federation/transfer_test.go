@@ -130,7 +130,7 @@ func TestBlobTransfer(t *testing.T) {
 
 	ctx := context.Background()
 	blobURL := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/blob/%s", a.Address(), MeshPort, hash)
-	client := &http.Client{Transport: &http.Transport{DialContext: b.DialContext}, Timeout: 5 * time.Second}
+	client := &http.Client{Transport: &http.Transport{DialContext: b.DialContext}, Timeout: meshClientTimeout}
 
 	// Pre-friendship: default-deny.
 	waitFor(t, "pre-friendship blob refusal", func() bool {
@@ -154,7 +154,7 @@ func TestBlobTransfer(t *testing.T) {
 	}
 	select {
 	case <-tr.Done():
-	case <-time.After(30 * time.Second):
+	case <-time.After(meshDeadline):
 		t.Fatal("transfer did not finish")
 	}
 	if err := tr.Err(); err != nil {
@@ -222,7 +222,7 @@ func TestBlobTransfer_VerificationFailure(t *testing.T) {
 	}
 	select {
 	case <-tr.Done():
-	case <-time.After(30 * time.Second):
+	case <-time.After(meshDeadline):
 		t.Fatal("transfer did not finish")
 	}
 	if tr.Err() == nil {

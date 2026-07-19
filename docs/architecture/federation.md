@@ -1,9 +1,9 @@
 # Madnetwork federation — design
 
-> **Status: agreed 2026-07-18; F0 (groundwork), F1 (friendship), F2 (catalog)
-> and F3 (direct transfer) are built.** The remaining items in §Open questions
-> are design-time details to settle during the respective milestones, not
-> blockers. Federation
+> **Status: agreed 2026-07-18; F0 (groundwork), F1 (friendship), F2 (catalog),
+> F3 (direct transfer) and F4 (swarm) are built.** The remaining items in
+> §Open questions are design-time details to settle during the respective
+> milestones, not blockers. Federation
 > is auth Phase 4 (`docs/architecture/auth.md` §8) and the milestone the native
 > client (`docs/ui/native-client.md`) exists to use.
 
@@ -48,6 +48,15 @@ default** — its social graph is visible to its members.
   is an official yggdrasil-network project (not a third-party fork) and its
   master tracks the latest core release, so the update-lag risk is low; the
   wrapper is ~2 small files we could vendor if it ever stalls.
+- **Local yggstack fork (F4).** yggstack's `YggdrasilNIC.writePacket` read every
+  outbound packet into a **single shared `writeBuf`**, which gVisor drives from
+  several goroutines at once — a data race that stays dormant with one
+  connection but is triggered reliably by the swarm's parallel chunk fetches
+  (F4). We carry a one-line fix in a local fork (`third_party/yggstack`, wired
+  by a `replace` directive): each `writePacket` call takes its own buffer from a
+  `sync.Pool` (the mesh write path below it — `ipv6rwc`/`core.WriteTo` — is
+  already mutex-guarded, so per-call buffers suffice and keep sends parallel).
+  Drop the `replace` if the fix lands upstream.
 - **Build option:** the `nofederation` build tag (mirroring `nowebui`) compiles
   all federation code and its dependencies (yggdrasil, gVisor) out, producing
   a standalone server; such a build aborts startup if the config enables
@@ -337,24 +346,53 @@ default** — its social graph is visible to its members.
   Progress is polled at `GET /api/madnetwork/transfers/{hash}`; the download
   job (dedup per hash) survives the requester.
 
-## Distribution (the swarm)
+## Distribution (the swarm, F4 built)
 
 - **Swarm ID = content hash.** Blobs are already content-addressed; two
   independently uploaded identical files hash identically and are automatically
   seeders of the same swarm — no coordination, no `.torrent` files. Different
   encodings of the same audio are different swarms; the recordings overlay
   above chooses which rendition (which swarm) to fetch.
-- **Protocol: a lean chunk-exchange protocol over ygg**, not the BitTorrent wire
-  protocol/DHT — we control both endpoints. Fixed-size chunks, Merkle-tree
-  verification per chunk, multi-source fetch, sequential-priority mode for
-  streaming. A single-seeder swarm degenerates to a direct transfer — no
-  slower than a plain download, so the swarm path is the only path.
-- **Tracker = the catalog.** "Who has hash H" comes from the holders list in
-  catalog entries; no DHT.
+- **Chunk protocol: a lean chunk-exchange over ygg** (built F4), not the
+  BitTorrent wire protocol/DHT — we control both endpoints. A holder serves an
+  **on-demand manifest** (`GET /madnetwork/v0/manifest/{hash}`): the total
+  size, the **chunk size**, and the ordered per-chunk SHA-256 list. The chunk
+  size is **adaptive** — chosen from the file size (small files → small chunks,
+  large → up to a cap, centred near ~1 MiB) and **written into the manifest**,
+  so a fetcher never assumes a layout and the sizing policy can change without a
+  protocol break (decision 2026-07-18, resolves former open question 1). Because
+  the swarm id is a flat SHA-256 of the whole file (not a Merkle root — it is
+  the same content address used everywhere), the manifest's chunk hashes are not
+  cryptographically bound to it; they enable **early per-chunk verification and
+  bad-chunk re-fetch**, while the **assembled whole-file hash remains the
+  authoritative anchor** (verified before a blob enters the cache). Manifests
+  from friends are cross-checkable and a lie only wastes bandwidth (caught by
+  the whole-file check) — acceptable because every holder is trusted. Chunks are
+  fetched with plain HTTP Range requests (the F3 blob endpoint already serves
+  them).
+- **Multi-source fetch, sequential-priority** (built F4): chunks are dispatched
+  lowest-index-first (so the streaming relay's in-order prefix grows and
+  `WaitFor(offset)` unblocks) but fetched by a small worker pool **in parallel
+  across all advertising holders**. A chunk that errors or fails its per-chunk
+  hash is re-queued to a different holder (the offending holder is dropped for
+  the rest of the transfer). A **single-seeder swarm degenerates to a direct
+  transfer**, and a holder too old to speak the manifest endpoint triggers a
+  **fall-back to the F3 whole-file streaming fetch** — so F4 nodes still fetch
+  from F3 nodes.
+- **Tracker = the catalog + holdings** (built F4). "Who has hash H" is the union
+  of two sources: friends whose **published catalog** advertises the hash as a
+  rendition (their library — already synced in F2), and friends advertising it
+  in their **download cache** via `GET /madnetwork/v0/holdings` (a flat hash
+  list of what a node will seed, pulled per-friend on the same refresh cadence
+  as the catalog and cached in `federation_holdings`). The library is already in
+  the catalog, so holdings carries only the cache — this is what makes a
+  **downloaded blob a discoverable seeder** and lets a popular track spread as
+  friends fetch it. Providers are tried most-recently-seen first; no DHT.
 - **Only nodes swarm.** Thin clients never talk to peers (see §Principals).
 - **Authorization in the swarm:**
-  - Between **direct friends**, the channel identity is sufficient — no tokens.
-  - At **depth ≥ 1**, seeders serve strangers-inside-the-network via
+  - Between **direct friends**, the channel identity is sufficient — no tokens
+    (this is all F4 does: **swarm scope = direct friends**).
+  - At **depth ≥ 1** (F5), seeders serve strangers-inside-the-network via
     **capability tokens**: the sharing node signs "peer key K may download hash
     H until T". A seeder verifies the signature against a node it trusts and
     verifies the connection is K (self-certifying channel — a leaked token is
@@ -364,11 +402,15 @@ default** — its social graph is visible to its members.
     friends within the share depth — authority delegates along the friendship
     chain, no central issuer.
   - **Guest-playable content is an open swarm** — no token.
-- **Seeding policy:** everything a node holds — library and listen-cache — seeds
-  by default ("who cares" is the default privacy stance at node granularity;
-  the cache reveals only that *someone on this node* listened). Advanced
-  settings: upload rate cap, "don't seed the cache" toggle, seeding off
-  entirely (for constrained users).
+- **Seeding policy** (built F4): everything a node holds — library and
+  listen-cache — seeds by default ("who cares" is the default privacy stance at
+  node granularity; the cache reveals only that *someone on this node*
+  listened). Controls: `seed_enabled` (master on/off — off refuses all blob and
+  manifest service, the node consuming without serving) and `seed_cache`
+  (whether the download cache is served **and** advertised in holdings), both
+  runtime DB settings on `/admin/settings` defaulting **on**; plus a global
+  **upload rate cap** `[federation] seed_rate_kib` (a token bucket over the
+  blob-serve write path; `0` = unlimited), a static config knob.
 
 ## Topology asymmetry (unchanged)
 
@@ -401,9 +443,15 @@ milestone directly after direct transfer works, and tokens ship with depth.
   cache-through streaming relay for thin clients, download-to-library through
   the review bucket + local fingerprint verification via the analysis
   pipeline, ladder-based rendition selection, `autoapprove_downloads`.
-- **F4 — Swarm.** Multi-source chunk fetch, holders lists in the catalog,
-  seeding (rate cap, cache-seed toggle), swarm scope = direct friends
-  (channel-auth only, no tokens yet).
+- **F4 — Swarm** (built 2026-07-19, see §Distribution). On-demand chunk
+  manifest with adaptive, self-describing chunk size (`GET
+  /madnetwork/v0/manifest/{hash}`); multi-source parallel chunk fetch with
+  per-chunk verification, bad-chunk failover, and F3 whole-file fall-back for
+  older peers; the holdings tracker (`GET /madnetwork/v0/holdings` +
+  `federation_holdings`, migration 028) unioned with catalog holders so cached
+  downloads seed; seeding controls (`seed_enabled`/`seed_cache` DB settings +
+  `[federation] seed_rate_kib` token-bucket cap). Swarm scope = direct friends,
+  channel-auth only (no tokens yet).
 - **F5 — Depth & tokens.** Share-depth knob (per node default + per content),
   capability tokens with delegated issuance, guest-open swarm.
 - **F6 — Transparency & defense.** Friend-list gossip within depth, network map
@@ -419,12 +467,15 @@ milestone directly after direct transfer works, and tokens ship with depth.
 
 ## Open questions (design-time details)
 
-1. Token lifetime / renewal cadence; exact chunk size & Merkle parameters.
+1. Token lifetime / renewal cadence (F5).
 2. Gossip payload details for F6 (what exactly a friend-list/distrust message
    carries).
 
 (Former question 1 — catalog crossing / one tagset text on two recordings —
-was settled with F2: see §Catalog, ""N versions"".)
+was settled with F2: see §Catalog, ""N versions"". Former question 2 — chunk
+size & Merkle parameters — was settled with F4: adaptive, self-describing chunk
+size in the manifest; whole-file hash is the anchor, per-chunk hashes are for
+early verification only. See §Distribution.)
 
 Decided-and-deferred: **replication** (subscribe/favourite → mirror, storage
 caps) stays out of v1 — manual download-to-library already makes a node a

@@ -28,3 +28,15 @@
   font: inherit;
 }
 .field-row select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Madnetwork seeding toggles: a per-checkbox hint on its own line. */
+.madnetwork-form { display: grid; gap: var(--space-3); margin-top: var(--space-4); }
+.madnetwork-form .check-row { align-items: flex-start; }
+.check-hint {
+  display: block;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-muted);
+  line-height: 1.4;
+  margin-top: 2px;
+}

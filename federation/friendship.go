@@ -316,6 +316,7 @@ func (n *Node) sweep(ctx context.Context) {
 			n.pingPeer(ctx, p)
 			if time.Since(time.Unix(p.CatalogSyncedAt, 0)) >= catalogSyncInterval {
 				n.syncCatalog(ctx, p)
+				n.syncHoldings(ctx, p) // F4: refresh what they seed from cache
 			}
 		}
 	}

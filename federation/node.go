@@ -59,6 +59,15 @@ type Node struct {
 	transfers      map[string]*transfer
 	transferCtx    context.Context
 	transferCancel context.CancelFunc
+
+	// F4 swarm wiring (swarm.go): a timeout-free client for blob/chunk fetches
+	// (each fetch is bounded by its own context), the outbound seed rate cap
+	// (nil = unlimited), and the memoized per-hash chunk manifests served to
+	// friends (content-addressed, so immutable once built).
+	blobClient  *http.Client
+	seedLimiter *rateLimiter
+	manifestMu  sync.Mutex
+	manifests   map[string]*blobManifest
 }
 
 // Start loads (or creates) the node key, brings up the yggdrasil core with the
@@ -118,11 +127,16 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 		transfers:      map[string]*transfer{},
 		transferCtx:    transferCtx,
 		transferCancel: transferCancel,
+		seedLimiter:    newRateLimiter(int64(fc.SeedRateKiB) * 1024),
+		manifests:      map[string]*blobManifest{},
 	}
 	n.client = &http.Client{
 		Transport: &http.Transport{DialContext: n.DialContext},
 		Timeout:   15 * time.Second,
 	}
+	// Blob/chunk fetches can be large and slow over the mesh; each is bounded by
+	// its own context, so this client carries no global timeout.
+	n.blobClient = &http.Client{Transport: &http.Transport{DialContext: n.DialContext}}
 	n.srv = &http.Server{Handler: n.protocolHandler()}
 	go func() {
 		if err := n.srv.Serve(lis); err != nil && err != http.ErrServerClosed {
@@ -199,9 +213,10 @@ func loadOrCreateKey(path string) (*yggconfig.NodeConfig, error) {
 
 // protocolHandler is the madnetwork protocol surface served on the mesh:
 // the ping (F0), pairing (F1, friendship.go), the catalog (F2, catalog.go),
-// and the blob server (F3, transfer.go). meshAuth wraps everything — a blocked
-// peer gets nothing, not even a ping, and any request from a known peer
-// refreshes its last_seen.
+// the blob server (F3, transfer.go), and the swarm's chunk manifest + holdings
+// tracker (F4, swarm.go). meshAuth wraps everything — a blocked peer gets
+// nothing, not even a ping, and any request from a known peer refreshes its
+// last_seen.
 func (n *Node) protocolHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /madnetwork/v0/ping", func(w http.ResponseWriter, r *http.Request) {
@@ -217,6 +232,8 @@ func (n *Node) protocolHandler() http.Handler {
 	mux.HandleFunc("POST /madnetwork/v0/pair", n.handlePair)
 	mux.HandleFunc("GET /madnetwork/v0/catalog", n.handleCatalog)
 	mux.HandleFunc("GET /madnetwork/v0/blob/{hash}", n.handleBlob)
+	mux.HandleFunc("GET /madnetwork/v0/manifest/{hash}", n.handleManifest)
+	mux.HandleFunc("GET /madnetwork/v0/holdings", n.handleHoldings)
 	return n.meshAuth(mux)
 }
 

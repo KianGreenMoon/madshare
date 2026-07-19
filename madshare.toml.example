@@ -92,12 +92,16 @@ max_upload_mb = 500          # per-request upload cap, in MiB
 # name is the display name shown on this node's card and to peers during
 # pairing (host name when unset) — purely descriptive, identity is the key.
 # Friendships are managed on /admin/network (exchange node cards out-of-band).
+# seed_rate_kib caps the outbound rate (KiB/s) for serving blobs to friends over
+# the swarm (0 = unlimited); the seed on/off + cache-seed toggles are runtime
+# settings on /admin/settings, not here.
 #[federation]
-#enabled  = false
-#name     = "my madshare"                  # defaults to the host name
-#key_file = "./data/federation.key"        # defaults to <data_dir>/federation.key
-#peers    = ["tls://peer.example:12345"]   # tcp/tls/quic/ws/wss/unix/socks/sockstls
-#listen   = ["tls://0.0.0.0:12345"]        # tcp/tls/quic/ws/wss/unix
+#enabled       = false
+#name          = "my madshare"             # defaults to the host name
+#key_file      = "./data/federation.key"   # defaults to <data_dir>/federation.key
+#peers         = ["tls://peer.example:12345"] # tcp/tls/quic/ws/wss/unix/socks/sockstls
+#listen        = ["tls://0.0.0.0:12345"]   # tcp/tls/quic/ws/wss/unix
+#seed_rate_kib = 0                          # 0 = unlimited outbound seeding rate
 
 # [sources] controls in-place "symlink" imports: an admin points at an external
 # directory and Madshare references each audio file by a symlink in the shared

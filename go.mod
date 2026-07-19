@@ -14,6 +14,14 @@ require (
 	modernc.org/sqlite v1.50.1
 )
 
+// Local fork of the yggstack netstack wrapper carrying one patch: a data-race
+// fix in YggdrasilNIC.writePacket (per-call write buffer instead of a shared
+// one), needed because the madnetwork swarm (F4) drives many concurrent mesh
+// connections. See third_party/yggstack/src/netstack/yggdrasil.go (LOCAL PATCH)
+// and docs/architecture/federation.md §Distribution. Drop this replace if the
+// fix lands upstream.
+replace github.com/yggdrasil-network/yggstack => ./third_party/yggstack
+
 require (
 	github.com/Arceliar/ironwood v0.0.0-20260613025018-d50055b11f5e // indirect
 	github.com/Arceliar/phony v0.0.0-20220903101357-530938a4b13d // indirect

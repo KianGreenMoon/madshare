@@ -88,11 +88,11 @@ func TestPingOverMesh(t *testing.T) {
 
 	client := &http.Client{
 		Transport: &http.Transport{DialContext: b.DialContext},
-		Timeout:   5 * time.Second,
+		Timeout:   meshClientTimeout,
 	}
 	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/ping", a.Address(), MeshPort)
 
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(meshDeadline)
 	for {
 		resp, err := client.Get(url)
 		if err != nil {

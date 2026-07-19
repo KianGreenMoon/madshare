@@ -112,10 +112,18 @@ type PeerStore interface {
 	// recording) — the F3 blob-serving gate, the same predicate that governs
 	// the local library and the catalog (database/review.go).
 	BlobPubliclyVisible(ctx context.Context, hash string) (visible, found bool, err error)
-	// MadnetworkBlobProviders returns the friends whose cached catalogs
-	// advertise hash — most recently seen first, the fetch order — plus the
-	// advertised byte size (a hint; the origin's Content-Length wins).
+	// MadnetworkBlobProviders returns the friends who hold hash — the swarm
+	// tracker (F4): the union of catalog (library) holders and holdings (cache)
+	// holders, most recently seen first (the fetch order) — plus the advertised
+	// byte size (a hint; the origin's Content-Length / manifest wins).
 	MadnetworkBlobProviders(ctx context.Context, hash string) (size int64, holders []*Peer, err error)
+	// ReplacePeerHoldings atomically replaces the cached list of what one friend
+	// holds in its download cache and will seed (F4 holdings sync).
+	ReplacePeerHoldings(ctx context.Context, peerID int64, hashes []string) error
+	// SeedingPolicy reports whether this node serves blobs to friends at all and
+	// whether it also seeds its download cache — the F4 serving gate (both
+	// default on).
+	SeedingPolicy(ctx context.Context) (enabled, cache bool, err error)
 }
 
 // Transfer is one in-flight or completed blob fetch (federation F3). Readers

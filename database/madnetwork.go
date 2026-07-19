@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -152,7 +153,53 @@ func (db *DB) MarkPeerCatalogChecked(ctx context.Context, peerID int64, serial s
 	return nil
 }
 
-// ── Blob lookup (federation F3) ──────────────────────────────────────────────
+// ReplacePeerHoldings atomically replaces the cached list of what one friend
+// holds in its download cache and will seed (federation F4 holdings tracker,
+// GET /madnetwork/v0/holdings). Invalid entries are skipped; duplicates collapse
+// on the composite primary key.
+func (db *DB) ReplacePeerHoldings(ctx context.Context, peerID int64, hashes []string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("replace peer holdings: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM federation_holdings WHERE peer_id = ?`, peerID); err != nil {
+		return fmt.Errorf("clear peer holdings: %w", err)
+	}
+	ins, err := tx.PrepareContext(ctx,
+		`INSERT OR IGNORE INTO federation_holdings (peer_id, hash) VALUES (?, ?)`)
+	if err != nil {
+		return fmt.Errorf("prepare holdings insert: %w", err)
+	}
+	defer ins.Close()
+	for _, h := range hashes {
+		if !isContentHash(h) {
+			continue // remote input — a content hash is 64 lowercase hex
+		}
+		if _, err := ins.ExecContext(ctx, peerID, h); err != nil {
+			return fmt.Errorf("insert peer holding: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+// isContentHash reports whether s is a well-formed content hash (64 lowercase
+// hex) — the same shape federation.isBlobHash enforces, kept local so the
+// database package carries no build-tagged dependency.
+func isContentHash(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+// ── Blob lookup (federation F3/F4) ───────────────────────────────────────────
 
 // madnetworkRowsForHash scans friends' cached rows whose renditions advertise
 // hash, most-recently-seen friend first. The LIKE is a cheap pre-filter (a
@@ -199,24 +246,67 @@ func (db *DB) madnetworkRowsForHash(ctx context.Context, hash string,
 	return rows.Err()
 }
 
-// MadnetworkBlobProviders returns the friends whose cached catalogs advertise
-// hash — most recently seen first (the fetch order) — plus the advertised byte
-// size. Satisfies the F3 half of federation.PeerStore.
+// MadnetworkBlobProviders returns the friends who hold hash — the swarm's
+// tracker (federation F4). It unions two sources: friends whose published
+// catalog advertises the hash as a rendition (their library) and friends
+// advertising it in their download cache (federation_holdings). Ordered
+// most-recently-seen first (the fetch order); the advertised byte size comes
+// from the catalog (a hint; a cache-only holder contributes none and the fetch
+// learns the size from the manifest). Satisfies the F4 half of
+// federation.PeerStore.
 func (db *DB) MadnetworkBlobProviders(ctx context.Context, hash string) (int64, []*federation.Peer, error) {
 	var size int64
-	var holders []*federation.Peer
-	seen := map[int64]bool{}
+	holders := map[int64]*federation.Peer{}
 	err := db.madnetworkRowsForHash(ctx, hash, func(p *federation.Peer, _ *federation.CatalogEntry, rd *federation.CatalogRendition) bool {
 		if size == 0 {
 			size = rd.Size
 		}
-		if !seen[p.ID] {
-			seen[p.ID] = true
-			holders = append(holders, p)
+		if _, ok := holders[p.ID]; !ok {
+			cp := *p
+			holders[cp.ID] = &cp
 		}
 		return true
 	})
-	return size, holders, err
+	if err != nil {
+		return 0, nil, err
+	}
+
+	// Cache holders (federation_holdings) — friends seeding the blob from their
+	// download cache without it being in their library catalog.
+	rows, err := db.QueryContext(ctx, `
+		SELECT p.id, p.public_key, p.name, p.last_seen
+		FROM federation_holdings h
+		JOIN federation_peers p ON p.id = h.peer_id AND p.state = 'friend'
+		WHERE h.hash = ?`, hash)
+	if err != nil {
+		return 0, nil, fmt.Errorf("holdings providers: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p federation.Peer
+		if err := rows.Scan(&p.ID, &p.PublicKey, &p.Name, &p.LastSeen); err != nil {
+			return 0, nil, fmt.Errorf("scan holdings provider: %w", err)
+		}
+		if _, ok := holders[p.ID]; !ok {
+			cp := p
+			holders[cp.ID] = &cp
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, nil, err
+	}
+
+	out := make([]*federation.Peer, 0, len(holders))
+	for _, p := range holders {
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].LastSeen != out[j].LastSeen {
+			return out[i].LastSeen > out[j].LastSeen // most recently seen first
+		}
+		return out[i].ID < out[j].ID
+	})
+	return size, out, nil
 }
 
 // MadnetworkEntryForHash returns the catalog entry (tagset text) behind a

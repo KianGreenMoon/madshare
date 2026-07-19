@@ -28,13 +28,23 @@ type memStore struct {
 	peers map[int64]*Peer
 
 	// Catalog half (F2): published is what this node offers friends; caches
-	// holds the per-peer pulled copies.
-	published []CatalogEntry
-	caches    map[int64][]CatalogEntry
+	// holds the per-peer pulled copies. holdings (F4) is the per-peer cached
+	// list of cache-held hashes; seedEnabled/seedCache back SeedingPolicy.
+	published  []CatalogEntry
+	caches     map[int64][]CatalogEntry
+	holdings   map[int64][]string
+	seedEnable bool
+	seedCache  bool
 }
 
 func newMemStore() *memStore {
-	return &memStore{peers: map[int64]*Peer{}, caches: map[int64][]CatalogEntry{}}
+	return &memStore{
+		peers:      map[int64]*Peer{},
+		caches:     map[int64][]CatalogEntry{},
+		holdings:   map[int64][]string{},
+		seedEnable: true, // seed by default, mirroring the DB defaults
+		seedCache:  true,
+	}
 }
 
 func (m *memStore) PublishedCatalog(context.Context) ([]CatalogEntry, error) {
@@ -81,13 +91,13 @@ func (m *memStore) BlobPubliclyVisible(_ context.Context, hash string) (bool, bo
 	return false, false, nil
 }
 
-// MadnetworkBlobProviders scans the cached friend catalogs for the hash, like
-// the DB does.
+// MadnetworkBlobProviders scans the cached friend catalogs and holdings for the
+// hash, like the DB does — the union, deduped per peer.
 func (m *memStore) MadnetworkBlobProviders(_ context.Context, hash string) (int64, []*Peer, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var size int64
-	var holders []*Peer
+	holders := map[int64]*Peer{}
 	for peerID, entries := range m.caches {
 		p, ok := m.peers[peerID]
 		if !ok || p.State != PeerFriend {
@@ -99,13 +109,58 @@ func (m *memStore) MadnetworkBlobProviders(_ context.Context, hash string) (int6
 					if size == 0 {
 						size = rd.Size
 					}
-					cp := *p
-					holders = append(holders, &cp)
+					if _, seen := holders[peerID]; !seen {
+						cp := *p
+						holders[peerID] = &cp
+					}
 				}
 			}
 		}
 	}
-	return size, holders, nil
+	for peerID, hashes := range m.holdings {
+		p, ok := m.peers[peerID]
+		if !ok || p.State != PeerFriend {
+			continue
+		}
+		for _, h := range hashes {
+			if h == hash {
+				if _, seen := holders[peerID]; !seen {
+					cp := *p
+					holders[peerID] = &cp
+				}
+			}
+		}
+	}
+	out := make([]*Peer, 0, len(holders))
+	for _, p := range holders {
+		out = append(out, p)
+	}
+	return size, out, nil
+}
+
+// ReplacePeerHoldings mirrors the DB: replace one friend's cache-holdings list.
+func (m *memStore) ReplacePeerHoldings(_ context.Context, peerID int64, hashes []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.peers[peerID]; !ok {
+		return ErrPeerNotFound
+	}
+	m.holdings[peerID] = append([]string(nil), hashes...)
+	return nil
+}
+
+// SeedingPolicy returns the configured seed flags (both default on).
+func (m *memStore) SeedingPolicy(context.Context) (bool, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.seedEnable, m.seedCache, nil
+}
+
+// setSeeding toggles the seed flags for a test.
+func (m *memStore) setSeeding(enabled, cache bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.seedEnable, m.seedCache = enabled, cache
 }
 
 func (m *memStore) cachedCatalog(peerID int64) []CatalogEntry {
@@ -219,7 +274,7 @@ func (m *memStore) DeleteFederationPeer(_ context.Context, id int64) error {
 // waitFor polls until cond returns true or the deadline passes.
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(meshDeadline)
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)
@@ -324,7 +379,7 @@ func TestFriendshipHandshake(t *testing.T) {
 	}
 	client := &http.Client{
 		Transport: &http.Transport{DialContext: b.DialContext},
-		Timeout:   5 * time.Second,
+		Timeout:   meshClientTimeout,
 	}
 	pingA := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/ping", a.Address(), MeshPort)
 	waitFor(t, "A to refuse the blocked B", func() bool {
@@ -400,10 +455,10 @@ func TestPairRejectsMismatchedKey(t *testing.T) {
 
 	client := &http.Client{
 		Transport: &http.Transport{DialContext: b.DialContext},
-		Timeout:   5 * time.Second,
+		Timeout:   meshClientTimeout,
 	}
 	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/pair", a.Address(), MeshPort)
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(meshDeadline)
 	for {
 		resp, err := client.Post(url, "application/json", strings.NewReader(forged))
 		if err != nil {

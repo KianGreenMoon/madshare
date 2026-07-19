@@ -173,6 +173,12 @@ type FederationConfig struct {
 	// Listen are underlay listener URIs (e.g. "tls://0.0.0.0:12345") accepting
 	// incoming peerings — for backbone nodes; outbound-only nodes leave it empty.
 	Listen []string `toml:"listen"`
+	// SeedRateKiB caps the outbound rate, in KiB/s, at which this node serves
+	// blobs to friends over the swarm (federation F4) — a token bucket over the
+	// blob-serve write path. 0 (the default) is unlimited; negative is clamped
+	// to 0 with a warning. The seed on/off and cache-seed toggles are runtime DB
+	// settings (madnetwork.seed_enabled / .seed_cache), not config.
+	SeedRateKiB int `toml:"seed_rate_kib"`
 }
 
 // federationSchemes are the underlay URI schemes yggdrasil accepts. socks /
@@ -383,6 +389,12 @@ func (c *Config) resolveStorageWorkers() {
 			"storage.user_max_parallel_workers %d is invalid; using 0 (unlimited)",
 			c.Storage.UserMaxParallelWorkers))
 		c.Storage.UserMaxParallelWorkers = 0
+	}
+	if c.Federation.SeedRateKiB < 0 {
+		c.warnings = append(c.warnings, fmt.Sprintf(
+			"federation.seed_rate_kib %d is invalid; using 0 (unlimited)",
+			c.Federation.SeedRateKiB))
+		c.Federation.SeedRateKiB = 0
 	}
 }
 

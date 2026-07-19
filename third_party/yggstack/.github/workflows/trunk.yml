@@ -1,0 +1,264 @@
+name: Trunk / release build
+
+on:
+  pull_request:
+    paths-ignore:
+      - "README.md"
+  push:
+    branches:
+      - develop
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+-[0-9]+'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+
+    name: Build Windows/Linux-static/MacOS/*BSD-static/Android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+
+      - name: Check if commit needs a release upload
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "RELEASENAME=${GITHUB_REF_NAME}" >> "${GITHUB_ENV}"
+          elif [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/develop" ]; then
+            echo "PRERELEASE=--prerelease" >> "${GITHUB_ENV}"
+            echo "RELEASENAME=trunk" >> "${GITHUB_ENV}"
+          else
+            echo "Not a tag or push to develop branch, skipping upload"
+            echo "SKIP_UPLOAD=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build yggstack executables
+        run: |
+          set -e
+          echo "::group::yggstack-windows-amd64.exe"
+          GOOS=windows GOARCH=amd64 ./build -o yggstack-windows-amd64.exe
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-windows-arm64.exe"
+          GOOS=windows GOARCH=arm64 ./build -o yggstack-windows-arm64.exe
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-windows-armv7.exe"
+          GOOS=windows GOARCH=arm GOARM=7 ./build -o yggstack-windows-armv7.exe
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-windows-i386.exe"
+          GOOS=windows GOARCH=386 ./build -o yggstack-windows-i386.exe
+          GOOS=windows GOARCH=386 ./build -o yggstack-windows-386.exe
+          echo "::endgroup::"
+          #
+          # NOTE: Go toolchain does produce dynamically linked binaries
+          # for native-architecture Linux/*BSD. Since we are building on amd64,
+          # request this buid to be fully static like the othe builds
+          echo "::group::yggstack-linux-amd64-static"
+          GOOS=linux GOARCH=amd64 ./build -s -o yggstack-linux-amd64-static
+          ! ldd yggstack-linux-amd64-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-linux-arm64-static"
+          GOOS=linux GOARCH=arm64 ./build -o yggstack-linux-arm64-static
+          ! ldd yggstack-linux-arm64-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-linux-armv6-static"
+          GOOS=linux GOARCH=arm GOARM=6 ./build -o yggstack-linux-armv6-static
+          ! ldd yggstack-linux-armv6-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-linux-armv7-static"
+          GOOS=linux GOARCH=arm GOARM=7 ./build -o yggstack-linux-armv7-static
+          ! ldd yggstack-linux-armv7-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-linux-i386-static"
+          GOOS=linux GOARCH=386 ./build -o yggstack-linux-i386-static
+          GOOS=linux GOARCH=386 ./build -o yggstack-linux-386-static
+          ! ldd yggstack-linux-i386-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-linux-mips-sf-static"
+          GOOS=linux GOARCH=mips GOMIPS=softfloat ./build -o yggstack-linux-mips-sf-static
+          ! ldd yggstack-linux-mips-sf-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-linux-mipsle-sf-static"
+          GOOS=linux GOARCH=mipsle GOMIPS=softfloat ./build -o yggstack-linux-mipsle-sf-static
+          ! ldd yggstack-linux-mipsle-sf-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-linux-mips64-static"
+          GOOS=linux GOARCH=mips64 ./build -o yggstack-linux-mips64-static
+          ! ldd yggstack-linux-mips64-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-linux-mips64le-static"
+          GOOS=linux GOARCH=mips64le ./build -o yggstack-linux-mips64le-static
+          ! ldd yggstack-linux-mips64le-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-linux-ppc64-static"
+          GOOS=linux GOARCH=ppc64 ./build -o yggstack-linux-ppc64-static
+          ! ldd yggstack-linux-ppc64-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-linux-ppc64le-static"
+          GOOS=linux GOARCH=ppc64le ./build -o yggstack-linux-ppc64le-static
+          ! ldd yggstack-linux-ppc64le-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-linux-riscv64-static"
+          GOOS=linux GOARCH=riscv64 ./build -o yggstack-linux-riscv64-static
+          ! ldd yggstack-linux-riscv64-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-linux-s390x-static"
+          GOOS=linux GOARCH=s390x ./build -o yggstack-linux-s390x-static
+          ! ldd yggstack-linux-s390x-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-darwin-amd64"
+          GOOS=darwin GOARCH=amd64 ./build -o yggstack-darwin-amd64
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-darwin-arm64"
+          GOOS=darwin GOARCH=arm64 ./build -o yggstack-darwin-arm64
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-freebsd-amd64-static"
+          GOOS=freebsd GOARCH=amd64 ./build -o yggstack-freebsd-amd64-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-freebsd-arm64-static"
+          GOOS=freebsd GOARCH=arm64 ./build -o yggstack-freebsd-arm64-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-freebsd-armv6-static"
+          GOOS=freebsd GOARCH=arm GOARM=6 ./build -o yggstack-freebsd-armv6-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-freebsd-armv7-static"
+          GOOS=freebsd GOARCH=arm GOARM=7 ./build -o yggstack-freebsd-armv7-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-freebsd-i386-static"
+          GOOS=freebsd GOARCH=386 ./build -o yggstack-freebsd-i386-static
+          GOOS=freebsd GOARCH=386 ./build -o yggstack-freebsd-386-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-openbsd-amd64-static"
+          GOOS=openbsd GOARCH=amd64 ./build -o yggstack-openbsd-amd64-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-openbsd-arm64-static"
+          GOOS=openbsd GOARCH=arm64 ./build -o yggstack-openbsd-arm64-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-openbsd-armv6-static"
+          GOOS=openbsd GOARCH=arm GOARM=6 ./build -o yggstack-openbsd-armv6-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-openbsd-armv7-static"
+          GOOS=openbsd GOARCH=arm GOARM=7 ./build -o yggstack-openbsd-armv7-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-openbsd-i386-static"
+          GOOS=openbsd GOARCH=386 ./build -o yggstack-openbsd-i386-static
+          GOOS=openbsd GOARCH=386 ./build -o yggstack-openbsd-386-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-netbsd-amd64-static"
+          GOOS=netbsd GOARCH=amd64 ./build -o yggstack-netbsd-amd64-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-netbsd-arm64-static"
+          GOOS=netbsd GOARCH=arm64 ./build -o yggstack-netbsd-arm64-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-netbsd-armv6-static"
+          GOOS=netbsd GOARCH=arm GOARM=6 ./build -o yggstack-netbsd-armv6-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-netbsd-armv7-static"
+          GOOS=netbsd GOARCH=arm GOARM=7 ./build -o yggstack-netbsd-armv7-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-netbsd-i386-static"
+          GOOS=netbsd GOARCH=386 ./build -o yggstack-netbsd-i386-static
+          GOOS=netbsd GOARCH=386 ./build -o yggstack-netbsd-386-static
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-android-amd64"
+          CGO_ENABLED=1 CC="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android21-clang" GOOS=android GOARCH=amd64 ./build -o yggstack-android-amd64
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-android-arm64"
+          CGO_ENABLED=1 CC="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang" GOOS=android GOARCH=arm64 ./build -o yggstack-android-arm64
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-android-armv7"
+          CGO_ENABLED=1 CC="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang" GOOS=android GOARCH=arm GOARM=7 ./build -o yggstack-android-armv7
+          echo "::endgroup::"
+          #
+          echo "::group::yggstack-android-i386"
+          CGO_ENABLED=1 CC="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android21-clang" GOOS=android GOARCH=386 ./build -o yggstack-android-i386
+          CGO_ENABLED=1 CC="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android21-clang" GOOS=android GOARCH=386 ./build -o yggstack-android-386
+          echo "::endgroup::"
+          #
+          #echo "::group::yggstack-ios-arm64"
+          #GOOS=ios GOARCH=arm64 CC=$(go env GOROOT)/misc/ios/clangwrap.sh ./build -o yggstack-ios-arm64
+          #echo "::endgroup::"
+          #
+          #echo "::group::yggstack-ios-amd64"
+          #GOOS=ios GOARCH=amd64 CC=$(go env GOROOT)/misc/ios/clangwrap.sh ./build -o yggstack-ios-amd64
+          #echo "::endgroup::"
+
+      - name: Publish release
+        if: ${{ env.SKIP_UPLOAD == '' }}
+        run: |
+          gh release create "${RELEASENAME}" ${PRERELEASE} yggstack-* || gh release upload "${RELEASENAME}" yggstack-* --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Set up Docker Buildx
+        if: ${{ env.SKIP_UPLOAD != '1' }}
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        if: ${{ env.SKIP_UPLOAD == '' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push yggstack container image
+        if: ${{ env.SKIP_UPLOAD == '' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.static
+          platforms: linux/386, linux/amd64, linux/arm/v6, linux/arm/v7, linux/arm64, linux/ppc64le, linux/riscv64, linux/s390x
+          push: true
+          tags: ghcr.io/yggdrasil-network/yggstack:${{ env.RELEASENAME }}

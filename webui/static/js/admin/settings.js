@@ -136,9 +136,11 @@ tagsourceClearKey.addEventListener('click', () => {
   saveTagsource('');
 });
 
-// ── Madnetwork (federation F3 download behavior) ─────────────────────────────
+// ── Madnetwork (federation F3 downloads + F4 seeding) ────────────────────────
 const madnetworkForm        = document.getElementById('madnetworkForm');
 const madnetworkAutoapprove = document.getElementById('madnetworkAutoapprove');
+const madnetworkSeedEnabled = document.getElementById('madnetworkSeedEnabled');
+const madnetworkSeedCache   = document.getElementById('madnetworkSeedCache');
 
 async function loadMadnetwork() {
   try {
@@ -147,6 +149,8 @@ async function loadMadnetwork() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const p = await res.json();
     madnetworkAutoapprove.checked = !!p.autoapprove_downloads;
+    madnetworkSeedEnabled.checked = p.seed_enabled !== false;
+    madnetworkSeedCache.checked   = p.seed_cache !== false;
   } catch (err) {
     console.error('load madnetwork settings:', err);
     toast(`Couldn't load madnetwork settings: ${err.message}`, 'error');
@@ -157,7 +161,11 @@ async function saveMadnetwork() {
   try {
     const res = await fetch(`${API}/api/admin/settings/madnetwork`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ autoapprove_downloads: madnetworkAutoapprove.checked }),
+      body: JSON.stringify({
+        autoapprove_downloads: madnetworkAutoapprove.checked,
+        seed_enabled:          madnetworkSeedEnabled.checked,
+        seed_cache:            madnetworkSeedCache.checked,
+      }),
     });
     if (handleAuthError(res)) return;
     if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
