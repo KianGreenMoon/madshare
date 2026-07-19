@@ -391,9 +391,15 @@ default** — its social graph is visible to its members.
   out-of-order region the instant its chunk lands; a streaming read of a
   not-yet-fetched offset **promotes the covering chunk to the front of the
   dispatch queue** (seek-priority), which keeps a tail probe or seek from
-  waiting out the whole file. A chunk that errors or fails its per-chunk hash is
-  re-queued to a different holder (the offending holder is dropped for the rest
-  of the transfer). A **single-seeder swarm degenerates to a direct transfer**,
+  waiting out the whole file. Failed chunks are re-queued with a resilient
+  policy: a **corrupt** chunk (wrong bytes) drops its holder immediately, but a
+  **transient** error (an unreachable/stalled mesh path) only counts toward a
+  consecutive-failure limit — reset on any success — so a single flaky moment on
+  the *sole* holder is retried, not fatal. A hung connection is caught by an
+  **idle-read watchdog** (~20 s with no bytes) plus a response-header timeout,
+  rather than waiting out the whole per-chunk backstop — so a Yggdrasil path
+  stall costs seconds, not minutes. A **single-seeder swarm degenerates to a
+  direct transfer**,
   and a holder too old to speak the manifest endpoint triggers a **fall-back to
   the F3 whole-file streaming fetch** — so F4 nodes still fetch from F3 nodes.
 - **Fast first byte** (built F4): to avoid two serial mesh round-trips before

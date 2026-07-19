@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -40,12 +41,44 @@ const (
 	maxChunkSize = 1 << 20   // 1 MiB — bulk cap = seek granularity
 	targetChunks = 12        // rough bulk-chunk count a mid-size file aims for
 
-	maxChunkWorkers  = 8                // parallel chunk fetches per transfer
-	perChunkTimeout  = 5 * time.Minute  // bound one chunk fetch
-	manifestTimeout  = 20 * time.Second // bound one manifest probe to a holder
-	maxManifestChunk = 64 << 20         // reject a manifest whose chunk size exceeds this (DoS guard)
-	seedWriteChunk   = 32 << 10         // rate-cap granularity on the serve path
+	maxChunkWorkers      = 8                // parallel chunk fetches per transfer
+	perChunkTimeout      = 2 * time.Minute  // overall backstop for one chunk fetch
+	chunkStallTimeout    = 20 * time.Second // idle (no-bytes) timeout — catches a hung mesh connection fast
+	manifestTimeout      = 20 * time.Second // bound one manifest probe to a holder
+	maxManifestChunk     = 64 << 20         // reject a manifest whose chunk size exceeds this (DoS guard)
+	providerFailureLimit = 4                // consecutive fetch failures before dropping a holder (reset on success)
+	seedWriteChunk       = 32 << 10         // rate-cap granularity on the serve path
 )
+
+// errChunkCorrupt marks a chunk whose bytes failed per-chunk verification — the
+// holder served wrong data, so it is dropped for the rest of the transfer
+// (unlike a transient network error, which is retried).
+var errChunkCorrupt = errors.New("chunk failed per-chunk verification")
+
+// readStall reads up to n bytes from r, cancelling the fetch (via cancel) if no
+// bytes arrive for `stall` — so a hung mesh connection is detected in ~stall
+// rather than waiting out the whole perChunkTimeout. exact requires all n bytes.
+func readStall(cancel context.CancelFunc, r io.Reader, n int64, exact bool, stall time.Duration) ([]byte, error) {
+	buf := make([]byte, n)
+	watchdog := time.AfterFunc(stall, cancel)
+	defer watchdog.Stop()
+	var got int64
+	for got < n {
+		watchdog.Reset(stall)
+		m, err := r.Read(buf[got:])
+		got += int64(m)
+		if err == io.EOF {
+			if exact && got < n {
+				return nil, io.ErrUnexpectedEOF
+			}
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	return buf[:got], nil
+}
 
 // chunkSizeFor picks the chunk size for a blob of the given total size: the
 // smallest power-of-two ≥ size/targetChunks, clamped to [minChunkSize,
@@ -481,7 +514,7 @@ func (n *Node) fetchRange(ctx context.Context, p *Peer, hash string, start, leng
 	if resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("range %d-%d: holder answered %s", start, start+length-1, resp.Status)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, length))
+	return readStall(cancel, io.LimitReader(resp.Body, length), length, false, chunkStallTimeout)
 }
 
 // chunk0Prefetch is a speculative chunk-0 fetch overlapped with the manifest
@@ -610,13 +643,13 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*Peer, prefe
 				}
 				p, pidx, ok := plan.pickProvider()
 				if !ok {
-					plan.fail(idx, -1, ErrNoHolder) // all providers dead → aborts
+					plan.fail(idx, -1, ErrNoHolder, false) // all providers dead → aborts
 					continue
 				}
 				if err := n.fetchChunk(t, f, layout, man, idx, p); err != nil {
-					plan.fail(idx, pidx, err)
+					plan.fail(idx, pidx, err, errors.Is(err, errChunkCorrupt))
 				} else {
-					plan.succeed(idx, t)
+					plan.succeed(idx, pidx, t)
 				}
 			}
 		}()
@@ -658,13 +691,13 @@ func (n *Node) fetchChunk(t *transfer, f *os.File, layout *chunkLayout, man *blo
 		!(resp.StatusCode == http.StatusOK && len(man.Chunks) == 1) {
 		return fmt.Errorf("chunk %d: holder answered %s", idx, resp.Status)
 	}
-	body := make([]byte, length)
-	if _, err := io.ReadFull(io.LimitReader(resp.Body, length), body); err != nil {
+	body, err := readStall(cancel, io.LimitReader(resp.Body, length), length, true, chunkStallTimeout)
+	if err != nil {
 		return fmt.Errorf("chunk %d: %w", idx, err)
 	}
 	sum := sha256.Sum256(body)
 	if hex.EncodeToString(sum[:]) != man.Chunks[idx] {
-		return fmt.Errorf("chunk %d: hash mismatch from %q", idx, p.Name)
+		return fmt.Errorf("chunk %d: hash mismatch from %q: %w", idx, p.Name, errChunkCorrupt)
 	}
 	if _, err := f.WriteAt(body, start); err != nil {
 		return err
@@ -692,6 +725,7 @@ type chunkPlan struct {
 
 	providers []*Peer
 	dead      []bool // per-provider
+	provFails []int  // per-provider consecutive failures (reset on success)
 	rr        int    // round-robin cursor
 }
 
@@ -703,6 +737,7 @@ func newChunkPlan(man *blobManifest, layout *chunkLayout, holders []*Peer, done0
 		layout:    layout,
 		providers: holders,
 		dead:      make([]bool, len(holders)),
+		provFails: make([]int, len(holders)),
 	}
 	start := 0
 	if done0 && nc > 0 {
@@ -783,10 +818,15 @@ func (cp *chunkPlan) pickProvider() (*Peer, int, bool) {
 }
 
 // succeed records a completed chunk, advancing the contiguous progress
-// watermark and publishing it to the transfer.
-func (cp *chunkPlan) succeed(idx int, t *transfer) {
+// watermark and publishing it to the transfer. A success clears the provider's
+// failure streak — an intermittently-stalling holder is forgiven so it is not
+// dropped over transient hiccups.
+func (cp *chunkPlan) succeed(idx, pidx int, t *transfer) {
 	cp.mu.Lock()
 	cp.inFlight--
+	if pidx >= 0 {
+		cp.provFails[pidx] = 0
+	}
 	if !cp.done[idx] {
 		cp.done[idx] = true
 		cp.remaining--
@@ -800,13 +840,23 @@ func (cp *chunkPlan) succeed(idx int, t *transfer) {
 	t.chunkDone(idx, progress)
 }
 
-// fail marks a provider dead (pidx < 0 = no provider to blame) and re-queues the
-// chunk, unless no live provider remains — then it aborts the whole transfer.
-func (cp *chunkPlan) fail(idx, pidx int, err error) {
+// fail re-queues the chunk for another attempt. A corrupt chunk (wrong bytes)
+// drops its holder immediately; a transient error (stall/unreachable) only
+// counts toward providerFailureLimit consecutive failures before the holder is
+// dropped — so a single flaky moment on the sole holder is retried, not fatal.
+// The transfer aborts only when no live provider remains.
+func (cp *chunkPlan) fail(idx, pidx int, err error, corrupt bool) {
 	cp.mu.Lock()
 	cp.inFlight--
 	if pidx >= 0 {
-		cp.dead[pidx] = true
+		if corrupt {
+			cp.dead[pidx] = true
+		} else {
+			cp.provFails[pidx]++
+			if cp.provFails[pidx] >= providerFailureLimit {
+				cp.dead[pidx] = true
+			}
+		}
 	}
 	if cp.liveProviders() == 0 {
 		if !cp.aborted {

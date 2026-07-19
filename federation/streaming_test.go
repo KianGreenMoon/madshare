@@ -4,6 +4,7 @@ package federation
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -124,5 +125,42 @@ func TestChunkPlanPrioritizeAndDone0(t *testing.T) {
 	}
 	if idx, ok := cp2.next(); !ok || idx != 1 {
 		t.Errorf("done0 first dispatch = (%d,%v), want (1,true)", idx, ok)
+	}
+}
+
+// TestChunkPlanFailover: a transient error on the sole holder retries (never
+// fatal until the consecutive-failure limit, reset on success), while a corrupt
+// chunk drops the holder immediately.
+func TestChunkPlanFailover(t *testing.T) {
+	man := &blobManifest{ChunkSize: 10, Size: 30, Chunks: []string{"a", "b", "c"}}
+	layout := man.layout()
+	netErr := errors.New("mesh stalled")
+
+	cp := newChunkPlan(man, layout, []*Peer{{Name: "only"}}, false)
+	for i := 1; i < providerFailureLimit; i++ {
+		idx, ok := cp.next()
+		if !ok {
+			t.Fatalf("no chunk to dispatch at retry %d", i)
+		}
+		cp.fail(idx, 0, netErr, false)
+		if cp.aborted {
+			t.Fatalf("aborted after %d transient failures (limit %d) — should retry", i, providerFailureLimit)
+		}
+	}
+	// A success clears the streak, so transient failures are tolerated again.
+	idx, _ := cp.next()
+	cp.succeed(idx, 0, newTransfer("h", "p", "p.part"))
+	idx, _ = cp.next()
+	cp.fail(idx, 0, netErr, false)
+	if cp.aborted {
+		t.Fatal("aborted right after a success reset the failure streak")
+	}
+
+	// A corrupt chunk drops the sole holder immediately → abort.
+	cp2 := newChunkPlan(man, layout, []*Peer{{Name: "liar"}}, false)
+	idx, _ = cp2.next()
+	cp2.fail(idx, 0, errChunkCorrupt, true)
+	if !cp2.aborted {
+		t.Fatal("a corrupt chunk from the sole holder should abort")
 	}
 }

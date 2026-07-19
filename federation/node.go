@@ -135,8 +135,13 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 		Timeout:   15 * time.Second,
 	}
 	// Blob/chunk fetches can be large and slow over the mesh; each is bounded by
-	// its own context, so this client carries no global timeout.
-	n.blobClient = &http.Client{Transport: &http.Transport{DialContext: n.DialContext}}
+	// its own context plus an idle-read watchdog (readStall), so this client
+	// carries no global timeout — but a ResponseHeaderTimeout catches a holder
+	// that accepts the connection then never answers (a hung mesh path) fast.
+	n.blobClient = &http.Client{Transport: &http.Transport{
+		DialContext:           n.DialContext,
+		ResponseHeaderTimeout: 20 * time.Second,
+	}}
 	n.srv = &http.Server{Handler: n.protocolHandler()}
 	go func() {
 		if err := n.srv.Serve(lis); err != nil && err != http.ErrServerClosed {
