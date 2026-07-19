@@ -56,7 +56,7 @@ are simply never registered on that listener's handler (a request for them gets
 | Group   | Routes                                                                          | Purpose |
 |---------|---------------------------------------------------------------------------------|---------|
 | `api`   | `/healthz`, `/source`, `/license`, `/api/*` (library), `/files/*`, `/images/*`  | The machine-facing API. This is the product. |
-| `webui` | `/` (library page), `/cmus`, `/static/*`                                         | The bundled reference browser UI. |
+| `webui` | `/` (library page), `/static/*`                                         | The bundled reference browser UI. |
 | `admin` | `/api/admin/*` (delete, prune) and the `/admin` page                             | Destructive operations + their UI. The API is gated by `auth.RequirePermission`. |
 
 Notes:

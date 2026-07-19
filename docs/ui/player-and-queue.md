@@ -15,8 +15,7 @@ reloads. The persistent shell this rides on is described in `docs/ui/shells.md`.
 | Shell | `webui/static/js/shell.js` | Client router. Everything outside `<main>` (header, player bar, `<audio>`, queue panel) survives page swaps, so playback is continuous across the listening pages (`/`, `/playlists`, `/upload`). |
 
 Admin pages are **outside** this system: they are full-load pages with their own
-page-local preview player and no queue UI. cmus (`/cmus`) is a paused view,
-also outside the shell.
+page-local preview player and no queue UI.
 
 ## The queue
 

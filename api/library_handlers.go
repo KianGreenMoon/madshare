@@ -52,7 +52,7 @@ func toArtistItem(a *database.ArtistEntry) artistItem {
 }
 
 // listArtists serves GET /api/artists. Without a `limit` query param it returns
-// the full artist list as a bare array (the admin By-entity + cmus views). With
+// the full artist list as a bare array (the admin By-entity view). With
 // `limit` (and an optional opaque `cursor`) it returns a cursor-paginated page
 // `{items, next_cursor}` for the public library's virtualized infinite scroll
 // (docs/architecture/infinite-scroll-virtualization.md).
@@ -404,7 +404,7 @@ func (h *handler) getAlbumImage(w http.ResponseWriter, r *http.Request) {
 
 // albumImageVariant picks which derived cover variant getAlbumImage serves from
 // the optional ?size= query param. Only crop variants are served (square art).
-// The default is large_crop (600px) so existing callers — cmus, the mobile app —
+// The default is large_crop (600px) so existing callers — the mobile app —
 // are unaffected; the library/admin thumbnails pass ?size=small (150px) since
 // they only render a small image and have no use for the larger blob.
 func albumImageVariant(r *http.Request) string {

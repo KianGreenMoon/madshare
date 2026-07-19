@@ -6,8 +6,8 @@
 //                  status (info) and success toasts; auto-dismisses.
 //   #toastAlert  — assertive live region, top-right; holds errors, which PERSIST
 //                  until the user dismisses them.
-// showToast no-ops if the target stack is absent (e.g. /cmus, which ships no
-// stacks), so callers never have to guard.
+// showToast no-ops if the target stack is absent (a page without the stacks
+// simply shows nothing), so callers never have to guard.
 //
 // Pure DOM, zero imports, and no work at module-eval time — only a function
 // definition; the stack is looked up lazily inside showToast. That keeps it safe

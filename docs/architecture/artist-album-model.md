@@ -179,7 +179,7 @@ alternatives were considered and rejected:
 - **Moving the grouping into each UI** ("if album_artist present, the client uses
   it as the artist") — rejected. The artist is a stable backend **entity** (id,
   cover, dedup, rename/merge). Deriving the grouping ad-hoc per client would lose
-  the stable entity + cover and force the library view, `/cmus`, admin, and
+  the stable entity + cover and force the library view, admin, and
   future federation to re-implement and stay in sync on the same rule.
 
 Browsing by a *performing/featured* artist who is never an `album_artist` is
@@ -343,8 +343,8 @@ by the write, rename, and name-based merge endpoints).
 
 ### Front-end migration
 
-The library drill-down (`app.js`), the admin By-entity drill-down
-(`admin/files.js`), and the standalone cmus view (`cmus.js`) browse by id. The
+The library drill-down (`app.js`) and the admin By-entity drill-down
+(`admin/files.js`) browse by id. The
 drill state carries `{id, name}` so the breadcrumb shows the display name while
 fetches use the id. **Search** result artist/album items carry an `id` so a hit
 can drill in and render its cover by id. The track-list rows show the per-track

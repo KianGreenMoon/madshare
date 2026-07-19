@@ -13,7 +13,7 @@
 # One [[listen]] block per bound socket. Each chooses which route groups it
 # serves:
 #   api    -> /healthz, /api/* (library), /files/*, /images/*   (the product)
-#   webui  -> /, /cmus, /static/*                               (bundled UI)
+#   webui  -> /, /static/*                                      (bundled UI)
 #   admin  -> /api/admin/* (delete, prune) and the /admin page  (destructive)
 #
 # The bundled web UI talks to the API over relative, same-origin URLs, so no

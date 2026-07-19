@@ -379,9 +379,7 @@ will extend.
    the principal lacks the rights, replaces `<main>` with an access-denied notice
    (a "Sign in" prompt for anonymous, "Back to Library" otherwise) and aborts the
    page boot. The admin page additionally hides its own Upload section without
-   `file.upload`. The standalone `/cmus` view doesn't use the shared auth module,
-   so `cmus.js` does a self-contained `GET /api/auth/me` check to drop its Admin
-   link. `.access-denied` styling lives in `app.css` + `admin.css`.
+   `file.upload`. `.access-denied` styling lives in `app.css` + `admin.css`.
 
    **(2a) User administration** — **IMPLEMENTED** (`api/user_handlers.go`,
    gated by `user.manage`): full account lifecycle from the admin page's *Users*

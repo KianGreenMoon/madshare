@@ -17,7 +17,7 @@ The album-cover endpoint `GET /api/albums/{album_id}/image` serves a derived
 shows its placeholder in the gap). An optional `?size=` query param picks which
 crop is served: `thumb` (64 px), `small` (150 px), `medium` (300 px), or the
 default `large` (600 px) when omitted/unknown. The library and admin thumbnails
-request `?size=small`; cmus and the mobile app use the `large` default. Artist
+request `?size=small`; the mobile app uses the `large` default. Artist
 images keep **no variant pipeline** (deferred): their original is stored and
 served directly under the flat `<image_hash><ext>` key (and ignore `?size=`).
 

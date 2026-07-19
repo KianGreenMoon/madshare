@@ -19,7 +19,7 @@ import (
 // docs/architecture/listeners-and-config.md for what each group covers.
 const (
 	GroupAPI   = "api"   // /, /api/* (non-admin), /files/*, /images/*
-	GroupWebUI = "webui" // /, /cmus, /static/*
+	GroupWebUI = "webui" // /, /static/*
 	GroupAdmin = "admin" // /api/admin/* and the /admin page
 )
 

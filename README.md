@@ -19,9 +19,9 @@ UI.
 - Upload, browse, stream and download audio (MP3 / OGG / FLAC / WAV / MP4 / M4A
   / AAC / OPUS), de-duplicated by content hash, with ID3/MP4/FLAC/OGG tag
   extraction and async cover-art variant generation.
-- Two bundled web UIs: a Jellyfin-style drill-down browser at `/` and a
-  cmus-style 3-panel view at `/cmus`, plus an `/admin` page. The listening
-  pages share a persistent shell, so playback continues across navigation.
+- A bundled web UI: a Jellyfin-style drill-down browser at `/`, plus an
+  `/admin` page. The listening pages share a persistent shell, so playback
+  continues across navigation.
 - Per-user playlists and favorites (`/playlists`): like tracks from the
   library or the player bar, edit the play queue in place (reorder / remove /
   play-next), save it as a playlist, and resume it after a reload. Player and
@@ -190,7 +190,7 @@ cp webui.toml.example     webui.toml
 ```toml
 # One [[listen]] block per bound socket; each picks which route groups it serves:
 #   api    -> /healthz, /api/* (library), /files/*, /images/*   (the product)
-#   webui  -> /, /cmus, /static/*                               (bundled UI)
+#   webui  -> /, /static/*                                      (bundled UI)
 #   admin  -> /api/admin/* (delete, prune) and the /admin page  (destructive)
 [[listen]]
 addr  = "127.0.0.1"          # "" / "0.0.0.0" / "[::]" = all interfaces; or a specific IP
@@ -330,7 +330,7 @@ new binary and restart.
 | `GET /api/*` | api | Library browse (artists/albums/tracks/search), auth, UI config. |
 | `POST /files/upload`, `GET /files/*` | api | Upload (gated `file.upload`) and stream/download. |
 | `GET /images/*` | api | Cover images. |
-| `GET /`, `/cmus`, `/static/*` | webui | Bundled web UI. |
+| `GET /`, `/static/*` | webui | Bundled web UI. |
 | `GET /admin`, `/api/admin/*` | admin | Admin page + destructive/management ops. |
 | `GET /source` | api | AGPL §13: `tar.gz` of the git-tracked source. |
 | `GET /license` | api | The project license. |

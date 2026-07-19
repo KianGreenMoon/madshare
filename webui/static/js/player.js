@@ -1,5 +1,5 @@
 // player.js — the shared audio player, used by the library page and the admin
-// Files page (and, later, cmus). It owns the <audio> element and the player-bar
+// Files page. It owns the <audio> element and the player-bar
 // DOM (the {{define "player-bar"}} partial) and handles everything intrinsic to
 // playback: play/pause, the play/pause icon, the progress bar (click + keyboard
 // seek), the time readout, and the volume slider.

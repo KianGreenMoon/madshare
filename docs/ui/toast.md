@@ -23,7 +23,7 @@ Two stacks from the `auth-modals` partial (`webui/html/partials.html`):
 | `#toastAlert`  | assertive | `error` (top of the page) |
 
 `showToast` looks the stack up **lazily inside the call** and **no-ops if it is
-absent** — so a page without the stacks (e.g. `/cmus`) simply shows nothing
+absent** — so a page without the stacks simply shows nothing
 rather than erroring. The module does no DOM work at import time (it only defines
 the function), which satisfies the shell's "no DOM at module-eval" rule so it is
 safe on shell-native pages.
@@ -36,8 +36,6 @@ safe on shell-native pages.
 - **`auth.js`** and **`admin/shared.js`** delegate to it — `admin/shared.js` keeps
   its exported `toast(msg, type)` name/signature (≈7 admin modules import it) and
   just forwards to `showToast(msg, { type })`.
-- **`/cmus`** is excluded by design (no `app.css`, no toast stacks → silent
-  no-op); it keeps its standalone old header.
 
 ## Styling
 

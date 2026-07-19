@@ -8,12 +8,6 @@ bug/cleanup items live in `.issues/open-issues.md` and `.issues/ui-issues.md`.
 
 ## Covers & images
 
-- **Aura effect (cmus).** An ambient glow behind the player in `cmus.html`,
-  derived from the current track's album cover: read the cover pixels on a hidden
-  canvas, pick a representative colour, drive `--aura-h/s/l` CSS custom properties
-  (transitioned between tracks), render as a `radial-gradient`/`box-shadow`.
-  Purely client-side and decorative — skip silently when no cover or on a tainted
-  canvas. Was the last (unbuilt) phase of the upload & covers work.
 - **WebP cover support.** JPEG/PNG only today; WebP is rejected at the upload
   boundary (`POST /api/albums/{album}/image`, embedded extraction). A later
   addition is non-breaking: accept the type, add the `.webp` variant names, decode
@@ -56,10 +50,6 @@ dry-run".)
 
 ## Listening shell & player
 
-- **cmus on the shared player.** `/cmus` is a paused, standalone view with its own
-  player and old header (outside the listening shell). Migrate it onto the shared
-  `player-controller` + shell so playback continues across it. See
-  `docs/ui/shells.md`, `docs/ui/player-and-queue.md`.
 - **Theme FOUC.** `<html data-theme="dark">` is hardcoded and JS swaps to the saved
   theme after load, so a slow load flashes dark → chosen theme. Fix is a tiny
   inline `<head>` script that applies the saved theme before first paint —

@@ -56,7 +56,6 @@ func buildPageTmpl(file string) *template.Template {
 }
 
 var (
-	cmusTmpl       = template.Must(template.ParseFS(htmlFS, "html/cmus.html"))
 	libraryTmpl    = buildPageTmpl("html/library.html")
 	uploadTmpl     = buildPageTmpl("html/upload.html")
 	playlistsTmpl  = buildPageTmpl("html/playlists.html")
@@ -99,7 +98,7 @@ var adminSubPages = map[string]*template.Template{
 // origin written into <meta name="api-url">; it is empty for the bundled,
 // same-origin server so the front-end falls back to relative URLs.
 // Page is the current page identifier used by the shared header partial to
-// mark the active nav link ("library", "playlists", "upload", "admin", "cmus")
+// mark the active nav link ("library", "playlists", "upload", "admin")
 // and, on the listening pages, the active library subtab ("library" = Music,
 // "playlists").
 // Section groups a header tab across its subtabs: the listening pages (Music +
@@ -174,7 +173,7 @@ func noCacheStatic(next http.Handler) http.Handler {
 }
 
 // Register mounts the web UI route group on r: the library page at "/", the
-// listening pages, the cmus view at "/cmus", and the static assets under
+// listening pages, and the static assets under
 // "/static/". apiBase is the API origin for the page (empty = relative,
 // same-origin); gitRepo is the header GitRepo button's URL (empty = hidden).
 // Templates and static assets are served from the embedded filesystem, so the
@@ -182,7 +181,6 @@ func noCacheStatic(next http.Handler) http.Handler {
 func Register(r chi.Router, apiBase, gitRepo string) {
 	static := noCacheStatic(http.FileServer(http.FS(staticRoot)))
 	r.Handle("/static/*", http.StripPrefix("/static/", static))
-	r.Get("/cmus", makeHandler(cmusTmpl, "cmus.html", pageData{APIURL: apiBase, GitRepo: gitRepo}))
 	r.Get("/upload", makeHandler(uploadTmpl, "upload.html", pageData{APIURL: apiBase, Page: "upload", GitRepo: gitRepo}))
 	r.Get("/playlists", makeHandler(playlistsTmpl, "playlists.html", pageData{APIURL: apiBase, Page: "playlists", Section: "library", GitRepo: gitRepo}))
 	// The madnetwork section (federation F2): browsing the merged catalog of

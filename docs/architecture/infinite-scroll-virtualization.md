@@ -291,7 +291,7 @@ steps (B, L, X) stay future. See "This pass" above for the decisions.
   `limit` is given: `{items, next_cursor}`, keyset on `(is_unknown_bucket,
   lower_name, id)` (`ListArtistsPage`), `limit` clamped to `[1,200]`, guest variant
   composed; without `limit` it still returns the full bare array (the admin
-  By-entity + cmus consumers, unchanged). The Unknown/Other **album/track** bucket
+  By-entity consumer, unchanged). The Unknown/Other **album/track** bucket
   paths are not yet cursor-paginated (still future — see X).
 - **L. Library — artist list DONE.** `app.js` renders the artist list through the
   module in **window-scroll** mode (the page is the scroller; the slice derives from

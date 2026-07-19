@@ -171,9 +171,3 @@ Two boundaries:
   same `beforeunload` guard *does* fire on admin navigation (it's a real navigation),
   so an in-progress admin upload at least prompts before it's lost. The controller is
   reusable as-is if the admin section ever becomes a client shell.
-
-## cmus
-
-`/cmus` (`webui/html/cmus.html`) is a **paused, standalone** view: its own header,
-its own player design, and outside both shells. Bringing it onto the shared
-player/shell is deferred (`docs/plans/roadmap.md`).
