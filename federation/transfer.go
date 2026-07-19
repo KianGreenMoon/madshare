@@ -94,11 +94,11 @@ type transfer struct {
 
 	// Chunk-mode readiness (F4 swarm path): per-chunk completion so the streaming
 	// relay can read out-of-order regions (a prioritized tail/seek), the chunk
-	// size mapping an offset to its chunk, and the plan's seek-priority hook that
-	// WaitFor pokes for a not-yet-fetched offset. All zero/nil in the sequential
-	// path (F3 whole-file fallback or a born-complete transfer), which relies on
-	// the contiguous `progress` watermark instead.
-	chunkSize  int64
+	// layout mapping an offset to its chunk (small lead ramp + uniform bulk), and
+	// the plan's seek-priority hook that WaitFor pokes for a not-yet-fetched
+	// offset. All nil in the sequential path (F3 whole-file fallback or a
+	// born-complete transfer), which relies on the contiguous `progress` watermark.
+	layout     *chunkLayout
 	chunkOK    []bool
 	prioritize func(chunkIdx int)
 }
@@ -169,7 +169,7 @@ func (t *transfer) WaitFor(ctx context.Context, offset int64) error {
 		t.mu.Lock()
 		avail := t.availLocked(offset)
 		finished, err, ch := t.finished, t.err, t.changed
-		chunkSize, prioritize := t.chunkSize, t.prioritize
+		layout, prioritize := t.layout, t.prioritize
 		t.mu.Unlock()
 		if avail > 0 {
 			return nil
@@ -183,8 +183,8 @@ func (t *transfer) WaitFor(ctx context.Context, offset int64) error {
 		// Seek-priority (chunk mode): nudge the swarm to fetch the chunk covering
 		// this offset next, so a tail/seek read is not gated on the sequential
 		// prefix reaching it.
-		if chunkSize > 0 && prioritize != nil {
-			prioritize(int(offset / chunkSize))
+		if layout != nil && prioritize != nil {
+			prioritize(layout.chunkAt(offset))
 		}
 		select {
 		case <-ctx.Done():
@@ -208,17 +208,14 @@ func (t *transfer) availLocked(offset int64) int64 {
 		}
 		return t.size - offset
 	}
-	if t.chunkSize > 0 && len(t.chunkOK) > 0 {
-		ci := int(offset / t.chunkSize)
-		if ci >= len(t.chunkOK) || !t.chunkOK[ci] {
+	if t.layout != nil && len(t.chunkOK) > 0 {
+		ci := t.layout.chunkAt(offset)
+		if ci < 0 || ci >= len(t.chunkOK) || !t.chunkOK[ci] {
 			return 0
 		}
-		end := int64(ci+1) * t.chunkSize
+		end := t.layout.offsetOf(ci + 1)
 		for j := ci + 1; j < len(t.chunkOK) && t.chunkOK[j]; j++ {
-			end = int64(j+1) * t.chunkSize
-		}
-		if t.size > 0 && end > t.size {
-			end = t.size
+			end = t.layout.offsetOf(j + 1)
 		}
 		if end <= offset {
 			return 0
@@ -263,7 +260,7 @@ func (t *transfer) addProgress(n int64) {
 func (t *transfer) resetProgress() {
 	t.mu.Lock()
 	t.progress = 0
-	t.chunkSize = 0
+	t.layout = nil
 	t.chunkOK = nil
 	t.prioritize = nil
 	close(t.changed)
@@ -274,10 +271,10 @@ func (t *transfer) resetProgress() {
 // beginChunks switches the transfer into chunk mode: readability becomes
 // per-chunk (for the streaming relay's random-access reads) and WaitFor gains a
 // seek-priority hook into the fetch plan. Called by fetchSwarm before dispatch.
-func (t *transfer) beginChunks(chunkSize int64, nchunks int, prioritize func(int)) {
+func (t *transfer) beginChunks(layout *chunkLayout, prioritize func(int)) {
 	t.mu.Lock()
-	t.chunkSize = chunkSize
-	t.chunkOK = make([]bool, nchunks)
+	t.layout = layout
+	t.chunkOK = make([]bool, layout.count())
 	t.prioritize = prioritize
 	close(t.changed)
 	t.changed = make(chan struct{})

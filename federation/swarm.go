@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -29,18 +30,21 @@ import (
 // lie only wastes bandwidth (caught by the whole-file check).
 
 const (
-	// Adaptive chunk sizing: the chunk size scales with the file so a small
-	// track gets small chunks (finer streaming/parallelism) and a large one is
-	// capped. The chosen size is written into the manifest, so a fetcher never
-	// assumes it and this policy can change without a protocol break.
-	minChunkSize = 256 << 10 // 256 KiB
-	maxChunkSize = 4 << 20   // 4 MiB
-	targetChunks = 12        // rough chunk count a mid-size file aims for
+	// Adaptive chunk sizing: the bulk chunk size scales with the file so a small
+	// track gets small chunks and a large one is capped. The cap doubles as the
+	// **seek granularity** — a seek into an un-fetched region waits for the one
+	// chunk covering it — so it is kept modest (1 MiB) rather than large. The
+	// layout is written into the manifest, so a fetcher never assumes it and the
+	// sizing policy can change without a protocol break.
+	minChunkSize = 256 << 10 // 256 KiB — the ramp floor and small-file chunk
+	maxChunkSize = 1 << 20   // 1 MiB — bulk cap = seek granularity
+	targetChunks = 12        // rough bulk-chunk count a mid-size file aims for
 
-	maxChunkWorkers = 8                // parallel chunk fetches per transfer
-	perChunkTimeout = 5 * time.Minute  // bound one chunk fetch
-	manifestTimeout = 20 * time.Second // bound one manifest probe to a holder
-	seedWriteChunk  = 32 << 10         // rate-cap granularity on the serve path
+	maxChunkWorkers  = 8                // parallel chunk fetches per transfer
+	perChunkTimeout  = 5 * time.Minute  // bound one chunk fetch
+	manifestTimeout  = 20 * time.Second // bound one manifest probe to a holder
+	maxManifestChunk = 64 << 20         // reject a manifest whose chunk size exceeds this (DoS guard)
+	seedWriteChunk   = 32 << 10         // rate-cap granularity on the serve path
 )
 
 // chunkSizeFor picks the chunk size for a blob of the given total size: the
@@ -69,6 +73,87 @@ func chunkCount(size, chunkSize int64) int {
 	return int((size + chunkSize - 1) / chunkSize)
 }
 
+// leadSizes returns the small "ramp" chunk sizes that precede the uniform bulk
+// chunks: minChunkSize doubling up to (not including) bulk. This makes the first
+// byte of a stream — and the first byte after a seek to the front — available
+// after a small chunk, while the bulk stays efficient. Empty when bulk is
+// already the floor (small files are uniformly min-chunked) or the file ends
+// within the ramp (the trailing chunk simply covers the remainder).
+func leadSizes(size, bulk int64) []int64 {
+	if bulk <= minChunkSize {
+		return nil
+	}
+	var lead []int64
+	var acc int64
+	for cs := int64(minChunkSize); cs < bulk; cs <<= 1 {
+		if acc+cs >= size {
+			break
+		}
+		lead = append(lead, cs)
+		acc += cs
+	}
+	return lead
+}
+
+// chunkLayout is a blob's chunk boundary table: offsets[i] is the byte start of
+// chunk i and offsets[len-1] == size, so chunk i is [offsets[i], offsets[i+1]).
+// It unifies the small lead ramp and the uniform bulk into one lookup, replacing
+// the old "idx*ChunkSize" assumption on the fetch/relay paths.
+type chunkLayout struct{ offsets []int64 }
+
+// buildLayout constructs the boundary table from the size, the bulk chunk size,
+// and the lead ramp. Deterministic, so a fetcher rebuilds a holder's layout (and
+// can guess it from the advertised size before the manifest arrives).
+func buildLayout(size, bulk int64, lead []int64) *chunkLayout {
+	offs := []int64{0}
+	pos := int64(0)
+	for _, ls := range lead {
+		if pos >= size || ls <= 0 {
+			break
+		}
+		pos += ls
+		if pos > size {
+			pos = size
+		}
+		offs = append(offs, pos)
+	}
+	for pos < size && bulk > 0 {
+		pos += bulk
+		if pos > size {
+			pos = size
+		}
+		offs = append(offs, pos)
+	}
+	return &chunkLayout{offsets: offs}
+}
+
+func (l *chunkLayout) count() int { return len(l.offsets) - 1 }
+
+// rangeOf returns [start, end) of chunk idx.
+func (l *chunkLayout) rangeOf(idx int) (int64, int64) { return l.offsets[idx], l.offsets[idx+1] }
+
+// offsetOf returns the byte start of chunk idx (or the total size for idx==count).
+func (l *chunkLayout) offsetOf(idx int) int64 {
+	if idx >= len(l.offsets) {
+		return l.offsets[len(l.offsets)-1]
+	}
+	return l.offsets[idx]
+}
+
+// chunkAt returns the index of the chunk containing offset (clamped to a valid
+// chunk index).
+func (l *chunkLayout) chunkAt(offset int64) int {
+	n := l.count()
+	if n <= 0 {
+		return 0
+	}
+	i := sort.Search(n, func(i int) bool { return l.offsets[i+1] > offset })
+	if i >= n {
+		i = n - 1
+	}
+	return i
+}
+
 // ── Chunk manifest ───────────────────────────────────────────────────────────
 
 // blobManifest describes a blob's chunk layout for multi-source fetch. It is
@@ -78,16 +163,33 @@ type blobManifest struct {
 	Protocol  int      `json:"protocol"`
 	Hash      string   `json:"hash"`
 	Size      int64    `json:"size"`
-	ChunkSize int64    `json:"chunk_size"`
+	ChunkSize int64    `json:"chunk_size"`           // bulk chunk size
+	LeadSizes []int64  `json:"lead_sizes,omitempty"` // small ramp chunks before the bulk (empty = uniform)
 	Filename  string   `json:"filename,omitempty"`
-	Chunks    []string `json:"chunks"` // per-chunk SHA-256 hex, in order
+	Chunks    []string `json:"chunks"` // per-chunk SHA-256 hex, lead ramp then bulk, in order
+}
+
+// layout builds the boundary table implied by the manifest (bulk ChunkSize +
+// LeadSizes ramp). Cheap; callers build it once per transfer.
+func (m *blobManifest) layout() *chunkLayout {
+	return buildLayout(m.Size, m.ChunkSize, m.LeadSizes)
 }
 
 // valid reports whether a manifest received from a friend is structurally sound
-// for the requested hash — the chunk count must match the declared layout.
+// for the requested hash: the ramp sizes must be positive and below the bulk
+// size, the bulk size within a sane bound (a DoS guard against a manifest that
+// would force a huge per-chunk allocation), and the chunk count must match the
+// declared layout.
 func (m *blobManifest) valid(hash string) bool {
-	return m != nil && m.Hash == hash && m.Size >= 0 && m.ChunkSize > 0 &&
-		len(m.Chunks) == chunkCount(m.Size, m.ChunkSize)
+	if m == nil || m.Hash != hash || m.Size < 0 || m.ChunkSize <= 0 || m.ChunkSize > maxManifestChunk {
+		return false
+	}
+	for _, ls := range m.LeadSizes {
+		if ls <= 0 || ls >= m.ChunkSize {
+			return false
+		}
+	}
+	return len(m.Chunks) == m.layout().count()
 }
 
 // manifest returns the (memoized) chunk manifest for a blob this node holds at
@@ -124,28 +226,26 @@ func buildManifest(path, hash string) (*blobManifest, error) {
 		return nil, err
 	}
 	size := info.Size()
-	cs := chunkSizeFor(size)
+	bulk := chunkSizeFor(size)
+	lead := leadSizes(size, bulk)
+	layout := buildLayout(size, bulk, lead)
 	m := &blobManifest{
 		Protocol:  ProtocolVersion,
 		Hash:      hash,
 		Size:      size,
-		ChunkSize: cs,
+		ChunkSize: bulk,
+		LeadSizes: lead,
 		Filename:  filepath.Base(path),
-		Chunks:    make([]string, 0, chunkCount(size, cs)),
+		Chunks:    make([]string, 0, layout.count()),
 	}
-	buf := make([]byte, cs)
-	for {
-		nr, rerr := io.ReadFull(f, buf)
-		if nr > 0 {
-			sum := sha256.Sum256(buf[:nr])
-			m.Chunks = append(m.Chunks, hex.EncodeToString(sum[:]))
+	buf := make([]byte, bulk) // bulk is the largest chunk; lead chunks are smaller
+	for i := 0; i < layout.count(); i++ {
+		start, end := layout.rangeOf(i)
+		if _, err := io.ReadFull(f, buf[:end-start]); err != nil {
+			return nil, err
 		}
-		if rerr == io.EOF || rerr == io.ErrUnexpectedEOF {
-			break
-		}
-		if rerr != nil {
-			return nil, rerr
-		}
+		sum := sha256.Sum256(buf[:end-start])
+		m.Chunks = append(m.Chunks, hex.EncodeToString(sum[:]))
 	}
 	return m, nil
 }
@@ -388,14 +488,15 @@ func (n *Node) fetchRange(ctx context.Context, p *Peer, hash string, start, leng
 // round trip. take() consumes it once the manifest is known, keeping the bytes
 // only if the guessed layout matched and chunk 0 verifies.
 type chunk0Prefetch struct {
-	active  bool
-	guessCS int64
-	ch      chan []byte // buffered(1): the fetched bytes, or nil on failure
+	active   bool
+	guessLen int64       // the chunk-0 length we speculatively fetched
+	ch       chan []byte // buffered(1): the fetched bytes, or nil on failure
 }
 
 // speculateChunk0 starts fetching chunk 0 from the first holder using the chunk
-// size implied by the advertised file size (deterministic via chunkSizeFor), so
-// it lands in parallel with the manifest fetch instead of after it.
+// layout implied by the advertised file size (deterministic via chunkSizeFor +
+// the lead ramp), so it lands in parallel with the manifest fetch. With the ramp
+// chunk 0 is a small lead chunk, so this speculative fetch is small.
 func (n *Node) speculateChunk0(t *transfer, holders []*Peer) *chunk0Prefetch {
 	pf := &chunk0Prefetch{ch: make(chan []byte, 1)}
 	if len(holders) == 0 {
@@ -403,15 +504,18 @@ func (n *Node) speculateChunk0(t *transfer, holders []*Peer) *chunk0Prefetch {
 		return pf
 	}
 	size := t.Size()
-	pf.guessCS = chunkSizeFor(size)
-	length := pf.guessCS
-	if size > 0 && size < length {
-		length = size
+	bulk := chunkSizeFor(size)
+	gl := buildLayout(size, bulk, leadSizes(size, bulk))
+	if gl.count() == 0 { // unknown/zero size — skip the guess
+		pf.ch <- nil
+		return pf
 	}
+	_, end := gl.rangeOf(0)
+	pf.guessLen = end // chunk 0 = [0, end)
 	pf.active = true
 	p := holders[0]
 	go func() {
-		data, err := n.fetchRange(n.transferCtx, p, t.hash, 0, length)
+		data, err := n.fetchRange(n.transferCtx, p, t.hash, 0, pf.guessLen)
 		if err != nil {
 			pf.ch <- nil
 			return
@@ -422,23 +526,20 @@ func (n *Node) speculateChunk0(t *transfer, holders []*Peer) *chunk0Prefetch {
 }
 
 // take waits for the speculative fetch and returns chunk 0's bytes iff the
-// manifest confirms the guessed layout and the bytes verify against it; nil
-// otherwise (fetchSwarm then fetches chunk 0 through the normal plan). It blocks
-// only until the speculative fetch resolves (bounded by perChunkTimeout).
+// manifest confirms the guessed chunk-0 boundary and the bytes verify against
+// it; nil otherwise (fetchSwarm then fetches chunk 0 through the normal plan).
+// It blocks only until the speculative fetch resolves (bounded by perChunkTimeout).
 func (pf *chunk0Prefetch) take(man *blobManifest) []byte {
 	if !pf.active {
 		return nil
 	}
 	data := <-pf.ch
-	if data == nil || len(man.Chunks) == 0 || man.ChunkSize != pf.guessCS {
+	if data == nil || len(man.Chunks) == 0 {
 		return nil
 	}
-	want := man.ChunkSize
-	if man.Size < want {
-		want = man.Size
-	}
-	if int64(len(data)) != want {
-		return nil
+	_, end := man.layout().rangeOf(0)
+	if end != pf.guessLen || int64(len(data)) != end {
+		return nil // the real chunk-0 boundary differed from the guess
 	}
 	sum := sha256.Sum256(data)
 	if hex.EncodeToString(sum[:]) != man.Chunks[0] {
@@ -460,6 +561,7 @@ func (pf *chunk0Prefetch) discard() {}
 // so chunks can be written at their offsets (WriteAt is safe for concurrent
 // non-overlapping writes).
 func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*Peer, prefetched0 []byte) error {
+	layout := man.layout()
 	f, err := os.OpenFile(t.partPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
@@ -478,10 +580,11 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*Peer, prefe
 		}
 		done0 = true
 	}
-	plan := newChunkPlan(man, holders, done0)
-	// Expose per-chunk readiness + the seek-priority hook to the streaming relay,
-	// pre-marking chunk 0 so a waiting reader is released without a round trip.
-	t.beginChunks(man.ChunkSize, len(man.Chunks), plan.prioritize)
+	plan := newChunkPlan(man, layout, holders, done0)
+	// Expose per-chunk readiness (the layout) + the seek-priority hook to the
+	// streaming relay, pre-marking chunk 0 so a waiting reader is released without
+	// a round trip.
+	t.beginChunks(layout, plan.prioritize)
 	if done0 {
 		t.chunkDone(0, plan.watermarkBytes())
 	}
@@ -510,7 +613,7 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*Peer, prefe
 					plan.fail(idx, -1, ErrNoHolder) // all providers dead → aborts
 					continue
 				}
-				if err := n.fetchChunk(t, f, man, idx, p); err != nil {
+				if err := n.fetchChunk(t, f, layout, man, idx, p); err != nil {
 					plan.fail(idx, pidx, err)
 				} else {
 					plan.succeed(idx, t)
@@ -529,16 +632,12 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*Peer, prefe
 // fetchChunk fetches one chunk over the mesh (a plain HTTP Range request against
 // the F3 blob endpoint), verifies it against the manifest, and writes it at its
 // offset.
-func (n *Node) fetchChunk(t *transfer, f *os.File, man *blobManifest, idx int, p *Peer) error {
+func (n *Node) fetchChunk(t *transfer, f *os.File, layout *chunkLayout, man *blobManifest, idx int, p *Peer) error {
 	addr, err := AddrForKeyHex(p.PublicKey)
 	if err != nil {
 		return err
 	}
-	start := int64(idx) * man.ChunkSize
-	end := start + man.ChunkSize
-	if end > man.Size {
-		end = man.Size
-	}
+	start, end := layout.rangeOf(idx)
 	length := end - start
 	ctx, cancel := context.WithTimeout(n.transferCtx, perChunkTimeout)
 	defer cancel()
@@ -589,21 +688,19 @@ type chunkPlan struct {
 	aborted   bool
 	err       error
 
-	chunkSize int64
-	size      int64
+	layout *chunkLayout
 
 	providers []*Peer
 	dead      []bool // per-provider
 	rr        int    // round-robin cursor
 }
 
-func newChunkPlan(man *blobManifest, holders []*Peer, done0 bool) *chunkPlan {
-	nc := len(man.Chunks)
+func newChunkPlan(man *blobManifest, layout *chunkLayout, holders []*Peer, done0 bool) *chunkPlan {
+	nc := layout.count()
 	cp := &chunkPlan{
 		done:      make([]bool, nc),
 		remaining: nc,
-		chunkSize: man.ChunkSize,
-		size:      man.Size,
+		layout:    layout,
 		providers: holders,
 		dead:      make([]bool, len(holders)),
 	}
@@ -626,11 +723,7 @@ func newChunkPlan(man *blobManifest, holders []*Peer, done0 bool) *chunkPlan {
 func (cp *chunkPlan) watermarkBytes() int64 {
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
-	b := int64(cp.watermark) * cp.chunkSize
-	if b > cp.size {
-		b = cp.size
-	}
-	return b
+	return cp.layout.offsetOf(cp.watermark)
 }
 
 // prioritize moves the chunk covering a requested offset to the front of the
@@ -701,10 +794,7 @@ func (cp *chunkPlan) succeed(idx int, t *transfer) {
 			cp.watermark++
 		}
 	}
-	progress := int64(cp.watermark) * cp.chunkSize
-	if progress > cp.size {
-		progress = cp.size
-	}
+	progress := cp.layout.offsetOf(cp.watermark)
 	cp.cond.Broadcast()
 	cp.mu.Unlock()
 	t.chunkDone(idx, progress)

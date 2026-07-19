@@ -358,12 +358,23 @@ default** — its social graph is visible to its members.
   above chooses which rendition (which swarm) to fetch.
 - **Chunk protocol: a lean chunk-exchange over ygg** (built F4), not the
   BitTorrent wire protocol/DHT — we control both endpoints. A holder serves an
-  **on-demand manifest** (`GET /madnetwork/v0/manifest/{hash}`): the total
-  size, the **chunk size**, and the ordered per-chunk SHA-256 list. The chunk
-  size is **adaptive** — chosen from the file size (small files → small chunks,
-  large → up to a cap, centred near ~1 MiB) and **written into the manifest**,
-  so a fetcher never assumes a layout and the sizing policy can change without a
-  protocol break (decision 2026-07-18, resolves former open question 1). Because
+  **on-demand manifest** (`GET /madnetwork/v0/manifest/{hash}`): the total size,
+  the bulk **chunk size**, a small **lead-ramp** (`lead_sizes`), and the ordered
+  per-chunk SHA-256 list. The layout is **adaptive + self-describing**, so a
+  fetcher never assumes it and the sizing policy can change without a protocol
+  break (decision 2026-07-18, resolves former open question 1):
+  - the **bulk chunk size** scales with the file up to a **1 MiB cap** — the cap
+    is deliberately modest because it doubles as the **seek granularity** (a seek
+    into an un-fetched region waits for the one chunk covering it);
+  - a **lead ramp** of small chunks (256 KiB doubling up to the bulk size)
+    precedes the bulk, so the **first byte** of a stream — and the first byte
+    after a seek to the front — is ready after a *small* chunk regardless of file
+    size, while the bulk stays efficient and manifests stay bounded for huge
+    files. Older nodes that predate the ramp see a chunk count that doesn't match
+    a uniform layout, reject the manifest, and fall back to the whole-file fetch
+    — a clean degrade.
+
+  Because
   the swarm id is a flat SHA-256 of the whole file (not a Merkle root — it is
   the same content address used everywhere), the manifest's chunk hashes are not
   cryptographically bound to it; they enable **early per-chunk verification and
@@ -388,11 +399,13 @@ default** — its social graph is visible to its members.
 - **Fast first byte** (built F4): to avoid two serial mesh round-trips before
   playback starts, a fetch **overlaps the manifest probe with a speculative
   chunk-0 fetch** — chunk 0's byte range is derived from the advertised size via
-  the deterministic `chunkSizeFor`, then confirmed and per-chunk-verified once
-  the manifest lands (dropped if the guess was wrong). Manifest probes and chunk
-  fetches share **one pooled mesh connection**, so chunk fetches reuse the
-  manifest's warm path instead of paying a fresh handshake; a manifest probe is
-  bounded (20 s) so a slow holder cannot stall the transfer.
+  the deterministic layout (so with the lead ramp the speculative fetch is a
+  *small* chunk), then confirmed and per-chunk-verified once the manifest lands
+  (dropped if the guess was wrong). Manifest probes and chunk fetches share **one
+  pooled mesh connection**, so chunk fetches reuse the manifest's warm path
+  instead of paying a fresh handshake; a manifest probe is bounded (20 s) so a
+  slow holder cannot stall the transfer. Net effect: first byte after ~one small
+  chunk + a round-trip rather than a full bulk chunk.
 - **Tracker = the catalog + holdings** (built F4). "Who has hash H" is the union
   of two sources: friends whose **published catalog** advertises the hash as a
   rendition (their library — already synced in F2), and friends advertising it

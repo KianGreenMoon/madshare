@@ -44,7 +44,7 @@ func TestChunkSizeForAdaptive(t *testing.T) {
 		{100 << 10, minChunkSize},    // below the floor
 		{minChunkSize, minChunkSize}, // exactly the floor
 		{6 << 20, 512 << 10},         // 6 MiB / 12 ≈ 512 KiB
-		{15 << 20, 2 << 20},          // 15 MiB / 12 rounds to 2 MiB
+		{15 << 20, maxChunkSize},     // 15 MiB / 12 ≈ 1.3 MiB → capped at the 1 MiB ceiling
 		{100 << 20, maxChunkSize},    // clamps to the ceiling
 	}
 	for _, c := range cases {
@@ -58,6 +58,54 @@ func TestChunkSizeForAdaptive(t *testing.T) {
 				t.Errorf("chunkCount(%d,%d)=%d does not cover the file exactly", c.size, got, nc)
 			}
 		}
+	}
+}
+
+// TestBuildManifestRamp: a file above the floor gets a lead ramp plus uniform
+// bulk chunks, and every chunk hash matches a re-hash of its byte range.
+func TestBuildManifestRamp(t *testing.T) {
+	content := fillBytes(4 << 20) // 4 MiB → ramp + bulk chunks
+	dir := t.TempDir()
+	path := filepath.Join(dir, "song.flac")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hash := hashOf(content)
+	m, err := buildManifest(path, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.valid(hash) {
+		t.Fatalf("built manifest invalid: %+v", m)
+	}
+	if len(m.LeadSizes) == 0 {
+		t.Errorf("expected a lead ramp for a 4 MiB file, got none")
+	}
+	lay := m.layout()
+	if s, e := lay.rangeOf(0); e-s != minChunkSize {
+		t.Errorf("first chunk = %d bytes, want %d (ramp floor)", e-s, minChunkSize)
+	}
+	for i := 0; i < lay.count(); i++ {
+		s, e := lay.rangeOf(i)
+		if hashOf(content[s:e]) != m.Chunks[i] {
+			t.Errorf("chunk %d hash does not match its content range", i)
+		}
+	}
+}
+
+// TestSwarmRamp fetches a file large enough to exercise the lead ramp + variable
+// bulk chunks end-to-end (manifest build → multi-chunk assembly → whole-file
+// verify), byte-exact.
+func TestSwarmRamp(t *testing.T) {
+	content := fillBytes(4 << 20) // 4 MiB
+	storeA, storeB := newMemStore(), newMemStore()
+	hash, resolveA := publishBlob(t, storeA, content)
+	cacheB := t.TempDir()
+	a, b := startNodePair(t, storeA, storeB, []Option{resolveA}, []Option{WithCacheDir(cacheB)})
+	makeFriends(t, a, b, storeA, storeB)
+	seedBlobCatalog(t, storeB, a, hash, int64(len(content)))
+	if !fetchAndVerify(t, b, hash, content, cacheB) {
+		t.Fatal("ramped multi-chunk transfer did not assemble the blob")
 	}
 }
 
