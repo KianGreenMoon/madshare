@@ -20,13 +20,29 @@ const API = document.querySelector('meta[name="api-url"]')?.content || '';
 let drill = null;      // { level: 'artists'|'albums'|'tracks', artist, album }
 let searchTimer = null;
 
+// Shared player controller (singleton) + the trackchange subscription so the
+// track list can highlight what's playing, mirroring the local library. Wired
+// in init(), released in teardown().
+let controller = null;
+let unsubTrackChange = null;
+
 // In-flight download polls, keyed by hash (survive within a visit; cleared on
 // teardown — the server job keeps running and the state is re-pollable).
 const downloadPolls = new Map();
 
+// Art placeholder for album rows — the merged catalog carries no cover images,
+// so every remote album falls back to this note icon (same glyph the library
+// shows for cover-less albums).
+const noteSvg =
+  `<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">` +
+  `<path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>`;
+
 export async function init() {
   if (!gatePage(PAGE_PERMS.madnetwork)) return;
   drill = { level: 'artists', artist: null, album: null };
+
+  controller = getController();
+  unsubTrackChange = controller.on('trackchange', t => highlightPlaying(t.url));
 
   const input = document.getElementById('mnSearchInput');
   input.addEventListener('input', () => {
@@ -42,7 +58,18 @@ export function teardown() {
   clearTimeout(searchTimer);
   for (const timer of downloadPolls.values()) clearTimeout(timer);
   downloadPolls.clear();
+  if (unsubTrackChange) { unsubTrackChange(); unsubTrackChange = null; }
+  controller = null;
   drill = null;
+}
+
+// highlightPlaying marks the madnetwork track row whose URL is playing (matched
+// by data-url) and clears the rest, so the shared player bar and the list stay
+// in sync exactly as they do in the local library.
+function highlightPlaying(url) {
+  document.querySelectorAll('.mn-track').forEach(row => {
+    row.classList.toggle('playing', !!url && row.dataset.url === url);
+  });
 }
 
 // ── Status strip ──────────────────────────────────────────────────────────────
@@ -185,10 +212,7 @@ async function showAlbums(artist) {
   const wrap = document.createElement('div');
   wrap.className = 'panel-fade-in';
   for (const al of albums) {
-    const yearPrefix = al.year ? `${al.year} · ` : '';
-    wrap.append(mkRow('album-row', al.title,
-      `${yearPrefix}${al.tracks} track${al.tracks === 1 ? '' : 's'}`,
-      () => showTracks(artist, al.title)));
+    wrap.append(mkAlbumRow(al, () => showTracks(artist, al.title)));
   }
   document.getElementById('mnPanel').replaceChildren(wrap);
 }
@@ -205,13 +229,31 @@ async function showTracks(artist, album) {
   const tracks = data.tracks || [];
   if (!tracks.length) { panelMessage('No tracks found.'); return; }
 
+  // Build the album's play queue once (default = each track's most-held version,
+  // ladder-best rendition). Unplayable tracks (no rendition hash) are kept out of
+  // the queue; the map lets each row find its queue slot so prev/next stays tight.
+  const queue = [];
+  const qIndex = new Map();
+  tracks.forEach((t, i) => {
+    const best = t.versions?.[0]?.renditions?.[0];
+    if (best && best.hash) {
+      qIndex.set(i, queue.length);
+      queue.push({
+        url: `${API}/api/madnetwork/stream/${best.hash}`,
+        title: t.title || 'Unknown',
+        artist: t.artist || drill.artist || '',
+        dur: fmtDur(t.duration) || '—',
+      });
+    }
+  });
+
   const wrap = document.createElement('div');
   wrap.className = 'panel-fade-in';
   const list = document.createElement('ul');
   list.className = 'track-list';
   let lastDisc;
   const multiDisc = new Set(tracks.map(t => t.disc_number ?? null)).size > 1;
-  for (const t of tracks) {
+  tracks.forEach((t, i) => {
     const disc = t.disc_number ?? null;
     if (multiDisc && disc !== lastDisc) {
       lastDisc = disc;
@@ -220,10 +262,14 @@ async function showTracks(artist, album) {
       hd.textContent = disc === null ? 'No disc' : disc === 0 ? 'Disc 0' : `Disc ${disc}`;
       list.append(hd);
     }
-    list.append(mkTrackRow(t));
-  }
+    list.append(mkTrackRow(t, i, queue, qIndex.get(i)));
+  });
   wrap.append(list);
   document.getElementById('mnPanel').replaceChildren(wrap);
+
+  // Re-highlight whatever is playing if its row is in this view.
+  const cur = controller?.current?.();
+  if (cur && cur.track) highlightPlaying(cur.track.url);
 }
 
 // ── Row builders ──────────────────────────────────────────────────────────────
@@ -235,6 +281,42 @@ function mkRow(kind, name, meta, onOpen) {
   row.setAttribute('role', 'button');
   row.setAttribute('aria-label', `Browse ${name}`);
   row.append(mkSpan('row-name', name), mkSpan('row-meta', meta), mkSpan('row-chevron', '›'));
+  row.addEventListener('click', onOpen);
+  row.addEventListener('keydown', e => {
+    if (e.target !== row) return;
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); }
+  });
+  return row;
+}
+
+// Album row with the library's cover-art column (a note placeholder — the merged
+// catalog carries no images) so the drill-down looks like the local library.
+function mkAlbumRow(al, onOpen) {
+  const row = document.createElement('div');
+  row.className = 'panel-row album-row';
+  row.tabIndex = 0;
+  row.setAttribute('role', 'button');
+  row.setAttribute('aria-label', `Browse album ${al.title}`);
+
+  const art = document.createElement('div');
+  art.className = 'row-art';
+  art.innerHTML = noteSvg;
+
+  const body = document.createElement('div');
+  body.className = 'row-body';
+  const name = document.createElement('div');
+  name.className = 'row-name';
+  name.textContent = al.title;
+  const meta = document.createElement('div');
+  meta.className = 'row-meta';
+  const yearPrefix = al.year ? `${al.year} · ` : '';
+  meta.textContent = `${yearPrefix}${al.tracks} track${al.tracks === 1 ? '' : 's'}`;
+  body.append(name, meta);
+
+  const chevron = mkSpan('row-chevron', '›');
+  chevron.setAttribute('aria-hidden', 'true');
+
+  row.append(art, body, chevron);
   row.addEventListener('click', onOpen);
   row.addEventListener('keydown', e => {
     if (e.target !== row) return;
@@ -263,42 +345,92 @@ function fmtSize(n) {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function mkTrackRow(t) {
+// A track row laid out like the local library's (number / title+artist /
+// duration), clicking to play. The madnetwork-only extras are a Download pill
+// and a subtle ⓘ toggle that reveals the source panel (holders / versions /
+// quality) — rare info kept out of the way. `queue` is the album's play queue
+// and `qi` this track's slot in it (undefined when the track has no playable
+// rendition).
+function mkTrackRow(t, i, queue, qi) {
   const li = document.createElement('li');
   const row = document.createElement('div');
   row.className = 'track-row mn-track';
   row.tabIndex = 0;
+  row.setAttribute('role', 'button');
 
-  const num = mkSpan('track-num', t.track_number ?? '');
-  const body = document.createElement('div');
-  body.className = 'mn-track-body';
-  body.append(mkSpan('track-title', t.title));
-  const holders = new Set();
-  for (const v of t.versions || []) for (const h of v.holders || []) holders.add(h.name);
-  const metaBits = [];
-  if (t.duration) metaBits.push(fmtDur(t.duration));
-  metaBits.push(`${holders.size} friend${holders.size === 1 ? '' : 's'}`);
-  if ((t.versions || []).length > 1) metaBits.push(`${t.versions.length} versions`);
-  body.append(mkSpan('mn-track-meta', metaBits.join(' · ')));
+  const playable = qi != null;
+  if (playable) row.dataset.url = queue[qi].url;
 
-  row.append(num, body, mkSpan('row-chevron mn-expand', '▾'));
-  li.append(row);
+  const num = mkSpan('track-num', t.track_number ?? (i + 1));
+  const icon = document.createElement('span');
+  icon.className = 'track-icon-playing';
+  icon.setAttribute('aria-hidden', 'true');
+  icon.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
 
-  // Expansion: the versions detail (renditions + holders). Toggled per row.
+  // Title over artist, stacked — the library uses block <div>s here (spans would
+  // run onto one line).
+  const info = document.createElement('div');
+  info.className = 'track-info';
+  const title = document.createElement('div');
+  title.className = 'track-title';
+  title.textContent = t.title || 'Unknown';
+  const meta = document.createElement('div');
+  meta.className = 'track-meta';
+  meta.textContent = t.artist || drill?.artist || '';
+  info.append(title, meta);
+
+  row.append(num, icon, info);
+
+  // Download — the madnetwork-only action, on the default version's best rendition.
+  const best = t.versions?.[0]?.renditions?.[0];
+  if (best && best.hash) {
+    const dl = document.createElement('button');
+    dl.type = 'button';
+    dl.className = 'mn-dl';
+    dl.textContent = '⬇ Download';
+    dl.title = 'Fetch into this server’s library (staged for review)';
+    dl.addEventListener('click', e => { e.stopPropagation(); startDownload(dl, best.hash); });
+    row.append(dl);
+  }
+
+  // Source & versions — a subtle info toggle for the provenance panel.
   const detail = document.createElement('div');
   detail.className = 'mn-versions';
   detail.hidden = true;
-  li.append(detail);
+  const infoBtn = document.createElement('button');
+  infoBtn.type = 'button';
+  infoBtn.className = 'mn-info';
+  infoBtn.textContent = 'ⓘ';
+  infoBtn.title = 'Source & versions';
+  infoBtn.setAttribute('aria-label', `Source and versions for ${t.title || 'this track'}`);
+  infoBtn.setAttribute('aria-expanded', 'false');
   const toggle = () => {
     if (detail.hidden) renderVersions(detail, t);
     detail.hidden = !detail.hidden;
+    infoBtn.setAttribute('aria-expanded', String(!detail.hidden));
     row.classList.toggle('mn-track--open', !detail.hidden);
   };
-  row.addEventListener('click', toggle);
-  row.addEventListener('keydown', e => {
-    if (e.target !== row) return;
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
-  });
+  infoBtn.addEventListener('click', e => { e.stopPropagation(); toggle(); });
+  row.append(infoBtn, mkSpan('track-dur', fmtDur(t.duration)));
+
+  li.append(row, detail);
+
+  if (playable) {
+    const play = () => controller?.setQueue(queue, qi);
+    row.setAttribute('aria-label', `Play ${t.title || 'track'}`);
+    row.addEventListener('click', play);
+    row.addEventListener('keydown', e => {
+      if (e.target !== row) return;
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); play(); }
+    });
+  } else {
+    row.setAttribute('aria-label', t.title || 'Unknown');
+    // Nothing to play — the ⓘ panel is still reachable via its own button.
+    row.addEventListener('keydown', e => {
+      if (e.target !== row) return;
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+    });
+  }
   return li;
 }
 

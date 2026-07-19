@@ -46,12 +46,54 @@
 }
 .mn-search input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-/* ── Track rows + versions expansion ────────────────────────────────────────── */
-.mn-track-body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.mn-track-body .track-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mn-track-meta { font-size: 0.8rem; color: var(--text-muted); }
-.mn-expand { transition: transform 120ms ease; }
-.mn-track--open .mn-expand { transform: rotate(180deg); }
+/* ── Track-row extras: Download pill + source/versions info toggle ───────────── */
+/* The row itself reuses the library's .track-row layout (app.css). */
+
+/* Download — the one action the local library lacks; always visible so the
+   feature is discoverable, muted until hover. */
+.mn-dl {
+  flex-shrink: 0;
+  font: inherit;
+  font-size: 0.76rem;
+  padding: 0.2rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.mn-dl:hover { color: var(--text); border-color: var(--accent); }
+.mn-dl:disabled { opacity: 0.65; cursor: default; }
+.mn-dl:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Source & versions — rare, so it stays faint until the row is hovered/focused
+   or the panel is open (never fully hidden, so touch + keyboard can reach it). */
+.mn-info {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.4;
+  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+}
+.track-row:hover .mn-info,
+.track-row:focus-within .mn-info,
+.mn-track--open .mn-info { opacity: 1; }
+.mn-info:hover { color: var(--text); background: var(--surface-hover); }
+.mn-info:focus-visible { outline: 2px solid var(--accent); opacity: 1; }
+.mn-track--open .mn-info { color: var(--accent); }
+
+/* ── Source & versions panel (renditions / holders / per-version actions) ────── */
 
 .mn-versions {
   margin: 0 var(--space-4) var(--space-2) var(--space-6);
