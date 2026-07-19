@@ -129,10 +129,10 @@ async function drillToTracks(albumId, artistId, artistName, albumTitle) {
 // Rebuild the breadcrumb nav from current drill state.
 // Uses addEventListener (not onclick) — module scripts don't share global scope.
 //
-// The breadcrumb holds only the drill path BELOW the section root: the "Music"
-// subtab already labels the section and is the back-to-top affordance, so we never
-// repeat it here. At the artists (top) level there's nothing to show, so the whole
-// bar is hidden to avoid an empty strip.
+// Once drilled in, the path is rooted at a clickable "Library" crumb (mirroring
+// /madnetwork's "Madnetwork › …") so the whole library is one click away on the
+// same line as the artist step-back. At the artists (top) level there's nothing
+// to step back to, so the whole bar is hidden to avoid an empty strip.
 function renderBreadcrumb() {
   const bc = document.getElementById('breadcrumb');
   bc.innerHTML = '';
@@ -161,15 +161,19 @@ function renderBreadcrumb() {
   }
 
   if (drill.level === 'albums') {
+    bc.appendChild(mkLink('Library', () => loadArtists()));
+    bc.appendChild(mkSep());
     bc.appendChild(mkCurrent(displayArtist));
   } else if (drill.level === 'tracks') {
     const capturedArtistId = drill.artistId;
     const capturedArtist   = drill.artist;
+    bc.appendChild(mkLink('Library', () => loadArtists()));
+    bc.appendChild(mkSep());
     bc.appendChild(mkLink(displayArtist, () => drillToAlbums(capturedArtistId, capturedArtist)));
     bc.appendChild(mkSep());
     bc.appendChild(mkCurrent(displayAlbum));
   }
-  // 'artists' (top) level: empty — the Music subtab is the label and the way back.
+  // 'artists' (top) level: empty — already at the full library, nothing to step back to.
   const bar = bc.closest('.library-bar');
   if (bar) bar.style.display = bc.children.length ? '' : 'none';
 }
