@@ -20,6 +20,9 @@
 //   'duration'      (track, secs)  — the current track's duration became known
 //   'error'         (track, index) — the current track failed (genuine media error)
 //   'autherror'     ()             — playback failed with 401/403 → prompt re-auth
+//   'playstate'     (playing)      — the audio started (true) or paused (false),
+//                                    so track lists can show a pause/resume icon
+//                                    on the current row
 //   'queuechange'   ()             — the queue's contents/order/current changed
 //   'queuereplaced' ()             — a manually edited queue was replaced by
 //                                    setQueue (a brief informational toast; the
@@ -235,8 +238,8 @@ function createController() {
       }
       if (index >= 0) emit('duration', queue[index], dur);
     },
-    onPlay:  () => setPlaybackState('playing'),
-    onPause: () => { setPlaybackState('paused'); persist(); }, // exact position on pause
+    onPlay:  () => { setPlaybackState('playing'); emit('playstate', true); },
+    onPause: () => { setPlaybackState('paused'); persist(); emit('playstate', false); }, // exact position on pause
   });
 
   // Keep the saved playback position fresh: a light heartbeat while playing
@@ -400,6 +403,9 @@ function createController() {
     },
 
     playAt: i => go(i),
+    // toggle pauses/resumes the current track without disturbing the queue — the
+    // track-list "click the playing row to pause it" path.
+    toggle: () => player.toggle(),
     next: goNext,
     prev: goPrev,
     // current returns the playing track + index (or null), so a freshly rendered

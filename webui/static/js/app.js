@@ -498,6 +498,11 @@ function renderTrackList(tracks) {
       // The tagset id rides on the track for the queue panel's "Save as
       // playlist", the hearts, and the quality-dropdown renditions fetch.
       tagsetId: t.tagset_id || null,
+      // rowKey is the APPEARANCE identity used to match the playing row and to
+      // decide pause-vs-restart on click: the tagset (appearance) when known, so
+      // a different appearance of the same audio (different tagset, same url)
+      // restarts rather than toggling pause.
+      rowKey: t.tagset_id ? `ts:${t.tagset_id}` : `url:${url}`,
       title:  t.title  || t.filename || 'Unknown',
       // Per-track performer (matches the playlists page); falls back to the
       // album-grouping artist from the breadcrumb when a row has no performer.
@@ -533,7 +538,8 @@ function renderTrackList(tracks) {
     row.className    = 'track-row';
     row.tabIndex     = 0;
     row.dataset.idx  = i;          // used by the background duration fetch
-    row.dataset.url  = track.url;  // stable key for the playing highlight
+    row.dataset.url  = track.url;  // duration write-back / unavailable marking
+    row.dataset.key  = track.rowKey; // appearance identity for the playing highlight
     row.setAttribute('role', 'button');
     row.setAttribute('aria-label', `Play ${track.title}`);
     row.innerHTML =
@@ -552,7 +558,13 @@ function renderTrackList(tracks) {
       mkMoreBtn(`More actions for ${track.title}`,
         btn => quickAddItems(btn, () => [track], { likeTagset: track.tagsetId })),
       durEl);
-    const play = () => controller.setQueue(libraryPlaylist, i);
+    // Click the playing row to pause/resume it; click any other row (including a
+    // different appearance of the same audio) to start it fresh.
+    const play = () => {
+      const cur = controller.current();
+      if (cur && playKeyOf(cur.track) === track.rowKey) controller.toggle();
+      else controller.setQueue(libraryPlaylist, i);
+    };
     row.addEventListener('click', play);
     row.addEventListener('keydown', e => {
       if (e.target !== row) return;
@@ -566,7 +578,7 @@ function renderTrackList(tracks) {
 
   // Re-highlight whatever is currently playing if its row is in this view.
   const cur = controller.current();
-  if (cur) highlightPlaying(cur.track.url);
+  if (cur) highlightPlaying(cur.track);
   repaintHearts();
 
   // Background fetch for any tracks still showing '—'.
@@ -619,22 +631,41 @@ async function fetchMissingDurations(list) {
 // builds queues (controller.setQueue on a track click) and reflects state — row
 // highlighting and duration write-back — through the subscriptions below
 // (module-scoped: they run once and persist, and are harmless on other pages
-// since they match rows by data-url). Auth-expiry and the queue-replaced undo
+// since they match rows by data-key). Auth-expiry and the queue-replaced undo
 // toast are shell concerns, wired in shell.js. The queue is stable: browsing
 // never changes it, only an explicit play or a manual queue edit does.
 
 const controller = getController();
-controller.on('trackchange', track => highlightPlaying(track.url));
+controller.on('trackchange', track => highlightPlaying(track));
+controller.on('playstate', reflectPlayState);
 controller.on('duration', writeDuration);
 controller.on('error', track => markUnavailable(track.url));
 
-// highlightPlaying marks the track row whose URL is playing (and clears the rest).
-function highlightPlaying(url) {
+// playKeyOf is the appearance identity used to match the playing row (rowKey when
+// the queue carries it, else tagset/url from an older or foreign queue).
+function playKeyOf(track) {
+  if (!track) return null;
+  return track.rowKey || (track.tagsetId ? `ts:${track.tagsetId}` : `url:${track.url}`);
+}
+
+// highlightPlaying marks the row of the playing APPEARANCE (and clears the rest),
+// plus the .paused state so the indicator shows pause (playing) vs play (resume).
+function highlightPlaying(track) {
+  const key = playKeyOf(track);
+  const paused = controller.paused;
   document.querySelectorAll('.track-row').forEach(row => {
-    const on = row.dataset.url === url;
+    const on = !!key && row.dataset.key === key;
     row.classList.toggle('playing', on);
+    row.classList.toggle('paused', on && paused);
     if (on) row.classList.remove('unavailable');
   });
+}
+
+// reflectPlayState flips the pause/resume indicator on the current row without
+// re-scanning identity — fired on every play/pause of the shared player.
+function reflectPlayState(playing) {
+  document.querySelectorAll('.track-row.playing')
+    .forEach(row => row.classList.toggle('paused', !playing));
 }
 
 function markUnavailable(url) {

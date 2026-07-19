@@ -25,6 +25,7 @@ let searchTimer = null;
 // in init(), released in teardown().
 let controller = null;
 let unsubTrackChange = null;
+let unsubPlayState = null;
 
 // In-flight download polls, keyed by hash (survive within a visit; cleared on
 // teardown — the server job keeps running and the state is re-pollable).
@@ -42,7 +43,8 @@ export async function init() {
   drill = { level: 'artists', artist: null, album: null };
 
   controller = getController();
-  unsubTrackChange = controller.on('trackchange', t => highlightPlaying(t.url));
+  unsubTrackChange = controller.on('trackchange', t => highlightPlaying(t));
+  unsubPlayState = controller.on('playstate', reflectPlayState);
 
   const input = document.getElementById('mnSearchInput');
   input.addEventListener('input', () => {
@@ -59,17 +61,29 @@ export function teardown() {
   for (const timer of downloadPolls.values()) clearTimeout(timer);
   downloadPolls.clear();
   if (unsubTrackChange) { unsubTrackChange(); unsubTrackChange = null; }
+  if (unsubPlayState) { unsubPlayState(); unsubPlayState = null; }
   controller = null;
   drill = null;
 }
 
-// highlightPlaying marks the madnetwork track row whose URL is playing (matched
-// by data-url) and clears the rest, so the shared player bar and the list stay
-// in sync exactly as they do in the local library.
-function highlightPlaying(url) {
+// highlightPlaying marks the row of the playing appearance (matched by data-key
+// = the artist/album/title identity, so the same audio under another album is a
+// distinct row) and reflects the pause/resume indicator, mirroring the library.
+function highlightPlaying(track) {
+  const key = track ? (track.rowKey || track.url) : null;
+  const paused = controller?.paused;
   document.querySelectorAll('.mn-track').forEach(row => {
-    row.classList.toggle('playing', !!url && row.dataset.url === url);
+    const on = !!key && row.dataset.key === key;
+    row.classList.toggle('playing', on);
+    row.classList.toggle('paused', on && paused);
   });
+}
+
+// reflectPlayState flips the pause/resume indicator on the current row on every
+// play/pause of the shared player.
+function reflectPlayState(playing) {
+  document.querySelectorAll('.mn-track.playing')
+    .forEach(row => row.classList.toggle('paused', !playing));
 }
 
 // ── Status strip ──────────────────────────────────────────────────────────────
@@ -240,6 +254,9 @@ async function showTracks(artist, album) {
       qIndex.set(i, queue.length);
       queue.push({
         url: `${API}/api/madnetwork/stream/${best.hash}`,
+        // Appearance identity: the artist/album/title text, so the same audio
+        // under another album is a distinct row (click restarts, not pauses).
+        rowKey: `mn:${drill.artist}␟${drill.album}␟${(t.title || '').toLowerCase()}`,
         title: t.title || 'Unknown',
         artist: t.artist || drill.artist || '',
         dur: fmtDur(t.duration) || '—',
@@ -269,7 +286,7 @@ async function showTracks(artist, album) {
 
   // Re-highlight whatever is playing if its row is in this view.
   const cur = controller?.current?.();
-  if (cur && cur.track) highlightPlaying(cur.track.url);
+  if (cur && cur.track) highlightPlaying(cur.track);
 }
 
 // ── Row builders ──────────────────────────────────────────────────────────────
@@ -359,7 +376,10 @@ function mkTrackRow(t, i, queue, qi) {
   row.setAttribute('role', 'button');
 
   const playable = qi != null;
-  if (playable) row.dataset.url = queue[qi].url;
+  if (playable) {
+    row.dataset.url = queue[qi].url;
+    row.dataset.key = queue[qi].rowKey; // appearance identity for the playing highlight
+  }
 
   const num = mkSpan('track-num', t.track_number ?? (i + 1));
   const icon = document.createElement('span');
@@ -416,7 +436,13 @@ function mkTrackRow(t, i, queue, qi) {
   li.append(row, detail);
 
   if (playable) {
-    const play = () => controller?.setQueue(queue, qi);
+    // Click the playing row to pause/resume it; any other row starts fresh.
+    const play = () => {
+      const cur = controller?.current();
+      const curKey = cur ? (cur.track.rowKey || cur.track.url) : null;
+      if (curKey === queue[qi].rowKey) controller.toggle();
+      else controller?.setQueue(queue, qi);
+    };
     row.setAttribute('aria-label', `Play ${t.title || 'track'}`);
     row.addEventListener('click', play);
     row.addEventListener('keydown', e => {

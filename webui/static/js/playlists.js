@@ -13,13 +13,29 @@ const API = document.querySelector('meta[name="api-url"]')?.content || '';
 
 const controller = getController();
 // Module-scoped (runs once, persists): re-paint the playing row on this page's
-// detail view. Rows are matched by data-url, same contract as the library.
-controller.on('trackchange', track => highlightPlaying(track.url));
+// detail view. Rows are matched by data-key (appearance identity), same contract
+// as the library, and reflect the pause/resume indicator on play/pause.
+controller.on('trackchange', track => highlightPlaying(track));
+controller.on('playstate', reflectPlayState);
 
-function highlightPlaying(url) {
+function playKeyOf(track) {
+  if (!track) return null;
+  return track.rowKey || (track.tagsetId ? `ts:${track.tagsetId}` : `url:${track.url}`);
+}
+
+function highlightPlaying(track) {
+  const key = playKeyOf(track);
+  const paused = controller.paused;
   document.querySelectorAll('#plPanel .track-row').forEach(row => {
-    row.classList.toggle('playing', row.dataset.url === url);
+    const on = !!key && row.dataset.key === key;
+    row.classList.toggle('playing', on);
+    row.classList.toggle('paused', on && paused);
   });
+}
+
+function reflectPlayState(playing) {
+  document.querySelectorAll('#plPanel .track-row.playing')
+    .forEach(row => row.classList.toggle('paused', !playing));
 }
 
 // ── State ─────────────────────────────────────────────────────────────────
@@ -155,6 +171,7 @@ function playableQueue() {
     tracks.push({
       url: `${API}${it.url}`,
       tagsetId: it.tagset_id || null,
+      rowKey: it.tagset_id ? `ts:${it.tagset_id}` : `url:${API}${it.url}`,
       title: it.title || 'Unknown',
       artist: it.artist || '',
       dur: it.duration_seconds || undefined,
@@ -276,7 +293,10 @@ function renderItems() {
     row.tabIndex = 0;
     row.draggable = true;
     row.dataset.i = i;
-    if (!trashed) row.dataset.url = `${API}${it.url}`;
+    if (!trashed) {
+      row.dataset.url = `${API}${it.url}`;
+      row.dataset.key = it.tagset_id ? `ts:${it.tagset_id}` : `url:${API}${it.url}`;
+    }
     row.setAttribute('role', 'button');
     row.setAttribute('aria-label', trashed
       ? `${it.title || 'Unknown'} (in Trash, not playable)`
@@ -320,7 +340,11 @@ function renderItems() {
 
     const play = () => {
       if (trashed) return;
-      controller.setQueue(tracks, queueIndexOf.get(i));
+      // Click the playing row to pause/resume; any other row starts fresh.
+      const qi = queueIndexOf.get(i);
+      const cur = controller.current();
+      if (cur && playKeyOf(cur.track) === tracks[qi].rowKey) controller.toggle();
+      else controller.setQueue(tracks, qi);
     };
     row.addEventListener('click', play);
     row.addEventListener('keydown', e => {
@@ -363,7 +387,7 @@ function renderItems() {
   panel().replaceChildren(wrap);
 
   const cur = controller.current();
-  if (cur) highlightPlaying(cur.track.url);
+  if (cur) highlightPlaying(cur.track);
 }
 
 function clearDropMarks() {

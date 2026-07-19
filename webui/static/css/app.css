@@ -412,11 +412,28 @@ main { padding: var(--space-5); max-width: 860px; margin: 0 auto; }
   display: none;
   flex-shrink: 0;
   width: 22px;
+  height: 14px;
   align-items: center;
   justify-content: center;
   color: var(--accent);
 }
 .track-row.playing .track-icon-playing { display: flex; }
+
+/* The playing row's indicator doubles as a pause affordance: while actually
+   playing it shows a ⏸ pause glyph (two bars, drawn here so no page markup has
+   to change — clicking the row pauses); a paused current row keeps the ▶ play
+   triangle from the markup (click to resume). */
+.track-row.playing:not(.paused) .track-icon-playing svg { display: none; }
+.track-row.playing:not(.paused) .track-icon-playing::before,
+.track-row.playing:not(.paused) .track-icon-playing::after {
+  content: "";
+  display: block;
+  width: 3px;
+  height: 12px;
+  border-radius: 1px;
+  background: currentColor;
+}
+.track-row.playing:not(.paused) .track-icon-playing::before { margin-right: 3px; }
 
 .track-info { flex: 1; min-width: 0; }
 .track-title {
