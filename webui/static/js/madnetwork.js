@@ -44,6 +44,13 @@ let unsubPlayState = null;
 // on teardown — the server job keeps running and the state is re-pollable).
 const materializePolls = new Map();
 
+// Presence polling (docs/ui/madnetwork-page.md §Presence): while the page is
+// active, the summary is re-fetched every 5 s; when the online set changes the
+// current panel re-renders (a vanished drill target falls back one level).
+const presencePollInterval = 5000;
+let pollTimer = null;
+let presenceFingerprint = null;
+
 export async function init() {
   if (!gatePage(PAGE_PERMS.madnetwork)) return;
   drill = { level: 'artists', artist: null, album: null };
@@ -83,6 +90,9 @@ export function teardown() {
   abort?.abort();
   abort = null;
   search = null;
+  clearTimeout(pollTimer);
+  pollTimer = null;
+  presenceFingerprint = null;
   for (const timer of materializePolls.values()) clearTimeout(timer);
   materializePolls.clear();
   if (unsubTrackChange) { unsubTrackChange(); unsubTrackChange = null; }
@@ -115,15 +125,30 @@ function fmtAgo(unix) {
   return new Date(unix * 1000).toLocaleDateString(undefined, { dateStyle: 'medium' });
 }
 
+// loadStatus fetches the summary, renders the strip, and keeps the presence
+// poll running: a changed online set re-renders the current panel.
 async function loadStatus() {
-  const box = document.getElementById('mnStatus');
   let data;
   try {
     const res = await fetch(`${API}/api/madnetwork/summary`);
-    if (!res.ok) return;
+    if (!res.ok) throw new Error();
     data = await res.json();
-  } catch { return; }
-  if (!box || !box.isConnected) return; // navigated away meanwhile
+  } catch {
+    if (drill) pollTimer = setTimeout(loadStatus, presencePollInterval);
+    return;
+  }
+  if (!drill) return; // navigated away meanwhile
+  renderStatus(data);
+
+  const fp = (data.friends || []).map(f => `${f.id}:${f.online ? 1 : 0}`).sort().join(',');
+  if (presenceFingerprint !== null && fp !== presenceFingerprint) refreshView();
+  presenceFingerprint = fp;
+  pollTimer = setTimeout(loadStatus, presencePollInterval);
+}
+
+function renderStatus(data) {
+  const box = document.getElementById('mnStatus');
+  if (!box || !box.isConnected) return;
 
   const friends = data.friends || [];
   box.replaceChildren();
@@ -133,8 +158,9 @@ async function loadStatus() {
     box.hidden = false;
     return;
   }
+  const online = friends.filter(f => f.online).length;
   box.append(mkSpan('mn-status-main',
-    `${data.tracks} track${data.tracks === 1 ? '' : 's'} from ${friends.length} friend${friends.length === 1 ? '' : 's'}` +
+    `${data.tracks} track${data.tracks === 1 ? '' : 's'} from ${online} of ${friends.length} friend${friends.length === 1 ? '' : 's'} online` +
     (data.self_name ? ' + this library' : '')));
   if (data.self_name) {
     const chip = document.createElement('span');
@@ -145,13 +171,24 @@ async function loadStatus() {
   }
   for (const f of friends) {
     const chip = document.createElement('span');
-    chip.className = 'mn-friend' + (f.entries ? '' : ' mn-friend--empty');
-    chip.title = `${f.entries} entries · catalog synced ${fmtAgo(f.synced_at)}`;
+    chip.className = 'mn-friend' + (f.entries ? '' : ' mn-friend--empty') + (f.online ? '' : ' mn-friend--offline');
+    chip.title = `${f.entries} entries · catalog synced ${fmtAgo(f.synced_at)}` +
+      (f.online ? '' : ' · offline — tracks hidden until it returns');
     chip.append(mkSpan('mn-friend-name', f.name || '(unnamed)'),
-      mkSpan('mn-friend-seen', `seen ${fmtAgo(f.last_seen)}`));
+      mkSpan('mn-friend-seen', f.online ? 'online' : `offline · seen ${fmtAgo(f.last_seen)}`));
     box.append(chip);
   }
   box.hidden = false;
+}
+
+// refreshView re-renders the current drill level after a presence change; a
+// drill target that went away with its source falls back one level (the view
+// functions handle that via their refresh option).
+function refreshView() {
+  if (!drill) return;
+  if (drill.level === 'artists') showArtists();
+  else if (drill.level === 'albums') showAlbums(drill.artist, { refresh: true });
+  else showTracks(drill.artist, drill.album, { refresh: true });
 }
 
 function mkSpan(cls, text) {
@@ -271,7 +308,7 @@ async function showArtists() {
   document.getElementById('mnPanel').replaceChildren(wrap);
 }
 
-async function showAlbums(artist) {
+async function showAlbums(artist, { refresh = false } = {}) {
   drill = { level: 'albums', artist, album: null };
   renderBreadcrumb();
   let data;
@@ -281,6 +318,13 @@ async function showAlbums(artist) {
   if (!drill || drill.level !== 'albums' || drill.artist !== artist) return;
 
   const albums = data.albums || [];
+  if (!albums.length && refresh) {
+    // The artist vanished with its source — step back up rather than strand
+    // the user on an empty panel.
+    showToast(`“${artist}” is no longer available — the source went offline.`, { type: 'status' });
+    showArtists();
+    return;
+  }
   if (!albums.length) { panelMessage('No albums found.'); return; }
   const wrap = document.createElement('div');
   wrap.className = 'panel-fade-in';
@@ -297,7 +341,7 @@ async function showAlbums(artist) {
   document.getElementById('mnPanel').replaceChildren(wrap);
 }
 
-async function showTracks(artist, album) {
+async function showTracks(artist, album, { refresh = false } = {}) {
   drill = { level: 'tracks', artist, album };
   renderBreadcrumb();
   let data;
@@ -307,6 +351,11 @@ async function showTracks(artist, album) {
   if (!drill || drill.level !== 'tracks' || drill.album !== album) return;
 
   const tracks = data.tracks || [];
+  if (!tracks.length && refresh) {
+    showToast(`“${album}” is no longer available — the source went offline.`, { type: 'status' });
+    showAlbums(artist, { refresh: true });
+    return;
+  }
   if (!tracks.length) { panelMessage('No tracks found.'); return; }
 
   // Build the album's play queue once. Unplayable tracks (no rendition hash)
@@ -455,16 +504,25 @@ function renderVersions(detail, t) {
     }
     box.append(rds);
 
+    // Holders = who can serve NOW (offline friends are filtered out
+    // server-side); a fully-cached version stays playable holder-less.
     const hs = document.createElement('div');
     hs.className = 'mn-holders';
-    hs.append(mkSpan('mn-holders-label', 'held by '));
-    (v.holders || []).forEach((h, j) => {
+    const holders = v.holders || [];
+    hs.append(mkSpan('mn-holders-label', holders.length ? 'held by ' : ''));
+    holders.forEach((h, j) => {
       if (j) hs.append(document.createTextNode(', '));
       const holder = mkSpan('mn-holder', h.name || '(unnamed)');
       holder.title = h.self ? 'this server' : `last seen ${fmtAgo(h.last_seen)}`;
       if (h.self) holder.classList.add('mn-holder--self');
       hs.append(holder);
     });
+    if (v.cached) {
+      if (holders.length) hs.append(document.createTextNode(' · '));
+      const c = mkSpan('mn-holder mn-holder--cached', 'cached on this server');
+      c.title = 'Fully downloaded — plays even while every holder is offline';
+      hs.append(c);
+    }
     box.append(hs);
 
     // Actions on the version's ladder-best rendition (renditions[0] — the

@@ -31,6 +31,12 @@ func init() {
 // can depend on a concrete type with repository methods attached.
 type DB struct {
 	*sql.DB
+
+	// madnetworkPresence, when set (SetMadnetworkPresenceProvider), feeds the
+	// merged-browse visibility rule with the running federation node's live
+	// state. Nil (federation disabled) means no friend is ever "online" — the
+	// madnetwork view then holds only cached and own content.
+	madnetworkPresence func() MadnetworkPresence
 }
 
 // Open opens (or creates) a SQLite database at dsn, applies WAL +

@@ -29,6 +29,9 @@
   border-radius: 999px;
 }
 .mn-friend--empty { opacity: 0.6; }
+/* Offline friend (presence rule): greyed, its tracks are hidden meanwhile. */
+.mn-friend--offline { opacity: 0.5; }
+.mn-friend--offline .mn-friend-name { text-decoration: line-through; text-decoration-thickness: 1px; }
 .mn-friend-name { color: var(--text); font-weight: 600; }
 .mn-friend-seen { font-size: 0.75rem; }
 
@@ -89,6 +92,7 @@
 .mn-holders { font-size: 0.8rem; color: var(--text-muted); }
 .mn-holder { color: var(--text); }
 .mn-holder--self { color: var(--accent); font-weight: 600; }
+.mn-holder--cached { color: var(--success); }
 
 /* ── F3 version actions (Play / Queue / Download) ──────────────────────────── */
 .mn-actions { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-1); }

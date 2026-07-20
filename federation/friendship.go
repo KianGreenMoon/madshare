@@ -257,25 +257,17 @@ func (n *Node) pairWith(ctx context.Context, p *Peer) {
 	}
 }
 
-// pingPeer refreshes a friend's last_seen with a protocol ping.
+// pingPeer refreshes a friend's last_seen with a protocol ping (the shared
+// probe also feeds the presence tracker, so the minute sweep contributes to
+// liveness between the prober's own rounds).
 func (n *Node) pingPeer(ctx context.Context, p *Peer) {
-	addr, err := AddrForKeyHex(p.PublicKey)
-	if err != nil {
+	if !n.probePeer(ctx, p) {
 		return
 	}
-	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/ping", addr, MeshPort)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return
+	if n.presence != nil {
+		n.presence.ObserveSuccess(p.ID, time.Now())
 	}
-	resp, err := n.client.Do(req)
-	if err != nil {
-		return
-	}
-	resp.Body.Close()
-	if resp.StatusCode == http.StatusOK {
-		_ = n.store.TouchFederationPeerSeen(ctx, p.ID, time.Now().Unix())
-	}
+	_ = n.store.TouchFederationPeerSeen(ctx, p.ID, time.Now().Unix())
 }
 
 // refreshLoop periodically retries outbound pairings and pings friends; Nudge
