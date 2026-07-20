@@ -1,9 +1,13 @@
-import { openLoginModal } from './auth.js';
 import { getController } from './player-controller.js';
 import { fmtTime } from './player.js';
-import { ensureLiked, isLiked, toggleLike, onLikedChange } from './favorites.js';
-import { openRowMenu } from './row-menu.js';
-import { showToast } from './shell.js';
+import { ensureLiked } from './favorites.js';
+import { quickAddItems } from './quick-add.js';
+import {
+  buildArtistRow, buildAlbumRow, buildTrackRow, mkDiscHeader,
+  playKeyOf, highlightPlayingRow, reflectPlayStateRows, markUnavailableRows,
+  repaintHearts,
+} from './browse-rows.js';
+import { createBrowseSearch } from './browse-search.js';
 import { discKey, discLabel, isMultiDisc } from './disc.js';
 import { createVirtualList } from './virtual-list.js';
 
@@ -13,6 +17,11 @@ import { createVirtualList } from './virtual-list.js';
 const API = document.querySelector('meta[name="api-url"]')?.content || '';
 
 // Theme is owned by shell.js (persistent header, applied once across pages).
+
+// Row building, quick-add menus, and the search view live in the shared browse
+// core (browse-rows.js / quick-add.js / browse-search.js — shared with the
+// madnetwork page, docs/ui/madnetwork-page.md); this module owns the library's
+// drill state, data fetching, and page lifecycle.
 
 // Duration cache: shared with the queue panel and the playlists page so
 // already-known durations show everywhere (dur-cache.js).
@@ -178,27 +187,7 @@ function renderBreadcrumb() {
   if (bar) bar.style.display = bc.children.length ? '' : 'none';
 }
 
-// ── Favorites & quick-add (Phase 5 step 4, docs/api/playlists.md) ─────────
-
-const heartSvg =
-  `<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">` +
-  `<path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 ` +
-  `3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 ` +
-  `6.86-8.55 11.54L12 21.35z"/></svg>`;
-
-// repaintHearts syncs every rendered heart with the shared liked set; runs on
-// each render and whenever the set changes (any heart, any page, player bar).
-function repaintHearts() {
-  document.querySelectorAll('.row-heart[data-tagset]').forEach(b => {
-    const on = isLiked(b.dataset.tagset);
-    b.classList.toggle('liked', on);
-    b.setAttribute('aria-pressed', String(on));
-    const label = on ? 'Remove from Favorites' : 'Add to Favorites';
-    b.setAttribute('aria-label', label);
-    b.title = label;
-  });
-}
-onLikedChange(repaintHearts);
+// ── Track collectors for the quick-add menus ──────────────────────────────
 
 // trackObjFromApi maps a browse-endpoint track to a controller track object.
 // tagsetId is the listening identity (hearts, playlists, renditions); the url
@@ -233,143 +222,19 @@ async function entityTracks(artistId, albumId, artistName) {
   return lists.flat();
 }
 
-// queueAdd runs a (possibly async) track collector and applies a queue action.
-async function queueAdd(collect, how) {
-  let tracks;
-  try { tracks = await collect(); }
-  catch { showToast('Failed to load tracks.', { type: 'error' }); return; }
-  if (!tracks.length) return;
-  if (how === 'next') controller.playNext(tracks);
-  else controller.enqueue(tracks);
-  showToast(`${tracks.length} track${tracks.length !== 1 ? 's' : ''} ${how === 'next' ? 'will play next' : 'added to queue'}.`,
-    { type: 'success' });
-}
+// ── Rendering (shared row builders from browse-rows.js) ───────────────────
 
-// addToPlaylistMenu replaces the open row menu with a playlist picker (plus
-// "New playlist…"), then posts the collected tracks' tagset ids.
-async function addToPlaylistMenu(anchor, collect) {
-  let lists, tracks;
-  try {
-    const res = await fetch(`${API}/api/playlists`);
-    if (res.status === 401 || res.status === 403) { openLoginModal(); return; }
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    lists = await res.json();
-    tracks = await collect();
-  } catch { showToast('Failed to load playlists.', { type: 'error' }); return; }
-  const tagsetIDs = tracks.map(t => t.tagsetId).filter(Boolean);
-  if (!tagsetIDs.length) return;
-
-  const add = async (id, name) => {
-    try {
-      const res = await fetch(`${API}/api/playlists/${id}/items`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tagset_ids: tagsetIDs }),
-      });
-      if (!res.ok) throw new Error((await res.text().catch(() => '')).trim() || `HTTP ${res.status}`);
-      const { added } = await res.json();
-      showToast(`Added ${added} track${added !== 1 ? 's' : ''} to "${name}".`, { type: 'success' });
-      if (added === 0 && tagsetIDs.length) showToast(`Already in "${name}".`, { type: 'status' });
-    } catch (err) {
-      showToast(`Couldn't add to "${name}": ${err.message}`, { type: 'error' });
-    }
-  };
-  const items = lists.map(p => ({
-    label: (p.kind === 'favorites' ? '♥ ' : '') + p.name,
-    onClick: () => add(p.id, p.name),
-  }));
-  items.push({
-    input: 'New playlist…',
-    onSubmit: async name => {
-      try {
-        const res = await fetch(`${API}/api/playlists`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, tagset_ids: tagsetIDs }),
-        });
-        if (!res.ok) throw new Error((await res.text().catch(() => '')).trim() || `HTTP ${res.status}`);
-        showToast(`Created "${name}" with ${tagsetIDs.length} track${tagsetIDs.length !== 1 ? 's' : ''}.`, { type: 'success' });
-      } catch (err) {
-        showToast(`Couldn't create playlist: ${err.message}`, { type: 'error' });
-      }
-    },
-  });
-  openRowMenu(anchor, items);
-}
-
-// quickAddItems builds the "⋯" menu for a row. collect yields the row's tracks
-// (a single track, an album, or a whole artist).
-function quickAddItems(anchor, collect, { likeTagset } = {}) {
-  const items = [
-    { label: 'Play next',       onClick: () => queueAdd(collect, 'next') },
-    { label: 'Add to queue',    onClick: () => queueAdd(collect, 'queue') },
-    { label: 'Add to playlist…', keepOpen: true, onClick: () => addToPlaylistMenu(anchor, collect) },
-  ];
-  if (likeTagset) {
-    items.push({
-      label: isLiked(likeTagset) ? 'Remove from Favorites' : 'Add to Favorites',
-      onClick: () => toggleLike(likeTagset),
-    });
-  }
-  return items;
-}
-
-// mkMoreBtn returns the "⋯" row button wired to the quick-add menu.
-function mkMoreBtn(label, makeItems) {
-  const btn = document.createElement('button');
-  btn.className = 'row-more';
-  btn.setAttribute('aria-label', label);
-  btn.setAttribute('aria-haspopup', 'menu');
-  btn.title = 'More actions';
-  btn.textContent = '⋯';
-  btn.addEventListener('click', e => {
-    e.stopPropagation();
-    openRowMenu(btn, makeItems(btn));
-  });
-  return btn;
-}
-
-// mkHeartBtn returns a heart button for a track row (state via repaintHearts),
-// keyed by the track's tagset id.
-function mkHeartBtn(tagsetId) {
-  const btn = document.createElement('button');
-  btn.className = 'row-heart';
-  btn.dataset.tagset = tagsetId || '';
-  btn.setAttribute('aria-pressed', 'false');
-  btn.setAttribute('aria-label', 'Add to Favorites');
-  btn.title = 'Add to Favorites';
-  btn.innerHTML = heartSvg;
-  btn.addEventListener('click', e => {
-    e.stopPropagation();
-    if (tagsetId) toggleLike(tagsetId);
-  });
-  return btn;
-}
-
-// buildArtistRow builds one artist row element. Shared by the windowed scroller's
-// renderRow and reused as items scroll into view.
-function buildArtistRow(artist) {
+// artistRow builds one artist row via the shared builder. Used by the windowed
+// scroller's renderRow and reused as items scroll into view.
+function artistRow(artist) {
   const displayName = artist.name || 'Unknown Artist';
   const count       = artist.track_count ?? 0;
-  const row         = document.createElement('div');
-  row.className     = 'panel-row artist-row';
-  row.tabIndex      = 0;
-  row.setAttribute('role', 'button');
-  row.setAttribute('aria-label', `Browse ${displayName}`);
-  row.innerHTML =
-    `<span class="row-name">${esc(displayName)}</span>` +
-    `<span class="row-meta">${count} track${count !== 1 ? 's' : ''}</span>` +
-    `<span class="row-chevron" aria-hidden="true">›</span>`;
-  row.insertBefore(
-    mkMoreBtn(`More actions for ${displayName}`,
-      btn => quickAddItems(btn, () => entityTracks(artist.id, null, artist.name))),
-    row.querySelector('.row-chevron'));
-  row.addEventListener('click', () => drillToAlbums(artist.id, artist.name));
-  row.addEventListener('keydown', e => {
-    if (e.target !== row) return; // buttons inside the row handle their own keys
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); drillToAlbums(artist.id, artist.name); }
+  return buildArtistRow({
+    name: displayName,
+    meta: `${count} track${count !== 1 ? 's' : ''}`,
+    onOpen: () => drillToAlbums(artist.id, artist.name),
+    makeMenuItems: btn => quickAddItems(btn, () => entityTracks(artist.id, null, artist.name)),
   });
-  return row;
 }
 
 // Render the artists panel as a virtualized, infinite-scrolling list. `page` is
@@ -399,7 +264,7 @@ function renderArtistList(page) {
     sizerEl: wrap,
     windowScroll: true,
     makeSpacer: spacerDiv,
-    renderRow: buildArtistRow,
+    renderRow: artistRow,
     estimateHeight: 56,         // artist-row height; corrected on measure
     fetchMore: async () => {
       if (!cursor) return { items: [], done: true };
@@ -431,42 +296,19 @@ function renderAlbumList(albums) {
   const wrap = document.createElement('div');
   wrap.className = 'panel-fade-in';
 
-  // Music note SVG used as art placeholder
-  const noteSvg =
-    `<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">` +
-    `<path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/>` +
-    `</svg>`;
-
   albums.forEach(album => {
     const title      = album.title       || 'Other';
     const count      = album.track_count ?? 0;
     const yearPrefix = album.year        ? `${album.year} · ` : '';
-    const artContent = album.has_image
-      ? `<img src="${API}/api/albums/${encodeURIComponent(album.id)}/image?size=small" alt="" loading="lazy">`
-      : noteSvg;
-
-    const row = document.createElement('div');
-    row.className = 'panel-row album-row';
-    row.tabIndex  = 0;
-    row.setAttribute('role', 'button');
-    row.setAttribute('aria-label', `Browse album ${title}`);
-    row.innerHTML =
-      `<div class="row-art">${artContent}</div>` +
-      `<div class="row-body">` +
-        `<div class="row-name">${esc(title)}</div>` +
-        `<div class="row-meta">${esc(yearPrefix)}${count} track${count !== 1 ? 's' : ''}</div>` +
-      `</div>` +
-      `<span class="row-chevron" aria-hidden="true">›</span>`;
-    row.insertBefore(
-      mkMoreBtn(`More actions for ${title}`,
-        btn => quickAddItems(btn, () => entityTracks(null, album.id, album.artist_name))),
-      row.querySelector('.row-chevron'));
-    row.addEventListener('click', () => drillToTracks(album.id, album.artist_id, album.artist_name, album.title));
-    row.addEventListener('keydown', e => {
-      if (e.target !== row) return;
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); drillToTracks(album.id, album.artist_id, album.artist_name, album.title); }
-    });
-    wrap.appendChild(row);
+    wrap.appendChild(buildAlbumRow({
+      title,
+      meta: `${yearPrefix}${count} track${count !== 1 ? 's' : ''}`,
+      artUrl: album.has_image
+        ? `${API}/api/albums/${encodeURIComponent(album.id)}/image?size=small`
+        : null,
+      onOpen: () => drillToTracks(album.id, album.artist_id, album.artist_name, album.title),
+      makeMenuItems: btn => quickAddItems(btn, () => entityTracks(null, album.id, album.artist_name)),
+    }));
   });
 
   panel.innerHTML = '';
@@ -526,38 +368,11 @@ function renderTrackList(tracks) {
     if (multiDisc && disc !== shownDisc) {
       shownDisc = disc;
       discTrackNo = 0;
-      const hdr = document.createElement('div');
-      hdr.className = 'track-disc-header';
-      hdr.textContent = discLabel(disc);
-      wrap.appendChild(hdr);
+      wrap.appendChild(mkDiscHeader(discLabel(disc)));
     }
     discTrackNo++;
     const displayNum = t.track_number || (multiDisc ? discTrackNo : i + 1);
     const track      = libraryPlaylist[i];
-    const row        = document.createElement('div');
-    row.className    = 'track-row';
-    row.tabIndex     = 0;
-    row.dataset.idx  = i;          // used by the background duration fetch
-    row.dataset.url  = track.url;  // duration write-back / unavailable marking
-    row.dataset.key  = track.rowKey; // appearance identity for the playing highlight
-    row.setAttribute('role', 'button');
-    row.setAttribute('aria-label', `Play ${track.title}`);
-    row.innerHTML =
-      `<span class="track-num">${displayNum}</span>` +
-      `<span class="track-icon-playing" aria-hidden="true">` +
-        `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>` +
-      `</span>` +
-      `<div class="track-info">` +
-        `<div class="track-title">${esc(track.title)}</div>` +
-        `<div class="track-meta">${esc(track.artist)}</div>` +
-      `</div>` +
-      `<span class="track-dur">${esc(track.dur)}</span>`;
-    const durEl = row.querySelector('.track-dur');
-    row.insertBefore(mkHeartBtn(track.tagsetId), durEl);
-    row.insertBefore(
-      mkMoreBtn(`More actions for ${track.title}`,
-        btn => quickAddItems(btn, () => [track], { likeTagset: track.tagsetId })),
-      durEl);
     // Click the playing row to pause/resume it; click any other row (including a
     // different appearance of the same audio) to start it fresh.
     const play = () => {
@@ -565,12 +380,18 @@ function renderTrackList(tracks) {
       if (cur && playKeyOf(cur.track) === track.rowKey) controller.toggle();
       else controller.setQueue(libraryPlaylist, i);
     };
-    row.addEventListener('click', play);
-    row.addEventListener('keydown', e => {
-      if (e.target !== row) return;
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); play(); }
-    });
-    wrap.appendChild(row);
+    wrap.appendChild(buildTrackRow({
+      num: displayNum,
+      title: track.title,
+      meta: track.artist,
+      dur: track.dur,
+      rowKey: track.rowKey,
+      url: track.url,   // duration write-back / unavailable marking
+      idx: i,           // used by the background duration fetch
+      tagsetId: track.tagsetId,
+      onPlay: play,
+      makeMenuItems: btn => quickAddItems(btn, () => [track]),
+    }));
   });
 
   panel.innerHTML = '';
@@ -578,7 +399,7 @@ function renderTrackList(tracks) {
 
   // Re-highlight whatever is currently playing if its row is in this view.
   const cur = controller.current();
-  if (cur) highlightPlaying(cur.track);
+  if (cur) highlightPlayingRow(cur.track, controller.paused);
   repaintHearts();
 
   // Background fetch for any tracks still showing '—'.
@@ -629,50 +450,18 @@ async function fetchMissingDurations(list) {
 // The controller is the SHARED singleton (created by shell.js, same instance
 // here); it owns the <audio>, the player-bar, and the play QUEUE. The page
 // builds queues (controller.setQueue on a track click) and reflects state — row
-// highlighting and duration write-back — through the subscriptions below
-// (module-scoped: they run once and persist, and are harmless on other pages
-// since they match rows by data-key). Auth-expiry and the queue-replaced undo
-// toast are shell concerns, wired in shell.js. The queue is stable: browsing
-// never changes it, only an explicit play or a manual queue edit does.
+// highlighting (browse-rows.js helpers) and duration write-back — through the
+// subscriptions below (module-scoped: they run once and persist, and are
+// harmless on other pages since they match rows by data-key). Auth-expiry and
+// the queue-replaced undo toast are shell concerns, wired in shell.js. The
+// queue is stable: browsing never changes it, only an explicit play or a manual
+// queue edit does.
 
 const controller = getController();
-controller.on('trackchange', track => highlightPlaying(track));
-controller.on('playstate', reflectPlayState);
+controller.on('trackchange', track => highlightPlayingRow(track, controller.paused));
+controller.on('playstate', reflectPlayStateRows);
 controller.on('duration', writeDuration);
-controller.on('error', track => markUnavailable(track.url));
-
-// playKeyOf is the appearance identity used to match the playing row (rowKey when
-// the queue carries it, else tagset/url from an older or foreign queue).
-function playKeyOf(track) {
-  if (!track) return null;
-  return track.rowKey || (track.tagsetId ? `ts:${track.tagsetId}` : `url:${track.url}`);
-}
-
-// highlightPlaying marks the row of the playing APPEARANCE (and clears the rest),
-// plus the .paused state so the indicator shows pause (playing) vs play (resume).
-function highlightPlaying(track) {
-  const key = playKeyOf(track);
-  const paused = controller.paused;
-  document.querySelectorAll('.track-row').forEach(row => {
-    const on = !!key && row.dataset.key === key;
-    row.classList.toggle('playing', on);
-    row.classList.toggle('paused', on && paused);
-    if (on) row.classList.remove('unavailable');
-  });
-}
-
-// reflectPlayState flips the pause/resume indicator on the current row without
-// re-scanning identity — fired on every play/pause of the shared player.
-function reflectPlayState(playing) {
-  document.querySelectorAll('.track-row.playing')
-    .forEach(row => row.classList.toggle('paused', !playing));
-}
-
-function markUnavailable(url) {
-  document.querySelectorAll('.track-row').forEach(row => {
-    if (row.dataset.url === url) row.classList.add('unavailable');
-  });
-}
+controller.on('error', track => markUnavailableRows(track.url));
 
 // writeDuration fills a newly-known duration into the track object, the cache,
 // and every rendered row for that URL (library .track-dur or search duration).
@@ -690,241 +479,37 @@ function writeDuration(track, durSeconds) {
   });
 }
 
-// ── Search ───────────────────────────────────────────────────────────────
+// ── Search (shared view machinery from browse-search.js) ──────────────────
 
-// These elements live in swappable DOM (inside <main>, above the view panels), so
-// they're re-queried and re-wired by wireSearch() on each init() and removed via
-// the AbortController on teardown(). Nav is owned by shell.js now — the old
-// "clear search on Library click" hack is gone (re-entering the library is a
-// shell swap, which resets to the artists view).
-let searchInput = null;
-let searchClear = null;
-let viewLibrary = null;
-let viewSearch  = null;
+// The search elements live in swappable DOM (inside <main>, above the view
+// panels), so the factory is created fresh on each init() and its listeners
+// are removed via the AbortController on teardown(). Nav is owned by shell.js —
+// re-entering the library is a shell swap, which resets to the artists view.
+let search = null;
 
-let lastQuery   = '';
-let searchTimer = null;
-let searchAbort = null;
-
-function wireSearch(signal) {
-  searchInput = document.querySelector('.library-search__input');
-  searchClear = document.querySelector('.library-search__clear');
-  viewLibrary = document.getElementById('view-library');
-  viewSearch  = document.getElementById('view-search');
-  if (!searchInput) return;
-
-  searchInput.addEventListener('input', () => {
-    const q = searchInput.value.trim();
-    searchClear.style.display = searchInput.value ? '' : 'none';
-    if (q.length < 2) { showLibraryView(); return; }
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => runSearch(q), 300);
-  }, { signal });
-
-  searchInput.addEventListener('keydown', e => {
-    if (e.key === 'Escape') clearSearch();
-  }, { signal });
-
-  searchClear.addEventListener('click', clearSearch, { signal });
-}
-
-function clearSearch() {
-  if (searchInput) searchInput.value = '';
-  if (searchClear) searchClear.style.display = 'none';
-  lastQuery = '';
-  showLibraryView();
-}
-
-function showLibraryView() {
-  if (!viewLibrary || !viewSearch) return;
-  viewLibrary.classList.add('view-panel--active');
-  viewLibrary.classList.remove('view-panel--hidden');
-  viewSearch.classList.add('view-panel--hidden');
-  viewSearch.classList.remove('view-panel--active');
-  // The artist scroller may have rendered against a hidden (zero-rect) sizer while
-  // search was up; re-derive its window for the now-visible scroll position.
-  artistVList?.refresh();
-}
-
-function showSearchView() {
-  if (!viewLibrary || !viewSearch) return;
-  viewSearch.classList.add('view-panel--active');
-  viewSearch.classList.remove('view-panel--hidden');
-  viewLibrary.classList.add('view-panel--hidden');
-  viewLibrary.classList.remove('view-panel--active');
-}
-
-async function runSearch(q) {
-  if (q === lastQuery) return;
-  lastQuery = q;
-
-  // Cancel any in-flight request for an older query.
-  if (searchAbort) searchAbort.abort();
-  searchAbort = new AbortController();
-
-  showSearchView();
-  viewSearch.innerHTML = '<div class="search-loading-bar"></div>';
-
-  let results;
-  try {
-    const res = await fetch(`${API}/api/search?q=${encodeURIComponent(q)}`, { signal: searchAbort.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    results = await res.json();
-    searchAbort = null;
-  } catch (err) {
-    if (err.name === 'AbortError') return; // superseded by a newer query — discard silently
-    lastQuery = ''; // allow retry with the same query after a real error
-    if (viewSearch) viewSearch.innerHTML =
-      '<p style="color:var(--error);padding:16px;text-align:center">' +
-      'Search failed — check your connection and try again.</p>';
-    return;
-  }
-
-  if (!active) return; // navigated away while searching
-  renderSearchResults(results, q);
-}
-
-function renderSearchResults(results, q) {
-  const { artists = [], albums = [], tracks = [] } = results;
-
-  if (!artists.length && !albums.length && !tracks.length) {
-    const qEsc = esc(q.length > 40 ? q.slice(0, 40) + '…' : q);
-    viewSearch.innerHTML =
-      `<div class="search-empty-state">` +
-      `<div class="search-empty-state__query">No results for "<em>${qEsc}</em>"</div>` +
-      `<div class="search-empty-state__hint">Try a different search term</div>` +
-      `</div>`;
-    return;
-  }
-
-  const frag = document.createDocumentFragment();
-
-  if (artists.length) {
-    const sec = document.createElement('section');
-    sec.className = 'search-section';
-    sec.innerHTML = '<h2 class="search-section__header">Artists</h2>';
-    artists.forEach(a => {
-      const row = document.createElement('div');
-      row.className = 'search-row search-row--artist';
-      row.tabIndex  = 0;
-      row.setAttribute('role', 'button');
-      row.setAttribute('aria-label', `Browse artist ${a.name}`);
-      row.innerHTML =
-        `<div class="search-row__avatar">${esc((a.name || '?')[0].toUpperCase())}</div>` +
-        `<div class="search-row__title">${esc(a.name || 'Unknown Artist')}</div>`;
-      row.addEventListener('click', () => { clearSearch(); drillToAlbums(a.id, a.name); });
-      row.addEventListener('keydown', e => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); clearSearch(); drillToAlbums(a.id, a.name); }
-      });
-      sec.appendChild(row);
-    });
-    frag.appendChild(sec);
-  }
-
-  if (albums.length) {
-    const noteSvg =
-      `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">` +
-      `<path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>`;
-    const sec = document.createElement('section');
-    sec.className = 'search-section';
-    sec.innerHTML = '<h2 class="search-section__header">Albums</h2>';
-    albums.forEach(a => {
-      const artContent = a.has_image
-        ? `<img src="${API}/api/albums/${encodeURIComponent(a.id)}/image?size=small" alt="" loading="lazy">`
-        : noteSvg;
-      const row = document.createElement('div');
-      row.className = 'search-row search-row--album';
-      row.tabIndex  = 0;
-      row.setAttribute('role', 'button');
-      row.setAttribute('aria-label', `Browse album ${a.title}`);
-      row.innerHTML =
-        `<div class="search-row__thumb">${artContent}</div>` +
-        `<div class="search-row__body">` +
-          `<div class="search-row__title">${esc(a.title || 'Other')}</div>` +
-          `<div class="search-row__subtitle">${esc(a.artist_name || 'Unknown Artist')}</div>` +
-        `</div>`;
-      row.addEventListener('click', () => { clearSearch(); drillToTracks(a.id, a.artist_id, a.artist_name, a.title); });
-      row.addEventListener('keydown', e => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); clearSearch(); drillToTracks(a.id, a.artist_id, a.artist_name, a.title); }
-      });
-      sec.appendChild(row);
-    });
-    frag.appendChild(sec);
-  }
-
-  if (tracks.length) {
-    const noteSvg =
-      `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">` +
-      `<path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>`;
-    const playSvg =
-      `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">` +
-      `<path d="M8 5v14l11-7z"/></svg>`;
-    const sec = document.createElement('section');
-    sec.className = 'search-section';
-    sec.innerHTML = '<h2 class="search-section__header">Tracks</h2>';
-
-    // Build the queue a search-result click would play (controller.setQueue).
-    const searchPlaylist = tracks.map(t => ({
+function createSearch(signal) {
+  return createBrowseSearch({
+    signal,
+    fetchResults: async (q, fetchSignal) => {
+      const res = await fetch(`${API}/api/search?q=${encodeURIComponent(q)}`, { signal: fetchSignal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    },
+    onOpenArtist: a => drillToAlbums(a.id, a.name),
+    onOpenAlbum:  a => drillToTracks(a.id, a.artist_id, a.artist_name, a.title),
+    albumArtUrl:  a => a.has_image
+      ? `${API}/api/albums/${encodeURIComponent(a.id)}/image?size=small`
+      : null,
+    buildQueueTrack: t => ({
       url:    `${API}${t.url}`,
       tagsetId: t.tagset_id || null,
       title:  t.title       || 'Unknown',
       artist: t.artist_name || '',
-    }));
-
-    tracks.forEach((t, i) => {
-      const dur      = t.duration_seconds ? fmtTime(t.duration_seconds) : '';
-      const subtitle = [t.artist_name, t.album_title].filter(Boolean).join(' · ');
-      const row      = document.createElement('div');
-      row.className  = 'search-row search-row--track';
-      row.tabIndex   = 0;
-      row.dataset.url = searchPlaylist[i].url; // stable key for the playing highlight
-      row.setAttribute('role', 'button');
-      row.setAttribute('aria-label', `Play ${t.title}`);
-      row.innerHTML =
-        `<div class="search-row__avatar search-row__avatar--note">${noteSvg}</div>` +
-        `<div class="search-row__body">` +
-          `<div class="search-row__title">${esc(t.title || 'Unknown')}</div>` +
-          `<div class="search-row__subtitle">${esc(subtitle)}</div>` +
-        `</div>` +
-        (dur ? `<div class="search-row__duration">${esc(dur)}</div>` : '');
-
-      // Swap note/play icon on hover to signal the row is playable.
-      const avatar = row.querySelector('.search-row__avatar--note');
-      row.addEventListener('mouseenter', () => {
-        avatar.innerHTML = playSvg;
-        avatar.style.color = 'var(--accent)';
-      });
-      row.addEventListener('mouseleave', () => {
-        avatar.innerHTML = noteSvg;
-        avatar.style.color = '';
-      });
-
-      // Heart between the row body and the duration (matches the library rows).
-      row.insertBefore(mkHeartBtn(searchPlaylist[i].tagsetId),
-        row.querySelector('.search-row__duration'));
-
-      const play = () => controller.setQueue(searchPlaylist, i);
-      row.addEventListener('click', play);
-      row.addEventListener('keydown', e => {
-        if (e.target !== row) return;
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); play(); }
-      });
-      sec.appendChild(row);
-    });
-    frag.appendChild(sec);
-  }
-
-  viewSearch.innerHTML = '';
-  viewSearch.appendChild(frag);
-  repaintHearts();
-}
-
-// ── Utilities ────────────────────────────────────────────────────────────
-
-function esc(s) {
-  return String(s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }),
+    // The artist scroller may have rendered against a hidden (zero-rect) sizer
+    // while search was up; re-derive its window for the visible scroll position.
+    onLibraryView: () => artistVList?.refresh(),
+  });
 }
 
 // ── Lifecycle (driven by shell.js) ─────────────────────────────────────────
@@ -942,9 +527,7 @@ let active = false;    // guards late async renders after teardown
 // browser-history entry): close an open search, else drill one level up. Returns
 // false at the artists root so native can take over. A plain browser never calls it.
 function handleBack() {
-  const searching = (viewSearch && viewSearch.classList.contains('view-panel--active'))
-    || (searchInput && searchInput.value);
-  if (searching) { clearSearch(); return true; }
+  if (search?.isSearching()) { search.clear(); return true; }
   if (drill.level === 'tracks') { drillToAlbums(drill.artistId, drill.artist); return true; }
   if (drill.level === 'albums') { loadArtists(); return true; }
   return false;
@@ -953,7 +536,7 @@ function handleBack() {
 export function init() {
   active = true;
   abort = new AbortController();
-  wireSearch(abort.signal);
+  search = createSearch(abort.signal);
   window.__madshareBack = handleBack;   // app-only; harmless/no-op in a browser
   ensureLiked(); // hearts repaint via onLikedChange once the set arrives
   loadArtists();
@@ -961,10 +544,9 @@ export function init() {
 
 export function teardown() {
   active = false;
-  abort?.abort();
+  abort?.abort();         // also cancels the search factory's timers/fetches
   abort = null;
+  search = null;
   destroyArtistVList();   // drop the window scroll/resize listeners
   if (window.__madshareBack === handleBack) window.__madshareBack = null;
-  clearTimeout(searchTimer);
-  if (searchAbort) { searchAbort.abort(); searchAbort = null; }
 }
