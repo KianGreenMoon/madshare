@@ -9,6 +9,7 @@
 // page's teardown() needs nothing else.
 import { getController } from './player-controller.js';
 import { fmtTime } from './player.js';
+import { trackKey } from './favorites.js';
 import { esc, mkHeartBtn, repaintHearts } from './browse-rows.js';
 
 export function createBrowseSearch({
@@ -211,7 +212,7 @@ export function createBrowseSearch({
         });
 
         // Heart between the row body and the duration (matches the library rows).
-        row.insertBefore(mkHeartBtn(searchPlaylist[i].tagsetId),
+        row.insertBefore(mkHeartBtn(trackKey(searchPlaylist[i]), searchPlaylist[i].remoteLike),
           row.querySelector('.search-row__duration'));
 
         const play = () => getController().setQueue(searchPlaylist, i);

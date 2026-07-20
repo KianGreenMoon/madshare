@@ -7,7 +7,6 @@
 import { fmtTime } from './player.js';
 import { openLoginModal } from './auth.js';
 import { loadDurCache } from './dur-cache.js';
-import { trackKey } from './favorites.js';
 
 const API = document.querySelector('meta[name="api-url"]')?.content || '';
 
@@ -77,13 +76,15 @@ export function initQueuePanel(controller, showToast) {
     e.preventDefault();
     const name = saveName.value.trim();
     const { tracks } = controller.getQueue();
-    const tagsetIDs = tracks.map(trackKey).filter(Boolean);
-    if (!name || !tagsetIDs.length) return;
+    // Local tracks save by tagset id; remote madnetwork tracks by their ref.
+    const tagsetIDs = tracks.map(t => t.tagsetId).filter(Boolean);
+    const remote = tracks.filter(t => !t.tagsetId && t.remoteLike?.hash).map(t => t.remoteLike);
+    if (!name || (!tagsetIDs.length && !remote.length)) return;
     try {
       const res = await fetch(`${API}/api/playlists`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, tagset_ids: tagsetIDs }),
+        body: JSON.stringify({ name, tagset_ids: tagsetIDs, remote }),
       });
       if (res.status === 401 || res.status === 403) { openLoginModal(); return; }
       if (!res.ok) {

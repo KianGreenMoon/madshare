@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -28,8 +30,21 @@ func registerPlaylists(r chi.Router, d Deps, h *handler) {
 	r.With(guard).Post("/api/playlists/{id}/items", h.addPlaylistItems)
 	r.With(guard).Delete("/api/playlists/{id}/items/{itemID}", h.removePlaylistItem)
 	r.With(guard).Put("/api/playlists/{id}/items", h.reorderPlaylist)
+	r.With(guard).Post("/api/favorites/remote/{hash}", h.toggleRemoteFavorite)
 	r.With(guard).Post("/api/favorites/{tagsetID}", h.toggleFavorite)
 	r.With(guard).Get("/api/favorites", h.listFavorites)
+}
+
+// repointRemotes runs the remote-playlist repoint sweep — remote rows whose
+// hash now lives in the library become normal local rows. Called after content
+// lands approved and after remote adds; failures only log, playlist
+// bookkeeping must never fail the triggering operation.
+func (h *handler) repointRemotes(ctx context.Context) {
+	if n, err := h.repo.RepointRemotePlaylistItems(ctx); err != nil {
+		log.Printf("repoint remote playlist items: %v", err)
+	} else if n > 0 {
+		log.Printf("repointed %d remote playlist item(s) to local appearances", n)
+	}
 }
 
 // maxPlaylistName caps playlist names; maxPlaylistBatch caps the ids
@@ -104,8 +119,9 @@ func (h *handler) createPlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name      string  `json:"name"`
-		TagsetIDs []int64 `json:"tagset_ids"`
+		Name      string                     `json:"name"`
+		TagsetIDs []int64                    `json:"tagset_ids"`
+		Remote    []database.RemoteTrackRef  `json:"remote"`
 	}
 	if !decodePlaylistBody(w, r, &body) {
 		return
@@ -115,18 +131,24 @@ func (h *handler) createPlaylist(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "name is required", http.StatusBadRequest)
 		return
 	}
-	if len(body.TagsetIDs) > maxPlaylistBatch {
+	if len(body.TagsetIDs)+len(body.Remote) > maxPlaylistBatch {
 		http.Error(w, "too many tracks", http.StatusBadRequest)
 		return
 	}
-	p, err := h.repo.CreatePlaylist(r.Context(), userID, name, body.TagsetIDs)
-	if errors.Is(err, database.ErrFileNotFound) {
+	p, err := h.repo.CreatePlaylist(r.Context(), userID, name, body.TagsetIDs, body.Remote)
+	switch {
+	case errors.Is(err, database.ErrFileNotFound):
 		http.Error(w, "unknown or unavailable track", http.StatusBadRequest)
 		return
-	}
-	if err != nil {
+	case errors.Is(err, database.ErrBadRemoteRef):
+		http.Error(w, "invalid remote track", http.StatusBadRequest)
+		return
+	case err != nil:
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
+	}
+	if len(body.Remote) > 0 {
+		h.repointRemotes(r.Context()) // a remote add may already be local
 	}
 	writeJSON(w, http.StatusCreated, toPlaylistSummary(p))
 }
@@ -163,6 +185,11 @@ func (h *handler) getPlaylist(w http.ResponseWriter, r *http.Request) {
 		Album    string   `json:"album"`
 		Duration *float64 `json:"duration_seconds"`
 		Status   string   `json:"status"`
+		// Remote madnetwork items: kind flag + the rendition hash the row
+		// plays through the streaming relay. Status "unavailable" = no source
+		// can currently provide the hash.
+		Remote bool   `json:"remote,omitempty"`
+		Hash   string `json:"hash,omitempty"`
 	}
 	items := make([]playlistItem, 0, len(entries))
 	for _, e := range entries {
@@ -172,7 +199,13 @@ func (h *handler) getPlaylist(w http.ResponseWriter, r *http.Request) {
 		}
 		status := "ok"
 		url := ""
-		if e.Trashed {
+		switch {
+		case e.RemoteHash != "":
+			url = "/api/madnetwork/stream/" + e.RemoteHash
+			if !e.Available {
+				status = "unavailable"
+			}
+		case e.Trashed:
 			status = "trashed"
 		}
 		if e.ObjectKey != "" {
@@ -188,6 +221,8 @@ func (h *handler) getPlaylist(w http.ResponseWriter, r *http.Request) {
 			Album:    e.Album.String,
 			Duration: dur,
 			Status:   status,
+			Remote:   e.RemoteHash != "",
+			Hash:     e.RemoteHash,
 		})
 	}
 	writeJSON(w, http.StatusOK, struct {
@@ -266,24 +301,31 @@ func (h *handler) addPlaylistItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		TagsetIDs []int64 `json:"tagset_ids"`
+		TagsetIDs []int64                    `json:"tagset_ids"`
+		Remote    []database.RemoteTrackRef  `json:"remote"`
 	}
 	if !decodePlaylistBody(w, r, &body) {
 		return
 	}
-	if len(body.TagsetIDs) == 0 || len(body.TagsetIDs) > maxPlaylistBatch {
-		http.Error(w, "tagset_ids are required", http.StatusBadRequest)
+	total := len(body.TagsetIDs) + len(body.Remote)
+	if total == 0 || total > maxPlaylistBatch {
+		http.Error(w, "tagset_ids or remote tracks are required", http.StatusBadRequest)
 		return
 	}
-	added, err := h.repo.AddPlaylistItems(r.Context(), userID, id, body.TagsetIDs)
+	added, err := h.repo.AddPlaylistItems(r.Context(), userID, id, body.TagsetIDs, body.Remote)
 	switch {
 	case errors.Is(err, database.ErrPlaylistNotFound):
 		http.NotFound(w, r)
 	case errors.Is(err, database.ErrFileNotFound):
 		http.Error(w, "unknown or unavailable track", http.StatusBadRequest)
+	case errors.Is(err, database.ErrBadRemoteRef):
+		http.Error(w, "invalid remote track", http.StatusBadRequest)
 	case err != nil:
 		http.Error(w, "storage error", http.StatusInternalServerError)
 	default:
+		if len(body.Remote) > 0 {
+			h.repointRemotes(r.Context()) // a remote add may already be local
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "added": added})
 	}
 }
@@ -373,8 +415,44 @@ func (h *handler) toggleFavorite(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// listFavorites handles GET /api/favorites — the user's liked tagset ids, for
-// painting hearts on rows and the player bar.
+// toggleRemoteFavorite handles POST /api/favorites/remote/{hash} — the Like
+// button on a remote madnetwork track. The body carries the display text
+// captured on first like ({title, artist, album}).
+func (h *handler) toggleRemoteFavorite(w http.ResponseWriter, r *http.Request) {
+	userID, ok := playlistUser(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Title  string `json:"title"`
+		Artist string `json:"artist"`
+		Album  string `json:"album"`
+	}
+	if !decodePlaylistBody(w, r, &body) {
+		return
+	}
+	ref := database.RemoteTrackRef{
+		Hash:   chi.URLParam(r, "hash"),
+		Title:  body.Title,
+		Artist: body.Artist,
+		Album:  body.Album,
+	}
+	liked, err := h.repo.ToggleRemoteFavorite(r.Context(), userID, ref)
+	switch {
+	case errors.Is(err, database.ErrBadRemoteRef):
+		http.Error(w, "invalid remote track", http.StatusBadRequest)
+	case err != nil:
+		http.Error(w, "storage error", http.StatusInternalServerError)
+	default:
+		if liked {
+			h.repointRemotes(r.Context()) // a remote like may already be local
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"liked": liked})
+	}
+}
+
+// listFavorites handles GET /api/favorites — the user's liked tagset ids plus
+// remote hashes, for painting hearts on rows and the player bar.
 func (h *handler) listFavorites(w http.ResponseWriter, r *http.Request) {
 	userID, ok := playlistUser(w, r)
 	if !ok {
@@ -385,7 +463,12 @@ func (h *handler) listFavorites(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tagset_ids": ids})
+	hashes, err := h.repo.ListFavoriteRemoteHashes(r.Context(), userID)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tagset_ids": ids, "remote_hashes": hashes})
 }
 
 // decodePlaylistBody decodes a small JSON body with the standard size cap,

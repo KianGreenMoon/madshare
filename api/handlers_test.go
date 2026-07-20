@@ -552,8 +552,9 @@ type fakeRepo struct {
 	playlistGet       *database.Playlist
 	playlistItems     []*database.PlaylistItemEntry
 	playlistItemFound bool
-	favoriteLiked     bool
-	favoriteTagsetIDs []int64
+	favoriteLiked        bool
+	favoriteTagsetIDs    []int64
+	favoriteRemoteHashes []string
 
 	// Review-bucket stubs (moderation review). lastReviewState captures the
 	// state InsertFile received; reviewInfoFound=false means "unknown hash"
@@ -1253,11 +1254,11 @@ func (f *fakeRepo) EnsureFavoritesPlaylist(_ context.Context, _ int64) (int64, e
 	return 1, f.playlistErr
 }
 
-func (f *fakeRepo) CreatePlaylist(_ context.Context, userID int64, name string, tagsetIDs []int64) (*database.Playlist, error) {
+func (f *fakeRepo) CreatePlaylist(_ context.Context, userID int64, name string, tagsetIDs []int64, remote []database.RemoteTrackRef) (*database.Playlist, error) {
 	if f.playlistErr != nil {
 		return nil, f.playlistErr
 	}
-	return &database.Playlist{ID: 2, UserID: userID, Name: name, Kind: database.PlaylistRegular, TrackCount: len(tagsetIDs)}, nil
+	return &database.Playlist{ID: 2, UserID: userID, Name: name, Kind: database.PlaylistRegular, TrackCount: len(tagsetIDs) + len(remote)}, nil
 }
 
 func (f *fakeRepo) GetPlaylist(_ context.Context, _, _ int64) (*database.Playlist, []*database.PlaylistItemEntry, error) {
@@ -1275,11 +1276,11 @@ func (f *fakeRepo) DeletePlaylist(_ context.Context, _, _ int64) error {
 	return f.playlistErr
 }
 
-func (f *fakeRepo) AddPlaylistItems(_ context.Context, _, _ int64, tagsetIDs []int64) (int, error) {
+func (f *fakeRepo) AddPlaylistItems(_ context.Context, _, _ int64, tagsetIDs []int64, remote []database.RemoteTrackRef) (int, error) {
 	if f.playlistErr != nil {
 		return 0, f.playlistErr
 	}
-	return len(tagsetIDs), nil
+	return len(tagsetIDs) + len(remote), nil
 }
 
 func (f *fakeRepo) RemovePlaylistItem(_ context.Context, _, _, _ int64) (bool, error) {
@@ -1296,6 +1297,21 @@ func (f *fakeRepo) ToggleFavorite(_ context.Context, _, _ int64) (bool, error) {
 
 func (f *fakeRepo) ListFavoriteTagsetIDs(_ context.Context, _ int64) ([]int64, error) {
 	return f.favoriteTagsetIDs, f.playlistErr
+}
+
+func (f *fakeRepo) ToggleRemoteFavorite(_ context.Context, _ int64, ref database.RemoteTrackRef) (bool, error) {
+	if len(ref.Hash) != 64 {
+		return false, database.ErrBadRemoteRef
+	}
+	return f.favoriteLiked, f.playlistErr
+}
+
+func (f *fakeRepo) ListFavoriteRemoteHashes(_ context.Context, _ int64) ([]string, error) {
+	return f.favoriteRemoteHashes, f.playlistErr
+}
+
+func (f *fakeRepo) RepointRemotePlaylistItems(_ context.Context) (int, error) {
+	return 0, nil
 }
 
 // TestUploadFile_InsertFailureLeavesOrphan verifies that when storage.Put

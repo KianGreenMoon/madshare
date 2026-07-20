@@ -175,6 +175,97 @@ func TestToggleFavorite_ResponseShape(t *testing.T) {
 	}
 }
 
+// Remote madnetwork items (docs/ui/madnetwork-page.md §Remote tracks): a
+// remote-only add is accepted, the toggle validates the hash, and the
+// favorites listing carries both halves of the liked set.
+func TestPlaylistRemote_AddAndToggle(t *testing.T) {
+	h := plHandler(&fakeRepo{})
+	rr := httptest.NewRecorder()
+	h.addPlaylistItems(rr, plReq(http.MethodPost, "/api/playlists/1/items",
+		`{"remote":[{"hash":"`+strings.Repeat("a", 64)+`","title":"Far Song"}]}`, "id", "1"))
+	if rr.Code != http.StatusOK {
+		t.Errorf("remote-only add: status = %d, want 200 (%s)", rr.Code, rr.Body.String())
+	}
+
+	h = plHandler(&fakeRepo{playlistErr: database.ErrBadRemoteRef})
+	rr = httptest.NewRecorder()
+	h.addPlaylistItems(rr, plReq(http.MethodPost, "/api/playlists/1/items",
+		`{"remote":[{"hash":"nope"}]}`, "id", "1"))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("bad remote hash add: status = %d, want 400", rr.Code)
+	}
+
+	h = plHandler(&fakeRepo{favoriteLiked: true})
+	rr = httptest.NewRecorder()
+	h.toggleRemoteFavorite(rr, plReq(http.MethodPost, "/api/favorites/remote/x",
+		`{"title":"Far Song"}`, "hash", strings.Repeat("b", 64)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("remote toggle: status = %d, want 200", rr.Code)
+	}
+	var resp struct {
+		Liked bool `json:"liked"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil || !resp.Liked {
+		t.Errorf("remote toggle response = %s (err %v), want liked:true", rr.Body.String(), err)
+	}
+
+	rr = httptest.NewRecorder()
+	h.toggleRemoteFavorite(rr, plReq(http.MethodPost, "/api/favorites/remote/x", `{}`, "hash", "zz"))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("bad remote hash toggle: status = %d, want 400", rr.Code)
+	}
+}
+
+func TestListFavorites_IncludesRemoteHashes(t *testing.T) {
+	h := plHandler(&fakeRepo{favoriteTagsetIDs: []int64{11}, favoriteRemoteHashes: []string{strings.Repeat("c", 64)}})
+	rr := httptest.NewRecorder()
+	h.listFavorites(rr, plReq(http.MethodGet, "/api/favorites", ""))
+	var resp struct {
+		TagsetIDs    []int64  `json:"tagset_ids"`
+		RemoteHashes []string `json:"remote_hashes"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.TagsetIDs) != 1 || len(resp.RemoteHashes) != 1 {
+		t.Errorf("favorites = %+v, want both halves", resp)
+	}
+}
+
+func TestGetPlaylist_RemoteItemShape(t *testing.T) {
+	hash := strings.Repeat("d", 64)
+	h := plHandler(&fakeRepo{
+		playlistGet: &database.Playlist{ID: 1, Name: "Mixed", Kind: database.PlaylistRegular},
+		playlistItems: []*database.PlaylistItemEntry{
+			{ItemID: 1, RemoteHash: hash, Available: true},
+			{ItemID: 2, RemoteHash: hash[:63] + "e", Available: false},
+		},
+	})
+	rr := httptest.NewRecorder()
+	h.getPlaylist(rr, plReq(http.MethodGet, "/api/playlists/1", "", "id", "1"))
+	var resp struct {
+		Items []struct {
+			URL    string `json:"url"`
+			Status string `json:"status"`
+			Remote bool   `json:"remote"`
+			Hash   string `json:"hash"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.Items) != 2 {
+		t.Fatalf("items = %d, want 2", len(resp.Items))
+	}
+	ok := resp.Items[0]
+	if !ok.Remote || ok.Hash != hash || ok.URL != "/api/madnetwork/stream/"+hash || ok.Status != "ok" {
+		t.Errorf("available remote item = %+v, want stream url + status ok", ok)
+	}
+	if resp.Items[1].Status != "unavailable" {
+		t.Errorf("unavailable remote item status = %q, want unavailable", resp.Items[1].Status)
+	}
+}
+
 func TestListFavorites_ReturnsTagsetIDs(t *testing.T) {
 	h := plHandler(&fakeRepo{favoriteTagsetIDs: []int64{11, 12}})
 	rr := httptest.NewRecorder()

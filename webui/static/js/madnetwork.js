@@ -15,6 +15,7 @@
 // init() (the shell swaps <main> between navigations).
 import { gatePage, PAGE_PERMS, getIdentity } from './auth.js';
 import { getController } from './player-controller.js';
+import { trackKey } from './favorites.js';
 import { fmtTime } from './player.js';
 import { showToast } from './shell.js';
 import { quickAddItems } from './quick-add.js';
@@ -65,6 +66,9 @@ export async function init() {
     buildQueueTrack: t => ({
       url: t.url ? `${API}${t.url}` : `${API}/api/madnetwork/stream/${t.hash}`,
       tagsetId: t.tagset_id || null,
+      remoteLike: t.tagset_id ? null : {
+        hash: t.hash, title: t.title || '', artist: t.artist_name || t.artist || '', album: t.album_title || '',
+      },
       rowKey: mnKey(t.artist, t.album_title, t.title),
       title:  t.title || 'Unknown',
       artist: t.artist_name || t.artist || '',
@@ -212,6 +216,11 @@ function queueTrackOf(t, artist, album) {
   return {
     url: v0.url ? `${API}${v0.url}` : `${API}/api/madnetwork/stream/${best.hash}`,
     tagsetId: t.tagset_id || null,
+    // Remote-only tracks are likable/playlistable by hash, carrying the
+    // display text captured at add time (docs/ui/madnetwork-page.md).
+    remoteLike: t.tagset_id ? null : {
+      hash: best.hash, title: t.title || '', artist: t.artist || artist || '', album: album || '',
+    },
     rowKey: mnKey(artist, album, t.title),
     title: t.title || 'Unknown',
     artist: t.artist || artist || '',
@@ -376,7 +385,8 @@ function appendTrackRow(wrap, t, i, queue, qi) {
     dur: fmtDur(t.duration) || '—',
     rowKey: playable ? qt.rowKey : null,
     url: playable ? qt.url : null,
-    tagsetId: t.tagset_id || null,
+    likeKey: playable ? trackKey(qt) : (t.tagset_id || null),
+    likeMeta: qt?.remoteLike || null,
     onPlay: play,
     makeMenuItems: btn => {
       const extraItems = [];

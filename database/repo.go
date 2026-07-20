@@ -507,10 +507,12 @@ type Repository interface {
 	// creating it if absent. Idempotent.
 	EnsureFavoritesPlaylist(ctx context.Context, userID int64) (int64, error)
 
-	// CreatePlaylist creates a regular playlist, optionally seeded with items
-	// (tagset ids, in order). Any unknown/unavailable appearance fails the
-	// whole create with ErrFileNotFound.
-	CreatePlaylist(ctx context.Context, userID int64, name string, tagsetIDs []int64) (*Playlist, error)
+	// CreatePlaylist creates a regular playlist, optionally seeded with local
+	// items and/or remote madnetwork refs
+	// (tagset ids then remote refs, in order). Any unknown/unavailable
+	// appearance fails the whole create with ErrFileNotFound; a malformed
+	// remote hash with ErrBadRemoteRef.
+	CreatePlaylist(ctx context.Context, userID int64, name string, tagsetIDs []int64, remote []RemoteTrackRef) (*Playlist, error)
 
 	// GetPlaylist returns the playlist and its items in order. Unavailable
 	// appearances stay listed (Trashed=true); hard-deleted tagsets vanish via
@@ -522,10 +524,11 @@ type Repository interface {
 	RenamePlaylist(ctx context.Context, userID, playlistID int64, name string) error
 	DeletePlaylist(ctx context.Context, userID, playlistID int64) error
 
-	// AddPlaylistItems atomically appends tracks by tagset id; any
-	// unknown/unavailable appearance fails the batch with ErrFileNotFound. On
-	// the favorites playlist, already-present appearances are skipped.
-	AddPlaylistItems(ctx context.Context, userID, playlistID int64, tagsetIDs []int64) (added int, err error)
+	// AddPlaylistItems atomically appends tracks by tagset id and/or remote
+	// madnetwork ref; any unknown/unavailable appearance fails the batch with
+	// ErrFileNotFound, a malformed remote hash with ErrBadRemoteRef. On the
+	// favorites playlist, already-present tracks are skipped.
+	AddPlaylistItems(ctx context.Context, userID, playlistID int64, tagsetIDs []int64, remote []RemoteTrackRef) (added int, err error)
 
 	// RemovePlaylistItem removes one item by its id; found is false (no error)
 	// when the item is not in that playlist.
@@ -543,4 +546,18 @@ type Repository interface {
 	// ListFavoriteTagsetIDs returns the user's visible favorite tagset ids in
 	// order.
 	ListFavoriteTagsetIDs(ctx context.Context, userID int64) ([]int64, error)
+
+	// ToggleRemoteFavorite flips a remote madnetwork track's membership in the
+	// user's favorites (display text captured on first like); returns the
+	// resulting state. A malformed hash returns ErrBadRemoteRef.
+	ToggleRemoteFavorite(ctx context.Context, userID int64, ref RemoteTrackRef) (liked bool, err error)
+
+	// ListFavoriteRemoteHashes returns the remote hashes in the user's
+	// favorites, in order.
+	ListFavoriteRemoteHashes(ctx context.Context, userID int64) ([]string, error)
+
+	// RepointRemotePlaylistItems turns remote playlist rows whose hash now
+	// lives in the library into local rows (or drops duplicates); returns the
+	// number of rows handled. Idempotent.
+	RepointRemotePlaylistItems(ctx context.Context) (int, error)
 }

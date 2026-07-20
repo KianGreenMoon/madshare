@@ -208,7 +208,7 @@ function wireLikeButton(controller) {
   onLikedChange(sync);
   btn.addEventListener('click', () => {
     const cur = controller.current();
-    if (cur) toggleLike(trackKey(cur.track)); // sync runs via onLikedChange
+    if (cur) toggleLike(trackKey(cur.track), cur.track.remoteLike); // sync runs via onLikedChange
   });
   ensureLiked(); // resolves to an empty set for anonymous users — no prompt
   sync();

@@ -4,7 +4,7 @@
 // heart, disc headers, and the playing-row highlight helpers. The rows are
 // presentation-only — data fetching, drill state, and menu contents stay with
 // the calling page, passed in as callbacks.
-import { isLiked, toggleLike, onLikedChange } from './favorites.js';
+import { isLiked, toggleLike, onLikedChange, likeKeyOf } from './favorites.js';
 import { mkMoreBtn } from './quick-add.js';
 
 export function esc(s) {
@@ -28,8 +28,8 @@ const heartSvg =
 // repaintHearts syncs every rendered heart with the shared liked set; runs on
 // each render and whenever the set changes (any heart, any page, player bar).
 export function repaintHearts() {
-  document.querySelectorAll('.row-heart[data-tagset]').forEach(b => {
-    const on = isLiked(b.dataset.tagset);
+  document.querySelectorAll('.row-heart[data-like]').forEach(b => {
+    const on = isLiked(b.dataset.like);
     b.classList.toggle('liked', on);
     b.setAttribute('aria-pressed', String(on));
     const label = on ? 'Remove from Favorites' : 'Add to Favorites';
@@ -40,19 +40,22 @@ export function repaintHearts() {
 onLikedChange(repaintHearts);
 
 // mkHeartBtn returns a heart button for a track row (state via repaintHearts),
-// keyed by the track's tagset id. The heart is THE favorites control — there is
-// no menu duplicate.
-export function mkHeartBtn(tagsetId) {
+// keyed by the track's like identity — a tagset id (local appearance) or an
+// `mn:<hash>` key (remote madnetwork track; likeMeta carries the display text
+// stored on first like). The heart is THE favorites control — there is no menu
+// duplicate.
+export function mkHeartBtn(likeKey, likeMeta) {
+  const key = likeKeyOf(likeKey);
   const btn = document.createElement('button');
   btn.className = 'row-heart';
-  btn.dataset.tagset = tagsetId || '';
+  btn.dataset.like = key || '';
   btn.setAttribute('aria-pressed', 'false');
   btn.setAttribute('aria-label', 'Add to Favorites');
   btn.title = 'Add to Favorites';
   btn.innerHTML = heartSvg;
   btn.addEventListener('click', e => {
     e.stopPropagation();
-    if (tagsetId) toggleLike(tagsetId);
+    if (key) toggleLike(key, likeMeta);
   });
   return btn;
 }
@@ -116,8 +119,8 @@ export function buildAlbumRow({ title, meta, artUrl, onOpen, makeMenuItems }) {
 // buildTrackRow builds one track row (num / playing icon / title+meta / heart /
 // ⋯ / duration). rowKey is the appearance identity for the playing highlight;
 // url and idx land on the dataset when given (duration write-back, unavailable
-// marking).
-export function buildTrackRow({ num, title, meta, dur, rowKey, url, idx, tagsetId, onPlay, makeMenuItems }) {
+// marking). likeKey/likeMeta feed the heart (see mkHeartBtn).
+export function buildTrackRow({ num, title, meta, dur, rowKey, url, idx, likeKey, likeMeta, onPlay, makeMenuItems }) {
   const row = document.createElement('div');
   row.className = 'track-row';
   row.tabIndex = 0;
@@ -137,7 +140,7 @@ export function buildTrackRow({ num, title, meta, dur, rowKey, url, idx, tagsetI
     `</div>` +
     `<span class="track-dur">${esc(dur)}</span>`;
   const durEl = row.querySelector('.track-dur');
-  row.insertBefore(mkHeartBtn(tagsetId), durEl);
+  row.insertBefore(mkHeartBtn(likeKey, likeMeta), durEl);
   if (makeMenuItems) {
     row.insertBefore(mkMoreBtn(`More actions for ${title}`, makeMenuItems), durEl);
   }

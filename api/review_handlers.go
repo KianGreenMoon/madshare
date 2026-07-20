@@ -418,6 +418,9 @@ func (h *handler) submitStaged(ctx context.Context, id *auth.Identity, tagsetIDs
 	if err != nil {
 		return 0, 0, err
 	}
+	if approved > 0 {
+		h.repointRemotes(ctx) // freshly approved content may back remote playlist rows
+	}
 	submittedClean, err := apply(submitIDs, database.ReviewSubmitted, "file.bulk_submit", "submitted")
 	if err != nil {
 		return 0, 0, err
@@ -714,6 +717,7 @@ func (h *handler) moderationBulk(w http.ResponseWriter, r *http.Request) {
 		})
 		if affected > 0 {
 			h.audit(r.Context(), "file.bulk_approve", "tagsets", fmt.Sprintf("%d approved", affected))
+			h.repointRemotes(r.Context())
 		}
 	case "return":
 		affected, err = h.repo.BulkUpdateReviewState(r.Context(), ids, database.ReviewTransition{
@@ -811,6 +815,7 @@ func (h *handler) moderationApprove(w http.ResponseWriter, r *http.Request) {
 		detail = strings.TrimSpace(detail + " drop-bytes")
 	}
 	h.audit(r.Context(), "file.approve", fmt.Sprintf("tagset:%d", tagsetID), detail)
+	h.repointRemotes(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tagset_id": tagsetID, "state": database.ReviewApproved})
 }
 

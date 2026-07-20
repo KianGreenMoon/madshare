@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sort"
 	"time"
 )
 
@@ -27,7 +28,21 @@ var (
 	// ErrBadReorder — the reorder id list is not a permutation of the
 	// playlist's current item ids.
 	ErrBadReorder = errors.New("reorder ids do not match playlist items")
+	// ErrBadRemoteRef — a remote track reference is malformed (the hash is not
+	// a content hash).
+	ErrBadRemoteRef = errors.New("invalid remote track reference")
 )
+
+// RemoteTrackRef identifies a remote madnetwork track in a playlist: the
+// default rendition's content hash plus the display text captured at add time
+// (the friend's catalog row may vanish later). docs/ui/madnetwork-page.md
+// §Remote tracks in favorites & playlists.
+type RemoteTrackRef struct {
+	Hash   string `json:"hash"`
+	Title  string `json:"title"`
+	Artist string `json:"artist"`
+	Album  string `json:"album"`
+}
 
 // Playlist is a row in the playlists table plus its item count.
 type Playlist struct {
@@ -49,6 +64,7 @@ type Playlist struct {
 // (docs/api/playlists.md).
 type PlaylistItemEntry struct {
 	ItemID          int64
+	Position        int64
 	TagsetID        int64
 	ObjectKey       string
 	MimeType        string
@@ -57,6 +73,12 @@ type PlaylistItemEntry struct {
 	Album           sql.NullString
 	DurationSeconds sql.NullFloat64
 	Trashed         bool
+
+	// Remote madnetwork items (tagset_id NULL): the rendition hash the row
+	// plays via the streaming relay, and whether any source can currently
+	// provide it (a live local blob, or a friend advertising it).
+	RemoteHash string
+	Available  bool
 }
 
 // ListPlaylists returns the user's playlists (favorites first, then regular by
@@ -113,10 +135,11 @@ func (db *DB) EnsureFavoritesPlaylist(ctx context.Context, userID int64) (int64,
 }
 
 // CreatePlaylist creates a regular playlist for the user, optionally seeded
-// with items (tagset ids, in order). Validation matches AddPlaylistItems:
-// every id must name a visible (approved, non-trashed, playable) appearance or
-// the whole create fails with ErrFileNotFound.
-func (db *DB) CreatePlaylist(ctx context.Context, userID int64, name string, tagsetIDs []int64) (*Playlist, error) {
+// with items (tagset ids, then remote refs, in order). Validation matches
+// AddPlaylistItems: every id must name a visible (approved, non-trashed,
+// playable) appearance or the whole create fails with ErrFileNotFound; a
+// malformed remote hash fails with ErrBadRemoteRef.
+func (db *DB) CreatePlaylist(ctx context.Context, userID int64, name string, tagsetIDs []int64, remote []RemoteTrackRef) (*Playlist, error) {
 	now := time.Now().Unix()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -134,7 +157,7 @@ func (db *DB) CreatePlaylist(ctx context.Context, userID int64, name string, tag
 	if err != nil {
 		return nil, err
 	}
-	added, err := addItemsTx(ctx, tx, id, tagsetIDs, false, now)
+	added, err := addItemsTx(ctx, tx, id, tagsetIDs, remote, false, now)
 	if err != nil {
 		return nil, err
 	}
@@ -163,13 +186,13 @@ func (db *DB) GetPlaylist(ctx context.Context, userID, playlistID int64) (*Playl
 	}
 
 	rows, err := db.QueryContext(ctx, `
-		SELECT i.id, m.id, COALESCE(f.object_key, ''), COALESCE(f.mime_type, ''),
+		SELECT i.id, i.position, m.id, COALESCE(f.object_key, ''), COALESCE(f.mime_type, ''),
 		       m.title, m.artist, m.album, mm.duration_seconds,
 		       (m.deleted_at IS NOT NULL OR m.review_state <> 'approved' OR f.id IS NULL)
 		FROM playlist_items i
 		JOIN tagsets m ON m.id = i.tagset_id`+recordingJoin+bestRenditionJoin(true)+`
 		LEFT JOIN media_metadata mm ON mm.file_id = f.id
-		WHERE i.playlist_id = ?
+		WHERE i.playlist_id = ? AND i.tagset_id IS NOT NULL
 		ORDER BY i.position, i.id`, playlistID)
 	if err != nil {
 		return nil, nil, err
@@ -178,14 +201,70 @@ func (db *DB) GetPlaylist(ctx context.Context, userID, playlistID int64) (*Playl
 	items := make([]*PlaylistItemEntry, 0)
 	for rows.Next() {
 		e := &PlaylistItemEntry{}
-		if err := rows.Scan(&e.ItemID, &e.TagsetID, &e.ObjectKey, &e.MimeType,
+		if err := rows.Scan(&e.ItemID, &e.Position, &e.TagsetID, &e.ObjectKey, &e.MimeType,
 			&e.Title, &e.Artist, &e.Album, &e.DurationSeconds, &e.Trashed); err != nil {
 			return nil, nil, err
 		}
 		items = append(items, e)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	// Remote madnetwork items ride in a second pass (their availability check
+	// runs against entirely different tables), then both merge on position.
+	remote, err := db.remotePlaylistItems(ctx, playlistID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(remote) > 0 {
+		items = append(items, remote...)
+		sort.SliceStable(items, func(a, b int) bool {
+			if items[a].Position != items[b].Position {
+				return items[a].Position < items[b].Position
+			}
+			return items[a].ItemID < items[b].ItemID
+		})
+	}
 	p.TrackCount = len(items)
-	return p, items, rows.Err()
+	return p, items, nil
+}
+
+// remotePlaylistItems lists a playlist's remote madnetwork rows. Available is
+// true when some source can still provide the hash: a live local blob, or a
+// friend advertising it (catalog or holdings) — the streaming relay
+// short-circuits local hashes, so an available row always plays.
+func (db *DB) remotePlaylistItems(ctx context.Context, playlistID int64) ([]*PlaylistItemEntry, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT i.id, i.position, i.remote_hash,
+		       COALESCE(i.remote_title, ''), COALESCE(i.remote_artist, ''), COALESCE(i.remote_album, ''),
+		       (EXISTS(SELECT 1 FROM files f WHERE f.hash = i.remote_hash AND f.deleted_at IS NULL)
+		        OR EXISTS(SELECT 1 FROM federation_catalog c
+		                  JOIN federation_peers p ON p.id = c.peer_id AND p.state = 'friend'
+		                  WHERE c.renditions LIKE '%' || i.remote_hash || '%')
+		        OR EXISTS(SELECT 1 FROM federation_holdings h
+		                  JOIN federation_peers p2 ON p2.id = h.peer_id AND p2.state = 'friend'
+		                  WHERE h.hash = i.remote_hash))
+		FROM playlist_items i
+		WHERE i.playlist_id = ? AND i.remote_hash IS NOT NULL
+		ORDER BY i.position, i.id`, playlistID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]*PlaylistItemEntry, 0)
+	for rows.Next() {
+		e := &PlaylistItemEntry{}
+		var title, artist, album string
+		if err := rows.Scan(&e.ItemID, &e.Position, &e.RemoteHash, &title, &artist, &album, &e.Available); err != nil {
+			return nil, err
+		}
+		e.Title = sql.NullString{String: title, Valid: title != ""}
+		e.Artist = sql.NullString{String: artist, Valid: artist != ""}
+		e.Album = sql.NullString{String: album, Valid: album != ""}
+		items = append(items, e)
+	}
+	return items, rows.Err()
 }
 
 // RenamePlaylist renames a regular playlist. Favorites returns ErrPlaylistSystem.
@@ -217,11 +296,12 @@ func (db *DB) DeletePlaylist(ctx context.Context, userID, playlistID int64) erro
 	return err
 }
 
-// AddPlaylistItems appends tracks (by tagset id, in order) to the user's
-// playlist. Every id must name a visible appearance or the whole batch fails
-// with ErrFileNotFound — the add is atomic. On the favorites playlist, tagsets
-// already present are skipped (Like is idempotent).
-func (db *DB) AddPlaylistItems(ctx context.Context, userID, playlistID int64, tagsetIDs []int64) (added int, err error) {
+// AddPlaylistItems appends tracks (by tagset id, then remote refs, in order)
+// to the user's playlist. Every id must name a visible appearance or the whole
+// batch fails with ErrFileNotFound — the add is atomic; a malformed remote
+// hash fails with ErrBadRemoteRef. On the favorites playlist, tracks already
+// present are skipped (Like is idempotent).
+func (db *DB) AddPlaylistItems(ctx context.Context, userID, playlistID int64, tagsetIDs []int64, remote []RemoteTrackRef) (added int, err error) {
 	kind, err := db.playlistKind(ctx, userID, playlistID)
 	if err != nil {
 		return 0, err
@@ -231,7 +311,7 @@ func (db *DB) AddPlaylistItems(ctx context.Context, userID, playlistID int64, ta
 		return 0, err
 	}
 	defer tx.Rollback()
-	added, err = addItemsTx(ctx, tx, playlistID, tagsetIDs, kind == PlaylistFavorites, time.Now().Unix())
+	added, err = addItemsTx(ctx, tx, playlistID, tagsetIDs, remote, kind == PlaylistFavorites, time.Now().Unix())
 	if err != nil {
 		return 0, err
 	}
@@ -241,11 +321,12 @@ func (db *DB) AddPlaylistItems(ctx context.Context, userID, playlistID int64, ta
 	return added, nil
 }
 
-// addItemsTx verifies each tagset is a visible appearance and appends items
-// after the playlist's current max position. dedupe skips tagsets already in
-// the list (favorites semantics). Touches updated_at when anything was added.
-func addItemsTx(ctx context.Context, tx *sql.Tx, playlistID int64, tagsetIDs []int64, dedupe bool, now int64) (int, error) {
-	if len(tagsetIDs) == 0 {
+// addItemsTx verifies each tagset is a visible appearance (and each remote ref
+// a well-formed content hash) and appends items after the playlist's current
+// max position. dedupe skips tracks already in the list (favorites semantics).
+// Touches updated_at when anything was added.
+func addItemsTx(ctx context.Context, tx *sql.Tx, playlistID int64, tagsetIDs []int64, remote []RemoteTrackRef, dedupe bool, now int64) (int, error) {
+	if len(tagsetIDs) == 0 && len(remote) == 0 {
 		return 0, nil
 	}
 	var pos int64
@@ -279,6 +360,30 @@ func addItemsTx(ctx context.Context, tx *sql.Tx, playlistID int64, tagsetIDs []i
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO playlist_items (playlist_id, tagset_id, position, added_at) VALUES (?, ?, ?, ?)`,
 			playlistID, tagsetID, pos, now); err != nil {
+			return 0, err
+		}
+		added++
+	}
+	for _, ref := range remote {
+		if !isContentHash(ref.Hash) {
+			return 0, ErrBadRemoteRef
+		}
+		if dedupe {
+			var n int
+			if err := tx.QueryRowContext(ctx,
+				`SELECT COUNT(*) FROM playlist_items WHERE playlist_id = ? AND remote_hash = ?`,
+				playlistID, ref.Hash).Scan(&n); err != nil {
+				return 0, err
+			}
+			if n > 0 {
+				continue
+			}
+		}
+		pos++
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO playlist_items (playlist_id, remote_hash, remote_title, remote_artist, remote_album, position, added_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			playlistID, ref.Hash, ref.Title, ref.Artist, ref.Album, pos, now); err != nil {
 			return 0, err
 		}
 		added++
@@ -406,6 +511,129 @@ func (db *DB) ToggleFavorite(ctx context.Context, userID, tagsetID int64) (liked
 	}
 	_, err = db.ExecContext(ctx, `UPDATE playlists SET updated_at = ? WHERE id = ?`, now, favID)
 	return true, err
+}
+
+// ToggleRemoteFavorite flips the membership of a remote madnetwork track (by
+// rendition hash) in the user's favorites playlist, creating the playlist on
+// first use. The display text is captured on first like. Returns the resulting
+// state; a malformed hash returns ErrBadRemoteRef.
+func (db *DB) ToggleRemoteFavorite(ctx context.Context, userID int64, ref RemoteTrackRef) (liked bool, err error) {
+	if !isContentHash(ref.Hash) {
+		return false, ErrBadRemoteRef
+	}
+	favID, err := db.EnsureFavoritesPlaylist(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	now := time.Now().Unix()
+	res, err := db.ExecContext(ctx,
+		`DELETE FROM playlist_items WHERE playlist_id = ? AND remote_hash = ?`, favID, ref.Hash)
+	if err != nil {
+		return false, err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return false, err
+	} else if n > 0 {
+		_, err = db.ExecContext(ctx, `UPDATE playlists SET updated_at = ? WHERE id = ?`, now, favID)
+		return false, err
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO playlist_items (playlist_id, remote_hash, remote_title, remote_artist, remote_album, position, added_at)
+		VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM playlist_items WHERE playlist_id = ?), ?)`,
+		favID, ref.Hash, ref.Title, ref.Artist, ref.Album, favID, now); err != nil {
+		return false, err
+	}
+	_, err = db.ExecContext(ctx, `UPDATE playlists SET updated_at = ? WHERE id = ?`, now, favID)
+	return true, err
+}
+
+// ListFavoriteRemoteHashes returns the remote hashes in the user's favorites —
+// the mn: half of the client's liked set.
+func (db *DB) ListFavoriteRemoteHashes(ctx context.Context, userID int64) ([]string, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT i.remote_hash
+		FROM playlists p
+		JOIN playlist_items i ON i.playlist_id = p.id
+		WHERE p.user_id = ? AND p.kind = 'favorites' AND i.remote_hash IS NOT NULL
+		ORDER BY i.position`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]string, 0)
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// RepointRemotePlaylistItems turns remote playlist rows whose hash now lives
+// in the library (a live blob whose recording has a visible appearance) into
+// normal local rows — the write-time half of the materialize repoint
+// (docs/ui/madnetwork-page.md). A row whose playlist already contains the
+// target appearance is dropped instead of duplicated. Idempotent; called after
+// blobs land approved (moderation approve, madnetwork downloads) and once at
+// startup as the catch-all sweep.
+func (db *DB) RepointRemotePlaylistItems(ctx context.Context) (int, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT i.id, i.playlist_id, (
+			SELECT m.id FROM files f
+			JOIN tagsets m ON m.recording_id = f.recording_id
+			WHERE f.hash = i.remote_hash AND f.deleted_at IS NULL AND `+visibleTagset+`
+			ORDER BY m.is_primary DESC, m.id LIMIT 1)
+		FROM playlist_items i
+		WHERE i.remote_hash IS NOT NULL`)
+	if err != nil {
+		return 0, err
+	}
+	type hit struct{ itemID, playlistID, tagsetID int64 }
+	var hits []hit
+	for rows.Next() {
+		var itemID, playlistID int64
+		var tagsetID sql.NullInt64
+		if err := rows.Scan(&itemID, &playlistID, &tagsetID); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if tagsetID.Valid {
+			hits = append(hits, hit{itemID, playlistID, tagsetID.Int64})
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	repointed := 0
+	for _, h := range hits {
+		var dup int
+		err := db.QueryRowContext(ctx,
+			`SELECT 1 FROM playlist_items WHERE playlist_id = ? AND tagset_id = ?`,
+			h.playlistID, h.tagsetID).Scan(&dup)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			if _, err := db.ExecContext(ctx, `
+				UPDATE playlist_items SET tagset_id = ?, remote_hash = NULL,
+					remote_title = NULL, remote_artist = NULL, remote_album = NULL
+				WHERE id = ?`, h.tagsetID, h.itemID); err != nil {
+				return repointed, err
+			}
+		case err != nil:
+			return repointed, err
+		default:
+			// The playlist already holds the local appearance — drop the remote twin.
+			if _, err := db.ExecContext(ctx,
+				`DELETE FROM playlist_items WHERE id = ?`, h.itemID); err != nil {
+				return repointed, err
+			}
+		}
+		repointed++
+	}
+	return repointed, nil
 }
 
 // ListFavoriteTagsetIDs returns the tagset ids of the user's visible favorites

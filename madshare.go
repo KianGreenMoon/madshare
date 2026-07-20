@@ -107,6 +107,14 @@ func main() {
 		log.Printf("reconcile orphans: %v", err)
 	}
 
+	// Catch-all sweep for remote playlist rows whose blob arrived by any path
+	// the write-time hooks miss (docs/ui/madnetwork-page.md §Re-pointing).
+	if n, err := db.RepointRemotePlaylistItems(context.Background()); err != nil {
+		log.Printf("repoint remote playlist items: %v", err)
+	} else if n > 0 {
+		log.Printf("repointed %d remote playlist item(s) to local appearances", n)
+	}
+
 	// Collect whatever a crash or bug left unreferenced before anything reads
 	// through it (GC model, docs/architecture/gc-model.md): quarantine the
 	// blobs of appearance-less recordings, trash the appearances of file-less

@@ -27,8 +27,31 @@ export async function queueAdd(collect, how) {
     { type: 'success' });
 }
 
+// splitPlaylistPayload separates a track collection into the request body's
+// two halves: local appearances (tagset ids) and remote madnetwork refs
+// (track.remoteLike = {hash, title, artist, album}). A track with a local
+// tagset never posts as remote.
+function splitPlaylistPayload(tracks) {
+  const tagsetIDs = [];
+  const remote = [];
+  for (const t of tracks) {
+    if (t.tagsetId) tagsetIDs.push(t.tagsetId);
+    else if (t.remoteLike?.hash) remote.push(t.remoteLike);
+  }
+  return { tagsetIDs, remote };
+}
+
+// warnRemoteAdded shows the one-time remote-content caveat after a successful
+// add that included remote tracks (docs/ui/madnetwork-page.md §Remote tracks).
+function warnRemoteAdded(remoteCount) {
+  if (remoteCount > 0) {
+    showToast('Not in the local library — may become unavailable.', { type: 'status' });
+  }
+}
+
 // addToPlaylistMenu replaces the open row menu with a playlist picker (plus
-// "New playlist…"), then posts the collected tracks' tagset ids.
+// "New playlist…"), then posts the collected tracks (local tagset ids and/or
+// remote madnetwork refs).
 export async function addToPlaylistMenu(anchor, collect) {
   let lists, tracks;
   try {
@@ -38,20 +61,22 @@ export async function addToPlaylistMenu(anchor, collect) {
     lists = await res.json();
     tracks = await collect();
   } catch { showToast('Failed to load playlists.', { type: 'error' }); return; }
-  const tagsetIDs = tracks.map(t => t.tagsetId).filter(Boolean);
-  if (!tagsetIDs.length) return;
+  const { tagsetIDs, remote } = splitPlaylistPayload(tracks);
+  const total = tagsetIDs.length + remote.length;
+  if (!total) return;
 
   const add = async (id, name) => {
     try {
       const res = await fetch(`${API}/api/playlists/${id}/items`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tagset_ids: tagsetIDs }),
+        body: JSON.stringify({ tagset_ids: tagsetIDs, remote }),
       });
       if (!res.ok) throw new Error((await res.text().catch(() => '')).trim() || `HTTP ${res.status}`);
       const { added } = await res.json();
       showToast(`Added ${added} track${added !== 1 ? 's' : ''} to "${name}".`, { type: 'success' });
-      if (added === 0 && tagsetIDs.length) showToast(`Already in "${name}".`, { type: 'status' });
+      if (added === 0 && total) showToast(`Already in "${name}".`, { type: 'status' });
+      else warnRemoteAdded(remote.length);
     } catch (err) {
       showToast(`Couldn't add to "${name}": ${err.message}`, { type: 'error' });
     }
@@ -67,10 +92,11 @@ export async function addToPlaylistMenu(anchor, collect) {
         const res = await fetch(`${API}/api/playlists`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, tagset_ids: tagsetIDs }),
+          body: JSON.stringify({ name, tagset_ids: tagsetIDs, remote }),
         });
         if (!res.ok) throw new Error((await res.text().catch(() => '')).trim() || `HTTP ${res.status}`);
-        showToast(`Created "${name}" with ${tagsetIDs.length} track${tagsetIDs.length !== 1 ? 's' : ''}.`, { type: 'success' });
+        showToast(`Created "${name}" with ${total} track${total !== 1 ? 's' : ''}.`, { type: 'success' });
+        warnRemoteAdded(remote.length);
       } catch (err) {
         showToast(`Couldn't create playlist: ${err.message}`, { type: 'error' });
       }

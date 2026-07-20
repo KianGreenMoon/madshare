@@ -447,6 +447,7 @@ func (h *handler) runMadnetworkDownload(hash string, entry *federation.CatalogEn
 	}
 	h.audit(ctx, "madnetwork.download", hash, "staged as "+reviewState+": "+filename)
 	if reviewState == database.ReviewApproved {
+		h.repointRemotes(ctx) // the materialized blob may back remote playlist rows
 		job.set("approved", "")
 	} else {
 		job.set("staged", "")
@@ -472,6 +473,7 @@ func (h *handler) attachRemoteTagset(ctx context.Context, fileID int64, actor sq
 		}); err != nil {
 			return tid, created, err
 		}
+		h.repointRemotes(ctx)
 	}
 	return tid, created, nil
 }

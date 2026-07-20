@@ -9,6 +9,20 @@
   font-size: 13px;
 }
 
+/* Remote madnetwork item badge — the row is not in the local library and may
+   become unavailable (docs/ui/madnetwork-page.md §Remote tracks). */
+.pl-remote {
+  margin-left: var(--space-2);
+  padding: 0 0.4em;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  vertical-align: middle;
+}
+
 .pl-head-actions {
   display: flex;
   align-items: center;

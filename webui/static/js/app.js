@@ -388,7 +388,7 @@ function renderTrackList(tracks) {
       rowKey: track.rowKey,
       url: track.url,   // duration write-back / unavailable marking
       idx: i,           // used by the background duration fetch
-      tagsetId: track.tagsetId,
+      likeKey: track.tagsetId,
       onPlay: play,
       makeMenuItems: btn => quickAddItems(btn, () => [track], {
         extraItems: [{ label: 'Download', onClick: () => downloadTrack(track) }],

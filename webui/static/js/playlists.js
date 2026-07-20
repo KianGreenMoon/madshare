@@ -171,6 +171,10 @@ function playableQueue() {
     tracks.push({
       url: `${API}${it.url}`,
       tagsetId: it.tagset_id || null,
+      // Remote madnetwork items stay likable by hash from the player bar.
+      remoteLike: it.remote ? {
+        hash: it.hash, title: it.title || '', artist: it.artist || '', album: it.album || '',
+      } : null,
       rowKey: it.tagset_id ? `ts:${it.tagset_id}` : `url:${API}${it.url}`,
       title: it.title || 'Unknown',
       artist: it.artist || '',
@@ -287,6 +291,9 @@ function renderItems() {
   }
 
   detail.items.forEach((it, i) => {
+    // "trashed" = a local appearance in Trash; "unavailable" = a remote track
+    // no source can currently provide. Both render dimmed and unplayable.
+    const unavailable = it.status === 'unavailable';
     const trashed = it.status !== 'ok';
     const row = document.createElement('div');
     row.className = 'track-row' + (trashed ? ' trashed' : '');
@@ -299,9 +306,10 @@ function renderItems() {
     }
     row.setAttribute('role', 'button');
     row.setAttribute('aria-label', trashed
-      ? `${it.title || 'Unknown'} (in Trash, not playable)`
+      ? `${it.title || 'Unknown'} (${unavailable ? 'currently unavailable' : 'in Trash, not playable'})`
       : `Play ${it.title || 'Unknown'}`);
-    if (trashed) row.title = 'In Trash — not playable';
+    if (unavailable) row.title = 'Not in the local library — currently unavailable';
+    else if (trashed) row.title = 'In Trash — not playable';
 
     const num = document.createElement('span');
     num.className = 'track-num';
@@ -318,6 +326,13 @@ function renderItems() {
     const title = document.createElement('div');
     title.className = 'track-title';
     title.textContent = it.title || 'Unknown';
+    if (it.remote) {
+      const badge = document.createElement('span');
+      badge.className = 'pl-remote';
+      badge.textContent = 'remote';
+      badge.title = 'Remote madnetwork track — not in the local library, may become unavailable';
+      title.append(badge);
+    }
     const meta = document.createElement('div');
     meta.className = 'track-meta';
     meta.textContent = [it.artist, it.album].filter(Boolean).join(' · ');

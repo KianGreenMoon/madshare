@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"daemonlord.ygg/madshare/federation"
 )
 
 // plFixture creates a user and n live files, returning the user id, the files'
@@ -33,12 +35,123 @@ func plFixture(t *testing.T, db *DB, n int) (userID int64, hashes []string, tags
 	return userID, hashes, tagsetIDs
 }
 
+// TestPlaylist_RemoteItems — the remote madnetwork half (mig 029,
+// docs/ui/madnetwork-page.md §Remote tracks): adds, favorites toggle,
+// availability, and the repoint sweep.
+func TestPlaylist_RemoteItems(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	userID, hashes, tagsetIDs := plFixture(t, db, 1)
+
+	remoteHash := "ab" + fmt.Sprintf("%062d", 7)
+	ref := RemoteTrackRef{Hash: remoteHash, Title: "Far Song", Artist: "Far Artist", Album: "Far Album"}
+
+	// Mixed create: one local appearance + one remote ref.
+	p, err := db.CreatePlaylist(ctx, userID, "Mixed", tagsetIDs, []RemoteTrackRef{ref})
+	if err != nil {
+		t.Fatalf("CreatePlaylist: %v", err)
+	}
+	if p.TrackCount != 2 {
+		t.Fatalf("track count = %d, want 2", p.TrackCount)
+	}
+	_, items, err := db.GetPlaylist(ctx, userID, p.ID)
+	if err != nil {
+		t.Fatalf("GetPlaylist: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items = %d, want 2", len(items))
+	}
+	rm := items[1]
+	if rm.RemoteHash != remoteHash || rm.Title.String != "Far Song" || rm.Artist.String != "Far Artist" {
+		t.Errorf("remote item = %+v, want the captured ref", rm)
+	}
+	if rm.Available {
+		t.Error("remote item available with no source, want unavailable")
+	}
+
+	// A friend advertising the hash in holdings makes it available.
+	friend := insertPeer(t, db, "d4d4", "friend-d", federation.PeerFriend)
+	if err := db.ReplacePeerHoldings(ctx, friend, []string{remoteHash}); err != nil {
+		t.Fatalf("ReplacePeerHoldings: %v", err)
+	}
+	if _, items, _ = db.GetPlaylist(ctx, userID, p.ID); !items[1].Available {
+		t.Error("remote item still unavailable with a friend holding it")
+	}
+
+	// Malformed hash rejects the batch.
+	if _, err := db.AddPlaylistItems(ctx, userID, p.ID, nil, []RemoteTrackRef{{Hash: "nope"}}); !errors.Is(err, ErrBadRemoteRef) {
+		t.Errorf("bad hash add err = %v, want ErrBadRemoteRef", err)
+	}
+
+	// Remote favorites: toggle on, listed, deduped on re-add, toggle off.
+	if liked, err := db.ToggleRemoteFavorite(ctx, userID, ref); err != nil || !liked {
+		t.Fatalf("ToggleRemoteFavorite on = (%v, %v), want liked", liked, err)
+	}
+	if hs, _ := db.ListFavoriteRemoteHashes(ctx, userID); len(hs) != 1 || hs[0] != remoteHash {
+		t.Errorf("remote favorite hashes = %v, want [%s]", hs, remoteHash)
+	}
+	favID, _ := db.EnsureFavoritesPlaylist(ctx, userID)
+	if added, err := db.AddPlaylistItems(ctx, userID, favID, nil, []RemoteTrackRef{ref}); err != nil || added != 0 {
+		t.Errorf("re-add to favorites = (%d, %v), want 0 added (deduped)", added, err)
+	}
+	if liked, err := db.ToggleRemoteFavorite(ctx, userID, ref); err != nil || liked {
+		t.Errorf("ToggleRemoteFavorite off = (%v, %v), want unliked", liked, err)
+	}
+	if _, err := db.ToggleRemoteFavorite(ctx, userID, RemoteTrackRef{Hash: "zz"}); !errors.Is(err, ErrBadRemoteRef) {
+		t.Errorf("bad hash toggle err = %v, want ErrBadRemoteRef", err)
+	}
+
+	// Repoint: a remote row whose hash IS a local live blob becomes the blob's
+	// visible appearance; a row whose playlist already holds that appearance is
+	// dropped instead of duplicated.
+	localRef := RemoteTrackRef{Hash: hashes[0], Title: "Now Local"}
+	if _, err := db.AddPlaylistItems(ctx, userID, p.ID, nil, []RemoteTrackRef{localRef}); err != nil {
+		t.Fatalf("add repointable ref: %v", err)
+	}
+	if n, err := db.RepointRemotePlaylistItems(ctx); err != nil || n != 1 {
+		t.Fatalf("RepointRemotePlaylistItems = (%d, %v), want 1 handled", n, err)
+	}
+	_, items, _ = db.GetPlaylist(ctx, userID, p.ID)
+	// The playlist already held tagsetIDs[0] from the create — the remote twin
+	// must be gone, not doubled.
+	locals := 0
+	for _, it := range items {
+		if it.TagsetID == tagsetIDs[0] {
+			locals++
+		}
+		if it.RemoteHash == hashes[0] {
+			t.Errorf("repointable remote row survived: %+v", it)
+		}
+	}
+	if locals != 1 {
+		t.Errorf("local appearance rows = %d, want exactly 1 after repoint-dedupe", locals)
+	}
+
+	// And the plain repoint (no duplicate in the target playlist): a fresh
+	// playlist with only the remote ref gains the local appearance.
+	p2, err := db.CreatePlaylist(ctx, userID, "Repoint", nil, []RemoteTrackRef{localRef})
+	if err != nil {
+		t.Fatalf("CreatePlaylist repoint: %v", err)
+	}
+	if n, err := db.RepointRemotePlaylistItems(ctx); err != nil || n != 1 {
+		t.Fatalf("second sweep = (%d, %v), want 1", n, err)
+	}
+	_, items2, _ := db.GetPlaylist(ctx, userID, p2.ID)
+	if len(items2) != 1 || items2[0].TagsetID != tagsetIDs[0] || items2[0].RemoteHash != "" {
+		t.Errorf("repointed item = %+v, want the local appearance", items2[0])
+	}
+	// Idempotent: nothing left to do.
+	if n, _ := db.RepointRemotePlaylistItems(ctx); n != 0 {
+		t.Errorf("third sweep handled %d rows, want 0", n)
+	}
+}
+
 func TestPlaylist_CreateGetRoundtrip(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 	userID, _, tagsetIDs := plFixture(t, db, 3)
 
-	p, err := db.CreatePlaylist(ctx, userID, "Road Trip", tagsetIDs)
+	p, err := db.CreatePlaylist(ctx, userID, "Road Trip", tagsetIDs, nil)
 	if err != nil {
 		t.Fatalf("CreatePlaylist: %v", err)
 	}
@@ -72,7 +185,7 @@ func TestPlaylist_OwnershipIsScoped(t *testing.T) {
 		t.Fatalf("CreateUser other: %v", err)
 	}
 
-	p, err := db.CreatePlaylist(ctx, owner, "Mine", tagsetIDs)
+	p, err := db.CreatePlaylist(ctx, owner, "Mine", tagsetIDs, nil)
 	if err != nil {
 		t.Fatalf("CreatePlaylist: %v", err)
 	}
@@ -86,7 +199,7 @@ func TestPlaylist_OwnershipIsScoped(t *testing.T) {
 	if err := db.DeletePlaylist(ctx, other, p.ID); !errors.Is(err, ErrPlaylistNotFound) {
 		t.Errorf("DeletePlaylist as other user: err = %v, want ErrPlaylistNotFound", err)
 	}
-	if _, err := db.AddPlaylistItems(ctx, other, p.ID, tagsetIDs); !errors.Is(err, ErrPlaylistNotFound) {
+	if _, err := db.AddPlaylistItems(ctx, other, p.ID, tagsetIDs, nil); !errors.Is(err, ErrPlaylistNotFound) {
 		t.Errorf("AddPlaylistItems as other user: err = %v, want ErrPlaylistNotFound", err)
 	}
 }
@@ -96,12 +209,12 @@ func TestPlaylist_AddRejectsUnknownAndTrashed(t *testing.T) {
 	ctx := context.Background()
 	userID, hashes, tagsetIDs := plFixture(t, db, 2)
 
-	p, err := db.CreatePlaylist(ctx, userID, "Strict", nil)
+	p, err := db.CreatePlaylist(ctx, userID, "Strict", nil, nil)
 	if err != nil {
 		t.Fatalf("CreatePlaylist: %v", err)
 	}
 
-	if _, err := db.AddPlaylistItems(ctx, userID, p.ID, []int64{tagsetIDs[0], 99999}); !errors.Is(err, ErrFileNotFound) {
+	if _, err := db.AddPlaylistItems(ctx, userID, p.ID, []int64{tagsetIDs[0], 99999}, nil); !errors.Is(err, ErrFileNotFound) {
 		t.Fatalf("add with unknown tagset: err = %v, want ErrFileNotFound", err)
 	}
 	// The batch is atomic: the valid first id must not have been added.
@@ -114,7 +227,7 @@ func TestPlaylist_AddRejectsUnknownAndTrashed(t *testing.T) {
 	}
 
 	trashAppearancesByHash(t, db, hashes[1])
-	if _, err := db.AddPlaylistItems(ctx, userID, p.ID, []int64{tagsetIDs[1]}); !errors.Is(err, ErrFileNotFound) {
+	if _, err := db.AddPlaylistItems(ctx, userID, p.ID, []int64{tagsetIDs[1]}, nil); !errors.Is(err, ErrFileNotFound) {
 		t.Errorf("add trashed appearance: err = %v, want ErrFileNotFound", err)
 	}
 }
@@ -124,7 +237,7 @@ func TestPlaylist_TrashedAndHardDeletedItems(t *testing.T) {
 	ctx := context.Background()
 	userID, hashes, tagsetIDs := plFixture(t, db, 3)
 
-	p, err := db.CreatePlaylist(ctx, userID, "Decay", tagsetIDs)
+	p, err := db.CreatePlaylist(ctx, userID, "Decay", tagsetIDs, nil)
 	if err != nil {
 		t.Fatalf("CreatePlaylist: %v", err)
 	}
@@ -190,7 +303,7 @@ func TestFavorites_ToggleAndDedupe(t *testing.T) {
 		t.Fatalf("first toggle: liked=%v err=%v, want liked", liked, err)
 	}
 	// Adding the same appearance through the batch path dedupes on favorites.
-	if added, err := db.AddPlaylistItems(ctx, userID, favA, []int64{tagsetIDs[0], tagsetIDs[1]}); err != nil || added != 1 {
+	if added, err := db.AddPlaylistItems(ctx, userID, favA, []int64{tagsetIDs[0], tagsetIDs[1]}, nil); err != nil || added != 1 {
 		t.Fatalf("batch add to favorites: added=%d err=%v, want 1 (dedupe)", added, err)
 	}
 	got, err := db.ListFavoriteTagsetIDs(ctx, userID)
@@ -237,7 +350,7 @@ func TestPlaylist_ReorderAndRemove(t *testing.T) {
 	ctx := context.Background()
 	userID, _, tagsetIDs := plFixture(t, db, 3)
 
-	p, err := db.CreatePlaylist(ctx, userID, "Order", tagsetIDs)
+	p, err := db.CreatePlaylist(ctx, userID, "Order", tagsetIDs, nil)
 	if err != nil {
 		t.Fatalf("CreatePlaylist: %v", err)
 	}
@@ -295,10 +408,10 @@ func TestPlaylist_ListIncludesCountsAndFavoritesFirst(t *testing.T) {
 	if _, err := db.ToggleFavorite(ctx, userID, tagsetIDs[0]); err != nil {
 		t.Fatalf("ToggleFavorite: %v", err)
 	}
-	if _, err := db.CreatePlaylist(ctx, userID, "Beta", tagsetIDs); err != nil {
+	if _, err := db.CreatePlaylist(ctx, userID, "Beta", tagsetIDs, nil); err != nil {
 		t.Fatalf("CreatePlaylist Beta: %v", err)
 	}
-	if _, err := db.CreatePlaylist(ctx, userID, "alpha", nil); err != nil {
+	if _, err := db.CreatePlaylist(ctx, userID, "alpha", nil, nil); err != nil {
 		t.Fatalf("CreatePlaylist alpha: %v", err)
 	}
 
