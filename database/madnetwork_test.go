@@ -131,7 +131,7 @@ func TestMadnetworkCacheAndBrowse(t *testing.T) {
 	}
 
 	// Artists: case-insensitive merge, no Ghost.
-	artists, err := db.MadnetworkArtists(ctx, "")
+	artists, err := db.MadnetworkArtists(ctx, "", false)
 	if err != nil {
 		t.Fatalf("MadnetworkArtists: %v", err)
 	}
@@ -147,12 +147,12 @@ func TestMadnetworkCacheAndBrowse(t *testing.T) {
 	}
 
 	// Filter hits only matching artists.
-	if got, _ := db.MadnetworkArtists(ctx, "only"); len(got) != 1 || got[0].Name != "Only B" {
+	if got, _ := db.MadnetworkArtists(ctx, "only", false); len(got) != 1 || got[0].Name != "Only B" {
 		t.Errorf("filtered artists = %+v, want Only B", got)
 	}
 
 	// Albums of the merged artist.
-	albums, err := db.MadnetworkAlbums(ctx, "SHARED ARTIST")
+	albums, err := db.MadnetworkAlbums(ctx, "SHARED ARTIST", false)
 	if err != nil {
 		t.Fatalf("MadnetworkAlbums: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestMadnetworkCacheAndBrowse(t *testing.T) {
 	}
 
 	// Summary: two friends (the pending peer is absent), merged track count 3.
-	friends, tracks, err := db.MadnetworkSummary(ctx)
+	friends, tracks, err := db.MadnetworkSummary(ctx, false)
 	if err != nil {
 		t.Fatalf("MadnetworkSummary: %v", err)
 	}
@@ -196,12 +196,136 @@ func TestMadnetworkCacheAndBrowse(t *testing.T) {
 	if err := db.SetFederationPeerState(ctx, friendB, federation.PeerBlocked, federation.PeerFriend); err != nil {
 		t.Fatal(err)
 	}
-	artists, _ = db.MadnetworkArtists(ctx, "")
+	artists, _ = db.MadnetworkArtists(ctx, "", false)
 	if len(artists) != 1 {
 		t.Errorf("artists after block = %+v, want only friend-a's", artists)
 	}
-	if _, tracks, _ = db.MadnetworkSummary(ctx); tracks != 2 {
+	if _, tracks, _ = db.MadnetworkSummary(ctx, false); tracks != 2 {
 		t.Errorf("track count after block = %d, want 2", tracks)
+	}
+}
+
+// TestMadnetworkSelfMergeAndSorting: includeSelf folds the own published set
+// into the merged browse (same track text = one row, counts stay distinct),
+// the unknown buckets sort last, and the search queries cover both sources
+// (docs/ui/madnetwork-page.md §Own tracks / §Sorting / §Search).
+func TestMadnetworkSelfMergeAndSorting(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	seed := func(hash, artist, album, title string) {
+		t.Helper()
+		meta := &MediaMetadata{Title: title, ExtractedAt: 1700000000}
+		if artist != "" {
+			meta.Artist = sql.NullString{String: artist, Valid: true}
+			meta.AlbumArtist = sql.NullString{String: artist, Valid: true}
+		}
+		if album != "" {
+			meta.Album = sql.NullString{String: album, Valid: true}
+		}
+		if err := db.InsertFile(ctx, newFile(hash), newUpload(hash+".mp3"), meta); err != nil {
+			t.Fatalf("InsertFile %s: %v", hash, err)
+		}
+	}
+	// Own library: one artist shared with the friend (same track text + hash),
+	// one own-only artist, and one untagged file (the unknown buckets).
+	seed("self0001", "Shared Artist", "Shared Album", "Shared Song")
+	seed("self0002", "Aardvark", "First Album", "Own Song")
+	seed("self0003", "", "", "Bucket Song")
+	// The merged identity includes the track number (catEntry advertises 1) —
+	// align the own appearance so the shared song folds across sources.
+	if _, err := db.Exec(`UPDATE tagsets SET track_number = 1 WHERE title = 'Shared Song'`); err != nil {
+		t.Fatal(err)
+	}
+
+	friend := insertPeer(t, db, "f1a1", "friend-a", federation.PeerFriend)
+	if err := db.ReplacePeerCatalog(ctx, friend, "s", 100, []federation.CatalogEntry{
+		catEntry("1", "r1", "Shared Artist", "Shared Album", "Shared Song", "self0001"),
+		catEntry("2", "r2", "Zebra", "Z Album", "Z Song", "hash-z"),
+	}); err != nil {
+		t.Fatalf("ReplacePeerCatalog: %v", err)
+	}
+
+	// Without self: only the friend's two artists.
+	if got, _ := db.MadnetworkArtists(ctx, "", false); len(got) != 2 {
+		t.Fatalf("artists without self = %+v, want 2", got)
+	}
+	// With self: merged, alphabetical, unknown bucket last.
+	artists, err := db.MadnetworkArtists(ctx, "", true)
+	if err != nil {
+		t.Fatalf("MadnetworkArtists(self): %v", err)
+	}
+	names := make([]string, len(artists))
+	for i, a := range artists {
+		names[i] = a.Name
+	}
+	want := []string{"Aardvark", "Shared Artist", "Zebra", DefaultArtistName}
+	if len(names) != 4 || names[0] != want[0] || names[1] != want[1] || names[2] != want[2] || names[3] != want[3] {
+		t.Fatalf("artists with self = %v, want %v (unknown last)", names, want)
+	}
+	// Same track offered by us and the friend stays ONE distinct track.
+	if artists[1].Tracks != 1 || artists[1].Albums != 1 {
+		t.Errorf("shared artist counts = %+v, want 1 album / 1 track", artists[1])
+	}
+
+	// Albums with self; the untagged bucket album sorts last for its artist.
+	if albums, _ := db.MadnetworkAlbums(ctx, "Shared Artist", true); len(albums) != 1 || albums[0].Tracks != 1 {
+		t.Errorf("shared albums = %+v, want one album with 1 merged track", albums)
+	}
+	if albums, _ := db.MadnetworkAlbums(ctx, DefaultArtistName, true); len(albums) != 1 || albums[0].Title != DefaultAlbumTitle {
+		t.Errorf("bucket albums = %+v, want the %q bucket", albums, DefaultAlbumTitle)
+	}
+
+	// Own track rows: Self, local tagset key, renditions with object keys.
+	own, err := db.MadnetworkOwnTracks(ctx, "Shared Artist", "Shared Album")
+	if err != nil {
+		t.Fatalf("MadnetworkOwnTracks: %v", err)
+	}
+	if len(own) != 1 || !own[0].Self || own[0].PeerID != 0 {
+		t.Fatalf("own rows = %+v, want one Self row", own)
+	}
+	if own[0].Entry.Key == "" || len(own[0].Entry.Renditions) != 1 {
+		t.Errorf("own row entry = %+v, want tagset key + 1 rendition", own[0].Entry)
+	}
+	if key := own[0].ObjectKeys["self0001"]; key == "" {
+		t.Errorf("own row object keys = %+v, want the local files key", own[0].ObjectKeys)
+	}
+
+	// Summary counts own tracks only when included.
+	if _, tracks, _ := db.MadnetworkSummary(ctx, false); tracks != 2 {
+		t.Errorf("summary tracks without self = %d, want 2", tracks)
+	}
+	if _, tracks, _ := db.MadnetworkSummary(ctx, true); tracks != 4 {
+		t.Errorf("summary tracks with self = %d, want 4 (shared song folds)", tracks)
+	}
+
+	// Search: albums by title substring (the untagged "Other" bucket doesn't
+	// match "album"; the shared album folds across sources), raw track rows
+	// from both sources.
+	if hits, _ := db.MadnetworkSearchAlbums(ctx, "album", 10, true); len(hits) != 3 {
+		t.Errorf("search albums = %+v, want 3 buckets", hits)
+	}
+	rows, err := db.MadnetworkSearchTrackRows(ctx, "song", true)
+	if err != nil {
+		t.Fatalf("MadnetworkSearchTrackRows: %v", err)
+	}
+	selfRows, remoteRows := 0, 0
+	for _, r := range rows {
+		if r.Self {
+			selfRows++
+		} else {
+			remoteRows++
+		}
+		if r.GroupArtist == "" || r.GroupAlbum == "" {
+			t.Errorf("search row missing group identity: %+v", r)
+		}
+	}
+	if remoteRows != 2 || selfRows != 3 {
+		t.Errorf("search rows = %d remote / %d self, want 2/3", remoteRows, selfRows)
+	}
+	// Self excluded → own rows disappear from search too.
+	if rows, _ := db.MadnetworkSearchTrackRows(ctx, "song", false); len(rows) != 2 {
+		t.Errorf("search rows without self = %d, want 2", len(rows))
 	}
 }
 

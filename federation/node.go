@@ -178,6 +178,10 @@ func (n *Node) Address() net.IP { return n.core.Address() }
 // — as lowercase hex.
 func (n *Node) PublicKeyHex() string { return hex.EncodeToString(n.core.PublicKey()) }
 
+// Name returns the node-card display name ([federation].name, hostname
+// fallback) — the label the merged browse uses for the self holder.
+func (n *Node) Name() string { return n.name }
+
 // DialContext dials through the mesh (for http.Transport.DialContext), so
 // outbound protocol calls reach peers' mesh listeners without any TUN.
 func (n *Node) DialContext(ctx context.Context, network, address string) (net.Conn, error) {

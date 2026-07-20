@@ -1,89 +1,103 @@
-// Madnetwork — browsing the merged catalog of this node's friends (federation
-// F2, docs/architecture/federation.md §Catalog). A drill-down mirroring the
-// local library (artist → album → track); the same tagset text offered by
-// several friends is ONE row, and a track expands into its "versions" — the
-// distinct claimed recordings behind that text — each with its renditions and
-// which friends hold it. F3 (direct transfer) adds the version actions: Play
-// (cache-through streaming relay, /api/madnetwork/stream) and Download to
-// library (fetch + stage through the review bucket).
+// Madnetwork — browsing the merged catalog of this node's friends PLUS its own
+// published library (federation F2/F3, docs/architecture/federation.md;
+// UI design docs/ui/madnetwork-page.md). A sibling of the library page built on
+// the shared browse core: the same rows (hearts, "⋯" quick-add menus), the same
+// search view, alphabetical order with the unknown buckets last. The
+// madnetwork-specific extras are the ⓘ source/versions panel and
+// **Materialize** — fetching a remote track into this server's library
+// (staged through the review bucket; the F3/F4 transfer machinery).
+//
+// A track's default pick is its most-held version's ladder-best rendition;
+// self-held tracks play the direct local /files/ URL (no relay hop) and carry
+// their local tagset id, so hearts and playlists work on them like anywhere.
 //
 // Shell page module: NO page DOM at module-eval time — everything inside
 // init() (the shell swaps <main> between navigations).
-import { gatePage, PAGE_PERMS } from './auth.js';
+import { gatePage, PAGE_PERMS, getIdentity } from './auth.js';
 import { getController } from './player-controller.js';
+import { fmtTime } from './player.js';
 import { showToast } from './shell.js';
+import { quickAddItems } from './quick-add.js';
+import {
+  buildArtistRow, buildAlbumRow, buildTrackRow, mkDiscHeader,
+  highlightPlayingRow, reflectPlayStateRows, repaintHearts,
+} from './browse-rows.js';
+import { createBrowseSearch } from './browse-search.js';
 
 const API = document.querySelector('meta[name="api-url"]')?.content || '';
 
 // Drill state for the current visit; reset on every init (the shell re-imports
 // a cached module, so init must not rely on module state surviving).
 let drill = null;      // { level: 'artists'|'albums'|'tracks', artist, album }
-let searchTimer = null;
+let search = null;     // shared browse-search factory (per activation)
+let abort = null;      // AbortController tied to the activation
 
-// Shared player controller (singleton) + the trackchange subscription so the
-// track list can highlight what's playing, mirroring the local library. Wired
-// in init(), released in teardown().
+// Shared player controller (singleton) + subscriptions so the track list can
+// highlight what's playing, mirroring the local library. Wired in init(),
+// released in teardown().
 let controller = null;
 let unsubTrackChange = null;
 let unsubPlayState = null;
 
-// In-flight download polls, keyed by hash (survive within a visit; cleared on
-// teardown — the server job keeps running and the state is re-pollable).
-const downloadPolls = new Map();
-
-// Art placeholder for album rows — the merged catalog carries no cover images,
-// so every remote album falls back to this note icon (same glyph the library
-// shows for cover-less albums).
-const noteSvg =
-  `<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">` +
-  `<path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>`;
+// In-flight materialize polls, keyed by hash (survive within a visit; cleared
+// on teardown — the server job keeps running and the state is re-pollable).
+const materializePolls = new Map();
 
 export async function init() {
   if (!gatePage(PAGE_PERMS.madnetwork)) return;
   drill = { level: 'artists', artist: null, album: null };
+  abort = new AbortController();
 
   controller = getController();
-  unsubTrackChange = controller.on('trackchange', t => highlightPlaying(t));
-  unsubPlayState = controller.on('playstate', reflectPlayState);
+  unsubTrackChange = controller.on('trackchange', t => highlightPlayingRow(t, controller.paused));
+  unsubPlayState = controller.on('playstate', reflectPlayStateRows);
 
-  const input = document.getElementById('mnSearchInput');
-  input.addEventListener('input', () => {
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => { if (drill.level === 'artists') showArtists(input.value); }, 250);
+  search = createBrowseSearch({
+    signal: abort.signal,
+    fetchResults: async (q, fetchSignal) => {
+      const res = await fetch(`${API}/api/madnetwork/search?q=${encodeURIComponent(q)}`, { signal: fetchSignal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    },
+    onOpenArtist: a => showAlbums(a.name),
+    onOpenAlbum:  a => showTracks(a.artist_name, a.title),
+    albumArtUrl:  () => null, // the merged catalog carries no cover images
+    buildQueueTrack: t => ({
+      url: t.url ? `${API}${t.url}` : `${API}/api/madnetwork/stream/${t.hash}`,
+      tagsetId: t.tagset_id || null,
+      rowKey: mnKey(t.artist, t.album_title, t.title),
+      title:  t.title || 'Unknown',
+      artist: t.artist_name || t.artist || '',
+    }),
   });
 
   loadStatus();
-  showArtists('');
+  showArtists();
 }
 
 export function teardown() {
-  clearTimeout(searchTimer);
-  for (const timer of downloadPolls.values()) clearTimeout(timer);
-  downloadPolls.clear();
+  abort?.abort();
+  abort = null;
+  search = null;
+  for (const timer of materializePolls.values()) clearTimeout(timer);
+  materializePolls.clear();
   if (unsubTrackChange) { unsubTrackChange(); unsubTrackChange = null; }
   if (unsubPlayState) { unsubPlayState(); unsubPlayState = null; }
   controller = null;
   drill = null;
 }
 
-// highlightPlaying marks the row of the playing appearance (matched by data-key
-// = the artist/album/title identity, so the same audio under another album is a
-// distinct row) and reflects the pause/resume indicator, mirroring the library.
-function highlightPlaying(track) {
-  const key = track ? (track.rowKey || track.url) : null;
-  const paused = controller?.paused;
-  document.querySelectorAll('.mn-track').forEach(row => {
-    const on = !!key && row.dataset.key === key;
-    row.classList.toggle('playing', on);
-    row.classList.toggle('paused', on && paused);
-  });
+// canMaterialize mirrors the server gate on POST /api/madnetwork/download —
+// UX only, the API still enforces it.
+function canMaterialize() {
+  return !!getIdentity()?.permissions?.includes('file.upload');
 }
 
-// reflectPlayState flips the pause/resume indicator on the current row on every
-// play/pause of the shared player.
-function reflectPlayState(playing) {
-  document.querySelectorAll('.mn-track.playing')
-    .forEach(row => row.classList.toggle('paused', !playing));
+// mnKey is the appearance identity of a merged madnetwork track — the
+// artist/album/title text, so the same audio under another album is a distinct
+// row (click restarts, not pauses).
+function mnKey(artist, album, title) {
+  return `mn:${artist || ''}␟${album || ''}␟${(title || '').toLowerCase()}`;
 }
 
 // ── Status strip ──────────────────────────────────────────────────────────────
@@ -105,18 +119,26 @@ async function loadStatus() {
     if (!res.ok) return;
     data = await res.json();
   } catch { return; }
-  if (!box) return; // navigated away meanwhile
+  if (!box || !box.isConnected) return; // navigated away meanwhile
 
   const friends = data.friends || [];
   box.replaceChildren();
-  if (!friends.length) {
+  if (!friends.length && !data.tracks) {
     box.append(mkSpan('mn-status-main', 'No friends yet — the madnetwork view fills up once this node friends others on '),
       mkAdminLink());
     box.hidden = false;
     return;
   }
   box.append(mkSpan('mn-status-main',
-    `${data.tracks} track${data.tracks === 1 ? '' : 's'} from ${friends.length} friend${friends.length === 1 ? '' : 's'}`));
+    `${data.tracks} track${data.tracks === 1 ? '' : 's'} from ${friends.length} friend${friends.length === 1 ? '' : 's'}` +
+    (data.self_name ? ' + this library' : '')));
+  if (data.self_name) {
+    const chip = document.createElement('span');
+    chip.className = 'mn-friend';
+    chip.title = 'This server’s own published library, merged into the view';
+    chip.append(mkSpan('mn-friend-name', data.self_name), mkSpan('mn-friend-seen', 'this server'));
+    box.append(chip);
+  }
   for (const f of friends) {
     const chip = document.createElement('span');
     chip.className = 'mn-friend' + (f.entries ? '' : ' mn-friend--empty');
@@ -160,20 +182,14 @@ function renderBreadcrumb() {
   if (drill.level === 'artists') {
     bc.append(mkCurrent('Madnetwork'));
   } else if (drill.level === 'albums') {
-    bc.append(mkLink('Madnetwork', () => showArtists(currentQuery())), mkSep(), mkCurrent(drill.artist));
+    bc.append(mkLink('Madnetwork', () => showArtists()), mkSep(), mkCurrent(drill.artist));
   } else {
-    bc.append(mkLink('Madnetwork', () => showArtists(currentQuery())), mkSep(),
+    bc.append(mkLink('Madnetwork', () => showArtists()), mkSep(),
       mkLink(drill.artist, () => showAlbums(drill.artist)), mkSep(), mkCurrent(drill.album));
   }
-  // The artist filter applies to the artist list only.
-  document.getElementById('mnSearch').hidden = drill.level !== 'artists';
 }
 
-function currentQuery() {
-  return document.getElementById('mnSearchInput')?.value || '';
-}
-
-// ── Views ─────────────────────────────────────────────────────────────────────
+// ── Data fetching ─────────────────────────────────────────────────────────────
 
 function panelMessage(html) {
   const panel = document.getElementById('mnPanel');
@@ -186,30 +202,64 @@ async function fetchJSON(url) {
   return res.json();
 }
 
-async function showArtists(q) {
+// queueTrackOf maps a merged track to a controller queue object — the default
+// pick is the most-held version's ladder-best rendition; a self-held version
+// plays its direct local URL. Null when nothing is playable.
+function queueTrackOf(t, artist, album) {
+  const v0 = t.versions?.[0];
+  const best = v0?.renditions?.[0];
+  if (!best || !best.hash) return null;
+  return {
+    url: v0.url ? `${API}${v0.url}` : `${API}/api/madnetwork/stream/${best.hash}`,
+    tagsetId: t.tagset_id || null,
+    rowKey: mnKey(artist, album, t.title),
+    title: t.title || 'Unknown',
+    artist: t.artist || artist || '',
+    dur: fmtDur(t.duration) || '—',
+  };
+}
+
+// entityTracks collects the playable queue tracks of a whole album — or a
+// whole artist (album == null → every album, in browse order). Feeds the
+// artist/album "⋯" quick-add menus.
+async function entityTracks(artist, album) {
+  const fetchAlbum = async al => {
+    const data = await fetchJSON(`${API}/api/madnetwork/tracks?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(al)}`);
+    return (data.tracks || []).map(t => queueTrackOf(t, artist, al)).filter(Boolean);
+  };
+  if (album != null) return fetchAlbum(album);
+  const data = await fetchJSON(`${API}/api/madnetwork/albums?artist=${encodeURIComponent(artist)}`);
+  const lists = await Promise.all((data.albums || []).map(al => fetchAlbum(al.title)));
+  return lists.flat();
+}
+
+// ── Views ─────────────────────────────────────────────────────────────────────
+
+async function showArtists() {
   drill = { level: 'artists', artist: null, album: null };
   renderBreadcrumb();
   let data;
   try {
-    data = await fetchJSON(`${API}/api/madnetwork/artists?q=${encodeURIComponent(q || '')}`);
+    data = await fetchJSON(`${API}/api/madnetwork/artists`);
   } catch { panelMessage('Could not load the madnetwork catalog.'); return; }
   if (!drill || drill.level !== 'artists') return; // user drilled on meanwhile
 
   const artists = data.artists || [];
   if (!artists.length) {
-    panelMessage(q ? 'No artists match the filter.'
-      : 'Nothing here yet — catalogs appear after the first sync with a friend.');
+    panelMessage('Nothing here yet — catalogs appear after the first sync with a friend.');
     return;
   }
   const wrap = document.createElement('div');
   wrap.className = 'panel-fade-in';
   for (const a of artists) {
-    wrap.append(mkRow('artist-row', a.name,
-      `${a.albums} album${a.albums === 1 ? '' : 's'} · ${a.tracks} track${a.tracks === 1 ? '' : 's'}`,
-      () => showAlbums(a.name)));
+    wrap.append(buildArtistRow({
+      name: a.name,
+      meta: `${a.albums} album${a.albums === 1 ? '' : 's'} · ${a.tracks} track${a.tracks === 1 ? '' : 's'}`,
+      onOpen: () => showAlbums(a.name),
+      makeMenuItems: btn => quickAddItems(btn, () => entityTracks(a.name, null)),
+    }));
   }
-  const panel = document.getElementById('mnPanel');
-  panel.replaceChildren(wrap);
+  document.getElementById('mnPanel').replaceChildren(wrap);
 }
 
 async function showAlbums(artist) {
@@ -226,7 +276,14 @@ async function showAlbums(artist) {
   const wrap = document.createElement('div');
   wrap.className = 'panel-fade-in';
   for (const al of albums) {
-    wrap.append(mkAlbumRow(al, () => showTracks(artist, al.title)));
+    const yearPrefix = al.year ? `${al.year} · ` : '';
+    wrap.append(buildAlbumRow({
+      title: al.title,
+      meta: `${yearPrefix}${al.tracks} track${al.tracks === 1 ? '' : 's'}`,
+      artUrl: null, // no cover images in the merged catalog
+      onOpen: () => showTracks(artist, al.title),
+      makeMenuItems: btn => quickAddItems(btn, () => entityTracks(artist, al.title)),
+    }));
   }
   document.getElementById('mnPanel').replaceChildren(wrap);
 }
@@ -243,109 +300,113 @@ async function showTracks(artist, album) {
   const tracks = data.tracks || [];
   if (!tracks.length) { panelMessage('No tracks found.'); return; }
 
-  // Build the album's play queue once (default = each track's most-held version,
-  // ladder-best rendition). Unplayable tracks (no rendition hash) are kept out of
-  // the queue; the map lets each row find its queue slot so prev/next stays tight.
+  // Build the album's play queue once. Unplayable tracks (no rendition hash)
+  // are kept out of the queue; the map lets each row find its queue slot so
+  // prev/next stays tight.
   const queue = [];
   const qIndex = new Map();
   tracks.forEach((t, i) => {
-    const best = t.versions?.[0]?.renditions?.[0];
-    if (best && best.hash) {
+    const qt = queueTrackOf(t, artist, album);
+    if (qt) {
       qIndex.set(i, queue.length);
-      queue.push({
-        url: `${API}/api/madnetwork/stream/${best.hash}`,
-        // Appearance identity: the artist/album/title text, so the same audio
-        // under another album is a distinct row (click restarts, not pauses).
-        rowKey: `mn:${drill.artist}␟${drill.album}␟${(t.title || '').toLowerCase()}`,
-        title: t.title || 'Unknown',
-        artist: t.artist || drill.artist || '',
-        dur: fmtDur(t.duration) || '—',
-      });
+      queue.push(qt);
     }
   });
 
   const wrap = document.createElement('div');
   wrap.className = 'panel-fade-in';
-  const list = document.createElement('ul');
-  list.className = 'track-list';
-  let lastDisc;
+  let shownDisc;
   const multiDisc = new Set(tracks.map(t => t.disc_number ?? null)).size > 1;
   tracks.forEach((t, i) => {
     const disc = t.disc_number ?? null;
-    if (multiDisc && disc !== lastDisc) {
-      lastDisc = disc;
-      const hd = document.createElement('li');
-      hd.className = 'track-disc-header';
-      hd.textContent = disc === null ? 'No disc' : disc === 0 ? 'Disc 0' : `Disc ${disc}`;
-      list.append(hd);
+    if (multiDisc && disc !== shownDisc) {
+      shownDisc = disc;
+      wrap.append(mkDiscHeader(disc === null ? 'No disc' : `Disc ${disc}`));
     }
-    list.append(mkTrackRow(t, i, queue, qIndex.get(i)));
+    appendTrackRow(wrap, t, i, queue, qIndex.get(i));
   });
-  wrap.append(list);
   document.getElementById('mnPanel').replaceChildren(wrap);
 
   // Re-highlight whatever is playing if its row is in this view.
   const cur = controller?.current?.();
-  if (cur && cur.track) highlightPlaying(cur.track);
+  if (cur && cur.track) highlightPlayingRow(cur.track, controller.paused);
+  repaintHearts();
 }
 
-// ── Row builders ──────────────────────────────────────────────────────────────
+// ── Track rows ────────────────────────────────────────────────────────────────
 
-function mkRow(kind, name, meta, onOpen) {
-  const row = document.createElement('div');
-  row.className = `panel-row ${kind}`;
-  row.tabIndex = 0;
-  row.setAttribute('role', 'button');
-  row.setAttribute('aria-label', `Browse ${name}`);
-  row.append(mkSpan('row-name', name), mkSpan('row-meta', meta), mkSpan('row-chevron', '›'));
-  row.addEventListener('click', onOpen);
-  row.addEventListener('keydown', e => {
-    if (e.target !== row) return;
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); }
-  });
-  return row;
+// selfHeld reports whether this node already publishes the track (any version
+// backed by the local library) — Materialize is then pointless and omitted.
+function selfHeld(t) {
+  return (t.versions || []).some(v => v.url || (v.holders || []).some(h => h.self));
 }
 
-// Album row with the library's cover-art column (a note placeholder — the merged
-// catalog carries no images) so the drill-down looks like the local library.
-function mkAlbumRow(al, onOpen) {
-  const row = document.createElement('div');
-  row.className = 'panel-row album-row';
-  row.tabIndex = 0;
-  row.setAttribute('role', 'button');
-  row.setAttribute('aria-label', `Browse album ${al.title}`);
+// appendTrackRow renders one merged track through the shared row builder, then
+// adds the madnetwork extras: the ⓘ source/versions toggle and the Materialize
+// menu item. `queue` is the album's play queue and `qi` this track's slot in
+// it (undefined when the track has no playable rendition).
+function appendTrackRow(wrap, t, i, queue, qi) {
+  const playable = qi != null;
+  const qt = playable ? queue[qi] : null;
 
-  const art = document.createElement('div');
-  art.className = 'row-art';
-  art.innerHTML = noteSvg;
+  // Source & versions — a subtle info toggle for the provenance panel.
+  const detail = document.createElement('div');
+  detail.className = 'mn-versions';
+  detail.hidden = true;
+  const infoBtn = document.createElement('button');
+  infoBtn.type = 'button';
+  infoBtn.className = 'mn-info';
+  infoBtn.textContent = 'ⓘ';
+  infoBtn.title = 'Source & versions';
+  infoBtn.setAttribute('aria-label', `Source and versions for ${t.title || 'this track'}`);
+  infoBtn.setAttribute('aria-expanded', 'false');
 
-  const body = document.createElement('div');
-  body.className = 'row-body';
-  const name = document.createElement('div');
-  name.className = 'row-name';
-  name.textContent = al.title;
-  const meta = document.createElement('div');
-  meta.className = 'row-meta';
-  const yearPrefix = al.year ? `${al.year} · ` : '';
-  meta.textContent = `${yearPrefix}${al.tracks} track${al.tracks === 1 ? '' : 's'}`;
-  body.append(name, meta);
+  const play = () => {
+    if (!playable) { toggle(); return; } // nothing to play — open the panel
+    const cur = controller?.current();
+    const curKey = cur ? (cur.track.rowKey || cur.track.url) : null;
+    if (curKey === qt.rowKey) controller.toggle();
+    else controller?.setQueue(queue, qi);
+  };
 
-  const chevron = mkSpan('row-chevron', '›');
-  chevron.setAttribute('aria-hidden', 'true');
-
-  row.append(art, body, chevron);
-  row.addEventListener('click', onOpen);
-  row.addEventListener('keydown', e => {
-    if (e.target !== row) return;
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); }
+  const row = buildTrackRow({
+    num: t.track_number ?? (i + 1),
+    title: t.title || 'Unknown',
+    meta: t.artist || drill?.artist || '',
+    dur: fmtDur(t.duration) || '—',
+    rowKey: playable ? qt.rowKey : null,
+    url: playable ? qt.url : null,
+    tagsetId: t.tagset_id || null,
+    onPlay: play,
+    makeMenuItems: btn => {
+      const extraItems = [];
+      if (playable && canMaterialize() && !selfHeld(t)) {
+        const hash = t.versions[0].renditions[0].hash;
+        extraItems.push({
+          label: 'Materialize',
+          onClick: () => startMaterialize(hash, { title: t.title }),
+        });
+      }
+      return quickAddItems(btn, () => (qt ? [qt] : []), { extraItems });
+    },
   });
-  return row;
+  row.classList.add('mn-track');
+
+  const toggle = () => {
+    if (detail.hidden) renderVersions(detail, t);
+    detail.hidden = !detail.hidden;
+    infoBtn.setAttribute('aria-expanded', String(!detail.hidden));
+    row.classList.toggle('mn-track--open', !detail.hidden);
+  };
+  infoBtn.addEventListener('click', e => { e.stopPropagation(); toggle(); });
+  row.insertBefore(infoBtn, row.querySelector('.track-dur'));
+
+  wrap.append(row, detail);
 }
 
 function fmtDur(s) {
   if (!s || !isFinite(s)) return '';
-  const m = Math.floor(s / 60), sec = Math.round(s % 60);
-  return `${m}:${String(sec).padStart(2, '0')}`;
+  return fmtTime(s);
 }
 
 function fmtQuality(rd) {
@@ -360,104 +421,6 @@ function fmtQuality(rd) {
 function fmtSize(n) {
   if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-// A track row laid out like the local library's (number / title+artist /
-// duration), clicking to play. The madnetwork-only extras are a Download pill
-// and a subtle ⓘ toggle that reveals the source panel (holders / versions /
-// quality) — rare info kept out of the way. `queue` is the album's play queue
-// and `qi` this track's slot in it (undefined when the track has no playable
-// rendition).
-function mkTrackRow(t, i, queue, qi) {
-  const li = document.createElement('li');
-  const row = document.createElement('div');
-  row.className = 'track-row mn-track';
-  row.tabIndex = 0;
-  row.setAttribute('role', 'button');
-
-  const playable = qi != null;
-  if (playable) {
-    row.dataset.url = queue[qi].url;
-    row.dataset.key = queue[qi].rowKey; // appearance identity for the playing highlight
-  }
-
-  const num = mkSpan('track-num', t.track_number ?? (i + 1));
-  const icon = document.createElement('span');
-  icon.className = 'track-icon-playing';
-  icon.setAttribute('aria-hidden', 'true');
-  icon.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
-
-  // Title over artist, stacked — the library uses block <div>s here (spans would
-  // run onto one line).
-  const info = document.createElement('div');
-  info.className = 'track-info';
-  const title = document.createElement('div');
-  title.className = 'track-title';
-  title.textContent = t.title || 'Unknown';
-  const meta = document.createElement('div');
-  meta.className = 'track-meta';
-  meta.textContent = t.artist || drill?.artist || '';
-  info.append(title, meta);
-
-  row.append(num, icon, info);
-
-  // Download — the madnetwork-only action, on the default version's best rendition.
-  const best = t.versions?.[0]?.renditions?.[0];
-  if (best && best.hash) {
-    const dl = document.createElement('button');
-    dl.type = 'button';
-    dl.className = 'mn-dl';
-    dl.textContent = '⬇ Download';
-    dl.title = 'Fetch into this server’s library (staged for review)';
-    dl.addEventListener('click', e => { e.stopPropagation(); startDownload(dl, best.hash); });
-    row.append(dl);
-  }
-
-  // Source & versions — a subtle info toggle for the provenance panel.
-  const detail = document.createElement('div');
-  detail.className = 'mn-versions';
-  detail.hidden = true;
-  const infoBtn = document.createElement('button');
-  infoBtn.type = 'button';
-  infoBtn.className = 'mn-info';
-  infoBtn.textContent = 'ⓘ';
-  infoBtn.title = 'Source & versions';
-  infoBtn.setAttribute('aria-label', `Source and versions for ${t.title || 'this track'}`);
-  infoBtn.setAttribute('aria-expanded', 'false');
-  const toggle = () => {
-    if (detail.hidden) renderVersions(detail, t);
-    detail.hidden = !detail.hidden;
-    infoBtn.setAttribute('aria-expanded', String(!detail.hidden));
-    row.classList.toggle('mn-track--open', !detail.hidden);
-  };
-  infoBtn.addEventListener('click', e => { e.stopPropagation(); toggle(); });
-  row.append(infoBtn, mkSpan('track-dur', fmtDur(t.duration)));
-
-  li.append(row, detail);
-
-  if (playable) {
-    // Click the playing row to pause/resume it; any other row starts fresh.
-    const play = () => {
-      const cur = controller?.current();
-      const curKey = cur ? (cur.track.rowKey || cur.track.url) : null;
-      if (curKey === queue[qi].rowKey) controller.toggle();
-      else controller?.setQueue(queue, qi);
-    };
-    row.setAttribute('aria-label', `Play ${t.title || 'track'}`);
-    row.addEventListener('click', play);
-    row.addEventListener('keydown', e => {
-      if (e.target !== row) return;
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); play(); }
-    });
-  } else {
-    row.setAttribute('aria-label', t.title || 'Unknown');
-    // Nothing to play — the ⓘ panel is still reachable via its own button.
-    row.addEventListener('keydown', e => {
-      if (e.target !== row) return;
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
-    });
-  }
-  return li;
 }
 
 function renderVersions(detail, t) {
@@ -488,65 +451,73 @@ function renderVersions(detail, t) {
     (v.holders || []).forEach((h, j) => {
       if (j) hs.append(document.createTextNode(', '));
       const holder = mkSpan('mn-holder', h.name || '(unnamed)');
-      holder.title = `last seen ${fmtAgo(h.last_seen)}`;
+      holder.title = h.self ? 'this server' : `last seen ${fmtAgo(h.last_seen)}`;
+      if (h.self) holder.classList.add('mn-holder--self');
       hs.append(holder);
     });
     box.append(hs);
 
-    // F3 actions on the version's ladder-best rendition (renditions[0] — the
+    // Actions on the version's ladder-best rendition (renditions[0] — the
     // server sorts them by the quality ladder).
     const best = (v.renditions || [])[0];
     if (best && best.hash) {
-      box.append(mkVersionActions(t, best));
+      box.append(mkVersionActions(t, v, best));
     }
     detail.append(box);
   });
 }
 
-// ── F3 version actions: play (streamed relay) + download to library ──────────
+// ── Version actions: play (relay or local) + materialize into the library ────
 
-function mkVersionActions(t, rd) {
+function mkVersionActions(t, v, rd) {
   const bar = document.createElement('div');
   bar.className = 'mn-actions';
+
+  const track = {
+    url: v.url ? `${API}${v.url}` : `${API}/api/madnetwork/stream/${rd.hash}`,
+    tagsetId: t.tagset_id || null,
+    title: t.title || 'Unknown',
+    artist: t.artist || drill?.artist || '',
+  };
 
   const play = document.createElement('button');
   play.className = 'btn btn-neutral mn-action';
   play.textContent = '▶ Play';
-  play.title = 'Stream from the madnetwork (relayed through this server)';
-  play.addEventListener('click', () => {
-    getController().setQueue([{
-      url: `${API}/api/madnetwork/stream/${rd.hash}`,
-      title: t.title || 'Unknown',
-      artist: t.artist || drill?.artist || '',
-    }], 0);
-  });
+  play.title = v.url ? 'Play from this server’s library'
+    : 'Stream from the madnetwork (relayed through this server)';
+  play.addEventListener('click', () => getController().setQueue([track], 0));
 
   const queue = document.createElement('button');
   queue.className = 'btn btn-neutral mn-action';
   queue.textContent = '+ Queue';
   queue.title = 'Add to the play queue';
   queue.addEventListener('click', () => {
-    getController().enqueue([{
-      url: `${API}/api/madnetwork/stream/${rd.hash}`,
-      title: t.title || 'Unknown',
-      artist: t.artist || drill?.artist || '',
-    }]);
+    getController().enqueue([track]);
     showToast('Added to queue.', { type: 'success' });
   });
 
-  const dl = document.createElement('button');
-  dl.className = 'btn btn-neutral mn-action';
-  dl.textContent = '⬇ Download';
-  dl.title = 'Fetch into this server’s library (staged for review)';
-  dl.addEventListener('click', () => startDownload(dl, rd.hash));
+  bar.append(play, queue);
 
-  bar.append(play, queue, dl);
+  // Materialize this specific version — omitted when it is already local.
+  if (canMaterialize() && !v.url) {
+    const mat = document.createElement('button');
+    mat.className = 'btn btn-neutral mn-action';
+    mat.textContent = '⬇ Materialize';
+    mat.title = 'Fetch into this server’s library (staged for review)';
+    mat.addEventListener('click', () => startMaterialize(rd.hash, { btn: mat, title: t.title }));
+    bar.append(mat);
+  }
   return bar;
 }
 
-async function startDownload(btn, hash) {
-  btn.disabled = true;
-  btn.textContent = 'Downloading…';
+// ── Materialize (POST /api/madnetwork/download + transfer poll) ──────────────
+
+// startMaterialize kicks off the fetch-into-library flow. With a `btn` (the ⓘ
+// panel's version action) the button carries the progress; from the ⋯ menu
+// (no surviving element) progress is toast-only.
+async function startMaterialize(hash, { btn, title } = {}) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Materializing…'; }
+  else showToast(`Materializing “${title || 'track'}”…`, { type: 'status' });
   let data;
   try {
     const res = await fetch(`${API}/api/madnetwork/download`, {
@@ -556,28 +527,28 @@ async function startDownload(btn, hash) {
     });
     data = await res.json().catch(() => ({}));
     if (res.status === 401 || res.status === 403) {
-      showToast('You need upload permission to download into the library.', { type: 'error' });
-      resetDownloadBtn(btn); return;
+      showToast('You need upload permission to materialize into the library.', { type: 'error' });
+      resetMaterializeBtn(btn); return;
     }
     if (!res.ok && !data.started) {
-      showToast(data.error || 'Download failed to start.', { type: 'error' });
-      resetDownloadBtn(btn); return;
+      showToast(data.error || 'Materialize failed to start.', { type: 'error' });
+      resetMaterializeBtn(btn); return;
     }
   } catch {
-    showToast('Download failed to start.', { type: 'error' });
-    resetDownloadBtn(btn); return;
+    showToast('Materialize failed to start.', { type: 'error' });
+    resetMaterializeBtn(btn); return;
   }
   if (data.existed) {
     showToast(data.attached
       ? 'Bytes already in the library — the tagset was staged as a new appearance.'
       : 'Already in the library (nothing new to add).', { type: 'success' });
-    resetDownloadBtn(btn, data.attached ? 'Staged' : 'In library');
+    resetMaterializeBtn(btn, data.attached ? 'Staged' : 'In library');
     return;
   }
-  pollDownload(btn, hash);
+  pollMaterialize(btn, hash);
 }
 
-function pollDownload(btn, hash) {
+function pollMaterialize(btn, hash) {
   const tick = async () => {
     let data;
     try {
@@ -588,28 +559,28 @@ function pollDownload(btn, hash) {
     switch (data.state) {
       case 'staged':
       case 'attached':
-        showToast('Downloaded — staged in My uploads for review.', { type: 'success' });
-        resetDownloadBtn(btn, 'Staged'); downloadPolls.delete(hash); return;
+        showToast('Materialized — staged in My uploads for review.', { type: 'success' });
+        resetMaterializeBtn(btn, 'Staged'); materializePolls.delete(hash); return;
       case 'approved':
-        showToast('Downloaded into the library.', { type: 'success' });
-        resetDownloadBtn(btn, 'In library'); downloadPolls.delete(hash); return;
+        showToast('Materialized into the library.', { type: 'success' });
+        resetMaterializeBtn(btn, 'In library'); materializePolls.delete(hash); return;
       case 'failed':
-        showToast(`Download failed: ${data.error || 'unknown error'}`, { type: 'error' });
-        resetDownloadBtn(btn); downloadPolls.delete(hash); return;
+        showToast(`Materialize failed: ${data.error || 'unknown error'}`, { type: 'error' });
+        resetMaterializeBtn(btn); materializePolls.delete(hash); return;
       default: {
-        if (data.size > 0 && data.progress >= 0 && btn.isConnected) {
+        if (btn && data.size > 0 && data.progress >= 0 && btn.isConnected) {
           btn.textContent = `${Math.floor((data.progress / data.size) * 100)} %`;
         }
         schedule();
       }
     }
   };
-  const schedule = () => downloadPolls.set(hash, setTimeout(tick, 1500));
+  const schedule = () => materializePolls.set(hash, setTimeout(tick, 1500));
   schedule();
 }
 
-function resetDownloadBtn(btn, label) {
-  if (!btn.isConnected) return;
-  btn.textContent = label || '⬇ Download';
+function resetMaterializeBtn(btn, label) {
+  if (!btn || !btn.isConnected) return;
+  btn.textContent = label || '⬇ Materialize';
   btn.disabled = !!label;
 }

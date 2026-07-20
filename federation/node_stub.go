@@ -31,6 +31,7 @@ func Start(config.FederationConfig, PeerStore, *log.Logger, ...Option) (*Node, e
 func (n *Node) Stop()                {}
 func (n *Node) Address() net.IP      { return nil }
 func (n *Node) PublicKeyHex() string { return "" }
+func (n *Node) Name() string         { return "" }
 func (n *Node) Info() NodeInfo       { return NodeInfo{} }
 func (n *Node) Nudge()               {}
 

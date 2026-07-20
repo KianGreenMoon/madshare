@@ -1,8 +1,10 @@
 package api
 
 import (
+	"math"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"daemonlord.ygg/madshare/database"
@@ -15,10 +17,17 @@ import (
 // madnetwork.access. Browse-only in F2 — playing/downloading remote content
 // arrives with F3 (direct transfer).
 
+// includeSelf reports whether the merged view folds this node's own published
+// set in — on exactly when the federation node runs (h.madnetworkName is its
+// display name). With federation disabled the view stays what the friends
+// provide: nothing.
+func (h *handler) includeSelf() bool { return h.madnetworkName != "" }
+
 // madnetworkSummary handles GET /api/madnetwork/summary: each friend's sync
-// state plus the merged distinct-track count — the page's status strip.
+// state plus the merged distinct-track count — the page's status strip. With
+// the own set merged in, self_name labels this node's contribution.
 func (h *handler) madnetworkSummary(w http.ResponseWriter, r *http.Request) {
-	friends, tracks, err := h.madnetwork.MadnetworkSummary(r.Context())
+	friends, tracks, err := h.madnetwork.MadnetworkSummary(r.Context(), h.includeSelf())
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -26,13 +35,17 @@ func (h *handler) madnetworkSummary(w http.ResponseWriter, r *http.Request) {
 	if friends == nil {
 		friends = []*database.MadnetworkFriend{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "friends": friends, "tracks": tracks})
+	resp := map[string]any{"ok": true, "friends": friends, "tracks": tracks}
+	if h.includeSelf() {
+		resp["self_name"] = h.madnetworkName
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // madnetworkArtists handles GET /api/madnetwork/artists[?q=]: the merged
 // artist list (album-artist grouping, like the local library).
 func (h *handler) madnetworkArtists(w http.ResponseWriter, r *http.Request) {
-	artists, err := h.madnetwork.MadnetworkArtists(r.Context(), r.URL.Query().Get("q"))
+	artists, err := h.madnetwork.MadnetworkArtists(r.Context(), r.URL.Query().Get("q"), h.includeSelf())
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -50,7 +63,7 @@ func (h *handler) madnetworkAlbums(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "artist is required"})
 		return
 	}
-	albums, err := h.madnetwork.MadnetworkAlbums(r.Context(), artist)
+	albums, err := h.madnetwork.MadnetworkAlbums(r.Context(), artist, h.includeSelf())
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -73,6 +86,10 @@ type madnetworkTrack struct {
 	Disc     *int64  `json:"disc_number,omitempty"`
 	Duration float64 `json:"duration,omitempty"`
 
+	// TagsetID is the local appearance behind a self-held track (hearts,
+	// playlists); zero when this node does not publish the track itself.
+	TagsetID int64 `json:"tagset_id,omitempty"`
+
 	Versions []madnetworkVersion `json:"versions"`
 }
 
@@ -81,15 +98,21 @@ type madnetworkVersion struct {
 	Holders    []madnetworkHolder            `json:"holders"`
 	License    string                        `json:"license,omitempty"`
 	Guest      bool                          `json:"guest_playable,omitempty"`
+
+	// URL is the direct local play address when the version's ladder-best
+	// rendition is in this node's library — no relay hop through the cache.
+	URL string `json:"url,omitempty"`
 }
 
 type madnetworkHolder struct {
 	Name     string `json:"name"`
 	LastSeen int64  `json:"last_seen"`
+	Self     bool   `json:"self,omitempty"` // this server
 }
 
 // madnetworkTracks handles GET /api/madnetwork/tracks?artist=&album=: the
-// album's merged track rows with their versions.
+// album's merged track rows with their versions — friends' cached rows plus,
+// when the federation node runs, this node's own published rows.
 func (h *handler) madnetworkTracks(w http.ResponseWriter, r *http.Request) {
 	artist, album := r.URL.Query().Get("artist"), r.URL.Query().Get("album")
 	if artist == "" || album == "" {
@@ -101,13 +124,51 @@ func (h *handler) madnetworkTracks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tracks": mergeMadnetworkTracks(rows)})
+	if h.includeSelf() {
+		own, err := h.madnetwork.MadnetworkOwnTracks(r.Context(), artist, album)
+		if err != nil {
+			http.Error(w, "storage error", http.StatusInternalServerError)
+			return
+		}
+		rows = append(rows, own...)
+		sortMadnetworkRows(rows)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tracks": mergeMadnetworkTracks(rows, h.madnetworkName)})
 }
 
-// mergeMadnetworkTracks folds raw per-(peer,appearance) rows into logical
+// sortMadnetworkRows restores display order over a combined remote+own row
+// set — the Go mirror of the SQL ORDER BY (disc IS NULL last, disc, track
+// with SQLite's NULL-first, title, self rows first within a track).
+func sortMadnetworkRows(rows []*database.MadnetworkTrackRow) {
+	val := func(p *int64, null int64) int64 {
+		if p == nil {
+			return null
+		}
+		return *p
+	}
+	sort.SliceStable(rows, func(a, b int) bool {
+		ra, rb := rows[a], rows[b]
+		da, db_ := ra.Entry.DiscNumber == nil, rb.Entry.DiscNumber == nil
+		if da != db_ {
+			return db_ // non-null discs first
+		}
+		if x, y := val(ra.Entry.DiscNumber, 0), val(rb.Entry.DiscNumber, 0); x != y {
+			return x < y
+		}
+		if x, y := val(ra.Entry.TrackNumber, math.MinInt64), val(rb.Entry.TrackNumber, math.MinInt64); x != y {
+			return x < y
+		}
+		if x, y := strings.ToLower(ra.Entry.Title), strings.ToLower(rb.Entry.Title); x != y {
+			return x < y
+		}
+		return ra.PeerID < rb.PeerID // self (0) first, then peers as before
+	})
+}
+
+// mergeMadnetworkTracks folds raw per-(source,appearance) rows into logical
 // tracks and versions. Rows arrive in display order; groups keep first-seen
-// order.
-func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow) []*madnetworkTrack {
+// order. selfName labels the self holder of own rows.
+func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow, selfName string) []*madnetworkTrack {
 	type ident struct {
 		disc, track int64
 		title       string
@@ -148,8 +209,13 @@ func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow) []*madnetworkTra
 			if t.Duration == 0 {
 				t.Duration = row.Entry.Duration
 			}
+			if t.TagsetID == 0 && row.Self {
+				if id, err := strconv.ParseInt(row.Entry.Key, 10, 64); err == nil {
+					t.TagsetID = id
+				}
+			}
 		}
-		t.Versions = mergeVersions(group)
+		t.Versions = mergeVersions(group, selfName)
 		tracks = append(tracks, t)
 	}
 	return tracks
@@ -159,7 +225,7 @@ func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow) []*madnetworkTra
 // recordings are the same version iff they share a rendition content hash
 // (same bytes somewhere = same audio for sure). Everything else stays a
 // separate version — recordings are never merged on text alone.
-func mergeVersions(group []*database.MadnetworkTrackRow) []madnetworkVersion {
+func mergeVersions(group []*database.MadnetworkTrackRow, selfName string) []madnetworkVersion {
 	// Union-find over the group's rows, linked by shared hashes.
 	parent := make([]int, len(group))
 	for i := range parent {
@@ -203,6 +269,7 @@ func mergeVersions(group []*database.MadnetworkTrackRow) []madnetworkVersion {
 		v.Holders = []madnetworkHolder{}
 		seenHash := map[string]bool{}
 		seenPeer := map[int64]bool{}
+		objectKeys := map[string]string{} // local hash -> files object key (self rows)
 		for _, i := range sets[r] {
 			row := group[i]
 			for _, rd := range row.Entry.Renditions {
@@ -214,7 +281,14 @@ func mergeVersions(group []*database.MadnetworkTrackRow) []madnetworkVersion {
 			}
 			if !seenPeer[row.PeerID] {
 				seenPeer[row.PeerID] = true
-				v.Holders = append(v.Holders, madnetworkHolder{Name: row.PeerName, LastSeen: row.PeerLastSeen})
+				if row.Self {
+					v.Holders = append(v.Holders, madnetworkHolder{Name: selfName, Self: true})
+				} else {
+					v.Holders = append(v.Holders, madnetworkHolder{Name: row.PeerName, LastSeen: row.PeerLastSeen})
+				}
+			}
+			for hash, key := range row.ObjectKeys {
+				objectKeys[hash] = key
 			}
 			if v.License == "" {
 				v.License = row.Entry.License
@@ -235,6 +309,13 @@ func mergeVersions(group []*database.MadnetworkTrackRow) []madnetworkVersion {
 		for i, rr := range database.RankRenditions(ranked) {
 			v.Renditions[i] = byHash2[rr.Hash]
 		}
+		// Direct local play URL when the version's default pick lives in this
+		// node's library.
+		if len(v.Renditions) > 0 {
+			if key, ok := objectKeys[v.Renditions[0].Hash]; ok {
+				v.URL = "/files/" + key
+			}
+		}
 		versions = append(versions, v)
 	}
 	// Most widely held version first — the doc's default pick for a crossing.
@@ -242,4 +323,108 @@ func mergeVersions(group []*database.MadnetworkTrackRow) []madnetworkVersion {
 		return len(versions[a].Holders) > len(versions[b].Holders)
 	})
 	return versions
+}
+
+// ── Merged search (docs/ui/madnetwork-page.md §Search) ───────────────────────
+
+const (
+	madnetworkSearchArtistCap = 5
+	madnetworkSearchAlbumCap  = 5
+	madnetworkSearchTrackCap  = 20
+)
+
+// madnetworkSearch handles GET /api/madnetwork/search?q= — the library-style
+// three-section search over the merged (friends ∪ own) catalog. Field names
+// mirror /api/search so the shared search view renders both; addressing is by
+// display name (the merged catalog has no entity ids), and each playable track
+// carries its default rendition hash plus a direct local url when self-held.
+func (h *handler) madnetworkSearch(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	if len(q) > 200 {
+		http.Error(w, "query too long", http.StatusBadRequest)
+		return
+	}
+
+	type searchTrack struct {
+		Title      string   `json:"title"`
+		ArtistName string   `json:"artist_name,omitempty"`
+		Artist     string   `json:"artist"` // grouping artist (drill address)
+		AlbumTitle string   `json:"album_title"`
+		Duration   *float64 `json:"duration_seconds,omitempty"`
+		TagsetID   int64    `json:"tagset_id,omitempty"`
+		Hash       string   `json:"hash"`
+		URL        string   `json:"url,omitempty"` // local play address when self-held
+	}
+
+	artists, err := h.madnetwork.MadnetworkArtists(r.Context(), q, h.includeSelf())
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if strings.TrimSpace(q) == "" {
+		artists = nil // an empty query lists everything — search shows nothing
+	}
+	if len(artists) > madnetworkSearchArtistCap {
+		artists = artists[:madnetworkSearchArtistCap]
+	}
+	if artists == nil {
+		artists = []*database.MadnetworkArtist{}
+	}
+
+	albums, err := h.madnetwork.MadnetworkSearchAlbums(r.Context(), q, madnetworkSearchAlbumCap, h.includeSelf())
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+
+	rows, err := h.madnetwork.MadnetworkSearchTrackRows(r.Context(), q, h.includeSelf())
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+
+	// Group cross-album rows by their display-identity bucket and run the
+	// album-scale merge per group, so version folding stays correct.
+	type bucket struct{ artist, album string }
+	groups := map[bucket][]*database.MadnetworkTrackRow{}
+	order := []bucket{}
+	for _, row := range rows {
+		b := bucket{strings.ToLower(row.GroupArtist), strings.ToLower(row.GroupAlbum)}
+		if _, seen := groups[b]; !seen {
+			order = append(order, b)
+		}
+		groups[b] = append(groups[b], row)
+	}
+	tracks := []searchTrack{}
+merge:
+	for _, b := range order {
+		group := groups[b]
+		for _, t := range mergeMadnetworkTracks(group, h.madnetworkName) {
+			if len(t.Versions) == 0 || len(t.Versions[0].Renditions) == 0 {
+				continue // nothing playable to offer from search
+			}
+			var dur *float64
+			if t.Duration > 0 {
+				d := t.Duration
+				dur = &d
+			}
+			tracks = append(tracks, searchTrack{
+				Title:      t.Title,
+				ArtistName: t.Artist,
+				Artist:     group[0].GroupArtist,
+				AlbumTitle: group[0].GroupAlbum,
+				Duration:   dur,
+				TagsetID:   t.TagsetID,
+				Hash:       t.Versions[0].Renditions[0].Hash,
+				URL:        t.Versions[0].URL,
+			})
+			if len(tracks) >= madnetworkSearchTrackCap {
+				break merge
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "artists": artists, "albums": albums, "tracks": tracks,
+	})
 }

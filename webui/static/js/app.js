@@ -390,7 +390,9 @@ function renderTrackList(tracks) {
       idx: i,           // used by the background duration fetch
       tagsetId: track.tagsetId,
       onPlay: play,
-      makeMenuItems: btn => quickAddItems(btn, () => [track]),
+      makeMenuItems: btn => quickAddItems(btn, () => [track], {
+        extraItems: [{ label: 'Download', onClick: () => downloadTrack(track) }],
+      }),
     }));
   });
 
@@ -404,6 +406,19 @@ function renderTrackList(tracks) {
 
   // Background fetch for any tracks still showing '—'.
   fetchMissingDurations(libraryPlaylist);
+}
+
+// downloadTrack saves the track's resolved rendition file to the user's
+// device — an anchor download of the same-origin /files/ URL; the browser
+// names the file after the URL's filename segment. (Fetching a remote
+// madnetwork track into the LIBRARY is "Materialize", on /madnetwork.)
+function downloadTrack(track) {
+  const a = document.createElement('a');
+  a.href = track.url;
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 // Fetch audio metadata headers in the background for tracks still showing '—'.

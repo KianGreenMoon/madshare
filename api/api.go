@@ -107,16 +107,25 @@ type Deps struct {
 	// (federation F2) — *database.DB in the running server. When nil, the
 	// madnetwork browse endpoints are not registered.
 	Madnetwork MadnetworkStore
+	// MadnetworkName is the running federation node's display name. Non-empty
+	// exactly when the node runs: it labels the self holder of own tracks in
+	// the merged browse, and an empty value keeps the own set OUT of the view
+	// (federation disabled = the madnetwork list stays empty).
+	MadnetworkName string
 }
 
-// MadnetworkStore reads the merged madnetwork catalog (cached friend catalogs;
-// database/madnetwork.go). A dedicated interface — not database.Repository —
-// so the browse endpoints don't force every Repository fake to grow with them.
+// MadnetworkStore reads the merged madnetwork catalog (cached friend catalogs
+// plus, when includeSelf, the own published set; database/madnetwork.go). A
+// dedicated interface — not database.Repository — so the browse endpoints
+// don't force every Repository fake to grow with them.
 type MadnetworkStore interface {
-	MadnetworkArtists(ctx context.Context, q string) ([]*database.MadnetworkArtist, error)
-	MadnetworkAlbums(ctx context.Context, artist string) ([]*database.MadnetworkAlbum, error)
+	MadnetworkArtists(ctx context.Context, q string, includeSelf bool) ([]*database.MadnetworkArtist, error)
+	MadnetworkAlbums(ctx context.Context, artist string, includeSelf bool) ([]*database.MadnetworkAlbum, error)
 	MadnetworkTracks(ctx context.Context, artist, album string) ([]*database.MadnetworkTrackRow, error)
-	MadnetworkSummary(ctx context.Context) ([]*database.MadnetworkFriend, int64, error)
+	MadnetworkOwnTracks(ctx context.Context, artist, album string) ([]*database.MadnetworkTrackRow, error)
+	MadnetworkSummary(ctx context.Context, includeSelf bool) ([]*database.MadnetworkFriend, int64, error)
+	MadnetworkSearchAlbums(ctx context.Context, q string, limit int, includeSelf bool) ([]*database.MadnetworkSearchAlbum, error)
+	MadnetworkSearchTrackRows(ctx context.Context, q string, includeSelf bool) ([]*database.MadnetworkTrackRow, error)
 	// F3 (direct transfer): the tagset text behind a rendition hash (staging
 	// metadata for download-to-library) and the download policy.
 	MadnetworkEntryForHash(ctx context.Context, hash string) (*federation.CatalogEntry, error)
@@ -197,6 +206,7 @@ func (d Deps) newHandler() *handler {
 		musicbrainz:     d.MusicBrainz,
 		federation:      d.Federation,
 		madnetwork:      d.Madnetwork,
+		madnetworkName:  d.MadnetworkName,
 	}
 	if d.SourceArchive != nil || d.LicenseText != nil || d.SourceRoot != "" {
 		h.source = &sourceArchiver{
@@ -303,6 +313,7 @@ func RegisterAPI(r chi.Router, d Deps) {
 		r.With(mad).Get("/api/madnetwork/artists", h.madnetworkArtists)
 		r.With(mad).Get("/api/madnetwork/albums", h.madnetworkAlbums)
 		r.With(mad).Get("/api/madnetwork/tracks", h.madnetworkTracks)
+		r.With(mad).Get("/api/madnetwork/search", h.madnetworkSearch)
 		// F3 (direct transfer): the cache-through streaming relay and
 		// download-to-library, only when a federation node runs. Downloading
 		// stages content as the caller's draft — an upload in all but wire —

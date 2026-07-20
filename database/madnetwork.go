@@ -328,11 +328,55 @@ func (db *DB) MadnetworkEntryForHash(ctx context.Context, hash string) (*federat
 // bucket, mirroring the local library's album-artist-only artist list; albums
 // fall back to the shared "Other" bucket. Only friends' catalogs are visible.
 const fedcatBase = `
-	FROM (SELECT COALESCE(NULLIF(c.album_artist, ''), NULLIF(c.artist, ''), 'Unknown artist') AS akey,
-	             COALESCE(NULLIF(c.album, ''), 'Other') AS alb,
+	FROM (SELECT COALESCE(NULLIF(c.album_artist, ''), NULLIF(c.artist, ''), '` + DefaultArtistName + `') AS akey,
+	             COALESCE(NULLIF(c.album, ''), '` + DefaultAlbumTitle + `') AS alb,
 	             c.*
 	      FROM federation_catalog c
 	      JOIN federation_peers p ON p.id = c.peer_id AND p.state = 'friend')`
+
+// fedcatRemoteRows / fedcatSelfRows are the two sources of the merged counting
+// queries (artists / albums / summary / search), reduced to the columns those
+// queries group and count by. The self source is this node's own published set
+// — the same visibleTagset predicate and display-name resolution that
+// PublishedCatalog advertises to friends, with fedcatBase's bucket fallbacks
+// applied on top, so a track we publish folds with the same track cached from
+// a friend (docs/ui/madnetwork-page.md §Own tracks).
+const fedcatRemoteRows = `
+	SELECT COALESCE(NULLIF(c.album_artist, ''), NULLIF(c.artist, ''), '` + DefaultArtistName + `') AS akey,
+	       COALESCE(NULLIF(c.album, ''), '` + DefaultAlbumTitle + `') AS alb,
+	       c.title AS title, c.track_number AS track_number,
+	       c.disc_number AS disc_number, c.year AS year
+	FROM federation_catalog c
+	JOIN federation_peers p ON p.id = c.peer_id AND p.state = 'friend'`
+
+const fedcatSelfRows = `
+	SELECT COALESCE(NULLIF(COALESCE(aar.name, m.album_artist, ''), ''),
+	                NULLIF(COALESCE(par.name, m.artist, ''), ''), '` + DefaultArtistName + `') AS akey,
+	       COALESCE(NULLIF(COALESCE(al.title, m.album, ''), ''), '` + DefaultAlbumTitle + `') AS alb,
+	       m.title AS title, m.track_number AS track_number,
+	       m.disc_number AS disc_number, m.year AS year
+	FROM tagsets m` + recordingJoin + `
+	LEFT JOIN artists par ON par.id = m.artist_id
+	LEFT JOIN artists aar ON aar.id = m.album_artist_id
+	LEFT JOIN albums al   ON al.id  = m.album_id
+	WHERE ` + visibleTagset
+
+// fedcatCountBase is the FROM clause of the counting queries: friends'
+// catalogs, optionally unioned with the own published set. includeSelf is off
+// when federation is disabled — the page then stays what the friends provide
+// (nothing), matching the "list fully clears" rule.
+func fedcatCountBase(includeSelf bool) string {
+	if includeSelf {
+		return ` FROM (` + fedcatRemoteRows + ` UNION ALL ` + fedcatSelfRows + `)`
+	}
+	return ` FROM (` + fedcatRemoteRows + `)`
+}
+
+// Leading ORDER BY keys forcing the unknown buckets to the bottom of the
+// alphabetical lists (the library's norm_name trick, matched on the canonical
+// default strings — remote catalogs carry no normalized ids).
+const artistBucketLast = `(lower(akey) = lower('` + DefaultArtistName + `')) ASC`
+const albumBucketLast = `(lower(alb) = lower('` + DefaultAlbumTitle + `')) ASC`
 
 // trackIdent is the merged logical-track identity inside one artist bucket:
 // album + disc + track + title (case-insensitive) — the same text offered by
@@ -348,8 +392,9 @@ type MadnetworkArtist struct {
 }
 
 // MadnetworkArtists lists the merged catalog's artists (display-identity
-// grouping, case-insensitive), optionally filtered by a substring.
-func (db *DB) MadnetworkArtists(ctx context.Context, q string) ([]*MadnetworkArtist, error) {
+// grouping, case-insensitive), optionally filtered by a substring. The unknown
+// bucket sorts last; includeSelf merges the own published set in.
+func (db *DB) MadnetworkArtists(ctx context.Context, q string, includeSelf bool) ([]*MadnetworkArtist, error) {
 	where, args := "", []any{}
 	if s := strings.TrimSpace(q); s != "" {
 		escaped := strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(s)
@@ -358,9 +403,9 @@ func (db *DB) MadnetworkArtists(ctx context.Context, q string) ([]*MadnetworkArt
 	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT MIN(akey), COUNT(DISTINCT lower(alb)), COUNT(DISTINCT `+trackIdent+`)
-		`+fedcatBase+where+`
+		`+fedcatCountBase(includeSelf)+where+`
 		GROUP BY lower(akey)
-		ORDER BY lower(akey)`, args...)
+		ORDER BY `+artistBucketLast+`, lower(akey)`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("madnetwork artists: %w", err)
 	}
@@ -383,14 +428,15 @@ type MadnetworkAlbum struct {
 	Year   *int64 `json:"year,omitempty"`
 }
 
-// MadnetworkAlbums lists one artist's albums in the merged catalog.
-func (db *DB) MadnetworkAlbums(ctx context.Context, artist string) ([]*MadnetworkAlbum, error) {
+// MadnetworkAlbums lists one artist's albums in the merged catalog; the
+// "Other" bucket sorts last.
+func (db *DB) MadnetworkAlbums(ctx context.Context, artist string, includeSelf bool) ([]*MadnetworkAlbum, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT MIN(alb), COUNT(DISTINCT `+trackIdent+`), MAX(year)
-		`+fedcatBase+`
+		`+fedcatCountBase(includeSelf)+`
 		WHERE lower(akey) = lower(?)
 		GROUP BY lower(alb)
-		ORDER BY year IS NULL, year, lower(alb)`, artist)
+		ORDER BY `+albumBucketLast+`, year IS NULL, year, lower(alb)`, artist)
 	if err != nil {
 		return nil, fmt.Errorf("madnetwork albums: %w", err)
 	}
@@ -408,30 +454,42 @@ func (db *DB) MadnetworkAlbums(ctx context.Context, artist string) ([]*Madnetwor
 	return out, rows.Err()
 }
 
-// MadnetworkTrackRow is one RAW cached row of an album's tracks — one per
-// (peer, appearance). The handler merges rows into logical tracks and their
-// "N versions" (distinct claimed recordings) — set logic that reads better in
-// Go than SQL at album scale.
+// MadnetworkTrackRow is one RAW row of the merged track view — one per
+// (source, appearance), a source being a friend's cached catalog or, for
+// Self rows, this node's own published set. The handler merges rows into
+// logical tracks and their "N versions" (distinct claimed recordings) — set
+// logic that reads better in Go than SQL at album scale.
 type MadnetworkTrackRow struct {
 	PeerID       int64
 	PeerName     string
 	PeerLastSeen int64
 	Entry        federation.CatalogEntry
+
+	// GroupArtist/GroupAlbum are the display-identity buckets (akey/alb) the
+	// row belongs to — the search handler groups cross-album results by them.
+	GroupArtist string
+	GroupAlbum  string
+
+	// Self rows come from the local library: PeerID is 0, Entry.Key is the
+	// local tagset id, and ObjectKeys maps each rendition hash to its local
+	// files object key (for direct /files/ play URLs).
+	Self       bool
+	ObjectKeys map[string]string
 }
 
-// MadnetworkTracks returns every friend's cached rows for one artist+album, in
-// display order.
-func (db *DB) MadnetworkTracks(ctx context.Context, artist, album string) ([]*MadnetworkTrackRow, error) {
+// remoteTrackRows runs the raw cached-row query with a caller-supplied match
+// clause over the bucketed columns (akey/alb/title available).
+func (db *DB) remoteTrackRows(ctx context.Context, match string, args ...any) ([]*MadnetworkTrackRow, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT peer_id, p2.name, p2.last_seen,
-		       entry_key, recording_key, title, artist, album_artist, alb,
+		SELECT peer_id, p2.name, p2.last_seen, akey, alb,
+		       entry_key, recording_key, title, artist, album_artist,
 		       COALESCE(genre, ''), year, track_number, disc_number,
 		       COALESCE(duration, 0), COALESCE(license, ''), guest_playable, renditions
 		`+fedcatBase+`
 		JOIN federation_peers p2 ON p2.id = peer_id
-		WHERE lower(akey) = lower(?) AND lower(alb) = lower(?)
+		WHERE `+match+`
 		ORDER BY (disc_number IS NULL) ASC, disc_number ASC, track_number ASC, lower(title) ASC, peer_id ASC`,
-		artist, album)
+		args...)
 	if err != nil {
 		return nil, fmt.Errorf("madnetwork tracks: %w", err)
 	}
@@ -441,12 +499,13 @@ func (db *DB) MadnetworkTracks(ctx context.Context, artist, album string) ([]*Ma
 		var r MadnetworkTrackRow
 		var year, track, disc sql.NullInt64
 		var renditions string
-		if err := rows.Scan(&r.PeerID, &r.PeerName, &r.PeerLastSeen,
+		if err := rows.Scan(&r.PeerID, &r.PeerName, &r.PeerLastSeen, &r.GroupArtist, &r.GroupAlbum,
 			&r.Entry.Key, &r.Entry.RecordingKey, &r.Entry.Title, &r.Entry.Artist,
-			&r.Entry.AlbumArtist, &r.Entry.Album, &r.Entry.Genre, &year, &track, &disc,
+			&r.Entry.AlbumArtist, &r.Entry.Genre, &year, &track, &disc,
 			&r.Entry.Duration, &r.Entry.License, &r.Entry.GuestPlayable, &renditions); err != nil {
 			return nil, fmt.Errorf("scan madnetwork track: %w", err)
 		}
+		r.Entry.Album = r.GroupAlbum
 		r.Entry.Year, r.Entry.TrackNumber, r.Entry.DiscNumber = nullInt(year), nullInt(track), nullInt(disc)
 		if err := json.Unmarshal([]byte(renditions), &r.Entry.Renditions); err != nil {
 			r.Entry.Renditions = nil // tolerate a damaged cache row rather than failing the album
@@ -454,6 +513,185 @@ func (db *DB) MadnetworkTracks(ctx context.Context, artist, album string) ([]*Ma
 		out = append(out, &r)
 	}
 	return out, rows.Err()
+}
+
+// MadnetworkTracks returns every friend's cached rows for one artist+album, in
+// display order.
+func (db *DB) MadnetworkTracks(ctx context.Context, artist, album string) ([]*MadnetworkTrackRow, error) {
+	return db.remoteTrackRows(ctx, `lower(akey) = lower(?) AND lower(alb) = lower(?)`, artist, album)
+}
+
+// Self-row display-identity expressions over the tagsets join (aliases par /
+// aar / al as in fedcatSelfRows) — the WHERE side of the bucket fallbacks.
+const selfAkeyExpr = `COALESCE(NULLIF(COALESCE(aar.name, m.album_artist, ''), ''),
+	NULLIF(COALESCE(par.name, m.artist, ''), ''), '` + DefaultArtistName + `')`
+const selfAlbExpr = `COALESCE(NULLIF(COALESCE(al.title, m.album, ''), ''), '` + DefaultAlbumTitle + `')`
+
+// ownTrackRows returns this node's own published appearances matching a
+// caller-supplied clause (akey/alb/title-level), shaped like cached catalog
+// rows: Self = true, PeerID 0, Entry.Key = tagset id, renditions attached from
+// the recording's live files with their local object keys.
+func (db *DB) ownTrackRows(ctx context.Context, match string, args ...any) ([]*MadnetworkTrackRow, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT m.id, m.recording_id, `+selfAkeyExpr+`, `+selfAlbExpr+`, m.title,
+		       COALESCE(par.name, m.artist, ''), COALESCE(aar.name, m.album_artist, ''),
+		       COALESCE(m.genre, ''), m.year, m.track_number, m.disc_number,
+		       COALESCE(r.license, ''), r.guest_playable
+		FROM tagsets m`+recordingJoin+`
+		LEFT JOIN artists par ON par.id = m.artist_id
+		LEFT JOIN artists aar ON aar.id = m.album_artist_id
+		LEFT JOIN albums al   ON al.id  = m.album_id
+		WHERE `+visibleTagset+` AND `+match+`
+		ORDER BY (m.disc_number IS NULL) ASC, m.disc_number ASC, m.track_number ASC, lower(m.title) ASC, m.id ASC`,
+		args...)
+	if err != nil {
+		return nil, fmt.Errorf("madnetwork own tracks: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*MadnetworkTrackRow
+	recordings := map[string][]int{} // recording key -> row indexes awaiting renditions
+	for rows.Next() {
+		r := MadnetworkTrackRow{Self: true, ObjectKeys: map[string]string{}}
+		var tagsetID, recordingID int64
+		var year, track, disc sql.NullInt64
+		if err := rows.Scan(&tagsetID, &recordingID, &r.GroupArtist, &r.GroupAlbum, &r.Entry.Title,
+			&r.Entry.Artist, &r.Entry.AlbumArtist, &r.Entry.Genre, &year, &track, &disc,
+			&r.Entry.License, &r.Entry.GuestPlayable); err != nil {
+			return nil, fmt.Errorf("scan madnetwork own track: %w", err)
+		}
+		r.Entry.Key = strconv.FormatInt(tagsetID, 10)
+		r.Entry.RecordingKey = strconv.FormatInt(recordingID, 10)
+		r.Entry.Album = r.GroupAlbum
+		r.Entry.Year, r.Entry.TrackNumber, r.Entry.DiscNumber = nullInt(year), nullInt(track), nullInt(disc)
+		r.Entry.Renditions = []federation.CatalogRendition{}
+		recordings[r.Entry.RecordingKey] = append(recordings[r.Entry.RecordingKey], len(out))
+		out = append(out, &r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return out, nil
+	}
+
+	// Attach each recording's live renditions plus their object keys (the
+	// local /files/ addresses the browse serves for self-held tracks).
+	ids := make([]any, 0, len(recordings))
+	ph := make([]string, 0, len(recordings))
+	for key := range recordings {
+		ids = append(ids, key)
+		ph = append(ph, "?")
+	}
+	rrows, err := db.QueryContext(ctx, `
+		SELECT f.recording_id, f.hash, f.byte_size, f.object_key,
+		       COALESCE(mm.codec, ''), COALESCE(mm.bitrate, 0),
+		       COALESCE(mm.sample_rate, 0), COALESCE(mm.bit_depth, 0),
+		       COALESCE(mm.duration_seconds, 0)
+		FROM files f
+		LEFT JOIN media_metadata mm ON mm.file_id = f.id
+		WHERE f.deleted_at IS NULL AND f.recording_id IN (`+strings.Join(ph, ",")+`)
+		ORDER BY f.recording_id, f.id`, ids...)
+	if err != nil {
+		return nil, fmt.Errorf("madnetwork own renditions: %w", err)
+	}
+	defer rrows.Close()
+	for rrows.Next() {
+		var recordingID int64
+		var objectKey string
+		var rd federation.CatalogRendition
+		if err := rrows.Scan(&recordingID, &rd.Hash, &rd.Size, &objectKey, &rd.Codec,
+			&rd.Bitrate, &rd.SampleRate, &rd.BitDepth, &rd.Duration); err != nil {
+			return nil, fmt.Errorf("scan madnetwork own rendition: %w", err)
+		}
+		for _, i := range recordings[strconv.FormatInt(recordingID, 10)] {
+			out[i].Entry.Renditions = append(out[i].Entry.Renditions, rd)
+			out[i].ObjectKeys[rd.Hash] = objectKey
+			if out[i].Entry.Duration == 0 && rd.Duration > 0 {
+				out[i].Entry.Duration = rd.Duration
+			}
+		}
+	}
+	return out, rrows.Err()
+}
+
+// MadnetworkOwnTracks returns the own published rows for one artist+album —
+// the Self side of the merged track view.
+func (db *DB) MadnetworkOwnTracks(ctx context.Context, artist, album string) ([]*MadnetworkTrackRow, error) {
+	return db.ownTrackRows(ctx,
+		`lower(`+selfAkeyExpr+`) = lower(?) AND lower(`+selfAlbExpr+`) = lower(?)`, artist, album)
+}
+
+// ── Merged search (docs/ui/madnetwork-page.md §Search) ───────────────────────
+
+// MadnetworkSearchAlbum is one album hit of the merged search.
+type MadnetworkSearchAlbum struct {
+	Artist string `json:"artist_name"`
+	Title  string `json:"title"`
+	Tracks int64  `json:"track_count"`
+	Year   *int64 `json:"year,omitempty"`
+}
+
+// MadnetworkSearchAlbums lists merged albums whose title matches a substring.
+func (db *DB) MadnetworkSearchAlbums(ctx context.Context, q string, limit int, includeSelf bool) ([]*MadnetworkSearchAlbum, error) {
+	s := strings.TrimSpace(q)
+	if s == "" || limit <= 0 {
+		return []*MadnetworkSearchAlbum{}, nil
+	}
+	escaped := strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(s)
+	rows, err := db.QueryContext(ctx, `
+		SELECT MIN(akey), MIN(alb), COUNT(DISTINCT `+trackIdent+`), MAX(year)
+		`+fedcatCountBase(includeSelf)+`
+		WHERE lower(alb) LIKE lower(?) ESCAPE '\'
+		GROUP BY lower(akey), lower(alb)
+		ORDER BY `+albumBucketLast+`, lower(alb), lower(akey)
+		LIMIT ?`, "%"+escaped+"%", limit)
+	if err != nil {
+		return nil, fmt.Errorf("madnetwork search albums: %w", err)
+	}
+	defer rows.Close()
+	out := []*MadnetworkSearchAlbum{}
+	for rows.Next() {
+		var a MadnetworkSearchAlbum
+		var year sql.NullInt64
+		if err := rows.Scan(&a.Artist, &a.Title, &a.Tracks, &year); err != nil {
+			return nil, fmt.Errorf("scan madnetwork search album: %w", err)
+		}
+		a.Year = nullInt(year)
+		out = append(out, &a)
+	}
+	return out, rows.Err()
+}
+
+// searchRowCap bounds the raw rows fed into the search handler's track merge —
+// a LIKE over titles can fan out; the handler caps the merged result anyway.
+const searchRowCap = 400
+
+// MadnetworkSearchTrackRows returns the raw rows (remote and, when includeSelf,
+// own) whose title matches a substring. Rows arrive grouped by source; the
+// handler groups by (GroupArtist, GroupAlbum) and merges per group, so having
+// every source's rows for a matching title keeps version folding correct.
+func (db *DB) MadnetworkSearchTrackRows(ctx context.Context, q string, includeSelf bool) ([]*MadnetworkTrackRow, error) {
+	s := strings.TrimSpace(q)
+	if s == "" {
+		return []*MadnetworkTrackRow{}, nil
+	}
+	escaped := "%" + strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(s) + "%"
+	rows, err := db.remoteTrackRows(ctx, `lower(title) LIKE lower(?) ESCAPE '\'`, escaped)
+	if err != nil {
+		return nil, err
+	}
+	if includeSelf {
+		own, err := db.ownTrackRows(ctx, `lower(m.title) LIKE lower(?) ESCAPE '\'`, escaped)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, own...)
+	}
+	if len(rows) > searchRowCap {
+		rows = rows[:searchRowCap]
+	}
+	return rows, nil
 }
 
 // MadnetworkFriend is one friend's sync status on the /madnetwork page strip.
@@ -465,8 +703,9 @@ type MadnetworkFriend struct {
 }
 
 // MadnetworkSummary reports the merged catalog's shape: each friend with sync
-// state and the merged distinct track count.
-func (db *DB) MadnetworkSummary(ctx context.Context) ([]*MadnetworkFriend, int64, error) {
+// state and the merged distinct track count (including the own published set
+// when includeSelf).
+func (db *DB) MadnetworkSummary(ctx context.Context, includeSelf bool) ([]*MadnetworkFriend, int64, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT p.name, p.last_seen, p.catalog_synced_at,
 		       (SELECT COUNT(*) FROM federation_catalog c WHERE c.peer_id = p.id)
@@ -492,7 +731,7 @@ func (db *DB) MadnetworkSummary(ctx context.Context) ([]*MadnetworkFriend, int64
 	var tracks int64
 	if err := db.QueryRowContext(ctx, `
 		SELECT COUNT(DISTINCT lower(akey) || char(31) || `+trackIdent+`)
-		`+fedcatBase).Scan(&tracks); err != nil {
+		`+fedcatCountBase(includeSelf)).Scan(&tracks); err != nil {
 		return nil, 0, fmt.Errorf("madnetwork track count: %w", err)
 	}
 	return friends, tracks, nil

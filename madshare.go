@@ -331,6 +331,13 @@ func main() {
 			log.Fatalf("start federation node: %v", err)
 		}
 		deps.Federation = fedNode
+		// A non-empty name switches the merged browse to include the own
+		// published set (self holder label); guarantee one even for a
+		// pathological hostname.
+		deps.MadnetworkName = fedNode.Name()
+		if deps.MadnetworkName == "" {
+			deps.MadnetworkName = "this server"
+		}
 		log.Printf("federation: madnetwork node up — mesh address %s (key file %s)", fedNode.Address(), cfg.Federation.KeyFile)
 	}
 

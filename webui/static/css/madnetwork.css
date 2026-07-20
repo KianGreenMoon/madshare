@@ -32,40 +32,9 @@
 .mn-friend-name { color: var(--text); font-weight: 600; }
 .mn-friend-seen { font-size: 0.75rem; }
 
-/* ── Artist filter (right side of the library bar) ──────────────────────────── */
-.mn-search input {
-  padding: 0.35rem 0.6rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  font: inherit;
-  font-size: 0.9rem;
-  width: 14rem;
-  max-width: 45vw;
-}
-.mn-search input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-
-/* ── Track-row extras: Download pill + source/versions info toggle ───────────── */
-/* The row itself reuses the library's .track-row layout (app.css). */
-
-/* Download — the one action the local library lacks; always visible so the
-   feature is discoverable, muted until hover. */
-.mn-dl {
-  flex-shrink: 0;
-  font: inherit;
-  font-size: 0.76rem;
-  padding: 0.2rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--text-muted);
-  cursor: pointer;
-  white-space: nowrap;
-}
-.mn-dl:hover { color: var(--text); border-color: var(--accent); }
-.mn-dl:disabled { opacity: 0.65; cursor: default; }
-.mn-dl:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* ── Track-row extras: the source/versions info toggle ───────────────────────── */
+/* The row itself (hearts, ⋯ menu, search) reuses the library's shared layout
+   (app.css); Materialize lives in the ⋯ menu and the ⓘ panel. */
 
 /* Source & versions — rare, so it stays faint until the row is hovered/focused
    or the panel is open (never fully hidden, so touch + keyboard can reach it). */
@@ -119,6 +88,7 @@
 .mn-rendition-quality { font-size: 0.82rem; color: var(--text); font-variant-numeric: tabular-nums; }
 .mn-holders { font-size: 0.8rem; color: var(--text-muted); }
 .mn-holder { color: var(--text); }
+.mn-holder--self { color: var(--accent); font-weight: 600; }
 
 /* ── F3 version actions (Play / Queue / Download) ──────────────────────────── */
 .mn-actions { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-1); }
