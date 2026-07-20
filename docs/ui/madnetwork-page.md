@@ -234,16 +234,23 @@ same shape.
 - Virtualized/paginated madnetwork artist list (adopt when catalogs grow).
 - Album/artist "Download as zip" on the library page.
 
-## Build order
+## Build order (all shipped)
 
-1. **Shared browse core** — extract `browse-rows.js` / `quick-add.js` /
-   `browse-search.js` from `app.js`; library page re-wired onto them with zero
-   behavior change (the regression gate for the extraction).
-2. **Madnetwork parity** — madnetwork page onto the shared core: hearts, ⋯
+1. **Shared browse core** — `browse-rows.js` / `quick-add.js` /
+   `browse-search.js` extracted from `app.js`; library page re-wired onto them
+   with the redundant Favorites ⋯ item dropped (heart is the one control).
+2. **Madnetwork parity** — madnetwork page on the shared core: hearts, ⋯
    menus, library-style search (`/api/madnetwork/search`), unknown-last sorting,
-   Materialize rename, library ⋯ Download item, own-tracks merge.
-3. **Remote playlists/likes** — migration 029, playlists/favorites API
-   extensions, warning text/badges, re-point on approval.
-4. **Presence** — 5 s prober + hysteresis, presence-filtered browse/search,
-   summary `online` flags, client polling + panel refresh.
-5. **Materialize all** — per-entity bulk submit + aggregate progress.
+   Materialize rename, library ⋯ Download item, own-tracks merge (`self` holder,
+   local `url`, `tagset_id`).
+3. **Remote playlists/likes** — migration 029 (nullable `tagset_id` XOR
+   `remote_hash`), playlists/favorites API extensions, canonical `ts:`/`mn:`
+   like keys, warning text + `remote` badge/dimming, `RepointRemotePlaylistItems`
+   on every approval path + startup.
+4. **Presence** — 5 s prober with 10 s hysteresis (`federation/presence.go`),
+   presence-filtered browse/search/summary/availability via
+   `SetMadnetworkPresenceProvider`, `online` flags, cache exception, client
+   polling + panel refresh with one-level fallback.
+5. **Materialize all** — per-entity bulk submit (sequential, skip-local) with a
+   persistent progress line, artist/album ⋯ items + a visible tracks-view
+   button, aggregate completion toast.

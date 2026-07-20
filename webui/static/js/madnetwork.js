@@ -93,6 +93,7 @@ export function teardown() {
   clearTimeout(pollTimer);
   pollTimer = null;
   presenceFingerprint = null;
+  bulk = null; // stops the bulk watcher; server-side transfers finish on their own
   for (const timer of materializePolls.values()) clearTimeout(timer);
   materializePolls.clear();
   if (unsubTrackChange) { unsubTrackChange(); unsubTrackChange = null; }
@@ -105,6 +106,13 @@ export function teardown() {
 // UX only, the API still enforces it.
 function canMaterialize() {
   return !!getIdentity()?.permissions?.includes('file.upload');
+}
+
+// materializeAllItems yields the entity ⋯ menus' trailing "Materialize all"
+// item (album given = that album; null = the whole artist).
+function materializeAllItems(artist, album) {
+  if (!canMaterialize()) return [];
+  return [{ label: 'Materialize all', onClick: () => materializeAll(artist, album) }];
 }
 
 // mnKey is the appearance identity of a merged madnetwork track — the
@@ -228,6 +236,23 @@ function renderBreadcrumb() {
     bc.append(mkLink('Madnetwork', () => showArtists()), mkSep(),
       mkLink(drill.artist, () => showAlbums(drill.artist)), mkSep(), mkCurrent(drill.album));
   }
+  renderBarActions();
+}
+
+// The tracks view carries a visible "Materialize all" button — the album-level
+// bulk action shouldn't hide in a menu (docs/ui/madnetwork-page.md).
+function renderBarActions() {
+  const el = document.getElementById('mnBarActions');
+  if (!el) return;
+  el.replaceChildren();
+  if (drill?.level !== 'tracks' || !canMaterialize()) return;
+  const { artist, album } = drill;
+  const btn = document.createElement('button');
+  btn.className = 'btn btn-neutral mn-bulk-btn';
+  btn.textContent = '⬇ Materialize all';
+  btn.title = 'Fetch every track of this album into this server’s library';
+  btn.addEventListener('click', () => materializeAll(artist, album));
+  el.append(btn);
 }
 
 // ── Data fetching ─────────────────────────────────────────────────────────────
@@ -302,7 +327,8 @@ async function showArtists() {
       name: a.name,
       meta: `${a.albums} album${a.albums === 1 ? '' : 's'} · ${a.tracks} track${a.tracks === 1 ? '' : 's'}`,
       onOpen: () => showAlbums(a.name),
-      makeMenuItems: btn => quickAddItems(btn, () => entityTracks(a.name, null)),
+      makeMenuItems: btn => quickAddItems(btn, () => entityTracks(a.name, null),
+        { extraItems: materializeAllItems(a.name, null) }),
     }));
   }
   document.getElementById('mnPanel').replaceChildren(wrap);
@@ -335,7 +361,8 @@ async function showAlbums(artist, { refresh = false } = {}) {
       meta: `${yearPrefix}${al.tracks} track${al.tracks === 1 ? '' : 's'}`,
       artUrl: null, // no cover images in the merged catalog
       onOpen: () => showTracks(artist, al.title),
-      makeMenuItems: btn => quickAddItems(btn, () => entityTracks(artist, al.title)),
+      makeMenuItems: btn => quickAddItems(btn, () => entityTracks(artist, al.title),
+        { extraItems: materializeAllItems(artist, al.title) }),
     }));
   }
   document.getElementById('mnPanel').replaceChildren(wrap);
@@ -651,4 +678,133 @@ function resetMaterializeBtn(btn, label) {
   if (!btn || !btn.isConnected) return;
   btn.textContent = label || '⬇ Materialize';
   btn.disabled = !!label;
+}
+
+// ── Materialize all (docs/ui/madnetwork-page.md phase 5) ─────────────────────
+// The per-entity bulk action: fetch every track of an album (or a whole
+// artist) into the library. Submissions are strictly sequential — one download
+// at a time, waiting out each transfer (the server swarm-fetches each blob's
+// CHUNKS in parallel internally) — so a big album never floods the mesh.
+// Already-local tracks are skipped. Progress lives in the persistent #mnBulk
+// line (toasts can't update in place); one completion toast sums it up.
+
+let bulk = null; // { label, pending, done, local, failed } — one run at a time
+
+function updateBulkUI() {
+  const el = document.getElementById('mnBulk');
+  if (!el || !el.isConnected) return;
+  if (!bulk) { el.hidden = true; el.textContent = ''; return; }
+  let text = `Materializing “${bulk.label}” — ${bulk.done + bulk.failed}/${bulk.pending} fetched`;
+  if (bulk.local) text += ` · ${bulk.local} already local`;
+  if (bulk.failed) text += ` · ${bulk.failed} failed`;
+  el.textContent = text;
+  el.hidden = false;
+}
+
+// collectMaterializeTargets walks the entity's merged tracks: already-local
+// tracks count as `local`, everything else contributes its default-version
+// best rendition hash.
+async function collectMaterializeTargets(artist, album) {
+  const targets = { pending: [], local: 0 };
+  const scan = async al => {
+    const data = await fetchJSON(`${API}/api/madnetwork/tracks?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(al)}`);
+    for (const t of data.tracks || []) {
+      const best = t.versions?.[0]?.renditions?.[0];
+      if (!best || !best.hash) continue; // nothing fetchable
+      if (selfHeld(t)) targets.local++;
+      else targets.pending.push(best.hash);
+    }
+  };
+  if (album != null) {
+    await scan(album);
+  } else {
+    const data = await fetchJSON(`${API}/api/madnetwork/albums?artist=${encodeURIComponent(artist)}`);
+    for (const al of data.albums || []) await scan(al.title);
+  }
+  return targets;
+}
+
+// materializeOne submits one download and waits for its terminal state.
+// Resolves 'done' | 'local' (bytes were already in the library) | 'failed'.
+function materializeOne(hash) {
+  return new Promise(resolve => {
+    (async () => {
+      let data;
+      try {
+        const res = await fetch(`${API}/api/madnetwork/download`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hash }),
+        });
+        data = await res.json().catch(() => ({}));
+        if (!res.ok && !data.started && !data.existed) { resolve('failed'); return; }
+      } catch { resolve('failed'); return; }
+      if (data.existed) { resolve('local'); return; }
+      const tick = async () => {
+        if (!bulk) { resolve('failed'); return; } // page torn down — stop watching
+        let st;
+        try {
+          const res = await fetch(`${API}/api/madnetwork/transfers/${hash}`);
+          if (!res.ok) throw new Error();
+          st = await res.json();
+        } catch { setTimeout(tick, 2000); return; }
+        switch (st.state) {
+          case 'staged': case 'attached': case 'approved': resolve('done'); return;
+          case 'failed': resolve('failed'); return;
+          default: setTimeout(tick, 2000);
+        }
+      };
+      tick();
+    })();
+  });
+}
+
+// materializeAll runs the bulk flow for one album (album given) or a whole
+// artist (album null).
+async function materializeAll(artist, album) {
+  if (!canMaterialize()) return;
+  if (bulk) {
+    showToast('A bulk materialize is already running — wait for it to finish.', { type: 'status' });
+    return;
+  }
+  const label = album != null ? album : artist;
+  bulk = { label, pending: 0, done: 0, local: 0, failed: 0 };
+  updateBulkUI();
+
+  let targets;
+  try {
+    targets = await collectMaterializeTargets(artist, album);
+  } catch {
+    bulk = null;
+    updateBulkUI();
+    showToast('Could not load the tracks to materialize.', { type: 'error' });
+    return;
+  }
+  bulk.pending = targets.pending.length;
+  bulk.local = targets.local;
+  if (!bulk.pending) {
+    bulk = null;
+    updateBulkUI();
+    showToast(`Nothing to fetch — “${label}” is already in the library.`, { type: 'status' });
+    return;
+  }
+  updateBulkUI();
+
+  for (const hash of targets.pending) {
+    if (!bulk) return; // torn down mid-run; server-side transfers finish on their own
+    const outcome = await materializeOne(hash);
+    if (!bulk) return;
+    if (outcome === 'done') bulk.done++;
+    else if (outcome === 'local') bulk.local++;
+    else bulk.failed++;
+    updateBulkUI();
+  }
+
+  const { done, local, failed } = bulk;
+  bulk = null;
+  updateBulkUI();
+  let msg = `Materialized ${done} track${done !== 1 ? 's' : ''} from “${label}”`;
+  if (local) msg += ` (${local} already local)`;
+  if (failed) msg += ` — ${failed} failed`;
+  showToast(msg + '.', { type: failed ? 'error' : 'success' });
 }

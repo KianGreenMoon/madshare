@@ -29,6 +29,19 @@
   border-radius: 999px;
 }
 .mn-friend--empty { opacity: 0.6; }
+
+/* Bulk-materialize progress line (Materialize all) + the tracks-view button. */
+.mn-bulk {
+  margin: 0 0 var(--space-3);
+  padding: 0.4rem 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+}
+.mn-bar-actions { flex-shrink: 0; }
+.mn-bulk-btn { font-size: 0.82rem; padding: 0.3rem 0.8rem; white-space: nowrap; }
 /* Offline friend (presence rule): greyed, its tracks are hidden meanwhile. */
 .mn-friend--offline { opacity: 0.5; }
 .mn-friend--offline .mn-friend-name { text-decoration: line-through; text-decoration-thickness: 1px; }

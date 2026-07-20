@@ -18,6 +18,10 @@
   <!-- Sync status strip: which friends contribute, how fresh, merged size. -->
   <div class="mn-status" id="mnStatus" hidden></div>
 
+  <!-- Bulk-materialize progress line (Materialize all); page-level so panel
+       re-renders and the 5s status poll never wipe it. -->
+  <div class="mn-bulk" id="mnBulk" role="status" aria-live="polite" hidden></div>
+
   {{/* Same search anatomy as the library page: the input sits above the view
        panels and the shared browse-search machinery swaps browse ↔ results
        (docs/ui/madnetwork-page.md §Search). */}}
@@ -40,6 +44,9 @@
       <nav class="breadcrumb" id="mnBreadcrumb" aria-label="Madnetwork navigation">
         <!-- populated by JS -->
       </nav>
+      <div class="mn-bar-actions" id="mnBarActions">
+        <!-- tracks view: the visible "Materialize all" button -->
+      </div>
     </div>
 
     <div class="library-panel" id="mnPanel" aria-live="polite">
