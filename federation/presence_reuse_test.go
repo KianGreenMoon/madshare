@@ -9,26 +9,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
-	"time"
 )
-
-// TestPresenceRecentlySeen: the prober-skip predicate — a peer heard from
-// within the window is "recently seen" (so the prober skips its ping and lets
-// an active transfer's byte flow stand in as liveness proof).
-func TestPresenceRecentlySeen(t *testing.T) {
-	tr := newPresenceTracker()
-	now := time.Unix(2_000_000, 0)
-	if tr.RecentlySeen(1, now, 5*time.Second) {
-		t.Error("unknown peer reported recently seen")
-	}
-	tr.ObserveSuccess(1, now)
-	if !tr.RecentlySeen(1, now.Add(4*time.Second), 5*time.Second) {
-		t.Error("peer seen 4s ago not recently-seen within 5s")
-	}
-	if tr.RecentlySeen(1, now.Add(6*time.Second), 5*time.Second) {
-		t.Error("peer seen 6s ago still recently-seen within 5s")
-	}
-}
 
 // TestChunkPlanFeedsPresence: a delivered chunk calls onProviderAlive with the
 // holder's peer id — the swarm's byte flow feeding the presence tracker.

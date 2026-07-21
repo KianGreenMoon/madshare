@@ -61,3 +61,39 @@ func TestPresenceTracker(t *testing.T) {
 		t.Error("forgotten peer still online")
 	}
 }
+
+// TestPresenceNoFlapWhenAlwaysReachable is the regression guard for the
+// offline-online flapping: a peer whose probe succeeds every presenceInterval
+// (the prober cadence) must read online CONTINUOUSLY once probation passes —
+// never flipping. The bug was a change that halved the effective probe rate to
+// presenceOfflineAfter, leaving a zero margin so jitter tipped it offline.
+func TestPresenceNoFlapWhenAlwaysReachable(t *testing.T) {
+	tr := newPresenceTracker()
+	base := time.Unix(3_000_000, 0)
+	// Successful probes at the real prober cadence, with a little jitter so the
+	// margin is genuinely exercised (not a synthetic exact-multiple case).
+	jitter := []time.Duration{0, 300, 700, 200, 900, 100, 500, 800, 400, 600}
+	success := func(tick int) time.Time {
+		return base.Add(time.Duration(tick)*presenceInterval + jitter[tick%len(jitter)]*time.Millisecond)
+	}
+	// Feed 40 ticks (~200 s) and, after probation, assert online at every second
+	// in between — presence must never dip.
+	for tick := 0; tick < 40; tick++ {
+		now := success(tick)
+		tr.ObserveSuccess(1, now)
+		if now.Sub(base) < presenceOnlineAfter {
+			continue // still in probation
+		}
+		// Check every second from this success up to (but not including) the next.
+		for s := time.Duration(0); s < presenceInterval; s += time.Second {
+			at := now.Add(s)
+			if at.After(success(tick + 1)) {
+				break
+			}
+			if !tr.Online(1, at) {
+				t.Fatalf("peer flapped offline at t=%v (last ok %v) — probe cadence must keep it online",
+					at.Sub(base), now.Sub(base))
+			}
+		}
+	}
+}
