@@ -326,8 +326,13 @@ func (db *DB) MadnetworkEntryForHash(ctx context.Context, hash string) (*federat
 // The browse queries group by DISPLAY identity — the grouping artist is the
 // album artist, falling back to the performer, falling back to the unknown
 // bucket, mirroring the local library's album-artist-only artist list; albums
-// fall back to the shared "Other" bucket. Only friends' catalogs are visible,
-// further narrowed by the presence rule (visibleClause).
+// fall back to the shared "Other" bucket. Only friends' catalogs are visible.
+const fedcatBase = `
+	FROM (SELECT COALESCE(NULLIF(c.album_artist, ''), NULLIF(c.artist, ''), '` + DefaultArtistName + `') AS akey,
+	             COALESCE(NULLIF(c.album, ''), '` + DefaultAlbumTitle + `') AS alb,
+	             c.*
+	      FROM federation_catalog c
+	      JOIN federation_peers p ON p.id = c.peer_id AND p.state = 'friend')`
 
 // fedcatRemoteRows / fedcatSelfRows are the two sources of the merged counting
 // queries (artists / albums / summary / search), reduced to the columns those
@@ -356,67 +361,15 @@ const fedcatSelfRows = `
 	LEFT JOIN albums al   ON al.id  = m.album_id
 	WHERE ` + visibleTagset
 
-// MadnetworkPresence is the live input to the merged-browse visibility rule
-// (docs/ui/madnetwork-page.md §Presence): which friends are online right now,
-// and which blob hashes sit fully downloaded in the local cache. Provided by
-// the running federation node via SetMadnetworkPresenceProvider.
-type MadnetworkPresence struct {
-	OnlinePeerIDs []int64
-	CachedHashes  []string
-}
-
-// SetMadnetworkPresenceProvider wires the presence source. Call once at
-// startup, before serving.
-func (db *DB) SetMadnetworkPresenceProvider(f func() MadnetworkPresence) {
-	db.madnetworkPresence = f
-}
-
-func (db *DB) presence() MadnetworkPresence {
-	if db.madnetworkPresence == nil {
-		return MadnetworkPresence{}
-	}
-	return db.madnetworkPresence()
-}
-
-// visibleClause builds the presence half of the visibility rule as a predicate
-// over the catalog alias `c` and peers alias `p`: a friend's row is visible iff
-// the friend is ONLINE, or one of the row's renditions is FULLY CACHED locally
-// (a cached track plays regardless of who is online). Returns SQL + its args
-// (the cached set rides as one JSON array; a content hash is plain hex, so the
-// instr containment check over the renditions JSON is exact enough).
-func visibleClause(pres MadnetworkPresence) (string, []any) {
-	parts := []string{}
-	args := []any{}
-	if len(pres.OnlinePeerIDs) > 0 {
-		ph := make([]string, len(pres.OnlinePeerIDs))
-		for i, id := range pres.OnlinePeerIDs {
-			ph[i] = "?"
-			args = append(args, id)
-		}
-		parts = append(parts, `p.id IN (`+strings.Join(ph, ",")+`)`)
-	}
-	if len(pres.CachedHashes) > 0 {
-		j, _ := json.Marshal(pres.CachedHashes)
-		parts = append(parts, `EXISTS (SELECT 1 FROM json_each(?) jc WHERE instr(c.renditions, jc.value) > 0)`)
-		args = append(args, string(j))
-	}
-	if len(parts) == 0 {
-		return `0`, nil // nobody online, nothing cached — no friend rows
-	}
-	return `(` + strings.Join(parts, " OR ") + `)`, args
-}
-
 // fedcatCountBase is the FROM clause of the counting queries: friends'
-// presence-visible catalog rows, optionally unioned with the own published
-// set. includeSelf is off when federation is disabled; with it off AND nobody
-// online the view is empty — the "list fully clears" rule.
-func (db *DB) fedcatCountBase(includeSelf bool) (string, []any) {
-	vis, args := visibleClause(db.presence())
-	remote := fedcatRemoteRows + ` AND ` + vis
+// catalogs, optionally unioned with the own published set. includeSelf is off
+// when federation is disabled — the page then stays what the friends provide
+// (nothing), matching the "list fully clears" rule.
+func fedcatCountBase(includeSelf bool) string {
 	if includeSelf {
-		return ` FROM (` + remote + ` UNION ALL ` + fedcatSelfRows + `)`, args
+		return ` FROM (` + fedcatRemoteRows + ` UNION ALL ` + fedcatSelfRows + `)`
 	}
-	return ` FROM (` + remote + `)`, args
+	return ` FROM (` + fedcatRemoteRows + `)`
 }
 
 // Leading ORDER BY keys forcing the unknown buckets to the bottom of the
@@ -442,8 +395,7 @@ type MadnetworkArtist struct {
 // grouping, case-insensitive), optionally filtered by a substring. The unknown
 // bucket sorts last; includeSelf merges the own published set in.
 func (db *DB) MadnetworkArtists(ctx context.Context, q string, includeSelf bool) ([]*MadnetworkArtist, error) {
-	base, args := db.fedcatCountBase(includeSelf)
-	where := ""
+	where, args := "", []any{}
 	if s := strings.TrimSpace(q); s != "" {
 		escaped := strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(s)
 		where = ` WHERE lower(akey) LIKE lower(?) ESCAPE '\'`
@@ -451,7 +403,7 @@ func (db *DB) MadnetworkArtists(ctx context.Context, q string, includeSelf bool)
 	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT MIN(akey), COUNT(DISTINCT lower(alb)), COUNT(DISTINCT `+trackIdent+`)
-		`+base+where+`
+		`+fedcatCountBase(includeSelf)+where+`
 		GROUP BY lower(akey)
 		ORDER BY `+artistBucketLast+`, lower(akey)`, args...)
 	if err != nil {
@@ -479,14 +431,12 @@ type MadnetworkAlbum struct {
 // MadnetworkAlbums lists one artist's albums in the merged catalog; the
 // "Other" bucket sorts last.
 func (db *DB) MadnetworkAlbums(ctx context.Context, artist string, includeSelf bool) ([]*MadnetworkAlbum, error) {
-	base, args := db.fedcatCountBase(includeSelf)
-	args = append(args, artist)
 	rows, err := db.QueryContext(ctx, `
 		SELECT MIN(alb), COUNT(DISTINCT `+trackIdent+`), MAX(year)
-		`+base+`
+		`+fedcatCountBase(includeSelf)+`
 		WHERE lower(akey) = lower(?)
 		GROUP BY lower(alb)
-		ORDER BY `+albumBucketLast+`, year IS NULL, year, lower(alb)`, args...)
+		ORDER BY `+albumBucketLast+`, year IS NULL, year, lower(alb)`, artist)
 	if err != nil {
 		return nil, fmt.Errorf("madnetwork albums: %w", err)
 	}
@@ -525,50 +475,25 @@ type MadnetworkTrackRow struct {
 	// files object key (for direct /files/ play URLs).
 	Self       bool
 	ObjectKeys map[string]string
-
-	// Presence facts (docs/ui/madnetwork-page.md §Presence): whether the row's
-	// peer is online right now, and whether one of its renditions is fully
-	// cached locally. An offline peer's row survives only via the cache.
-	Online bool
-	Cached bool
 }
 
 // remoteTrackRows runs the raw cached-row query with a caller-supplied match
-// clause over the bucketed columns (akey/alb/title available). Rows are
-// presence-visible only: an offline friend's row is returned solely when one
-// of its renditions is fully cached.
+// clause over the bucketed columns (akey/alb/title available).
 func (db *DB) remoteTrackRows(ctx context.Context, match string, args ...any) ([]*MadnetworkTrackRow, error) {
-	pres := db.presence()
-	vis, visArgs := visibleClause(pres)
 	rows, err := db.QueryContext(ctx, `
 		SELECT peer_id, p2.name, p2.last_seen, akey, alb,
 		       entry_key, recording_key, title, artist, album_artist,
 		       COALESCE(genre, ''), year, track_number, disc_number,
 		       COALESCE(duration, 0), COALESCE(license, ''), guest_playable, renditions
-		FROM (SELECT COALESCE(NULLIF(c.album_artist, ''), NULLIF(c.artist, ''), '`+DefaultArtistName+`') AS akey,
-		             COALESCE(NULLIF(c.album, ''), '`+DefaultAlbumTitle+`') AS alb,
-		             c.*
-		      FROM federation_catalog c
-		      JOIN federation_peers p ON p.id = c.peer_id AND p.state = 'friend'
-		      WHERE `+vis+`)
+		`+fedcatBase+`
 		JOIN federation_peers p2 ON p2.id = peer_id
 		WHERE `+match+`
 		ORDER BY (disc_number IS NULL) ASC, disc_number ASC, track_number ASC, lower(title) ASC, peer_id ASC`,
-		append(visArgs, args...)...)
+		args...)
 	if err != nil {
 		return nil, fmt.Errorf("madnetwork tracks: %w", err)
 	}
 	defer rows.Close()
-
-	online := map[int64]bool{}
-	for _, id := range pres.OnlinePeerIDs {
-		online[id] = true
-	}
-	cached := map[string]bool{}
-	for _, h := range pres.CachedHashes {
-		cached[h] = true
-	}
-
 	var out []*MadnetworkTrackRow
 	for rows.Next() {
 		var r MadnetworkTrackRow
@@ -584,13 +509,6 @@ func (db *DB) remoteTrackRows(ctx context.Context, match string, args ...any) ([
 		r.Entry.Year, r.Entry.TrackNumber, r.Entry.DiscNumber = nullInt(year), nullInt(track), nullInt(disc)
 		if err := json.Unmarshal([]byte(renditions), &r.Entry.Renditions); err != nil {
 			r.Entry.Renditions = nil // tolerate a damaged cache row rather than failing the album
-		}
-		r.Online = online[r.PeerID]
-		for _, rd := range r.Entry.Renditions {
-			if cached[rd.Hash] {
-				r.Cached = true
-				break
-			}
 		}
 		out = append(out, &r)
 	}
@@ -721,15 +639,13 @@ func (db *DB) MadnetworkSearchAlbums(ctx context.Context, q string, limit int, i
 		return []*MadnetworkSearchAlbum{}, nil
 	}
 	escaped := strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(s)
-	base, args := db.fedcatCountBase(includeSelf)
-	args = append(args, "%"+escaped+"%", limit)
 	rows, err := db.QueryContext(ctx, `
 		SELECT MIN(akey), MIN(alb), COUNT(DISTINCT `+trackIdent+`), MAX(year)
-		`+base+`
+		`+fedcatCountBase(includeSelf)+`
 		WHERE lower(alb) LIKE lower(?) ESCAPE '\'
 		GROUP BY lower(akey), lower(alb)
 		ORDER BY `+albumBucketLast+`, lower(alb), lower(akey)
-		LIMIT ?`, args...)
+		LIMIT ?`, "%"+escaped+"%", limit)
 	if err != nil {
 		return nil, fmt.Errorf("madnetwork search albums: %w", err)
 	}
@@ -780,12 +696,10 @@ func (db *DB) MadnetworkSearchTrackRows(ctx context.Context, q string, includeSe
 
 // MadnetworkFriend is one friend's sync status on the /madnetwork page strip.
 type MadnetworkFriend struct {
-	ID       int64  `json:"id"`
 	Name     string `json:"name"`
 	LastSeen int64  `json:"last_seen"`
 	SyncedAt int64  `json:"synced_at"`
 	Entries  int64  `json:"entries"`
-	Online   bool   `json:"online"` // presence prober verdict (10-second rule)
 }
 
 // MadnetworkSummary reports the merged catalog's shape: each friend with sync
@@ -793,7 +707,7 @@ type MadnetworkFriend struct {
 // when includeSelf).
 func (db *DB) MadnetworkSummary(ctx context.Context, includeSelf bool) ([]*MadnetworkFriend, int64, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT p.id, p.name, p.last_seen, p.catalog_synced_at,
+		SELECT p.name, p.last_seen, p.catalog_synced_at,
 		       (SELECT COUNT(*) FROM federation_catalog c WHERE c.peer_id = p.id)
 		FROM federation_peers p
 		WHERE p.state = 'friend'
@@ -802,17 +716,12 @@ func (db *DB) MadnetworkSummary(ctx context.Context, includeSelf bool) ([]*Madne
 		return nil, 0, fmt.Errorf("madnetwork summary: %w", err)
 	}
 	defer rows.Close()
-	online := map[int64]bool{}
-	for _, id := range db.presence().OnlinePeerIDs {
-		online[id] = true
-	}
 	var friends []*MadnetworkFriend
 	for rows.Next() {
 		var f MadnetworkFriend
-		if err := rows.Scan(&f.ID, &f.Name, &f.LastSeen, &f.SyncedAt, &f.Entries); err != nil {
+		if err := rows.Scan(&f.Name, &f.LastSeen, &f.SyncedAt, &f.Entries); err != nil {
 			return nil, 0, fmt.Errorf("scan madnetwork friend: %w", err)
 		}
-		f.Online = online[f.ID]
 		friends = append(friends, &f)
 	}
 	if err := rows.Err(); err != nil {
@@ -820,10 +729,9 @@ func (db *DB) MadnetworkSummary(ctx context.Context, includeSelf bool) ([]*Madne
 	}
 
 	var tracks int64
-	base, args := db.fedcatCountBase(includeSelf)
 	if err := db.QueryRowContext(ctx, `
 		SELECT COUNT(DISTINCT lower(akey) || char(31) || `+trackIdent+`)
-		`+base, args...).Scan(&tracks); err != nil {
+		`+fedcatCountBase(includeSelf)).Scan(&tracks); err != nil {
 		return nil, 0, fmt.Errorf("madnetwork track count: %w", err)
 	}
 	return friends, tracks, nil

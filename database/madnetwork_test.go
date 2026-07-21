@@ -95,11 +95,6 @@ func TestMadnetworkCacheAndBrowse(t *testing.T) {
 	friendA := insertPeer(t, db, "f1a1", "friend-a", federation.PeerFriend)
 	friendB := insertPeer(t, db, "f2b2", "friend-b", federation.PeerFriend)
 	pending := insertPeer(t, db, "f3c3", "pending-one", federation.PeerPendingIncoming)
-	// The browse is presence-visible (docs/ui/madnetwork-page.md §Presence) —
-	// mark both friends online for the catalog assertions.
-	db.SetMadnetworkPresenceProvider(func() MadnetworkPresence {
-		return MadnetworkPresence{OnlinePeerIDs: []int64{friendA, friendB}}
-	})
 
 	// friend-a and friend-b both offer the same track (same text, SAME hash →
 	// one version); friend-b also offers a different album, and a second claimed
@@ -244,9 +239,6 @@ func TestMadnetworkSelfMergeAndSorting(t *testing.T) {
 	}
 
 	friend := insertPeer(t, db, "f1a1", "friend-a", federation.PeerFriend)
-	db.SetMadnetworkPresenceProvider(func() MadnetworkPresence {
-		return MadnetworkPresence{OnlinePeerIDs: []int64{friend}}
-	})
 	if err := db.ReplacePeerCatalog(ctx, friend, "s", 100, []federation.CatalogEntry{
 		catEntry("1", "r1", "Shared Artist", "Shared Album", "Shared Song", "self0001"),
 		catEntry("2", "r2", "Zebra", "Z Album", "Z Song", "hash-z"),
@@ -334,92 +326,6 @@ func TestMadnetworkSelfMergeAndSorting(t *testing.T) {
 	// Self excluded → own rows disappear from search too.
 	if rows, _ := db.MadnetworkSearchTrackRows(ctx, "song", false); len(rows) != 2 {
 		t.Errorf("search rows without self = %d, want 2", len(rows))
-	}
-}
-
-// TestMadnetworkPresenceVisibility — the 10-second rule's data side
-// (docs/ui/madnetwork-page.md §Presence): an offline friend's rows leave the
-// merged browse, a fully-cached rendition is the exception (row survives with
-// Cached set and Online false), and the summary reports per-friend online.
-func TestMadnetworkPresenceVisibility(t *testing.T) {
-	db := openMem(t)
-	ctx := context.Background()
-
-	friendA := insertPeer(t, db, "p1a1", "friend-a", federation.PeerFriend)
-	friendB := insertPeer(t, db, "p2b2", "friend-b", federation.PeerFriend)
-	var online []int64
-	var cached []string
-	db.SetMadnetworkPresenceProvider(func() MadnetworkPresence {
-		return MadnetworkPresence{OnlinePeerIDs: online, CachedHashes: cached}
-	})
-
-	if err := db.ReplacePeerCatalog(ctx, friendA, "sa", 100, []federation.CatalogEntry{
-		catEntry("1", "r1", "Artist A", "Album A", "Song A", "hash-a"),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.ReplacePeerCatalog(ctx, friendB, "sb", 200, []federation.CatalogEntry{
-		catEntry("9", "r9", "Artist B", "Album B", "Song B", "hash-b"),
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	// Nobody online, nothing cached: the merged view is empty.
-	if got, _ := db.MadnetworkArtists(ctx, "", false); len(got) != 0 {
-		t.Errorf("artists with everyone offline = %+v, want none", got)
-	}
-	if _, tracks, _ := db.MadnetworkSummary(ctx, false); tracks != 0 {
-		t.Errorf("track count with everyone offline = %d, want 0", tracks)
-	}
-
-	// A online, B offline: only A's rows.
-	online = []int64{friendA}
-	artists, err := db.MadnetworkArtists(ctx, "", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(artists) != 1 || artists[0].Name != "Artist A" {
-		t.Fatalf("artists with A online = %+v, want only Artist A", artists)
-	}
-	rows, err := db.MadnetworkTracks(ctx, "Artist B", "Album B")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 0 {
-		t.Errorf("offline friend's track rows = %d, want 0", len(rows))
-	}
-	friends, _, err := db.MadnetworkSummary(ctx, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, f := range friends {
-		want := f.ID == friendA
-		if f.Online != want {
-			t.Errorf("friend %q online = %v, want %v", f.Name, f.Online, want)
-		}
-	}
-
-	// Cache exception: B stays offline, but its rendition is fully cached →
-	// the row returns, flagged Cached and not Online (no holder to show).
-	cached = []string{"hash-b"}
-	rows, err = db.MadnetworkTracks(ctx, "Artist B", "Album B")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 1 || !rows[0].Cached || rows[0].Online {
-		t.Fatalf("cached offline rows = %+v, want one Cached=!Online row", rows)
-	}
-	if got, _ := db.MadnetworkArtists(ctx, "", false); len(got) != 2 {
-		t.Errorf("artists with cache exception = %+v, want both", got)
-	}
-
-	// Search obeys the same rule.
-	if rows, _ := db.MadnetworkSearchTrackRows(ctx, "song", false); len(rows) != 2 {
-		t.Errorf("search rows with cache exception = %d, want 2", len(rows))
-	}
-	cached = nil
-	if rows, _ := db.MadnetworkSearchTrackRows(ctx, "song", false); len(rows) != 1 {
-		t.Errorf("search rows with B dark = %d, want 1", len(rows))
 	}
 }
 

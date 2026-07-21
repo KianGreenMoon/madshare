@@ -614,11 +614,6 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*Peer, prefe
 		done0 = true
 	}
 	plan := newChunkPlan(man, layout, holders, done0)
-	// A delivered chunk is liveness proof: feed the presence tracker so the
-	// prober skips this holder while the transfer flows (presence.go).
-	if n.presence != nil {
-		plan.onProviderAlive = func(peerID int64) { n.presence.ObserveSuccess(peerID, time.Now()) }
-	}
 	// Expose per-chunk readiness (the layout) + the seek-priority hook to the
 	// streaming relay, pre-marking chunk 0 so a waiting reader is released without
 	// a round trip.
@@ -732,12 +727,6 @@ type chunkPlan struct {
 	dead      []bool // per-provider
 	provFails []int  // per-provider consecutive failures (reset on success)
 	rr        int    // round-robin cursor
-
-	// onProviderAlive, when set, is called with a provider's peer id whenever it
-	// delivers a chunk — the transfer's byte flow feeding the presence tracker,
-	// so an in-flight download keeps its holder "online" without a competing
-	// ping (presence.go).
-	onProviderAlive func(peerID int64)
 }
 
 func newChunkPlan(man *blobManifest, layout *chunkLayout, holders []*Peer, done0 bool) *chunkPlan {
@@ -837,9 +826,6 @@ func (cp *chunkPlan) succeed(idx, pidx int, t *transfer) {
 	cp.inFlight--
 	if pidx >= 0 {
 		cp.provFails[pidx] = 0
-		if cp.onProviderAlive != nil {
-			cp.onProviderAlive(cp.providers[pidx].ID)
-		}
 	}
 	if !cp.done[idx] {
 		cp.done[idx] = true

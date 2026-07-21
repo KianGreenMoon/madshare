@@ -339,16 +339,6 @@ func main() {
 			log.Fatalf("start federation node: %v", err)
 		}
 		deps.Federation = fedNode
-		// Presence-visible browse (docs/ui/madnetwork-page.md §Presence): the
-		// merged view shows a friend's rows only while the prober sees the
-		// friend online, with fully-cached blobs as the exception. Without a
-		// node (federation off) the provider stays nil — nobody online.
-		db.SetMadnetworkPresenceProvider(func() database.MadnetworkPresence {
-			return database.MadnetworkPresence{
-				OnlinePeerIDs: fedNode.OnlinePeerIDs(),
-				CachedHashes:  fedNode.CachedHashes(),
-			}
-		})
 		// A non-empty name switches the merged browse to include the own
 		// published set (self holder label); guarantee one even for a
 		// pathological hostname.

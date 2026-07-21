@@ -69,22 +69,13 @@ func TestPlaylist_RemoteItems(t *testing.T) {
 		t.Error("remote item available with no source, want unavailable")
 	}
 
-	// An ONLINE friend advertising the hash in holdings makes it available
-	// (presence-grade: an offline holder does not).
+	// A friend advertising the hash in holdings makes it available.
 	friend := insertPeer(t, db, "d4d4", "friend-d", federation.PeerFriend)
 	if err := db.ReplacePeerHoldings(ctx, friend, []string{remoteHash}); err != nil {
 		t.Fatalf("ReplacePeerHoldings: %v", err)
 	}
-	if _, items, _ = db.GetPlaylist(ctx, userID, p.ID); items[1].Available {
-		t.Error("remote item available while its only holder is offline")
-	}
-	var online []int64
-	db.SetMadnetworkPresenceProvider(func() MadnetworkPresence {
-		return MadnetworkPresence{OnlinePeerIDs: online}
-	})
-	online = []int64{friend}
 	if _, items, _ = db.GetPlaylist(ctx, userID, p.ID); !items[1].Available {
-		t.Error("remote item still unavailable with an online friend holding it")
+		t.Error("remote item still unavailable with a friend holding it")
 	}
 
 	// Malformed hash rejects the batch.

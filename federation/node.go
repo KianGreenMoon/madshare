@@ -45,11 +45,6 @@ type Node struct {
 	loopCancel context.CancelFunc
 	loopDone   chan struct{}
 
-	// Presence prober (presence.go): in-memory friend online state behind
-	// the 10-second visibility rule.
-	presence     *presenceTracker
-	presenceDone chan struct{}
-
 	// Memoized own-catalog snapshot served to friends (catalog.go).
 	snapMu sync.Mutex
 	snap   *snapshot
@@ -158,9 +153,6 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 		n.loopCancel = cancel
 		n.loopDone = make(chan struct{})
 		go n.refreshLoop(loopCtx)
-		n.presence = newPresenceTracker()
-		n.presenceDone = make(chan struct{})
-		go n.presenceLoop(loopCtx)
 	}
 	return n, nil
 }
@@ -171,7 +163,6 @@ func (n *Node) Stop() {
 	if n.loopCancel != nil {
 		n.loopCancel()
 		<-n.loopDone
-		<-n.presenceDone
 	}
 	n.transferCancel()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -3,10 +3,8 @@ package database
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -233,44 +231,23 @@ func (db *DB) GetPlaylist(ctx context.Context, userID, playlistID int64) (*Playl
 }
 
 // remotePlaylistItems lists a playlist's remote madnetwork rows. Available is
-// presence-grade (docs/ui/madnetwork-page.md §Presence): a live local blob, a
-// fully cached hash, or an ONLINE friend advertising it (catalog or holdings)
-// — the streaming relay short-circuits local hashes, so an available row
-// always plays.
+// true when some source can still provide the hash: a live local blob, or a
+// friend advertising it (catalog or holdings) — the streaming relay
+// short-circuits local hashes, so an available row always plays.
 func (db *DB) remotePlaylistItems(ctx context.Context, playlistID int64) ([]*PlaylistItemEntry, error) {
-	pres := db.presence()
-	avail := []string{`EXISTS(SELECT 1 FROM files f WHERE f.hash = i.remote_hash AND f.deleted_at IS NULL)`}
-	args := []any{}
-	if len(pres.CachedHashes) > 0 {
-		j, _ := json.Marshal(pres.CachedHashes)
-		avail = append(avail, `i.remote_hash IN (SELECT value FROM json_each(?))`)
-		args = append(args, string(j))
-	}
-	if len(pres.OnlinePeerIDs) > 0 {
-		ph := make([]string, len(pres.OnlinePeerIDs))
-		ids := make([]any, len(pres.OnlinePeerIDs))
-		for i, id := range pres.OnlinePeerIDs {
-			ph[i] = "?"
-			ids[i] = id
-		}
-		in := strings.Join(ph, ",")
-		avail = append(avail, `EXISTS(SELECT 1 FROM federation_catalog c
-			JOIN federation_peers p ON p.id = c.peer_id AND p.state = 'friend'
-			WHERE p.id IN (`+in+`) AND c.renditions LIKE '%' || i.remote_hash || '%')`)
-		args = append(args, ids...)
-		avail = append(avail, `EXISTS(SELECT 1 FROM federation_holdings h
-			JOIN federation_peers p2 ON p2.id = h.peer_id AND p2.state = 'friend'
-			WHERE p2.id IN (`+in+`) AND h.hash = i.remote_hash)`)
-		args = append(args, ids...)
-	}
-	args = append(args, playlistID)
 	rows, err := db.QueryContext(ctx, `
 		SELECT i.id, i.position, i.remote_hash,
 		       COALESCE(i.remote_title, ''), COALESCE(i.remote_artist, ''), COALESCE(i.remote_album, ''),
-		       (`+strings.Join(avail, " OR ")+`)
+		       (EXISTS(SELECT 1 FROM files f WHERE f.hash = i.remote_hash AND f.deleted_at IS NULL)
+		        OR EXISTS(SELECT 1 FROM federation_catalog c
+		                  JOIN federation_peers p ON p.id = c.peer_id AND p.state = 'friend'
+		                  WHERE c.renditions LIKE '%' || i.remote_hash || '%')
+		        OR EXISTS(SELECT 1 FROM federation_holdings h
+		                  JOIN federation_peers p2 ON p2.id = h.peer_id AND p2.state = 'friend'
+		                  WHERE h.hash = i.remote_hash))
 		FROM playlist_items i
 		WHERE i.playlist_id = ? AND i.remote_hash IS NOT NULL
-		ORDER BY i.position, i.id`, args...)
+		ORDER BY i.position, i.id`, playlistID)
 	if err != nil {
 		return nil, err
 	}

@@ -150,6 +150,14 @@ part of the mesh. It also keeps the page useful when no friends are online.
 
 ## Presence — the 10-second rule
 
+> **Status: BUILT then REVERTED (2026-07-21).** The presence machinery below was
+> implemented and shipped, but proved unstable on a real mesh (download stalls +
+> online/offline flapping) and was backed out in full. The merged browse now
+> always shows every friend's cached catalog, as before presence existed. The
+> failure analysis and the conditions any reattempt must meet are in
+> `.issues/open-issues.md` ("the 10-second presence feature was reverted"). The
+> design is kept below for whoever revisits it.
+
 Friends that drop off the mesh disappear from the browse within ~10 s, and
 return only after being demonstrably back for ~10 s (hysteresis, so a flapping
 link doesn't strobe the list).
@@ -247,10 +255,9 @@ same shape.
    `remote_hash`), playlists/favorites API extensions, canonical `ts:`/`mn:`
    like keys, warning text + `remote` badge/dimming, `RepointRemotePlaylistItems`
    on every approval path + startup.
-4. **Presence** — 5 s prober with 10 s hysteresis (`federation/presence.go`),
-   presence-filtered browse/search/summary/availability via
-   `SetMadnetworkPresenceProvider`, `online` flags, cache exception, client
-   polling + panel refresh with one-level fallback.
+4. **Presence** — 5 s prober with 10 s hysteresis. **REVERTED** (unstable on a
+   real mesh; see `.issues/open-issues.md`). The browse shows all friends'
+   catalogs again, no online/offline filtering.
 5. **Materialize all** — per-entity bulk submit (sequential, skip-local) with a
    persistent progress line, artist/album ⋯ items + a visible tracks-view
    button, aggregate completion toast.

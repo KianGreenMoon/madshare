@@ -102,11 +102,6 @@ type madnetworkVersion struct {
 	// URL is the direct local play address when the version's ladder-best
 	// rendition is in this node's library — no relay hop through the cache.
 	URL string `json:"url,omitempty"`
-
-	// Cached — one of the version's renditions sits fully downloaded in the
-	// local cache, so it plays even with every holder offline (the visibility
-	// rule's cache exception).
-	Cached bool `json:"cached,omitempty"`
 }
 
 type madnetworkHolder struct {
@@ -286,17 +281,12 @@ func mergeVersions(group []*database.MadnetworkTrackRow, selfName string) []madn
 			}
 			if !seenPeer[row.PeerID] {
 				seenPeer[row.PeerID] = true
-				switch {
-				case row.Self:
+				if row.Self {
 					v.Holders = append(v.Holders, madnetworkHolder{Name: selfName, Self: true})
-				case row.Online:
+				} else {
 					v.Holders = append(v.Holders, madnetworkHolder{Name: row.PeerName, LastSeen: row.PeerLastSeen})
-					// An offline peer's row is only here via the cache exception —
-					// it contributes renditions but not a holder (the ⓘ list shows
-					// who can serve NOW).
 				}
 			}
-			v.Cached = v.Cached || row.Cached
 			for hash, key := range row.ObjectKeys {
 				objectKeys[hash] = key
 			}

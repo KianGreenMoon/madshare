@@ -437,3 +437,58 @@ recovers. Look for a stray read error in the node log just before it went quiet.
    already carries one patch and each additional one raises the cost of bumping
    the dependency (`MADSHARE-PATCH.md` must be re-applied), so prefer upstreaming
    over accumulating local patches — with (4) as the local safety net meanwhile.
+
+## Federation — the 10-second presence feature was reverted (unstable) (2026-07-21)
+
+The madnetwork "presence" feature (the *10-second rule*: hide an offline
+friend's tracks within ~10 s, show them again ~10 s after it returns) was
+built, shipped, twice-patched, and then **reverted in full** because it never
+became stable. It is logged here so a future attempt starts from the failure
+analysis instead of the same design.
+
+**What it was.** A dedicated prober pinged every friend every 5 s (in-memory
+`presenceTracker`, hysteresis: offline after 10 s of silence, online after 10 s
+of proven reachability). The merged browse/search/summary and remote-playlist
+availability were filtered to online friends, with a fully-cached rendition as
+the "playable while everyone's offline" exception. `/madnetwork` polled the
+summary every 5 s and re-rendered on any online-set change. Design:
+`docs/ui/madnetwork-page.md` §Presence.
+
+**Related commits (all part of the reverted feature):**
+
+- `b76e148` — feat: the 10-second presence rule (the feature itself, phase 4).
+- `1daa3f1` — fix attempt 1: drain the `/ping` body so the prober reuses one
+  keep-alive connection instead of opening a fresh mesh TCP connection every
+  5 s (12× the pre-feature churn), which was suspected of stressing the
+  netstack ([[yggstack inbound reader SPOF]] above) and stalling transfers.
+  Also fed the presence tracker from delivered chunks.
+- `cdcb5c1` — fix attempt 2: remove the "skip a recently-seen peer" logic that
+  attempt 1 had added, which had halved the idle probe rate to ~10 s against a
+  10 s offline threshold → constant offline/online **flapping** on an
+  always-reachable peer.
+- The revert commit that adds this entry backs out `b76e148`, `1daa3f1`, and
+  `cdcb5c1` (restoring the madnetwork files to their pre-presence state at
+  `57ba5e1`), keeping the phase-5 *Materialize all* work (`3a8f7b2`) intact.
+
+| Severity | Issue | Status |
+|---|---|---|
+| — | **Download stalls after ~768 KiB then intermittently recovers.** Reported against the presence build. 768 KiB = the swarm's lead-ramp watermark (256 + 512 KiB), so the small lead chunks arrive and the first 1 MiB bulk chunk stalls. Suspected cause: the 5 s prober's extra mesh connections competing with in-flight blob/chunk fetches over the fragile gVisor netstack (single inbound reader, SPOF above). **Never reproduced on loopback** (no latency/loss — the swarm transferred cleanly there every time, incl. throttled with the prober firing during it), so the mechanism was never confirmed. Attempt 1 (`1daa3f1`) reduced the connection churn but the owner still saw the problem on the real Yggdrasil mesh. | reverted (feature removed) |
+| — | **Presence flaps offline/online on an always-online peer.** Introduced by attempt 1's probe-skip; fixed by `cdcb5c1` (verified steady on loopback), but the owner reported the underlying trouble persisted on the real mesh. | reverted (feature removed) |
+
+**If reattempted — notes for next time.**
+
+- Presence is a *P4 invention*; before it, `/madnetwork` simply always showed
+  every friend's cached catalog (only a 1/min `last_seen`, hiding nothing).
+  Reverting restored exactly that. So "no presence" is a perfectly good
+  fallback, not a regression.
+- Do not add a fast prober that opens connections competing with transfers on
+  the single-inbound-reader netstack until that SPOF is addressed (the section
+  above). Consider deriving liveness passively from traffic that already flows
+  (catalog sync, chunk deliveries) rather than a dedicated high-frequency ping.
+- Any online/offline threshold must keep a comfortable margin over the probe
+  interval (the flapping came from a 1× margin). And prefer to *degrade*
+  (dim/annotate) rather than *hide* tracks on a presence flip, so a false
+  offline is cosmetic, not a vanished library.
+- The download-stall symptom must be reproduced on a real (lossy/latent) mesh
+  or a netstack stress harness before trusting any fix — loopback will not
+  show it.

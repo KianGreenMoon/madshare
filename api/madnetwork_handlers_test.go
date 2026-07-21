@@ -58,14 +58,12 @@ func (f *fakeMadnetwork) GetMadnetworkPolicy(context.Context) (database.Madnetwo
 	return database.MadnetworkPolicy{}, nil
 }
 
-// madRow builds a fake ONLINE peer row (the store only returns offline rows
-// via the cache exception — see TestMadnetworkTracks_OfflineCachedRow).
 func madRow(peerID int64, peer, recording, title string, hashes ...string) *database.MadnetworkTrackRow {
 	e := federation.CatalogEntry{Key: recording + "-key", RecordingKey: recording, Title: title}
 	for _, h := range hashes {
 		e.Renditions = append(e.Renditions, federation.CatalogRendition{Hash: h, Size: 1})
 	}
-	return &database.MadnetworkTrackRow{PeerID: peerID, PeerName: peer, Online: true, Entry: e}
+	return &database.MadnetworkTrackRow{PeerID: peerID, PeerName: peer, Entry: e}
 }
 
 func TestMadnetworkTracks_VersionMerging(t *testing.T) {
@@ -184,50 +182,6 @@ func TestMadnetworkTracks_SelfMerge(t *testing.T) {
 	}
 	if len(v.Holders) != 2 || !selfHolder {
 		t.Errorf("holders = %+v, want peer + self(my node)", v.Holders)
-	}
-}
-
-// TestMadnetworkTracks_OfflineCachedRow: a row surviving only via the cache
-// exception contributes its renditions and the cached flag, but no holder —
-// the ⓘ list shows who can serve NOW.
-func TestMadnetworkTracks_OfflineCachedRow(t *testing.T) {
-	offline := madRow(1, "alpha", "r1", "Ghost Song", "h-cached")
-	offline.Online = false
-	offline.Cached = true
-	fake := &fakeMadnetwork{rows: []*database.MadnetworkTrackRow{offline}}
-	r := chi.NewRouter()
-	RegisterAPI(r, Deps{Madnetwork: fake})
-	srv := httptest.NewServer(r)
-	defer srv.Close()
-
-	resp, err := http.Get(srv.URL + "/api/madnetwork/tracks?artist=A&album=B")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	var body struct {
-		Tracks []struct {
-			Versions []struct {
-				Cached     bool                          `json:"cached"`
-				Renditions []federation.CatalogRendition `json:"renditions"`
-				Holders    []struct {
-					Name string `json:"name"`
-				} `json:"holders"`
-			} `json:"versions"`
-		} `json:"tracks"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatal(err)
-	}
-	if len(body.Tracks) != 1 || len(body.Tracks[0].Versions) != 1 {
-		t.Fatalf("tracks = %+v, want one track / one version", body.Tracks)
-	}
-	v := body.Tracks[0].Versions[0]
-	if !v.Cached || len(v.Renditions) != 1 {
-		t.Errorf("version = %+v, want cached with its rendition", v)
-	}
-	if len(v.Holders) != 0 {
-		t.Errorf("holders = %+v, want none (the peer is offline)", v.Holders)
 	}
 }
 
