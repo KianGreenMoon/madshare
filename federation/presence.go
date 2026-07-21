@@ -19,6 +19,7 @@ package federation
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -63,6 +64,18 @@ func (t *presenceTracker) ObserveSuccess(peerID int64, now time.Time) {
 		p.okSince = now
 	}
 	p.lastOK = now
+}
+
+// RecentlySeen reports whether the peer produced a successful contact within
+// `within` of `now` — a ping OR (via ObserveSuccess from the swarm) a delivered
+// chunk. The prober uses it to skip a peer we are already exchanging bytes
+// with, so presence probing never opens a connection that competes with an
+// active transfer over the same mesh path.
+func (t *presenceTracker) RecentlySeen(peerID int64, now time.Time, within time.Duration) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	p := t.peers[peerID]
+	return p != nil && !p.lastOK.IsZero() && now.Sub(p.lastOK) <= within
 }
 
 // Online reports whether the peer counts as online at `now`: last heard from
@@ -134,6 +147,14 @@ func (n *Node) probeFriends(ctx context.Context) {
 			continue
 		}
 		keep[p.ID] = true
+		// An active transfer from this peer already proves it is online
+		// (fetchSwarm feeds ObserveSuccess on every delivered chunk). Skip the
+		// ping so presence probing never contends with the transfer for the
+		// mesh path — the interference the 5 s cadence would otherwise add on
+		// top of an in-flight download.
+		if n.presence.RecentlySeen(p.ID, time.Now(), presenceInterval) {
+			continue
+		}
 		wg.Add(1)
 		go func(p *Peer) {
 			defer wg.Done()
@@ -163,6 +184,15 @@ func (n *Node) probePeer(ctx context.Context, p *Peer) bool {
 	if err != nil {
 		return false
 	}
+	// Drain before closing so net/http can return the connection to the idle
+	// pool and REUSE it on the next probe. Without this the /ping JSON body is
+	// left unread, the Transport discards the connection, and every probe opens
+	// a fresh mesh TCP connection — at the 5 s cadence that is a heavy
+	// connection-churn load on the gVisor netstack (its inbound path is a
+	// single point of failure — see .issues/open-issues.md), which competes
+	// with and can stall in-flight blob transfers. Keep-alive reuse makes the
+	// prober ride one persistent connection per friend instead.
+	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
 }
