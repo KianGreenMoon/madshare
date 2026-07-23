@@ -146,11 +146,11 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 		manifests:      map[string]*blobManifest{},
 		lastTouch:      map[int64]time.Time{},
 	}
-	// Self-health signal: the netstack inbound reader's liveness. Wired here once
-	// Phase 0 exposes an accessor on the netstack (docs/plans/availability.md);
-	// until then InboundHealthy defaults healthy (safe: the browse keeps hiding
-	// unreachable friends, the common case).
-	// n.readerAlive = stack.InboundReaderAlive
+	// Self-health signal: the netstack inbound reader's liveness (the unambiguous
+	// signal — a self-ping can't test it, HandleLocal loops local traffic inside
+	// gVisor). When it reports dead, the merged browse fails open rather than
+	// blanking the view (docs/architecture/federation.md §Availability).
+	n.readerAlive = stack.InboundReaderAlive
 	n.client = &http.Client{
 		Transport: &http.Transport{DialContext: n.DialContext},
 		Timeout:   15 * time.Second,
