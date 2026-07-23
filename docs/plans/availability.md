@@ -70,6 +70,11 @@ fix and gates *trusting* liveness.
 - Characterise `ipv6rwc.Read`'s error set first (issue's prerequisite): confirm
   which errors are terminal (core stopped / NIC closed) vs transient. Keep the
   terminal ones exiting.
+- **Also expose the reader's liveness** as `(*YggdrasilNetstack) InboundReaderAlive() bool`
+  (backed by the same alive/closed state — an `atomic.Bool` set true when the
+  goroutine starts, false in a `defer` when it returns). Phase 1 wires
+  `node.readerAlive = stack.InboundReaderAlive`; this is the **only unambiguous
+  self-health signal** (see Phase 1).
 - **Fork hygiene:** this is a **second** local patch — add a `LOCAL PATCH` marker
   and document it in `third_party/yggstack/MADSHARE-PATCH.md`; update the
   `[[yggstack-fork-patch]]` memory. Prefer upstreaming (issue's option 5).
@@ -80,21 +85,35 @@ fix and gates *trusting* liveness.
 
 Backend signal only; no browse/UI change yet, so it can land and bake alone.
 
-1. **Close the passive gaps** (`federation/`):
-   - Touch `last_seen` on a **successful blob/chunk delivery** during a long
-     transfer (`swarm.go`/`transfer.go` fetch paths) — an in-progress download is
-     continuous liveness proof, but today only the initial request touched it.
-     (Cheap: touch on each verified chunk, throttled to ≤1/round per peer.)
-   - Confirm catalog/holdings sync paths touch (they run right after `pingPeer` in
-     the same sweep, so likely covered — verify, don't duplicate).
-2. **Self-health watchdog** in `refreshLoop`/`sweep` (`federation/friendship.go`):
-   - Track per-sweep "did any friend get touched?" and query `n.core.GetPeers()`
-     for `any(.Up)`. If **`inboundSuspectRounds`** consecutive sweeps saw zero
-     friend contact while ≥1 underlay peer was up → set `n.inboundSuspect = true`;
-     clear on any successful touch.
-   - Expose `Node.InboundHealthy() bool` (returns `!inboundSuspect`) + a matching
-     `federation/node_stub.go` stub (`nofederation` → always healthy/true).
-   - Log the transition loudly; it also feeds `/admin/network` (Phase 3).
+1. **Close the passive gaps** (`federation/`). **Built (commit 5b7a0be):**
+   - `Node.observePeerAlive` touches `last_seen` on a **verified swarm chunk**
+     (`swarm.go`) and a **completed whole-file fetch** (`transfer.go`), throttled
+     to ≤1 write per peer per 30 s; `last_seen` stays monotonic.
+   - Catalog/holdings sync run right after `pingPeer` in the same sweep, so
+     they're already covered — not duplicated.
+2. **Self-health signal** — `Node.InboundHealthy() bool` (+ `node_stub.go` stub
+   returning true). **Built (commit 5b7a0be):** the method reads a pluggable
+   `readerAlive func() bool` (nil ⇒ healthy). The signal source is settled below.
+   - **The signal is the netstack inbound-reader liveness** (Phase 0's
+     `InboundReaderAlive`), wired as `node.readerAlive = stack.InboundReaderAlive`
+     in `Start` once Phase 0 lands. Until then it defaults healthy (safe — the
+     browse keeps hiding unreachable friends, the common case).
+   - **Two rejected alternatives (decided while building Phase 1):**
+     - *Self-ping* (dial our own mesh address): **ruled out** — the netstack sets
+       `HandleLocal: true`, so gVisor loops local traffic internally and a
+       self-ping never exercises the real `ipv6rwc.Read` inbound reader (the
+       SPOF). It would report healthy even with the reader dead.
+     - *The "all-friends-stale N rounds + underlay peers `Up`" heuristic* (the
+       original plan sketch): **not used to drive fail-open** — it's ambiguous
+       with the *common* case where friends are simply offline while we hold
+       public backbone underlay peers. Failing open there would re-show the exact
+       stale/dead rows the feature hides. `core.GetPeers().Up` can't distinguish
+       "my inbound died" from "friends are off". The reader-liveness signal is
+       unambiguous, so it's the sole driver. (The heuristic may still surface as
+       an *advisory* note on `/admin/network` — "haven't heard from any friend in
+       a while" — but must not flip hiding.)
+   - Blast radius if this is wrong is small: failing dark hides only friends'
+     *remote* rows on `/madnetwork`; own library and the home page are untouched.
 
 ## Phase 2 — Availability predicate in the browse queries
 
