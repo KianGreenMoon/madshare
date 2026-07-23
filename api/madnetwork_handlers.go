@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"math"
 	"net/http"
 	"sort"
@@ -24,21 +25,36 @@ import (
 // provide: nothing.
 func (h *handler) includeSelf() bool { return h.madnetworkName != "" }
 
-// reachableWindowSec is the freshness window: a friend is "reachable" (its
-// exclusively-held tracks are shown) when last_seen is within this many seconds.
-// Several × the node's 1-minute refresh cadence, so a single missed ping never
-// flips reachability — the margin is the anti-flap guarantee.
-const reachableWindowSec = 180
+// defaultReachableWindowSec mirrors config.DefaultReachableWindowSec for the
+// paths that carry no configured window (tests via NewRouter). The running
+// server always passes the (validated, ≥ min) config value.
+const defaultReachableWindowSec = 180
+
+// reachWindow is the availability freshness window in seconds: a friend is
+// "reachable" (its exclusively-held tracks are shown) when last_seen is within
+// it. Several × the node's 1-minute refresh cadence, so a single missed ping
+// never flips reachability — the margin is the anti-flap guarantee.
+func (h *handler) reachWindow() int64 {
+	if h.reachWindowSec > 0 {
+		return int64(h.reachWindowSec)
+	}
+	return defaultReachableWindowSec
+}
 
 // madnetworkView builds the merged-browse policy for this request: whether to
 // fold in the own published set, and the reachability cutoff. The cutoff is 0
-// (no filtering — fail open) when this node's inbound mesh path is suspect, so a
-// local netstack fault shows the last-known catalog instead of blanking it.
-func (h *handler) madnetworkView() database.MadnetworkView {
+// (no filtering) when either this node's inbound mesh path is suspect (fail open
+// — a local netstack fault shows the last-known catalog instead of blanking it)
+// or the admin turned the madnetwork.hide_unavailable toggle off.
+func (h *handler) madnetworkView(ctx context.Context) database.MadnetworkView {
 	v := database.MadnetworkView{IncludeSelf: h.includeSelf()}
-	if h.inboundHealthy() {
-		v.Cutoff = time.Now().Unix() - reachableWindowSec
+	if !h.inboundHealthy() {
+		return v // fail open
 	}
+	if p, err := h.madnetwork.GetMadnetworkPolicy(ctx); err == nil && !p.HideUnavailable {
+		return v // hiding disabled by the admin
+	}
+	v.Cutoff = time.Now().Unix() - h.reachWindow()
 	return v
 }
 
@@ -52,13 +68,13 @@ func (h *handler) inboundHealthy() bool {
 // ⓘ panel greys a holder past it). Always now−window, independent of the browse
 // filter cutoff — so when the view fails open (showing everything), stale holders
 // still read as stale rather than all looking reachable.
-func reachCutoff() int64 { return time.Now().Unix() - reachableWindowSec }
+func (h *handler) reachCutoff() int64 { return time.Now().Unix() - h.reachWindow() }
 
 // madnetworkSummary handles GET /api/madnetwork/summary: each friend's sync
 // state plus the merged distinct-track count — the page's status strip. With
 // the own set merged in, self_name labels this node's contribution.
 func (h *handler) madnetworkSummary(w http.ResponseWriter, r *http.Request) {
-	friends, tracks, err := h.madnetwork.MadnetworkSummary(r.Context(), h.madnetworkView())
+	friends, tracks, err := h.madnetwork.MadnetworkSummary(r.Context(), h.madnetworkView(r.Context()))
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -77,7 +93,7 @@ func (h *handler) madnetworkSummary(w http.ResponseWriter, r *http.Request) {
 // madnetworkArtists handles GET /api/madnetwork/artists[?q=]: the merged
 // artist list (album-artist grouping, like the local library).
 func (h *handler) madnetworkArtists(w http.ResponseWriter, r *http.Request) {
-	artists, err := h.madnetwork.MadnetworkArtists(r.Context(), r.URL.Query().Get("q"), h.madnetworkView())
+	artists, err := h.madnetwork.MadnetworkArtists(r.Context(), r.URL.Query().Get("q"), h.madnetworkView(r.Context()))
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -95,7 +111,7 @@ func (h *handler) madnetworkAlbums(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "artist is required"})
 		return
 	}
-	albums, err := h.madnetwork.MadnetworkAlbums(r.Context(), artist, h.madnetworkView())
+	albums, err := h.madnetwork.MadnetworkAlbums(r.Context(), artist, h.madnetworkView(r.Context()))
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -152,7 +168,7 @@ func (h *handler) madnetworkTracks(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "artist and album are required"})
 		return
 	}
-	view := h.madnetworkView()
+	view := h.madnetworkView(r.Context())
 	rows, err := h.madnetwork.MadnetworkTracks(r.Context(), artist, album, view.Cutoff)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
@@ -167,7 +183,7 @@ func (h *handler) madnetworkTracks(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, own...)
 		sortMadnetworkRows(rows)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tracks": mergeMadnetworkTracks(rows, h.madnetworkName, reachCutoff())})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tracks": mergeMadnetworkTracks(rows, h.madnetworkName, h.reachCutoff())})
 }
 
 // sortMadnetworkRows restores display order over a combined remote+own row
@@ -393,7 +409,7 @@ func (h *handler) madnetworkSearch(w http.ResponseWriter, r *http.Request) {
 		URL        string   `json:"url,omitempty"` // local play address when self-held
 	}
 
-	view := h.madnetworkView()
+	view := h.madnetworkView(r.Context())
 	artists, err := h.madnetwork.MadnetworkArtists(r.Context(), q, view)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
@@ -434,7 +450,7 @@ func (h *handler) madnetworkSearch(w http.ResponseWriter, r *http.Request) {
 		groups[b] = append(groups[b], row)
 	}
 	tracks := []searchTrack{}
-	rc := reachCutoff()
+	rc := h.reachCutoff()
 merge:
 	for _, b := range order {
 		group := groups[b]

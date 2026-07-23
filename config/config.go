@@ -179,7 +179,21 @@ type FederationConfig struct {
 	// to 0 with a warning. The seed on/off and cache-seed toggles are runtime DB
 	// settings (madnetwork.seed_enabled / .seed_cache), not config.
 	SeedRateKiB int `toml:"seed_rate_kib"`
+	// ReachableWindowSec is the madnetwork availability freshness window: a friend
+	// counts as reachable (its exclusively-held tracks are shown in the browse)
+	// when last_seen is within this many seconds. Several × the 1-minute refresh
+	// cadence, so a single missed ping never flips it — the margin is the anti-flap
+	// guarantee. 0 (the default) → DefaultReachableWindowSec; a positive value
+	// below MinReachableWindowSec is clamped up with a warning. Whether hiding is
+	// applied at all is the runtime toggle madnetwork.hide_unavailable.
+	ReachableWindowSec int `toml:"reachable_window_sec"`
 }
+
+// Madnetwork availability freshness-window bounds (federation.reachable_window_sec).
+const (
+	DefaultReachableWindowSec = 180 // 3× the 1-minute refresh cadence
+	MinReachableWindowSec     = 120 // 2× cadence — the floor that keeps it from flapping
+)
 
 // federationSchemes are the underlay URI schemes yggdrasil accepts. socks /
 // sockstls are dial-only, hence the peersOnly flag.
@@ -395,6 +409,15 @@ func (c *Config) resolveStorageWorkers() {
 			"federation.seed_rate_kib %d is invalid; using 0 (unlimited)",
 			c.Federation.SeedRateKiB))
 		c.Federation.SeedRateKiB = 0
+	}
+	switch {
+	case c.Federation.ReachableWindowSec == 0:
+		c.Federation.ReachableWindowSec = DefaultReachableWindowSec
+	case c.Federation.ReachableWindowSec < MinReachableWindowSec:
+		c.warnings = append(c.warnings, fmt.Sprintf(
+			"federation.reachable_window_sec %d is below the anti-flap floor; using %d",
+			c.Federation.ReachableWindowSec, MinReachableWindowSec))
+		c.Federation.ReachableWindowSec = MinReachableWindowSec
 	}
 }
 

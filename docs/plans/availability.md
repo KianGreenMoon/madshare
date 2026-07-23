@@ -219,6 +219,16 @@ on load and on search, so "hide at refresh boundaries" mostly falls out for free
 
 ## Phase 4 — Config, verification, docs
 
+**Built (this commit).** `[federation] reachable_window_sec` (default 180,
+clamped up to a 120s anti-flap floor with a warning; `config.Default/MinReachableWindowSec`)
+→ `Deps.ReachableWindowSec` → the handler's `reachWindow()`. Runtime
+`madnetwork.hide_unavailable` toggle (default on) in `MadnetworkPolicy`
+(`GET/POST /api/admin/settings/madnetwork` + checkbox card on `/admin/settings`);
+`madnetworkView` returns cutoff 0 when it's off. `madshare.toml.example` +
+`TestConfig_ReachableWindow_DefaultAndClamp` + the toggle-off case in
+`TestMadnetworkView_FailOpen`. Owner reports Phases 0–3 working on the real mesh
+(2026-07-23). Original checklist:
+
 - Optional `[federation] reachable_window_sec` in `config/` + validation; wire the
   runtime `madnetwork.hide_unavailable` toggle into `MadnetworkPolicy`
   (`GET/POST /api/admin/settings/madnetwork`, card on `/admin/settings`).

@@ -141,6 +141,7 @@ const madnetworkForm        = document.getElementById('madnetworkForm');
 const madnetworkAutoapprove = document.getElementById('madnetworkAutoapprove');
 const madnetworkSeedEnabled = document.getElementById('madnetworkSeedEnabled');
 const madnetworkSeedCache   = document.getElementById('madnetworkSeedCache');
+const madnetworkHideUnavail = document.getElementById('madnetworkHideUnavail');
 
 async function loadMadnetwork() {
   try {
@@ -151,6 +152,7 @@ async function loadMadnetwork() {
     madnetworkAutoapprove.checked = !!p.autoapprove_downloads;
     madnetworkSeedEnabled.checked = p.seed_enabled !== false;
     madnetworkSeedCache.checked   = p.seed_cache !== false;
+    madnetworkHideUnavail.checked = p.hide_unavailable !== false;
   } catch (err) {
     console.error('load madnetwork settings:', err);
     toast(`Couldn't load madnetwork settings: ${err.message}`, 'error');
@@ -165,6 +167,7 @@ async function saveMadnetwork() {
         autoapprove_downloads: madnetworkAutoapprove.checked,
         seed_enabled:          madnetworkSeedEnabled.checked,
         seed_cache:            madnetworkSeedCache.checked,
+        hide_unavailable:      madnetworkHideUnavail.checked,
       }),
     });
     if (handleAuthError(res)) return;

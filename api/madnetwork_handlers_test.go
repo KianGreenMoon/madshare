@@ -19,6 +19,7 @@ type fakeMadnetwork struct {
 	ownRows  []*database.MadnetworkTrackRow
 	artists  []*database.MadnetworkArtist
 	lastView database.MadnetworkView // captured by MadnetworkSummary for assertions
+	hideOff  bool                    // when true, GetMadnetworkPolicy reports hiding disabled
 }
 
 func (f *fakeMadnetwork) MadnetworkArtists(context.Context, string, database.MadnetworkView) ([]*database.MadnetworkArtist, error) {
@@ -58,7 +59,7 @@ func (f *fakeMadnetwork) MadnetworkEntryForHash(_ context.Context, hash string) 
 	return nil, nil
 }
 func (f *fakeMadnetwork) GetMadnetworkPolicy(context.Context) (database.MadnetworkPolicy, error) {
-	return database.MadnetworkPolicy{}, nil
+	return database.MadnetworkPolicy{HideUnavailable: !f.hideOff}, nil
 }
 
 func madRow(peerID int64, peer, recording, title string, hashes ...string) *database.MadnetworkTrackRow {
@@ -279,8 +280,7 @@ func TestMadnetworkRoutes_NotRegisteredWithoutStore(t *testing.T) {
 // inbound path fails open (cutoff 0 = show the last-known catalog) and reports
 // inbound_healthy=false (docs/architecture/federation.md §Availability).
 func TestMadnetworkView_FailOpen(t *testing.T) {
-	call := func(fed FederationNode) (*fakeMadnetwork, bool) {
-		fake := &fakeMadnetwork{}
+	call := func(fake *fakeMadnetwork, fed FederationNode) (*fakeMadnetwork, bool) {
 		r := chi.NewRouter()
 		RegisterAPI(r, Deps{Madnetwork: fake, MadnetworkName: "n", Federation: fed})
 		srv := httptest.NewServer(r)
@@ -299,13 +299,18 @@ func TestMadnetworkView_FailOpen(t *testing.T) {
 		return fake, body.InboundHealthy
 	}
 
-	// Healthy: filtering on (positive cutoff), inbound_healthy true.
-	if fake, healthy := call(&fakeFederation{}); fake.lastView.Cutoff <= 0 || !healthy {
+	// Healthy + hiding on: filtering active (positive cutoff), inbound_healthy true.
+	if fake, healthy := call(&fakeMadnetwork{}, &fakeFederation{}); fake.lastView.Cutoff <= 0 || !healthy {
 		t.Errorf("healthy: cutoff = %d, inbound_healthy = %v; want cutoff>0, healthy true",
 			fake.lastView.Cutoff, healthy)
 	}
+	// Admin turned hiding off: no filtering (cutoff 0) even though healthy.
+	if fake, healthy := call(&fakeMadnetwork{hideOff: true}, &fakeFederation{}); fake.lastView.Cutoff != 0 || !healthy {
+		t.Errorf("hiding off: cutoff = %d, inbound_healthy = %v; want cutoff 0, healthy true",
+			fake.lastView.Cutoff, healthy)
+	}
 	// Inbound dead: fail open (cutoff 0), inbound_healthy false.
-	if fake, healthy := call(&fakeFederation{inboundDead: true}); fake.lastView.Cutoff != 0 || healthy {
+	if fake, healthy := call(&fakeMadnetwork{}, &fakeFederation{inboundDead: true}); fake.lastView.Cutoff != 0 || healthy {
 		t.Errorf("inbound dead: cutoff = %d, inbound_healthy = %v; want cutoff 0, healthy false",
 			fake.lastView.Cutoff, healthy)
 	}

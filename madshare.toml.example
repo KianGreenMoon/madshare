@@ -94,14 +94,19 @@ max_upload_mb = 500          # per-request upload cap, in MiB
 # Friendships are managed on /admin/network (exchange node cards out-of-band).
 # seed_rate_kib caps the outbound rate (KiB/s) for serving blobs to friends over
 # the swarm (0 = unlimited); the seed on/off + cache-seed toggles are runtime
-# settings on /admin/settings, not here.
+# settings on /admin/settings, not here. reachable_window_sec is the availability
+# freshness window: a friend counts as reachable (its exclusively-held tracks show
+# in the madnetwork browse) when seen within it — 0 = default 180s, values below
+# 120s are clamped up (anti-flap floor). Whether hiding applies at all is the
+# runtime madnetwork.hide_unavailable toggle on /admin/settings.
 #[federation]
-#enabled       = false
-#name          = "my madshare"             # defaults to the host name
-#key_file      = "./data/federation.key"   # defaults to <data_dir>/federation.key
-#peers         = ["tls://peer.example:12345"] # tcp/tls/quic/ws/wss/unix/socks/sockstls
-#listen        = ["tls://0.0.0.0:12345"]   # tcp/tls/quic/ws/wss/unix
-#seed_rate_kib = 0                          # 0 = unlimited outbound seeding rate
+#enabled             = false
+#name                = "my madshare"           # defaults to the host name
+#key_file            = "./data/federation.key" # defaults to <data_dir>/federation.key
+#peers               = ["tls://peer.example:12345"] # tcp/tls/quic/ws/wss/unix/socks/sockstls
+#listen              = ["tls://0.0.0.0:12345"] # tcp/tls/quic/ws/wss/unix
+#seed_rate_kib       = 0                        # 0 = unlimited outbound seeding rate
+#reachable_window_sec = 180                     # availability freshness window (min 120)
 
 # [sources] controls in-place "symlink" imports: an admin points at an external
 # directory and Madshare references each audio file by a symlink in the shared

@@ -113,6 +113,12 @@
           <small class="check-hint">Also re-seed tracks you streamed or downloaded from friends, helping popular files spread. Off = only your library is served.</small>
         </span>
       </label>
+      <label class="check-row">
+        <input type="checkbox" id="madnetworkHideUnavail">
+        <span>Hide unreachable friends&rsquo; tracks
+          <small class="check-hint">Drop tracks held only by a friend not seen recently from the madnetwork browse (refreshed on reload/search). Off = show every friend&rsquo;s cached catalog regardless of reachability. The freshness window is a server setting (<code>[federation] reachable_window_sec</code>).</small>
+        </span>
+      </label>
       <p class="section-copy">
         The outbound seeding rate cap is a server setting
         (<code>[federation] seed_rate_kib</code>); leave it at 0 for unlimited.

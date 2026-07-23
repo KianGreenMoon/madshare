@@ -112,6 +112,9 @@ type Deps struct {
 	// the merged browse, and an empty value keeps the own set OUT of the view
 	// (federation disabled = the madnetwork list stays empty).
 	MadnetworkName string
+	// ReachableWindowSec is the availability freshness window in seconds
+	// (config.FederationConfig.ReachableWindowSec); 0 falls back to the default.
+	ReachableWindowSec int
 }
 
 // MadnetworkStore reads the merged madnetwork catalog (cached friend catalogs
@@ -211,6 +214,7 @@ func (d Deps) newHandler() *handler {
 		federation:      d.Federation,
 		madnetwork:      d.Madnetwork,
 		madnetworkName:  d.MadnetworkName,
+		reachWindowSec:  d.ReachableWindowSec,
 	}
 	if d.SourceArchive != nil || d.LicenseText != nil || d.SourceRoot != "" {
 		h.source = &sourceArchiver{

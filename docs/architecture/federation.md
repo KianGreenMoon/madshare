@@ -492,10 +492,13 @@ There is no dedicated high-frequency prober. Three cheap sources feed a per-peer
    pinging ahead of need.
 
 **Freshness window, not a knife-edge.** A friend is *reachable* if `last_seen` is
-within a **minutes-wide** window (target ≈ a few refresh rounds, e.g. 3 min), so
-a single missed ping never flips it — the flapping came from a 1× margin, this is
-a several-× margin by construction. No probation state machine; the window *is*
-the hysteresis.
+within a **minutes-wide** window (`[federation] reachable_window_sec`, default
+180 s ≈ 3 refresh rounds, clamped up to a 120 s anti-flap floor), so a single
+missed ping never flips it — the flapping came from a 1× margin, this is a
+several-× margin by construction. No probation state machine; the window *is* the
+hysteresis. Whether hiding is applied at all is the runtime
+**`madnetwork.hide_unavailable`** toggle (default on, `/admin/settings`) — off
+shows every friend's cached catalog regardless of reachability.
 
 **Availability predicate** (evaluated **at request time** in the browse/search
 queries and the remote-playlist availability flag). A rendition is *available*

@@ -346,6 +346,7 @@ func main() {
 		if deps.MadnetworkName == "" {
 			deps.MadnetworkName = "this server"
 		}
+		deps.ReachableWindowSec = cfg.Federation.ReachableWindowSec
 		log.Printf("federation: madnetwork node up — mesh address %s (key file %s)", fedNode.Address(), cfg.Federation.KeyFile)
 	}
 

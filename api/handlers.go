@@ -148,6 +148,7 @@ type handler struct {
 	// the browse (docs/ui/madnetwork-page.md §Own tracks).
 	madnetwork     MadnetworkStore
 	madnetworkName string
+	reachWindowSec int // availability freshness window (seconds); 0 = default
 	// source, when non-nil, serves the AGPL-required source archive at GET /source.
 	// Nil when no SourceRoot was configured (e.g. in tests via NewRouter).
 	source *sourceArchiver

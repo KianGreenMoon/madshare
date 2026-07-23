@@ -336,6 +336,7 @@ func (h *manageHandler) getMadnetworkSettings(w http.ResponseWriter, r *http.Req
 		"autoapprove_downloads": p.AutoapproveDownloads,
 		"seed_enabled":          p.SeedEnabled,
 		"seed_cache":            p.SeedCache,
+		"hide_unavailable":      p.HideUnavailable,
 	})
 }
 
@@ -348,7 +349,8 @@ func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Req
 		AutoapproveDownloads bool `json:"autoapprove_downloads"`
 		SeedEnabled          bool `json:"seed_enabled"`
 		SeedCache            bool `json:"seed_cache"`
-	}{SeedEnabled: true, SeedCache: true}
+		HideUnavailable      bool `json:"hide_unavailable"`
+	}{SeedEnabled: true, SeedCache: true, HideUnavailable: true}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
@@ -356,6 +358,7 @@ func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Req
 		AutoapproveDownloads: req.AutoapproveDownloads,
 		SeedEnabled:          req.SeedEnabled,
 		SeedCache:            req.SeedCache,
+		HideUnavailable:      req.HideUnavailable,
 	}
 	if err := h.store.SetMadnetworkPolicy(r.Context(), p); err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
@@ -364,12 +367,14 @@ func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Req
 	h.mAudit(r.Context(), "madnetwork.settings", "",
 		"autoapprove_downloads="+strconv.FormatBool(p.AutoapproveDownloads)+
 			" seed_enabled="+strconv.FormatBool(p.SeedEnabled)+
-			" seed_cache="+strconv.FormatBool(p.SeedCache))
+			" seed_cache="+strconv.FormatBool(p.SeedCache)+
+			" hide_unavailable="+strconv.FormatBool(p.HideUnavailable))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                    true,
 		"autoapprove_downloads": p.AutoapproveDownloads,
 		"seed_enabled":          p.SeedEnabled,
 		"seed_cache":            p.SeedCache,
+		"hide_unavailable":      p.HideUnavailable,
 	})
 }
 

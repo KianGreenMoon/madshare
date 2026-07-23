@@ -450,6 +450,45 @@ func TestConfig_Warnings_WebUIWithoutAPI(t *testing.T) {
 	}
 }
 
+func TestConfig_ReachableWindow_DefaultAndClamp(t *testing.T) {
+	load := func(t *testing.T, body string) config.Config {
+		t.Helper()
+		f := filepath.Join(t.TempDir(), "w.toml")
+		if err := os.WriteFile(f, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.Load(f)
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		return cfg
+	}
+	base := "[[listen]]\naddr=\"127.0.0.1\"\nport=3000\nserve=[\"api\"]\n"
+
+	// Unset → default.
+	if cfg := load(t, base); cfg.Federation.ReachableWindowSec != config.DefaultReachableWindowSec {
+		t.Errorf("unset window = %d, want default %d", cfg.Federation.ReachableWindowSec, config.DefaultReachableWindowSec)
+	}
+	// A valid explicit value is kept.
+	if cfg := load(t, base+"[federation]\nreachable_window_sec = 300\n"); cfg.Federation.ReachableWindowSec != 300 {
+		t.Errorf("explicit window = %d, want 300", cfg.Federation.ReachableWindowSec)
+	}
+	// Below the floor → clamped up with a warning.
+	cfg := load(t, base+"[federation]\nreachable_window_sec = 30\n")
+	if cfg.Federation.ReachableWindowSec != config.MinReachableWindowSec {
+		t.Errorf("too-small window = %d, want clamp to %d", cfg.Federation.ReachableWindowSec, config.MinReachableWindowSec)
+	}
+	var warned bool
+	for _, w := range cfg.Warnings() {
+		if strings.Contains(w, "reachable_window_sec") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("expected a reachable_window_sec clamp warning, got %v", cfg.Warnings())
+	}
+}
+
 func TestLoad_InvalidTOML_ReturnsError(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "bad.toml")
 	os.WriteFile(f, []byte("not = valid [toml"), 0o600)

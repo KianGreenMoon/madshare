@@ -10,14 +10,15 @@ import (
 // Settings keys (see migration 006_access_mgmt.sql; settings is a generic
 // key/value table, so new keys need no migration).
 const (
-	settingAutoDeriveEnabled     = "access.autoderive.enabled"
-	settingAutoDeriveLicenses    = "access.autoderive.licenses"
-	settingTrashRestorePolicy    = "upload.trash_restore_policy"
-	settingMusicBrainzEnabled    = "tagsource.musicbrainz.enabled"
-	settingAcoustIDKey           = "tagsource.acoustid.api_key"
-	settingMadnetworkAutoapprove = "madnetwork.autoapprove_downloads"
-	settingMadnetworkSeedEnabled = "madnetwork.seed_enabled"
-	settingMadnetworkSeedCache   = "madnetwork.seed_cache"
+	settingAutoDeriveEnabled         = "access.autoderive.enabled"
+	settingAutoDeriveLicenses        = "access.autoderive.licenses"
+	settingTrashRestorePolicy        = "upload.trash_restore_policy"
+	settingMusicBrainzEnabled        = "tagsource.musicbrainz.enabled"
+	settingAcoustIDKey               = "tagsource.acoustid.api_key"
+	settingMadnetworkAutoapprove     = "madnetwork.autoapprove_downloads"
+	settingMadnetworkSeedEnabled     = "madnetwork.seed_enabled"
+	settingMadnetworkSeedCache       = "madnetwork.seed_cache"
+	settingMadnetworkHideUnavailable = "madnetwork.hide_unavailable"
 )
 
 // Trash-restore policy modes — what may happen to a trashed file whose content
@@ -69,6 +70,10 @@ type MadnetworkPolicy struct {
 	AutoapproveDownloads bool
 	SeedEnabled          bool
 	SeedCache            bool
+	// HideUnavailable hides tracks held only by an unreachable friend from the
+	// merged browse (the availability rule). Default on; off shows every friend's
+	// cached catalog regardless of reachability (docs/plans/availability.md).
+	HideUnavailable bool
 }
 
 // GetMadnetworkPolicy reads the madnetwork settings. Missing keys read as the
@@ -87,10 +92,15 @@ func (db *DB) GetMadnetworkPolicy(ctx context.Context) (MadnetworkPolicy, error)
 	if err != nil {
 		return MadnetworkPolicy{}, err
 	}
+	hide, _, err := db.GetSetting(ctx, settingMadnetworkHideUnavailable)
+	if err != nil {
+		return MadnetworkPolicy{}, err
+	}
 	return MadnetworkPolicy{
 		AutoapproveDownloads: auto == "1",
 		SeedEnabled:          seed != "0",  // default on
 		SeedCache:            cache != "0", // default on
+		HideUnavailable:      hide != "0",  // default on
 	}, nil
 }
 
@@ -114,6 +124,7 @@ func (db *DB) SetMadnetworkPolicy(ctx context.Context, p MadnetworkPolicy) error
 		{settingMadnetworkAutoapprove, bit(p.AutoapproveDownloads)},
 		{settingMadnetworkSeedEnabled, bit(p.SeedEnabled)},
 		{settingMadnetworkSeedCache, bit(p.SeedCache)},
+		{settingMadnetworkHideUnavailable, bit(p.HideUnavailable)},
 	} {
 		if _, err := tx.ExecContext(ctx, upsert, kv.key, kv.val); err != nil {
 			return err
