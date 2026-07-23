@@ -68,7 +68,22 @@ type Node struct {
 	seedLimiter *rateLimiter
 	manifestMu  sync.Mutex
 	manifests   map[string]*blobManifest
+
+	// Availability / self-health (docs/plans/availability.md Phase 1).
+	// readerAlive reports whether the netstack inbound reader is running — the
+	// unambiguous self-health signal (a self-ping cannot test it: HandleLocal
+	// loops local traffic inside gVisor, bypassing the reader). nil ⇒ treated as
+	// healthy; wired to the netstack accessor once Phase 0 exposes it.
+	readerAlive func() bool
+	// lastTouch throttles last_seen writes from the transfer path (chunk
+	// deliveries are frequent; last_seen is monotonic, so ≤1 write per peer per
+	// peerTouchThrottle is plenty). meshAuth/pingPeer touch directly, unthrottled.
+	touchMu   sync.Mutex
+	lastTouch map[int64]time.Time
 }
+
+// peerTouchThrottle bounds transfer-path last_seen writes per peer.
+const peerTouchThrottle = 30 * time.Second
 
 // Start loads (or creates) the node key, brings up the yggdrasil core with the
 // configured underlay peers/listeners, and serves the federation protocol on
@@ -129,7 +144,13 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 		transferCancel: transferCancel,
 		seedLimiter:    newRateLimiter(int64(fc.SeedRateKiB) * 1024),
 		manifests:      map[string]*blobManifest{},
+		lastTouch:      map[int64]time.Time{},
 	}
+	// Self-health signal: the netstack inbound reader's liveness. Wired here once
+	// Phase 0 exposes an accessor on the netstack (docs/plans/availability.md);
+	// until then InboundHealthy defaults healthy (safe: the browse keeps hiding
+	// unreachable friends, the common case).
+	// n.readerAlive = stack.InboundReaderAlive
 	n.client = &http.Client{
 		Transport: &http.Transport{DialContext: n.DialContext},
 		Timeout:   15 * time.Second,
@@ -186,6 +207,37 @@ func (n *Node) Name() string { return n.name }
 // outbound protocol calls reach peers' mesh listeners without any TUN.
 func (n *Node) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	return n.stack.DialContext(ctx, network, address)
+}
+
+// InboundHealthy reports whether this node's inbound mesh path appears to be
+// working. The merged madnetwork browse consults it to decide whether to hide
+// currently-unreachable friends' tracks (healthy) or to stop hiding and show the
+// last-known catalog (unhealthy) — a local netstack fault must never look like
+// "the whole network is gone" (docs/architecture/federation.md §Availability &
+// node health). nil signal ⇒ healthy.
+func (n *Node) InboundHealthy() bool {
+	return n.readerAlive == nil || n.readerAlive()
+}
+
+// observePeerAlive records that a peer just delivered data on the transfer path
+// (an in-flight download is continuous liveness proof). Throttled per peer, and
+// a no-op without a store; last_seen is monotonic so an out-of-order write is
+// harmless. meshAuth and pingPeer touch directly and are not throttled.
+func (n *Node) observePeerAlive(p *Peer) {
+	if n.store == nil || p == nil {
+		return
+	}
+	now := time.Now()
+	n.touchMu.Lock()
+	if last, ok := n.lastTouch[p.ID]; ok && now.Sub(last) < peerTouchThrottle {
+		n.touchMu.Unlock()
+		return
+	}
+	n.lastTouch[p.ID] = now
+	n.touchMu.Unlock()
+	if err := n.store.TouchFederationPeerSeen(n.transferCtx, p.ID, now.Unix()); err != nil {
+		n.logger.Printf("federation: touch peer %d (transfer): %v", p.ID, err)
+	}
 }
 
 // loadOrCreateKey returns a yggdrasil NodeConfig whose private key is persisted

@@ -649,6 +649,7 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*Peer, prefe
 				if err := n.fetchChunk(t, f, layout, man, idx, p); err != nil {
 					plan.fail(idx, pidx, err, errors.Is(err, errChunkCorrupt))
 				} else {
+					n.observePeerAlive(p) // a verified chunk is liveness proof
 					plan.succeed(idx, pidx, t)
 				}
 			}

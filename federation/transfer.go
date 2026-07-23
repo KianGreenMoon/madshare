@@ -413,6 +413,7 @@ func (n *Node) runWhole(t *transfer, holders []*Peer) {
 		}
 		err := n.fetchFrom(t, p)
 		if err == nil {
+			n.observePeerAlive(p) // a completed fetch is liveness proof
 			n.logger.Printf("federation: fetched %s from %q (%d bytes)", t.hash, p.Name, t.Progress())
 			t.finish(nil)
 			return
