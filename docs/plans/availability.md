@@ -54,6 +54,12 @@ netstack fix that makes the SPOF recoverable, and (d) small UI polish.
 
 ## Phase 0 — Netstack resilience (issue #398)
 
+**Built (commit a85e618).** Reader loop now log-and-continues with 50ms→1s
+backoff, exits only on `Close()` or the terminal `types.ErrClosed`; nil-guarded
+delivery; `InboundReaderAlive()` accessor added; 5 tests. Error analysis: in the
+pinned deps only `ErrClosed` is reachable and it's terminal — everything else is
+defensively treated as transient. See `third_party/yggstack/MADSHARE-PATCH.md`.
+
 Independent of the rest; makes the single-inbound-reader SPOF a recoverable fault
 instead of a silent permanent death. The availability watchdog (Phase 1) is the
 safety net that lets the feature ship even before this lands, but this is the real
@@ -116,6 +122,13 @@ Backend signal only; no browse/UI change yet, so it can land and bake alone.
      *remote* rows on `/madnetwork`; own library and the home page are untouched.
 
 ## Phase 2 — Availability predicate in the browse queries
+
+**Built (commit 4c86c10).** `MadnetworkView{IncludeSelf, Cutoff}` threaded through
+the browse/summary/search queries; friend join gated on `last_seen >= cutoff`
+(inlined server-computed int; `<=0` = no filter). Handler sets `cutoff = now−180s`
+when healthy, `0` when `InboundHealthy()` is false; summary carries
+`inbound_healthy` + per-friend `reachable`. Playlists intentionally not gated.
+Tests: `TestMadnetworkAvailability`, `TestMadnetworkView_FailOpen`.
 
 The visible behavior. All in `database/madnetwork.go` + the handler wiring.
 
