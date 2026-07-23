@@ -260,8 +260,11 @@ default** — its social graph is visible to its members.
   snapshot, applied as an atomic replace. The wire format carries the serial,
   so real deltas can arrive later without a protocol break. The serving node
   memoizes its own snapshot (~1 min) so friend syncs don't rebuild it per
-  request. A friend's library stays browsable while they are offline, shown
-  with a **"last seen"** indicator — no TTL-based hiding. What a node
+  request. A friend's catalog cache is **retained** regardless of reachability
+  (never TTL-purged); the friend carries a **"last seen"** indicator, and whether
+  their exclusively-held tracks appear in the *merged* madnetwork view is decided
+  at request time by the availability predicate (§Availability & node health) —
+  storage and visibility are separate concerns. What a node
   publishes in F2 is its **whole approved live library** (the node-level
   default scope; per-content share depth arrives in F5). Push/gossip of
   changes is a later optimization, not v1.
@@ -445,6 +448,120 @@ default** — its social graph is visible to its members.
   **upload rate cap** `[federation] seed_rate_kib` (a token bucket over the
   blob-serve write path; `0` = unlimited), a static config knob.
 
+## Availability & node health
+
+> **Supersedes the reverted "10-second presence" feature.** An earlier attempt
+> (phase 4 of the madnetwork-page rework) ran a dedicated 5 s prober with a 10 s
+> online/offline hysteresis and *hid* offline friends' tracks live. It was
+> unstable on a real mesh (download stalls + online/offline flapping) and was
+> backed out in full — see `.issues/open-issues.md` ("the 10-second presence
+> feature was reverted"). The three mistakes were: a **fast dedicated ping** that
+> competed with transfers on the fragile netstack, a **tight hysteresis** (probe
+> interval ≈ threshold → flapping), and a **live-mutating client** that made a
+> false reading vanish the library. This section is the corrected model. The UI
+> half lives in `docs/ui/madnetwork-page.md` §Availability; the build steps are
+> in `docs/plans/availability.md`.
+
+**The unit is the track, not the friend.** Because the swarm is keyed by content
+hash, a track's availability is the *union over its holders* (catalog ∪
+holdings) — "is **any** holder reachable" is far more stable than "is this one
+friend online right now", and it is exactly what transfer already computes when
+it fails over between providers. Availability grows with the network:
+redundant libraries make most entries multi-holder.
+
+**Availability = redundancy + slow/passive liveness + reactive reachability.**
+There is no dedicated high-frequency prober. Three cheap sources feed a per-peer
+`last_seen`, and availability is derived from it at request time:
+
+1. **Slow health check.** The existing **1-minute friendship refresh loop**
+   already pings every friend; that ping *is* the health check (reuse the mesh
+   `GET /madnetwork/v0/ping`, no new endpoint, no new cadence). One round a
+   minute is within the connection budget the mesh already carries — it is not
+   the 5 s prober that caused the churn.
+2. **Passive observation.** Every *successful* mesh interaction refreshes
+   `last_seen` — outbound (catalog sync, holdings sync, a delivered blob/chunk)
+   and **inbound** (a friend syncing our catalog, fetching a blob, or pinging us
+   proves they are alive *and*, by Yggdrasil's symmetric addressability, that we
+   can most likely reach them). An in-flight transfer is continuous liveness
+   proof for that holder for free.
+3. **Reactive reachability.** When a transfer/manifest fetch fails against a
+   holder, that failure is recorded (the swarm already fails a chunk in ~20 s and
+   fails over); a holder with a recent failure is de-ranked as a provider and
+   counts as "not seen" for availability until proven otherwise. This is the
+   PeerTube/Mastodon pattern (learn a peer is down by *trying*, back off), not by
+   pinging ahead of need.
+
+**Freshness window, not a knife-edge.** A friend is *reachable* if `last_seen` is
+within a **minutes-wide** window (target ≈ a few refresh rounds, e.g. 3 min), so
+a single missed ping never flips it — the flapping came from a 1× margin, this is
+a several-× margin by construction. No probation state machine; the window *is*
+the hysteresis.
+
+**Availability predicate** (evaluated **at request time** in the browse/search
+queries and the remote-playlist availability flag). A rendition is *available*
+iff:
+
+1. a **reachable** friend holds it (catalog ∪ holdings, `last_seen` within the
+   window), **or**
+2. it is in the **local library**, **or**
+3. it is **fully cached** (complete file in `<data_dir>/cache/madnetwork/`, no
+   `.part`).
+
+A version is available if any rendition is; a track if any version is;
+albums/artists and counts are computed over the available set. Local, cached, and
+this node's **own** published tracks are *always* available — they never depend
+on anyone's liveness. Because the predicate runs per request, each browse/search
+fetch is a fresh **snapshot**; there is no server push and no live mutation (the
+client re-evaluates only on page load and on a new search — see the UI doc).
+
+**Fail open, never fail dark.** If *this node* cannot reach anyone (see the
+self-health watchdog below), the correct response is to **stop filtering** and
+show the last-known catalog, not to blank the library — a local fault must never
+look like "the whole network is gone". Concretely: availability filtering is
+suppressed while the node's own inbound path is suspect.
+
+**Self-health (own inbound path).** This is the more important monitor, and it is
+what makes "fail open" decidable. The vendored gVisor netstack runs its entire
+inbound path in one goroutine; a single read error kills *all* inbound mesh
+traffic permanently (the SPOF logged 2026-07-19 in `.issues/open-issues.md`).
+When that happens, every friend goes silent at once even though the network is
+fine. The watchdog (issue's option 4): **if every friend has been unreachable for
+N consecutive refresh rounds while the yggdrasil core still reports peers up**,
+flag the local inbound path as probably dead — surface it on `/admin/network`,
+and trip the fail-open above. **Prerequisite:** before trusting any of this,
+harden the read loop itself (log-and-continue on transient errors + supervise the
+reader; issue's options 2–3) so the SPOF is a recoverable fault rather than a
+silent permanent death. That hardening is the real gate on richer liveness, and
+it is worth doing on its own regardless of the availability feature.
+
+**No transitive real-time presence — how the big network stays honest.** At
+depth ≥ 1 (F5+, friends-of-friends) the answer is deliberately *not* to ping
+strangers or relay pings along the chain. Federated systems don't do live
+presence at all:
+
+- **Mastodon (ActivityPub)** is push-with-backoff: activities are delivered to
+  peer inboxes, delivery failures retry with exponential backoff over days, and
+  an instance is marked dead only after prolonged failure. There is no "online
+  now" concept; capability/health is a **NodeInfo** document fetched
+  occasionally, and reach beyond direct follows comes from **relays**, not
+  transitive pinging.
+- **PeerTube** adds **redundancy**: instances mirror popular videos, so a video
+  stays available when its origin is down — availability is **replication**, not
+  liveness. Discovery across the network uses **search indexes / instance lists**
+  (SepiaSearch), again not a presence protocol.
+
+We already have the analogues — the swarm's holdings *are* PeerTube redundancy,
+and reactive backoff *is* Mastodon's dead-instance handling. So the depth-≥1 plan
+is: **gossip coarse freshness hints along the catalog sync** (a friend's catalog
+carries *its* friends' `last_seen` as a per-hop-stale *claim*, cheap and already
+flowing — the relay pattern), rely on **redundancy** (any reachable holder
+serves), and **verify on demand only for the working set actually on screen**
+(one mesh RTT to the specific holder, proof not hearsay, cost O(what you are
+looking at) not O(network)). A future enrichment of `GET /madnetwork/v0/ping`
+into a small **NodeInfo-style health card** (name, version, holdings size,
+seed policy) gives the network map real per-node health without any new probing
+cadence. No chain-relayed ping-forwarding is ever needed.
+
 ## Topology asymmetry (unchanged)
 
 A backbone of always-on server nodes plus intermittent madplayer peers. Mobile
@@ -485,8 +602,16 @@ milestone directly after direct transfer works, and tokens ship with depth.
   downloads seed; seeding controls (`seed_enabled`/`seed_cache` DB settings +
   `[federation] seed_rate_kib` token-bucket cap). Swarm scope = direct friends,
   channel-auth only (no tokens yet).
+- **Availability & node health** (near-term, not depth-gated; see the section of
+  that name). Harden the netstack inbound reader (issue #398) → slow/passive
+  per-peer `last_seen` from the existing 1-min refresh + all successful mesh
+  traffic → request-time availability predicate (reachable holder ∨ local ∨
+  cached) with a minutes-wide freshness window → self-health watchdog +
+  fail-open on `/admin/network`. Replaces the reverted 10 s presence feature.
 - **F5 — Depth & tokens.** Share-depth knob (per node default + per content),
-  capability tokens with delegated issuance, guest-open swarm.
+  capability tokens with delegated issuance, guest-open swarm. Deeper networks
+  reuse the availability model above (gossiped freshness hints + on-demand verify
+  of the visible working set), never transitive pinging.
 - **F6 — Transparency & defense.** Friend-list gossip within depth, network map
   UI, signed distrust marks, branch snipping, stolen-key revocation flow.
   Transitive reach (depth > 0) turns on here, not before.

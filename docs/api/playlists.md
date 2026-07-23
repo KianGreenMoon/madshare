@@ -101,6 +101,48 @@ and returns **201** with the same summary shape.
   appearances in playlist order, **excluding unavailable ones** (used by the
   web UI to paint the hearts).
 
+## Remote (madnetwork) items
+
+A playlist item — and a favorite — may reference a **remote madnetwork track**
+that is not (yet) in the local library, addressed by its content **hash** instead
+of a tagset id (design: `docs/ui/madnetwork-page.md` §"Remote tracks in favorites
+& playlists"; federation: `docs/architecture/federation.md`).
+
+**Schema** (migration `029_playlist_remote_items.sql`): `playlist_items.tagset_id`
+becomes **nullable**; new columns `remote_hash TEXT`, `remote_title`,
+`remote_artist`, `remote_album` capture the friend's catalog text at add time (the
+remote row may vanish later). Invariant `CHECK ((tagset_id IS NULL) <> (remote_hash
+IS NULL))` — an item is **either** a local appearance **or** a remote hash, never
+both. Per-playlist dedupe on `remote_hash` mirrors the tagset dedupe.
+
+**API extensions:**
+
+| Action | Endpoint | Body |
+|--------|----------|------|
+| Append remote items | `POST /api/playlists/{id}/items` | `{"remote": [{"hash", "title", "artist", "album"}]}` (alongside or instead of `tagset_ids`) |
+| Create with remote items | `POST /api/playlists` | `{"name", "remote": [...]}` |
+| Toggle remote Like | `POST /api/favorites/remote/{hash}` | `{"title", "artist", "album"}` (display text) |
+| Liked ids | `GET /api/favorites` | — → adds `"remote_hashes": [ … ]` beside `tagset_ids` |
+
+Remote listing rows (in `GET /api/playlists/{id}` and favorites) carry:
+
+| Field | Notes |
+|-------|-------|
+| `remote` | `true` for a remote item. |
+| `hash` | The content hash addressing the track. |
+| `url` | `/api/madnetwork/stream/{hash}` — the cache-through streaming relay. |
+| `available` | `true` when the hash is a live local blob, fully cached, **or** held by a **reachable** friend (the availability predicate — `docs/architecture/federation.md` §Availability & node health). `false` → status `"unavailable"`; the row stays listed with its captured text. |
+
+**Re-pointing on materialize** (`RepointRemotePlaylistItems`, idempotent DB
+sweep). When a blob lands **approved** in the library, every `playlist_items` row
+whose `remote_hash` matches a rendition of the approved recording is re-pointed to
+the approved appearance's tagset (`tagset_id` set, `remote_*` cleared) — a remote
+row silently becomes a normal local one; a duplicate within the same playlist is
+dropped. Run from `h.repointRemotes` after every approval path
+(moderation approve/bulk, self-approve, download-approved, autoapprove-attach) and
+after remote adds, plus once at startup. Likes migrate the same way (favorites is
+a playlist).
+
 ## Error responses
 
 | Status | Condition |

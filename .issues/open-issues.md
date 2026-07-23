@@ -475,7 +475,17 @@ summary every 5 s and re-rendered on any online-set change. Design:
 | — | **Download stalls after ~768 KiB then intermittently recovers.** Reported against the presence build. 768 KiB = the swarm's lead-ramp watermark (256 + 512 KiB), so the small lead chunks arrive and the first 1 MiB bulk chunk stalls. Suspected cause: the 5 s prober's extra mesh connections competing with in-flight blob/chunk fetches over the fragile gVisor netstack (single inbound reader, SPOF above). **Never reproduced on loopback** (no latency/loss — the swarm transferred cleanly there every time, incl. throttled with the prober firing during it), so the mechanism was never confirmed. Attempt 1 (`1daa3f1`) reduced the connection churn but the owner still saw the problem on the real Yggdrasil mesh. | reverted (feature removed) |
 | — | **Presence flaps offline/online on an always-online peer.** Introduced by attempt 1's probe-skip; fixed by `cdcb5c1` (verified steady on loopback), but the owner reported the underlying trouble persisted on the real mesh. | reverted (feature removed) |
 
-**If reattempted — notes for next time.**
+**Corrected design (2026-07-23).** A replacement — *availability* rather than
+*presence* — is now designed doc-first in `docs/architecture/federation.md`
+§"Availability & node health" (backend) + `docs/ui/madnetwork-page.md`
+§Availability (UI). It drops the fast prober (slow 1-min health + passive
+`last_seen` from traffic that already flows), computes availability per **track**
+(union over holders) at request time, hides unavailable only at **refresh
+boundaries** (page load / search — no live poll), never fails dark (self-health
+watchdog + fail-open), and gates on hardening the netstack reader (issue #398).
+Not yet implemented.
+
+**If reattempted — notes for next time** (folded into the corrected design above).
 
 - Presence is a *P4 invention*; before it, `/madnetwork` simply always showed
   every friend's cached catalog (only a 1/min `last_seen`, hiding nothing).

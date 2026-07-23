@@ -1,14 +1,21 @@
-# Madnetwork Page — Library Parity & Presence
+# Madnetwork Page — Library Parity & Availability
 
 The `/madnetwork` page grows from a bespoke read-only drill-down into a full
 sibling of the library page (`/`): same row anatomy, same actions (hearts, "⋯"
 quick-add menus, playlists), same search behavior, shared code. On top of the
 parity work it gains two madnetwork-specific behaviors: **materialize** (the
-renamed download-to-library flow) and **presence** (friends that drop off the
-mesh take their tracks with them — fast).
+renamed download-to-library flow) and **availability** (tracks held only by a
+friend who is currently unreachable drop out of the view at the next refresh).
 
-Related docs: `docs/architecture/federation.md` (F2 catalog, F3 transfer, F4
-swarm), `docs/ui/player-and-queue.md` (queue semantics), `docs/api/playlists.md`.
+This is the **UI** design. The server-side mechanics referenced here are
+documented with the backend:
+
+- Catalog merge, the availability predicate, node-health/liveness, the swarm:
+  `docs/architecture/federation.md` (§Catalog, §Distribution, §Availability &
+  node health).
+- Remote playlist/favorite items (migration 029, API surface, re-pointing):
+  `docs/api/playlists.md` §"Remote (madnetwork) items".
+- Queue semantics: `docs/ui/player-and-queue.md`.
 
 ## Principles
 
@@ -19,9 +26,11 @@ swarm), `docs/ui/player-and-queue.md` (queue semantics), `docs/api/playlists.md`
   this server's library it says *Materialize* — button labels, menu items,
   progress, toasts. "Download" now exclusively means *save the file to the
   user's device* (a library action).
-- **The madnetwork view shows what is reachable.** Rows are backed by an online
-  holder, by our own library, or by a complete local cache — never by a friend
-  who is currently gone.
+- **The view shows what is reachable — and degrades quietly.** A row is backed by
+  our own library, by a complete local cache, or by a **reachable** friend.
+  Tracks held only by an unreachable friend are dropped, but only at a **refresh
+  boundary** (page load or a new search), never live under the cursor — so the
+  list is stable while you use it and a transient blip can't strobe it.
 - **Remote entries in playlists are first-class but honestly labeled.** They
   play (streamed relay) and survive in playlists, but carry a warning that they
   are not local and may become unavailable.
@@ -57,7 +66,7 @@ adopt the same `createVirtualList` later without API changes). The
 madnetwork-only ⓘ source/versions panel stays, appended by the madnetwork
 page after the shared track row is built.
 
-**Track identity for hearts/queues** becomes a single string key used by
+**Track identity for hearts/queues** is a single string key used by
 `favorites.js` and the playing-row highlight:
 
 - local appearance: `ts:<tagset_id>` (unchanged semantics)
@@ -67,8 +76,8 @@ page after the shared track row is built.
 
 **Favorites live on the row, not in the menu.** The inline heart button is the
 one favorites control on track rows, on both pages (madnetwork hearts keyed
-`mn:<hash>`). The library's current redundant "Add to Favorites" ⋯ item is
-dropped along with the extraction.
+`mn:<hash>`). The library's redundant "Add to Favorites" ⋯ item is dropped along
+with the extraction.
 
 **Library track ⋯ menu** (order): Play next · Add to queue · Add to playlist… ·
 **Download** (last). Download is a plain browser save of the track's resolved
@@ -76,11 +85,11 @@ rendition file — an `<a download>` click on the same-origin `/files/...` URL;
 no new endpoint. Track rows only (no album/artist zip in v0).
 
 **Madnetwork track ⋯ menu** (order): Play next · Add to queue · Add to
-playlist… · **Materialize** (last). The inline "⬇ Download"
-pill on the row is removed; the ⓘ panel's per-version action row renames its
-Download to Materialize (per-version materialize stays — it targets that
-version's best rendition). Materialize items render only for users holding
-`file.upload` (server enforcement unchanged).
+playlist… · **Materialize** (last). The inline "⬇ Download" pill on the row is
+removed; the ⓘ panel's per-version action row renames its Download to Materialize
+(per-version materialize targets that version's best rendition). Materialize items
+render only for users holding `file.upload` (server enforcement unchanged) and are
+omitted for tracks that are already local.
 
 **Madnetwork artist & album ⋯ menus**: Play next · Add to queue · Add to
 playlist… · **Materialize all** (last). Additionally the album *tracks view*
@@ -89,151 +98,106 @@ album-level bulk action shouldn't hide in a menu), permission-gated like the
 menu items.
 
 *Materialize all* iterates the entity's tracks, submitting
-`POST /api/madnetwork/download` for each default-version best rendition,
-skipping tracks already local, with one aggregate progress toast ("Materializing
-7 tracks… 3 done, 1 already local"). Submissions are sequential (the server
-dedupes per hash and swarm-fetches in parallel internally; the UI must not
-hammer the endpoint).
+`POST /api/madnetwork/download` for each default-version best rendition, skipping
+tracks already local, with a persistent page-level progress line (`#mnBulk` —
+survives panel re-render) and one aggregate completion toast ("Materializing
+7 tracks… 3 done, 1 already local"). Submissions are **sequential** (the server
+dedupes per hash and swarm-fetches in parallel internally; the UI must not hammer
+the endpoint). Only one bulk run at a time.
 
 ## Remote tracks in favorites & playlists
 
-Playlist items grow a **remote variant** (migration `029_playlist_remote_items.sql`):
+Remote madnetwork tracks can be liked and added to playlists. The schema,
+API surface, `available` flag, and re-pointing rules are backend concerns —
+see `docs/api/playlists.md` §"Remote (madnetwork) items". UI behavior:
 
-- `playlist_items.tagset_id` becomes nullable; new columns `remote_hash TEXT`,
-  `remote_title`, `remote_artist`, `remote_album` (display text captured at add
-  time — the friend's catalog row may vanish later).
-- `CHECK ((tagset_id IS NULL) <> (remote_hash IS NULL))`; per-playlist dedupe on
-  `remote_hash` mirrors the tagset dedupe.
-
-API surface:
-
-- `POST /api/playlists/{id}/items` accepts `remote: [{hash, title, artist,
-  album}]` alongside `tagset_ids`.
-- `GET /api/favorites` returns `tagset_ids` plus `remote` entries;
-  `POST /api/favorites/remote/{hash}` (body = display text) toggles a remote
-  like. Favorites remain the same system playlist underneath.
-- Playlist/favorites listings return remote rows with `kind: "remote"`, a play
-  URL of `/api/madnetwork/stream/{hash}`, and `available: bool` — true when the
-  hash is local, fully cached, or held by an online friend.
-
-UI behavior:
-
-- Adding a remote track to a playlist or favorites shows a one-time toast:
+- Adding a remote track to a playlist or to favorites shows a **one-time toast**:
   *"Not in the local library — may become unavailable."*
-- The playlists page renders remote rows with a small "remote" badge; rows with
-  `available: false` are dimmed with the same warning as their tooltip. Playback
-  and queueing otherwise work exactly like local rows (the streaming relay is
-  the URL).
-
-**Re-pointing on materialize:** when a blob lands **approved** in the library,
-all `playlist_items` rows whose `remote_hash` matches a rendition of the
-approved recording are re-pointed to the approved appearance's tagset
-(`tagset_id` set, `remote_*` cleared) — the playlist entry silently becomes a
-normal local entry. A read-time fallback resolves any rows the write-time hook
-missed (e.g. blobs that arrived by other means). Likes migrate the same way
-(favorites are a playlist).
+- The playlists page renders remote rows with a small **"remote" badge**; rows
+  the server reports `available: false` are **dimmed** with that same warning as
+  their tooltip. Playback and queueing otherwise work exactly like local rows
+  (the streaming relay is the URL).
+- Queue tracks carry a `remoteLike` meta flag so the player-bar heart and the
+  queue-panel "save" split the local (`ts:`) and remote (`mn:`) payloads
+  correctly.
+- When a remote track is later materialized and approved, its playlist/favorite
+  rows are re-pointed to the new local appearance server-side and quietly lose
+  the badge on the next load — the user does nothing.
 
 ## Own tracks in the view
 
-The madnetwork browse merges **this node's own published snapshot** (the same
-`visibleTagset` catalog served to friends) into the artist/album/track merge,
-as a holder named after `[federation].name` and flagged `self: true`:
+The madnetwork browse merges **this node's own published library** into the
+artist/album/track merge, so the page answers "what does the mesh see" and stays
+useful even with no friends online. The merge is a server-side UNION (see
+`docs/architecture/federation.md` §Catalog). What the UI shows:
 
-- Play/queue on a track whose best rendition is local uses the local resolved
-  URL (no relay hop through our own cache).
-- Materialize is omitted for tracks that are already local (nothing to do);
-  *Materialize all* skips them.
-- The ⓘ panel lists us among holders ("this server").
+- Own tracks appear as a holder named after `[federation].name`, flagged
+  `self: true` in the ⓘ panel ("this server").
+- Play/queue on an own track uses the direct local `/files/...` URL (no relay
+  hop through our own cache).
+- Materialize is omitted for own/already-local tracks; *Materialize all* skips
+  them.
+- Own tracks are **always available** — they never depend on anyone's liveness.
 
-Rationale: the page answers "what does the mesh see", and our own library is
-part of the mesh. It also keeps the page useful when no friends are online.
+## Availability
 
-## Presence — the 10-second rule
+> Replaces the reverted **10-second presence** feature (phase 4). The old design
+> ran a 5 s prober with a 10 s hysteresis and mutated the list live; it was
+> unstable on a real mesh and backed out in full. The corrected model — slow,
+> passive liveness; hide only at refresh boundaries; never fail dark — is
+> designed backend-side in `docs/architecture/federation.md` §Availability & node
+> health. This section is the UI half.
 
-> **Status: BUILT then REVERTED (2026-07-21).** The presence machinery below was
-> implemented and shipped, but proved unstable on a real mesh (download stalls +
-> online/offline flapping) and was backed out in full. The merged browse now
-> always shows every friend's cached catalog, as before presence existed. The
-> failure analysis and the conditions any reattempt must meet are in
-> `.issues/open-issues.md` ("the 10-second presence feature was reverted"). The
-> design is kept below for whoever revisits it.
+The server decides, **at request time**, which tracks are available (held by a
+reachable friend, or local, or fully cached) and returns only those in the
+browse/search responses. The page's job is simply to **render what the server
+sent** — there is no client-side presence logic, no background poll, and no live
+mutation of the list.
 
-Friends that drop off the mesh disappear from the browse within ~10 s, and
-return only after being demonstrably back for ~10 s (hysteresis, so a flapping
-link doesn't strobe the list).
+**Refresh boundaries.** The available set is re-evaluated only when the client
+re-fetches, which happens on exactly two user actions:
 
-**Server (federation node):** a dedicated presence prober alongside the 1-min
-refresh loop — every **5 s** ping all friends in parallel (3 s timeout, the
-existing `/madnetwork/v0/ping`). Per-friend state:
+1. **Page (re)load / navigating into `/madnetwork`** — a fresh browse fetch.
+2. **A new search** — `/api/madnetwork/search` returns the currently-available
+   matches.
 
-- `online → offline`: no successful ping for **10 s**.
-- `offline → online`: first success starts a probation window; the friend flips
-  online only after staying reachable for **10 s** (i.e. the next probe also
-  succeeds). Successful pings keep feeding `last_seen` as today.
+Between those, the list is frozen: a friend dropping off mid-scroll does **not**
+make rows vanish under the cursor; their exclusively-held tracks simply won't be
+there after the next reload or search. This is the deliberate trade the owner
+chose — avoid a "big pile of dead links" (unavailable tracks are hidden, not
+shown-then-broken) *without* the live flapping that sank the 10 s rule.
 
-Presence is in-memory node state (not persisted); on startup everyone begins
-offline and earns online status through probation. Mesh pings are tiny (a GET
-inside an established session), so N friends at 5 s cadence is negligible.
+**What is never hidden.** Local, fully-cached, and this node's own tracks always
+render regardless of anyone's reachability — a transient disconnect can never
+blank content you can actually play. Only tracks whose *only* holders are
+unreachable friends drop out.
 
-**Visibility rule** (applied server-side in the madnetwork browse queries and
-`/api/madnetwork/search`): a rendition is *visible* iff
+**Reachability display.** The sync-status strip lists friends with a **"last
+seen"** indicator; a friend outside the freshness window is greyed. The ⓘ panel's
+holder list shows the same — an unreachable holder is greyed rather than removed,
+so the provenance stays legible. (Freshness is minutes-wide; see the backend doc.)
 
-1. an **online** friend holds it (catalog ∪ holdings), or
-2. it is in the **local library**, or
-3. it is **fully cached** (complete file in `<data_dir>/cache/madnetwork/`,
-   no `.part`) — a cached track is fully playable regardless of who is online.
-
-A version is visible if any of its renditions is; a track if any version is;
-albums/artists and their counts are computed post-filter. Offline friends also
-drop out of the ⓘ holder lists and the status strip shows them greyed.
-
-**Client:** while `/madnetwork` is active, poll `/api/madnetwork/summary`
-every 5 s (existing endpoint + per-friend `online` flag). When the online-set
-fingerprint changes, re-fetch the current panel (drill level is preserved; a
-vanished album/artist falls back one level with a toast). Polling stops on
-teardown.
-
-**Future outlook — presence beyond direct friends (F5+):** the 5 s prober does
-not scale to a transitive friend-of-friend network, and it doesn't have to.
-Madnetwork rides Yggdrasil, so *any* node whose key we learn (from a
-depth-shared catalog) is directly addressable — the friendship chain governs
-trust and authorization, not connectivity. The plan for deeper networks is
-therefore two-tier: **gossiped liveness hints** piggybacking on catalog sync
-(each node shares its direct friends' `last_seen` — cheap, coarse,
-per-hop-stale, and only a claim) for browse-level filtering, plus **direct
-on-demand probing** of exactly the holders currently on screen (one mesh RTT to
-the holder itself — proof, not hearsay) for the accurate 10 s-grade presence.
-Probing the visible working set keeps cost O(what you're looking at) instead of
-O(network). No chain-relayed ping-forwarding is ever needed.
-
-**Empty states:** with own tracks merged in, the list truly empties only when
+**Empty states.** With own tracks merged in, the list truly empties only when
 there is nothing to show at all. The "no friends yet" onboarding message stays
 for the no-peers case; federation disabled keeps today's behavior (no
-`/madnetwork` link, page gated). Transient disconnects never blank the page —
-own + cached content remains.
+`/madnetwork` link, page gated).
 
 ## Search
 
 Madnetwork search behaves exactly like the library's: one input, 2+ chars,
 300 ms debounce, a search view with **Artists / Albums / Tracks** sections
-(shared `browse-search.js`), Escape/✕ to clear, hit = drill or play. New
-endpoint `GET /api/madnetwork/search?q=` mirrors `/api/search`'s shape over the
-merged (presence-filtered) catalog. The old artists-only filter box is retired.
+(shared `browse-search.js`), Escape/✕ to clear, hit = drill or play. The endpoint
+`GET /api/madnetwork/search?q=` mirrors `/api/search`'s shape over the merged,
+availability-filtered catalog. The old artists-only filter box is retired.
 
 ## Sorting
 
-Alphabetical (case-insensitive) everywhere, with the **unknown buckets last**:
-
-- Artists: the "Unknown artist" bucket sorts after everything else, then
-  `lower(name)`. Remote catalogs carry no normalized ids, so the bucket match is
-  on the canonical default strings (best-effort for foreign-language peers).
-- Albums: "Other" last, then `year IS NULL, year, lower(title)` (matching the
-  library's album order).
-- Tracks: unchanged (disc, track number, title).
-
-This matches the local library's existing server-side order (`norm_name`
-last-bucket trick in `database/library.go`); the madnetwork queries adopt the
-same shape.
+Alphabetical (case-insensitive) everywhere, with the **unknown buckets last** —
+"Unknown artist" after all artists, "Other" after all albums — matching the local
+library's existing order. Tracks order by disc, track number, then title. The
+ordering is applied server-side (same shape as `database/library.go`); remote
+catalogs carry no normalized ids, so the bucket match is best-effort on the
+canonical default strings.
 
 ## Out of scope
 
@@ -242,22 +206,27 @@ same shape.
 - Virtualized/paginated madnetwork artist list (adopt when catalogs grow).
 - Album/artist "Download as zip" on the library page.
 
-## Build order (all shipped)
+## Build order
 
 1. **Shared browse core** — `browse-rows.js` / `quick-add.js` /
    `browse-search.js` extracted from `app.js`; library page re-wired onto them
    with the redundant Favorites ⋯ item dropped (heart is the one control).
-2. **Madnetwork parity** — madnetwork page on the shared core: hearts, ⋯
-   menus, library-style search (`/api/madnetwork/search`), unknown-last sorting,
+   *(shipped)*
+2. **Madnetwork parity** — madnetwork page on the shared core: hearts, ⋯ menus,
+   library-style search (`/api/madnetwork/search`), unknown-last sorting,
    Materialize rename, library ⋯ Download item, own-tracks merge (`self` holder,
-   local `url`, `tagset_id`).
+   local `url`, `tagset_id`). *(shipped)*
 3. **Remote playlists/likes** — migration 029 (nullable `tagset_id` XOR
-   `remote_hash`), playlists/favorites API extensions, canonical `ts:`/`mn:`
-   like keys, warning text + `remote` badge/dimming, `RepointRemotePlaylistItems`
-   on every approval path + startup.
-4. **Presence** — 5 s prober with 10 s hysteresis. **REVERTED** (unstable on a
-   real mesh; see `.issues/open-issues.md`). The browse shows all friends'
-   catalogs again, no online/offline filtering.
-5. **Materialize all** — per-entity bulk submit (sequential, skip-local) with a
-   persistent progress line, artist/album ⋯ items + a visible tracks-view
-   button, aggregate completion toast.
+   `remote_hash`), playlists/favorites API extensions, canonical `ts:`/`mn:` like
+   keys, warning text + `remote` badge/dimming, re-pointing on every approval
+   path + startup. *(shipped)*
+4. **Materialize all** — per-entity bulk submit (sequential, skip-local) with a
+   persistent progress line, artist/album ⋯ items + a visible tracks-view button,
+   aggregate completion toast. *(shipped)*
+5. **Availability** — the reworked replacement for the reverted 10 s presence.
+   Backend: netstack hardening → slow/passive `last_seen` → request-time
+   availability predicate + self-health watchdog (fail open). UI: render the
+   server's available set; hide unavailable only at page-load / search
+   boundaries; grey (don't remove) unreachable holders; local/cached/own always
+   shown. *(planned — see `docs/architecture/federation.md` §Availability & node
+   health)*
