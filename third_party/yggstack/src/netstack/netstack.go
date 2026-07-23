@@ -19,6 +19,19 @@ import (
 
 type YggdrasilNetstack struct {
 	stack *stack.Stack
+	// nic is the single mesh NIC created in NewYggdrasilNIC; kept so
+	// InboundReaderAlive can report the inbound reader goroutine's liveness.
+	nic *YggdrasilNIC
+}
+
+// InboundReaderAlive reports whether the single inbound reader goroutine is
+// still running. It returns false once that goroutine has exited — on Close()
+// or on a terminal read error (types.ErrClosed). The madshare availability
+// watchdog reads this to "fail open" (stop hiding friends' tracks) when the
+// local inbound mesh path is dead. LOCAL PATCH (madshare) — see
+// third_party/yggstack/MADSHARE-PATCH.md (inbound-reader resilience, #398).
+func (s *YggdrasilNetstack) InboundReaderAlive() bool {
+	return s.nic != nil && s.nic.readerAlive.Load()
 }
 
 func CreateYggdrasilNetstack(ygg *core.Core) (*YggdrasilNetstack, error) {

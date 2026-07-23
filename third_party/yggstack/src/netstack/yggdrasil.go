@@ -1,10 +1,14 @@
 package netstack
 
 import (
+	"errors"
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
+	"time"
 
+	"github.com/Arceliar/ironwood/types"
 	"github.com/yggdrasil-network/yggdrasil-go/src/core"
 	"github.com/yggdrasil-network/yggdrasil-go/src/ipv6rwc"
 
@@ -29,6 +33,77 @@ type YggdrasilNIC struct {
 	// per-call buffers are sufficient and keep sends parallel.
 	writePool  sync.Pool
 	rstPackets chan *stack.PacketBuffer
+	// closed is set by Close() so the single inbound reader goroutine
+	// (runInboundReader) exits cleanly on shutdown instead of mistaking a
+	// deliberate teardown for a recoverable read error. See the LOCAL PATCH
+	// note above runInboundReader.
+	closed atomic.Bool
+	// readerAlive is true while the inbound reader goroutine runs; it flips to
+	// false in the goroutine's defer when it returns for any reason. Read via
+	// YggdrasilNetstack.InboundReaderAlive by the availability watchdog.
+	readerAlive atomic.Bool
+}
+
+// packetReader is the inbound half of *ipv6rwc.ReadWriteCloser. Declaring it as
+// an interface lets runInboundReader be unit-tested with an injected fake reader
+// (see yggdrasil_test.go) — the concrete ReadWriteCloser needs a live core.
+type packetReader interface {
+	Read(p []byte) (int, error)
+}
+
+const (
+	inboundBackoffMin = 50 * time.Millisecond
+	inboundBackoffMax = time.Second
+)
+
+// LOCAL PATCH (madshare): inbound-reader resilience — issue #398.
+//
+// Upstream ran the netstack's ENTIRE inbound path in one goroutine that did
+// `for { rx, err := Read(buf); if err != nil { log; break } ... }`. A single
+// Read error `break`s the loop for good, so one hiccup permanently kills ALL
+// inbound mesh traffic on the node (friend pings, catalog/holdings sync,
+// blob/manifest/chunk fetches, and serving other nodes) until the process is
+// restarted — a silent single point of failure.
+//
+// Error characterisation (the issue's prerequisite): ipv6rwc.Read →
+// keyStore.readPC → core.ReadFrom → ironwood PacketConn.ReadFrom. The only
+// errors that path surfaces are ironwood's types.ErrClosed (PacketConn/core was
+// closed — the definitive shutdown signal) and types.ErrTimeout (only if a read
+// deadline is set on the PacketConn, which this wrapper never does, so it does
+// not occur here). core.ReadFrom manufactures no errors of its own; it filters
+// non-traffic frames and otherwise blocks. So in this version the sole reachable
+// error is terminal-and-expected: types.ErrClosed at shutdown. This node stops
+// the mesh via core.Stop() (federation/node.go), which never calls
+// YggdrasilNIC.Close(), so the `closed` flag alone would NOT be set on the
+// normal shutdown path — hence ErrClosed must itself be treated as terminal, or
+// the loop would backoff-spin forever after Stop().
+//
+// runInboundReader therefore exits cleanly on (a) our own close signal or
+// (b) types.ErrClosed, and treats anything else — nothing today, but any future
+// yggstack/ironwood error, injected fault, or unanticipated transient — as
+// recoverable: log it and continue after a capped exponential backoff (50 ms →
+// 1 s) so a genuinely permanent error cannot hot-spin a CPU core.
+//
+// Documented in third_party/yggstack/MADSHARE-PATCH.md; prefer upstreaming
+// (issue #398 option 5) over carrying a second local patch indefinitely.
+func runInboundReader(r packetReader, buf []byte, closing func() bool, deliver func([]byte)) {
+	backoff := inboundBackoffMin
+	for {
+		rx, err := r.Read(buf)
+		if err != nil {
+			if closing() || errors.Is(err, types.ErrClosed) {
+				return // clean shutdown — exiting is correct
+			}
+			log.Printf("madnetwork: netstack inbound read error (recovering after %s): %v", backoff, err)
+			time.Sleep(backoff)
+			if backoff *= 2; backoff > inboundBackoffMax {
+				backoff = inboundBackoffMax
+			}
+			continue
+		}
+		backoff = inboundBackoffMin
+		deliver(buf[:rx])
+	}
 }
 
 func (s *YggdrasilNetstack) NewYggdrasilNIC(ygg *core.Core) tcpip.Error {
@@ -43,21 +118,13 @@ func (s *YggdrasilNetstack) NewYggdrasilNIC(ygg *core.Core) tcpip.Error {
 	if err := s.stack.CreateNIC(1, nic); err != nil {
 		return err
 	}
+	s.nic = nic
+	// Mark alive before launching so InboundReaderAlive can't observe a false
+	// "dead" between here and the goroutine starting; the defer flips it back.
+	nic.readerAlive.Store(true)
 	go func() {
-		var rx int
-		var err error
-		for {
-			rx, err = nic.ipv6rwc.Read(nic.readBuf)
-			if err != nil {
-				log.Println(err)
-				break
-			}
-			pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{
-				Payload: buffer.MakeWithData(nic.readBuf[:rx]),
-			})
-			nic.dispatcher.DeliverNetworkPacket(ipv6.ProtocolNumber, pkb)
-			pkb.DecRef()
-		}
+		defer nic.readerAlive.Store(false)
+		runInboundReader(nic.ipv6rwc, nic.readBuf, nic.closed.Load, nic.deliverInbound)
 	}()
 	go func() {
 		for {
@@ -98,6 +165,19 @@ func (s *YggdrasilNetstack) NewYggdrasilNIC(ygg *core.Core) tcpip.Error {
 		}
 	}
 	return nil
+}
+
+// deliverInbound wraps one received frame and hands it up to the stack. Close()
+// sets e.dispatcher = nil, so read the field once into a local and guard it: a
+// shutdown that races the reader must not panic on a nil DeliverNetworkPacket.
+func (e *YggdrasilNIC) deliverInbound(b []byte) {
+	pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{
+		Payload: buffer.MakeWithData(b),
+	})
+	if d := e.dispatcher; d != nil {
+		d.DeliverNetworkPacket(ipv6.ProtocolNumber, pkb)
+	}
+	pkb.DecRef()
 }
 
 func (e *YggdrasilNIC) Attach(dispatcher stack.NetworkDispatcher) { e.dispatcher = dispatcher }
@@ -195,6 +275,9 @@ func (e *YggdrasilNIC) ParseHeader(*stack.PacketBuffer) bool {
 }
 
 func (e *YggdrasilNIC) Close() {
+	// LOCAL PATCH (madshare): signal the inbound reader (runInboundReader) to
+	// exit cleanly rather than treat the teardown as a recoverable read error.
+	e.closed.Store(true)
 	e.stack.stack.RemoveNIC(1)
 	e.dispatcher = nil
 }
