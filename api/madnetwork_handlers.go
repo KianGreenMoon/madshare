@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/federation"
@@ -23,11 +24,35 @@ import (
 // provide: nothing.
 func (h *handler) includeSelf() bool { return h.madnetworkName != "" }
 
+// reachableWindowSec is the freshness window: a friend is "reachable" (its
+// exclusively-held tracks are shown) when last_seen is within this many seconds.
+// Several × the node's 1-minute refresh cadence, so a single missed ping never
+// flips reachability — the margin is the anti-flap guarantee.
+const reachableWindowSec = 180
+
+// madnetworkView builds the merged-browse policy for this request: whether to
+// fold in the own published set, and the reachability cutoff. The cutoff is 0
+// (no filtering — fail open) when this node's inbound mesh path is suspect, so a
+// local netstack fault shows the last-known catalog instead of blanking it.
+func (h *handler) madnetworkView() database.MadnetworkView {
+	v := database.MadnetworkView{IncludeSelf: h.includeSelf()}
+	if h.inboundHealthy() {
+		v.Cutoff = time.Now().Unix() - reachableWindowSec
+	}
+	return v
+}
+
+// inboundHealthy reports the node's self-health (true when federation is off or
+// absent — there is nothing to fail open for).
+func (h *handler) inboundHealthy() bool {
+	return h.federation == nil || h.federation.InboundHealthy()
+}
+
 // madnetworkSummary handles GET /api/madnetwork/summary: each friend's sync
 // state plus the merged distinct-track count — the page's status strip. With
 // the own set merged in, self_name labels this node's contribution.
 func (h *handler) madnetworkSummary(w http.ResponseWriter, r *http.Request) {
-	friends, tracks, err := h.madnetwork.MadnetworkSummary(r.Context(), h.includeSelf())
+	friends, tracks, err := h.madnetwork.MadnetworkSummary(r.Context(), h.madnetworkView())
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -35,7 +60,8 @@ func (h *handler) madnetworkSummary(w http.ResponseWriter, r *http.Request) {
 	if friends == nil {
 		friends = []*database.MadnetworkFriend{}
 	}
-	resp := map[string]any{"ok": true, "friends": friends, "tracks": tracks}
+	resp := map[string]any{"ok": true, "friends": friends, "tracks": tracks,
+		"inbound_healthy": h.inboundHealthy()}
 	if h.includeSelf() {
 		resp["self_name"] = h.madnetworkName
 	}
@@ -45,7 +71,7 @@ func (h *handler) madnetworkSummary(w http.ResponseWriter, r *http.Request) {
 // madnetworkArtists handles GET /api/madnetwork/artists[?q=]: the merged
 // artist list (album-artist grouping, like the local library).
 func (h *handler) madnetworkArtists(w http.ResponseWriter, r *http.Request) {
-	artists, err := h.madnetwork.MadnetworkArtists(r.Context(), r.URL.Query().Get("q"), h.includeSelf())
+	artists, err := h.madnetwork.MadnetworkArtists(r.Context(), r.URL.Query().Get("q"), h.madnetworkView())
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -63,7 +89,7 @@ func (h *handler) madnetworkAlbums(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "artist is required"})
 		return
 	}
-	albums, err := h.madnetwork.MadnetworkAlbums(r.Context(), artist, h.includeSelf())
+	albums, err := h.madnetwork.MadnetworkAlbums(r.Context(), artist, h.madnetworkView())
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -119,12 +145,13 @@ func (h *handler) madnetworkTracks(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "artist and album are required"})
 		return
 	}
-	rows, err := h.madnetwork.MadnetworkTracks(r.Context(), artist, album)
+	view := h.madnetworkView()
+	rows, err := h.madnetwork.MadnetworkTracks(r.Context(), artist, album, view.Cutoff)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	if h.includeSelf() {
+	if view.IncludeSelf {
 		own, err := h.madnetwork.MadnetworkOwnTracks(r.Context(), artist, album)
 		if err != nil {
 			http.Error(w, "storage error", http.StatusInternalServerError)
@@ -356,7 +383,8 @@ func (h *handler) madnetworkSearch(w http.ResponseWriter, r *http.Request) {
 		URL        string   `json:"url,omitempty"` // local play address when self-held
 	}
 
-	artists, err := h.madnetwork.MadnetworkArtists(r.Context(), q, h.includeSelf())
+	view := h.madnetworkView()
+	artists, err := h.madnetwork.MadnetworkArtists(r.Context(), q, view)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -371,13 +399,13 @@ func (h *handler) madnetworkSearch(w http.ResponseWriter, r *http.Request) {
 		artists = []*database.MadnetworkArtist{}
 	}
 
-	albums, err := h.madnetwork.MadnetworkSearchAlbums(r.Context(), q, madnetworkSearchAlbumCap, h.includeSelf())
+	albums, err := h.madnetwork.MadnetworkSearchAlbums(r.Context(), q, madnetworkSearchAlbumCap, view)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
 
-	rows, err := h.madnetwork.MadnetworkSearchTrackRows(r.Context(), q, h.includeSelf())
+	rows, err := h.madnetwork.MadnetworkSearchTrackRows(r.Context(), q, view)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return

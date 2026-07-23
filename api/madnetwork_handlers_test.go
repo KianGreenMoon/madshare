@@ -14,33 +14,35 @@ import (
 )
 
 type fakeMadnetwork struct {
-	rows    []*database.MadnetworkTrackRow
-	ownRows []*database.MadnetworkTrackRow
-	artists []*database.MadnetworkArtist
+	rows     []*database.MadnetworkTrackRow
+	ownRows  []*database.MadnetworkTrackRow
+	artists  []*database.MadnetworkArtist
+	lastView database.MadnetworkView // captured by MadnetworkSummary for assertions
 }
 
-func (f *fakeMadnetwork) MadnetworkArtists(context.Context, string, bool) ([]*database.MadnetworkArtist, error) {
+func (f *fakeMadnetwork) MadnetworkArtists(context.Context, string, database.MadnetworkView) ([]*database.MadnetworkArtist, error) {
 	if f.artists != nil {
 		return f.artists, nil
 	}
 	return []*database.MadnetworkArtist{{Name: "A", Albums: 1, Tracks: 2}}, nil
 }
-func (f *fakeMadnetwork) MadnetworkAlbums(context.Context, string, bool) ([]*database.MadnetworkAlbum, error) {
+func (f *fakeMadnetwork) MadnetworkAlbums(context.Context, string, database.MadnetworkView) ([]*database.MadnetworkAlbum, error) {
 	return nil, nil
 }
-func (f *fakeMadnetwork) MadnetworkTracks(context.Context, string, string) ([]*database.MadnetworkTrackRow, error) {
+func (f *fakeMadnetwork) MadnetworkTracks(context.Context, string, string, int64) ([]*database.MadnetworkTrackRow, error) {
 	return f.rows, nil
 }
 func (f *fakeMadnetwork) MadnetworkOwnTracks(context.Context, string, string) ([]*database.MadnetworkTrackRow, error) {
 	return f.ownRows, nil
 }
-func (f *fakeMadnetwork) MadnetworkSummary(context.Context, bool) ([]*database.MadnetworkFriend, int64, error) {
+func (f *fakeMadnetwork) MadnetworkSummary(_ context.Context, view database.MadnetworkView) ([]*database.MadnetworkFriend, int64, error) {
+	f.lastView = view
 	return nil, 0, nil
 }
-func (f *fakeMadnetwork) MadnetworkSearchAlbums(context.Context, string, int, bool) ([]*database.MadnetworkSearchAlbum, error) {
+func (f *fakeMadnetwork) MadnetworkSearchAlbums(context.Context, string, int, database.MadnetworkView) ([]*database.MadnetworkSearchAlbum, error) {
 	return []*database.MadnetworkSearchAlbum{{Artist: "A", Title: "B", Tracks: 2}}, nil
 }
-func (f *fakeMadnetwork) MadnetworkSearchTrackRows(context.Context, string, bool) ([]*database.MadnetworkTrackRow, error) {
+func (f *fakeMadnetwork) MadnetworkSearchTrackRows(context.Context, string, database.MadnetworkView) ([]*database.MadnetworkTrackRow, error) {
 	return append(append([]*database.MadnetworkTrackRow{}, f.rows...), f.ownRows...), nil
 }
 func (f *fakeMadnetwork) MadnetworkEntryForHash(_ context.Context, hash string) (*federation.CatalogEntry, error) {
@@ -268,5 +270,42 @@ func TestMadnetworkRoutes_NotRegisteredWithoutStore(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("without a store = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestMadnetworkView_FailOpen verifies the availability policy the browse
+// handlers build: a healthy node filters by a positive cutoff, while a suspect
+// inbound path fails open (cutoff 0 = show the last-known catalog) and reports
+// inbound_healthy=false (docs/architecture/federation.md §Availability).
+func TestMadnetworkView_FailOpen(t *testing.T) {
+	call := func(fed FederationNode) (*fakeMadnetwork, bool) {
+		fake := &fakeMadnetwork{}
+		r := chi.NewRouter()
+		RegisterAPI(r, Deps{Madnetwork: fake, MadnetworkName: "n", Federation: fed})
+		srv := httptest.NewServer(r)
+		defer srv.Close()
+		resp, err := http.Get(srv.URL + "/api/madnetwork/summary")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var body struct {
+			InboundHealthy bool `json:"inbound_healthy"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		return fake, body.InboundHealthy
+	}
+
+	// Healthy: filtering on (positive cutoff), inbound_healthy true.
+	if fake, healthy := call(&fakeFederation{}); fake.lastView.Cutoff <= 0 || !healthy {
+		t.Errorf("healthy: cutoff = %d, inbound_healthy = %v; want cutoff>0, healthy true",
+			fake.lastView.Cutoff, healthy)
+	}
+	// Inbound dead: fail open (cutoff 0), inbound_healthy false.
+	if fake, healthy := call(&fakeFederation{inboundDead: true}); fake.lastView.Cutoff != 0 || healthy {
+		t.Errorf("inbound dead: cutoff = %d, inbound_healthy = %v; want cutoff 0, healthy false",
+			fake.lastView.Cutoff, healthy)
 	}
 }

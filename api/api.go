@@ -119,13 +119,13 @@ type Deps struct {
 // dedicated interface — not database.Repository — so the browse endpoints
 // don't force every Repository fake to grow with them.
 type MadnetworkStore interface {
-	MadnetworkArtists(ctx context.Context, q string, includeSelf bool) ([]*database.MadnetworkArtist, error)
-	MadnetworkAlbums(ctx context.Context, artist string, includeSelf bool) ([]*database.MadnetworkAlbum, error)
-	MadnetworkTracks(ctx context.Context, artist, album string) ([]*database.MadnetworkTrackRow, error)
+	MadnetworkArtists(ctx context.Context, q string, view database.MadnetworkView) ([]*database.MadnetworkArtist, error)
+	MadnetworkAlbums(ctx context.Context, artist string, view database.MadnetworkView) ([]*database.MadnetworkAlbum, error)
+	MadnetworkTracks(ctx context.Context, artist, album string, cutoff int64) ([]*database.MadnetworkTrackRow, error)
 	MadnetworkOwnTracks(ctx context.Context, artist, album string) ([]*database.MadnetworkTrackRow, error)
-	MadnetworkSummary(ctx context.Context, includeSelf bool) ([]*database.MadnetworkFriend, int64, error)
-	MadnetworkSearchAlbums(ctx context.Context, q string, limit int, includeSelf bool) ([]*database.MadnetworkSearchAlbum, error)
-	MadnetworkSearchTrackRows(ctx context.Context, q string, includeSelf bool) ([]*database.MadnetworkTrackRow, error)
+	MadnetworkSummary(ctx context.Context, view database.MadnetworkView) ([]*database.MadnetworkFriend, int64, error)
+	MadnetworkSearchAlbums(ctx context.Context, q string, limit int, view database.MadnetworkView) ([]*database.MadnetworkSearchAlbum, error)
+	MadnetworkSearchTrackRows(ctx context.Context, q string, view database.MadnetworkView) ([]*database.MadnetworkTrackRow, error)
 	// F3 (direct transfer): the tagset text behind a rendition hash (staging
 	// metadata for download-to-library) and the download policy.
 	MadnetworkEntryForHash(ctx context.Context, hash string) (*federation.CatalogEntry, error)
@@ -149,6 +149,10 @@ type FederationNode interface {
 	// EnsureBlob joins (or starts) the fetch of a remote blob by content hash
 	// (federation F3); the stub answers with its compiled-out error.
 	EnsureBlob(ctx context.Context, hash string) (federation.Transfer, error)
+	// InboundHealthy reports whether this node's inbound mesh path appears alive;
+	// false makes the merged browse fail open (stop hiding unreachable friends)
+	// rather than blank the view (docs/architecture/federation.md §Availability).
+	InboundHealthy() bool
 }
 
 // protect returns middleware enforcing perm, but only when auth is configured

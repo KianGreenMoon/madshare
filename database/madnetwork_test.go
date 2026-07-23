@@ -131,7 +131,7 @@ func TestMadnetworkCacheAndBrowse(t *testing.T) {
 	}
 
 	// Artists: case-insensitive merge, no Ghost.
-	artists, err := db.MadnetworkArtists(ctx, "", false)
+	artists, err := db.MadnetworkArtists(ctx, "", MadnetworkView{})
 	if err != nil {
 		t.Fatalf("MadnetworkArtists: %v", err)
 	}
@@ -147,12 +147,12 @@ func TestMadnetworkCacheAndBrowse(t *testing.T) {
 	}
 
 	// Filter hits only matching artists.
-	if got, _ := db.MadnetworkArtists(ctx, "only", false); len(got) != 1 || got[0].Name != "Only B" {
+	if got, _ := db.MadnetworkArtists(ctx, "only", MadnetworkView{}); len(got) != 1 || got[0].Name != "Only B" {
 		t.Errorf("filtered artists = %+v, want Only B", got)
 	}
 
 	// Albums of the merged artist.
-	albums, err := db.MadnetworkAlbums(ctx, "SHARED ARTIST", false)
+	albums, err := db.MadnetworkAlbums(ctx, "SHARED ARTIST", MadnetworkView{})
 	if err != nil {
 		t.Fatalf("MadnetworkAlbums: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestMadnetworkCacheAndBrowse(t *testing.T) {
 	}
 
 	// Raw track rows for the handler's merge: 4 rows (2 peers × 2 tracks).
-	rows, err := db.MadnetworkTracks(ctx, "Shared Artist", "Shared Album")
+	rows, err := db.MadnetworkTracks(ctx, "Shared Artist", "Shared Album", 0)
 	if err != nil {
 		t.Fatalf("MadnetworkTracks: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestMadnetworkCacheAndBrowse(t *testing.T) {
 	}
 
 	// Summary: two friends (the pending peer is absent), merged track count 3.
-	friends, tracks, err := db.MadnetworkSummary(ctx, false)
+	friends, tracks, err := db.MadnetworkSummary(ctx, MadnetworkView{})
 	if err != nil {
 		t.Fatalf("MadnetworkSummary: %v", err)
 	}
@@ -196,11 +196,11 @@ func TestMadnetworkCacheAndBrowse(t *testing.T) {
 	if err := db.SetFederationPeerState(ctx, friendB, federation.PeerBlocked, federation.PeerFriend); err != nil {
 		t.Fatal(err)
 	}
-	artists, _ = db.MadnetworkArtists(ctx, "", false)
+	artists, _ = db.MadnetworkArtists(ctx, "", MadnetworkView{})
 	if len(artists) != 1 {
 		t.Errorf("artists after block = %+v, want only friend-a's", artists)
 	}
-	if _, tracks, _ = db.MadnetworkSummary(ctx, false); tracks != 2 {
+	if _, tracks, _ = db.MadnetworkSummary(ctx, MadnetworkView{}); tracks != 2 {
 		t.Errorf("track count after block = %d, want 2", tracks)
 	}
 }
@@ -247,11 +247,11 @@ func TestMadnetworkSelfMergeAndSorting(t *testing.T) {
 	}
 
 	// Without self: only the friend's two artists.
-	if got, _ := db.MadnetworkArtists(ctx, "", false); len(got) != 2 {
+	if got, _ := db.MadnetworkArtists(ctx, "", MadnetworkView{}); len(got) != 2 {
 		t.Fatalf("artists without self = %+v, want 2", got)
 	}
 	// With self: merged, alphabetical, unknown bucket last.
-	artists, err := db.MadnetworkArtists(ctx, "", true)
+	artists, err := db.MadnetworkArtists(ctx, "", MadnetworkView{IncludeSelf: true})
 	if err != nil {
 		t.Fatalf("MadnetworkArtists(self): %v", err)
 	}
@@ -269,10 +269,10 @@ func TestMadnetworkSelfMergeAndSorting(t *testing.T) {
 	}
 
 	// Albums with self; the untagged bucket album sorts last for its artist.
-	if albums, _ := db.MadnetworkAlbums(ctx, "Shared Artist", true); len(albums) != 1 || albums[0].Tracks != 1 {
+	if albums, _ := db.MadnetworkAlbums(ctx, "Shared Artist", MadnetworkView{IncludeSelf: true}); len(albums) != 1 || albums[0].Tracks != 1 {
 		t.Errorf("shared albums = %+v, want one album with 1 merged track", albums)
 	}
-	if albums, _ := db.MadnetworkAlbums(ctx, DefaultArtistName, true); len(albums) != 1 || albums[0].Title != DefaultAlbumTitle {
+	if albums, _ := db.MadnetworkAlbums(ctx, DefaultArtistName, MadnetworkView{IncludeSelf: true}); len(albums) != 1 || albums[0].Title != DefaultAlbumTitle {
 		t.Errorf("bucket albums = %+v, want the %q bucket", albums, DefaultAlbumTitle)
 	}
 
@@ -292,20 +292,20 @@ func TestMadnetworkSelfMergeAndSorting(t *testing.T) {
 	}
 
 	// Summary counts own tracks only when included.
-	if _, tracks, _ := db.MadnetworkSummary(ctx, false); tracks != 2 {
+	if _, tracks, _ := db.MadnetworkSummary(ctx, MadnetworkView{}); tracks != 2 {
 		t.Errorf("summary tracks without self = %d, want 2", tracks)
 	}
-	if _, tracks, _ := db.MadnetworkSummary(ctx, true); tracks != 4 {
+	if _, tracks, _ := db.MadnetworkSummary(ctx, MadnetworkView{IncludeSelf: true}); tracks != 4 {
 		t.Errorf("summary tracks with self = %d, want 4 (shared song folds)", tracks)
 	}
 
 	// Search: albums by title substring (the untagged "Other" bucket doesn't
 	// match "album"; the shared album folds across sources), raw track rows
 	// from both sources.
-	if hits, _ := db.MadnetworkSearchAlbums(ctx, "album", 10, true); len(hits) != 3 {
+	if hits, _ := db.MadnetworkSearchAlbums(ctx, "album", 10, MadnetworkView{IncludeSelf: true}); len(hits) != 3 {
 		t.Errorf("search albums = %+v, want 3 buckets", hits)
 	}
-	rows, err := db.MadnetworkSearchTrackRows(ctx, "song", true)
+	rows, err := db.MadnetworkSearchTrackRows(ctx, "song", MadnetworkView{IncludeSelf: true})
 	if err != nil {
 		t.Fatalf("MadnetworkSearchTrackRows: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestMadnetworkSelfMergeAndSorting(t *testing.T) {
 		t.Errorf("search rows = %d remote / %d self, want 2/3", remoteRows, selfRows)
 	}
 	// Self excluded → own rows disappear from search too.
-	if rows, _ := db.MadnetworkSearchTrackRows(ctx, "song", false); len(rows) != 2 {
+	if rows, _ := db.MadnetworkSearchTrackRows(ctx, "song", MadnetworkView{}); len(rows) != 2 {
 		t.Errorf("search rows without self = %d, want 2", len(rows))
 	}
 }
@@ -409,5 +409,83 @@ func TestMadnetworkPolicy(t *testing.T) {
 	// SeedingPolicy reflects the same stored flags.
 	if en, ca, _ := db.SeedingPolicy(ctx); en || ca {
 		t.Errorf("SeedingPolicy = (%v,%v), want (false,false)", en, ca)
+	}
+}
+
+// TestMadnetworkAvailability covers the request-time reachability filter
+// (docs/architecture/federation.md §Availability & node health): a friend seen
+// before the cutoff drops out of the merged browse, while a fresh friend stays;
+// cutoff 0 (fail open / filtering off) shows both, matching pre-availability.
+func TestMadnetworkAvailability(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	fresh := insertPeer(t, db, "aaaa", "fresh", federation.PeerFriend)
+	stale := insertPeer(t, db, "bbbb", "stale", federation.PeerFriend)
+	if err := db.TouchFederationPeerSeen(ctx, fresh, 10000); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.TouchFederationPeerSeen(ctx, stale, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReplacePeerCatalog(ctx, fresh, "sf", 1, []federation.CatalogEntry{
+		catEntry("1", "r1", "Fresh Artist", "Fresh Album", "Fresh Song", "hash-fresh"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReplacePeerCatalog(ctx, stale, "ss", 1, []federation.CatalogEntry{
+		catEntry("2", "r2", "Stale Artist", "Stale Album", "Stale Song", "hash-stale"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	const cutoff = 5000 // fresh (10000) reachable, stale (100) not
+
+	// Filtered: only the fresh friend's artist shows.
+	got, err := db.MadnetworkArtists(ctx, "", MadnetworkView{Cutoff: cutoff})
+	if err != nil {
+		t.Fatalf("MadnetworkArtists: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "Fresh Artist" {
+		t.Fatalf("filtered artists = %+v, want only Fresh Artist", got)
+	}
+	// The stale friend's album has no reachable holder → no track rows.
+	if rows, _ := db.MadnetworkTracks(ctx, "Stale Artist", "Stale Album", cutoff); len(rows) != 0 {
+		t.Errorf("stale album track rows = %d, want 0", len(rows))
+	}
+	if rows, _ := db.MadnetworkTracks(ctx, "Fresh Artist", "Fresh Album", cutoff); len(rows) != 1 {
+		t.Errorf("fresh album track rows = %d, want 1", len(rows))
+	}
+	// Search is filtered too.
+	if rows, _ := db.MadnetworkSearchTrackRows(ctx, "Song", MadnetworkView{Cutoff: cutoff}); len(rows) != 1 {
+		t.Errorf("filtered search rows = %d, want 1 (fresh only)", len(rows))
+	}
+
+	// Summary lists BOTH friends (the strip greys, not hides) but marks
+	// reachability, and the track count reflects only the reachable set.
+	friends, tracks, err := db.MadnetworkSummary(ctx, MadnetworkView{Cutoff: cutoff})
+	if err != nil {
+		t.Fatalf("MadnetworkSummary: %v", err)
+	}
+	if len(friends) != 2 {
+		t.Fatalf("summary friends = %d, want 2 (both listed)", len(friends))
+	}
+	reach := map[string]bool{}
+	for _, f := range friends {
+		reach[f.Name] = f.Reachable
+	}
+	if !reach["fresh"] || reach["stale"] {
+		t.Errorf("reachability = %+v, want fresh=true stale=false", reach)
+	}
+	if tracks != 1 {
+		t.Errorf("reachable track count = %d, want 1", tracks)
+	}
+
+	// Cutoff 0 = fail open: both friends' tracks are visible again.
+	if got, _ := db.MadnetworkArtists(ctx, "", MadnetworkView{}); len(got) != 2 {
+		t.Errorf("unfiltered artists = %d, want 2", len(got))
+	}
+	if _, tracks, _ := db.MadnetworkSummary(ctx, MadnetworkView{}); tracks != 2 {
+		t.Errorf("unfiltered track count = %d, want 2", tracks)
 	}
 }

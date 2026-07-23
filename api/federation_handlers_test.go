@@ -17,10 +17,11 @@ import (
 // machine is covered by the federation package's handshake test — here only the
 // HTTP mapping is under test.
 type fakeFederation struct {
-	peers    []*federation.Peer
-	imported *federation.Card
-	patched  map[string]any
-	opErr    error
+	peers       []*federation.Peer
+	imported    *federation.Card
+	patched     map[string]any
+	opErr       error
+	inboundDead bool // when true, InboundHealthy() reports false (fail-open path)
 }
 
 func (f *fakeFederation) Info() federation.NodeInfo {
@@ -40,6 +41,7 @@ func (f *fakeFederation) ImportCard(_ context.Context, c federation.Card) (*fede
 func (f *fakeFederation) EnsureBlob(context.Context, string) (federation.Transfer, error) {
 	return nil, federation.ErrNoHolder
 }
+func (f *fakeFederation) InboundHealthy() bool                     { return !f.inboundDead }
 func (f *fakeFederation) AcceptPeer(context.Context, int64) error  { return f.opErr }
 func (f *fakeFederation) BlockPeer(context.Context, int64) error   { return f.opErr }
 func (f *fakeFederation) UnblockPeer(context.Context, int64) error { return f.opErr }

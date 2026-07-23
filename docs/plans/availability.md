@@ -146,9 +146,14 @@ The visible behavior. All in `database/madnetwork.go` + the handler wiring.
    `Reachable bool` (computed `last_seen >= cutoff`) and a top-level
    `inbound_healthy` to `MadnetworkSummary` / the `madnetworkSummary` response, so
    the client greys stale friends and can show the fail-open banner.
-4. **Remote playlists** (`database/playlists.go` `remotePlaylistItems`): add the
-   `AND (:cutoff = 0 OR p.last_seen >= :cutoff)` gate to the two friend-EXISTS
-   subqueries so `available` matches the browse rule.
+4. **Remote playlists** — *decided NOT to freshness-gate* (2026-07-23).
+   `remotePlaylistItems` keeps its "local blob ∨ any friend advertises (catalog ∨
+   holdings)" semantics. Rationale: browse is discovery (hide unreachable to cut
+   dead-link noise), but a playlist/favorite is an **intentional saved item** — it
+   should not dim just because its holder missed a ping (the swarm may still fetch
+   it); `available:false` should mean "no holder anywhere," which is the current
+   rule. This is a deliberate browse-vs-saved distinction, and it avoids threading
+   a cutoff through the general `GetPlaylist`/`Repository` interface.
 
 ## Phase 2b — Fully-cached exception (deferrable)
 
