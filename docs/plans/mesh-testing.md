@@ -116,6 +116,32 @@ not extend it on the theory that it protects the release artifact.
 
 ## Phase T0 — netfault core (TCP)
 
+**Built (this commit)** — the library half. `tests/mesh/netfault` implements the
+`Fault`/`Dir` model, the relay, `Set` (applying to live connections), `Script`,
+`Stats`, and loopback-only defaults with an `Options.AllowRemote` escape hatch.
+11 tests: 6 deterministic ones run by default in ~20 ms, 5 timing-sensitive ones
+behind `MADSHARE_CHAOS`. Race-clean. `tests/mesh/README.md` stub written, its
+Quick start commands and Go snippet both executed/compiled as written.
+
+Two things worth recording:
+
+- **Latency is a delay queue, not a sleep before each write.** Sleeping inline
+  couples delay to throughput — a 200 ms link would deliver one 32 KiB buffer per
+  200 ms (≈160 KiB/s) — which would have made every latency scenario measure a bug
+  in the injector rather than anything federation did. `TestLatencyDoesNotThrottle`
+  pins it: 4 MiB across a 200 ms link completes in 0.42 s, where the naive
+  implementation needs ~25 s. Delivery times are forced monotonic, since jitter
+  must vary delay without reordering a byte stream.
+- **The token bucket's burst is 100 ms of traffic, not 1 s** as in `swarm.go`.
+  That one is a fairness cap where bursting is harmless; this one emulates a
+  *link*, which does not save up a second of unused capacity to spend at once —
+  and a wide burst would make short transfers appear unthrottled, exactly the
+  regime the swarm tests care about.
+
+**Not yet built:** `cmd/netfaultd` and its HTTP control API. Nothing consumes it
+until meshlab (T4) — in-process scenarios call the library directly — so it lands
+with its only consumer, and the `-tags tests` gating arrives with it.
+
 A dependency-free relay: listen on `127.0.0.1:0`, dial the real endpoint, pump
 bytes both ways through a fault pipeline. Per-direction configuration so
 asymmetry (fast down, crawling up) is expressible.
