@@ -55,6 +55,15 @@ async function loadStatus() {
   selfName.textContent = data.node.name || '(unnamed)';
   selfAddr.textContent = data.node.address;
   selfKey.textContent  = data.node.public_key;
+  const inboundWarn = document.getElementById('inboundWarn');
+  if (inboundWarn) {
+    if (data.inbound_healthy === false) {
+      inboundWarn.textContent = '⚠ This node’s inbound mesh path looks down — friends are unreachable until it recovers or the node is restarted (issue #398). The madnetwork browse is failing open (showing last-known catalogs).';
+      inboundWarn.hidden = false;
+    } else {
+      inboundWarn.hidden = true;
+    }
+  }
   selfPanel.hidden = false;
   importForm.hidden = false;
   peersHeading.hidden = false;

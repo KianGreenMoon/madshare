@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -307,5 +308,49 @@ func TestMadnetworkView_FailOpen(t *testing.T) {
 	if fake, healthy := call(&fakeFederation{inboundDead: true}); fake.lastView.Cutoff != 0 || healthy {
 		t.Errorf("inbound dead: cutoff = %d, inbound_healthy = %v; want cutoff 0, healthy false",
 			fake.lastView.Cutoff, healthy)
+	}
+}
+
+// TestMadnetworkHolders_Reachability: in a fail-open response (both fresh and
+// stale holders present), each holder carries a display reachability flag —
+// fresh within the window is reachable, long-ago is not (the ⓘ panel greys it).
+func TestMadnetworkHolders_Reachability(t *testing.T) {
+	fresh := madRow(1, "fresh-peer", "r1", "Song", "h1")
+	fresh.PeerLastSeen = time.Now().Unix()
+	stale := madRow(2, "stale-peer", "r2", "Song", "h1") // same hash → one version, two holders
+	stale.PeerLastSeen = 1
+	fake := &fakeMadnetwork{rows: []*database.MadnetworkTrackRow{fresh, stale}}
+	r := chi.NewRouter()
+	RegisterAPI(r, Deps{Madnetwork: fake})
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/madnetwork/tracks?artist=A&album=B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Tracks []struct {
+			Versions []struct {
+				Holders []struct {
+					Name      string `json:"name"`
+					Reachable bool   `json:"reachable"`
+				} `json:"holders"`
+			} `json:"versions"`
+		} `json:"tracks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Tracks) != 1 || len(body.Tracks[0].Versions) != 1 {
+		t.Fatalf("want 1 track / 1 version, got %+v", body.Tracks)
+	}
+	reach := map[string]bool{}
+	for _, h := range body.Tracks[0].Versions[0].Holders {
+		reach[h.Name] = h.Reachable
+	}
+	if !reach["fresh-peer"] || reach["stale-peer"] {
+		t.Errorf("holder reachability = %+v, want fresh=true stale=false", reach)
 	}
 }

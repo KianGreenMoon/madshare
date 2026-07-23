@@ -29,6 +29,18 @@
   border-radius: 999px;
 }
 .mn-friend--empty { opacity: 0.6; }
+/* A friend not seen within the freshness window: its exclusively-held tracks are
+   hidden from the browse, so the chip reads as dimmed/offline. */
+.mn-friend--stale { opacity: 0.5; border-style: dashed; }
+.mn-friend--stale .mn-friend-seen { color: var(--text-muted); font-style: italic; }
+
+/* Fail-open banner: this node's inbound mesh path looks dead, so nothing is
+   being hidden and the catalog shown is last-known rather than live. */
+.mn-status-warn {
+  flex-basis: 100%;
+  color: var(--warning, #b26b00);
+  font-weight: 600;
+}
 
 /* Bulk-materialize progress line (Materialize all) + the tracks-view button. */
 .mn-bulk {
@@ -102,6 +114,9 @@
 .mn-holders { font-size: 0.8rem; color: var(--text-muted); }
 .mn-holder { color: var(--text); }
 .mn-holder--self { color: var(--accent); font-weight: 600; }
+/* Holder seen too long ago to count as reachable — shown (fail-open view) but
+   greyed so it reads as possibly-unavailable. */
+.mn-holder--stale { color: var(--text-muted); text-decoration: line-through; }
 
 /* ── F3 version actions (Play / Queue / Download) ──────────────────────────── */
 .mn-actions { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-1); }

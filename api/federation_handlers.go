@@ -27,10 +27,11 @@ func (h *handler) federationStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	info := h.federation.Info()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":        true,
-		"enabled":   true,
-		"node":      info,
-		"mesh_port": federation.MeshPort,
+		"ok":              true,
+		"enabled":         true,
+		"node":            info,
+		"mesh_port":       federation.MeshPort,
+		"inbound_healthy": h.federation.InboundHealthy(),
 	})
 }
 

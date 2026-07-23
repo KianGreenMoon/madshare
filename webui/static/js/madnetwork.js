@@ -135,6 +135,12 @@ async function loadStatus() {
 
   const friends = data.friends || [];
   box.replaceChildren();
+  // Fail-open banner: our own inbound mesh path looks dead, so nothing is being
+  // hidden — the catalog shown is last-known, not live.
+  if (data.inbound_healthy === false) {
+    box.append(mkSpan('mn-status-warn',
+      '⚠ This node can’t reach the mesh right now — showing the last-known catalog.'));
+  }
   if (!friends.length && !data.tracks) {
     box.append(mkSpan('mn-status-main', 'No friends yet — the madnetwork view fills up once this node friends others on '),
       mkAdminLink());
@@ -152,9 +158,11 @@ async function loadStatus() {
     box.append(chip);
   }
   for (const f of friends) {
+    const stale = f.reachable === false;
     const chip = document.createElement('span');
-    chip.className = 'mn-friend' + (f.entries ? '' : ' mn-friend--empty');
-    chip.title = `${f.entries} entries · catalog synced ${fmtAgo(f.synced_at)}`;
+    chip.className = 'mn-friend' + (f.entries ? '' : ' mn-friend--empty') + (stale ? ' mn-friend--stale' : '');
+    chip.title = `${f.entries} entries · catalog synced ${fmtAgo(f.synced_at)}` +
+      (stale ? ' · not seen recently — its tracks are hidden' : '');
     chip.append(mkSpan('mn-friend-name', f.name || '(unnamed)'),
       mkSpan('mn-friend-seen', `seen ${fmtAgo(f.last_seen)}`));
     box.append(chip);
@@ -488,8 +496,11 @@ function renderVersions(detail, t) {
     (v.holders || []).forEach((h, j) => {
       if (j) hs.append(document.createTextNode(', '));
       const holder = mkSpan('mn-holder', h.name || '(unnamed)');
-      holder.title = h.self ? 'this server' : `last seen ${fmtAgo(h.last_seen)}`;
+      const stale = !h.self && h.reachable === false;
+      holder.title = h.self ? 'this server'
+        : `last seen ${fmtAgo(h.last_seen)}` + (stale ? ' · not seen recently' : '');
       if (h.self) holder.classList.add('mn-holder--self');
+      if (stale) holder.classList.add('mn-holder--stale');
       hs.append(holder);
     });
     box.append(hs);

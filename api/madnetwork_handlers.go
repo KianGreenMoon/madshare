@@ -48,6 +48,12 @@ func (h *handler) inboundHealthy() bool {
 	return h.federation == nil || h.federation.InboundHealthy()
 }
 
+// reachCutoff is the freshness cutoff used to *display* holder reachability (the
+// ⓘ panel greys a holder past it). Always now−window, independent of the browse
+// filter cutoff — so when the view fails open (showing everything), stale holders
+// still read as stale rather than all looking reachable.
+func reachCutoff() int64 { return time.Now().Unix() - reachableWindowSec }
+
 // madnetworkSummary handles GET /api/madnetwork/summary: each friend's sync
 // state plus the merged distinct-track count — the page's status strip. With
 // the own set merged in, self_name labels this node's contribution.
@@ -131,9 +137,10 @@ type madnetworkVersion struct {
 }
 
 type madnetworkHolder struct {
-	Name     string `json:"name"`
-	LastSeen int64  `json:"last_seen"`
-	Self     bool   `json:"self,omitempty"` // this server
+	Name      string `json:"name"`
+	LastSeen  int64  `json:"last_seen"`
+	Self      bool   `json:"self,omitempty"`      // this server
+	Reachable bool   `json:"reachable,omitempty"` // seen within the freshness window
 }
 
 // madnetworkTracks handles GET /api/madnetwork/tracks?artist=&album=: the
@@ -160,7 +167,7 @@ func (h *handler) madnetworkTracks(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, own...)
 		sortMadnetworkRows(rows)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tracks": mergeMadnetworkTracks(rows, h.madnetworkName)})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tracks": mergeMadnetworkTracks(rows, h.madnetworkName, reachCutoff())})
 }
 
 // sortMadnetworkRows restores display order over a combined remote+own row
@@ -195,7 +202,7 @@ func sortMadnetworkRows(rows []*database.MadnetworkTrackRow) {
 // mergeMadnetworkTracks folds raw per-(source,appearance) rows into logical
 // tracks and versions. Rows arrive in display order; groups keep first-seen
 // order. selfName labels the self holder of own rows.
-func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow, selfName string) []*madnetworkTrack {
+func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow, selfName string, reachCutoff int64) []*madnetworkTrack {
 	type ident struct {
 		disc, track int64
 		title       string
@@ -242,7 +249,7 @@ func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow, selfName string)
 				}
 			}
 		}
-		t.Versions = mergeVersions(group, selfName)
+		t.Versions = mergeVersions(group, selfName, reachCutoff)
 		tracks = append(tracks, t)
 	}
 	return tracks
@@ -252,7 +259,7 @@ func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow, selfName string)
 // recordings are the same version iff they share a rendition content hash
 // (same bytes somewhere = same audio for sure). Everything else stays a
 // separate version — recordings are never merged on text alone.
-func mergeVersions(group []*database.MadnetworkTrackRow, selfName string) []madnetworkVersion {
+func mergeVersions(group []*database.MadnetworkTrackRow, selfName string, reachCutoff int64) []madnetworkVersion {
 	// Union-find over the group's rows, linked by shared hashes.
 	parent := make([]int, len(group))
 	for i := range parent {
@@ -309,9 +316,12 @@ func mergeVersions(group []*database.MadnetworkTrackRow, selfName string) []madn
 			if !seenPeer[row.PeerID] {
 				seenPeer[row.PeerID] = true
 				if row.Self {
-					v.Holders = append(v.Holders, madnetworkHolder{Name: selfName, Self: true})
+					v.Holders = append(v.Holders, madnetworkHolder{Name: selfName, Self: true, Reachable: true})
 				} else {
-					v.Holders = append(v.Holders, madnetworkHolder{Name: row.PeerName, LastSeen: row.PeerLastSeen})
+					v.Holders = append(v.Holders, madnetworkHolder{
+						Name: row.PeerName, LastSeen: row.PeerLastSeen,
+						Reachable: reachCutoff <= 0 || row.PeerLastSeen >= reachCutoff,
+					})
 				}
 			}
 			for hash, key := range row.ObjectKeys {
@@ -424,10 +434,11 @@ func (h *handler) madnetworkSearch(w http.ResponseWriter, r *http.Request) {
 		groups[b] = append(groups[b], row)
 	}
 	tracks := []searchTrack{}
+	rc := reachCutoff()
 merge:
 	for _, b := range order {
 		group := groups[b]
-		for _, t := range mergeMadnetworkTracks(group, h.madnetworkName) {
+		for _, t := range mergeMadnetworkTracks(group, h.madnetworkName, rc) {
 			if len(t.Versions) == 0 || len(t.Versions[0].Renditions) == 0 {
 				continue // nothing playable to offer from search
 			}

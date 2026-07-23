@@ -191,6 +191,15 @@ only *cache-only* content, so it can ship after Phase 2 without blocking it.
 
 ## Phase 3 — UI polish
 
+**Built (this commit).** `/madnetwork`: stale friends greyed on the status strip
+(`mn-friend--stale`, off `reachable`), a fail-open banner when `inbound_healthy`
+is false (`mn-status-warn`), and stale holders struck through in the ⓘ panel
+(`mn-holder--stale`, off a server-computed display `reachable` flag on each holder
+— always `now−window`, so fail-open still shows staleness). `/admin/network` shows
+an inbound-down warning (`#inboundWarn`, off `inbound_healthy` added to
+`GET /api/admin/federation`). No client poll (confirmed); hide-at-refresh comes
+from the existing load + search fetches. Tests: `TestMadnetworkHolders_Reachability`.
+
 Small — the server now returns the available set and the client already re-fetches
 on load and on search, so "hide at refresh boundaries" mostly falls out for free.
 

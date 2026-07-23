@@ -228,5 +228,6 @@ canonical default strings.
    availability predicate + self-health watchdog (fail open). UI: render the
    server's available set; hide unavailable only at page-load / search
    boundaries; grey (don't remove) unreachable holders; local/cached/own always
-   shown. *(planned — see `docs/architecture/federation.md` §Availability & node
-   health)*
+   shown. *(shipped — phases 0–3; config knob + real-mesh verification are the
+   remaining phase 4. See `docs/architecture/federation.md` §Availability & node
+   health and `docs/plans/availability.md`.)*
