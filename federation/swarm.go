@@ -744,6 +744,16 @@ type chunkPlan struct {
 	provFails []int  // per-provider consecutive failures (reset on success)
 	rr        int    // round-robin cursor
 
+	// attempts counts every failed try at each chunk, across all holders, and
+	// attemptLimit bounds it. This is what ENDS a hopeless transfer. It used to
+	// be a side effect of retiring holders — the fetch stopped once the last one
+	// was dropped — which forced the drop rule to double as the termination
+	// rule and got healthy holders retired to make transfers finish. The two are
+	// separate concerns now: retirement decides who to ask, this decides when to
+	// give up. See the note above fail().
+	attempts     []int
+	attemptLimit int
+
 	stats *transferStats // diagnostics sink; nil outside a real transfer
 }
 
@@ -756,7 +766,15 @@ func newChunkPlan(man *blobManifest, layout *chunkLayout, holders []*Peer, done0
 		providers: holders,
 		dead:      make([]bool, len(holders)),
 		provFails: make([]int, len(holders)),
+		attempts:  make([]int, nc),
 		stats:     st,
+	}
+	// One chunk may be retried as many times as the old rule allowed in total
+	// before every holder was retired — so the worst case is bounded exactly as
+	// it was, while no longer requiring anyone to be retired to get there.
+	cp.attemptLimit = providerFailureLimit * len(holders)
+	if cp.attemptLimit < providerFailureLimit {
+		cp.attemptLimit = providerFailureLimit
 	}
 	start := 0
 	if done0 && nc > 0 {
@@ -866,11 +884,25 @@ func (cp *chunkPlan) succeed(idx, pidx int, t *transfer) {
 	t.chunkDone(idx, progress)
 }
 
-// fail re-queues the chunk for another attempt. A corrupt chunk (wrong bytes)
-// drops its holder immediately; a transient error (stall/unreachable) only
-// counts toward providerFailureLimit consecutive failures before the holder is
-// dropped — so a single flaky moment on the sole holder is retried, not fatal.
-// The transfer aborts only when no live provider remains.
+// fail re-queues the chunk for another attempt and decides whether to retire the
+// holder that missed it.
+//
+// A corrupt chunk (wrong bytes) retires its holder immediately: bad bytes are
+// evidence about the holder itself, and no amount of environmental bad luck
+// produces them. A transient error (stall, timeout, unreachable) is weaker
+// evidence, because it describes the holder AND the moment. The rule is
+// therefore relative: a holder is retired once it is providerFailureLimit
+// consecutive failures worse than the best live holder. When some peer is still
+// delivering (streak 0) that is exactly the old absolute rule; when every holder
+// is equally deep in failures the fetch is in a slow moment, not a bad holder,
+// and nobody is retired. A sole holder has nothing to be compared against, so
+// the absolute limit stands and the transfer can still end.
+//
+// Retiring holders is no longer how a hopeless transfer stops — see attempts /
+// attemptLimit, which bound each chunk individually. That separation is the
+// point: the old code could only end a fetch by killing every holder, so a
+// healthy one had to be declared faulty for the transfer to finish at all
+// (.issues/open-issues.md, -race run findings, item 3).
 func (cp *chunkPlan) fail(idx, pidx int, err error, corrupt bool) {
 	cp.mu.Lock()
 	cp.inFlight--
@@ -882,17 +914,24 @@ func (cp *chunkPlan) fail(idx, pidx int, err error, corrupt bool) {
 			cp.dead[pidx] = true
 		} else {
 			cp.provFails[pidx]++
-			if cp.provFails[pidx] >= providerFailureLimit {
+			if cp.provFails[pidx] >= providerFailureLimit && cp.worseThanPeers(pidx) {
 				cp.dead[pidx] = true
 			}
 		}
 		dropped = cp.dead[pidx]
 	}
-	if cp.liveProviders() == 0 {
+	cp.attempts[idx]++
+	switch {
+	case cp.liveProviders() == 0:
 		if !cp.aborted {
 			cp.aborted, cp.err = true, err
 		}
-	} else {
+	case cp.attempts[idx] >= cp.attemptLimit:
+		if !cp.aborted {
+			cp.aborted, cp.err = true, fmt.Errorf(
+				"chunk %d unfetchable after %d attempts: %w", idx, cp.attempts[idx], err)
+		}
+	default:
 		cp.pending = append(cp.pending, idx)
 	}
 	cp.cond.Broadcast()
@@ -901,6 +940,39 @@ func (cp *chunkPlan) fail(idx, pidx int, err error, corrupt bool) {
 	if dropped {
 		cp.stats.noteDropped(from)
 	}
+}
+
+// worseThanPeers reports whether provider i is failing out of line with the
+// other live holders — the relative half of the retirement rule above. Caller
+// holds cp.mu.
+//
+// It compares consecutive-failure streaks, which are already maintained and are
+// reset by any success: a holder that keeps delivering sits at 0, so anything
+// providerFailureLimit above it is demonstrably the odd one out. With no live
+// peer left to compare against it returns true, leaving the absolute limit in
+// force so a fetch against a single dead holder still terminates.
+//
+// This leans on dispatch being round-robin. A streak of 0 is read as "this peer
+// is doing fine", which is only sound because every live holder is handed work
+// in rotation, so an idle holder cannot sit at 0 while others struggle. If
+// pickProvider ever becomes speed-aware (.issues/open-issues.md, "swarm provider
+// selection is speed-blind"), a deprioritised holder could hold a 0 streak
+// without having earned it, and the benchmark would need to ignore holders that
+// have not been tried recently.
+func (cp *chunkPlan) worseThanPeers(i int) bool {
+	best := -1
+	for j := range cp.providers {
+		if j == i || cp.dead[j] {
+			continue
+		}
+		if best < 0 || cp.provFails[j] < best {
+			best = cp.provFails[j]
+		}
+	}
+	if best < 0 {
+		return true
+	}
+	return cp.provFails[i] >= best+providerFailureLimit
 }
 
 // liveProviders counts non-dead holders; caller holds cp.mu.

@@ -395,10 +395,23 @@ default** — its social graph is visible to its members.
   not-yet-fetched offset **promotes the covering chunk to the front of the
   dispatch queue** (seek-priority), which keeps a tail probe or seek from
   waiting out the whole file. Failed chunks are re-queued with a resilient
-  policy: a **corrupt** chunk (wrong bytes) drops its holder immediately, but a
-  **transient** error (an unreachable/stalled mesh path) only counts toward a
-  consecutive-failure limit — reset on any success — so a single flaky moment on
-  the *sole* holder is retried, not fatal. A hung connection is caught by an
+  policy: a **corrupt** chunk (wrong bytes) retires its holder immediately —
+  wrong bytes are evidence about the holder, and no amount of bad luck produces
+  them — while a **transient** error (an unreachable/stalled mesh path) is
+  weaker evidence, because it describes the holder *and* the moment. So
+  retirement is **relative**: a holder is retired once it is a
+  consecutive-failure limit worse than the **best live holder** (streaks reset on
+  any success). When some peer is still delivering, that is an absolute limit
+  exactly; when every holder is equally deep in failures the fetch is in a bad
+  moment rather than facing a bad holder, and none is retired. A *sole* holder
+  has nothing to be compared against, so the plain limit applies and the fetch
+  still ends.
+  Retiring holders is deliberately **not** how a hopeless fetch stops — each
+  chunk carries its own **attempt budget**, and exhausting it aborts the transfer
+  with every holder still live. Conflating the two is a trap worth naming: when
+  the only way to end a fetch is to kill every source, a perfectly healthy source
+  gets declared faulty to make the transfer terminate.
+  A hung connection is caught by an
   **idle-read watchdog** (~20 s with no bytes) plus a response-header timeout,
   rather than waiting out the whole per-chunk backstop — so a Yggdrasil path
   stall costs seconds, not minutes. A **single-seeder swarm degenerates to a

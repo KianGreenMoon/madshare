@@ -5,6 +5,7 @@ package federation
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -162,5 +163,125 @@ func TestChunkPlanFailover(t *testing.T) {
 	cp2.fail(idx, 0, errChunkCorrupt, true)
 	if !cp2.aborted {
 		t.Fatal("a corrupt chunk from the sole holder should abort")
+	}
+}
+
+// wideManifest is a manifest with enough chunks that failures spread across them
+// instead of exhausting one chunk's attempt budget — these tests are about who
+// gets retired, not about the termination backstop.
+func wideManifest(n int) (*blobManifest, *chunkLayout) {
+	man := &blobManifest{ChunkSize: 10, Size: int64(10 * n), Chunks: make([]string, n)}
+	for i := range man.Chunks {
+		man.Chunks[i] = "h"
+	}
+	return man, man.layout()
+}
+
+// TestChunkPlanRetirementIsRelative pins the fix for a healthy holder being
+// dropped as if faulty (.issues/open-issues.md, -race findings, item 3).
+//
+// Retirement asks whether a holder is failing out of line with the others, not
+// whether it crossed a fixed count. When some peer is still delivering, that is
+// the old absolute rule exactly. When every holder is missing, the moment is bad
+// rather than any one holder, and retiring them all is how a fetch used to kill
+// itself with a perfectly good source in hand.
+func TestChunkPlanRetirementIsRelative(t *testing.T) {
+	netErr := errors.New("mesh stalled")
+
+	t.Run("out of line with a delivering peer", func(t *testing.T) {
+		man, layout := wideManifest(8)
+		cp := newChunkPlan(man, layout, []*Peer{{Name: "bad"}, {Name: "good"}}, false, nil)
+		for i := 0; i < providerFailureLimit; i++ {
+			idx, ok := cp.next()
+			if !ok {
+				t.Fatalf("no chunk to dispatch at failure %d", i)
+			}
+			cp.fail(idx, 0, netErr, false) // provider 0 only; provider 1 stays at streak 0
+		}
+		if !cp.dead[0] {
+			t.Error("a holder failing while its peer delivers should be retired")
+		}
+		if cp.dead[1] {
+			t.Error("the delivering peer was retired")
+		}
+		if cp.aborted {
+			t.Error("aborted while a live holder remained")
+		}
+	})
+
+	t.Run("everyone is equally slow", func(t *testing.T) {
+		man, layout := wideManifest(8)
+		cp := newChunkPlan(man, layout, []*Peer{{Name: "a"}, {Name: "b"}}, false, nil)
+		// Both holders miss the same number of times, alternating.
+		for i := 0; i < providerFailureLimit; i++ {
+			for _, pidx := range []int{0, 1} {
+				idx, ok := cp.next()
+				if !ok {
+					t.Fatalf("no chunk to dispatch at failure %d/%d", i, pidx)
+				}
+				cp.fail(idx, pidx, netErr, false)
+			}
+		}
+		if cp.dead[0] || cp.dead[1] {
+			t.Errorf("a holder was retired in a slow moment: dead=%v provFails=%v", cp.dead, cp.provFails)
+		}
+		if cp.aborted {
+			t.Error("aborted although both holders are still worth asking")
+		}
+	})
+
+	t.Run("sole holder still terminates", func(t *testing.T) {
+		man, layout := wideManifest(8)
+		cp := newChunkPlan(man, layout, []*Peer{{Name: "only"}}, false, nil)
+		for i := 0; i < providerFailureLimit; i++ {
+			idx, _ := cp.next()
+			cp.fail(idx, 0, netErr, false)
+		}
+		// Nothing to compare against, so the absolute limit stands — otherwise a
+		// fetch against a single dead holder would retry forever.
+		if !cp.dead[0] {
+			t.Error("the sole holder was never retired")
+		}
+		if !cp.aborted {
+			t.Error("transfer did not abort with no live holder left")
+		}
+	})
+}
+
+// TestChunkPlanAttemptLimit pins the other half of that change: retiring holders
+// is no longer what ends a hopeless transfer, so something else must. A chunk
+// that cannot be fetched aborts on its own attempt budget, with every holder
+// still live — the case the relative rule deliberately refuses to resolve by
+// killing sources.
+func TestChunkPlanAttemptLimit(t *testing.T) {
+	man, layout := wideManifest(1) // one chunk, so every failure lands on it
+	holders := []*Peer{{Name: "a"}, {Name: "b"}}
+	cp := newChunkPlan(man, layout, holders, false, nil)
+	netErr := errors.New("mesh stalled")
+
+	if cp.attemptLimit != providerFailureLimit*len(holders) {
+		t.Fatalf("attemptLimit = %d, want %d", cp.attemptLimit, providerFailureLimit*len(holders))
+	}
+	for i := 0; !cp.aborted; i++ {
+		if i > cp.attemptLimit*2 {
+			t.Fatal("transfer never gave up on an unfetchable chunk")
+		}
+		idx, ok := cp.next()
+		if !ok {
+			break
+		}
+		cp.fail(idx, i%len(holders), netErr, false) // alternate, so streaks stay level
+	}
+	if !cp.aborted {
+		t.Fatal("an unfetchable chunk must abort the transfer")
+	}
+	if cp.dead[0] || cp.dead[1] {
+		t.Errorf("holders were retired to reach termination: dead=%v", cp.dead)
+	}
+	if cp.err == nil || !strings.Contains(cp.err.Error(), "unfetchable") {
+		t.Errorf("abort error = %v, want it to name the unfetchable chunk", cp.err)
+	}
+	if !errors.Is(cp.err, netErr) {
+		t.Errorf("abort error = %v, want the holder's error wrapped", cp.err)
 	}
 }
