@@ -3,14 +3,17 @@
 This is a vendored copy of
 [`github.com/yggdrasil-network/yggstack`](https://github.com/yggdrasil-network/yggstack)
 at pseudo-version `v0.0.0-20260619214331-c39db65e5bcc`, wired into the build by a
-`replace` directive in the repository-root `go.mod`. It carries **two local
-changes** on top of upstream, both in `src/netstack/yggdrasil.go`. If you
-re-vendor or bump yggstack, **re-apply both patches** (or drop the fork entirely
-once the fixes are upstream). Grep for `LOCAL PATCH (madshare)` to find them.
+`replace` directive in the repository-root `go.mod`. It carries **three local
+changes** on top of upstream, in `src/netstack/yggdrasil.go` and
+`src/netstack/netstack.go`. If you re-vendor or bump yggstack, **re-apply all
+three** (or drop the fork entirely once the fixes are upstream). Grep for
+`LOCAL PATCH (madshare)` to find them.
 
 1. **Data race in `YggdrasilNIC.writePacket`** (below).
 2. **Inbound-reader resilience — issue #398** (further below): a single
    `ipv6rwc.Read` error no longer permanently kills all inbound mesh traffic.
+3. **Netstack teardown** (last): upstream cannot shut a netstack down at all, so
+   every stopped node leaks its stack and goroutines.
 
 ## The patch — data race in `YggdrasilNIC.writePacket`
 
@@ -185,9 +188,65 @@ on Close() or a terminal error). The madshare availability feature wires
 open** — stop hiding friends' tracks — when the local inbound mesh path is dead.
 This is part of the same local patch (`docs/plans/availability.md` §Phase 0/1).
 
+## The patch — netstack teardown
+
+Files: `src/netstack/netstack.go`, `src/netstack/yggdrasil.go`
+
+Upstream has **no way to shut a netstack down**. `CreateYggdrasilNetstack` starts
+a gVisor stack, a NIC, an inbound reader goroutine and an RST drain goroutine,
+and offers no `Close`. A program that runs one node until it exits never notices.
+Madshare's mesh test suite starts and stops dozens of nodes in one process, and
+measured **9 goroutines leaked per node** — plus the whole gVisor stack behind
+them. The accumulated load made a two-node pairing that takes ~30 s under `-race`
+take over 240 s late in a run, timing out three tests in setup.
+
+Four changes, all in service of one new entry point:
+
+```go
+func (s *YggdrasilNetstack) Close()   // stack.Close → nic.Close → stack.Wait
+```
+
+1. **`YggdrasilNetstack.Close`** (new). Order is load-bearing: gVisor's
+   `Stack.Close()` explicitly does *not* stop link endpoints ("link endpoints
+   must be stopped via an implementation specific mechanism") — that is the
+   `nic.Close()` in the middle — and `Stack.Wait()` then reaps the endpoint and
+   qDisc goroutines. Callers must call this **before** stopping the yggdrasil
+   core, so endpoints aborting here can still put their RSTs on the wire; the
+   inbound reader is parked in `ipv6rwc.Read` and exits on the core's shutdown,
+   which is why `Close` neither stops nor waits for it.
+2. **`YggdrasilNIC.Close` was unreachable-broken.** It dereferenced `e.stack`,
+   which the constructor never sets — a nil-pointer panic latent upstream
+   because nothing ever called `Close()`. The constructor now sets the
+   back-reference. The method is also `sync.Once`-guarded, because gVisor can
+   call it re-entrantly: `removeNICLocked` hands `ep.Close` back as a deferred
+   action, so our own `Close` → `RemoveNIC` can call straight back in.
+3. **The RST drain goroutine gained an exit.** Upstream loops forever on
+   `<-nic.rstPackets`. It now selects on a `done` channel too, and drains the
+   queue on its way out so the `PacketBuffer` refs that `WritePackets` took are
+   released. `WritePackets` skips enqueueing once the NIC is closing, since
+   nothing would drain it.
+4. **`dispatcher` became `atomic.Pointer[stack.NetworkDispatcher]`.** Removing a
+   NIC makes gVisor call `Attach(nil)` (`stack/nic.go`), which races the inbound
+   reader's `deliverInbound` on what upstream stores as a plain field. Safe
+   upstream only because nothing ever removed the NIC; the moment teardown
+   exists, this is a real data race and `-race` reports it. A frame that wins the
+   race and reaches an already-removed NIC is dropped safely by gVisor itself
+   (`nic.DeliverNetworkPacket` returns early unless the NIC is enabled).
+
+None of this is visible on the wire: it is all local teardown of this node's own
+userspace IP stack, below the HTTP layer and above the yggdrasil session. Peers —
+including stock yggdrasil nodes — see only a peering that ends.
+
+Regression guard: `federation/TestStopReleasesNetstack` asserts goroutines do not
+grow with start/stop cycles (it fails at 56 goroutines vs. an 11 baseline without
+this patch).
+
 ### Upstreaming (preferred)
 
 Each local patch raises the cost of bumping yggstack. The right long-term home is
-upstream yggstack (issue #398 option 5); the independent availability watchdog
-(`docs/plans/availability.md` Phase 1) is the local safety net meanwhile. Prefer
-upstreaming this over carrying it indefinitely.
+upstream yggstack (issue #398 option 5 for the reader; the teardown and the
+`writePacket` race are independent and worth their own PRs — note the nil
+`e.stack` is a plain upstream bug that needs no madshare context to fix). The
+independent availability watchdog (`docs/plans/availability.md` Phase 1) is the
+local safety net meanwhile. Prefer upstreaming these over carrying them
+indefinitely.

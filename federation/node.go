@@ -220,6 +220,13 @@ func (n *Node) Stop() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = n.srv.Shutdown(ctx)
+	// Tear the userspace netstack down before the core: aborting the stack's
+	// endpoints while the mesh is still up lets their RSTs reach peers, and the
+	// inbound reader then exits on the core's own shutdown. Skipping this leaves
+	// a full gVisor stack (and its goroutines) running for the life of the
+	// process — harmless for a server that stops one node at exit, cumulative
+	// for anything that starts and stops many.
+	n.stack.Close()
 	n.core.Stop()
 }
 

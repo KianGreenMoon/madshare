@@ -34,6 +34,29 @@ func (s *YggdrasilNetstack) InboundReaderAlive() bool {
 	return s.nic != nil && s.nic.readerAlive.Load()
 }
 
+// Close tears the netstack down: it aborts every registered endpoint, closes the
+// transport/network protocols, stops the NIC's own goroutines and waits for the
+// stack's workers to halt. LOCAL PATCH (madshare) — upstream offers no teardown
+// at all, so a stopped node leaves its whole netstack running. See
+// third_party/yggstack/MADSHARE-PATCH.md (netstack teardown).
+//
+// Call this BEFORE stopping the yggdrasil core, so endpoints aborting here can
+// still put their RSTs on the wire. The inbound reader goroutine is the one
+// thing Close cannot stop — it is parked in ipv6rwc.Read and exits when the core
+// stops, which the caller is expected to do next.
+//
+// Safe to call more than once.
+func (s *YggdrasilNetstack) Close() {
+	// Order matters: gVisor's Stack.Close explicitly does NOT stop link
+	// endpoints ("link endpoints must be stopped via an implementation specific
+	// mechanism"), which is what the nic.Close call in the middle is.
+	s.stack.Close()
+	if s.nic != nil {
+		s.nic.Close()
+	}
+	s.stack.Wait()
+}
+
 func CreateYggdrasilNetstack(ygg *core.Core) (*YggdrasilNetstack, error) {
 	s := &YggdrasilNetstack{
 		stack: stack.New(stack.Options{

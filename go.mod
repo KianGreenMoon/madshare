@@ -14,12 +14,14 @@ require (
 	modernc.org/sqlite v1.50.1
 )
 
-// Local fork of the yggstack netstack wrapper carrying one patch: a data-race
-// fix in YggdrasilNIC.writePacket (per-call write buffer instead of a shared
-// one), needed because the madnetwork swarm (F4) drives many concurrent mesh
-// connections. See third_party/yggstack/src/netstack/yggdrasil.go (LOCAL PATCH)
-// and docs/architecture/federation.md §Distribution. Drop this replace if the
-// fix lands upstream.
+// Local fork of the yggstack netstack wrapper carrying three patches: a
+// data-race fix in YggdrasilNIC.writePacket (per-call write buffer instead of a
+// shared one), inbound-reader resilience (one read error no longer kills all
+// inbound mesh traffic), and netstack teardown (upstream has no Close, so a
+// stopped node leaks its whole gVisor stack). See
+// third_party/yggstack/MADSHARE-PATCH.md, the LOCAL PATCH markers in
+// third_party/yggstack/src/netstack/, and docs/architecture/federation.md
+// §Distribution. Drop this replace if the fixes land upstream.
 replace github.com/yggdrasil-network/yggstack => ./third_party/yggstack
 
 require (

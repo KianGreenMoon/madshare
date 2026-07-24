@@ -21,9 +21,15 @@ import (
 )
 
 type YggdrasilNIC struct {
-	stack      *YggdrasilNetstack
-	ipv6rwc    *ipv6rwc.ReadWriteCloser
-	dispatcher stack.NetworkDispatcher
+	stack   *YggdrasilNetstack
+	ipv6rwc *ipv6rwc.ReadWriteCloser
+	// dispatcher is atomic because tearing the NIC down writes it from a
+	// different goroutine than the inbound reader reads it: RemoveNIC calls
+	// Attach(nil) (gVisor stack/nic.go), which races the reader's
+	// deliverInbound. Upstream stores it as a plain field, which was safe only
+	// because nothing ever removed the NIC. LOCAL PATCH (madshare) — see the
+	// teardown note above Close().
+	dispatcher atomic.Pointer[stack.NetworkDispatcher]
 	readBuf    []byte
 	// writePool hands each concurrent writePacket call its own MTU-sized scratch
 	// buffer. gVisor invokes WritePackets from several goroutines at once, so a
@@ -38,6 +44,13 @@ type YggdrasilNIC struct {
 	// deliberate teardown for a recoverable read error. See the LOCAL PATCH
 	// note above runInboundReader.
 	closed atomic.Bool
+	// done is closed by Close() to stop the RST drain goroutine, which upstream
+	// starts with no exit path at all. closeOnce guards both, because gVisor can
+	// call Close() itself: removeNICLocked hands back ep.Close as a deferred
+	// action, so our own Close → RemoveNIC can re-enter here.
+	// LOCAL PATCH (madshare) — see the teardown note above Close().
+	done      chan struct{}
+	closeOnce sync.Once
 	// readerAlive is true while the inbound reader goroutine runs; it flips to
 	// false in the goroutine's defer when it returns for any reason. Read via
 	// YggdrasilNetstack.InboundReaderAlive by the availability watchdog.
@@ -110,10 +123,15 @@ func (s *YggdrasilNetstack) NewYggdrasilNIC(ygg *core.Core) tcpip.Error {
 	rwc := ipv6rwc.NewReadWriteCloser(ygg)
 	mtu := rwc.MTU()
 	nic := &YggdrasilNIC{
+		// LOCAL PATCH (madshare): upstream never sets this back-reference, so
+		// Close()'s RemoveNIC call nil-derefs. Latent upstream because nothing
+		// ever called Close().
+		stack:      s,
 		ipv6rwc:    rwc,
 		readBuf:    make([]byte, mtu),
 		writePool:  sync.Pool{New: func() any { return make([]byte, mtu) }},
 		rstPackets: make(chan *stack.PacketBuffer, 100),
+		done:       make(chan struct{}),
 	}
 	if err := s.stack.CreateNIC(1, nic); err != nil {
 		return err
@@ -126,14 +144,32 @@ func (s *YggdrasilNetstack) NewYggdrasilNIC(ygg *core.Core) tcpip.Error {
 		defer nic.readerAlive.Store(false)
 		runInboundReader(nic.ipv6rwc, nic.readBuf, nic.closed.Load, nic.deliverInbound)
 	}()
+	// LOCAL PATCH (madshare): the RST drain goroutine gets an exit. Upstream
+	// loops forever, so every stopped node leaks it — invisible in a process
+	// that runs one node until exit, fatal in a test suite that starts dozens.
 	go func() {
 		for {
-			pkt := <-nic.rstPackets
-			if pkt == nil {
-				continue
+			select {
+			case <-nic.done:
+				// Release anything still queued; WritePackets holds a ref per
+				// packet it enqueued.
+				for {
+					select {
+					case pkt := <-nic.rstPackets:
+						if pkt != nil {
+							pkt.DecRef()
+						}
+					default:
+						return
+					}
+				}
+			case pkt := <-nic.rstPackets:
+				if pkt == nil {
+					continue
+				}
+				_ = nic.writePacket(pkt)
+				pkt.DecRef()
 			}
-			_ = nic.writePacket(pkt)
-			pkt.DecRef()
 		}
 	}()
 	_, snet, err := net.ParseCIDR("0200::/7")
@@ -167,22 +203,36 @@ func (s *YggdrasilNetstack) NewYggdrasilNIC(ygg *core.Core) tcpip.Error {
 	return nil
 }
 
-// deliverInbound wraps one received frame and hands it up to the stack. Close()
-// sets e.dispatcher = nil, so read the field once into a local and guard it: a
-// shutdown that races the reader must not panic on a nil DeliverNetworkPacket.
+// deliverInbound wraps one received frame and hands it up to the stack. The
+// detach that teardown performs (Attach(nil)) can land between any two frames,
+// so load the dispatcher once and drop the frame if it is gone — a shutdown
+// racing the reader must not panic on a nil DeliverNetworkPacket. A frame that
+// wins the race and is delivered to an already-removed NIC is dropped safely by
+// gVisor itself (nic.DeliverNetworkPacket returns early unless the NIC is
+// enabled).
 func (e *YggdrasilNIC) deliverInbound(b []byte) {
+	d := e.dispatcher.Load()
+	if d == nil {
+		return
+	}
 	pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{
 		Payload: buffer.MakeWithData(b),
 	})
-	if d := e.dispatcher; d != nil {
-		d.DeliverNetworkPacket(ipv6.ProtocolNumber, pkb)
-	}
+	(*d).DeliverNetworkPacket(ipv6.ProtocolNumber, pkb)
 	pkb.DecRef()
 }
 
-func (e *YggdrasilNIC) Attach(dispatcher stack.NetworkDispatcher) { e.dispatcher = dispatcher }
+// Attach stores the dispatcher; gVisor passes nil to detach when the NIC is
+// removed, which is why this is a typed atomic rather than a plain field.
+func (e *YggdrasilNIC) Attach(dispatcher stack.NetworkDispatcher) {
+	if dispatcher == nil {
+		e.dispatcher.Store(nil)
+		return
+	}
+	e.dispatcher.Store(&dispatcher)
+}
 
-func (e *YggdrasilNIC) IsAttached() bool { return e.dispatcher != nil }
+func (e *YggdrasilNIC) IsAttached() bool { return e.dispatcher.Load() != nil }
 
 func (e *YggdrasilNIC) MTU() uint32 { return uint32(e.ipv6rwc.MTU()) }
 
@@ -237,6 +287,14 @@ func (e *YggdrasilNIC) WritePackets(
 			if pkt.Network().TransportProtocol() == tcp.ProtocolNumber {
 				tcpHeader := header.TCP(pkt.TransportHeader().Slice())
 				if (tcpHeader.Flags() & header.TCPFlagRst) == header.TCPFlagRst {
+					// LOCAL PATCH (madshare): once the NIC is closing nothing
+					// drains rstPackets, so queueing here would strand the ref.
+					// A packet that slips through a concurrent Close is bounded
+					// by the channel's capacity and released when the drain
+					// goroutine empties the queue on its way out.
+					if e.closed.Load() {
+						continue
+					}
 					pkt.IncRef()
 					select {
 					case e.rstPackets <- pkt:
@@ -274,12 +332,31 @@ func (e *YggdrasilNIC) ParseHeader(*stack.PacketBuffer) bool {
 	return true
 }
 
+// Close tears the NIC down. LOCAL PATCH (madshare): upstream's version leaves
+// the RST drain goroutine running and nils the dispatcher with a plain write.
+//
+// Two things make this re-entrant, so both are guarded by closeOnce: gVisor's
+// removeNICLocked returns ep.Close as a deferred action, so RemoveNIC below can
+// call straight back into here; and YggdrasilNetstack.Close calls it directly.
+// The second pass finds the NIC already gone and RemoveNIC reports
+// ErrUnknownNICID, which is the expected outcome, not a failure.
+//
+// The inbound reader is NOT waited for here. It is parked in ipv6rwc.Read until
+// the yggdrasil core stops, and nothing this method does can wake it; it exits
+// on its own once the caller stops the core (see runInboundReader, which treats
+// types.ErrClosed as terminal). Frames it delivers in the meantime are dropped
+// safely — see deliverInbound.
 func (e *YggdrasilNIC) Close() {
-	// LOCAL PATCH (madshare): signal the inbound reader (runInboundReader) to
-	// exit cleanly rather than treat the teardown as a recoverable read error.
-	e.closed.Store(true)
+	e.closeOnce.Do(func() {
+		// Signal the inbound reader (runInboundReader) to exit cleanly rather
+		// than treat the teardown as a recoverable read error, and stop the RST
+		// drain goroutine.
+		e.closed.Store(true)
+		close(e.done)
+	})
+	// Removing the NIC detaches the dispatcher (gVisor calls Attach(nil)) and
+	// terminates the qDisc goroutines.
 	e.stack.stack.RemoveNIC(1)
-	e.dispatcher = nil
 }
 
 func (e *YggdrasilNIC) SetOnCloseAction(func()) {}
