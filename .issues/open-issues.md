@@ -514,21 +514,20 @@ live holders, with **no notion of how fast any of them is**. So when one holder
 crawls and another is fast, roughly half of all chunk *dispatches* still go to
 the slow one, and workers pile up blocked on it.
 
-What saves the transfer today is not the scheduler but the failure path: a
-holder that cannot deliver a chunk inside `Timeouts.PerChunk` accumulates
-failures and is dropped once it hits `providerFailureLimit` (4). Measured with
-one holder at 16 KiB/s and one unlimited: the fast holder ends up carrying all
-8 chunks, the slow one 0, and the whole 2 MiB completes in ~9 s (against >2 min
-if the slow holder had gated it).
+What saves the transfer is not the scheduler but the failure path: a holder that
+cannot deliver a chunk inside `Timeouts.PerChunk` accumulates failures and is
+eventually retired. Measured with one holder at 16 KiB/s and one unlimited: the
+fast holder ends up carrying all 8 chunks, the slow one 0, and the whole 2 MiB
+completes in ~9 s (against >2 min if the slow holder had gated it).
 
 So the *outcome* is correct and the suite asserts it end-to-end. But the
-mechanism is "wait for it to time out four times", which means:
+mechanism is "wait for it to time out repeatedly", which means:
 
-- Every slow holder costs `4 × PerChunk` of wasted worker time before it is
-  dropped — with the production 2-minute `PerChunk` that is 8 minutes.
+- Every slow holder costs several `PerChunk` of wasted worker time before it is
+  retired — with the production 2-minute `PerChunk` that is minutes.
 - A holder that is slow but *just* fast enough to beat `PerChunk` is never
-  dropped and keeps taking half the dispatches indefinitely.
-- The drop is permanent for the transfer, so a holder that was briefly
+  retired and keeps taking half the dispatches indefinitely.
+- Retirement is permanent for the transfer, so a holder that was briefly
   congested is not reconsidered.
 
 Possible directions, none implemented: track per-provider throughput in the
@@ -540,6 +539,12 @@ demonstrably slower than its peers.
 Not urgent — v1 correctness is fine, this is efficiency. Deliberately **not**
 "fixed" while writing the tests: the suite asserts what the code claims, and
 changing the scheduler is a design decision, not a test fix.
+
+**Update (2026-07-25):** the *retirement* half of this was reworked — see the
+`-race` findings section below, item 3. The rule is now relative (a holder is
+retired once it is `providerFailureLimit` failures worse than the best live
+peer) and termination moved to a per-chunk attempt budget. **Dispatch is still
+plain round-robin**, so everything above about the scheduler stands unchanged.
 
 ## Federation — findings from the full `-race` mesh run (2026-07-24)
 
@@ -555,8 +560,8 @@ in the order they should be worked.
 |---|---|---|
 | Medium | **`Node.Stop` never tears down the gVisor netstack** (item 1 below) | **fixed** |
 | Low | **`TestChaosRateLimitedSeeder`'s seed cap is not scaled** (item 2) | **not a bug — see item 2** |
-| Low | **A healthy holder can be dropped as if faulty** (item 3) | **open** |
-| Info | **The swarm→whole fallback erases the stats that explain the failure** (item 4) | **open** |
+| Low | **A healthy holder can be dropped as if faulty** (item 3) | **fixed** |
+| Info | **The swarm→whole fallback erases the stats that explain the failure** (item 4) | **fixed** |
 
 **Resolved by the item-1 fix.** The full suite was re-run under `-race` with the
 teardown patch in place: **0 failures, 0 data races**, and the `federation`
@@ -641,21 +646,44 @@ while leaving a real leak in place, and would have quietly weakened a test that
 was working correctly. **When a chaos scenario fails only in a long run, suspect
 the run before the scenario.**
 
-### 3. A healthy holder was dropped as if faulty (Low, design)
+### 3. A healthy holder was dropped as if faulty (Low, design) — **fixed**
 
 The part of item 2 that is not test-only. Holder A was uncapped on a clean link
 and still accumulated 8 consecutive failures, hitting `providerFailureLimit` (4)
 and being dropped — `context deadline exceeded`, i.e. it could not deliver a
 256 KiB chunk inside `Timeouts.PerChunk` (6 s × 8 = 48 s). Nothing about A was
 faulty; the fetcher simply could not tell "this holder is dead" from "everything
-here is slow right now", and the failure counter is what decides.
+here is slow right now", and the failure counter is what decided.
 
-Same family as the speed-blind round-robin above, and it argues the same
-direction: the drop rule is absolute (N consecutive misses of a fixed budget)
-where the useful signal is *relative* (this holder is slow compared to its
-peers). A fetcher on a thin uplink with several holders is the production shape
-that could reproduce it. Not urgent; do not change `swarm.go` without a decision
-on the scheduler.
+**Fixed: retirement is now relative, and termination is separate from it.**
+
+A holder is retired once it is `providerFailureLimit` consecutive failures worse
+than the **best live holder** (`chunkPlan.worseThanPeers`). When some peer is
+still delivering its streak is 0, so the threshold is exactly the old absolute
+rule; when every holder is equally deep in failures the fetch is in a slow
+moment rather than facing a bad holder, and nobody is retired. Corrupt bytes
+still retire a holder immediately — those are evidence about the holder itself,
+not about the moment. A sole holder has no peer to be compared against, so the
+absolute limit stands there and a fetch against one dead holder still ends.
+
+That last point generalises into the second half of the change. Retiring holders
+used to be the *only* thing that stopped a hopeless swarm fetch — there is no
+overall deadline on the swarm path (`Timeouts.Transfer` is applied in
+`fetchFrom`, i.e. the whole-file path, only), so the fetch ran until the last
+holder was killed. That is precisely why a healthy holder had to be declared
+faulty: it was the only way to finish. Termination now has its own mechanism —
+each chunk carries an attempt budget (`attemptLimit`, `providerFailureLimit ×
+holders`, the same worst case the old rule allowed) and a chunk that exhausts it
+aborts the transfer with every holder still live.
+
+Relaxing the retirement rule without that backstop would have turned a failing
+fetch into an infinite retry loop, so the two halves are not separable.
+
+Tests: `TestChunkPlanRetirementIsRelative` (out-of-line holder retired, equally
+slow holders spared, sole holder still terminates) and
+`TestChunkPlanAttemptLimit` (an unfetchable chunk aborts with nobody retired).
+**Dispatch is untouched** — still plain round-robin, so the speed-blind
+scheduler issue above remains open by design.
 
 **Correction (same day, after the fix in item 1).** An earlier revision of this
 entry blamed `readStall`'s per-stream stall timer, reasoning that the
@@ -667,7 +695,7 @@ with `net/http: timeout awaiting response headers` — the same fast, cheap
 dropped. `throttledResponseWriter` throttles the header write too. The mechanism
 above (an absolute budget, not a stall timer) is what the evidence supports.
 
-### 4. The fallback erases the stats that explain the failure (Info)
+### 4. The fallback erases the stats that explain the failure (Info) — **fixed**
 
 Reading the failure in item 2 was harder than it should have been. `runTransfer`
 reacts to a failed swarm phase by calling `stats.setMode("whole")` and
@@ -678,7 +706,21 @@ per-provider byte counts survive (they are cumulative by design, see T1's
 `resetProgress` note) and were the only reason the real sequence was
 recoverable at all.
 
-Keep the swarm-phase chunk accounting across the fallback — e.g. a
-`mode=swarm→whole` marker plus retained `chunks`/`ttfb` from the first phase —
-so a failed transfer reports both phases. Cosmetic, but it is the diagnostic
-surface T1 built `TransferStats` to provide.
+**Fixed:** `resetAttempt` now archives what it clears into `TransferStats.Prior`
+(`[]AttemptStats`: mode, first byte, chunks, chunks done) instead of dropping
+it, and `describe()` renders the path that was actually walked. The same failure
+now reads:
+
+```
+mode=swarm→whole ttfb=0s elapsed=20.5s chunks=0/0 retries=6 failovers=0 …
+  [abandoned swarm] ttfb=520.367656ms chunks=1/9
+```
+
+The live counters still describe only the live attempt — that was correct and is
+unchanged; a reader who lost the prefix must not be told the file is partly
+readable. Only attempts that *reached* something are archived (a chunk count, a
+chunk done, or a first byte). Mode alone does not qualify, because `runWhole`
+names the mode once and then walks its holders resetting between each, which
+would otherwise pad the readout with a blank entry per dead holder.
+
+Test: `TestTransferStatsPriorAttempt`.
