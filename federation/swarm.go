@@ -41,14 +41,17 @@ const (
 	maxChunkSize = 1 << 20   // 1 MiB — bulk cap = seek granularity
 	targetChunks = 12        // rough bulk-chunk count a mid-size file aims for
 
-	maxChunkWorkers      = 8                // parallel chunk fetches per transfer
-	perChunkTimeout      = 2 * time.Minute  // overall backstop for one chunk fetch
-	chunkStallTimeout    = 20 * time.Second // idle (no-bytes) timeout — catches a hung mesh connection fast
-	manifestTimeout      = 20 * time.Second // bound one manifest probe to a holder
-	maxManifestChunk     = 64 << 20         // reject a manifest whose chunk size exceeds this (DoS guard)
-	providerFailureLimit = 4                // consecutive fetch failures before dropping a holder (reset on success)
-	seedWriteChunk       = 32 << 10         // rate-cap granularity on the serve path
+	maxChunkWorkers      = 8        // parallel chunk fetches per transfer
+	maxManifestChunk     = 64 << 20 // reject a manifest whose chunk size exceeds this (DoS guard)
+	providerFailureLimit = 4        // consecutive fetch failures before dropping a holder (reset on success)
+	seedWriteChunk       = 32 << 10 // rate-cap granularity on the serve path
 )
+
+// The fetch deadlines this file works to — Timeouts.PerChunk (one chunk's
+// overall backstop), Timeouts.ChunkStall (the idle-read watchdog that catches a
+// hung mesh connection long before the backstop) and Timeouts.Manifest (one
+// manifest probe) — are node fields; see defaultIntervals/defaultTimeouts in
+// node.go.
 
 // errChunkCorrupt marks a chunk whose bytes failed per-chunk verification — the
 // holder served wrong data, so it is dropped for the rest of the transfer
@@ -57,10 +60,17 @@ var errChunkCorrupt = errors.New("chunk failed per-chunk verification")
 
 // readStall reads up to n bytes from r, cancelling the fetch (via cancel) if no
 // bytes arrive for `stall` — so a hung mesh connection is detected in ~stall
-// rather than waiting out the whole perChunkTimeout. exact requires all n bytes.
-func readStall(cancel context.CancelFunc, r io.Reader, n int64, exact bool, stall time.Duration) ([]byte, error) {
+// rather than waiting out the whole Timeouts.PerChunk backstop. exact requires
+// all n bytes; onStall (may be nil) is called when the watchdog fires, which is
+// what makes a stall countable in TransferStats rather than merely fatal.
+func readStall(cancel context.CancelFunc, r io.Reader, n int64, exact bool, stall time.Duration, onStall func()) ([]byte, error) {
 	buf := make([]byte, n)
-	watchdog := time.AfterFunc(stall, cancel)
+	watchdog := time.AfterFunc(stall, func() {
+		if onStall != nil {
+			onStall()
+		}
+		cancel()
+	})
 	defer watchdog.Stop()
 	var got int64
 	for got < n {
@@ -326,7 +336,7 @@ func (n *Node) fetchManifest(ctx context.Context, p *Peer, hash string) *blobMan
 	// Share the pooled blob transport (not the short control client) so the
 	// chunk fetches that follow reuse this warm connection; bound this one probe
 	// so a slow holder doesn't stall the whole transfer.
-	cctx, cancel := context.WithTimeout(ctx, manifestTimeout)
+	cctx, cancel := context.WithTimeout(ctx, n.timeouts.Manifest)
 	defer cancel()
 	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/manifest/%s", addr, MeshPort, hash)
 	req, err := http.NewRequestWithContext(cctx, http.MethodGet, url, nil)
@@ -493,12 +503,12 @@ func (n *Node) seedableBlob(ctx context.Context, hash string) (string, bool) {
 // fetchRange fetches [start, start+length) from one holder over the mesh (a
 // plain HTTP Range request against the F3 blob endpoint) and returns the bytes.
 // The holder clamps at EOF, so a short file yields fewer than length bytes.
-func (n *Node) fetchRange(ctx context.Context, p *Peer, hash string, start, length int64) ([]byte, error) {
+func (n *Node) fetchRange(ctx context.Context, p *Peer, hash string, start, length int64, onStall func()) ([]byte, error) {
 	addr, err := AddrForKeyHex(p.PublicKey)
 	if err != nil {
 		return nil, err
 	}
-	cctx, cancel := context.WithTimeout(ctx, perChunkTimeout)
+	cctx, cancel := context.WithTimeout(ctx, n.timeouts.PerChunk)
 	defer cancel()
 	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/blob/%s", addr, MeshPort, hash)
 	req, err := http.NewRequestWithContext(cctx, http.MethodGet, url, nil)
@@ -514,7 +524,7 @@ func (n *Node) fetchRange(ctx context.Context, p *Peer, hash string, start, leng
 	if resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("range %d-%d: holder answered %s", start, start+length-1, resp.Status)
 	}
-	return readStall(cancel, io.LimitReader(resp.Body, length), length, false, chunkStallTimeout)
+	return readStall(cancel, io.LimitReader(resp.Body, length), length, false, n.timeouts.ChunkStall, onStall)
 }
 
 // chunk0Prefetch is a speculative chunk-0 fetch overlapped with the manifest
@@ -522,6 +532,7 @@ func (n *Node) fetchRange(ctx context.Context, p *Peer, hash string, start, leng
 // only if the guessed layout matched and chunk 0 verifies.
 type chunk0Prefetch struct {
 	active   bool
+	from     *Peer       // the holder it was fetched from (for stats crediting)
 	guessLen int64       // the chunk-0 length we speculatively fetched
 	ch       chan []byte // buffered(1): the fetched bytes, or nil on failure
 }
@@ -547,8 +558,9 @@ func (n *Node) speculateChunk0(t *transfer, holders []*Peer) *chunk0Prefetch {
 	pf.guessLen = end // chunk 0 = [0, end)
 	pf.active = true
 	p := holders[0]
+	pf.from = p
 	go func() {
-		data, err := n.fetchRange(n.transferCtx, p, t.hash, 0, pf.guessLen)
+		data, err := n.fetchRange(n.transferCtx, p, t.hash, 0, pf.guessLen, t.stats.noteStall)
 		if err != nil {
 			pf.ch <- nil
 			return
@@ -589,11 +601,12 @@ func (pf *chunk0Prefetch) discard() {}
 // fetchSwarm downloads a blob chunk-by-chunk from all advertising holders in
 // parallel, verifying each chunk against the manifest. prefetched0 (when
 // non-nil) is chunk 0 already fetched and verified during the manifest round
-// trip — written up front so the first byte is ready immediately. The caller
-// verifies the assembled whole-file hash afterwards. The part file is pre-sized
-// so chunks can be written at their offsets (WriteAt is safe for concurrent
-// non-overlapping writes).
-func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*Peer, prefetched0 []byte) error {
+// trip — written up front so the first byte is ready immediately (from0 is the
+// holder it came from, credited in the stats). The caller verifies the assembled
+// whole-file hash afterwards. The part file is pre-sized so chunks can be
+// written at their offsets (WriteAt is safe for concurrent non-overlapping
+// writes).
+func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*Peer, prefetched0 []byte, from0 *Peer) error {
 	layout := man.layout()
 	f, err := os.OpenFile(t.partPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
 	if err != nil {
@@ -613,12 +626,14 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*Peer, prefe
 		}
 		done0 = true
 	}
-	plan := newChunkPlan(man, layout, holders, done0)
+	plan := newChunkPlan(man, layout, holders, done0, t.stats)
+	t.stats.setChunks(layout.count())
 	// Expose per-chunk readiness (the layout) + the seek-priority hook to the
 	// streaming relay, pre-marking chunk 0 so a waiting reader is released without
 	// a round trip.
 	t.beginChunks(layout, plan.prioritize)
 	if done0 {
+		t.stats.noteSucceed(0, from0, int64(len(prefetched0)))
 		t.chunkDone(0, plan.watermarkBytes())
 	}
 	workers := len(holders) * 2
@@ -673,7 +688,7 @@ func (n *Node) fetchChunk(t *transfer, f *os.File, layout *chunkLayout, man *blo
 	}
 	start, end := layout.rangeOf(idx)
 	length := end - start
-	ctx, cancel := context.WithTimeout(n.transferCtx, perChunkTimeout)
+	ctx, cancel := context.WithTimeout(n.transferCtx, n.timeouts.PerChunk)
 	defer cancel()
 	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/blob/%s", addr, MeshPort, t.hash)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -692,7 +707,7 @@ func (n *Node) fetchChunk(t *transfer, f *os.File, layout *chunkLayout, man *blo
 		!(resp.StatusCode == http.StatusOK && len(man.Chunks) == 1) {
 		return fmt.Errorf("chunk %d: holder answered %s", idx, resp.Status)
 	}
-	body, err := readStall(cancel, io.LimitReader(resp.Body, length), length, true, chunkStallTimeout)
+	body, err := readStall(cancel, io.LimitReader(resp.Body, length), length, true, n.timeouts.ChunkStall, t.stats.noteStall)
 	if err != nil {
 		return fmt.Errorf("chunk %d: %w", idx, err)
 	}
@@ -728,9 +743,11 @@ type chunkPlan struct {
 	dead      []bool // per-provider
 	provFails []int  // per-provider consecutive failures (reset on success)
 	rr        int    // round-robin cursor
+
+	stats *transferStats // diagnostics sink; nil outside a real transfer
 }
 
-func newChunkPlan(man *blobManifest, layout *chunkLayout, holders []*Peer, done0 bool) *chunkPlan {
+func newChunkPlan(man *blobManifest, layout *chunkLayout, holders []*Peer, done0 bool, st *transferStats) *chunkPlan {
 	nc := layout.count()
 	cp := &chunkPlan{
 		done:      make([]bool, nc),
@@ -739,6 +756,7 @@ func newChunkPlan(man *blobManifest, layout *chunkLayout, holders []*Peer, done0
 		providers: holders,
 		dead:      make([]bool, len(holders)),
 		provFails: make([]int, len(holders)),
+		stats:     st,
 	}
 	start := 0
 	if done0 && nc > 0 {
@@ -825,19 +843,26 @@ func (cp *chunkPlan) pickProvider() (*Peer, int, bool) {
 func (cp *chunkPlan) succeed(idx, pidx int, t *transfer) {
 	cp.mu.Lock()
 	cp.inFlight--
+	var from *Peer
 	if pidx >= 0 {
 		cp.provFails[pidx] = 0
+		from = cp.providers[pidx]
 	}
-	if !cp.done[idx] {
+	fresh := !cp.done[idx]
+	if fresh {
 		cp.done[idx] = true
 		cp.remaining--
 		for cp.watermark < len(cp.done) && cp.done[cp.watermark] {
 			cp.watermark++
 		}
 	}
+	start, end := cp.layout.rangeOf(idx)
 	progress := cp.layout.offsetOf(cp.watermark)
 	cp.cond.Broadcast()
 	cp.mu.Unlock()
+	if fresh {
+		cp.stats.noteSucceed(idx, from, end-start)
+	}
 	t.chunkDone(idx, progress)
 }
 
@@ -849,7 +874,10 @@ func (cp *chunkPlan) succeed(idx, pidx int, t *transfer) {
 func (cp *chunkPlan) fail(idx, pidx int, err error, corrupt bool) {
 	cp.mu.Lock()
 	cp.inFlight--
+	var from *Peer
+	dropped := false
 	if pidx >= 0 {
+		from = cp.providers[pidx]
 		if corrupt {
 			cp.dead[pidx] = true
 		} else {
@@ -858,6 +886,7 @@ func (cp *chunkPlan) fail(idx, pidx int, err error, corrupt bool) {
 				cp.dead[pidx] = true
 			}
 		}
+		dropped = cp.dead[pidx]
 	}
 	if cp.liveProviders() == 0 {
 		if !cp.aborted {
@@ -868,6 +897,10 @@ func (cp *chunkPlan) fail(idx, pidx int, err error, corrupt bool) {
 	}
 	cp.cond.Broadcast()
 	cp.mu.Unlock()
+	cp.stats.noteFail(idx, from, err, corrupt)
+	if dropped {
+		cp.stats.noteDropped(from)
+	}
 }
 
 // liveProviders counts non-dead holders; caller holds cp.mu.

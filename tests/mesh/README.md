@@ -11,9 +11,9 @@ containers.
 > anything else unless explicitly overridden. Run them on a disposable machine
 > or your own workstation — never on a shared or reachable host.
 
-**Build status:** `netfault` (the TCP fault relay) is built. `netfaultd`,
-`meshlab`, the QUIC/UDP relay and the federation chaos scenarios are not yet —
-see `docs/plans/mesh-testing.md` for the phase plan.
+**Build status:** `netfault` (the TCP fault relay) and the `federation/` test
+seams are built. `netfaultd`, `meshlab`, the QUIC/UDP relay and the chaos
+scenarios are not yet — see `docs/plans/mesh-testing.md` for the phase plan.
 
 ## Prerequisites
 
@@ -46,6 +46,48 @@ retransmits. So:
 | `tcp://` | latency, jitter, bandwidth, slicing, partitions, mid-stream kills |
 | `quic://` | genuine packet loss, reordering, duplication *(not yet built)* |
 
+## Test seams in `federation/`
+
+A hostile link is only half of it: production cadences are tuned for a quiet mesh
+(a 15-minute catalog sync, a 2-minute per-chunk backstop), and "it eventually
+finished" is not an assertion about *how* a transfer went. Three additive seams
+close that — none changes default behavior, and nothing in the server sets them.
+
+**`federation.WithIntervals`** shrinks the background cadences, so a scenario or
+a lab converges in milliseconds rather than minutes:
+
+```go
+node, err := federation.Start(fc, store, logger, federation.WithIntervals(federation.Intervals{
+	Refresh:     50 * time.Millisecond, // refresh-loop sweep      (default 1 min)
+	CatalogSync: 50 * time.Millisecond, // per-friend catalog pull (default 15 min)
+	SnapshotTTL: 20 * time.Millisecond, // own-snapshot memoization (default 1 min)
+}))
+```
+
+All three matter together: without `SnapshotTTL` the *serving* node keeps handing
+out its memoized old catalog, so a fast puller learns nothing new.
+
+**`federation.WithTimeouts`** shrinks the deadlines, so a stall scenario asserts
+in seconds what would otherwise take minutes to fail:
+
+| Field | Bounds | Default |
+|---|---|---|
+| `Control` | one ping / catalog / holdings call | 15 s |
+| `Manifest` | one manifest probe against a holder | 20 s |
+| `ChunkStall` | idle read: no bytes for this long ⇒ hung connection (also the blob client's response-header timeout) | 20 s |
+| `PerChunk` | overall backstop for one chunk fetch | 2 min |
+| `Transfer` | overall backstop for one whole-file fetch | 30 min |
+
+A zero field keeps the default in both structs, so an override names only what it
+cares about.
+
+**`Transfer.Stats()`** returns a `TransferStats` snapshot — mode
+(`local`/`swarm`/`whole`), time-to-first-byte, per-provider bytes and chunks,
+retries, failovers, stalls, corrupt chunks, dropped holders. This is what lets a
+scenario assert that failover *happened*, that the fast holder carried the
+majority, or that the chunk-0 prefetch paid off — F4's load-bearing claims — and
+it is the same data an admin transfer view would want.
+
 ## Quick start
 
 ```bash
@@ -57,6 +99,9 @@ MADSHARE_CHAOS=1 go test -count=1 ./tests/mesh/...
 
 # Under the race detector: this package is concurrency-heavy by design.
 MADSHARE_CHAOS=1 go test -race -count=1 ./tests/mesh/...
+
+# The federation seams the scenarios build on (real in-process meshes).
+go test -run 'Seams|Intervals|TransferStats' ./federation/...
 ```
 
 Using it in a test — peer a node at the proxy instead of the real underlay:

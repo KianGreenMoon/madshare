@@ -78,6 +78,9 @@ func (f *fakeTransfer) Available(offset int64) int64 {
 func (f *fakeTransfer) Done() <-chan struct{}   { return f.done }
 func (f *fakeTransfer) Err() error              { return f.err }
 func (f *fakeTransfer) Open() (*os.File, error) { return os.Open(f.path) }
+func (f *fakeTransfer) Stats() federation.TransferStats {
+	return federation.TransferStats{Hash: f.hash, Size: f.Size(), Progress: f.Progress()}
+}
 func (f *fakeTransfer) WaitFor(ctx context.Context, offset int64) error {
 	for {
 		if f.Progress() > offset {

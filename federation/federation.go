@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 // MeshPort is the fixed TCP port of the madnetwork protocol listener on every
@@ -160,15 +161,133 @@ type Transfer interface {
 	// WaitFor blocks until at least offset+1 bytes are readable, the transfer
 	// ends, or ctx is done. An offset at or beyond EOF returns io.EOF.
 	WaitFor(ctx context.Context, offset int64) error
+	// Stats is a diagnostic snapshot of how the fetch is going — which holders
+	// carried it, how often it retried or failed over, when the first byte
+	// landed. Safe to call at any point in the transfer's life.
+	Stats() TransferStats
 }
 
-// Option configures Start with the F3 transfer wiring. Both build variants
-// accept options; the stub ignores them.
+// TransferStats is a point-in-time snapshot of one blob fetch: enough to answer
+// *how* it went, not just whether it finished. The swarm's load-bearing claims
+// (multi-source failover, seek priority, the chunk-0 prefetch overlap) are only
+// assertable against numbers like these — see docs/plans/mesh-testing.md T1 —
+// and the same numbers are what an admin transfer view would show.
+type TransferStats struct {
+	Hash string `json:"hash"`
+	// Mode is how the bytes are being fetched: "local" (born complete from the
+	// library or the cache), "swarm" (F4 multi-source chunks) or "whole" (the F3
+	// single-source fallback). Empty before the fetch picks a path.
+	Mode string `json:"mode"`
+	Size int64  `json:"size"`
+	// Progress is the contiguous readable prefix (Transfer.Progress).
+	Progress int64 `json:"progress"`
+	// Elapsed is wall-clock since the fetch started (frozen once it ended).
+	Elapsed time.Duration `json:"elapsed_ns"`
+	// FirstByte is how long it took the front of the file to become readable —
+	// the streaming time-to-first-byte. 0 means "not yet"; a failed attempt that
+	// resets progress clears it, so it always describes the live attempt.
+	FirstByte time.Duration `json:"first_byte_ns"`
+
+	Chunks     int `json:"chunks"`      // chunks in the manifest layout (0 in whole-file mode)
+	ChunksDone int `json:"chunks_done"` // chunks verified and written
+	Retries    int `json:"retries"`     // failed attempts that were re-queued
+	Failovers  int `json:"failovers"`   // pieces completed by a holder after another holder failed them
+	Stalls     int `json:"stalls"`      // idle-read watchdog firings (a hung mesh connection)
+	Corrupt    int `json:"corrupt"`     // per-chunk verification failures
+
+	// Providers is per-holder accounting, in the order the tracker offered them.
+	Providers []ProviderStats `json:"providers"`
+}
+
+// ProviderStats is one holder's contribution to a transfer.
+type ProviderStats struct {
+	Name      string `json:"name"`
+	PublicKey string `json:"public_key"`
+	Bytes     int64  `json:"bytes"`
+	Chunks    int    `json:"chunks"`
+	Failures  int    `json:"failures"`
+	Dropped   bool   `json:"dropped"` // taken out of rotation (corrupt bytes, or too many failures)
+	LastError string `json:"last_error,omitempty"`
+}
+
+// Option configures Start: the transfer wiring (cache dir, blob resolver) and
+// the test/lab seams (intervals, timeouts). Both build variants accept options;
+// the stub ignores them.
 type Option func(*nodeOptions)
 
 type nodeOptions struct {
 	cacheDir    string
 	resolveBlob func(hash string) (path string, ok bool)
+	intervals   Intervals
+	timeouts    Timeouts
+}
+
+// Intervals overrides the node's background cadences. A zero field keeps the
+// built-in default, so a caller sets only what it cares about.
+//
+// This is a test/lab seam (docs/plans/mesh-testing.md T1): the production values
+// are tuned for a quiet mesh, but a chaos scenario cannot wait out a 15-minute
+// catalog sync and a multi-node demo whose catalogs converge on that cadence is
+// unusable. Nothing in the server sets it.
+type Intervals struct {
+	Refresh     time.Duration // refresh-loop sweep period (pair retries + friend pings); default 1 min
+	CatalogSync time.Duration // how stale a friend's cached catalog may get before a re-pull; default 15 min
+	SnapshotTTL time.Duration // how long this node's own catalog snapshot is memoized; default 1 min
+}
+
+// WithIntervals overrides the background cadences (zero fields keep defaults).
+func WithIntervals(iv Intervals) Option { return func(o *nodeOptions) { o.intervals = iv } }
+
+// Timeouts overrides the deadlines on the protocol and transfer paths. A zero
+// field keeps the built-in default.
+//
+// The same seam as [Intervals], for the other half of the problem: a stall
+// scenario that waits out the production 2-minute per-chunk backstop takes
+// minutes to assert a fact that happens in the first second.
+type Timeouts struct {
+	Control    time.Duration // one control call (ping, catalog, holdings); default 15 s
+	Manifest   time.Duration // one manifest probe against a holder; default 20 s
+	ChunkStall time.Duration // idle-read watchdog: no bytes for this long ⇒ the connection is hung; default 20 s
+	PerChunk   time.Duration // overall backstop for one chunk fetch; default 2 min
+	Transfer   time.Duration // overall backstop for one whole-file fetch; default 30 min
+}
+
+// WithTimeouts overrides the protocol/transfer deadlines (zero fields keep
+// defaults).
+func WithTimeouts(to Timeouts) Option { return func(o *nodeOptions) { o.timeouts = to } }
+
+// withDefaults fills every unset (non-positive) field from d.
+func (iv Intervals) withDefaults(d Intervals) Intervals {
+	if iv.Refresh <= 0 {
+		iv.Refresh = d.Refresh
+	}
+	if iv.CatalogSync <= 0 {
+		iv.CatalogSync = d.CatalogSync
+	}
+	if iv.SnapshotTTL <= 0 {
+		iv.SnapshotTTL = d.SnapshotTTL
+	}
+	return iv
+}
+
+// withDefaults fills every unset (non-positive) field from d.
+func (to Timeouts) withDefaults(d Timeouts) Timeouts {
+	if to.Control <= 0 {
+		to.Control = d.Control
+	}
+	if to.Manifest <= 0 {
+		to.Manifest = d.Manifest
+	}
+	if to.ChunkStall <= 0 {
+		to.ChunkStall = d.ChunkStall
+	}
+	if to.PerChunk <= 0 {
+		to.PerChunk = d.PerChunk
+	}
+	if to.Transfer <= 0 {
+		to.Transfer = d.Transfer
+	}
+	return to
 }
 
 // WithCacheDir sets the directory for fetched blobs (<data_dir>/cache/madnetwork

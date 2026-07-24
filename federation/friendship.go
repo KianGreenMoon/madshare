@@ -282,7 +282,7 @@ func (n *Node) pingPeer(ctx context.Context, p *Peer) {
 // wakes it early after an import/accept so the admin sees the result promptly.
 func (n *Node) refreshLoop(ctx context.Context) {
 	defer close(n.loopDone)
-	ticker := time.NewTicker(time.Minute)
+	ticker := time.NewTicker(n.intervals.Refresh)
 	defer ticker.Stop()
 	for {
 		n.sweep(ctx)
@@ -296,7 +296,7 @@ func (n *Node) refreshLoop(ctx context.Context) {
 }
 
 // sweep runs one round: pair toward every pending_outgoing peer; ping every
-// friend and, when its catalog is due (catalogSyncInterval, or never synced),
+// friend and, when its catalog is due (Intervals.CatalogSync, or never synced),
 // pull it. Sequential — friend lists are small and each call is bounded by the
 // client timeout.
 func (n *Node) sweep(ctx context.Context) {
@@ -314,7 +314,7 @@ func (n *Node) sweep(ctx context.Context) {
 			n.pairWith(ctx, p)
 		case PeerFriend:
 			n.pingPeer(ctx, p)
-			if time.Since(time.Unix(p.CatalogSyncedAt, 0)) >= catalogSyncInterval {
+			if time.Since(time.Unix(p.CatalogSyncedAt, 0)) >= n.intervals.CatalogSync {
 				n.syncCatalog(ctx, p)
 				n.syncHoldings(ctx, p) // F4: refresh what they seed from cache
 			}

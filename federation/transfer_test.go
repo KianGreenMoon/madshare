@@ -174,6 +174,25 @@ func TestBlobTransfer(t *testing.T) {
 		t.Error("cached bytes differ from the origin")
 	}
 
+	// The stats seam (T1) describes the fetch that just happened: which path it
+	// took, who carried the bytes, when the first one became readable.
+	st := tr.Stats()
+	if st.Mode != "swarm" && st.Mode != "whole" {
+		t.Errorf("stats mode = %q, want the swarm or whole-file path", st.Mode)
+	}
+	if st.FirstByte <= 0 || st.Elapsed <= 0 {
+		t.Errorf("stats timing = first byte %v, elapsed %v — both should be set", st.FirstByte, st.Elapsed)
+	}
+	if len(st.Providers) != 1 || st.Providers[0].PublicKey != a.PublicKeyHex() {
+		t.Fatalf("stats providers = %+v, want only node A", st.Providers)
+	}
+	if st.Providers[0].Bytes != int64(len(content)) || st.Providers[0].Failures != 0 {
+		t.Errorf("A's contribution = %+v, want all %d bytes and no failures", st.Providers[0], len(content))
+	}
+	if st.Failovers != 0 || st.Corrupt != 0 {
+		t.Errorf("clean single-holder fetch reported failovers=%d corrupt=%d", st.Failovers, st.Corrupt)
+	}
+
 	// Second EnsureBlob is a cache hit: complete immediately, same bytes.
 	tr2, err := b.EnsureBlob(ctx, hash)
 	if err != nil {
@@ -183,6 +202,9 @@ func TestBlobTransfer(t *testing.T) {
 	case <-tr2.Done():
 	default:
 		t.Error("cached EnsureBlob not complete immediately")
+	}
+	if m := tr2.Stats().Mode; m != "local" {
+		t.Errorf("cache-hit stats mode = %q, want %q", m, "local")
 	}
 
 	// A published-but-unadvertised hash has no provider.

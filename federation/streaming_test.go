@@ -105,7 +105,7 @@ func TestChunkPlanPrioritizeAndDone0(t *testing.T) {
 	layout := man.layout()
 	holders := []*Peer{{Name: "h"}}
 
-	cp := newChunkPlan(man, layout, holders, false)
+	cp := newChunkPlan(man, layout, holders, false, nil)
 	cp.prioritize(3)
 	if idx, ok := cp.next(); !ok || idx != 3 {
 		t.Fatalf("prioritized next = (%d,%v), want (3,true)", idx, ok)
@@ -116,7 +116,7 @@ func TestChunkPlanPrioritizeAndDone0(t *testing.T) {
 		}
 	}
 
-	cp2 := newChunkPlan(man, layout, holders, true)
+	cp2 := newChunkPlan(man, layout, holders, true, nil)
 	if !cp2.done[0] || cp2.watermark != 1 || cp2.remaining != 4 {
 		t.Fatalf("done0 plan: done[0]=%v watermark=%d remaining=%d", cp2.done[0], cp2.watermark, cp2.remaining)
 	}
@@ -136,7 +136,7 @@ func TestChunkPlanFailover(t *testing.T) {
 	layout := man.layout()
 	netErr := errors.New("mesh stalled")
 
-	cp := newChunkPlan(man, layout, []*Peer{{Name: "only"}}, false)
+	cp := newChunkPlan(man, layout, []*Peer{{Name: "only"}}, false, nil)
 	for i := 1; i < providerFailureLimit; i++ {
 		idx, ok := cp.next()
 		if !ok {
@@ -157,7 +157,7 @@ func TestChunkPlanFailover(t *testing.T) {
 	}
 
 	// A corrupt chunk drops the sole holder immediately → abort.
-	cp2 := newChunkPlan(man, layout, []*Peer{{Name: "liar"}}, false)
+	cp2 := newChunkPlan(man, layout, []*Peer{{Name: "liar"}}, false, nil)
 	idx, _ = cp2.next()
 	cp2.fail(idx, 0, errChunkCorrupt, true)
 	if !cp2.aborted {

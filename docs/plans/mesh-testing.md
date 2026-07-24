@@ -193,26 +193,44 @@ roughly the right offset, and a no-fault proxy is byte-transparent over a few Mi
 
 ## Phase T1 — Test seams in `federation/`
 
-Without these, most interesting behavior cannot be asserted in sane wall-clock.
-All three are additive; none changes default behavior.
+**Built (this commit).** All three landed, additive, with default behavior
+unchanged — nothing in the server passes either new option.
 
-- **Injectable intervals.** `refreshLoop`'s ticker (`federation/friendship.go:285`,
-  1 min), `catalogSyncInterval` (15 min) and `snapshotTTL` (1 min) in
-  `federation/catalog.go` are hard consts. Add `WithIntervals(...)` (an `Option`,
-  matching the existing `WithCacheDir`/`WithBlobResolver` style) so a chaos test
-  runs the sweep at ~200 ms. Also needed by meshlab: a lab whose catalogs
-  converge on a 15-minute cadence is unusable for demos.
-- **Timeout scaling.** `chunkStallTimeout` (20 s), `manifestTimeout` (20 s),
-  `perChunkTimeout` (2 min) and the 30-min transfer ceiling
-  (`federation/transfer.go:436`) become fields with the current values as
-  defaults, so a stall scenario finishes in seconds instead of minutes.
-- **Per-transfer stats.** `type transfer` (`federation/transfer.go:81`) tracks
-  progress but nothing diagnostic. Add a `TransferStats` snapshot: time-to-first-
-  byte, bytes per provider, chunk retries, failover count, stall events, provider
-  errors. Today a test can only assert *"it eventually finished"* — not *that
-  failover happened*, *that seek-priority beat sequential*, or *that the
-  `chunk0Prefetch` overlap paid off*, which are precisely F4's load-bearing
-  claims. Dual-purpose: this is the data an admin transfer view wants anyway.
+- **Injectable intervals.** `WithIntervals(Intervals{Refresh, CatalogSync,
+  SnapshotTTL})`, matching the existing `WithCacheDir`/`WithBlobResolver` style;
+  zero fields keep the defaults. The former consts `catalogSyncInterval` /
+  `snapshotTTL` and `refreshLoop`'s literal `time.Minute` are gone, replaced by
+  one `defaultIntervals` block in `node.go` — a const *plus* a default would
+  drift apart, and one place to read is what the lab needs.
+- **Timeout scaling.** `WithTimeouts(Timeouts{Control, Manifest, ChunkStall,
+  PerChunk, Transfer})`, same zero-keeps-default rule, defaults in
+  `defaultTimeouts`. Two beyond the plan's list, both for the same reason the
+  others exist: `Control` (the 15 s protocol-client timeout) because a flap
+  scenario's sweep otherwise blocks 15 s per dead friend, and `ChunkStall` now
+  also drives the blob client's `ResponseHeaderTimeout` — both detect the same
+  "connected but silent" holder, on either side of the response header.
+- **Per-transfer stats.** `Transfer.Stats() TransferStats` (on the interface —
+  the admin-view case wants it too), backed by `transferStats` in
+  `federation/stats.go`: mode (`local`/`swarm`/`whole`), time-to-first-byte,
+  per-provider bytes/chunks/failures/dropped/last-error, retries, failovers,
+  stalls, corrupt chunks.
+
+Three decisions worth recording:
+
+- **Failover is counted per piece, not per provider drop.** A piece delivered by
+  a holder *other than one that already failed it* is one failover; the same
+  holder recovering after its own transient failure is a retry, not a failover.
+  Both fetch modes share the accounting — the whole-file path books itself as one
+  synthetic piece (`wholePiece = -1`), so scenario 2's `Failovers > 0` assertion
+  holds whether the transfer went through the swarm or the F3 fallback.
+- **A failed attempt clears the time-to-first-byte but keeps the history.**
+  `resetProgress` (the swarm→whole-file fallback) takes the bytes back from
+  readers, so TTFB must describe the live attempt; retries, failovers, stalls and
+  per-provider bytes are cumulative — they happened, and per-provider bytes is
+  network accounting.
+- **`readStall` reports rather than only cancelling.** Its watchdog now takes an
+  `onStall` callback, which is what makes a stall *countable* instead of merely
+  fatal — scenario 9's anti-flap assertion needs the count, not the corpse.
 
 ## Phase T2 — Scenario suite (TCP faults)
 

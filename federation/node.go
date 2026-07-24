@@ -45,6 +45,12 @@ type Node struct {
 	loopCancel context.CancelFunc
 	loopDone   chan struct{}
 
+	// Background cadences and deadlines, resolved once in Start from the
+	// defaults plus any WithIntervals/WithTimeouts override. Only tests and the
+	// mesh lab override them (docs/plans/mesh-testing.md T1).
+	intervals Intervals
+	timeouts  Timeouts
+
 	// Memoized own-catalog snapshot served to friends (catalog.go).
 	snapMu sync.Mutex
 	snap   *snapshot
@@ -84,6 +90,27 @@ type Node struct {
 
 // peerTouchThrottle bounds transfer-path last_seen writes per peer.
 const peerTouchThrottle = 30 * time.Second
+
+// The production cadences and deadlines — what a node runs with unless a caller
+// passes WithIntervals/WithTimeouts. They live together rather than next to
+// their users so the values a lab has to shrink are readable in one place.
+var (
+	defaultIntervals = Intervals{
+		// Most refresh rounds are cheap: a ping per friend and a not-modified
+		// catalog check. The catalog cadence is deliberately far slower than the
+		// ping — a library changes rarely, liveness constantly.
+		Refresh:     time.Minute,
+		CatalogSync: 15 * time.Minute,
+		SnapshotTTL: time.Minute,
+	}
+	defaultTimeouts = Timeouts{
+		Control:    15 * time.Second,
+		Manifest:   20 * time.Second,
+		ChunkStall: 20 * time.Second,
+		PerChunk:   2 * time.Minute,
+		Transfer:   30 * time.Minute,
+	}
+)
 
 // Start loads (or creates) the node key, brings up the yggdrasil core with the
 // configured underlay peers/listeners, and serves the federation protocol on
@@ -131,6 +158,8 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 	}
 	transferCtx, transferCancel := context.WithCancel(context.Background())
 	n := &Node{
+		intervals:      o.intervals.withDefaults(defaultIntervals),
+		timeouts:       o.timeouts.withDefaults(defaultTimeouts),
 		core:           c,
 		stack:          stack,
 		store:          store,
@@ -153,15 +182,17 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 	n.readerAlive = stack.InboundReaderAlive
 	n.client = &http.Client{
 		Transport: &http.Transport{DialContext: n.DialContext},
-		Timeout:   15 * time.Second,
+		Timeout:   n.timeouts.Control,
 	}
 	// Blob/chunk fetches can be large and slow over the mesh; each is bounded by
 	// its own context plus an idle-read watchdog (readStall), so this client
 	// carries no global timeout — but a ResponseHeaderTimeout catches a holder
-	// that accepts the connection then never answers (a hung mesh path) fast.
+	// that accepts the connection then never answers (a hung mesh path) fast. It
+	// shares the idle-read budget: both detect the same "connected but silent"
+	// failure, only on different sides of the response header.
 	n.blobClient = &http.Client{Transport: &http.Transport{
 		DialContext:           n.DialContext,
-		ResponseHeaderTimeout: 20 * time.Second,
+		ResponseHeaderTimeout: n.timeouts.ChunkStall,
 	}}
 	n.srv = &http.Server{Handler: n.protocolHandler()}
 	go func() {

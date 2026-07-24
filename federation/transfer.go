@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 )
 
 // Direct transfer (federation F3): fetch-by-hash between friends over the
@@ -101,6 +100,11 @@ type transfer struct {
 	layout     *chunkLayout
 	chunkOK    []bool
 	prioritize func(chunkIdx int)
+
+	// Diagnostics (T1). Independently locked — the swarm records into it from
+	// the fetch workers while readers snapshot it, and it must never be in the
+	// path that publishes progress.
+	stats *transferStats
 }
 
 func newTransfer(hash, path, partPath string) *transfer {
@@ -110,6 +114,7 @@ func newTransfer(hash, path, partPath string) *transfer {
 		partPath: partPath,
 		done:     make(chan struct{}),
 		changed:  make(chan struct{}),
+		stats:    newTransferStats(),
 	}
 }
 
@@ -118,6 +123,9 @@ func completedTransfer(hash, path string, size int64) *transfer {
 	t := newTransfer(hash, path, "")
 	t.size, t.progress, t.finished = size, size, true
 	t.filename = filepath.Base(path)
+	t.stats.setMode("local")
+	t.stats.noteFirstByte()
+	t.stats.finish()
 	close(t.done)
 	return t
 }
@@ -252,9 +260,13 @@ func (t *transfer) setMeta(size int64, filename string) {
 func (t *transfer) addProgress(n int64) {
 	t.mu.Lock()
 	t.progress += n
+	readable := t.progress > 0
 	close(t.changed)
 	t.changed = make(chan struct{})
 	t.mu.Unlock()
+	if readable {
+		t.stats.noteFirstByte()
+	}
 }
 
 func (t *transfer) resetProgress() {
@@ -266,6 +278,7 @@ func (t *transfer) resetProgress() {
 	close(t.changed)
 	t.changed = make(chan struct{})
 	t.mu.Unlock()
+	t.stats.resetAttempt()
 }
 
 // beginChunks switches the transfer into chunk mode: readability becomes
@@ -292,9 +305,13 @@ func (t *transfer) chunkDone(idx int, watermarkBytes int64) {
 	if watermarkBytes > t.progress {
 		t.progress = watermarkBytes
 	}
+	readable := t.progress > 0
 	close(t.changed)
 	t.changed = make(chan struct{})
 	t.mu.Unlock()
+	if readable {
+		t.stats.noteFirstByte()
+	}
 }
 
 func (t *transfer) finish(err error) {
@@ -307,7 +324,16 @@ func (t *transfer) finish(err error) {
 	close(t.changed)
 	t.changed = make(chan struct{})
 	t.mu.Unlock()
+	t.stats.finish()
 	close(t.done)
+}
+
+// Stats snapshots the transfer's diagnostics (see [TransferStats]).
+func (t *transfer) Stats() TransferStats {
+	t.mu.Lock()
+	hash, size, progress := t.hash, t.size, t.progress
+	t.mu.Unlock()
+	return t.stats.snapshot(hash, size, progress)
 }
 
 // EnsureBlob returns the Transfer for hash, starting a fetch when needed:
@@ -379,7 +405,8 @@ func (n *Node) runTransfer(t *transfer, holders []*Peer) {
 
 	if man := n.fetchAnyManifest(n.transferCtx, holders, t.hash); man != nil {
 		t.setMeta(man.Size, man.Filename)
-		err := n.fetchSwarm(t, man, holders, pf.take(man))
+		t.stats.setMode("swarm")
+		err := n.fetchSwarm(t, man, holders, pf.take(man), pf.from)
 		if err == nil {
 			if verr := verifyFileHash(t.partPath, t.hash); verr != nil {
 				err = fmt.Errorf("assembled blob failed verification: %w", verr)
@@ -405,6 +432,7 @@ func (n *Node) runTransfer(t *transfer, holders []*Peer) {
 // runWhole is the F3 fallback: try each advertising friend in order until one
 // delivers the whole blob with bytes that verify against the content hash.
 func (n *Node) runWhole(t *transfer, holders []*Peer) {
+	t.stats.setMode("whole")
 	var lastErr error
 	for _, p := range holders {
 		if n.transferCtx.Err() != nil {
@@ -413,12 +441,14 @@ func (n *Node) runWhole(t *transfer, holders []*Peer) {
 		}
 		err := n.fetchFrom(t, p)
 		if err == nil {
-			n.observePeerAlive(p) // a completed fetch is liveness proof
+			n.observePeerAlive(p)                 // a completed fetch is liveness proof
+			t.stats.noteSucceed(wholePiece, p, 0) // bytes were credited as they arrived
 			n.logger.Printf("federation: fetched %s from %q (%d bytes)", t.hash, p.Name, t.Progress())
 			t.finish(nil)
 			return
 		}
 		lastErr = err
+		t.stats.noteFail(wholePiece, p, err, false)
 		n.logger.Printf("federation: fetch %s from %q: %v", t.hash, p.Name, err)
 		t.resetProgress()
 	}
@@ -433,7 +463,7 @@ func (n *Node) fetchFrom(t *transfer, p *Peer) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(n.transferCtx, 30*time.Minute)
+	ctx, cancel := context.WithTimeout(n.transferCtx, n.timeouts.Transfer)
 	defer cancel()
 	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/blob/%s", addr, MeshPort, t.hash)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -471,6 +501,7 @@ func (n *Node) fetchFrom(t *transfer, p *Peer) error {
 				return werr
 			}
 			hasher.Write(buf[:nr])
+			t.stats.noteBytes(p, int64(nr))
 			t.addProgress(int64(nr))
 		}
 		if rerr == io.EOF {

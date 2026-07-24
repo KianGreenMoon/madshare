@@ -18,14 +18,12 @@ import (
 // arrive without a protocol break (decision 2026-07-18, supersedes the
 // original per-row-delta idea; see docs/architecture/federation.md §Catalog).
 
-// catalogSyncInterval is how often the refresh loop re-pulls each friend's
-// catalog. Most rounds are a cheap not-modified check.
-const catalogSyncInterval = 15 * time.Minute
-
-// snapshotTTL bounds how long a built snapshot is served before the store is
-// consulted again — so back-to-back friend syncs don't rebuild the catalog
-// per request.
-const snapshotTTL = time.Minute
+// The two cadences this file lives by are node fields (defaultIntervals in
+// node.go, overridable via WithIntervals): Intervals.CatalogSync is how often
+// the refresh loop re-pulls each friend's catalog — most rounds a cheap
+// not-modified check — and Intervals.SnapshotTTL bounds how long a built
+// snapshot is served before the store is consulted again, so back-to-back
+// friend syncs don't rebuild the catalog per request.
 
 // catalogMessage is the catalog reply (and the shape cached in memory):
 // either Unchanged (the caller's serial still matches) or the full snapshot.
@@ -44,11 +42,11 @@ type snapshot struct {
 }
 
 // ownSnapshot returns the current published catalog + serial, rebuilding at
-// most every snapshotTTL.
+// most every Intervals.SnapshotTTL.
 func (n *Node) ownSnapshot(ctx context.Context) (*snapshot, error) {
 	n.snapMu.Lock()
 	defer n.snapMu.Unlock()
-	if n.snap != nil && time.Since(n.snap.built) < snapshotTTL {
+	if n.snap != nil && time.Since(n.snap.built) < n.intervals.SnapshotTTL {
 		return n.snap, nil
 	}
 	entries, err := n.store.PublishedCatalog(ctx)
