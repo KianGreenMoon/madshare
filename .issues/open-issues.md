@@ -553,9 +553,9 @@ in the order they should be worked.
 
 | Severity | Issue | Status |
 |---|---|---|
-| Medium | **`Node.Stop` never tears down the gVisor netstack** (item 1 below) | **open** |
-| Low | **`TestChaosRateLimitedSeeder`'s seed cap is not scaled** (item 2) | **open** |
-| Low | **A per-stream stall timer can drop a healthy holder under worker contention** (item 3) | **open** |
+| Medium | **`Node.Stop` never tears down the gVisor netstack** (item 1 below) | **fixed** |
+| Low | **`TestChaosRateLimitedSeeder`'s seed cap is not scaled** (item 2) | **may be a symptom of 1** |
+| Low | **A healthy holder can be dropped as if faulty** (item 3) | **open** |
 | Info | **The swarm→whole fallback erases the stats that explain the failure** (item 4) | **open** |
 
 ### 1. `Node.Stop` leaks the netstack (Medium)
@@ -595,9 +595,15 @@ it cheaply before changing anything else — run the three failures standalone
 **no timeout needs raising**. Raising `testTimeoutScale` to paper over this would
 hide a real leak and make an 80-minute run longer still.
 
-Fixing it needs a `Close()` on `YggdrasilNetstack` in the fork (NIC close + stack
-close/wait + a way to stop the `rstPackets` goroutine), i.e. a **third** local
-patch to document in `MADSHARE-PATCH.md` and to try to upstream.
+**Fixed** by a **third** local yggstack patch (`MADSHARE-PATCH.md`, "netstack
+teardown"): a new `(*YggdrasilNetstack).Close()`, an exit for the RST drain
+goroutine, an atomic `dispatcher` (NIC removal calls `Attach(nil)`, which races
+the inbound reader — a leak fix that introduced a data race would be a poor
+trade), and the `nic.stack` back-reference the upstream constructor never sets,
+which made `YggdrasilNIC.Close()` a latent nil-deref panic. `Node.Stop` calls it
+before `core.Stop`. Measured leak: **9 goroutines per node**, plus the stack.
+Guarded by `federation/TestStopReleasesNetstack`, which fails at 56 goroutines
+against an 11 baseline without the patch.
 
 ### 2. `TestChaosRateLimitedSeeder`'s 4 KiB/s cap does not scale (Low)
 
@@ -614,32 +620,50 @@ roughly 25–40 KiB/s aggregate (4 MiB in 110 s in `TestChaosLatencyTimeToFirstB
 one to two orders of magnitude; at 8× it is single-digit, and the scenario stops
 testing its own premise.
 
-Fix on the test side: scale the cap with `testTimeoutScale`, or shrink the
-content so the chunk count drops. Note this refines the scaling rule already
-recorded for T2 ("slow rates are 4 KiB/s = misses the chunk budget at BOTH
-scales") — that reasoning covered the capped holder in isolation and missed that
-`-race` handicaps the holder it is being compared *against*.
+**Status: do not "fix" this yet.** Re-run standalone under `-race` *after* the
+netstack teardown fix (item 1), the scenario passes in 95 s — the capped holder
+is dropped after six cheap `ResponseHeaderTimeout` failures and the uncapped one
+carries all 8 chunks with zero failures. But that run is also free of the
+accumulated load item 1 describes, so it does not separate the two causes. The
+one number that still looks wrong is `ttfb=1m25s` in the *passing* run: 85 s to
+first byte leaves little headroom under `PerChunk`, which is how a slower
+environment turns this into the observed failure.
 
-### 3. A per-stream stall timer can drop a healthy holder (Low, design)
+So this may be a symptom of item 1 rather than a bug of its own. The decisive
+evidence is a full-suite `-race` run with the teardown fix in place — if the
+scenario passes in context, there is nothing here to calibrate, and shrinking the
+content or scaling the cap would only have hidden the leak. If it still fails,
+scale the cap with `testTimeoutScale` or shrink the content so the chunk count
+drops, and note that this refines the scaling rule recorded for T2 ("slow rates
+are 4 KiB/s = misses the chunk budget at BOTH scales") — that reasoning covered
+the capped holder in isolation and missed that `-race` handicaps the holder it is
+being compared *against*.
 
-Why the run above failed the way it did, and the part that is not test-only.
-Holder A was uncapped on a clean link and still accumulated 8 consecutive
-failures — hitting `providerFailureLimit` (4) and being dropped as if faulty.
-The stats show `stalls=6`.
+### 3. A healthy holder was dropped as if faulty (Low, design)
 
-`fetchSwarm` starts `min(len(holders)*2, chunks)` workers (4 here) that share one
-netstack, and `fetchChunk` bounds each one with `readStall(..., Timeouts.ChunkStall)`
-— a timer on *that stream's* byte arrivals. With one worker pinned on C's 4 KiB/s
-bucket for the full `PerChunk` budget and the remaining bandwidth split three
-ways, A's own streams went longer than `ChunkStall` (2 s × 8 = 16 s) without
-delivering a byte. The stall timer cannot distinguish "this holder is dead" from
-"my own workers are starving each other", so it charged the fault to A.
+The part of item 2 that is not test-only. Holder A was uncapped on a clean link
+and still accumulated 8 consecutive failures, hitting `providerFailureLimit` (4)
+and being dropped — `context deadline exceeded`, i.e. it could not deliver a
+256 KiB chunk inside `Timeouts.PerChunk` (6 s × 8 = 48 s). Nothing about A was
+faulty; the fetcher simply could not tell "this holder is dead" from "everything
+here is slow right now", and the failure counter is what decides.
 
 Same family as the speed-blind round-robin above, and it argues the same
-direction: the swarm needs some notion of *relative* throughput. Far less likely
-in production (15 s stall against real bandwidth, not a `-race` netstack), but the
-shape is real — a fetcher on a thin uplink with several holders could reproduce
-it. Not urgent; do not change `swarm.go` without a decision on the scheduler.
+direction: the drop rule is absolute (N consecutive misses of a fixed budget)
+where the useful signal is *relative* (this holder is slow compared to its
+peers). A fetcher on a thin uplink with several holders is the production shape
+that could reproduce it. Not urgent; do not change `swarm.go` without a decision
+on the scheduler.
+
+**Correction (same day, after the fix in item 1).** An earlier revision of this
+entry blamed `readStall`'s per-stream stall timer, reasoning that the
+serving-side token bucket lets response headers out instantly so a capped holder
+is only discovered by burning the whole per-chunk budget. **That is wrong.**
+Re-running the scenario standalone under `-race` shows the capped holder failing
+with `net/http: timeout awaiting response headers` — the same fast, cheap
+`ResponseHeaderTimeout` path as the link-capped scenario, six times, then
+dropped. `throttledResponseWriter` throttles the header write too. The mechanism
+above (an absolute budget, not a stall timer) is what the evidence supports.
 
 ### 4. The fallback erases the stats that explain the failure (Info)
 
