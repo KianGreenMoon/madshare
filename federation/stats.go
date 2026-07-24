@@ -44,6 +44,9 @@ type transferStats struct {
 	// attempt (a fallback restarts the accounting).
 	failedBy map[int]map[string]bool
 
+	// prior archives attempts abandoned mid-transfer (see resetAttempt).
+	prior []AttemptStats
+
 	order []string                  // provider keys in tracker order (the fetch order)
 	prov  map[string]*ProviderStats // by provider key
 }
@@ -111,11 +114,29 @@ func (s *transferStats) noteStall() {
 // per-provider bytes — are history and stay, and so does failedBy: a piece
 // delivered by a holder after another one failed it is a failover no matter
 // which attempt each happened in.
+//
+// What it clears is archived into prior first, so a transfer that failed after a
+// fallback can still report what the abandoned phase reached. Clearing without
+// archiving is what made a failed swarm fetch read as mode=whole chunks=0/0.
 func (s *transferStats) resetAttempt() {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
+	// Only an attempt that got somewhere is worth archiving. The mode alone does
+	// not count: runWhole sets it once and then walks its holders, resetting
+	// between each, so keying off mode would pad the readout with blank entries
+	// for holders that never answered. A swarm phase that read a manifest has a
+	// chunk count even if it fetched nothing, which is exactly the case that
+	// needs recording.
+	if s.chunks > 0 || s.chunksDone > 0 || s.firstByte > 0 {
+		s.prior = append(s.prior, AttemptStats{
+			Mode:       s.mode,
+			FirstByte:  s.firstByte,
+			Chunks:     s.chunks,
+			ChunksDone: s.chunksDone,
+		})
+	}
 	s.firstByte = 0
 	s.chunks, s.chunksDone = 0, 0
 	s.mu.Unlock()
@@ -265,6 +286,9 @@ func (s *transferStats) snapshot(hash string, size, progress int64) TransferStat
 	out.Providers = make([]ProviderStats, 0, len(s.order))
 	for _, key := range s.order {
 		out.Providers = append(out.Providers, *s.prov[key])
+	}
+	if len(s.prior) > 0 {
+		out.Prior = append([]AttemptStats(nil), s.prior...)
 	}
 	return out
 }

@@ -308,9 +308,21 @@ func providerBytes(st TransferStats, of *Node) int64 {
 // describe renders a stats snapshot for a failure message — every chaos failure
 // wants to know who carried what.
 func describe(st TransferStats) string {
+	mode := st.Mode
+	// A fallback resets the live counters, so name the path that was actually
+	// walked — "swarm→whole" reads very differently from a bare "whole".
+	for i := len(st.Prior) - 1; i >= 0; i-- {
+		if st.Prior[i].Mode != "" {
+			mode = st.Prior[i].Mode + "→" + mode
+		}
+	}
 	s := fmt.Sprintf("mode=%s ttfb=%v elapsed=%v chunks=%d/%d retries=%d failovers=%d stalls=%d corrupt=%d",
-		st.Mode, st.FirstByte, st.Elapsed, st.ChunksDone, st.Chunks,
+		mode, st.FirstByte, st.Elapsed, st.ChunksDone, st.Chunks,
 		st.Retries, st.Failovers, st.Stalls, st.Corrupt)
+	for _, a := range st.Prior {
+		s += fmt.Sprintf("\n  [abandoned %s] ttfb=%v chunks=%d/%d",
+			a.Mode, a.FirstByte, a.ChunksDone, a.Chunks)
+	}
 	for _, p := range st.Providers {
 		s += fmt.Sprintf("\n  %-8s bytes=%-9d chunks=%-3d failures=%d dropped=%v %s",
 			p.Name, p.Bytes, p.Chunks, p.Failures, p.Dropped, p.LastError)

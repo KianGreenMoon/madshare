@@ -171,23 +171,38 @@ seeder vanished: mode=swarm ttfb=506ms elapsed=9.19s chunks=9/9 retries=2 failov
 
 | Field | Reads as |
 |---|---|
-| `mode` | `swarm` (F4 multi-source), `whole` (F3 single-source fallback), `local` (cache/library hit) |
+| `mode` | `swarm` (F4 multi-source), `whole` (F3 single-source fallback), `local` (cache/library hit); `a→b` names a path that fell back |
 | `ttfb` | time until the front of the file became readable — the streaming claim |
 | `chunks=9/9` | verified / total in the manifest layout |
 | `retries` | failed attempts that were re-queued |
 | `failovers` | pieces finished by a holder *after a different one failed them* |
 | `stalls` | idle-read watchdog firings — a holder that connected then went silent |
 | `corrupt` | per-chunk hash mismatches (a holder serving wrong bytes) |
+| `[abandoned …]` | an attempt the fetch gave up on, and how far it got before switching |
 | per-holder | bytes and chunks carried, consecutive failures, whether it was dropped from rotation, and its last error |
 
-Two readings worth knowing:
+A fetch that changed strategy mid-flight reports both halves — the top line is
+the attempt that was live at the end, the indented ones are what came before:
 
-- **`mode=whole` in a swarm scenario** means the manifest probe failed and the
-  fetch fell back to F3. Usually the link was already cut before the transfer got
-  going.
+```
+all seeders vanished: mode=swarm→whole ttfb=0s elapsed=20.5s chunks=0/0 retries=6 failovers=0 stalls=0 corrupt=0
+  [abandoned swarm] ttfb=520ms chunks=1/9
+  node-a   bytes=262144   chunks=1   failures=6 dropped=true  Get "http://[…]:1314/…": context deadline exceeded
+```
+
+Three readings worth knowing:
+
+- **A bare `mode=whole` in a swarm scenario** means the manifest probe failed and
+  the fetch went straight to F3 — usually the link was already cut before the
+  transfer got going. **`mode=swarm→whole`** is a different story: the swarm ran
+  and gave up, and the `[abandoned swarm]` line says how far it got.
 - **A holder with `dropped=true` and `bytes=0`** was never usable. That is the
   expected shape for the slow-seeder scenarios — see the note on
   drop-not-deprioritize in Troubleshooting.
+- **Nobody `dropped=true` on a failed transfer** is normal now, not a puzzle: a
+  chunk that exhausts its attempt budget aborts the fetch with every holder still
+  live. Retiring holders and ending transfers are separate mechanisms
+  (`docs/architecture/federation.md` §Distribution).
 
 ## Writing a new scenario
 
@@ -430,10 +445,16 @@ no bytes to the `madshare` binary.
   just makes the handshake slow instead of testing the transfer.
 - **A "slow holder" is dropped, not deprioritized.** `chunkPlan` picks providers
   round-robin with no speed awareness; what keeps a crawling holder from
-  dominating is the per-chunk timeout plus `providerFailureLimit`. Scenarios
+  dominating is the per-chunk timeout plus the retirement rule. Scenarios
   therefore need a per-chunk budget short enough that a slow holder actually
   fails — `chaosPerChunk`, not the 2-minute production default. (This is a known
   efficiency gap, logged in `.issues/open-issues.md`.)
+- **Retirement is relative, so a slow holder needs a *faster peer* to be
+  retired.** A holder is dropped once it is `providerFailureLimit` failures worse
+  than the best live holder — so a scenario where *every* holder is degraded will
+  see nobody dropped, by design. If you want a holder retired, leave another one
+  healthy. A fetch with no healthy holder left ends on the per-chunk attempt
+  budget instead, with everyone still live.
 - **A restarted node lost its friendships.** Node identity derives from
   `federation.key` — restarting without the same key file is a *new node*, not
   the same one returning.

@@ -190,3 +190,56 @@ func TestTransferStatsFirstByte(t *testing.T) {
 		t.Errorf("retries after a reset = %d, want the history kept (1)", r)
 	}
 }
+
+// TestTransferStatsPriorAttempt: what a reset clears is archived, not lost. A
+// transfer that fetched half its chunks and then fell back to the whole-file
+// path used to report mode=whole chunks=0/0 — the failed phase erased itself
+// from the only readout anyone looks at.
+func TestTransferStatsPriorAttempt(t *testing.T) {
+	st := newTransferStats()
+	st.setMode("swarm")
+	st.setChunks(8)
+	st.noteFirstByte()
+	st.noteSucceed(0, &Peer{Name: "a", PublicKey: "aa"}, 4096)
+
+	st.resetAttempt() // the swarm→whole fallback
+	st.setMode("whole")
+
+	snap := st.snapshot("h", 0, 0)
+	if snap.Mode != "whole" || snap.Chunks != 0 || snap.ChunksDone != 0 || snap.FirstByte != 0 {
+		t.Errorf("live attempt not clean: mode=%s chunks=%d/%d ttfb=%v",
+			snap.Mode, snap.ChunksDone, snap.Chunks, snap.FirstByte)
+	}
+	if len(snap.Prior) != 1 {
+		t.Fatalf("prior attempts = %d, want 1", len(snap.Prior))
+	}
+	if p := snap.Prior[0]; p.Mode != "swarm" || p.Chunks != 8 || p.ChunksDone != 1 || p.FirstByte == 0 {
+		t.Errorf("archived attempt = %+v, want the swarm phase's 1/8 chunks and its ttfb", p)
+	}
+	// Transfer-wide history is not split per attempt.
+	if len(snap.Providers) != 1 || snap.Providers[0].Bytes != 4096 {
+		t.Errorf("per-provider bytes should survive the reset, got %+v", snap.Providers)
+	}
+
+	// An attempt that got nowhere is not archived, even though it has a mode:
+	// runWhole names the mode once and then walks its holders, resetting between
+	// each, so a fetch against three dead holders would otherwise report three
+	// blank abandoned attempts.
+	st2 := newTransferStats()
+	st2.setMode("whole")
+	st2.resetAttempt()
+	st2.resetAttempt()
+	if p := st2.snapshot("h", 0, 0).Prior; len(p) != 0 {
+		t.Errorf("attempts that reached nothing were archived: %+v", p)
+	}
+
+	// A whole-file holder that delivered some bytes before dying IS worth
+	// recording — it says the fetch was working and then lost its source.
+	st3 := newTransferStats()
+	st3.setMode("whole")
+	st3.noteFirstByte()
+	st3.resetAttempt()
+	if p := st3.snapshot("h", 0, 0).Prior; len(p) != 1 || p[0].Mode != "whole" || p[0].FirstByte == 0 {
+		t.Errorf("partial whole-file attempt not archived: %+v", p)
+	}
+}

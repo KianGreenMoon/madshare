@@ -197,6 +197,25 @@ type TransferStats struct {
 
 	// Providers is per-holder accounting, in the order the tracker offered them.
 	Providers []ProviderStats `json:"providers"`
+
+	// Prior holds the attempts this transfer abandoned before the live one —
+	// today just the swarm phase of a swarm→whole-file fallback. The fields
+	// above describe only the attempt still running, which is right for a live
+	// transfer and useless for a failed one: without this, a fetch that fetched
+	// half the chunks and then fell back reports mode=whole chunks=0/0, hiding
+	// the phase that actually failed.
+	Prior []AttemptStats `json:"prior,omitempty"`
+}
+
+// AttemptStats is what one abandoned fetch attempt achieved before giving way to
+// the next. The cumulative counters (retries, failovers, stalls, corrupt and the
+// per-provider rows) are NOT split per attempt — they are transfer-wide history
+// and stay in [TransferStats].
+type AttemptStats struct {
+	Mode       string        `json:"mode"`
+	FirstByte  time.Duration `json:"first_byte_ns"`
+	Chunks     int           `json:"chunks"`
+	ChunksDone int           `json:"chunks_done"`
 }
 
 // ProviderStats is one holder's contribution to a transfer.
