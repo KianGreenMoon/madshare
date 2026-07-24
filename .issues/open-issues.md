@@ -554,9 +554,15 @@ in the order they should be worked.
 | Severity | Issue | Status |
 |---|---|---|
 | Medium | **`Node.Stop` never tears down the gVisor netstack** (item 1 below) | **fixed** |
-| Low | **`TestChaosRateLimitedSeeder`'s seed cap is not scaled** (item 2) | **may be a symptom of 1** |
+| Low | **`TestChaosRateLimitedSeeder`'s seed cap is not scaled** (item 2) | **not a bug — see item 2** |
 | Low | **A healthy holder can be dropped as if faulty** (item 3) | **open** |
 | Info | **The swarm→whole fallback erases the stats that explain the failure** (item 4) | **open** |
+
+**Resolved by the item-1 fix.** The full suite was re-run under `-race` with the
+teardown patch in place: **0 failures, 0 data races**, and the `federation`
+package went from **4812 s to 1272 s** — the same tests, 3.8× faster, because the
+run is no longer dragging ~70 dead netstacks behind it. All five original
+failures were the leak. Nothing was calibrated to make this pass.
 
 ### 1. `Node.Stop` leaks the netstack (Medium)
 
@@ -620,24 +626,20 @@ roughly 25–40 KiB/s aggregate (4 MiB in 110 s in `TestChaosLatencyTimeToFirstB
 one to two orders of magnitude; at 8× it is single-digit, and the scenario stops
 testing its own premise.
 
-**Status: do not "fix" this yet.** Re-run standalone under `-race` *after* the
-netstack teardown fix (item 1), the scenario passes in 95 s — the capped holder
-is dropped after six cheap `ResponseHeaderTimeout` failures and the uncapped one
-carries all 8 chunks with zero failures. But that run is also free of the
-accumulated load item 1 describes, so it does not separate the two causes. The
-one number that still looks wrong is `ttfb=1m25s` in the *passing* run: 85 s to
-first byte leaves little headroom under `PerChunk`, which is how a slower
-environment turns this into the observed failure.
+**Resolved: there was nothing here to fix.** Standalone under `-race` with the
+item-1 patch the scenario passes in 95 s — the capped holder is dropped after six
+cheap `ResponseHeaderTimeout` failures and the uncapped one carries all 8 chunks
+with zero failures — and it passes again in the full-suite re-run, in context.
+The scenario's premise holds at both clock scales after all; it was starved by
+the leak, like everything else late in that run.
 
-So this may be a symptom of item 1 rather than a bug of its own. The decisive
-evidence is a full-suite `-race` run with the teardown fix in place — if the
-scenario passes in context, there is nothing here to calibrate, and shrinking the
-content or scaling the cap would only have hidden the leak. If it still fails,
-scale the cap with `testTimeoutScale` or shrink the content so the chunk count
-drops, and note that this refines the scaling rule recorded for T2 ("slow rates
-are 4 KiB/s = misses the chunk budget at BOTH scales") — that reasoning covered
-the capped holder in isolation and missed that `-race` handicaps the holder it is
-being compared *against*.
+Kept as a warning rather than deleted, because the tempting fix was wrong. The
+obvious reading of the original failure was "the 4 KiB/s cap is the one chaos
+knob not expressed in `testTimeoutScale` units", and the obvious response was to
+scale the cap or shrink the content. Either would have made the scenario pass
+while leaving a real leak in place, and would have quietly weakened a test that
+was working correctly. **When a chaos scenario fails only in a long run, suspect
+the run before the scenario.**
 
 ### 3. A healthy holder was dropped as if faulty (Low, design)
 
