@@ -11,9 +11,9 @@ containers.
 > anything else unless explicitly overridden. Run them on a disposable machine
 > or your own workstation — never on a shared or reachable host.
 
-**Build status:** `netfault` (the TCP fault relay) and the `federation/` test
-seams are built. `netfaultd`, `meshlab`, the QUIC/UDP relay and the chaos
-scenarios are not yet — see `docs/plans/mesh-testing.md` for the phase plan.
+**Build status:** `netfault` (the TCP fault relay), the `federation/` test seams
+and the TCP chaos scenarios are built. `netfaultd`, `meshlab` and the QUIC/UDP
+relay are not yet — see `docs/plans/mesh-testing.md` for the phase plan.
 
 ## Prerequisites
 
@@ -35,6 +35,14 @@ That socket is the seam. `netfault.Proxy` listens on loopback, dials the real
 endpoint, and pumps bytes through a per-direction fault pipeline; peering a node
 at the proxy's address instead of the real one makes the link hostile without
 touching yggdrasil, the OS, or the test's structure.
+
+The chaos suite builds its own topologies (`federation/chaoshelp_test.go`) rather
+than wrapping those two, for one structural reason: `startNodeTrio` peers both
+other nodes to a single hub, so its two seeders **share one underlay link** and
+cannot be degraded independently. The faulted shape inverts it — **the fetcher
+dials, every seeder listens**, each behind its own proxy — which both separates
+the links and fixes the direction convention (`Down` is always blob bytes toward
+the fetcher).
 
 **Transport split.** TCP is a reliable byte stream, so this relay cannot emulate
 packet loss: dropping bytes would corrupt the connection rather than model a
@@ -88,6 +96,42 @@ scenario assert that failover *happened*, that the fast holder carried the
 majority, or that the chunk-0 prefetch paid off — F4's load-bearing claims — and
 it is the same data an admin transfer view would want.
 
+## The scenarios
+
+`federation/chaos_test.go` — real meshes under real faults. Each one asserts a
+claim the code makes, not merely that a transfer eventually finished; the
+`TransferStats` seam is what makes the difference assertable.
+
+| Scenario | Fault | Claim under test |
+|---|---|---|
+| `SlowAndFastSeeder` | one holder at 4 KiB/s | a crawling source cannot gate the transfer; the fast holder carries the bulk |
+| `SeederVanishesMidTransfer` | partition one link mid-fetch | the survivor finishes it, and `Failovers > 0` proves chunks were re-routed |
+| `AllSeedersVanish` | partition the only link mid-fetch | fails cleanly and promptly — no hang, nothing promoted into the cache, no orphaned `.part` |
+| `LatencyTimeToFirstByte` | 300 ms RTT + 512 KiB/s | the lead ramp + chunk-0 prefetch put the first byte early in the transfer, not near its end |
+| `TailSeekBeatsPrefix` | 512 KiB/s | a seek to EOF fetches the tail chunk out of order, while the contiguous watermark is still far behind |
+| `RateLimitedSeeder` | `seed_rate_kib` on one holder | the serving-side cap throttles that holder, not the swarm |
+| `PartitionThenHeal` | cut, then heal | friendship survives; `last_seen` freezes and falls behind the window, then recovers on its own; the changed catalog syncs |
+| `FlappingLinkStaysFresh` | 2 s down / 6 s up, ×3 | the anti-flap guarantee: repeated outages never push a friend past the freshness window |
+
+Two scenarios from the plan resolve differently than written, both for the same
+structural reason — **netfault faults the underlay, and some behavior lives
+above it**:
+
+- *"Friend down past the window → its tracks disappear from the browse."* The
+  hiding is a SQL predicate (`last_seen >= now-window`,
+  `database.MadnetworkView.Cutoff`), unit-tested in `database/madnetwork_test.go`.
+  What only a real mesh can show is the *input*: `PartitionThenHeal` asserts an
+  unreachable friend genuinely falls behind the cutoff.
+- *"Local inbound path dead → fail open."* A cut peering **cannot** produce this,
+  and that is the design working. `InboundReaderAlive` watches the goroutine
+  reading from the yggdrasil core into the netstack — above the underlay — so a
+  partition leaves it blocked but alive. `PartitionThenHeal` asserts the inverse
+  instead, which is the property that actually matters: a *remote* outage must
+  never be mistaken for a *local* fault, or every partition would stop hiding
+  anything. The dead-reader path itself is unit-tested with an injected read
+  error (`federation/availability_test.go`, and `runInboundReader` in the
+  yggstack fork).
+
 ## Quick start
 
 ```bash
@@ -97,12 +141,23 @@ go test ./tests/mesh/...
 # Add the timing-sensitive cases (latency/bandwidth/timeline accuracy).
 MADSHARE_CHAOS=1 go test -count=1 ./tests/mesh/...
 
-# Under the race detector: this package is concurrency-heavy by design.
-MADSHARE_CHAOS=1 go test -race -count=1 ./tests/mesh/...
+# The chaos scenarios: real meshes under real faults (~2 min, serial).
+MADSHARE_CHAOS=1 go test -p 1 -run Chaos -v ./federation/...
 
-# The federation seams the scenarios build on (real in-process meshes).
+# One scenario, with its stats readout.
+MADSHARE_CHAOS=1 go test -run TestChaosSeederVanishesMidTransfer -v ./federation/...
+
+# Under the race detector: concurrency-heavy by design, and ~8× slower.
+# (Not the usual 3300s — see Troubleshooting; this run has overshot 55 min.)
+MADSHARE_CHAOS=1 go test -race -p 1 -timeout 7200s -count=1 ./federation/... ./tests/mesh/...
+
+# The federation seams the scenarios build on.
 go test -run 'Seams|Intervals|TransferStats' ./federation/...
 ```
+
+Scenario runs are verbose on purpose: every one logs a `TransferStats` readout
+(mode, TTFB, per-holder bytes/chunks/failures, retries, failovers, stalls), which
+is usually enough to diagnose a failure without re-running it.
 
 Using it in a test — peer a node at the proxy instead of the real underlay:
 
@@ -171,8 +226,11 @@ cmd/netfaultd/  standalone relay + HTTP control API   [not yet built]
 cmd/meshlab/    multi-node lab of real servers        [not yet built]
 ```
 
-Federation's chaos scenarios live in `federation/chaos_test.go` (not yet built) —
-next to the helpers they reuse, not here.
+Federation's chaos scenarios live in `federation/chaos_test.go`, with their
+faulted topologies in `federation/chaoshelp_test.go` — next to the internals and
+helpers they reuse, not here. They are internal (`package federation`) by
+necessity as well as convenience: `database` imports `federation`, so a test in
+this package cannot import the browse layer without a cycle.
 
 ## Troubleshooting
 
@@ -180,11 +238,45 @@ next to the helpers they reuse, not here.
   wall-clock instead of `testTimeoutScale` units — the mesh is stochastic, and
   `-race` runs the gVisor netstack several times slower (`racescale_on_test.go`
   scales by 8). Assert "completes within N×", never an exact duration.
-- **`-race` on the database or federation packages** needs `-timeout ≥ 3300s` and
-  `-p 1`; parallel suites make SQLite's `busy_timeout` flake.
+- **…but do not scale a *fault*.** The rule is **scale what costs *us* time, not
+  what the *link* does**. A deadline you wait on scales; a cut cable does not.
+  Three ways this bit while writing the suite, all under `-race`:
+  - Scaling an *outage* 8× makes recovery *far* more than 8× worse, because
+    yggdrasil's redial backoff grows with how long the peer was unreachable and
+    runs on its own wall clock. The flap scenario went 61 s stale against its own
+    54 s window purely from that.
+  - But the *recovery window* after an outage **must** scale — reconnect plus a
+    sweep landing takes ~4 s normally and ~23 s under `-race`. Leave it unscaled
+    and the friend is never refreshed at all, which fails the same test from the
+    opposite direction.
+  - A bandwidth cap that stays fixed while the per-chunk timeout scales hands a
+    "too slow to be usable" holder 8× more budget, so it stops being dropped and
+    the scenario changes character. Pick a rate that misses the budget at *both*
+    scales (the suite uses 4 KiB/s).
+- **`last_seen` keeps moving for a moment after a partition.** `pingPeer`
+  timestamps the store write, not the reply, so an exchange that succeeded just
+  before the cut can land seconds later — reliably under `-race`. Take the
+  baseline with `settleLastSeen`, never straight after `Set(partitioned)`.
+- **`-race` on the database or federation packages** needs `-p 1`; parallel
+  suites make SQLite's `busy_timeout` flake. The usual `-timeout 3300s` is **not
+  enough** once the chaos scenarios join the same binary: `./federation/...` on
+  its own runs ~15 min under `-race` and the scenarios add ~22 min, and the
+  combined run has overshot 55 min. Use `-timeout 7200s`, or run the scenarios
+  separately with `-run Chaos`.
 - **A healed partition doesn't reconnect immediately.** yggdrasil applies its own
-  link retry backoff. Poll for reconvergence (as `waitFor` does); never assert
-  right after a heal.
+  link retry backoff — measured at **2–4 s** on a loopback underlay. Poll for
+  reconvergence (as `waitFor` does); never assert right after a heal. That delay
+  is *wall-clock*, not part of the shrunk test clock, so a budget that has to
+  absorb it must add it rather than scale it.
+- **Which direction is which.** In the chaos helpers the fetcher always dials and
+  the seeder always listens, so blob bytes are the proxy's `Down` direction and
+  requests are `Up`. `slowDown()` throttles the seeder for that reason. Getting it
+  backwards produces a scenario that degrades nothing and passes anyway.
+- **A "slow holder" is dropped, not deprioritized.** `chunkPlan` picks providers
+  round-robin with no speed awareness; what keeps a crawling holder from
+  dominating is the per-chunk timeout plus `providerFailureLimit`. Scenarios
+  therefore need a per-chunk budget short enough that a slow holder actually
+  fails — `chaosPerChunk`, not the 2-minute production default.
 - **A restarted node lost its friendships.** Node identity derives from
   `federation.key` — restarting without the same key file is a *new node*, not
   the same one returning.

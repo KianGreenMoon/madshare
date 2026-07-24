@@ -234,39 +234,101 @@ Three decisions worth recording:
 
 ## Phase T2 — Scenario suite (TCP faults)
 
-`federation/chaos_test.go` — compiled always, run only under `MADSHARE_CHAOS=1`
-(§Gating), so `go test ./...` stays fast and `make test` is unaffected while the
-compiler still checks every scenario against current `federation/` internals.
-Helpers wrap the existing pair/trio builders, threading each peering through a
-netfault proxy.
+**Built (this commit).** `federation/chaos_test.go` (8 scenarios) +
+`federation/chaoshelp_test.go` (faulted topologies, the shrunk clock,
+`requireChaos`). Compiled always, run only under `MADSHARE_CHAOS=1`: the default
+`go test ./...` is unchanged (~60 s, every scenario skipped), the scenarios add
+~150 s serial on top, ~22 min under `-race`.
 
-Scenarios, each an assertion about a claim the code already makes:
+Two shape decisions the plan did not anticipate:
 
-1. **Slow seeder + fast seeder** — no head-of-line blocking; the fast holder must
-   carry the majority of chunks (assert via per-provider bytes).
-2. **Seeder vanishes mid-transfer** (`KillAfter`) — failover completes the
-   transfer; `TransferStats.Failovers > 0`.
-3. **All seeders vanish** — clean error inside the (shrunk) budget, no hang, the
-   `.part` file never promoted, no partial blob in the cache.
-4. **300 ms RTT, 4 MiB blob** — streaming TTFB stays inside budget: the lead-ramp
-   + `chunk0Prefetch` claim, which is exactly what latency was supposed to fix.
-5. **Tail seek under latency** — seek-priority fetches the seeked chunk before the
-   prefix (`transfer.Available` on the tail chunk goes true first).
-6. **Partition then heal** — friendship survives, `last_seen` recovers, catalog
-   resyncs after reconvergence.
-7. **Friend down past the window** — its exclusively-held tracks disappear from
-   the next browse; own and cached rows never do.
-8. **Local inbound path dead** — fail-open: cutoff 0, `inbound_healthy:false`,
-   full catalog retained. Currently only unit-tested with an injected read error
-   (`availability_test.go`); this exercises it through a real dead link.
-9. **Flapping link at the window boundary** — the anti-flap guarantee: a link
-   cycling near `reachable_window_sec` must not flip availability per sweep.
-10. **Rate-limited seeder** (`seed_rate_kib`) — a throttled holder doesn't starve
-    the swarm; other holders take up the slack.
+- **The faulted topologies do not wrap `startNodePair`/`startNodeTrio`.** The trio
+  peers B *and* C to A, so the two seeders share one underlay link and cannot be
+  degraded independently — which is the entire point. The chaos topologies invert
+  it: **the fetcher dials, every seeder listens**, each through its own proxy. That
+  also fixes the orientation for good, so `Down` is always "blob bytes toward the
+  fetcher" and a fault builder can be read without checking who dialled whom.
+- **`KillAfterBytes` is the wrong knob for "a seeder vanishes."** It cuts the
+  underlay session, and yggdrasil simply redials — the holder comes back. A
+  `Partition` (refuse new dials *and* kill live ones) is what actually removes a
+  source.
+
+Scenario-by-scenario, against the ten originally listed:
+
+1. **Slow seeder + fast seeder** — built. Passes, but *not* for the reason the
+   plan assumed: `chunkPlan` picks providers round-robin with no speed
+   awareness, so the crawling holder is dispatched to about as often as the fast
+   one. What keeps it from dominating is the per-chunk timeout plus
+   `providerFailureLimit` — it fails four chunks and is dropped. Observed: the
+   fast holder carries all 8 chunks, the slow one none, whole transfer ≈8 s where
+   the slow holder's rate alone would have needed over an hour. The assertion is
+   therefore end-to-end, not "the plan prefers the fast source" — and speed-aware
+   provider selection stays an open design question (logged in
+   `.issues/open-issues.md`) rather than a claim the suite pretends is true.
+2. **Seeder vanishes mid-transfer** — built (via `Partition`, see above). Which
+   holder carries what varies per run; `Failovers > 0` and "the survivor
+   finished it" are the stable facts, and both hold.
+3. **All seeders vanish** — built. Fails in ~20 s with the shrunk clock, cache
+   and `.part` both clean.
+4. **300 ms RTT** — built. TTFB ≈1.9 s of an ≈11 s transfer (4 MiB @ 512 KiB/s).
+5. **Tail seek** — built. Tail readable with the watermark at 256 KiB of 4 MiB,
+   tail chunk starting at 3.75 MiB.
+6. **Partition then heal** — built. Reconvergence measured at 2–8 s on loopback,
+   the longer figure after a longer outage — yggdrasil's backoff grows with it,
+   which is why scenario 9's budget has to allow for the redial separately.
+7. **Friend down past the window** — split, not dropped. The row-hiding is a SQL
+   predicate (`MadnetworkView.Cutoff`) already unit-tested in
+   `database/madnetwork_test.go`, and `database` imports `federation`, so an
+   internal federation test *cannot* import it (cycle). Scenario 6 therefore
+   asserts the half only a real mesh can show: an unreachable friend genuinely
+   falls behind the cutoff.
+8. **Local inbound path dead** — **not reachable through netfault, by design.**
+   `InboundReaderAlive` watches the goroutine reading the yggdrasil core into the
+   netstack, which sits *above* the underlay: a cut peering leaves it blocked but
+   alive. Scenario 6 asserts the inverse instead, which is the load-bearing
+   property — a remote outage must never be mistaken for a local fault, or every
+   partition would fail open and stop hiding anything. The dead-reader path stays
+   unit-tested with an injected read error.
+9. **Flapping link** — built, and the fiddliest of the eight. Worst `last_seen`
+   age ≈3.9 s of an 8.4 s window normally, ≈8.6 s of 53 s under `-race`. The
+   budget is *outage + recovery + one refresh gap*, and the outage and the
+   recovery scale **differently** — see the scaling rule below, which this
+   scenario cost two `-race` runs to get right.
+10. **Rate-limited seeder** — built, using `seed_rate_kib` rather than a link
+    cap, so it tests the serving-side bucket. Same drop-not-deprioritize dynamic
+    as scenario 1.
 
 Budgets are `testTimeoutScale`-relative and tolerance-shaped ("completes within
 N×", "no stall > X"), never exact timings — the mesh is stochastic and `-race`
-runs it ~8× slower.
+runs it ~8× slower. One budget is deliberately *not* scaled from `meshDeadline`:
+`chaosDeadline` (90 s ×scale) bounds a scenario's transfer, because a chaos
+transfer is supposed to hit timeouts and retries, and budgeting it like a healthy
+one would only assert that the shrunk clock is smaller than itself.
+
+**And the scaling rule is narrower than `testTimeoutScale` suggests: scale what
+costs *us* time, not what the *link* does.** The `-race` runs failed three
+scenarios teaching this, and it is the most transferable thing T2 produced.
+
+- Scaling the flap's **outage** made it 16 s instead of 2 s, and yggdrasil's
+  redial backoff **grows with how long the peer was unreachable**, on its own
+  wall clock — so recovery grew far more than 8×: the friend went 61 s stale
+  against its own 54 s window, for reasons with nothing to do with anti-flap.
+- Leaving the flap's **recovery window** unscaled then failed it from the
+  opposite side: reconnect-plus-a-landed-sweep costs ~4 s normally and ~23 s
+  under `-race` (that cost *is* ours), so a 6 s up-window never refreshed the
+  friend at all — 24.8 s stale against a 12 s window. The scenario now splits the
+  two explicitly: outage unscaled, recovery scaled, window = outage + recovery +
+  a refresh gap.
+- A netfault bandwidth cap that stays fixed while `PerChunk` scales hands the
+  "crawling" holder 8× more budget under `-race` — at 16 KiB/s it stopped being
+  dropped and started carrying a third of the chunks, turning a deterministic
+  scenario into a coin flip. The slow rates (link cap and `seed_rate_kib`) are
+  now 4 KiB/s: too slow to finish one chunk inside the budget at *either* scale.
+
+One more `-race`-only trap: **`last_seen` keeps moving briefly after a
+partition**, because `pingPeer` timestamps the store write rather than the reply,
+and under `-race` that goroutine can be descheduled for seconds. A baseline taken
+straight after `Set(partitioned)` is racy; `settleLastSeen` waits for quiet first.
 
 ## Phase T3 — netfault UDP + QUIC underlay
 
@@ -425,7 +487,9 @@ T2 is the highest-value arm for regressions.
 - **`go install ./...` yields only `madshare`** — the packaging hole the tag exists
   to close; assert it stays closed whenever a `cmd/` is added.
 - `MADSHARE_CHAOS=1 go test -p 1 ./federation/... ./tests/mesh/...` green, and
-  green under `-race` with the scaled budgets.
+  green under `-race` with the scaled budgets. Note the `-race` run needs
+  **`-timeout 7200s`**, not the 3300 s the rest of the repo uses: `./federation/...`
+  alone is ~15 min under `-race` and the scenarios add ~22 min on top.
 - `netfaultd` refuses a non-loopback bind or target without the explicit override,
   and says why.
 - **Every command in the README's Quick start is executed as written** — the

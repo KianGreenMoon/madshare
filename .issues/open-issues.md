@@ -502,3 +502,41 @@ Not yet implemented.
 - The download-stall symptom must be reproduced on a real (lossy/latent) mesh
   or a netstack stress harness before trusting any fix — loopback will not
   show it.
+
+## Federation — swarm provider selection is speed-blind (2026-07-24)
+
+Found by the T2 chaos suite (`federation/chaos_test.go`
+`TestChaosSlowAndFastSeeder`), which was written to assert the plan's claim that
+"the fast holder must carry the majority of chunks".
+
+`chunkPlan.pickProvider` (`federation/swarm.go`) is plain round-robin over the
+live holders, with **no notion of how fast any of them is**. So when one holder
+crawls and another is fast, roughly half of all chunk *dispatches* still go to
+the slow one, and workers pile up blocked on it.
+
+What saves the transfer today is not the scheduler but the failure path: a
+holder that cannot deliver a chunk inside `Timeouts.PerChunk` accumulates
+failures and is dropped once it hits `providerFailureLimit` (4). Measured with
+one holder at 16 KiB/s and one unlimited: the fast holder ends up carrying all
+8 chunks, the slow one 0, and the whole 2 MiB completes in ~9 s (against >2 min
+if the slow holder had gated it).
+
+So the *outcome* is correct and the suite asserts it end-to-end. But the
+mechanism is "wait for it to time out four times", which means:
+
+- Every slow holder costs `4 × PerChunk` of wasted worker time before it is
+  dropped — with the production 2-minute `PerChunk` that is 8 minutes.
+- A holder that is slow but *just* fast enough to beat `PerChunk` is never
+  dropped and keeps taking half the dispatches indefinitely.
+- The drop is permanent for the transfer, so a holder that was briefly
+  congested is not reconsidered.
+
+Possible directions, none implemented: track per-provider throughput in the
+existing `TransferStats` accounting and weight `pickProvider` by it; or
+dispatch a chunk to the provider with the fewest bytes in flight; or keep
+round-robin but shrink the effective timeout for a provider that is
+demonstrably slower than its peers.
+
+Not urgent — v1 correctness is fine, this is efficiency. Deliberately **not**
+"fixed" while writing the tests: the suite asserts what the code claims, and
+changing the scheduler is a design decision, not a test fix.
