@@ -365,10 +365,20 @@ plan.
 
 ## Phase T5 — Docs, Makefile, closing the availability item
 
-**Finalize** `tests/mesh/README.md` — the stub has been growing since T0
-(§Deliverable), so T5 is a completeness pass over it, not a writing session: fill
-the sections later phases added (QUIC transport, meshlab topologies), verify every
-command in Quick start actually runs as written, and delete this plan doc.
+**The README half is DONE for T0–T2** (owner-requested, pulled forward): the
+completeness pass ran over everything built, and `tests/mesh/README.md` is now a
+standalone operator's guide rather than a growing stub — safety callout rewritten
+to describe the tool that actually exists (`netfault`, not the unbuilt
+`netfaultd`/`meshlab`), a §Reading a failure that decodes the `TransferStats`
+readout field by field, and a §Writing a new scenario with the full helper
+reference (topologies, fault builders, waiters, assertions, the shrunk-clock
+constants and what production value each replaces). Every Quick start command was
+executed as written and its timing recorded. The unbuilt phases appear only as a
+three-line "not built yet" pointer back here.
+
+**Still open in T5:** the sections T3/T4 will add (QUIC transport, meshlab
+topologies), the Makefile targets below, the availability walkthrough, and
+deleting this plan doc — none of which can happen before T3/T4 exist.
 
 Plus Makefile targets. Note the split: the binaries need `-tags tests` (an
 explicit path without it is a hard error), the scenarios need the env var:
@@ -385,6 +395,14 @@ Then a walkthrough of the availability live-verification checklist run against
 meshlab instead of the real mesh.
 
 ## Deliverable: `tests/mesh/README.md`
+
+**Status: every bullet below is satisfied for T0–T2** (see §Phase T5). What
+remains is the content T3 and T4 will bring — the QUIC transport section, the
+meshlab topologies/env-var section, and the `ffprobe`/`fpcalc`/`TEST_AUDIO_DIR`
+prerequisites that only meshlab's seeding needs. The safety callout currently
+describes `netfault` alone; it must be widened when `netfaultd` (an open relay
+with a retargetable control API) and `meshlab` (known bootstrap admin
+credentials) actually exist.
 
 **Written incrementally, not at the end.** A stub lands with T0 and each phase
 extends it; a tool nobody can run is not done, and this suite has more moving
@@ -421,10 +439,14 @@ Follow the house pattern set by `tests/k6/README.md` and
 
 Troubleshooting must carry the failures we already know are coming: mesh
 convergence is not instant after a heal (poll, don't assert); `-race` needs
-`-timeout ≥ 3300s` and `-p 1`; a restarted node that lost its `federation.key` is
-a new identity; budgets are `testTimeoutScale`-relative; and a scenario that is
+`-p 1` and — since the scenarios joined the package — `-timeout 7200s`, not the
+3300 s the rest of the repo uses; a restarted node that lost its `federation.key`
+is a new identity; budgets are `testTimeoutScale`-relative; and a scenario that is
 flaky under load is usually a budget expressed in wall-clock rather than scale
-units.
+units. T2 added four more the hard way: never scale a *fault* the way you scale a
+deadline, `last_seen` keeps moving briefly after a partition, degrade the right
+direction (`Down` carries blob bytes), and a slow holder is dropped by timeout
+rather than deprioritized.
 
 ## Dependencies & sequencing
 
