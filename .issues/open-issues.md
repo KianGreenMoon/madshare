@@ -540,3 +540,119 @@ demonstrably slower than its peers.
 Not urgent — v1 correctness is fine, this is efficiency. Deliberately **not**
 "fixed" while writing the tests: the suite asserts what the code claims, and
 changing the scheduler is a design decision, not a test fix.
+
+## Federation — findings from the full `-race` mesh run (2026-07-24)
+
+The first end-to-end run of
+`MADSHARE_CHAOS=1 go test -race -p 1 -timeout 7200s ./federation/... ./tests/mesh/...`
+(80 min, 41 pass / 5 fail). **No data races were reported** — the yggstack
+`writePacket` fix (`third_party/yggstack/MADSHARE-PATCH.md`) holds under the 8
+parallel chunk workers that used to trip it, and `tests/mesh/netfault` is fully
+green. All five failures are timing; the four items below are what they exposed,
+in the order they should be worked.
+
+| Severity | Issue | Status |
+|---|---|---|
+| Medium | **`Node.Stop` never tears down the gVisor netstack** (item 1 below) | **open** |
+| Low | **`TestChaosRateLimitedSeeder`'s seed cap is not scaled** (item 2) | **open** |
+| Low | **A per-stream stall timer can drop a healthy holder under worker contention** (item 3) | **open** |
+| Info | **The swarm→whole fallback erases the stats that explain the failure** (item 4) | **open** |
+
+### 1. `Node.Stop` leaks the netstack (Medium)
+
+`Node.Stop` (`federation/node.go`) cancels the loops, shuts down the mesh HTTP
+server and calls `core.Stop()` — but it never touches `n.stack`. Nothing calls
+`YggdrasilNIC.Close()`, nothing closes the gVisor `stack.Stack`, and the
+`rstPackets` drain goroutine started in `NewYggdrasilNIC`
+(`third_party/yggstack/src/netstack/yggdrasil.go`) has no exit path at all. So
+every stopped node leaves a live netstack behind. (The inbound *reader* does
+exit — the #398 patch treats `types.ErrClosed` as terminal — so this is not a
+regression from that patch.)
+
+In the server this is close to harmless: federation stops only at process exit.
+In the test suite it is not, because ~30 mesh tests start 2–3 nodes each, so the
+run accumulates ~70 dead-but-live netstacks. The run degrades accordingly — the
+*same* two-node pairing costs 51–128 s in the early test files and 243–377 s in
+the last ones:
+
+| early in the run | | late in the run | |
+|---|---|---|---|
+| `TestPairRejectsMismatchedKey` | 51 s | `TestSwarmMultiSource` | **fail** at 243 s |
+| `TestPingOverMesh` | 54 s | `TestHoldingsTracker` | **fail** at 245 s |
+| `TestFriendshipHandshake` | 128 s | `TestSwarmFailover` | **fail** at 375 s |
+| | | `TestBlobTransfer` | 278 s |
+
+Three of the five failures are that and nothing more: `TestSwarmMultiSource`,
+`TestSwarmFailover` and `TestHoldingsTracker` all died inside `makeFriends` — in
+test *setup*, before reaching a single assertion — when `waitFor` hit
+`meshDeadline` (30 s × `testTimeoutScale` 8 = 240 s) on the same handshake that
+`TestFriendshipHandshake` had completed in 128 s earlier in the same process.
+
+The leak is a code fact; that it *causes* the slowdown is a hypothesis. Confirm
+it cheaply before changing anything else — run the three failures standalone
+(`go test -race -run 'TestSwarmMultiSource|TestSwarmFailover|TestHoldingsTracker'
+./federation/`); if they pass well inside the deadline, the diagnosis holds and
+**no timeout needs raising**. Raising `testTimeoutScale` to paper over this would
+hide a real leak and make an 80-minute run longer still.
+
+Fixing it needs a `Close()` on `YggdrasilNetstack` in the fork (NIC close + stack
+close/wait + a way to stop the `rstPackets` goroutine), i.e. a **third** local
+patch to document in `MADSHARE-PATCH.md` and to try to upstream.
+
+### 2. `TestChaosRateLimitedSeeder`'s 4 KiB/s cap does not scale (Low)
+
+The one behavioural failure. The scenario gives holder C a 4 KiB/s serving cap
+(`seed_rate_kib`) and asserts the uncapped holder A takes up the slack. Under
+`-race` **both** holders were dropped, the swarm phase aborted, the whole-file
+fallback also failed, and the transfer errored after 4 m 15 s.
+
+Every other chaos knob is expressed in `testTimeoutScale` units; the seed cap is
+an absolute constant. That is fine in isolation — but the *healthy* side is not
+constant. The passing scenarios in the same run measure the whole -race mesh at
+roughly 25–40 KiB/s aggregate (4 MiB in 110 s in `TestChaosLatencyTimeToFirstByte`,
+2 MiB in 86 s in `TestChaosSlowAndFastSeeder`). At 1× the healthy/capped gap is
+one to two orders of magnitude; at 8× it is single-digit, and the scenario stops
+testing its own premise.
+
+Fix on the test side: scale the cap with `testTimeoutScale`, or shrink the
+content so the chunk count drops. Note this refines the scaling rule already
+recorded for T2 ("slow rates are 4 KiB/s = misses the chunk budget at BOTH
+scales") — that reasoning covered the capped holder in isolation and missed that
+`-race` handicaps the holder it is being compared *against*.
+
+### 3. A per-stream stall timer can drop a healthy holder (Low, design)
+
+Why the run above failed the way it did, and the part that is not test-only.
+Holder A was uncapped on a clean link and still accumulated 8 consecutive
+failures — hitting `providerFailureLimit` (4) and being dropped as if faulty.
+The stats show `stalls=6`.
+
+`fetchSwarm` starts `min(len(holders)*2, chunks)` workers (4 here) that share one
+netstack, and `fetchChunk` bounds each one with `readStall(..., Timeouts.ChunkStall)`
+— a timer on *that stream's* byte arrivals. With one worker pinned on C's 4 KiB/s
+bucket for the full `PerChunk` budget and the remaining bandwidth split three
+ways, A's own streams went longer than `ChunkStall` (2 s × 8 = 16 s) without
+delivering a byte. The stall timer cannot distinguish "this holder is dead" from
+"my own workers are starving each other", so it charged the fault to A.
+
+Same family as the speed-blind round-robin above, and it argues the same
+direction: the swarm needs some notion of *relative* throughput. Far less likely
+in production (15 s stall against real bandwidth, not a `-race` netstack), but the
+shape is real — a fetcher on a thin uplink with several holders could reproduce
+it. Not urgent; do not change `swarm.go` without a decision on the scheduler.
+
+### 4. The fallback erases the stats that explain the failure (Info)
+
+Reading the failure in item 2 was harder than it should have been. `runTransfer`
+reacts to a failed swarm phase by calling `stats.setMode("whole")` and
+`t.resetProgress()` before running `runWhole`, so the readout printed by
+`describe()` said `mode=whole ttfb=0s chunks=0/0` — implying the swarm path never
+ran, when in fact it had fetched two chunks and dropped both holders. The
+per-provider byte counts survive (they are cumulative by design, see T1's
+`resetProgress` note) and were the only reason the real sequence was
+recoverable at all.
+
+Keep the swarm-phase chunk accounting across the fallback — e.g. a
+`mode=swarm→whole` marker plus retained `chunks`/`ttfb` from the first phase —
+so a failed transfer reports both phases. Cosmetic, but it is the diagnostic
+surface T1 built `TransferStats` to provide.
