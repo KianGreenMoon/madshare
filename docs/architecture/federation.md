@@ -304,6 +304,64 @@ Design notes for the implementation:
      bounded by your depth knob. Trolls can flood their own corner of the
      network; they cannot dilute yours — which is exactly why rating stays
      local/manual and never network-global.
+
+**Planned — report contradicted identity claims (not built; decided
+2026-07-26).** A peer's catalog makes claims this node can *check*, and when a
+check fails the admin should hear about it with the evidence attached. This is
+the "Detect → details" arm layer 3 promises and nothing implements; the
+"→ block → snip → publish the mark" half is F6's existing toolkit. A false audio
+identity is worth singling out because it is **provable** — unlike a tasteless
+tagset, it is arithmetic — which is exactly what makes it fair to put in front of
+an admin as grounds for blocking.
+
+What is checkable, cheapest first:
+
+- **Against blobs we already hold — no download, no request.** For a hash in our
+  own library we know the true fingerprint. A peer advertising that hash with a
+  materially different one is contradicting bytes we can hash ourselves. Runs at
+  catalog-sync time and costs a comparison. This case is **airtight**: identical
+  bytes cannot fingerprint differently.
+- **Against a materialized download.** The pipeline already re-fingerprints
+  fetched audio before it joins a recording (§Catalog); compare the result with
+  what the origin advertised, and the check is free where the work is done.
+- **Against the peer's own grouping — needs no wire change at all.** A
+  `recording_key` asserts "these renditions are the same audio". Hold two of them
+  and the assertion is testable locally without the peer's cooperation.
+
+**Never automatic.** Blocking stays manual, for the reason given above: an
+automatic reputation score is a weapon in intra-network wars. A report is
+evidence shown to a human — the peer card on `/admin/network` grows a warning
+carrying the hash, both fingerprints, and how each was obtained, next to the
+Block action already there. Nothing about what the peer is served changes until
+an admin decides.
+
+**Say "contradiction", not "lie".** Innocent explanations are more common than
+malice: a different chromaprint build (`audio_fingerprints.algo_version` exists
+precisely because fingerprints are version-sensitive), a peer that associated a
+rendition with the wrong recording through its own sloppiness, or — once F6
+gossip and F7 reach land — an honest relay repeating someone else's claim, which
+makes the *origin* of a claim a separate question from its *carrier*. Only the
+same-hash case above is airtight; the fuzzier ones are BER comparisons against a
+threshold and must be worded as such. Present a conflict and its provenance,
+never a verdict.
+
+Storage is one row per (peer, hash, claim) with an admin disposition
+(new / dismissed / acted on) so a repeating sync re-alarms nobody — a new
+migration, 031 at the earliest, since 030 is `share_depth`. A count badge on the
+dashboard alongside the pending-peer one is the whole notification design; this
+must not become mail.
+
+**Prerequisite: the catalog has to carry the fingerprint claim.** §Catalog
+describes entries as carrying one, but the F2 wire never added it —
+`CatalogEntry` has tagset text plus renditions with quality facts and nothing
+else. It is an additive JSON field, so no protocol break, and an absent claim is
+simply uncheckable rather than suspicious. Note this is also what layer 1's
+"auto-flag tagsets that conflict with a recording's dominant label" needs to work
+across nodes.
+
+The *byte*-level lie needs nothing here: bytes that do not hash to the requested
+hash never enter the cache and cost the provider its place in the swarm
+(§Distribution). This item is about claims that survive byte verification.
 - Transitive reach (depth > 0) **never ships before** the transparency and
   blocking tooling — a network you can see further into than you can defend is
   the wrong order. This is the reason the build plan puts defense in F6 and
@@ -762,7 +820,12 @@ milestone directly after direct transfer works, and tokens ship with depth.
   flow. **Changes nothing about who may fetch what** — every requester stays at
   distance 0 throughout, so the wire's access rules are exactly F5's. What it
   adds is sight and reach of *judgement*: an admin can see the graph beyond their
-  own friend list, see whom their friends distrust, and cut a branch.
+  own friend list, see whom their friends distrust, and cut a branch. Includes
+  **contradicted-claim reports** (§Trust graph): the fingerprint claim added to
+  the catalog wire, the checks against blobs we already hold and against
+  materialized downloads, and the evidence shown on the peer card — the detection
+  that makes the blocking tooling in this phase something an admin can act on
+  rather than guess with.
 - **F7 — Tokens & transitive reach.** The capability tokens that let a seeder
   serve strangers-inside-the-network, with delegated issuance along the
   friendship chain; `Audience.Distance` computed from the gossiped graph instead
