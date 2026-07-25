@@ -1,5 +1,5 @@
-// Package netfault injects network faults into a TCP link by sitting between
-// its two ends.
+// Package netfault injects network faults into a link by sitting between its
+// two ends — Proxy for a TCP underlay, UDPProxy (udp.go) for a datagram one.
 //
 // Madshare's federation tests already run real yggdrasil cores peered over a
 // loopback TCP underlay (`startNodePair` in federation/transfer_test.go reserves
@@ -11,11 +11,12 @@
 // netem, no containers, and one implementation serves both `go test` and the
 // meshlab harness.
 //
-// What this package deliberately cannot do is emulate packet loss. TCP is a
+// What the TCP relay deliberately cannot do is emulate packet loss. TCP is a
 // reliable byte stream: dropping bytes would corrupt the connection rather than
 // model a lossy path, and the kernel's retransmits mean real loss surfaces as
-// stalls and resets, not as gaps. Genuine loss, reordering and duplication need
-// the UDP (quic://) relay instead. Plan: docs/plans/mesh-testing.md.
+// stalls and resets, not as gaps. Genuine loss, reordering and duplication live
+// on UDPProxy, in front of a quic:// peering, where a lost datagram is a lost
+// datagram. Plan: docs/plans/mesh-testing.md.
 package netfault
 
 import (
@@ -467,17 +468,25 @@ func (p *Proxy) dir(up bool) Dir {
 }
 
 // delayOf draws this parcel's delay: Latency ± Jitter, never negative.
-func delayOf(d Dir) time.Duration {
-	if d.Jitter <= 0 {
-		return max(d.Latency, 0)
+func delayOf(d Dir) time.Duration { return jitterDelay(d.Latency, d.Jitter) }
+
+// jitterDelay draws latency ± jitter, never negative. Shared with the datagram
+// relay, where the same draw is made per packet rather than per read.
+func jitterDelay(latency, jitter time.Duration) time.Duration {
+	if jitter <= 0 {
+		return max(latency, 0)
 	}
-	return max(d.Latency+rand.N(2*d.Jitter)-d.Jitter, 0)
+	return max(latency+rand.N(2*jitter)-jitter, 0)
 }
 
 // sleepUntil waits for a delivery deadline, reporting false if the proxy closed.
-func (p *Proxy) sleepUntil(at time.Time) bool { return p.sleepFor(time.Until(at)) }
+func (p *Proxy) sleepUntil(at time.Time) bool { return pause(p.closed, time.Until(at)) }
 
-func (p *Proxy) sleepFor(d time.Duration) bool {
+func (p *Proxy) sleepFor(d time.Duration) bool { return pause(p.closed, d) }
+
+// pause waits out d, reporting false if stop closed first. Shared with the
+// datagram relay in udp.go.
+func pause(stop <-chan struct{}, d time.Duration) bool {
 	if d <= 0 {
 		return true
 	}
@@ -486,7 +495,7 @@ func (p *Proxy) sleepFor(d time.Duration) bool {
 	select {
 	case <-t.C:
 		return true
-	case <-p.closed:
+	case <-stop:
 		return false
 	}
 }

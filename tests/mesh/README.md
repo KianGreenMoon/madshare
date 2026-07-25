@@ -1,19 +1,21 @@
 # Madnetwork mesh test suite — fault injection for federation
 
 Correctness tests for madshare's federation layer under a **bad network**:
-latency, jitter, narrow bandwidth, partitions, flapping links, and seeders that
-vanish mid-transfer. Everything runs in userspace on one machine — no root, no
+latency, jitter, narrow bandwidth, partitions, flapping links, seeders that
+vanish mid-transfer, and — on a QUIC underlay — genuine packet loss, reordering
+and duplication. Everything runs in userspace on one machine — no root, no
 `tc`/netem, no containers, no external services.
 
 The question this suite answers is *"does the swarm still behave when the network
 misbehaves"*, and — because a transfer that merely finishes proves very little —
 *"did it behave for the reason we think it does"*.
 
-> ⚠️ **`netfault` is a relay.** It listens on one socket and forwards to another.
-> It binds loopback and refuses a non-loopback bind *or* target unless you pass
-> `Options{AllowRemote: true}`, which turns it into an open relay reachable from
-> the network and pointing at whatever the host can reach. Do not set that flag
-> to work around a problem. The chaos tests never set it.
+> ⚠️ **`netfault` is a relay**, in both its forms. It listens on one socket and
+> forwards to another. It binds loopback and refuses a non-loopback bind *or*
+> target unless you pass `Options{AllowRemote: true}`, which turns it into an open
+> relay reachable from the network and pointing at whatever the host can reach.
+> Being connectionless makes the datagram half no safer. Do not set that flag to
+> work around a problem. The chaos tests never set it.
 
 ## What's here
 
@@ -21,11 +23,13 @@ misbehaves"*, and — because a transfer that merely finishes proves very little
 tests/mesh/
   netfault/
     netfault.go        the fault model + TCP relay (a library; stdlib only)
+    udp.go             the datagram relay — loss, reorder, duplication
     netfault_test.go   the injector's own tests — a fault proxy that lies is
-                       worse than none
+    udp_test.go        worse than none
   README.md            this file
 federation/
-  chaos_test.go        the scenarios
+  chaos_test.go        the scenarios, over a tcp:// underlay
+  chaos_quic_test.go   the scenarios that need datagrams
   chaoshelp_test.go    faulted topologies, the shrunk clock, requireChaos
   seams_test.go        the injectable intervals/timeouts + TransferStats
 ```
@@ -36,9 +40,9 @@ That is also a hard constraint, not just convenience: `database` imports
 `federation`, so a test inside this package **cannot** import the browse layer
 without an import cycle. See §The scenarios for what that costs.
 
-Not built yet: `cmd/netfaultd` (standalone relay + control API), `cmd/meshlab`
-(a lab of real madshare processes), and the UDP/QUIC relay that would allow
-genuine packet loss. `docs/plans/mesh-testing.md` has the phase plan.
+Not built yet: `cmd/netfaultd` (standalone relay + control API) and `cmd/meshlab`
+(a lab of real madshare processes). `docs/plans/mesh-testing.md` has the phase
+plan.
 
 ## Prerequisites
 
@@ -55,17 +59,20 @@ own blobs and run the mesh in-process.
 ## Quick start
 
 ```bash
-# Nothing extra: the injector's deterministic tests. Instant.
+# Nothing extra: the injector's deterministic tests. ~2 s.
 go test ./tests/mesh/...
 
-# Add netfault's timing-sensitive cases (measured latency, throughput, kills). ~5 s.
+# Add netfault's timing-sensitive cases (measured latency, throughput, kills). ~10 s.
 MADSHARE_CHAOS=1 go test -count=1 ./tests/mesh/...
 
-# The scenarios: real meshes under real faults. ~2.5 min, serial, verbose.
+# The scenarios: real meshes under real faults. ~3.5 min, serial, verbose.
 MADSHARE_CHAOS=1 go test -p 1 -run Chaos -v ./federation/...
 
 # One scenario, with its stats readout. ~20 s.
 MADSHARE_CHAOS=1 go test -run TestChaosSeederVanishesMidTransfer -v ./federation/...
+
+# Just the datagram half — packet loss, reordering, duplication. ~40 s.
+MADSHARE_CHAOS=1 go test -p 1 -run 'TestChaos(Lossy|Scrambled|SustainedLoss)' -v ./federation/...
 
 # The federation test seams the scenarios are built on. ~4 s.
 go test -run 'Intervals|TransferStats' ./federation/...
@@ -109,21 +116,53 @@ it:
 So `slowDown()` degrades `Down`. Getting this backwards produces a scenario that
 degrades nothing and passes anyway.
 
-**Transport split.** TCP is a reliable byte stream, so this relay cannot emulate
-packet loss: dropping bytes would corrupt the connection rather than model a
-lossy path, and real loss surfaces as stalls and resets because the kernel
-retransmits. So:
+**Transport split.** TCP is a reliable byte stream, so the stream relay cannot
+emulate packet loss: dropping bytes would corrupt the connection rather than
+model a lossy path, and real loss surfaces as stalls and resets because the
+kernel retransmits. Three faults therefore live one layer down, on the datagrams
+a `quic://` peering rides — yggdrasil 0.5.14 speaks QUIC natively, so this costs
+nothing but a different URI scheme:
 
-| Underlay | Use it for |
-|---|---|
-| `tcp://` | latency, jitter, bandwidth, slicing, partitions, mid-stream kills |
-| `quic://` | genuine packet loss, reordering, duplication *(not built)* |
+| Underlay | Relay | Use it for |
+|---|---|---|
+| `tcp://` | `netfault.Proxy` | latency, jitter, bandwidth, slicing, partitions, mid-stream kills |
+| `quic://` | `netfault.UDPProxy` | genuine packet **loss**, **reordering**, **duplication**, per-datagram jitter |
+
+`UDPProxy` demultiplexes by source address into *flows*, each with its own socket
+toward the target, and schedules delivery per datagram rather than queueing in
+arrival order — which is what lets a reordered packet actually be overtaken
+instead of holding up everything behind it.
+
+Two knob sets that deliberately do **not** match, because each would be a lie on
+the other transport:
+
+- No `Loss`/`Reorder`/`Duplicate` on `Fault`. The kernel would repair them before
+  yggdrasil saw anything.
+- No `Slice`, `KillAfterBytes` or `KillAfterTime` on `DatagramFault`. Chopping a
+  datagram corrupts it, and closing a flow removes nothing: the client's next
+  packet opens a new one, which to QUIC is a NAT rebinding it migrates across.
+  **`Partition` is the only way to remove a datagram source** — the same
+  conclusion the stream side reached from the other direction, where a
+  `KillAfterBytes` cut just makes yggdrasil redial.
+
+`Partition` itself differs for the same reason: on TCP it also kills live
+connections, because a peer must be *told* the path is gone; on UDP it only stops
+carrying packets, so a heal needs no redial and QUIC picks up where it left off
+(unless the outage outlasts its one-minute idle timeout).
+
+**Degrade after convergence, always.** Every QUIC scenario friends the nodes on a
+clean link and applies the fault afterwards. A handshake is the least interesting
+thing a lossy path can break, and letting setup fail probabilistically would make
+scenarios flaky for reasons unrelated to what they assert.
 
 ## The scenarios
 
-`federation/chaos_test.go`. Each asserts a claim the code makes, not merely that
-a transfer eventually finished — `TransferStats` is what makes the difference
+`federation/chaos_test.go` (stream underlay) and `federation/chaos_quic_test.go`
+(datagram underlay). Each asserts a claim the code makes, not merely that a
+transfer eventually finished — `TransferStats` is what makes the difference
 assertable.
+
+Over a `tcp://` underlay:
 
 | Scenario | Fault | Claim under test |
 |---|---|---|
@@ -135,6 +174,19 @@ assertable.
 | `RateLimitedSeeder` | `seed_rate_kib` on one holder | the serving-side cap throttles that holder, not the swarm |
 | `PartitionThenHeal` | cut, then heal | friendship survives; `last_seen` freezes and falls behind the cutoff, then recovers on its own; a catalog changed during the outage syncs |
 | `FlappingLinkStaysFresh` | 2 s down / 6 s up, ×3 | the anti-flap guarantee: repeated outages never push a friend past the freshness window |
+
+Over a `quic://` underlay:
+
+| Scenario | Fault | Claim under test |
+|---|---|---|
+| `LossyPathCompletes` | 15 % loss, both directions | loss stays a *transport* problem: the transfer completes byte-exact and never surfaces as a corrupt chunk — which would retire holders that did nothing wrong |
+| `ScrambledPathKeepsChunksIntact` | 20 % reordered by 30 ms, 10 % duplicated, **no loss**, two holders | reassembly from two independently disordered sources still verifies per chunk *and* whole-file |
+| `SustainedLossStaysReachable` | 5 % loss, sustained | a permanently lossy friend still counts as reachable — `last_seen` keeps up, friendship survives, and the local inbound signal is not flipped by a remote fault |
+
+Every QUIC scenario also asserts the **injector's own counters** (`assertLossy`,
+`assertScrambled`). A transfer that "survived 15 % loss" over a link that dropped
+nothing has proved nothing, and that is a silent failure — so the fault is
+verified to have happened before its result is believed.
 
 ### Two things this suite deliberately does not test
 
@@ -245,20 +297,30 @@ func TestChaosMyScenario(t *testing.T) {
 
 **Topologies**
 
-| Helper | Shape |
-|---|---|
-| `startFaultedPair(t, sA, sB, oA, oB)` | seeder `a` listens, fetcher `b` dials → returns `(a, b, link)` |
-| `startFaultedTrio(t, sA, sB, sC, oA, oB, oC, seedRateA, seedRateC)` | seeders `a` and `c` listen, fetcher `b` dials both → returns `(a, b, c, linkA, linkC)`. The seed rates are `seed_rate_kib` (serving-side cap, 0 = unlimited), distinct from a link cap. |
+| Helper | Underlay | Shape |
+|---|---|---|
+| `startFaultedPair(t, sA, sB, oA, oB)` | `tcp://` | seeder `a` listens, fetcher `b` dials → returns `(a, b, link)` |
+| `startFaultedTrio(t, sA, sB, sC, oA, oB, oC, seedRateA, seedRateC)` | `tcp://` | seeders `a` and `c` listen, fetcher `b` dials both → returns `(a, b, c, linkA, linkC)`. The seed rates are `seed_rate_kib` (serving-side cap, 0 = unlimited), distinct from a link cap. |
+| `startQUICPair(t, sA, sB, oA, oB)` | `quic://` | the datagram counterpart → returns `(a, b, link)` with `link` a `*netfault.UDPProxy` |
+| `startQUICTrio(t, sA, sB, sC, oA, oB, oC)` | `quic://` | two seeders, each behind its own datagram proxy → `(a, b, c, linkA, linkC)` |
 
-**Faults** — `link.Set(...)` applies to live connections, not just new ones, so a
-transfer already in flight feels the change:
+**Faults** — `link.Set(...)` applies to live traffic, not just new connections, so
+a transfer already in flight feels the change:
 
-| Builder | Effect |
-|---|---|
-| `slowDown(bytesPerSec)` | caps the seeder→fetcher direction |
-| `rtt(d)` | splits a round-trip time across both directions |
-| `partitioned` | refuse new dials **and** kill live ones; heal with `netfault.Fault{}` |
-| `link.Script(flapSteps(cycles, down, up)...)` | a down/up timeline in the background |
+| Builder | Underlay | Effect |
+|---|---|---|
+| `slowDown(bytesPerSec)` | `tcp://` | caps the seeder→fetcher direction |
+| `rtt(d)` | `tcp://` | splits a round-trip time across both directions |
+| `partitioned` | `tcp://` | refuse new dials **and** kill live ones; heal with `netfault.Fault{}` |
+| `link.Script(flapSteps(cycles, down, up)...)` | `tcp://` | a down/up timeline in the background |
+| `lossy(rate)` | `quic://` | drops that share of datagrams in **both** directions — see below |
+| `scrambled(reorder, duplicate, delay)` | `quic://` | reorders and duplicates without dropping anything |
+| `netfault.DatagramFault{Partition: true}` | `quic://` | stops carrying packets; heal with `netfault.DatagramFault{}`. No builder — nothing needs one yet, and a cut path is already covered on the stream side, where it is the harder case. |
+
+`lossy` is symmetric on purpose. A one-sided drop rate is not something a path
+does — loss is a property of the wire — and a `Down`-only rate would let every
+acknowledgement and retransmission through unharmed, quietly making the scenario
+easier than it claims to be.
 
 **Waiting** — never `time.Sleep` for a mesh event:
 
@@ -279,6 +341,9 @@ transfer already in flight feels the change:
 | `providerBytes(st, node)` | one holder's byte count |
 | `assertCached(t, dir, hash, want)` | the blob landed byte-exact |
 | `lastSeenOf(t, store, node)` | a peer's stored liveness timestamp |
+| `describeLink(link)` | a datagram relay's counters — log it beside `describe(st)` |
+| `assertLossy(t, link, want)` | the path really was that lossy, and the relay added no weather of its own |
+| `assertScrambled(t, name, link)` | reordering and duplication really happened, and nothing was lost |
 
 **The shrunk clock.** `chaosOpts()` applies it to every node; the constants are in
 `chaoshelp_test.go`. Values below are at 1×; all but the last are multiplied by
@@ -341,6 +406,8 @@ admin transfer view would want.
 
 ## netfault reference
 
+### Stream relay (`Proxy`, `tcp://`)
+
 A `Fault` carries two `Dir`s plus link-level triggers. The zero `Fault` is a
 transparent proxy, which is what makes it a usable baseline.
 
@@ -380,6 +447,41 @@ helpers pin which end is which (§The model); a standalone proxy does not.
 
 `Options{AllowRemote: true}` lifts the loopback restriction on both the bind
 address and the target — see the warning at the top.
+
+### Datagram relay (`UDPProxy`, `quic://`)
+
+A `DatagramFault` carries two `DatagramDir`s plus `Partition`. Same `Options`,
+same loopback-by-default rule, same `Script` shape (`DatagramStep`).
+
+| Knob | Scope | Meaning |
+|---|---|---|
+| `Latency` | per direction | Added delivery delay, scheduled per datagram. Does **not** reduce throughput. |
+| `Jitter` | per direction | Spreads each datagram's delay over ±Jitter, clamped at 0. Order is **not** preserved — a datagram path may reorder, and jitter alone will do it. |
+| `Bandwidth` | per direction | Ceiling in bytes/s (token bucket, 100 ms burst). A datagram arriving with the transmit queue full is **dropped**, not buffered, and counted as `Overflowed`. |
+| `Loss` | per direction | Probability in [0,1] of dropping a datagram outright. |
+| `Duplicate` | per direction | Probability of delivering a second copy, immediately after the first. |
+| `Reorder` / `ReorderDelay` | per direction | Probability of holding a datagram back by `ReorderDelay`, so its successors overtake it. Does nothing without a delay. |
+| `Partition` | link | Stop carrying packets both ways. Flows survive; heal is the same knob back. |
+
+```go
+p, err := netfault.NewUDP(realUnderlayAddr, netfault.DatagramFault{})
+if err != nil {
+	t.Fatal(err)
+}
+defer p.Close()
+
+peerURI := "quic://" + p.Addr() // hand this to config.FederationConfig.Peers
+
+p.Set(netfault.DatagramFault{                    // 5 % loss both ways
+	Up:   netfault.DatagramDir{Loss: 0.05},
+	Down: netfault.DatagramDir{Loss: 0.05},
+})
+st := p.Stats() // flows / packets & bytes each way / lost / reordered /
+                // duplicated / overflowed / refused
+```
+
+`Stats()` is not decoration here — it is how a scenario proves the fault it
+configured actually happened. Always assert on it (§The scenarios).
 
 ## Gating
 
@@ -459,8 +561,31 @@ no bytes to the `madshare` binary.
   `federation.key` — restarting without the same key file is a *new node*, not
   the same one returning.
 - **Latency seems to cap throughput.** That is the bug `TestLatencyDoesNotThrottle`
-  exists to catch: delay must be applied by the parcel queue, never as a sleep
+  exists to catch (and `TestDatagramLatencyDoesNotThrottle` one layer down): delay
+  must be applied by the parcel queue or the per-datagram timer, never as a sleep
   before each write.
+- **A "5 % loss" run measures some other rate.** The relay adds a hop, and a hop
+  with a default-sized socket buffer starts dropping under a burst the two real
+  endpoints would have absorbed — drops indistinguishable from injected loss in
+  the counters. `UDPProxy` asks for 4 MiB buffers (best-effort; the kernel clamps
+  to `net.core.rmem_max`) and counts its own transmit-queue drops separately as
+  `Overflowed`, which `assertLossy` checks. If `Overflowed` is climbing, the
+  measurement is the relay's, not the knob's. In the injector's *own* tests the
+  same problem appears on the sending side, which is why every sender there paces
+  itself — see `pace` in `udp_test.go`.
+- **A datagram scenario passes but proved nothing.** Loss, reorder and duplicate
+  are *draws*: a mis-wired knob produces a perfectly healthy link and a green
+  test. Call `assertLossy`/`assertScrambled` — every QUIC scenario does — and log
+  `describeLink(link)` next to the transfer stats.
+- **`Partition` behaves differently on the two relays**, and it is not a bug.
+  TCP kills live connections (a peer must be told); UDP just stops carrying
+  packets, so a heal needs no redial and QUIC resumes — unless the outage outlasts
+  its one-minute idle timeout. Also, `KillAfterBytes`/`KillAfterTime` do not exist
+  on `DatagramFault` at all: closing a flow removes nothing, because the client's
+  next packet opens a new one and QUIC migrates across it.
+- **A QUIC scenario fails during setup, not during the fault.** Degrade *after*
+  friending. `startQUICPair`/`startQUICTrio` hand back a transparent link for
+  exactly this reason — a lossy handshake is a flaky test, not a finding.
 - **Port allocation is racy.** The reserve-then-close `127.0.0.1:0` idiom has an
   inherent window; serial runs (`-p 1`) keep it narrow.
 

@@ -168,6 +168,19 @@ func reserveUnderlay(t *testing.T) string {
 	return addr
 }
 
+// reserveUnderlayUDP is the datagram counterpart. TCP and UDP port spaces are
+// separate, so this must probe the one it will actually bind.
+func reserveUnderlayUDP(t *testing.T) string {
+	t.Helper()
+	probe, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := probe.LocalAddr().String()
+	probe.Close()
+	return addr
+}
+
 // newLink starts a transparent proxy in front of target; scenarios degrade it
 // with Set/Script once the mesh has converged.
 func newLink(t *testing.T, target string) *netfault.Proxy {
@@ -178,6 +191,64 @@ func newLink(t *testing.T, target string) *netfault.Proxy {
 	}
 	t.Cleanup(func() { p.Close() })
 	return p
+}
+
+// newDatagramLink is newLink for a quic:// peering.
+func newDatagramLink(t *testing.T, target string) *netfault.UDPProxy {
+	t.Helper()
+	p, err := netfault.NewUDP(target, netfault.DatagramFault{})
+	if err != nil {
+		t.Fatalf("netfault datagram proxy for %s: %v", target, err)
+	}
+	t.Cleanup(func() { p.Close() })
+	return p
+}
+
+// ── QUIC topologies (T3) ─────────────────────────────────────────────────────
+//
+// The same shapes over a quic:// underlay, which is what makes loss, reordering
+// and duplication expressible at all: on a TCP underlay the kernel repairs them
+// before yggdrasil ever sees them, so a "5 % loss" knob there would be fiction
+// (docs/plans/mesh-testing.md §Known gotchas). Orientation is unchanged — the
+// fetcher dials, the seeders listen, Down carries blob bytes.
+//
+// The links start transparent on purpose. QUIC's handshake and yggdrasil's
+// pairing are the least interesting things a lossy path can break, and letting a
+// scenario's setup fail probabilistically would make every one of them flaky for
+// reasons that have nothing to do with what they assert. Converge first, then
+// degrade.
+
+// startQUICPair starts a seeder (a, listening) and a fetcher (b, dialing) whose
+// single quic:// peering runs through the returned datagram proxy.
+func startQUICPair(t *testing.T, storeA, storeB *memStore, optsA, optsB []Option) (*Node, *Node, *netfault.UDPProxy) {
+	t.Helper()
+	logger := log.New(io.Discard, "", 0)
+	dir := t.TempDir()
+
+	real := reserveUnderlayUDP(t)
+	link := newDatagramLink(t, real)
+
+	a := startChaosNode(t, "a", dir, storeA, logger, config.FederationConfig{Listen: []string{"quic://" + real}}, optsA)
+	b := startChaosNode(t, "b", dir, storeB, logger, config.FederationConfig{Peers: []string{"quic://" + link.Addr()}}, optsB)
+	return a, b, link
+}
+
+// startQUICTrio is startFaultedTrio over quic://: two seeders (a, c), one
+// fetcher (b) dialing both through its own datagram proxy per link.
+func startQUICTrio(t *testing.T, sA, sB, sC *memStore, oA, oB, oC []Option) (a, b, c *Node, linkA, linkC *netfault.UDPProxy) {
+	t.Helper()
+	logger := log.New(io.Discard, "", 0)
+	dir := t.TempDir()
+
+	realA, realC := reserveUnderlayUDP(t), reserveUnderlayUDP(t)
+	linkA, linkC = newDatagramLink(t, realA), newDatagramLink(t, realC)
+
+	a = startChaosNode(t, "a", dir, sA, logger, config.FederationConfig{Listen: []string{"quic://" + realA}}, oA)
+	c = startChaosNode(t, "c", dir, sC, logger, config.FederationConfig{Listen: []string{"quic://" + realC}}, oC)
+	b = startChaosNode(t, "b", dir, sB, logger, config.FederationConfig{
+		Peers: []string{"quic://" + linkA.Addr(), "quic://" + linkC.Addr()},
+	}, oB)
+	return a, b, c, linkA, linkC
 }
 
 // ── Fault builders ───────────────────────────────────────────────────────────
@@ -198,6 +269,34 @@ func rtt(d time.Duration) netfault.Fault {
 
 // partitioned is the cut link: new dials refused, live connections killed.
 var partitioned = netfault.Fault{Partition: true}
+
+// ── Datagram fault builders (T3) ─────────────────────────────────────────────
+
+// lossy drops the given share of datagrams in BOTH directions. Both, because a
+// one-sided drop rate is not a thing a path does: loss is a property of the
+// wire, and QUIC's recovery only means anything when its acknowledgements are
+// exposed to the same weather as the data they acknowledge. A Down-only rate
+// would let every retransmission through unharmed and quietly make the scenario
+// easier than it claims to be.
+func lossy(rate float64) netfault.DatagramFault {
+	return netfault.DatagramFault{
+		Up:   netfault.DatagramDir{Loss: rate},
+		Down: netfault.DatagramDir{Loss: rate},
+	}
+}
+
+// scrambled reorders and duplicates datagrams without dropping any — the two
+// faults a reliable stream hides completely, isolated from loss so a failure
+// cannot be blamed on missing bytes.
+func scrambled(reorder, duplicate float64, delay time.Duration) netfault.DatagramFault {
+	d := netfault.DatagramDir{Reorder: reorder, ReorderDelay: delay, Duplicate: duplicate}
+	return netfault.DatagramFault{Up: d, Down: d}
+}
+
+// There is no datagramPartition builder to match `partitioned` because nothing
+// needs one yet: netfault.DatagramFault{Partition: true} is the whole of it, and
+// a cut path is already covered on the stream side, where it is the harder case
+// (TCP must redial; a datagram heal resumes the QUIC connection as it stands).
 
 // ── Scenario plumbing ────────────────────────────────────────────────────────
 
@@ -303,6 +402,68 @@ func providerBytes(st TransferStats, of *Node) int64 {
 		}
 	}
 	return 0
+}
+
+// ── Datagram assertions (T3) ─────────────────────────────────────────────────
+
+// describeLink renders a datagram relay's counters. Every QUIC scenario logs
+// them next to the transfer stats: the two together are what distinguish "the
+// swarm coped with a hostile path" from "the path was never hostile".
+func describeLink(p *netfault.UDPProxy) string {
+	s := p.Stats()
+	seen := s.Lost + s.PacketsUp + s.PacketsDown
+	var rate float64
+	if seen > 0 {
+		rate = float64(s.Lost) / float64(seen)
+	}
+	return fmt.Sprintf("link: flows=%d packets=%d/%d bytes=%d/%d lost=%d (%.1f%%) "+
+		"reordered=%d duplicated=%d overflowed=%d refused=%d",
+		s.Flows, s.PacketsUp, s.PacketsDown, s.BytesUp, s.BytesDown,
+		s.Lost, rate*100, s.Reordered, s.Duplicated, s.Overflowed, s.Refused)
+}
+
+// assertLossy checks the path was as hostile as the scenario claims. Without
+// this a "survived 15 % loss" result is indistinguishable from a link that
+// dropped nothing — the most dangerous way for a fault suite to be green.
+//
+// It also guards the other end: the relay's own transmit queue drops when it
+// overflows, and drops the scenario did not ask for would make the measured rate
+// (and any conclusion drawn from it) something other than what was configured.
+func assertLossy(t *testing.T, p *netfault.UDPProxy, want float64) {
+	t.Helper()
+	s := p.Stats()
+	seen := s.Lost + s.PacketsUp + s.PacketsDown
+	if s.Lost == 0 {
+		t.Fatalf("the link dropped nothing across %d datagrams — the loss knob is not "+
+			"wired up, so this scenario proved nothing\n%s", seen, describeLink(p))
+	}
+	if got := float64(s.Lost) / float64(seen); got < want/2 {
+		t.Errorf("measured loss %.3f against a configured %.2f — the path was far "+
+			"gentler than the scenario claims\n%s", got, want, describeLink(p))
+	}
+	if s.Overflowed > s.Lost/10 {
+		t.Errorf("%d datagrams were dropped by relay queue overflow, not by the loss "+
+			"knob — the injector is adding weather of its own\n%s", s.Overflowed, describeLink(p))
+	}
+}
+
+// assertScrambled checks reordering and duplication actually happened, and that
+// no loss crept in — the scenario's whole argument is that a chunk failure could
+// only mean misordered reassembly, which requires the bytes to all be there.
+func assertScrambled(t *testing.T, name string, p *netfault.UDPProxy) {
+	t.Helper()
+	s := p.Stats()
+	if s.Reordered == 0 {
+		t.Errorf("link %s reordered nothing — the knob is not wired up\n%s", name, describeLink(p))
+	}
+	if s.Duplicated == 0 {
+		t.Errorf("link %s duplicated nothing — the knob is not wired up\n%s", name, describeLink(p))
+	}
+	if s.Lost > 0 || s.Overflowed > 0 {
+		t.Errorf("link %s lost %d datagrams (%d to queue overflow) in a scenario that "+
+			"injects no loss — a chunk failure could no longer be blamed on ordering alone\n%s",
+			name, s.Lost, s.Overflowed, describeLink(p))
+	}
 }
 
 // describe renders a stats snapshot for a failure message — every chaos failure

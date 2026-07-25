@@ -53,7 +53,8 @@ tests/mesh/
   cmd/meshlab/        # multi-node harness binary                      [tags tests]
   README.md           # how to run it — stub lands in T0, grows per phase
 federation/
-  chaos_test.go       # faulted scenarios                              [env-gated]
+  chaos_test.go       # faulted scenarios, tcp:// underlay             [env-gated]
+  chaos_quic_test.go  # the scenarios that need datagrams              [env-gated]
   chaoshelp_test.go   # faulted variants of startNodePair/startNodeTrio
 ```
 
@@ -332,13 +333,56 @@ straight after `Set(partitioned)` is racy; `settleLastSeen` waits for quiet firs
 
 ## Phase T3 — netfault UDP + QUIC underlay
 
-A datagram relay for `quic://` peerings, adding what TCP structurally cannot
-express: **loss**, **reorder**, **duplication**, per-datagram jitter. Same control
-surface, same `Script` timeline. Extends the suite with: lossy path still
-completes a transfer; reordered/duplicated datagrams don't corrupt a chunk (the
-per-chunk sha256 is the anchor); sustained 5 % loss doesn't flap availability.
+**Built (this commit).** `tests/mesh/netfault/udp.go` (`UDPProxy`,
+`DatagramFault`/`DatagramDir`, `DatagramStep`, `DatagramStats`) + 11 tests in
+`udp_test.go`, plus `federation/chaos_quic_test.go` (3 scenarios) and the QUIC
+topologies/fault builders/assertions in `chaoshelp_test.go`. All three scenarios
+from the list landed, all pass. `quic://` needed nothing on the madshare side —
+yggdrasil 0.5.14 ships the link type and `config` already accepted the scheme, so
+a smoke test peering two in-process nodes over QUIC worked before a line of the
+relay existed.
 
-Sequenced after T0 so the TCP suite lands first, but independent of T1/T2.
+Four decisions worth recording:
+
+- **The two knob sets deliberately do not match.** `Slice` is meaningless on a
+  datagram (chopping one corrupts it), and `KillAfterBytes`/`KillAfterTime` were
+  *dropped from the datagram fault entirely*: closing a flow removes nothing,
+  because the client's next packet opens a new one and QUIC treats that as a NAT
+  rebinding it migrates across. That leaves `Partition` as the only way to remove
+  a datagram source — the identical conclusion T2 reached from the other side,
+  where a `KillAfterBytes` cut just makes yggdrasil redial. Two honest types beat
+  one type with knobs that lie on half its instances.
+- **`Partition` means something different per transport, and should.** TCP also
+  kills live connections, because a peer must be *told* the path is gone; UDP just
+  stops carrying packets. So a datagram heal needs no redial and QUIC resumes
+  where it left off — which makes the flap-shaped scenarios *cheaper* here than on
+  TCP, where yggdrasil's redial backoff dominates the budget.
+- **Delivery is scheduled per datagram, not queued in arrival order.** The stream
+  relay's delay queue must preserve order (reordering a byte stream corrupts it);
+  the datagram relay must be able to *not*. A FIFO queue plus a sleep would turn
+  "this packet is late" into "everything behind it is late", which is a stall, not
+  a reorder. Bandwidth still applies after the delay stage, one goroutine per
+  direction — the network reorders, the wire does not.
+- **Every scenario asserts the injector's own counters** (`assertLossy`,
+  `assertScrambled`). Loss and reordering are *draws*, so a mis-wired knob yields
+  a perfectly healthy link and a green test — a silent failure the TCP scenarios
+  never had, because a bandwidth cap that does nothing shows up as a transfer
+  finishing too fast. `assertLossy` also fails when the relay's *own* transmit
+  queue overflowed more than a tenth as often as the knob fired, so a measurement
+  polluted by the injector is caught rather than reported.
+
+One trap, found while writing the injector's tests: **the relay is an extra hop,
+and an extra hop drops.** A default-sized UDP socket buffer overruns under a burst
+the two real endpoints would have absorbed, and those kernel drops are
+indistinguishable from injected loss in the counters. Two fixes, both needed:
+`UDPProxy` asks for 4 MiB buffers (best-effort — the kernel clamps to
+`net.core.rmem_max`), and every sender in `udp_test.go` paces itself. Without the
+pacing, `TestDatagramLoss` measured the host's socket buffers rather than the
+knob. The rate is also computed over what the relay *saw*, not what was sent, so a
+drop before the proxy cannot be charged to it.
+
+Measured: 15 % configured → 14.9 % observed, zero overflow; the three scenarios
+cost ~39 s on top of T2's ~150 s.
 
 ## Phase T4 — meshlab (multi-node lab, real servers)
 
@@ -376,9 +420,16 @@ constants and what production value each replaces). Every Quick start command wa
 executed as written and its timing recorded. The unbuilt phases appear only as a
 three-line "not built yet" pointer back here.
 
-**Still open in T5:** the sections T3/T4 will add (QUIC transport, meshlab
-topologies), the Makefile targets below, the availability walkthrough, and
-deleting this plan doc — none of which can happen before T3/T4 exist.
+**T3's share is DONE too** — the README gained the transport-split model (why TCP
+cannot express loss and what `UDPProxy` does instead), the QUIC scenario table,
+the datagram topologies/builders/assertions in §Writing a new scenario, a
+`DatagramFault` knob reference, and five new Troubleshooting entries.
+
+**Still open in T5:** the sections T4 will add (meshlab topologies, the
+`ffprobe`/`fpcalc`/`TEST_AUDIO_DIR` prerequisites its seeding needs, widening the
+safety callout to cover `netfaultd` and meshlab's known admin credentials), the
+Makefile targets below, the availability walkthrough, and deleting this plan doc —
+none of which can happen before T4 exists.
 
 Plus Makefile targets. Note the split: the binaries need `-tags tests` (an
 explicit path without it is a hard error), the scenarios need the env var:
@@ -396,13 +447,12 @@ meshlab instead of the real mesh.
 
 ## Deliverable: `tests/mesh/README.md`
 
-**Status: every bullet below is satisfied for T0–T2** (see §Phase T5). What
-remains is the content T3 and T4 will bring — the QUIC transport section, the
-meshlab topologies/env-var section, and the `ffprobe`/`fpcalc`/`TEST_AUDIO_DIR`
-prerequisites that only meshlab's seeding needs. The safety callout currently
-describes `netfault` alone; it must be widened when `netfaultd` (an open relay
-with a retargetable control API) and `meshlab` (known bootstrap admin
-credentials) actually exist.
+**Status: every bullet below is satisfied for T0–T3** (see §Phase T5). What
+remains is the content T4 will bring — the meshlab topologies/env-var section and
+the `ffprobe`/`fpcalc`/`TEST_AUDIO_DIR` prerequisites that only its seeding needs.
+The safety callout currently describes `netfault` (both relays); it must be
+widened when `netfaultd` (an open relay with a retargetable control API) and
+`meshlab` (known bootstrap admin credentials) actually exist.
 
 **Written incrementally, not at the end.** A stub lands with T0 and each phase
 extends it; a tool nobody can run is not done, and this suite has more moving
@@ -475,8 +525,18 @@ T2 is the highest-value arm for regressions.
   is impossible to spell wrong.
 - **TCP loss ≠ packet loss.** The kernel retransmits, so "loss" on a `tcp://`
   underlay degenerates into stalls and resets. Genuine loss/reorder needs the
-  `quic://` underlay (T3). Don't ship a `Loss` knob on the TCP relay — it would
-  be a lie; expose `Slice`/`KillAfter` instead.
+  `quic://` underlay (T3, built). Don't ship a `Loss` knob on the TCP relay — it
+  would be a lie; expose `Slice`/`KillAfter` instead. The reverse holds too:
+  `Slice` and `KillAfter*` are absent from `DatagramFault` for the same reason.
+- **A datagram fault can be green and fictional.** Loss/reorder/duplication are
+  probabilistic, so an unwired knob leaves a healthy link and a passing test —
+  unlike a bandwidth cap, whose absence shows up as a transfer finishing too fast.
+  Assert the relay's counters (`assertLossy` / `assertScrambled`), always.
+- **The relay is an extra hop, and an extra hop drops.** Default UDP socket
+  buffers overrun under bursts the real endpoints would have absorbed, and those
+  kernel drops look exactly like injected loss. `UDPProxy` widens its buffers
+  best-effort and counts its own queue drops as `Overflowed`; test senders pace
+  themselves. Measure loss over what the relay *saw*, never over what was sent.
 - **netfault emulates a link, not the internet.** Multi-hop routing pathologies
   inside yggdrasil only appear with ≥ 3 nodes and a real topology — hence the
   `chain` preset. A faulted pair tests our timeouts; a faulted chain tests ygg's.
