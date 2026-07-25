@@ -1,7 +1,7 @@
 # Madnetwork federation — design
 
 > **Status: agreed 2026-07-18; F0 (groundwork), F1 (friendship), F2 (catalog),
-> F3 (direct transfer) and F4 (swarm) are built.** The remaining items in
+> F3 (direct transfer), F4 (swarm) and F5 (depth & scope) are built.** The remaining items in
 > §Open questions are design-time details to settle during the respective
 > milestones, not blockers. Federation
 > is auth Phase 4 (`docs/architecture/auth.md` §8) and the milestone the native
@@ -81,9 +81,11 @@ default** — its social graph is visible to its members.
   identity** — it may see and fetch whatever a plain `user`-role local account
   may. The mapping is the per-friend *override* (more or less than the
   default), not a prerequisite. Deliberately a rule, not a magic local account
-  row — nothing to log into, rename, or accidentally delete. Enforcement
-  becomes consequential with per-content scope (F5); until then the published
-  set is uniform per the F2 decision.
+  row — nothing to log into, rename, or accidentally delete. Since F5 this is
+  enforced as the `GuestOnly` half of the audience (§Sharing scope): unmapped
+  and mapped-with-`content.access` friends see the full published set, a friend
+  mapped to an account without it sees only guest-accessible recordings — in the
+  catalog and at the byte endpoints alike.
 - **Thin clients have no madnetwork access by default.** Madnetwork browsing is a
   new permission (working name `madnetwork.access`), granted to admin by default
   and grantable to trusted local users. The header section for the madnetwork
@@ -94,7 +96,7 @@ default** — its social graph is visible to its members.
   browser as they arrive, while the complete file lands in the cache in
   parallel. Never build the blocking download-fully-then-play version.
 
-## Sharing scope
+## Sharing scope (F5, built)
 
 - Node-level default scope per admin: share with madnetwork / friends / nothing
   (madshare.org). On top of that, content carries a **share depth** (see
@@ -108,6 +110,74 @@ default** — its social graph is visible to its members.
   a friend who re-shares applies their own judgment anyway ("torrents do not
   know borders"). What the depth knob really controls is how far *we* actively
   push visibility and issue access.
+
+### The audience model
+
+Every mesh request that reveals or delivers library content is answered *for an
+audience*, and the same audience decides both halves — **catalog and bytes
+together**, so the node never advertises what it would not serve (the F3 rule,
+now enforced per requester instead of uniformly):
+
+```go
+type Audience struct {
+    Distance  int   // friendship hops: 0 = a direct friend
+    GuestOnly bool  // only guest-accessible recordings
+}
+```
+
+- **Distance** is compared against the content's share depth: a recording is in
+  the audience's catalog iff `depth >= Distance`. Depth `0` (friends only) serves
+  a direct friend and nobody beyond; `DepthPrivate` (`-1`) serves nobody at all,
+  including direct friends — it is the "not on the network" mark. Until
+  transitive reach turns on (F6) every authenticated requester is at distance 0,
+  so the ladder above 0 is inert *by construction rather than by omission*: the
+  depth is stored, enforced, and carried on the catalog wire today, so F6 adds
+  reach without a protocol break or a schema change.
+- **GuestOnly** is the per-friend half, resolved from the **user mapping**
+  (§Principals & access): a friend mapped to a local account inherits that
+  account's rights, and since the local model grants either `content.access`
+  (the whole library) or nothing beyond the guest-playable/license policy, the
+  mapping collapses to exactly this bit. An **unmapped** friend is the *default
+  regular-user identity* — `GuestOnly: false`, i.e. the full published set —
+  per the 2026-07-18 decision that unmapped is a rule, not a missing row. So the
+  mapping is what an admin reaches for to give a friend *less*.
+
+**Where depth lives: on the recording.** Access already lives there
+(`license`, `guest_playable` — one audio identity, one license,
+`docs/architecture/recording-tagsets.md` decision 9), and sharing is ultimately
+about *bytes*, which are per-recording renditions; hiding one appearance of a
+recording while serving another would leak the same blob under a different name.
+`recordings.share_depth` (migration 030) is `NULL` by default, meaning **inherit
+the node default** (`madnetwork.default_share_depth`, a runtime setting on
+`/admin/settings`, default `∞`). One override level over one node default — no
+artist/album inheritance chain, deliberately: a resolution chain would land in
+every catalog and blob-serve query for expressiveness nobody has asked for. Bulk
+selection in the Recordings and All Appearances lenses covers "a whole artist"
+in practice.
+
+**Per-audience snapshots.** The memoized own-catalog (§Catalog) is no longer one
+global snapshot: it is memoized **per audience class**, not per peer. At F5 there
+are exactly two classes (full and guest-only at distance 0), so the cost is
+bounded and the serial keeps its meaning — each peer already stores the serial of
+the snapshot *it* was served, so the not-modified check works unchanged.
+
+**Guest-playable is an open swarm.** A recording that is guest-accessible
+(explicitly flagged or via the license policy) serves its **blobs and manifests
+to any mesh node**, friend or stranger — no friendship, no token. This is the
+deliberate exception in §Sharing scope's legal frame: guest-playable content is
+open to everyone and the admin who flags it owns that choice, exactly as it is
+already open to anonymous HTTP callers on `/files/*`. Everything else stays
+default-deny toward strangers: the **catalog** and **holdings** endpoints remain
+friends-only (a stranger gets no listing — they must already know the hash), and
+**cache blobs are never open** (this node cannot vouch for the license of
+something it merely fetched). A blocked peer is refused everything, as before.
+
+**Tokens ship with F6.** Capability tokens exist to serve
+strangers-inside-the-network at depth ≥ 1, and a friend-of-a-friend cannot
+*discover* that we hold a hash until friend-list/catalog gossip lands. Building
+the issuer before the discovery path would ship a signed credential nothing
+presents; it moves to F6 next to the gossip that gives it a counterparty (decided
+2026-07-25). Depth enforcement at hop 0 — the part that is real today — is F5.
 - The **legal frame** (madshare.org): sharing among friends is private sharing;
   non-friends cannot listen. Default-deny toward the outside world is preserved
   end-to-end — an outsider gets no catalog, no stream, no swarm chunks.
@@ -265,9 +335,10 @@ default** — its social graph is visible to its members.
   their exclusively-held tracks appear in the *merged* madnetwork view is decided
   at request time by the availability predicate (§Availability & node health) —
   storage and visibility are separate concerns. What a node
-  publishes in F2 is its **whole approved live library** (the node-level
-  default scope; per-content share depth arrives in F5). Push/gossip of
-  changes is a later optimization, not v1.
+  publishes is its **whole approved live library** minus what the requesting
+  audience may not see — per-content share depth and the per-friend user mapping
+  (§Sharing scope, F5); the snapshot is memoized per audience class rather than
+  globally. Push/gossip of changes is a later optimization, not v1.
 - **Playback needs a holder, not the origin.** Because the swarm is keyed by
   content hash, an offline friend's tracks stay playable whenever *any*
   reachable node holds the hash. With network scale (many redundant
@@ -312,13 +383,14 @@ default** — its social graph is visible to its members.
   the requested hash never enter the cache. The Merkle chunk protocol is
   deferred to F4, where multi-source fetch actually needs per-chunk
   verification.
-- **Authorization** (decision 2026-07-18): **any friend may fetch any
-  published blob** — exactly matching what the F2 catalog already shows them
-  (never advertise what you won't serve, and vice versa). Published = the same
-  predicate as the local library (live file + an approved appearance on its
-  recording); a staged, trashed, or unknown hash is 404 even for a friend.
-  Per-friend filtering via the user mapping (unmapped = default regular-user
-  rights, §Principals & access) arrives with F5, catalog and bytes together.
+- **Authorization** (decision 2026-07-18): **a friend may fetch any blob its own
+  catalog shows it** — never advertise what you won't serve, and vice versa.
+  Published = the same predicate as the local library (live file + an approved
+  appearance on its recording); a staged, trashed, or unknown hash is 404 even
+  for a friend. Since F5 that predicate is evaluated **for the requester's
+  audience** (§Sharing scope): share depth and the per-friend user mapping filter
+  the catalog and the byte endpoints from the same rule, and a guest-accessible
+  recording additionally serves strangers (the open swarm).
 - **Fetching** (`federation.Node.EnsureBlob`): one transfer per hash, joined
   by every concurrent requester; providers come from the cached catalogs
   (friends advertising the hash, most recently seen first — tried in order
@@ -440,8 +512,9 @@ default** — its social graph is visible to its members.
 - **Only nodes swarm.** Thin clients never talk to peers (see §Principals).
 - **Authorization in the swarm:**
   - Between **direct friends**, the channel identity is sufficient — no tokens
-    (this is all F4 does: **swarm scope = direct friends**).
-  - At **depth ≥ 1** (F5), seeders serve strangers-inside-the-network via
+    (F4: **swarm scope = direct friends**), filtered by the requester's audience
+    since F5.
+  - At **depth ≥ 1** (F6), seeders serve strangers-inside-the-network via
     **capability tokens**: the sharing node signs "peer key K may download hash
     H until T". A seeder verifies the signature against a node it trusts and
     verifies the connection is K (self-certifying channel — a leaked token is
@@ -450,7 +523,10 @@ default** — its social graph is visible to its members.
     outsiders hit the wall. Any trusted holder may issue tokens to *its own*
     friends within the share depth — authority delegates along the friendship
     chain, no central issuer.
-  - **Guest-playable content is an open swarm** — no token.
+  - **Guest-playable content is an open swarm** (F5) — no friendship, no token:
+    blob and manifest service for a guest-accessible recording answers any mesh
+    node. Catalog and holdings stay friends-only, and the download cache is never
+    open.
 - **Seeding policy** (built F4): everything a node holds — library and
   listen-cache — seeds by default ("who cares" is the default privacy stance at
   node granularity; the cache reveals only that *someone on this node*
@@ -551,7 +627,7 @@ silent permanent death. That hardening is the real gate on richer liveness, and
 it is worth doing on its own regardless of the availability feature.
 
 **No transitive real-time presence — how the big network stays honest.** At
-depth ≥ 1 (F5+, friends-of-friends) the answer is deliberately *not* to ping
+depth ≥ 1 (F6+, friends-of-friends) the answer is deliberately *not* to ping
 strangers or relay pings along the chain. Federated systems don't do live
 presence at all:
 
@@ -624,13 +700,18 @@ milestone directly after direct transfer works, and tokens ship with depth.
   traffic → request-time availability predicate (reachable holder ∨ local ∨
   cached) with a minutes-wide freshness window → self-health watchdog +
   fail-open on `/admin/network`. Replaces the reverted 10 s presence feature.
-- **F5 — Depth & tokens.** Share-depth knob (per node default + per content),
-  capability tokens with delegated issuance, guest-open swarm. Deeper networks
+- **F5 — Depth & scope** (built 2026-07-25, see §Sharing scope). Share-depth knob
+  (node default + per recording, migration 030), the audience model filtering
+  catalog and bytes from one rule, per-friend filtering via the user mapping, and
+  the guest-open swarm. Tokens moved to F6 (below): depth ≥ 1 is what needs them,
+  and it is what F6 turns on.
+- **F6 — Transparency, defense & tokens.** Friend-list gossip within depth,
+  network map UI, signed distrust marks, branch snipping, stolen-key revocation
+  flow — plus the capability tokens that let a seeder serve
+  strangers-inside-the-network, with delegated issuance along the friendship
+  chain. Transitive reach (depth > 0) turns on here, not before; deeper networks
   reuse the availability model above (gossiped freshness hints + on-demand verify
   of the visible working set), never transitive pinging.
-- **F6 — Transparency & defense.** Friend-list gossip within depth, network map
-  UI, signed distrust marks, branch snipping, stolen-key revocation flow.
-  Transitive reach (depth > 0) turns on here, not before.
 - **F7 — Quality upgrades.** Madnetwork-match arm on the upload/download review
   cards (other tagsets + better renditions of the same recording), the
   fingerprint-vs-tagset **mismatch warning** (tag-suggestions machinery reuse),
@@ -641,7 +722,7 @@ milestone directly after direct transfer works, and tokens ship with depth.
 
 ## Open questions (design-time details)
 
-1. Token lifetime / renewal cadence (F5).
+1. Token lifetime / renewal cadence (F6).
 2. Gossip payload details for F6 (what exactly a friend-list/distrust message
    carries).
 

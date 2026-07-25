@@ -24,23 +24,25 @@ import (
 
 // ── Serving side: GET /madnetwork/v0/blob/{hash} ─────────────────────────────
 
-// handleBlob serves a blob this node holds and will seed to a friend. Friends
-// only (any friend may fetch any seedable blob — matching what the F2 catalog +
-// F4 holdings already advertise them; per-friend filtering arrives with F5),
-// and only blobs the seeding gate admits: a published library blob, or a cache
-// blob when cache-seeding is on (seedableBlob, swarm.go). A staged-but-unshared
-// or unknown hash is 404 even for a friend. http.ServeContent provides
-// HEAD/Range (the swarm's chunk fetches are Range requests); Content-Disposition
-// carries the origin filename so the fetching node can land it under its real
-// name; the write path honours the seed rate cap.
+// handleBlob serves a blob this node holds and will seed to the requester. What
+// it serves is decided by the requester's *audience* (F5): a friend may fetch
+// any blob its own catalog advertises — matching what the F2 catalog + F4
+// holdings showed it, filtered by share depth and the user mapping — while any
+// other mesh node reaches guest-playable content only (the open swarm). Beyond
+// that the seeding gate applies: a published library blob, or a cache blob when
+// cache-seeding is on and the requester is a friend (seedableBlob, swarm.go). A
+// staged, out-of-scope, or unknown hash is 404 even for a friend.
+// http.ServeContent provides HEAD/Range (the swarm's chunk fetches are Range
+// requests); Content-Disposition carries the origin filename so the fetching
+// node can land it under its real name; the write path honours the seed rate cap.
 func (n *Node) handleBlob(w http.ResponseWriter, r *http.Request) {
 	if n.store == nil {
 		http.Error(w, "transfer not configured", http.StatusServiceUnavailable)
 		return
 	}
-	p := n.peerFromRemote(r)
-	if p == nil || p.State != PeerFriend {
-		http.Error(w, "blobs are served to friends only", http.StatusForbidden)
+	aud, ok := n.serveAudience(r)
+	if !ok {
+		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
 	hash := r.PathValue("hash")
@@ -48,7 +50,7 @@ func (n *Node) handleBlob(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	path, ok := n.seedableBlob(r.Context(), hash)
+	path, ok := n.seedableBlob(r.Context(), hash, aud)
 	if !ok {
 		http.NotFound(w, r)
 		return

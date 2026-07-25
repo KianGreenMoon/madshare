@@ -1,0 +1,19 @@
+-- Federation F5 — per-content share depth (docs/architecture/federation.md
+-- §Sharing scope). How far along the friendship chain a recording travels:
+--
+--   -1  private — shared with nobody, not even a direct friend
+--    0  direct friends only
+--    n  n hops out (friends-of-friends at 1, …) — inert until F6 turns on
+--       transitive reach, but stored and enforced from F5 so that turning it on
+--       needs neither a schema change nor a protocol break
+--    ∞  the whole reachable madnetwork (federation.DepthUnlimited)
+--
+--   NULL  inherit the node default (setting madnetwork.default_share_depth,
+--         itself defaulting to ∞) — the value every existing recording keeps, so
+--         this migration changes nothing about what is published today.
+--
+-- Depth lives on the recording because access already does (license,
+-- guest_playable — one audio identity, one license) and because sharing is about
+-- bytes: renditions belong to the recording, so hiding one appearance while
+-- serving another would leak the same blob under a different name.
+ALTER TABLE recordings ADD COLUMN share_depth INTEGER;

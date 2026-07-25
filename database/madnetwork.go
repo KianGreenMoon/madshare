@@ -18,11 +18,22 @@ import (
 // behind /api/madnetwork/* (friends only — a blocked peer's cache is kept but
 // hidden). *DB satisfies the catalog half of federation.PeerStore here.
 
-// PublishedCatalog builds this node's own catalog: every approved, live
-// appearance (the visibleTagset predicate — exactly what the local library
-// shows) with resolved display names and its recording's live renditions.
-// Ordered by tagset id so the snapshot serial is deterministic.
-func (db *DB) PublishedCatalog(ctx context.Context) ([]federation.CatalogEntry, error) {
+// PublishedCatalog builds this node's own catalog *for one audience*: every
+// approved, live appearance (the visibleTagset predicate — exactly what the
+// local library shows) that the audience's scope admits (F5: share depth, and
+// the guest-playable policy for a guest-only audience), with resolved display
+// names and its recording's live renditions. Ordered by tagset id so the
+// snapshot serial is deterministic.
+//
+// The audience is a parameter rather than a post-filter because the serial must
+// hash the snapshot the peer actually receives: two audiences legitimately have
+// two serials, and the node memoizes one snapshot per audience class.
+func (db *DB) PublishedCatalog(ctx context.Context, aud federation.Audience) ([]federation.CatalogEntry, error) {
+	defaultDepth, err := db.nodeDefaultDepth(ctx)
+	if err != nil {
+		return nil, err
+	}
+	scope := audienceClause(aud)
 	rows, err := db.QueryContext(ctx, `
 		SELECT m.id, m.recording_id, m.title,
 		       COALESCE(par.name, m.artist, ''),
@@ -35,7 +46,8 @@ func (db *DB) PublishedCatalog(ctx context.Context) ([]federation.CatalogEntry, 
 		LEFT JOIN artists aar ON aar.id = m.album_artist_id
 		LEFT JOIN albums al   ON al.id  = m.album_id
 		WHERE `+visibleTagset+`
-		ORDER BY m.id`)
+		  AND (`+scope+`)
+		ORDER BY m.id`, scopeArgs(defaultDepth, aud)...)
 	if err != nil {
 		return nil, fmt.Errorf("published catalog: %w", err)
 	}
@@ -65,18 +77,23 @@ func (db *DB) PublishedCatalog(ctx context.Context) ([]federation.CatalogEntry, 
 		return []federation.CatalogEntry{}, nil
 	}
 
-	// Attach each recording's live renditions (hash = the future swarm id, plus
-	// the quality facts the ladder ranks by).
+	// Attach each recording's live renditions (hash = the swarm id, plus the
+	// quality facts the ladder ranks by). Scoped by the same audience clause as
+	// the entries above: only entries in `recordings` receive renditions anyway,
+	// so this is not what makes the result correct — it is what keeps the two
+	// queries obviously the same rule, and what stops an out-of-scope recording's
+	// hashes from being read at all.
 	rrows, err := db.QueryContext(ctx, `
 		SELECT f.recording_id, f.hash, f.byte_size,
 		       COALESCE(mm.codec, ''), COALESCE(mm.bitrate, 0),
 		       COALESCE(mm.sample_rate, 0), COALESCE(mm.bit_depth, 0),
 		       COALESCE(mm.duration_seconds, 0)
 		FROM files f
+		JOIN recordings r ON r.id = f.recording_id
 		LEFT JOIN media_metadata mm ON mm.file_id = f.id
-		WHERE f.deleted_at IS NULL AND EXISTS (
+		WHERE f.deleted_at IS NULL AND (`+scope+`) AND EXISTS (
 			SELECT 1 FROM tagsets m WHERE m.recording_id = f.recording_id AND `+visibleTagset+`)
-		ORDER BY f.recording_id, f.id`)
+		ORDER BY f.recording_id, f.id`, scopeArgs(defaultDepth, aud)...)
 	if err != nil {
 		return nil, fmt.Errorf("catalog renditions: %w", err)
 	}
@@ -332,6 +349,15 @@ func (db *DB) MadnetworkEntryForHash(ctx context.Context, hash string) (*federat
 type MadnetworkView struct {
 	IncludeSelf bool
 	Cutoff      int64
+	// DefaultShareDepth is the node-level sharing scope the self-merged rows
+	// inherit when a recording carries none (F5). A recording this node does not
+	// publish is not on the network, so it must not appear on the network page
+	// either — it stays in the local library at /, which is exactly the
+	// distinction the admin made. Only the private/not-private boundary matters
+	// here, so the zero value (DepthFriends) is the safe default for an unset
+	// view: recordings without an explicit depth stay visible, explicitly
+	// private ones do not.
+	DefaultShareDepth int
 }
 
 // reachClause gates a friend join by reachability. cutoff is a server-computed
@@ -376,7 +402,17 @@ func fedcatRemoteRows(cutoff int64) string {
 	JOIN federation_peers p ON p.id = c.peer_id AND p.state = 'friend'` + reachClause(cutoff)
 }
 
-const fedcatSelfRows = `
+// selfPublishedClause keeps the self-merged rows to what this node actually
+// publishes: a recording is on the network iff its effective depth reaches at
+// least a direct friend (F5). defaultDepth is a server-resolved integer, never
+// user input, so it is inlined like reachClause's cutoff rather than threaded as
+// a bind parameter through every shared fragment.
+func selfPublishedClause(defaultDepth int) string {
+	return fmt.Sprintf(" AND COALESCE(r.share_depth, %d) >= %d", defaultDepth, federation.DepthFriends)
+}
+
+func fedcatSelfRows(defaultDepth int) string {
+	return `
 	SELECT COALESCE(NULLIF(COALESCE(aar.name, m.album_artist, ''), ''),
 	                NULLIF(COALESCE(par.name, m.artist, ''), ''), '` + DefaultArtistName + `') AS akey,
 	       COALESCE(NULLIF(COALESCE(al.title, m.album, ''), ''), '` + DefaultAlbumTitle + `') AS alb,
@@ -386,18 +422,19 @@ const fedcatSelfRows = `
 	LEFT JOIN artists par ON par.id = m.artist_id
 	LEFT JOIN artists aar ON aar.id = m.album_artist_id
 	LEFT JOIN albums al   ON al.id  = m.album_id
-	WHERE ` + visibleTagset
+	WHERE ` + visibleTagset + selfPublishedClause(defaultDepth)
+}
 
 // fedcatCountBase is the FROM clause of the counting queries: reachable friends'
 // catalogs (cutoff), optionally unioned with the own published set (always
 // available — self is never gated). includeSelf is off when federation is
 // disabled — the page then stays what the friends provide (nothing), matching
 // the "list fully clears" rule.
-func fedcatCountBase(includeSelf bool, cutoff int64) string {
-	if includeSelf {
-		return ` FROM (` + fedcatRemoteRows(cutoff) + ` UNION ALL ` + fedcatSelfRows + `)`
+func fedcatCountBase(view MadnetworkView) string {
+	if view.IncludeSelf {
+		return ` FROM (` + fedcatRemoteRows(view.Cutoff) + ` UNION ALL ` + fedcatSelfRows(view.DefaultShareDepth) + `)`
 	}
-	return ` FROM (` + fedcatRemoteRows(cutoff) + `)`
+	return ` FROM (` + fedcatRemoteRows(view.Cutoff) + `)`
 }
 
 // Leading ORDER BY keys forcing the unknown buckets to the bottom of the
@@ -431,7 +468,7 @@ func (db *DB) MadnetworkArtists(ctx context.Context, q string, view MadnetworkVi
 	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT MIN(akey), COUNT(DISTINCT lower(alb)), COUNT(DISTINCT `+trackIdent+`)
-		`+fedcatCountBase(view.IncludeSelf, view.Cutoff)+where+`
+		`+fedcatCountBase(view)+where+`
 		GROUP BY lower(akey)
 		ORDER BY `+artistBucketLast+`, lower(akey)`, args...)
 	if err != nil {
@@ -461,7 +498,7 @@ type MadnetworkAlbum struct {
 func (db *DB) MadnetworkAlbums(ctx context.Context, artist string, view MadnetworkView) ([]*MadnetworkAlbum, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT MIN(alb), COUNT(DISTINCT `+trackIdent+`), MAX(year)
-		`+fedcatCountBase(view.IncludeSelf, view.Cutoff)+`
+		`+fedcatCountBase(view)+`
 		WHERE lower(akey) = lower(?)
 		GROUP BY lower(alb)
 		ORDER BY `+albumBucketLast+`, year IS NULL, year, lower(alb)`, artist)
@@ -559,8 +596,10 @@ const selfAlbExpr = `COALESCE(NULLIF(COALESCE(al.title, m.album, ''), ''), '` + 
 // ownTrackRows returns this node's own published appearances matching a
 // caller-supplied clause (akey/alb/title-level), shaped like cached catalog
 // rows: Self = true, PeerID 0, Entry.Key = tagset id, renditions attached from
-// the recording's live files with their local object keys.
-func (db *DB) ownTrackRows(ctx context.Context, match string, args ...any) ([]*MadnetworkTrackRow, error) {
+// the recording's live files with their local object keys. defaultDepth applies
+// the same self-published filter as the counting queries, so a recording kept
+// off the network cannot be listed by a view whose counts already exclude it.
+func (db *DB) ownTrackRows(ctx context.Context, defaultDepth int, match string, args ...any) ([]*MadnetworkTrackRow, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT m.id, m.recording_id, `+selfAkeyExpr+`, `+selfAlbExpr+`, m.title,
 		       COALESCE(par.name, m.artist, ''), COALESCE(aar.name, m.album_artist, ''),
@@ -570,7 +609,7 @@ func (db *DB) ownTrackRows(ctx context.Context, match string, args ...any) ([]*M
 		LEFT JOIN artists par ON par.id = m.artist_id
 		LEFT JOIN artists aar ON aar.id = m.album_artist_id
 		LEFT JOIN albums al   ON al.id  = m.album_id
-		WHERE `+visibleTagset+` AND `+match+`
+		WHERE `+visibleTagset+selfPublishedClause(defaultDepth)+` AND `+match+`
 		ORDER BY (m.disc_number IS NULL) ASC, m.disc_number ASC, m.track_number ASC, lower(m.title) ASC, m.id ASC`,
 		args...)
 	if err != nil {
@@ -646,8 +685,8 @@ func (db *DB) ownTrackRows(ctx context.Context, match string, args ...any) ([]*M
 
 // MadnetworkOwnTracks returns the own published rows for one artist+album —
 // the Self side of the merged track view.
-func (db *DB) MadnetworkOwnTracks(ctx context.Context, artist, album string) ([]*MadnetworkTrackRow, error) {
-	return db.ownTrackRows(ctx,
+func (db *DB) MadnetworkOwnTracks(ctx context.Context, artist, album string, view MadnetworkView) ([]*MadnetworkTrackRow, error) {
+	return db.ownTrackRows(ctx, view.DefaultShareDepth,
 		`lower(`+selfAkeyExpr+`) = lower(?) AND lower(`+selfAlbExpr+`) = lower(?)`, artist, album)
 }
 
@@ -670,7 +709,7 @@ func (db *DB) MadnetworkSearchAlbums(ctx context.Context, q string, limit int, v
 	escaped := strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(s)
 	rows, err := db.QueryContext(ctx, `
 		SELECT MIN(akey), MIN(alb), COUNT(DISTINCT `+trackIdent+`), MAX(year)
-		`+fedcatCountBase(view.IncludeSelf, view.Cutoff)+`
+		`+fedcatCountBase(view)+`
 		WHERE lower(alb) LIKE lower(?) ESCAPE '\'
 		GROUP BY lower(akey), lower(alb)
 		ORDER BY `+albumBucketLast+`, lower(alb), lower(akey)
@@ -711,7 +750,7 @@ func (db *DB) MadnetworkSearchTrackRows(ctx context.Context, q string, view Madn
 		return nil, err
 	}
 	if view.IncludeSelf {
-		own, err := db.ownTrackRows(ctx, `lower(m.title) LIKE lower(?) ESCAPE '\'`, escaped)
+		own, err := db.ownTrackRows(ctx, view.DefaultShareDepth, `lower(m.title) LIKE lower(?) ESCAPE '\'`, escaped)
 		if err != nil {
 			return nil, err
 		}
@@ -765,7 +804,7 @@ func (db *DB) MadnetworkSummary(ctx context.Context, view MadnetworkView) ([]*Ma
 	var tracks int64
 	if err := db.QueryRowContext(ctx, `
 		SELECT COUNT(DISTINCT lower(akey) || char(31) || `+trackIdent+`)
-		`+fedcatCountBase(view.IncludeSelf, view.Cutoff)).Scan(&tracks); err != nil {
+		`+fedcatCountBase(view)).Scan(&tracks); err != nil {
 		return nil, 0, fmt.Errorf("madnetwork track count: %w", err)
 	}
 	return friends, tracks, nil

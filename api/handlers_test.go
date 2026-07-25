@@ -608,6 +608,9 @@ type fakeRepo struct {
 	bulkLicense          string
 	bulkGuestTagsetIDs   []int64
 	bulkGuest            bool
+	bulkDepthTagsetIDs   []int64
+	bulkDepth            database.ShareDepthUpdate
+	accessDepth          database.ShareDepthUpdate
 }
 
 func (f *fakeRepo) ListUploadsByUser(_ context.Context, _ int64) ([]*database.ReviewEntry, error) {
@@ -1068,11 +1071,18 @@ func (f *fakeRepo) BulkHardDeleteRecordings(_ context.Context, recordingIDs []in
 	return f.bulkHardDelRecN, f.hardDelOutcome.Blobs, nil
 }
 
-func (f *fakeRepo) SetRecordingAccess(_ context.Context, recordingID int64, license *string, guest *bool) (bool, error) {
+func (f *fakeRepo) SetRecordingAccess(_ context.Context, recordingID int64, license *string, guest *bool, depth database.ShareDepthUpdate) (bool, error) {
 	f.accessRecordingID = recordingID
 	f.accessLicense = license
 	f.accessGuest = guest
+	f.accessDepth = depth
 	return !f.accessNotFound, nil
+}
+
+func (f *fakeRepo) BulkSetShareDepthByTagsets(_ context.Context, tagsetIDs []int64, depth database.ShareDepthUpdate) (int, error) {
+	f.bulkDepthTagsetIDs = tagsetIDs
+	f.bulkDepth = depth
+	return len(tagsetIDs), nil
 }
 
 func (f *fakeRepo) RemoveRendition(_ context.Context, fileID int64) (bool, error) {

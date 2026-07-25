@@ -41,20 +41,28 @@ type snapshot struct {
 	built   time.Time
 }
 
-// ownSnapshot returns the current published catalog + serial, rebuilding at
-// most every Intervals.SnapshotTTL.
-func (n *Node) ownSnapshot(ctx context.Context) (*snapshot, error) {
+// ownSnapshot returns the published catalog + serial for one audience,
+// rebuilding at most every Intervals.SnapshotTTL. Each audience class carries
+// its own memo and its own serial: a friend restricted to guest-playable content
+// sees a different catalog, so it must not be told the full snapshot's serial —
+// that would make its next not-modified check answer about a catalog it never
+// received (F5, docs/architecture/federation.md §Sharing scope).
+func (n *Node) ownSnapshot(ctx context.Context, aud Audience) (*snapshot, error) {
 	n.snapMu.Lock()
 	defer n.snapMu.Unlock()
-	if n.snap != nil && time.Since(n.snap.built) < n.intervals.SnapshotTTL {
-		return n.snap, nil
+	if snap := n.snaps[aud]; snap != nil && time.Since(snap.built) < n.intervals.SnapshotTTL {
+		return snap, nil
 	}
-	entries, err := n.store.PublishedCatalog(ctx)
+	entries, err := n.store.PublishedCatalog(ctx, aud)
 	if err != nil {
 		return nil, err
 	}
-	n.snap = &snapshot{serial: CatalogSerial(entries), entries: entries, built: time.Now()}
-	return n.snap, nil
+	snap := &snapshot{serial: CatalogSerial(entries), entries: entries, built: time.Now()}
+	if n.snaps == nil {
+		n.snaps = map[Audience]*snapshot{}
+	}
+	n.snaps[aud] = snap
+	return snap, nil
 }
 
 // handleCatalog serves GET /madnetwork/v0/catalog?since=<serial> — friends
@@ -71,7 +79,13 @@ func (n *Node) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "catalog is served to friends only", http.StatusForbidden)
 		return
 	}
-	snap, err := n.ownSnapshot(r.Context())
+	aud, err := n.store.PeerAudience(r.Context(), p.ID)
+	if err != nil {
+		n.logger.Printf("federation: resolve audience of %q: %v", p.Name, err)
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	snap, err := n.ownSnapshot(r.Context(), aud)
 	if err != nil {
 		n.logger.Printf("federation: build catalog snapshot: %v", err)
 		http.Error(w, "storage error", http.StatusInternalServerError)

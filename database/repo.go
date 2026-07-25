@@ -61,6 +61,9 @@ type Repository interface {
 	// tagset-addressed counterparts of BulkSetLicense/BulkSetGuestPlayable).
 	BulkSetLicenseByTagsets(ctx context.Context, tagsetIDs []int64, license string) (int, error)
 	BulkSetGuestPlayableByTagsets(ctx context.Context, tagsetIDs []int64, guest bool) (int, error)
+	// BulkSetShareDepthByTagsets is the same arm for the madnetwork share scope
+	// (F5) — how far along the friendship chain the selection travels.
+	BulkSetShareDepthByTagsets(ctx context.Context, tagsetIDs []int64, depth ShareDepthUpdate) (int, error)
 
 	// Files perspective of Trash (gc-model.md): the file-grain lens over
 	// soft-removed blobs (files.deleted_at). Paged like the other listings;
@@ -420,9 +423,10 @@ type Repository interface {
 	BulkRestoreRecordings(ctx context.Context, recordingIDs []int64) (restored int, err error)
 	BulkHardDeleteRecordings(ctx context.Context, recordingIDs []int64) (deleted int, blobs []DeletedBlob, err error)
 
-	// SetRecordingAccess updates the recording-level license / guest-playable
-	// fields (nil = unchanged; explicit guest sets the manual override).
-	SetRecordingAccess(ctx context.Context, recordingID int64, license *string, guest *bool) (bool, error)
+	// SetRecordingAccess updates the recording-level license / guest-playable /
+	// madnetwork share-depth fields (nil = unchanged; explicit guest sets the
+	// manual override; see ShareDepthUpdate for the depth's three states).
+	SetRecordingAccess(ctx context.Context, recordingID int64, license *string, guest *bool, depth ShareDepthUpdate) (bool, error)
 
 	// RemoveRendition soft-removes a blob (files.deleted_at; last one → dormant
 	// recording) and RestoreRendition brings it back — the renditions arm's

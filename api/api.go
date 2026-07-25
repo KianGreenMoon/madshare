@@ -125,7 +125,7 @@ type MadnetworkStore interface {
 	MadnetworkArtists(ctx context.Context, q string, view database.MadnetworkView) ([]*database.MadnetworkArtist, error)
 	MadnetworkAlbums(ctx context.Context, artist string, view database.MadnetworkView) ([]*database.MadnetworkAlbum, error)
 	MadnetworkTracks(ctx context.Context, artist, album string, cutoff int64) ([]*database.MadnetworkTrackRow, error)
-	MadnetworkOwnTracks(ctx context.Context, artist, album string) ([]*database.MadnetworkTrackRow, error)
+	MadnetworkOwnTracks(ctx context.Context, artist, album string, view database.MadnetworkView) ([]*database.MadnetworkTrackRow, error)
 	MadnetworkSummary(ctx context.Context, view database.MadnetworkView) ([]*database.MadnetworkFriend, int64, error)
 	MadnetworkSearchAlbums(ctx context.Context, q string, limit int, view database.MadnetworkView) ([]*database.MadnetworkSearchAlbum, error)
 	MadnetworkSearchTrackRows(ctx context.Context, q string, view database.MadnetworkView) ([]*database.MadnetworkTrackRow, error)

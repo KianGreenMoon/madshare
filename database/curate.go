@@ -46,7 +46,10 @@ type RecordingRow struct {
 	Pinned         bool   // holds a recording_pinned file (split/force-new/merge)
 	License        string
 	GuestPlayable  bool
-	CreatedAt      int64
+	// ShareDepth is the madnetwork share scope override (F5); nil = inherit the
+	// node default.
+	ShareDepth *int
+	CreatedAt  int64
 }
 
 // recordingFilterClause maps a RecordingListOptions.Filter token onto its SQL
@@ -127,7 +130,7 @@ func recordingWhere(opts RecordingListOptions) (string, []any) {
 func (db *DB) ListRecordings(ctx context.Context, opts RecordingListOptions) ([]RecordingRow, error) {
 	where, args := recordingWhere(opts)
 	query := `
-		SELECT r.id, r.created_at, COALESCE(r.license, ''), r.guest_playable,
+		SELECT r.id, r.created_at, COALESCE(r.license, ''), r.guest_playable, r.share_depth,
 		       COALESCE(pt.title, ''),
 		       COALESCE(NULLIF(pt.album_artist, ''), NULLIF(pt.artist, ''), ''),
 		       (SELECT COUNT(*) FROM files f WHERE f.recording_id = r.id AND f.deleted_at IS NULL),
@@ -160,13 +163,18 @@ func (db *DB) ListRecordings(ctx context.Context, opts RecordingListOptions) ([]
 	for rows.Next() {
 		var rec RecordingRow
 		var guest, pinned int
-		if err := rows.Scan(&rec.ID, &rec.CreatedAt, &rec.License, &guest,
+		var depth sql.NullInt64
+		if err := rows.Scan(&rec.ID, &rec.CreatedAt, &rec.License, &guest, &depth,
 			&rec.Title, &rec.DisplayArtist,
 			&rec.LiveRenditions, &rec.RemovedFiles, &rec.Appearances, &rec.TrashedTagsets,
 			&pinned, &rec.BestFormat); err != nil {
 			return nil, fmt.Errorf("list recordings: scan: %w", err)
 		}
 		rec.GuestPlayable = guest != 0
+		if depth.Valid {
+			d := int(depth.Int64)
+			rec.ShareDepth = &d
+		}
 		rec.Pinned = pinned != 0
 		rec.Dormant = rec.LiveRenditions == 0
 		out = append(out, rec)
@@ -747,11 +755,16 @@ func (db *DB) HardDeleteRecording(ctx context.Context, recordingID int64) (Recor
 // ── Access ────────────────────────────────────────────────────────────────────
 
 // SetRecordingAccess updates the recording-level access fields (the editable
-// license/guest chip on /admin/library#recordings). nil leaves a field unchanged; an
-// empty license clears it. Setting guest marks the manual override, so the
-// license auto-derive policy never overrides an explicit admin decision — the
-// same semantics as the hash-addressed setters (auth.md §5.1).
-func (db *DB) SetRecordingAccess(ctx context.Context, recordingID int64, license *string, guest *bool) (bool, error) {
+// license/guest/scope chip on /admin/library#recordings). nil leaves a field
+// unchanged; an empty license clears it. Setting guest marks the manual
+// override, so the license auto-derive policy never overrides an explicit admin
+// decision — the same semantics as the hash-addressed setters (auth.md §5.1).
+// depth is the madnetwork share scope (F5), which shares this setter because it
+// is the same row and the same admin decision: who may reach this recording.
+func (db *DB) SetRecordingAccess(ctx context.Context, recordingID int64, license *string, guest *bool, depth ShareDepthUpdate) (bool, error) {
+	if !depth.Valid() {
+		return false, errors.New("invalid share depth")
+	}
 	var sets []string
 	var args []any
 	if license != nil {
@@ -765,6 +778,10 @@ func (db *DB) SetRecordingAccess(ctx context.Context, recordingID int64, license
 	if guest != nil {
 		sets = append(sets, "guest_playable = ?", "guest_playable_manual = 1")
 		args = append(args, boolToInt(*guest))
+	}
+	if depth.Set {
+		sets = append(sets, "share_depth = ?")
+		args = append(args, depth.column())
 	}
 	if len(sets) == 0 {
 		var exists bool

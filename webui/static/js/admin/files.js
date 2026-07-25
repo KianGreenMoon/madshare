@@ -155,6 +155,7 @@ function appearancesScope() {
     artistAlbumSort: true,
     apiBase: API,
     accessEditable: canEditMeta,
+    shareDepthEditable: canEditMeta, // madnetwork share scope in the bulk editor (F5)
     licenses: LICENSE_OPTIONS,
     loadPage: loadAppearancesPage,
     selectable: () => canEditMeta || canDelete,

@@ -47,6 +47,55 @@ const (
 	PeerBlocked         = "blocked"
 )
 
+// Share depth (F5) — how far along the friendship chain a recording travels.
+// Stored per recording (recordings.share_depth, migration 030; NULL = inherit
+// the node default) and compared against an [Audience]'s Distance: content is
+// visible to an audience iff depth >= Distance. See
+// docs/architecture/federation.md §Sharing scope.
+const (
+	// DepthPrivate keeps content off the network entirely — not even a direct
+	// friend sees it. Distance is never negative, so depth >= Distance is false
+	// for every requester.
+	DepthPrivate = -1
+	// DepthFriends shares with direct friends only (distance 0).
+	DepthFriends = 0
+	// DepthUnlimited is ∞, the whole reachable madnetwork — a concrete large
+	// integer rather than a NULL sentinel so the comparison stays a plain >= in
+	// SQL and on the wire, with no special case to forget in one of them.
+	DepthUnlimited = 1 << 20
+)
+
+// ValidDepth reports whether d is a share depth this node accepts from an admin
+// or a peer: private, or any non-negative number of hops up to ∞.
+func ValidDepth(d int) bool { return d >= DepthPrivate && d <= DepthUnlimited }
+
+// Audience is who a mesh request is answered for (F5). The same value decides
+// what the catalog lists and what the byte endpoints serve — a node must never
+// advertise what it would not serve, so both halves read one rule.
+//
+// Until transitive reach turns on (F6) every authenticated requester is at
+// distance 0; the field exists so depth > 0 needs no protocol or schema change
+// then, and so the depth ladder is inert by construction rather than by
+// omission.
+type Audience struct {
+	// Distance is the friendship hops to the requester: 0 = a direct friend.
+	Distance int
+	// GuestOnly limits the audience to guest-accessible recordings (the
+	// guest-playable / license policy). True for a friend mapped to a local
+	// account without content.access, and for the open swarm's strangers.
+	GuestOnly bool
+}
+
+// FriendAudience is the audience of an unmapped direct friend: the default
+// regular-user identity, which sees the whole published set
+// (docs/architecture/federation.md §Principals & access).
+var FriendAudience = Audience{Distance: DepthFriends}
+
+// GuestAudience is the audience of a mesh node with no friendship at all — the
+// open swarm. It reaches guest-accessible content only, and only at the byte
+// endpoints: catalog and holdings stay friends-only.
+var GuestAudience = Audience{Distance: DepthFriends, GuestOnly: true}
+
 // ErrPeerNotFound is returned by peer lookups when no row matches.
 var ErrPeerNotFound = errors.New("federation peer not found")
 
@@ -97,10 +146,11 @@ type PeerStore interface {
 	TouchFederationPeerSeen(ctx context.Context, id int64, when int64) error
 	DeleteFederationPeer(ctx context.Context, id int64) error
 
-	// PublishedCatalog is this node's own catalog — every approved, live
-	// appearance with its recording's renditions — in a stable order (the
-	// snapshot serial is a hash over it).
-	PublishedCatalog(ctx context.Context) ([]CatalogEntry, error)
+	// PublishedCatalog is this node's own catalog for one audience — every
+	// approved, live appearance the audience's scope admits, with its
+	// recording's renditions, in a stable order (the snapshot serial is a hash
+	// over it, so each audience has its own serial).
+	PublishedCatalog(ctx context.Context, aud Audience) ([]CatalogEntry, error)
 	// ReplacePeerCatalog atomically replaces the cached copy of a friend's
 	// catalog with a fresh snapshot and records its serial + sync time.
 	ReplacePeerCatalog(ctx context.Context, peerID int64, serial string, syncedAt int64, entries []CatalogEntry) error
@@ -108,11 +158,15 @@ type PeerStore interface {
 	// still fresh (the not-modified path).
 	MarkPeerCatalogChecked(ctx context.Context, peerID int64, serial string, syncedAt int64) error
 
-	// BlobPubliclyVisible reports whether the blob with this content hash is
-	// part of the published library (live file + an approved appearance on its
-	// recording) — the F3 blob-serving gate, the same predicate that governs
-	// the local library and the catalog (database/review.go).
-	BlobPubliclyVisible(ctx context.Context, hash string) (visible, found bool, err error)
+	// BlobVisibleTo reports whether the blob with this content hash may be
+	// served to aud: part of the published library (live file + an approved
+	// appearance on its recording) *and* inside the audience's scope — the same
+	// rule the catalog above answers by, so the node never advertises what it
+	// would not serve (database/madnetwork_scope.go).
+	BlobVisibleTo(ctx context.Context, hash string, aud Audience) (visible, found bool, err error)
+	// PeerAudience resolves a known peer to the audience its requests are
+	// answered for (the user mapping, §Principals & access).
+	PeerAudience(ctx context.Context, peerID int64) (Audience, error)
 	// MadnetworkBlobProviders returns the friends who hold hash — the swarm
 	// tracker (F4): the union of catalog (library) holders and holdings (cache)
 	// holders, most recently seen first (the fetch order) — plus the advertised

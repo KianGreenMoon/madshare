@@ -22,6 +22,7 @@
 import { API, el, fmtBytes, fmtTime, toast, handleAuthError } from './shared.js';
 import { createTrackEditor } from '../track-edit.js';
 import { createVirtualList } from '../virtual-list.js';
+import { depthName, depthSelectValue, depthFromSelect, depthIsPrivate } from '../share-depth.js';
 
 const PAGE_SIZE = 100;
 
@@ -42,6 +43,9 @@ export function createRecordingsView({ play, perms }) {
   // ── Page state ──────────────────────────────────────────────────────────────
   let vlist = null;
   let total = 0;
+  // The node-level madnetwork scope a recording's null share_depth inherits
+  // (reported by the listing) — what the scope chip names for inherited rows.
+  let nodeShareDepth = null;
   let filter = '';
   let query = '';
   let editor = null;       // track-edit modal for editing an appearance (canEdit)
@@ -227,6 +231,7 @@ export function createRecordingsView({ play, perms }) {
     try { first = await fetchPage(0); }
     catch { listHost.replaceChildren(el('p', { class: 'error' }, ['Failed to load recordings.'])); return; }
     total = first.total;
+    if (first.node_share_depth !== undefined) nodeShareDepth = first.node_share_depth;
     countEl.textContent = `${total} recording${total === 1 ? '' : 's'}`;
     // Drop expansion/selection state for rows that no longer exist server-side —
     // a stale id would silently mis-target a later merge/trash.
@@ -416,11 +421,12 @@ export function createRecordingsView({ play, perms }) {
     moveSearch.focus();
   }
 
-  // ── License & guest modal ───────────────────────────────────────────────────
+  // ── Access & sharing modal ──────────────────────────────────────────────────
   const accessModal   = document.getElementById('accessModal');
   const accessBody    = document.getElementById('accessBody');
   const accessLicense = document.getElementById('accessLicense');
   const accessGuest   = document.getElementById('accessGuest');
+  const accessDepth   = document.getElementById('accessDepth');
   const accessGo      = document.getElementById('accessGo');
 
   let accessCtx = null;
@@ -431,6 +437,7 @@ export function createRecordingsView({ play, perms }) {
       el('strong', {}, [`“${dispName(rec)}”`]));
     accessLicense.value = rec.license || '';
     accessGuest.checked = !!rec.guest_playable;
+    if (accessDepth) accessDepth.value = depthSelectValue(rec.share_depth);
     accessModal.classList.remove('hidden');
   }
 
@@ -451,14 +458,22 @@ export function createRecordingsView({ play, perms }) {
     if (rec.best_format) chips.push(chip(`★ ${rec.best_format}`, 'rec-chip--best', 'Best rendition by the quality ladder'));
     if (rec.dormant) chips.push(chip('dormant', 'rec-chip--dorm', 'No playable rendition — hidden from the library'));
     if (rec.pinned) chips.push(chip('pinned', '', 'Holds a pinned file — the resolver never regroups it'));
+    const accessText = `${rec.license || 'no license'}${rec.guest_playable ? ' · guest ✓' : ''}`;
     if (canEdit) {
       chips.push(el('button', {
         class: 'rec-chip rec-chip--lic',
-        title: 'Edit license & guest access (recording-level)',
+        title: 'Edit license, guest access & madnetwork scope (recording-level)',
         onclick: e => { e.stopPropagation(); openAccess(rec); },
-      }, [`${rec.license || 'no license'}${rec.guest_playable ? ' · guest ✓' : ''} ✎`]));
+      }, [`${accessText} ✎`]));
     } else {
-      chips.push(chip(`${rec.license || 'no license'}${rec.guest_playable ? ' · guest ✓' : ''}`, 'rec-chip--lic'));
+      chips.push(chip(accessText, 'rec-chip--lic'));
+    }
+    // The scope chip appears only when it says something the node default does
+    // not already say — an unmodified library should not grow a chip per row.
+    if (rec.share_depth !== null && rec.share_depth !== undefined) {
+      chips.push(chip(depthName(rec.share_depth),
+        depthIsPrivate(rec.share_depth, nodeShareDepth) ? 'rec-chip--dorm' : '',
+        'Madnetwork sharing scope for this recording (overrides the node default)'));
     }
     return chips;
   }
@@ -676,13 +691,12 @@ export function createRecordingsView({ play, perms }) {
       if (!accessCtx) return;
       const rec = accessCtx;
       hideAccess();
-      const res = await post(`${API}/api/admin/recordings/${rec.id}/access`, {
-        method: 'PATCH',
-        body: { license: accessLicense.value, guest_playable: accessGuest.checked },
-      });
+      const body = { license: accessLicense.value, guest_playable: accessGuest.checked };
+      if (accessDepth) body.share_depth = depthFromSelect(accessDepth.value) ?? null;
+      const res = await post(`${API}/api/admin/recordings/${rec.id}/access`, { method: 'PATCH', body });
       if (!res) return;
       if (!res.ok) { toast(`Access update failed (HTTP ${res.status}).`, 'error'); return; }
-      toast('License & guest access updated.', 'success');
+      toast('Access & sharing updated.', 'success');
       reload();
     });
 

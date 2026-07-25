@@ -22,6 +22,7 @@
 // form; the caller owns persistence via onApply.
 
 import { EXTENDED_FIELDS } from './track-edit.js';
+import { depthFromSelect } from './share-depth.js';
 
 let nextBulkId = 1;
 
@@ -29,6 +30,7 @@ const GUEST_KEEP = '';      // sentinel: leave guest as-is
 const GUEST_ON   = 'on';
 const GUEST_OFF  = 'off';
 const LICENSE_KEEP = '\x00keep'; // "keep" sentinel — "" is a real license value (— none —), so it can't double as keep the way GUEST_KEEP does
+const DEPTH_KEEP = '';      // sentinel: leave the madnetwork share scope as-is
 
 // Field placeholders. MIXED marks a field whose selected files disagree (shown
 // blank, so leaving it blank keeps each file's own value).
@@ -119,7 +121,7 @@ export function createBulkEditor({ access = null, onApply, onError, loadDetails 
     form.appendChild(wrap);
   }
 
-  let licenseSel = null, guestSel = null;
+  let licenseSel = null, guestSel = null, depthSel = null;
   if (access) {
     const split = document.createElement('div');
     split.className = 'field-split';
@@ -152,6 +154,30 @@ export function createBulkEditor({ access = null, onApply, onError, loadDetails 
 
     split.append(licWrap, guestWrap);
     form.appendChild(split);
+
+    // Madnetwork sharing scope (federation F5). Its own row, and "keep" is the
+    // empty sentinel rather than a real depth — 0 (direct friends) and -1
+    // (private) are both meaningful values, so neither can double as "no change".
+    if (access.shareDepth) {
+      const depthWrap = document.createElement('label');
+      depthWrap.append(document.createTextNode('Madnetwork scope'));
+      depthSel = document.createElement('select');
+      for (const [val, text] of [
+        [DEPTH_KEEP, '— keep —'],
+        ['inherit', 'Node default'],
+        ['-1', 'Private — not shared at all'],
+        ['0', 'Direct friends only'],
+        ['1', 'Friends of friends'],
+        ['unlimited', 'Whole madnetwork'],
+      ]) {
+        const opt = document.createElement('option');
+        opt.value = val;
+        opt.textContent = text;
+        depthSel.appendChild(opt);
+      }
+      depthWrap.appendChild(depthSel);
+      form.appendChild(depthWrap);
+    }
   }
 
   // "Extended edit" — opens the stacked wide modal with the rarely-touched tags.
@@ -413,6 +439,9 @@ export function createBulkEditor({ access = null, onApply, onError, loadDetails 
     if (access) {
       if (licenseSel.value !== LICENSE_KEEP && licenseSel.value !== initial.license) patch.license = licenseSel.value;
       if (guestSel.value !== GUEST_KEEP && guestSel.value !== initial.guest) patch.guest = guestSel.value === GUEST_ON;
+      // No prefill comparison: the selection's rows don't carry share_depth, so
+      // the control starts at "keep" and any other choice is an explicit edit.
+      if (depthSel && depthSel.value !== DEPTH_KEEP) patch.share_depth = depthFromSelect(depthSel.value) ?? null;
     }
     return patch;
   }

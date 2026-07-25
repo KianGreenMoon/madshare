@@ -30,7 +30,7 @@ func TestPublishedCatalog(t *testing.T) {
 	seed("cat00002", "Artist A", "Album One", "Song Two")
 	seed("cat00003", "Artist B", "Album Two", "Song Three")
 
-	entries, err := db.PublishedCatalog(ctx)
+	entries, err := db.PublishedCatalog(ctx, federation.FriendAudience)
 	if err != nil {
 		t.Fatalf("PublishedCatalog: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestPublishedCatalog(t *testing.T) {
 
 	// The serial is deterministic and moves when the catalog changes.
 	s1 := federation.CatalogSerial(entries)
-	again, _ := db.PublishedCatalog(ctx)
+	again, _ := db.PublishedCatalog(ctx, federation.FriendAudience)
 	if federation.CatalogSerial(again) != s1 {
 		t.Error("serial not deterministic across identical builds")
 	}
@@ -67,7 +67,7 @@ func TestPublishedCatalog(t *testing.T) {
 	if _, err := db.Exec(`UPDATE tagsets SET deleted_at = 1 WHERE id = ?`, tagsetID); err != nil {
 		t.Fatal(err)
 	}
-	entries, _ = db.PublishedCatalog(ctx)
+	entries, _ = db.PublishedCatalog(ctx, federation.FriendAudience)
 	if len(entries) != 2 {
 		t.Errorf("after trash len = %d, want 2", len(entries))
 	}
@@ -277,7 +277,7 @@ func TestMadnetworkSelfMergeAndSorting(t *testing.T) {
 	}
 
 	// Own track rows: Self, local tagset key, renditions with object keys.
-	own, err := db.MadnetworkOwnTracks(ctx, "Shared Artist", "Shared Album")
+	own, err := db.MadnetworkOwnTracks(ctx, "Shared Artist", "Shared Album", MadnetworkView{IncludeSelf: true})
 	if err != nil {
 		t.Fatalf("MadnetworkOwnTracks: %v", err)
 	}

@@ -65,6 +65,8 @@ function fmtBytes(n) {
  *   metaValue(file)  → string for the 'meta' cell
  *   badge(file)      → { text, cls } | null  (the title-cell pill)
  *   accessEditable   show License+Guest in the editors (admin scopes)
+ *   shareDepthEditable  also offer the madnetwork share scope in the BULK editor
+ *                       (federation F5; recording-level, live appearances only)
  *   licenses         license vocabulary for the pickers
  *   load()           async → file[]   (required for list presentation)
  *   selectable(file) → bool — which rows enter bulk selection (default: none)
@@ -262,7 +264,13 @@ export function createFileList(scope) {
   function bulkEditor() {
     if (_bulk) return _bulk;
     _bulk = createBulkEditor({
-      access: scope.accessEditable ? { licenses: scope.licenses || [] } : null,
+      // shareDepth adds the madnetwork scope control (F5) — bulk only, and only
+      // where the scope opts in: it edits the RECORDING behind each selected
+      // appearance, so a scope whose rows aren't live approved appearances (Trash)
+      // must not offer it.
+      access: scope.accessEditable
+        ? { licenses: scope.licenses || [], shareDepth: !!scope.shareDepthEditable }
+        : null,
       // When the scope can read a file's full tags, let the bulk editor fetch them
       // for the selection so the Extended modal can pre-fill its shared values too.
       loadDetails: scope.editDetailURL ? loadSelectionDetails : null,

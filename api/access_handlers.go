@@ -13,6 +13,7 @@ import (
 
 	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/database"
+	"daemonlord.ygg/madshare/federation"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -337,28 +338,46 @@ func (h *manageHandler) getMadnetworkSettings(w http.ResponseWriter, r *http.Req
 		"seed_enabled":          p.SeedEnabled,
 		"seed_cache":            p.SeedCache,
 		"hide_unavailable":      p.HideUnavailable,
+		"default_share_depth":   p.DefaultShareDepth,
 	})
 }
 
 // setMadnetworkSettings updates the madnetwork download + seeding settings. The
 // seed fields default true (missing = keep the "seed by default" stance) so an
 // older client that only sends autoapprove_downloads does not silently disable
-// seeding.
+// seeding. default_share_depth is a *pointer* for the same reason turned the
+// other way: 0 is a meaningful depth (friends only), so an absent field must
+// mean "leave the node's sharing scope alone", not "restrict it to zero".
 func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Request) {
 	req := struct {
 		AutoapproveDownloads bool `json:"autoapprove_downloads"`
 		SeedEnabled          bool `json:"seed_enabled"`
 		SeedCache            bool `json:"seed_cache"`
 		HideUnavailable      bool `json:"hide_unavailable"`
+		DefaultShareDepth    *int `json:"default_share_depth"`
 	}{SeedEnabled: true, SeedCache: true, HideUnavailable: true}
 	if !decodeJSON(w, r, &req) {
 		return
+	}
+	current, err := h.store.GetMadnetworkPolicy(r.Context())
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	depth := current.DefaultShareDepth
+	if req.DefaultShareDepth != nil {
+		depth = *req.DefaultShareDepth
+		if !federation.ValidDepth(depth) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid default share depth"})
+			return
+		}
 	}
 	p := database.MadnetworkPolicy{
 		AutoapproveDownloads: req.AutoapproveDownloads,
 		SeedEnabled:          req.SeedEnabled,
 		SeedCache:            req.SeedCache,
 		HideUnavailable:      req.HideUnavailable,
+		DefaultShareDepth:    depth,
 	}
 	if err := h.store.SetMadnetworkPolicy(r.Context(), p); err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
@@ -368,13 +387,15 @@ func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Req
 		"autoapprove_downloads="+strconv.FormatBool(p.AutoapproveDownloads)+
 			" seed_enabled="+strconv.FormatBool(p.SeedEnabled)+
 			" seed_cache="+strconv.FormatBool(p.SeedCache)+
-			" hide_unavailable="+strconv.FormatBool(p.HideUnavailable))
+			" hide_unavailable="+strconv.FormatBool(p.HideUnavailable)+
+			" default_share_depth="+strconv.Itoa(p.DefaultShareDepth))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                    true,
 		"autoapprove_downloads": p.AutoapproveDownloads,
 		"seed_enabled":          p.SeedEnabled,
 		"seed_cache":            p.SeedCache,
 		"hide_unavailable":      p.HideUnavailable,
+		"default_share_depth":   p.DefaultShareDepth,
 	})
 }
 

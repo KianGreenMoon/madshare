@@ -263,7 +263,7 @@ func TestSetRecordingAccess(t *testing.T) {
 
 	lic := "CC-BY-4.0"
 	guest := true
-	if found, err := db.SetRecordingAccess(ctx, rec, &lic, &guest); err != nil || !found {
+	if found, err := db.SetRecordingAccess(ctx, rec, &lic, &guest, ShareDepthUpdate{}); err != nil || !found {
 		t.Fatalf("set access: found=%v err=%v", found, err)
 	}
 	if n := countRow(t, db,
@@ -272,14 +272,14 @@ func TestSetRecordingAccess(t *testing.T) {
 	}
 	// License-only update leaves guest untouched.
 	empty := ""
-	if found, err := db.SetRecordingAccess(ctx, rec, &empty, nil); err != nil || !found {
+	if found, err := db.SetRecordingAccess(ctx, rec, &empty, nil, ShareDepthUpdate{}); err != nil || !found {
 		t.Fatalf("clear license: found=%v err=%v", found, err)
 	}
 	if n := countRow(t, db,
 		`SELECT COUNT(*) FROM recordings WHERE id=? AND license IS NULL AND guest_playable=1`, rec); n != 1 {
 		t.Errorf("license clear / guest preserved failed")
 	}
-	if found, err := db.SetRecordingAccess(ctx, 99999, &lic, nil); err != nil || found {
+	if found, err := db.SetRecordingAccess(ctx, 99999, &lic, nil, ShareDepthUpdate{}); err != nil || found {
 		t.Errorf("unknown recording: found=%v err=%v, want false", found, err)
 	}
 }

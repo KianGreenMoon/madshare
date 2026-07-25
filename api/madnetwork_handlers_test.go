@@ -34,7 +34,7 @@ func (f *fakeMadnetwork) MadnetworkAlbums(context.Context, string, database.Madn
 func (f *fakeMadnetwork) MadnetworkTracks(context.Context, string, string, int64) ([]*database.MadnetworkTrackRow, error) {
 	return f.rows, nil
 }
-func (f *fakeMadnetwork) MadnetworkOwnTracks(context.Context, string, string) ([]*database.MadnetworkTrackRow, error) {
+func (f *fakeMadnetwork) MadnetworkOwnTracks(context.Context, string, string, database.MadnetworkView) ([]*database.MadnetworkTrackRow, error) {
 	return f.ownRows, nil
 }
 func (f *fakeMadnetwork) MadnetworkSummary(_ context.Context, view database.MadnetworkView) ([]*database.MadnetworkFriend, int64, error) {

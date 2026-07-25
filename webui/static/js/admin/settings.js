@@ -1,5 +1,6 @@
 // Admin · Settings — license-based auto-publish policy. Requires user.manage.
 import { bootAdmin, API, FREE_LICENSES, toast, handleAuthError, el } from './shared.js';
+import { depthSelectValue, depthFromSelect, DEPTH_UNLIMITED } from '../share-depth.js';
 
 const autoderiveForm     = document.getElementById('autoderiveForm');
 const autoderiveEnabled  = document.getElementById('autoderiveEnabled');
@@ -142,6 +143,7 @@ const madnetworkAutoapprove = document.getElementById('madnetworkAutoapprove');
 const madnetworkSeedEnabled = document.getElementById('madnetworkSeedEnabled');
 const madnetworkSeedCache   = document.getElementById('madnetworkSeedCache');
 const madnetworkHideUnavail = document.getElementById('madnetworkHideUnavail');
+const madnetworkDepth       = document.getElementById('madnetworkDefaultDepth');
 
 async function loadMadnetwork() {
   try {
@@ -153,6 +155,12 @@ async function loadMadnetwork() {
     madnetworkSeedEnabled.checked = p.seed_enabled !== false;
     madnetworkSeedCache.checked   = p.seed_cache !== false;
     madnetworkHideUnavail.checked = p.hide_unavailable !== false;
+    // The node default is never "inherit" — there is nothing above it to inherit
+    // from — so a missing field falls back to ∞, the documented default.
+    if (madnetworkDepth) {
+      madnetworkDepth.value = depthSelectValue(
+        typeof p.default_share_depth === 'number' ? p.default_share_depth : DEPTH_UNLIMITED);
+    }
   } catch (err) {
     console.error('load madnetwork settings:', err);
     toast(`Couldn't load madnetwork settings: ${err.message}`, 'error');
@@ -168,6 +176,7 @@ async function saveMadnetwork() {
         seed_enabled:          madnetworkSeedEnabled.checked,
         seed_cache:            madnetworkSeedCache.checked,
         hide_unavailable:      madnetworkHideUnavail.checked,
+        ...(madnetworkDepth ? { default_share_depth: depthFromSelect(madnetworkDepth.value) } : {}),
       }),
     });
     if (handleAuthError(res)) return;

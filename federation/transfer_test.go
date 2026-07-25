@@ -132,15 +132,17 @@ func TestBlobTransfer(t *testing.T) {
 	blobURL := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/blob/%s", a.Address(), MeshPort, hash)
 	client := &http.Client{Transport: &http.Transport{DialContext: b.DialContext}, Timeout: meshClientTimeout}
 
-	// Pre-friendship: default-deny.
+	// Pre-friendship: default-deny. Since F5 a non-friend is answered as the
+	// open swarm's guest audience, so a blob that is not guest-playable is 404
+	// (nothing to find) rather than 403 (which would confirm the hash exists).
 	waitFor(t, "pre-friendship blob refusal", func() bool {
 		resp, err := client.Get(blobURL)
 		if err != nil {
 			return false // mesh converging
 		}
 		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusForbidden {
-			t.Fatalf("pre-friendship blob = %d, want 403", resp.StatusCode)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("pre-friendship blob = %d, want 404", resp.StatusCode)
 		}
 		return true
 	})

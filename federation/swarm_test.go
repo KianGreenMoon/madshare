@@ -165,14 +165,16 @@ func TestManifestEndpoint(t *testing.T) {
 	manURL := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/manifest/%s", a.Address(), MeshPort, hash)
 	client := &http.Client{Transport: &http.Transport{DialContext: b.DialContext}, Timeout: meshClientTimeout}
 
+	// A non-friend is the open swarm's guest audience since F5, and this blob is
+	// not guest-playable — so it is simply not found, not refused by name.
 	waitFor(t, "pre-friendship manifest refusal", func() bool {
 		resp, err := client.Get(manURL)
 		if err != nil {
 			return false
 		}
 		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusForbidden {
-			t.Fatalf("pre-friendship manifest = %d, want 403", resp.StatusCode)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("pre-friendship manifest = %d, want 404", resp.StatusCode)
 		}
 		return true
 	})

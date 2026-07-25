@@ -10,6 +10,7 @@ package api
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -18,6 +19,7 @@ import (
 	"strings"
 
 	"daemonlord.ygg/madshare/database"
+	"daemonlord.ygg/madshare/federation"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -34,7 +36,11 @@ type recordingRowDTO struct {
 	Pinned             bool   `json:"pinned"`
 	License            string `json:"license"`
 	GuestPlayable      bool   `json:"guest_playable"`
-	CreatedAt          int64  `json:"created_at"`
+	// ShareDepth is the madnetwork scope override (F5); null = inherit the node
+	// default, which NodeShareDepth on the listing reports so the UI can render
+	// what "inherit" currently resolves to.
+	ShareDepth *int  `json:"share_depth"`
+	CreatedAt  int64 `json:"created_at"`
 }
 
 type recordingRenditionDTO struct {
@@ -134,12 +140,30 @@ func (h *handler) recordingsList(w http.ResponseWriter, r *http.Request) {
 			LiveRenditions: rec.LiveRenditions, RemovedFiles: rec.RemovedFiles,
 			Appearances: rec.Appearances, TrashedAppearances: rec.TrashedTagsets,
 			BestFormat: rec.BestFormat, Dormant: rec.Dormant, Pinned: rec.Pinned,
-			License: rec.License, GuestPlayable: rec.GuestPlayable, CreatedAt: rec.CreatedAt,
+			License: rec.License, GuestPlayable: rec.GuestPlayable, ShareDepth: rec.ShareDepth,
+			CreatedAt: rec.CreatedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"total": total, "limit": limit, "offset": offset, "items": items,
+		// What a null share_depth currently resolves to, so the scope chip can
+		// name the inherited value instead of just saying "inherit".
+		"node_share_depth": h.nodeShareDepth(r.Context()),
 	})
+}
+
+// nodeShareDepth is the node-level madnetwork sharing scope (F5). Falls back to
+// ∞ — the documented default — when no settings store is wired (tests / open
+// embeddings), matching how the node itself resolves an unset value.
+func (h *handler) nodeShareDepth(ctx context.Context) int {
+	if h.manage == nil {
+		return federation.DepthUnlimited
+	}
+	p, err := h.manage.GetMadnetworkPolicy(ctx)
+	if err != nil {
+		return federation.DepthUnlimited
+	}
+	return p.DefaultShareDepth
 }
 
 // recordingsDetail handles GET /api/admin/recordings/{recordingID} — both arms
@@ -397,9 +421,12 @@ func (h *handler) recordingsAddAppearance(w http.ResponseWriter, r *http.Request
 }
 
 // recordingsAccess handles PATCH /api/admin/recordings/{recordingID}/access —
-// the editable license/guest chip. Body {license?, guest_playable?}; absent
-// fields stay unchanged; the license must be in the controlled vocabulary.
-// Gated metadata.edit (the same gate as the file-addressed setters).
+// the editable license/guest/scope chip. Body {license?, guest_playable?,
+// share_depth?}; absent fields stay unchanged; the license must be in the
+// controlled vocabulary. share_depth is deliberately three-valued: absent leaves
+// the scope alone, an explicit null clears the override back to the node
+// default, and a number pins it. Gated metadata.edit (the same gate as the
+// file-addressed setters).
 func (h *handler) recordingsAccess(w http.ResponseWriter, r *http.Request) {
 	recID := parseRecordingID(r)
 	if recID == 0 {
@@ -408,22 +435,28 @@ func (h *handler) recordingsAccess(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req struct {
-		License       *string `json:"license"`
-		GuestPlayable *bool   `json:"guest_playable"`
+		License       *string         `json:"license"`
+		GuestPlayable *bool           `json:"guest_playable"`
+		ShareDepth    json.RawMessage `json:"share_depth"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid JSON body"})
 		return
 	}
-	if req.License == nil && req.GuestPlayable == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "provide license and/or guest_playable"})
+	depth, ok := parseShareDepthUpdate(req.ShareDepth)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid share_depth"})
+		return
+	}
+	if req.License == nil && req.GuestPlayable == nil && !depth.Set {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "provide license, guest_playable and/or share_depth"})
 		return
 	}
 	if req.License != nil && !knownLicenses[*req.License] {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown license"})
 		return
 	}
-	found, err := h.repo.SetRecordingAccess(r.Context(), recID, req.License, req.GuestPlayable)
+	found, err := h.repo.SetRecordingAccess(r.Context(), recID, req.License, req.GuestPlayable, depth)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -432,17 +465,17 @@ func (h *handler) recordingsAccess(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	detail := ""
+	parts := []string{}
 	if req.License != nil {
-		detail = "license=" + *req.License
+		parts = append(parts, "license="+*req.License)
 	}
 	if req.GuestPlayable != nil {
-		if detail != "" {
-			detail += " "
-		}
-		detail += "guest=" + strconv.FormatBool(*req.GuestPlayable)
+		parts = append(parts, "guest="+strconv.FormatBool(*req.GuestPlayable))
 	}
-	h.audit(r.Context(), "recording.access", strconv.FormatInt(recID, 10), detail)
+	if depth.Set {
+		parts = append(parts, "share_depth="+shareDepthLabel(depth))
+	}
+	h.audit(r.Context(), "recording.access", strconv.FormatInt(recID, 10), strings.Join(parts, " "))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

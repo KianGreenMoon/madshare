@@ -272,7 +272,7 @@
 <div class="modal-backdrop hidden" id="accessModal" role="dialog" aria-modal="true" aria-labelledby="accessTitle">
   <div class="modal">
     <div class="modal-header">
-      <h2 id="accessTitle">License &amp; guest access</h2>
+      <h2 id="accessTitle">Access &amp; sharing</h2>
       <button class="btn-close" id="accessClose" aria-label="Close">&times;</button>
     </div>
     <p class="modal-body" id="accessBody"></p>
@@ -290,8 +290,20 @@
     <label class="rec-access-guest">
       <input type="checkbox" id="accessGuest"> Guest playable &mdash; listeners without an account can stream it
     </label>
+    <label class="rec-access-field">Madnetwork scope
+      <select id="accessDepth">
+        <option value="inherit">Node default</option>
+        <option value="-1">Private &mdash; not shared at all</option>
+        <option value="0">Direct friends only</option>
+        <option value="1">Friends of friends</option>
+        <option value="unlimited">Whole madnetwork</option>
+      </select>
+    </label>
     <p class="modal-body rec-access-note">Recording-level: applies to every appearance and every rendition at
-      once. An explicit guest setting is a manual decision the license auto-derive policy never overrides.</p>
+      once. An explicit guest setting is a manual decision the license auto-derive policy never overrides.
+      Madnetwork scope decides how far this recording travels along the friendship chain &mdash; it is
+      enforced on this node&rsquo;s own catalog and byte serving; reach beyond direct friends arrives with
+      friend-list gossip.</p>
     <div class="modal-actions">
       <button class="btn btn-neutral" id="accessCancel">Cancel</button>
       <button class="btn btn-absorb" id="accessGo">Save</button>

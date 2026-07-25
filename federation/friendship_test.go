@@ -35,6 +35,12 @@ type memStore struct {
 	holdings   map[int64][]string
 	seedEnable bool
 	seedCache  bool
+
+	// Sharing scope (F5): depths overrides one published entry's share depth by
+	// entry key (absent = the node default, ∞ here); audiences overrides what a
+	// peer resolves to (absent = FriendAudience, the unmapped default).
+	depths    map[string]int
+	audiences map[int64]Audience
 }
 
 func newMemStore() *memStore {
@@ -44,13 +50,46 @@ func newMemStore() *memStore {
 		holdings:   map[int64][]string{},
 		seedEnable: true, // seed by default, mirroring the DB defaults
 		seedCache:  true,
+		depths:     map[string]int{},
+		audiences:  map[int64]Audience{},
 	}
 }
 
-func (m *memStore) PublishedCatalog(context.Context) ([]CatalogEntry, error) {
+// inScope mirrors the DB's audience predicate over one published entry: its
+// effective depth must reach the audience, and a guest-only audience sees only
+// guest-playable entries. Callers hold m.mu.
+func (m *memStore) inScope(e CatalogEntry, aud Audience) bool {
+	depth, ok := m.depths[e.Key]
+	if !ok {
+		depth = DepthUnlimited
+	}
+	if depth < aud.Distance {
+		return false
+	}
+	return !aud.GuestOnly || e.GuestPlayable
+}
+
+func (m *memStore) PublishedCatalog(_ context.Context, aud Audience) ([]CatalogEntry, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return append([]CatalogEntry(nil), m.published...), nil
+	out := []CatalogEntry{}
+	for _, e := range m.published {
+		if m.inScope(e, aud) {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// PeerAudience returns the peer's configured audience, defaulting to the
+// unmapped friend (the whole published set).
+func (m *memStore) PeerAudience(_ context.Context, peerID int64) (Audience, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if aud, ok := m.audiences[peerID]; ok {
+		return aud, nil
+	}
+	return FriendAudience, nil
 }
 
 func (m *memStore) ReplacePeerCatalog(_ context.Context, peerID int64, serial string, syncedAt int64, entries []CatalogEntry) error {
@@ -76,15 +115,17 @@ func (m *memStore) MarkPeerCatalogChecked(_ context.Context, peerID int64, seria
 	return nil
 }
 
-// BlobPubliclyVisible mirrors the DB predicate over the published set: a hash
-// advertised by any published entry's renditions is visible.
-func (m *memStore) BlobPubliclyVisible(_ context.Context, hash string) (bool, bool, error) {
+// BlobVisibleTo mirrors the DB predicate over the published set: a hash
+// advertised by a published entry is visible when that entry is in the
+// audience's scope. found stays true for a known-but-out-of-scope hash, so the
+// fake reproduces the real store's "exists, may not have it" answer.
+func (m *memStore) BlobVisibleTo(_ context.Context, hash string, aud Audience) (bool, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, e := range m.published {
 		for _, rd := range e.Renditions {
 			if rd.Hash == hash {
-				return true, true, nil
+				return m.inScope(e, aud), true, nil
 			}
 		}
 	}

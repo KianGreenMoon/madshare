@@ -35,6 +35,10 @@ type bulkEditPatch struct {
 	metadataPatchRequest
 	License *string `json:"license"`
 	Guest   *bool   `json:"guest"`
+	// ShareDepth is the madnetwork share scope (F5), three-valued like the
+	// single-recording setter: absent = unchanged, null = inherit the node
+	// default, a number = pin it. See api/share_depth.go.
+	ShareDepth json.RawMessage `json:"share_depth"`
 }
 
 func (p *bulkEditPatch) hasTags() bool {
@@ -43,7 +47,9 @@ func (p *bulkEditPatch) hasTags() bool {
 		m.Genre != nil || m.Composer != nil || m.Comment != nil ||
 		m.TrackNumber != nil || m.TrackTotal != nil || m.DiscNumber != nil || m.Year != nil
 }
-func (p *bulkEditPatch) hasAccess() bool { return p != nil && (p.License != nil || p.Guest != nil) }
+func (p *bulkEditPatch) hasAccess() bool {
+	return p != nil && (p.License != nil || p.Guest != nil || len(p.ShareDepth) > 0)
+}
 
 // bulkEditAppearances applies one bulk tag patch by tagset id — the Trash lens's
 // "fix a tag before restoring". Tags only: access (license / guest) is a

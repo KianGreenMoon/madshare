@@ -42,16 +42,21 @@ func (h *handler) reachWindow() int64 {
 }
 
 // madnetworkView builds the merged-browse policy for this request: whether to
-// fold in the own published set, and the reachability cutoff. The cutoff is 0
-// (no filtering) when either this node's inbound mesh path is suspect (fail open
-// — a local netstack fault shows the last-known catalog instead of blanking it)
-// or the admin turned the madnetwork.hide_unavailable toggle off.
+// fold in the own published set (and under which node-default share depth, F5),
+// and the reachability cutoff. The cutoff is 0 (no filtering) when either this
+// node's inbound mesh path is suspect (fail open — a local netstack fault shows
+// the last-known catalog instead of blanking it) or the admin turned the
+// madnetwork.hide_unavailable toggle off.
 func (h *handler) madnetworkView(ctx context.Context) database.MadnetworkView {
-	v := database.MadnetworkView{IncludeSelf: h.includeSelf()}
+	v := database.MadnetworkView{IncludeSelf: h.includeSelf(), DefaultShareDepth: federation.DepthFriends}
+	p, err := h.madnetwork.GetMadnetworkPolicy(ctx)
+	if err == nil {
+		v.DefaultShareDepth = p.DefaultShareDepth
+	}
 	if !h.inboundHealthy() {
 		return v // fail open
 	}
-	if p, err := h.madnetwork.GetMadnetworkPolicy(ctx); err == nil && !p.HideUnavailable {
+	if err == nil && !p.HideUnavailable {
 		return v // hiding disabled by the admin
 	}
 	v.Cutoff = time.Now().Unix() - h.reachWindow()
@@ -175,7 +180,7 @@ func (h *handler) madnetworkTracks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if view.IncludeSelf {
-		own, err := h.madnetwork.MadnetworkOwnTracks(r.Context(), artist, album)
+		own, err := h.madnetwork.MadnetworkOwnTracks(r.Context(), artist, album, view)
 		if err != nil {
 			http.Error(w, "storage error", http.StatusInternalServerError)
 			return

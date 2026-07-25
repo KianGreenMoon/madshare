@@ -51,9 +51,12 @@ type Node struct {
 	intervals Intervals
 	timeouts  Timeouts
 
-	// Memoized own-catalog snapshot served to friends (catalog.go).
+	// Memoized own-catalog snapshots served to friends, one per audience class
+	// (catalog.go, F5): a catalog is built for a specific audience, so the memo
+	// is keyed by it. The key space is tiny — at depth 0 it is exactly {full,
+	// guest-only} — so this is bounded by design, not by eviction.
 	snapMu sync.Mutex
-	snap   *snapshot
+	snaps  map[Audience]*snapshot
 
 	// F3 transfer wiring (transfer.go): the blob cache dir, the local blob
 	// resolver (serving side + local short-circuit), the in-flight transfer

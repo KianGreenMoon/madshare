@@ -251,6 +251,14 @@ func (h *handler) bulkEditLiveAppearances(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown license"})
 		return
 	}
+	var depth database.ShareDepthUpdate
+	if patch != nil {
+		var ok bool
+		if depth, ok = parseShareDepthUpdate(patch.ShareDepth); !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid share_depth"})
+			return
+		}
+	}
 	if len(tagsetIDs) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": 0, "failed": []any{}})
 		return
@@ -290,6 +298,14 @@ func (h *handler) bulkEditLiveAppearances(w http.ResponseWriter, r *http.Request
 		}
 		if patch.Guest != nil {
 			n, err := h.repo.BulkSetGuestPlayableByTagsets(r.Context(), tagsetIDs, *patch.Guest)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+				return
+			}
+			accN = n
+		}
+		if depth.Set {
+			n, err := h.repo.BulkSetShareDepthByTagsets(r.Context(), tagsetIDs, depth)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
 				return

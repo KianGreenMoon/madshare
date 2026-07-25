@@ -138,7 +138,7 @@ func TestCatalogSync(t *testing.T) {
 
 func mustPublished(t *testing.T, s *memStore) []CatalogEntry {
 	t.Helper()
-	entries, err := s.PublishedCatalog(context.Background())
+	entries, err := s.PublishedCatalog(context.Background(), FriendAudience)
 	if err != nil {
 		t.Fatal(err)
 	}

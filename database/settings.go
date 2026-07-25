@@ -4,7 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strconv"
 	"strings"
+
+	"daemonlord.ygg/madshare/federation"
 )
 
 // Settings keys (see migration 006_access_mgmt.sql; settings is a generic
@@ -19,6 +22,7 @@ const (
 	settingMadnetworkSeedEnabled     = "madnetwork.seed_enabled"
 	settingMadnetworkSeedCache       = "madnetwork.seed_cache"
 	settingMadnetworkHideUnavailable = "madnetwork.hide_unavailable"
+	settingMadnetworkDefaultDepth    = "madnetwork.default_share_depth"
 )
 
 // Trash-restore policy modes — what may happen to a trashed file whose content
@@ -74,6 +78,12 @@ type MadnetworkPolicy struct {
 	// merged browse (the availability rule). Default on; off shows every friend's
 	// cached catalog regardless of reachability (docs/plans/availability.md).
 	HideUnavailable bool
+	// DefaultShareDepth is the node-level sharing scope (F5): the depth every
+	// recording that carries no explicit share_depth inherits. Default
+	// federation.DepthUnlimited (∞ — the whole reachable madnetwork);
+	// federation.DepthFriends restricts the node to direct friends,
+	// federation.DepthPrivate publishes nothing at all.
+	DefaultShareDepth int
 }
 
 // GetMadnetworkPolicy reads the madnetwork settings. Missing keys read as the
@@ -96,16 +106,37 @@ func (db *DB) GetMadnetworkPolicy(ctx context.Context) (MadnetworkPolicy, error)
 	if err != nil {
 		return MadnetworkPolicy{}, err
 	}
+	depth, _, err := db.GetSetting(ctx, settingMadnetworkDefaultDepth)
+	if err != nil {
+		return MadnetworkPolicy{}, err
+	}
 	return MadnetworkPolicy{
 		AutoapproveDownloads: auto == "1",
 		SeedEnabled:          seed != "0",  // default on
 		SeedCache:            cache != "0", // default on
 		HideUnavailable:      hide != "0",  // default on
+		DefaultShareDepth:    parseShareDepth(depth),
 	}, nil
 }
 
-// SetMadnetworkPolicy persists the madnetwork settings atomically.
+// parseShareDepth reads the stored node-default depth, falling back to ∞ for an
+// unset or unparseable value — the historical behavior (publish the whole
+// approved library) and the documented default.
+func parseShareDepth(raw string) int {
+	d, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || !federation.ValidDepth(d) {
+		return federation.DepthUnlimited
+	}
+	return d
+}
+
+// SetMadnetworkPolicy persists the madnetwork settings atomically. An
+// out-of-range default depth is rejected rather than silently clamped: it is the
+// node's whole sharing scope, so a typo must not quietly widen or close it.
 func (db *DB) SetMadnetworkPolicy(ctx context.Context, p MadnetworkPolicy) error {
+	if !federation.ValidDepth(p.DefaultShareDepth) {
+		return errors.New("invalid default share depth")
+	}
 	bit := func(b bool) string {
 		if b {
 			return "1"
@@ -125,6 +156,7 @@ func (db *DB) SetMadnetworkPolicy(ctx context.Context, p MadnetworkPolicy) error
 		{settingMadnetworkSeedEnabled, bit(p.SeedEnabled)},
 		{settingMadnetworkSeedCache, bit(p.SeedCache)},
 		{settingMadnetworkHideUnavailable, bit(p.HideUnavailable)},
+		{settingMadnetworkDefaultDepth, strconv.Itoa(p.DefaultShareDepth)},
 	} {
 		if _, err := tx.ExecContext(ctx, upsert, kv.key, kv.val); err != nil {
 			return err
