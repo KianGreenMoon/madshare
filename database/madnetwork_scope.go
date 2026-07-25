@@ -92,7 +92,7 @@ func (db *DB) BlobVisibleTo(ctx context.Context, hash string, aud federation.Aud
 
 // PeerAudience resolves a trusted peer to the audience its requests are answered
 // for. The distance is 0 — every peer we speak to directly is a direct friend
-// until transitive reach ships (F6) — so the interesting half is the user
+// until transitive reach ships (F7) — so the interesting half is the user
 // mapping (federation.md §Principals & access):
 //
 //	unmapped                     the default regular-user identity: the whole

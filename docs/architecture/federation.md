@@ -129,9 +129,9 @@ type Audience struct {
   the audience's catalog iff `depth >= Distance`. Depth `0` (friends only) serves
   a direct friend and nobody beyond; `DepthPrivate` (`-1`) serves nobody at all,
   including direct friends — it is the "not on the network" mark. Until
-  transitive reach turns on (F6) every authenticated requester is at distance 0,
+  transitive reach turns on (F7) every authenticated requester is at distance 0,
   so the ladder above 0 is inert *by construction rather than by omission*: the
-  depth is stored, enforced, and carried on the catalog wire today, so F6 adds
+  depth is stored, enforced, and carried on the catalog wire today, so F7 adds
   reach without a protocol break or a schema change.
 - **GuestOnly** is the per-friend half, resolved from the **user mapping**
   (§Principals & access): a friend mapped to a local account inherits that
@@ -172,12 +172,14 @@ friends-only (a stranger gets no listing — they must already know the hash), a
 **cache blobs are never open** (this node cannot vouch for the license of
 something it merely fetched). A blocked peer is refused everything, as before.
 
-**Tokens ship with F6.** Capability tokens exist to serve
+**Tokens ship with F7.** Capability tokens exist to serve
 strangers-inside-the-network at depth ≥ 1, and a friend-of-a-friend cannot
 *discover* that we hold a hash until friend-list/catalog gossip lands. Building
 the issuer before the discovery path would ship a signed credential nothing
-presents; it moves to F6 next to the gossip that gives it a counterparty (decided
-2026-07-25). Depth enforcement at hop 0 — the part that is real today — is F5.
+presents, so tokens follow the gossip that gives them a counterparty rather than
+preceding it (decided 2026-07-25; the gossip itself became F6 and the tokens F7
+when that phase was split on 2026-07-26). Depth enforcement at hop 0 — the part
+that is real today — is F5.
 - The **legal frame** (madshare.org): sharing among friends is private sharing;
   non-friends cannot listen. Default-deny toward the outside world is preserved
   end-to-end — an outsider gets no catalog, no stream, no swarm chunks.
@@ -302,9 +304,11 @@ Design notes for the implementation:
      bounded by your depth knob. Trolls can flood their own corner of the
      network; they cannot dilute yours — which is exactly why rating stays
      local/manual and never network-global.
-- Transitive reach (depth > 0) **ships only together with** the transparency and
+- Transitive reach (depth > 0) **never ships before** the transparency and
   blocking tooling — a network you can see further into than you can defend is
-  the wrong order (build plan F6).
+  the wrong order. This is the reason the build plan puts defense in F6 and
+  reach in F7, in that order, rather than in one phase: the dependency runs one
+  way only, so F6 stands alone and F7 does not.
 
 ## Catalog & the madnetwork library
 
@@ -400,7 +404,7 @@ Design notes for the implementation:
   sorts each version's renditions by the quality ladder before answering).
   At depth 0 every carrier is a direct friend, so the carrier count is
   trivially trust-weighted; the full weighting (one branch = one voice)
-  arrives with transitive reach (F6).
+  arrives with transitive reach (F7).
 - **Catalog crossing — "N versions" (built, F2; resolves former open question
   1).** The same tagset text on *different claimed recordings* (different
   masters, live vs. studio, or a mislabel) stays **one track row** that
@@ -555,7 +559,7 @@ Design notes for the implementation:
   - Between **direct friends**, the channel identity is sufficient — no tokens
     (F4: **swarm scope = direct friends**), filtered by the requester's audience
     since F5.
-  - At **depth ≥ 1** (F6), seeders serve strangers-inside-the-network via
+  - At **depth ≥ 1** (F7), seeders serve strangers-inside-the-network via
     **capability tokens**: the sharing node signs "peer key K may download hash
     H until T". A seeder verifies the signature against a node it trusts and
     verifies the connection is K (self-certifying channel — a leaked token is
@@ -668,7 +672,7 @@ silent permanent death. That hardening is the real gate on richer liveness, and
 it is worth doing on its own regardless of the availability feature.
 
 **No transitive real-time presence — how the big network stays honest.** At
-depth ≥ 1 (F6+, friends-of-friends) the answer is deliberately *not* to ping
+depth ≥ 1 (F7+, friends-of-friends) the answer is deliberately *not* to ping
 strangers or relay pings along the chain. Federated systems don't do live
 presence at all:
 
@@ -744,23 +748,40 @@ milestone directly after direct transfer works, and tokens ship with depth.
 - **F5 — Depth & scope** (built 2026-07-25, see §Sharing scope). Share-depth knob
   (node default + per recording, migration 030), the audience model filtering
   catalog and bytes from one rule, per-friend filtering via the user mapping, and
-  the guest-open swarm. Tokens moved to F6 (below): depth ≥ 1 is what needs them,
-  and it is what F6 turns on.
+  the guest-open swarm. Tokens moved out of F5 (they need depth ≥ 1 to have a
+  counterparty) and now sit in F7, one phase after the gossip that discovers it.
 - **No fingerprint, no publication** (near-term, not depth-gated; see the
   planned item at the end of §Sharing scope). The publishable predicate gains an
   `audio_fingerprints` requirement per rendition, in `visibleTagset` /
   `selfPublishedClause` so catalog and bytes inherit it together, plus the "why
-  is this not published" readout in the Recordings lens. Independent of F6 and
-  shippable on its own; the startup gate refusing a federated node without
+  is this not published" readout in the Recordings lens. Independent of both F6
+  and F7, shippable on its own; the startup gate refusing a federated node without
   `fpcalc` (built 2026-07-26) is the other half of the same rule.
-- **F6 — Transparency, defense & tokens.** Friend-list gossip within depth,
-  network map UI, signed distrust marks, branch snipping, stolen-key revocation
-  flow — plus the capability tokens that let a seeder serve
-  strangers-inside-the-network, with delegated issuance along the friendship
-  chain. Transitive reach (depth > 0) turns on here, not before; deeper networks
-  reuse the availability model above (gossiped freshness hints + on-demand verify
-  of the visible working set), never transitive pinging.
-- **F7 — Quality upgrades.** Madnetwork-match arm on the upload/download review
+- **F6 — Transparency & defense.** Friend-list gossip within depth, the network
+  map UI, signed distrust marks, branch snipping, and the stolen-key revocation
+  flow. **Changes nothing about who may fetch what** — every requester stays at
+  distance 0 throughout, so the wire's access rules are exactly F5's. What it
+  adds is sight and reach of *judgement*: an admin can see the graph beyond their
+  own friend list, see whom their friends distrust, and cut a branch.
+- **F7 — Tokens & transitive reach.** The capability tokens that let a seeder
+  serve strangers-inside-the-network, with delegated issuance along the
+  friendship chain; `Audience.Distance` computed from the gossiped graph instead
+  of pinned to 0, so the depth ladder above `DepthFriends` finally does
+  something; trust-weighted popularity (one branch = one voice, §Trust graph);
+  and gossiped freshness hints for availability at depth ≥ 1 (§Availability),
+  never transitive pinging.
+
+  **Why the split** (decided 2026-07-26, superseding the single F6): the two
+  halves have opposite risk profiles. F6 is additive and observational — new
+  endpoints, a new page, no change to what leaves the node — while F7 rewrites
+  the access rule that F5 just established and introduces a credential with a
+  lifetime, a revocation story and a delegation chain. Shipping them together
+  would mean the riskiest change in the project arriving inside its largest
+  phase. The ordering is also the doc's own rule from §Trust graph: a network you
+  can see further into than you can defend is the wrong order, so defense first
+  is not merely convenient sequencing — F7 is *unsafe* without F6, and F6 is
+  useful without F7.
+- **F8 — Quality upgrades.** Madnetwork-match arm on the upload/download review
   cards (other tagsets + better renditions of the same recording), the
   fingerprint-vs-tagset **mismatch warning** (tag-suggestions machinery reuse),
   and the optional quality-upgrade page scanning the local library against
@@ -770,9 +791,12 @@ milestone directly after direct transfer works, and tokens ship with depth.
 
 ## Open questions (design-time details)
 
-1. Token lifetime / renewal cadence (F6).
-2. Gossip payload details for F6 (what exactly a friend-list/distrust message
-   carries).
+1. **Gossip payload details (F6) — the next one to settle**, since gossip is now
+   the first thing F6 builds: what exactly a friend-list / distrust message
+   carries, how far it propagates, and how a receiver ages it out. Note that the
+   friend-list half is a **privacy** decision as much as a protocol one — it
+   tells a friend-of-a-friend who my friends are.
+2. Token lifetime / renewal cadence (F7).
 
 (Former question 1 — catalog crossing / one tagset text on two recordings —
 was settled with F2: see §Catalog, ""N versions"". Former question 2 — chunk

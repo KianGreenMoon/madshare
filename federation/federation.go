@@ -73,7 +73,7 @@ func ValidDepth(d int) bool { return d >= DepthPrivate && d <= DepthUnlimited }
 // what the catalog lists and what the byte endpoints serve — a node must never
 // advertise what it would not serve, so both halves read one rule.
 //
-// Until transitive reach turns on (F6) every authenticated requester is at
+// Until transitive reach turns on (F7) every authenticated requester is at
 // distance 0; the field exists so depth > 0 needs no protocol or schema change
 // then, and so the depth ladder is inert by construction rather than by
 // omission.

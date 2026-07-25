@@ -141,7 +141,7 @@ func TestShareDepthInheritsNodeDefault(t *testing.T) {
 }
 
 // TestDepthLadderGatesByDistance: depth 0 reaches a direct friend and nobody
-// further out — the F6 ladder is already enforced, it just has no traffic yet.
+// further out — the ladder is already enforced, it just has no traffic until F7.
 func TestDepthLadderGatesByDistance(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
