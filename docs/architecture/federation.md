@@ -184,6 +184,40 @@ presents; it moves to F6 next to the gossip that gives it a counterparty (decide
   Guest-playable content is the deliberate exception (open to everyone, no
   token), and the admin who flags it owns that choice.
 
+**Planned — no fingerprint, no publication (not built; decided 2026-07-26).**
+The published set gains a third condition beside "approved and live" and the
+audience filter: a rendition is publishable only when its blob has an
+`audio_fingerprints` row. Requiring `fpcalc` to *start* a federated node closes
+the tool-missing case; this closes the per-file remainder — a blob that was never
+successfully fingerprinted (ingested before the tool existed, corrupt audio, a
+codec `fpcalc` chokes on) would otherwise still be advertised with an audio
+identity nothing local ever verified. Publishing it asks friends to trust a
+grouping claim this node cannot itself stand behind.
+
+Design notes for the implementation:
+
+- **Rendition-level, not recording-level.** Each rendition is a distinct blob;
+  one being fingerprinted says nothing about another, and a `recording_pinned`
+  rendition can join a recording by hand without ever being analysed. A recording
+  whose renditions are all unfingerprinted then has nothing to advertise and
+  drops out of the catalog on its own — no separate recording-level rule.
+- **One place, both halves.** The condition belongs in `visibleTagset` /
+  `selfPublishedClause` (`database/madnetwork_scope.go`), so the catalog,
+  `BlobVisibleTo` and the `/madnetwork` self-merge inherit it together. Never
+  advertise what you would not serve applies here exactly as it does to depth.
+- **Holdings are untouched.** `GET /madnetwork/v0/holdings` advertises cache
+  hashes — "I hold these bytes", not "this is that recording". There is no
+  identity claim to back, and the fetcher verifies the hash regardless.
+- **Say it in the UI.** A recording silently missing from the network page is a
+  support question; the Recordings lens should show *why* (no fingerprint yet /
+  analysis failed) next to the existing scope chip. Most cases resolve
+  themselves — the startup backfill re-analyses anything lacking a fingerprint —
+  so the state is usually "not yet", and it should read that way.
+- **Expect the serial to churn** on a node that federates for the first time with
+  a large unanalysed library: entries appear as the backfill lands, so friends
+  re-pull the snapshot repeatedly for a while. Harmless at the 15-minute sync
+  cadence, worth knowing before someone reports it as a bug.
+
 ## Friendship (F1, built)
 
 - **Node card** — the out-of-band introduction two admins exchange (chat, mail,
@@ -712,6 +746,13 @@ milestone directly after direct transfer works, and tokens ship with depth.
   catalog and bytes from one rule, per-friend filtering via the user mapping, and
   the guest-open swarm. Tokens moved to F6 (below): depth ≥ 1 is what needs them,
   and it is what F6 turns on.
+- **No fingerprint, no publication** (near-term, not depth-gated; see the
+  planned item at the end of §Sharing scope). The publishable predicate gains an
+  `audio_fingerprints` requirement per rendition, in `visibleTagset` /
+  `selfPublishedClause` so catalog and bytes inherit it together, plus the "why
+  is this not published" readout in the Recordings lens. Independent of F6 and
+  shippable on its own; the startup gate refusing a federated node without
+  `fpcalc` (built 2026-07-26) is the other half of the same rule.
 - **F6 — Transparency, defense & tokens.** Friend-list gossip within depth,
   network map UI, signed distrust marks, branch snipping, stolen-key revocation
   flow — plus the capability tokens that let a seeder serve
