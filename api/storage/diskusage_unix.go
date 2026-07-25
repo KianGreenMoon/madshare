@@ -22,8 +22,11 @@ import (
 // space is a property of the mount, so any ancestor on the same filesystem
 // yields the same numbers.
 //
-// Block count fields are unsigned; Bsize can be signed on some platforms, so it
-// is converted via uint64 after a guard.
+// The statfs fields have platform-dependent signedness and width — Bsize is
+// int64 on Linux and uint64 on FreeBSD, and Bavail is unsigned on Linux but
+// *signed* on FreeBSD, where it legitimately goes negative once a filesystem
+// eats into its root reservation. [statCount] normalizes all of them, clamping
+// a negative count to zero, so the arithmetic below has one shape everywhere.
 func diskUsage(path string) (total, free, used uint64, err error) {
 	var st syscall.Statfs_t
 	for {
@@ -40,12 +43,21 @@ func diskUsage(path string) (total, free, used uint64, err error) {
 		}
 		path = parent
 	}
-	bsize := uint64(st.Bsize)
-	if st.Bsize < 0 {
-		bsize = 0
-	}
-	total = st.Blocks * bsize
-	free = st.Bavail * bsize
-	used = (st.Blocks - st.Bfree) * bsize
+	bsize := blocks64(st.Bsize)
+	total = blocks64(st.Blocks) * bsize
+	free = blocks64(st.Bavail) * bsize
+	used = (blocks64(st.Blocks) - blocks64(st.Bfree)) * bsize
 	return total, free, used, nil
+}
+
+// statCount is the set of types the various platforms give the statfs block
+// counters and block size.
+type statCount interface{ ~int32 | ~uint32 | ~int64 | ~uint64 }
+
+// blocks64 widens a statfs counter to uint64, treating a negative value as zero.
+func blocks64[T statCount](v T) uint64 {
+	if v < 0 {
+		return 0
+	}
+	return uint64(v)
 }
