@@ -57,5 +57,22 @@ First start
      systemctl enable --now madshare      # systemd
      rc-update add madshare default && rc-service madshare start   # OpenRC
 
+Optional media-analysis tools
+-----------------------------
+Both are looked up on PATH at startup and neither is needed to serve a library
+(the .deb and .rpm pull them in as weak dependencies; with this tarball they are
+yours to install):
+
+  fpcalc   - acoustic fingerprint / same-audio identity
+             Debian/Ubuntu: apt install libchromaprint-tools
+             Fedora/RHEL:   dnf install chromaprint-tools
+             Alpine:        apk add chromaprint
+  ffprobe  - codec, bitrate, sample rate, duration
+             apt install ffmpeg  /  dnf install ffmpeg  /  apk add ffmpeg
+
+fpcalc stops being optional if you enable [federation]: a federated node
+re-fingerprints downloaded audio locally before trusting it, and refuses to
+start without it.
+
 Madshare speaks plain HTTP and expects a TLS-terminating reverse proxy in front
 of it — see contrib/nginx/. Everything else is in README.md.

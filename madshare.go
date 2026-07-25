@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -70,6 +71,11 @@ func main() {
 	// Feature gate: federation may only be enabled if it is compiled in.
 	if cfg.Federation.Enabled && !federation.Available {
 		log.Fatalf("federation.enabled is set but this binary was built with -tags nofederation; rebuild without that tag or disable [federation]")
+	}
+	// Environment gate, same class as the one above: federation is enabled but
+	// this host cannot do it correctly.
+	if cfg.Federation.Enabled {
+		requireFingerprinting(cfg)
 	}
 
 	log.Println("Start the program")
@@ -212,6 +218,12 @@ func main() {
 	haveFFprobe, haveFpcalc := media.ToolStatus()
 	if !haveFFprobe {
 		log.Printf("warning: ffprobe not found on PATH; audio tech columns (bitrate/sample rate/codec) stay empty")
+		if cfg.Federation.Enabled {
+			// Not fatal (unlike fpcalc above): the output is poorer, the input
+			// is still verified. Worth naming, because the cost lands on peers.
+			log.Printf("         with federation enabled that also means the catalog this node " +
+				"publishes carries no quality facts, so friends cannot rank its renditions")
+		}
 	}
 	if !haveFpcalc {
 		log.Printf("warning: fpcalc not found on PATH; acoustic fingerprinting disabled (duplicate detection degrades to tags)")
@@ -389,6 +401,55 @@ func main() {
 // startListeners binds and serves one http.Server per [[listen]] entry. Each
 // server runs in its own goroutine; a bind failure aborts startup. The returned
 // servers are live and must be shut down by the caller.
+// requireFingerprinting refuses to bring up a federated node on a host without
+// fpcalc, unless [federation].allow_missing_fingerprinting says otherwise. It is
+// the one analysis tool federation cannot do without — the reasoning, including
+// why ffprobe is deliberately not gated the same way, is on
+// config.FederationConfig.AllowMissingFingerprinting.
+//
+// A PATH lookup is the whole check, on purpose: a binary that is present but
+// broken shows up per analysis job, where the failure is recoverable and
+// visible, and probing it here would only add a startup dependency on running
+// somebody else's code.
+func requireFingerprinting(cfg config.Config) {
+	if _, haveFpcalc := media.ToolStatus(); haveFpcalc {
+		return
+	}
+	if cfg.Federation.AllowMissingFingerprinting {
+		log.Printf("warning: federation is enabled without fpcalc (allow_missing_fingerprinting is set) — " +
+			"downloaded audio cannot be checked against what it claims to be, and never groups with " +
+			"recordings this node already holds")
+		return
+	}
+	log.Fatalf("federation.enabled is set but fpcalc (Chromaprint) is not on PATH.\n"+
+		"  A federated node re-fingerprints downloaded audio locally before it joins a recording,\n"+
+		"  because a peer's claims about it are hints and never facts. Without fpcalc that check\n"+
+		"  cannot happen, so this node would import and re-publish content it is unable to verify.\n"+
+		"  Install it:\n%s\n"+
+		"  and restart — the startup backfill re-analyses every file that still lacks a\n"+
+		"  fingerprint, so an existing library repairs itself.\n"+
+		"  To federate without it anyway, set [federation] allow_missing_fingerprinting = true.",
+		fpcalcInstallHint())
+}
+
+// fpcalcInstallHint names the package carrying fpcalc on this platform, so the
+// refusal above ends in a command rather than in a search. Indented to sit
+// inside that message.
+func fpcalcInstallHint() string {
+	switch runtime.GOOS {
+	case "linux":
+		return "    Debian/Ubuntu: apt install libchromaprint-tools\n" +
+			"    Fedora/RHEL:   dnf install chromaprint-tools\n" +
+			"    Alpine:        apk add chromaprint"
+	case "freebsd":
+		return "    pkg install chromaprint"
+	case "darwin":
+		return "    brew install chromaprint"
+	default:
+		return "    it ships with Chromaprint, https://acoustid.org/chromaprint"
+	}
+}
+
 func startListeners(cfg config.Config, deps api.Deps) ([]*http.Server, error) {
 	servers := make([]*http.Server, 0, len(cfg.Listen))
 	for _, lc := range cfg.Listen {

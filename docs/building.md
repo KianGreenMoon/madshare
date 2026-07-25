@@ -28,14 +28,34 @@ The Go module path is `daemonlord.ygg/madshare`; the entry point is
 
 Two external binaries enable ingest **media analysis** (see
 [`architecture/recordings.md`](architecture/recordings.md)). Both are looked up
-on `PATH` at startup and are **entirely optional** — neither affects the build,
-and a missing tool only logs a warning and disables its own output:
+on `PATH` at startup, and neither affects the build:
 
 - **`ffprobe`** (from FFmpeg) — fills the audio tech columns (duration, bitrate,
   sample rate, channels, codec, bit depth). Absent → those columns stay empty.
+  Always optional; a missing binary only warns.
 - **`fpcalc`** (Chromaprint) — computes the acoustic fingerprint used for
   same-audio (recording) identity. Absent → fingerprinting is disabled and
-  duplicate detection degrades to a tag-based check.
+  duplicate detection degrades to a tag-based check. Optional for a standalone
+  server, **required once `[federation].enabled` is set** (see below).
+
+**Federation requires `fpcalc`.** A federated node re-fingerprints downloaded
+audio locally before it joins a recording, because a peer's claims about it are
+hints and never facts; without fpcalc that check cannot happen, so the node
+would import and re-publish content it is unable to verify — a cost borne by its
+peers, not just by itself. Startup therefore **refuses** when federation is
+enabled and fpcalc is missing, naming the package to install. Setting
+`[federation] allow_missing_fingerprinting = true` federates anyway. Installing
+the tool and restarting repairs the existing library on its own: the startup
+backfill re-analyses every file that still lacks a fingerprint.
+
+`ffprobe` is deliberately *not* gated the same way. Without it a node's catalog
+carries no quality facts, so friends cannot rank its renditions — worse output,
+not unverified input — and it is by far the heavier install of the two.
+
+The distribution packages list both as **weak** dependencies (`Recommends`),
+which apt and dnf install by default: a requirement conditional on a config
+setting is not something package metadata can express, so the rule lives at
+runtime where the config is known.
 
 ## Standard build
 

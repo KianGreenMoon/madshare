@@ -179,6 +179,27 @@ type FederationConfig struct {
 	// to 0 with a warning. The seed on/off and cache-seed toggles are runtime DB
 	// settings (madnetwork.seed_enabled / .seed_cache), not config.
 	SeedRateKiB int `toml:"seed_rate_kib"`
+	// AllowMissingFingerprinting lets a federated node start without fpcalc on
+	// PATH. Default false — i.e. fpcalc is REQUIRED once federation is enabled,
+	// and main refuses to start otherwise.
+	//
+	// It is the one analysis tool federation cannot do without: downloaded bytes
+	// are re-fingerprinted locally before they join a recording, because remote
+	// claims are hints and never facts (docs/architecture/federation.md
+	// §Catalog). Without it that verification silently does not happen — fetched
+	// audio can never group with what this node already holds, and a mislabelled
+	// tagset has no true recording to land on as a visible minority label, which
+	// is the first layer of the anti-mislabel defense. The damage is to peers'
+	// trust in this node's catalog, not merely to local convenience, hence a
+	// refusal rather than a warning.
+	//
+	// ffprobe is deliberately NOT gated: without it renditions carry no quality
+	// facts and the ladder degrades to format+size, which is worse output, not
+	// unverified input.
+	//
+	// The polarity is chosen so the zero value is the safe one: an absent key
+	// means "required", with no defaulting step to forget.
+	AllowMissingFingerprinting bool `toml:"allow_missing_fingerprinting"`
 	// ReachableWindowSec is the madnetwork availability freshness window: a friend
 	// counts as reachable (its exclusively-held tracks are shown in the browse)
 	// when last_seen is within this many seconds. Several × the 1-minute refresh

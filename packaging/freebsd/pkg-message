@@ -18,3 +18,10 @@ Madshare is installed but not enabled. Remaining setup:
 
 Madshare speaks plain HTTP; put it behind a TLS-terminating reverse proxy. The
 example nginx configurations are in %%DOCDIR%%.
+
+Optional media-analysis tools, looked up on PATH at startup:
+  pkg install chromaprint   # fpcalc  - acoustic fingerprint / same-audio identity
+  pkg install ffmpeg        # ffprobe - codec, bitrate, sample rate, duration
+Chromaprint stops being optional if you enable [federation]: a federated node
+re-fingerprints downloaded audio locally before trusting it, and refuses to
+start without fpcalc.

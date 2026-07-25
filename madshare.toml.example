@@ -99,6 +99,15 @@ max_upload_mb = 500          # per-request upload cap, in MiB
 # in the madnetwork browse) when seen within it — 0 = default 180s, values below
 # 120s are clamped up (anti-flap floor). Whether hiding applies at all is the
 # runtime madnetwork.hide_unavailable toggle on /admin/settings.
+#
+# fpcalc (Chromaprint) is REQUIRED once enabled = true, and the server refuses to
+# start without it: a federated node re-fingerprints downloaded audio locally
+# before it joins a recording, because a peer's claims about it are hints and
+# never facts. allow_missing_fingerprinting = true federates anyway — the node
+# then imports and re-publishes content it cannot verify, and downloads never
+# group with recordings it already holds. ffprobe is only recommended: without it
+# this node's catalog carries no quality facts, so friends cannot rank its
+# renditions, but nothing goes unverified.
 #[federation]
 #enabled             = false
 #name                = "my madshare"           # defaults to the host name
@@ -107,6 +116,7 @@ max_upload_mb = 500          # per-request upload cap, in MiB
 #listen              = ["tls://0.0.0.0:12345"] # tcp/tls/quic/ws/wss/unix
 #seed_rate_kib       = 0                        # 0 = unlimited outbound seeding rate
 #reachable_window_sec = 180                     # availability freshness window (min 120)
+#allow_missing_fingerprinting = false           # true = federate without fpcalc (unverified)
 
 # [sources] controls in-place "symlink" imports: an admin points at an external
 # directory and Madshare references each audio file by a symlink in the shared

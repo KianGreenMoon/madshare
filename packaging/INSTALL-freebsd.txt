@@ -53,5 +53,16 @@ First start
 The service reads %%RCDIR%%/madshare; madshare_user, madshare_chdir and
 madshare_config can all be overridden in /etc/rc.conf.d/madshare.
 
+Optional media-analysis tools
+-----------------------------
+Both are looked up on PATH at startup and neither is needed to serve a library:
+
+  pkg install chromaprint   # fpcalc  - acoustic fingerprint / same-audio identity
+  pkg install ffmpeg        # ffprobe - codec, bitrate, sample rate, duration
+
+Chromaprint stops being optional if you enable [federation]: a federated node
+re-fingerprints downloaded audio locally before trusting it, and refuses to
+start without fpcalc.
+
 Madshare speaks plain HTTP and expects a TLS-terminating reverse proxy in front
 of it — see contrib/nginx/. Everything else is in README.md.

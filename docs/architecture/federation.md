@@ -286,6 +286,13 @@ presents; it moves to F6 next to the gossip that gives it a counterparty (decide
   grouping is used for discovery and display only. On download the bytes are
   verified against the content hash chunk-by-chunk, and the fingerprint is
   recomputed locally (`fpcalc`) before anything merges into a local recording.
+  That local recomputation *is* the guarantee, so it is a hard requirement
+  rather than an enrichment: a node with `[federation].enabled` **refuses to
+  start** when `fpcalc` is not on `PATH` (override:
+  `[federation] allow_missing_fingerprinting`, which accepts importing and
+  re-publishing unverifiable content). `ffprobe` stays optional — without it the
+  published catalog carries no quality facts and friends cannot rank this node's
+  renditions, which is poorer output, not unverified input.
 - **Download to library — through the review bucket.** Right to listen = right
   to download. By default the **ladder-best rendition** is fetched
   (`RankRenditions` across local + remote). The download does **not**
