@@ -102,6 +102,10 @@ type Proxy struct {
 	fault    Fault
 	sessions map[*session]struct{}
 	script   chan struct{} // closed to cancel the running script, nil if none
+	// closing is set under mu before Close collects the live sessions, so a
+	// connection still being set up cannot register itself afterwards and be
+	// missed. See handle.
+	closing bool
 
 	stats struct {
 		accepted, refused, killed, active atomic.Int64
@@ -244,6 +248,7 @@ func (p *Proxy) Close() error {
 		close(p.closed)
 		p.ln.Close()
 		p.mu.Lock()
+		p.closing = true
 		if p.script != nil {
 			close(p.script)
 			p.script = nil
@@ -306,6 +311,15 @@ func (p *Proxy) handle(near net.Conn) {
 	s := &session{near: near, far: far}
 
 	p.mu.Lock()
+	if p.closing {
+		// Close already took its list of live sessions; registering now would
+		// leave this one unreachable, and pump blocks in a read that only its
+		// own socket closing can end — so Close would wait on it forever. The
+		// dial above is exactly the window this happens in.
+		p.mu.Unlock()
+		s.close()
+		return
+	}
 	p.sessions[s] = struct{}{}
 	p.mu.Unlock()
 	p.stats.accepted.Add(1)

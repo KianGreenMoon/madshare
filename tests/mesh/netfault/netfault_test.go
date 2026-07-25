@@ -297,6 +297,35 @@ func TestCloseIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestCloseRacesNewConnections is the stream-side twin of
+// TestDatagramCloseRacesNewFlows, and exists because the bug was found there
+// first: a connection accepted before Close but registered after it took its
+// list of live sessions is unreachable, and pump is parked in a read that only
+// its own socket closing can end — so Close waits on it forever. The dial in
+// handle is the window.
+func TestCloseRacesNewConnections(t *testing.T) {
+	echo := echoServer(t)
+	for i := range 100 {
+		p, err := New(echo, Fault{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := net.Dial("tcp", p.Addr())
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan struct{})
+		go func() { defer close(done); p.Close() }()
+		select {
+		case <-done:
+		case <-time.After(15 * time.Second):
+			t.Fatalf("Close hung on iteration %d — a session registered after Close "+
+				"took its list is never cut, so the WaitGroup never drains", i)
+		}
+		c.Close()
+	}
+}
+
 // ── Timing (gated) ───────────────────────────────────────────────────────────
 
 // TestLatencyIsPerDirection measures added delay on a ping-pong, one direction

@@ -534,8 +534,20 @@ no bytes to the `madshare` binary.
   baseline with `settleLastSeen`, never straight after `Set(partitioned)`.
 - **`-race` needs `-p 1`** (parallel suites make SQLite's `busy_timeout` flake)
   **and a bigger `-timeout` than the repo's usual 3300 s**: `./federation/...`
-  alone runs ~15 min under `-race` and the scenarios add ~22 min, and the combined
-  run has overshot 55 min. Use `-timeout 7200s`, or split it with `-run Chaos`.
+  measures **1496 s** all-in under `-race` (the whole package), of which
+  `-run TestChaos` is **1348 s** for all eleven scenarios; `./tests/mesh/...` adds
+  12 s. `-timeout 7200s` leaves room; use `-run Chaos` to split it. Note the older
+  "~15 min plus ~22 min" figure is stale — it predates the netstack-teardown fix
+  in the yggstack fork.
+- **`netfault`'s own `Close` hangs.** If you extend either relay, anything that
+  registers a goroutine parked in a blocking socket read must be serialized
+  against `Close` — the `closing` flag exists for exactly that. A goroutine in
+  `conn.Read` has one way out, its socket closing; it cannot select on the
+  `closed` channel, so a session or flow registered *after* `Close` took its list
+  is never torn down and `done.Wait()` never returns. Guarded by
+  `TestCloseRacesNewConnections` / `TestDatagramCloseRacesNewFlows`, which loop
+  the race 100× and report the hang instead of taking the package timeout with
+  them.
 - **A healed partition doesn't reconnect immediately.** yggdrasil applies its own
   link retry backoff — measured at **2–8 s** on a loopback underlay, the longer
   figure after a longer outage. Poll for reconvergence (`waitFor`); never assert

@@ -128,6 +128,10 @@ type UDPProxy struct {
 	fault  DatagramFault
 	flows  map[string]*flow
 	script chan struct{} // closed to cancel the running script, nil if none
+	// closing is set under mu before Close collects the live flows, so a flow
+	// still being opened cannot register itself afterwards and be missed. See
+	// flowFor.
+	closing bool
 
 	stats struct {
 		flows, active                              atomic.Int64
@@ -267,6 +271,7 @@ func (p *UDPProxy) Close() error {
 		close(p.closed)
 		p.conn.Close()
 		p.mu.Lock()
+		p.closing = true
 		if p.script != nil {
 			close(p.script)
 			p.script = nil
@@ -393,6 +398,16 @@ func (p *UDPProxy) flowFor(from *net.UDPAddr) *flow {
 		p.mu.Unlock()
 		far.Close()
 		return existing
+	}
+	if p.closing {
+		// Close already took its list of live flows; registering now would leave
+		// this one unreachable, and readFar blocks in a socket read that only
+		// far.Close can end — so Close would wait on it forever. The dial above
+		// is exactly the window this happens in, and -race widens it enough to
+		// hit reliably.
+		p.mu.Unlock()
+		far.Close()
+		return nil
 	}
 	p.flows[key] = f
 	p.mu.Unlock()

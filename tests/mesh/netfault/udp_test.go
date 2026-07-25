@@ -185,17 +185,49 @@ func TestDatagramTransparent(t *testing.T) {
 	}
 
 	all := settle(t, got, 150*time.Millisecond)
-	if len(all) != n {
-		t.Fatalf("delivered %d of %d datagrams through a zero fault", len(all), n)
-	}
-	for i, b := range all {
-		if string(b) != string(sent[i]) {
-			t.Fatalf("datagram %d differs (len %d, want %d) — the relay is not "+
-				"transparent", i, len(b), len(sent[i]))
+
+	// Every datagram is checked against the one carrying its sequence number,
+	// not against its position — see mostlyDelivered for why a count on this
+	// side of the wire cannot be exact. Content and order are still exact: those
+	// are the relay's job, and neither survives a bug quietly.
+	var last int64 = -1
+	for _, b := range all {
+		seq := binary.BigEndian.Uint32(b)
+		if int(seq) >= n {
+			t.Fatalf("a datagram arrived with sequence %d, past the %d sent", seq, n)
 		}
+		if string(b) != string(sent[seq]) {
+			t.Fatalf("datagram %d differs (len %d, want %d) — the relay is not "+
+				"transparent", seq, len(b), len(sent[seq]))
+		}
+		if int64(seq) <= last {
+			t.Fatalf("a zero fault reordered the stream: %d arrived after %d", seq, last)
+		}
+		last = int64(seq)
 	}
-	if s := p.Stats(); s.PacketsUp != n || s.Flows != 1 {
-		t.Errorf("stats packets=%d flows=%d, want %d and 1", s.PacketsUp, s.Flows, n)
+	mostlyDelivered(t, len(all), n, "a zero fault")
+	if s := p.Stats(); s.Flows != 1 {
+		t.Errorf("Stats.Flows = %d, want 1", s.Flows)
+	}
+}
+
+// mostlyDelivered is the delivery floor every sink-side population check uses.
+//
+// It is a floor rather than an equality because both hops here are loopback UDP,
+// and neither the kernel nor a busy machine promises to carry all of it: a run
+// competing with a -race build lost 26 of 400 datagrams and failed an exact
+// count that had nothing to do with the relay. Anything the *relay* did is
+// asserted exactly, off its own counters; what reaches the sink is asserted
+// loosely enough to survive the host and tightly enough that a knob dropping a
+// quarter of the traffic still fails.
+func mostlyDelivered(t *testing.T, got, want int, what string) {
+	t.Helper()
+	if floor := want * 9 / 10; got < floor {
+		t.Errorf("%s delivered %d of %d datagrams, below the %d floor", what, got, want, floor)
+	}
+	if got > want {
+		t.Errorf("%s delivered %d datagrams for %d expected — the relay invented traffic",
+			what, got, want)
 	}
 }
 
@@ -253,22 +285,35 @@ func TestDatagramDuplicate(t *testing.T) {
 	blast(t, p, n)
 
 	all := settle(t, got, 150*time.Millisecond)
-	if len(all) != 2*n {
-		t.Fatalf("delivered %d datagrams for %d sent at Duplicate=1, want %d",
-			len(all), n, 2*n)
+
+	// The relay's side is exact: at Duplicate=1 it copies everything it saw, and
+	// forwards twice as much as it took in.
+	s := p.Stats()
+	if s.Duplicated != s.PacketsUp/2 {
+		t.Errorf("Stats: duplicated=%d of packets=%d — at Duplicate=1 exactly half "+
+			"of what was forwarded should be copies", s.Duplicated, s.PacketsUp)
 	}
+	// The sink's side is not (see mostlyDelivered), so the claim is that copies
+	// really reached the wire, and that nothing arrived three times.
 	seen := map[uint32]int{}
 	for _, seq := range seqs(all) {
 		seen[seq]++
 	}
+	twice := 0
 	for i := range n {
-		if seen[uint32(i)] != 2 {
-			t.Fatalf("datagram %d arrived %d times, want 2", i, seen[uint32(i)])
+		switch seen[uint32(i)] {
+		case 2:
+			twice++
+		case 0, 1:
+		default:
+			t.Fatalf("datagram %d arrived %d times, want at most 2", i, seen[uint32(i)])
 		}
 	}
-	if s := p.Stats(); s.Duplicated != n {
-		t.Errorf("Stats.Duplicated = %d, want %d", s.Duplicated, n)
+	if floor := n * 9 / 10; twice < floor {
+		t.Errorf("only %d of %d datagrams arrived twice at Duplicate=1 (floor %d)",
+			twice, n, floor)
 	}
+	mostlyDelivered(t, len(all), 2*n, "Duplicate=1")
 }
 
 // TestDatagramReorder pins both halves: without the knob the relay preserves
@@ -288,8 +333,12 @@ func TestDatagramReorder(t *testing.T) {
 	p.Set(DatagramFault{Up: DatagramDir{Reorder: 0.2, ReorderDelay: 20 * time.Millisecond}})
 	blast(t, p, n)
 	all := settle(t, got, 150*time.Millisecond)
-	if len(all) != n {
-		t.Errorf("reorder lost datagrams: %d of %d arrived", len(all), n)
+	// Reorder holds datagrams back; it must not drop them. The floor is what
+	// distinguishes "delayed" from "discarded" without asserting a count the
+	// kernel does not guarantee.
+	mostlyDelivered(t, len(all), n, "Reorder=0.2")
+	if s := p.Stats(); s.Lost != 0 {
+		t.Errorf("Stats.Lost = %d with no loss configured — reorder is dropping", s.Lost)
 	}
 	if out := outOfOrder(seqs(all)); out == 0 {
 		t.Error("Reorder=0.2 delivered a perfectly ordered stream — the knob does nothing")
@@ -414,6 +463,43 @@ func TestDatagramCloseIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestDatagramCloseRacesNewFlows hammers the window between a datagram arriving
+// and its flow being registered. Close collects the live flows under the lock
+// and tears them down; a flow that registers itself *after* that collection is
+// unreachable, and its readFar goroutine is parked in a socket read that only
+// far.Close can end — so Close waits on it forever. The dial that opens a flow
+// is long enough for this to happen, and it did: the whole package hung under
+// -race until `closing` was checked at registration.
+//
+// One iteration reproduces it only sometimes, hence the loop; and Close runs on
+// its own goroutine so a regression reports the hang instead of taking the
+// package timeout down with it.
+func TestDatagramCloseRacesNewFlows(t *testing.T) {
+	echo := udpEcho(t)
+	for i := range 100 {
+		p, err := NewUDP(echo, DatagramFault{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := net.Dial("udp", p.Addr())
+		if err != nil {
+			t.Fatal(err)
+		}
+		// In flight, but almost certainly not yet demultiplexed into a flow.
+		c.Write([]byte("open a flow"))
+
+		done := make(chan struct{})
+		go func() { defer close(done); p.Close() }()
+		select {
+		case <-done:
+		case <-time.After(15 * time.Second):
+			t.Fatalf("Close hung on iteration %d — a flow opened after Close took "+
+				"its list is never torn down, so the WaitGroup never drains", i)
+		}
+		c.Close()
+	}
+}
+
 // ── Timing (gated) ───────────────────────────────────────────────────────────
 
 // TestDatagramLatencyIsPerDirection measures added delay one direction at a
@@ -481,9 +567,7 @@ func TestDatagramLatencyDoesNotThrottle(t *testing.T) {
 	all := settle(t, got, 150*time.Millisecond)
 	elapsed := time.Since(start)
 
-	if len(all) != n {
-		t.Errorf("delivered %d of %d datagrams under latency", len(all), n)
-	}
+	mostlyDelivered(t, len(all), n, "a latent path")
 	if budget := lat + 3*time.Second; elapsed > budget {
 		t.Errorf("%d datagrams across a %v path took %v (budget %v) — latency is "+
 			"serializing delivery instead of delaying it", n, lat, elapsed, budget)

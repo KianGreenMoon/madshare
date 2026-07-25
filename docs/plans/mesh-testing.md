@@ -371,8 +371,28 @@ Four decisions worth recording:
   queue overflowed more than a tenth as often as the knob fired, so a measurement
   polluted by the injector is caught rather than reported.
 
-One trap, found while writing the injector's tests: **the relay is an extra hop,
-and an extra hop drops.** A default-sized UDP socket buffer overruns under a burst
+**The datagram relay's own tests found a hang in T0's stream relay.** Under
+`-race` the whole `netfault` package wedged in `TestDatagramCloseIsIdempotent`:
+`Close` collects the live flows under the lock and tears them down, but a flow
+that registers itself *after* that collection is unreachable, and its `readFar`
+goroutine is parked in a socket read only `far.Close` can end — so `done.Wait()`
+never returns. The `net.DialUDP` that opens a flow is exactly the window, and
+`-race` widens it enough to hit almost every time. `Proxy` had the identical race
+between `Accept` and session registration (`net.Dial` is the window there), latent
+since T0 and never hit because the window is narrower. Both fixed the same way: a
+`closing` flag set under the same mutex Close collects in, checked at
+registration. Both carry a regression test that loops the race 100 times and
+reports a hang rather than taking the package timeout down with it —
+`TestDatagramCloseRacesNewFlows` fails on iteration 1 and
+`TestCloseRacesNewConnections` on iteration 3 with the fix removed.
+
+The transferable lesson: **a goroutine parked in a blocking socket read has
+exactly one way out, and it is that socket being closed** — so anything that
+registers such a goroutine must be serialized against the teardown that closes
+it. A `closed` channel is not enough on its own; the read does not select.
+
+One more trap, found while writing the injector's tests: **the relay is an extra
+hop, and an extra hop drops.** A default-sized UDP socket buffer overruns under a burst
 the two real endpoints would have absorbed, and those kernel drops are
 indistinguishable from injected loss in the counters. Two fixes, both needed:
 `UDPProxy` asks for 4 MiB buffers (best-effort — the kernel clamps to
@@ -382,7 +402,17 @@ knob. The rate is also computed over what the relay *saw*, not what was sent, so
 drop before the proxy cannot be charged to it.
 
 Measured: 15 % configured → 14.9 % observed, zero overflow; the three scenarios
-cost ~39 s on top of T2's ~150 s.
+cost ~39 s on top of T2's ~150 s (11 scenarios, 197 s serial). Under `-race`:
+`-run TestChaos` is 1348 s for all eleven, the whole `./federation/...` package
+1496 s, `./tests/mesh/...` 12 s. The old "~15 min plus ~22 min of scenarios"
+figure predates the netstack-teardown fix (5fb6343) and no longer holds.
+
+The `-race` run also confirms the availability window is honestly sized rather
+than merely large: worst `last_seen` age under 5 % sustained loss is 2.4 s
+against an 11.6 s window. An earlier draft derived that window from
+`chaosControl`, making it 21 s — but budgeting for a ping that runs the protocol
+timeout down is budgeting for the very pathology the scenario exists to catch, so
+it is derived from the refresh cadence instead.
 
 ## Phase T4 — meshlab (multi-node lab, real servers)
 
