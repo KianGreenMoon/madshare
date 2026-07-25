@@ -25,6 +25,20 @@ default** — its social graph is visible to its members.
   `0` = direct friends only, `1` = friends of friends, `2` = one hop further,
   `∞` = the whole reachable madnetwork. **Default: ∞** (transparent network);
   the knob exists so an admin can tighten as the network grows.
+- **Gossip** — information spread node-to-node rather than from a central place:
+  each node tells its friends, who tell theirs. Three distinct uses, deliberately
+  kept apart. **Friend-list gossip** (F6) — B tells A whom B is friends with, so
+  A can see the graph past its own friend list; the network map, branch snipping
+  and distrust marks all read it, and `Audience.Distance` (F7) is a hop count in
+  it. **Freshness-hint gossip** (F7) — a friend relays *its* friends' `last_seen`
+  as a second-hand claim, so availability survives past one hop without pinging
+  strangers (§Availability). **Catalog-delta gossip** (deferred) — pushing
+  library changes instead of pulling snapshots; an optimisation, unrelated to the
+  other two. Despite the name none of these is a push protocol here: they ride
+  the existing periodic pull (§Catalog), and the word describes how information
+  travels, not the transport. Because a friend list names third parties who never
+  agreed to be named, its payload is a privacy decision as much as a protocol one
+  (§Open questions).
 - **Full peer** — a node: participates in catalog exchange and the swarm.
 - **Thin client** — a browser user. Thin clients are *not* madnetwork
   participants; they are local users of exactly one home node, which acts as
