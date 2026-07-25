@@ -1,4 +1,4 @@
-//go:build tests
+//go:build tests && !nofederation
 
 package main
 
@@ -273,8 +273,13 @@ func (n *node) walkLibrary(visit func(duration *float64)) error {
 			return fmt.Errorf("album list on %s: %w", n.name, err)
 		}
 		for _, al := range albums {
+			// duration_seconds, not duration: /api/tracks names it that way
+			// (api/library_handlers.go). Reading the wrong field decodes to nil
+			// for every track, so waitAnalysis never saw a duration arrive and
+			// every seeded node burned its full two-minute timeout before moving
+			// on — silently, since a slow pipeline is not treated as a failure.
 			var tracks []struct {
-				Duration *float64 `json:"duration"`
+				Duration *float64 `json:"duration_seconds"`
 			}
 			if err := n.getList(fmt.Sprintf("/api/tracks?album_id=%d", al.ID), &tracks); err != nil {
 				return fmt.Errorf("track list on %s: %w", n.name, err)

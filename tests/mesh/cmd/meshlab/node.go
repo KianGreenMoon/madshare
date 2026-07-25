@@ -1,4 +1,4 @@
-//go:build tests
+//go:build tests && !nofederation
 
 package main
 
@@ -300,6 +300,43 @@ func (n *node) postJSON(path string, in, out any) error {
 
 func (n *node) getJSON(path string, out any) error {
 	return n.do(http.MethodGet, path, nil, "", out)
+}
+
+// patchJSON is the access endpoints' verb (recordings carry their license, guest
+// flag and share depth behind PATCH, since a request names only the fields it
+// changes).
+func (n *node) patchJSON(path string, in, out any) error {
+	b, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return n.do(http.MethodPatch, path, bytes.NewReader(b), "application/json", out)
+}
+
+// rawGet fetches a path and returns the status and body without insisting on
+// JSON or on success — the check pass asserts against refusals, where `do`'s
+// error-on-non-2xx would throw away the status it is testing for. The timeout is
+// per call because a madnetwork stream that has to give up on every holder takes
+// far longer than an admin API round-trip.
+func (n *node) rawGet(path string, timeout time.Duration) (int, []byte, error) {
+	req, err := http.NewRequest(http.MethodGet, n.url(path), nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	n.mu.Lock()
+	tok := n.token
+	n.mu.Unlock()
+	if tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+	client := &http.Client{Timeout: timeout, Jar: n.client.Jar}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256<<20))
+	return resp.StatusCode, body, nil
 }
 
 // upload posts one file to /files/upload as multipart, the same request the

@@ -1,4 +1,4 @@
-//go:build tests
+//go:build tests && !nofederation
 
 package main
 

@@ -44,6 +44,9 @@ tests/mesh/
     udp_test.go        worse than none
   cmd/netfaultd/       standalone relays + a JSON control API   [tags tests]
   cmd/meshlab/         a lab of real madshare processes         [tags tests]
+    scope.go           the F5 sharing-scope knobs
+    probe.go           an outsider madnetwork node — nobody's friend
+    check.go           the scope rules, asserted against the lab
   README.md            this file
 federation/
   chaos_test.go        the scenarios, over a tcp:// underlay
@@ -134,6 +137,12 @@ tests/mesh/bin/meshlab partition c               # cut every link touching c
 tests/mesh/bin/meshlab heal c
 tests/mesh/bin/meshlab kill c ; tests/mesh/bin/meshlab restart c
 tests/mesh/bin/meshlab flap b -down 10s -up 20s  # `heal b` stops it
+
+# Sharing scope (F5), and the assertion pass over it:
+tests/mesh/bin/meshlab scope                     # every node's scope
+tests/mesh/bin/meshlab scope a tracks private    # take a's tracks off the network
+tests/mesh/bin/meshlab scope a tracks guest on   # …or open them to everyone
+tests/mesh/bin/meshlab check                     # 12 cases, ~3 s, non-zero on failure
 ```
 
 Or relays without a lab, for faulting something you started yourself:
@@ -258,6 +267,11 @@ Both for the same structural reason — **netfault faults the underlay, and some
 behavior lives above it.** Neither is a gap; knowing *why* saves the next person
 from trying.
 
+*(A third, for a different reason: **sharing scope** is an authorization rule, not
+a timing one, so faulting the link would only make the answer arrive later.
+`federation/scope_test.go` asserts it over an in-process mesh, and `meshlab check`
+asserts it against real servers with a real outsider — see below.)*
+
 - **"Friend down past the window → its tracks disappear from the browse."** The
   hiding is a SQL predicate (`last_seen >= now-window`,
   `database.MadnetworkView.Cutoff`), unit-tested in `database/madnetwork_test.go`
@@ -288,23 +302,44 @@ This is the load-bearing idea, and getting it wrong makes the lab lie.
 > **`-topology` chooses the underlay peering graph. `-friends` chooses who is
 > friends with whom. They are separate.**
 
-Federation is **friends-only and direct** — catalog, manifest, blob and holdings
-each 403 a peer that is not a friend (`federation/catalog.go:70`,
-`transfer.go:42`, `swarm.go:305`/`:417`). Nothing is relayed at the madshare
+Federation is **friends-only and direct** — nothing is relayed at the madshare
 layer, and nothing is discovered transitively. A lab that friended everything it
 started would test one point in the space and hide the two that matter:
 
 | Shape | How | Must show |
 |---|---|---|
 | **friends across hops** | `-topology chain -friends all` — `a` and `c` are friends but two underlay hops apart | works exactly as if adjacent; yggdrasil routes it, and degrading `c-b` degrades a friendship neither end has a link to |
-| **adjacency is not access** | `-topology chain -friends adjacent` — `a` and `c` can route to each other but are strangers | each sees nothing of the other's library, and 403 on `/madnetwork/v0/*` |
+| **adjacency is not access** | `-topology chain -friends adjacent` — `a` and `c` can route to each other but are strangers | each sees nothing of the other's library: `403` on catalog and holdings, `404` on blobs and manifests — *except* guest-playable content, which is open to everyone (below) |
 
-It is also what keeps the lab usable as federation grows. F5 (depth & tokens)
-adds non-friend paths; when it lands, those scenarios are a different `-friends`
-value over the same topology, not a meshlab rewrite.
+That prediction held: F5 landed as a different friendship graph plus new knobs
+over the same topology, not a meshlab rewrite.
 
 `-friends` takes `all` (default), `adjacent`, `none`, or an explicit list
 (`a-c,b-c`).
+
+### What a stranger gets since F5
+
+F5 (`docs/architecture/federation.md` §Sharing scope) made "not a friend" stop
+meaning one thing, so it is worth being precise about which refusal is which:
+
+| Route | Friend | Stranger |
+|---|---|---|
+| `GET /madnetwork/v0/ping` | 200 | **200** — `meshAuth` refuses only *blocked* peers |
+| `GET /madnetwork/v0/catalog` | 200 | **403** — the library listing is friends-only |
+| `GET /madnetwork/v0/holdings` | 200 | **403** — likewise |
+| `GET /madnetwork/v0/blob/{hash}` | 200 if in scope | **404** normally, **200 for guest-playable** |
+| `GET /madnetwork/v0/manifest/{hash}` | follows the blob | follows the blob |
+
+The blob answers are **404, not 403**: a stranger is never told which hashes
+exist. Guest-playable content is the deliberate exception — an open swarm, no
+friendship and no token — and it is the reason `check` needs a real outsider
+rather than a `-friends none` lab node. A madshare node only ever *fetches* from
+friends (providers come from the cached catalogs and holdings, both friends-only),
+so no lab node can be made to ask as a stranger. `probe.go` starts a genuine
+madnetwork node with its own key and no friends, which can.
+
+Depth beats the guest flag: a recording at `private` serves nobody, guest-playable
+or not.
 
 ### Topologies
 
@@ -351,6 +386,11 @@ Three FLACs totalling ~80 MB took about six minutes on the maintainer's machine.
 | `meshlab kill NODE` / `restart NODE` | stop / bring back. **Identity survives** — `federation.key` stays in the data dir, and a node that lost it would be a stranger to every friend it had |
 | `meshlab flap NODE -down 10s -up 20s` | partition/heal on a period until `heal` |
 | `meshlab seed -audio DIR` | see above |
+| `meshlab scope` | every node's sharing scope: its default depth, and how many recordings are private or guest-playable |
+| `meshlab scope NODE default DEPTH` | the node-wide default. `DEPTH` is `private`, `friends`, `network`, or a hop count |
+| `meshlab scope NODE tracks DEPTH [-limit N]` | pin the depth of its recordings (`inherit` clears the override). `-limit 1` touches only the oldest, which is the shape most assertions want |
+| `meshlab scope NODE tracks guest on\|off [-limit N]` | flag recordings guest-playable |
+| `meshlab check` | assert the scope rules; exits non-zero on a failure |
 
 **`madnetwork` is the number to watch.** It is what `/madnetwork` would show that
 node — its own published set plus every friend's, after the availability filter,
@@ -389,6 +429,81 @@ To see the fail-open half, the local inbound path has to die rather than a
 peering — a cut link deliberately cannot cause it (see §Two things this suite
 deliberately does not test). `meshlab status` shows `INBOUND DEAD (browse fails
 open)` if it ever does.
+
+### `meshlab check` — the scope rules, asserted
+
+Everything above is a knob for a person to turn. `check` is the one command that
+*answers*, and it exists because F5's central claim is a **negative** one: what
+an audience is not shown, it also cannot fetch. Negatives are what a browser
+walkthrough is worst at — nothing appears, which looks exactly like a feature
+that silently does nothing.
+
+```bash
+tests/mesh/bin/meshlab up -topology triangle -seed ~/music -per-node 1
+tests/mesh/bin/meshlab check          # from another shell; non-zero on failure
+```
+
+```
+PASS  outsider reaches the mesh                      ping = 200, want 200
+PASS  outsider refused catalog                       /madnetwork/v0/catalog = 403, want 403 (friends only)
+PASS  outsider refused holdings                      /madnetwork/v0/holdings = 403, want 403 (friends only)
+PASS  normal blob is invisible to an outsider        blob = 404
+PASS  normal blob is invisible to an outsider (manifest agrees) manifest = 404, want 404 (same as the blob)
+PASS  guest-playable blob serves an outsider         blob = 200, 654618 bytes, sha256 47c9d7b1c13a… (want 47c9d7b1c13a…)
+PASS  guest-playable blob serves an outsider (manifest agrees) manifest = 200, want 200 (same as the blob)
+PASS  private beats guest-playable                   blob = 404
+PASS  private beats guest-playable (manifest agrees) manifest = 404, want 404 (same as the blob)
+PASS  private track leaves the node's own /madnetwork madnetwork on a: 2 while private, 3 while shared (want +1)
+PASS  friend is refused a now-private track          b streaming a's private track = 502, want any failure (its catalog is stale but the bytes are gated live)
+PASS  friend can stream a shared track               b received 654618 bytes from a, sha256 47c9d7b1c13a… (want 47c9d7b1c13a…)
+
+12 passed, 0 failed, 0 skipped in 3.157s
+```
+
+It picks the oldest published track on the first seeded node, walks it through
+three scopes, and asks as an outsider each time. Two of the cases are ones an
+in-process test cannot make:
+
+- **the guest-open swarm serves bytes**, verified against the content hash — not
+  merely a 200;
+- **the byte gate is live**: a friend whose cached catalog still advertises a
+  now-private track is refused anyway. Catalog staleness is the *normal* state of
+  a federated node (15-minute sync), which makes this the realistic case rather
+  than an exotic one.
+
+The subject's original scope is restored afterwards, including on a failure — a
+check that left a track private would quietly break whatever you did next.
+
+The outsider is started on the first `check` and kept for the lab's life, so the
+first run pays a few seconds of mesh convergence and later ones do not: measured
+**3.1 s cold, then 24–68 ms**. Nothing here waits on a window or a sync, by design
+— the byte endpoints re-read the scope predicate per request, and the one case
+that depends on catalog staleness *wants* the stale copy rather than a fresh one.
+
+It is **re-runnable**, which took one deliberate step: the success case leaves the
+blob in the friend's download cache, and on the next run `EnsureBlob` would answer
+from there without ever asking the holder — so the refusal case would read `200`,
+a true answer to a question it had stopped asking. `check` therefore clears that
+one hash from the friend's cache first. (The lab owns those directories; letting
+an assertion quietly depend on a fresh lab does not.)
+
+Verify it can go red before trusting it green — turning `seed_enabled` off on the
+holder fails exactly the three cases that need bytes from it, and nothing else.
+
+Watching it by hand tells the same story, and shows the asymmetry the check
+asserts:
+
+```
+$ meshlab scope a tracks private
+a: 1 recording(s) -> depth private
+  track-a
+$ meshlab status
+  a  … library 1   madnetwork 2      # a's own view drops immediately
+  b  … library 1   madnetwork 3      # b's cached catalog still lists it …
+```
+
+`b` keeps showing the track until its next catalog sync — and cannot fetch a byte
+of it in the meantime. Visibility is cached; authorization is not.
 
 ## Reading a failure
 
@@ -724,6 +839,20 @@ it minutes-slow.
 
 ## Troubleshooting
 
+- **`meshlab up -seed` sits for two minutes per node.** `waitAnalysis` waits for
+  `ffprobe` to fill in track durations, and gives up quietly after two minutes
+  because a missing `ffprobe` is not a seeding failure. Some files never satisfy
+  it however long you wait: a headerless or streamed **FLAC reports
+  `duration=N/A`**, so the column stays empty legitimately. Check before blaming
+  the lab —
+
+  ```bash
+  ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 track.flac
+  ```
+
+  — and seed from files that report a duration if you want a fast `up`. (Until
+  2026-07-25 this timeout fired on *every* run: the poll read a `duration` field
+  where `/api/tracks` returns `duration_seconds`, so no duration ever arrived.)
 - **A scenario is flaky under load.** Almost always a budget written in
   wall-clock instead of `testTimeoutScale` units — the mesh is stochastic, and
   `-race` runs the gVisor netstack several times slower (`racescale_on_test.go`

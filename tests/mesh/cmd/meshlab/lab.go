@@ -1,4 +1,4 @@
-//go:build tests
+//go:build tests && !nofederation
 
 package main
 
@@ -22,11 +22,13 @@ package main
 //   - friends across hops — friended but not underlay-adjacent. Must work
 //     exactly as if adjacent; yggdrasil does the routing, we do not.
 //   - adjacency is not access — underlay-peered but not friends. Must see
-//     nothing, and 403 on every /madnetwork/v0/ route.
+//     nothing: 403 on catalog and holdings, 404 on blobs and manifests.
 //
-// It is also what keeps this usable as federation grows: F5 adds non-friend
-// paths, and when it lands those scenarios are a different friendship graph over
-// the same topology rather than a meshlab rewrite.
+// It is also what kept this usable as federation grew: F5 arrived as a different
+// friendship graph plus the scope knobs (scope.go) over the same topology, not a
+// meshlab rewrite. It did add one actor this file cannot express — an outsider
+// that fetches rather than serves — because a madshare node only ever fetches
+// from friends. That is probe.go.
 
 import (
 	"encoding/json"
@@ -146,6 +148,9 @@ type lab struct {
 
 	mu    sync.Mutex
 	flaps map[string]chan struct{} // node -> cancel for a running flap
+	// probeNode is the outsider used by `check` — nobody's friend, started on
+	// first use and kept for the lab's life (probe.go).
+	probeNode *probe
 }
 
 // build lays out the lab: reserve ports, open a faulted link per peering, and
@@ -359,7 +364,10 @@ func (l *lab) stop() {
 		close(cancel)
 		delete(l.flaps, name)
 	}
+	p := l.probeNode
+	l.probeNode = nil
 	l.mu.Unlock()
+	p.stop()
 	for _, name := range l.names {
 		l.nodes[name].stop()
 	}
@@ -459,9 +467,10 @@ type nodeStatus struct {
 	Key     string `json:"key,omitempty"`
 	Tracks  int    `json:"tracks"`
 	// Madnetwork is what this node sees on /madnetwork — its own published set
-	// plus every friend's, after the freshness filter. It is the number a lab
-	// exists to watch: it is what the browse would show, so it moves when a
-	// friend goes stale and moves back when it returns.
+	// plus every friend's, after the freshness filter and the sharing scope. It
+	// is the number a lab exists to watch: it is what the browse would show, so
+	// it moves when a friend goes stale, when one returns, and when this node
+	// takes a recording off the network.
 	Madnetwork     int         `json:"madnetwork"`
 	InboundHealthy bool        `json:"inbound_healthy"`
 	Peers          []peerState `json:"peers,omitempty"`
@@ -527,6 +536,7 @@ func (l *lab) status() map[string]any {
 		"root": l.root, "nodes": nodes, "links": links,
 		"friends": friends, "flapping": flapping,
 		"reachable_window_sec": reachableWindowSec,
+		"scope":                l.scopeAll(),
 	}
 }
 
@@ -636,6 +646,47 @@ func (l *lab) routes() http.Handler {
 			json.Unmarshal(raw, &body)
 		}
 		report, err := l.seed(body.Dir, body.PerNode)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "%v", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, report)
+	})
+
+	// Sharing scope (F5): set a node's default depth, or the depth / guest flag
+	// of its recordings.
+	mux.HandleFunc("/scope", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErr(w, http.StatusMethodNotAllowed, "POST")
+			return
+		}
+		var req scopeRequest
+		raw, err := readBody(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "%v", err)
+			return
+		}
+		if err := json.Unmarshal(raw, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid request: %v", err)
+			return
+		}
+		report, err := l.applyScope(req)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "%v", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, report)
+	})
+
+	// The scope assertion pass. Runs here rather than in the client because the
+	// outsider probe is a mesh node the lab owns, not something a CLI invocation
+	// can spin up per command.
+	mux.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErr(w, http.StatusMethodNotAllowed, "POST")
+			return
+		}
+		report, err := l.check()
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, "%v", err)
 			return

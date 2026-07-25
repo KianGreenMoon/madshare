@@ -1,4 +1,4 @@
-//go:build tests
+//go:build tests && !nofederation
 
 // Command meshlab runs a lab of real madshare processes on one machine, peered
 // over faulted links, so availability, fail-open and Materialize can be watched
@@ -69,6 +69,10 @@ func main() {
 		cmdLink(os.Args[2:])
 	case "seed":
 		cmdSeed(os.Args[2:])
+	case "scope":
+		cmdScope(os.Args[2:])
+	case "check":
+		cmdCheck(os.Args[2:])
 	case "kill", "restart", "partition", "heal":
 		cmdNodeAction(cmd, os.Args[2:])
 	case "flap":
@@ -93,6 +97,9 @@ func usage() {
   meshlab link NAME clear              back to a perfect link
   meshlab kill|restart|partition|heal NODE
   meshlab flap NODE [-down 10s] [-up 20s]
+  meshlab scope NODE default DEPTH     node-wide sharing scope (F5)
+  meshlab scope NODE tracks DEPTH|guest on|off [-limit N]
+  meshlab check                        assert the sharing-scope rules
 
 'up' runs in the foreground and holds the lab; every other command talks to it
 over the control API (-control, default %s).
@@ -107,6 +114,12 @@ the 15-minute sync interval, and that timestamp is stored, so friending an empty
 node means waiting 15 minutes to see anything. 'up -seed DIR' seeds before
 friending, and the nudge that fires on a new friendship pulls a full catalog at
 once. 'meshlab seed' afterwards works, it is just slow to show up.
+
+SHARING SCOPE (F5). 'scope' sets how far content travels — DEPTH is one of
+private, friends, network, inherit, or a hop count. 'check' then asserts the
+rules from an OUTSIDER's position: it starts a real madnetwork node that is
+nobody's friend and asks each server directly, which is the only way to see the
+guest-open swarm (a stranger may fetch guest-playable bytes and nothing else).
 
 SAFETY: known hardcoded admin credentials, loopback-only, disposable lab root.
 Never on a shared host.
@@ -279,11 +292,12 @@ func cmdStatus(args []string) {
 
 func printStatus(raw []byte) {
 	var st struct {
-		Root               string       `json:"root"`
-		ReachableWindowSec int          `json:"reachable_window_sec"`
-		Friends            []string     `json:"friends"`
-		Flapping           []string     `json:"flapping"`
-		Nodes              []nodeStatus `json:"nodes"`
+		Root               string                  `json:"root"`
+		ReachableWindowSec int                     `json:"reachable_window_sec"`
+		Friends            []string                `json:"friends"`
+		Flapping           []string                `json:"flapping"`
+		Scope              map[string]scopeSummary `json:"scope"`
+		Nodes              []nodeStatus            `json:"nodes"`
 		Links              []struct {
 			Name      string          `json:"name"`
 			Transport string          `json:"transport"`
@@ -328,6 +342,15 @@ func printStatus(raw []byte) {
 	fmt.Println("\nLINKS")
 	for _, l := range st.Links {
 		fmt.Printf("  %-8s %-5s %s\n", l.Name, l.Transport, summarizeRaw(l.Fault))
+	}
+	if len(st.Scope) > 0 {
+		fmt.Println("\nSCOPE")
+		for _, n := range st.Nodes {
+			if s, ok := st.Scope[n.Name]; ok {
+				fmt.Printf("  %-4s default %-10s  %d private  %d guest-playable\n",
+					n.Name, s.Default, s.Private, s.Guest)
+			}
+		}
 	}
 }
 
@@ -528,6 +551,108 @@ func cmdSeed(args []string) {
 			"15-minute sync interval, so these tracks may take that long to appear on\n" +
 			"the other nodes' /madnetwork. `meshlab up -seed DIR` avoids the wait by " +
 			"seeding before friending.")
+	}
+}
+
+// cmdScope drives the F5 knobs: `meshlab scope a default private`,
+// `meshlab scope a tracks guest on -limit 1`.
+func cmdScope(args []string) {
+	fs := flag.NewFlagSet("scope", flag.ExitOnError)
+	control := fs.String("control", defaultControl, "control API address")
+	limit := fs.Int("limit", 0, "with `tracks`: touch only the first N recordings (0 = all)")
+	words := knobsIn(args)
+	fs.Parse(flagsIn(args))
+
+	if len(words) == 0 {
+		raw, err := call(*control, http.MethodGet, "/status", nil)
+		if err != nil {
+			fatalf("%v", err)
+		}
+		printScope(raw)
+		return
+	}
+	if len(words) < 3 {
+		fatalf("scope NODE default DEPTH  |  scope NODE tracks DEPTH  |  scope NODE tracks guest on|off")
+	}
+	req := scopeRequest{Node: words[0], Target: words[1], Limit: *limit}
+	switch {
+	case words[2] == "guest" && len(words) >= 4:
+		req.Guest = words[3]
+	case words[2] == "guest":
+		fatalf("guest needs on or off")
+	default:
+		req.Depth = words[2]
+	}
+	body, _ := json.Marshal(req)
+	raw, err := call(*control, http.MethodPost, "/scope", body)
+	if err != nil {
+		fatalf("%v", err)
+	}
+	var rep scopeReport
+	json.Unmarshal(raw, &rep)
+	if rep.Affected > 0 {
+		fmt.Printf("%s: %d recording(s) -> %s\n", rep.Node, rep.Affected, rep.Applied)
+		for _, t := range rep.Titles {
+			fmt.Printf("  %s\n", t)
+		}
+		return
+	}
+	fmt.Printf("%s: %s\n", rep.Node, rep.Applied)
+}
+
+func printScope(raw []byte) {
+	var st struct {
+		Scope map[string]scopeSummary `json:"scope"`
+		Nodes []nodeStatus            `json:"nodes"`
+	}
+	if err := json.Unmarshal(raw, &st); err != nil {
+		fatalf("decoding status: %v", err)
+	}
+	fmt.Println("SHARING SCOPE")
+	for _, n := range st.Nodes {
+		s, ok := st.Scope[n.Name]
+		if !ok {
+			fmt.Printf("  %-4s (down)\n", n.Name)
+			continue
+		}
+		fmt.Printf("  %-4s default %-10s  %d private  %d guest-playable  (%d recording(s) override the default)\n",
+			n.Name, s.Default, s.Private, s.Guest, s.Pinned)
+	}
+}
+
+// cmdCheck runs the scope assertion pass and exits non-zero on a failure, so it
+// is usable from a script as well as by eye.
+func cmdCheck(args []string) {
+	fs := flag.NewFlagSet("check", flag.ExitOnError)
+	control := fs.String("control", defaultControl, "control API address")
+	asJSON := fs.Bool("json", false, "print the raw JSON")
+	fs.Parse(args)
+
+	raw, err := call(*control, http.MethodPost, "/check", nil)
+	if err != nil {
+		fatalf("%v", err)
+	}
+	if *asJSON {
+		os.Stdout.Write(raw)
+		return
+	}
+	var rep checkReport
+	if err := json.Unmarshal(raw, &rep); err != nil {
+		fatalf("decoding report: %v", err)
+	}
+	for _, c := range rep.Cases {
+		mark := "PASS"
+		switch {
+		case c.Skipped:
+			mark = "SKIP"
+		case !c.OK:
+			mark = "FAIL"
+		}
+		fmt.Printf("%s  %-46s %s\n", mark, c.Name, c.Detail)
+	}
+	fmt.Printf("\n%d passed, %d failed, %d skipped in %s\n", rep.Passed, rep.Failed, rep.Skipped, rep.Elapsed)
+	if rep.Failed > 0 {
+		os.Exit(1)
 	}
 }
 
