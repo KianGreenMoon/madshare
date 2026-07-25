@@ -244,6 +244,33 @@ clamped up to a 120s anti-flap floor with a warning; `config.Default/MinReachabl
   live); restart → back after a reload; own/cached always present; kill the local
   inbound path → banner + full catalog stays (fail open), not a blank page.
 
+  **CLOSED (2026-07-25)** by the mesh test toolset (`tests/mesh/README.md`),
+  which made a hostile mesh something you start rather than wait for. Both halves
+  are covered, by the arm suited to each:
+
+  - **(b) availability doesn't flap** — the chaos suite proves it under faults a
+    real network only supplies occasionally: `TestChaosFlappingLinkStaysFresh` (a
+    link dropping every few seconds never pushes a friend past the window) and
+    `TestChaosSustainedLossStaysReachable` (5 % packet loss on a `quic://`
+    underlay; worst `last_seen` age 1.0 s normally, 2.4 s under `-race`, against
+    an 11.6 s window). `TestChaosPartitionThenHeal` covers the input to the
+    hiding predicate, and asserts the load-bearing inverse: a *remote* outage
+    must never read as a *local* fault, or every partition would fail open.
+  - **(a) transfers no longer stall, and the user-visible half** — meshlab, on
+    real servers. Measured on a 3-node triangle with one track each: partition a
+    friend → at 120 s (`reachable_window_sec`, the lab runs at madshare's floor)
+    the other two go `madnetwork 3 → 2`, losing only the track held *exclusively*
+    by the unreachable node and keeping their own and the reachable friend's;
+    heal → back to 3 within ~90 s with no restart and no admin action. The
+    walkthrough is in `tests/mesh/README.md` §The availability walkthrough.
+
+  One item is *deliberately* not reachable by cutting a link, and that is the
+  design working: `InboundReaderAlive` watches the goroutine reading the
+  yggdrasil core into the netstack, which sits **above** the underlay, so a cut
+  peering leaves it blocked but alive. The dead-reader path stays unit-tested
+  with an injected read error; `meshlab status` surfaces the flag if it ever
+  trips.
+
 ## Dependencies & sequencing
 
 ```

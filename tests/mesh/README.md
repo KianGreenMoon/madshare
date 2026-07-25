@@ -10,12 +10,27 @@ The question this suite answers is *"does the swarm still behave when the networ
 misbehaves"*, and — because a transfer that merely finishes proves very little —
 *"did it behave for the reason we think it does"*.
 
-> ⚠️ **`netfault` is a relay**, in both its forms. It listens on one socket and
-> forwards to another. It binds loopback and refuses a non-loopback bind *or*
-> target unless you pass `Options{AllowRemote: true}`, which turns it into an open
-> relay reachable from the network and pointing at whatever the host can reach.
-> Being connectionless makes the datagram half no safer. Do not set that flag to
-> work around a problem. The chaos tests never set it.
+> ⚠️ **Everything here is loopback-only, and two pieces of it are dangerous off
+> loopback.**
+>
+> - **`netfault` is a relay**, in both its forms: it listens on one socket and
+>   forwards to another. It refuses a non-loopback bind *or* target unless you
+>   pass `Options{AllowRemote: true}`, which turns it into an open relay reachable
+>   from the network and pointing at whatever the host can reach. Being
+>   connectionless makes the datagram half no safer. The chaos tests never set it.
+> - **`netfaultd` is that, plus a control API that can retarget it** — the shape
+>   of program that must never face a network. Relays, targets and the control
+>   listener are all loopback-only unless `-allow-remote` is given, which logs a
+>   warning naming the risk. It has no config file, no daemonization and no init
+>   script on purpose: nothing about it should look installable.
+> - **`meshlab` provisions madshare servers with known, hardcoded admin
+>   credentials** (`meshlab-admin-pw`, in `node.go`, deliberately public — a lab
+>   node is disposable and a secret nobody can type only makes it harder to poke
+>   at by hand). Every node and its control API bind loopback. Never run it on a
+>   shared host, and never point `-root` at a directory you care about: the nodes
+>   will migrate and write to whatever is there.
+>
+> Do not set any of those escape hatches to work around a problem.
 
 ## What's here
 
@@ -24,8 +39,11 @@ tests/mesh/
   netfault/
     netfault.go        the fault model + TCP relay (a library; stdlib only)
     udp.go             the datagram relay — loss, reorder, duplication
+    faultjson.go       the wire format both control APIs speak
     netfault_test.go   the injector's own tests — a fault proxy that lies is
     udp_test.go        worse than none
+  cmd/netfaultd/       standalone relays + a JSON control API   [tags tests]
+  cmd/meshlab/         a lab of real madshare processes         [tags tests]
   README.md            this file
 federation/
   chaos_test.go        the scenarios, over a tcp:// underlay
@@ -34,27 +52,45 @@ federation/
   seams_test.go        the injectable intervals/timeouts + TransferStats
 ```
 
+Two arms, and they answer different questions. **The chaos suite** asserts what
+the swarm does — in Go, in milliseconds, with `TransferStats` to prove *why* it
+passed. **meshlab** shows what a person sees: real processes, real migrations,
+the real analysis pipeline, the real browse endpoints, in a browser. Neither
+replaces the other, and a claim about the UI can only be made by the second.
+
 The scenarios live in `federation/`, not here, because they are internal tests
 (`package federation`) that reach into `chunkPlan`, `chunkLayout` and friends.
 That is also a hard constraint, not just convenience: `database` imports
 `federation`, so a test inside this package **cannot** import the browse layer
 without an import cycle. See §The scenarios for what that costs.
 
-Not built yet: `cmd/netfaultd` (standalone relay + control API) and `cmd/meshlab`
-(a lab of real madshare processes). `docs/plans/mesh-testing.md` has the phase
-plan.
-
 ## Prerequisites
 
-Go, and nothing else. On the maintainer's machine the toolchain is
+For the **chaos suite**: Go, and nothing else — no audio fixtures, no database,
+no running server. The scenarios generate their own blobs and run the mesh
+in-process. On the maintainer's machine the toolchain is
 `~/.guix-home/profile/bin/go`, which is **not** on the default `PATH`:
 
 ```bash
 export PATH="$HOME/.guix-home/profile/bin:$PATH"
 ```
 
-No audio fixtures, no database, no running server — the scenarios generate their
-own blobs and run the mesh in-process.
+For **meshlab**, additionally:
+
+- **`ffprobe` and `fpcalc` on `PATH`.** Not required, but without them the
+  analysis pipeline degrades: no duration/bitrate/codec, no acoustic
+  fingerprint, so the quality ladder falls back to format-and-size and same-audio
+  grouping does not happen. A lab meant to show rendition ranking needs both.
+- **`TEST_AUDIO_DIR`** pointing at real audio. meshlab *discovers* files, it
+  does not generate them — the same discover-don't-seed rule as `tests/k6`, and
+  for the same reason: a synthesized blob produces a catalog that browses but
+  ranks nothing. Each node gets a **distinct slice**, because the question a lab
+  answers is "can this node see what that one has", and shared libraries look
+  correct whether federation works or not.
+
+```bash
+export TEST_AUDIO_DIR=~/music
+```
 
 ## Quick start
 
@@ -79,6 +115,34 @@ go test -run 'Intervals|TransferStats' ./federation/...
 
 # Everything, under the race detector. Slow — see Troubleshooting for the timeout.
 MADSHARE_CHAOS=1 go test -race -p 1 -timeout 7200s -count=1 ./federation/... ./tests/mesh/...
+```
+
+And the lab, which needs its binaries built first (`make mesh-tools`):
+
+```bash
+make mesh-tools                                  # -> tests/mesh/bin/
+
+# A 3-node chain, all friended. Foreground; Ctrl-C tears it down. ~10 s to up.
+tests/mesh/bin/meshlab up -topology chain -nodes 3
+
+# From another shell:
+tests/mesh/bin/meshlab status
+tests/mesh/bin/meshlab seed -audio ~/music       # distinct library per node
+tests/mesh/bin/meshlab link b-a latency 200ms bandwidth 65536
+tests/mesh/bin/meshlab link b-a clear
+tests/mesh/bin/meshlab partition c               # cut every link touching c
+tests/mesh/bin/meshlab heal c
+tests/mesh/bin/meshlab kill c ; tests/mesh/bin/meshlab restart c
+tests/mesh/bin/meshlab flap b -down 10s -up 20s  # `heal b` stops it
+```
+
+Or relays without a lab, for faulting something you started yourself:
+
+```bash
+tests/mesh/bin/netfaultd -link a-b=127.0.0.1:9001 -link b-c=quic://127.0.0.1:9002
+curl -s localhost:7777/links
+curl -s -X PUT localhost:7777/links/a-b -d '{"down":{"latency":"200ms"}}'
+curl -s -X PUT localhost:7777/links/b-c -d '{"up":{"loss":0.05},"down":{"loss":0.05}}'
 ```
 
 **Without `MADSHARE_CHAOS` every scenario skips**, so a plain `go test ./...`
@@ -209,6 +273,122 @@ from trying.
   would stop hiding anything. The dead-reader path itself is unit-tested with an
   injected read error (`federation/availability_test.go`, and `runInboundReader`
   in the yggstack fork).
+
+## meshlab — a lab of real servers
+
+`tests/mesh/cmd/meshlab` starts N real madshare processes on one machine, each
+with its own data dir, database, `federation.key` and ports, peered through
+faulted links. `up` runs in the foreground and holds the lab; every other command
+is an HTTP client to its control API.
+
+### The two graphs
+
+This is the load-bearing idea, and getting it wrong makes the lab lie.
+
+> **`-topology` chooses the underlay peering graph. `-friends` chooses who is
+> friends with whom. They are separate.**
+
+Federation is **friends-only and direct** — catalog, manifest, blob and holdings
+each 403 a peer that is not a friend (`federation/catalog.go:70`,
+`transfer.go:42`, `swarm.go:305`/`:417`). Nothing is relayed at the madshare
+layer, and nothing is discovered transitively. A lab that friended everything it
+started would test one point in the space and hide the two that matter:
+
+| Shape | How | Must show |
+|---|---|---|
+| **friends across hops** | `-topology chain -friends all` — `a` and `c` are friends but two underlay hops apart | works exactly as if adjacent; yggdrasil routes it, and degrading `c-b` degrades a friendship neither end has a link to |
+| **adjacency is not access** | `-topology chain -friends adjacent` — `a` and `c` can route to each other but are strangers | each sees nothing of the other's library, and 403 on `/madnetwork/v0/*` |
+
+It is also what keeps the lab usable as federation grows. F5 (depth & tokens)
+adds non-friend paths; when it lands, those scenarios are a different `-friends`
+value over the same topology, not a meshlab rewrite.
+
+`-friends` takes `all` (default), `adjacent`, `none`, or an explicit list
+(`a-c,b-c`).
+
+### Topologies
+
+| Preset | Underlay shape | What it is for |
+|---|---|---|
+| `pair` | `b → a` | the smallest useful lab |
+| `triangle` | `b → a`, `c → a`, `c → b` | the swarm shape: two holders reachable independently |
+| `hub` (default 4) | every node → `a` | spokes are two hops apart; cutting `a`'s links isolates everything at once |
+| `chain` (default 3) | `b → a`, `c → b`, … | the only shape that exercises yggdrasil's multi-hop routing rather than a single link |
+
+`-transport tcp` (default) or `quic`. Use `quic` when you want packet loss —
+same reason as the chaos suite, one layer down.
+
+### Seed at `up`, not after
+
+```bash
+meshlab up -topology triangle -seed ~/music -per-node 1
+```
+
+A friend's catalog is pulled on the refresh sweep only when it is older than the
+**15-minute** sync interval, and that timestamp lives in the database, so a
+restart does not reset it. Friend an empty node and you sync an empty catalog,
+then wait a quarter of an hour to see anything. `-seed` seeds *before* friending,
+so the nudge that fires on a new friendship
+(`federation/friendship.go:197`) pulls a library that is already there — catalogs
+converge in seconds.
+
+`meshlab seed` afterwards still works; its results just take until the next sync
+to reach the friends, and the command says so.
+
+Seeding is not instant: each file goes upload → submit → approve → analysis, and
+meshlab waits for `ffprobe` to fill in durations before declaring a node ready.
+Three FLACs totalling ~80 MB took about six minutes on the maintainer's machine.
+
+### Commands
+
+| Command | Effect |
+|---|---|
+| `meshlab status` | every node's library count, **madnetwork count**, inbound health, and each friend's `last_seen` age against the freshness window |
+| `meshlab link NAME KNOB VALUE…` | e.g. `link b-a latency 200ms bandwidth 65536`; `-dir up\|down\|both` |
+| `meshlab link NAME clear` | back to a perfect link |
+| `meshlab partition NODE` | cut every link touching it — the closest thing to unplugging the machine. The process keeps running, so its own view of the outage is observable too |
+| `meshlab heal NODE` | undo a partition (and stop a flap). Only the `Partition` bit is flipped, so a latency or bandwidth condition set earlier survives |
+| `meshlab kill NODE` / `restart NODE` | stop / bring back. **Identity survives** — `federation.key` stays in the data dir, and a node that lost it would be a stranger to every friend it had |
+| `meshlab flap NODE -down 10s -up 20s` | partition/heal on a period until `heal` |
+| `meshlab seed -audio DIR` | see above |
+
+**`madnetwork` is the number to watch.** It is what `/madnetwork` would show that
+node — its own published set plus every friend's, after the availability filter,
+computed at request time. So it falls when a friend goes stale and rises when one
+returns, which is the feature working rather than a proxy for it.
+
+### The availability walkthrough
+
+This is the verification `docs/plans/availability.md` §Phase 4 left open —
+*"reproduce on a real lossy/latent mesh, not loopback, that availability doesn't
+flap"*. Measured on a 3-node triangle, one track each:
+
+```bash
+make mesh-tools
+tests/mesh/bin/meshlab up -topology triangle -seed ~/music -per-node 1
+```
+
+```
+$ meshlab status                    # each node: library 1, madnetwork 3
+$ meshlab partition c               # c is unplugged; its process keeps running
+   t+30s   a,b: madnetwork 3        # nothing hidden yet — the window has not passed
+   t+90s   a,b: madnetwork 3
+   t+120s  a,b: madnetwork 2        # c's exclusive track is gone from the browse
+$ meshlab heal c
+   t+90s   a,b: madnetwork 3        # back, with no restart and no admin action
+```
+
+The step at exactly 120 s is `reachable_window_sec`, and the lab uses the
+smallest value madshare accepts (`config.MinReachableWindowSec`) — it cannot be
+shrunk further, so this walkthrough costs two minutes of waiting by design. What
+it demonstrates: hiding happens **at request time**, only for tracks held
+*exclusively* by an unreachable friend (each node keeps its own and the reachable
+friend's), and recovery is automatic.
+
+To see the fail-open half, the local inbound path has to die rather than a
+peering — a cut link deliberately cannot cause it (see §Two things this suite
+deliberately does not test). `meshlab status` shows `INBOUND DEAD (browse fails
+open)` if it ever does.
 
 ## Reading a failure
 
@@ -483,29 +663,64 @@ st := p.Stats() // flows / packets & bytes each way / lost / reordered /
 `Stats()` is not decoration here — it is how a scenario proves the fault it
 configured actually happened. Always assert on it (§The scenarios).
 
+### netfaultd — relays without a lab
+
+For faulting a link between things meshlab did not start: a real deployment, a
+hand-rolled pair, anything with a known address.
+
+```bash
+netfaultd -link a-b=127.0.0.1:9001 -link b-c=quic://127.0.0.1:9002
+```
+
+Each `-link` opens a relay and prints the address to point the near end at. The
+control API is the same wire format meshlab's is (`netfault/faultjson.go` — one
+codec, so a fault typed at a meshlab prompt and one curled here mean the same
+thing):
+
+| Route | |
+|---|---|
+| `GET /links` | every link's fault and counters |
+| `GET /links/{name}` | one link |
+| `PUT /links/{name}` | replace one link's fault |
+
+A `PUT` is a **full replacement, not a merge** — the operation a session runs most
+often is putting a link back to perfect, and a merge would make that depend on
+what was set before. Unknown fields are rejected, which is how `loss` on a `tcp`
+link becomes an error rather than a knob that silently does nothing.
+
 ## Gating
 
-Two mechanisms, deliberately not unified —
-`docs/plans/mesh-testing.md` §Gating has the full reasoning:
+Two mechanisms, deliberately not unified:
 
 - **`MADSHARE_CHAOS=1`** gates *execution* of the timing-sensitive and
   long-running tests. They still **compile** on every `go test ./...`, so a
   refactor in `federation/` breaks them loudly and immediately instead of rotting
   unnoticed. This suite tracks `federation/` internals far too closely to survive
   being invisible to the compiler.
-- **`-tags tests`** will gate the *tool binaries* (`cmd/netfaultd`, `cmd/meshlab`)
-  once they exist. Unlike `go build ./...`, `go install ./...` writes every `main`
-  package into `GOBIN`, and `netfaultd` must not land next to `madshare` in
-  someone's `/usr/bin`. Do not extend that tag to the library or the scenarios.
+- **`-tags tests`** gates the *tool binaries* (`cmd/netfaultd`, `cmd/meshlab`).
+  Unlike `go build ./...`, `go install ./...` writes every `main` package into
+  `GOBIN`, and neither an open relay nor a lab with hardcoded admin credentials
+  may land next to `madshare` in someone's `/usr/bin`. Verified against Go 1.26:
 
-**Every new chaos test must call `requireChaos(t)` first.** Forgetting it is the
-mirror-image failure: the scenario runs on every default `go test ./...` and makes
-it minutes-slow.
+  ```
+  go install ./...   (untagged)  → GOBIN: madshare
+  go install ./...   (tagged)    → GOBIN: madshare  meshlab  netfaultd
+  ```
+
+  **Do not extend that tag to the library or the scenarios.** If a package's
+  sources are tag-excluded but a `_test.go` in it is not, Go still compiles the
+  test package and every reference fails as *undefined* — a clean
+  `go test ./...` turns into `FAIL … [build failed]`.
 
 Nothing here needs gating to stay out of the shipped server: `_test.go` files
 never enter a binary, `make build` builds only `./`, and a package nobody imports
 is never linked in. `netfault` is stdlib-only, so it adds no `go.mod` entries and
-no bytes to the `madshare` binary.
+no bytes to the `madshare` binary. The tag is a packaging safeguard, not a
+build-hygiene one.
+
+**Every new chaos test must call `requireChaos(t)` first.** Forgetting it is the
+mirror-image failure: the scenario runs on every default `go test ./...` and makes
+it minutes-slow.
 
 ## Troubleshooting
 
@@ -601,6 +816,33 @@ no bytes to the `madshare` binary.
 - **Port allocation is racy.** The reserve-then-close `127.0.0.1:0` idiom has an
   inherent window; serial runs (`-p 1`) keep it narrow.
 
+meshlab specifically:
+
+- **A node's library looks empty and federation looks broken.** Check you are
+  authenticated. Content access is **default-deny**, so an unauthenticated read
+  of `/api/artists` on a node with a full library returns an empty list — a very
+  convincing way to misdiagnose federation. meshlab's own client always carries
+  the node's bearer token; a `curl` you type does not.
+- **`madnetwork` stays at the node's own track count.** The friends' catalogs
+  have not synced. Seed at `up`, not after — see §Seed at `up`, not after.
+- **Nothing happens for 15 minutes.** Same cause. The sync interval is a
+  production value and meshlab does not shrink it; `WithIntervals` is a *test*
+  seam and the server never sets it.
+- **A friend takes two minutes to go stale.** That is `reachable_window_sec`, and
+  the lab already runs at the smallest value madshare accepts. Not a bug, and not
+  something to work around — watch `meshlab status` rather than guessing.
+- **The lab browse endpoints are drill-down, not flat.** `/api/albums` needs an
+  `artist_id` and `/api/tracks` an `album_id`; there is no "every track"
+  endpoint. Artists come back as a bare array normally and as `{"items": […]}` on
+  the keyset-paginated branch, so a client has to accept both.
+- **`meshlab up` exits immediately.** It runs in the foreground by design (so does
+  `netfaultd`) — there is no daemon mode, no state file and no init script,
+  because nothing about either tool should look installable. Keep the shell open
+  and drive it from another one.
+- **A restarted node lost its friendships** — see the general note above. meshlab
+  keeps the data dir across `restart`, so identity survives; deleting the lab root
+  between runs does not.
+
 ## Separation from the other suites
 
 - **`tests/k6`** — load and performance against a running server. Throughput
@@ -608,5 +850,6 @@ no bytes to the `madshare` binary.
 - **`tests/playwright`** — browser end-to-end behavior.
 - **This suite** — federation correctness when the network misbehaves.
 
-They are complementary. Once `meshlab` exists it will be a legitimate *target*
-for either of the other two.
+They are complementary, and `meshlab` is a legitimate *target* for either of the
+other two: point k6 at a lab node's URL to load it while a link is degraded, or
+Playwright at one to drive the browse through a partition.

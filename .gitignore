@@ -23,3 +23,6 @@ webui.toml
 
 # Generated AGPL source archive embedded by `make build` (-tags embedsource)
 /source.tar.gz
+
+# Mesh lab tool binaries (`make mesh-tools`)
+/tests/mesh/bin/

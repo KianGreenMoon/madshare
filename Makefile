@@ -10,7 +10,7 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null)
 LDFLAGS := -X 'daemonlord.ygg/madshare/internal/version.Tag=$(VERSION)'
 
-.PHONY: build build-nowebui source-archive run test vet clean install uninstall
+.PHONY: build build-nowebui source-archive run test test-mesh mesh-tools vet clean install uninstall
 
 # Installation layout (POSIX systems only — see the note on `install` below).
 # GNU-style overrides, plus DESTDIR staging for packagers:
@@ -54,8 +54,19 @@ test:
 vet:
 	go vet ./...
 
+# The mesh fault-injection suite (tests/mesh/README.md). Note the split, which is
+# deliberate: the scenarios are gated at RUN time by an env var so they keep
+# compiling on every `go test ./...`, while the two lab binaries are gated at
+# BUILD time by a tag so `go install ./...` cannot drop them in GOBIN.
+test-mesh:
+	MADSHARE_CHAOS=1 go test -p 1 ./federation/... ./tests/mesh/...
+
+mesh-tools:
+	go build -tags tests -o tests/mesh/bin/ ./tests/mesh/cmd/...
+
 clean:
 	rm -f madshare source.tar.gz
+	rm -rf tests/mesh/bin
 
 # Install the full-stack binary, seed config under $(CONFDIR), and — depending
 # on the detected init system — drop in the systemd unit (systemctl present)
