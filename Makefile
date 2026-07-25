@@ -10,7 +10,7 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null)
 LDFLAGS := -X 'daemonlord.ygg/madshare/internal/version.Tag=$(VERSION)'
 
-.PHONY: build build-nowebui source-archive run test test-mesh mesh-tools vet clean install uninstall
+.PHONY: build build-nowebui source-archive run test test-mesh mesh-tools vet clean release install uninstall
 
 # Installation layout (POSIX systems only — see the note on `install` below).
 # GNU-style overrides, plus DESTDIR staging for packagers:
@@ -25,6 +25,13 @@ CONFDIR          ?= $(SYSCONFDIR)/madshare
 SYSTEMD_UNIT_DIR ?= /etc/systemd/system
 OPENRC_INITD_DIR ?= /etc/init.d
 OPENRC_CONFD_DIR ?= /etc/conf.d
+FREEBSD_RCD_DIR  ?= $(PREFIX)/etc/rc.d
+# Working directory baked into the service definitions. One default for every
+# platform on purpose (a conditional here would need GNU-make syntax and this
+# file still runs under FreeBSD's bmake); the .pkg built by `make release` uses
+# the FreeBSD-native /var/db/madshare, so pass DATADIR=/var/db/madshare to match
+# it when installing from source there.
+DATADIR          ?= /var/lib/madshare
 INSTALL          ?= install
 
 # AGPL Corresponding Source, embedded into release binaries so /source works
@@ -66,7 +73,19 @@ mesh-tools:
 
 clean:
 	rm -f madshare source.tar.gz
-	rm -rf tests/mesh/bin
+	rm -rf tests/mesh/bin dist
+
+# Release artifacts for every supported platform, into ./dist: a .deb and .rpm
+# per Linux architecture, a FreeBSD .pkg per FreeBSD architecture, a plain
+# tarball for each, and SHA256SUMS over the lot. Everything is cross-built on
+# this host — no root, no distro tooling, no FreeBSD box (see
+# packaging/release.sh and docs/building.md "Release packages").
+#
+# Refuses a dirty tree, because a release binary embeds `git archive HEAD` as
+# its AGPL Corresponding Source: `make release ALLOW_DIRTY=1` for a trial run.
+# Other knobs: VERSION, TARGETS, DIST, FREEBSD_ABI.
+release:
+	./packaging/release.sh
 
 # Install the full-stack binary, seed config under $(CONFDIR), and — depending
 # on the detected init system — drop in the systemd unit (systemctl present)
@@ -117,11 +136,31 @@ install:
 			chmod 0644 "$(DESTDIR)$(OPENRC_CONFD_DIR)/madshare"; \
 		else echo "  KEEP    $(DESTDIR)$(OPENRC_CONFD_DIR)/madshare (already present)"; fi; \
 	else echo "  SKIP    OpenRC service (rc-update not found; set DESTDIR to stage anyway)"; fi
+	@if [ "$$(uname -s)" = "FreeBSD" ]; then \
+		echo "  INSTALL $(DESTDIR)$(FREEBSD_RCD_DIR)/madshare"; \
+		$(INSTALL) -d "$(DESTDIR)$(FREEBSD_RCD_DIR)"; \
+		sed -e 's|%%PREFIX%%|$(PREFIX)|g' -e 's|%%BINDIR%%|$(BINDIR)|g' \
+			-e 's|%%CONFDIR%%|$(CONFDIR)|g' -e 's|%%DATADIR%%|$(DATADIR)|g' \
+			-e 's|%%RCDIR%%|$(FREEBSD_RCD_DIR)|g' -e 's|%%DOCDIR%%|$(PREFIX)/share/doc/madshare|g' \
+			contrib/freebsd/madshare.in > "$(DESTDIR)$(FREEBSD_RCD_DIR)/madshare"; \
+		chmod 0755 "$(DESTDIR)$(FREEBSD_RCD_DIR)/madshare"; \
+	fi
 	@echo
 	@echo "Installed. Remaining one-time setup (needs root; not done automatically):"
-	@echo "  1. useradd --system --home /var/lib/madshare --shell /usr/sbin/nologin madshare"
-	@echo "     install -d -o madshare -g madshare /var/lib/madshare"
-	@if command -v systemctl >/dev/null 2>&1; then \
+	@if [ "$$(uname -s)" = "FreeBSD" ]; then \
+		echo "  1. pw groupadd madshare"; \
+		echo "     pw useradd madshare -g madshare -d $(DATADIR) -s /usr/sbin/nologin"; \
+		echo "     install -d -o madshare -g madshare -m 0750 $(DATADIR)"; \
+	else \
+		echo "  1. useradd --system --home $(DATADIR) --shell /usr/sbin/nologin madshare"; \
+		echo "     install -d -o madshare -g madshare $(DATADIR)"; \
+	fi
+	@if [ "$$(uname -s)" = "FreeBSD" ]; then \
+		echo "  2. install -m 0600 /dev/null /etc/rc.conf.d/madshare"; \
+		echo "     sysrc -f /etc/rc.conf.d/madshare madshare_env=\"MADSHARE_INITIAL_ADMIN_PASSWORD=...\""; \
+		echo "     (ignored once the first admin exists)"; \
+		echo "  3. Review $(CONFDIR)/madshare.toml, then: sysrc madshare_enable=YES && service madshare start"; \
+	elif command -v systemctl >/dev/null 2>&1; then \
 		echo "  2. echo 'MADSHARE_INITIAL_ADMIN_PASSWORD=...' | tee $(CONFDIR)/madshare.env >/dev/null"; \
 		echo "     chmod 600 $(CONFDIR)/madshare.env   # ignored once the first admin exists"; \
 		echo "  3. Review $(CONFDIR)/madshare.toml, then: systemctl daemon-reload && systemctl enable --now madshare"; \
@@ -135,14 +174,15 @@ install:
 		echo "     $(BINDIR)/madshare -config $(CONFDIR)/madshare.toml -webui-config $(CONFDIR)/webui.toml"; \
 	fi
 
-# Remove the binary, the service units (systemd + OpenRC), and the installed
-# *.example files. Leaves the live config ($(CONFDIR)/*.toml), the OpenRC
-# conf.d, and the data dir untouched on purpose — remove those by hand if you
-# really mean to.
+# Remove the binary, the service units (systemd + OpenRC + FreeBSD rc.d), and
+# the installed *.example files. Leaves the live config ($(CONFDIR)/*.toml), the
+# OpenRC conf.d, and the data dir untouched on purpose — remove those by hand if
+# you really mean to.
 uninstall:
 	rm -f "$(DESTDIR)$(BINDIR)/madshare"
 	rm -f "$(DESTDIR)$(SYSTEMD_UNIT_DIR)/madshare.service"
 	rm -f "$(DESTDIR)$(OPENRC_INITD_DIR)/madshare"
+	rm -f "$(DESTDIR)$(FREEBSD_RCD_DIR)/madshare"
 	rm -f "$(DESTDIR)$(CONFDIR)/madshare.toml.example" "$(DESTDIR)$(CONFDIR)/webui.toml.example"
 	rmdir "$(DESTDIR)$(CONFDIR)" 2>/dev/null || true
 	@echo "Removed binary + units + examples. Kept $(CONFDIR)/*.toml, $(OPENRC_CONFD_DIR)/madshare and /var/lib/madshare (if any)."

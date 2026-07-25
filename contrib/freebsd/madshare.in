@@ -1,0 +1,70 @@
+#!/bin/sh
+#
+# Madshare rc.d service for FreeBSD. Installed as %%RCDIR%%/madshare — the
+# .pkg does this for you (see docs/building.md "Release packages"); from a
+# tarball, `make install` does, or copy it by hand and chmod 0555.
+#
+# In the repository this is a template whose path markers are rewritten at
+# install/package time from PREFIX / CONFDIR / DATADIR; the paths below are
+# already the ones this installation uses.
+#
+# Setup:
+#   1. Create the service user and its data directory:
+#        pw groupadd madshare
+#        pw useradd madshare -g madshare -d %%DATADIR%% -s /usr/sbin/nologin -c "Madshare server"
+#        install -d -o madshare -g madshare -m 0750 %%DATADIR%%
+#      (The .pkg's post-install script does all of this.)
+#   2. Review %%CONFDIR%%/madshare.toml. Data paths in it are resolved relative
+#      to the working directory (madshare_chdir below, %%DATADIR%% by default),
+#      so the defaults land in %%DATADIR%%/data.
+#   3. First-run admin password — consumed ONLY while the users table is empty,
+#      ignored forever after. Put it in /etc/rc.conf.d/madshare:
+#        madshare_env="MADSHARE_INITIAL_ADMIN_PASSWORD=choose-a-strong-password"
+#   4. Enable and start:
+#        sysrc madshare_enable=YES
+#        service madshare start
+#
+# Madshare speaks plain HTTP and is meant to sit behind a reverse proxy that
+# terminates TLS — see contrib/nginx/.
+#
+# PROVIDE: madshare
+# REQUIRE: LOGIN NETWORKING
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="madshare"
+desc="Madshare media sharing server"
+rcvar="madshare_enable"
+
+load_rc_config $name
+
+: ${madshare_enable:="NO"}
+: ${madshare_user:="madshare"}
+: ${madshare_group:="madshare"}
+: ${madshare_chdir:="%%DATADIR%%"}
+: ${madshare_config:="%%CONFDIR%%/madshare.toml"}
+: ${madshare_webui_config:="%%CONFDIR%%/webui.toml"}
+
+pidfile="/var/run/${name}.pid"
+
+# Madshare runs in the foreground and handles SIGINT/SIGTERM itself, so
+# daemon(8) does the backgrounding, the pidfile and the privilege drop, and
+# relays the process output to syslog under the "madshare" tag. procname is the
+# real binary so `service madshare status` looks at the server, not at daemon.
+procname="%%BINDIR%%/madshare"
+command="/usr/sbin/daemon"
+command_args="-S -T ${name} -p ${pidfile} -u ${madshare_user} \
+	${procname} -config ${madshare_config} -webui-config ${madshare_webui_config}"
+
+start_precmd="madshare_precmd"
+
+madshare_precmd()
+{
+	if [ ! -d "${madshare_chdir}" ]; then
+		install -d -o "${madshare_user}" -g "${madshare_group}" -m 0750 \
+			"${madshare_chdir}" || return 1
+	fi
+}
+
+run_rc_command "$1"

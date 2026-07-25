@@ -1,0 +1,20 @@
+Madshare is installed but not enabled. Remaining setup:
+
+1. Review the configuration:
+     %%CONFDIR%%/madshare.toml
+   Data paths in it are resolved relative to the working directory
+   (%%DATADIR%%), so the defaults land in %%DATADIR%%/data. The shipped
+   config listens on 127.0.0.1:3000.
+
+2. Set the first-run admin password. It is consumed only while no user account
+   exists and ignored forever after, so keep the file root-only:
+     install -m 0600 /dev/null /etc/rc.conf.d/madshare
+     sysrc -f /etc/rc.conf.d/madshare \
+       madshare_env="MADSHARE_INITIAL_ADMIN_PASSWORD=choose-a-strong-password"
+
+3. Enable and start the service:
+     sysrc madshare_enable=YES
+     service madshare start
+
+Madshare speaks plain HTTP; put it behind a TLS-terminating reverse proxy. The
+example nginx configurations are in %%DOCDIR%%.

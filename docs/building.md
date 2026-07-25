@@ -17,6 +17,9 @@ listener/route-group model the variants rely on, see
   [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite) driver, so there
   is no system-SQLite or cgo requirement. Builds work with `CGO_ENABLED=0` and
   cross-compile cleanly (see below).
+- **`zstd`** — only for `make release`, which compresses the FreeBSD `.pkg` with
+  it. That target also fetches a pinned [nfpm](https://github.com/goreleaser/nfpm)
+  through the module cache on its first run; nothing else needs the network.
 
 The Go module path is `daemonlord.ygg/madshare`; the entry point is
 `madshare.go` at the repository root.
@@ -130,9 +133,17 @@ It will:
     no-clobber [`madshare.confd`](../contrib/openrc/madshare.confd) seeded to
     `$(OPENRC_CONFD_DIR)/madshare` (`/etc/conf.d`). The init script uses
     `supervise-daemon` for restart-on-failure parity with the systemd unit.
+  - **FreeBSD rc.d** (when `uname -s` is `FreeBSD`) —
+    [`contrib/freebsd/madshare.in`](../contrib/freebsd/madshare.in) to
+    `$(FREEBSD_RCD_DIR)/madshare` (`/usr/local/etc/rc.d`, mode `0755`), with its
+    `%%PREFIX%%` / `%%CONFDIR%%` / `%%DATADIR%%` markers substituted. It wraps
+    the server in `daemon(8)` for the pidfile, the privilege drop and syslog
+    output; `madshare_user`, `madshare_chdir` and `madshare_config` are all
+    overridable in `/etc/rc.conf.d/madshare`.
 
-  Both can be installed at once (e.g. under `DESTDIR` for a package that
-  targets both); on a real host only the one whose tool is present fires.
+  Both Linux init systems can be installed at once (e.g. under `DESTDIR` for a
+  package that targets both); on a real host only the one whose tool is present
+  fires.
 
 It intentionally does **not** create the `madshare` service user, write the
 admin-password env file, or `daemon-reload`/`enable` the unit — those need root
@@ -150,6 +161,8 @@ Overridable variables (GNU-style, plus `DESTDIR` for staged/packaging installs):
 | `SYSTEMD_UNIT_DIR` | `/etc/systemd/system` | systemd unit destination |
 | `OPENRC_INITD_DIR` | `/etc/init.d` | OpenRC init-script destination |
 | `OPENRC_CONFD_DIR` | `/etc/conf.d` | OpenRC conf.d destination |
+| `FREEBSD_RCD_DIR` | `$(PREFIX)/etc/rc.d` | FreeBSD rc.d destination |
+| `DATADIR` | `/var/lib/madshare` | working directory baked into the rc.d script — pass `/var/db/madshare` on FreeBSD to match what the `.pkg` uses |
 | `DESTDIR` | *(empty)* | staging prefix prepended to every path |
 | `INSTALL` | `install` | the install(1) program |
 
@@ -164,6 +177,104 @@ files; it deliberately keeps the live `*.toml` config and any data directory.
 There is **no Windows install target** — Windows has no `/usr/local` or systemd
 and `make` is uncommon there. On Windows just `go build -o madshare.exe ./` and
 run the binary with a `madshare.toml` beside it (or pass `-config <path>`).
+
+## Release packages (`make release`)
+
+```bash
+make release          # everything, into ./dist
+```
+
+Builds the distributable artifacts for every supported platform **on one host**,
+without root, without distro tooling and without a FreeBSD machine — the whole
+matrix is cross-compiled, and each packager is a program that runs anywhere:
+
+| Target | Artifacts |
+|---|---|
+| `linux/amd64` | `.deb`, `.rpm`, `.tar.gz` |
+| `linux/arm64` | `.deb`, `.rpm`, `.tar.gz` |
+| `freebsd/amd64` | `.pkg`, `.tar.gz` |
+| `freebsd/arm64` | `.pkg`, `.tar.gz` |
+
+plus a `SHA256SUMS` over all of them. The orchestration lives in
+[`packaging/release.sh`](../packaging/release.sh); `make release` only calls it,
+so the script is equally usable on its own.
+
+Release binaries differ from `make build` in three ways: they are stripped
+(`-s -w`), built with `-trimpath` (no local paths in the binary), and always
+carry the embedded AGPL Corresponding Source (`-tags embedsource`).
+
+**A dirty tree is refused.** The binary embeds `git archive HEAD` as its
+Corresponding Source, so uncommitted changes would ship a binary whose `/source`
+endpoint does not match it — a licensing defect rather than a matter of taste.
+Use `make release ALLOW_DIRTY=1` for a throwaway build.
+
+Knobs (environment variables): `VERSION`, `DIST` (default `dist`), `TARGETS`
+(default all four), `FREEBSD_ABI` (default `14`), `GO`, `NFPM_VERSION`.
+
+```bash
+make release TARGETS="linux/amd64"           # one platform
+make release FREEBSD_ABI=15                  # .pkg for FreeBSD 15
+```
+
+### Versions
+
+`git describe` produces one string; packagers need a version/release pair, and
+neither an RPM `Release` nor a FreeBSD version may contain a dash. The script
+splits it:
+
+| `git describe` | tarball / binary stamp | deb, rpm | FreeBSD |
+|---|---|---|---|
+| `v0.6.0` | `0.6.0` | `0.6.0-1` | `0.6.0` |
+| `v0.6.0-51-gc3b1cd1` | `0.6.0-51-gc3b1cd1` | `0.6.0-51.gc3b1cd1` | `0.6.0_51.gc3b1cd1` |
+| untagged (`c3b1cd1`) | `c3b1cd1` | `0.0.0-0.c3b1cd1` | `0.0.0_0.c3b1cd1` |
+
+### What the packages do
+
+All of them install the binary, the two configs, the platform's service
+definition and the docs, create the `madshare` system user, and **stop there** —
+nothing is enabled or started, because a fresh install has an unreviewed config
+and no bootstrap password. The next steps are printed on install.
+
+| | deb / rpm | FreeBSD pkg |
+|---|---|---|
+| binary | `/usr/bin/madshare` | `/usr/local/bin/madshare` |
+| config | `/etc/madshare/` | `/usr/local/etc/madshare/` |
+| data | `/var/lib/madshare` | `/var/db/madshare` |
+| service | `/usr/lib/systemd/system/madshare.service` | `/usr/local/etc/rc.d/madshare` |
+| docs | `/usr/share/doc/madshare/` | `/usr/local/share/doc/madshare/` |
+
+The live `madshare.toml` / `webui.toml` are readable only by `root:madshare`
+(they can carry the first-run admin password) and survive upgrades: on deb/rpm
+as `conffiles` / `%config(noreplace)`, on FreeBSD via the `.sample` convention
+(the package owns `madshare.toml.sample`, post-install copies it once). Removal
+keeps the database, the media and the service account — `apt remove` must never
+delete somebody's library — and says so.
+
+### How each format is produced
+
+- **deb + rpm** — [nfpm](https://github.com/goreleaser/nfpm) via
+  `go run github.com/goreleaser/nfpm/v2/cmd/nfpm@<pinned>`, so no `dpkg-deb` or
+  `rpmbuild` is needed. The recipe is
+  [`packaging/nfpm.yaml`](../packaging/nfpm.yaml), a template whose
+  `${MADSHARE_*}` markers `release.sh` substitutes (nfpm's own environment
+  expansion does not reach `contents[].src`). Maintainer scripts are in
+  [`packaging/scripts/`](../packaging/scripts/) and are written to work under
+  both conventions — dpkg passes `configure`/`remove`, rpm passes `1`/`0`.
+  Note that nfpm silently **drops** a content entry with an unknown `type`; the
+  valid set is `symlink`, `ghost`, `config`, `config|noreplace`, `dir`, `tree`.
+- **FreeBSD pkg** — [`packaging/cmd/fbsdpkg`](../packaging/cmd/fbsdpkg), a small
+  build-tagged (`tools`) Go program. A `.pkg` is a zstd-compressed tar carrying
+  `+COMPACT_MANIFEST` and `+MANIFEST` in front of an absolute-path payload, so
+  it can be produced anywhere. The manifest shape was read off real packages
+  from `pkg.freebsd.org` — including the two details that are easy to guess
+  wrong: each `files` entry is an object (not a bare checksum), and its `sum` is
+  the sha256 hex prefixed with `1$`. The `.pkg` declares an ABI
+  (`FreeBSD:14:amd64`), and pkg(8) refuses a package built for a different major
+  version, hence `FREEBSD_ABI`.
+- **tarballs** — binary, config templates, `contrib/` for that platform, and a
+  generated `INSTALL.txt` with the exact commands
+  ([`packaging/INSTALL-linux.txt`](../packaging/INSTALL-linux.txt),
+  [`packaging/INSTALL-freebsd.txt`](../packaging/INSTALL-freebsd.txt)).
 
 ## Build variants
 
@@ -233,7 +344,9 @@ the binary** to pick them up (they are embedded), then restart the server.
 
 ## Cross-compilation
 
-Because the build is pure Go, cross-compiling is just `GOOS`/`GOARCH`:
+For the supported release targets this is already done for you — see
+[Release packages](#release-packages-make-release). By hand: because the build
+is pure Go, cross-compiling is just `GOOS`/`GOARCH`:
 
 ```bash
 # Linux arm64 (e.g. a Raspberry Pi / ARM server)
@@ -244,6 +357,9 @@ CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 go build -tags nowebui -o madshare-api-li
 
 # macOS arm64
 CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o madshare-darwin-arm64 ./
+
+# FreeBSD amd64
+CGO_ENABLED=0 GOOS=freebsd GOARCH=amd64 go build -o madshare-freebsd-amd64 ./
 ```
 
 A smaller binary (strip debug info):

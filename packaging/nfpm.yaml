@@ -1,0 +1,123 @@
+# nfpm recipe for the Madshare .deb and .rpm. This is a TEMPLATE: the
+# ${MADSHARE_*} markers are substituted by packaging/release.sh, which renders
+# one config per architecture and runs nfpm once per packager. See
+# docs/building.md "Release packages".
+#
+# The prose here is the deb/rpm rendering of packaging/pkg-descr (the FreeBSD
+# .pkg reads that file verbatim); keep the two in step.
+---
+name: madshare
+arch: ${MADSHARE_ARCH}
+platform: linux
+version: ${MADSHARE_VERSION}
+release: ${MADSHARE_RELEASE}
+version_schema: none
+
+maintainer: Kian Seibel <kian.eugen.seibel@gmail.com>
+vendor: Madshare
+homepage: https://github.com/KianGreenMoon/madshare
+license: AGPL-3.0-or-later
+section: sound
+priority: optional
+
+description: |
+  Self-hosted audio and media sharing server
+  One Go process serves a JSON API, content-addressed storage and streaming,
+  and a bundled web UI: a drill-down library browser, per-user playlists and
+  favourites, an upload-and-review pipeline, and an admin surface.
+  .
+  Uploads are de-duplicated by content hash, ID3/MP4/FLAC/OGG tags are
+  extracted on ingest, and cover-art variants are generated in the background.
+  Access is authenticated with session cookies or API tokens and authorized by
+  role-based permissions.
+  .
+  The binary is statically linked and needs no database server - SQLite is
+  built in. Madshare speaks plain HTTP and expects a TLS-terminating reverse
+  proxy in front of it.
+
+# ffprobe and fpcalc only enrich media analysis; the server runs fine without
+# them, so they are weak dependencies. Package names differ per distribution
+# and an unresolvable recommendation is ignored rather than fatal.
+overrides:
+  deb:
+    recommends:
+      - ffmpeg
+      - libchromaprint-tools
+  rpm:
+    recommends:
+      - ffmpeg
+      - chromaprint-tools
+
+contents:
+  - src: ${MADSHARE_BIN}
+    dst: /usr/bin/madshare
+    file_info:
+      mode: 0755
+
+  - src: ${MADSHARE_UNIT}
+    dst: /usr/lib/systemd/system/madshare.service
+    file_info:
+      mode: 0644
+
+  # The live configuration: seeded from the example, never clobbered on
+  # upgrade, and readable only by root and the service account because it can
+  # carry the first-run admin password.
+  - src: madshare.toml.example
+    dst: /etc/madshare/madshare.toml
+    type: "config|noreplace"
+    file_info:
+      mode: 0640
+      owner: root
+      group: madshare
+  - src: webui.toml.example
+    dst: /etc/madshare/webui.toml
+    type: "config|noreplace"
+    file_info:
+      mode: 0640
+      owner: root
+      group: madshare
+
+  # The examples ship alongside so an admin can diff a customized config
+  # against the shipped defaults after an upgrade.
+  - src: madshare.toml.example
+    dst: /etc/madshare/madshare.toml.example
+    file_info:
+      mode: 0644
+  - src: webui.toml.example
+    dst: /etc/madshare/webui.toml.example
+    file_info:
+      mode: 0644
+
+  # Plain files on purpose: nfpm has no "doc" content type (symlink, ghost,
+  # config, config|noreplace, dir, tree, or nothing) and silently drops an
+  # unknown one, which is how these went missing once already.
+  - src: README.md
+    dst: /usr/share/doc/madshare/README.md
+    file_info:
+      mode: 0644
+  - src: LICENSE.md
+    dst: /usr/share/doc/madshare/LICENSE.md
+    file_info:
+      mode: 0644
+  - src: contrib/nginx
+    dst: /usr/share/doc/madshare/nginx
+    type: tree
+
+  - dst: /etc/madshare
+    type: dir
+    file_info:
+      mode: 0750
+      owner: root
+      group: madshare
+  - dst: /var/lib/madshare
+    type: dir
+    file_info:
+      mode: 0750
+      owner: madshare
+      group: madshare
+
+scripts:
+  preinstall: packaging/scripts/preinstall.sh
+  postinstall: packaging/scripts/postinstall.sh
+  preremove: packaging/scripts/preremove.sh
+  postremove: packaging/scripts/postremove.sh

@@ -26,3 +26,6 @@ webui.toml
 
 # Mesh lab tool binaries (`make mesh-tools`)
 /tests/mesh/bin/
+
+# Release artifacts (`make release`): packages, tarballs, SHA256SUMS
+/dist/

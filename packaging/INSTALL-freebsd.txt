@@ -1,0 +1,57 @@
+Madshare %%VERSION%% — binary distribution for FreeBSD
+======================================================
+
+Prefer the .pkg if one is published for your ABI: `pkg add ./madshare-*.pkg`
+does everything below and registers the package for upgrades. This tarball is
+the manual route.
+
+Contents
+--------
+  madshare               the server — statically linked, no runtime deps
+  madshare.toml.example  server configuration template
+  webui.toml.example     web UI upload-control template
+  contrib/freebsd/       rc.d service script (paths already substituted)
+  contrib/nginx/         reverse-proxy examples
+  README.md LICENSE.md
+
+Install (as root)
+-----------------
+  install -m 0555 madshare %%BINDIR%%/madshare
+  install -m 0755 contrib/freebsd/madshare %%RCDIR%%/madshare
+
+  install -d %%CONFDIR%%
+  install -m 0644 madshare.toml.example %%CONFDIR%%/madshare.toml.sample
+  install -m 0644 webui.toml.example    %%CONFDIR%%/webui.toml.sample
+  cp %%CONFDIR%%/madshare.toml.sample %%CONFDIR%%/madshare.toml
+  cp %%CONFDIR%%/webui.toml.sample    %%CONFDIR%%/webui.toml
+
+  pw groupadd madshare
+  pw useradd madshare -g madshare -d %%DATADIR%% -s /usr/sbin/nologin \
+     -c "Madshare server"
+  install -d -o madshare -g madshare -m 0750 %%DATADIR%%
+  chown root:madshare %%CONFDIR%%/madshare.toml %%CONFDIR%%/webui.toml
+  chmod 0640 %%CONFDIR%%/madshare.toml %%CONFDIR%%/webui.toml
+
+First start
+-----------
+1. Review %%CONFDIR%%/madshare.toml. Data paths in it are resolved relative to
+   the service's working directory (%%DATADIR%%), so the defaults land in
+   %%DATADIR%%/data. The shipped config listens on 127.0.0.1:3000.
+
+2. Set the first-run admin password. It is consumed only while no user account
+   exists and ignored forever after, so keep the file root-only:
+
+     install -m 0600 /dev/null /etc/rc.conf.d/madshare
+     sysrc -f /etc/rc.conf.d/madshare \
+       madshare_env="MADSHARE_INITIAL_ADMIN_PASSWORD=choose-a-strong-password"
+
+3. Start it:
+
+     sysrc madshare_enable=YES
+     service madshare start
+
+The service reads %%RCDIR%%/madshare; madshare_user, madshare_chdir and
+madshare_config can all be overridden in /etc/rc.conf.d/madshare.
+
+Madshare speaks plain HTTP and expects a TLS-terminating reverse proxy in front
+of it — see contrib/nginx/. Everything else is in README.md.

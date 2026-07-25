@@ -1,0 +1,61 @@
+Madshare %%VERSION%% — binary distribution for Linux
+====================================================
+
+If your distribution uses .deb or .rpm, prefer those packages: they do all of
+the below, and they upgrade cleanly. This tarball is for everything else.
+
+Contents
+--------
+  madshare               the server — statically linked, no runtime deps
+  madshare.toml.example  server configuration template
+  webui.toml.example     web UI upload-control template
+  contrib/systemd/       systemd unit
+  contrib/openrc/        OpenRC service + conf.d settings
+  contrib/nginx/         reverse-proxy examples
+  README.md LICENSE.md
+
+Install (as root)
+-----------------
+  install -m 0755 madshare %%BINDIR%%/madshare
+
+  install -d %%CONFDIR%%
+  install -m 0644 madshare.toml.example webui.toml.example %%CONFDIR%%/
+  cp %%CONFDIR%%/madshare.toml.example %%CONFDIR%%/madshare.toml
+  cp %%CONFDIR%%/webui.toml.example    %%CONFDIR%%/webui.toml
+
+  useradd --system --home-dir %%DATADIR%% --shell /usr/sbin/nologin madshare
+  install -d -o madshare -g madshare -m 0750 %%DATADIR%%
+
+Then pick the init system you run:
+
+  # systemd
+  install -m 0644 contrib/systemd/madshare.service /etc/systemd/system/
+  systemctl daemon-reload
+
+  # OpenRC
+  install -m 0755 contrib/openrc/madshare.initd /etc/init.d/madshare
+  install -m 0644 contrib/openrc/madshare.confd /etc/conf.d/madshare
+
+First start
+-----------
+1. Review %%CONFDIR%%/madshare.toml. Data paths in it are resolved relative to
+   the service's working directory (%%DATADIR%%), so the defaults land in
+   %%DATADIR%%/data. The shipped config listens on 127.0.0.1:3000.
+
+2. Set the first-run admin password. It is consumed only while no user account
+   exists and ignored forever after:
+
+     echo 'MADSHARE_INITIAL_ADMIN_PASSWORD=choose-a-strong-password' \
+       > %%CONFDIR%%/madshare.env
+     chmod 600 %%CONFDIR%%/madshare.env
+
+   systemd reads that file (EnvironmentFile). Under OpenRC, export the variable
+   in /etc/conf.d/madshare instead.
+
+3. Start it:
+
+     systemctl enable --now madshare      # systemd
+     rc-update add madshare default && rc-service madshare start   # OpenRC
+
+Madshare speaks plain HTTP and expects a TLS-terminating reverse proxy in front
+of it — see contrib/nginx/. Everything else is in README.md.

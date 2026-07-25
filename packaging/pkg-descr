@@ -1,0 +1,17 @@
+Madshare is a self-hosted audio and media sharing server, primarily for music.
+One Go process serves a JSON API, content-addressed storage and streaming, and
+a bundled web UI: a drill-down library browser, per-user playlists and
+favourites, an upload-and-review pipeline, and an admin surface.
+
+Uploads are de-duplicated by content hash, ID3/MP4/FLAC/OGG tags are extracted
+on ingest, and cover-art variants are generated in the background. Access is
+authenticated with session cookies or API tokens and authorized by role-based
+permissions.
+
+The binary is statically linked and needs no database server -- SQLite is built
+in. ffprobe(1) and fpcalc(1) are optional: when present on PATH they add audio
+technical metadata and acoustic fingerprinting, and nothing else changes when
+they are absent.
+
+Madshare speaks plain HTTP and expects a TLS-terminating reverse proxy in front
+of it.
