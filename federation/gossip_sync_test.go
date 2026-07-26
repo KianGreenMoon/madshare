@@ -265,3 +265,119 @@ func TestOwnRecordBumpsSequenceOnNewFriendship(t *testing.T) {
 		t.Errorf("sequence did not advance: %d → %d", first.Seq, second.Seq)
 	}
 }
+
+// heldMarks returns the distrust record a store holds for one origin, or nil.
+func heldMarks(t *testing.T, s *memStore, origin string) *MarkRecord {
+	t.Helper()
+	payloads, err := s.MarkPayloads(context.Background(), []string{origin}, 0)
+	if err != nil {
+		t.Fatalf("MarkPayloads: %v", err)
+	}
+	raw, ok := payloads[origin]
+	if !ok {
+		return nil
+	}
+	rec, err := ParseMarkRecord(raw)
+	if err != nil {
+		t.Fatalf("stored distrust record for %s does not verify: %v", origin[:8], err)
+	}
+	return rec
+}
+
+// Blocking publishes a distrust mark, and lifting the block clears it — the
+// property that makes a network-wide accusation ledger recoverable rather than
+// permanent. Without the supersede-with-empty step, a lifted block would stand
+// on every node until the record expired days later.
+func TestBlockPublishesMarkAndUnblockClearsIt(t *testing.T) {
+	dir := t.TempDir()
+	underlay := freeUnderlay(t)
+	ctx := context.Background()
+
+	storeA, storeB := newMemStore(), newMemStore()
+	a := startGossipNode(t, dir, "node-a", underlay, true, storeA)
+	b := startGossipNode(t, dir, "node-b", underlay, false, storeB)
+	mustFriend(t, b, a, storeB, storeA)
+
+	// Nobody blocked: no distrust record at all, rather than an empty one.
+	if rec := heldMarks(t, storeA, a.PublicKeyHex()); rec != nil {
+		t.Fatalf("published a distrust record with nothing blocked: %+v", rec)
+	}
+
+	peerB, err := storeA.GetFederationPeerByKey(ctx, b.PublicKeyHex())
+	if err != nil {
+		t.Fatalf("look up B on A: %v", err)
+	}
+	if err := a.BlockPeer(ctx, peerB.ID, "advertised a hash with a contradicting fingerprint"); err != nil {
+		t.Fatalf("BlockPeer: %v", err)
+	}
+
+	var marked *MarkRecord
+	waitFor(t, "A to publish the block as a mark", func() bool {
+		a.Nudge()
+		marked = heldMarks(t, storeA, a.PublicKeyHex())
+		return marked != nil && len(marked.Marks) == 1
+	})
+	if marked.Marks[0].Key != b.PublicKeyHex() {
+		t.Errorf("mark names %s, want B", marked.Marks[0].Key[:8])
+	}
+	if marked.Marks[0].Reason != "advertised a hash with a contradicting fingerprint" {
+		t.Errorf("mark reason = %q", marked.Marks[0].Reason)
+	}
+	if marked.Marks[0].At == 0 {
+		t.Error("mark carries no timestamp")
+	}
+
+	// The blocked peer also leaves the friend-list record: a block is not a
+	// friendship, and publishing it as one would misstate the graph.
+	waitFor(t, "the blocked edge to leave A's friend list", func() bool {
+		a.Nudge()
+		rec := heldRecord(t, storeA, a.PublicKeyHex())
+		return rec != nil && len(rec.Friends) == 0
+	})
+
+	if err := a.UnblockPeer(ctx, peerB.ID); err != nil {
+		t.Fatalf("UnblockPeer: %v", err)
+	}
+	var cleared *MarkRecord
+	waitFor(t, "the mark to be superseded by an empty record", func() bool {
+		a.Nudge()
+		cleared = heldMarks(t, storeA, a.PublicKeyHex())
+		return cleared != nil && len(cleared.Marks) == 0
+	})
+	if cleared.Seq <= marked.Seq {
+		t.Errorf("clearing record did not supersede: seq %d → %d", marked.Seq, cleared.Seq)
+	}
+}
+
+// A node can block a key it has no relationship with — someone seen only on the
+// gossiped graph. Without this the map would be a read-only curiosity.
+func TestBlockKeyMarksAStranger(t *testing.T) {
+	dir := t.TempDir()
+	underlay := freeUnderlay(t)
+	ctx := context.Background()
+
+	storeA := newMemStore()
+	a := startGossipNode(t, dir, "node-a", underlay, true, storeA)
+
+	stranger := "00000000000000000000000000000000000000000000000000000000000000ab"
+	if err := a.BlockKey(ctx, stranger, "seen on the map", "claims audio it does not have"); err != nil {
+		t.Fatalf("BlockKey: %v", err)
+	}
+	p, err := storeA.GetFederationPeerByKey(ctx, stranger)
+	if err != nil {
+		t.Fatalf("blocked stranger has no peer row: %v", err)
+	}
+	if p.State != PeerBlocked {
+		t.Errorf("state = %q, want blocked", p.State)
+	}
+
+	var rec *MarkRecord
+	waitFor(t, "the stranger's mark to be published", func() bool {
+		a.Nudge()
+		rec = heldMarks(t, storeA, a.PublicKeyHex())
+		return rec != nil && len(rec.Marks) == 1
+	})
+	if rec.Marks[0].Key != stranger || rec.Marks[0].Reason != "claims audio it does not have" {
+		t.Errorf("mark = %+v", rec.Marks[0])
+	}
+}

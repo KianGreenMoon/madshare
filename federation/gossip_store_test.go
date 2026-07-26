@@ -159,6 +159,17 @@ func (m *memStore) GraphEdges(_ context.Context, now int64) ([]GraphEdgeClaim, e
 	return out, nil
 }
 
+func (m *memStore) BlockFederationPeer(_ context.Context, id int64, prevState, reason string, at int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.peers[id]
+	if !ok {
+		return ErrPeerNotFound
+	}
+	p.State, p.PrevState, p.BlockReason, p.BlockedAt = PeerBlocked, prevState, reason, at
+	return nil
+}
+
 // PublishFriendList mirrors the DB default (on). A test that wants a silent
 // node clears publishFriends.
 func (m *memStore) PublishFriendList(context.Context) (bool, error) {

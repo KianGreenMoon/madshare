@@ -127,6 +127,36 @@
 .peer-badge.is-pending { color: var(--accent); border: 1px solid var(--accent); }
 .peer-badge.is-blocked { color: var(--danger); border: 1px solid var(--danger); }
 
+/* ── Block modal: the reason a distrust mark carries ────────────────────────── */
+/* Blocking publishes a mark network-wide, so the modal warns and takes a
+   reason. The note is the warning; the field is what the network reads. */
+.modal-note {
+  margin: var(--space-3) 0;
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--danger);
+  background: var(--bg);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+.modal-label {
+  display: block;
+  margin-bottom: var(--space-1);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.modal-reason {
+  width: 100%;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-2);
+}
+.modal-reason:focus { outline: none; border-color: var(--accent); }
+
 /* ── Accept modal key display ───────────────────────────────────────────────── */
 .modal-key {
   display: block;

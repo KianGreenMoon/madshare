@@ -61,10 +61,13 @@ func (emptyStore) InsertFederationPeer(context.Context, *federation.Peer) (int64
 	return 0, nil
 }
 func (emptyStore) SetFederationPeerState(context.Context, int64, string, string) error { return nil }
-func (emptyStore) UpdateFederationPeerName(context.Context, int64, string) error       { return nil }
-func (emptyStore) SetFederationPeerUser(context.Context, int64, *int64) error          { return nil }
-func (emptyStore) TouchFederationPeerSeen(context.Context, int64, int64) error         { return nil }
-func (emptyStore) DeleteFederationPeer(context.Context, int64) error                   { return nil }
+func (emptyStore) BlockFederationPeer(context.Context, int64, string, string, int64) error {
+	return nil
+}
+func (emptyStore) UpdateFederationPeerName(context.Context, int64, string) error { return nil }
+func (emptyStore) SetFederationPeerUser(context.Context, int64, *int64) error    { return nil }
+func (emptyStore) TouchFederationPeerSeen(context.Context, int64, int64) error   { return nil }
+func (emptyStore) DeleteFederationPeer(context.Context, int64) error             { return nil }
 
 func (emptyStore) PublishedCatalog(context.Context, federation.Audience) ([]federation.CatalogEntry, error) {
 	return nil, nil

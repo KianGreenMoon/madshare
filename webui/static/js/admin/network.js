@@ -265,18 +265,34 @@ async function acceptPeer(p) {
   if (ok) await peerOp(p, 'accept', 'Friend added.');
 }
 
+// Blocking is a PUBLIC act: the block is published as a signed distrust mark
+// that relays across the whole network and is readable by the node being
+// blocked (docs/architecture/federation.md §Friend-list gossip). The modal has
+// to say so plainly and collect the reason, because a mark without one is an
+// anonymous downvote nobody downstream can act on.
 async function blockPeer(p) {
+  const reason = el('input', {
+    type: 'text',
+    class: 'modal-reason',
+    maxlength: '280',
+    placeholder: 'e.g. advertised a hash with a contradicting fingerprint',
+  });
   const ok = await confirmModal({
     title: 'Block this node?',
-    bodyNodes: [el('p', {}, [`Block “${p.name || p.public_key.slice(0, 12)}”? It loses all madnetwork service from this node immediately. You can unblock it later.`])],
-    confirmLabel: 'Block',
+    bodyNodes: [
+      el('p', {}, [`Block “${p.name || p.public_key.slice(0, 12)}”? It loses all madnetwork service from this node immediately. You can unblock it later.`]),
+      el('p', { class: 'modal-note' }, ['This block is published to the network as a distrust mark — everyone, including the blocked node, can see it and read the reason. Unblocking withdraws it again.']),
+      el('label', { class: 'modal-label' }, ['Reason (shown to everyone)']),
+      reason,
+    ],
+    confirmLabel: 'Block and publish',
     danger: true,
   });
-  if (ok) await peerOp(p, 'block', 'Node blocked.');
+  if (ok) await peerOp(p, 'block', 'Node blocked; distrust mark published.', { reason: reason.value.trim() });
 }
 
 async function unblockPeer(p) {
-  await peerOp(p, 'unblock', 'Node unblocked.');
+  await peerOp(p, 'unblock', 'Node unblocked; the distrust mark is withdrawn.');
 }
 
 async function removePeer(p) {
@@ -299,9 +315,12 @@ async function removePeer(p) {
   refresh();
 }
 
-async function peerOp(p, op, doneMsg) {
+async function peerOp(p, op, doneMsg, body = null) {
   try {
-    const res = await fetch(`${API}/api/admin/federation/peers/${p.id}/${op}`, { method: 'POST' });
+    const res = await fetch(`${API}/api/admin/federation/peers/${p.id}/${op}`, {
+      method: 'POST',
+      ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
+    });
     if (handleAuthError(res)) return;
     const body = await res.json().catch(() => ({}));
     if (!res.ok) { toast(body.error || `Operation failed (HTTP ${res.status}).`, 'error'); return; }

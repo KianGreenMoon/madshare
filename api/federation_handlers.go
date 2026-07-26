@@ -154,12 +154,56 @@ func (h *handler) federationPeerAccept(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// federationPeerBlock handles POST .../peers/{peerID}/block: refuse the node
-// all madnetwork service (local effect only in F1).
+// federationPeerBlock handles POST .../peers/{peerID}/block: refuse the node all
+// madnetwork service and publish the block as a distrust mark.
+//
+// The optional {"reason": "…"} body is what the rest of the network reads. An
+// absent one is accepted — refusing to block without an explanation would be
+// worse than an unexplained block — but it makes the mark an anonymous downvote.
 func (h *handler) federationPeerBlock(w http.ResponseWriter, r *http.Request) {
-	if node, id, ok := h.federationPeerID(w, r); ok {
-		h.federationPeerOp(w, r, func() error { return node.BlockPeer(r.Context(), id) })
+	node, id, ok := h.federationPeerID(w, r)
+	if !ok {
+		return
 	}
+	reason := blockReasonFromBody(r)
+	h.federationPeerOp(w, r, func() error { return node.BlockPeer(r.Context(), id, reason) })
+}
+
+// federationBlockKey handles POST /api/admin/federation/block with
+// {"public_key", "name", "reason"}: block a node we have no relationship with,
+// seen only on the gossiped graph.
+func (h *handler) federationBlockKey(w http.ResponseWriter, r *http.Request) {
+	if h.federation == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "federation is not enabled"})
+		return
+	}
+	var req struct {
+		PublicKey string `json:"public_key"`
+		Name      string `json:"name"`
+		Reason    string `json:"reason"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid json (want {\"public_key\": \"…\"})"})
+		return
+	}
+	if err := h.federation.BlockKey(r.Context(), req.PublicKey, req.Name, req.Reason); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// blockReasonFromBody reads the optional reason. A missing or malformed body is
+// simply no reason: the block itself must not depend on parsing succeeding.
+func blockReasonFromBody(r *http.Request) string {
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if r.Body == nil {
+		return ""
+	}
+	_ = json.NewDecoder(http.MaxBytesReader(nil, r.Body, 8<<10)).Decode(&req)
+	return req.Reason
 }
 
 // federationPeerUnblock handles POST .../peers/{peerID}/unblock.

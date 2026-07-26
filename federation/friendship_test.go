@@ -425,7 +425,7 @@ func TestFriendshipHandshake(t *testing.T) {
 
 	// Block: A refuses B all service — even the ping.
 	pa, _ := storeA.GetFederationPeerByKey(ctx, b.PublicKeyHex())
-	if err := a.BlockPeer(ctx, pa.ID); err != nil {
+	if err := a.BlockPeer(ctx, pa.ID, "test block"); err != nil {
 		t.Fatalf("block on A: %v", err)
 	}
 	client := &http.Client{

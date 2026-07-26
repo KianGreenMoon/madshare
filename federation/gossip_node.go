@@ -134,6 +134,108 @@ func (n *Node) publishOwnRecord(ctx context.Context, peers []*Peer) {
 	n.logger.Printf("federation: published friend-list record seq %d (%d friendships)", seq, len(edges))
 }
 
+// publishOwnMarkRecord signs and stores this node's distrust list — every peer
+// it has blocked, with the reason and the time.
+//
+// Deliberately NOT gated on the publish-friend-list setting: that switch is
+// about naming third parties this node is friends with, while a mark is this
+// node's own judgement, and the decision was that every block is published
+// (docs/architecture/federation.md §Friend-list gossip, D6b — there are no
+// private blocks).
+func (n *Node) publishOwnMarkRecord(ctx context.Context, peers []*Peer) {
+	if n.store == nil || n.signKey == nil {
+		return
+	}
+	origin := n.PublicKeyHex()
+	marks := ownMarks(peers)
+	prev := n.storedOwnMarks(ctx, origin)
+	now := time.Now()
+
+	switch {
+	case prev == nil && len(marks) == 0:
+		// Never blocked anyone: publish nothing rather than an empty record that
+		// costs every store a row to say so.
+		return
+	case prev != nil && sameMarks(prev.Marks, marks) &&
+		now.Sub(time.Unix(prev.IssuedAt, 0)) < n.intervals.GraphRepublish:
+		return // unchanged, and the heartbeat is not due
+	}
+	// Note the asymmetry with the case above: once a record exists, an EMPTY one
+	// still gets published. Lifting the last block has to supersede the record
+	// that carried it — letting it expire instead would leave the mark standing
+	// on every node for up to the TTL after the admin cleared it.
+
+	seq := now.Unix()
+	if prev != nil && prev.Seq >= seq {
+		seq = prev.Seq + 1
+	}
+	raw, err := SignMarkRecord(n.signKey, MarkRecord{
+		Origin: origin, Seq: seq, IssuedAt: now.Unix(), Marks: marks,
+	})
+	if err != nil {
+		n.logger.Printf("federation: sign own distrust record: %v", err)
+		return
+	}
+	parsed, err := ParseMarkRecord(raw)
+	if err != nil {
+		n.logger.Printf("federation: own distrust record does not verify: %v", err)
+		return
+	}
+	expires := now.Add(n.intervals.GraphTTL).Unix()
+	if _, err := n.store.PutMarkRecord(ctx, parsed, raw, nil, expires, now.Unix()); err != nil {
+		n.logger.Printf("federation: store own distrust record: %v", err)
+		return
+	}
+	n.logger.Printf("federation: published distrust record seq %d (%d mark(s))", seq, len(marks))
+}
+
+// ownMarks is the distrust list this node publishes: its blocked peers,
+// key-ordered so an unchanged set produces an unchanged record.
+func ownMarks(peers []*Peer) []DistrustMark {
+	marks := make([]DistrustMark, 0, len(peers))
+	for _, p := range peers {
+		if p.State != PeerBlocked {
+			continue
+		}
+		marks = append(marks, DistrustMark{Key: p.PublicKey, At: p.BlockedAt, Reason: p.BlockReason})
+	}
+	sort.Slice(marks, func(i, j int) bool { return marks[i].Key < marks[j].Key })
+	if len(marks) > MaxMarksPerRecord {
+		marks = marks[:MaxMarksPerRecord]
+	}
+	return marks
+}
+
+func sameMarks(a, b []DistrustMark) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// storedOwnMarks reads back the distrust record we last published, if any.
+func (n *Node) storedOwnMarks(ctx context.Context, origin string) *MarkRecord {
+	payloads, err := n.store.MarkPayloads(ctx, []string{origin}, 0)
+	if err != nil {
+		n.logger.Printf("federation: read own distrust record: %v", err)
+		return nil
+	}
+	raw, ok := payloads[origin]
+	if !ok {
+		return nil
+	}
+	rec, err := ParseMarkRecord(raw)
+	if err != nil {
+		return nil
+	}
+	return rec
+}
+
 // ownEdges is the friendship set this node publishes: its friends, key-ordered
 // so an unchanged friend list produces an unchanged record and the sequence
 // does not bump on a mere reordering by the store.

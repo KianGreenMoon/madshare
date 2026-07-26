@@ -16,6 +16,7 @@ import (
 const peerColumns = `
 	p.id, p.public_key, p.name, p.state, p.prev_state, p.user_id,
 	p.created_at, p.last_seen, p.catalog_serial, p.catalog_synced_at,
+	p.block_reason, p.blocked_at,
 	COALESCE(u.username, '')`
 
 func scanPeer(row interface{ Scan(...any) error }) (*federation.Peer, error) {
@@ -23,7 +24,7 @@ func scanPeer(row interface{ Scan(...any) error }) (*federation.Peer, error) {
 	var userID sql.NullInt64
 	if err := row.Scan(&p.ID, &p.PublicKey, &p.Name, &p.State, &p.PrevState,
 		&userID, &p.CreatedAt, &p.LastSeen, &p.CatalogSerial, &p.CatalogSyncedAt,
-		&p.Username); err != nil {
+		&p.BlockReason, &p.BlockedAt, &p.Username); err != nil {
 		return nil, err
 	}
 	if userID.Valid {
@@ -114,6 +115,24 @@ func (db *DB) SetFederationPeerState(ctx context.Context, id int64, state, prevS
 		`UPDATE federation_peers SET state = ?, prev_state = ? WHERE id = ?`, state, prevState, id)
 	if err != nil {
 		return fmt.Errorf("update federation_peers state: %w", err)
+	}
+	return requirePeerRow(res)
+}
+
+// BlockFederationPeer blocks a peer and records what the published distrust
+// mark will say: when, and why (F6). prevState is what an unblock returns to.
+//
+// Separate from SetFederationPeerState because a block is the one transition
+// that carries evidence — every block becomes a mark the whole network reads,
+// so the reason is part of the operation rather than an afterthought.
+func (db *DB) BlockFederationPeer(ctx context.Context, id int64, prevState, reason string, at int64) error {
+	res, err := db.ExecContext(ctx,
+		`UPDATE federation_peers
+		    SET state = ?, prev_state = ?, block_reason = ?, blocked_at = ?
+		  WHERE id = ?`,
+		federation.PeerBlocked, prevState, reason, at, id)
+	if err != nil {
+		return fmt.Errorf("block federation peer: %w", err)
 	}
 	return requirePeerRow(res)
 }

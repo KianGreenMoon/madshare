@@ -144,7 +144,12 @@ type FederationNode interface {
 	Peers(ctx context.Context) ([]*federation.Peer, error)
 	ImportCard(ctx context.Context, c federation.Card) (*federation.Peer, error)
 	AcceptPeer(ctx context.Context, id int64) error
-	BlockPeer(ctx context.Context, id int64) error
+	// BlockPeer cuts the peer off and publishes the block as a distrust mark
+	// carrying reason — there are no private blocks (federation F6).
+	BlockPeer(ctx context.Context, id int64, reason string) error
+	// BlockKey does the same for a node seen only on the gossiped graph, which
+	// has no peer row yet — what makes the network map actionable.
+	BlockKey(ctx context.Context, publicKey, name, reason string) error
 	UnblockPeer(ctx context.Context, id int64) error
 	RemovePeer(ctx context.Context, id int64) error
 	RenamePeer(ctx context.Context, id int64, name string) error
@@ -453,6 +458,7 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(fedManage).Delete("/federation/peers/{peerID}", h.federationPeerRemove)
 		r.With(fedManage).Post("/federation/peers/{peerID}/accept", h.federationPeerAccept)
 		r.With(fedManage).Post("/federation/peers/{peerID}/block", h.federationPeerBlock)
+		r.With(fedManage).Post("/federation/block", h.federationBlockKey)
 		r.With(fedManage).Post("/federation/peers/{peerID}/unblock", h.federationPeerUnblock)
 
 		// Symlink data sources (import in place). The admin group is already

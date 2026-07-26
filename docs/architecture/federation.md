@@ -688,7 +688,14 @@ own lifetime, relayed on the same sync:
 ```
 
 - **Every block publishes one — there are no private blocks.** Blocking is a
-  social act here by construction.
+  social act here by construction. Two consequences of that, both built: the
+  block modal states plainly that the mark relays network-wide and is readable
+  by its target, and it collects the reason there rather than after the fact;
+  and **a key can be blocked without ever having been a peer** (`BlockKey`,
+  `POST /api/admin/federation/block`), since the point of seeing past your own
+  friend list is being able to act on what you see. A blocked peer also drops
+  out of the friend-list record — a block is not a friendship, and publishing it
+  as one would misstate the graph.
 - **Key, when, and a short reason.** A bare key is an anonymous downvote: the
   reason is what lets a reader judge whether it applies to them, and it pairs
   with the contradicted-claim reports above, which produce exactly this evidence.
@@ -702,7 +709,13 @@ own lifetime, relayed on the same sync:
   which soften the choice:
   - **marks expire on the record schedule** — unblock, stop refreshing, and the
     mark is gone from every store within 7 days. A ledger that forgets is
-    recoverable; a permanent one is not.
+    recoverable; a permanent one is not. **Lifting a block does better than
+    waiting out the TTL** (built 2026-07-26): clearing the last mark publishes an
+    *empty* record rather than simply ceasing to refresh, so the record carrying
+    the accusation is superseded on every node at the next sync instead of
+    standing for up to a week after the admin withdrew it. The asymmetry is
+    deliberate — a node that has never blocked anyone publishes nothing at all,
+    since an empty record would cost every store a row to say nothing.
   - **display is branch-weighted** — one branch is one voice (layer 2), so a farm
     publishing 10 000 marks against a key renders as a single entry.
   - **nothing is automatic**, as everywhere else here: a mark is evidence put in

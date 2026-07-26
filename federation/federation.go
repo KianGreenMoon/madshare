@@ -128,6 +128,12 @@ type Peer struct {
 	CatalogSerial   string `json:"-"`
 	CatalogSyncedAt int64  `json:"catalog_synced_at"`
 
+	// Block evidence (F6): what the published distrust mark says. Both describe
+	// the current block only — an unblock leaves them behind, and the next block
+	// overwrites them.
+	BlockReason string `json:"block_reason,omitempty"`
+	BlockedAt   int64  `json:"blocked_at,omitempty"`
+
 	Username string `json:"username,omitempty"` // mapped account, display only
 	Address  string `json:"address,omitempty"`  // derived mesh address, display only
 }
@@ -142,6 +148,10 @@ type PeerStore interface {
 	GetFederationPeerByKey(ctx context.Context, publicKey string) (*Peer, error)
 	InsertFederationPeer(ctx context.Context, p *Peer) (int64, error)
 	SetFederationPeerState(ctx context.Context, id int64, state, prevState string) error
+	// BlockFederationPeer blocks a peer and records the evidence the published
+	// distrust mark carries: when, and why. Every block publishes a mark — there
+	// are no private blocks (docs/architecture/federation.md §Friend-list gossip).
+	BlockFederationPeer(ctx context.Context, id int64, prevState, reason string, at int64) error
 	UpdateFederationPeerName(ctx context.Context, id int64, name string) error
 	SetFederationPeerUser(ctx context.Context, id int64, userID *int64) error
 	TouchFederationPeerSeen(ctx context.Context, id int64, when int64) error

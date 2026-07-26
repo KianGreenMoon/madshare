@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -310,6 +311,7 @@ func (n *Node) sweep(ctx context.Context) {
 	// aged out. Both run before the loop so a friendship accepted this round is
 	// already in the record we serve during it.
 	n.publishOwnRecord(ctx, peers)
+	n.publishOwnMarkRecord(ctx, peers)
 	n.expireGraph(ctx)
 
 	for _, p := range peers {
@@ -412,10 +414,16 @@ func (n *Node) AcceptPeer(ctx context.Context, id int64) error {
 	return nil
 }
 
-// BlockPeer refuses the node all madnetwork service (local effect only in F1 —
-// distrust marks and branch snipping are F6). The prior state is remembered for
+// BlockPeer refuses the node all madnetwork service and publishes the block as
+// a distrust mark on the next sweep. The prior state is remembered for
 // UnblockPeer. Idempotent.
-func (n *Node) BlockPeer(ctx context.Context, id int64) error {
+//
+// reason is what the mark carries to the rest of the network, so blocking is a
+// public act here by construction — see the accepted risk in
+// docs/architecture/federation.md §Friend-list gossip. It is capped and
+// sanitized on the peer-name rules; empty is allowed but makes the mark an
+// anonymous downvote nobody downstream can act on.
+func (n *Node) BlockPeer(ctx context.Context, id int64, reason string) error {
 	p, err := n.store.GetFederationPeer(ctx, id)
 	if err != nil {
 		return err
@@ -424,7 +432,46 @@ func (n *Node) BlockPeer(ctx context.Context, id int64) error {
 		return nil
 	}
 	n.logger.Printf("federation: blocked %q (%s)", p.Name, p.PublicKey)
-	return n.store.SetFederationPeerState(ctx, id, PeerBlocked, p.State)
+	if err := n.store.BlockFederationPeer(ctx, id, p.State, CleanMarkReason(reason), time.Now().Unix()); err != nil {
+		return err
+	}
+	n.Nudge() // republish the mark (and drop the edge) without waiting for the tick
+	return nil
+}
+
+// BlockKey blocks a node we have no relationship with — someone seen only on
+// the gossiped graph. It creates the peer row a block needs, since blocking is
+// a judgement about a key rather than about a friendship.
+//
+// This is what makes the network map actionable: the whole point of seeing
+// past your own friend list is being able to act on what you see.
+func (n *Node) BlockKey(ctx context.Context, publicKey, name, reason string) error {
+	key, err := NormalizeKey(publicKey)
+	if err != nil {
+		return err
+	}
+	p, err := n.store.GetFederationPeerByKey(ctx, key)
+	switch {
+	case err == nil:
+		return n.BlockPeer(ctx, p.ID, reason)
+	case !errors.Is(err, ErrPeerNotFound):
+		return err
+	}
+	id, err := n.store.InsertFederationPeer(ctx, &Peer{
+		PublicKey: key,
+		Name:      CleanPeerName(name),
+		State:     PeerBlocked,
+		CreatedAt: time.Now().Unix(),
+	})
+	if err != nil {
+		return err
+	}
+	if err := n.store.BlockFederationPeer(ctx, id, "", CleanMarkReason(reason), time.Now().Unix()); err != nil {
+		return err
+	}
+	n.logger.Printf("federation: blocked %s (never a peer of ours)", key)
+	n.Nudge()
+	return nil
 }
 
 // UnblockPeer returns a blocked peer to its pre-block state. With no recorded

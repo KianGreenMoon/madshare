@@ -21,7 +21,8 @@ type fakeFederation struct {
 	imported    *federation.Card
 	patched     map[string]any
 	opErr       error
-	inboundDead bool // when true, InboundHealthy() reports false (fail-open path)
+	inboundDead bool   // when true, InboundHealthy() reports false (fail-open path)
+	blockReason string // what the last block carried into the published mark (F6)
 }
 
 func (f *fakeFederation) Info() federation.NodeInfo {
@@ -41,9 +42,17 @@ func (f *fakeFederation) ImportCard(_ context.Context, c federation.Card) (*fede
 func (f *fakeFederation) EnsureBlob(context.Context, string) (federation.Transfer, error) {
 	return nil, federation.ErrNoHolder
 }
-func (f *fakeFederation) InboundHealthy() bool                     { return !f.inboundDead }
-func (f *fakeFederation) AcceptPeer(context.Context, int64) error  { return f.opErr }
-func (f *fakeFederation) BlockPeer(context.Context, int64) error   { return f.opErr }
+func (f *fakeFederation) InboundHealthy() bool                    { return !f.inboundDead }
+func (f *fakeFederation) AcceptPeer(context.Context, int64) error { return f.opErr }
+func (f *fakeFederation) BlockPeer(_ context.Context, _ int64, reason string) error {
+	f.blockReason = reason
+	return f.opErr
+}
+
+func (f *fakeFederation) BlockKey(_ context.Context, _, _, reason string) error {
+	f.blockReason = reason
+	return f.opErr
+}
 func (f *fakeFederation) UnblockPeer(context.Context, int64) error { return f.opErr }
 func (f *fakeFederation) RemovePeer(context.Context, int64) error  { return f.opErr }
 func (f *fakeFederation) RenamePeer(_ context.Context, _ int64, name string) error {
@@ -159,5 +168,53 @@ func TestFederationEndpoints_ImportAndErrors(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("missing-peer block = %d, want 404", resp.StatusCode)
+	}
+}
+
+// Every block publishes a distrust mark, so the reason has to reach the node —
+// a mark without one is an anonymous downvote nobody downstream can act on.
+func TestFederationBlockCarriesReason(t *testing.T) {
+	fake := &fakeFederation{patched: map[string]any{}}
+	srv := newFederationTestServer(t, fake)
+
+	post := func(path, body string) int {
+		t.Helper()
+		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if code := post("/api/admin/federation/peers/7/block", `{"reason":"contradicted fingerprint"}`); code != http.StatusOK {
+		t.Fatalf("block = %d, want 200", code)
+	}
+	if fake.blockReason != "contradicted fingerprint" {
+		t.Errorf("reason reaching the node = %q, want the posted one", fake.blockReason)
+	}
+
+	// A block with no body still blocks: refusing to act without an explanation
+	// would be worse than an unexplained block.
+	fake.blockReason = "unset"
+	resp, err := http.Post(srv.URL+"/api/admin/federation/peers/7/block", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("bodyless block = %d, want 200", resp.StatusCode)
+	}
+	if fake.blockReason != "" {
+		t.Errorf("reason = %q, want empty for a bodyless block", fake.blockReason)
+	}
+
+	// Blocking a key seen only on the gossiped graph, with no peer row.
+	if code := post("/api/admin/federation/block",
+		`{"public_key":"`+strings.Repeat("ab", 32)+`","name":"stranger","reason":"sybil farm"}`); code != http.StatusOK {
+		t.Fatalf("block by key = %d, want 200", code)
+	}
+	if fake.blockReason != "sybil farm" {
+		t.Errorf("block-by-key reason = %q", fake.blockReason)
 	}
 }
