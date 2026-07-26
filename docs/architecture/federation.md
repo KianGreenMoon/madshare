@@ -1,9 +1,11 @@
 # Madnetwork federation — design
 
 > **Status: agreed 2026-07-18; F0 (groundwork), F1 (friendship), F2 (catalog),
-> F3 (direct transfer), F4 (swarm) and F5 (depth & scope) are built.** The remaining items in
-> §Open questions are design-time details to settle during the respective
-> milestones, not blockers. Federation
+> F3 (direct transfer), F4 (swarm), F5 (depth & scope) and the gossip half of F6
+> (friend-list records, distrust marks, network map) are built.** What remains in
+> F6 is the contradicted-claim reporting and the naming split. The remaining item
+> in §Open questions is a design-time detail to settle during its milestone, not a
+> blocker. Federation
 > is auth Phase 4 (`docs/architecture/auth.md` §8) and the milestone the native
 > client (`docs/ui/native-client.md`) exists to use.
 
@@ -345,13 +347,15 @@ Design notes for the implementation:
   construction: a node becomes a friend only after *both* admins acted — and
   accepting an incoming request shows the full key so the admin can check it
   against the card received out-of-band (never a blind one-click).
-- **Blocking (local effect, F1):** a blocked peer is refused the *entire*
-  protocol surface (even ping, HTTP 403) by the mesh-side auth wrapper.
-  Unblock returns the peer to its pre-block state. Distrust marks, branch
-  snipping, and de-peering arrive with F6.
+- **Blocking:** a blocked peer is refused the *entire* protocol surface (even
+  ping, HTTP 403) by the mesh-side auth wrapper. Unblock returns the peer to its
+  pre-block state. Since F6 a block also publishes a **distrust mark** carrying
+  its reason, drops the peer from our published friend list, and snips the branch
+  behind it on the map; de-peering the underlay link is still to come.
 - **Admin surface:** `/admin/network` (own card, import form, peer list with
   accept/block/unblock/remove/rename/user-mapping; pending-request badge on the
-  dashboard) over `/api/admin/federation*`, all gated `federation.manage`.
+  dashboard; the F6 network map) over `/api/admin/federation*`, all gated
+  `federation.manage`.
 
 ### Planned — names are a convenience, the key is the identity (2026-07-26)
 
@@ -555,7 +559,8 @@ never a verdict.
 
 Storage is one row per (peer, hash, claim) with an admin disposition
 (new / dismissed / acted on) so a repeating sync re-alarms nobody — a new
-migration, 031 at the earliest, since 030 is `share_depth`. A count badge on the
+migration, 033 at the earliest, since 031 and 032 are the gossip tables and the
+block evidence. A count badge on the
 dashboard alongside the pending-peer one is the whole notification design; this
 must not become mail.
 
@@ -576,7 +581,7 @@ hash never enter the cache and cost the provider its place in the swarm
   reach in F7, in that order, rather than in one phase: the dependency runs one
   way only, so F6 stands alone and F7 does not.
 
-### Friend-list gossip & the network graph (F6, designed 2026-07-26 — not built)
+### Friend-list gossip & the network graph (F6, built 2026-07-26)
 
 Settles the former Open question 1. The goal an admin actually asked for is
 **the whole network, not a radius**: every node reachable through any chain of
@@ -727,12 +732,27 @@ distance 0 and the wire's access rules remain exactly F5's — the graph is sigh
 not reach. `Audience.Distance` becoming a hop count in this graph is F7.
 
 **Storage** is a cache, like `federation_catalog`: rebuildable, referenced by
-nothing local, dropped and refilled without consequence. One table of records
-keyed by origin (`seq`, `issued_at`, payload, signature, which friend it arrived
-from, expiry) and one of marks — a new migration, 031 at the earliest since 030
-is `share_depth`. **Wire**: `GET /madnetwork/v0/graph` (digest, `since=`-aware)
-plus a record fetch, friends-only like the catalog. Additive, so an older peer
-404s and simply contributes nothing.
+nothing local, dropped and refilled without consequence. Migration 031 holds the
+records keyed by origin (`seq`, `issued_at`, payload, signature, which friend it
+arrived from, expiry) beside the edges and marks denormalized off them, so
+admission checks and the map are queries rather than a scan that decodes every
+payload. The payload column is the record **verbatim** — nothing re-encodes it,
+because the signature covers the bytes as written and a record may carry fields
+this build cannot parse. Migration 032 adds `block_reason` / `blocked_at` to
+`federation_peers`, the evidence a published mark carries.
+
+**Wire**: `GET /madnetwork/v0/graph` (digest, `since=`-aware) plus
+`POST /madnetwork/v0/graph/fetch` for the raw bytes of named records — a POST
+because the request is a list of keys, too many for a query string once a
+network is more than a handful of nodes. Friends-only like the catalog, and
+additive, so an older peer 404s and simply contributes nothing.
+
+**Admin surface**: `GET /api/admin/federation/graph` (gate `federation.manage`)
+answers the computed map — nodes with distance, branch attribution and marks,
+plus the edges between them — and `POST /api/admin/federation/block` blocks by
+key, since most nodes on the map have no peer row at all. The map computation is
+a pure function over peers, edges and marks, so branch snipping and mark
+weighting are tested without a mesh.
 
 ## Catalog & the madnetwork library
 
@@ -1181,23 +1201,32 @@ milestone directly after direct transfer works, and tokens ship with depth.
   is this not published" readout in the Recordings lens. Independent of both F6
   and F7, shippable on its own; the startup gate refusing a federated node without
   `fpcalc` (built 2026-07-26) is the other half of the same rule.
-- **F6 — Transparency & defense.** Friend-list gossip (**design settled
-  2026-07-26 — see §Friend-list gossip**: signed per-node records relayed by
-  friends, unlimited radius, digest-then-fetch on the catalog cadence, 7-day
-  expiry), the network map UI, signed distrust marks, branch snipping, and the
-  stolen-key revocation flow. **Changes nothing about who may fetch what** —
+- **F6 — Transparency & defense.** **Changes nothing about who may fetch what** —
   every requester stays at distance 0 throughout, so the wire's access rules are
-  exactly F5's. What it
-  adds is sight and reach of *judgement*: an admin can see the graph beyond their
-  own friend list, see whom the network distrusts, and cut a branch. Includes
-  **contradicted-claim reports** (§Trust graph): the fingerprint claim added to
-  the catalog wire, the checks against blobs we already hold and against
-  materialized downloads, and the evidence shown on the peer card — the detection
-  that makes the blocking tooling in this phase something an admin can act on
-  rather than guess with. Also the **naming split** (§Friendship): the map is
-  where names stop being trustworthy, since gossip delivers them second-hand
-  about nodes we have never met, so the address belongs on screen next to every
-  one of them.
+  exactly F5's. What it adds is sight and reach of *judgement*: an admin can see
+  the graph beyond their own friend list, see whom the network distrusts, and cut
+  a branch.
+
+  *Built 2026-07-26 — see §Friend-list gossip for the design and its
+  consequences.* Signed per-node friend-list records relayed by friends
+  (unlimited radius, highest-sequence-wins, digest-then-fetch on the catalog
+  cadence, 7-day expiry against a 6-hour heartbeat, migration 031); distrust
+  marks published on every block with a reason (migration 032), superseded
+  network-wide when the block is lifted; and the **network map** on
+  `/admin/network` — a node-link diagram over `GET /api/admin/federation/graph`,
+  laid out on rings by hop distance, carrying branch attribution, the address
+  beside every hearsay name, branch-weighted mark display, and Block by key for
+  the strangers that make up most of it. Branch snipping falls out of the map's
+  reachability walk: it never traverses through a blocked node.
+
+  *Still to build.* **Contradicted-claim reports** (§Trust graph): the
+  fingerprint claim added to the catalog wire, the checks against blobs we
+  already hold and against materialized downloads, and the evidence shown on the
+  peer card — the detection that makes the blocking tooling something an admin
+  can act on rather than guess with. And the **naming split** (§Friendship):
+  `federation_peers.name` still collapses the heard name into the local label, so
+  a peer that renames itself keeps its old name here forever. The map already
+  renders the address beside every name, which was the urgent half.
 - **F7 — Tokens & transitive reach.** The capability tokens that let a seeder
   serve strangers-inside-the-network, with delegated issuance along the
   friendship chain; `Audience.Distance` computed from the gossiped graph instead

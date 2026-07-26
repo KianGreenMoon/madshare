@@ -339,8 +339,10 @@ the whole page, no majority-takes-all step to explain.
   them through the whole tail, so one source occupies one region of the list
   instead of every other line of it.
 - **Cost.** The signal is another aggregate over `federation_catalog` alongside
-  the grouping already there; the branch count needs the F6 friend graph, so
-  before F6 it degrades to a per-peer count.
+  the grouping already there. The branch count needs the friend graph, which F6
+  built: `federation.BuildNetworkMap` already resolves a key to the branches it
+  is reachable through, so this can read branches rather than degrade to a
+  per-peer count.
 - **What "materially below" means numerically** — a ratio against the sibling
   median, a fixed gap, or a quantile. Deliberately unspecified until there is a
   real catalog to look at; picking a constant now would be picking it blind.
