@@ -3,6 +3,7 @@ package federation
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 const testKey = "0000000000000000000000000000000000000000000000000000000000000001"
@@ -37,7 +38,28 @@ func TestCleanPeerName(t *testing.T) {
 	if got := CleanPeerName("  x  "); got != "x" {
 		t.Errorf("trim: got %q", got)
 	}
-	if got := CleanPeerName(strings.Repeat("a", 300)); len(got) != 100 {
-		t.Errorf("cap: len = %d, want 100", len(got))
+	if got := CleanPeerName(strings.Repeat("a", 300)); utf8.RuneCountInString(got) != MaxPeerNameRunes {
+		t.Errorf("ascii cap: %d runes, want %d", utf8.RuneCountInString(got), MaxPeerNameRunes)
+	}
+	if got := CleanPeerName("Kians Musikserver"); got != "Kians Musikserver" {
+		t.Errorf("short name altered: %q", got)
+	}
+
+	// The cap counts runes, so a multi-byte name is cut on a character
+	// boundary. Capping bytes instead would slice the last character in half
+	// and leave invalid UTF-8 behind — the whole point of the rune count.
+	for _, name := range []string{
+		strings.Repeat("я", 300),  // 2 bytes per rune
+		strings.Repeat("音", 300),  // 3
+		strings.Repeat("🎵", 300), // 4
+		strings.Repeat("ä", 300),  // 2, and what a German host name hits first
+	} {
+		got := CleanPeerName(name)
+		if n := utf8.RuneCountInString(got); n != MaxPeerNameRunes {
+			t.Errorf("%.1s cap: %d runes, want %d", name, n, MaxPeerNameRunes)
+		}
+		if !utf8.ValidString(got) {
+			t.Errorf("%.1s cap produced invalid UTF-8: %q", name, got)
+		}
 	}
 }

@@ -389,13 +389,15 @@ all.
   name), drop zero-width characters, collapse internal whitespace, and reject
   newlines. Homoglyph lookalikes cannot be solved this way, which is once again
   why the address is on screen.
-- **Cap at 64 runes, and count runes.** 64 clears a DNS label (63 octets), so no
-  realistic host name is ever truncated, while staying far below anything that
-  could disrupt a layout. Today's `CleanPeerName` caps at 100 **bytes** via
-  `name[:100]`, which can slice a multi-byte character in half and store invalid
-  UTF-8 — a plain bug for any non-ASCII name, and independent of the rest of this
-  entry. The UI truncates further for display (~24 characters with the full value
-  on hover); that is a rendering choice, not a storage limit.
+- **Capped at 64 runes** — *done 2026-07-26, `MaxPeerNameRunes`; the rest of this
+  entry is still planned.* 64 clears a DNS label (63 octets), so no realistic
+  host name is ever truncated, while staying far below anything that could
+  disrupt a layout. The previous cap counted **bytes** (`name[:100]`), which made
+  the effective limit depend on the script — 100 characters of ASCII, 50 of
+  Cyrillic or German umlauts, 25 of emoji — and cut a 3-byte character in half at
+  that boundary, storing invalid UTF-8 for CJK names. The UI truncates further
+  for display (~24 characters with the full value on hover); that is a rendering
+  choice, not a storage limit.
 
 ## Trust graph, transparency & defense
 

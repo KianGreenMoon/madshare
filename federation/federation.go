@@ -20,6 +20,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // MeshPort is the fixed TCP port of the madnetwork protocol listener on every
@@ -468,12 +469,23 @@ func ParseCard(raw []byte) (Card, error) {
 	return c, nil
 }
 
+// MaxPeerNameRunes caps a node's display name. 64 clears a DNS label (63
+// octets), so no realistic host name — the default self-name — is ever
+// truncated, while staying short enough not to disturb a layout. A name is only
+// a label: identity is the key, and every surface showing a name shows the mesh
+// address beside it (docs/architecture/federation.md §Friendship).
+const MaxPeerNameRunes = 64
+
 // CleanPeerName trims and length-caps a peer-supplied display name (cards and
 // pair requests are remote input).
+//
+// The cap counts runes, not bytes. Slicing a UTF-8 string at a byte offset can
+// cut a multi-byte character in half and store the broken tail, which every
+// non-ASCII name long enough to be truncated would hit.
 func CleanPeerName(name string) string {
 	name = strings.TrimSpace(name)
-	if len(name) > 100 {
-		name = name[:100]
+	if utf8.RuneCountInString(name) > MaxPeerNameRunes {
+		name = string([]rune(name)[:MaxPeerNameRunes])
 	}
 	return name
 }
