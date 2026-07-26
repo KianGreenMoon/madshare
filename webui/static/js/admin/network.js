@@ -193,7 +193,11 @@ function renderUserMapping(p) {
 }
 
 function startRename(p, nameSpan) {
-  const input = el('input', { class: 'peer-name-input', value: p.name || '', maxlength: '100' });
+  // Mirrors the server cap (federation.MaxPeerNameRunes), so a rename is never
+  // silently truncated on save. maxlength counts UTF-16 units rather than runes,
+  // making it marginally stricter for astral characters like emoji — stopping
+  // the field early is better than accepting text the server would cut.
+  const input = el('input', { class: 'peer-name-input', value: p.name || '', maxlength: '64' });
   nameSpan.replaceWith(input);
   input.focus();
   input.select();

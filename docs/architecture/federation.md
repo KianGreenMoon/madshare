@@ -456,9 +456,9 @@ Tests should be a golden table: a `U+202E` reversal, a friend's name padded with
 (documenting the loss), a Persian name with ZWNJ (likewise), and a name that
 sanitizes to nothing.
 
-One inconsistency to fix alongside: the rename field in
-`webui/static/js/admin/network.js` still carries `maxlength: '100'`, so the UI
-accepts 65–100 characters that the server then silently truncates to 64.
+(The rename field in `webui/static/js/admin/network.js` already mirrors the cap
+at 64 — `maxlength` counts UTF-16 units rather than runes, so it is marginally
+stricter for emoji, which is the harmless direction.)
 
 ## Trust graph, transparency & defense
 
