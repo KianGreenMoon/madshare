@@ -27,18 +27,19 @@ default** — its social graph is visible to its members.
   the knob exists so an admin can tighten as the network grows.
 - **Gossip** — information spread node-to-node rather than from a central place:
   each node tells its friends, who tell theirs. Three distinct uses, deliberately
-  kept apart. **Friend-list gossip** (F6) — B tells A whom B is friends with, so
-  A can see the graph past its own friend list; the network map, branch snipping
-  and distrust marks all read it, and `Audience.Distance` (F7) is a hop count in
-  it. **Freshness-hint gossip** (F7) — a friend relays *its* friends' `last_seen`
-  as a second-hand claim, so availability survives past one hop without pinging
-  strangers (§Availability). **Catalog-delta gossip** (deferred) — pushing
-  library changes instead of pulling snapshots; an optimisation, unrelated to the
-  other two. Despite the name none of these is a push protocol here: they ride
+  kept apart. **Friend-list gossip** (F6, designed) — B tells A whom B is friends
+  with *and relays what B's own friends said*, so A's view grows past its friend
+  list to the whole connected network rather than a fixed radius; the network
+  map, branch snipping and distrust marks all read it, and `Audience.Distance`
+  (F7) is a hop count in it. **Freshness-hint gossip** (F7) — a friend relays
+  *its* friends' `last_seen` as a second-hand claim, so availability survives
+  past one hop without pinging strangers (§Availability). **Catalog-delta
+  gossip** (deferred) — pushing library changes instead of pulling snapshots; an
+  optimisation, unrelated to the other two. Despite the name none of these is a push protocol here: they ride
   the existing periodic pull (§Catalog), and the word describes how information
   travels, not the transport. Because a friend list names third parties who never
-  agreed to be named, its payload is a privacy decision as much as a protocol one
-  (§Open questions).
+  agreed to be named, its payload is a privacy decision as much as a protocol
+  one; both halves are settled in §Friend-list gossip.
 - **Full peer** — a node: participates in catalog exchange and the swarm.
 - **Thin client** — a browser user. Thin clients are *not* madnetwork
   participants; they are local users of exactly one home node, which acts as
@@ -462,9 +463,10 @@ stricter for emoji, which is the harmless direction.)
 
 ## Trust graph, transparency & defense
 
-- **Transparency:** nodes gossip their friend lists (within trust depth), so
-  every admin can see the reachable network as a graph — who is connected to
-  whom — in an admin UI (network map).
+- **Transparency:** nodes gossip their friend lists, so every admin can see the
+  reachable network as a graph — who is connected to whom — in an admin UI
+  (network map). Not bounded by a radius: signed records relay outward until the
+  store holds the whole connected component (§Friend-list gossip below).
 - **Blocking ("snipping a branch"):** an admin can block any node key. Blocking
   is **manual** — there is deliberately **no automatic rating/critical-mass
   system in v1** (an automatic reputation score is a weapon for intra-network
@@ -475,9 +477,11 @@ stricter for emoji, which is the harmless direction.)
     de-peer, so the blocked node loses us as transit. (On shared public-mesh
     segments, transit below the app layer is Yggdrasil's business — the
     app-layer cut is the guaranteed part.)
-  - Blocks are **published as signed distrust marks**, visible to friends: "see
-    whom your friends don't trust." Friends factor that in manually; nothing is
-    automatic.
+  - Blocks are **published as signed distrust marks**, relayed network-wide like
+    the friend records and carrying a short reason: "see whom the network does
+    not trust, and why." Every block publishes one — there are no private blocks.
+    Readers factor them in manually; nothing is automatic, and the accepted risk
+    of a public ledger is spelled out in §Friend-list gossip.
   - Blocking a node also snips the *branch* behind it — nodes reachable only
     through the blocked node drop out of our view; nodes also connected via
     other friends remain.
@@ -570,6 +574,140 @@ hash never enter the cache and cost the provider its place in the swarm
   the wrong order. This is the reason the build plan puts defense in F6 and
   reach in F7, in that order, rather than in one phase: the dependency runs one
   way only, so F6 stands alone and F7 does not.
+
+### Friend-list gossip & the network graph (F6, designed 2026-07-26 — not built)
+
+Settles the former Open question 1. The goal an admin actually asked for is
+**the whole network, not a radius**: every node reachable through any chain of
+friendships shows up on the map. The design that delivers that without flooding
+is to relay *records*, never views.
+
+**The record.** Each node publishes exactly one document about itself:
+
+```json
+{ "protocol": 1,
+  "origin":  "<hex ed25519 node key>",
+  "seq":     7,
+  "issued_at": 1753400000,
+  "friends": [ {"key": "a1b2…", "name": "studio", "since": 1750000000} ],
+  "sig":     "<ed25519 over the canonical encoding>" }
+```
+
+- **Per edge: key, name, `since`.** The mesh address is never sent — it derives
+  from the key (`AddrForKeyHex`). `since` is when the friendship was made, a
+  cheap durability signal a five-year-old edge should get credit for when
+  trust weighting arrives in F7; it also leaks a timeline of who befriended
+  whom, which is the price.
+- **Signed by the origin's own node key** — the key that already *is* the
+  identity, so no new PKI. A relay carries the bytes untouched: it can withhold
+  a record, never forge one.
+- **The names are hearsay.** Sanitized and rune-capped on receipt exactly like
+  peer names, and the map renders the address beside every one — most nodes on
+  the graph are strangers whose names arrived second-hand (§Friendship, naming).
+
+**Propagation: friends relay, nobody crawls.** A node opens connections to its
+own friends and to nobody else, ever. Each friend serves its whole store, so
+records ripple outward one ring per sync round until every store holds the
+entire connected component. No hop limit — the radius is unlimited by design.
+
+- Signatures are what make this safe: A can hand me X's record and I verify X
+  wrote it without X and I ever meeting.
+- **Rejected — dialing nodes directly** (take a key from a friend's list, connect
+  to that node, ask it yourself). It costs N² connections per round (500 nodes ≈
+  250 000 dials) to move a graph that changes monthly; it requires opening the
+  friends-only mesh endpoints to strangers; and it routes around the trust model
+  by making every node interrogable by anyone. Relaying is both cheaper *and*
+  more complete, since it surfaces nodes we could not dial at all.
+- There is no other discovery path to choose from: Yggdrasil does not enumerate
+  the mesh, so **the friend graph is the discovery mechanism**.
+
+**Convergence: highest `seq` wins.** A receiver keeps one record per origin. A
+copy of a `seq` already held is dropped and *not* re-propagated, so loops die on
+their own — no hop counts, no TTL-based loop control. This is link-state
+routing's rule, and Yggdrasil's own one layer down. The origin bumps `seq` when
+its friend list changes and on the heartbeat below.
+
+**Bandwidth: digest-then-fetch on the catalog cadence.** Sync rides the existing
+~15-minute catalog loop. A round exchanges a digest of `{origin, seq}` pairs
+(~48 bytes per node), then fetches only the records whose `seq` is missing. The
+digest carries a serial and answers `since=` with a not-modified reply, exactly
+as `handleCatalog` already does. A 10 000-node network is ~480 KB for a *full*
+digest; a realistic mesh of a few hundred is 10–30 KB; an unchanged graph costs
+one small round-trip per friend and moves no payload at all.
+
+**Expiry: 7 days, refreshed every 6 hours.** The origin re-signs on the
+heartbeat even when nothing changed; receivers drop a record 7 days after
+`issued_at` and stop serving it. Chosen against this network's actual
+population — intermittently-online home servers (§Goal) must survive a weekend
+offline — while an abandoned key fades from every store inside a week with
+nobody acting. Rejected: 24 h/1 h (a two-day trip drops you off the map, and 24×
+the chatter for a graph that changes monthly) and 30 d/24 h (a snipped branch
+lingers a month in stores that forgot why).
+
+**Publishing is node-level and default-on.** Runtime setting
+`madnetwork.publish_friend_list`, default on, matching the network's default-∞
+transparency. All edges or none — deliberately no per-peer granularity.
+
+- **The switch means "I publish no record", and nothing more.** A shared edge has
+  two ends, and the other end is not yours to silence: friends' records still
+  name you, so you stay on the map with visible edges and only your own list is
+  missing. The UI text must say precisely that. Anything softer sells an
+  invisibility that does not exist.
+
+**Anti-flood bounds** (engineering limits, not policy):
+
+- at most 512 edges per record — a longer list is refused, not truncated;
+- a per-branch quota on how many origins any single friend may introduce, and
+  blocking that friend drops everything that entered through it;
+- at most one accepted new `seq` per origin per minute;
+- a record whose origin is named by nobody in our store is junk, and dropped.
+
+Together these bound a sybil farm to display noise: a farm behind one edge is
+one branch, and dies with one snip (layer 2 above).
+
+**Distrust marks** are a second document type, independently signed, with their
+own lifetime, relayed on the same sync:
+
+```json
+{ "protocol": 1, "origin": "…", "seq": 3, "issued_at": 1753400000,
+  "marks": [ {"key": "e5f6…", "at": 1753300000,
+              "reason": "advertised hash 3a9f… with a fingerprint
+                         contradicting our own copy"} ],
+  "sig": "…" }
+```
+
+- **Every block publishes one — there are no private blocks.** Blocking is a
+  social act here by construction.
+- **Key, when, and a short reason.** A bare key is an anonymous downvote: the
+  reason is what lets a reader judge whether it applies to them, and it pairs
+  with the contradicted-claim reports above, which produce exactly this evidence.
+  Capped and sanitized on the peer-name rules at a larger cap (280 runes).
+- **Relayed network-wide**, so everyone sees whom everyone distrusts — including
+  the node being marked.
+- **Accepted risk, stated plainly.** This is a global, public accusation ledger,
+  carrying free text, with no rebuttal path, readable by its target: the
+  intra-network-war warning this section opens with applies to it squarely. It
+  was chosen with that understood (2026-07-26). Three containments, none of
+  which soften the choice:
+  - **marks expire on the record schedule** — unblock, stop refreshing, and the
+    mark is gone from every store within 7 days. A ledger that forgets is
+    recoverable; a permanent one is not.
+  - **display is branch-weighted** — one branch is one voice (layer 2), so a farm
+    publishing 10 000 marks against a key renders as a single entry.
+  - **nothing is automatic**, as everywhere else here: a mark is evidence put in
+    front of a human beside the Block action, never an input to a score.
+
+**This changes nothing about who may fetch what.** Every requester stays at
+distance 0 and the wire's access rules remain exactly F5's — the graph is sight,
+not reach. `Audience.Distance` becoming a hop count in this graph is F7.
+
+**Storage** is a cache, like `federation_catalog`: rebuildable, referenced by
+nothing local, dropped and refilled without consequence. One table of records
+keyed by origin (`seq`, `issued_at`, payload, signature, which friend it arrived
+from, expiry) and one of marks — a new migration, 031 at the earliest since 030
+is `share_depth`. **Wire**: `GET /madnetwork/v0/graph` (digest, `since=`-aware)
+plus a record fetch, friends-only like the catalog. Additive, so an older peer
+404s and simply contributes nothing.
 
 ## Catalog & the madnetwork library
 
@@ -1018,12 +1156,15 @@ milestone directly after direct transfer works, and tokens ship with depth.
   is this not published" readout in the Recordings lens. Independent of both F6
   and F7, shippable on its own; the startup gate refusing a federated node without
   `fpcalc` (built 2026-07-26) is the other half of the same rule.
-- **F6 — Transparency & defense.** Friend-list gossip within depth, the network
-  map UI, signed distrust marks, branch snipping, and the stolen-key revocation
-  flow. **Changes nothing about who may fetch what** — every requester stays at
-  distance 0 throughout, so the wire's access rules are exactly F5's. What it
+- **F6 — Transparency & defense.** Friend-list gossip (**design settled
+  2026-07-26 — see §Friend-list gossip**: signed per-node records relayed by
+  friends, unlimited radius, digest-then-fetch on the catalog cadence, 7-day
+  expiry), the network map UI, signed distrust marks, branch snipping, and the
+  stolen-key revocation flow. **Changes nothing about who may fetch what** —
+  every requester stays at distance 0 throughout, so the wire's access rules are
+  exactly F5's. What it
   adds is sight and reach of *judgement*: an admin can see the graph beyond their
-  own friend list, see whom their friends distrust, and cut a branch. Includes
+  own friend list, see whom the network distrusts, and cut a branch. Includes
   **contradicted-claim reports** (§Trust graph): the fingerprint claim added to
   the catalog wire, the checks against blobs we already hold and against
   materialized downloads, and the evidence shown on the peer card — the detection
@@ -1069,18 +1210,15 @@ milestone directly after direct transfer works, and tokens ship with depth.
 
 ## Open questions (design-time details)
 
-1. **Gossip payload details (F6) — the next one to settle**, since gossip is now
-   the first thing F6 builds: what exactly a friend-list / distrust message
-   carries, how far it propagates, and how a receiver ages it out. Note that the
-   friend-list half is a **privacy** decision as much as a protocol one — it
-   tells a friend-of-a-friend who my friends are.
-2. Token lifetime / renewal cadence (F7).
+1. Token lifetime / renewal cadence (F7).
 
 (Former question 1 — catalog crossing / one tagset text on two recordings —
 was settled with F2: see §Catalog, ""N versions"". Former question 2 — chunk
 size & Merkle parameters — was settled with F4: adaptive, self-describing chunk
 size in the manifest; whole-file hash is the anchor, per-chunk hashes are for
-early verification only. See §Distribution.)
+early verification only. See §Distribution. Former question 3 — gossip payload,
+propagation and ageing — was settled 2026-07-26 ahead of F6: see §Friend-list
+gossip, including the privacy half.)
 
 Decided-and-deferred: **replication** (subscribe/favourite → mirror, storage
 caps) stays out of v1 — manual download-to-library already makes a node a
