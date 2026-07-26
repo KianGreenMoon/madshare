@@ -249,6 +249,34 @@ useful, because sometimes rare is exactly what the user came for. The same
 number that keeps a flood from outranking real music also powers a genuinely
 good badge. A holder count belongs next to it.
 
+**Rarity is relative, and marked only where it is news** (decided 2026-07-26).
+If everything in view is rare, nothing is: the badge means *rarer than what
+surrounds it*, so the rule is
+
+> mark an item when its corroboration is materially below its context's — never
+> otherwise, and never inherited downward.
+
+A rare artist's albums are not each labeled rare; their rarity is already
+explained by the artist's, and repeating it on every descendant turns the badge
+into wallpaper. Same for a rare album's tracks. But an unusual track *inside an
+ordinary album* is exactly worth marking, because there the rarity is news about
+that track rather than about its parent — it is rare **for this album**, which is
+what the badge should say.
+
+Two things fall out of the one rule, which is why it is worth stating this way:
+
+- **Small networks mark nothing.** With three friends almost everything is
+  single-source, so nothing stands out from its context and no badge appears.
+  A small network is not a suspicious one, and it needs no special case.
+- **Rarity inside a rare parent still shows** when it is genuinely uneven — three
+  albums held by one node under an artist whose fourth is held by five is a real
+  difference, and the rule catches it without another clause.
+
+*Implementation consequence:* "is rare" is a property of a row **in the list it
+appears in**, not of the row itself, so it cannot be precomputed or cached per
+entry. The browse already builds each list server-side per request, which is
+where the sibling distribution is available.
+
 ### Album identity: overlap, not a hash
 
 An album identifier hashed from its recordings is brittle in the ordinary case,
@@ -286,25 +314,36 @@ place a curious user or an admin goes to judge a source after a report. It does
 **not** carry the ranking above: within one node's shelf there is nothing to
 corroborate against, so its own catalog order is the right order.
 
+### Conflicting placements are not a special case
+
+The same recording filed under different artists or albums by different nodes is
+usually **not corruption at all**: a track credited "A feat. B" legitimately
+belongs under A for one tagger and under B for another, and the local model
+already declines to settle this — the library artist list is album-artist only,
+and multi-credit "feat." parsing is deferred (`docs/architecture/artist-album-model.md`).
+The network view must not try to solve upstream of the local library.
+
+So placements get the same treatment as everything else on this page rather than
+a vote (decided 2026-07-26): weight them, lead with the best-corroborated one,
+and **show every other placement that is also well corroborated** — two popular
+placements are two legitimate answers, not a winner and a loser. A placement only
+one branch asserts still appears, marked rare like anything else. One rule for
+the whole page, no majority-takes-all step to explain.
+
 ### Open
 
-- **Volume from a single honest branch.** Branch weighting answers the sybil
-  farm but not one friend with fifty thousand badly tagged albums: still one
-  voice, still fifty thousand rows in the tail. Clustering a branch's
-  uncorroborated entries together, rather than interleaving them through the
-  whole tail, is the likely answer.
-- **Threshold at small scale.** With three friends almost nothing is
-  corroborated, so a fixed "needs two branches" rule would demote the entire
-  network. The tiering must relax toward *show everything at equal rank* as the
-  graph shrinks, rather than treating a small network as a suspicious one.
-- **Conflicting placements** — the same recording filed under different
-  artists or albums by different nodes. Reading the "order, never hide"
-  principle: the majority placement leads and the alternatives stay reachable
-  from the track's expansion, where holders and versions already live. Recorded
-  as inference, not yet a decision.
+- **Volume from a single honest branch** — likely answer agreed 2026-07-26, not
+  yet specified. Branch weighting answers the sybil farm but not one friend with
+  fifty thousand badly tagged albums: still one voice, still fifty thousand rows.
+  Cluster a branch's low-corroboration entries together rather than interleaving
+  them through the whole tail, so one source occupies one region of the list
+  instead of every other line of it.
 - **Cost.** The signal is another aggregate over `federation_catalog` alongside
   the grouping already there; the branch count needs the F6 friend graph, so
   before F6 it degrades to a per-peer count.
+- **What "materially below" means numerically** — a ratio against the sibling
+  median, a fixed gap, or a quantile. Deliberately unspecified until there is a
+  real catalog to look at; picking a constant now would be picking it blind.
 
 ## Out of scope
 
