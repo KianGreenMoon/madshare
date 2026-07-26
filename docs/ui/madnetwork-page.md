@@ -34,6 +34,13 @@ documented with the backend:
 - **Remote entries in playlists are first-class but honestly labeled.** They
   play (streamed relay) and survive in playlists, but carry a warning that they
   are not local and may become unavailable.
+- **Nothing is hidden; things are ordered** (decided 2026-07-26). Weak or
+  unverifiable structure is ranked down and labeled, never suppressed. Someone
+  hunting a rare record is a normal user of this page, and a rule that protects
+  the artist list by deleting the long tail from it has destroyed the thing the
+  network is for. The only content the page withholds is content nobody
+  reachable can serve (§Availability), which is a fact about the world rather
+  than a judgement about a claim.
 
 ## Shared browse core
 
@@ -198,6 +205,106 @@ library's existing order. Tracks order by disc, track number, then title. The
 ordering is applied server-side (same shape as `database/library.go`); remote
 catalogs carry no normalized ids, so the bucket match is best-effort on the
 canonical default strings.
+
+## Planned — ranking rare and unverifiable structure
+
+Today the hierarchy is built *out of* text: `GROUP BY lower(akey), lower(alb)`
+over `federation_catalog`. Tags do not describe the structure, they **are** the
+structure. The local library can afford that because tags are moderated on
+ingest; the network cannot, because the text arrives from strangers. One
+mistagged album is enough to put a record under the wrong artist, and a node
+with a badly tagged library — or a hostile one — reshapes the artist list.
+
+The principle to build on: **structure that came from audio is evidence,
+structure that came from text is a claim.** Anchor the page on the verifiable
+part; let the claims decorate it.
+
+**Mistake and attack are the same signal, deliberately.** A troll's fabricated
+album and an honest typo both produce *a claim nobody else makes*. Keying the
+remedy on that rather than on intent means it needs no judgement, no urgency and
+no blocking to work — and it treats a clumsy friend exactly like an enemy, which
+is right, because their effect on the artist list is identical.
+
+### The ordering signal
+
+Two inputs, both already part of the design's vocabulary:
+
+- **Corroboration, counted per branch, never per node.** Nodes reachable only
+  through one friend are **one voice** (federation.md §Trust graph, the sybil
+  rule). A farm of fifty nodes behind a single friendship edge corroborates
+  nothing, and dies with one snip.
+- **Trust distance of the nearest holder**, which cuts the other way and is why
+  it is worth having: a **direct friend is somebody this admin deliberately
+  added**, so a claim only they make is credible rather than suspect. Distant
+  *and* uncorroborated is where the tail belongs.
+
+Together they are a **sort key, not a filter**. Corroborated structure leads;
+everything else follows, labeled.
+
+### Label it "rare", because that is what it usually is
+
+The tail is presented as **"rare album" / "rare artist"**, not as anything
+suspicious. It is honest — one holder three hops out *is* rare — and it is
+useful, because sometimes rare is exactly what the user came for. The same
+number that keeps a flood from outranking real music also powers a genuinely
+good badge. A holder count belongs next to it.
+
+### Album identity: overlap, not a hash
+
+An album identifier hashed from its recordings is brittle in the ordinary case,
+never mind the adversarial one: deluxe editions, bonus tracks, regional
+pressings and a one-track holding versus a ten-track one all yield different
+hashes for what everyone calls one album. Identity should **emerge from recording
+overlap** — two album claims sharing recordings, with similar text, are probably
+one album — which degrades into "probably related" where a hash simply fails.
+
+The anchor is per-recording identity: the content hash (identical bytes) today,
+and the **fingerprint claim once it is on the catalog wire** (federation.md F6,
+added there for contradicted-claim reports). Fingerprints matter more than hashes
+here: a hash only matches when one node fetched the bytes from the other, while a
+fingerprint matches two independent rips of the same recording — so album linkage
+works between libraries that never exchanged a byte.
+
+**No MusicBrainz** (decided 2026-07-26). Release ids would make album identity
+exact where present, but it is a separate, optional external service and nothing
+in the hierarchy may depend on it.
+
+### Reporting trash
+
+A user who finds garbage reports it from the row; the report reaches the admin
+with the **source node or nodes** attached, next to a Block action — the same
+inbox as the contradicted-claim reports (federation.md §Trust graph), and
+manual in exactly the same way. Nothing about a peer's service changes because a
+user complained; blocking stays a decision a person makes.
+
+### Browsing a single node
+
+Wanted, lower priority: a view of one node's shared library on its own — "show
+me what *this* friend has". Useful in its own right, and it is where a node's
+offering is complete, uncorroborated entries included, so it doubles as the
+place a curious user or an admin goes to judge a source after a report. It does
+**not** carry the ranking above: within one node's shelf there is nothing to
+corroborate against, so its own catalog order is the right order.
+
+### Open
+
+- **Volume from a single honest branch.** Branch weighting answers the sybil
+  farm but not one friend with fifty thousand badly tagged albums: still one
+  voice, still fifty thousand rows in the tail. Clustering a branch's
+  uncorroborated entries together, rather than interleaving them through the
+  whole tail, is the likely answer.
+- **Threshold at small scale.** With three friends almost nothing is
+  corroborated, so a fixed "needs two branches" rule would demote the entire
+  network. The tiering must relax toward *show everything at equal rank* as the
+  graph shrinks, rather than treating a small network as a suspicious one.
+- **Conflicting placements** — the same recording filed under different
+  artists or albums by different nodes. Reading the "order, never hide"
+  principle: the majority placement leads and the alternatives stay reachable
+  from the track's expansion, where holders and versions already live. Recorded
+  as inference, not yet a decision.
+- **Cost.** The signal is another aggregate over `federation_catalog` alongside
+  the grouping already there; the branch count needs the F6 friend graph, so
+  before F6 it degrades to a per-peer count.
 
 ## Out of scope
 
