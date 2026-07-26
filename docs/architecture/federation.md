@@ -35,11 +35,12 @@ default** — its social graph is visible to its members.
   *its* friends' `last_seen` as a second-hand claim, so availability survives
   past one hop without pinging strangers (§Availability). **Catalog-delta
   gossip** (deferred) — pushing library changes instead of pulling snapshots; an
-  optimisation, unrelated to the other two. Despite the name none of these is a push protocol here: they ride
-  the existing periodic pull (§Catalog), and the word describes how information
-  travels, not the transport. Because a friend list names third parties who never
-  agreed to be named, its payload is a privacy decision as much as a protocol
-  one; both halves are settled in §Friend-list gossip.
+  optimisation, unrelated to the other two. Despite the name none of these is a
+  push protocol here: they ride the existing periodic pull (§Catalog), and the
+  word describes how information travels, not the transport. Because a friend
+  list names third parties who never agreed to be named, its payload is a
+  privacy decision as much as a protocol one; both halves are settled in
+  §Friend-list gossip.
 - **Full peer** — a node: participates in catalog exchange and the swarm.
 - **Thin client** — a browser user. Thin clients are *not* madnetwork
   participants; they are local users of exactly one home node, which acts as
