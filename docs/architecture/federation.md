@@ -351,6 +351,52 @@ Design notes for the implementation:
   accept/block/unblock/remove/rename/user-mapping; pending-request badge on the
   dashboard) over `/api/admin/federation*`, all gated `federation.manage`.
 
+### Planned — names are a convenience, the key is the identity (2026-07-26)
+
+Self-naming stays exactly as it is: `[federation].name`, falling back to the host
+name, is what a node says in the pair handshake — "hello, my name is …" and
+nothing more. What needs fixing is the receiving side, where **three different
+names are collapsed into one `federation_peers.name` column**:
+
+| | what it is | who owns it |
+|---|---|---|
+| self-name | what we call ourselves on the wire | this node's config |
+| heard name | what a peer calls *itself* | the peer — a claim, refreshable |
+| local label | what *we* choose to call that peer | this admin, always wins |
+
+Today the column is seeded from the card, then overwritten by a rename — which
+destroys the claim — and afterwards never refreshed at all, because `pairWith`
+backfills the name only when it is empty. So a peer that renames itself stays
+under its old name here forever, and an admin who renames a peer can no longer
+see what that peer calls itself.
+
+Planned shape: separate the heard name from the local label (a migration),
+refresh the heard name on every successful contact, and display
+`local label ?? heard name ?? short key`. **Wherever a node is shown, render its
+mesh address or key beside the name** — peer cards and the F6 network map above
+all.
+
+- **On the map this matters more than in the peer list.** Once friend-list gossip
+  lands, most nodes on the graph are ones we have no relationship with, and their
+  names arrive *second-hand from a friend*. A name there is hearsay about a
+  stranger, so nothing may be identified by it.
+- **Impersonation is a naming problem, not a hole.** Any node may call itself
+  anything, including exactly what a friend calls itself. There is no fix at the
+  name layer and none is needed — the address is the identity, the name is a
+  label, and the UI must never let the second stand in for the first.
+- **Sanitize: peer-supplied names are remote input rendered in admin UI.**
+  Strip control characters and bidi overrides (`U+202E` can visually reverse a
+  name), drop zero-width characters, collapse internal whitespace, and reject
+  newlines. Homoglyph lookalikes cannot be solved this way, which is once again
+  why the address is on screen.
+- **Cap at 64 runes, and count runes.** 64 clears a DNS label (63 octets), so no
+  realistic host name is ever truncated, while staying far below anything that
+  could disrupt a layout. Today's `CleanPeerName` caps at 100 **bytes** via
+  `name[:100]`, which can slice a multi-byte character in half and store invalid
+  UTF-8 — a plain bug for any non-ASCII name, and independent of the rest of this
+  entry. The UI truncates further for display (~24 characters with the full value
+  on hover); that is a rendering choice, not a storage limit.
+
 ## Trust graph, transparency & defense
 
 - **Transparency:** nodes gossip their friend lists (within trust depth), so
@@ -919,7 +965,10 @@ milestone directly after direct transfer works, and tokens ship with depth.
   the catalog wire, the checks against blobs we already hold and against
   materialized downloads, and the evidence shown on the peer card — the detection
   that makes the blocking tooling in this phase something an admin can act on
-  rather than guess with.
+  rather than guess with. Also the **naming split** (§Friendship): the map is
+  where names stop being trustworthy, since gossip delivers them second-hand
+  about nodes we have never met, so the address belongs on screen next to every
+  one of them.
 - **F7 — Tokens & transitive reach.** The capability tokens that let a seeder
   serve strangers-inside-the-network, with delegated issuance along the
   friendship chain; `Audience.Distance` computed from the gossiped graph instead
