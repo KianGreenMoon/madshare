@@ -43,6 +43,12 @@ default** — its social graph is visible to its members.
 - **Thin client** — a browser user. Thin clients are *not* madnetwork
   participants; they are local users of exactly one home node, which acts as
   their gateway.
+- **Listener node** (planned) — a madplayer: a person's device that runs a node
+  and swarms like a full peer, but signs in to a home server with **user
+  credentials** instead of being friended, and **publishes no catalog** — its
+  library stays private to the device. Consumption is one-way; the only route
+  from that library into the network is an ordinary upload to the home server.
+  See §Principals & access.
 
 ## Identity & transport
 
@@ -83,13 +89,16 @@ default** — its social graph is visible to its members.
 
 - **Node-level trust is the default relationship.** A friend node is trusted as a
   unit; its internal user model is its own business.
-- **User-level grants** exist for madplayer users: an admin maps a remote user
-  (identified by their personal node's key) to a **local user account**. From
-  then on *all existing local ACLs apply to them unchanged* — default-deny,
-  `content.access`, guest flags, per-recording access. Federation adds no
-  parallel permission system. The point of the mapping: a personal node is
-  intermittently online, but its owner's *access* to this server's library is
-  stable (it's an account); only their seeding is best-effort.
+- **The node-key → local-user mapping is being removed** (decided 2026-07-26;
+  built and still present — `federation_peers.user_id`, `PeerAudience`, the
+  user-mapping control on `/admin/network`). It let an admin bind a friend node's
+  key to a local account so that node was answered with that account's rights.
+  It came from misreading "authorize the node as a user": the requirement was
+  never *a node acting as an account*, it is the **listener node** below — a
+  person who signs in with credentials, from a device that happens to also be a
+  mesh node. Two consequences to handle when it goes: the `GuestOnly` half of the
+  audience is derived from it today (see the open detail under §Sharing scope),
+  and the removal needs a migration.
 - **Unmapped friends are not a special case** (decided 2026-07-18): a friend
   node *without* a user mapping is treated as a **default regular-user
   identity** — it may see and fetch whatever a plain `user`-role local account
@@ -104,11 +113,72 @@ default** — its social graph is visible to its members.
   new permission (working name `madnetwork.access`), granted to admin by default
   and grantable to trusted local users. The header section for the madnetwork
   library is server-side gated like every other link.
+- **Planned — split `madnetwork.access` in two** (raised 2026-07-26). One
+  permission gates two things whose costs are nothing alike: *looking* at the
+  merged catalog, which reads rows that were synced anyway, and *making this node
+  fetch and cache remote bytes for you*, which spends its disk (the madnetwork
+  cache has no eviction) and its bandwidth. The permission was created for the
+  second and is being spent on the first. Listener nodes sharpen the mismatch:
+  one browses through the server but fetches for itself, so it wants the cheap
+  half and never the expensive one. Proposed shape — keep `madnetwork.access`
+  meaning **browse** (no rename, no migration, no role churn: 027 already grants
+  it to admin and the stackable `madnetwork` role) and add **`madnetwork.relay`**
+  for the stream/materialize path; grant browse widely, relay narrowly. A
+  per-user cache quota is the natural companion and the honest answer to overuse
+  — the permission is a blunt instrument standing in for one.
 - When a thin client with the permission plays a non-local file, **the server
   fetches it into a cache directory and relays it** — as *cache-through
   streaming*: chunks are fetched in sequential priority and served to the
   browser as they arrive, while the complete file lands in the cache in
   parallel. Never build the blocking download-fully-then-play version.
+
+### Listener nodes — madplayer (planned, not built)
+
+A madplayer is a person's own device: a player that also runs a federation node.
+It joins the network **as a person rather than as a friend**, which makes it a
+third kind of participant beside the full peer and the thin client (decided
+2026-07-26; supersedes the node-key → local-user mapping above).
+
+- **Credentials, not friendship.** It signs in to a home server with an ordinary
+  account — session or API token, the same auth a browser uses. No node card, no
+  admin accept, no `federation_peers` row. Its rights are that account's rights,
+  so federation still adds no parallel permission system.
+- **The content flow is one-way, by construction.** It consumes — browse,
+  stream, materialize, bounded by the account's ACLs. It publishes **nothing**:
+  its local library is never catalogued, advertised or pulled. That library is
+  unmoderated personal content on somebody's phone, and the network has no basis
+  to vouch for it. This is a property of where the content lives, not a setting
+  to relax later.
+- **The one way in is an upload.** A user holding `file.upload` uploads from the
+  device to the home server, through the review bucket like any other upload.
+  What the network then sees is the *server's* published content under the
+  server's identity — reviewed, fingerprinted, attributable. The device is never
+  the publisher.
+- **It is a full swarm member regardless.** Its own key, on the mesh, fetching
+  chunks from many holders and seeding back what it fetched, discovered like any
+  other node. Safe for exactly the reason cache blobs are exempt from the
+  fingerprint rule: serving a hash claims *possession of bytes*, never an
+  identity, so a seeder asserts nothing anyone has to trust. One-way publication
+  and two-way swarming are not in tension — the swarm carries bytes, the catalog
+  carries claims, and only the second needs vouching for.
+- **Token-carrying, not relay-only** (decided 2026-07-26). Fetching everything
+  through the home server would have been the cheaper first version and was
+  rejected: madplayer is unbuilt, so it gets built properly. This makes **F7
+  capability tokens a prerequisite** — to its home server's friends a madplayer
+  is a stranger, and a stranger reaches only the guest-open swarm. The token is
+  how a home server says "this bearer is mine", which makes madplayer the
+  motivating case for delegated issuance rather than an abstract one.
+- **Thin clients stay out of the swarm** (decided 2026-07-26). A browser user
+  remains a pure consumer relayed by its home node. Browser tabs have no durable
+  storage, no stable address and no lifetime; enrolling them would complicate
+  the swarm and buy nothing.
+- **Future — the home node as introducer.** Both ends are on yggdrasil, so a
+  server could broker a direct connection to its own listener users instead of
+  carrying their traffic. Recorded as madplayer's direction; not part of this
+  plan.
+
+Client-side behaviour — playlist sync, and what the app does with items the
+server cannot resolve — is in `docs/ui/native-client.md`.
 
 ## Sharing scope (F5, built)
 
@@ -155,6 +225,16 @@ type Audience struct {
   regular-user identity* — `GuestOnly: false`, i.e. the full published set —
   per the 2026-07-18 decision that unmapped is a rule, not a missing row. So the
   mapping is what an admin reaches for to give a friend *less*.
+
+  **Open detail — what `GuestOnly` reads once the mapping goes** (2026-07-26).
+  The mapping is being removed (§Principals & access), and it is the only thing
+  that sets this bit today. It is also the only **per-friend** restriction in the
+  model: share depth is per *content*, so it cannot express "friend X sees less
+  than friend Y". Either that axis is dropped — every friend then sees the whole
+  published set within depth, and `Audience` collapses to `Distance` alone — or a
+  plain per-peer *guest-only* flag replaces the account binding, keeping the
+  capability without pretending a node is a user. The audience model itself is
+  unaffected either way; only where the bit comes from changes.
 
 **Where depth lives: on the recording.** Access already lives there
 (`license`, `guest_playable` — one audio identity, one license,
@@ -846,7 +926,16 @@ milestone directly after direct transfer works, and tokens ship with depth.
   of pinned to 0, so the depth ladder above `DepthFriends` finally does
   something; trust-weighted popularity (one branch = one voice, §Trust graph);
   and gossiped freshness hints for availability at depth ≥ 1 (§Availability),
-  never transitive pinging.
+  never transitive pinging. **Listener nodes land here too** (§Principals &
+  access): a madplayer is a stranger to its home server's friends, so the token
+  that says "this bearer is mine" is what admits it to the swarm — the concrete
+  use case the token design should be built against rather than an abstract
+  friend-of-a-friend.
+- **Cleanup, any time — remove the node-key → local-user mapping** (§Principals &
+  access). Drop `federation_peers.user_id`, `PeerAudience`'s account lookup and
+  the `/admin/network` control, once the open detail under §Sharing scope decides
+  what — if anything — replaces it as the source of `GuestOnly`. Independent of
+  the phases around it; needs a migration.
 
   **Why the split** (decided 2026-07-26, superseding the single F6): the two
   halves have opposite risk profiles. F6 is additive and observational — new

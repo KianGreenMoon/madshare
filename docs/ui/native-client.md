@@ -53,27 +53,62 @@ node compiled in as libraries and run **in-process**, with the Go UI on top.
 - **Local-first.** With the backend embedded, the app is a standalone music
   player against its *own* library over loopback, with **no server required**.
 
-### Federation peers is the milestone
+### Federation: madplayer is a listener node
 
-The point of embedding the backend is to make every install a **node** that can
-**peer** with other madshare nodes. Plain "authenticate to a remote server as a
-thin client" is an acceptable fallback but is **not** the goal.
+The point of embedding the backend is to make every install a **node**. What
+kind of node is now settled: a **listener node**, defined in
+`docs/architecture/federation.md` §Principals & access (decided 2026-07-26).
+The short form, because it shapes nearly every screen in this client:
 
-- **Yggdrasil as a transport library.** One of the reasons the project is in Go:
-  Yggdrasil-go is itself Go, so it links into the same binary. Use it as a
-  **transport** (route madshare traffic over its connection API) — preferably
-  **without** creating a system TUN device, because a TUN on mobile needs VPN
-  entitlements (Android `VpnService`, iOS `NetworkExtension`), a permissions and
-  store-review headache. *Verify the current yggdrasil-go library API exposes
-  library-as-transport before committing.*
-- **Self-certifying identity.** The Yggdrasil node key derives the node's mesh
-  address, so the address *is* proof of who the node is — it can double as the
-  madshare node identity and remove a whole identity-bootstrap problem.
-- **The real open problem is cross-node authorisation.** Today auth is per-instance
-  roles; "which remote node may pull which content from me?" needs a new trust
-  model. That is its own design — `docs/architecture/federation.md`, picking up
-  the Phase-4 thread already deferred in `docs/architecture/auth.md` §8. **Write
-  that doc before this client's federation code.**
+- **It signs in to a home server with user credentials**, not by friending it.
+  The account's own rights decide what it may see. Being a node and being a
+  principal are separate things here — the key is for the mesh, the account is
+  for authorisation.
+- **It publishes nothing.** The device's library is never catalogued or
+  advertised: it is unmoderated personal content and the network cannot vouch
+  for it. The single route from the device's library into the network is an
+  ordinary **upload** to the home server, through the review bucket, which needs
+  `file.upload` — and what the network then sees belongs to the *server*.
+- **It swarms fully all the same** — fetching chunks from many holders and
+  seeding back what it fetched, discovered like any other node. Serving a hash
+  claims possession of bytes, never an identity, so seeding asserts nothing
+  anyone must trust. That is why one-way publication and two-way swarming do not
+  contradict each other.
+- **It needs F7 capability tokens** to do that: to its home server's friends the
+  device is a stranger. Fetching everything through the home server instead was
+  considered and rejected — this client is unbuilt, so it gets built properly.
+
+The transport questions this section used to leave open are answered:
+yggdrasil-go links in as a library and the **F0 spike confirmed** a full mesh
+node with no TUN and no root, via yggstack's gVisor netstack — so no
+`VpnService` / `NetworkExtension` entitlement is needed. The node key derives the
+mesh address, so identity is self-certifying and needs no bootstrap. Cross-node
+authorisation is designed and built through F5.
+
+### Playlists follow the person, not the device
+
+A listener node has three pools of music at once — what is on the device, what
+its home server holds, and what the network holds — and a playlist should
+survive moving between them. Sync playlists and favourites with the home server.
+
+The hard half is already solved server-side and should be reused rather than
+reinvented: a playlist item is **either** a local tagset **or** a remote content
+hash plus captured display text (migration 029), and listing rows carry an
+availability flag so the UI can dim what nothing can currently serve. The
+madplayer case is the mirror image of that — an item pointing into the *device's*
+local-only library, which the home server cannot resolve — and it takes the same
+shape: keep the captured text, mark it unresolvable *here*, and say so plainly.
+"This one is only on your device" is a perfectly good answer.
+
+The rule that matters: **an item you cannot resolve is displayed, never
+dropped.** A sync that silently deletes whatever the other side can't see would
+quietly eat the user's playlists, and it would do it worst to the people with the
+largest local libraries. Captured text exists so an unresolvable row can still be
+shown, searched and re-pointed later if the same audio turns up — which is what
+`RepointRemotePlaylistItems` already does for remote rows that land locally.
+
+Open: sync direction and conflict rules (two-way, last-writer-wins, or per-item
+merge), and whether favourites follow the same path or ride along with playlists.
 
 ### The payoff: one networking layer, local and remote
 
