@@ -85,6 +85,39 @@ func (emptyStore) MadnetworkBlobProviders(context.Context, string) (int64, []*fe
 func (emptyStore) ReplacePeerHoldings(context.Context, int64, []string) error { return nil }
 func (emptyStore) SeedingPolicy(context.Context) (bool, bool, error)          { return false, false, nil }
 
+// The gossiped graph (F6) is empty for the same reason as everything above: a
+// node with no friends has heard no records and publishes none. GraphKnowsKey
+// answering false also means the probe would refuse any record offered to it,
+// which is the correct behaviour for a node that knows nobody.
+func (emptyStore) PutGraphRecord(context.Context, *federation.GraphRecord, []byte, *int64, int64, int64) (bool, error) {
+	return false, nil
+}
+func (emptyStore) PutMarkRecord(context.Context, *federation.MarkRecord, []byte, *int64, int64, int64) (bool, error) {
+	return false, nil
+}
+func (emptyStore) GraphDigest(context.Context, int64) ([]federation.GraphDigestEntry, []federation.GraphDigestEntry, error) {
+	return nil, nil, nil
+}
+func (emptyStore) GraphPayloads(context.Context, []string, int64) (map[string][]byte, error) {
+	return nil, nil
+}
+func (emptyStore) MarkPayloads(context.Context, []string, int64) (map[string][]byte, error) {
+	return nil, nil
+}
+func (emptyStore) GraphKnowsKey(context.Context, string) (bool, error)      { return false, nil }
+func (emptyStore) GraphIntroducedCount(context.Context, int64) (int, error) { return 0, nil }
+func (emptyStore) ExpireGraph(context.Context, int64) (int, error)          { return 0, nil }
+func (emptyStore) GraphEdges(context.Context, int64) ([]federation.GraphEdgeClaim, error) {
+	return nil, nil
+}
+func (emptyStore) GraphMarks(context.Context, int64) ([]federation.StoredMark, error) {
+	return nil, nil
+}
+
+// The probe publishes no record of its own: it has no friendships to describe,
+// and an outsider that gossiped would stop being an outsider.
+func (emptyStore) PublishFriendList(context.Context) (bool, error) { return false, nil }
+
 // probe is the outsider node plus an HTTP client dialling through its netstack.
 type probe struct {
 	node   *federation.Node

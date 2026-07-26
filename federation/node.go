@@ -4,6 +4,7 @@ package federation
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -89,6 +90,15 @@ type Node struct {
 	// peerTouchThrottle is plenty). meshAuth/pingPeer touch directly, unthrottled.
 	touchMu   sync.Mutex
 	lastTouch map[int64]time.Time
+
+	// Friend-list gossip (F6, gossip_node.go). signKey is this node's ed25519
+	// private key — the same identity the mesh address derives from — used to
+	// sign the records it publishes, since a relayed record cannot lean on the
+	// connection it arrived over. graphAccept rate-limits how often one origin
+	// may push a new sequence at us.
+	signKey     ed25519.PrivateKey
+	acceptMu    sync.Mutex
+	graphAccept map[string]time.Time
 }
 
 // peerTouchThrottle bounds transfer-path last_seen writes per peer.
@@ -105,6 +115,12 @@ var (
 		Refresh:     time.Minute,
 		CatalogSync: 15 * time.Minute,
 		SnapshotTTL: time.Minute,
+		// Gossip (F6) ages by wall clock, not by hops: a record lives 7 days and
+		// its author re-signs every 6 hours. The ratio is what makes an offline
+		// weekend invisible while an abandoned node still fades within a week.
+		GraphRepublish: 6 * time.Hour,
+		GraphTTL:       7 * 24 * time.Hour,
+		GraphAccept:    time.Minute,
 	}
 	defaultTimeouts = Timeouts{
 		Control:    15 * time.Second,
@@ -161,6 +177,8 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 	}
 	transferCtx, transferCancel := context.WithCancel(context.Background())
 	n := &Node{
+		signKey:        ed25519.PrivateKey(nodeCfg.PrivateKey),
+		graphAccept:    map[string]time.Time{},
 		intervals:      o.intervals.withDefaults(defaultIntervals),
 		timeouts:       o.timeouts.withDefaults(defaultTimeouts),
 		core:           c,
@@ -336,6 +354,8 @@ func (n *Node) protocolHandler() http.Handler {
 	mux.HandleFunc("GET /madnetwork/v0/blob/{hash}", n.handleBlob)
 	mux.HandleFunc("GET /madnetwork/v0/manifest/{hash}", n.handleManifest)
 	mux.HandleFunc("GET /madnetwork/v0/holdings", n.handleHoldings)
+	mux.HandleFunc("GET /madnetwork/v0/graph", n.handleGraph)
+	mux.HandleFunc("POST /madnetwork/v0/graph/fetch", n.handleGraphFetch)
 	return n.meshAuth(mux)
 }
 

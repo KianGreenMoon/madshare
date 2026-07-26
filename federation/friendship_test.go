@@ -41,6 +41,14 @@ type memStore struct {
 	// peer resolves to (absent = FriendAudience, the unmapped default).
 	depths    map[string]int
 	audiences map[int64]Audience
+
+	// Gossiped graph (F6, methods in gossip_store_test.go): signed records by
+	// origin, for friend lists and distrust lists respectively. silent turns
+	// PublishFriendList off — the node still relays, it just publishes nothing
+	// of its own.
+	graph  map[string]*memRecord
+	marks  map[string]*memRecord
+	silent bool
 }
 
 func newMemStore() *memStore {
@@ -52,6 +60,8 @@ func newMemStore() *memStore {
 		seedCache:  true,
 		depths:     map[string]int{},
 		audiences:  map[int64]Audience{},
+		graph:      map[string]*memRecord{},
+		marks:      map[string]*memRecord{},
 	}
 }
 

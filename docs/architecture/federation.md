@@ -653,6 +653,17 @@ transparency. All edges or none — deliberately no per-peer granularity.
   name you, so you stay on the map with visible edges and only your own list is
   missing. The UI text must say precisely that. Anything softer sells an
   invisibility that does not exist.
+- **It also makes you a dead end** (found while building, 2026-07-26; pinned by
+  `TestSilentNodeWallsOffItsFriends`). A silent node still collects and serves
+  its friends' records, so it has not left the network — but since nothing it
+  publishes names anyone, its friends are never vouched for to each other, and
+  the admission rule below refuses them as unattributed. Two friends of a silent
+  node cannot discover each other through it, in either direction. That is the
+  correct behaviour rather than a gap to patch: admitting a record because it
+  *claims* an edge to someone we know is exactly the sybil vector the rule
+  exists to close. It is also the strongest argument for the default being on,
+  and it belongs in the setting's UI text — the cost is not "my list is
+  private", it is "my friends stop seeing past me".
 
 **Anti-flood bounds** (engineering limits, not policy):
 

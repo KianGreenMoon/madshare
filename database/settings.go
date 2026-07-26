@@ -23,6 +23,7 @@ const (
 	settingMadnetworkSeedCache       = "madnetwork.seed_cache"
 	settingMadnetworkHideUnavailable = "madnetwork.hide_unavailable"
 	settingMadnetworkDefaultDepth    = "madnetwork.default_share_depth"
+	settingMadnetworkPublishFriends  = "madnetwork.publish_friend_list"
 )
 
 // Trash-restore policy modes — what may happen to a trashed file whose content
@@ -84,6 +85,16 @@ type MadnetworkPolicy struct {
 	// federation.DepthFriends restricts the node to direct friends,
 	// federation.DepthPrivate publishes nothing at all.
 	DefaultShareDepth int
+	// PublishFriendList controls whether this node publishes its own friend-list
+	// record to the gossip (F6). Default on, matching the network's transparent
+	// default.
+	//
+	// Off means "I publish no record" and nothing more: a friendship has two
+	// ends, and friends' own records still name this node, so it stays on the
+	// map with visible edges — only its own list goes missing. Any UI for this
+	// must say exactly that rather than imply invisibility
+	// (docs/architecture/federation.md §Friend-list gossip).
+	PublishFriendList bool
 }
 
 // GetMadnetworkPolicy reads the madnetwork settings. Missing keys read as the
@@ -110,12 +121,17 @@ func (db *DB) GetMadnetworkPolicy(ctx context.Context) (MadnetworkPolicy, error)
 	if err != nil {
 		return MadnetworkPolicy{}, err
 	}
+	publish, _, err := db.GetSetting(ctx, settingMadnetworkPublishFriends)
+	if err != nil {
+		return MadnetworkPolicy{}, err
+	}
 	return MadnetworkPolicy{
 		AutoapproveDownloads: auto == "1",
 		SeedEnabled:          seed != "0",  // default on
 		SeedCache:            cache != "0", // default on
 		HideUnavailable:      hide != "0",  // default on
 		DefaultShareDepth:    parseShareDepth(depth),
+		PublishFriendList:    publish != "0", // default on
 	}, nil
 }
 
@@ -157,6 +173,7 @@ func (db *DB) SetMadnetworkPolicy(ctx context.Context, p MadnetworkPolicy) error
 		{settingMadnetworkSeedCache, bit(p.SeedCache)},
 		{settingMadnetworkHideUnavailable, bit(p.HideUnavailable)},
 		{settingMadnetworkDefaultDepth, strconv.Itoa(p.DefaultShareDepth)},
+		{settingMadnetworkPublishFriends, bit(p.PublishFriendList)},
 	} {
 		if _, err := tx.ExecContext(ctx, upsert, kv.key, kv.val); err != nil {
 			return err
@@ -175,6 +192,16 @@ func (db *DB) SeedingPolicy(ctx context.Context) (enabled, cache bool, err error
 		return false, false, err
 	}
 	return p.SeedEnabled, p.SeedCache, nil
+}
+
+// PublishFriendList reports whether this node publishes its own friend-list
+// record to the gossip — the F6 half of federation.PeerStore. Default on.
+func (db *DB) PublishFriendList(ctx context.Context) (bool, error) {
+	p, err := db.GetMadnetworkPolicy(ctx)
+	if err != nil {
+		return false, err
+	}
+	return p.PublishFriendList, nil
 }
 
 // GetSetting returns the value for key. ok is false (no error) when unset.

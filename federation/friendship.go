@@ -305,6 +305,13 @@ func (n *Node) sweep(ctx context.Context) {
 		n.logger.Printf("federation: refresh: %v", err)
 		return
 	}
+	// Gossip (F6) is maintenance of our own view, not per-peer work: publish our
+	// record when the friend list moved or the heartbeat came due, and drop what
+	// aged out. Both run before the loop so a friendship accepted this round is
+	// already in the record we serve during it.
+	n.publishOwnRecord(ctx, peers)
+	n.expireGraph(ctx)
+
 	for _, p := range peers {
 		if ctx.Err() != nil {
 			return
@@ -317,6 +324,7 @@ func (n *Node) sweep(ctx context.Context) {
 			if time.Since(time.Unix(p.CatalogSyncedAt, 0)) >= n.intervals.CatalogSync {
 				n.syncCatalog(ctx, p)
 				n.syncHoldings(ctx, p) // F4: refresh what they seed from cache
+				n.syncGraph(ctx, p)    // F6: gossip rides the catalog cadence
 			}
 		}
 	}

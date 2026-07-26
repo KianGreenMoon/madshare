@@ -180,6 +180,61 @@ type PeerStore interface {
 	// whether it also seeds its download cache — the F4 serving gate (both
 	// default on).
 	SeedingPolicy(ctx context.Context) (enabled, cache bool, err error)
+
+	GraphStore
+}
+
+// GraphStore is the gossiped-network-graph half of the persistence (F6,
+// gossip.go): the signed records this node holds — its own and every one
+// relayed to it by a friend — plus the denormalized edges and marks the map
+// and the admission checks query. Embedded in [PeerStore] rather than wired
+// separately, since a node that gossips is always a node that has a store.
+//
+// Everything here is a cache in the sense federation_catalog established:
+// rebuildable from the network, referenced by nothing local, and safe to drop.
+type GraphStore interface {
+	// PutGraphRecord stores a verified friend-list record and rewrites that
+	// origin's edges, but only if seq is higher than what we already hold —
+	// reported by the bool. A record we have seen is dropped and NOT
+	// re-propagated, which is what terminates gossip loops without hop counts
+	// or TTL bookkeeping. receivedFrom is the friend that delivered it (nil for
+	// this node's own record).
+	PutGraphRecord(ctx context.Context, rec *GraphRecord, payload []byte, receivedFrom *int64, expiresAt, now int64) (stored bool, err error)
+	// PutMarkRecord is the same for a distrust list.
+	PutMarkRecord(ctx context.Context, rec *MarkRecord, payload []byte, receivedFrom *int64, expiresAt, now int64) (stored bool, err error)
+
+	// GraphDigest lists what this node holds, unexpired and origin-ordered, for
+	// the digest exchange that opens a sync round.
+	GraphDigest(ctx context.Context, now int64) (records, marks []GraphDigestEntry, err error)
+	// GraphPayloads returns the raw signed bytes for the named origins —
+	// verbatim, since re-encoding a record would invalidate its signature.
+	GraphPayloads(ctx context.Context, origins []string, now int64) (map[string][]byte, error)
+	// MarkPayloads is the same for distrust records.
+	MarkPayloads(ctx context.Context, origins []string, now int64) (map[string][]byte, error)
+
+	// GraphKnowsKey reports whether a key is one we would accept a record from:
+	// a direct friend, or a node some record we hold already names. It is the
+	// admission rule — a record whose author nobody in our store has heard of
+	// is junk a friend invented, and is dropped unread.
+	GraphKnowsKey(ctx context.Context, key string) (bool, error)
+	// GraphIntroducedCount is how many origins arrived through one friend, for
+	// the per-branch quota ([MaxOriginsPerBranch]).
+	GraphIntroducedCount(ctx context.Context, peerID int64) (int, error)
+
+	// ExpireGraph drops records past their expiry along with their edges and
+	// marks, returning how many records went. This is the only ageing mechanism
+	// there is: stop refreshing a record and it leaves every store on its own.
+	ExpireGraph(ctx context.Context, now int64) (int, error)
+
+	// GraphEdges and GraphMarks are the unexpired denormalized claims, for the
+	// network map and its branch-weighted mark display.
+	GraphEdges(ctx context.Context, now int64) ([]GraphEdgeClaim, error)
+	GraphMarks(ctx context.Context, now int64) ([]StoredMark, error)
+
+	// PublishFriendList reports whether this node publishes its own friend-list
+	// record (runtime setting, default on). Off means only that: friends' own
+	// records still name this node, so it stays on the map either way.
+	PublishFriendList(ctx context.Context) (bool, error)
 }
 
 // Transfer is one in-flight or completed blob fetch (federation F3). Readers
@@ -307,6 +362,28 @@ type Intervals struct {
 	Refresh     time.Duration // refresh-loop sweep period (pair retries + friend pings); default 1 min
 	CatalogSync time.Duration // how stale a friend's cached catalog may get before a re-pull; default 15 min
 	SnapshotTTL time.Duration // how long this node's own catalog snapshot is memoized; default 1 min
+
+	// GraphRepublish is how often this node re-signs its own friend-list record
+	// even when nothing changed (F6). The heartbeat is what keeps a live node on
+	// everyone's map, since records age out on GraphTTL rather than on a hop
+	// count. Default 6 h.
+	GraphRepublish time.Duration
+	// GraphTTL is how long a gossiped record is kept and served after it was
+	// issued. Default 7 days — long enough that an intermittently-online home
+	// server survives a weekend offline, short enough that an abandoned key
+	// fades from every store within a week without anyone acting.
+	GraphTTL time.Duration
+	// GraphAccept bounds how often one origin's record may be accepted, so a
+	// node churning sequences costs a map lookup rather than a write. Default
+	// 1 min.
+	//
+	// It throttles honest updates too — a node that friends three peers in a
+	// row has its first republish stored and the rest deferred — which is why
+	// convergence must never depend on catching a particular record: the next
+	// round fetches whatever was dropped. A lab shrinks this, or a scenario
+	// that changes friendships faster than the interval will look broken while
+	// merely being slow.
+	GraphAccept time.Duration
 }
 
 // WithIntervals overrides the background cadences (zero fields keep defaults).
@@ -340,6 +417,15 @@ func (iv Intervals) withDefaults(d Intervals) Intervals {
 	}
 	if iv.SnapshotTTL <= 0 {
 		iv.SnapshotTTL = d.SnapshotTTL
+	}
+	if iv.GraphRepublish <= 0 {
+		iv.GraphRepublish = d.GraphRepublish
+	}
+	if iv.GraphTTL <= 0 {
+		iv.GraphTTL = d.GraphTTL
+	}
+	if iv.GraphAccept <= 0 {
+		iv.GraphAccept = d.GraphAccept
 	}
 	return iv
 }
