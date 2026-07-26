@@ -384,11 +384,7 @@ all.
   anything, including exactly what a friend calls itself. There is no fix at the
   name layer and none is needed — the address is the identity, the name is a
   label, and the UI must never let the second stand in for the first.
-- **Sanitize: peer-supplied names are remote input rendered in admin UI.**
-  Strip control characters and bidi overrides (`U+202E` can visually reverse a
-  name), drop zero-width characters, collapse internal whitespace, and reject
-  newlines. Homoglyph lookalikes cannot be solved this way, which is once again
-  why the address is on screen.
+- **Sanitize peer-supplied names** (planned). Detail below.
 - **Capped at 64 runes** — *done 2026-07-26, `MaxPeerNameRunes`; the rest of this
   entry is still planned.* 64 clears a DNS label (63 octets), so no realistic
   host name is ever truncated, while staying far below anything that could
@@ -398,6 +394,71 @@ all.
   that boundary, storing invalid UTF-8 for CJK names. The UI truncates further
   for display (~24 characters with the full value on hover); that is a rendering
   choice, not a storage limit.
+
+#### Name sanitization (planned)
+
+**This is not an XSS fix, and must never be sold as one.** The admin UI already
+renders names safely — `el()` in `webui/static/js/admin/shared.js` assigns
+`textContent` and appends string children as text nodes, and its `html:` escape
+hatch carries trusted icon markup only. Escaping stays the defense against
+injection. Sanitizing is about **display integrity**: a name should render as
+what it is, and two different nodes should not be able to render identically.
+Recording the distinction because the failure mode is somebody later deciding
+the sanitizer makes escaping unnecessary.
+
+`CleanPeerName` is the single choke point and should stay that way — every name
+passes it, whether from a node card (`ParseCard`), a pair request
+(`handlePair`/`pairWith`), an admin rename (`RenamePeer`), or this node's own
+`[federation].name`/host name. The rules, **in this order**, because the order is
+load-bearing:
+
+1. **Invalid UTF-8** — drop the offending runes (Go decodes them as `U+FFFD`).
+2. **Strip Unicode categories `Cc` and `Cf`.** `Cc` is the control characters:
+   C0/C1, newline, tab, DEL. `Cf` is the elegant part — one category test covers
+   the bidi overrides (`U+202A`–`U+202E`, `U+2066`–`U+2069`, which can visually
+   reverse a rendered name), the zero-width characters (`U+200B`/`200C`/`200D`)
+   that make two different names look identical, and `U+FEFF`.
+3. **Strip `Co`** (private use): vendor-specific glyphs and tofu.
+4. **Collapse whitespace** runs to a single `U+0020`, then trim the ends.
+5. **Optionally bound combining marks** (`Mn`/`Mc`) per base character — the
+   "Zalgo" stack that renders as a vertical smear over neighbouring rows. The
+   64-rune cap already bounds the damage, so this is polish; two marks per base
+   is generous for every living script.
+6. **Then** apply the 64-rune cap. Capping first would let stripped junk consume
+   the budget and truncate the real name.
+7. **If nothing survives, the name is empty** — display falls back to the short
+   key, exactly as an unnamed peer does today. Never render an empty label.
+
+**The accepted cost, stated rather than hidden:** stripping all of `Cf` also
+removes `U+200C` (ZWNJ), which is orthographically meaningful in Persian and
+Arabic, and `U+200D` (ZWJ), which joins emoji families — 👨‍👩‍👧 becomes three
+separate people. That is accepted for a *label* that carries no identity role.
+The narrower alternative, "strip `Cf` except ZWJ/ZWNJ", reopens precisely the
+invisible-difference vector this rule exists to close, so it is not the default.
+
+**Homoglyphs remain unsolved and that is fine.** Cyrillic `а` against Latin `a`
+cannot be filtered without mixed-script heuristics that punish legitimate
+multilingual names. The answer stays the one this whole section rests on: the
+mesh address is displayed next to the name, and identity is the key.
+
+**Normalize to NFC as well**, which collapses `é` written as one rune against
+`e` plus a combining accent — another way two names render identically while
+differing byte for byte. `golang.org/x/text` is already a direct dependency, so
+`unicode/norm` costs nothing new; do it before the combining-mark bound in step 5,
+since composing may remove the marks that step would otherwise count.
+
+Existing rows keep their unsanitized names — the sweep is not worth a migration,
+because a name refreshed from its peer on the next contact (planned above) heals
+itself.
+
+Tests should be a golden table: a `U+202E` reversal, a friend's name padded with
+`U+200B` into a second peer, an embedded newline, a Zalgo stack, an emoji family
+(documenting the loss), a Persian name with ZWNJ (likewise), and a name that
+sanitizes to nothing.
+
+One inconsistency to fix alongside: the rename field in
+`webui/static/js/admin/network.js` still carries `maxlength: '100'`, so the UI
+accepts 65–100 characters that the server then silently truncates to 64.
 
 ## Trust graph, transparency & defense
 
