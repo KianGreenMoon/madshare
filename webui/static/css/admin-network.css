@@ -77,7 +77,7 @@
 }
 .peer-card.is-friend   { border-left-color: var(--success); }
 .peer-card.is-pending  { border-left-color: var(--accent); }
-.peer-card.is-blocked  { border-left-color: var(--danger); }
+.peer-card.is-blocked  { border-left-color: var(--error); }
 .peer-head { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-1); flex-wrap: wrap; }
 .peer-name { font-weight: 600; color: var(--text); }
 .peer-name-input {
@@ -125,7 +125,7 @@
 }
 .peer-badge.is-friend  { color: var(--success); border: 1px solid var(--success); }
 .peer-badge.is-pending { color: var(--accent); border: 1px solid var(--accent); }
-.peer-badge.is-blocked { color: var(--danger); border: 1px solid var(--danger); }
+.peer-badge.is-blocked { color: var(--error); border: 1px solid var(--error); }
 
 /* ── Block modal: the reason a distrust mark carries ────────────────────────── */
 /* Blocking publishes a mark network-wide, so the modal warns and takes a
@@ -133,7 +133,7 @@
 .modal-note {
   margin: var(--space-3) 0;
   padding: var(--space-2) var(--space-3);
-  border-left: 3px solid var(--danger);
+  border-left: 3px solid var(--error);
   background: var(--bg);
   border-radius: var(--radius);
   font-size: 0.85rem;
@@ -169,4 +169,172 @@
   font-size: 0.78rem;
   word-break: break-all;
   color: var(--text);
+}
+
+/* ── Network map (F6) ───────────────────────────────────────────────────────── */
+/* The gossiped graph drawn as a node-link diagram. Nodes sit on rings by hop
+   distance, so how far a claim travelled is legible at a glance rather than
+   buried in a tooltip. */
+.net-map { margin-top: var(--space-6); }
+
+.map-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+  flex-wrap: wrap;
+}
+.map-search {
+  flex: 1 1 16rem;
+  min-width: 0;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-2);
+}
+.map-search:focus { outline: none; border-color: var(--accent); }
+.map-stats { font-size: 0.82rem; color: var(--text-muted); }
+
+.map-stage {
+  position: relative;
+  height: min(60vh, 520px);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.map-svg { width: 100%; height: 100%; cursor: grab; touch-action: none; display: block; }
+.map-svg:active { cursor: grabbing; }
+
+.map-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  padding: var(--space-5);
+  text-align: center;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+/* Edges. A one-sided claim is drawn faintly: it may simply be that the other
+   end publishes no record, but it is weaker evidence either way. */
+.map-edge { stroke: var(--border); stroke-width: 1.5; }
+.map-edge.is-onesided { stroke-dasharray: 3 3; }
+.map-edge.is-lit { stroke: var(--accent); stroke-width: 2; }
+.map-edge.is-dim { opacity: 0.25; }
+
+.map-node { cursor: pointer; }
+.map-node.is-dim { opacity: 0.3; }
+.map-node-dot { fill: var(--text-muted); stroke: var(--bg); stroke-width: 2; }
+.map-node.is-self     .map-node-dot { fill: var(--accent); }
+.map-node.is-friend   .map-node-dot { fill: var(--success); }
+.map-node.is-pending  .map-node-dot { fill: var(--accent-dim); }
+.map-node.is-blocked  .map-node-dot { fill: var(--error); }
+.map-node.is-stranger .map-node-dot { fill: var(--text-muted); }
+.map-node.is-selected .map-node-dot { stroke: var(--accent); stroke-width: 3; }
+.map-node.is-hit      .map-node-dot { stroke: var(--accent); stroke-width: 3; }
+.map-node:focus-visible { outline: none; }
+.map-node:focus-visible .map-node-dot { stroke: var(--accent); stroke-width: 3; }
+
+/* A ring for a node someone has published a distrust mark against. It is a
+   prompt to look, never a verdict — blocking stays manual. */
+.map-node-warn { fill: none; stroke: var(--error); stroke-width: 1.5; opacity: 0.7; }
+
+.map-node-label {
+  fill: var(--text);
+  font-size: 11px;
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 3px;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Detail panel, over the canvas rather than beside it so the graph keeps the
+   full width on a narrow screen. */
+.map-detail {
+  position: absolute;
+  top: var(--space-3);
+  right: var(--space-3);
+  width: min(22rem, calc(100% - 2 * var(--space-3)));
+  max-height: calc(100% - 2 * var(--space-3));
+  overflow-y: auto;
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+}
+.map-detail-close { position: absolute; top: var(--space-2); right: var(--space-2); }
+.map-detail-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding-right: var(--space-5);
+  font-weight: 600;
+  margin-bottom: var(--space-3);
+}
+.map-hearsay, .map-yours {
+  font-size: 0.72rem;
+  font-weight: 400;
+  padding: 0 0.35rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.map-hearsay { border-color: var(--accent-dim); color: var(--accent-dim); }
+
+.map-detail-grid { display: grid; gap: var(--space-2); font-size: 0.85rem; }
+.map-detail-grid dt { color: var(--text-muted); font-size: 0.75rem; }
+.map-detail-grid dd { color: var(--text); }
+.map-key {
+  display: block;
+  font-family: var(--mono, monospace);
+  font-size: 0.72rem;
+  word-break: break-all;
+  color: var(--text);
+}
+
+.map-marks { margin-top: var(--space-4); }
+.map-marks-head { font-size: 0.85rem; font-weight: 600; color: var(--error); }
+.map-marks-note { font-weight: 400; color: var(--text-muted); }
+.map-mark-list { list-style: none; margin-top: var(--space-2); display: grid; gap: var(--space-2); }
+.map-mark-list li {
+  font-size: 0.8rem;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border);
+}
+.map-mark-who { display: block; color: var(--text-muted); font-size: 0.72rem; }
+.map-mark-why { color: var(--text); }
+
+.map-detail-actions { margin-top: var(--space-4); }
+.map-note { font-size: 0.8rem; color: var(--text-muted); }
+
+.map-legend {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin-top: var(--space-3);
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+.map-legend li { display: flex; align-items: center; gap: var(--space-2); }
+.map-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.map-dot.is-self     { background: var(--accent); }
+.map-dot.is-friend   { background: var(--success); }
+.map-dot.is-pending  { background: var(--accent-dim); }
+.map-dot.is-blocked  { background: var(--error); }
+.map-dot.is-stranger { background: var(--text-muted); }
+.map-dot.is-marked   { background: transparent; border: 2px solid var(--error); }
+
+@media (max-width: 720px) {
+  .map-stage { height: min(70vh, 420px); }
+  .map-detail { inset: auto var(--space-2) var(--space-2) var(--space-2); width: auto; max-height: 60%; }
 }

@@ -587,3 +587,34 @@ func (n *Node) rateAdmits(origin string) bool {
 	n.graphAccept[origin] = now
 	return true
 }
+
+// NetworkMap builds the admin-facing view of the gossiped graph: who is out
+// there, how far, through whom, and what the network says about them.
+func (n *Node) NetworkMap(ctx context.Context) (NetworkMap, error) {
+	if n.store == nil {
+		return NetworkMap{}, nil
+	}
+	now := time.Now().Unix()
+	peers, err := n.store.ListFederationPeers(ctx)
+	if err != nil {
+		return NetworkMap{}, err
+	}
+	edges, err := n.store.GraphEdges(ctx, now)
+	if err != nil {
+		return NetworkMap{}, err
+	}
+	marks, err := n.store.GraphMarks(ctx, now)
+	if err != nil {
+		return NetworkMap{}, err
+	}
+	m := BuildNetworkMap(n.PublicKeyHex(), peers, edges, marks)
+	// Mesh addresses are derived here rather than stored: the key is the
+	// identity, the address is a function of it, and the map shows both beside
+	// every name because a gossiped name is hearsay about a stranger.
+	for i := range m.Nodes {
+		if addr, err := AddrForKeyHex(m.Nodes[i].Key); err == nil {
+			m.Nodes[i].Address = addr.String()
+		}
+	}
+	return m, nil
+}

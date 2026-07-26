@@ -5,6 +5,7 @@
 // asynchronous — the page polls while anything is pending so state flips appear
 // without a reload. Design: docs/architecture/federation.md.
 import { bootAdmin, API, toast, handleAuthError, el } from './shared.js';
+import { initMap, loadMap } from './network-map.js';
 
 const disabledNote = document.getElementById('disabledNote');
 const selfPanel    = document.getElementById('selfPanel');
@@ -270,7 +271,10 @@ async function acceptPeer(p) {
 // blocked (docs/architecture/federation.md §Friend-list gossip). The modal has
 // to say so plainly and collect the reason, because a mark without one is an
 // anonymous downvote nobody downstream can act on.
-async function blockPeer(p) {
+//
+// Shared by the peer list and the network map, so a node blocked from the graph
+// is asked for exactly as much as one blocked from the peer card.
+async function askBlockReason(label) {
   const reason = el('input', {
     type: 'text',
     class: 'modal-reason',
@@ -280,7 +284,7 @@ async function blockPeer(p) {
   const ok = await confirmModal({
     title: 'Block this node?',
     bodyNodes: [
-      el('p', {}, [`Block “${p.name || p.public_key.slice(0, 12)}”? It loses all madnetwork service from this node immediately. You can unblock it later.`]),
+      el('p', {}, [`Block “${label}”? It loses all madnetwork service from this node immediately. You can unblock it later.`]),
       el('p', { class: 'modal-note' }, ['This block is published to the network as a distrust mark — everyone, including the blocked node, can see it and read the reason. Unblocking withdraws it again.']),
       el('label', { class: 'modal-label' }, ['Reason (shown to everyone)']),
       reason,
@@ -288,7 +292,34 @@ async function blockPeer(p) {
     confirmLabel: 'Block and publish',
     danger: true,
   });
-  if (ok) await peerOp(p, 'block', 'Node blocked; distrust mark published.', { reason: reason.value.trim() });
+  return ok ? reason.value.trim() : null;
+}
+
+async function blockPeer(p) {
+  const reason = await askBlockReason(p.name || p.public_key.slice(0, 12));
+  if (reason === null) return;
+  await peerOp(p, 'block', 'Node blocked; distrust mark published.', { reason });
+}
+
+// Blocking from the map goes by KEY: most nodes there are strangers with no
+// peer row, which is the whole reason the map is worth having.
+async function blockMapNode(n) {
+  const reason = await askBlockReason(n.name || n.key.slice(0, 12));
+  if (reason === null) return;
+  try {
+    const res = await fetch(`${API}/api/admin/federation/block`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ public_key: n.key, name: n.name || '', reason }),
+    });
+    if (handleAuthError(res)) return;
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { toast(body.error || `Block failed (HTTP ${res.status}).`, 'error'); return; }
+    toast('Node blocked; distrust mark published.', 'info');
+  } catch (err) {
+    toast(`Block failed: ${err.message}`, 'error');
+  }
+  refresh();
 }
 
 async function unblockPeer(p) {
@@ -351,6 +382,7 @@ async function patchPeer(id, patch) {
 function refresh() {
   lastPeersJSON = '';
   loadPeers();
+  loadMap();
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -404,4 +436,6 @@ function confirmModal({ title, bodyNodes, confirmLabel, danger = true }) {
   if (!await loadStatus()) return;
   await loadUsers();
   await loadPeers();
+  initMap({ onBlockNode: blockMapNode });
+  await loadMap();
 })();

@@ -157,6 +157,10 @@ type FederationNode interface {
 	// EnsureBlob joins (or starts) the fetch of a remote blob by content hash
 	// (federation F3); the stub answers with its compiled-out error.
 	EnsureBlob(ctx context.Context, hash string) (federation.Transfer, error)
+	// NetworkMap is the gossiped graph as an admin sees it (F6): every node
+	// reachable through a chain of friendships, with branch attribution and the
+	// distrust marks against it.
+	NetworkMap(ctx context.Context) (federation.NetworkMap, error)
 	// InboundHealthy reports whether this node's inbound mesh path appears alive;
 	// false makes the merged browse fail open (stop hiding unreachable friends)
 	// rather than blank the view (docs/architecture/federation.md §Availability).
@@ -459,6 +463,7 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(fedManage).Post("/federation/peers/{peerID}/accept", h.federationPeerAccept)
 		r.With(fedManage).Post("/federation/peers/{peerID}/block", h.federationPeerBlock)
 		r.With(fedManage).Post("/federation/block", h.federationBlockKey)
+		r.With(fedManage).Get("/federation/graph", h.federationGraph)
 		r.With(fedManage).Post("/federation/peers/{peerID}/unblock", h.federationPeerUnblock)
 
 		// Symlink data sources (import in place). The admin group is already

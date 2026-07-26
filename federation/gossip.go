@@ -30,6 +30,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"unicode/utf8"
 )
@@ -348,4 +349,318 @@ func CleanMarkReason(reason string) string {
 		reason = string([]rune(reason)[:MaxMarkReasonRunes])
 	}
 	return reason
+}
+
+// ── The network map (F6) ─────────────────────────────────────────────────────
+
+// NetworkMap is the gossiped graph as an admin sees it: every node reachable
+// through some chain of friendships, how far away it is, which of our friends
+// vouched for it, and what the network says about it.
+type NetworkMap struct {
+	Nodes []MapNode `json:"nodes"`
+	Edges []MapEdge `json:"edges"`
+	// Radius is the greatest distance any node sits at — how far this node can
+	// currently see.
+	Radius int `json:"radius"`
+}
+
+// Map node states, in the order the UI ranks them. Anything else is a stranger:
+// a node we know of only because the graph names it.
+const (
+	MapSelf    = "self"
+	MapFriend  = "friend"
+	MapPending = "pending"
+	MapBlocked = "blocked"
+)
+
+// MapNode is one node on the map.
+type MapNode struct {
+	Key     string `json:"key"`
+	Address string `json:"address,omitempty"`
+	// Name is the best label available, in falling order of trust: our own local
+	// label, then what the graph calls it. Beyond our friend list a name is
+	// hearsay about a stranger, so Named reports whether it is ours or theirs and
+	// every surface renders the key beside it.
+	Name  string `json:"name,omitempty"`
+	Named string `json:"named,omitempty"` // "local" | "heard"
+	State string `json:"state,omitempty"`
+	// PeerID is the trusted-peer row when we have one, so the map can drive the
+	// peer operations (unblock, remove) that are addressed by id. Absent for a
+	// node we know only from the graph.
+	PeerID int64 `json:"peer_id,omitempty"`
+	// Distance is friendship hops from us: 0 is this node, 1 a direct friend.
+	Distance int `json:"distance"`
+	// Via are the direct friends this node is reachable through — the branch
+	// attribution. Blocking every key here removes the node from our view, which
+	// is what "snipping a branch" means concretely.
+	Via []string `json:"via,omitempty"`
+	// Marks are the published distrust marks against this node.
+	Marks []MapMark `json:"marks,omitempty"`
+	// MarkBranches counts those marks the way they must be READ: one branch is
+	// one voice (§Trust graph). A sybil farm behind a single friendship shouts
+	// once, however many keys it mints.
+	MarkBranches int `json:"mark_branches,omitempty"`
+}
+
+// MapEdge is one friendship drawn on the map. Undirected: a friendship has two
+// ends, and whether one or both ends published a record about it changes
+// nothing about the edge being there.
+type MapEdge struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+	// Mutual reports whether both ends published the claim. A one-sided edge is
+	// not a lie — the other end may simply publish no record — but it is weaker
+	// evidence, so the map draws it faintly rather than identically.
+	Mutual bool `json:"mutual"`
+}
+
+// MapMark is one distrust mark shown against a node.
+type MapMark struct {
+	Origin     string `json:"origin"`
+	OriginName string `json:"origin_name,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	At         int64  `json:"at,omitempty"`
+	// Branch is the direct friend this accusation reached us through, or "self"
+	// for our own. It is what MarkBranches counts.
+	Branch string `json:"branch,omitempty"`
+}
+
+// BuildNetworkMap computes the map from raw store contents. Pure so the
+// reachability rules — which are the whole feature — are testable without a
+// mesh.
+//
+// Branch snipping happens here: the walk never traverses THROUGH a blocked
+// node, so nodes reachable only behind one drop out of view, while nodes also
+// reachable via another friend stay. The blocked node itself is kept, since an
+// admin has to be able to see and undo what they blocked.
+func BuildNetworkMap(selfKey string, peers []*Peer, edges []GraphEdgeClaim, marks []StoredMark) NetworkMap {
+	peerByKey := make(map[string]*Peer, len(peers))
+	for _, p := range peers {
+		peerByKey[p.PublicKey] = p
+	}
+
+	// Adjacency, undirected, with a note of which directions were claimed.
+	adj := map[string]map[string]bool{}
+	heard := map[string]map[string]int{} // key → name → times claimed
+	link := func(a, b string) {
+		if adj[a] == nil {
+			adj[a] = map[string]bool{}
+		}
+		adj[a][b] = true
+	}
+	claimed := map[[2]string]bool{}
+	for _, e := range edges {
+		if e.Origin == e.Peer {
+			continue
+		}
+		link(e.Origin, e.Peer)
+		link(e.Peer, e.Origin)
+		claimed[[2]string{e.Origin, e.Peer}] = true
+		if e.Name != "" {
+			if heard[e.Peer] == nil {
+				heard[e.Peer] = map[string]int{}
+			}
+			heard[e.Peer][e.Name]++
+		}
+	}
+	// Our own friendships are on the map whether or not any record carries them
+	// yet — a friendship we just made is a fact we hold directly.
+	for _, p := range peers {
+		if p.State == PeerFriend {
+			link(selfKey, p.PublicKey)
+			link(p.PublicKey, selfKey)
+		}
+	}
+
+	blocked := func(key string) bool {
+		p, ok := peerByKey[key]
+		return ok && p.State == PeerBlocked
+	}
+
+	// Multi-source BFS from us. Each node inherits the branch labels of whoever
+	// discovered it; direct friends label themselves.
+	dist := map[string]int{selfKey: 0}
+	via := map[string]map[string]bool{}
+	frontier := []string{selfKey}
+	for depth := 0; len(frontier) > 0; depth++ {
+		var next []string
+		for _, cur := range frontier {
+			// A blocked node is shown, but nothing is discovered through it.
+			if cur != selfKey && blocked(cur) {
+				continue
+			}
+			for peer := range adj[cur] {
+				labels := via[cur]
+				if depth == 0 {
+					labels = map[string]bool{peer: true} // a direct friend is its own branch
+				}
+				if _, seen := dist[peer]; !seen {
+					dist[peer] = depth + 1
+					next = append(next, peer)
+				}
+				// Labels merge even for an already-seen node: reachability through a
+				// second friend is exactly what keeps it on the map when the first is
+				// blocked.
+				if dist[peer] >= depth+1 {
+					if via[peer] == nil {
+						via[peer] = map[string]bool{}
+					}
+					for l := range labels {
+						via[peer][l] = true
+					}
+				}
+			}
+		}
+		frontier = next
+	}
+
+	// Every node we hold a peer row for belongs on the map, reachable through the
+	// graph or not: a pending pairing and a blocked key are direct relationships
+	// of ours, and an admin has to be able to see and undo them here rather than
+	// only in the peer list. They sit on the inner ring with no edge drawn, which
+	// is exactly what they are — known to us, vouched for by nobody.
+	for _, p := range peers {
+		if p.PublicKey == selfKey {
+			continue
+		}
+		if _, seen := dist[p.PublicKey]; !seen {
+			dist[p.PublicKey] = 1
+		}
+	}
+
+	// Marks, grouped by target and weighted by branch.
+	byTarget := map[string][]MapMark{}
+	for _, m := range marks {
+		if _, reachable := dist[m.Origin]; !reachable && m.Origin != selfKey {
+			continue // an accusation from outside our view is not evidence we can place
+		}
+		branch := "self"
+		if m.Origin != selfKey {
+			for l := range via[m.Origin] {
+				branch = l
+				break // one branch is one voice; which representative hardly matters
+			}
+		}
+		byTarget[m.Target] = append(byTarget[m.Target], MapMark{
+			Origin: m.Origin, OriginName: displayName(m.Origin, peerByKey, heard),
+			Reason: m.Reason, At: m.At, Branch: branch,
+		})
+	}
+
+	out := NetworkMap{}
+	for key, d := range dist {
+		node := MapNode{Key: key, Distance: d}
+		if p, ok := peerByKey[key]; ok && p.Name != "" {
+			node.Name, node.Named = p.Name, "local"
+		} else if n := commonName(heard[key]); n != "" {
+			node.Name, node.Named = n, "heard"
+		}
+		if p, ok := peerByKey[key]; ok {
+			node.PeerID = p.ID
+		}
+		switch {
+		case key == selfKey:
+			node.State = MapSelf
+		case peerByKey[key] == nil:
+			// a stranger: known only because the graph names it
+		case peerByKey[key].State == PeerFriend:
+			node.State = MapFriend
+		case peerByKey[key].State == PeerBlocked:
+			node.State = MapBlocked
+		default:
+			node.State = MapPending
+		}
+		for l := range via[key] {
+			node.Via = append(node.Via, l)
+		}
+		sort.Strings(node.Via)
+		node.Marks = byTarget[key]
+		sort.Slice(node.Marks, func(i, j int) bool { return node.Marks[i].Origin < node.Marks[j].Origin })
+		branches := map[string]bool{}
+		for _, m := range node.Marks {
+			branches[m.Branch] = true
+		}
+		node.MarkBranches = len(branches)
+		if d > out.Radius {
+			out.Radius = d
+		}
+		out.Nodes = append(out.Nodes, node)
+	}
+	sort.Slice(out.Nodes, func(i, j int) bool {
+		if out.Nodes[i].Distance != out.Nodes[j].Distance {
+			return out.Nodes[i].Distance < out.Nodes[j].Distance
+		}
+		return out.Nodes[i].Key < out.Nodes[j].Key
+	})
+
+	// Edges, deduped to one line per friendship, and only between nodes that
+	// survived the walk — an edge to a snipped node would draw a line to nothing.
+	seen := map[[2]string]bool{}
+	for _, e := range edges {
+		a, b := e.Origin, e.Peer
+		if a == b {
+			continue
+		}
+		if _, ok := dist[a]; !ok {
+			continue
+		}
+		if _, ok := dist[b]; !ok {
+			continue
+		}
+		lo, hi := a, b
+		if lo > hi {
+			lo, hi = hi, lo
+		}
+		if seen[[2]string{lo, hi}] {
+			continue
+		}
+		seen[[2]string{lo, hi}] = true
+		out.Edges = append(out.Edges, MapEdge{
+			From: lo, To: hi,
+			Mutual: claimed[[2]string{lo, hi}] && claimed[[2]string{hi, lo}],
+		})
+	}
+	// Our own friendships again: they belong on the map even before any record
+	// carries them.
+	for _, p := range peers {
+		if p.State != PeerFriend {
+			continue
+		}
+		lo, hi := selfKey, p.PublicKey
+		if lo > hi {
+			lo, hi = hi, lo
+		}
+		if seen[[2]string{lo, hi}] {
+			continue
+		}
+		seen[[2]string{lo, hi}] = true
+		out.Edges = append(out.Edges, MapEdge{From: lo, To: hi})
+	}
+	sort.Slice(out.Edges, func(i, j int) bool {
+		if out.Edges[i].From != out.Edges[j].From {
+			return out.Edges[i].From < out.Edges[j].From
+		}
+		return out.Edges[i].To < out.Edges[j].To
+	})
+	return out
+}
+
+// displayName resolves a key to the best label available for it.
+func displayName(key string, peers map[string]*Peer, heard map[string]map[string]int) string {
+	if p, ok := peers[key]; ok && p.Name != "" {
+		return p.Name
+	}
+	return commonName(heard[key])
+}
+
+// commonName picks the label most of the graph uses for a node, ties broken
+// alphabetically so the map does not reshuffle between loads.
+func commonName(names map[string]int) string {
+	best, bestN := "", 0
+	for name, n := range names {
+		if n > bestN || (n == bestN && name < best) {
+			best, bestN = name, n
+		}
+	}
+	return best
 }

@@ -69,6 +69,43 @@
 
     <h3 class="net-subhead" id="peersHeading" hidden>Known nodes</h3>
     <div class="net-peers" id="peersList" aria-live="polite"></div>
+
+    <!-- Network map: the gossiped graph beyond our own friend list (F6). -->
+    <section class="net-map" id="mapSection" aria-labelledby="mapHeading" hidden>
+      <h3 class="net-subhead" id="mapHeading">Network map</h3>
+      <p class="section-copy">
+        Every node reachable through a chain of friendships, as your friends
+        describe it. Names past your own friends are <strong>hearsay about
+        strangers</strong> &mdash; anyone can call themselves anything, so the
+        key is the identity and is shown beside every name. Blocking a node also
+        drops whatever was reachable only through it.
+      </p>
+
+      <div class="map-toolbar">
+        <input class="map-search" id="mapSearch" type="search"
+               placeholder="Find a node by name or key…" aria-label="Find a node">
+        <span class="map-stats" id="mapStats" aria-live="polite"></span>
+        <button class="btn btn-neutral btn-mini" id="mapReset" type="button">Reset view</button>
+      </div>
+
+      <div class="map-stage" id="mapStage">
+        <svg class="map-svg" id="mapSvg" role="img" aria-label="Network map"></svg>
+        <div class="map-empty" id="mapEmpty" hidden>
+          No graph yet. Records arrive from friends on the catalog cadence &mdash;
+          give it a few minutes after the first friendship.
+        </div>
+        <aside class="map-detail" id="mapDetail" hidden aria-live="polite"></aside>
+      </div>
+
+      <ul class="map-legend">
+        <li><span class="map-dot is-self"></span>This node</li>
+        <li><span class="map-dot is-friend"></span>Your friend</li>
+        <li><span class="map-dot is-pending"></span>Pending</li>
+        <li><span class="map-dot is-blocked"></span>Blocked by you</li>
+        <li><span class="map-dot is-stranger"></span>Seen through a friend</li>
+        <li><span class="map-dot is-marked"></span>Distrusted by someone</li>
+      </ul>
+    </section>
   </section>
 </main>
 

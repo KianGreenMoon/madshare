@@ -57,3 +57,7 @@ func (n *Node) MapPeerUser(context.Context, int64, *int64) error {
 func (n *Node) EnsureBlob(context.Context, string) (Transfer, error) {
 	return nil, errCompiledOut
 }
+
+func (n *Node) NetworkMap(context.Context) (NetworkMap, error) {
+	return NetworkMap{}, errCompiledOut
+}

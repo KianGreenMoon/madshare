@@ -250,3 +250,25 @@ func writeFederationError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
 	}
 }
+
+// federationGraph handles GET /api/admin/federation/graph: the gossiped network
+// map — every node reachable through a chain of friendships, with branch
+// attribution and the distrust marks against it (federation F6).
+func (h *handler) federationGraph(w http.ResponseWriter, r *http.Request) {
+	if h.federation == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "federation is not enabled"})
+		return
+	}
+	m, err := h.federation.NetworkMap(r.Context())
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if m.Nodes == nil {
+		m.Nodes = []federation.MapNode{}
+	}
+	if m.Edges == nil {
+		m.Edges = []federation.MapEdge{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "graph": m})
+}

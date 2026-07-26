@@ -23,6 +23,7 @@ type fakeFederation struct {
 	opErr       error
 	inboundDead bool   // when true, InboundHealthy() reports false (fail-open path)
 	blockReason string // what the last block carried into the published mark (F6)
+	graph       federation.NetworkMap
 }
 
 func (f *fakeFederation) Info() federation.NodeInfo {
@@ -47,6 +48,10 @@ func (f *fakeFederation) AcceptPeer(context.Context, int64) error { return f.opE
 func (f *fakeFederation) BlockPeer(_ context.Context, _ int64, reason string) error {
 	f.blockReason = reason
 	return f.opErr
+}
+
+func (f *fakeFederation) NetworkMap(context.Context) (federation.NetworkMap, error) {
+	return f.graph, nil
 }
 
 func (f *fakeFederation) BlockKey(_ context.Context, _, _, reason string) error {
