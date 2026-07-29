@@ -20,7 +20,10 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // MeshPort is the fixed TCP port of the madnetwork protocol listener on every
@@ -572,16 +575,101 @@ func ParseCard(raw []byte) (Card, error) {
 // address beside it (docs/architecture/federation.md §Friendship).
 const MaxPeerNameRunes = 64
 
-// CleanPeerName trims and length-caps a peer-supplied display name (cards and
-// pair requests are remote input).
+// CleanPeerName sanitizes and length-caps a peer-supplied display name (cards,
+// pair requests, gossiped friend lists and admin renames all pass through here —
+// it is deliberately the single choke point).
 //
 // The cap counts runes, not bytes. Slicing a UTF-8 string at a byte offset can
 // cut a multi-byte character in half and store the broken tail, which every
 // non-ASCII name long enough to be truncated would hit.
-func CleanPeerName(name string) string {
-	name = strings.TrimSpace(name)
-	if utf8.RuneCountInString(name) > MaxPeerNameRunes {
-		name = string([]rune(name)[:MaxPeerNameRunes])
+func CleanPeerName(name string) string { return sanitizeLabel(name, MaxPeerNameRunes) }
+
+// maxCombiningMarks bounds the combining marks allowed per base character — the
+// "Zalgo" stack that otherwise smears a name over the rows above and below it.
+// Two is generous for every living script.
+const maxCombiningMarks = 2
+
+// sanitizeLabel is the display-integrity rule set shared by peer names and
+// distrust-mark reasons (docs/architecture/federation.md §Name sanitization).
+//
+// This is NOT an injection defense and must never be sold as one: the admin UI
+// escapes by assigning textContent, and that stays the defense against XSS. What
+// this buys is that a label renders as what it is, and that two different nodes
+// cannot render identically — an invisible difference is worse than a visible
+// collision, because a collision is something an admin can see and check the
+// address of.
+//
+// The order is load-bearing:
+//
+//  1. drop invalid UTF-8 (Go decodes it as U+FFFD, i.e. tofu);
+//  2. strip Cc (controls: C0/C1, newline, tab, DEL), Cf (bidi overrides that
+//     reverse a rendered name, the zero-width characters that make two names
+//     look alike, U+FEFF) and Co (private use: vendor glyphs and tofu);
+//  3. normalize to NFC, so "é" as one rune and "e" plus a combining accent stop
+//     being two byte-different names that render the same — before the mark
+//     bound, since composing removes marks that step would otherwise count;
+//  4. collapse whitespace runs to one U+0020 (this is also what folds NBSP and
+//     friends onto the plain space) and trim the ends;
+//  5. bound the combining marks per base character;
+//  6. cap to maxRunes LAST, so stripped junk cannot eat the budget and truncate
+//     the real name.
+//
+// The result may be empty, which every caller renders as the short key rather
+// than as a blank label.
+//
+// Accepted cost, stated rather than hidden: step 2 also removes U+200C (ZWNJ),
+// orthographically meaningful in Persian and Arabic, and U+200D (ZWJ), so an
+// emoji family becomes separate people. The narrower "all of Cf except the
+// joiners" reopens exactly the invisible-difference vector the rule closes, so
+// it is not the default — a label carries no identity role here. Homoglyphs
+// (Cyrillic "а" against Latin "a") stay unsolved on purpose: filtering them
+// needs mixed-script heuristics that punish legitimate multilingual names, and
+// the answer is the one the whole design rests on — the address is shown beside
+// the name, and identity is the key.
+func sanitizeLabel(s string, maxRunes int) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		// A decoding failure yields RuneError; so does a literal U+FFFD, which is
+		// tofu we have no reason to keep either.
+		if r == utf8.RuneError {
+			continue
+		}
+		if unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Co, r) {
+			continue
+		}
+		b.WriteRune(r)
 	}
-	return name
+
+	out := make([]rune, 0, maxRunes)
+	marks := 0            // combining marks seen on the current base character
+	base := false         // is there a base character for a mark to attach to?
+	pendingSpace := false // a collapsed run, written only if something follows it
+	for _, r := range norm.NFC.String(b.String()) {
+		switch {
+		case unicode.IsSpace(r):
+			pendingSpace = len(out) > 0 // never leading; a trailing run is dropped
+			base = false
+			continue
+		case unicode.Is(unicode.M, r):
+			// A mark with no base is a floating diacritic, not a name.
+			if !base || marks >= maxCombiningMarks {
+				continue
+			}
+			marks++
+		default:
+			marks, base = 0, true
+		}
+		if pendingSpace {
+			if len(out) >= maxRunes {
+				break
+			}
+			out, pendingSpace = append(out, ' '), false
+		}
+		if len(out) >= maxRunes {
+			break
+		}
+		out = append(out, r)
+	}
+	return string(out)
 }

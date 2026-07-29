@@ -32,7 +32,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"unicode/utf8"
 )
 
 // Bounds on a single record. These are anti-flood limits, not policy: they cap
@@ -340,16 +339,12 @@ type StoredMark struct {
 	Reason string
 }
 
-// CleanMarkReason trims and rune-caps a distrust mark's free text. Same rules as
-// [CleanPeerName] at a larger cap: remote input, rendered in a UI, counted in
-// runes so a multi-byte character is never cut in half.
-func CleanMarkReason(reason string) string {
-	reason = strings.TrimSpace(reason)
-	if utf8.RuneCountInString(reason) > MaxMarkReasonRunes {
-		reason = string([]rune(reason)[:MaxMarkReasonRunes])
-	}
-	return reason
-}
+// CleanMarkReason sanitizes and rune-caps a distrust mark's free text. Exactly
+// [CleanPeerName]'s rules at a larger cap: remote input, rendered in a UI,
+// counted in runes so a multi-byte character is never cut in half. A reason is
+// read by a human deciding whether an accusation applies to them, so it has the
+// same display-integrity stake a name does — more, since it is longer.
+func CleanMarkReason(reason string) string { return sanitizeLabel(reason, MaxMarkReasonRunes) }
 
 // ── The network map (F6) ─────────────────────────────────────────────────────
 

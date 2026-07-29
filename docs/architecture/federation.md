@@ -390,9 +390,9 @@ all.
   anything, including exactly what a friend calls itself. There is no fix at the
   name layer and none is needed — the address is the identity, the name is a
   label, and the UI must never let the second stand in for the first.
-- **Sanitize peer-supplied names** (planned). Detail below.
-- **Capped at 64 runes** — *done 2026-07-26, `MaxPeerNameRunes`; the rest of this
-  entry is still planned.* 64 clears a DNS label (63 octets), so no realistic
+- **Sanitize peer-supplied names** — *done 2026-07-30.* Detail below.
+- **Capped at 64 runes** — *done 2026-07-26, `MaxPeerNameRunes`; the naming split
+  above is what remains of this entry.* 64 clears a DNS label (63 octets), so no realistic
   host name is ever truncated, while staying far below anything that could
   disrupt a layout. The previous cap counted **bytes** (`name[:100]`), which made
   the effective limit depend on the script — 100 characters of ASCII, 50 of
@@ -401,7 +401,7 @@ all.
   for display (~24 characters with the full value on hover); that is a rendering
   choice, not a storage limit.
 
-#### Name sanitization (planned)
+#### Name sanitization (built 2026-07-30)
 
 **This is not an XSS fix, and must never be sold as one.** The admin UI already
 renders names safely — `el()` in `webui/static/js/admin/shared.js` assigns
@@ -412,10 +412,13 @@ what it is, and two different nodes should not be able to render identically.
 Recording the distinction because the failure mode is somebody later deciding
 the sanitizer makes escaping unnecessary.
 
-`CleanPeerName` is the single choke point and should stay that way — every name
-passes it, whether from a node card (`ParseCard`), a pair request
-(`handlePair`/`pairWith`), an admin rename (`RenamePeer`), or this node's own
-`[federation].name`/host name. The rules, **in this order**, because the order is
+`CleanPeerName` is the single choke point and stays that way — every name passes
+it, whether from a node card (`ParseCard`), a pair request
+(`handlePair`/`pairWith`), a gossiped friend list (`ParseGraphRecord`), an admin
+rename (`RenamePeer`), or this node's own `[federation].name`/host name. It and
+`CleanMarkReason` are two caps over one `sanitizeLabel`, so a mark's free text —
+longer, and read by someone deciding whether an accusation applies to them — gets
+the same treatment. The rules, **in this order**, because the order is
 load-bearing:
 
 1. **Invalid UTF-8** — drop the offending runes (Go decodes them as `U+FFFD`).
@@ -425,15 +428,28 @@ load-bearing:
    reverse a rendered name), the zero-width characters (`U+200B`/`200C`/`200D`)
    that make two different names look identical, and `U+FEFF`.
 3. **Strip `Co`** (private use): vendor-specific glyphs and tofu.
-4. **Collapse whitespace** runs to a single `U+0020`, then trim the ends.
-5. **Optionally bound combining marks** (`Mn`/`Mc`) per base character — the
-   "Zalgo" stack that renders as a vertical smear over neighbouring rows. The
-   64-rune cap already bounds the damage, so this is polish; two marks per base
-   is generous for every living script.
+4. **Normalize to NFC**, which collapses `é` written as one rune against `e` plus
+   a combining accent — another way two names render identically while differing
+   byte for byte. `golang.org/x/text` is already a direct dependency, so
+   `unicode/norm` costs nothing new. It runs *after* the strips, so two characters
+   separated by a zero-width joiner still compose once it is gone, and *before*
+   the mark bound, since composing removes marks that step would otherwise count.
+5. **Bound combining marks** (all of `M`: `Mn`/`Mc`/`Me`) per base character — the
+   "Zalgo" stack that renders as a vertical smear over neighbouring rows. Two
+   marks per base is generous for every living script. The count is of marks
+   *following* a base character, so a precomposed `á` carries two more; that caps
+   the rendered stack without having to reason about which scripts precompose. A
+   mark with no base — a name opening on a floating diacritic, or one following a
+   collapsed space — is dropped.
 6. **Then** apply the 64-rune cap. Capping first would let stripped junk consume
    the budget and truncate the real name.
 7. **If nothing survives, the name is empty** — display falls back to the short
    key, exactly as an unnamed peer does today. Never render an empty label.
+
+Whitespace collapse runs on the same pass as 5–6: runs fold to a single `U+0020`
+and the ends are trimmed. Because `unicode.IsSpace` covers the `Z` categories,
+this is also what folds `U+00A0` (no-break space) onto the plain space — one more
+pair that renders alike.
 
 **The accepted cost, stated rather than hidden:** stripping all of `Cf` also
 removes `U+200C` (ZWNJ), which is orthographically meaningful in Persian and
@@ -447,20 +463,16 @@ cannot be filtered without mixed-script heuristics that punish legitimate
 multilingual names. The answer stays the one this whole section rests on: the
 mesh address is displayed next to the name, and identity is the key.
 
-**Normalize to NFC as well**, which collapses `é` written as one rune against
-`e` plus a combining accent — another way two names render identically while
-differing byte for byte. `golang.org/x/text` is already a direct dependency, so
-`unicode/norm` costs nothing new; do it before the combining-mark bound in step 5,
-since composing may remove the marks that step would otherwise count.
-
 Existing rows keep their unsanitized names — the sweep is not worth a migration,
 because a name refreshed from its peer on the next contact (planned above) heals
 itself.
 
-Tests should be a golden table: a `U+202E` reversal, a friend's name padded with
-`U+200B` into a second peer, an embedded newline, a Zalgo stack, an emoji family
-(documenting the loss), a Persian name with ZWNJ (likewise), and a name that
-sanitizes to nothing.
+The tests are a golden table (`TestSanitizePeerName`): a `U+202E` reversal, a
+friend's name padded with `U+200B` into a second peer, an embedded newline, a
+private-use glyph, a Zalgo stack, a decomposed `é`, an emoji family and a Persian
+ZWNJ name (both documenting the loss), and names that sanitize to nothing.
+`TestSanitizeCapsLast` pins rule 6 by padding a full-length name with 200
+zero-width spaces and asserting the name survives whole.
 
 (The rename field in `webui/static/js/admin/network.js` already mirrors the cap
 at 64 — `maxlength` counts UTF-16 units rather than runes, so it is marginally
@@ -1219,14 +1231,23 @@ milestone directly after direct transfer works, and tokens ship with depth.
   the strangers that make up most of it. Branch snipping falls out of the map's
   reachability walk: it never traverses through a blocked node.
 
+  *Name sanitization built 2026-07-30* (§Name sanitization): one `sanitizeLabel`
+  behind `CleanPeerName` and `CleanMarkReason`, so a name or a mark reason renders
+  as what it is and two nodes cannot render identically.
+
   *Still to build.* **Contradicted-claim reports** (§Trust graph): the
   fingerprint claim added to the catalog wire, the checks against blobs we
   already hold and against materialized downloads, and the evidence shown on the
   peer card — the detection that makes the blocking tooling something an admin
-  can act on rather than guess with. And the **naming split** (§Friendship):
+  can act on rather than guess with. The **naming split** (§Friendship):
   `federation_peers.name` still collapses the heard name into the local label, so
   a peer that renames itself keeps its old name here forever. The map already
-  renders the address beside every name, which was the urgent half.
+  renders the address beside every name, which was the urgent half. And
+  **de-peering a blocked node on the underlay** (§Trust graph, blocking): only the
+  application layer is cut today, so a blocked node we peer with directly keeps us
+  as transit. `core.RemovePeer` takes an underlay URI while a block names a key,
+  so this needs the `GetPeers()` key→URI match plus a persistent suppression list —
+  otherwise the retry loop and the next restart re-add it from config.
 - **F7 — Tokens & transitive reach.** The capability tokens that let a seeder
   serve strangers-inside-the-network, with delegated issuance along the
   friendship chain; `Audience.Distance` computed from the gossiped graph instead
