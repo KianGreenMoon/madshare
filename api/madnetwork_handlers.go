@@ -332,6 +332,10 @@ func mergeVersions(group []*database.MadnetworkTrackRow, selfName string, reachC
 					continue
 				}
 				seenHash[rd.Hash] = true
+				// The fingerprint claim is evidence for the contradiction checks,
+				// not something a browser has any use for — and it is ~340 bytes
+				// per rendition. Drop it on the way out.
+				rd.Fingerprint = nil
 				v.Renditions = append(v.Renditions, rd)
 			}
 			if !seenPeer[row.PeerID] {

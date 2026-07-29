@@ -161,6 +161,11 @@ type FederationNode interface {
 	// reachable through a chain of friendships, with branch attribution and the
 	// distrust marks against it.
 	NetworkMap(ctx context.Context) (federation.NetworkMap, error)
+	// ClaimReports lists contradicted identity claims awaiting an admin decision,
+	// and SetClaimDisposition records it (F6). Evidence beside the Block action —
+	// nothing here changes what a peer is served.
+	ClaimReports(ctx context.Context) ([]*federation.ClaimReport, error)
+	SetClaimDisposition(ctx context.Context, id int64, disposition string) error
 	// InboundHealthy reports whether this node's inbound mesh path appears alive;
 	// false makes the merged browse fail open (stop hiding unreachable friends)
 	// rather than blank the view (docs/architecture/federation.md §Availability).
@@ -464,6 +469,8 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(fedManage).Post("/federation/peers/{peerID}/block", h.federationPeerBlock)
 		r.With(fedManage).Post("/federation/block", h.federationBlockKey)
 		r.With(fedManage).Get("/federation/graph", h.federationGraph)
+		r.With(fedManage).Get("/federation/reports", h.federationReports)
+		r.With(fedManage).Patch("/federation/reports/{reportID}", h.federationReportPatch)
 		r.With(fedManage).Post("/federation/peers/{peerID}/unblock", h.federationPeerUnblock)
 
 		// Symlink data sources (import in place). The admin group is already

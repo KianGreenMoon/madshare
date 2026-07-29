@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -83,17 +84,27 @@ func (db *DB) PublishedCatalog(ctx context.Context, aud federation.Audience) ([]
 	// so this is not what makes the result correct — it is what keeps the two
 	// queries obviously the same rule, and what stops an out-of-scope recording's
 	// hashes from being read at all.
+	//
+	// The fingerprint head rides along per rendition (F6): what this node says the
+	// audio *is*, in a form a friend holding the same bytes can check. substr on a
+	// BLOB counts bytes, so this reads the first ClaimHeadWords packed words and
+	// never the whole fingerprint — see federation.ClaimHeadWords for why.
 	rrows, err := db.QueryContext(ctx, `
 		SELECT f.recording_id, f.hash, f.byte_size,
 		       COALESCE(mm.codec, ''), COALESCE(mm.bitrate, 0),
 		       COALESCE(mm.sample_rate, 0), COALESCE(mm.bit_depth, 0),
-		       COALESCE(mm.duration_seconds, 0)
+		       COALESCE(mm.duration_seconds, 0),
+		       COALESCE(af.algo, ''), COALESCE(af.algo_version, ''),
+		       COALESCE(LENGTH(af.fingerprint), 0),
+		       SUBSTR(af.fingerprint, 1, ?)
 		FROM files f
 		JOIN recordings r ON r.id = f.recording_id
 		LEFT JOIN media_metadata mm ON mm.file_id = f.id
+		LEFT JOIN audio_fingerprints af ON af.file_id = f.id
 		WHERE f.deleted_at IS NULL AND (`+scope+`) AND EXISTS (
 			SELECT 1 FROM tagsets m WHERE m.recording_id = f.recording_id AND `+visibleTagset+`)
-		ORDER BY f.recording_id, f.id`, scopeArgs(defaultDepth, aud)...)
+		ORDER BY f.recording_id, f.id`,
+		append([]any{federation.ClaimHeadWords * 4}, scopeArgs(defaultDepth, aud)...)...)
 	if err != nil {
 		return nil, fmt.Errorf("catalog renditions: %w", err)
 	}
@@ -101,9 +112,21 @@ func (db *DB) PublishedCatalog(ctx context.Context, aud federation.Audience) ([]
 	for rrows.Next() {
 		var recordingID int64
 		var rd federation.CatalogRendition
+		var algo, algoVersion string
+		var fpBytes int
+		var head []byte
 		if err := rrows.Scan(&recordingID, &rd.Hash, &rd.Size, &rd.Codec,
-			&rd.Bitrate, &rd.SampleRate, &rd.BitDepth, &rd.Duration); err != nil {
+			&rd.Bitrate, &rd.SampleRate, &rd.BitDepth, &rd.Duration,
+			&algo, &algoVersion, &fpBytes, &head); err != nil {
 			return nil, fmt.Errorf("scan catalog rendition: %w", err)
+		}
+		if len(head) >= 4 {
+			rd.Fingerprint = &federation.FingerprintClaim{
+				Algo:    algo,
+				Version: algoVersion,
+				Words:   fpBytes / 4,
+				Head:    base64.StdEncoding.EncodeToString(head),
+			}
 		}
 		for _, i := range recordings[strconv.FormatInt(recordingID, 10)] {
 			entries[i].Renditions = append(entries[i].Renditions, rd)

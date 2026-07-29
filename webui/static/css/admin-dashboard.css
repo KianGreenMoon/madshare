@@ -42,6 +42,13 @@
   background: var(--accent-glow);
   color: var(--accent);
 }
+/* Something needs a human's judgement (a contradicted identity claim). Warns
+   without pulsing: it is evidence waiting, not an event in progress. */
+.dash-card-count--warn {
+  background: var(--danger-bg, var(--accent-glow));
+  color: var(--danger, var(--accent));
+  font-weight: 600;
+}
 /* Live activity badge (e.g. a running prune) — distinct from numeric counts. */
 .dash-card-count--live {
   text-transform: uppercase;

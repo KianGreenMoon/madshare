@@ -30,6 +30,7 @@ let pollTimer = null;
 let ownCard = null;
 let users = null;          // [{id, username}] or null when not loadable (no user.manage)
 let lastPeersJSON = '';    // skip re-render (and select clobbering) when nothing changed
+let reports = [];          // contradicted-claim findings, rendered on the peer they came from (F6)
 
 importForm.addEventListener('submit', onImport);
 document.getElementById('copyAddr').addEventListener('click', () => copyText(selfAddr.textContent, 'Mesh address copied.'));
@@ -80,7 +81,8 @@ async function loadPeers() {
     if (!res.ok) return; // transient — retry next poll
   } catch { return; }
   const peers = data.peers || [];
-  const json = JSON.stringify(peers);
+  await loadReports();
+  const json = JSON.stringify(peers) + JSON.stringify(reports);
   if (json !== lastPeersJSON) {
     lastPeersJSON = json;
     renderPeers(peers);
@@ -93,6 +95,106 @@ async function loadPeers() {
 
 function startPolling() { if (!pollTimer) pollTimer = setInterval(loadPeers, POLL_MS); }
 function stopPolling()  { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+
+// Contradicted identity claims (federation F6): findings this node made by
+// checking a peer's advertised fingerprints against bytes it holds itself. They
+// render on the peer card they belong to, beside the Block action.
+//
+// Nothing here is automatic and the wording must keep it that way: a finding is a
+// CONTRADICTION with innocent explanations (a different chromaprint build, a peer
+// that grouped a rendition wrongly, a relay repeating someone else's claim), never
+// an accusation the UI has already accepted.
+async function loadReports() {
+  try {
+    const res = await fetch(`${API}/api/admin/federation/reports`);
+    if (!res.ok) { reports = []; return; }
+    const data = await res.json().catch(() => ({}));
+    reports = data.reports || [];
+  } catch { reports = []; }
+}
+
+const short = (h, n = 10) => (h && h.length > n ? `${h.slice(0, n)}…` : (h || '—'));
+
+function claimHeadline(r) {
+  const pct = `${(r.ber * 100).toFixed(0)}% of bits differ`;
+  if (r.kind === 'grouping') {
+    return `Claims ${short(r.hash)} and ${short(r.other_hash)} are the same recording, `
+      + `but our own fingerprints of those two blobs disagree (${pct}).`;
+  }
+  return `Advertises ${short(r.hash)} with a fingerprint that does not match our own copy `
+    + `of those exact bytes (${pct}).`;
+}
+
+// The measurement and its provenance — what was compared, over how much, and how
+// each side was obtained. A version difference is called out because it is the
+// most common innocent explanation: chromaprint output is build-sensitive.
+function claimEvidence(r) {
+  const parts = [`compared ${r.words} fingerprint words`];
+  if (r.kind === 'grouping') {
+    parts.push('both fingerprints computed here');
+  } else {
+    parts.push(`ours ${short(r.our_head, 12)} vs advertised ${short(r.their_head, 12)}`);
+  }
+  if (r.our_version || r.their_version) {
+    const same = r.our_version === r.their_version;
+    parts.push(same
+      ? `both fingerprinted by ${r.our_version || 'an unknown build'}`
+      : `different fingerprinter builds (ours ${r.our_version || '?'}, theirs ${r.their_version || '?'})`);
+  }
+  return parts.join(' · ');
+}
+
+function renderClaims(p) {
+  const mine = reports.filter(r => r.peer_id === p.id);
+  if (!mine.length) return null;
+  const box = el('div', { class: 'peer-claims' }, [
+    el('div', { class: 'peer-claims-head' }, [
+      `⚠ ${mine.length} contradicted claim${mine.length > 1 ? 's' : ''} — checked against bytes we hold. `,
+      el('span', { class: 'peer-claims-note' }, ['Nothing has been acted on; blocking is always your call.']),
+    ]),
+  ]);
+  for (const r of mine) {
+    box.append(el('div', { class: 'peer-claim' }, [
+      el('div', { class: 'peer-claim-what', text: claimHeadline(r) }),
+      el('div', { class: 'peer-claim-evidence', text: claimEvidence(r) }),
+      el('div', { class: 'peer-claim-actions' }, [
+        el('button', {
+          class: 'btn btn-neutral btn-sm',
+          title: 'An innocent explanation, or not worth acting on — stop showing this',
+          onclick: () => disposeClaim(r, 'dismissed'),
+        }, ['Dismiss']),
+        el('button', {
+          class: 'btn btn-neutral btn-sm',
+          title: 'You have taken this up with the peer, or blocked it',
+          onclick: () => disposeClaim(r, 'acted'),
+        }, ['Mark handled']),
+      ]),
+    ]));
+  }
+  return box;
+}
+
+async function disposeClaim(r, disposition) {
+  try {
+    const res = await fetch(`${API}/api/admin/federation/reports/${r.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ disposition }),
+    });
+    if (handleAuthError(res)) return;
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      toast(data.error || `Could not update the finding (HTTP ${res.status}).`, 'error');
+      return;
+    }
+  } catch (err) {
+    toast(`Could not update the finding: ${err.message}`, 'error');
+    return;
+  }
+  toast(disposition === 'dismissed' ? 'Finding dismissed.' : 'Finding marked handled.', 'info');
+  lastPeersJSON = '';
+  refresh();
+}
 
 // Users for the mapping dropdown; needs user.manage — degrade to plain text
 // without it.
@@ -168,12 +270,17 @@ function renderPeer(p) {
   }
   actions.append(el('button', { class: 'btn btn-destructive-outline', onclick: () => removePeer(p) }, ['Remove…']));
 
-  return el('div', { class: `peer-card ${stateClass(p.state)}` }, [
+  const card = el('div', { class: `peer-card ${stateClass(p.state)}` }, [
     head,
     el('code', { class: 'peer-key', text: p.public_key, title: 'The node’s public key — its identity' }),
     meta,
-    actions,
   ]);
+  // Findings sit directly above the actions, so the evidence and the Block
+  // button an admin might reach for are read in one movement.
+  const claims = renderClaims(p);
+  if (claims) card.append(claims);
+  card.append(actions);
+  return card;
 }
 
 // Mapping a personal (madplayer) node to a local account: all existing ACLs

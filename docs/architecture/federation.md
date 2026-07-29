@@ -555,28 +555,42 @@ stricter for emoji, which is the harmless direction.)
      network; they cannot dilute yours — which is exactly why rating stays
      local/manual and never network-global.
 
-**Planned — report contradicted identity claims (not built; decided
-2026-07-26).** A peer's catalog makes claims this node can *check*, and when a
-check fails the admin should hear about it with the evidence attached. This is
-the "Detect → details" arm layer 3 promises and nothing implements; the
-"→ block → snip → publish the mark" half is F6's existing toolkit. A false audio
-identity is worth singling out because it is **provable** — unlike a tasteless
-tagset, it is arithmetic — which is exactly what makes it fair to put in front of
-an admin as grounds for blocking.
+### Contradicted identity claims (built 2026-07-30)
+
+A peer's catalog makes claims this node can *check*, and when a check fails the
+admin hears about it with the evidence attached. This is the "Detect → details"
+arm layer 3 promises; the "→ block → snip → publish the mark" half is F6's
+existing toolkit. A false audio identity is worth singling out because it is
+**provable** — unlike a tasteless tagset, it is arithmetic — which is exactly what
+makes it fair to put in front of an admin as grounds for blocking.
 
 What is checkable, cheapest first:
 
-- **Against blobs we already hold — no download, no request.** For a hash in our
-  own library we know the true fingerprint. A peer advertising that hash with a
-  materially different one is contradicting bytes we can hash ourselves. Runs at
-  catalog-sync time and costs a comparison. This case is **airtight**: identical
-  bytes cannot fingerprint differently.
-- **Against a materialized download.** The pipeline already re-fingerprints
-  fetched audio before it joins a recording (§Catalog); compare the result with
-  what the origin advertised, and the check is free where the work is done.
-- **Against the peer's own grouping — needs no wire change at all.** A
+- **Against blobs we already hold — no download, no request** (`held_blob`). For a
+  hash in our own library we know the true fingerprint. A peer advertising that
+  hash with a materially different one is contradicting bytes we can hash
+  ourselves. The check is a SQL join over the *overlap*, so it costs a comparison
+  per hash both sides have and nothing per hash only one of us has. This case is
+  **airtight**: identical bytes cannot fingerprint differently.
+- **Against a materialized download** — the same check, reached from the other
+  side. The pipeline re-fingerprints fetched audio before it joins a recording
+  (§Catalog), which simply makes the download one more blob we hold, and the next
+  sync round compares the origin's standing claim against it. That is why the
+  checks read the *cached* catalog rather than a freshly received snapshot: a
+  peer's claims stand still while our own library moves, and a not-modified sync
+  round must still re-check. No separate code path, one rule read once.
+- **Against the peer's own grouping — needs no wire claim at all** (`grouping`). A
   `recording_key` asserts "these renditions are the same audio". Hold two of them
-  and the assertion is testable locally without the peer's cooperation.
+  and the assertion is testable locally without the peer's cooperation: *both*
+  fingerprints in that comparison are ours.
+
+**The threshold is the local one.** A contradiction is a start-aligned bit-error
+rate above `database.maxBitErrorRate` (0.10) — the same number
+`ResolveRecording` groups renditions by. Reusing it makes a finding explainable in
+one sentence: *the claim would not group with our own bytes by the very standard
+this node uses to decide that two files are the same audio.* Under 16 compared
+words the check declines to answer, because a claim we cannot check is not a claim
+we distrust.
 
 **Never automatic.** Blocking stays manual, for the reason given above: an
 automatic reputation score is a weapon in intra-network wars. A report is
@@ -595,20 +609,33 @@ same-hash case above is airtight; the fuzzier ones are BER comparisons against a
 threshold and must be worded as such. Present a conflict and its provenance,
 never a verdict.
 
-Storage is one row per (peer, hash, claim) with an admin disposition
-(new / dismissed / acted on) so a repeating sync re-alarms nobody — a new
-migration, 033 at the earliest, since 031 and 032 are the gossip tables and the
-block evidence. A count badge on the
-dashboard alongside the pending-peer one is the whole notification design; this
-must not become mail.
+**Storage** is `federation_claim_reports` (migration 034): one row per
+(peer, kind, hash, other_hash) with an admin disposition (new / dismissed /
+acted), so a repeating check refreshes the measurement and re-alarms nobody — and
+a dismissal is never overwritten by detection. The evidence travels with the row
+(both compared heads, both fingerprinter versions, the BER and the word count), so
+a finding survives the catalog replace that produced it. Rows CASCADE with the
+peer: forgetting a node forgets what we found about it. The admin surface is
+`GET /api/admin/federation/reports` + `PATCH …/reports/{id}`, and a **count badge
+on the dashboard** beside the pending-peer one is the whole notification design;
+this must not become mail.
 
-**Prerequisite: the catalog has to carry the fingerprint claim.** §Catalog
-describes entries as carrying one, but the F2 wire never added it —
-`CatalogEntry` has tagset text plus renditions with quality facts and nothing
-else. It is an additive JSON field, so no protocol break, and an absent claim is
-simply uncheckable rather than suspicious. Note this is also what layer 1's
-"auto-flag tagsets that conflict with a recording's dominant label" needs to work
-across nodes.
+**The catalog carries the fingerprint claim, as a bounded head.** The F2 wire never
+had one; `CatalogRendition` now has `fingerprint: {algo, version, words, head}`,
+additive so an older peer simply contributes nothing checkable. `head` is the first
+`federation.ClaimHeadWords` (64) raw sub-fingerprint words, base64 of the same
+little-endian packing the DB stores — **not** the whole fingerprint, and the reason
+is measured rather than guessed: a real fingerprint is ~950 words (3.8 KB packed)
+for a four-minute track, a snapshot is re-sent in full whenever its serial moves,
+and shipping all of it would add ~5 MB per sync to a thousand-rendition catalog on
+a 15-minute cadence between intermittently-online home servers. 64 words is ~15 s
+of audio and 2048 compared bits: the same bytes score 0, unrelated audio lands near
+0.5. The comparison is start-aligned exactly like the local matcher, so a head is
+the same kind of evidence measured over less of it. Publishing it leaks nothing new
+— a friend already gets the hash and the full tag text — and the browse endpoints
+strip it, since a browser has no use for 340 bytes per rendition. This is also what
+layer 1's "auto-flag tagsets that conflict with a recording's dominant label" needs
+to work across nodes.
 
 The *byte*-level lie needs nothing here: bytes that do not hash to the requested
 hash never enter the cache and cost the provider its place in the swarm
@@ -1264,12 +1291,14 @@ milestone directly after direct transfer works, and tokens ship with depth.
   (migration 033), the claim refreshed from the ping reply on the existing 1-minute
   cadence, and `local label ?? heard name ?? short key` everywhere a node is shown.
 
-  *Still to build.* **Contradicted-claim reports** (§Trust graph): the
-  fingerprint claim added to the catalog wire, the checks against blobs we
-  already hold and against materialized downloads, and the evidence shown on the
-  peer card — the detection that makes the blocking tooling something an admin
-  can act on rather than guess with. And
-  **de-peering a blocked node on the underlay** (§Trust graph, blocking): only the
+  *Contradicted-claim reports built 2026-07-30* (§Contradicted identity claims):
+  the fingerprint head on the catalog wire, the held-blob and grouping checks on
+  the sync cadence (migration 034), the evidence on the peer card and the count on
+  the dashboard — the detection that makes the blocking tooling something an admin
+  can act on rather than guess with.
+
+  *Still to build:*
+  **de-peering a blocked node on the underlay** (§Trust graph, blocking). Only the
   application layer is cut today, so a blocked node we peer with directly keeps us
   as transit. `core.RemovePeer` takes an underlay URI while a block names a key,
   so this needs the `GetPeers()` key→URI match plus a persistent suppression list —

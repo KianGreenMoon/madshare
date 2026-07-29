@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,6 +25,8 @@ type fakeFederation struct {
 	inboundDead bool   // when true, InboundHealthy() reports false (fail-open path)
 	blockReason string // what the last block carried into the published mark (F6)
 	graph       federation.NetworkMap
+	reports     []*federation.ClaimReport // contradicted claims awaiting a decision (F6)
+	disposed    []string                  // "<id>:<disposition>" per PATCH
 }
 
 func (f *fakeFederation) Info() federation.NodeInfo {
@@ -52,6 +55,15 @@ func (f *fakeFederation) BlockPeer(_ context.Context, _ int64, reason string) er
 
 func (f *fakeFederation) NetworkMap(context.Context) (federation.NetworkMap, error) {
 	return f.graph, nil
+}
+
+func (f *fakeFederation) ClaimReports(context.Context) ([]*federation.ClaimReport, error) {
+	return f.reports, nil
+}
+
+func (f *fakeFederation) SetClaimDisposition(_ context.Context, id int64, disposition string) error {
+	f.disposed = append(f.disposed, fmt.Sprintf("%d:%s", id, disposition))
+	return nil
 }
 
 func (f *fakeFederation) BlockKey(_ context.Context, _, _, reason string) error {
@@ -221,5 +233,69 @@ func TestFederationBlockCarriesReason(t *testing.T) {
 	}
 	if fake.blockReason != "sybil farm" {
 		t.Errorf("block-by-key reason = %q", fake.blockReason)
+	}
+}
+
+// TestFederationReports covers the claim-report surface: the findings an admin
+// sees, and recording a decision on one. The detection itself is SQL and is
+// tested against a real database (database/madnetwork_claims_test.go).
+func TestFederationReports(t *testing.T) {
+	fake := &fakeFederation{
+		patched: map[string]any{},
+		reports: []*federation.ClaimReport{{
+			ID: 7, PeerID: 3, Kind: federation.ClaimHeldBlob, Hash: "3a9f",
+			BER: 0.47, Words: 64, OurVersion: "1.5.1", TheirVersion: "1.4.3",
+			Disposition: federation.ClaimNew, PeerName: "studio", PeerKey: "ab12",
+		}},
+	}
+	srv := newFederationTestServer(t, fake)
+
+	resp, err := http.Get(srv.URL + "/api/admin/federation/reports")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed struct {
+		OK      bool                      `json:"ok"`
+		Reports []*federation.ClaimReport `json:"reports"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !listed.OK || len(listed.Reports) != 1 {
+		t.Fatalf("reports = %+v, want the one finding", listed)
+	}
+	got := listed.Reports[0]
+	if got.Hash != "3a9f" || got.PeerName != "studio" || got.PeerKey != "ab12" {
+		t.Errorf("report = %+v, want the hash plus the peer's label AND key", got)
+	}
+	if got.BER == 0 || got.Words == 0 || got.TheirVersion == "" {
+		t.Error("the evidence (measurement and both fingerprinter versions) must survive the wire")
+	}
+
+	patch := func(id, body string) int {
+		req, _ := http.NewRequest(http.MethodPatch,
+			srv.URL+"/api/admin/federation/reports/"+id, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+	if code := patch("7", `{"disposition":"dismissed"}`); code != http.StatusOK {
+		t.Fatalf("dismiss = %d, want 200", code)
+	}
+	if len(fake.disposed) != 1 || fake.disposed[0] != "7:dismissed" {
+		t.Errorf("recorded dispositions = %v, want [7:dismissed]", fake.disposed)
+	}
+	// An unknown disposition is a client error — the set is closed on purpose, so
+	// nothing invents a state the schema's CHECK would reject.
+	if code := patch("7", `{"disposition":"blocked"}`); code != http.StatusBadRequest {
+		t.Errorf("unknown disposition = %d, want 400", code)
+	}
+	if code := patch("nope", `{"disposition":"acted"}`); code != http.StatusBadRequest {
+		t.Errorf("bad id = %d, want 400", code)
 	}
 }

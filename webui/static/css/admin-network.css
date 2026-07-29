@@ -114,6 +114,33 @@
 }
 .peer-actions { display: flex; gap: var(--space-2); margin-top: var(--space-3); flex-wrap: wrap; }
 
+/* ── Contradicted claims (F6) ────────────────────────────────────────────────
+   Findings this node made by checking a peer's advertised fingerprints against
+   bytes it holds itself. Styled as a warning, not an alarm: it sits quietly
+   above the actions until an admin decides something. */
+.peer-claims {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--danger, var(--border));
+  border-radius: var(--radius);
+  background: var(--danger-bg, transparent);
+  font-size: 0.85rem;
+}
+.peer-claims-head { font-weight: 600; color: var(--danger, var(--text)); }
+.peer-claims-note { font-weight: 400; color: var(--text-muted); }
+.peer-claim { margin-top: var(--space-3); }
+.peer-claim-what { color: var(--text); }
+/* The measurement and its provenance — monospace, because it is data an admin
+   may want to compare character by character. */
+.peer-claim-evidence {
+  margin-top: var(--space-1);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.peer-claim-actions { display: flex; gap: var(--space-2); margin-top: var(--space-2); flex-wrap: wrap; }
+
 /* ── State badge ────────────────────────────────────────────────────────────── */
 .peer-badge {
   display: inline-flex;

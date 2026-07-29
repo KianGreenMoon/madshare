@@ -100,6 +100,66 @@ var FriendAudience = Audience{Distance: DepthFriends}
 // endpoints: catalog and holdings stay friends-only.
 var GuestAudience = Audience{Distance: DepthFriends, GuestOnly: true}
 
+// Claim-report kinds (federation_claim_reports.kind, migration 034) — which
+// check found a contradiction. See [ClaimReport].
+const (
+	// ClaimHeldBlob: the peer advertises a hash we hold ourselves, with a
+	// fingerprint that does not match our own copy of those exact bytes. This is
+	// the airtight case — identical bytes cannot fingerprint differently.
+	ClaimHeldBlob = "held_blob"
+	// ClaimGrouping: the peer asserts two renditions are the same recording, we
+	// hold both, and our own fingerprints disagree. Testable without the peer's
+	// cooperation and without any wire claim.
+	ClaimGrouping = "grouping"
+)
+
+// Claim-report dispositions — the admin's decision, which detection never
+// overwrites.
+const (
+	ClaimNew       = "new"
+	ClaimDismissed = "dismissed"
+	ClaimActed     = "acted"
+)
+
+// ClaimReport is one contradiction between what a peer advertises and what this
+// node can verify for itself (F6). It is evidence shown to a human beside the
+// Block action, never an input to a score: blocking stays manual here, because an
+// automatic reputation system is a weapon in intra-network wars.
+//
+// Say "contradiction", not "lie". Only [ClaimHeldBlob] is arithmetic; the rest is
+// a bit-error rate against a threshold, and a mismatch has innocent explanations
+// (a different chromaprint build — hence both versions travel with the report —
+// a peer that grouped a rendition wrongly, or an honest relay repeating someone
+// else's claim, which makes the origin of a claim a separate question from its
+// carrier).
+type ClaimReport struct {
+	ID     int64  `json:"id"`
+	PeerID int64  `json:"peer_id"`
+	Kind   string `json:"kind"`
+	Hash   string `json:"hash"`
+	// OtherHash is the second blob involved, for ClaimGrouping.
+	OtherHash string `json:"other_hash,omitempty"`
+	// BER is the measured bit-error rate over Words compared fingerprint words.
+	BER   float64 `json:"ber"`
+	Words int     `json:"words"`
+	// The two fingerprint heads that were compared, kept so the finding stays
+	// reproducible after the catalog that carried it has been replaced. For
+	// ClaimHeldBlob they are our own copy of the bytes and the peer's claim about
+	// them; for ClaimGrouping *both are ours* — the two blobs the peer says are
+	// one recording — since that check needs nothing from the peer.
+	OurHead      string `json:"our_head,omitempty"`
+	TheirHead    string `json:"their_head,omitempty"`
+	OurVersion   string `json:"our_version,omitempty"`
+	TheirVersion string `json:"their_version,omitempty"`
+	Disposition  string `json:"disposition"`
+	FirstSeen    int64  `json:"first_seen"`
+	LastSeen     int64  `json:"last_seen"`
+
+	// Display decorations, joined by the store.
+	PeerName string `json:"peer_name,omitempty"`
+	PeerKey  string `json:"peer_key,omitempty"`
+}
+
 // ErrPeerNotFound is returned by peer lookups when no row matches.
 var ErrPeerNotFound = errors.New("federation peer not found")
 
@@ -220,6 +280,24 @@ type PeerStore interface {
 	// whether it also seeds its download cache — the F4 serving gate (both
 	// default on).
 	SeedingPolicy(ctx context.Context) (enabled, cache bool, err error)
+
+	// CheckPeerClaims re-runs the contradiction checks over one peer's cached
+	// catalog and records what it finds, returning how many reports are newly
+	// open. Idempotent: re-finding a contradiction refreshes it and leaves the
+	// admin's disposition alone (F6, migration 034).
+	//
+	// It reads the *cache* rather than a freshly received snapshot on purpose. A
+	// peer whose catalog has not changed sends no entries, but what we hold
+	// locally changes all the time — every upload and every materialized download
+	// is a new blob to check old claims against — so the check has to be able to
+	// run when only our side moved.
+	CheckPeerClaims(ctx context.Context, peerID int64) (newlyOpen int, err error)
+	// ListClaimReports returns the findings still awaiting an admin decision,
+	// newest first, decorated with the reporting peer's label and key.
+	ListClaimReports(ctx context.Context) ([]*ClaimReport, error)
+	// SetClaimReportDisposition records that decision. Detection never overwrites
+	// it, so a dismissed finding stays dismissed.
+	SetClaimReportDisposition(ctx context.Context, id int64, disposition string) error
 
 	GraphStore
 }
@@ -513,6 +591,47 @@ type CatalogRendition struct {
 	SampleRate int64   `json:"sample_rate,omitempty"`
 	BitDepth   int64   `json:"bit_depth,omitempty"`
 	Duration   float64 `json:"duration,omitempty"`
+	// Fingerprint is the origin's audio-identity claim for these bytes (F6). Nil
+	// when the origin never fingerprinted the blob or speaks an older protocol —
+	// an absent claim is uncheckable, not suspicious.
+	Fingerprint *FingerprintClaim `json:"fingerprint,omitempty"`
+}
+
+// ClaimHeadWords is how many raw sub-fingerprint words a [FingerprintClaim]
+// carries. It is a *head*, not the whole fingerprint, and the reason is
+// arithmetic: a real fingerprint measures ~950 words (3.8 KB packed) for a
+// four-minute track, and a catalog snapshot is re-sent in full whenever its
+// serial changes, so shipping all of it would inflate a thousand-rendition
+// catalog by ~5 MB per sync — on a 15-minute cadence, between home servers that
+// are only intermittently online.
+//
+// 64 words is ~15 s of audio and 2048 compared bits, which is decisive: the same
+// bytes score a bit-error rate of 0, and unrelated audio lands near 0.5. The
+// comparison is start-aligned, exactly like the local matcher
+// (database.ResolveRecording), so a head is the same kind of evidence, measured
+// over less of it.
+const ClaimHeadWords = 64
+
+// FingerprintClaim is what a rendition says its audio *is* — the head of the
+// origin's own acoustic fingerprint, so a receiver holding the same bytes can
+// check the claim instead of taking it on trust
+// (docs/architecture/federation.md §Trust graph, contradicted claims).
+//
+// Publishing it leaks nothing new: a friend already receives the content hash and
+// the full tag text of everything in scope, so the claim only makes an existing
+// assertion checkable.
+type FingerprintClaim struct {
+	// Algo and Version identify the fingerprinter. Version matters more than it
+	// looks: chromaprint output is build-sensitive, which is why a mismatch
+	// between different versions is an innocent explanation rather than evidence.
+	Algo    string `json:"algo,omitempty"`
+	Version string `json:"version,omitempty"`
+	// Words is the length of the origin's *whole* fingerprint, so a receiver can
+	// see that two claims describe audio of very different lengths.
+	Words int `json:"words,omitempty"`
+	// Head is base64 (standard encoding) of the first [ClaimHeadWords] words,
+	// packed little-endian — the wire form of what media.DecodeFingerprint reads.
+	Head string `json:"head"`
 }
 
 // CatalogEntry is one published appearance (tagset) of a recording, as carried

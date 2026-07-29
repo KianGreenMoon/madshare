@@ -49,6 +49,24 @@ async function fillPeerRequests() {
   } catch { /* network error — leave the badge hidden */ }
 }
 
+// Show how many contradicted identity claims are waiting for a decision on the
+// Network card (federation F6). Evidence, not an alarm: the badge links to the
+// page where each finding sits beside the Block action.
+async function fillClaimReports() {
+  try {
+    const res = await fetch(`${API}/api/admin/federation/reports`);
+    if (!res.ok) return; // disabled / lacks federation.manage — leave it hidden
+    const data = await res.json();
+    const open = (data.reports || []).length;
+    const badge = document.getElementById('countClaimReports');
+    if (badge && open > 0) {
+      badge.textContent = `${open} flagged`;
+      badge.title = `${open} contradicted identity claim(s) awaiting review`;
+      badge.hidden = false;
+    }
+  } catch { /* network error — leave the badge hidden */ }
+}
+
 // Show a "scanning" badge on the Data sources card while any symlink source is
 // mid-scan (the same shared state the /admin/sources page polls).
 async function fillSourcesStatus() {
@@ -212,6 +230,7 @@ async function fillStorage() {
   fillPruneStatus();
   fillSourcesStatus();
   fillPeerRequests();
+  fillClaimReports();
   fillCount('countFiles', '/api/files?limit=0');
   fillCount('countModeration', '/api/admin/moderation?limit=0');
   fillCount('countTrash', '/api/admin/trash?limit=0');

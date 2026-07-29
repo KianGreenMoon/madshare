@@ -61,3 +61,11 @@ func (n *Node) EnsureBlob(context.Context, string) (Transfer, error) {
 func (n *Node) NetworkMap(context.Context) (NetworkMap, error) {
 	return NetworkMap{}, errCompiledOut
 }
+
+func (n *Node) ClaimReports(context.Context) ([]*ClaimReport, error) {
+	return nil, errCompiledOut
+}
+
+func (n *Node) SetClaimDisposition(context.Context, int64, string) error {
+	return errCompiledOut
+}

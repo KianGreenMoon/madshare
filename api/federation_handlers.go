@@ -272,3 +272,62 @@ func (h *handler) federationGraph(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "graph": m})
 }
+
+// federationReports handles GET /api/admin/federation/reports: contradicted
+// identity claims awaiting a decision (federation F6). A peer's catalog makes
+// claims this node can check — it advertises a content hash together with the
+// head of its own fingerprint — and when we hold those exact bytes, a materially
+// different claim contradicts something we can hash ourselves.
+//
+// The response is evidence, never a verdict: the peer card renders what was
+// compared and how each side was obtained, next to the Block action that was
+// already there. Blocking stays manual, because an automatic reputation score is
+// a weapon in intra-network wars.
+func (h *handler) federationReports(w http.ResponseWriter, r *http.Request) {
+	if h.federation == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "federation is not enabled"})
+		return
+	}
+	reports, err := h.federation.ClaimReports(r.Context())
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "reports": reports})
+}
+
+// federationReportPatch handles PATCH /api/admin/federation/reports/{reportID}:
+// record the admin's decision on one finding ({"disposition": "dismissed"} or
+// "acted"). Detection never overwrites it, so a dismissed finding does not come
+// back every fifteen minutes.
+func (h *handler) federationReportPatch(w http.ResponseWriter, r *http.Request) {
+	if h.federation == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "federation is not enabled"})
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "reportID"), 10, 64)
+	if err != nil || id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "bad report id"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	var body struct {
+		Disposition string `json:"disposition"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid json"})
+		return
+	}
+	switch body.Disposition {
+	case federation.ClaimDismissed, federation.ClaimActed, federation.ClaimNew:
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "error": `disposition must be "dismissed", "acted" or "new"`})
+		return
+	}
+	if err := h.federation.SetClaimDisposition(r.Context(), id, body.Disposition); err != nil {
+		writeFederationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}

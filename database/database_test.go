@@ -55,7 +55,8 @@ func TestOpen_CreatesExpectedTables(t *testing.T) {
 	want := []string{
 		"album_images", "albums", "api_tokens",
 		"artist_images", "artists", "audio_fingerprints", "audit_log",
-		"data_sources", "federation_catalog", "federation_graph_edges", "federation_graph_records",
+		"data_sources", "federation_catalog", "federation_claim_reports",
+		"federation_graph_edges", "federation_graph_records",
 		"federation_holdings", "federation_mark_records", "federation_marks", "federation_peers",
 		"file_uploads", "files",
 		"image_processing_jobs", "media_analysis_jobs", "media_metadata",
@@ -82,8 +83,8 @@ func TestOpen_RecordsMigrationVersion(t *testing.T) {
 	if err := db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&v); err != nil {
 		t.Fatalf("query version: %v", err)
 	}
-	if v != 33 {
-		t.Errorf("migration version = %d, want 33", v)
+	if v != 34 {
+		t.Errorf("migration version = %d, want 34", v)
 	}
 }
 
@@ -204,8 +205,8 @@ func TestOpen_IdempotentMigrations(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&rows); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if rows != 33 {
-		t.Errorf("schema_migrations row count = %d, want 33 after re-run", rows)
+	if rows != 34 {
+		t.Errorf("schema_migrations row count = %d, want 34 after re-run", rows)
 	}
 }
 

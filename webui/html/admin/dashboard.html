@@ -85,6 +85,10 @@
         <span class="dash-card-head">
           <span class="dash-card-title">Network</span>
           <span class="dash-card-count" id="countPeerRequests" hidden></span>
+          <!-- Contradicted identity claims awaiting a decision (federation F6).
+               A count beside the pending-peer one is the whole notification
+               design, deliberately: nothing here becomes mail. -->
+          <span class="dash-card-count dash-card-count--warn" id="countClaimReports" hidden></span>
         </span>
         <span class="dash-card-desc">Friend other madshare nodes: exchange node cards, manage peers.</span>
       </a>

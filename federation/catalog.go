@@ -128,13 +128,35 @@ func (n *Node) syncCatalog(ctx context.Context, p *Peer) {
 	now := time.Now().Unix()
 	if msg.Unchanged {
 		if err := n.store.MarkPeerCatalogChecked(ctx, p.ID, msg.Serial, now); err != nil {
-			n.logger.Printf("federation: mark catalog checked for %q: %v", p.Name, err)
+			n.logger.Printf("federation: mark catalog checked for %q: %v", p.Label(), err)
 		}
+		n.checkClaims(ctx, p)
 		return
 	}
 	if err := n.store.ReplacePeerCatalog(ctx, p.ID, msg.Serial, now, msg.Entries); err != nil {
-		n.logger.Printf("federation: store catalog of %q: %v", p.Name, err)
+		n.logger.Printf("federation: store catalog of %q: %v", p.Label(), err)
 		return
 	}
-	n.logger.Printf("federation: synced catalog of %q (%s) — %d entries", p.Name, p.PublicKey, len(msg.Entries))
+	n.logger.Printf("federation: synced catalog of %q (%s) — %d entries", p.Label(), p.PublicKey, len(msg.Entries))
+	n.checkClaims(ctx, p)
+}
+
+// checkClaims re-runs the contradiction checks over this peer's cached catalog
+// (F6). It runs on both sync paths, including the not-modified one: a peer's
+// claims stand still while *our* library moves, and every upload or materialized
+// download is a new blob those old claims can be checked against.
+//
+// A finding is logged once per round and otherwise waits on /admin/network.
+// Nothing here blocks, scores or notifies — that is the whole point of the design
+// (docs/architecture/federation.md §Trust graph).
+func (n *Node) checkClaims(ctx context.Context, p *Peer) {
+	open, err := n.store.CheckPeerClaims(ctx, p.ID)
+	if err != nil {
+		n.logger.Printf("federation: check claims of %q: %v", p.Label(), err)
+		return
+	}
+	if open > 0 {
+		n.logger.Printf("federation: %d unreviewed contradicted claim(s) from %q (%s) — see /admin/network",
+			open, p.Label(), p.PublicKey)
+	}
 }

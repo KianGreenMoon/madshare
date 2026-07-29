@@ -303,6 +303,14 @@ func (m *memStore) UpdateFederationPeerHeardName(_ context.Context, id int64, na
 	return nil
 }
 
+// CheckPeerClaims: the store fake finds nothing — the contradiction checks are
+// SQL and are tested against a real database (database/madnetwork_claims_test.go).
+func (m *memStore) CheckPeerClaims(context.Context, int64) (int, error) { return 0, nil }
+
+func (m *memStore) ListClaimReports(context.Context) ([]*ClaimReport, error) { return nil, nil }
+
+func (m *memStore) SetClaimReportDisposition(context.Context, int64, string) error { return nil }
+
 func (m *memStore) SetFederationPeerUser(_ context.Context, id int64, userID *int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

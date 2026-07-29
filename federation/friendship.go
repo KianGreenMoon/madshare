@@ -545,6 +545,28 @@ func (n *Node) RenamePeer(ctx context.Context, id int64, name string) error {
 	return n.store.UpdateFederationPeerName(ctx, id, CleanPeerName(name))
 }
 
+// ClaimReports lists the contradicted claims still waiting for an admin (F6).
+// Evidence, not a verdict: the peer card shows what was compared and how each
+// side was obtained, next to the Block action that was always there.
+func (n *Node) ClaimReports(ctx context.Context) ([]*ClaimReport, error) {
+	reports, err := n.store.ListClaimReports(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if reports == nil {
+		reports = []*ClaimReport{}
+	}
+	return reports, nil
+}
+
+// SetClaimDisposition records the admin's decision on one finding — dismissed
+// (an innocent explanation, or not worth acting on) or acted (they blocked, or
+// took it up with the peer). Nothing about what the peer is served changes here;
+// blocking stays a separate, deliberate act.
+func (n *Node) SetClaimDisposition(ctx context.Context, id int64, disposition string) error {
+	return n.store.SetClaimReportDisposition(ctx, id, disposition)
+}
+
 // MapPeerUser maps the peer node to a local user account (nil clears). All
 // existing local ACLs then apply to that node's owner — federation adds no
 // parallel permission system.
