@@ -5,6 +5,7 @@ package federation
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -515,6 +516,35 @@ func TestFriendshipHandshake(t *testing.T) {
 		resp.Body.Close()
 		return resp.StatusCode == http.StatusOK
 	})
+
+	// A block also cuts the UNDERLAY link where that link is ours. B configured A
+	// as a peer, so B is the side that can de-peer — and because the removal
+	// cancels yggdrasil's retry, the link must stay gone rather than come back on
+	// the next dial. (Left last: it takes the transport down.)
+	hasUnderlay := func(n *Node, key string) bool {
+		for _, info := range n.core.GetPeers() {
+			if hex.EncodeToString(info.Key) == key {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasUnderlay(b, a.PublicKeyHex()) {
+		t.Fatal("B has no underlay link to A to begin with; the de-peer assertion would be vacuous")
+	}
+	pbOnB, _ := storeB.GetFederationPeerByKey(ctx, a.PublicKeyHex())
+	if err := b.BlockPeer(ctx, pbOnB.ID, "underlay de-peer test"); err != nil {
+		t.Fatalf("block on B: %v", err)
+	}
+	waitFor(t, "B to drop the underlay link to a blocked A", func() bool {
+		b.Nudge()
+		return !hasUnderlay(b, a.PublicKeyHex())
+	})
+	// Still gone a moment later: the retry was cancelled, not just interrupted.
+	time.Sleep(500 * time.Millisecond)
+	if hasUnderlay(b, a.PublicKeyHex()) {
+		t.Error("the underlay link to a blocked node came back; RemovePeer must stop the retry")
+	}
 }
 
 // TestPairRejectsMismatchedKey: a pair request claiming a key that does not

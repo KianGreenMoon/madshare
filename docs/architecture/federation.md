@@ -519,7 +519,19 @@ stricter for emoji, which is the harmless direction.)
   - Where the peering link is ours (direct ygg peering with that node), we also
     de-peer, so the blocked node loses us as transit. (On shared public-mesh
     segments, transit below the app layer is Yggdrasil's business — the
-    app-layer cut is the guaranteed part.)
+    app-layer cut is the guaranteed part.) *Built 2026-07-30*, in the refresh
+    sweep rather than at block time: a configured peer URI carries no key, so we
+    only learn who is behind `tcp://host:port` after the handshake, which means
+    the live link list is the only thing that can be matched against the blocked
+    set. Re-running it every sweep is also what makes the cut durable without a
+    suppression list — config re-adds the peer at startup, and a minute later it
+    is cut again, for as long as the block stands. Two limits, both real:
+    `RemovePeer` reports "not configured" for a link on a shared segment (that is
+    the case the parenthesis above describes), and an **inbound** link is skipped
+    entirely because yggdrasil v0.5.14 *panics* when asked to remove one (nil
+    cancel func; see `.issues/open-issues.md`) and exposes no handle for it
+    anyway. A blocked node that dialled us therefore keeps its transit until it
+    disconnects, while getting nothing from the application.
   - Blocks are **published as signed distrust marks**, relayed network-wide like
     the friend records and carrying a short reason: "see whom the network does
     not trust, and why." Every block publishes one — there are no private blocks.
@@ -1297,12 +1309,12 @@ milestone directly after direct transfer works, and tokens ship with depth.
   the dashboard — the detection that makes the blocking tooling something an admin
   can act on rather than guess with.
 
-  *Still to build:*
-  **de-peering a blocked node on the underlay** (§Trust graph, blocking). Only the
-  application layer is cut today, so a blocked node we peer with directly keeps us
-  as transit. `core.RemovePeer` takes an underlay URI while a block names a key,
-  so this needs the `GetPeers()` key→URI match plus a persistent suppression list —
-  otherwise the retry loop and the next restart re-add it from config.
+  *Underlay de-peering built 2026-07-30* (§Trust graph, blocking): the sweep
+  matches the live link list against the blocked set by key and drops the links we
+  dialled, so a blocked node also loses us as transit. Inbound links are the
+  documented exception (an upstream panic, no handle).
+
+  **F6 is complete.**
 - **F7 — Tokens & transitive reach.** The capability tokens that let a seeder
   serve strangers-inside-the-network, with delegated issuance along the
   friendship chain; `Audience.Distance` computed from the gossiped graph instead

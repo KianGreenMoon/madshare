@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/yggdrasil-network/yggdrasil-go/src/address"
@@ -348,6 +349,7 @@ func (n *Node) sweep(ctx context.Context) {
 	n.publishOwnRecord(ctx, peers)
 	n.publishOwnMarkRecord(ctx, peers)
 	n.expireGraph(ctx)
+	n.depeerBlocked(peers)
 
 	for _, p := range peers {
 		if ctx.Err() != nil {
@@ -543,6 +545,63 @@ func (n *Node) RemovePeer(ctx context.Context, id int64) error {
 // RenamePeer sets the local display label.
 func (n *Node) RenamePeer(ctx context.Context, id int64, name string) error {
 	return n.store.UpdateFederationPeerName(ctx, id, CleanPeerName(name))
+}
+
+// depeerBlocked cuts the *underlay* link to a blocked node wherever that link is
+// ours to cut — the second half of what blocking promises (§Trust graph): a block
+// refuses all application-layer service, and where we peer with the node directly
+// it also loses us as transit.
+//
+// It works from the live link list rather than from config, because a configured
+// peer URI carries no key: we only learn who is behind `tcp://host:port` once the
+// handshake completes. That also removes the need for a suppression list — the
+// blocked set is already persisted, so re-running this every sweep re-cuts a link
+// that config re-added at startup, or that the far side re-dialled. Within a
+// minute, in other words, and permanently for as long as the block stands.
+//
+// A failure is expected and silent: on a shared public-mesh segment the link is
+// not ours (`ErrLinkNotConfigured`), and transit below the app layer is
+// Yggdrasil's business. The app-layer cut is the guaranteed part.
+func (n *Node) depeerBlocked(peers []*Peer) {
+	blocked := map[string]*Peer{}
+	for _, p := range peers {
+		if p.State == PeerBlocked {
+			blocked[p.PublicKey] = p
+		}
+	}
+	if len(blocked) == 0 {
+		return
+	}
+	for _, info := range n.core.GetPeers() {
+		if len(info.Key) == 0 {
+			continue // a link that has not finished its handshake claims no key
+		}
+		// Only links WE dialled. This is not just scoping: yggdrasil v0.5.14
+		// panics on RemovePeer for an inbound link — `links.remove` calls
+		// `state.cancel()`, and only `links.add` ever sets that field, so an
+		// incoming link's cancel func is nil (src/core/link.go:434 against :254).
+		// Cutting an inbound link would be desirable and there is no API for it
+		// anyway: PeerInfo carries no handle, so nothing else identifies it.
+		// Reported by TestFriendshipHandshake, which blocks in both directions.
+		if info.Inbound {
+			continue
+		}
+		p, ok := blocked[hex.EncodeToString(info.Key)]
+		if !ok {
+			continue
+		}
+		u, err := url.Parse(info.URI)
+		if err != nil {
+			continue
+		}
+		// The empty source interface matches how peers are configured here
+		// (core.Peer{URI} with no SourceInterface) and how listeners accept.
+		if err := n.core.RemovePeer(u, ""); err != nil {
+			continue
+		}
+		n.logger.Printf("federation: de-peered blocked node %q (%s) on the underlay — %s",
+			p.Label(), p.PublicKey, info.URI)
+	}
 }
 
 // ClaimReports lists the contradicted claims still waiting for an admin (F6).

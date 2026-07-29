@@ -724,3 +724,43 @@ names the mode once and then walks its holders resetting between each, which
 would otherwise pad the readout with a blank entry per dead holder.
 
 Test: `TestTransferStatsPriorAttempt`.
+
+## Federation — yggdrasil `RemovePeer` panics on an inbound link (2026-07-30)
+
+Found while building F6's underlay de-peering (blocking a node should also cut the
+ygg peering where that link is ours). `core.RemovePeer` dereferences a nil
+`context.CancelFunc` for any **incoming** link and takes the process down:
+
+```
+panic: runtime error: invalid memory address or nil pointer dereference
+  github.com/yggdrasil-network/yggdrasil-go/src/core.(*links).remove.func1()
+    src/core/link.go:434
+```
+
+`links.remove` calls `state.cancel()` unconditionally (link.go:434), but only
+`links.add` ever assigns that field (link.go:254). An inbound link's state is
+built at link.go:538 without it, so `cancel` is nil for every peer that dialled
+*us*. Reproducible in one call, on yggdrasil-go v0.5.14.
+
+**Worked around, not fixed:** `depeerBlocked` skips `PeerInfo.Inbound` links. That
+also happens to be the only thing it *can* do — `PeerInfo` carries no handle, so
+nothing identifies an inbound link for removal anyway. Consequence to keep in
+mind: a blocked node that dialled us keeps its underlay link (and its transit
+through us) until it disconnects, though the app-layer block refuses it
+everything. `TestFriendshipHandshake` covers both directions and is what caught
+the panic.
+
+Fixing it upstream is a two-line guard (`if state.cancel != nil`) plus, ideally, an
+API to drop an inbound peering. We carry no yggdrasil-go fork (only the yggstack
+one, `third_party/yggstack`), so this is deliberately not patched locally.
+
+## Federation — mesh tests can flake under load (2026-07-30)
+
+One full `go test ./federation/` run failed at `swarm_test.go:219` ("timed out
+waiting for A to see B's pairing request") on a run that took 125 s; two fresh
+runs of the same suite passed in ~86 s and 13 s (swarm only). These tests start
+several in-process yggdrasil nodes with real handshakes and `waitFor` deadlines,
+so a loaded machine can miss a pairing window. Not tracked to any code path — the
+change under test that round (`depeerBlocked`) returns immediately when no peer is
+blocked, and no swarm test blocks one. Worth generous deadlines rather than a
+retry loop if it recurs.
