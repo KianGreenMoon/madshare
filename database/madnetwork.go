@@ -224,7 +224,7 @@ func isContentHash(s string) bool {
 func (db *DB) madnetworkRowsForHash(ctx context.Context, hash string,
 	visit func(peer *federation.Peer, entry *federation.CatalogEntry, rendition *federation.CatalogRendition) bool) error {
 	rows, err := db.QueryContext(ctx, `
-		SELECT p.id, p.public_key, p.name, p.last_seen,
+		SELECT p.id, p.public_key, p.name, p.heard_name, p.last_seen,
 		       c.entry_key, c.recording_key, c.title, c.artist, c.album_artist,
 		       c.album, COALESCE(c.genre, ''), c.year, c.track_number, c.disc_number,
 		       COALESCE(c.duration, 0), COALESCE(c.license, ''), c.guest_playable, c.renditions
@@ -241,7 +241,7 @@ func (db *DB) madnetworkRowsForHash(ctx context.Context, hash string,
 		var e federation.CatalogEntry
 		var year, track, disc sql.NullInt64
 		var renditions string
-		if err := rows.Scan(&p.ID, &p.PublicKey, &p.Name, &p.LastSeen,
+		if err := rows.Scan(&p.ID, &p.PublicKey, &p.Name, &p.HeardName, &p.LastSeen,
 			&e.Key, &e.RecordingKey, &e.Title, &e.Artist, &e.AlbumArtist, &e.Album,
 			&e.Genre, &year, &track, &disc, &e.Duration, &e.License, &e.GuestPlayable,
 			&renditions); err != nil {
@@ -291,7 +291,7 @@ func (db *DB) MadnetworkBlobProviders(ctx context.Context, hash string) (int64, 
 	// Cache holders (federation_holdings) — friends seeding the blob from their
 	// download cache without it being in their library catalog.
 	rows, err := db.QueryContext(ctx, `
-		SELECT p.id, p.public_key, p.name, p.last_seen
+		SELECT p.id, p.public_key, p.name, p.heard_name, p.last_seen
 		FROM federation_holdings h
 		JOIN federation_peers p ON p.id = h.peer_id AND p.state = 'friend'
 		WHERE h.hash = ?`, hash)
@@ -301,7 +301,7 @@ func (db *DB) MadnetworkBlobProviders(ctx context.Context, hash string) (int64, 
 	defer rows.Close()
 	for rows.Next() {
 		var p federation.Peer
-		if err := rows.Scan(&p.ID, &p.PublicKey, &p.Name, &p.LastSeen); err != nil {
+		if err := rows.Scan(&p.ID, &p.PublicKey, &p.Name, &p.HeardName, &p.LastSeen); err != nil {
 			return 0, nil, fmt.Errorf("scan holdings provider: %w", err)
 		}
 		if _, ok := holders[p.ID]; !ok {
@@ -547,7 +547,7 @@ type MadnetworkTrackRow struct {
 // rows to reachable friends (cutoff <= 0 = all).
 func (db *DB) remoteTrackRows(ctx context.Context, cutoff int64, match string, args ...any) ([]*MadnetworkTrackRow, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT peer_id, p2.name, p2.last_seen, akey, alb,
+		SELECT peer_id, `+peerLabelExpr("p2")+`, p2.last_seen, akey, alb,
 		       entry_key, recording_key, title, artist, album_artist,
 		       COALESCE(genre, ''), year, track_number, disc_number,
 		       COALESCE(duration, 0), COALESCE(license, ''), guest_playable, renditions
@@ -779,11 +779,11 @@ type MadnetworkFriend struct {
 // friends and greys the unreachable — but the track count uses the view's cutoff.
 func (db *DB) MadnetworkSummary(ctx context.Context, view MadnetworkView) ([]*MadnetworkFriend, int64, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT p.name, p.last_seen, p.catalog_synced_at,
+		SELECT `+peerLabelExpr("p")+`, p.last_seen, p.catalog_synced_at,
 		       (SELECT COUNT(*) FROM federation_catalog c WHERE c.peer_id = p.id)
 		FROM federation_peers p
 		WHERE p.state = 'friend'
-		ORDER BY lower(p.name), p.id`)
+		ORDER BY lower(`+peerLabelExpr("p")+`), p.id`)
 	if err != nil {
 		return nil, 0, fmt.Errorf("madnetwork summary: %w", err)
 	}

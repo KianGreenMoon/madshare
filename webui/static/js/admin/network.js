@@ -139,7 +139,7 @@ function renderPeers(peers) {
 }
 
 function renderPeer(p) {
-  const nameSpan = el('span', { class: 'peer-name', text: p.name || '(unnamed node)' });
+  const nameSpan = el('span', { class: 'peer-name', text: peerLabel(p) });
   const head = el('div', { class: 'peer-head' }, [
     nameSpan,
     el('button', { class: 'peer-rename', title: 'Rename (local label)', 'aria-label': 'Rename', onclick: () => startRename(p, nameSpan) }, ['✎']),
@@ -149,6 +149,12 @@ function renderPeer(p) {
 
   const meta = el('div', { class: 'peer-meta' });
   meta.append(el('span', {}, [p.address ? `mesh ${p.address}` : '']));
+  // What the node calls itself, shown whenever our label is hiding it — the
+  // label always wins, but it must never make the peer's own name unreadable.
+  if (p.heard_name && p.name && p.heard_name !== p.name) {
+    meta.append(el('span', { class: 'peer-heard', title: 'The name this node gives itself, refreshed on every contact' },
+      [`calls itself “${p.heard_name}”`]));
+  }
   meta.append(renderUserMapping(p));
 
   const actions = el('div', { class: 'peer-actions' });
@@ -193,12 +199,29 @@ function renderUserMapping(p) {
   return el('label', {}, ['account: ', sel]);
 }
 
+// peerLabel is the client half of federation.Peer.Label: the admin's own label
+// wins, then what the node calls itself, then its short key — a name is never
+// blank, and never the only thing identifying a node (the key is right below it).
+function peerLabel(p) {
+  return p.name || p.heard_name || p.public_key.slice(0, 12);
+}
+
 function startRename(p, nameSpan) {
+  // The field edits the LOCAL LABEL only, so it starts empty for a peer this
+  // admin never named and the peer's own name sits in the placeholder: saving
+  // nothing keeps following that name, and clearing the field returns to it.
+  //
   // Mirrors the server cap (federation.MaxPeerNameRunes), so a rename is never
   // silently truncated on save. maxlength counts UTF-16 units rather than runes,
   // making it marginally stricter for astral characters like emoji — stopping
   // the field early is better than accepting text the server would cut.
-  const input = el('input', { class: 'peer-name-input', value: p.name || '', maxlength: '64' });
+  const input = el('input', {
+    class: 'peer-name-input',
+    value: p.name || '',
+    placeholder: p.heard_name || 'local label',
+    title: p.heard_name ? `This node calls itself “${p.heard_name}”` : 'A label only this node sees',
+    maxlength: '64',
+  });
   nameSpan.replaceWith(input);
   input.focus();
   input.select();
@@ -206,8 +229,11 @@ function startRename(p, nameSpan) {
   const finish = async save => {
     if (done) return;
     done = true;
-    if (save && input.value.trim() !== (p.name || '')) {
-      if (await patchPeer(p.id, { name: input.value.trim() })) toast('Renamed.', 'info');
+    const next = input.value.trim();
+    if (save && next !== (p.name || '')) {
+      if (await patchPeer(p.id, { name: next })) {
+        toast(next ? 'Renamed.' : 'Label cleared — showing the name this node gives itself.', 'info');
+      }
     }
     lastPeersJSON = '';
     refresh();
@@ -242,7 +268,7 @@ async function onImport(e) {
     if (!res.ok) { toast(body.error || `Import failed (HTTP ${res.status}).`, 'error'); return; }
     cardInput.value = '';
     toast(body.peer?.state === 'friend'
-      ? `Friendship with “${body.peer.name || body.peer.public_key.slice(0, 12)}” established.`
+      ? `Friendship with “${peerLabel(body.peer)}” established.`
       : 'Card imported — contacting the node…', 'info');
     refresh();
   } catch (err) {
@@ -256,7 +282,7 @@ async function acceptPeer(p) {
   const ok = await confirmModal({
     title: 'Accept pairing request?',
     bodyNodes: [
-      el('p', {}, [`“${p.name || '(unnamed node)'}” asks to become a friend. Verify that this key matches the node card its admin sent you out-of-band:`]),
+      el('p', {}, [`“${peerLabel(p)}” asks to become a friend. Verify that this key matches the node card its admin sent you out-of-band:`]),
       el('code', { class: 'modal-key', text: p.public_key }),
       el('p', {}, ['A friend node can browse and fetch the parts of this library you share with the madnetwork.']),
     ],
@@ -296,7 +322,7 @@ async function askBlockReason(label) {
 }
 
 async function blockPeer(p) {
-  const reason = await askBlockReason(p.name || p.public_key.slice(0, 12));
+  const reason = await askBlockReason(peerLabel(p));
   if (reason === null) return;
   await peerOp(p, 'block', 'Node blocked; distrust mark published.', { reason });
 }
@@ -329,7 +355,7 @@ async function unblockPeer(p) {
 async function removePeer(p) {
   const ok = await confirmModal({
     title: 'Remove this node?',
-    bodyNodes: [el('p', {}, [`Forget “${p.name || p.public_key.slice(0, 12)}” entirely? A new card import (or a fresh pairing request from its side) starts over from scratch.`])],
+    bodyNodes: [el('p', {}, [`Forget “${peerLabel(p)}” entirely? A new card import (or a fresh pairing request from its side) starts over from scratch.`])],
     confirmLabel: 'Remove',
     danger: true,
   });

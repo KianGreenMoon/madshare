@@ -640,10 +640,15 @@ func BuildNetworkMap(selfKey string, peers []*Peer, edges []GraphEdgeClaim, mark
 	return out
 }
 
-// displayName resolves a key to the best label available for it.
+// displayName resolves a key to the best label available for it, best evidence
+// first: our own label, then what the node told *us* directly in a handshake or
+// ping, and only then the name the graph gossips about it — which is hearsay from
+// third parties about a node we may never have met.
 func displayName(key string, peers map[string]*Peer, heard map[string]map[string]int) string {
-	if p, ok := peers[key]; ok && p.Name != "" {
-		return p.Name
+	if p, ok := peers[key]; ok {
+		if label := p.Label(); label != "" {
+			return label
+		}
 	}
 	return commonName(heard[key])
 }

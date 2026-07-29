@@ -116,10 +116,21 @@ var ErrPeerState = errors.New("invalid peer state for this operation")
 // the mapped local account's name (joined by the store), Address the mesh IPv6
 // derived from PublicKey (filled by the running node — key derivation lives in
 // the !nofederation build).
+//
+// Two names, with different owners, deliberately never overwriting each other
+// (migration 033): Name is the local label this admin chose and nothing else
+// writes it, HeardName is what the peer calls *itself* — a claim, refreshed on
+// every successful contact. [Peer.Label] resolves the two for display.
 type Peer struct {
 	ID        int64  `json:"id"`
 	PublicKey string `json:"public_key"` // lowercase hex ed25519
-	Name      string `json:"name"`
+	// Name is the local label: written only by an admin rename, and it always
+	// wins. Empty means the admin never named this node.
+	Name string `json:"name"`
+	// HeardName is what the peer says its name is — hearsay, kept apart from the
+	// label so that refreshing it can never destroy an admin's choice and
+	// renaming can never hide what the peer calls itself.
+	HeardName string `json:"heard_name"`
 	State     string `json:"state"`
 	PrevState string `json:"-"`
 	UserID    *int64 `json:"user_id"`
@@ -141,6 +152,18 @@ type Peer struct {
 	Address  string `json:"address,omitempty"`  // derived mesh address, display only
 }
 
+// Label is the name to show for a peer: the admin's local label if they set one,
+// otherwise what the peer calls itself, otherwise empty — and an empty label is
+// rendered as the short key, never as a blank. Callers that show a Label must
+// show the mesh address or key beside it: a name is a convenience, the key is the
+// identity, and nothing may be identified by a name (see §Friendship).
+func (p *Peer) Label() string {
+	if p.Name != "" {
+		return p.Name
+	}
+	return p.HeardName
+}
+
 // PeerStore is the persistence the node needs: the trusted-peer table (F1) and
 // the catalog — both what this node publishes to friends and the cached copies
 // pulled from them (F2). *database.DB implements it (database/federation.go +
@@ -156,6 +179,10 @@ type PeerStore interface {
 	// are no private blocks (docs/architecture/federation.md §Friend-list gossip).
 	BlockFederationPeer(ctx context.Context, id int64, prevState, reason string, at int64) error
 	UpdateFederationPeerName(ctx context.Context, id int64, name string) error
+	// UpdateFederationPeerHeardName records what the peer calls itself, learned
+	// from a ping or pairing reply. Separate from the rename above because the
+	// two names have separate owners: this one must never touch a local label.
+	UpdateFederationPeerHeardName(ctx context.Context, id int64, name string) error
 	SetFederationPeerUser(ctx context.Context, id int64, userID *int64) error
 	TouchFederationPeerSeen(ctx context.Context, id int64, when int64) error
 	DeleteFederationPeer(ctx context.Context, id int64) error

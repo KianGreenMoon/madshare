@@ -292,6 +292,17 @@ func (m *memStore) UpdateFederationPeerName(_ context.Context, id int64, name st
 	return nil
 }
 
+func (m *memStore) UpdateFederationPeerHeardName(_ context.Context, id int64, name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.peers[id]
+	if !ok {
+		return ErrPeerNotFound
+	}
+	p.HeardName = name
+	return nil
+}
+
 func (m *memStore) SetFederationPeerUser(_ context.Context, id int64, userID *int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -398,8 +409,10 @@ func TestFriendshipHandshake(t *testing.T) {
 			return false
 		}
 		incomingID = p.ID
-		if p.Name != "node-b" {
-			t.Fatalf("A recorded requester name %q, want node-b", p.Name)
+		// The requester's name is its own claim, so it lands in the heard name and
+		// leaves the local label — which only an admin writes — empty.
+		if p.HeardName != "node-b" || p.Name != "" {
+			t.Fatalf("A recorded requester as name=%q heard=%q, want heard node-b and no label", p.Name, p.HeardName)
 		}
 		return p.State == PeerPendingIncoming
 	})
@@ -421,6 +434,38 @@ func TestFriendshipHandshake(t *testing.T) {
 	// Contact updates last_seen on A's side (B's calls arrived over the mesh).
 	if pa, _ := storeA.GetFederationPeerByKey(ctx, b.PublicKeyHex()); pa.LastSeen == 0 {
 		t.Error("A never recorded last_seen for B despite mesh contact")
+	}
+
+	// The naming split (migration 033). Before it, both names shared one column
+	// and the backfill only ever ran while that column was empty, so a node that
+	// renamed itself kept its old name here forever — and an admin's rename
+	// destroyed the claim. Simulate the stale claim, add a local label on top, and
+	// let one round of contact happen: the claim must refresh, the label must not
+	// move, and the label must be what shows.
+	pb2, _ := storeA.GetFederationPeerByKey(ctx, b.PublicKeyHex())
+	if err := storeA.UpdateFederationPeerHeardName(ctx, pb2.ID, "the name B used to use"); err != nil {
+		t.Fatalf("seed stale heard name: %v", err)
+	}
+	if err := a.RenamePeer(ctx, pb2.ID, "B, my studio node"); err != nil {
+		t.Fatalf("rename on A: %v", err)
+	}
+	waitFor(t, "A to refresh B's heard name from contact", func() bool {
+		a.Nudge() // A pings its friends; B's reply carries B's own name
+		p, err := storeA.GetFederationPeerByKey(ctx, b.PublicKeyHex())
+		return err == nil && p.HeardName == "node-b"
+	})
+	if p, _ := storeA.GetFederationPeerByKey(ctx, b.PublicKeyHex()); p.Name != "B, my studio node" {
+		t.Errorf("local label after a heard-name refresh = %q, want it untouched", p.Name)
+	} else if p.Label() != "B, my studio node" {
+		t.Errorf("Label() = %q, want the local label to win", p.Label())
+	}
+	// Clearing the label falls back to what the peer calls itself, rather than to
+	// nothing — which is why the two are stored apart.
+	if err := a.RenamePeer(ctx, pb2.ID, ""); err != nil {
+		t.Fatalf("clear label on A: %v", err)
+	}
+	if p, _ := storeA.GetFederationPeerByKey(ctx, b.PublicKeyHex()); p.Label() != "node-b" {
+		t.Errorf("Label() after clearing the label = %q, want the heard name node-b", p.Label())
 	}
 
 	// Block: A refuses B all service — even the ping.

@@ -14,15 +14,22 @@ import (
 // package — this layer only persists rows.
 
 const peerColumns = `
-	p.id, p.public_key, p.name, p.state, p.prev_state, p.user_id,
+	p.id, p.public_key, p.name, p.heard_name, p.state, p.prev_state, p.user_id,
 	p.created_at, p.last_seen, p.catalog_serial, p.catalog_synced_at,
 	p.block_reason, p.blocked_at,
 	COALESCE(u.username, '')`
 
+// peerLabelExpr resolves a peer's display name in SQL for the surfaces that only
+// ever show one — the admin's local label if set, else what the peer calls itself
+// (migration 033). federation.Peer.Label is the Go twin; keep the two in step.
+func peerLabelExpr(alias string) string {
+	return `COALESCE(NULLIF(` + alias + `.name, ''), ` + alias + `.heard_name)`
+}
+
 func scanPeer(row interface{ Scan(...any) error }) (*federation.Peer, error) {
 	var p federation.Peer
 	var userID sql.NullInt64
-	if err := row.Scan(&p.ID, &p.PublicKey, &p.Name, &p.State, &p.PrevState,
+	if err := row.Scan(&p.ID, &p.PublicKey, &p.Name, &p.HeardName, &p.State, &p.PrevState,
 		&userID, &p.CreatedAt, &p.LastSeen, &p.CatalogSerial, &p.CatalogSyncedAt,
 		&p.BlockReason, &p.BlockedAt, &p.Username); err != nil {
 		return nil, err
@@ -99,9 +106,9 @@ func (db *DB) GetFederationPeerByKey(ctx context.Context, publicKey string) (*fe
 // UNIQUE constraint.
 func (db *DB) InsertFederationPeer(ctx context.Context, p *federation.Peer) (int64, error) {
 	res, err := db.ExecContext(ctx, `
-		INSERT INTO federation_peers (public_key, name, state, prev_state, user_id, created_at, last_seen)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		p.PublicKey, p.Name, p.State, p.PrevState, nullableID(p.UserID), p.CreatedAt, p.LastSeen)
+		INSERT INTO federation_peers (public_key, name, heard_name, state, prev_state, user_id, created_at, last_seen)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.PublicKey, p.Name, p.HeardName, p.State, p.PrevState, nullableID(p.UserID), p.CreatedAt, p.LastSeen)
 	if err != nil {
 		return 0, fmt.Errorf("insert federation_peers: %w", err)
 	}
@@ -137,11 +144,24 @@ func (db *DB) BlockFederationPeer(ctx context.Context, id int64, prevState, reas
 	return requirePeerRow(res)
 }
 
-// UpdateFederationPeerName renames a peer (local label only).
+// UpdateFederationPeerName renames a peer (local label only). Empty clears the
+// label, so display falls back to what the peer calls itself.
 func (db *DB) UpdateFederationPeerName(ctx context.Context, id int64, name string) error {
 	res, err := db.ExecContext(ctx, `UPDATE federation_peers SET name = ? WHERE id = ?`, name, id)
 	if err != nil {
 		return fmt.Errorf("update federation_peers name: %w", err)
+	}
+	return requirePeerRow(res)
+}
+
+// UpdateFederationPeerHeardName records what the peer calls itself, learned from
+// a ping or pairing reply (migration 033). It deliberately cannot touch the local
+// label: a peer renaming itself must never overwrite an admin's choice, which is
+// what the single pre-033 column did.
+func (db *DB) UpdateFederationPeerHeardName(ctx context.Context, id int64, name string) error {
+	res, err := db.ExecContext(ctx, `UPDATE federation_peers SET heard_name = ? WHERE id = ?`, name, id)
+	if err != nil {
+		return fmt.Errorf("update federation_peers heard_name: %w", err)
 	}
 	return requirePeerRow(res)
 }

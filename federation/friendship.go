@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"time"
@@ -174,7 +175,7 @@ func (n *Node) handlePair(w http.ResponseWriter, r *http.Request) {
 	case err == ErrPeerNotFound:
 		_, err := n.store.InsertFederationPeer(r.Context(), &Peer{
 			PublicKey: key,
-			Name:      CleanPeerName(req.Name),
+			HeardName: CleanPeerName(req.Name),
 			State:     PeerPendingIncoming,
 			CreatedAt: time.Now().Unix(),
 			LastSeen:  time.Now().Unix(),
@@ -194,13 +195,19 @@ func (n *Node) handlePair(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "storage error", http.StatusInternalServerError)
 			return
 		}
-		n.logger.Printf("federation: friendship with %q (%s) established", p.Name, p.PublicKey)
+		n.logger.Printf("federation: friendship with %q (%s) established", p.Label(), p.PublicKey)
 		n.Nudge() // start the first catalog sync right away
 		result = "friend"
 	case p.State == PeerFriend:
 		result = "friend"
 	default: // pending_incoming — their retry while our admin hasn't acted
 		result = "pending"
+	}
+	// The request carries the peer's own name. For a peer we already know that is
+	// a refreshed claim (the insert above stored it for a new one) — a node that
+	// renames itself is heard on its next contact rather than never.
+	if p != nil {
+		n.refreshHeardName(r.Context(), p, req.Name)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -249,16 +256,34 @@ func (n *Node) pairWith(ctx context.Context, p *Peer) {
 			n.logger.Printf("federation: record friendship with %s: %v", p.PublicKey, err)
 			return
 		}
-		n.logger.Printf("federation: friendship with %q (%s) established", p.Name, p.PublicKey)
+		n.logger.Printf("federation: friendship with %q (%s) established", p.Label(), p.PublicKey)
 		n.Nudge() // start the first catalog sync on the next sweep
 	}
-	// Backfill the display name from the peer's own if the card carried none.
-	if p.Name == "" && CleanPeerName(msg.Name) != "" {
-		_ = n.store.UpdateFederationPeerName(ctx, p.ID, CleanPeerName(msg.Name))
-	}
+	n.refreshHeardName(ctx, p, msg.Name)
 }
 
-// pingPeer refreshes a friend's last_seen with a protocol ping.
+// refreshHeardName records what a peer just called itself, if that differs from
+// what we last heard. Writes nothing when it is unchanged, which is the normal
+// case — this runs on every ping, once a minute per friend.
+//
+// It cannot touch the local label (migration 033): a peer renaming itself must
+// never overwrite the admin's choice, and an admin renaming a peer must never
+// hide what that peer calls itself.
+func (n *Node) refreshHeardName(ctx context.Context, p *Peer, heard string) {
+	heard = CleanPeerName(heard)
+	if heard == "" || heard == p.HeardName {
+		return
+	}
+	if err := n.store.UpdateFederationPeerHeardName(ctx, p.ID, heard); err != nil {
+		n.logger.Printf("federation: record heard name for %s: %v", p.PublicKey, err)
+		return
+	}
+	p.HeardName = heard
+}
+
+// pingPeer refreshes a friend's last_seen with a protocol ping, and takes the
+// peer's own name from the reply while it is there — the contact that keeps the
+// heard name current, once a minute per friend.
 func (n *Node) pingPeer(ctx context.Context, p *Peer) {
 	addr, err := AddrForKeyHex(p.PublicKey)
 	if err != nil {
@@ -273,10 +298,20 @@ func (n *Node) pingPeer(ctx context.Context, p *Peer) {
 	if err != nil {
 		return
 	}
-	resp.Body.Close()
-	if resp.StatusCode == http.StatusOK {
-		_ = n.store.TouchFederationPeerSeen(ctx, p.ID, time.Now().Unix())
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return
 	}
+	_ = n.store.TouchFederationPeerSeen(ctx, p.ID, time.Now().Unix())
+	// The name is additive on the ping (a pre-033 peer omits it), so a missing
+	// one simply leaves the last claim standing.
+	var reply struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<10)).Decode(&reply); err != nil {
+		return
+	}
+	n.refreshHeardName(ctx, p, reply.Name)
 }
 
 // refreshLoop periodically retries outbound pairings and pings friends; Nudge
@@ -370,7 +405,10 @@ func (n *Node) ImportCard(ctx context.Context, c Card) (*Peer, error) {
 	case err == ErrPeerNotFound:
 		id, err := n.store.InsertFederationPeer(ctx, &Peer{
 			PublicKey: c.PublicKey,
-			Name:      c.Name,
+			// A card's name is what that node calls itself, not a label this
+			// admin chose — so it lands in the claim, where the handshake keeps
+			// it current.
+			HeardName: c.Name,
 			State:     PeerPendingOutgoing,
 			CreatedAt: time.Now().Unix(),
 		})
@@ -387,7 +425,7 @@ func (n *Node) ImportCard(ctx context.Context, c Card) (*Peer, error) {
 		if err := n.store.SetFederationPeerState(ctx, p.ID, PeerFriend, ""); err != nil {
 			return nil, err
 		}
-		n.logger.Printf("federation: friendship with %q (%s) established (card import accepted their request)", p.Name, p.PublicKey)
+		n.logger.Printf("federation: friendship with %q (%s) established (card import accepted their request)", p.Label(), p.PublicKey)
 		n.Nudge()
 		return n.store.GetFederationPeer(ctx, p.ID)
 	default: // pending_outgoing or friend — idempotent re-import
@@ -409,7 +447,7 @@ func (n *Node) AcceptPeer(ctx context.Context, id int64) error {
 	if err := n.store.SetFederationPeerState(ctx, id, PeerFriend, ""); err != nil {
 		return err
 	}
-	n.logger.Printf("federation: friendship with %q (%s) established (request accepted)", p.Name, p.PublicKey)
+	n.logger.Printf("federation: friendship with %q (%s) established (request accepted)", p.Label(), p.PublicKey)
 	n.Nudge() // tell their node right away so its side flips too
 	return nil
 }
@@ -431,7 +469,7 @@ func (n *Node) BlockPeer(ctx context.Context, id int64, reason string) error {
 	if p.State == PeerBlocked {
 		return nil
 	}
-	n.logger.Printf("federation: blocked %q (%s)", p.Name, p.PublicKey)
+	n.logger.Printf("federation: blocked %q (%s)", p.Label(), p.PublicKey)
 	if err := n.store.BlockFederationPeer(ctx, id, p.State, CleanMarkReason(reason), time.Now().Unix()); err != nil {
 		return err
 	}
@@ -459,7 +497,7 @@ func (n *Node) BlockKey(ctx context.Context, publicKey, name, reason string) err
 	}
 	id, err := n.store.InsertFederationPeer(ctx, &Peer{
 		PublicKey: key,
-		Name:      CleanPeerName(name),
+		HeardName: CleanPeerName(name),
 		State:     PeerBlocked,
 		CreatedAt: time.Now().Unix(),
 	})

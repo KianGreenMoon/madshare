@@ -357,12 +357,12 @@ Design notes for the implementation:
   dashboard; the F6 network map) over `/api/admin/federation*`, all gated
   `federation.manage`.
 
-### Planned — names are a convenience, the key is the identity (2026-07-26)
+### Names are a convenience, the key is the identity (built 2026-07-30)
 
 Self-naming stays exactly as it is: `[federation].name`, falling back to the host
 name, is what a node says in the pair handshake — "hello, my name is …" and
-nothing more. What needs fixing is the receiving side, where **three different
-names are collapsed into one `federation_peers.name` column**:
+nothing more. What needed fixing was the receiving side, where **three different
+names were collapsed into one `federation_peers.name` column**:
 
 | | what it is | who owns it |
 |---|---|---|
@@ -370,17 +370,43 @@ names are collapsed into one `federation_peers.name` column**:
 | heard name | what a peer calls *itself* | the peer — a claim, refreshable |
 | local label | what *we* choose to call that peer | this admin, always wins |
 
-Today the column is seeded from the card, then overwritten by a rename — which
-destroys the claim — and afterwards never refreshed at all, because `pairWith`
-backfills the name only when it is empty. So a peer that renames itself stays
-under its old name here forever, and an admin who renames a peer can no longer
-see what that peer calls itself.
+Before migration 033 the column was seeded from the card, then overwritten by a
+rename — which destroyed the claim — and afterwards never refreshed at all,
+because `pairWith` backfilled the name only while it was empty. So a peer that
+renamed itself stayed under its old name forever, and an admin who renamed a peer
+could no longer see what that peer calls itself.
 
-Planned shape: separate the heard name from the local label (a migration),
-refresh the heard name on every successful contact, and display
-`local label ?? heard name ?? short key`. **Wherever a node is shown, render its
-mesh address or key beside the name** — peer cards and the F6 network map above
-all.
+**Built shape.** `federation_peers.heard_name` holds the claim and `name` is the
+local label; nothing writes both. The label is written *only* by an admin rename
+(`RenamePeer`, and clearing it is allowed), the claim *only* by
+`UpdateFederationPeerHeardName` from a contact, and `Peer.Label()` resolves
+`local label ?? heard name ?? empty` — an empty label renders as the short key,
+never as a blank. `peerLabelExpr` is the SQL twin for the browse surfaces that
+only ever show a name; `peerLabel` in `admin/network.js` is the client one.
+
+- **Refreshed on every successful contact.** `GET /madnetwork/v0/ping` now
+  answers with the node's own `name`, so the 1-minute refresh loop keeps every
+  friend's claim current — a node renaming itself is heard within a minute
+  instead of never. Pairing (both directions) refreshes it too. The field is
+  additive, so a peer that does not send one simply leaves the last claim
+  standing, and a write only happens when the name actually changed. This is also
+  the first field of the NodeInfo-style health card §Availability sketches.
+- **Which name we publish and show.** Gossiped edges carry `Label()` — the
+  publisher's own label for that friend, which is what a `GraphEdge` name has
+  always meant. On the map, `displayName` resolves best-evidence-first: our label,
+  then what the node told *us* directly, and only then the name the graph gossips
+  about it, which is hearsay from third parties.
+- **The migration cannot classify old rows** — a value seeded from a card is
+  indistinguishable from one an admin typed — so 033 moves `name` into
+  `heard_name` and starts every row with no label. A peer that had been renamed
+  reverts to its own name on the next contact and can be renamed again in two
+  clicks; the alternative would pin a name the admin never chose and reproduce
+  exactly the bug being fixed. Failure visible and recoverable beats failure
+  silent and permanent.
+- **Wherever a node is shown, its mesh address or key is rendered beside the
+  name** — peer cards and the F6 network map above all. The peer card also shows
+  `calls itself “…”` whenever a local label is hiding a different claim: the label
+  wins, but it must never make the peer's own name unreadable.
 
 - **On the map this matters more than in the peer list.** Once friend-list gossip
   lands, most nodes on the graph are ones we have no relationship with, and their
@@ -1231,18 +1257,18 @@ milestone directly after direct transfer works, and tokens ship with depth.
   the strangers that make up most of it. Branch snipping falls out of the map's
   reachability walk: it never traverses through a blocked node.
 
-  *Name sanitization built 2026-07-30* (§Name sanitization): one `sanitizeLabel`
-  behind `CleanPeerName` and `CleanMarkReason`, so a name or a mark reason renders
-  as what it is and two nodes cannot render identically.
+  *Naming built 2026-07-30.* Sanitization (§Name sanitization): one
+  `sanitizeLabel` behind `CleanPeerName` and `CleanMarkReason`, so a name or a
+  mark reason renders as what it is and two nodes cannot render identically. And
+  the naming split (§Friendship): `heard_name` beside the local label
+  (migration 033), the claim refreshed from the ping reply on the existing 1-minute
+  cadence, and `local label ?? heard name ?? short key` everywhere a node is shown.
 
   *Still to build.* **Contradicted-claim reports** (§Trust graph): the
   fingerprint claim added to the catalog wire, the checks against blobs we
   already hold and against materialized downloads, and the evidence shown on the
   peer card — the detection that makes the blocking tooling something an admin
-  can act on rather than guess with. The **naming split** (§Friendship):
-  `federation_peers.name` still collapses the heard name into the local label, so
-  a peer that renames itself keeps its old name here forever. The map already
-  renders the address beside every name, which was the urgent half. And
+  can act on rather than guess with. And
   **de-peering a blocked node on the underlay** (§Trust graph, blocking): only the
   application layer is cut today, so a blocked node we peer with directly keeps us
   as transit. `core.RemovePeer` takes an underlay URI while a block names a key,

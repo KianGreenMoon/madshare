@@ -342,9 +342,14 @@ func (n *Node) protocolHandler() http.Handler {
 	mux.HandleFunc("GET /madnetwork/v0/ping", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"protocol":   ProtocolVersion,
-			"software":   version.Name,
-			"version":    version.Get().Version,
+			"protocol": ProtocolVersion,
+			"software": version.Name,
+			"version":  version.Get().Version,
+			// The self-name, so a friend's ping keeps its heard name current
+			// (migration 033) — this node renaming itself propagates within a
+			// minute instead of never. Also the first field of the NodeInfo-style
+			// health card §Availability sketches.
+			"name":       n.name,
 			"public_key": n.PublicKeyHex(),
 			"address":    n.Address().String(),
 		})

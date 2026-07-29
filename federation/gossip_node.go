@@ -249,7 +249,7 @@ func ownEdges(peers []*Peer) []GraphEdge {
 		if p.State != PeerFriend {
 			continue
 		}
-		edges = append(edges, GraphEdge{Key: p.PublicKey, Name: p.Name, Since: p.CreatedAt})
+		edges = append(edges, GraphEdge{Key: p.PublicKey, Name: p.Label(), Since: p.CreatedAt})
 	}
 	sort.Slice(edges, func(i, j int) bool { return edges[i].Key < edges[j].Key })
 	if len(edges) > MaxGraphEdges {
@@ -482,7 +482,7 @@ func (n *Node) syncGraph(ctx context.Context, p *Peer) {
 		}
 	}
 	if stored > 0 {
-		n.logger.Printf("federation: learned %d gossip record(s) via %q", stored, p.Name)
+		n.logger.Printf("federation: learned %d gossip record(s) via %q", stored, p.Label())
 	}
 }
 
