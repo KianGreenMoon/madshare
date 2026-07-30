@@ -155,7 +155,7 @@ func (s *transferStats) finish() {
 }
 
 // providerKey identifies a holder across a transfer. The public key is the
-// identity; the name is a fallback for the synthetic peers unit tests build.
+// identity; the label is a fallback for the synthetic peers unit tests build.
 func providerKey(p *Peer) string {
 	if p == nil {
 		return ""
@@ -163,7 +163,7 @@ func providerKey(p *Peer) string {
 	if p.PublicKey != "" {
 		return p.PublicKey
 	}
-	return p.Name
+	return p.Label()
 }
 
 // providerLocked returns (creating on first sight) the accounting row for p.
@@ -175,7 +175,7 @@ func (s *transferStats) providerLocked(p *Peer) *ProviderStats {
 	}
 	ps, ok := s.prov[key]
 	if !ok {
-		ps = &ProviderStats{Name: p.Name, PublicKey: p.PublicKey}
+		ps = &ProviderStats{Name: p.Display(), PublicKey: p.PublicKey}
 		s.prov[key] = ps
 		s.order = append(s.order, key)
 	}

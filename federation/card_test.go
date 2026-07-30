@@ -136,3 +136,31 @@ func TestSanitizeMarkReason(t *testing.T) {
 		t.Errorf("reason cap: %d runes, want %d", utf8.RuneCountInString(got), MaxMarkReasonRunes)
 	}
 }
+
+// TestPeerDisplayNeverBlank pins the rule the naming split rests on: a peer is
+// never named by an empty string. Migration 033 emptied every local label, so
+// after it Label() is blank for any peer whose owner has not renamed it and whose
+// name we have not yet heard — and every log line and stats row named that peer
+// "". Display() is what those callers use instead.
+func TestPeerDisplayNeverBlank(t *testing.T) {
+	key := strings.Repeat("ab", 32)
+	for _, tc := range []struct {
+		name, label, heard, want string
+	}{
+		{"local label wins", "my studio node", "node-b", "my studio node"},
+		{"heard name when unlabelled", "", "node-b", "node-b"},
+		{"short key when neither", "", "", key[:shortKeyRunes]},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &Peer{PublicKey: key, Name: tc.label, HeardName: tc.heard}
+			if got := p.Display(); got != tc.want {
+				t.Errorf("Display() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	// Label keeps returning empty: the network map needs that case to fall
+	// through to what the *graph* calls a node before reaching for the key.
+	if got := (&Peer{PublicKey: key}).Label(); got != "" {
+		t.Errorf("Label() with no names = %q, want empty", got)
+	}
+}

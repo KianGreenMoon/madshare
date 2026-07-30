@@ -421,7 +421,7 @@ func (n *Node) handleHoldings(w http.ResponseWriter, r *http.Request) {
 	}
 	aud, err := n.store.PeerAudience(r.Context(), p.ID)
 	if err != nil {
-		n.logger.Printf("federation: resolve audience of %q: %v", p.Name, err)
+		n.logger.Printf("federation: resolve audience of %q: %v", p.Display(), err)
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
@@ -472,7 +472,7 @@ func (n *Node) syncHoldings(ctx context.Context, p *Peer) {
 		}
 	}
 	if err := n.store.ReplacePeerHoldings(ctx, p.ID, valid); err != nil {
-		n.logger.Printf("federation: store holdings of %q: %v", p.Name, err)
+		n.logger.Printf("federation: store holdings of %q: %v", p.Display(), err)
 	}
 }
 
@@ -526,7 +526,7 @@ func (n *Node) serveAudience(r *http.Request) (Audience, bool) {
 	}
 	aud, err := n.store.PeerAudience(r.Context(), p.ID)
 	if err != nil {
-		n.logger.Printf("federation: resolve audience of %q: %v", p.Name, err)
+		n.logger.Printf("federation: resolve audience of %q: %v", p.Display(), err)
 		return Audience{}, false
 	}
 	return aud, true
@@ -747,7 +747,7 @@ func (n *Node) fetchChunk(t *transfer, f *os.File, layout *chunkLayout, man *blo
 	}
 	sum := sha256.Sum256(body)
 	if hex.EncodeToString(sum[:]) != man.Chunks[idx] {
-		return fmt.Errorf("chunk %d: hash mismatch from %q: %w", idx, p.Name, errChunkCorrupt)
+		return fmt.Errorf("chunk %d: hash mismatch from %q: %w", idx, p.Display(), errChunkCorrupt)
 	}
 	if _, err := f.WriteAt(body, start); err != nil {
 		return err

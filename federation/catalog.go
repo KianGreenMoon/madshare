@@ -81,7 +81,7 @@ func (n *Node) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	}
 	aud, err := n.store.PeerAudience(r.Context(), p.ID)
 	if err != nil {
-		n.logger.Printf("federation: resolve audience of %q: %v", p.Name, err)
+		n.logger.Printf("federation: resolve audience of %q: %v", p.Display(), err)
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}

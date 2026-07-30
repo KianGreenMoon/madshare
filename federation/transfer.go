@@ -445,13 +445,13 @@ func (n *Node) runWhole(t *transfer, holders []*Peer) {
 		if err == nil {
 			n.observePeerAlive(p)                 // a completed fetch is liveness proof
 			t.stats.noteSucceed(wholePiece, p, 0) // bytes were credited as they arrived
-			n.logger.Printf("federation: fetched %s from %q (%d bytes)", t.hash, p.Name, t.Progress())
+			n.logger.Printf("federation: fetched %s from %q (%d bytes)", t.hash, p.Display(), t.Progress())
 			t.finish(nil)
 			return
 		}
 		lastErr = err
 		t.stats.noteFail(wholePiece, p, err, false)
-		n.logger.Printf("federation: fetch %s from %q: %v", t.hash, p.Name, err)
+		n.logger.Printf("federation: fetch %s from %q: %v", t.hash, p.Display(), err)
 		t.resetProgress()
 	}
 	os.Remove(t.partPath)

@@ -224,6 +224,33 @@ func (p *Peer) Label() string {
 	return p.HeardName
 }
 
+// Display is Label with the fallback Label promises but deliberately does not
+// apply itself: the short key, so a peer is never named by a blank. Use it
+// wherever a peer is written into a log line or a stats row — anywhere the
+// result is read by a person and there is no second field carrying the identity.
+// Label stays the raw resolution because one caller (the network map's
+// displayName) has a better fallback than the key: what the *graph* calls the
+// node. This is the Go twin of peerLabel() in admin/network.js.
+func (p *Peer) Display() string {
+	if label := p.Label(); label != "" {
+		return label
+	}
+	return p.ShortKey()
+}
+
+// ShortKey abbreviates the public key to the length the admin UI shows. Enough
+// to tell nodes apart at a glance, never enough to identify one — the full key
+// is what does that.
+func (p *Peer) ShortKey() string {
+	if len(p.PublicKey) > shortKeyRunes {
+		return p.PublicKey[:shortKeyRunes]
+	}
+	return p.PublicKey
+}
+
+// shortKeyRunes matches the slice in admin/network.js's peerLabel.
+const shortKeyRunes = 12
+
 // PeerStore is the persistence the node needs: the trusted-peer table (F1) and
 // the catalog — both what this node publishes to friends and the cached copies
 // pulled from them (F2). *database.DB implements it (database/federation.go +
