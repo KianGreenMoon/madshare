@@ -73,6 +73,8 @@ func main() {
 		cmdScope(os.Args[2:])
 	case "check":
 		cmdCheck(os.Args[2:])
+	case "reach":
+		cmdReach(os.Args[2:])
 	case "kill", "restart", "partition", "heal":
 		cmdNodeAction(cmd, os.Args[2:])
 	case "flap":
@@ -100,6 +102,7 @@ func usage() {
   meshlab scope NODE default DEPTH     node-wide sharing scope (F5)
   meshlab scope NODE tracks DEPTH|guest on|off [-limit N]
   meshlab check                        assert the sharing-scope rules
+  meshlab reach [-runs N] [-no-fetch]  what does friendship DISTANCE cost?
 
 'up' runs in the foreground and holds the lab; every other command talks to it
 over the control API (-control, default %s).
@@ -120,6 +123,18 @@ private, friends, network, inherit, or a hop count. 'check' then asserts the
 rules from an OUTSIDER's position: it starts a real madnetwork node that is
 nobody's friend and asks each server directly, which is the only way to see the
 guest-open swarm (a stranger may fetch guest-playable bytes and nothing else).
+
+DISTANCE (F7). 'reach' measures what being far away in the FRIENDSHIP graph
+actually costs, on a chain where friendship distance and underlay distance
+coincide:
+
+    meshlab up -nodes 7 -topology chain -friends adjacent -seed ./audio
+    meshlab reach
+
+It reports the mesh RTT to every node by friendship distance (ping is open to
+strangers, so this measures routing alone) and then tries a real content fetch
+from the first node. Before F7 every fetch past distance 1 fails — a non-friend
+is not a provider — and that failure is the gap stated as a measurement.
 
 SAFETY: known hardcoded admin credentials, loopback-only, disposable lab root.
 Never on a shared host.

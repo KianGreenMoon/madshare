@@ -319,9 +319,19 @@ func (n *node) patchJSON(path string, in, out any) error {
 // per call because a madnetwork stream that has to give up on every holder takes
 // far longer than an admin API round-trip.
 func (n *node) rawGet(path string, timeout time.Duration) (int, []byte, error) {
+	return n.rawGetRange(path, "", timeout)
+}
+
+// rawGetRange is rawGet with an optional Range header — what a player sends to
+// start playback, and the request the swarm answers with seek-priority instead
+// of by fetching the prefix first.
+func (n *node) rawGetRange(path, rng string, timeout time.Duration) (int, []byte, error) {
 	req, err := http.NewRequest(http.MethodGet, n.url(path), nil)
 	if err != nil {
 		return 0, nil, err
+	}
+	if rng != "" {
+		req.Header.Set("Range", rng)
 	}
 	n.mu.Lock()
 	tok := n.token

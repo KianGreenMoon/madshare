@@ -391,6 +391,7 @@ Three FLACs totalling ~80 MB took about six minutes on the maintainer's machine.
 | `meshlab scope NODE tracks DEPTH [-limit N]` | pin the depth of its recordings (`inherit` clears the override). `-limit 1` touches only the oldest, which is the shape most assertions want |
 | `meshlab scope NODE tracks guest on\|off [-limit N]` | flag recordings guest-playable |
 | `meshlab check` | assert the scope rules; exits non-zero on a failure |
+| `meshlab reach [-runs N] [-no-fetch]` | what friendship **distance** costs: mesh RTT per hop, then a real fetch |
 
 **`madnetwork` is the number to watch.** It is what `/madnetwork` would show that
 node — its own published set plus every friend's, after the availability filter,
@@ -504,6 +505,67 @@ $ meshlab status
 
 `b` keeps showing the track until its next catalog sync — and cannot fetch a byte
 of it in the meantime. Visibility is cached; authorization is not.
+
+### `meshlab reach` — what does friendship distance cost?
+
+Built 2026-07-31, for a design question that came up while planning F7: if the
+track I want lives on a node six friendships away, is reaching it slow? The
+intuition that it must be — *ask my friend to ask his friend to ask…* — is
+reasonable and wrong, because **the friendship graph is not the transport**. A
+yggdrasil address is derived from a node key, so knowing a key already means
+being able to dial its owner: every fetch does `AddrForKeyHex(peer.PublicKey)`
+and connects, at distance 1 or 20 alike.
+
+Run it on a chain, the shape where friendship distance and underlay distance
+coincide and a slope would therefore show at its worst:
+
+```
+$ meshlab up -nodes 5 -topology chain -friends adjacent -seed ./audio
+$ meshlab reach
+```
+
+Two arms, separated because they fail for unrelated reasons. **Routing** pings
+every node by friendship distance — `/madnetwork/v0/ping` is open to strangers
+(`meshAuth` refuses only *blocked* peers), so it measures the network alone and
+needs no F7. **Reach** then tries a real content fetch from the first node for a
+track only the distant node publishes.
+
+Measured on a cold 5-node chain (loopback, so treat the absolute values as a
+floor and the *shape* as the finding):
+
+```
+  node   dist  ping warm   ping cold   first 64K   whole file  note
+  b      1     1.2ms       3.01s       35.6ms      11.1ms
+  c      2     366µs       8.6ms       —           —           stream = 404 (not a provider: c is not a friend of a)
+  d      3     1.3ms       11.3ms      —           —           stream = 404 (not a provider: d is not a friend of a)
+  e      4     1.6ms       19.9ms      —           —           stream = 404 (not a provider: e is not a friend of a)
+```
+
+Three things worth keeping:
+
+- **Warm RTT is flat across distance** — 1.2 ms at one hop, 1.6 ms at four. There
+  is no slope to find, which is the answer to the design question.
+- **Cold contact is the cost that is actually there**, and it is paid per *peer*,
+  not per hop: `b` is the slowest of the four precisely because it was contacted
+  first and absorbed the mesh join. (An earlier run on a lab that had just come up
+  saw a first contact exceed **60 s** — the same session-setup cost the F4
+  streaming work hit. It is real, it is not distance, and it is the argument for
+  preferring holders we already have a warm session with.)
+- **Every fetch past distance 1 is a 404**, because a non-friend is not a provider
+  (`MadnetworkBlobProviders` joins `state = 'friend'`). That is the F7 gap stated
+  as a measurement rather than a claim. After F7 this run should turn green at
+  every distance — and, the hypothesis this command exists to check, take roughly
+  the same time at each.
+
+`-friends adjacent` is what makes this a chain of *friendships*; with the default
+`-friends all` every node sits at distance 1 and there is nothing to measure.
+`-no-fetch` runs the routing arm alone, which is fast enough to repeat.
+
+> **The `ping cold` column is only cold once.** The outsider probe is started on
+> first use and kept for the lab's life, so a second `reach` run against the same
+> lab reports warm numbers there (sub-millisecond, and meaningless as a cold-start
+> figure). Read that column on the first run after `up`, or restart the lab. The
+> `ping warm` column is repeatable and is the one to compare across distances.
 
 ## Reading a failure
 

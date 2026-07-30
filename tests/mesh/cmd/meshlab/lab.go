@@ -694,6 +694,44 @@ func (l *lab) routes() http.Handler {
 		writeJSON(w, http.StatusOK, report)
 	})
 
+	mux.HandleFunc("/reach", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErr(w, http.StatusMethodNotAllowed, "POST")
+			return
+		}
+		var req struct {
+			Runs    int    `json:"runs"`
+			Timeout string `json:"timeout"`
+			NoFetch bool   `json:"no_fetch"`
+		}
+		raw, err := readBody(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "%v", err)
+			return
+		}
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &req); err != nil {
+				writeErr(w, http.StatusBadRequest, "%v", err)
+				return
+			}
+		}
+		if req.Runs <= 0 {
+			req.Runs = 5
+		}
+		timeout := 3 * time.Minute
+		if req.Timeout != "" {
+			if d, err := time.ParseDuration(req.Timeout); err == nil {
+				timeout = d
+			}
+		}
+		report, err := l.reach(req.Runs, timeout, req.NoFetch)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "%v", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, report)
+	})
+
 	return mux
 }
 

@@ -64,10 +64,11 @@ func (emptyStore) SetFederationPeerState(context.Context, int64, string, string)
 func (emptyStore) BlockFederationPeer(context.Context, int64, string, string, int64) error {
 	return nil
 }
-func (emptyStore) UpdateFederationPeerName(context.Context, int64, string) error { return nil }
-func (emptyStore) SetFederationPeerUser(context.Context, int64, *int64) error    { return nil }
-func (emptyStore) TouchFederationPeerSeen(context.Context, int64, int64) error   { return nil }
-func (emptyStore) DeleteFederationPeer(context.Context, int64) error             { return nil }
+func (emptyStore) UpdateFederationPeerName(context.Context, int64, string) error      { return nil }
+func (emptyStore) UpdateFederationPeerHeardName(context.Context, int64, string) error { return nil }
+func (emptyStore) SetFederationPeerUser(context.Context, int64, *int64) error         { return nil }
+func (emptyStore) TouchFederationPeerSeen(context.Context, int64, int64) error        { return nil }
+func (emptyStore) DeleteFederationPeer(context.Context, int64) error                  { return nil }
 
 func (emptyStore) PublishedCatalog(context.Context, federation.Audience) ([]federation.CatalogEntry, error) {
 	return nil, nil
@@ -120,6 +121,15 @@ func (emptyStore) GraphMarks(context.Context, int64) ([]federation.StoredMark, e
 // The probe publishes no record of its own: it has no friendships to describe,
 // and an outsider that gossiped would stop being an outsider.
 func (emptyStore) PublishFriendList(context.Context) (bool, error) { return false, nil }
+
+// The probe caches no catalogs, so there is never a claim of anyone's to check
+// against bytes it holds — it holds none either (F6, contradicted identity
+// claims).
+func (emptyStore) CheckPeerClaims(context.Context, int64) (int, error) { return 0, nil }
+func (emptyStore) ListClaimReports(context.Context) ([]*federation.ClaimReport, error) {
+	return nil, nil
+}
+func (emptyStore) SetClaimReportDisposition(context.Context, int64, string) error { return nil }
 
 // probe is the outsider node plus an HTTP client dialling through its netstack.
 type probe struct {
