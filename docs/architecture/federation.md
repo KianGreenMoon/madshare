@@ -1,11 +1,13 @@
 # Madnetwork federation — design
 
 > **Status: agreed 2026-07-18; F0 (groundwork), F1 (friendship), F2 (catalog),
-> F3 (direct transfer), F4 (swarm), F5 (depth & scope) and the gossip half of F6
-> (friend-list records, distrust marks, network map) are built.** What remains in
-> F6 is the contradicted-claim reporting and the naming split. The remaining item
-> in §Open questions is a design-time detail to settle during its milestone, not a
-> blocker. Federation
+> F3 (direct transfer), F4 (swarm), F5 (depth & scope), Availability & node
+> health, and all of F6 — friend-list records, distrust marks, network map, the
+> naming split, contradicted-claim reports and underlay de-peering — are built.**
+> **F7 (reach) is next**, and the 2026-07-30 scope collapse it carries is decided
+> but not yet running (§Sharing scope, "What is decided vs. what is running").
+> The two items in §Open questions are design-time details to settle during their
+> milestone, not blockers. Federation
 > is auth Phase 4 (`docs/architecture/auth.md` §8) and the milestone the native
 > client (`docs/ui/native-client.md`) exists to use.
 
@@ -25,8 +27,10 @@ default** — its social graph is visible to its members.
   these edges.
 - **Sharing scope** — who a recording is shared with. **Three values, and no
   ladder** (decided 2026-07-30, superseding the per-hop "trust depth"):
-  **Madnetwork** = any node, **Friends** = our direct friends only, **Local** =
-  nobody on the network. Shipped default: **Friends**. The reason there is no
+  **Madnetwork** = any **member of our madnetwork** — our own component of the
+  friendship graph, never the mesh at large (§Principals & access) — **Friends** =
+  our direct friends only, **Local** = nobody on the network.
+  Shipped default: **Friends**. The reason there is no
   "friends of friends" any more is that it was a promise we could not keep — see
   §Sharing scope, "Why the ladder collapsed". The stored column and its constants
   are unchanged (`DepthUnlimited` / `DepthFriends` / `DepthPrivate`), so this is a
@@ -138,6 +142,9 @@ Three consequences, all of them wanted:
   or over-generous edge therefore yields content already declared public *within*
   the network, never friends-only content. Distance-based reach had the opposite
   property, which is why it is gone (§Sharing scope).
+
+The rest of the access model is what the four principals are made of, and the
+declaration above changed none of it:
 
 - **Node-level trust is the default relationship.** A friend node is trusted as a
   unit; its internal user model is its own business.
@@ -325,6 +332,8 @@ what the audience *is* — not something a caller derives from loose fields:
 | **friend** | a `state='friend'` peer row for the connection's key | `Distance: DepthFriends` → everything except Local |
 | **member** | the key is in our gossiped component | `Distance: DepthUnlimited` → Madnetwork only |
 | **guest** | anything else, including any node we cannot place in our component | nothing, unless the node opts in to serving guest-playable |
+
+Planned shape (F7 — the running type is still F5's `{Distance, GuestOnly}`):
 
 ```go
 type Audience struct {
@@ -558,9 +567,17 @@ could no longer see what that peer calls itself.
 local label; nothing writes both. The label is written *only* by an admin rename
 (`RenamePeer`, and clearing it is allowed), the claim *only* by
 `UpdateFederationPeerHeardName` from a contact, and `Peer.Label()` resolves
-`local label ?? heard name ?? empty` — an empty label renders as the short key,
-never as a blank. `peerLabelExpr` is the SQL twin for the browse surfaces that
-only ever show a name; `peerLabel` in `admin/network.js` is the client one.
+`local label ?? heard name ?? empty`. `peerLabelExpr` is the SQL twin for the
+browse surfaces that only ever show a name; `peerLabel` in `admin/network.js` is
+the client one.
+
+**A peer is never named by a blank**, which needs one more step than `Label()`,
+because 033 left *every* row unlabelled: until an admin renames a peer or we hear
+its name, `Label()` is empty. `Peer.Display()` is the rendering form —
+`Label() ?? short key`, the Go twin of `peerLabel` — and it is what log lines and
+stats rows use. `Label()` deliberately keeps returning empty, because the network
+map's `displayName` has a better fallback than the key: the name the *graph* uses
+for that node. Pinned by `TestPeerDisplayNeverBlank`.
 
 - **Refreshed on every successful contact.** `GET /madnetwork/v0/ping` now
   answers with the node's own `name`, so the 1-minute refresh loop keeps every
@@ -704,7 +721,9 @@ stricter for emoji, which is the harmless direction.)
     set. Re-running it every sweep is also what makes the cut durable without a
     suppression list — config re-adds the peer at startup, and a minute later it
     is cut again, for as long as the block stands. Two limits, both real:
-    `RemovePeer` reports "not configured" for a link on a shared segment (that is
+    yggdrasil's `core.RemovePeer` (the underlay call — not `Node.RemovePeer`,
+    which forgets a peer *row*) reports "not configured" for a link on a shared
+    segment (that is
     the case the parenthesis above describes), and an **inbound** link is skipped
     entirely because yggdrasil v0.5.14 *panics* when asked to remove one (nil
     cancel func; see `.issues/open-issues.md`) and exposes no handle for it
@@ -744,6 +763,11 @@ stricter for emoji, which is the harmless direction.)
      bounded by your depth knob. Trolls can flood their own corner of the
      network; they cannot dilute yours — which is exactly why rating stays
      local/manual and never network-global.
+- Reach beyond our own friends **never ships before** the transparency and
+  blocking tooling — a network you can see further into than you can defend is
+  the wrong order. This is the reason the build plan puts defense in F6 and
+  reach in F7, in that order, rather than in one phase: the dependency runs one
+  way only, so F6 stands alone and F7 does not.
 
 ### Contradicted identity claims (built 2026-07-30)
 
@@ -830,11 +854,6 @@ to work across nodes.
 The *byte*-level lie needs nothing here: bytes that do not hash to the requested
 hash never enter the cache and cost the provider its place in the swarm
 (§Distribution). This item is about claims that survive byte verification.
-- Reach beyond our own friends **never ships before** the transparency and
-  blocking tooling — a network you can see further into than you can defend is
-  the wrong order. This is the reason the build plan puts defense in F6 and
-  reach in F7, in that order, rather than in one phase: the dependency runs one
-  way only, so F6 stands alone and F7 does not.
 
 ### Friend-list gossip & the network graph (F6, built 2026-07-26)
 
@@ -1131,7 +1150,12 @@ access rule is never even consulted. This is the real content of F7.
 an audience*, so serving a **member** means passing the member audience: the
 snapshot then contains exactly the Madnetwork-scoped entries and nothing else. An
 **outsider** — a node we cannot place in our component — keeps getting the 403 it
-gets today, so opening discovery does not open it to the mesh at large. Two
+gets today, so opening discovery does not open it to the mesh at large. **403
+here, 404 at the byte endpoints** (§Distribution), and the asymmetry is
+deliberate: a catalog request names nothing, so refusing it openly leaks nothing,
+while a blob or manifest request names a *hash* — answering 403 would confirm we
+hold it. Refuse plainly where there is nothing to confirm; stay silent where
+there is. Two
 properties make the member case cheap rather than alarming:
 
 - **All members are one audience class**, so their snapshot is memoized once and
@@ -1322,7 +1346,10 @@ it makes "which node changed" free, and only then does storing more pay off.
     (§Discovery beyond the friend ring), while holdings and the download cache stay
     inside the friend ring.
   - To an **outsider** — any node we cannot place in the component — nothing, and
-    404 rather than 403, so a hash's existence is never confirmed. (Together these
+    404 rather than 403, so a hash's existence is never confirmed. *Here* only: the
+    catalog answers an outsider with a plain 403, because that request names no
+    hash and so has nothing to confirm (§Discovery beyond the friend ring).
+    (Together these
     replace the token-gated depth ≥ 1 tier *and* F5's guest-playable open swarm; see
     §Sharing scope.)
   - A **listener node** presents a **capability token** — the one surviving use:
@@ -1402,7 +1429,10 @@ iff:
    window), **or**
 2. it is in the **local library**, **or**
 3. it is **fully cached** (complete file in `<data_dir>/cache/madnetwork/`, no
-   `.part`).
+   `.part`) — *the one arm not built:* the request-time queries have no cheap way
+   to ask the filesystem, so it wants a table of complete cache hashes and
+   therefore its own migration. Until then a cached-but-unreachable track hides,
+   which is wrong in the safe direction (it is still fetchable, just not offered).
 
 A version is available if any rendition is; a track if any version is;
 albums/artists and counts are computed over the available set. Local, cached, and
@@ -1417,19 +1447,30 @@ show the last-known catalog, not to blank the library — a local fault must nev
 look like "the whole network is gone". Concretely: availability filtering is
 suppressed while the node's own inbound path is suspect.
 
-**Self-health (own inbound path).** This is the more important monitor, and it is
-what makes "fail open" decidable. The vendored gVisor netstack runs its entire
-inbound path in one goroutine; a single read error kills *all* inbound mesh
-traffic permanently (the SPOF logged 2026-07-19 in `.issues/open-issues.md`).
-When that happens, every friend goes silent at once even though the network is
-fine. The watchdog (issue's option 4): **if every friend has been unreachable for
-N consecutive refresh rounds while the yggdrasil core still reports peers up**,
-flag the local inbound path as probably dead — surface it on `/admin/network`,
-and trip the fail-open above. **Prerequisite:** before trusting any of this,
-harden the read loop itself (log-and-continue on transient errors + supervise the
-reader; issue's options 2–3) so the SPOF is a recoverable fault rather than a
-silent permanent death. That hardening is the real gate on richer liveness, and
-it is worth doing on its own regardless of the availability feature.
+**Self-health (own inbound path, built).** This is the more important monitor, and
+it is what makes "fail open" decidable. The vendored gVisor netstack ran its
+entire inbound path in one goroutine, where a single read error killed *all*
+inbound mesh traffic permanently (the SPOF logged 2026-07-19 in
+`.issues/open-issues.md`) and every friend went silent at once even though the
+network was fine. Both halves are now built:
+
+- **The read loop was hardened first**, because a watchdog over a silently dead
+  reader only reports the fault it should have prevented. The yggstack fork's
+  reader log-and-continues with a 50 ms→1 s backoff instead of `break`ing on one
+  read error, and exits only on `Close()`/terminal `ErrClosed` — the
+  inbound-reader resilience patch in `third_party/yggstack/MADSHARE-PATCH.md`.
+- **The signal is `InboundReaderAlive()`**, exposed by that same patch and read
+  through `Node.InboundHealthy()` → `inbound_healthy` on the madnetwork summary.
+  It is the only *unambiguous* one available. A self-ping cannot test the inbound
+  path (`HandleLocal: true` loops local traffic back without touching it), and the
+  originally sketched heuristic — *every friend unreachable for N refresh rounds
+  while the yggdrasil core still reports peers up* — was **rejected as ambiguous**:
+  it cannot tell a dead local reader from a genuinely absent set of friends, which
+  is precisely the distinction fail-open exists to make.
+
+Unhealthy ⇒ cutoff 0 (no filtering at all) plus `inbound_healthy: false` on the
+summary, so the UI shows the last-known catalog behind a banner instead of
+blanking.
 
 **No transitive real-time presence — how the big network stays honest.** Once
 catalogs travel past the friend ring (F7) most holders are nodes we never ping, and
@@ -1499,12 +1540,15 @@ milestone directly after direct transfer works, and tokens ship with depth.
   downloads seed; seeding controls (`seed_enabled`/`seed_cache` DB settings +
   `[federation] seed_rate_kib` token-bucket cap). Swarm scope = direct friends,
   channel-auth only (no tokens yet).
-- **Availability & node health** (near-term, not depth-gated; see the section of
-  that name). Harden the netstack inbound reader (issue #398) → slow/passive
-  per-peer `last_seen` from the existing 1-min refresh + all successful mesh
-  traffic → request-time availability predicate (reachable holder ∨ local ∨
-  cached) with a minutes-wide freshness window → self-health watchdog +
-  fail-open on `/admin/network`. Replaces the reverted 10 s presence feature.
+- **Availability & node health** (built 2026-07-23, not depth-gated; see the
+  section of that name). Hardened netstack inbound reader (issue #398) →
+  slow/passive per-peer `last_seen` from the existing 1-min refresh + all
+  successful mesh traffic → request-time availability predicate (reachable holder
+  ∨ local ∨ cached) with a minutes-wide freshness window
+  (`[federation] reachable_window_sec`, runtime `madnetwork.hide_unavailable`
+  toggle) → self-health via `InboundReaderAlive()` + fail-open banner. Replaces
+  the reverted 10 s presence feature. Deferred: the cached-blob exception in the
+  predicate, which wants its own migration.
 - **F5 — Depth & scope** (built 2026-07-25, see §Sharing scope). Share-depth knob
   (node default + per recording, migration 030), the audience model filtering
   catalog and bytes from one rule, per-friend filtering via the user mapping, and
