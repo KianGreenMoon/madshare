@@ -347,12 +347,96 @@ the whole page, no majority-takes-all step to explain.
   median, a fixed gap, or a quantile. Deliberately unspecified until there is a
   real catalog to look at; picking a constant now would be picking it blind.
 
+## Planned — the page is a phone book, and F7 makes that worse
+
+*(Raised by the owner 2026-07-31: "it currently just shows all library in
+alphabetic order.")*
+
+The page today is one thing: an A→Z drill-down over the merged catalogs. That was
+right while the merged set was a handful of friends' libraries, and it stops being
+right the moment F7 lands, because **the community's whole published output**
+arrives behind the same alphabet.
+
+The reason it fails is not size, it is the question being asked. **On your own
+library you browse, because you already know what is in it — you are navigating
+memory. On the network you have no memory to navigate**, so an alphabet is the
+one ordering that helps least: it answers "show me everything, in an order
+unrelated to anything I care about". Nobody looks for music by scrolling to the
+letter R. The local page and the network page have looked alike since the parity
+work, and this is the place where the parity was the mistake.
+
+### What replaces it
+
+**The drill-down is demoted, not deleted.** It becomes one lane called *Browse
+all*, keeping its current behaviour exactly — including the rare/corroboration
+ordering above, which is about *trust*, not discovery, and is orthogonal to
+everything here. What changes is that it stops being the landing view.
+
+The landing view is a small set of **lanes**, each answering a question a person
+actually arrives with:
+
+| lane | the question | cost |
+|---|---|---|
+| **Not in your library** | *what can I get that I don't have?* | ~free — the self-merge already tags rows with a `self` holder (§Own tracks in the view); this lane is the rows without one |
+| **New on the network** | *what appeared since I last looked?* | a `first_seen` column on `federation_catalog` — it is a cache table, so a migration there costs nothing |
+| **Most held** | *what does my community actually have?* | the holder count already computed for version ordering, **branch-weighted** (one branch = one voice) |
+| **Rare finds** | *what is nearly gone?* | the same corroboration signal, read from the other end — the badge designed above becomes a destination |
+| **From your friends** | *what do the people I chose personally have?* | direct friends only: the smallest, highest-trust slice, and the one lane that needs no trust arithmetic at all |
+| **By node** | *what does that node have?* | §Browsing a single node, already sketched |
+
+**Search is promoted to the primary affordance**, not a filter on a browse tree.
+On a network you *find*; the search box belongs at the top of the landing view
+with the lanes underneath it, which is the opposite of the library page's
+arrangement and correct for the opposite reason.
+
+### The rules these lanes must obey
+
+- **Every lane is computed from what THIS node can see** — its own synced
+  catalogs, its own friend graph, its own branch weighting. There is no
+  network-global chart, no shared counter, nothing to game from outside, and
+  nothing that could grow into the automatic reputation score the design refuses
+  (federation.md §Trust graph). "Most held" means *most held among nodes I can
+  see*, and the UI should say so rather than imply a chart.
+- **Lanes rank, they never hide.** Same rule as the rarity ordering: the long tail
+  is reachable through *Browse all* and through search, always. A lane is a
+  shortcut, never a gate.
+- **Availability applies unchanged** (§Availability). A lane is computed over the
+  available set at request time, so an unreachable friend's exclusives drop out of
+  the lanes exactly as they drop out of the drill-down.
+- **Nothing here is a recommendation.** No inferred taste, no "because you
+  listened to", no profile. Every lane is a plain fact about the catalog, and a
+  person can see why a row is in one.
+
+### Scale stops being optional
+
+"Virtualized/paginated madnetwork artist list (adopt when catalogs grow)" has sat
+in *Out of scope* since the parity work. **F7 is the growth it was waiting for** —
+the community's whole output, not a few friends' — so the windowing already built
+for the admin lenses (`virtual-list.js`) has to come to *Browse all* in the same
+phase, along with keyset paging on the artist query. A lane is naturally bounded
+(a screenful) and needs none of it; the alphabet is not, and does.
+
+### Open
+
+- **How much of a lane to show, and how it expands.** A row of ten with "see all",
+  versus a short vertical list. Answer after looking at a real merged catalog.
+- **`first_seen` semantics on a catalog replace.** A snapshot is applied as an
+  atomic replace (§Catalog), so a naive column would call every row new after
+  every sync. It has to be preserved per `(peer, hash)` across a replace, and
+  "new" means *new to us*, not new to the origin — an honest thing to label
+  precisely, since the two differ for a node we just befriended.
+- **Whether "From your friends" survives the vocabulary change.** Since
+  2026-07-31 "friends" means the whole community (federation.md §Goal &
+  vocabulary), so this lane needs a name that says *direct* friends without
+  reintroducing the ambiguity that decision removed.
+
 ## Out of scope
 
 - Per-content share scope and transfer tokens (federation F5).
 - Remote cover art (the catalog carries no images; note placeholder stays).
-- Virtualized/paginated madnetwork artist list (adopt when catalogs grow).
 - Album/artist "Download as zip" on the library page.
+- Recommendations of any kind — see the rules above; this is a permanent
+  exclusion, not a deferral.
 
 ## Build order
 
@@ -379,3 +463,14 @@ the whole page, no majority-takes-all step to explain.
    shown. *(shipped — phases 0–3; config knob + real-mesh verification are the
    remaining phase 4. See `docs/architecture/federation.md` §Availability & node
    health and `docs/plans/availability.md`.)*
+6. **Discovery** — the landing view above: lanes over the merged catalog, search
+   promoted to the top, the A→Z drill-down demoted to *Browse all* and windowed
+   with `virtual-list.js` + keyset paging. Needs `first_seen` on
+   `federation_catalog` (a cache-table migration) and the branch weighting from
+   federation.md §Trust graph; everything else reads aggregates the page already
+   computes. *(planned — ships with or just after F7, which is what makes the
+   alphabet untenable.)*
+7. **Ranking rare and unverifiable structure** — the corroboration sort key and
+   the "rare" badge (§Planned — ranking rare…). Independent of 6 and orthogonal
+   to it: 6 decides *what a person is shown first*, 7 decides *what order claims
+   appear in once shown*. *(planned)*

@@ -1824,12 +1824,22 @@ milestone directly after direct transfer works, and tokens ship with depth.
      library's ⓘ expansion. Not access work at all, but it is what makes the
      revocation half of the membership model usable, so it ships with the phase
      rather than after it.
-  8. **Listener-node tokens** (§Principals & access): a home server signs "this
+  8. **A madnetwork page that can hold a community's library**
+     (`docs/ui/madnetwork-page.md` §"the page is a phone book"). `/madnetwork` is
+     an A→Z drill-down today, which was right for a few friends' catalogs and is
+     the wrong shape for everything the community publishes: on your own library
+     you browse because you remember it, on the network you have nothing to
+     remember. Discovery lanes over the merged catalog, search promoted to the
+     landing view, the alphabet demoted to *Browse all* and finally windowed.
+     Listed here because F7 is what makes it urgent — serving members without it
+     means opening the network's libraries into a surface nobody can find anything
+     in.
+  9. **Listener-node tokens** (§Principals & access): a home server signs "this
      bearer is mine until T", verified by that server's friends against the
      self-certifying channel. One issuer, one hop, no chain — the only surviving
      use of a token, and the only open design question left is its lifetime
      (§Open questions).
-  9. **Trust-weighted popularity** (one branch = one voice, §Trust graph), which
+  10. **Trust-weighted popularity** (one branch = one voice, §Trust graph), which
      only becomes meaningful once carriers are not all direct friends, and
      **gossiped freshness hints** for holders we never ping (§Availability) —
      never transitive pinging.
