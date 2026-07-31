@@ -119,21 +119,27 @@
           <small class="check-hint">Drop tracks held only by a friend not seen recently from the madnetwork browse (refreshed on reload/search). Off = show every friend&rsquo;s cached catalog regardless of reachability. The freshness window is a server setting (<code>[federation] reachable_window_sec</code>).</small>
         </span>
       </label>
+      <label class="check-row">
+        <input type="checkbox" id="madnetworkServeGuests">
+        <span>Serve guests outside the madnetwork
+          <small class="check-hint">Answer mesh nodes that are <em>not</em> in your community with guest-playable tracks only. Off (the default) = they are told nothing at all. Your catalog is never served outside the community either way.</small>
+        </span>
+      </label>
       <label class="rec-access-field">Default sharing scope
         <select id="madnetworkDefaultDepth">
-          <option value="-1">Private &mdash; publish nothing</option>
+          <option value="unlimited">Madnetwork &mdash; everyone in our community</option>
           <option value="0">Direct friends only</option>
-          <option value="1">Friends of friends</option>
-          <option value="unlimited">Whole madnetwork</option>
+          <option value="-1">Local &mdash; publish nothing</option>
         </select>
       </label>
       <p class="section-copy">
-        How far a recording travels along the friendship chain when it carries no
-        scope of its own. Per-recording overrides live on the Recordings lens
+        Who a recording is published to when it carries no scope of its own. Your
+        <strong>community</strong> is every node reachable from you through mutually
+        declared friendships &mdash; see the
+        <a href="/admin/network">network map</a> &mdash; not everyone on the mesh.
+        Per-recording overrides live on the Recordings lens
         (<a href="/admin/library#recordings">Full Library &rsaquo; Recordings</a>) and in the
-        All&nbsp;Appearances bulk editor. Reach beyond direct friends is stored and
-        enforced here, but the network only extends past your own friends once
-        friend-list gossip ships.
+        All&nbsp;Appearances bulk editor.
       </p>
       <p class="section-copy">
         The outbound seeding rate cap is a server setting

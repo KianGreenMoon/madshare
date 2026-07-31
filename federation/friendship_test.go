@@ -31,11 +31,12 @@ type memStore struct {
 	// Catalog half (F2): published is what this node offers friends; caches
 	// holds the per-peer pulled copies. holdings (F4) is the per-peer cached
 	// list of cache-held hashes; seedEnabled/seedCache back SeedingPolicy.
-	published  []CatalogEntry
-	caches     map[int64][]CatalogEntry
-	holdings   map[int64][]string
-	seedEnable bool
-	seedCache  bool
+	published   []CatalogEntry
+	caches      map[int64][]CatalogEntry
+	holdings    map[int64][]string
+	seedEnable  bool
+	seedCache   bool
+	serveGuests bool
 
 	// Sharing scope (F5): depths overrides one published entry's share depth by
 	// entry key (absent = the node default, ∞ here); audiences overrides what a
@@ -47,12 +48,12 @@ type memStore struct {
 	// origin, for friend lists and distrust lists respectively. silent turns
 	// PublishFriendList off — the node still relays, it just publishes nothing
 	// of its own.
-	graph  map[string]*memRecord
-	marks  map[string]*memRecord
+	graph map[string]*memRecord
+	marks map[string]*memRecord
 	// digests counts GraphDigest calls that reached the store, so a test can
 	// assert the node's memo absorbed the repeats.
 	digests int
-	silent bool
+	silent  bool
 }
 
 func newMemStore() *memStore {
@@ -73,6 +74,9 @@ func newMemStore() *memStore {
 // effective depth must reach the audience, and a guest-only audience sees only
 // guest-playable entries. Callers hold m.mu.
 func (m *memStore) inScope(e CatalogEntry, aud Audience) bool {
+	if !aud.Serves() {
+		return false // the fail-closed zero value, mirrored from audienceClause
+	}
 	depth, ok := m.depths[e.Key]
 	if !ok {
 		depth = DepthUnlimited
@@ -204,11 +208,12 @@ func (m *memStore) ReplacePeerHoldings(_ context.Context, peerID int64, hashes [
 	return nil
 }
 
-// SeedingPolicy returns the configured seed flags (both default on).
-func (m *memStore) SeedingPolicy(context.Context) (bool, bool, error) {
+// SeedingPolicy returns the configured seed flags (both default on; guests off,
+// the production default — a test that wants the guest switch sets it).
+func (m *memStore) SeedingPolicy(context.Context) (SeedPolicy, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.seedEnable, m.seedCache, nil
+	return SeedPolicy{Enabled: m.seedEnable, Cache: m.seedCache, Guests: m.serveGuests}, nil
 }
 
 // setSeeding toggles the seed flags for a test.

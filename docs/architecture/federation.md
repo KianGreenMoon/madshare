@@ -4,10 +4,13 @@
 > F3 (direct transfer), F4 (swarm), F5 (depth & scope), Availability & node
 > health, and all of F6 — friend-list records, distrust marks, network map, the
 > naming split, contradicted-claim reports and underlay de-peering — are built.**
-> **F7 (reach) is next**, and everything it carries — the 2026-07-30 scope
-> collapse, the 2026-07-31 posture (**everything to our community, nothing outside
-> it**), the membership rule and the swarm's single boundary — is **decided but not
-> yet running** (§Sharing scope, "What is decided vs. what is running").
+> **F7 (reach) is in progress.** Its first four items are built (2026-07-31): the
+> mesh classes on `Audience`, the mutual-edge membership walk, serving members
+> while refusing outsiders, and the three-value scope vocabulary with migration
+> 035. The posture is therefore running — **everything to our community, nothing
+> outside it** — but only in the *serving* direction: this node still pulls
+> catalogs from direct friends alone, so other libraries become visible with F7
+> item 5 (§Discovery beyond the friend ring). Items 5–10 remain.
 > The two items in §Open questions are design-time details to settle during their
 > milestone, not blockers. Federation
 > is auth Phase 4 (`docs/architecture/auth.md` §8) and the milestone the native
@@ -125,8 +128,8 @@ default** — its social graph is visible to its members.
 ## Principals & access
 
 **Four principals, and every access decision resolves to one of them** (declared
-2026-07-30). Two are local and two arrive over the mesh; the fourth is what F7
-adds:
+2026-07-30, built 2026-07-31). Two are local and two arrive over the mesh; the
+fourth is what F7 added:
 
 | principal | identified by | may reach |
 |---|---|---|
@@ -166,13 +169,15 @@ Three consequences, all of them wanted:
   community, never content restricted to direct friends. Distance-based reach had
   the opposite property, which is why it is gone (§Sharing scope).
 
-### The membership rule (declared 2026-07-31)
+### The membership rule (declared 2026-07-31, built 2026-07-31)
 
 Once the node default is Madnetwork, **membership is the only thing between a
 stranger and the whole library**, so the rule deciding it stops being a
 convenience and becomes the perimeter. Three decisions define it.
 
 **1. A member is a key we can reach through *mutually declared* friendships.**
+Built as `MemberKeys` in `federation/gossip.go`, memoized per node in
+`federation/membership.go`.
 `BuildNetworkMap` currently links two nodes from **one** side's claim
 (`link(e.Origin, e.Peer)` *and* `link(e.Peer, e.Origin)`, `federation/gossip.go`),
 so a single signed record naming 512 invented keys would make all 512 members at
@@ -321,7 +326,7 @@ third kind of participant beside the full peer and the thin client (decided
 Client-side behaviour — playlist sync, and what the app does with items the
 server cannot resolve — is in `docs/ui/native-client.md`.
 
-## Sharing scope (F5 built; collapsed to three values 2026-07-30)
+## Sharing scope (F5 built; collapsed to three values in F7, built 2026-07-31)
 
 An admin marks each recording with one of **three** scopes, and the node has a
 default every recording inherits:
@@ -349,14 +354,11 @@ this document rather than in a caveat here: nothing at all leaves the community
 per recording or as the node default, and **Local** for content that must not
 travel — both one control away on `/admin/settings`.
 
-**What is decided vs. what is running.** This section is the decision of
-2026-07-30 as amended on 2026-07-31; the *code* still carries F5's ladder — the
-in-between values remain writable and no non-friend is served anything beyond
-guest-playable yet. The node default is already `∞`, so the default *value* needs
-no change; what changes is its meaning, and that meaning only becomes real in the
-commit that serves members. Vocabulary and serving land together in F7 (build plan
-items 1–3), because narrowing the values and widening the audience are safe only
-as one change.
+**Built 2026-07-31** (F7 items 1–4, one change — narrowing the values and
+widening the audience are safe only together). `ValidDepth` now accepts exactly
+the three constants, migration 035 snapped the stored in-between values, and
+members are served. The node default value did not change: it was already `∞`;
+what changed is that `∞` now has an audience.
 
 ### Why the ladder collapsed (decided 2026-07-30)
 
@@ -428,18 +430,25 @@ what the audience *is* — not something a caller derives from loose fields:
 | **member** | the key is a member of our community (§The membership rule) | `Distance: DepthUnlimited` → Madnetwork, which is the default scope |
 | **guest** | anything else — any node we cannot place in our community | nothing, unless the node opts in to serving guest-playable |
 
-Planned shape (F7 — the running type is still F5's `{Distance, GuestOnly}`):
+Built 2026-07-31 (`federation/federation.go`):
 
 ```go
 type Audience struct {
-    Class     AudienceClass // guest (zero value) | member | friend
-    Distance  int           // derived from Class, compared against the scope
-    GuestOnly bool          // a friend demoted by the user mapping, while it exists
+    Class     Class // outsider (zero value) | guest | member | friend
+    Distance  int   // the reach the class earns, compared against the scope
+    GuestOnly bool  // a friend demoted by the user mapping, while it exists
 }
 ```
 
-The zero value is a **guest**, so a forgotten error path denies instead of granting;
-before F7 the zero value was a full friend.
+Four constants rather than the three classes above, because "outsider" and
+"guest" are the same principal in two node policies: an outsider is served
+nothing, a guest is an outsider on a node that opted in. The **zero value is
+`ClassOutsider`**, so a forgotten error path denies instead of granting; before
+F7 the zero value was a full friend. Predicates are positive — `Serves()`,
+`IsFriend()`, `InCommunity()`, `ServesCache()` — and the SQL clause refuses an
+audience that serves nothing outright (`audienceClause` returns a constant
+`false` and binds nothing), so the fail-closed zero value holds at the storage
+layer too and not only in the handlers.
 
 - **Distance** is compared against the content's scope: a recording is in the
   audience's catalog iff `depth >= Distance`. With three scopes, `DepthFriends`
@@ -459,21 +468,22 @@ before F7 the zero value was a full friend.
   claim is the point, the access walk requires both ends because granting on one
   claim is not.
 - **The class must be a value, not an inference.** Two near-misses found while
-  designing F7, both the same mistake — a guard that means "is a friend" written as
-  the negation of a bit whose meaning was about to change:
-  - `seedableBlob`'s cache branch is gated on `!aud.GuestOnly`. A stranger is
-    `GuestOnly: true` today, so the cache is refused by accident rather than by
-    rule; the guard must be rewritten to say what it means before a member is ever
-    handed `GuestOnly: false`. (Cache blobs *are* served to members since
-    2026-07-31 — see "the swarm's only boundary" below — which makes the rewrite a
-    correctness fix, not a policy one: what the branch may not do is serve a
-    **guest**.)
-  - `serveAudience` returns `Audience{}` on a store error, which is `Distance 0` —
-    *a full friend*. Inert today only because every caller checks the `ok` flag.
+  designing F7 and fixed when it was built, both the same mistake — a guard that
+  means "is a friend" written as the negation of a bit whose meaning was about to
+  change:
+  - `seedableBlob`'s cache branch was gated on `!aud.GuestOnly`. A stranger was
+    `GuestOnly: true`, so the cache was refused by accident rather than by rule,
+    and a member — `GuestOnly: false` — would have passed the guard before anyone
+    decided members may have it. Now `aud.ServesCache()`. (Members *are* served
+    cache blobs since 2026-07-31 — see "the swarm's only boundary" below — which
+    makes this a correctness fix rather than a policy one: what the branch may
+    never do is serve a **guest**.)
+  - `serveAudience` returned `Audience{}` on a store error, which was `Distance 0`
+    — *a full friend*. Inert only because every caller checked the `ok` flag.
 
-  So the type carries an explicit class with positive predicates (`IsFriend()`,
-  `ServesCache()`), the zero value denies, and the SQL arguments derive from the
-  class instead of being assembled at each call site.
+  So the type carries an explicit class with positive predicates, the zero value
+  denies, and the SQL arguments derive from the class instead of being assembled
+  at each call site.
 - **GuestOnly** is the per-friend half, resolved from the **user mapping**
   (§Principals & access): a friend mapped to a local account inherits that
   account's rights, and since the local model grants either `content.access`
@@ -515,13 +525,20 @@ meaning — each peer stores the serial of the snapshot *it* was served, so the
 not-modified check works unchanged.
 
 **Scope is the only authority on the network, and `guest_playable` is not**
-(decided 2026-07-30, replacing the guest-open swarm). F5 served the blobs and
-manifests of any guest-accessible recording to any mesh node, *even when its scope
-said friends-only* — a second way to be open that quietly overrode the admin's own
-setting. Now that "Madnetwork" is a scope an admin can simply choose, that back
-door has no purpose and is closed: `guest_playable` and the license policy go back
-to meaning what they say locally — what an **unauthenticated visitor of this
-server** may play — and have no effect on what leaves the node over the mesh.
+(decided 2026-07-30, built 2026-07-31, replacing the guest-open swarm). F5 served
+the blobs and manifests of any guest-accessible recording to any mesh node, *even
+when its scope said friends-only* — a second way to be open that quietly overrode
+the admin's own setting. Now that "Madnetwork" is a scope an admin can simply
+choose, that back door has no purpose and is closed: `guest_playable` and the
+license policy go back to meaning what they say locally — what an
+**unauthenticated visitor of this server** may play.
+
+What survives is one node setting, `madnetwork.serve_guests`, **default off**: it
+answers outsiders with guest-playable content at the byte endpoints only, within
+the Madnetwork scope, and never from the cache. A guest's distance is
+`DepthUnlimited` rather than F5's `0`, so an outsider can never be served
+something restricted to direct friends — **a stranger must never outrank a
+member.**
 
 What each mesh class is served:
 
@@ -1483,24 +1500,38 @@ scale and navigation, not a different metaphor.
   dedup of *unshared* rips can refine this later; local verification on
   download (F3) stays the truth either way.
 
-### Discovery beyond the friend ring (F7, planned)
+### Discovery beyond the friend ring (F7 — serving half built, pulling half planned)
 
 Once scope decides who may *fetch*, the thing standing between an admin and "the
 whole network's libraries are reachable" is no longer authorization — it is
-**knowing a hash exists**. `MadnetworkBlobProviders` and `handleCatalog` both stop
-at `state = 'friend'`, so a node three hops out cannot learn what we have, and the
-access rule is never even consulted. This is the real content of F7.
+**knowing a hash exists**. This is the real content of F7, and it has two halves
+that ship separately:
 
-**The endpoint change is one line of policy.** `handleCatalog` already answers *for
-an audience*, so serving a **member** means passing the member audience: the
-snapshot then contains exactly the Madnetwork-scoped entries and nothing else. An
-**outsider** — a node we cannot place in our component — keeps getting the 403 it
-gets today, so opening discovery does not open it to the mesh at large. **403
-here, 404 at the byte endpoints** (§Distribution), and the asymmetry is
-deliberate: a catalog request names nothing, so refusing it openly leaks nothing,
-while a blob or manifest request names a *hash* — answering 403 would confirm we
-hold it. Refuse plainly where there is nothing to confirm; stay silent where
-there is. Two
+- **Serving discovery to members — built 2026-07-31** (item 3). `handleCatalog`
+  and `handleHoldings` now answer any member, so our library is discoverable by
+  our community.
+- **Pulling from beyond the friend ring — not built** (item 5). The sweep still
+  syncs catalogs and holdings from `state = 'friend'` peers only, and
+  `MadnetworkBlobProviders` still joins on friendship, so *other people's*
+  libraries are not visible here yet. Until this lands, item 3 is a one-sided
+  opening: symmetric across nodes, useless on any single one. `meshlab reach` is
+  the acceptance test and stays red until then.
+
+  One shape question found while building item 3: `federation_catalog` is keyed
+  by `peer_id` with a CASCADE to `federation_peers`, so caching a *member's*
+  catalog needs either a peer row for every member we pull from or a table that
+  is not peer-rooted. That is the first decision item 5 has to make, and it is a
+  migration either way.
+
+**The endpoint change was one line of policy**, as predicted. `handleCatalog`
+already answered *for an audience*, so serving a **member** meant passing the
+member audience: the snapshot contains exactly the Madnetwork-scoped entries and
+nothing else. An **outsider** — a node we cannot place in our component — keeps
+its 403, so opening discovery did not open it to the mesh at large. **403 here,
+404 at the byte endpoints** (§Distribution), and the asymmetry is deliberate: a
+catalog request names nothing, so refusing it openly leaks nothing, while a blob
+or manifest request names a *hash* — answering 403 would confirm we hold it.
+Refuse plainly where there is nothing to confirm; stay silent where there is. Two
 properties make the member case cheap rather than alarming:
 
 - **All members are one audience class**, so their snapshot is memoized once and
@@ -1995,32 +2026,43 @@ milestone directly after direct transfer works, and tokens ship with depth.
   with a lifetime, a delegation chain and a revocation story, plus an
   authorization decision computed from *gossiped* edges — is gone, because the
   tier it existed to serve is gone. What is left is mostly reuse:
-  1. **The four principals as three mesh classes** (§Principals & access, §The
-     audience model): friend, **member of our community**, and guest. The class
-     becomes a value on `Audience` with positive predicates, the zero value denies,
-     and the two guards that would have leaked — `seedableBlob`'s
-     `!aud.GuestOnly` cache branch and `serveAudience`'s `Audience{}` error return
-     — are rewritten to mean what they say.
-  2. **The membership walk** (§The membership rule) — the access-side twin of
+  1. **The four principals as mesh classes** (§Principals & access, §The audience
+     model) — *built 2026-07-31*. `Audience.Class` (outsider = zero value = deny,
+     guest, member, friend) with positive predicates; both leaking guards
+     rewritten — `seedableBlob`'s cache branch is now `aud.ServesCache()` and
+     `serveAudience`'s error return denies instead of reading as a full friend —
+     and `audienceClause` refuses a non-serving audience in SQL, so the
+     fail-closed zero value holds at the storage layer too.
+  2. **The membership walk** (§The membership rule) — *built 2026-07-31*.
+     `MemberKeys` (`federation/gossip.go`, pure) is the access-side twin of
      `BuildNetworkMap`: same store, same branch snipping, plus the **mutual-edge**
      condition, with our own `federation_peers` friends admitted unconditionally.
-     Memoized and refreshed on the graph sync, since it is now on every mesh
-     request's path. The map keeps the single-claim walk; these are two functions,
-     and a test should assert they disagree exactly where a one-sided edge exists.
-     Needs the forgetting work above first, or its input still contains branches
-     we cut.
-  3. **Serve members, refuse outsiders.** Madnetwork-scoped blobs, manifests,
-     catalog, **holdings and cache blobs** to members (§Distribution — the swarm's
-     only boundary is the madnetwork); nothing to a node outside the community, 404
-     rather than 403. `guest_playable` stops overriding scope on the mesh, and
-     serving it to outsiders survives only as a node setting, default off.
-  4. **Tighten the vocabulary** — `ValidDepth` rejects the in-between values, a
-     migration snaps stored `1…n` to **Direct friends** *and* explicit `∞` back to
-     inherit (§Sharing scope, "Nothing about the schema changed"), the node default
-     stays `∞` and is now *named* Madnetwork, and `share-depth.js` / the access
-     modal / the settings card offer three choices instead of a ladder — with
-     `DepthFriends` labelled **Direct friends** everywhere, since "Friends" reads as
-     the community and would understate what it restricts.
+     Memoized on the node with a mesh-address index (`federation/membership.go`)
+     and recomputed on the sweep from the same peers+edges the retention walk
+     reads — two walks, one read, so the store and the perimeter cannot drift.
+     `TestMapDrawsAOneSidedEdgeThatMembershipRefuses` pins the one place the two
+     walks disagree.
+  3. **Serve members, refuse outsiders** — *built 2026-07-31*. Madnetwork-scoped
+     blobs, manifests, catalog, **holdings and cache blobs** to members
+     (§Distribution — the swarm's only boundary is the madnetwork); an outsider
+     gets 404 on bytes and 403 on the two listings. `guest_playable` no longer
+     overrides scope on the mesh; serving guests survives as
+     `madnetwork.serve_guests`, default off.
+  4. **Tighten the vocabulary** — *built 2026-07-31*. `ValidDepth` accepts exactly
+     the three constants, migration **035** snaps stored `1…n` to **Direct
+     friends** *and* explicit `∞` back to inherit (§Sharing scope, "Nothing about
+     the schema changed"), the node default stays `∞` and is now *named*
+     Madnetwork, and `share-depth.js` / the access modal / the bulk bar / the
+     settings card offer three choices instead of a ladder — with `DepthFriends`
+     labelled **Direct friends** everywhere, since "Friends" reads as the
+     community and would understate what it restricts.
+
+  Items 1–4 landed as **one change**, as planned: narrowing the values and
+  widening the audience are only safe together. Note what this does *not* yet
+  buy — a node now serves its community, but still **pulls** catalogs only from
+  direct friends, so other people's libraries become visible to us with item 5
+  and not before. `meshlab reach` therefore still 404s past distance 1; that is
+  the acceptance test for item 5, not for these.
   5. **Discovery beyond the friend ring** (§Discovery beyond the friend ring): the
      bounded frontier pull that actually makes other people's libraries visible —
      the substance of the phase, and the only part with an open engineering

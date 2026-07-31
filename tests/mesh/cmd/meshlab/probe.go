@@ -87,7 +87,9 @@ func (emptyStore) MadnetworkBlobProviders(context.Context, string) (int64, []*fe
 	return 0, nil, nil
 }
 func (emptyStore) ReplacePeerHoldings(context.Context, int64, []string) error { return nil }
-func (emptyStore) SeedingPolicy(context.Context) (bool, bool, error)          { return false, false, nil }
+func (emptyStore) SeedingPolicy(context.Context) (federation.SeedPolicy, error) {
+	return federation.SeedPolicy{}, nil
+}
 
 // The gossiped graph (F6) is empty for the same reason as everything above: a
 // node with no friends has heard no records and publishes none. GraphKnowsKey

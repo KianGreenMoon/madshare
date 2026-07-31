@@ -51,54 +51,169 @@ const (
 	PeerBlocked         = "blocked"
 )
 
-// Share depth (F5) — how far along the friendship chain a recording travels.
-// Stored per recording (recordings.share_depth, migration 030; NULL = inherit
-// the node default) and compared against an [Audience]'s Distance: content is
-// visible to an audience iff depth >= Distance. See
+// Sharing scope (F5, collapsed to three values in F7) — who a recording is
+// published to. Stored per recording (recordings.share_depth, migration 030;
+// NULL = inherit the node default) and compared against an [Audience]'s
+// Distance: content is visible iff depth >= Distance. See
 // docs/architecture/federation.md §Sharing scope.
+//
+// The constants still read as distances because that is how the SQL compares
+// them, and keeping the encoding is what let the vocabulary change without a
+// schema or protocol break. Their *names in the UI* are Local, Direct friends
+// and Madnetwork.
 const (
-	// DepthPrivate keeps content off the network entirely — not even a direct
-	// friend sees it. Distance is never negative, so depth >= Distance is false
-	// for every requester.
+	// DepthPrivate ("Local") keeps content off the network entirely — not even a
+	// direct friend sees it. Distance is never negative, so depth >= Distance is
+	// false for every requester.
 	DepthPrivate = -1
-	// DepthFriends shares with direct friends only (distance 0).
+	// DepthFriends ("Direct friends") shares with the nodes this admin
+	// hand-picked and nobody else. Labelled *Direct* friends everywhere a person
+	// reads it: "friends" in this project's vocabulary means the whole community
+	// (§Goal & vocabulary), and using it here would understate what it restricts.
 	DepthFriends = 0
-	// DepthUnlimited is ∞, the whole reachable madnetwork — a concrete large
+	// DepthUnlimited ("Madnetwork") shares with our whole community — every
+	// member reachable through mutually declared friendships. A concrete large
 	// integer rather than a NULL sentinel so the comparison stays a plain >= in
 	// SQL and on the wire, with no special case to forget in one of them.
 	DepthUnlimited = 1 << 20
 )
 
 // ValidDepth reports whether d is a share depth this node accepts from an admin
-// or a peer: private, or any non-negative number of hops up to ∞.
-func ValidDepth(d int) bool { return d >= DepthPrivate && d <= DepthUnlimited }
-
-// Audience is who a mesh request is answered for (F5). The same value decides
-// what the catalog lists and what the byte endpoints serve — a node must never
-// advertise what it would not serve, so both halves read one rule.
+// or a peer. Three values, not a ladder (F7): private, direct friends, or the
+// whole madnetwork.
 //
-// Until transitive reach turns on (F7) every authenticated requester is at
-// distance 0; the field exists so depth > 0 needs no protocol or schema change
-// then, and so the depth ladder is inert by construction rather than by
-// omission.
+// The in-between hop counts were removed because every scope value is a claim
+// about *our* behaviour, while "3 hops" is a claim about other people's — and
+// nothing enforces it once a friend holds the bytes. Migration 035 snapped the
+// stored ones onto [DepthFriends]; a peer or an admin sending one now is
+// refused rather than silently rounded, since rounding a sharing decision is
+// exactly the kind of quiet widening this predicate exists to prevent
+// (docs/architecture/federation.md §Sharing scope).
+func ValidDepth(d int) bool {
+	return d == DepthPrivate || d == DepthFriends || d == DepthUnlimited
+}
+
+// Class is what a mesh requester *is* to this node — the three mesh principals
+// of §Principals & access, in increasing order of reach. It is the first half of
+// every access decision; [Audience.Distance] is the second.
+//
+// The zero value is [ClassOutsider], and that is load-bearing: an audience
+// nobody filled in denies everything, so a forgotten branch or an error path
+// that returns a bare Audience{} fails closed. Before F7 the zero value meant
+// "direct friend at distance 0" — the widest audience there was — which is the
+// shape of both leaks this type was introduced to close.
+type Class int
+
+const (
+	// ClassOutsider is a node we cannot place in our community. It is served
+	// nothing at all by default: being routable on Yggdrasil establishes nothing
+	// (§Principals & access). The zero value, deliberately.
+	ClassOutsider Class = iota
+	// ClassGuest is an outsider this node has opted to answer anyway, limited to
+	// guest-playable content — the node setting that replaced F5's always-on
+	// guest-open swarm, and it defaults to off.
+	ClassGuest
+	// ClassMember is a key inside our community: reachable from us through
+	// mutually declared friendships (§The membership rule). It reaches the
+	// Madnetwork scope — by default the whole library — and the swarm, cache
+	// included.
+	ClassMember
+	// ClassFriend is a node in federation_peers with state='friend'. A local
+	// fact rather than hearsay, and the only class that additionally reaches
+	// what an admin restricted to hand-picked nodes.
+	ClassFriend
+)
+
+// Audience is who a mesh request is answered for (F5, extended by F7). The same
+// value decides what the catalog lists and what the byte endpoints serve — a
+// node must never advertise what it would not serve, so both halves read one
+// rule.
+//
+// Class and Distance answer different questions and both are needed. Class is
+// *who is asking*, and it gates the endpoints: whether this requester may pull a
+// catalog at all, whether it may be served a cache blob. Distance is *how far
+// away they are*, and it meets each recording's share depth in SQL
+// (`COALESCE(r.share_depth, default) >= Distance`) — DepthFriends for a direct
+// friend, DepthUnlimited for anyone further out, which yields exactly the
+// recordings marked Madnetwork and nothing else.
 type Audience struct {
-	// Distance is the friendship hops to the requester: 0 = a direct friend.
+	// Class is the mesh principal this request resolved to. The zero value
+	// ([ClassOutsider]) is served nothing.
+	Class Class
+	// Distance is the reach the requester's class earns: DepthFriends (0) for a
+	// direct friend, DepthUnlimited for a member or a guest, since a scope is a
+	// statement about *whom* rather than about hop counts.
 	Distance int
 	// GuestOnly limits the audience to guest-accessible recordings (the
 	// guest-playable / license policy). True for a friend mapped to a local
-	// account without content.access, and for the open swarm's strangers.
+	// account without content.access, and for [ClassGuest].
 	GuestOnly bool
 }
+
+// Serves reports whether this audience is answered at all. False for an
+// outsider, which is every mesh node we cannot place in our community unless the
+// admin opted into serving guests.
+func (a Audience) Serves() bool { return a.Class >= ClassGuest }
+
+// IsFriend reports whether the requester is a direct friend of ours — a peer row
+// we hold, not a key vouched for by somebody else.
+func (a Audience) IsFriend() bool { return a.Class == ClassFriend }
+
+// InCommunity reports whether the requester belongs to our madnetwork: a member
+// or a direct friend. This is the swarm's boundary and the catalog's
+// (§Distribution — the swarm must not care which node happens to hold the
+// bytes), so it is deliberately one predicate rather than two checks that could
+// drift apart.
+func (a Audience) InCommunity() bool { return a.Class >= ClassMember }
+
+// ServesCache reports whether this node's download cache may be served to the
+// requester. The community, and nobody else: a cached blob is somebody else's
+// content that we merely hold, so seeding it outward is only defensible inside
+// the network it came from.
+//
+// Written as a positive predicate on purpose. Its ancestor was `!aud.GuestOnly`
+// — a guard that meant "is a friend" expressed as the negation of a bit whose
+// meaning changed underneath it, and which would have started handing our cache
+// to every member the moment members existed.
+func (a Audience) ServesCache() bool { return a.InCommunity() }
 
 // FriendAudience is the audience of an unmapped direct friend: the default
 // regular-user identity, which sees the whole published set
 // (docs/architecture/federation.md §Principals & access).
-var FriendAudience = Audience{Distance: DepthFriends}
+var FriendAudience = Audience{Class: ClassFriend, Distance: DepthFriends}
 
-// GuestAudience is the audience of a mesh node with no friendship at all — the
-// open swarm. It reaches guest-accessible content only, and only at the byte
-// endpoints: catalog and holdings stay friends-only.
-var GuestAudience = Audience{Distance: DepthFriends, GuestOnly: true}
+// MemberAudience is the audience of a node in our community that is not a direct
+// friend (F7). Distance [DepthUnlimited] is what makes the F5 depth predicate
+// select exactly the recordings marked Madnetwork — no new clause, no new
+// column: the tier that needs no credential was always expressible as a reach.
+var MemberAudience = Audience{Class: ClassMember, Distance: DepthUnlimited}
+
+// GuestAudience is the audience of a node outside our community, on the node
+// that opted to answer them: guest-playable content within the Madnetwork scope,
+// at the byte endpoints only. Catalog and holdings stay inside the community.
+//
+// Its distance is DepthUnlimited rather than F5's 0, so an outsider can never be
+// served something an admin restricted to direct friends — a stranger must never
+// outrank a member.
+var GuestAudience = Audience{Class: ClassGuest, Distance: DepthUnlimited, GuestOnly: true}
+
+// SeedPolicy is the node-level answer to "what do we serve over the swarm"
+// (runtime settings, /admin/settings). The two seeding switches are F4's; Guests
+// is F7's, and it is the only one that defaults off.
+type SeedPolicy struct {
+	// Enabled is the master switch: off means this node consumes without serving
+	// bytes to anyone. Default on.
+	Enabled bool
+	// Cache also seeds blobs this node merely downloaded, making popular content
+	// spread — to our community only, never outward (see
+	// [Audience.ServesCache]). Default on.
+	Cache bool
+	// Guests answers mesh nodes *outside* our community, with guest-playable
+	// library content and nothing else. Default OFF: the posture is everything to
+	// our community, nothing outside it, and this is the deliberate exception an
+	// admin has to reach for. It replaces F5's always-on guest-open swarm.
+	Guests bool
+}
 
 // Claim-report kinds (federation_claim_reports.kind, migration 034) — which
 // check found a contradiction. See [ClaimReport].
@@ -333,10 +448,9 @@ type PeerStore interface {
 	// ReplacePeerHoldings atomically replaces the cached list of what one friend
 	// holds in its download cache and will seed (F4 holdings sync).
 	ReplacePeerHoldings(ctx context.Context, peerID int64, hashes []string) error
-	// SeedingPolicy reports whether this node serves blobs to friends at all and
-	// whether it also seeds its download cache — the F4 serving gate (both
-	// default on).
-	SeedingPolicy(ctx context.Context) (enabled, cache bool, err error)
+	// SeedingPolicy reports what this node is willing to serve over the swarm —
+	// the F4 serving gate, extended by F7's guest switch.
+	SeedingPolicy(ctx context.Context) (SeedPolicy, error)
 
 	// CheckPeerClaims re-runs the contradiction checks over one peer's cached
 	// catalog and records what it finds, returning how many reports are newly
@@ -574,6 +688,15 @@ type Intervals struct {
 	// the store — a record learned, a branch dropped — invalidates it, so the
 	// TTL bounds staleness only for the case where nothing happened.
 	GraphDigestTTL time.Duration
+	// MembershipTTL is how long the computed community (membership.go, F7) is
+	// reused before it is rebuilt from the store. Default 1 min.
+	//
+	// The sweep recomputes it every round anyway, so this bounds only the case
+	// where nothing has swept yet — and it bounds it in the safe direction: a
+	// node that just joined the community waits at most this long for reach,
+	// while a node that just left loses it immediately, because a block is
+	// enforced at meshAuth off the peer table and never from this memo.
+	MembershipTTL time.Duration
 }
 
 // WithIntervals overrides the background cadences (zero fields keep defaults).
@@ -619,6 +742,9 @@ func (iv Intervals) withDefaults(d Intervals) Intervals {
 	}
 	if iv.GraphDigestTTL <= 0 {
 		iv.GraphDigestTTL = d.GraphDigestTTL
+	}
+	if iv.MembershipTTL <= 0 {
+		iv.MembershipTTL = d.MembershipTTL
 	}
 	return iv
 }

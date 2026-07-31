@@ -65,24 +65,31 @@ func (n *Node) ownSnapshot(ctx context.Context, aud Audience) (*snapshot, error)
 	return snap, nil
 }
 
-// handleCatalog serves GET /madnetwork/v0/catalog?since=<serial> — friends
-// only. meshAuth has already refused blocked peers; everyone else must resolve
-// to a known friend (the catalog is the library listing — default-deny toward
-// non-friends).
+// handleCatalog serves GET /madnetwork/v0/catalog?since=<serial> — our
+// community only (F7). A member pulls the Madnetwork-scoped listing, a direct
+// friend its mapped one; a node outside the community is refused, and the guest
+// switch does not open this — guests are answered bytes they can already name,
+// never a listing of what we have.
+//
+// That one-line widening from friends to members is what makes other people's
+// libraries visible at all: the blocker on reaching them was never authorization
+// but knowing a hash exists (§Discovery beyond the friend ring). All members
+// share one memoized snapshot and the same `since=` not-modified reply, so the
+// cost does not scale with the community.
+//
+// meshAuth has already refused blocked peers.
 func (n *Node) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	if n.store == nil {
 		http.Error(w, "catalog not configured", http.StatusServiceUnavailable)
 		return
 	}
-	p := n.peerFromRemote(r)
-	if p == nil || p.State != PeerFriend {
-		http.Error(w, "catalog is served to friends only", http.StatusForbidden)
+	aud, ok := n.serveAudience(r)
+	if !ok {
+		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	aud, err := n.store.PeerAudience(r.Context(), p.ID)
-	if err != nil {
-		n.logger.Printf("federation: resolve audience of %q: %v", p.Display(), err)
-		http.Error(w, "storage error", http.StatusInternalServerError)
+	if !aud.InCommunity() {
+		http.Error(w, "catalog is served inside the madnetwork only", http.StatusForbidden)
 		return
 	}
 	snap, err := n.ownSnapshot(r.Context(), aud)

@@ -115,6 +115,13 @@ type Node struct {
 	signKey     ed25519.PrivateKey
 	acceptMu    sync.Mutex
 	graphAccept map[string]time.Time
+
+	// Our community (F7, membership.go): the keys we serve the Madnetwork scope
+	// to, derived from the gossiped graph by the mutual-edge walk and indexed by
+	// mesh address. Memoized because it is on every mesh request's path, and
+	// recomputed on the sweep from the same peers+edges the retention walk reads.
+	memberMu sync.Mutex
+	members  *memberSet
 }
 
 // peerTouchThrottle bounds transfer-path last_seen writes per peer.
@@ -138,6 +145,7 @@ var (
 		GraphTTL:       7 * 24 * time.Hour,
 		GraphAccept:    time.Minute,
 		GraphDigestTTL: 30 * time.Second,
+		MembershipTTL:  time.Minute,
 	}
 	defaultTimeouts = Timeouts{
 		Control:    15 * time.Second,

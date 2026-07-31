@@ -15,8 +15,10 @@ package main
 // outsider (probe.go) doing the asking. Two of them are worth naming, because
 // they are the ones an in-process test cannot make:
 //
-//   - the guest-open swarm serves a stranger the BYTES, verified against the
-//     content hash — not merely a 200;
+//   - the guest swarm, once an admin opens it, serves a stranger the BYTES,
+//     verified against the content hash — not merely a 200. Since F7 it is off
+//     by default, so the case immediately before it is that the same request is
+//     refused while the switch is closed;
 //   - the byte gate is LIVE, so a friend holding a stale catalog that still
 //     advertises a now-private track is refused anyway. Staleness is the normal
 //     state of a federated catalog (15-minute sync), which makes this the
@@ -110,6 +112,14 @@ func (l *lab) check() (*checkReport, error) {
 				subject.RecordingID, holder.name, err)
 		}
 	}()
+	// The guest switch is node-level, so leaving it open would change every later
+	// command's answers, not just this recording's. Closed is the default and the
+	// only state the rest of the lab should ever see.
+	defer func() {
+		if err := l.setServeGuests(holder, false); err != nil {
+			rep.add("close the guest switch", false, "%v", err)
+		}
+	}()
 
 	p, err := l.ensureProbe()
 	if err != nil {
@@ -148,13 +158,37 @@ func (l *lab) check() (*checkReport, error) {
 	}
 	l.probeBlob(rep, p, holder, subject, "normal blob is invisible to an outsider", http.StatusNotFound, false)
 
-	// Guest-playable: the open swarm. Bytes, not just a status.
+	// Guest-playable, with the node closed to guests — the F7 default posture:
+	// everything to our community, nothing outside it. Marking a track
+	// guest-playable is a statement about *local* visitors and buys an outsider
+	// nothing on its own.
 	if err := l.setScope(holder, subject.RecordingID, nil, false, ptr(true)); err != nil {
 		return nil, err
 	}
-	l.probeBlob(rep, p, holder, subject, "guest-playable blob serves an outsider", http.StatusOK, true)
+	l.probeBlob(rep, p, holder, subject,
+		"guest-playable blob still refused while guests are closed", http.StatusNotFound, false)
 
-	// Private beats guest-playable: depth is checked before the guest policy, so
+	// A guest never outranks a member, so opening the node is not enough while the
+	// track is still scoped Direct friends — the guest switch widens *who* may be
+	// answered, never *what* they are answered with. This case caught a stale F5
+	// expectation on the real lab: under F5 the guest audience sat at distance 0
+	// and guest-playable overrode the scope, which is exactly the back door F7
+	// closed.
+	if err := l.setServeGuests(holder, true); err != nil {
+		return nil, err
+	}
+	l.probeBlob(rep, p, holder, subject,
+		"guests opened still cannot reach a Direct-friends track", http.StatusNotFound, false)
+
+	// Scoped back to the node default (Madnetwork) and still guest-playable: now
+	// the swarm serves it. Bytes, not just a status.
+	if err := l.setScope(holder, subject.RecordingID, nil, true, nil); err != nil {
+		return nil, err
+	}
+	l.probeBlob(rep, p, holder, subject, "guest-playable blob serves an outsider once opened", http.StatusOK, true)
+
+	// Private beats guest-playable, with the node still open to guests — which is
+	// the sharper form of the case: scope is checked before the guest policy, so
 	// "not on the network" means exactly that.
 	if err := l.setScope(holder, subject.RecordingID, ptr(federation.DepthPrivate), false, nil); err != nil {
 		return nil, err
@@ -344,6 +378,16 @@ func (l *lab) restoreScope(n *node, recordingID int64, before recordingRow) erro
 func (l *lab) setScope(n *node, recordingID int64, depth *int, inherit bool, guest *bool) error {
 	if err := n.setRecordingScope(recordingID, depth, inherit, guest); err != nil {
 		return fmt.Errorf("scope recording %d on %s: %w", recordingID, n.name, err)
+	}
+	return nil
+}
+
+// setServeGuests opens or closes the node to mesh nodes outside its community
+// (F7). Node-level, unlike setScope, and not memoized either: the seeding policy
+// is read per request.
+func (l *lab) setServeGuests(n *node, on bool) error {
+	if err := n.setServeGuests(on); err != nil {
+		return fmt.Errorf("serve guests on %s: %w", n.name, err)
 	}
 	return nil
 }

@@ -293,17 +293,16 @@
     <label class="rec-access-field">Madnetwork scope
       <select id="accessDepth">
         <option value="inherit">Node default</option>
-        <option value="-1">Private &mdash; not shared at all</option>
+        <option value="unlimited">Madnetwork &mdash; everyone in our community</option>
         <option value="0">Direct friends only</option>
-        <option value="1">Friends of friends</option>
-        <option value="unlimited">Whole madnetwork</option>
+        <option value="-1">Local &mdash; not shared at all</option>
       </select>
     </label>
     <p class="modal-body rec-access-note">Recording-level: applies to every appearance and every rendition at
       once. An explicit guest setting is a manual decision the license auto-derive policy never overrides.
-      Madnetwork scope decides how far this recording travels along the friendship chain &mdash; it is
-      enforced on this node&rsquo;s own catalog and byte serving; reach beyond direct friends arrives with
-      friend-list gossip.</p>
+      Madnetwork scope decides who this recording is published to: everyone in your community (every node
+      reachable through mutual friendships), only the nodes you friended yourself, or nobody. It governs both
+      the catalog you advertise and the bytes you serve.</p>
     <div class="modal-actions">
       <button class="btn btn-neutral" id="accessCancel">Cancel</button>
       <button class="btn btn-absorb" id="accessGo">Save</button>

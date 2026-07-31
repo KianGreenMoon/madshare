@@ -24,7 +24,7 @@ import (
 //   - guest-only — the per-friend half, resolved from the user mapping: a friend
 //     mapped to a local account without content.access sees exactly what an
 //     anonymous local visitor sees (the guest-playable / license policy), and so
-//     does a stranger on the open swarm.
+//     does an outsider on a node that opted to answer guests at all (F7).
 
 // shareDepthClause is the depth predicate over the recording aliased `r`. It
 // binds two parameters in order — the node's default depth (for recordings that
@@ -34,7 +34,16 @@ const shareDepthClause = `COALESCE(r.share_depth, ?) >= ?`
 // audienceClause is the full scope predicate for the recording aliased `r`:
 // depth, plus the guest-playable / license policy when the audience is limited
 // to guest-accessible content. Pair it with scopeArgs for the bind values.
+//
+// An audience that is served nothing (the zero value — an outsider, or a
+// resolution that failed) yields a constant-false predicate and binds no
+// parameters. This is the SQL half of [federation.Class]'s fail-closed zero
+// value: without it a bare Audience{} reads as distance 0, which is a *direct
+// friend*, so the widest audience in the system would be the one nobody set.
 func audienceClause(aud federation.Audience) string {
+	if !aud.Serves() {
+		return `0`
+	}
 	clause := shareDepthClause
 	if aud.GuestOnly {
 		clause += ` AND ` + accessClause
@@ -42,8 +51,14 @@ func audienceClause(aud federation.Audience) string {
 	return clause
 }
 
-// scopeArgs returns the bind values audienceClause expects, in order.
+// scopeArgs returns the bind values audienceClause expects, in order — none for
+// an audience the clause refuses outright. The two are always used together and
+// must stay in step; that is why the empty case lives here rather than at the
+// call sites.
 func scopeArgs(defaultDepth int, aud federation.Audience) []any {
+	if !aud.Serves() {
+		return nil
+	}
 	return []any{defaultDepth, aud.Distance}
 }
 
@@ -90,9 +105,9 @@ func (db *DB) BlobVisibleTo(ctx context.Context, hash string, aud federation.Aud
 	return v, true, nil
 }
 
-// PeerAudience resolves a trusted peer to the audience its requests are answered
-// for. The distance is 0 — every peer we speak to directly is a direct friend
-// until transitive reach ships (F7) — so the interesting half is the user
+// PeerAudience resolves a *direct friend* to the audience its requests are
+// answered for: class friend, distance 0 (both scopes — Direct friends and
+// Madnetwork — are served at distance 0), so the interesting half is the user
 // mapping (federation.md §Principals & access):
 //
 //	unmapped                     the default regular-user identity: the whole
@@ -104,17 +119,19 @@ func (db *DB) BlobVisibleTo(ctx context.Context, hash string, aud federation.Aud
 //	mapped to a disabled account guest-only too: disabling an account must cut the
 //	                             friend's reach the same way it cuts the person's
 //
-// An unknown peer id resolves to the guest audience (the open swarm), never to a
-// wider one — the caller decides whether a stranger may be served at all.
+// A peer id with no row resolves to the outsider audience, which is served
+// nothing — a friendship that vanished between the lookup and here must not
+// leave a wider audience behind. Whether a *stranger* may be served at all is
+// the caller's decision, not this function's.
 func (db *DB) PeerAudience(ctx context.Context, peerID int64) (federation.Audience, error) {
 	var userID sql.NullInt64
 	err := db.QueryRowContext(ctx,
 		`SELECT user_id FROM federation_peers WHERE id = ?`, peerID).Scan(&userID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return federation.GuestAudience, nil
+		return federation.Audience{}, nil
 	}
 	if err != nil {
-		return federation.GuestAudience, fmt.Errorf("peer audience: %w", err)
+		return federation.Audience{}, fmt.Errorf("peer audience: %w", err)
 	}
 	if !userID.Valid {
 		return federation.FriendAudience, nil
@@ -128,9 +145,15 @@ func (db *DB) PeerAudience(ctx context.Context, peerID int64) (federation.Audien
 			WHERE u.id = ? AND u.disabled = 0 AND rp.permission = ?
 		)`, userID.Int64, "content.access").Scan(&full)
 	if err != nil {
-		return federation.GuestAudience, fmt.Errorf("peer audience permissions: %w", err)
+		return federation.Audience{}, fmt.Errorf("peer audience permissions: %w", err)
 	}
-	return federation.Audience{Distance: federation.DepthFriends, GuestOnly: !full}, nil
+	// Still a friend, only a demoted one: the mapping narrows *what* it sees, not
+	// *who it is*, so a guest-limited friend keeps the swarm and the catalog.
+	return federation.Audience{
+		Class:     federation.ClassFriend,
+		Distance:  federation.DepthFriends,
+		GuestOnly: !full,
+	}, nil
 }
 
 // ShareDepthUpdate expresses the three states a share-depth edit can be in,

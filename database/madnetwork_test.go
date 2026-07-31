@@ -407,8 +407,8 @@ func TestMadnetworkPolicy(t *testing.T) {
 		t.Errorf("policy not persisted: %+v", got)
 	}
 	// SeedingPolicy reflects the same stored flags.
-	if en, ca, _ := db.SeedingPolicy(ctx); en || ca {
-		t.Errorf("SeedingPolicy = (%v,%v), want (false,false)", en, ca)
+	if sp, _ := db.SeedingPolicy(ctx); sp.Enabled || sp.Cache {
+		t.Errorf("SeedingPolicy = %+v, want Enabled and Cache false", sp)
 	}
 }
 

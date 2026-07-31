@@ -25,13 +25,15 @@ import (
 // ── Serving side: GET /madnetwork/v0/blob/{hash} ─────────────────────────────
 
 // handleBlob serves a blob this node holds and will seed to the requester. What
-// it serves is decided by the requester's *audience* (F5): a friend may fetch
-// any blob its own catalog advertises — matching what the F2 catalog + F4
-// holdings showed it, filtered by share depth and the user mapping — while any
-// other mesh node reaches guest-playable content only (the open swarm). Beyond
-// that the seeding gate applies: a published library blob, or a cache blob when
-// cache-seeding is on and the requester is a friend (seedableBlob, swarm.go). A
-// staged, out-of-scope, or unknown hash is 404 even for a friend.
+// it serves is decided by the requester's *audience* (F5, F7): a friend may
+// fetch any blob its own catalog advertises — matching what the catalog and
+// holdings showed it, filtered by scope and the user mapping — a member of our
+// community reaches everything scoped Madnetwork, and a node outside the
+// community reaches nothing unless this node opted to answer guests, and then
+// guest-playable content only. Beyond that the seeding gate applies: a published
+// library blob, or a cache blob when cache-seeding is on and the requester is in
+// our community (seedableBlob, swarm.go). A staged, out-of-scope, or unknown
+// hash is 404 even for a friend.
 // http.ServeContent provides HEAD/Range (the swarm's chunk fetches are Range
 // requests); Content-Disposition carries the origin filename so the fetching
 // node can land it under its real name; the write path honours the seed rate cap.

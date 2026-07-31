@@ -24,6 +24,7 @@ const (
 	settingMadnetworkHideUnavailable = "madnetwork.hide_unavailable"
 	settingMadnetworkDefaultDepth    = "madnetwork.default_share_depth"
 	settingMadnetworkPublishFriends  = "madnetwork.publish_friend_list"
+	settingMadnetworkServeGuests     = "madnetwork.serve_guests"
 )
 
 // Trash-restore policy modes — what may happen to a trashed file whose content
@@ -95,6 +96,12 @@ type MadnetworkPolicy struct {
 	// must say exactly that rather than imply invisibility
 	// (docs/architecture/federation.md §Friend-list gossip).
 	PublishFriendList bool
+	// ServeGuests answers mesh nodes outside our community with guest-playable
+	// content (F7). Default OFF — the node's posture is everything to our
+	// community, nothing outside it, and this is the one switch that crosses that
+	// line. It is byte endpoints only: catalog and holdings never leave the
+	// community, whatever this says.
+	ServeGuests bool
 }
 
 // GetMadnetworkPolicy reads the madnetwork settings. Missing keys read as the
@@ -125,6 +132,10 @@ func (db *DB) GetMadnetworkPolicy(ctx context.Context) (MadnetworkPolicy, error)
 	if err != nil {
 		return MadnetworkPolicy{}, err
 	}
+	guests, _, err := db.GetSetting(ctx, settingMadnetworkServeGuests)
+	if err != nil {
+		return MadnetworkPolicy{}, err
+	}
 	return MadnetworkPolicy{
 		AutoapproveDownloads: auto == "1",
 		SeedEnabled:          seed != "0",  // default on
@@ -132,6 +143,7 @@ func (db *DB) GetMadnetworkPolicy(ctx context.Context) (MadnetworkPolicy, error)
 		HideUnavailable:      hide != "0",  // default on
 		DefaultShareDepth:    parseShareDepth(depth),
 		PublishFriendList:    publish != "0", // default on
+		ServeGuests:          guests == "1",  // default OFF
 	}, nil
 }
 
@@ -174,6 +186,7 @@ func (db *DB) SetMadnetworkPolicy(ctx context.Context, p MadnetworkPolicy) error
 		{settingMadnetworkHideUnavailable, bit(p.HideUnavailable)},
 		{settingMadnetworkDefaultDepth, strconv.Itoa(p.DefaultShareDepth)},
 		{settingMadnetworkPublishFriends, bit(p.PublishFriendList)},
+		{settingMadnetworkServeGuests, bit(p.ServeGuests)},
 	} {
 		if _, err := tx.ExecContext(ctx, upsert, kv.key, kv.val); err != nil {
 			return err
@@ -182,16 +195,20 @@ func (db *DB) SetMadnetworkPolicy(ctx context.Context, p MadnetworkPolicy) error
 	return tx.Commit()
 }
 
-// SeedingPolicy reports whether this node serves blobs to friends and whether
-// it seeds its download cache — the F4 swarm-serving gate the embedded node
-// consults on every blob/manifest/holdings request. Both default on. Satisfies
-// the F4 half of federation.PeerStore.
-func (db *DB) SeedingPolicy(ctx context.Context) (enabled, cache bool, err error) {
+// SeedingPolicy reports what this node serves over the swarm — the gate the
+// embedded node consults on every blob/manifest/holdings request. Satisfies the
+// F4 half of federation.PeerStore. A read error yields the zero policy, which
+// serves nothing.
+func (db *DB) SeedingPolicy(ctx context.Context) (federation.SeedPolicy, error) {
 	p, err := db.GetMadnetworkPolicy(ctx)
 	if err != nil {
-		return false, false, err
+		return federation.SeedPolicy{}, err
 	}
-	return p.SeedEnabled, p.SeedCache, nil
+	return federation.SeedPolicy{
+		Enabled: p.SeedEnabled,
+		Cache:   p.SeedCache,
+		Guests:  p.ServeGuests,
+	}, nil
 }
 
 // PublishFriendList reports whether this node publishes its own friend-list

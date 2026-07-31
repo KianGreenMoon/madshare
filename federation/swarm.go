@@ -406,34 +406,37 @@ func (n *Node) cacheHoldings() []string {
 	return out
 }
 
-// handleHoldings serves GET /madnetwork/v0/holdings — friends only; empty when
-// seeding or cache-seeding is off (the node then advertises nothing extra
-// beyond its catalog).
+// handleHoldings serves GET /madnetwork/v0/holdings — our community only (F7:
+// the swarm's boundary is the madnetwork, so a member seeds from us exactly as a
+// direct friend does); empty when seeding or cache-seeding is off, and for a
+// guest-limited friend, which is never served cache blobs. Advertising and
+// serving read one rule.
+//
+// A node outside the community is refused rather than answered with an empty
+// list: like the catalog this is a listing, and the guest switch does not open
+// it — what it opens is the byte endpoints, where 404 keeps a hash's existence
+// unconfirmed.
 func (n *Node) handleHoldings(w http.ResponseWriter, r *http.Request) {
 	if n.store == nil {
 		http.Error(w, "transfer not configured", http.StatusServiceUnavailable)
 		return
 	}
-	p := n.peerFromRemote(r)
-	if p == nil || p.State != PeerFriend {
-		http.Error(w, "holdings are served to friends only", http.StatusForbidden)
-		return
-	}
-	aud, err := n.store.PeerAudience(r.Context(), p.ID)
-	if err != nil {
-		n.logger.Printf("federation: resolve audience of %q: %v", p.Display(), err)
+	aud, ok := n.serveAudience(r)
+	if !ok {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	enabled, cache, err := n.store.SeedingPolicy(r.Context())
+	if !aud.InCommunity() {
+		http.Error(w, "holdings are served inside the madnetwork only", http.StatusForbidden)
+		return
+	}
+	policy, err := n.store.SeedingPolicy(r.Context())
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
 	hashes := []string{}
-	// A guest-only friend is never served cache blobs (seedableBlob), so it is
-	// not told about them either — advertising and serving read one rule.
-	if enabled && cache && !aud.GuestOnly {
+	if policy.Enabled && policy.Cache && aud.ServesCache() && !aud.GuestOnly {
 		hashes = n.cacheHoldings()
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -479,18 +482,23 @@ func (n *Node) syncHoldings(ctx context.Context, p *Peer) {
 // ── Seeding gate ─────────────────────────────────────────────────────────────
 
 // seedableBlob resolves a hash to a local path this node will serve to the given
-// audience, honouring the seeding policy: nothing when seeding is off; a library
-// blob when it is published *and inside the audience's scope* (F5); a cache blob
-// only when cache-seeding is on — and never to a guest-only audience, because a
-// blob this node merely fetched carries no license we can vouch for. Returns
-// ("", false) when the hash is not seedable.
+// audience, honouring the seeding policy: nothing when seeding is off or the
+// audience is served nothing at all; a library blob when it is published *and
+// inside the audience's scope* (F5); a cache blob only when cache-seeding is on
+// *and the requester is in our community* — a blob this node merely fetched is
+// somebody else's content that we hold, so re-seeding it is defensible inside
+// the network it came from and nowhere else. Returns ("", false) when the hash
+// is not seedable.
 func (n *Node) seedableBlob(ctx context.Context, hash string, aud Audience) (string, bool) {
-	enabled, cache, err := n.store.SeedingPolicy(ctx)
+	if !aud.Serves() {
+		return "", false
+	}
+	policy, err := n.store.SeedingPolicy(ctx)
 	if err != nil {
 		n.logger.Printf("federation: seeding policy: %v", err)
 		return "", false
 	}
-	if !enabled {
+	if !policy.Enabled {
 		return "", false
 	}
 	if n.resolveBlob != nil {
@@ -500,7 +508,7 @@ func (n *Node) seedableBlob(ctx context.Context, hash string, aud Audience) (str
 			}
 		}
 	}
-	if cache && !aud.GuestOnly && n.cacheDir != "" {
+	if policy.Cache && aud.ServesCache() && n.cacheDir != "" {
 		path := filepath.Join(n.cacheDir, hash)
 		if info, err := os.Stat(path); err == nil && !info.IsDir() {
 			return path, true
@@ -510,26 +518,50 @@ func (n *Node) seedableBlob(ctx context.Context, hash string, aud Audience) (str
 }
 
 // serveAudience is the byte endpoints' gate: who this request is answered for,
-// and whether it may be answered at all. A friend gets its mapped audience; any
-// other mesh node gets the guest audience — the open swarm, which reaches
-// guest-playable content and nothing else (F5, §Sharing scope). Blocked peers
-// never arrive here; meshAuth refuses them the whole surface first.
+// and whether it may be answered at all (F7, §Principals & access). Three
+// classes, resolved in order of how much we know:
+//
+//	a direct friend      its mapped audience — the only class that also reaches
+//	                     what an admin restricted to hand-picked nodes
+//	a member             our community, from the mutual-edge walk: the
+//	                     Madnetwork scope, cache blobs included
+//	anyone else          nothing, unless this node opted to answer guests, and
+//	                     then guest-playable content only
+//
+// The bool reports whether the request could be *decided*, not whether it is
+// allowed: false means a storage error the caller should answer with a 500. A
+// refusal comes back as an audience that serves nothing, so every endpoint keeps
+// its own 404-vs-403 choice — a stranger is never told a hash exists.
+//
+// Blocked peers never arrive here; meshAuth refuses them the whole surface
+// first, and they are excluded from the community walk besides.
 func (n *Node) serveAudience(r *http.Request) (Audience, bool) {
-	p := n.peerFromRemote(r)
-	if p == nil {
-		return GuestAudience, true
+	if p := n.peerFromRemote(r); p != nil && p.State == PeerFriend {
+		aud, err := n.store.PeerAudience(r.Context(), p.ID)
+		if err != nil {
+			n.logger.Printf("federation: resolve audience of %q: %v", p.Display(), err)
+			return Audience{}, false
+		}
+		return aud, true
 	}
-	if p.State != PeerFriend {
-		// A pending peer is not yet trusted — treat it exactly like a stranger
-		// rather than granting it friendship's reach early.
-		return GuestAudience, true
+	// Not a friend — but possibly a member. A pending peer takes this path too:
+	// it has not been accepted, so it gets whatever its key earns in the
+	// community and not a step more.
+	if _, ok, err := n.memberFromRemote(r); err != nil {
+		n.logger.Printf("federation: resolve community membership: %v", err)
+		return Audience{}, false
+	} else if ok {
+		return MemberAudience, true
 	}
-	aud, err := n.store.PeerAudience(r.Context(), p.ID)
+	policy, err := n.store.SeedingPolicy(r.Context())
 	if err != nil {
-		n.logger.Printf("federation: resolve audience of %q: %v", p.Display(), err)
+		n.logger.Printf("federation: seeding policy: %v", err)
 		return Audience{}, false
 	}
-	return aud, true
+	if policy.Guests {
+		return GuestAudience, true
+	}
+	return Audience{}, true // an outsider: decided, and served nothing
 }
 
 // ── Multi-source chunk fetch ─────────────────────────────────────────────────

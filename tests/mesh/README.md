@@ -309,7 +309,7 @@ started would test one point in the space and hide the two that matter:
 | Shape | How | Must show |
 |---|---|---|
 | **friends across hops** | `-topology chain -friends all` — `a` and `c` are friends but two underlay hops apart | works exactly as if adjacent; yggdrasil routes it, and degrading `c-b` degrades a friendship neither end has a link to |
-| **adjacency is not access** | `-topology chain -friends adjacent` — `a` and `c` can route to each other but are strangers | each sees nothing of the other's library: `403` on catalog and holdings, `404` on blobs and manifests — *except* guest-playable content, which is open to everyone (below) |
+| **adjacency is not access** | `-topology chain -friends adjacent` — `a` and `c` can route to each other but are strangers *in the friend graph* | since F7 they are nonetheless **members of one community** (`a—b—c` is a mutual chain), so each reaches the other's Madnetwork-scoped library while `Direct friends` content stays private to `b`. A true outsider is a node in no community at all — that is what `probe.go` is for |
 
 That prediction held: F5 landed as a different friendship graph plus new knobs
 over the same topology, not a meshlab rewrite.
@@ -317,28 +317,39 @@ over the same topology, not a meshlab rewrite.
 `-friends` takes `all` (default), `adjacent`, `none`, or an explicit list
 (`a-c,b-c`).
 
-### What a stranger gets since F5
+### What each principal gets since F7
 
-F5 (`docs/architecture/federation.md` §Sharing scope) made "not a friend" stop
-meaning one thing, so it is worth being precise about which refusal is which:
+F5 made "not a friend" stop meaning one thing; F7
+(`docs/architecture/federation.md` §Principals & access) split it again, into a
+**member of our community** and an **outsider**. Three columns, and the middle
+one is the phase:
 
-| Route | Friend | Stranger |
-|---|---|---|
-| `GET /madnetwork/v0/ping` | 200 | **200** — `meshAuth` refuses only *blocked* peers |
-| `GET /madnetwork/v0/catalog` | 200 | **403** — the library listing is friends-only |
-| `GET /madnetwork/v0/holdings` | 200 | **403** — likewise |
-| `GET /madnetwork/v0/blob/{hash}` | 200 if in scope | **404** normally, **200 for guest-playable** |
-| `GET /madnetwork/v0/manifest/{hash}` | follows the blob | follows the blob |
+| Route | Direct friend | Member of our community | Outsider |
+|---|---|---|---|
+| `GET /madnetwork/v0/ping` | 200 | 200 | **200** — `meshAuth` refuses only *blocked* peers |
+| `GET /madnetwork/v0/catalog` | 200 | **200**, Madnetwork scope | **403** |
+| `GET /madnetwork/v0/holdings` | 200 | **200** — the swarm's boundary is the community | **403** |
+| `GET /madnetwork/v0/blob/{hash}` | 200 if in scope | 200 if Madnetwork-scoped, or a cache blob | **404**; 200 for guest-playable *only if* the node opened `serve_guests` |
+| `GET /madnetwork/v0/manifest/{hash}` | follows the blob | follows the blob | follows the blob |
 
-The blob answers are **404, not 403**: a stranger is never told which hashes
-exist. Guest-playable content is the deliberate exception — an open swarm, no
-friendship and no token — and it is the reason `check` needs a real outsider
-rather than a `-friends none` lab node. A madshare node only ever *fetches* from
-friends (providers come from the cached catalogs and holdings, both friends-only),
-so no lab node can be made to ask as a stranger. `probe.go` starts a genuine
-madnetwork node with its own key and no friends, which can.
+The blob answers are **404, not 403**: an outsider is never told which hashes
+exist. `Direct friends` scope is the one thing membership does not buy — it is
+the exception *inside* the perimeter, not the perimeter itself.
 
-Depth beats the guest flag: a recording at `private` serves nobody, guest-playable
+A **member** is a key reachable from us through **mutually declared**
+friendships: both ends must have published the edge, so one friend relaying one
+invented record mints nobody. Our own direct friends are members unconditionally
+(that edge is a local fact, not hearsay), and further out a node that publishes
+no friend list cannot be a member at all.
+
+Guests are the deliberate exception and they are **off by default** since F7 —
+`meshlab check` opens `serve_guests` for one case and closes it again. That
+switch is the reason `check` needs a real outsider rather than a `-friends none`
+lab node: with `-friends none` the nodes are still nobody's members only if the
+gossip never links them, which is fragile to assert. `probe.go` starts a genuine
+madnetwork node with its own key, in no community, which is unambiguous.
+
+Scope beats the guest flag: a recording at `local` serves nobody, guest-playable
 or not.
 
 ### Topologies
@@ -389,7 +400,7 @@ Three FLACs totalling ~80 MB took about six minutes on the maintainer's machine.
 | `meshlab friend A B` | friend two **running** nodes. `up -friends` fixes the graph at startup; this adds an edge to a live lab — the friend-of-a-friend case (`up -friends a-b,b-c` then `friend a c`) is the one an admin actually meets, and the trust graph has to be a graph to support it |
 | `meshlab scope` | every node's sharing scope: its default depth, and how many recordings are private or guest-playable |
 | `meshlab scope NODE default DEPTH` | the node-wide default. `DEPTH` is `private`, `friends`, `network`, or a hop count |
-| `meshlab scope NODE tracks DEPTH [-limit N]` | pin the depth of its recordings (`inherit` clears the override). `-limit 1` touches only the oldest, which is the shape most assertions want |
+| `meshlab scope NODE tracks SCOPE [-limit N]` | pin the sharing scope of its recordings — `local`, `friends` or `network` (`inherit` clears the override). `-limit 1` touches only the oldest, which is the shape most assertions want |
 | `meshlab scope NODE tracks guest on\|off [-limit N]` | flag recordings guest-playable |
 | `meshlab check` | assert the scope rules; exits non-zero on a failure |
 | `meshlab reach [-runs N] [-no-fetch]` | what friendship **distance** costs: mesh RTT per hop, then a real fetch |
@@ -451,8 +462,10 @@ PASS  outsider refused catalog                       /madnetwork/v0/catalog = 40
 PASS  outsider refused holdings                      /madnetwork/v0/holdings = 403, want 403 (friends only)
 PASS  normal blob is invisible to an outsider        blob = 404
 PASS  normal blob is invisible to an outsider (manifest agrees) manifest = 404, want 404 (same as the blob)
-PASS  guest-playable blob serves an outsider         blob = 200, 654618 bytes, sha256 47c9d7b1c13a… (want 47c9d7b1c13a…)
-PASS  guest-playable blob serves an outsider (manifest agrees) manifest = 200, want 200 (same as the blob)
+PASS  guest-playable blob still refused while guests are closed blob = 404
+PASS  guest-playable blob still refused while guests are closed (manifest agrees) manifest = 404, want 404 (same as the blob)
+PASS  guest-playable blob serves an outsider once opened blob = 200, 654618 bytes, sha256 47c9d7b1c13a… (want 47c9d7b1c13a…)
+PASS  guest-playable blob serves an outsider once opened (manifest agrees) manifest = 200, want 200 (same as the blob)
 PASS  private beats guest-playable                   blob = 404
 PASS  private beats guest-playable (manifest agrees) manifest = 404, want 404 (same as the blob)
 PASS  private track leaves the node's own /madnetwork madnetwork on a: 2 while private, 3 while shared (want +1)
@@ -466,7 +479,7 @@ It picks the oldest published track on the first seeded node, walks it through
 three scopes, and asks as an outsider each time. Two of the cases are ones an
 in-process test cannot make:
 
-- **the guest-open swarm serves bytes**, verified against the content hash — not
+- **the guest swarm, once opened, serves bytes**, verified against the content hash — not
   merely a 200;
 - **the byte gate is live**: a friend whose cached catalog still advertises a
   now-private track is refused anyway. Catalog staleness is the *normal* state of

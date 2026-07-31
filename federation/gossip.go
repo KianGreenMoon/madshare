@@ -531,6 +531,93 @@ func ReachableKeys(selfKey string, peers []*Peer, edges []GraphEdgeClaim) map[st
 	return out
 }
 
+// MemberKeys is the access-side twin of [walkGraph]: every key that belongs to
+// our community and may therefore be served the Madnetwork scope (F7,
+// docs/architecture/federation.md §The membership rule). Same store, same
+// branch snipping — and one difference that is the whole point.
+//
+// **A gossiped edge counts only when both ends claim it.** The map links two
+// nodes from either side's claim, because an edge somebody asserts is worth
+// seeing; access cannot afford that, since one signed record may name
+// [MaxGraphEdges] keys, and a single friend relaying one invented record would
+// otherwise mint 512 authorized fetchers who never agreed to anything, own no
+// record, and leave nothing to block but the friend who carried them. Requiring
+// agreement means every member has *declared itself* part of the community, one
+// signed record each.
+//
+// Two consequences worth stating because they look like bugs from the outside:
+//
+//   - **Our own direct friends are members unconditionally**, from
+//     federation_peers rather than from the graph. That edge is a local fact, so
+//     a friend who publishes no friend list is still a full friend of ours.
+//   - **Further out, a silent node cannot be a member.** Nothing it signs names
+//     anyone, so no edge to it is ever mutual. That is the already-documented
+//     "a silent node makes itself a dead end" property (§Friend-list gossip)
+//     arriving at its logical end, and the strongest reason publish_friend_list
+//     defaults to on.
+//
+// Blocked keys are never members, and nothing is discovered *through* one, so
+// blocking a friend removes the whole branch behind it from the network's reach
+// in the same act that removes it from the map. Our own key is not in the
+// result: this answers "may I serve this requester", and we never ask it about
+// ourselves.
+func MemberKeys(selfKey string, peers []*Peer, edges []GraphEdgeClaim) map[string]struct{} {
+	claimed := make(map[[2]string]bool, len(edges))
+	for _, e := range edges {
+		if e.Origin == e.Peer || e.Origin == selfKey || e.Peer == selfKey {
+			continue // hearsay about our own friendships is not evidence (see walkGraph)
+		}
+		claimed[[2]string{e.Origin, e.Peer}] = true
+	}
+	adj := map[string]map[string]bool{}
+	link := func(a, b string) {
+		if adj[a] == nil {
+			adj[a] = map[string]bool{}
+		}
+		adj[a][b] = true
+	}
+	for pair := range claimed {
+		if claimed[[2]string{pair[1], pair[0]}] {
+			link(pair[0], pair[1])
+		}
+	}
+	byKey := peerByKeyOf(peers)
+	blocked := func(key string) bool {
+		p, ok := byKey[key]
+		return ok && p.State == PeerBlocked
+	}
+	for _, p := range peers {
+		if p.State == PeerFriend {
+			link(selfKey, p.PublicKey)
+			link(p.PublicKey, selfKey)
+		}
+	}
+
+	members := map[string]struct{}{}
+	seen := map[string]bool{selfKey: true}
+	frontier := []string{selfKey}
+	for len(frontier) > 0 {
+		var next []string
+		for _, cur := range frontier {
+			if cur != selfKey && blocked(cur) {
+				continue // a blocked node is not a member and vouches for nobody
+			}
+			for peer := range adj[cur] {
+				if seen[peer] {
+					continue
+				}
+				seen[peer] = true
+				next = append(next, peer)
+				if !blocked(peer) {
+					members[peer] = struct{}{}
+				}
+			}
+		}
+		frontier = next
+	}
+	return members
+}
+
 // BuildNetworkMap computes the map from raw store contents. Pure so the
 // reachability rules — which are the whole feature — are testable without a
 // mesh.

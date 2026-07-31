@@ -22,7 +22,7 @@
 // form; the caller owns persistence via onApply.
 
 import { EXTENDED_FIELDS } from './track-edit.js';
-import { depthFromSelect } from './share-depth.js';
+import { depthFromSelect, SCOPE_OPTIONS } from './share-depth.js';
 
 let nextBulkId = 1;
 
@@ -165,10 +165,7 @@ export function createBulkEditor({ access = null, onApply, onError, loadDetails 
       for (const [val, text] of [
         [DEPTH_KEEP, '— keep —'],
         ['inherit', 'Node default'],
-        ['-1', 'Private — not shared at all'],
-        ['0', 'Direct friends only'],
-        ['1', 'Friends of friends'],
-        ['unlimited', 'Whole madnetwork'],
+        ...SCOPE_OPTIONS,
       ]) {
         const opt = document.createElement('option');
         opt.value = val;

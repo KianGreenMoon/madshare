@@ -22,13 +22,16 @@ package main
 //     here as a slope. This arm needs no F7 and is the direct answer to the
 //     question.
 //
-//   - REACH (mostly fails today, by design) — an actual content fetch from the
-//     vantage node for a track only the distant node publishes. Today a
-//     non-friend is not a provider (`MadnetworkBlobProviders` joins
-//     `state = 'friend'`), so everything past distance 1 fails, and the failure
-//     IS the F7 gap stated as a measurement. After F7 the same run should turn
-//     green at every distance, and — the hypothesis worth recording — should
-//     take roughly the same time at every distance.
+//   - REACH (still fails past distance 1, by design) — an actual content fetch
+//     from the vantage node for a track only the distant node publishes. Since
+//     F7 items 1–3 the distant node *would* serve us: we are a member of its
+//     community and it answers members. What is missing is knowing the hash
+//     exists — `MadnetworkBlobProviders` and the catalog sweep both still join
+//     `state = 'friend'`, so nothing past our own ring is ever a provider. The
+//     failure IS F7 item 5 (discovery beyond the friend ring) stated as a
+//     measurement; when that lands the same run should turn green at every
+//     distance, and — the hypothesis worth recording — take roughly the same
+//     time at each.
 //
 // Run it on a friendship chain, which is the shape where the two distances
 // coincide and a slope would therefore be visible at its worst:
@@ -272,10 +275,14 @@ func (l *lab) measureFetch(hop *reachHop, from, holder *node, timeout time.Durat
 		hop.FetchNote = "first chunk: " + err.Error()
 		return
 	case code != http.StatusOK && code != http.StatusPartialContent:
-		// The expected outcome before F7 for every distance above 1, and the
-		// reason this is worth running: the gap is a measurement, not a claim.
-		hop.FetchNote = fmt.Sprintf("stream = %d (not a provider: %s is not a friend of %s)",
-			code, holder.name, from.name)
+		// The expected outcome above distance 1 until F7 item 5, and the reason
+		// this is worth running: the gap is a measurement, not a claim. Note where
+		// it now lives — since F7 items 1–3, %s WOULD serve %s as a member of its
+		// community; what is missing is that %s never learned %s holds the hash,
+		// because MadnetworkBlobProviders and the catalog sweep still stop at
+		// state='friend'. Discovery, not authorization.
+		hop.FetchNote = fmt.Sprintf("stream = %d (no provider: %s never learned %s holds it — catalogs are pulled from friends only)",
+			code, from.name, holder.name)
 		return
 	}
 	hop.FirstChunk = round(time.Since(t0))

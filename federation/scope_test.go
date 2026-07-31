@@ -54,7 +54,7 @@ func scopePair(t *testing.T, storeA, storeB *memStore) (plain, guest string, a, 
 	// mid-flight, so shorten the memo rather than reaching past it — the same
 	// seam the mesh lab uses (docs/plans/mesh-testing.md T1).
 	a, b = startNodePair(t, storeA, storeB,
-		[]Option{resolve, WithIntervals(Intervals{SnapshotTTL: time.Millisecond})},
+		[]Option{resolve, WithIntervals(Intervals{SnapshotTTL: time.Millisecond, MembershipTTL: time.Millisecond})},
 		[]Option{WithCacheDir(t.TempDir())})
 	return plainHash, guestHash, a, b
 }
@@ -95,15 +95,34 @@ func fetchCatalog(t *testing.T, a, b *Node) catalogMessage {
 	return msg
 }
 
-// TestGuestOpenSwarm: a node that is NOT a friend may fetch a guest-playable
-// blob and only that one — the open swarm. It still gets no catalog, so it must
-// already know the hash.
-func TestGuestOpenSwarm(t *testing.T) {
+// TestOutsiderIsServedNothingByDefault: a node outside our community gets 404 on
+// every blob, guest-playable or not (F7). This is the posture — everything to our
+// community, nothing outside it — and it reverses F5, where the guest-open swarm
+// was always on.
+func TestOutsiderIsServedNothingByDefault(t *testing.T) {
 	storeA, storeB := newMemStore(), newMemStore()
 	plain, guest, a, b := scopePair(t, storeA, storeB)
 
+	if got := blobStatus(t, a, b, guest); got != http.StatusNotFound {
+		t.Errorf("outsider fetching a guest-playable blob = %d, want 404 (guests off)", got)
+	}
+	if got := blobStatus(t, a, b, plain); got != http.StatusNotFound {
+		t.Errorf("outsider fetching an ordinary blob = %d, want 404", got)
+	}
+}
+
+// TestGuestSwarmWhenOpenedIsGuestPlayableOnly: with the node's guest switch on,
+// an outsider reaches guest-playable content and only that. It still gets no
+// catalog, so it must already know the hash.
+func TestGuestSwarmWhenOpenedIsGuestPlayableOnly(t *testing.T) {
+	storeA, storeB := newMemStore(), newMemStore()
+	plain, guest, a, b := scopePair(t, storeA, storeB)
+	storeA.mu.Lock()
+	storeA.serveGuests = true
+	storeA.mu.Unlock()
+
 	if got := blobStatus(t, a, b, guest); got != http.StatusOK {
-		t.Errorf("stranger fetching a guest-playable blob = %d, want 200 (the open swarm)", got)
+		t.Errorf("stranger fetching a guest-playable blob = %d, want 200 (guests opened)", got)
 	}
 	if got := blobStatus(t, a, b, plain); got != http.StatusNotFound {
 		t.Errorf("stranger fetching an ordinary blob = %d, want 404", got)
@@ -166,7 +185,7 @@ func TestGuestOnlyFriendSeesGuestContentOnly(t *testing.T) {
 		t.Fatalf("look up peer B on A: %v", err)
 	}
 	storeA.mu.Lock()
-	storeA.audiences[p.ID] = Audience{Distance: DepthFriends, GuestOnly: true}
+	storeA.audiences[p.ID] = Audience{Class: ClassFriend, Distance: DepthFriends, GuestOnly: true}
 	storeA.mu.Unlock()
 
 	msg := fetchCatalog(t, a, b)

@@ -140,33 +140,64 @@ func TestShareDepthInheritsNodeDefault(t *testing.T) {
 	}
 }
 
-// TestDepthLadderGatesByDistance: depth 0 reaches a direct friend and nobody
-// further out — the ladder is already enforced, it just has no traffic until F7.
-func TestDepthLadderGatesByDistance(t *testing.T) {
+// TestScopeGatesFriendsAndMembers: the three scopes against the mesh classes
+// (F7). Direct friends is the value that discriminates — it reaches a friend and
+// stops at a member — while Madnetwork reaches both, which is what makes the
+// community the default audience rather than an extra tier.
+func TestScopeGatesFriendsAndMembers(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 	rec := seedScopeFile(t, db, "scope005", "Friends only")
 
 	if ok, err := db.SetRecordingAccess(ctx, rec, nil, nil,
 		ShareDepthUpdate{Set: true, Depth: federation.DepthFriends}); err != nil || !ok {
-		t.Fatalf("set depth 0: ok=%v err=%v", ok, err)
+		t.Fatalf("set scope to direct friends: ok=%v err=%v", ok, err)
 	}
-	if !visible(t, db, "scope005", federation.Audience{Distance: 0}) {
-		t.Error("depth 0 should reach a direct friend")
+	if !visible(t, db, "scope005", federation.FriendAudience) {
+		t.Error("Direct friends should reach a direct friend")
 	}
-	if visible(t, db, "scope005", federation.Audience{Distance: 1}) {
-		t.Error("depth 0 must not reach a friend-of-a-friend")
+	if visible(t, db, "scope005", federation.MemberAudience) {
+		t.Error("Direct friends must not reach a member of the wider community")
 	}
 
 	if ok, err := db.SetRecordingAccess(ctx, rec, nil, nil,
-		ShareDepthUpdate{Set: true, Depth: 1}); err != nil || !ok {
-		t.Fatalf("set depth 1: ok=%v err=%v", ok, err)
+		ShareDepthUpdate{Set: true, Depth: federation.DepthUnlimited}); err != nil || !ok {
+		t.Fatalf("set scope to madnetwork: ok=%v err=%v", ok, err)
 	}
-	if !visible(t, db, "scope005", federation.Audience{Distance: 1}) {
-		t.Error("depth 1 should reach a friend-of-a-friend")
+	if !visible(t, db, "scope005", federation.MemberAudience) {
+		t.Error("Madnetwork should reach a member")
 	}
-	if visible(t, db, "scope005", federation.Audience{Distance: 2}) {
-		t.Error("depth 1 must not reach two hops out")
+	if !visible(t, db, "scope005", federation.FriendAudience) {
+		t.Error("Madnetwork should reach a direct friend too — a friend is in the community")
+	}
+
+	// The in-between values the ladder used to offer are refused outright rather
+	// than rounded: rounding a sharing decision is the quiet widening the
+	// three-value vocabulary exists to prevent (migration 035).
+	if ok, err := db.SetRecordingAccess(ctx, rec, nil, nil,
+		ShareDepthUpdate{Set: true, Depth: 1}); err == nil || ok {
+		t.Errorf("a hop count should be refused, got ok=%v err=%v", ok, err)
+	}
+}
+
+// TestOutsiderAudienceIsServedNothing pins the fail-closed zero value: an
+// Audience nobody filled in is an outsider. Before F7 gave it a Class it read as
+// distance 0 — a *direct friend*, the widest audience there is — so this is the
+// storage half of that fix.
+func TestOutsiderAudienceIsServedNothing(t *testing.T) {
+	db := openMem(t)
+	seedScopeFile(t, db, "scope008", "Everything, by default")
+
+	if visible(t, db, "scope008", federation.Audience{}) {
+		t.Error("the zero audience must be served nothing")
+	}
+	if got := catalogTitles(t, db, federation.Audience{}); len(got) != 0 {
+		t.Errorf("catalog for the zero audience = %v, want empty", got)
+	}
+	// And the node default really is Madnetwork, so this did not pass merely by
+	// everything being private.
+	if !visible(t, db, "scope008", federation.MemberAudience) {
+		t.Error("a member should reach a recording under the node default")
 	}
 }
 

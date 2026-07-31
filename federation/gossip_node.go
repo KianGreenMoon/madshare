@@ -364,6 +364,11 @@ func (n *Node) expireGraph(ctx context.Context, peers []*Peer) {
 		n.logger.Printf("federation: read graph edges for retention: %v", err)
 		return
 	}
+	// Two walks over one read (F7): what we keep, and whom we serve. They differ
+	// only in the mutual-edge condition, and computing them from the same inputs
+	// in the same pass is what stops the store and the perimeter from drifting —
+	// a branch collected below must not still be a member above.
+	n.refreshMembers(peers, edges)
 	keep := ReachableKeys(n.PublicKeyHex(), peers, edges)
 	dropped, err := n.store.DropUnreachableGraph(ctx, keep)
 	if err != nil {

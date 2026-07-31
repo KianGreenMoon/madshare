@@ -22,12 +22,12 @@ import (
 	"daemonlord.ygg/madshare/federation"
 )
 
-// parseDepth turns a CLI word into a share depth. The words exist because the
-// numbers are not memorable: -1 and 1<<20 are the two ends of a ladder whose
-// middle is measured in friendship hops.
+// parseDepth turns a CLI word into a sharing scope. The words exist because the
+// numbers are not memorable: -1 and 1<<20 encode the two ends of what is, since
+// F7, a set of three named scopes rather than a ladder.
 func parseDepth(word string) (int, error) {
 	switch strings.ToLower(strings.TrimSpace(word)) {
-	case "private", "none":
+	case "private", "local", "none":
 		return federation.DepthPrivate, nil
 	case "friends", "direct":
 		return federation.DepthFriends, nil
@@ -36,25 +36,29 @@ func parseDepth(word string) (int, error) {
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(word))
 	if err != nil {
-		return 0, fmt.Errorf("depth %q: want private, friends, network, or a hop count", word)
+		return 0, fmt.Errorf("scope %q: want local, friends or network", word)
 	}
 	if !federation.ValidDepth(n) {
-		return 0, fmt.Errorf("depth %d is out of range", n)
+		return 0, fmt.Errorf("scope %d is not one of local (%d), friends (%d) or network (%d)",
+			n, federation.DepthPrivate, federation.DepthFriends, federation.DepthUnlimited)
 	}
 	return n, nil
 }
 
-// depthWord is parseDepth's inverse, for readouts.
+// depthWord is parseDepth's inverse, for readouts. A value that is none of the
+// three is rendered as itself rather than rounded: post-migration-035 it can only
+// come from a row the migration missed, and a lab readout is where that should
+// be visible.
 func depthWord(d int) string {
-	switch {
-	case d <= federation.DepthPrivate:
-		return "private"
-	case d >= federation.DepthUnlimited:
-		return "network"
-	case d == federation.DepthFriends:
+	switch d {
+	case federation.DepthPrivate:
+		return "local"
+	case federation.DepthFriends:
 		return "friends"
+	case federation.DepthUnlimited:
+		return "network"
 	default:
-		return fmt.Sprintf("%d hops", d)
+		return fmt.Sprintf("legacy(%d)", d)
 	}
 }
 
@@ -67,6 +71,10 @@ type madnetworkSettings struct {
 	SeedCache         bool `json:"seed_cache"`
 	HideUnavailable   bool `json:"hide_unavailable"`
 	DefaultShareDepth int  `json:"default_share_depth"`
+	// ServeGuests answers mesh nodes outside the community with guest-playable
+	// content (F7, default off). A pointer so a POST that carries the card back
+	// unchanged cannot flip it: the endpoint reads absent as "leave alone".
+	ServeGuests *bool `json:"serve_guests,omitempty"`
 }
 
 func (n *node) madnetworkSettings() (madnetworkSettings, error) {
@@ -84,6 +92,18 @@ func (n *node) setDefaultDepth(depth int) error {
 		return err
 	}
 	cur.DefaultShareDepth = depth
+	return n.postJSON("/api/admin/settings/madnetwork", cur, nil)
+}
+
+// setServeGuests opens or closes this node to mesh nodes outside its community
+// (F7). Off is the default, so `check` has to open it to test the guest arm at
+// all — which is the point of the switch.
+func (n *node) setServeGuests(on bool) error {
+	cur, err := n.madnetworkSettings()
+	if err != nil {
+		return err
+	}
+	cur.ServeGuests = &on
 	return n.postJSON("/api/admin/settings/madnetwork", cur, nil)
 }
 

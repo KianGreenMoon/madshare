@@ -339,22 +339,35 @@ func (h *manageHandler) getMadnetworkSettings(w http.ResponseWriter, r *http.Req
 		"seed_cache":            p.SeedCache,
 		"hide_unavailable":      p.HideUnavailable,
 		"default_share_depth":   p.DefaultShareDepth,
+		"serve_guests":          p.ServeGuests,
+		"publish_friend_list":   p.PublishFriendList,
 	})
 }
 
 // setMadnetworkSettings updates the madnetwork download + seeding settings. The
 // seed fields default true (missing = keep the "seed by default" stance) so an
 // older client that only sends autoapprove_downloads does not silently disable
-// seeding. default_share_depth is a *pointer* for the same reason turned the
-// other way: 0 is a meaningful depth (friends only), so an absent field must
-// mean "leave the node's sharing scope alone", not "restrict it to zero".
+// seeding.
+//
+// Everything a client may omit is a *pointer* and absent means **unchanged**,
+// which is the only shape that is safe here: this endpoint writes the whole
+// policy row, so a field the request does not mention would otherwise be reset
+// to its zero value. That is not hypothetical — publish_friend_list has no
+// control on the settings card at all, and every save of the seed checkboxes
+// used to silently switch it off, which under F7 walls a node's own friends off
+// from each other (they stop being vouched for, so they stop being members).
+// serve_guests is a pointer for the same reason turned outward, and
+// default_share_depth because 0 is a meaningful scope (Direct friends), so an
+// absent field must not narrow the node to it.
 func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Request) {
 	req := struct {
-		AutoapproveDownloads bool `json:"autoapprove_downloads"`
-		SeedEnabled          bool `json:"seed_enabled"`
-		SeedCache            bool `json:"seed_cache"`
-		HideUnavailable      bool `json:"hide_unavailable"`
-		DefaultShareDepth    *int `json:"default_share_depth"`
+		AutoapproveDownloads bool  `json:"autoapprove_downloads"`
+		SeedEnabled          bool  `json:"seed_enabled"`
+		SeedCache            bool  `json:"seed_cache"`
+		HideUnavailable      bool  `json:"hide_unavailable"`
+		DefaultShareDepth    *int  `json:"default_share_depth"`
+		ServeGuests          *bool `json:"serve_guests"`
+		PublishFriendList    *bool `json:"publish_friend_list"`
 	}{SeedEnabled: true, SeedCache: true, HideUnavailable: true}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -372,12 +385,20 @@ func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
+	keep := func(v *bool, cur bool) bool {
+		if v == nil {
+			return cur
+		}
+		return *v
+	}
 	p := database.MadnetworkPolicy{
 		AutoapproveDownloads: req.AutoapproveDownloads,
 		SeedEnabled:          req.SeedEnabled,
 		SeedCache:            req.SeedCache,
 		HideUnavailable:      req.HideUnavailable,
 		DefaultShareDepth:    depth,
+		ServeGuests:          keep(req.ServeGuests, current.ServeGuests),
+		PublishFriendList:    keep(req.PublishFriendList, current.PublishFriendList),
 	}
 	if err := h.store.SetMadnetworkPolicy(r.Context(), p); err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
@@ -388,7 +409,9 @@ func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Req
 			" seed_enabled="+strconv.FormatBool(p.SeedEnabled)+
 			" seed_cache="+strconv.FormatBool(p.SeedCache)+
 			" hide_unavailable="+strconv.FormatBool(p.HideUnavailable)+
-			" default_share_depth="+strconv.Itoa(p.DefaultShareDepth))
+			" default_share_depth="+strconv.Itoa(p.DefaultShareDepth)+
+			" serve_guests="+strconv.FormatBool(p.ServeGuests)+
+			" publish_friend_list="+strconv.FormatBool(p.PublishFriendList))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                    true,
 		"autoapprove_downloads": p.AutoapproveDownloads,
@@ -396,6 +419,8 @@ func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Req
 		"seed_cache":            p.SeedCache,
 		"hide_unavailable":      p.HideUnavailable,
 		"default_share_depth":   p.DefaultShareDepth,
+		"serve_guests":          p.ServeGuests,
+		"publish_friend_list":   p.PublishFriendList,
 	})
 }
 

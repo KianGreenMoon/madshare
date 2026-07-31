@@ -127,11 +127,12 @@ node means waiting 15 minutes to see anything. 'up -seed DIR' seeds before
 friending, and the nudge that fires on a new friendship pulls a full catalog at
 once. 'meshlab seed' afterwards works, it is just slow to show up.
 
-SHARING SCOPE (F5). 'scope' sets how far content travels — DEPTH is one of
-private, friends, network, inherit, or a hop count. 'check' then asserts the
-rules from an OUTSIDER's position: it starts a real madnetwork node that is
-nobody's friend and asks each server directly, which is the only way to see the
-guest-open swarm (a stranger may fetch guest-playable bytes and nothing else).
+SHARING SCOPE (F5/F7). 'scope' sets who content is published to — SCOPE is one of
+local, friends (direct friends only), network (our whole community), or inherit.
+'check' then asserts the rules from an OUTSIDER's position: it starts a real
+madnetwork node in nobody's community and asks each server directly, which is the
+only way to see what a node outside the community gets — nothing, until the
+serve_guests switch is opened, and then guest-playable bytes and nothing else.
 
 FORGETTING (F6). 'forget A B' removes B from A only; B keeps publishing a record
 that names A, which is the honest state its admin holds. 'graph' then shows what

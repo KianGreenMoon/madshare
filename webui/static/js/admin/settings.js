@@ -144,6 +144,7 @@ const madnetworkSeedEnabled = document.getElementById('madnetworkSeedEnabled');
 const madnetworkSeedCache   = document.getElementById('madnetworkSeedCache');
 const madnetworkHideUnavail = document.getElementById('madnetworkHideUnavail');
 const madnetworkDepth       = document.getElementById('madnetworkDefaultDepth');
+const madnetworkServeGuests = document.getElementById('madnetworkServeGuests');
 
 async function loadMadnetwork() {
   try {
@@ -155,6 +156,9 @@ async function loadMadnetwork() {
     madnetworkSeedEnabled.checked = p.seed_enabled !== false;
     madnetworkSeedCache.checked   = p.seed_cache !== false;
     madnetworkHideUnavail.checked = p.hide_unavailable !== false;
+    // The one madnetwork switch that defaults OFF: serving nodes outside the
+    // community is the deliberate exception, so a missing field is not consent.
+    if (madnetworkServeGuests) madnetworkServeGuests.checked = p.serve_guests === true;
     // The node default is never "inherit" — there is nothing above it to inherit
     // from — so a missing field falls back to ∞, the documented default.
     if (madnetworkDepth) {
@@ -176,6 +180,7 @@ async function saveMadnetwork() {
         seed_enabled:          madnetworkSeedEnabled.checked,
         seed_cache:            madnetworkSeedCache.checked,
         hide_unavailable:      madnetworkHideUnavail.checked,
+        ...(madnetworkServeGuests ? { serve_guests: madnetworkServeGuests.checked } : {}),
         ...(madnetworkDepth ? { default_share_depth: depthFromSelect(madnetworkDepth.value) } : {}),
       }),
     });
