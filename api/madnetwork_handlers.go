@@ -47,6 +47,26 @@ func (h *handler) reachWindow() int64 {
 // node's inbound mesh path is suspect (fail open — a local netstack fault shows
 // the last-known catalog instead of blanking it) or the admin turned the
 // madnetwork.hide_unavailable toggle off.
+// madnetworkViewFor is madnetworkView plus the request's optional single-node
+// restriction — the "By node" shelf (?source=<id>, or ?source=self for our own
+// published library). An unparseable source is the merged view rather than an
+// error: a stale link should land somewhere useful.
+func (h *handler) madnetworkViewFor(r *http.Request) database.MadnetworkView {
+	v := h.madnetworkView(r.Context())
+	switch src := r.URL.Query().Get("source"); {
+	case src == "":
+	case src == "self":
+		if h.includeSelf() {
+			v.SelfOnly = true
+		}
+	default:
+		if id, err := strconv.ParseInt(src, 10, 64); err == nil && id > 0 {
+			v.SourceID = id
+		}
+	}
+	return v
+}
+
 func (h *handler) madnetworkView(ctx context.Context) database.MadnetworkView {
 	v := database.MadnetworkView{IncludeSelf: h.includeSelf(), DefaultShareDepth: federation.DepthFriends}
 	p, err := h.madnetwork.GetMadnetworkPolicy(ctx)
@@ -95,10 +115,22 @@ func (h *handler) madnetworkSummary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// madnetworkArtists handles GET /api/madnetwork/artists[?q=]: the merged
-// artist list (album-artist grouping, like the local library).
+// madnetworkArtistPageSize bounds one page of Browse all. The list is the
+// community's whole output now, so it is paged and windowed like the library's
+// (docs/ui/madnetwork-page.md §Scale stops being optional) rather than sent
+// whole and rendered whole.
+const madnetworkArtistPageSize = 80
+
+// madnetworkArtists handles GET /api/madnetwork/artists[?q=&limit=&cursor=]: one
+// keyset page of the merged artist list (album-artist grouping, like the local
+// library). The cursor is opaque and comes only from a previous next_cursor.
 func (h *handler) madnetworkArtists(w http.ResponseWriter, r *http.Request) {
-	artists, err := h.madnetwork.MadnetworkArtists(r.Context(), r.URL.Query().Get("q"), h.madnetworkView(r.Context()))
+	limit := madnetworkArtistPageSize
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
+		limit = min(v, madnetworkArtistPageSize)
+	}
+	artists, next, err := h.madnetwork.MadnetworkArtists(r.Context(), r.URL.Query().Get("q"),
+		h.madnetworkViewFor(r), limit, r.URL.Query().Get("cursor"))
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -106,7 +138,11 @@ func (h *handler) madnetworkArtists(w http.ResponseWriter, r *http.Request) {
 	if artists == nil {
 		artists = []*database.MadnetworkArtist{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "artists": artists})
+	resp := map[string]any{"ok": true, "artists": artists}
+	if next != "" {
+		resp["next_cursor"] = next
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // madnetworkAlbums handles GET /api/madnetwork/albums?artist=<name>.
@@ -116,7 +152,7 @@ func (h *handler) madnetworkAlbums(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "artist is required"})
 		return
 	}
-	albums, err := h.madnetwork.MadnetworkAlbums(r.Context(), artist, h.madnetworkView(r.Context()))
+	albums, err := h.madnetwork.MadnetworkAlbums(r.Context(), artist, h.madnetworkViewFor(r))
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -173,18 +209,18 @@ func (h *handler) madnetworkTracks(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "artist and album are required"})
 		return
 	}
-	view := h.madnetworkView(r.Context())
-	rows, err := h.madnetwork.MadnetworkTracks(r.Context(), artist, album, view.Cutoff)
+	view := h.madnetworkViewFor(r)
+	rows, err := h.madnetwork.MadnetworkTracks(r.Context(), artist, album, view)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	if view.IncludeSelf {
-		own, err := h.madnetwork.MadnetworkOwnTracks(r.Context(), artist, album, view)
-		if err != nil {
-			http.Error(w, "storage error", http.StatusInternalServerError)
-			return
-		}
+	own, err := h.madnetwork.MadnetworkOwnTracks(r.Context(), artist, album, view)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if len(own) > 0 {
 		rows = append(rows, own...)
 		sortMadnetworkRows(rows)
 	}
@@ -418,20 +454,17 @@ func (h *handler) madnetworkSearch(w http.ResponseWriter, r *http.Request) {
 		URL        string   `json:"url,omitempty"` // local play address when self-held
 	}
 
-	view := h.madnetworkView(r.Context())
-	artists, err := h.madnetwork.MadnetworkArtists(r.Context(), q, view)
-	if err != nil {
-		http.Error(w, "storage error", http.StatusInternalServerError)
-		return
-	}
-	if strings.TrimSpace(q) == "" {
-		artists = nil // an empty query lists everything — search shows nothing
-	}
-	if len(artists) > madnetworkSearchArtistCap {
-		artists = artists[:madnetworkSearchArtistCap]
-	}
-	if artists == nil {
-		artists = []*database.MadnetworkArtist{}
+	view := h.madnetworkViewFor(r)
+	artists := []*database.MadnetworkArtist{}
+	if strings.TrimSpace(q) != "" { // an empty query lists everything — search shows nothing
+		found, _, err := h.madnetwork.MadnetworkArtists(r.Context(), q, view, madnetworkSearchArtistCap, "")
+		if err != nil {
+			http.Error(w, "storage error", http.StatusInternalServerError)
+			return
+		}
+		if found != nil {
+			artists = found
+		}
 	}
 
 	albums, err := h.madnetwork.MadnetworkSearchAlbums(r.Context(), q, madnetworkSearchAlbumCap, view)

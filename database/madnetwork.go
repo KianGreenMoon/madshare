@@ -146,6 +146,12 @@ func (db *DB) PublishedCatalog(ctx context.Context, aud federation.Audience) ([]
 
 // ReplaceSourceCatalog atomically replaces the cached copy of one source's
 // catalog with a fresh snapshot and records the snapshot serial + sync time.
+//
+// The replace is wholesale, but first_seen is NOT: the dates of the entries this
+// source already offered are read before the delete and re-applied to the ones
+// that survive (migration 037). Without that, every sync that changed anything
+// would re-date the source's whole library, and "New on the network" would be a
+// list of whoever synced most recently.
 func (db *DB) ReplaceSourceCatalog(ctx context.Context, sourceID int64, serial string, syncedAt int64, entries []federation.CatalogEntry) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -153,14 +159,18 @@ func (db *DB) ReplaceSourceCatalog(ctx context.Context, sourceID int64, serial s
 	}
 	defer tx.Rollback()
 
+	seen, err := catalogFirstSeen(ctx, tx, sourceID)
+	if err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM federation_catalog WHERE source_id = ?`, sourceID); err != nil {
 		return fmt.Errorf("clear source catalog: %w", err)
 	}
 	ins, err := tx.PrepareContext(ctx, `
 		INSERT INTO federation_catalog (source_id, entry_key, recording_key, title, artist,
 			album_artist, album, genre, year, track_number, disc_number, duration,
-			license, guest_playable, renditions)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			license, guest_playable, renditions, first_seen)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare source catalog insert: %w", err)
 	}
@@ -173,9 +183,13 @@ func (db *DB) ReplaceSourceCatalog(ctx context.Context, sourceID int64, serial s
 		if err != nil {
 			return fmt.Errorf("marshal renditions: %w", err)
 		}
+		firstSeen := syncedAt
+		if prior, ok := seen[e.Key]; ok && prior > 0 {
+			firstSeen = prior
+		}
 		if _, err := ins.ExecContext(ctx, sourceID, e.Key, e.RecordingKey, e.Title, e.Artist,
 			e.AlbumArtist, e.Album, e.Genre, e.Year, e.TrackNumber, e.DiscNumber,
-			nullFloat(e.Duration), e.License, e.GuestPlayable, string(renditions)); err != nil {
+			nullFloat(e.Duration), e.License, e.GuestPlayable, string(renditions), firstSeen); err != nil {
 			return fmt.Errorf("insert source catalog entry: %w", err)
 		}
 	}
@@ -186,6 +200,29 @@ func (db *DB) ReplaceSourceCatalog(ctx context.Context, sourceID int64, serial s
 		return fmt.Errorf("update source sync state: %w", err)
 	}
 	return tx.Commit()
+}
+
+// catalogFirstSeen reads one source's entry_key → first_seen map inside the
+// replace transaction. A source's catalog is bounded by what we chose to cache,
+// so holding it in memory for the length of the replace is the same order of
+// cost as the snapshot being applied.
+func catalogFirstSeen(ctx context.Context, tx *sql.Tx, sourceID int64) (map[string]int64, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT entry_key, first_seen FROM federation_catalog WHERE source_id = ?`, sourceID)
+	if err != nil {
+		return nil, fmt.Errorf("read source catalog dates: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var key string
+		var at int64
+		if err := rows.Scan(&key, &at); err != nil {
+			return nil, fmt.Errorf("scan source catalog date: %w", err)
+		}
+		out[key] = at
+	}
+	return out, rows.Err()
 }
 
 // MarkSourceCatalogChecked records a sync round that confirmed the cached copy
@@ -433,6 +470,24 @@ type MadnetworkView struct {
 	// view: recordings without an explicit depth stay visible, explicitly
 	// private ones do not.
 	DefaultShareDepth int
+
+	// SourceID restricts the browse to ONE cached catalog — the "By node" lane's
+	// shelf (docs/ui/madnetwork-page.md §Browsing a single node). Zero is the
+	// merged view. A single node's shelf never folds the own set in: browsing a
+	// node means seeing what that node offers, and we are a different node.
+	SourceID int64
+	// SelfOnly is the same restriction pointed at ourselves — our own published
+	// library as the network sees it, which is the one shelf on the list whose
+	// contents an admin can actually change.
+	SelfOnly bool
+}
+
+// includeRemote / includeOwn split a view into the two row sources the merged
+// queries union. Keeping the rule in one place is what stops a source filter
+// from being applied to one half of a UNION and forgotten on the other.
+func (v MadnetworkView) includeRemote() bool { return !v.SelfOnly }
+func (v MadnetworkView) includeOwn() bool {
+	return v.SelfOnly || (v.IncludeSelf && v.SourceID == 0)
 }
 
 // reachClause gates a source join by reachability. cutoff is a server-computed
@@ -446,12 +501,23 @@ func reachClause(cutoff int64) string {
 	return fmt.Sprintf(" AND "+srcLastSeen+" >= %d", cutoff)
 }
 
+// sourceClause narrows a cached-row query to one source (the "By node" shelf).
+// The id is an int64 the handler parsed out of the query string — a value that
+// cannot carry SQL whatever it holds — so it is inlined like reachClause's
+// cutoff rather than threaded as a bind through every shared fragment.
+func sourceClause(view MadnetworkView) string {
+	if view.SourceID <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" AND s.id = %d", view.SourceID)
+}
+
 // The browse queries group by DISPLAY identity — the grouping artist is the
 // album artist, falling back to the performer, falling back to the unknown
 // bucket, mirroring the local library's album-artist-only artist list; albums
 // fall back to the shared "Other" bucket. Only reachable, unblocked sources'
 // catalogs are visible (reachClause; cutoff <= 0 = every source).
-func fedcatBase(cutoff int64) string {
+func fedcatBase(view MadnetworkView) string {
 	return `
 	FROM (SELECT COALESCE(NULLIF(c.album_artist, ''), NULLIF(c.artist, ''), '` + DefaultArtistName + `') AS akey,
 	             COALESCE(NULLIF(c.album, ''), '` + DefaultAlbumTitle + `') AS alb,
@@ -459,7 +525,7 @@ func fedcatBase(cutoff int64) string {
 	             ` + srcLastSeen + ` AS source_last_seen,
 	             c.*
 	      FROM federation_catalog c` + sourceJoin("c") + `
-	      WHERE ` + notBlocked + reachClause(cutoff) + `)`
+	      WHERE ` + notBlocked + reachClause(view.Cutoff) + sourceClause(view) + `)`
 }
 
 // fedcatRemoteRows / fedcatSelfRows are the two sources of the merged counting
@@ -469,14 +535,14 @@ func fedcatBase(cutoff int64) string {
 // PublishedCatalog advertises to friends, with fedcatBase's bucket fallbacks
 // applied on top, so a track we publish folds with the same track cached from
 // a friend (docs/ui/madnetwork-page.md §Own tracks).
-func fedcatRemoteRows(cutoff int64) string {
+func fedcatRemoteRows(view MadnetworkView) string {
 	return `
 	SELECT COALESCE(NULLIF(c.album_artist, ''), NULLIF(c.artist, ''), '` + DefaultArtistName + `') AS akey,
 	       COALESCE(NULLIF(c.album, ''), '` + DefaultAlbumTitle + `') AS alb,
 	       c.title AS title, c.track_number AS track_number,
 	       c.disc_number AS disc_number, c.year AS year
 	FROM federation_catalog c` + sourceJoin("c") + `
-	WHERE ` + notBlocked + reachClause(cutoff)
+	WHERE ` + notBlocked + reachClause(view.Cutoff) + sourceClause(view)
 }
 
 // selfPublishedClause keeps the self-merged rows to what this node actually
@@ -506,12 +572,17 @@ func fedcatSelfRows(defaultDepth int) string {
 // catalogs (cutoff), optionally unioned with the own published set (always
 // available — self is never gated). includeSelf is off when federation is
 // disabled — the page then stays what the friends provide (nothing), matching
-// the "list fully clears" rule.
+// the "list fully clears" rule. A source-filtered view (the "By node" shelf)
+// keeps exactly one of the two halves.
 func fedcatCountBase(view MadnetworkView) string {
-	if view.IncludeSelf {
-		return ` FROM (` + fedcatRemoteRows(view.Cutoff) + ` UNION ALL ` + fedcatSelfRows(view.DefaultShareDepth) + `)`
+	switch {
+	case !view.includeRemote():
+		return ` FROM (` + fedcatSelfRows(view.DefaultShareDepth) + `)`
+	case view.includeOwn():
+		return ` FROM (` + fedcatRemoteRows(view) + ` UNION ALL ` + fedcatSelfRows(view.DefaultShareDepth) + `)`
+	default:
+		return ` FROM (` + fedcatRemoteRows(view) + `)`
 	}
-	return ` FROM (` + fedcatRemoteRows(view.Cutoff) + `)`
 }
 
 // Leading ORDER BY keys forcing the unknown buckets to the bottom of the
@@ -526,6 +597,11 @@ const albumBucketLast = `(lower(alb) = lower('` + DefaultAlbumTitle + `')) ASC`
 const trackIdent = `lower(alb) || char(31) || COALESCE(disc_number, -1) || char(31) ||
 	COALESCE(track_number, -1) || char(31) || lower(title)`
 
+// trackFullIdent is that identity across the whole merged view rather than
+// inside one artist bucket — the key the discovery lanes rank and the counting
+// queries count distinct.
+const trackFullIdent = `lower(akey) || char(31) || ` + trackIdent
+
 // MadnetworkArtist is one row of the merged artist list.
 type MadnetworkArtist struct {
 	Name   string `json:"name"`
@@ -536,32 +612,73 @@ type MadnetworkArtist struct {
 // MadnetworkArtists lists the merged catalog's artists (display-identity
 // grouping, case-insensitive), optionally filtered by a substring. The unknown
 // bucket sorts last; includeSelf merges the own published set in.
-func (db *DB) MadnetworkArtists(ctx context.Context, q string, view MadnetworkView) ([]*MadnetworkArtist, error) {
-	where, args := "", []any{}
+//
+// The list is keyset-paged: limit <= 0 returns everything (the search path,
+// which caps its own results), otherwise one page plus the cursor for the next.
+// Browse all is now the community's whole output rather than a few friends'
+// libraries, which is what took this off the "adopt when catalogs grow" list.
+func (db *DB) MadnetworkArtists(ctx context.Context, q string, view MadnetworkView, limit int, cursor string) ([]*MadnetworkArtist, string, error) {
+	conds, args := []string{}, []any{}
 	if s := strings.TrimSpace(q); s != "" {
 		escaped := strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(s)
-		where = ` WHERE lower(akey) LIKE lower(?) ESCAPE '\'`
+		conds = append(conds, `lower(akey) LIKE lower(?) ESCAPE '\'`)
 		args = append(args, "%"+escaped+"%")
+	}
+	if c, ok := decodeArtistCursor(cursor); ok {
+		// Row-value comparison over the ORDER BY key: the bucket flag first (the
+		// unknown bucket sorts last), then the folded name. Applied row-level
+		// because the grouping key is lower(akey), which is constant per group.
+		// The cursor type is the library's — same sort key, minus the id a merged
+		// row has no equivalent of (the folded name IS the group).
+		conds = append(conds, `((`+artistBucketExpr+`), lower(akey)) > (?, ?)`)
+		args = append(args, c.Unknown, c.Name)
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
+	}
+	page := ""
+	if limit > 0 {
+		page = " LIMIT ?"
+		args = append(args, limit+1) // one extra row = "there is a next page"
 	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT MIN(akey), COUNT(DISTINCT lower(alb)), COUNT(DISTINCT `+trackIdent+`)
 		`+fedcatCountBase(view)+where+`
 		GROUP BY lower(akey)
-		ORDER BY `+artistBucketLast+`, lower(akey)`, args...)
+		ORDER BY `+artistBucketLast+`, lower(akey)`+page, args...)
 	if err != nil {
-		return nil, fmt.Errorf("madnetwork artists: %w", err)
+		return nil, "", fmt.Errorf("madnetwork artists: %w", err)
 	}
 	defer rows.Close()
 	var out []*MadnetworkArtist
 	for rows.Next() {
 		var a MadnetworkArtist
 		if err := rows.Scan(&a.Name, &a.Albums, &a.Tracks); err != nil {
-			return nil, fmt.Errorf("scan madnetwork artist: %w", err)
+			return nil, "", fmt.Errorf("scan madnetwork artist: %w", err)
 		}
 		out = append(out, &a)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	next := ""
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+		last := out[len(out)-1].Name
+		c := artistCursor{Name: strings.ToLower(last)}
+		if strings.EqualFold(last, DefaultArtistName) {
+			c.Unknown = 1
+		}
+		next = encodeArtistCursor(c)
+	}
+	return out, next, nil
 }
+
+// artistBucketExpr is artistBucketLast without its sort direction — the same
+// flag as a value, so the keyset cursor compares exactly what the ORDER BY
+// orders by.
+const artistBucketExpr = `lower(akey) = lower('` + DefaultArtistName + `')`
 
 // MadnetworkAlbum is one row of an artist's merged album list.
 type MadnetworkAlbum struct {
@@ -627,13 +744,16 @@ type MadnetworkTrackRow struct {
 // remoteTrackRows runs the raw cached-row query with a caller-supplied match
 // clause over the bucketed columns (akey/alb/title available). cutoff gates the
 // rows to reachable sources (cutoff <= 0 = all).
-func (db *DB) remoteTrackRows(ctx context.Context, cutoff int64, match string, args ...any) ([]*MadnetworkTrackRow, error) {
+func (db *DB) remoteTrackRows(ctx context.Context, view MadnetworkView, match string, args ...any) ([]*MadnetworkTrackRow, error) {
+	if !view.includeRemote() {
+		return nil, nil
+	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT source_id, source_label, source_last_seen, akey, alb,
 		       entry_key, recording_key, title, artist, album_artist,
 		       COALESCE(genre, ''), year, track_number, disc_number,
 		       COALESCE(duration, 0), COALESCE(license, ''), guest_playable, renditions
-		`+fedcatBase(cutoff)+`
+		`+fedcatBase(view)+`
 		WHERE `+match+`
 		ORDER BY (disc_number IS NULL) ASC, disc_number ASC, track_number ASC, lower(title) ASC, source_id ASC`,
 		args...)
@@ -663,9 +783,10 @@ func (db *DB) remoteTrackRows(ctx context.Context, cutoff int64, match string, a
 }
 
 // MadnetworkTracks returns reachable sources' cached rows for one artist+album,
-// in display order (cutoff gates reachability; <= 0 = every source).
-func (db *DB) MadnetworkTracks(ctx context.Context, artist, album string, cutoff int64) ([]*MadnetworkTrackRow, error) {
-	return db.remoteTrackRows(ctx, cutoff, `lower(akey) = lower(?) AND lower(alb) = lower(?)`, artist, album)
+// in display order (the view gates reachability and, for a single node's shelf,
+// which source may answer at all).
+func (db *DB) MadnetworkTracks(ctx context.Context, artist, album string, view MadnetworkView) ([]*MadnetworkTrackRow, error) {
+	return db.remoteTrackRows(ctx, view, `lower(akey) = lower(?) AND lower(alb) = lower(?)`, artist, album)
 }
 
 // Self-row display-identity expressions over the tagsets join (aliases par /
@@ -680,7 +801,11 @@ const selfAlbExpr = `COALESCE(NULLIF(COALESCE(al.title, m.album, ''), ''), '` + 
 // the recording's live files with their local object keys. defaultDepth applies
 // the same self-published filter as the counting queries, so a recording kept
 // off the network cannot be listed by a view whose counts already exclude it.
-func (db *DB) ownTrackRows(ctx context.Context, defaultDepth int, match string, args ...any) ([]*MadnetworkTrackRow, error) {
+func (db *DB) ownTrackRows(ctx context.Context, view MadnetworkView, match string, args ...any) ([]*MadnetworkTrackRow, error) {
+	if !view.includeOwn() {
+		return nil, nil
+	}
+	defaultDepth := view.DefaultShareDepth
 	rows, err := db.QueryContext(ctx, `
 		SELECT m.id, m.recording_id, `+selfAkeyExpr+`, `+selfAlbExpr+`, m.title,
 		       COALESCE(par.name, m.artist, ''), COALESCE(aar.name, m.album_artist, ''),
@@ -767,7 +892,7 @@ func (db *DB) ownTrackRows(ctx context.Context, defaultDepth int, match string, 
 // MadnetworkOwnTracks returns the own published rows for one artist+album —
 // the Self side of the merged track view.
 func (db *DB) MadnetworkOwnTracks(ctx context.Context, artist, album string, view MadnetworkView) ([]*MadnetworkTrackRow, error) {
-	return db.ownTrackRows(ctx, view.DefaultShareDepth,
+	return db.ownTrackRows(ctx, view,
 		`lower(`+selfAkeyExpr+`) = lower(?) AND lower(`+selfAlbExpr+`) = lower(?)`, artist, album)
 }
 
@@ -826,17 +951,15 @@ func (db *DB) MadnetworkSearchTrackRows(ctx context.Context, q string, view Madn
 		return []*MadnetworkTrackRow{}, nil
 	}
 	escaped := "%" + strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(s) + "%"
-	rows, err := db.remoteTrackRows(ctx, view.Cutoff, `lower(title) LIKE lower(?) ESCAPE '\'`, escaped)
+	rows, err := db.remoteTrackRows(ctx, view, `lower(title) LIKE lower(?) ESCAPE '\'`, escaped)
 	if err != nil {
 		return nil, err
 	}
-	if view.IncludeSelf {
-		own, err := db.ownTrackRows(ctx, view.DefaultShareDepth, `lower(m.title) LIKE lower(?) ESCAPE '\'`, escaped)
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, own...)
+	own, err := db.ownTrackRows(ctx, view, `lower(m.title) LIKE lower(?) ESCAPE '\'`, escaped)
+	if err != nil {
+		return nil, err
 	}
+	rows = append(rows, own...)
 	if len(rows) > searchRowCap {
 		rows = rows[:searchRowCap]
 	}
@@ -849,6 +972,9 @@ func (db *DB) MadnetworkSearchTrackRows(ctx context.Context, q string, view Madn
 // window, and Friend distinguishes the nodes an admin hand-picked from the
 // members the frontier reached on its own.
 type MadnetworkFriend struct {
+	// ID is the catalog-source row, the address of this node's shelf in the
+	// "By node" lane. Stable for as long as we cache the node.
+	ID        int64  `json:"id"`
 	Name      string `json:"name"`
 	LastSeen  int64  `json:"last_seen"`
 	SyncedAt  int64  `json:"synced_at"`
@@ -865,7 +991,7 @@ type MadnetworkFriend struct {
 // and the strip is where an admin looks for them.
 func (db *DB) MadnetworkSummary(ctx context.Context, view MadnetworkView) ([]*MadnetworkFriend, int64, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT `+sourceLabelExpr+`, `+srcLastSeen+`, s.catalog_synced_at,
+		SELECT s.id, `+sourceLabelExpr+`, `+srcLastSeen+`, s.catalog_synced_at,
 		       (SELECT COUNT(*) FROM federation_catalog c WHERE c.source_id = s.id),
 		       COALESCE(p.state, '') = 'friend'
 		FROM federation_catalog_sources s
@@ -881,7 +1007,7 @@ func (db *DB) MadnetworkSummary(ctx context.Context, view MadnetworkView) ([]*Ma
 	var friends []*MadnetworkFriend
 	for rows.Next() {
 		var f MadnetworkFriend
-		if err := rows.Scan(&f.Name, &f.LastSeen, &f.SyncedAt, &f.Entries, &f.Friend); err != nil {
+		if err := rows.Scan(&f.ID, &f.Name, &f.LastSeen, &f.SyncedAt, &f.Entries, &f.Friend); err != nil {
 			return nil, 0, fmt.Errorf("scan madnetwork source: %w", err)
 		}
 		f.Reachable = view.Cutoff <= 0 || f.LastSeen >= view.Cutoff
@@ -893,7 +1019,7 @@ func (db *DB) MadnetworkSummary(ctx context.Context, view MadnetworkView) ([]*Ma
 
 	var tracks int64
 	if err := db.QueryRowContext(ctx, `
-		SELECT COUNT(DISTINCT lower(akey) || char(31) || `+trackIdent+`)
+		SELECT COUNT(DISTINCT `+trackFullIdent+`)
 		`+fedcatCountBase(view)).Scan(&tracks); err != nil {
 		return nil, 0, fmt.Errorf("madnetwork track count: %w", err)
 	}

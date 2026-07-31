@@ -15,24 +15,44 @@ import (
 )
 
 type fakeMadnetwork struct {
-	rows     []*database.MadnetworkTrackRow
-	ownRows  []*database.MadnetworkTrackRow
-	artists  []*database.MadnetworkArtist
-	lastView database.MadnetworkView // captured by MadnetworkSummary for assertions
-	hideOff  bool                    // when true, GetMadnetworkPolicy reports hiding disabled
+	rows      []*database.MadnetworkTrackRow
+	ownRows   []*database.MadnetworkTrackRow
+	artists   []*database.MadnetworkArtist
+	lanes     map[string][]*database.LaneCandidate // per-lane ranked candidates
+	lastView  database.MadnetworkView              // captured by MadnetworkSummary for assertions
+	trackView database.MadnetworkView              // captured by MadnetworkTracks for assertions
+	hideOff   bool                                 // when true, GetMadnetworkPolicy reports hiding disabled
 }
 
-func (f *fakeMadnetwork) MadnetworkArtists(context.Context, string, database.MadnetworkView) ([]*database.MadnetworkArtist, error) {
-	if f.artists != nil {
-		return f.artists, nil
+// MadnetworkArtists honours limit the way the real store does — one page plus a
+// cursor when there is more — because the search cap is now expressed as a limit
+// passed down rather than a truncation in the handler.
+func (f *fakeMadnetwork) MadnetworkArtists(_ context.Context, _ string, _ database.MadnetworkView, limit int, _ string) ([]*database.MadnetworkArtist, string, error) {
+	out := f.artists
+	if out == nil {
+		out = []*database.MadnetworkArtist{{Name: "A", Albums: 1, Tracks: 2}}
 	}
-	return []*database.MadnetworkArtist{{Name: "A", Albums: 1, Tracks: 2}}, nil
+	if limit > 0 && len(out) > limit {
+		return out[:limit], "more", nil
+	}
+	return out, "", nil
 }
 func (f *fakeMadnetwork) MadnetworkAlbums(context.Context, string, database.MadnetworkView) ([]*database.MadnetworkAlbum, error) {
 	return nil, nil
 }
-func (f *fakeMadnetwork) MadnetworkTracks(context.Context, string, string, int64) ([]*database.MadnetworkTrackRow, error) {
+func (f *fakeMadnetwork) MadnetworkTracks(_ context.Context, _, _ string, view database.MadnetworkView) ([]*database.MadnetworkTrackRow, error) {
+	f.trackView = view
 	return f.rows, nil
+}
+func (f *fakeMadnetwork) MadnetworkLaneCandidates(_ context.Context, lane string, _ database.MadnetworkView, limit int) ([]*database.LaneCandidate, error) {
+	out := f.lanes[lane]
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+func (f *fakeMadnetwork) MadnetworkRowsForIdents(context.Context, []string, database.MadnetworkView) ([]*database.MadnetworkTrackRow, error) {
+	return append(append([]*database.MadnetworkTrackRow{}, f.rows...), f.ownRows...), nil
 }
 func (f *fakeMadnetwork) MadnetworkOwnTracks(context.Context, string, string, database.MadnetworkView) ([]*database.MadnetworkTrackRow, error) {
 	return f.ownRows, nil

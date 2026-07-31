@@ -122,13 +122,18 @@ type Deps struct {
 // dedicated interface — not database.Repository — so the browse endpoints
 // don't force every Repository fake to grow with them.
 type MadnetworkStore interface {
-	MadnetworkArtists(ctx context.Context, q string, view database.MadnetworkView) ([]*database.MadnetworkArtist, error)
+	MadnetworkArtists(ctx context.Context, q string, view database.MadnetworkView, limit int, cursor string) ([]*database.MadnetworkArtist, string, error)
 	MadnetworkAlbums(ctx context.Context, artist string, view database.MadnetworkView) ([]*database.MadnetworkAlbum, error)
-	MadnetworkTracks(ctx context.Context, artist, album string, cutoff int64) ([]*database.MadnetworkTrackRow, error)
+	MadnetworkTracks(ctx context.Context, artist, album string, view database.MadnetworkView) ([]*database.MadnetworkTrackRow, error)
 	MadnetworkOwnTracks(ctx context.Context, artist, album string, view database.MadnetworkView) ([]*database.MadnetworkTrackRow, error)
 	MadnetworkSummary(ctx context.Context, view database.MadnetworkView) ([]*database.MadnetworkFriend, int64, error)
 	MadnetworkSearchAlbums(ctx context.Context, q string, limit int, view database.MadnetworkView) ([]*database.MadnetworkSearchAlbum, error)
 	MadnetworkSearchTrackRows(ctx context.Context, q string, view database.MadnetworkView) ([]*database.MadnetworkTrackRow, error)
+	// Discovery lanes (docs/ui/madnetwork-page.md §Lane definitions): SQL ranks
+	// the merged view into candidate identities, the handler finishes the
+	// ranking and fetches the rows behind the ones it kept.
+	MadnetworkLaneCandidates(ctx context.Context, lane string, view database.MadnetworkView, limit int) ([]*database.LaneCandidate, error)
+	MadnetworkRowsForIdents(ctx context.Context, idents []string, view database.MadnetworkView) ([]*database.MadnetworkTrackRow, error)
 	// F3 (direct transfer): the tagset text behind a rendition hash (staging
 	// metadata for download-to-library) and the download policy.
 	MadnetworkEntryForHash(ctx context.Context, hash string) (*federation.CatalogEntry, error)
@@ -346,6 +351,8 @@ func RegisterAPI(r chi.Router, d Deps) {
 	if d.Madnetwork != nil {
 		mad := d.protect(auth.PermMadnetworkAccess)
 		r.With(mad).Get("/api/madnetwork/summary", h.madnetworkSummary)
+		r.With(mad).Get("/api/madnetwork/discover", h.madnetworkDiscover)
+		r.With(mad).Get("/api/madnetwork/lane", h.madnetworkLane)
 		r.With(mad).Get("/api/madnetwork/artists", h.madnetworkArtists)
 		r.With(mad).Get("/api/madnetwork/albums", h.madnetworkAlbums)
 		r.With(mad).Get("/api/madnetwork/tracks", h.madnetworkTracks)
