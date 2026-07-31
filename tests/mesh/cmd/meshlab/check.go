@@ -299,7 +299,7 @@ func (l *lab) pickSubject() (*node, appearance, error) {
 
 // friendOf returns a running node friended with n, or nil.
 func (l *lab) friendOf(n *node) *node {
-	for _, pair := range l.friendPairs {
+	for _, pair := range l.friendGraph() {
 		var other string
 		switch n.name {
 		case pair[0]:

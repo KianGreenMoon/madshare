@@ -275,12 +275,49 @@ function renderPeer(p) {
     el('code', { class: 'peer-key', text: p.public_key, title: 'The node’s public key — its identity' }),
     meta,
   ]);
+  const pairing = renderPairing(p);
+  if (pairing) card.append(pairing);
   // Findings sit directly above the actions, so the evidence and the Block
   // button an admin might reach for are read in one movement.
   const claims = renderClaims(p);
   if (claims) card.append(claims);
   card.append(actions);
   return card;
+}
+
+// What our last pairing attempt did (federation.PairAttempt). A pairing that
+// does not converge is the one federation failure an admin cannot see from the
+// outside — "pending_outgoing" looks identical whether the node is switched off,
+// refusing us, or simply waiting on its own admin — so the card says which.
+//
+// Only for pending_outgoing: once a peer is a friend the attempt is history, and
+// for pending_incoming the contact came the other way (last_seen covers it).
+function renderPairing(p) {
+  if (p.state !== 'pending_outgoing') return null;
+  const a = p.last_attempt;
+  if (!a) {
+    return el('p', { class: 'peer-pairing' }, ['Contacting the node… (retried every minute)']);
+  }
+  const when = fmtAgo(a.at);
+  if (a.error) {
+    return el('p', { class: 'peer-pairing is-bad' }, [`Last try ${when}: ${a.error}`]);
+  }
+  if (a.result === 'friend') {
+    // Their side is already mutual; ours flips on the next sweep.
+    return el('p', { class: 'peer-pairing is-good' }, [`This node considers you friends (${when}) — settling on our side.`]);
+  }
+  return el('p', { class: 'peer-pairing is-good' }, [
+    `Request delivered ${when} — waiting for their admin to accept it. Nothing more to do on this side.`,
+  ]);
+}
+
+function fmtAgo(unix) {
+  if (!unix) return 'just now';
+  const s = Math.max(0, Math.floor(Date.now() / 1000) - unix);
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return new Date(unix * 1000).toLocaleDateString(undefined, { dateStyle: 'medium' });
 }
 
 // Mapping a personal (madplayer) node to a local account: all existing ACLs
@@ -354,21 +391,39 @@ function startRename(p, nameSpan) {
 
 // ── Actions ───────────────────────────────────────────────────────────────────
 
+// The field takes either form an admin can have a node in: a full node card, or
+// just its public key — which is what the network map hands out, and what a
+// friend-of-a-friend is knowable by without their admin exporting anything.
+// Identity is the key; a card adds only a claimed name.
+const KEY_RE = /^[0-9a-f]{64}$/i;
+
+function importPayload(raw) {
+  if (raw.startsWith('{')) {
+    try {
+      return { payload: { card: JSON.parse(raw) } };
+    } catch {
+      return { error: 'That is not valid JSON — paste the card exactly as exported, or paste just the node’s public key.' };
+    }
+  }
+  if (KEY_RE.test(raw)) return { payload: { public_key: raw.toLowerCase() } };
+  // A mesh address is derived from the key and cannot be turned back into one,
+  // so it is not enough to friend a node with — say that instead of "invalid".
+  if (raw.includes(':') && /^[0-9a-f:]+$/i.test(raw)) {
+    return { error: 'A mesh address is not enough to friend a node — an address cannot be turned back into a key. Paste the node’s public key (64 hex characters) or its card.' };
+  }
+  return { error: 'Paste a node card (JSON) or a node’s public key (64 hex characters).' };
+}
+
 async function onImport(e) {
   e.preventDefault();
-  let card;
-  try {
-    card = JSON.parse(cardInput.value);
-  } catch {
-    toast('That is not valid JSON — paste the card exactly as exported.', 'error');
-    return;
-  }
+  const { payload, error } = importPayload(cardInput.value.trim());
+  if (error) { toast(error, 'error'); return; }
   importBtn.disabled = true;
   try {
     const res = await fetch(`${API}/api/admin/federation/peers`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ card }),
+      body: JSON.stringify(payload),
     });
     if (handleAuthError(res)) return;
     const body = await res.json().catch(() => ({}));
@@ -376,7 +431,7 @@ async function onImport(e) {
     cardInput.value = '';
     toast(body.peer?.state === 'friend'
       ? `Friendship with “${peerLabel(body.peer)}” established.`
-      : 'Card imported — contacting the node…', 'info');
+      : 'Contacting the node — its admin has to accept before you are friends.', 'info');
     refresh();
   } catch (err) {
     toast(`Import failed: ${err.message}`, 'error');
@@ -451,6 +506,50 @@ async function blockMapNode(n) {
     toast('Node blocked; distrust mark published.', 'info');
   } catch (err) {
     toast(`Block failed: ${err.message}`, 'error');
+  }
+  refresh();
+}
+
+// Friending from the map goes by KEY, for the same reason blocking does: the
+// nodes worth acting on there are the ones we have no row for. A friend of a
+// friend is knowable — the graph carries its key — without its admin exporting a
+// card, and the trust graph is a graph, so nothing about being two hops away
+// makes this a lesser friendship than the one it was discovered through.
+//
+// This sends the request and no more. The far node records a pending request its
+// admin has to accept, exactly as a card import does — friending stays mutual.
+async function friendMapNode(n) {
+  const label = n.name || n.key.slice(0, 12);
+  const body = [
+    el('p', {}, [`Send “${label}” a pairing request. Its admin has to accept before you are friends, and nothing of your library is shared until they do.`]),
+    el('code', { class: 'modal-key', text: n.key }),
+  ];
+  if (n.named === 'heard') {
+    body.push(el('p', { class: 'modal-note' }, [
+      'That name is only what the network says this node calls itself. The key above is the identity — check it against the person you mean to friend.',
+    ]));
+  }
+  const ok = await confirmModal({
+    title: 'Ask this node to be friends?',
+    bodyNodes: body,
+    confirmLabel: 'Send request',
+    danger: false,
+  });
+  if (!ok) return;
+  try {
+    const res = await fetch(`${API}/api/admin/federation/peers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ public_key: n.key, name: n.name || '' }),
+    });
+    if (handleAuthError(res)) return;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { toast(data.error || `Request failed (HTTP ${res.status}).`, 'error'); return; }
+    toast(data.peer?.state === 'friend'
+      ? `Friendship with “${peerLabel(data.peer)}” established — they had already asked.`
+      : 'Request sent — waiting for their admin to accept it.', 'info');
+  } catch (err) {
+    toast(`Request failed: ${err.message}`, 'error');
   }
   refresh();
 }
@@ -569,6 +668,6 @@ function confirmModal({ title, bodyNodes, confirmLabel, danger = true }) {
   if (!await loadStatus()) return;
   await loadUsers();
   await loadPeers();
-  initMap({ onBlockNode: blockMapNode });
+  initMap({ onBlockNode: blockMapNode, onFriendNode: friendMapNode });
   await loadMap();
 })();

@@ -386,6 +386,7 @@ Three FLACs totalling ~80 MB took about six minutes on the maintainer's machine.
 | `meshlab kill NODE` / `restart NODE` | stop / bring back. **Identity survives** — `federation.key` stays in the data dir, and a node that lost it would be a stranger to every friend it had |
 | `meshlab flap NODE -down 10s -up 20s` | partition/heal on a period until `heal` |
 | `meshlab seed -audio DIR` | see above |
+| `meshlab friend A B` | friend two **running** nodes. `up -friends` fixes the graph at startup; this adds an edge to a live lab — the friend-of-a-friend case (`up -friends a-b,b-c` then `friend a c`) is the one an admin actually meets, and the trust graph has to be a graph to support it |
 | `meshlab scope` | every node's sharing scope: its default depth, and how many recordings are private or guest-playable |
 | `meshlab scope NODE default DEPTH` | the node-wide default. `DEPTH` is `private`, `friends`, `network`, or a hop count |
 | `meshlab scope NODE tracks DEPTH [-limit N]` | pin the depth of its recordings (`inherit` clears the override). `-limit 1` touches only the oldest, which is the shape most assertions want |

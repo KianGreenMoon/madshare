@@ -665,6 +665,40 @@ Design notes for the implementation:
   dashboard; the F6 network map) over `/api/admin/federation*`, all gated
   `federation.manage`.
 
+#### The trust graph is a graph (built 2026-07-31)
+
+Two nodes that are both friends of a third must be able to friend **each other**,
+and a node must be able to sit in several branches at once. Nothing in the state
+machine ever forbade it — a pair request from an unknown key is answered the same
+way whoever sends it — but two things made it look forbidden from the admin's
+seat, and both are now fixed.
+
+- **Friending by key.** The import form and `POST /api/admin/federation/peers`
+  take `{"public_key": …, "name": …}` as well as a card, and the network map's
+  detail panel offers **Ask to be friends…** on any node it draws that we have no
+  row for. The map already carries every node's key — that is the whole identity,
+  and a card adds only a claimed name — so a friend of a friend is friendable
+  without their admin exporting anything. Both surfaces show the full key, and the
+  map's confirm says outright that a name out there is hearsay. Nothing about
+  *deliberate* changes: this sends a request, the far side still records a
+  `pending_incoming` its admin must accept. A **mesh address is refused with its
+  own message**, because an address is derived from a key and cannot be turned
+  back into one.
+- **Pairing says why it has not converged.** Every failure in `pairWith` used to
+  be a silent `return`, so an unreachable node, a refusing node and a node whose
+  admin has not clicked Accept were one indistinguishable `pending_outgoing`. Each
+  attempt now records a `PairAttempt{At, Result, Error}` — in memory on the node,
+  since it describes the last try rather than the friendship — carried on the peer
+  row as `last_attempt` and rendered on the card: *request delivered, waiting for
+  their admin* (the common case, and not a fault), *nothing answered*, or the far
+  node's own refusal text. It is logged too, but only **when the outcome changes**:
+  the sweep retries every minute, and a node that is merely switched off must not
+  write a line a minute about it.
+
+Verification: `federation/friendgraph_test.go` friends A–B and B–C on a chain
+underlay where A and C have no link, then friends A–C over two hops; `meshlab
+friend A B` does the same with real processes on a running lab.
+
 ### Names are a convenience, the key is the identity (built 2026-07-30)
 
 Self-naming stays exactly as it is: `[federation].name`, falling back to the host

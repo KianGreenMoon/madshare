@@ -42,8 +42,11 @@ func (n *Node) DialContext(context.Context, string, string) (net.Conn, error) {
 
 func (n *Node) Peers(context.Context) ([]*Peer, error)          { return nil, errCompiledOut }
 func (n *Node) ImportCard(context.Context, Card) (*Peer, error) { return nil, errCompiledOut }
-func (n *Node) AcceptPeer(context.Context, int64) error         { return errCompiledOut }
-func (n *Node) BlockPeer(context.Context, int64, string) error  { return errCompiledOut }
+func (n *Node) ImportKey(context.Context, string, string) (*Peer, error) {
+	return nil, errCompiledOut
+}
+func (n *Node) AcceptPeer(context.Context, int64) error        { return errCompiledOut }
+func (n *Node) BlockPeer(context.Context, int64, string) error { return errCompiledOut }
 func (n *Node) BlockKey(context.Context, string, string, string) error {
 	return errCompiledOut
 }

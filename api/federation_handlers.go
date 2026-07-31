@@ -54,10 +54,17 @@ func (h *handler) federationPeers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "peers": peers})
 }
 
-// federationImportCard handles POST /api/admin/federation/peers: import a
-// friend's node card ({"card": {...}}) — the admin half of the pairing
-// handshake. A new node becomes pending_outgoing (contacted immediately); a
-// card for a node that already asked to pair completes the friendship.
+// federationImportCard handles POST /api/admin/federation/peers: the admin half
+// of the pairing handshake, in either of the two forms an admin can have a node
+// in.
+//
+//	{"card": {…}}                     a node card exchanged out-of-band
+//	{"public_key": "<hex>", "name": …} a bare key — the form the network map has
+//
+// The two are the same act: identity is the key, and a card carries nothing else
+// except a claimed name. A new node becomes pending_outgoing (contacted
+// immediately); for a node that already asked to pair, importing completes the
+// friendship.
 func (h *handler) federationImportCard(w http.ResponseWriter, r *http.Request) {
 	if h.federation == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "federation is not enabled"})
@@ -65,18 +72,33 @@ func (h *handler) federationImportCard(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
 	var body struct {
-		Card json.RawMessage `json:"card"`
+		Card      json.RawMessage `json:"card"`
+		PublicKey string          `json:"public_key"`
+		Name      string          `json:"name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Card) == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid json (want {\"card\": {…}})"})
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid json (want {\"card\": {…}} or {\"public_key\": \"…\"})"})
 		return
 	}
-	card, err := federation.ParseCard(body.Card)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+
+	var (
+		peer *federation.Peer
+		err  error
+	)
+	switch {
+	case len(body.Card) > 0:
+		card, perr := federation.ParseCard(body.Card)
+		if perr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": perr.Error()})
+			return
+		}
+		peer, err = h.federation.ImportCard(r.Context(), card)
+	case body.PublicKey != "":
+		peer, err = h.federation.ImportKey(r.Context(), body.PublicKey, body.Name)
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "nothing to import (want {\"card\": {…}} or {\"public_key\": \"…\"})"})
 		return
 	}
-	peer, err := h.federation.ImportCard(r.Context(), card)
 	if err != nil {
 		writeFederationError(w, err)
 		return

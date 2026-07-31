@@ -46,6 +46,12 @@ type Node struct {
 	loopCancel context.CancelFunc
 	loopDone   chan struct{}
 
+	// Pairing diagnostics (friendship.go): the last outbound attempt per node
+	// key, so a pairing that never converges can say why. Keyed by key rather
+	// than by peer id — a removed-and-reimported node is the same node.
+	attemptMu sync.Mutex
+	attempts  map[string]PairAttempt
+
 	// Background cadences and deadlines, resolved once in Start from the
 	// defaults plus any WithIntervals/WithTimeouts override. Only tests and the
 	// mesh lab override them (docs/plans/mesh-testing.md T1).
@@ -187,6 +193,7 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 		name:           name,
 		logger:         logger,
 		nudge:          make(chan struct{}, 1),
+		attempts:       map[string]PairAttempt{},
 		cacheDir:       o.cacheDir,
 		resolveBlob:    o.resolveBlob,
 		transfers:      map[string]*transfer{},

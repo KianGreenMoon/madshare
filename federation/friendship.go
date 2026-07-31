@@ -13,6 +13,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/yggdrasil-network/yggdrasil-go/src/address"
@@ -222,10 +224,15 @@ func (n *Node) handlePair(w http.ResponseWriter, r *http.Request) {
 
 // pairWith performs one outbound pairing attempt toward a pending_outgoing (or
 // just-accepted) peer and applies the response to our side of the state machine.
+//
+// Every exit records a [PairAttempt]: a pairing that does not converge is the
+// one federation failure an admin cannot debug from the outside, since both
+// halves of it look identical from the peer list (`pending_outgoing`, forever).
 func (n *Node) pairWith(ctx context.Context, p *Peer) {
 	addr, err := AddrForKeyHex(p.PublicKey)
 	if err != nil {
 		n.logger.Printf("federation: peer %d has an invalid key: %v", p.ID, err)
+		n.recordAttempt(p, PairAttempt{Error: "this node's stored key is not a valid ed25519 key"})
 		return
 	}
 	body, _ := json.Marshal(pairMessage{
@@ -241,15 +248,26 @@ func (n *Node) pairWith(ctx context.Context, p *Peer) {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := n.client.Do(req)
 	if err != nil {
+		// A cancelled sweep is not a failed attempt — it is no attempt.
+		if ctx.Err() == nil {
+			n.recordAttempt(p, PairAttempt{Error: "could not reach this node on the mesh: " + dialReason(err)})
+		}
 		return // unreachable — the refresh loop retries
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		n.recordAttempt(p, PairAttempt{Error: refusalReason(resp)})
 		return
 	}
 	var msg pairMessage
 	if err := json.NewDecoder(resp.Body).Decode(&msg); err != nil {
+		n.recordAttempt(p, PairAttempt{Error: "this node answered something that is not a pairing reply"})
 		return
+	}
+	if msg.Result == "" {
+		n.recordAttempt(p, PairAttempt{Error: "this node answered without saying where the pairing stands"})
+	} else {
+		n.recordAttempt(p, PairAttempt{Result: msg.Result})
 	}
 	_ = n.store.TouchFederationPeerSeen(ctx, p.ID, time.Now().Unix())
 	if msg.Result == "friend" && p.State == PeerPendingOutgoing {
@@ -261,6 +279,71 @@ func (n *Node) pairWith(ctx context.Context, p *Peer) {
 		n.Nudge() // start the first catalog sync on the next sweep
 	}
 	n.refreshHeardName(ctx, p, msg.Name)
+}
+
+// recordAttempt stores the outcome of one outbound pairing attempt and logs it
+// **when it changes**. The sweep retries every minute per pending peer, so a
+// node that is merely switched off would otherwise write a log line a minute
+// for as long as its admin leaves the pairing in place.
+func (n *Node) recordAttempt(p *Peer, a PairAttempt) {
+	a.At = time.Now().Unix()
+	n.attemptMu.Lock()
+	prev, had := n.attempts[p.PublicKey]
+	n.attempts[p.PublicKey] = a
+	n.attemptMu.Unlock()
+	if had && prev.Result == a.Result && prev.Error == a.Error {
+		return
+	}
+	switch {
+	case a.Error != "":
+		n.logger.Printf("federation: pairing with %q (%s): %s", p.Display(), p.PublicKey, a.Error)
+	case a.Result == "pending":
+		// The single most useful line in this file for someone whose pairing
+		// "does not work": it did work, and the ball is on the other side.
+		n.logger.Printf("federation: pairing request delivered to %q (%s) — waiting for their admin to accept it",
+			p.Display(), p.PublicKey)
+	}
+}
+
+// lastAttempt returns the recorded outcome of the last pairing attempt toward a
+// key, if this process made one.
+func (n *Node) lastAttempt(key string) (PairAttempt, bool) {
+	n.attemptMu.Lock()
+	defer n.attemptMu.Unlock()
+	a, ok := n.attempts[key]
+	return a, ok
+}
+
+// dialReason turns the transport error into something an admin can act on.
+//
+// The timeout case is named rather than reported, because it is both the
+// commonest outcome and the least readable one: `net/http` renders it as
+// `Post "http://[200:…]:1314/…": context deadline exceeded (Client.Timeout
+// exceeded while awaiting headers)`, which says nothing a person can do
+// anything with. What it actually means here is that nothing answered on the
+// mesh — the node is off, or has federation disabled.
+func dialReason(err error) string {
+	if os.IsTimeout(err) || errors.Is(err, context.DeadlineExceeded) {
+		return "nothing answered (the node is offline, or its madnetwork node is not running)"
+	}
+	var uerr *url.Error
+	if errors.As(err, &uerr) && uerr.Err != nil {
+		err = uerr.Err
+	}
+	return err.Error()
+}
+
+// refusalReason turns a non-200 pairing reply into a sentence. The body is the
+// far node's own words (handlePair answers in plain text), so it carries the
+// specifics — a protocol mismatch, or the self-certifying check having failed —
+// and is worth far more than the status alone.
+func refusalReason(resp *http.Response) string {
+	msg := fmt.Sprintf("this node refused the pairing request (HTTP %d)", resp.StatusCode)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	if detail := strings.TrimSpace(string(body)); detail != "" {
+		msg += ": " + CleanMarkReason(detail)
+	}
+	return msg
 }
 
 // refreshHeardName records what a peer just called itself, if that differs from
@@ -389,8 +472,27 @@ func (n *Node) Peers(ctx context.Context) ([]*Peer, error) {
 		if addr, err := AddrForKeyHex(p.PublicKey); err == nil {
 			p.Address = addr.String()
 		}
+		if a, ok := n.lastAttempt(p.PublicKey); ok {
+			p.LastAttempt = &a
+		}
 	}
 	return peers, nil
+}
+
+// ImportKey is [Node.ImportCard] for a node whose *key* an admin has but whose
+// card they do not — the node they just found on the network map, which carries
+// every key it draws. Identity is the key, so a card adds nothing here except a
+// claimed name, and name is stored as exactly that: a claim the handshake will
+// refresh (it may be empty).
+//
+// Friending stays deliberate: this is our half of the mutual intent, and the far
+// node still records a `pending_incoming` request its admin has to accept.
+func (n *Node) ImportKey(ctx context.Context, publicKey, name string) (*Peer, error) {
+	key, err := NormalizeKey(publicKey)
+	if err != nil {
+		return nil, err
+	}
+	return n.ImportCard(ctx, Card{Version: ProtocolVersion, Name: CleanPeerName(name), PublicKey: key})
 }
 
 // ImportCard records a friend's node card. A new key becomes pending_outgoing

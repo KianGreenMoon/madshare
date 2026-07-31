@@ -73,6 +73,8 @@ func main() {
 		cmdScope(os.Args[2:])
 	case "check":
 		cmdCheck(os.Args[2:])
+	case "friend":
+		cmdFriend(os.Args[2:])
 	case "reach":
 		cmdReach(os.Args[2:])
 	case "kill", "restart", "partition", "heal":
@@ -101,6 +103,7 @@ func usage() {
   meshlab flap NODE [-down 10s] [-up 20s]
   meshlab scope NODE default DEPTH     node-wide sharing scope (F5)
   meshlab scope NODE tracks DEPTH|guest on|off [-limit N]
+  meshlab friend A B                   friend two RUNNING nodes (a-c after a-b,b-c)
   meshlab check                        assert the sharing-scope rules
   meshlab reach [-runs N] [-no-fetch]  what does friendship DISTANCE cost?
 
@@ -637,6 +640,30 @@ func printScope(raw []byte) {
 
 // cmdCheck runs the scope assertion pass and exits non-zero on a failure, so it
 // is usable from a script as well as by eye.
+// cmdFriend adds a friendship to a running lab. `up -friends` fixes the graph at
+// startup; this is how the friend-of-a-friend case is built, which is the one an
+// admin actually meets:
+//
+//	meshlab up -nodes 3 -topology chain -friends a-b,b-c -seed ./audio
+//	meshlab friend a c
+func cmdFriend(args []string) {
+	fs := flag.NewFlagSet("friend", flag.ExitOnError)
+	control := fs.String("control", defaultControl, "control API address")
+	// Positionals may precede the flags here, as in `scope`, so the two are
+	// separated before parsing rather than left to flag's stop-at-first-operand.
+	words := knobsIn(args)
+	fs.Parse(flagsIn(args))
+	if len(words) != 2 {
+		fatalf("usage: meshlab friend NODE NODE")
+	}
+	a, b := words[0], words[1]
+	body, _ := json.Marshal(map[string]string{"a": a, "b": b})
+	if _, err := call(*control, http.MethodPost, "/friend", body); err != nil {
+		fatalf("%v", err)
+	}
+	fmt.Printf("%s and %s are friends\n", a, b)
+}
+
 func cmdCheck(args []string) {
 	fs := flag.NewFlagSet("check", flag.ExitOnError)
 	control := fs.String("control", defaultControl, "control API address")

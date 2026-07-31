@@ -210,7 +210,37 @@ type Peer struct {
 
 	Username string `json:"username,omitempty"` // mapped account, display only
 	Address  string `json:"address,omitempty"`  // derived mesh address, display only
+	// LastAttempt is what our last outbound pairing attempt toward this node
+	// did (display only, filled by the running node). Nil when we have not tried
+	// since this process started.
+	LastAttempt *PairAttempt `json:"last_attempt,omitempty"`
 }
+
+// PairAttempt is the outcome of the last outbound pairing attempt toward one
+// node. It exists to answer the only question a peer stuck on
+// `pending_outgoing` raises — *did our request get there, and what did they
+// say?* — which the handshake otherwise keeps entirely to itself: every failure
+// in [Node.pairWith] is a silent return, so an admin watching a pairing that
+// never converges cannot tell an unreachable node from a refused request from a
+// node whose admin simply has not clicked accept yet.
+//
+// In memory on the running node rather than in the peer row: it describes this
+// process's last try, not a fact about the friendship, and one refresh tick
+// re-derives it after a restart.
+type PairAttempt struct {
+	At int64 `json:"at"` // unix seconds
+	// Result is what the far side answered: "friend" (it considers us mutual) or
+	// "pending" (our request is recorded and waiting for its admin). Empty when
+	// the attempt never got an answer.
+	Result string `json:"result,omitempty"`
+	// Error is a sentence for an admin when the attempt failed: unreachable,
+	// refused, or an answer we could not read. Empty on success.
+	Error string `json:"error,omitempty"`
+}
+
+// Delivered reports whether the request reached the far node and was answered —
+// the line between "they have not seen it" and "they have not acted on it".
+func (a PairAttempt) Delivered() bool { return a.Error == "" && a.Result != "" }
 
 // Label is the name to show for a peer: the admin's local label if they set one,
 // otherwise what the peer calls itself, otherwise empty — and an empty label is

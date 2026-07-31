@@ -40,7 +40,8 @@ let state = {
 };
 
 let svg, gRoot, gEdges, gNodes, detail, statsEl, emptyEl;
-let onBlock = null; // injected by network.js so the map reuses its modal + toasts
+let onBlock = null;  // injected by network.js so the map reuses its modal + toasts
+let onFriend = null; // likewise for the pairing request a stranger node can be sent
 
 // ── Building ─────────────────────────────────────────────────────────────────
 
@@ -351,12 +352,28 @@ function renderDetail() {
     actions.append(el('p', { class: 'map-note', text: 'This is your node.' }));
   } else if (n.state === 'blocked') {
     actions.append(el('p', { class: 'map-note', text: 'You have blocked this node; the block is published as a distrust mark.' }));
-  } else if (onBlock) {
-    actions.append(el('button', {
-      class: 'btn btn-destructive-solid btn-mini',
-      text: 'Block…',
-      onclick: () => onBlock(n),
-    }));
+  } else {
+    // A node the graph names but we have no relationship with — a friend of a
+    // friend, or further out. The map already carries its key, which is all a
+    // pairing needs, so the friendship graph can be grown from here instead of
+    // only pruned: friending stays mutual, this sends the request.
+    if (onFriend && !n.state) {
+      actions.append(el('button', {
+        class: 'btn btn-neutral btn-mini',
+        text: 'Ask to be friends…',
+        onclick: () => onFriend(n),
+      }));
+    }
+    if (n.state === 'pending') {
+      actions.append(el('p', { class: 'map-note', text: 'A pairing with this node is under way — its card in the node list has the details.' }));
+    }
+    if (onBlock) {
+      actions.append(el('button', {
+        class: 'btn btn-destructive-solid btn-mini',
+        text: 'Block…',
+        onclick: () => onBlock(n),
+      }));
+    }
   }
   rows.push(actions);
 
@@ -385,8 +402,9 @@ function viaText(n) {
 
 // ── Public entry ─────────────────────────────────────────────────────────────
 
-export function initMap({ onBlockNode }) {
+export function initMap({ onBlockNode, onFriendNode }) {
   onBlock = onBlockNode;
+  onFriend = onFriendNode;
   svg = document.getElementById('mapSvg');
   detail = document.getElementById('mapDetail');
   statsEl = document.getElementById('mapStats');

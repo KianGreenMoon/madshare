@@ -344,7 +344,7 @@ func reachVerdict(rep *reachReport) string {
 // and this command exists to show that the separation is real.
 func (l *lab) friendDistances(from string) map[string]int {
 	adj := map[string][]string{}
-	for _, p := range l.friendPairs {
+	for _, p := range l.friendGraph() {
 		adj[p[0]] = append(adj[p[0]], p[1])
 		adj[p[1]] = append(adj[p[1]], p[0])
 	}

@@ -60,11 +60,16 @@
     <form class="net-import" id="importForm" hidden>
       <h3 class="net-subhead">Add a friend</h3>
       <label class="net-field">
-        <span>Paste your friend&rsquo;s node card (JSON)</span>
+        <span>Paste a node card (JSON) &mdash; or just a node&rsquo;s public key</span>
         <textarea id="cardInput" rows="4" spellcheck="false"
                   placeholder='{"madshare_node_card": 0, "name": "…", "public_key": "…"}'></textarea>
       </label>
-      <button class="btn btn-neutral" id="importBtn" type="submit">Import card</button>
+      <p class="net-hint">
+        The key is the identity, so either form works. Any node on the map below
+        can be friended straight from its key &mdash; a friend of a friend needs
+        no card. Their admin still has to accept.
+      </p>
+      <button class="btn btn-neutral" id="importBtn" type="submit">Send friend request</button>
     </form>
 
     <h3 class="net-subhead" id="peersHeading" hidden>Known nodes</h3>

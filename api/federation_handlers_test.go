@@ -43,6 +43,10 @@ func (f *fakeFederation) ImportCard(_ context.Context, c federation.Card) (*fede
 	f.imported = &c
 	return &federation.Peer{ID: 1, PublicKey: c.PublicKey, Name: c.Name, State: federation.PeerPendingOutgoing}, nil
 }
+func (f *fakeFederation) ImportKey(ctx context.Context, publicKey, name string) (*federation.Peer, error) {
+	return f.ImportCard(ctx, federation.Card{Version: federation.ProtocolVersion, Name: name, PublicKey: publicKey})
+}
+
 func (f *fakeFederation) EnsureBlob(context.Context, string) (federation.Transfer, error) {
 	return nil, federation.ErrNoHolder
 }
@@ -142,6 +146,33 @@ func TestFederationEndpoints_ImportAndErrors(t *testing.T) {
 	}
 	if fake.imported == nil || fake.imported.PublicKey != key {
 		t.Fatalf("imported card = %+v, want key %s", fake.imported, key)
+	}
+
+	// A bare key is the same act — the form the network map has for a node whose
+	// admin never exported a card. The name rides along as the peer's own claim.
+	fake.imported = nil
+	otherKey := strings.Repeat("cd", 32)
+	resp, err = http.Post(srv.URL+"/api/admin/federation/peers", "application/json",
+		strings.NewReader(`{"public_key": "`+otherKey+`", "name": "found on the map"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("import by key = %d, want 200", resp.StatusCode)
+	}
+	if fake.imported == nil || fake.imported.PublicKey != otherKey || fake.imported.Name != "found on the map" {
+		t.Fatalf("imported by key = %+v, want key %s named \"found on the map\"", fake.imported, otherKey)
+	}
+
+	// Neither form present is a 400 naming both.
+	resp, err = http.Post(srv.URL+"/api/admin/federation/peers", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("empty import = %d, want 400", resp.StatusCode)
 	}
 
 	// A malformed card is a 400 with the parse message.

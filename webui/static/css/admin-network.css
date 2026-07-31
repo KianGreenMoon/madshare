@@ -64,6 +64,7 @@
   resize: vertical;
 }
 .net-field textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.net-hint { font-size: 0.8rem; color: var(--text-muted); margin: calc(var(--space-2) * -1) 0 var(--space-3); }
 
 /* ── Peer list ──────────────────────────────────────────────────────────────── */
 .net-peers { display: flex; flex-direction: column; gap: var(--space-3); }
@@ -112,6 +113,13 @@
   color: var(--text);
   font-size: 0.82rem;
 }
+/* What our last pairing attempt did. The whole point is that a pairing which is
+   merely WAITING must not read as a fault, so a delivered request is styled as
+   progress and only a real failure is coloured as one. */
+.peer-pairing { font-size: 0.82rem; margin-top: var(--space-2); color: var(--text-muted); }
+.peer-pairing.is-good { color: var(--text); }
+.peer-pairing.is-bad  { color: var(--error); }
+
 .peer-actions { display: flex; gap: var(--space-2); margin-top: var(--space-3); flex-wrap: wrap; }
 
 /* ── Contradicted claims (F6) ────────────────────────────────────────────────
@@ -343,8 +351,10 @@
 .map-mark-who { display: block; color: var(--text-muted); font-size: 0.72rem; }
 .map-mark-why { color: var(--text); }
 
-.map-detail-actions { margin-top: var(--space-4); }
+.map-detail-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; margin-top: var(--space-4); }
 .map-note { font-size: 0.8rem; color: var(--text-muted); }
+/* A note shares the action row with the buttons, and always takes its own line. */
+.map-detail-actions .map-note { flex-basis: 100%; margin: 0; }
 
 .map-legend {
   list-style: none;

@@ -290,6 +290,59 @@ func (l *lab) applyFriends() error {
 	return nil
 }
 
+// friendGraph is a snapshot of the friendship graph. It is copied under the lock
+// because `friend` grows it while the control API serves readers.
+func (l *lab) friendGraph() [][2]string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([][2]string(nil), l.friendPairs...)
+}
+
+// friend adds one friendship to a RUNNING lab, which `up -friends` cannot: the
+// interesting friendships are the ones formed after the network exists. The
+// friend-of-a-friend case is the reason it is here — `up -friends a-b,b-c`
+// followed by `friend a c` is exactly what an admin does when they meet someone
+// through a friend, and it is the shape the friendship graph has to support to
+// be a graph at all.
+//
+// Idempotent: befriending an existing pair re-runs the (idempotent) card imports
+// and accepts, which is also how a half-finished pairing is nudged along.
+func (l *lab) friend(a, b string) error {
+	na, nb := l.nodes[a], l.nodes[b]
+	if na == nil || nb == nil {
+		return fmt.Errorf("friend %s-%s names a node that is not in this lab (have: %s)", a, b, strings.Join(l.names, ", "))
+	}
+	if a == b {
+		return fmt.Errorf("a node cannot befriend itself")
+	}
+	if err := na.postJSON("/api/admin/federation/peers", map[string]any{"card": nb.nodeCard()}, nil); err != nil {
+		return fmt.Errorf("import %s's card on %s: %w", b, a, err)
+	}
+	if err := nb.postJSON("/api/admin/federation/peers", map[string]any{"card": na.nodeCard()}, nil); err != nil {
+		return fmt.Errorf("import %s's card on %s: %w", a, b, err)
+	}
+	if err := l.acceptEachOther(na, nb); err != nil {
+		return err
+	}
+	l.mu.Lock()
+	known := false
+	for _, p := range l.friendPairs {
+		if (p[0] == a && p[1] == b) || (p[0] == b && p[1] == a) {
+			known = true
+			break
+		}
+	}
+	if !known {
+		// `reach` and `status` read friendPairs as the friendship graph, so a
+		// runtime friendship has to land there or the lab would describe a
+		// topology it no longer has.
+		l.friendPairs = append(l.friendPairs, [2]string{a, b})
+	}
+	l.mu.Unlock()
+	l.logger.Printf("friends: %s <-> %s", a, b)
+	return nil
+}
+
 // acceptEachOther approves any pending_incoming request on both sides, polling
 // because the pairing handshake crosses the mesh and the mesh has just come up.
 func (l *lab) acceptEachOther(a, b *node) error {
@@ -520,8 +573,9 @@ func (l *lab) status() map[string]any {
 	for _, name := range l.linkOrder {
 		links = append(links, l.links[name].describe())
 	}
-	friends := make([]string, 0, len(l.friendPairs))
-	for _, p := range l.friendPairs {
+	pairs := l.friendGraph()
+	friends := make([]string, 0, len(pairs))
+	for _, p := range pairs {
 		friends = append(friends, p[0]+"-"+p[1])
 	}
 	l.mu.Lock()
@@ -651,6 +705,31 @@ func (l *lab) routes() http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, report)
+	})
+
+	// Friend two running nodes. The friendship graph is not fixed at `up`: the
+	// case worth testing is the one where an admin meets a node THROUGH a friend
+	// and befriends it afterwards.
+	mux.HandleFunc("/friend", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErr(w, http.StatusMethodNotAllowed, "POST")
+			return
+		}
+		var req struct{ A, B string }
+		raw, err := readBody(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "%v", err)
+			return
+		}
+		if err := json.Unmarshal(raw, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid request: %v", err)
+			return
+		}
+		if err := l.friend(req.A, req.B); err != nil {
+			writeErr(w, http.StatusBadRequest, "%v", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "friends": []string{req.A, req.B}})
 	})
 
 	// Sharing scope (F5): set a node's default depth, or the depth / guest flag
