@@ -485,9 +485,14 @@ type MadnetworkView struct {
 // includeRemote / includeOwn split a view into the two row sources the merged
 // queries union. Keeping the rule in one place is what stops a source filter
 // from being applied to one half of a UNION and forgotten on the other.
+//
+// Both can be false, and that case is load-bearing rather than an oversight:
+// asking for OUR shelf on a node that publishes nothing to the network must
+// answer with nothing. Answering with the merged catalog instead — the shape
+// this had first — is the one answer that is certainly wrong.
 func (v MadnetworkView) includeRemote() bool { return !v.SelfOnly }
 func (v MadnetworkView) includeOwn() bool {
-	return v.SelfOnly || (v.IncludeSelf && v.SourceID == 0)
+	return v.IncludeSelf && (v.SelfOnly || v.SourceID == 0)
 }
 
 // reachClause gates a source join by reachability. cutoff is a server-computed
@@ -576,14 +581,24 @@ func fedcatSelfRows(defaultDepth int) string {
 // keeps exactly one of the two halves.
 func fedcatCountBase(view MadnetworkView) string {
 	switch {
-	case !view.includeRemote():
-		return ` FROM (` + fedcatSelfRows(view.DefaultShareDepth) + `)`
-	case view.includeOwn():
+	case view.includeRemote() && view.includeOwn():
 		return ` FROM (` + fedcatRemoteRows(view) + ` UNION ALL ` + fedcatSelfRows(view.DefaultShareDepth) + `)`
-	default:
+	case view.includeRemote():
 		return ` FROM (` + fedcatRemoteRows(view) + `)`
+	case view.includeOwn():
+		return ` FROM (` + fedcatSelfRows(view.DefaultShareDepth) + `)`
+	default:
+		return ` FROM (` + fedcatNoRows + `)`
 	}
 }
+
+// fedcatNoRows is a row source shaped like the other two and guaranteed empty —
+// the view that includes neither half (§includeOwn). A well-typed nothing keeps
+// every query above it unchanged; a special case at each call site would not.
+const fedcatNoRows = `
+	SELECT '' AS akey, '' AS alb, '' AS title, NULL AS track_number,
+	       NULL AS disc_number, NULL AS year
+	WHERE 0`
 
 // Leading ORDER BY keys forcing the unknown buckets to the bottom of the
 // alphabetical lists (the library's norm_name trick, matched on the canonical

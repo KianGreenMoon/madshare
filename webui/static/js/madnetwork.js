@@ -1,11 +1,21 @@
 // Madnetwork — browsing the merged catalog of this node's community PLUS its own
 // published library (federation F2/F3, docs/architecture/federation.md;
-// UI design docs/ui/madnetwork-page.md). A sibling of the library page built on
-// the shared browse core: the same rows (hearts, "⋯" quick-add menus), the same
-// search view, alphabetical order with the unknown buckets last. The
-// madnetwork-specific extras are the ⓘ source/versions panel and
-// **Materialize** — fetching a remote track into this server's library
+// UI design docs/ui/madnetwork-page.md). Built on the shared browse core: the
+// same rows (hearts, "⋯" quick-add menus) and the same search view as the
+// library page. The madnetwork-specific extras are the ⓘ source/versions panel
+// and **Materialize** — fetching a remote track into this server's library
 // (staged through the review bucket; the F3/F4 transfer machinery).
+//
+// The landing view is NOT the alphabet. On your own library you browse because
+// you already know what is in it; on the network you have no memory to navigate,
+// so the page leads with search and a set of lanes that each answer a question
+// somebody actually arrives with — what can I get that I don't have, what
+// appeared since I last looked, what does my community have, what is nearly
+// gone, what did the people I chose personally bring, what does that one node
+// have. The A→Z drill-down is still here, demoted to "Browse all" and windowed.
+//
+// Every lane is a plain fact about what THIS node has cached, and every row says
+// why it is in the lane it is in. Nothing here is a recommendation.
 //
 // A track's default pick is its most-held version's ladder-best rendition;
 // self-held tracks play the direct local /files/ URL (no relay hop) and carry
@@ -24,14 +34,27 @@ import {
   highlightPlayingRow, reflectPlayStateRows, repaintHearts,
 } from './browse-rows.js';
 import { createBrowseSearch } from './browse-search.js';
+import { createVirtualList } from './virtual-list.js';
 
 const API = document.querySelector('meta[name="api-url"]')?.content || '';
 
 // Drill state for the current visit; reset on every init (the shell re-imports
 // a cached module, so init must not rely on module state surviving).
-let drill = null;      // { level: 'artists'|'albums'|'tracks', artist, album }
+//   level  'discover' (the landing lanes) | 'lane' (one lane, in full)
+//          | 'artists' | 'albums' | 'tracks' (Browse all, the old drill-down)
+//   source the node whose shelf we are browsing, or null for the merged view:
+//          { id, name } with id 'self' for our own published library.
+let drill = null;
 let search = null;     // shared browse-search factory (per activation)
 let abort = null;      // AbortController tied to the activation
+let nodes = [];        // the summary's node list, reused by the "By node" lane
+
+// The Browse-all artist scroller: the merged catalog is a whole community's
+// output now, so it is paged and windowed like the library's rather than
+// rendered whole (docs/ui/madnetwork-page.md §Scale stops being optional).
+const ARTIST_PAGE_SIZE = 80;
+let artistVList = null;
+function destroyArtistVList() { if (artistVList) { artistVList.destroy(); artistVList = null; } }
 
 // Shared player controller (singleton) + subscriptions so the track list can
 // highlight what's playing, mirroring the local library. Wired in init(),
@@ -46,8 +69,9 @@ const materializePolls = new Map();
 
 export async function init() {
   if (!gatePage(PAGE_PERMS.madnetwork)) return;
-  drill = { level: 'artists', artist: null, album: null };
+  drill = { level: 'discover', artist: null, album: null, lane: null, source: null };
   abort = new AbortController();
+  nodes = [];
 
   controller = getController();
   unsubTrackChange = controller.on('trackchange', t => highlightPlayingRow(t, controller.paused));
@@ -76,13 +100,14 @@ export async function init() {
   });
 
   loadStatus();
-  showArtists();
+  showDiscover();
 }
 
 export function teardown() {
   abort?.abort();
   abort = null;
   search = null;
+  destroyArtistVList();
   bulk = null; // stops the bulk watcher; server-side transfers finish on their own
   for (const timer of materializePolls.values()) clearTimeout(timer);
   materializePolls.clear();
@@ -134,6 +159,12 @@ async function loadStatus() {
   if (!box || !box.isConnected) return; // navigated away meanwhile
 
   const friends = data.friends || [];
+  // The node list feeds the "By node" lane as well as the strip; our own
+  // library is one shelf among them (it has no source row, hence the flag).
+  nodes = friends.map(f => ({ ...f, self: false }));
+  if (data.self_name) nodes.unshift({ name: data.self_name, self: true, entries: 0, last_seen: 0 });
+  if (drill?.level === 'discover') refreshNodeLane();
+
   box.replaceChildren();
   // Fail-open banner: our own inbound mesh path looks dead, so nothing is being
   // hidden — the catalog shown is last-known, not live.
@@ -154,25 +185,47 @@ async function loadStatus() {
     `${data.tracks} track${data.tracks === 1 ? '' : 's'} from ${friends.length} ` +
     `librar${friends.length === 1 ? 'y' : 'ies'}` +
     (data.self_name ? ' + this one' : '')));
+  // Every chip opens that node's shelf — the strip already answered "who is
+  // here", and "what do they have" is the next question a person asks.
   if (data.self_name) {
-    const chip = document.createElement('span');
-    chip.className = 'mn-friend';
-    chip.title = 'This server’s own published library, merged into the view';
-    chip.append(mkSpan('mn-friend-name', data.self_name), mkSpan('mn-friend-seen', 'this server'));
+    const chip = mkNodeChip('mn-friend', data.self_name, 'this server',
+      'This server’s own published library, merged into the view',
+      { id: 'self', name: data.self_name });
     box.append(chip);
   }
   for (const f of friends) {
     const stale = f.reachable === false;
-    const chip = document.createElement('span');
-    chip.className = 'mn-friend' + (f.entries ? '' : ' mn-friend--empty') + (stale ? ' mn-friend--stale' : '');
-    chip.title = `${f.entries} entries · catalog synced ${fmtAgo(f.synced_at)}` +
+    const cls = 'mn-friend' + (f.entries ? '' : ' mn-friend--empty') + (stale ? ' mn-friend--stale' : '');
+    box.append(mkNodeChip(cls, f.name || '(unnamed)', `seen ${fmtAgo(f.last_seen)}`,
+      `${f.entries} entries · catalog synced ${fmtAgo(f.synced_at)}` +
       (f.friend ? ' · a node this server friended directly' : ' · reached through the community') +
-      (stale ? ' · not seen recently — its tracks are hidden' : '');
-    chip.append(mkSpan('mn-friend-name', f.name || '(unnamed)'),
-      mkSpan('mn-friend-seen', `seen ${fmtAgo(f.last_seen)}`));
-    box.append(chip);
+      (stale ? ' · not seen recently — its tracks are hidden' : '') +
+      ' · click to browse this node',
+      { id: f.id, name: f.name || '(unnamed)' }));
   }
   box.hidden = false;
+}
+
+function mkNodeChip(cls, name, seen, title, source) {
+  const chip = document.createElement('button');
+  chip.type = 'button';
+  chip.className = cls;
+  chip.title = title;
+  chip.append(mkSpan('mn-friend-name', name), mkSpan('mn-friend-seen', seen));
+  chip.addEventListener('click', () => showArtists(source));
+  return chip;
+}
+
+// refreshNodeLane redraws the By-node lane when the status poll lands after the
+// landing view is already on screen (the two fetches race on every load).
+function refreshNodeLane() {
+  const panel = document.getElementById('mnPanel');
+  const existing = panel?.querySelector('.mn-lane--nodes');
+  const lane = buildNodeLane();
+  if (!lane) return;
+  lane.classList.add('mn-lane--nodes');
+  if (existing) existing.replaceWith(lane);
+  else panel?.querySelector('.panel-fade-in')?.append(lane);
 }
 
 function mkSpan(cls, text) {
@@ -204,23 +257,47 @@ function renderBreadcrumb() {
   const mkSep = () => mkSpan('bc-sep', '›');
   const mkCurrent = label => mkSpan('bc-item bc-current', label);
 
-  if (drill.level === 'artists') {
-    bc.append(mkCurrent('Madnetwork'));
-  } else if (drill.level === 'albums') {
-    bc.append(mkLink('Madnetwork', () => showArtists()), mkSep(), mkCurrent(drill.artist));
-  } else {
-    bc.append(mkLink('Madnetwork', () => showArtists()), mkSep(),
-      mkLink(drill.artist, () => showAlbums(drill.artist)), mkSep(), mkCurrent(drill.album));
+  // Everything hangs off the landing view, and a node's shelf announces itself
+  // as its own step so it is never mistaken for the merged catalog.
+  const trail = [];
+  if (drill.level !== 'discover') trail.push(mkLink('Madnetwork', () => showDiscover()));
+  if (drill.level === 'lane') {
+    trail.push(mkCurrent(laneTitle(drill.lane)));
+  } else if (drill.level !== 'discover') {
+    const rootLabel = drill.source ? drill.source.name : 'Browse all';
+    const root = () => showArtists(drill.source);
+    if (drill.level === 'artists') trail.push(mkCurrent(rootLabel));
+    else trail.push(mkLink(rootLabel, root));
+    if (drill.level === 'albums') trail.push(mkCurrent(drill.artist));
+    if (drill.level === 'tracks') {
+      trail.push(mkLink(drill.artist, () => showAlbums(drill.artist)), mkCurrent(drill.album));
+    }
   }
+  if (!trail.length) trail.push(mkCurrent('Madnetwork'));
+
+  trail.forEach((el, i) => {
+    if (i) bc.append(mkSep());
+    bc.append(el);
+  });
   renderBarActions();
 }
 
-// The tracks view carries a visible "Materialize all" button — the album-level
-// bulk action shouldn't hide in a menu (docs/ui/madnetwork-page.md).
+// Bar actions are per view: the landing keeps the alphabet one click away
+// (demoted, not deleted), and the tracks view carries the visible "Materialize
+// all" — an album-level bulk action shouldn't hide in a menu.
 function renderBarActions() {
   const el = document.getElementById('mnBarActions');
   if (!el) return;
   el.replaceChildren();
+  if (drill?.level === 'discover') {
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-neutral';
+    btn.textContent = 'Browse all A→Z';
+    btn.title = 'Every artist in the merged catalog, alphabetically';
+    btn.addEventListener('click', () => showArtists(null));
+    el.append(btn);
+    return;
+  }
   if (drill?.level !== 'tracks' || !canMaterialize()) return;
   const { artist, album } = drill;
   const btn = document.createElement('button');
@@ -271,51 +348,304 @@ function queueTrackOf(t, artist, album) {
 // artist/album "⋯" quick-add menus.
 async function entityTracks(artist, album) {
   const fetchAlbum = async al => {
-    const data = await fetchJSON(`${API}/api/madnetwork/tracks?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(al)}`);
+    const data = await fetchJSON(`${API}/api/madnetwork/tracks?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(al)}${sourceQS()}`);
     return (data.tracks || []).map(t => queueTrackOf(t, artist, al)).filter(Boolean);
   };
   if (album != null) return fetchAlbum(album);
-  const data = await fetchJSON(`${API}/api/madnetwork/albums?artist=${encodeURIComponent(artist)}`);
+  const data = await fetchJSON(`${API}/api/madnetwork/albums?artist=${encodeURIComponent(artist)}${sourceQS()}`);
   const lists = await Promise.all((data.albums || []).map(al => fetchAlbum(al.title)));
   return lists.flat();
 }
 
-// ── Views ─────────────────────────────────────────────────────────────────────
+// ── Landing view: the lanes ───────────────────────────────────────────────────
 
-async function showArtists() {
-  drill = { level: 'artists', artist: null, album: null };
+// Lane titles are also the fallbacks for a lane the server names but this build
+// doesn't know — the server sends its own title with every lane.
+const LANE_TITLES = {
+  missing: 'Not in your library',
+  new:     'New on the network',
+  held:    'Most held here',
+  rare:    'Only one node has it',
+  friends: 'From your direct friends',
+};
+function laneTitle(name) { return LANE_TITLES[name] || 'Lane'; }
+
+// laneNote is the one-line answer to "why is this row here" — the rule that
+// every lane row is explainable, made literal. It reads facts the server sent,
+// never an inference.
+function laneNote(lane, t) {
+  const holders = t.holders || 0;
+  const nodes_ = n => `${n} node${n === 1 ? '' : 's'}`;
+  switch (lane) {
+    case 'rare':    return t.source_name ? `only ${t.source_name} has it` : 'only one node has it';
+    case 'new':     return t.first_seen ? `first seen ${fmtAgo(t.first_seen)}` : 'new here';
+    case 'held':    return `held by ${nodes_(holders)} here`;
+    case 'missing': return `held by ${nodes_(holders)}`;
+    case 'friends': return `held by ${nodes_(holders)}`;
+    default:        return '';
+  }
+}
+
+async function showDiscover() {
+  drill = { level: 'discover', artist: null, album: null, lane: null, source: null };
+  destroyArtistVList();
   renderBreadcrumb();
+  const panel = document.getElementById('mnPanel');
+  panel.innerHTML = '<div class="panel-loading" aria-live="polite" role="status"></div>';
+
   let data;
   try {
-    data = await fetchJSON(`${API}/api/madnetwork/artists`);
+    data = await fetchJSON(`${API}/api/madnetwork/discover`);
+  } catch { panelMessage('Could not load the madnetwork.'); return; }
+  if (!drill || drill.level !== 'discover') return; // navigated on meanwhile
+
+  const lanes = data.lanes || [];
+  const wrap = document.createElement('div');
+  wrap.className = 'panel-fade-in';
+  for (const lane of lanes) {
+    wrap.append(buildLaneBlock(lane));
+  }
+  const nodeLane = buildNodeLane();
+  if (nodeLane) {
+    nodeLane.classList.add('mn-lane--nodes');
+    wrap.append(nodeLane);
+  }
+
+  if (!wrap.childElementCount) {
+    panelMessage('Nothing here yet — libraries appear once this node friends others on '
+      + '<a href="/admin/network">Admin › Network</a>.');
+    return;
+  }
+  panel.replaceChildren(wrap);
+  repaintHearts();
+  const cur = controller?.current?.();
+  if (cur && cur.track) highlightPlayingRow(cur.track, controller.paused);
+}
+
+// buildLaneBlock renders one lane's digest: a heading, up to eight ordinary
+// track rows, and "See all" when there is more behind it.
+function buildLaneBlock(lane) {
+  const box = document.createElement('section');
+  box.className = 'mn-lane';
+
+  const head = document.createElement('div');
+  head.className = 'mn-lane-head';
+  head.append(mkSpan('mn-lane-title', lane.title || laneTitle(lane.name)));
+  if (lane.more) {
+    const more = document.createElement('button');
+    more.className = 'mn-lane-more';
+    more.textContent = 'See all →';
+    more.addEventListener('click', () => showLane(lane.name));
+    head.append(more);
+  }
+  box.append(head);
+
+  const rows = document.createElement('div');
+  rows.className = 'mn-lane-rows';
+  const tracks = lane.tracks || [];
+  // One queue per lane: playing a lane row continues down that lane, which is
+  // the only continuation that makes sense for a list assembled by a ranking.
+  const queue = [];
+  const qIndex = new Map();
+  tracks.forEach((t, i) => {
+    const qt = queueTrackOf(t, t.group_artist, t.album);
+    if (qt) {
+      qIndex.set(i, queue.length);
+      queue.push(qt);
+    }
+  });
+  tracks.forEach((t, i) => {
+    appendTrackRow(rows, t, i, queue, qIndex.get(i), {
+      artist: t.group_artist,
+      album: t.album,
+      meta: [t.artist || t.group_artist, t.album].filter(Boolean).join(' · '),
+      note: laneNote(lane.name, t),
+      num: i + 1,
+    });
+  });
+  box.append(rows);
+  return box;
+}
+
+// buildNodeLane is "By node": every library we hold a catalog from, our own
+// included. Opening one enters Browse all restricted to that node — the shelf
+// an admin looks at after a report, where a node's offering is complete and
+// uncorroborated entries included (docs/ui/madnetwork-page.md).
+function buildNodeLane() {
+  if (!nodes.length) return null;
+  const box = document.createElement('section');
+  box.className = 'mn-lane';
+  const head = document.createElement('div');
+  head.className = 'mn-lane-head';
+  head.append(mkSpan('mn-lane-title', 'By node'));
+  box.append(head);
+
+  const rows = document.createElement('div');
+  rows.className = 'mn-lane-rows';
+  for (const n of nodes) {
+    rows.append(buildArtistRow({
+      name: n.name || '(unnamed)',
+      meta: n.self ? 'this server’s own published library'
+        : `${n.entries} entr${n.entries === 1 ? 'y' : 'ies'} · seen ${fmtAgo(n.last_seen)}`
+          + (n.friend ? ' · direct friend' : ''),
+      onOpen: () => showArtists({ id: n.self ? 'self' : n.id, name: n.name || '(unnamed)' }),
+    }));
+  }
+  box.append(rows);
+  return box;
+}
+
+// ── One lane, in full ─────────────────────────────────────────────────────────
+
+// showLane is "See all": the same ranking without the digest's per-source cap,
+// paged. The tail of a lane is reachable here and through search — a lane ranks,
+// it never hides.
+async function showLane(name, offset = 0) {
+  drill = { level: 'lane', artist: null, album: null, lane: name, source: null };
+  destroyArtistVList();
+  renderBreadcrumb();
+  const panel = document.getElementById('mnPanel');
+  panel.innerHTML = '<div class="panel-loading" aria-live="polite" role="status"></div>';
+
+  let data;
+  try {
+    data = await fetchJSON(`${API}/api/madnetwork/lane?name=${encodeURIComponent(name)}&offset=${offset}`);
+  } catch { panelMessage('Could not load this lane.'); return; }
+  if (!drill || drill.level !== 'lane' || drill.lane !== name) return;
+
+  const lane = data.lane || {};
+  const tracks = lane.tracks || [];
+  if (!tracks.length) { panelMessage('Nothing in this lane right now.'); return; }
+
+  const wrap = document.createElement('div');
+  wrap.className = 'panel-fade-in';
+  const queue = [];
+  const qIndex = new Map();
+  tracks.forEach((t, i) => {
+    const qt = queueTrackOf(t, t.group_artist, t.album);
+    if (qt) {
+      qIndex.set(i, queue.length);
+      queue.push(qt);
+    }
+  });
+  tracks.forEach((t, i) => {
+    appendTrackRow(wrap, t, i, queue, qIndex.get(i), {
+      artist: t.group_artist,
+      album: t.album,
+      meta: [t.artist || t.group_artist, t.album].filter(Boolean).join(' · '),
+      note: laneNote(name, t),
+      num: offset + i + 1,
+    });
+  });
+
+  if (offset > 0 || lane.more) {
+    const nav = document.createElement('div');
+    nav.className = 'mn-lane-nav';
+    if (offset > 0) {
+      const prev = document.createElement('button');
+      prev.className = 'btn btn-neutral';
+      prev.textContent = '← Previous';
+      prev.addEventListener('click', () => showLane(name, Math.max(0, offset - (data.limit || 50))));
+      nav.append(prev);
+    }
+    if (lane.more) {
+      const next = document.createElement('button');
+      next.className = 'btn btn-neutral';
+      next.textContent = 'Next →';
+      next.addEventListener('click', () => showLane(name, offset + (data.limit || 50)));
+      nav.append(next);
+    }
+    wrap.append(nav);
+  }
+  panel.replaceChildren(wrap);
+  repaintHearts();
+  const cur = controller?.current?.();
+  if (cur && cur.track) highlightPlayingRow(cur.track, controller.paused);
+}
+
+// ── Browse all: the alphabet, demoted and windowed ───────────────────────────
+
+// sourceQS is the "&source=" this view is restricted to, if any — appended to
+// every browse fetch so a node's shelf stays a node's shelf all the way down.
+function sourceQS() {
+  return drill?.source ? `&source=${encodeURIComponent(drill.source.id)}` : '';
+}
+
+async function showArtists(source = null) {
+  drill = { level: 'artists', artist: null, album: null, lane: null, source };
+  destroyArtistVList();
+  renderBreadcrumb();
+  const panel = document.getElementById('mnPanel');
+  panel.innerHTML = '<div class="panel-loading" aria-live="polite" role="status"></div>';
+
+  let page;
+  try {
+    page = await fetchJSON(`${API}/api/madnetwork/artists?limit=${ARTIST_PAGE_SIZE}${sourceQS()}`);
   } catch { panelMessage('Could not load the madnetwork catalog.'); return; }
   if (!drill || drill.level !== 'artists') return; // user drilled on meanwhile
 
-  const artists = data.artists || [];
+  const artists = page.artists || [];
   if (!artists.length) {
-    panelMessage('Nothing here yet — catalogs appear after the first sync with a friend.');
+    panelMessage(source
+      ? 'This node is not offering anything we can see right now.'
+      : 'Nothing here yet — catalogs appear after the first sync with a friend.');
     return;
   }
+
   const wrap = document.createElement('div');
   wrap.className = 'panel-fade-in';
-  for (const a of artists) {
-    wrap.append(buildArtistRow({
-      name: a.name,
-      meta: `${a.albums} album${a.albums === 1 ? '' : 's'} · ${a.tracks} track${a.tracks === 1 ? '' : 's'}`,
-      onOpen: () => showAlbums(a.name),
-      makeMenuItems: btn => quickAddItems(btn, () => entityTracks(a.name, null),
-        { extraItems: materializeAllItems(a.name, null) }),
-    }));
-  }
-  document.getElementById('mnPanel').replaceChildren(wrap);
+  panel.replaceChildren(wrap);
+
+  // Windowed + cursor-paged: only the on-screen rows exist in the DOM and the
+  // next page streams in as the window nears the end (same machinery as the
+  // library page's artist scroller).
+  let cursor = page.next_cursor || null;
+  const qs = sourceQS();
+  artistVList = createVirtualList({
+    sizerEl: wrap,
+    windowScroll: true,
+    makeSpacer: spacerDiv,
+    renderRow: artistRow,
+    estimateHeight: 56,
+    fetchMore: async () => {
+      if (!cursor) return { items: [], done: true };
+      try {
+        const d = await fetchJSON(
+          `${API}/api/madnetwork/artists?limit=${ARTIST_PAGE_SIZE}&cursor=${encodeURIComponent(cursor)}${qs}`);
+        cursor = d.next_cursor || null;
+        return { items: d.artists || [], done: !cursor };
+      } catch {
+        return { items: [], done: true };
+      }
+    },
+  });
+  artistVList.setItems(artists);
+}
+
+function spacerDiv(px) {
+  const d = document.createElement('div');
+  d.style.height = `${Math.max(0, px)}px`;
+  d.setAttribute('aria-hidden', 'true');
+  return d;
+}
+
+function artistRow(a) {
+  return buildArtistRow({
+    name: a.name,
+    meta: `${a.albums} album${a.albums === 1 ? '' : 's'} · ${a.tracks} track${a.tracks === 1 ? '' : 's'}`,
+    onOpen: () => showAlbums(a.name),
+    makeMenuItems: btn => quickAddItems(btn, () => entityTracks(a.name, null),
+      { extraItems: materializeAllItems(a.name, null) }),
+  });
 }
 
 async function showAlbums(artist) {
-  drill = { level: 'albums', artist, album: null };
+  drill = { ...drill, level: 'albums', artist, album: null };
+  destroyArtistVList();
   renderBreadcrumb();
   let data;
   try {
-    data = await fetchJSON(`${API}/api/madnetwork/albums?artist=${encodeURIComponent(artist)}`);
+    data = await fetchJSON(`${API}/api/madnetwork/albums?artist=${encodeURIComponent(artist)}${sourceQS()}`);
   } catch { panelMessage('Could not load albums.'); return; }
   if (!drill || drill.level !== 'albums' || drill.artist !== artist) return;
 
@@ -338,11 +668,12 @@ async function showAlbums(artist) {
 }
 
 async function showTracks(artist, album) {
-  drill = { level: 'tracks', artist, album };
+  drill = { ...drill, level: 'tracks', artist, album };
+  destroyArtistVList();
   renderBreadcrumb();
   let data;
   try {
-    data = await fetchJSON(`${API}/api/madnetwork/tracks?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`);
+    data = await fetchJSON(`${API}/api/madnetwork/tracks?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}${sourceQS()}`);
   } catch { panelMessage('Could not load tracks.'); return; }
   if (!drill || drill.level !== 'tracks' || drill.album !== album) return;
 
@@ -392,11 +723,17 @@ function selfHeld(t) {
 
 // appendTrackRow renders one merged track through the shared row builder, then
 // adds the madnetwork extras: the ⓘ source/versions toggle and the Materialize
-// menu item. `queue` is the album's play queue and `qi` this track's slot in
-// it (undefined when the track has no playable rendition).
-function appendTrackRow(wrap, t, i, queue, qi) {
+// menu item. `queue` is the list's play queue and `qi` this track's slot in it
+// (undefined when the track has no playable rendition).
+//
+// opts carries what a lane row needs and an album row does not: its own artist
+// and album (a lane crosses both), the meta line that spells them out, and the
+// `note` explaining why the row is in this lane at all.
+function appendTrackRow(wrap, t, i, queue, qi, opts = {}) {
   const playable = qi != null;
   const qt = playable ? queue[qi] : null;
+  const artist = opts.artist ?? drill?.artist;
+  const album = opts.album ?? drill?.album;
 
   // Source & versions — a subtle info toggle for the provenance panel.
   const detail = document.createElement('div');
@@ -419,9 +756,9 @@ function appendTrackRow(wrap, t, i, queue, qi) {
   };
 
   const row = buildTrackRow({
-    num: t.track_number ?? (i + 1),
+    num: opts.num ?? t.track_number ?? (i + 1),
     title: t.title || 'Unknown',
-    meta: t.artist || drill?.artist || '',
+    meta: opts.meta ?? (t.artist || artist || ''),
     dur: fmtDur(t.duration) || '—',
     rowKey: playable ? qt.rowKey : null,
     url: playable ? qt.url : null,
@@ -449,7 +786,15 @@ function appendTrackRow(wrap, t, i, queue, qi) {
     row.classList.toggle('mn-track--open', !detail.hidden);
   };
   infoBtn.addEventListener('click', e => { e.stopPropagation(); toggle(); });
-  row.insertBefore(infoBtn, row.querySelector('.track-dur'));
+  const durEl = row.querySelector('.track-dur');
+  // The lane's reason sits next to the row's own facts rather than in a
+  // tooltip: a person must be able to see why a row was put in front of them.
+  if (opts.note) {
+    const why = mkSpan('mn-why', opts.note);
+    why.title = 'Why this row is here';
+    row.insertBefore(why, durEl);
+  }
+  row.insertBefore(infoBtn, durEl);
 
   wrap.append(row, detail);
 }
@@ -530,7 +875,7 @@ function mkVersionActions(t, v, rd) {
     url: v.url ? `${API}${v.url}` : `${API}/api/madnetwork/stream/${rd.hash}`,
     tagsetId: t.tagset_id || null,
     title: t.title || 'Unknown',
-    artist: t.artist || drill?.artist || '',
+    artist: t.artist || t.group_artist || drill?.artist || '',
   };
 
   const play = document.createElement('button');
@@ -665,7 +1010,7 @@ function updateBulkUI() {
 async function collectMaterializeTargets(artist, album) {
   const targets = { pending: [], local: 0 };
   const scan = async al => {
-    const data = await fetchJSON(`${API}/api/madnetwork/tracks?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(al)}`);
+    const data = await fetchJSON(`${API}/api/madnetwork/tracks?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(al)}${sourceQS()}`);
     for (const t of data.tracks || []) {
       const best = t.versions?.[0]?.renditions?.[0];
       if (!best || !best.hash) continue; // nothing fetchable
@@ -676,7 +1021,7 @@ async function collectMaterializeTargets(artist, album) {
   if (album != null) {
     await scan(album);
   } else {
-    const data = await fetchJSON(`${API}/api/madnetwork/albums?artist=${encodeURIComponent(artist)}`);
+    const data = await fetchJSON(`${API}/api/madnetwork/albums?artist=${encodeURIComponent(artist)}${sourceQS()}`);
     for (const al of data.albums || []) await scan(al.title);
   }
   return targets;

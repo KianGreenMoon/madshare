@@ -75,11 +75,13 @@ type LaneCandidate struct {
 	Self bool
 
 	// FirstSeen is the earliest moment any source showed it to us (0 = unknown,
-	// which is what rows cached before migration 037 carry), LastSeen the newest
-	// contact with any holder, and SourceName a holder's label for the "only
-	// <node> has it" line.
-	FirstSeen  int64
-	LastSeen   int64
+	// which is what rows cached before migration 037 carry), and LastSeen the
+	// newest contact with any holder.
+	FirstSeen int64
+	LastSeen  int64
+	// SourceName is ONE holder's label, chosen by an aggregate. It names the
+	// node exactly when Holders is 1 — the "only <node> has it" line — and means
+	// nothing when there are several, so nothing else should read it.
 	SourceName string
 
 	// Branches is filled by the caller's branch weighting, not by SQL.
@@ -115,12 +117,20 @@ func laneRowsCTE(view MadnetworkView) string {
 	WHERE ` + visibleTagset + selfPublishedClause(view.DefaultShareDepth)
 
 	switch {
-	case !view.includeRemote():
-		return self
-	case view.includeOwn():
+	case view.includeRemote() && view.includeOwn():
 		return remote + " UNION ALL " + self
-	default:
+	case view.includeRemote():
 		return remote
+	case view.includeOwn():
+		return self
+	default:
+		// The view that includes neither half — shaped like the others and
+		// guaranteed empty, so every ranking above it stays one query.
+		return `
+	SELECT '' AS akey, '' AS alb, '' AS title, NULL AS track_number, NULL AS disc_number,
+	       '' AS source_key, '' AS source_label, 0 AS source_last_seen,
+	       0 AS is_friend, 0 AS first_seen, 1 AS is_self
+	WHERE 0`
 	}
 }
 

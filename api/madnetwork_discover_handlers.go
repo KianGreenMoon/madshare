@@ -134,15 +134,21 @@ func (h *handler) buildLane(ctx context.Context, name string, view database.Madn
 	if name == database.LaneHeld {
 		database.WeightByBranch(candidates, branches)
 	}
+	// "Is there more" is decided on the RANKING, before any capping — the cap
+	// changes which rows the digest shows, never how much the lane holds.
+	out.More = len(candidates) > offset+limit
 	if offset == 0 && laneCapped(name) {
-		candidates = database.CapPerSource(candidates, want)
+		// Capped against the rows actually shown, not against the extra
+		// probe row: a quota computed over limit+1 hands the dominant node
+		// one more slot than the digest has room to justify.
+		candidates = database.CapPerSource(candidates, limit)
 	}
 	if offset >= len(candidates) {
 		return out, nil
 	}
 	candidates = candidates[offset:]
 	if len(candidates) > limit {
-		candidates, out.More = candidates[:limit], true
+		candidates = candidates[:limit]
 	}
 
 	idents := make([]string, 0, len(candidates))
@@ -224,16 +230,23 @@ func (h *handler) renderLaneTracks(candidates []*database.LaneCandidate, rows []
 			continue // nothing playable to offer, so nothing to put in a lane
 		}
 		d := display[k]
-		out = append(out, laneTrack{
+		row := laneTrack{
 			madnetworkTrack: t,
 			GroupArtist:     d.artist,
 			Album:           d.album,
 			Holders:         c.Holders,
 			Branches:        c.Branches,
 			FirstSeen:       c.FirstSeen,
-			SourceName:      c.SourceName,
 			SelfHeld:        c.Self,
-		})
+		}
+		// The candidate's source label is one holder's, picked by the aggregate
+		// — which names the node exactly when there is only one, and means
+		// nothing at all when there are several. Only the exact case is sent:
+		// the ⓘ panel is where a multi-holder row's sources actually live.
+		if c.Holders == 1 {
+			row.SourceName = c.SourceName
+		}
+		out = append(out, row)
 		delete(merged, k) // a merged track fills one lane row, however it was ranked
 	}
 	return out

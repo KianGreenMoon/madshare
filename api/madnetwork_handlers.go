@@ -56,9 +56,7 @@ func (h *handler) madnetworkViewFor(r *http.Request) database.MadnetworkView {
 	switch src := r.URL.Query().Get("source"); {
 	case src == "":
 	case src == "self":
-		if h.includeSelf() {
-			v.SelfOnly = true
-		}
+		v.SelfOnly = true
 	default:
 		if id, err := strconv.ParseInt(src, 10, 64); err == nil && id > 0 {
 			v.SourceID = id

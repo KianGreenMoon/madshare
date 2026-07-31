@@ -305,6 +305,20 @@ func TestSourceFilteredBrowse(t *testing.T) {
 	if len(mine) != 1 || mine[0].Name != "Artist Mine" {
 		t.Fatalf("self shelf = %+v, want only our own artist", mine)
 	}
+
+	// Our own shelf on a node that publishes nothing to the network is EMPTY —
+	// not the merged catalog, which is the one answer that would be certainly
+	// wrong for "show me only my shelf".
+	none, _, err := db.MadnetworkArtists(ctx, "", MadnetworkView{SelfOnly: true}, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none) != 0 {
+		t.Errorf("self shelf with federation off = %+v, want nothing", none)
+	}
+	if got := laneNames(t, db, LaneHeld, MadnetworkView{SelfOnly: true}, 10); len(got) != 0 {
+		t.Errorf("lane over an empty view = %v, want nothing", got)
+	}
 }
 
 // TestMadnetworkArtistPaging walks the keyset cursor to the end, including the

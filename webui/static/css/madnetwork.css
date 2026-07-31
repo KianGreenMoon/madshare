@@ -20,6 +20,8 @@
 .mn-status-main { color: var(--text); font-weight: 600; }
 .mn-status a { color: var(--accent); text-decoration: none; }
 .mn-status a:hover { text-decoration: underline; }
+/* A node chip is a button: it opens that node's shelf (the "By node" lane's
+   other entrance). Styled flat so the strip still reads as a status line. */
 .mn-friend {
   display: inline-flex;
   align-items: baseline;
@@ -27,7 +29,13 @@
   padding: 0.1rem 0.5rem;
   border: 1px solid var(--border);
   border-radius: 999px;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
 }
+.mn-friend:hover,
+.mn-friend:focus-visible { border-color: var(--accent); }
 .mn-friend--empty { opacity: 0.6; }
 /* A friend not seen within the freshness window: its exclusively-held tracks are
    hidden from the browse, so the chip reads as dimmed/offline. */
@@ -56,6 +64,64 @@
 .mn-bulk-btn { font-size: 0.82rem; padding: 0.3rem 0.8rem; white-space: nowrap; }
 .mn-friend-name { color: var(--text); font-weight: 600; }
 .mn-friend-seen { font-size: 0.75rem; }
+
+/* ── Discovery lanes (the landing view) ──────────────────────────────────────── */
+/* A lane is a heading and eight ordinary track rows — the same rows the
+   drill-down builds, so hearts, the ⋯ menu and the ⓘ panel work inside one with
+   no second component. No card shelf: the merged catalog carries no cover art,
+   and a row of artwork with no artwork is a row of grey squares. */
+
+.mn-lane { margin-bottom: var(--space-5); }
+.mn-lane-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 0 var(--space-2) var(--space-2);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--space-1);
+}
+.mn-lane-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.01em;
+}
+.mn-lane-more {
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 0.82rem;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0.1rem 0.3rem;
+  border-radius: var(--radius);
+}
+.mn-lane-more:hover { text-decoration: underline; }
+.mn-lane-nav {
+  display: flex;
+  gap: var(--space-3);
+  justify-content: center;
+  margin-top: var(--space-4);
+}
+
+/* The reason a row is in a lane, shown next to the row's own facts rather than
+   hidden in a tooltip — every lane row has to be explainable. */
+.mn-why {
+  flex-shrink: 0;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-align: right;
+  padding-right: var(--space-2);
+}
+@media (max-width: 640px) {
+  .mn-why { display: none; } /* the row's own text wins the space on a phone */
+}
 
 /* ── Track-row extras: the source/versions info toggle ───────────────────────── */
 /* The row itself (hearts, ⋯ menu, search) reuses the library's shared layout
