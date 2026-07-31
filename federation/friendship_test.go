@@ -49,6 +49,9 @@ type memStore struct {
 	// of its own.
 	graph  map[string]*memRecord
 	marks  map[string]*memRecord
+	// digests counts GraphDigest calls that reached the store, so a test can
+	// assert the node's memo absorbed the repeats.
+	digests int
 	silent bool
 }
 

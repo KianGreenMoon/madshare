@@ -474,6 +474,7 @@ async function askBlockReason(label) {
     bodyNodes: [
       el('p', {}, [`Block “${label}”? It loses all madnetwork service from this node immediately. You can unblock it later.`]),
       el('p', { class: 'modal-note' }, ['This block is published to the network as a distrust mark — everyone, including the blocked node, can see it and read the reason. Unblocking withdraws it again.']),
+      el('p', { class: 'modal-note' }, ['Whatever you could only see through this node leaves the map too, and is forgotten rather than merely hidden. Nodes another friend also vouches for stay. Unblocking re-learns the rest on the next sync.']),
       el('label', { class: 'modal-label' }, ['Reason (shown to everyone)']),
       reason,
     ],
@@ -563,7 +564,10 @@ async function unblockPeer(p) {
 async function removePeer(p) {
   const ok = await confirmModal({
     title: 'Remove this node?',
-    bodyNodes: [el('p', {}, [`Forget “${peerLabel(p)}” entirely? A new card import (or a fresh pairing request from its side) starts over from scratch.`])],
+    bodyNodes: [
+      el('p', {}, [`Forget “${peerLabel(p)}” entirely? A new card import (or a fresh pairing request from its side) starts over from scratch.`]),
+      el('p', { class: 'modal-note' }, ['Everything you knew only through this node is forgotten with it — the map may lose more than one dot. Nodes another friend also vouches for stay.']),
+    ],
     confirmLabel: 'Remove',
     danger: true,
   });

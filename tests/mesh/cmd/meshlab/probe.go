@@ -111,6 +111,9 @@ func (emptyStore) MarkPayloads(context.Context, []string, int64) (map[string][]b
 func (emptyStore) GraphKnowsKey(context.Context, string) (bool, error)      { return false, nil }
 func (emptyStore) GraphIntroducedCount(context.Context, int64) (int, error) { return 0, nil }
 func (emptyStore) ExpireGraph(context.Context, int64) (int, error)          { return 0, nil }
+func (emptyStore) DropUnreachableGraph(context.Context, map[string]struct{}) (int, error) {
+	return 0, nil
+}
 func (emptyStore) GraphEdges(context.Context, int64) ([]federation.GraphEdgeClaim, error) {
 	return nil, nil
 }

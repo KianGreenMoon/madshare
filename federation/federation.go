@@ -397,9 +397,15 @@ type GraphStore interface {
 	GraphIntroducedCount(ctx context.Context, peerID int64) (int, error)
 
 	// ExpireGraph drops records past their expiry along with their edges and
-	// marks, returning how many records went. This is the only ageing mechanism
-	// there is: stop refreshing a record and it leaves every store on its own.
+	// marks, returning how many records went. Ageing by wall clock: stop
+	// refreshing a record and it leaves every store on its own.
 	ExpireGraph(ctx context.Context, now int64) (int, error)
+	// DropUnreachableGraph drops every record whose origin is not in keep — the
+	// other ageing mechanism, and the one that answers an admin's action rather
+	// than a clock. Blocking or removing a friend severs an edge, which makes
+	// the branch behind it unreachable, which this collects ([ReachableKeys],
+	// docs/architecture/federation.md §Forgetting).
+	DropUnreachableGraph(ctx context.Context, keep map[string]struct{}) (int, error)
 
 	// GraphEdges and GraphMarks are the unexpired denormalized claims, for the
 	// network map and its branch-weighted mark display.
@@ -559,6 +565,15 @@ type Intervals struct {
 	// that changes friendships faster than the interval will look broken while
 	// merely being slow.
 	GraphAccept time.Duration
+	// GraphDigestTTL is how long the digest this node serves to friends is
+	// memoized (the ownSnapshot pattern, gossip_node.go). Default 30 s.
+	//
+	// It is the whole rate limit on GET /madnetwork/v0/graph: a friend pulling
+	// too often gets the memo instead of a refusal, because syncGraph cannot
+	// tell a 429 from a peer that has no such endpoint. Anything that changes
+	// the store — a record learned, a branch dropped — invalidates it, so the
+	// TTL bounds staleness only for the case where nothing happened.
+	GraphDigestTTL time.Duration
 }
 
 // WithIntervals overrides the background cadences (zero fields keep defaults).
@@ -601,6 +616,9 @@ func (iv Intervals) withDefaults(d Intervals) Intervals {
 	}
 	if iv.GraphAccept <= 0 {
 		iv.GraphAccept = d.GraphAccept
+	}
+	if iv.GraphDigestTTL <= 0 {
+		iv.GraphDigestTTL = d.GraphDigestTTL
 	}
 	return iv
 }

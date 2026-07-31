@@ -162,6 +162,38 @@ func TestPairAttemptUnreachable(t *testing.T) {
 	}
 }
 
+// Removing a peer forgets the in-memory pairing note with it (§Forgetting).
+// Otherwise re-importing a key we once failed to reach greets the admin with a
+// "last try" from a relationship that no longer exists.
+func TestRemovePeerForgetsPairingAttempt(t *testing.T) {
+	ctx := context.Background()
+	store := newMemStore()
+	dir, logger := t.TempDir(), log.New(io.Discard, "", 0)
+	n := startChaosNode(t, "a", dir, store, logger, config.FederationConfig{}, chaosOpts())
+
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghost := hex.EncodeToString(pub)
+	p, err := n.ImportKey(ctx, ghost, "nobody home")
+	if err != nil {
+		t.Fatalf("import key: %v", err)
+	}
+	waitFor(t, "the failed attempt to be recorded", func() bool {
+		n.Nudge()
+		_, ok := n.lastAttempt(ghost)
+		return ok
+	})
+
+	if err := n.RemovePeer(ctx, p.ID); err != nil {
+		t.Fatalf("remove peer: %v", err)
+	}
+	if at, ok := n.lastAttempt(ghost); ok {
+		t.Errorf("the pairing note survived the removal: %+v", at)
+	}
+}
+
 // TestImportKey: the map-driven path. A key is a whole identity, so importing one
 // is the same act as importing a card — and the name that rides along is stored
 // as the peer's own claim, never as this admin's label.

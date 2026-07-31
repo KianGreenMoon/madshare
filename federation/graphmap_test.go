@@ -178,7 +178,8 @@ func TestNetworkMapDropsUnreachableAccusers(t *testing.T) {
 }
 
 // A friendship we just made is a fact we hold directly, so it is drawn before
-// any record carries it.
+// any record carries it — and drawn solid, because our own edges are not claims
+// to be weighed for mutuality (§Forgetting).
 func TestNetworkMapIncludesOwnFriendshipsWithoutRecords(t *testing.T) {
 	peers := []*Peer{{PublicKey: k("a"), Name: "fresh", State: PeerFriend}}
 	m := BuildNetworkMap(k("me"), peers, nil, nil)
@@ -186,8 +187,8 @@ func TestNetworkMapIncludesOwnFriendshipsWithoutRecords(t *testing.T) {
 	if n := nodeByLabel(t, m, "a"); n == nil || n.Distance != 1 {
 		t.Fatalf("a brand-new friend is missing from the map: %+v", m.Nodes)
 	}
-	if len(m.Edges) != 1 || m.Edges[0].Mutual {
-		t.Errorf("edges = %+v, want one edge, not yet mutually claimed", m.Edges)
+	if len(m.Edges) != 1 || !m.Edges[0].Mutual {
+		t.Errorf("edges = %+v, want one edge drawn as a fact of ours", m.Edges)
 	}
 }
 

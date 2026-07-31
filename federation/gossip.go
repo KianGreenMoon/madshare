@@ -420,46 +420,36 @@ type MapMark struct {
 	Branch string `json:"branch,omitempty"`
 }
 
-// BuildNetworkMap computes the map from raw store contents. Pure so the
-// reachability rules — which are the whole feature — are testable without a
-// mesh.
+// walkGraph is the reachability walk every other rule is expressed in terms of:
+// multi-source BFS from selfKey over the gossiped edges, never traversing
+// THROUGH a blocked node, returning each reachable key's distance and the direct
+// friends it was discovered through.
 //
-// Branch snipping happens here: the walk never traverses THROUGH a blocked
-// node, so nodes reachable only behind one drop out of view, while nodes also
-// reachable via another friend stay. The blocked node itself is kept, since an
-// admin has to be able to see and undo what they blocked.
-func BuildNetworkMap(selfKey string, peers []*Peer, edges []GraphEdgeClaim, marks []StoredMark) NetworkMap {
-	peerByKey := make(map[string]*Peer, len(peers))
-	for _, p := range peers {
-		peerByKey[p.PublicKey] = p
-	}
-
-	// Adjacency, undirected, with a note of which directions were claimed.
+// Two properties matter and both are deliberate. **Edges with our own key at an
+// end come from peers alone** — a friendship of ours is a fact we hold, not a
+// claim to be weighed, so a node whose admin never removed us cannot put itself
+// back on our inner ring by publishing that we are friends. Other nodes' edges
+// stay single-claim, because an edge somebody claims is worth seeing. And
+// **branch snipping falls out of the walk**: nodes reachable only behind a
+// blocked node drop out, while a node also vouched for by another friend keeps
+// whatever distance and labels remain (docs/architecture/federation.md
+// §Forgetting).
+func walkGraph(selfKey string, peers []*Peer, edges []GraphEdgeClaim) (dist map[string]int, via map[string]map[string]bool) {
 	adj := map[string]map[string]bool{}
-	heard := map[string]map[string]int{} // key → name → times claimed
 	link := func(a, b string) {
 		if adj[a] == nil {
 			adj[a] = map[string]bool{}
 		}
 		adj[a][b] = true
 	}
-	claimed := map[[2]string]bool{}
 	for _, e := range edges {
-		if e.Origin == e.Peer {
-			continue
+		if e.Origin == e.Peer || e.Origin == selfKey || e.Peer == selfKey {
+			continue // hearsay about our own friendships is not evidence
 		}
 		link(e.Origin, e.Peer)
 		link(e.Peer, e.Origin)
-		claimed[[2]string{e.Origin, e.Peer}] = true
-		if e.Name != "" {
-			if heard[e.Peer] == nil {
-				heard[e.Peer] = map[string]int{}
-			}
-			heard[e.Peer][e.Name]++
-		}
 	}
-	// Our own friendships are on the map whether or not any record carries them
-	// yet — a friendship we just made is a fact we hold directly.
+	// Our own friendships, from the only source entitled to state them.
 	for _, p := range peers {
 		if p.State == PeerFriend {
 			link(selfKey, p.PublicKey)
@@ -467,15 +457,14 @@ func BuildNetworkMap(selfKey string, peers []*Peer, edges []GraphEdgeClaim, mark
 		}
 	}
 
+	byKey := peerByKeyOf(peers)
 	blocked := func(key string) bool {
-		p, ok := peerByKey[key]
+		p, ok := byKey[key]
 		return ok && p.State == PeerBlocked
 	}
 
-	// Multi-source BFS from us. Each node inherits the branch labels of whoever
-	// discovered it; direct friends label themselves.
-	dist := map[string]int{selfKey: 0}
-	via := map[string]map[string]bool{}
+	dist = map[string]int{selfKey: 0}
+	via = map[string]map[string]bool{}
 	frontier := []string{selfKey}
 	for depth := 0; len(frontier) > 0; depth++ {
 		var next []string
@@ -508,6 +497,62 @@ func BuildNetworkMap(selfKey string, peers []*Peer, edges []GraphEdgeClaim, mark
 		}
 		frontier = next
 	}
+	return dist, via
+}
+
+func peerByKeyOf(peers []*Peer) map[string]*Peer {
+	m := make(map[string]*Peer, len(peers))
+	for _, p := range peers {
+		m[p.PublicKey] = p
+	}
+	return m
+}
+
+// ReachableKeys is [walkGraph]'s answer as a set: every origin whose record this
+// node still has a reason to hold. It is what the sweep keeps and drops, and it
+// is deliberately the same walk the map draws — a branch that vanished from the
+// picture but stayed in the store is the gap §Forgetting exists to close.
+//
+// Our own key is always present, so an empty result is impossible and a caller
+// deleting "everything not in here" can never empty the store by accident.
+func ReachableKeys(selfKey string, peers []*Peer, edges []GraphEdgeClaim) map[string]struct{} {
+	dist, _ := walkGraph(selfKey, peers, edges)
+	out := make(map[string]struct{}, len(dist))
+	for key := range dist {
+		out[key] = struct{}{}
+	}
+	// A peer row of ours is a direct relationship: its record stays even while
+	// the pairing is pending or the node is blocked, so an admin can still see
+	// and undo what they did.
+	for _, p := range peers {
+		out[p.PublicKey] = struct{}{}
+	}
+	out[selfKey] = struct{}{}
+	return out
+}
+
+// BuildNetworkMap computes the map from raw store contents. Pure so the
+// reachability rules — which are the whole feature — are testable without a
+// mesh.
+func BuildNetworkMap(selfKey string, peers []*Peer, edges []GraphEdgeClaim, marks []StoredMark) NetworkMap {
+	peerByKey := peerByKeyOf(peers)
+
+	heard := map[string]map[string]int{} // key → name → times claimed
+	claimed := map[[2]string]bool{}
+	for _, e := range edges {
+		if e.Origin == e.Peer || e.Origin == selfKey || e.Peer == selfKey {
+			continue // see walkGraph: our own edges are not claims
+		}
+		claimed[[2]string{e.Origin, e.Peer}] = true
+		if e.Name != "" {
+			if heard[e.Peer] == nil {
+				heard[e.Peer] = map[string]int{}
+			}
+			heard[e.Peer][e.Name]++
+		}
+	}
+
+	dist, via := walkGraph(selfKey, peers, edges)
 
 	// Every node we hold a peer row for belongs on the map, reachable through the
 	// graph or not: a pending pairing and a blocked key are direct relationships
@@ -593,8 +638,8 @@ func BuildNetworkMap(selfKey string, peers []*Peer, edges []GraphEdgeClaim, mark
 	seen := map[[2]string]bool{}
 	for _, e := range edges {
 		a, b := e.Origin, e.Peer
-		if a == b {
-			continue
+		if a == b || a == selfKey || b == selfKey {
+			continue // our own edges are drawn below, from our peer rows
 		}
 		if _, ok := dist[a]; !ok {
 			continue
@@ -615,8 +660,9 @@ func BuildNetworkMap(selfKey string, peers []*Peer, edges []GraphEdgeClaim, mark
 			Mutual: claimed[[2]string{lo, hi}] && claimed[[2]string{hi, lo}],
 		})
 	}
-	// Our own friendships again: they belong on the map even before any record
-	// carries them.
+	// Our own friendships, the only edges on this map that are not claims at all:
+	// we accepted the pairing, so they are drawn solid rather than weighed for
+	// mutuality like a pair of third parties' records.
 	for _, p := range peers {
 		if p.State != PeerFriend {
 			continue
@@ -629,7 +675,7 @@ func BuildNetworkMap(selfKey string, peers []*Peer, edges []GraphEdgeClaim, mark
 			continue
 		}
 		seen[[2]string{lo, hi}] = true
-		out.Edges = append(out.Edges, MapEdge{From: lo, To: hi})
+		out.Edges = append(out.Edges, MapEdge{From: lo, To: hi, Mutual: true})
 	}
 	sort.Slice(out.Edges, func(i, j int) bool {
 		if out.Edges[i].From != out.Edges[j].From {

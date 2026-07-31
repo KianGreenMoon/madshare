@@ -18,6 +18,7 @@ import (
 // machine is covered by the federation package's handshake test — here only the
 // HTTP mapping is under test.
 type fakeFederation struct {
+	resyncs     int
 	peers       []*federation.Peer
 	imported    *federation.Card
 	patched     map[string]any
@@ -60,6 +61,8 @@ func (f *fakeFederation) BlockPeer(_ context.Context, _ int64, reason string) er
 func (f *fakeFederation) NetworkMap(context.Context) (federation.NetworkMap, error) {
 	return f.graph, nil
 }
+
+func (f *fakeFederation) ResyncGraph() { f.resyncs++ }
 
 func (f *fakeFederation) ClaimReports(context.Context) ([]*federation.ClaimReport, error) {
 	return f.reports, nil
@@ -328,5 +331,34 @@ func TestFederationReports(t *testing.T) {
 	}
 	if code := patch("nope", `{"disposition":"acted"}`); code != http.StatusBadRequest {
 		t.Errorf("bad id = %d, want 400", code)
+	}
+}
+
+// The Rescan button: an accepted request that hands the work to the refresh
+// loop, and a 503 when no node runs.
+func TestFederationGraphResync(t *testing.T) {
+	fake := &fakeFederation{patched: map[string]any{}}
+	srv := newFederationTestServer(t, fake)
+
+	resp, err := http.Post(srv.URL+"/api/admin/federation/graph/resync", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Errorf("resync = %d, want 202", resp.StatusCode)
+	}
+	if fake.resyncs != 1 {
+		t.Errorf("ResyncGraph called %d times, want 1", fake.resyncs)
+	}
+
+	off := newFederationTestServer(t, nil)
+	resp, err = http.Post(off.URL+"/api/admin/federation/graph/resync", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("resync with federation off = %d, want 503", resp.StatusCode)
 	}
 }

@@ -426,13 +426,19 @@ func (n *Node) sweep(ctx context.Context) {
 		return
 	}
 	// Gossip (F6) is maintenance of our own view, not per-peer work: publish our
-	// record when the friend list moved or the heartbeat came due, and drop what
-	// aged out. Both run before the loop so a friendship accepted this round is
-	// already in the record we serve during it.
+	// record when the friend list moved or the heartbeat came due, then age the
+	// store on both its clocks — expiry, and the reachability walk that collects
+	// what a block or a removal orphaned. All of it runs before the loop so a
+	// friendship accepted this round is already in the record we serve during it,
+	// and a branch we just cut is gone before we offer anyone a digest.
 	n.publishOwnRecord(ctx, peers)
 	n.publishOwnMarkRecord(ctx, peers)
-	n.expireGraph(ctx)
+	n.expireGraph(ctx, peers)
 	n.depeerBlocked(peers)
+
+	// The Rescan button (ResyncGraph). Consumed once per sweep, so presses during
+	// a round fold into the next one instead of queueing rounds.
+	forceGraph := n.forceGraph.Swap(false)
 
 	for _, p := range peers {
 		if ctx.Err() != nil {
@@ -443,10 +449,15 @@ func (n *Node) sweep(ctx context.Context) {
 			n.pairWith(ctx, p)
 		case PeerFriend:
 			n.pingPeer(ctx, p)
-			if time.Since(time.Unix(p.CatalogSyncedAt, 0)) >= n.intervals.CatalogSync {
+			due := time.Since(time.Unix(p.CatalogSyncedAt, 0)) >= n.intervals.CatalogSync
+			if due {
 				n.syncCatalog(ctx, p)
 				n.syncHoldings(ctx, p) // F4: refresh what they seed from cache
-				n.syncGraph(ctx, p)    // F6: gossip rides the catalog cadence
+			}
+			// Gossip rides the catalog cadence, except when an admin asked for it
+			// now — and then it is the graph alone, never the catalog.
+			if due || forceGraph {
+				n.syncGraph(ctx, p)
 			}
 		}
 	}
@@ -641,6 +652,17 @@ func (n *Node) UnblockPeer(ctx context.Context, id int64) error {
 // RemovePeer deletes the peer row entirely (forget the node; a fresh card
 // import or incoming request starts from scratch).
 func (n *Node) RemovePeer(ctx context.Context, id int64) error {
+	// Forget the in-memory pairing attempt too, or re-importing this key later
+	// shows a "last try" from before the removal — a diagnostic about a
+	// relationship that no longer exists, which is exactly the kind of stale
+	// remembering §Forgetting is about. Best-effort: a peer we cannot read is
+	// one we cannot key the map by, and failing the removal over a log note
+	// would be worse than the stale note.
+	if p, err := n.store.GetFederationPeer(ctx, id); err == nil && p != nil {
+		n.attemptMu.Lock()
+		delete(n.attempts, p.PublicKey)
+		n.attemptMu.Unlock()
+	}
 	return n.store.DeleteFederationPeer(ctx, id)
 }
 

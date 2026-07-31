@@ -235,6 +235,15 @@
 .map-search:focus { outline: none; border-color: var(--accent); }
 .map-stats { font-size: 0.82rem; color: var(--text-muted); }
 
+/* Shown only while a rescan is in flight: what the button can and cannot do,
+   said where it is being done rather than in a tooltip nobody opens. */
+.map-note {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin: calc(var(--space-3) * -1) 0 var(--space-3);
+  max-width: 60ch;
+}
+
 .map-stage {
   position: relative;
   height: min(60vh, 520px);

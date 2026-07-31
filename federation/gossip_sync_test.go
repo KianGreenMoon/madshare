@@ -26,6 +26,10 @@ var gossipIntervals = Intervals{
 	GraphRepublish: time.Hour,
 	GraphTTL:       time.Hour,
 	GraphAccept:    time.Millisecond,
+	// These tests assert propagation, not caching. The digest memo invalidates
+	// on every store change anyway, but a TTL of one millisecond keeps a stale
+	// serial from ever being the reason a convergence assertion flakes.
+	GraphDigestTTL: time.Millisecond,
 }
 
 // mustFriend pairs two running nodes and waits for both sides to agree, which

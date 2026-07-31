@@ -10,6 +10,7 @@ package federation
 
 import (
 	"context"
+	"errors"
 	"sort"
 )
 
@@ -57,6 +58,7 @@ func (m *memStore) PutMarkRecord(_ context.Context, rec *MarkRecord, payload []b
 func (m *memStore) GraphDigest(_ context.Context, now int64) ([]GraphDigestEntry, []GraphDigestEntry, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.digests++
 	return digestOf(m.graph, now), digestOf(m.marks, now), nil
 }
 
@@ -130,6 +132,24 @@ func (m *memStore) ExpireGraph(_ context.Context, now int64) (int, error) {
 	for _, recs := range []map[string]*memRecord{m.graph, m.marks} {
 		for origin, r := range recs {
 			if r.expiresAt <= now {
+				delete(recs, origin)
+				n++
+			}
+		}
+	}
+	return n, nil
+}
+
+func (m *memStore) DropUnreachableGraph(_ context.Context, keep map[string]struct{}) (int, error) {
+	if len(keep) == 0 {
+		return 0, errors.New("refusing to keep nothing")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, recs := range []map[string]*memRecord{m.graph, m.marks} {
+		for origin := range recs {
+			if _, ok := keep[origin]; !ok {
 				delete(recs, origin)
 				n++
 			}

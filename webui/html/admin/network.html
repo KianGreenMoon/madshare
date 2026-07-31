@@ -82,22 +82,30 @@
         Every node reachable through a chain of friendships, as your friends
         describe it. Names past your own friends are <strong>hearsay about
         strangers</strong> &mdash; anyone can call themselves anything, so the
-        key is the identity and is shown beside every name. Blocking a node also
-        drops whatever was reachable only through it.
+        key is the identity and is shown beside every name. Blocking or removing
+        a node also <strong>forgets</strong> whatever was reachable only through
+        it &mdash; unless another friend vouches for it too.
       </p>
 
       <div class="map-toolbar">
         <input class="map-search" id="mapSearch" type="search"
                placeholder="Find a node by name or key…" aria-label="Find a node">
         <span class="map-stats" id="mapStats" aria-live="polite"></span>
+        <button class="btn btn-neutral btn-mini" id="mapRescan" type="button"
+                title="Ask every friend for their graph now, instead of waiting for the next sync">Rescan</button>
         <button class="btn btn-neutral btn-mini" id="mapReset" type="button">Reset view</button>
       </div>
+      <p class="map-note" id="mapRescanNote" hidden>
+        Rescanning&hellip; this asks your friends what <em>they</em> currently hold, so
+        it brings your view up to date with theirs &mdash; not with the whole
+        network. A change several hops away still travels one ring per round.
+      </p>
 
       <div class="map-stage" id="mapStage">
         <svg class="map-svg" id="mapSvg" role="img" aria-label="Network map"></svg>
         <div class="map-empty" id="mapEmpty" hidden>
-          No graph yet. Records arrive from friends on the catalog cadence &mdash;
-          give it a few minutes after the first friendship.
+          No graph yet. Records arrive from friends on the sync cadence &mdash;
+          give it a few minutes after the first friendship, or press Rescan.
         </div>
         <aside class="map-detail" id="mapDetail" hidden aria-live="polite"></aside>
       </div>

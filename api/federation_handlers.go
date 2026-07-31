@@ -295,6 +295,24 @@ func (h *handler) federationGraph(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "graph": m})
 }
 
+// federationGraphResync handles POST /api/admin/federation/graph/resync: pull
+// the gossiped graph from every friend now, rather than when the 15-minute
+// catalog cadence next comes round (the Rescan button on /admin/network).
+//
+// 202 rather than 200, and no result: the round runs on the refresh loop, so
+// there is nothing to report back except that it was asked for. Repeated presses
+// coalesce into the round already running, which is why this needs no throttle
+// of its own — see docs/architecture/federation.md §Refreshing the graph on
+// demand for why the *serving* side answers with a memo instead of a refusal.
+func (h *handler) federationGraphResync(w http.ResponseWriter, r *http.Request) {
+	if h.federation == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "federation is not enabled"})
+		return
+	}
+	h.federation.ResyncGraph()
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true})
+}
+
 // federationReports handles GET /api/admin/federation/reports: contradicted
 // identity claims awaiting a decision (federation F6). A peer's catalog makes
 // claims this node can check — it advertises a content hash together with the

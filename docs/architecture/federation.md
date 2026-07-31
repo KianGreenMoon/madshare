@@ -1199,7 +1199,7 @@ key, since most nodes on the map have no peer row at all. The map computation is
 a pure function over peers, edges and marks, so branch snipping and mark
 weighting are tested without a mesh.
 
-### Forgetting: what a block or a removal takes with it (planned 2026-07-31)
+### Forgetting: what a block or a removal takes with it (built 2026-07-31)
 
 Ending a friendship is instant everywhere it is *enforced* — the peer row changes
 state, the mesh door refuses a blocked node, our own published record drops them
@@ -1279,9 +1279,71 @@ with or before F7's membership walk, and its test is the one that would otherwis
 be missing: remove a friend, and assert the nodes seen only through them are gone
 from the map, from the digest, from admission **and** from the served audience.
 
-**Smaller staleness in the same family**, worth doing with it: the in-memory
-pairing-attempt note (§Friendship) survives a `RemovePeer`, so re-importing a key
-we once failed to reach can show a "last try" from before the removal.
+**Smaller staleness in the same family**, fixed with it: the in-memory
+pairing-attempt note (§Friendship) used to survive a `RemovePeer`, so re-importing
+a key we once failed to reach showed a "last try" from before the removal.
+`RemovePeer` now drops it — best-effort, since failing a removal over a log note
+would be the worse trade.
+
+**Admission needs no new rule, and that is the point.** `GraphKnowsKey` admits a
+record whose author some record we hold already names. Once the sweep *drops* the
+records that named a cut branch, the branch stops being named — so the same
+unchanged admission check refuses it on the next round. Dropping and refusing are
+the same act seen twice, which is why part 3 costs nothing: an origin re-offered
+by a second friend is one that friend's record still names, and it is admitted
+because it genuinely is reachable again.
+
+### Refreshing the graph on demand (built 2026-07-31)
+
+Gossip rides the catalog cadence (`sweep`, 15 minutes), and `CatalogSyncedAt` is
+bumped on the not-modified path too, so an admin who has just changed something
+waits out the timer with no way to say "look again now". `Nudge` does not help:
+it wakes the loop, the loop re-checks the same timer, and the graph sync is
+skipped. A **Rescan** button on `/admin/network` sets a force flag and nudges;
+the sweep then runs `syncGraph` against every friend regardless of the timer.
+
+**Graph only.** Not the catalog, not holdings. The catalog is the expensive one —
+its cost scales with a library rather than a friend list — and it already answers
+`unchanged` in the common case, so forcing it buys freshness nobody asked for at
+the only price worth avoiding. The button exists to refresh *the map*, and the
+map is built from graph records.
+
+**What it can and cannot do**, which the UI should say rather than imply.
+Convergence is one ring per round: a rescan makes our view as fresh as our
+friends' *stores*, not as fresh as the network. A change three hops out still
+waits for the nodes in between to run their own rounds. Nothing can shortcut that
+without dialling strangers, which is the one thing this design refuses.
+
+Note also what the button is *not* for. A change to **our own** friendships needs
+no rescan at all once §Forgetting part 1 lands — our edges come from
+`federation_peers`, so removing a friend takes the edge off the map on the next
+page load, with no round-trip. The button covers the other case: somebody else's
+friendship moved, and we would rather not wait fifteen minutes to hear about it.
+
+**Guarding the serving side: cache, do not refuse.** A friend pulling too often
+is the real load, and the button does not create it — `GET /madnetwork/v0/graph`
+has always been there. The answer is the one `ownSnapshot` already gives for
+catalogs: **memoize the digest** for `Intervals.GraphDigestTTL` and serve the memo
+to everyone. An extra pull then costs a mutex and a map read, so the fast caller
+gets a cheap yes rather than an error.
+
+A per-peer cooldown answering 429 was considered and rejected. `syncGraph` treats
+every non-200 as "an older peer without the endpoint" and returns, so a refusal is
+indistinguishable from absence: a mistuned cooldown would stop two honest nodes
+converging with nothing anywhere to say why. Refusals are how a network quietly
+stops working, and this one would buy nothing a cache does not.
+
+The rest of the surface is already bounded, and stating it is what makes the cache
+sufficient rather than optimistic: both endpoints are friends-only, `rateAdmits`
+accepts one record per origin per `Intervals.GraphAccept`, `MaxOriginsPerBranch`
+caps what one friend may introduce, and the per-record bounds cap a single
+document. The attacker set is people we deliberately let in and can block — this
+is buggy-friend protection, not anonymous denial of service.
+
+`POST /graph/fetch` is the one surface a cache cannot cover, since every caller
+asks for a different set and it is the only one serving bulk payload. If it ever
+needs bounding, the tool is the token bucket already carrying `seed_rate_kib`
+over the blob write path, not a cooldown.
 
 ### The network map (requirements declared 2026-07-31)
 
@@ -1899,20 +1961,33 @@ milestone directly after direct transfer works, and tokens ship with depth.
   documented exception (an upstream panic, no handle).
 
   **F6 is complete.**
-- **Forgetting stale graph data** (planned 2026-07-31; see §Forgetting). Ending a
-  friendship is instant where it is enforced and slow in what we remember: a
-  removed friend is still drawn joined to us off their own one-sided claim, and
-  the branch behind a blocked *or* removed node is still relayed, still admitted
-  by `GraphKnowsKey`, and still stored until it expires. Three parts, in order:
-  edges with our own key come from `federation_peers` alone (which alone fixes
-  removal, since a severed edge makes the branch unreachable and the existing snip
-  collects it); one reachability walk decides drawing, relaying, admission and
-  retention together, dropping unreachable records on the sweep that already runs
-  `ExpireGraph`; and the admin surface says what an action took with it, so a map
-  that loses a third of its nodes is a result rather than a glitch. No migration —
-  the graph store is a cache. **Ships with or before F7 item 2**, which turns the
-  same walk into an access decision and would otherwise serve the library to a
-  branch we believe we cut.
+- **Forgetting stale graph data** — *built 2026-07-31* (see §Forgetting). Ending a
+  friendship was instant where it is enforced and slow in what we remembered. All
+  three parts landed, and the third cost nothing as designed: `walkGraph` skips
+  every gossiped edge touching our own key, so our edges come from
+  `federation_peers` alone; `ReachableKeys` + `DropUnreachableGraph` collect what
+  is no longer reachable on the sweep that already runs `ExpireGraph`; and with
+  the branch's records gone, `GraphKnowsKey` refuses it on the next round with no
+  code of its own. Our own edges are now drawn `Mutual` — they are facts, not
+  claims to be weighed. Removal also drops the in-memory pairing note. No
+  migration: the graph store is a cache. The admin surface says what an action
+  takes with it, on the block and remove confirmations. **Prerequisite for F7
+  item 2**, which turns the same walk into an access decision.
+- **Refreshing the graph on demand** — *built 2026-07-31* (see §Refreshing the
+  graph on demand). A **Rescan** button on `/admin/network` forces `syncGraph`
+  past the 15-minute catalog timer — graph only, coalescing, and honest in the UI
+  that it buys our friends' freshness rather than the network's. Its counterpart
+  on the serving side is a memoized graph digest (`Intervals.GraphDigestTTL`,
+  30 s), the `ownSnapshot` pattern rather than a cooldown: a friend that pulls too
+  often gets a cheap answer, never a 429 that `syncGraph` would read as a missing
+  endpoint.
+
+  One thing only a real mesh showed: the button **silently did nothing**.
+  `rateAdmits` refuses a second record per origin inside `Intervals.GraphAccept`,
+  which is exactly the set an admin presses Rescan for, while the UI reported
+  success. `ResyncGraph` now clears that map first — it bounds what a peer may
+  *push* at us unsolicited, and a local permission-gated act is not that. The
+  toast reports the change in node count rather than claiming a refresh.
 - **F7 — Reach: the community's libraries.** Rescoped 2026-07-30 when the depth
   ladder collapsed, and given its posture 2026-07-31: **everything to our
   community, nothing outside it** (§Goal & vocabulary, "Community"). What made

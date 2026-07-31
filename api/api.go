@@ -165,6 +165,11 @@ type FederationNode interface {
 	// reachable through a chain of friendships, with branch attribution and the
 	// distrust marks against it.
 	NetworkMap(ctx context.Context) (federation.NetworkMap, error)
+	// ResyncGraph asks the refresh loop to pull the graph from every friend on
+	// its next round, past the catalog cadence that normally gates it — the
+	// Rescan button on /admin/network. Returns immediately; the round runs in
+	// the background and repeated calls coalesce.
+	ResyncGraph()
 	// ClaimReports lists contradicted identity claims awaiting an admin decision,
 	// and SetClaimDisposition records it (F6). Evidence beside the Block action —
 	// nothing here changes what a peer is served.
@@ -473,6 +478,7 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(fedManage).Post("/federation/peers/{peerID}/block", h.federationPeerBlock)
 		r.With(fedManage).Post("/federation/block", h.federationBlockKey)
 		r.With(fedManage).Get("/federation/graph", h.federationGraph)
+		r.With(fedManage).Post("/federation/graph/resync", h.federationGraphResync)
 		r.With(fedManage).Get("/federation/reports", h.federationReports)
 		r.With(fedManage).Patch("/federation/reports/{reportID}", h.federationReportPatch)
 		r.With(fedManage).Post("/federation/peers/{peerID}/unblock", h.federationPeerUnblock)

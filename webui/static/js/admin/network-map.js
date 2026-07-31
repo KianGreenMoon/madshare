@@ -12,7 +12,7 @@
 //
 // Names beyond your own friends are hearsay: the key rides along everywhere.
 
-import { API, el } from './shared.js';
+import { API, el, toast } from './shared.js';
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 
@@ -421,11 +421,61 @@ export function initMap({ onBlockNode, onFriendNode }) {
   svg.addEventListener('wheel', onWheel, { passive: false });
   svg.addEventListener('click', ev => { if (!ev.target.closest('.map-node')) select(null); });
   document.getElementById('mapReset')?.addEventListener('click', () => { resetView(); reheat(0.6); });
+  document.getElementById('mapRescan')?.addEventListener('click', rescan);
   document.getElementById('mapSearch')?.addEventListener('input', ev => {
     state.filter = ev.target.value.trim();
     draw();
   });
   window.addEventListener('resize', () => draw());
+}
+
+// rescan asks the node to pull the graph from every friend on its next refresh
+// round, rather than when the sync cadence next comes due, then reloads the map
+// once that round has had time to run.
+//
+// The endpoint answers 202 and returns immediately — the work happens on the
+// background loop — so the delay here is only about when it is worth looking
+// again. A press during a round already running folds into it (the server
+// coalesces), which is why the button re-enables rather than queueing.
+//
+// What it buys is deliberately understated in the note beside it: gossip travels
+// one ring per round, so this makes the map as fresh as our FRIENDS' stores, not
+// as fresh as the network (docs/architecture/federation.md §Refreshing the graph
+// on demand).
+async function rescan() {
+  const btn = document.getElementById('mapRescan');
+  const note = document.getElementById('mapRescanNote');
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = 'Rescanning…';
+  if (note) note.hidden = false;
+  try {
+    const res = await fetch(`${API}/api/admin/federation/graph/resync`, { method: 'POST' });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      toast(body.error || `Rescan failed (HTTP ${res.status}).`, 'error');
+      return;
+    }
+    // One refresh round plus the round-trips it makes. Long enough that the
+    // reload usually shows the result, short enough to still feel like an act.
+    await new Promise(done => setTimeout(done, 3000));
+    const before = state.nodes.length;
+    await loadMap();
+    const delta = state.nodes.length - before;
+    // Say what happened rather than that it succeeded. A round can legitimately
+    // learn nothing — the friends had nothing new — and reporting that as a
+    // refreshed map would train an admin to distrust the button.
+    toast(delta === 0
+      ? 'Rescanned — your friends had nothing new for us.'
+      : `Rescanned — ${delta > 0 ? '+' : ''}${delta} node${Math.abs(delta) === 1 ? '' : 's'} on the map.`, 'info');
+  } catch (err) {
+    toast(`Rescan failed: ${err.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+    if (note) note.hidden = true;
+  }
 }
 
 export async function loadMap() {

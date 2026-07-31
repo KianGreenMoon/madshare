@@ -273,6 +273,73 @@ func (db *DB) ExpireGraph(ctx context.Context, now int64) (int, error) {
 	return total, nil
 }
 
+// DropUnreachableGraph deletes every record whose origin is not in keep, with
+// its derived rows, and returns how many records went — the retention half of
+// the reachability walk (docs/architecture/federation.md §Forgetting).
+//
+// Deleting is safe because this store is a cache: rebuildable from the network,
+// referenced by nothing local. Re-friending or unblocking re-syncs what went on
+// the next round, which is why nothing here is soft.
+//
+// keep arrives as a set rather than a WHERE clause because it is unbounded — a
+// large community has more origins than SQLite takes bind parameters — so it
+// lands in a temporary table the deletes anti-join against. An empty keep is
+// refused rather than obeyed: the caller's walk always contains its own key, so
+// an empty set means a bug upstream, and obeying it would erase the store.
+func (db *DB) DropUnreachableGraph(ctx context.Context, keep map[string]struct{}) (int, error) {
+	if len(keep) == 0 {
+		return 0, fmt.Errorf("drop unreachable graph: refusing to keep nothing")
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("drop unreachable graph: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx,
+		`CREATE TEMP TABLE IF NOT EXISTS graph_reachable (key TEXT PRIMARY KEY)`); err != nil {
+		return 0, fmt.Errorf("stage reachable keys: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM graph_reachable`); err != nil {
+		return 0, fmt.Errorf("stage reachable keys: %w", err)
+	}
+	ins, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO graph_reachable (key) VALUES (?)`)
+	if err != nil {
+		return 0, fmt.Errorf("stage reachable keys: %w", err)
+	}
+	defer ins.Close()
+	for key := range keep {
+		if _, err := ins.ExecContext(ctx, key); err != nil {
+			return 0, fmt.Errorf("stage reachable keys: %w", err)
+		}
+	}
+
+	total := 0
+	for _, t := range []struct{ records, derived string }{
+		{`federation_graph_records`, `federation_graph_edges`},
+		{`federation_mark_records`, `federation_marks`},
+	} {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM `+t.derived+` WHERE origin NOT IN (SELECT key FROM graph_reachable)`); err != nil {
+			return 0, fmt.Errorf("drop unreachable derived rows: %w", err)
+		}
+		res, err := tx.ExecContext(ctx,
+			`DELETE FROM `+t.records+` WHERE origin NOT IN (SELECT key FROM graph_reachable)`)
+		if err != nil {
+			return 0, fmt.Errorf("drop unreachable graph records: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("drop unreachable graph records: %w", err)
+		}
+		total += int(n)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("drop unreachable graph: %w", err)
+	}
+	return total, nil
+}
+
 // GraphEdges returns every unexpired friendship claim, origin-ordered — the
 // input the network map walks for reachability and branch attribution.
 func (db *DB) GraphEdges(ctx context.Context, now int64) ([]federation.GraphEdgeClaim, error) {

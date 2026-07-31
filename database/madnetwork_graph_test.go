@@ -327,3 +327,101 @@ func TestMarkRecordReplacementDropsLiftedMarks(t *testing.T) {
 		t.Fatalf("marks = %+v, want only the still-published one", marks)
 	}
 }
+
+// DropUnreachableGraph is the retention half of the reachability walk: whatever
+// the caller's walk did not reach goes, with its derived rows, exactly as
+// expiry drops what aged out (docs/architecture/federation.md §Forgetting).
+func TestDropUnreachableGraphCollectsCutBranches(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	privKeep, originKeep := signer(t)
+	privDrop, originDrop := signer(t)
+	_, friend := signer(t)
+
+	putGraph(t, db, privKeep, federation.GraphRecord{
+		Origin: originKeep, Seq: 1, IssuedAt: 100,
+		Friends: []federation.GraphEdge{{Key: friend}},
+	}, nil, 9000)
+	putGraph(t, db, privDrop, federation.GraphRecord{
+		Origin: originDrop, Seq: 1, IssuedAt: 100,
+		Friends: []federation.GraphEdge{{Key: friend}},
+	}, nil, 9000)
+
+	// A mark from the cut branch, so both document types are shown to go.
+	rawMark, err := federation.SignMarkRecord(privDrop, federation.MarkRecord{
+		Origin: originDrop, Seq: 1, IssuedAt: 100,
+		Marks: []federation.DistrustMark{{Key: friend, At: 90, Reason: "hearsay"}},
+	})
+	if err != nil {
+		t.Fatalf("SignMarkRecord: %v", err)
+	}
+	parsedMark, err := federation.ParseMarkRecord(rawMark)
+	if err != nil {
+		t.Fatalf("ParseMarkRecord: %v", err)
+	}
+	if _, err := db.PutMarkRecord(ctx, parsedMark, rawMark, nil, 9000, 1000); err != nil {
+		t.Fatalf("PutMarkRecord: %v", err)
+	}
+
+	n, err := db.DropUnreachableGraph(ctx, map[string]struct{}{originKeep: {}})
+	if err != nil {
+		t.Fatalf("DropUnreachableGraph: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("dropped %d records, want 2 (one graph, one mark)", n)
+	}
+
+	digest, marks, err := db.GraphDigest(ctx, 0)
+	if err != nil {
+		t.Fatalf("GraphDigest: %v", err)
+	}
+	if len(digest) != 1 || digest[0].Origin != originKeep {
+		t.Errorf("digest = %+v, want only the reachable origin", digest)
+	}
+	if len(marks) != 0 {
+		t.Errorf("marks = %+v, want none: the branch that published them is cut", marks)
+	}
+
+	// The derived rows go with their records — a dropped branch must also stop
+	// satisfying GraphKnowsKey, which is what keeps it from being re-admitted.
+	edges, err := db.GraphEdges(ctx, 0)
+	if err != nil {
+		t.Fatalf("GraphEdges: %v", err)
+	}
+	for _, e := range edges {
+		if e.Origin == originDrop {
+			t.Errorf("edge %+v survived its record", e)
+		}
+	}
+	stored, err := db.GraphMarks(ctx, 0)
+	if err != nil {
+		t.Fatalf("GraphMarks: %v", err)
+	}
+	if len(stored) != 0 {
+		t.Errorf("derived marks = %+v, want none", stored)
+	}
+}
+
+// An empty keep set means the caller's walk produced nothing, which cannot
+// happen (it always contains our own key) and would erase the store if obeyed.
+func TestDropUnreachableGraphRefusesToKeepNothing(t *testing.T) {
+	db := openMem(t)
+	priv, origin := signer(t)
+	_, friend := signer(t)
+	putGraph(t, db, priv, federation.GraphRecord{
+		Origin: origin, Seq: 1, IssuedAt: 100,
+		Friends: []federation.GraphEdge{{Key: friend}},
+	}, nil, 9000)
+
+	if _, err := db.DropUnreachableGraph(context.Background(), nil); err == nil {
+		t.Fatal("an empty keep set should be refused, not obeyed")
+	}
+	digest, _, err := db.GraphDigest(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("GraphDigest: %v", err)
+	}
+	if len(digest) != 1 {
+		t.Errorf("digest = %+v, want the store untouched after a refusal", digest)
+	}
+}

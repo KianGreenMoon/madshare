@@ -63,6 +63,50 @@ type graphFetchReply struct {
 	Marks    []json.RawMessage `json:"marks,omitempty"`
 }
 
+// graphDigest is one memoized digest and the serial taken over it, held for
+// Intervals.GraphDigestTTL (see ownDigest).
+type graphDigest struct {
+	records []GraphDigestEntry
+	marks   []GraphDigestEntry
+	serial  string
+	built   time.Time
+}
+
+// ResyncGraph asks the refresh loop to pull the graph from every friend on its
+// next round, skipping the catalog cadence that normally gates it — the Rescan
+// button on /admin/network.
+//
+// Graph only: the catalog's cost scales with a library rather than a friend
+// list, and it already answers "unchanged" in the common case, so forcing it
+// would buy freshness nobody asked for at the only price worth avoiding.
+//
+// Pressing twice does not run twice. The flag coalesces, and Nudge's buffered
+// channel coalesces the wake-up, so a held-down button costs one round — the
+// same shape as EnsureBlob deduping concurrent fetches of one hash.
+//
+// What it cannot do is worth saying where the method is: gossip reaches one ring
+// per round, so this makes our view as fresh as our friends' STORES, not as
+// fresh as the network (docs/architecture/federation.md §Refreshing the graph on
+// demand).
+func (n *Node) ResyncGraph() {
+	// Clear the per-origin accept throttle first, or the button silently does
+	// nothing. rateAdmits refuses a second record from one origin inside
+	// Intervals.GraphAccept, and the records an admin is pressing this for are
+	// exactly the ones we just declined — press within a minute of the last
+	// round and every fetch comes back refused while the UI reports success.
+	//
+	// Dropping the throttle here is not a hole in it. It bounds what a peer can
+	// PUSH at us unsolicited; this is a local, deliberate, permission-gated act,
+	// and it still admits at most one record per origin — one round's worth,
+	// bounded by the digest and by MaxOriginsPerBranch like any other round.
+	n.acceptMu.Lock()
+	clear(n.graphAccept)
+	n.acceptMu.Unlock()
+
+	n.forceGraph.Store(true)
+	n.Nudge()
+}
+
 // graphSerial is the deterministic serial of a digest — the SHA-256 of its
 // canonical JSON, exactly as CatalogSerial does for a catalog snapshot.
 func graphSerial(records, marks []GraphDigestEntry) string {
@@ -131,6 +175,7 @@ func (n *Node) publishOwnRecord(ctx context.Context, peers []*Peer) {
 		n.logger.Printf("federation: store own graph record: %v", err)
 		return
 	}
+	n.invalidateGraphDigest()
 	n.logger.Printf("federation: published friend-list record seq %d (%d friendships)", seq, len(edges))
 }
 
@@ -186,6 +231,7 @@ func (n *Node) publishOwnMarkRecord(ctx context.Context, peers []*Peer) {
 		n.logger.Printf("federation: store own distrust record: %v", err)
 		return
 	}
+	n.invalidateGraphDigest()
 	n.logger.Printf("federation: published distrust record seq %d (%d mark(s))", seq, len(marks))
 }
 
@@ -290,23 +336,90 @@ func (n *Node) storedOwnRecord(ctx context.Context, origin string) *GraphRecord 
 	return rec
 }
 
-// expireGraph drops records past their TTL. The only ageing mechanism there is:
-// stop refreshing a record and it leaves every store on its own.
-func (n *Node) expireGraph(ctx context.Context) {
+// expireGraph ages the store on both of its clocks. Records past their TTL go
+// first — an abandoned key fades from every store without anyone acting — and
+// then the reachability walk collects what an admin's action orphaned: block or
+// remove a friend and the branch behind them is no longer reachable from our
+// key, so we stop holding it, stop offering it in our digest, and (because
+// nothing we hold names those origins any more) stop admitting it.
+//
+// Order matters. Expiring first means the walk runs over live edges only, so a
+// branch held up solely by a record that just aged out is collected in the same
+// pass rather than the next one.
+func (n *Node) expireGraph(ctx context.Context, peers []*Peer) {
 	if n.store == nil {
 		return
 	}
-	dropped, err := n.store.ExpireGraph(ctx, time.Now().Unix())
-	if err != nil {
+	now := time.Now().Unix()
+	if dropped, err := n.store.ExpireGraph(ctx, now); err != nil {
 		n.logger.Printf("federation: expire graph: %v", err)
+		return
+	} else if dropped > 0 {
+		n.invalidateGraphDigest()
+		n.logger.Printf("federation: expired %d gossip record(s)", dropped)
+	}
+
+	edges, err := n.store.GraphEdges(ctx, now)
+	if err != nil {
+		n.logger.Printf("federation: read graph edges for retention: %v", err)
+		return
+	}
+	keep := ReachableKeys(n.PublicKeyHex(), peers, edges)
+	dropped, err := n.store.DropUnreachableGraph(ctx, keep)
+	if err != nil {
+		n.logger.Printf("federation: drop unreachable gossip records: %v", err)
 		return
 	}
 	if dropped > 0 {
-		n.logger.Printf("federation: expired %d gossip record(s)", dropped)
+		// Worth a line rather than silence: this is the one place the store
+		// shrinks because of something an admin did, and a map that loses a third
+		// of its nodes should be explainable from the log.
+		n.logger.Printf("federation: dropped %d gossip record(s) no longer reachable from us", dropped)
+		n.invalidateGraphDigest()
 	}
 }
 
 // ── Serving the graph ────────────────────────────────────────────────────────
+
+// ownDigest is the digest we serve, memoized for Intervals.GraphDigestTTL —
+// exactly what ownSnapshot does for the catalog, and for the same reason.
+//
+// This is the whole answer to a friend that pulls too often (a rescan button
+// held down, a buggy build, a loop): the second pull inside the window costs a
+// mutex and a slice header instead of two table scans. A per-peer cooldown
+// answering 429 was rejected on purpose — syncGraph reads every non-200 as "an
+// older peer without the endpoint" and returns, so a refusal is indistinguishable
+// from absence and a mistuned one would silently stop two honest nodes
+// converging (docs/architecture/federation.md §Refreshing the graph on demand).
+//
+// Unlike the catalog there is no per-audience split: the graph is served to
+// friends and to nobody else, so every caller gets the same bytes.
+func (n *Node) ownDigest(ctx context.Context) ([]GraphDigestEntry, []GraphDigestEntry, string, error) {
+	n.digestMu.Lock()
+	defer n.digestMu.Unlock()
+	if n.digest != nil && time.Since(n.digest.built) < n.intervals.GraphDigestTTL {
+		return n.digest.records, n.digest.marks, n.digest.serial, nil
+	}
+	records, marks, err := n.store.GraphDigest(ctx, time.Now().Unix())
+	if err != nil {
+		return nil, nil, "", err
+	}
+	n.digest = &graphDigest{
+		records: records, marks: marks,
+		serial: graphSerial(records, marks), built: time.Now(),
+	}
+	return n.digest.records, n.digest.marks, n.digest.serial, nil
+}
+
+// invalidateGraphDigest forces the next serve to rebuild. Called where the store
+// changes in a way a friend should hear about promptly — a record we accepted,
+// a branch we dropped — so the TTL bounds staleness for the quiet case without
+// adding it to the case that matters.
+func (n *Node) invalidateGraphDigest() {
+	n.digestMu.Lock()
+	n.digest = nil
+	n.digestMu.Unlock()
+}
 
 // handleGraph serves GET /madnetwork/v0/graph?since=<serial> — the digest of
 // everything we hold. Friends only, like the catalog: the graph names third
@@ -320,13 +433,13 @@ func (n *Node) handleGraph(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the network graph is served to friends only", http.StatusForbidden)
 		return
 	}
-	records, marks, err := n.store.GraphDigest(r.Context(), time.Now().Unix())
+	records, marks, serial, err := n.ownDigest(r.Context())
 	if err != nil {
 		n.logger.Printf("federation: build graph digest: %v", err)
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	msg := graphDigestMessage{Protocol: ProtocolVersion, Serial: graphSerial(records, marks)}
+	msg := graphDigestMessage{Protocol: ProtocolVersion, Serial: serial}
 	if r.URL.Query().Get("since") == msg.Serial {
 		msg.Unchanged = true
 	} else {
@@ -482,6 +595,9 @@ func (n *Node) syncGraph(ctx context.Context, p *Peer) {
 		}
 	}
 	if stored > 0 {
+		// What we just learned is what our own friends have not heard yet, so the
+		// memoized digest must not sit on it for the rest of its window.
+		n.invalidateGraphDigest()
 		n.logger.Printf("federation: learned %d gossip record(s) via %q", stored, p.Label())
 	}
 }

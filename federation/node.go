@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	yggconfig "github.com/yggdrasil-network/yggdrasil-go/src/config"
@@ -64,6 +65,15 @@ type Node struct {
 	// guest-only} — so this is bounded by design, not by eviction.
 	snapMu sync.Mutex
 	snaps  map[Audience]*snapshot
+
+	// Memoized gossip digest served to friends (gossip_node.go, F6). Not keyed
+	// by audience like the catalog: the graph is friends-only, so every caller
+	// gets the same answer. forceGraph is the Rescan button's flag — set by
+	// ResyncGraph, consumed once per sweep, so holding the button down coalesces
+	// into the round already running.
+	digestMu   sync.Mutex
+	digest     *graphDigest
+	forceGraph atomic.Bool
 
 	// F3 transfer wiring (transfer.go): the blob cache dir, the local blob
 	// resolver (serving side + local short-circuit), the in-flight transfer
@@ -127,6 +137,7 @@ var (
 		GraphRepublish: 6 * time.Hour,
 		GraphTTL:       7 * 24 * time.Hour,
 		GraphAccept:    time.Minute,
+		GraphDigestTTL: 30 * time.Second,
 	}
 	defaultTimeouts = Timeouts{
 		Control:    15 * time.Second,
