@@ -416,19 +416,87 @@ for the admin lenses (`virtual-list.js`) has to come to *Browse all* in the same
 phase, along with keyset paging on the artist query. A lane is naturally bounded
 (a screenful) and needs none of it; the alphabet is not, and does.
 
-### Open
+### Settled (2026-07-31)
 
-- **How much of a lane to show, and how it expands.** A row of ten with "see all",
-  versus a short vertical list. Answer after looking at a real merged catalog.
-- **`first_seen` semantics on a catalog replace.** A snapshot is applied as an
-  atomic replace (§Catalog), so a naive column would call every row new after
-  every sync. It has to be preserved per `(peer, hash)` across a replace, and
-  "new" means *new to us*, not new to the origin — an honest thing to label
-  precisely, since the two differ for a node we just befriended.
-- **Whether "From your friends" survives the vocabulary change.** Since
-  2026-07-31 "friends" means the whole community (federation.md §Goal &
-  vocabulary), so this lane needs a name that says *direct* friends without
-  reintroducing the ambiguity that decision removed.
+The three questions this section left open are answered; the answers are the
+build's specification.
+
+**A lane is eight rows and a "See all", not a card shelf.** Each lane renders as
+a heading plus up to eight ordinary track rows — the same `browse-rows.js` rows
+the drill-down uses, so hearts, the ⋯ menu, Materialize and the ⓘ versions panel
+work inside a lane with no new component and no second code path. The deciding
+argument is the one thing the merged catalog does not have: **cover images**. A
+horizontal shelf is a row of artwork, and a row of artwork with no artwork is ten
+grey squares. "See all" opens the lane full-page, in the same rank order, without
+the cap below.
+
+**`first_seen` is per `(source, entry)`, carried across the atomic replace, and
+aggregated as a minimum.** The column lives on `federation_catalog`; a sync reads
+the existing values for that source before the replace and re-stamps the rows that
+survive, so re-advertising an unchanged entry never makes it new again. A logical
+track's date is the **earliest** date any source showed it to us, so a track we
+already know from A does not resurface as new when B also starts offering it. The
+label is *new to us*: a node reached last week publishing a record from 1974 is
+new here, and the page says "new on the network", never "new music".
+
+**"From your friends" becomes "From your direct friends".** federation.md §Goal &
+vocabulary settled the word the same day: *community* is the whole connected
+component, and **direct friend** is the node an admin friended by hand. The lane
+means the second, so it uses the second's name in full. It is the only lane whose
+membership an admin controls personally, which is exactly why it exists.
+
+### Lane definitions
+
+Each lane is one ranking over the merged, availability-filtered set. `holders` is
+the number of distinct **nodes** offering a logical track; `branches` is the
+number of distinct direct friends those nodes are reachable through
+(federation.md §Trust graph — one branch is one voice).
+
+| lane | shown when | ranked by |
+|---|---|---|
+| `missing` — **Not in your library** | no self row in the group | `holders` desc |
+| `new` — **New on the network** | some source has a `first_seen` | `first_seen` desc |
+| `held` — **Most held here** | always | `branches` desc, then `holders` desc |
+| `rare` — **Only one node has it** | `holders = 1` and no self row | that node's `last_seen` desc |
+| `friends` — **From your direct friends** | some holder is a direct friend | friend `holders` desc |
+| `nodes` — **By node** | — | not a track lane; see below |
+
+`held` is the only lane needing the friend graph. It is ranked in two steps —
+SQL takes the top candidates by `holders`, then the branch weighting re-sorts
+them — and the two-step is exact rather than approximate, because `branches ≤
+holders` always holds, so the top *K* by holders necessarily contains the top *K*
+by branches. With no graph (federation off, nothing gossiped yet) it degrades to
+one source = one voice, which is the same rule with a smaller world.
+
+`rare` needs no branch arithmetic at all: one holder is one branch, whatever the
+graph says. Ordering it by the holder's `last_seen` puts the rarities that are
+**fetchable right now** first, which is the only thing that distinguishes them
+from each other.
+
+**The per-source cap, and where it does not apply.** On the landing view `new` and
+`rare` cap how much any one node may contribute, filling the lane round-robin
+across sources: a node reached for the first time makes its entire library new to
+us at once, and without a cap that one node owns the lane until something newer
+happens — which on a quiet community is days. The quota adapts to how many nodes
+are in the candidate set (`ceil(limit / sources)`, at least one) and the lane
+still fills from the remainder in rank order if the quota cannot fill it, so a
+one-node network sees no difference. **"See all" is never capped**, which is the
+"lanes rank, they never hide" rule kept literally: the cap is a property of the
+eight-row digest, not of the ranking.
+
+`missing`, `held` and `friends` are *not* capped. Their rankings are corroboration
+counts, so volume from a single node cannot lift a row in them at all — a cap
+there would only mean showing worse answers.
+
+### Browsing a single node
+
+The **By node** lane lists the nodes whose catalogs this node holds — the same set
+as the status strip — and opening one enters *Browse all* restricted to that node,
+this node's own library included as a node like any other. It carries no ranking:
+within one shelf there is nothing to corroborate against, so its own order is the
+right order (§Browsing a single node above). This is also where an admin looks at
+a source after a report, so it deliberately shows the node's offering complete,
+uncorroborated entries and all.
 
 ## Out of scope
 
@@ -468,8 +536,8 @@ phase, along with keyset paging on the artist query. A lane is naturally bounded
    with `virtual-list.js` + keyset paging. Needs `first_seen` on
    `federation_catalog` (a cache-table migration) and the branch weighting from
    federation.md §Trust graph; everything else reads aggregates the page already
-   computes. *(planned — ships with or just after F7, which is what makes the
-   alphabet untenable.)*
+   computes. *(specified 2026-07-31 — §Settled, §Lane definitions; in build as
+   F7 item 8, which is what makes the alphabet untenable.)*
 7. **Ranking rare and unverifiable structure** — the corroboration sort key and
    the "rare" badge (§Planned — ranking rare…). Independent of 6 and orthogonal
    to it: 6 decides *what a person is shown first*, 7 decides *what order claims

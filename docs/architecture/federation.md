@@ -2149,7 +2149,12 @@ milestone directly after direct transfer works, and tokens ship with depth.
      landing view, the alphabet demoted to *Browse all* and finally windowed.
      Listed here because F7 is what makes it urgent — serving members without it
      means opening the network's libraries into a surface nobody can find anything
-     in.
+     in. **Specified 2026-07-31** (that page, §Settled and §Lane definitions): six
+     lanes, eight rows each, a per-source cap on the two lanes a single node's
+     volume could otherwise own, and a `first_seen` column carried across the
+     catalog replace. Its *Most held* lane is the first place branch weighting
+     reaches the browse, so it lands part of item 10 early — deliberately, because
+     a popularity lane that a sybil farm can lift is worse than none.
   9. **Listener-node tokens** (§Principals & access): a home server signs "this
      bearer is mine until T", verified by that server's friends against the
      self-certifying channel. One issuer, one hop, no chain — the only surviving
