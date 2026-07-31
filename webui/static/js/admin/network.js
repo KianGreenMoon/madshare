@@ -520,18 +520,20 @@ async function blockMapNode(n) {
 // admin has to accept, exactly as a card import does — friending stays mutual.
 async function friendMapNode(n) {
   const label = n.name || n.key.slice(0, 12);
-  const body = [
+  // Not `body`: a fetch options object below has a `body` key, and the two names
+  // sitting next to each other is how the bug this file just fixed reads.
+  const bodyNodes = [
     el('p', {}, [`Send “${label}” a pairing request. Its admin has to accept before you are friends, and nothing of your library is shared until they do.`]),
     el('code', { class: 'modal-key', text: n.key }),
   ];
   if (n.named === 'heard') {
-    body.push(el('p', { class: 'modal-note' }, [
+    bodyNodes.push(el('p', { class: 'modal-note' }, [
       'That name is only what the network says this node calls itself. The key above is the identity — check it against the person you mean to friend.',
     ]));
   }
   const ok = await confirmModal({
     title: 'Ask this node to be friends?',
-    bodyNodes: body,
+    bodyNodes,
     confirmLabel: 'Send request',
     danger: false,
   });
@@ -585,8 +587,11 @@ async function peerOp(p, op, doneMsg, body = null) {
       ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
     });
     if (handleAuthError(res)) return;
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) { toast(body.error || `Operation failed (HTTP ${res.status}).`, 'error'); return; }
+    // NOT `body` — that is this function's request parameter, read a few lines
+    // up. Re-declaring the name here put that read in a temporal dead zone, so
+    // every accept, block and unblock threw before the request was ever sent.
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { toast(data.error || `Operation failed (HTTP ${res.status}).`, 'error'); return; }
     toast(doneMsg, 'info');
   } catch (err) {
     toast(`Operation failed: ${err.message}`, 'error');
