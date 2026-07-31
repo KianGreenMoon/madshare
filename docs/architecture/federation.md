@@ -11,8 +11,11 @@
 > visible here (§Discovery beyond the friend ring, migration **036**). The posture
 > is therefore running in **both** directions — **everything to our community,
 > nothing outside it** — and `meshlab reach` is the measurement that says so.
-> Items 6–10 remain: per-member abuse controls, the map at scale, the
-> /madnetwork page rework, listener-node tokens, and trust-weighted popularity.
+> **Item 8 followed the same day** (migration **037**): the /madnetwork page now
+> lands on discovery lanes and search instead of an alphabet, which is what a
+> community's whole published output needed. Items 6, 7, 9 and 10 remain:
+> per-member abuse controls, the map at scale, listener-node tokens, and the rest
+> of trust-weighted popularity.
 > The two items in §Open questions are design-time details to settle during their
 > milestone, not blockers. Federation
 > is auth Phase 4 (`docs/architecture/auth.md` §8) and the milestone the native
@@ -2140,21 +2143,26 @@ milestone directly after direct transfer works, and tokens ship with depth.
      library's ⓘ expansion. Not access work at all, but it is what makes the
      revocation half of the membership model usable, so it ships with the phase
      rather than after it.
-  8. **A madnetwork page that can hold a community's library**
-     (`docs/ui/madnetwork-page.md` §"the page is a phone book"). `/madnetwork` is
-     an A→Z drill-down today, which was right for a few friends' catalogs and is
-     the wrong shape for everything the community publishes: on your own library
-     you browse because you remember it, on the network you have nothing to
-     remember. Discovery lanes over the merged catalog, search promoted to the
-     landing view, the alphabet demoted to *Browse all* and finally windowed.
-     Listed here because F7 is what makes it urgent — serving members without it
-     means opening the network's libraries into a surface nobody can find anything
-     in. **Specified 2026-07-31** (that page, §Settled and §Lane definitions): six
-     lanes, eight rows each, a per-source cap on the two lanes a single node's
-     volume could otherwise own, and a `first_seen` column carried across the
-     catalog replace. Its *Most held* lane is the first place branch weighting
-     reaches the browse, so it lands part of item 10 early — deliberately, because
-     a popularity lane that a sybil farm can lift is worse than none.
+  8. **A madnetwork page that can hold a community's library** — **BUILT
+     2026-07-31.**
+     (`docs/ui/madnetwork-page.md` §Discovery). `/madnetwork` was an A→Z
+     drill-down, which was right for a few friends' catalogs and the wrong shape
+     for everything the community publishes: on your own library you browse
+     because you remember it, on the network you have nothing to remember. It now
+     lands on discovery lanes over the merged catalog with search above them, the
+     alphabet demoted to *Browse all* and finally windowed (keyset-paged +
+     `virtual-list.js`). Built here because F7 is what made it urgent — serving
+     members without it meant opening the network's libraries into a surface
+     nobody could find anything in.
+
+     Six lanes, eight rows each, a per-source cap on the two a single node's
+     volume could otherwise own, `?source=` for one node's shelf, and migration
+     **037** (`federation_catalog.first_seen`, carried across the atomic replace —
+     otherwise every sync re-dates a source's whole library). Its *Most held* lane
+     is the first place branch weighting reaches the browse, so it lands part of
+     item 10 early — deliberately, because a popularity lane a sybil farm can lift
+     is worse than none. What item 10 still owes it: the same weighting applied
+     beyond one lane, and gossiped freshness hints.
   9. **Listener-node tokens** (§Principals & access): a home server signs "this
      bearer is mine until T", verified by that server's friends against the
      self-certifying channel. One issuer, one hop, no chain — the only surviving

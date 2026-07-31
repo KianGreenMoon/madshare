@@ -347,10 +347,14 @@ the whole page, no majority-takes-all step to explain.
   median, a fixed gap, or a quantile. Deliberately unspecified until there is a
   real catalog to look at; picking a constant now would be picking it blind.
 
-## Planned — the page is a phone book, and F7 makes that worse
+## Discovery — the page was a phone book, and F7 made that worse
 
 *(Raised by the owner 2026-07-31: "it currently just shows all library in
-alphabetic order.")*
+alphabetic order." **Built the same day** — this section is what shipped, not a
+plan. The API surface is `GET /api/madnetwork/discover` (every lane's eight-row
+digest in one round trip, empty lanes omitted) and `GET
+/api/madnetwork/lane?name=&offset=` ("See all"), with `?source=<id|self>` on
+`artists`/`albums`/`tracks`/`search` for a single node's shelf.)*
 
 The page today is one thing: an A→Z drill-down over the merged catalogs. That was
 right while the merged set was a handful of friends' libraries, and it stops being
@@ -482,7 +486,8 @@ are in the candidate set (`ceil(limit / sources)`, at least one) and the lane
 still fills from the remainder in rank order if the quota cannot fill it, so a
 one-node network sees no difference. **"See all" is never capped**, which is the
 "lanes rank, they never hide" rule kept literally: the cap is a property of the
-eight-row digest, not of the ranking.
+eight-row digest, not of the ranking — and for the same reason *whether there is
+more* is decided on the ranking, before any capping runs.
 
 `missing`, `held` and `friends` are *not* capped. Their rankings are corroboration
 counts, so volume from a single node cannot lift a row in them at all — a cap
@@ -491,12 +496,20 @@ there would only mean showing worse answers.
 ### Browsing a single node
 
 The **By node** lane lists the nodes whose catalogs this node holds — the same set
-as the status strip — and opening one enters *Browse all* restricted to that node,
-this node's own library included as a node like any other. It carries no ranking:
-within one shelf there is nothing to corroborate against, so its own order is the
-right order (§Browsing a single node above). This is also where an admin looks at
-a source after a report, so it deliberately shows the node's offering complete,
-uncorroborated entries and all.
+as the status strip, whose chips are the other entrance — and opening one enters
+*Browse all* restricted to that node, this node's own library included as a node
+like any other. It carries no ranking: within one shelf there is nothing to
+corroborate against, so its own order is the right order (§Browsing a single node
+above). This is also where an admin looks at a source after a report, so it
+deliberately shows the node's offering complete, uncorroborated entries and all.
+
+A node's shelf **never folds our own set in** — browsing a node means seeing what
+that node offers, and we are a different node. The corollary caught a real bug:
+asking for OUR shelf on a node that publishes nothing to the network has to
+answer with nothing, and answering with the merged catalog instead is the one
+answer that is certainly wrong. The view's `includeRemote`/`includeOwn` pair
+therefore admits a view that includes *neither* half, backed by a well-typed
+empty row source rather than a special case at each call site.
 
 ## Out of scope
 
@@ -536,8 +549,10 @@ uncorroborated entries and all.
    with `virtual-list.js` + keyset paging. Needs `first_seen` on
    `federation_catalog` (a cache-table migration) and the branch weighting from
    federation.md §Trust graph; everything else reads aggregates the page already
-   computes. *(specified 2026-07-31 — §Settled, §Lane definitions; in build as
-   F7 item 8, which is what makes the alphabet untenable.)*
+   computes. *(**shipped 2026-07-31** as F7 item 8 — §Settled, §Lane
+   definitions, §Browsing a single node. Migration 037, `GET
+   /api/madnetwork/discover` + `/lane`, `?source=` on the browse endpoints, a
+   keyset-paged + windowed Browse all, and By node with it.)*
 7. **Ranking rare and unverifiable structure** — the corroboration sort key and
    the "rare" badge (§Planned — ranking rare…). Independent of 6 and orthogonal
    to it: 6 decides *what a person is shown first*, 7 decides *what order claims
