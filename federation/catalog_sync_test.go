@@ -15,12 +15,24 @@ import (
 	"daemonlord.ygg/madshare/config"
 )
 
-func (m *memStore) resetSync(peerID int64) {
+// resetSync ages one node's cached catalog so the next sweep re-pulls it,
+// addressed by node key — sync state lives on the source row since F7 item 5.
+func (m *memStore) resetSync(key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if p, ok := m.peers[peerID]; ok {
-		p.CatalogSyncedAt = 0
+	if s := m.sourceByKeyLocked(key); s != nil {
+		s.CatalogSyncedAt, s.AttemptedAt = 0, 0
 	}
+}
+
+// syncState returns one node's cached serial and last confirmed-fresh time.
+func (m *memStore) syncState(key string) (string, int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s := m.sourceByKeyLocked(key); s != nil {
+		return s.CatalogSerial, s.CatalogSyncedAt
+	}
+	return "", 0
 }
 
 // TestCatalogSync walks the F2 pull-and-cache flow between two embedded nodes:
@@ -108,7 +120,10 @@ func TestCatalogSync(t *testing.T) {
 	waitFor(t, "B to pull A's catalog", func() bool {
 		b.Nudge()
 		p, err := storeB.GetFederationPeerByKey(ctx, a.PublicKeyHex())
-		if err != nil || p.State != PeerFriend || p.CatalogSerial == "" {
+		if err != nil || p.State != PeerFriend {
+			return false
+		}
+		if serial, _ := storeB.syncState(a.PublicKeyHex()); serial == "" {
 			return false
 		}
 		peerAonB = p
@@ -119,17 +134,17 @@ func TestCatalogSync(t *testing.T) {
 		t.Errorf("cached catalog = %+v, want A's two entries", cached)
 	}
 	wantSerial := CatalogSerial(mustPublished(t, storeA))
-	if peerAonB.CatalogSerial != wantSerial {
-		t.Errorf("stored serial = %q, want the snapshot serial %q", peerAonB.CatalogSerial, wantSerial)
+	if serial, _ := storeB.syncState(a.PublicKeyHex()); serial != wantSerial {
+		t.Errorf("stored serial = %q, want the snapshot serial %q", serial, wantSerial)
 	}
 
 	// A due re-sync with an unchanged catalog takes the not-modified path:
 	// synced_at moves, the cache stays.
-	storeB.resetSync(peerAonB.ID)
+	storeB.resetSync(a.PublicKeyHex())
 	waitFor(t, "the not-modified re-check", func() bool {
 		b.Nudge()
-		p, err := storeB.GetFederationPeerByKey(ctx, a.PublicKeyHex())
-		return err == nil && p.CatalogSyncedAt > 0
+		_, syncedAt := storeB.syncState(a.PublicKeyHex())
+		return syncedAt > 0
 	})
 	if got := storeB.cachedCatalog(peerAonB.ID); len(got) != 2 {
 		t.Errorf("cache after not-modified check = %d entries, want 2 (untouched)", len(got))

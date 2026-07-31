@@ -97,8 +97,8 @@ func TestWithIntervalsDrivesSweeps(t *testing.T) {
 // that carries a chaos scenario — a failover being counted only when a piece is
 // delivered by a holder *other* than one that failed it.
 func TestTransferStatsAccounting(t *testing.T) {
-	fast := &Peer{Name: "fast", PublicKey: "aa"}
-	slow := &Peer{Name: "slow", PublicKey: "bb"}
+	fast := &BlobProvider{Name: "fast", PublicKey: "aa"}
+	slow := &BlobProvider{Name: "slow", PublicKey: "bb"}
 	boom := errors.New("mesh stalled")
 
 	s := newTransferStats()
@@ -184,7 +184,7 @@ func TestTransferStatsFirstByte(t *testing.T) {
 		t.Errorf("FirstByte after a reset = %v, want 0", ttfb)
 	}
 	// Cumulative history survives the reset.
-	tr.stats.noteFail(wholePiece, &Peer{Name: "gone", PublicKey: "cc"}, errors.New("dead"), false)
+	tr.stats.noteFail(wholePiece, &BlobProvider{Name: "gone", PublicKey: "cc"}, errors.New("dead"), false)
 	tr.resetProgress()
 	if r := tr.Stats().Retries; r != 1 {
 		t.Errorf("retries after a reset = %d, want the history kept (1)", r)
@@ -200,7 +200,7 @@ func TestTransferStatsPriorAttempt(t *testing.T) {
 	st.setMode("swarm")
 	st.setChunks(8)
 	st.noteFirstByte()
-	st.noteSucceed(0, &Peer{Name: "a", PublicKey: "aa"}, 4096)
+	st.noteSucceed(0, &BlobProvider{Name: "a", PublicKey: "aa"}, 4096)
 
 	st.resetAttempt() // the swarm→whole fallback
 	st.setMode("whole")

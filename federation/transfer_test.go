@@ -78,16 +78,18 @@ func makeFriends(t *testing.T, a, b *Node, storeA, storeB *memStore) {
 	})
 }
 
-// seedBlobCatalog gives B a cached catalog row for friend A advertising hash,
-// so EnsureBlob finds a provider without waiting out a catalog sync.
+// seedBlobCatalog gives B a cached catalog row for A advertising hash, so
+// EnsureBlob finds a provider without waiting out a catalog sync. Addressed by
+// node key: a cached catalog hangs off a source row, and A need not be a peer at
+// all for B to hold one (F7 item 5).
 func seedBlobCatalog(t *testing.T, storeB *memStore, a *Node, hash string, size int64) {
 	t.Helper()
 	ctx := context.Background()
-	p, err := storeB.GetFederationPeerByKey(ctx, a.PublicKeyHex())
+	src, err := storeB.EnsureCatalogSource(ctx, a.PublicKeyHex(), time.Now().Unix())
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = storeB.ReplacePeerCatalog(ctx, p.ID, "s1", time.Now().Unix(), []CatalogEntry{{
+	err = storeB.ReplaceSourceCatalog(ctx, src.ID, "s1", time.Now().Unix(), []CatalogEntry{{
 		Key: "1", RecordingKey: "r1", Title: "Blob Song",
 		Renditions: []CatalogRendition{{Hash: hash, Size: size, Codec: "mp3"}},
 	}})

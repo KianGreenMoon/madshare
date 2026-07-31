@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -28,10 +29,14 @@ type memStore struct {
 	next  int64
 	peers map[int64]*Peer
 
-	// Catalog half (F2): published is what this node offers friends; caches
-	// holds the per-peer pulled copies. holdings (F4) is the per-peer cached
-	// list of cache-held hashes; seedEnabled/seedCache back SeedingPolicy.
+	// Catalog half (F2): published is what this node offers; caches holds the
+	// pulled copies, keyed by SOURCE id (F7 item 5 — a cached catalog hangs off
+	// a node we pull from, which need not be a peer). holdings (F4) is the
+	// per-source cached list of cache-held hashes; seedEnabled/seedCache back
+	// SeedingPolicy.
 	published   []CatalogEntry
+	sources     map[int64]*CatalogSource
+	nextSource  int64
 	caches      map[int64][]CatalogEntry
 	holdings    map[int64][]string
 	seedEnable  bool
@@ -59,6 +64,7 @@ type memStore struct {
 func newMemStore() *memStore {
 	return &memStore{
 		peers:      map[int64]*Peer{},
+		sources:    map[int64]*CatalogSource{},
 		caches:     map[int64][]CatalogEntry{},
 		holdings:   map[int64][]string{},
 		seedEnable: true, // seed by default, mirroring the DB defaults
@@ -110,26 +116,111 @@ func (m *memStore) PeerAudience(_ context.Context, peerID int64) (Audience, erro
 	return FriendAudience, nil
 }
 
-func (m *memStore) ReplacePeerCatalog(_ context.Context, peerID int64, serial string, syncedAt int64, entries []CatalogEntry) error {
+func (m *memStore) ReplaceSourceCatalog(_ context.Context, sourceID int64, serial string, syncedAt int64, entries []CatalogEntry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	p, ok := m.peers[peerID]
+	s, ok := m.sources[sourceID]
 	if !ok {
 		return ErrPeerNotFound
 	}
-	m.caches[peerID] = append([]CatalogEntry(nil), entries...)
-	p.CatalogSerial, p.CatalogSyncedAt = serial, syncedAt
+	m.caches[sourceID] = append([]CatalogEntry(nil), entries...)
+	s.CatalogSerial, s.CatalogSyncedAt = serial, syncedAt
+	if syncedAt > s.LastSeen {
+		s.LastSeen = syncedAt
+	}
 	return nil
 }
 
-func (m *memStore) MarkPeerCatalogChecked(_ context.Context, peerID int64, serial string, syncedAt int64) error {
+func (m *memStore) MarkSourceCatalogChecked(_ context.Context, sourceID int64, serial string, syncedAt int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	p, ok := m.peers[peerID]
+	s, ok := m.sources[sourceID]
 	if !ok {
 		return ErrPeerNotFound
 	}
-	p.CatalogSerial, p.CatalogSyncedAt = serial, syncedAt
+	s.CatalogSerial, s.CatalogSyncedAt = serial, syncedAt
+	if syncedAt > s.LastSeen {
+		s.LastSeen = syncedAt
+	}
+	return nil
+}
+
+// ── Catalog sources (F7 item 5) ──────────────────────────────────────────────
+
+func (m *memStore) EnsureCatalogSource(_ context.Context, publicKey string, now int64) (*CatalogSource, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s := m.sourceByKeyLocked(publicKey); s != nil {
+		cp := *s
+		return &cp, nil
+	}
+	m.nextSource++
+	s := &CatalogSource{ID: m.nextSource, PublicKey: publicKey, FirstSeen: now}
+	m.sources[s.ID] = s
+	cp := *s
+	return &cp, nil
+}
+
+func (m *memStore) ListCatalogSources(context.Context) ([]*CatalogSource, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*CatalogSource, 0, len(m.sources))
+	for _, s := range m.sources {
+		cp := *s
+		out = append(out, &cp)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].AttemptedAt != out[j].AttemptedAt {
+			return out[i].AttemptedAt < out[j].AttemptedAt
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+func (m *memStore) MarkCatalogSourceAttempted(_ context.Context, id int64, at int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s, ok := m.sources[id]; ok {
+		s.AttemptedAt = at
+	}
+	return nil
+}
+
+func (m *memStore) TouchCatalogSourceSeen(_ context.Context, id int64, at int64, heardName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sources[id]
+	if !ok {
+		return nil
+	}
+	if at > s.LastSeen {
+		s.LastSeen = at
+	}
+	if heardName != "" {
+		s.HeardName = heardName
+	}
+	return nil
+}
+
+func (m *memStore) DropCatalogSources(_ context.Context, ids []int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, id := range ids {
+		delete(m.sources, id)
+		delete(m.caches, id)
+		delete(m.holdings, id)
+	}
+	return nil
+}
+
+// sourceByKeyLocked finds a source row by node key; caller holds m.mu.
+func (m *memStore) sourceByKeyLocked(key string) *CatalogSource {
+	for _, s := range m.sources {
+		if s.PublicKey == key {
+			return s
+		}
+	}
 	return nil
 }
 
@@ -150,61 +241,78 @@ func (m *memStore) BlobVisibleTo(_ context.Context, hash string, aud Audience) (
 	return false, false, nil
 }
 
-// MadnetworkBlobProviders scans the cached friend catalogs and holdings for the
-// hash, like the DB does — the union, deduped per peer.
-func (m *memStore) MadnetworkBlobProviders(_ context.Context, hash string) (int64, []*Peer, error) {
+// MadnetworkBlobProviders scans the cached catalogs and holdings for the hash,
+// like the DB does — the union, deduped per source, minus blocked nodes.
+func (m *memStore) MadnetworkBlobProviders(_ context.Context, hash string) (int64, []*BlobProvider, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var size int64
-	holders := map[int64]*Peer{}
-	for peerID, entries := range m.caches {
-		p, ok := m.peers[peerID]
-		if !ok || p.State != PeerFriend {
-			continue
+	holders := map[int64]*BlobProvider{}
+	note := func(sourceID int64) {
+		if _, seen := holders[sourceID]; seen {
+			return
 		}
+		s, ok := m.sources[sourceID]
+		if !ok {
+			return
+		}
+		prov := &BlobProvider{SourceID: s.ID, PublicKey: s.PublicKey,
+			HeardName: s.HeardName, LastSeen: s.LastSeen}
+		if p := m.peerByKeyLocked(s.PublicKey); p != nil {
+			if p.State == PeerBlocked {
+				return
+			}
+			prov.PeerID, prov.Name = p.ID, p.Name
+			if p.LastSeen > prov.LastSeen {
+				prov.LastSeen = p.LastSeen
+			}
+		}
+		holders[sourceID] = prov
+	}
+	for sourceID, entries := range m.caches {
 		for _, e := range entries {
 			for _, rd := range e.Renditions {
 				if rd.Hash == hash {
 					if size == 0 {
 						size = rd.Size
 					}
-					if _, seen := holders[peerID]; !seen {
-						cp := *p
-						holders[peerID] = &cp
-					}
+					note(sourceID)
 				}
 			}
 		}
 	}
-	for peerID, hashes := range m.holdings {
-		p, ok := m.peers[peerID]
-		if !ok || p.State != PeerFriend {
-			continue
-		}
+	for sourceID, hashes := range m.holdings {
 		for _, h := range hashes {
 			if h == hash {
-				if _, seen := holders[peerID]; !seen {
-					cp := *p
-					holders[peerID] = &cp
-				}
+				note(sourceID)
 			}
 		}
 	}
-	out := make([]*Peer, 0, len(holders))
+	out := make([]*BlobProvider, 0, len(holders))
 	for _, p := range holders {
 		out = append(out, p)
 	}
 	return size, out, nil
 }
 
-// ReplacePeerHoldings mirrors the DB: replace one friend's cache-holdings list.
-func (m *memStore) ReplacePeerHoldings(_ context.Context, peerID int64, hashes []string) error {
+// peerByKeyLocked finds a peer row by node key; caller holds m.mu.
+func (m *memStore) peerByKeyLocked(key string) *Peer {
+	for _, p := range m.peers {
+		if p.PublicKey == key {
+			return p
+		}
+	}
+	return nil
+}
+
+// ReplaceSourceHoldings mirrors the DB: replace one source's cache-holdings list.
+func (m *memStore) ReplaceSourceHoldings(_ context.Context, sourceID int64, hashes []string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.peers[peerID]; !ok {
+	if _, ok := m.sources[sourceID]; !ok {
 		return ErrPeerNotFound
 	}
-	m.holdings[peerID] = append([]string(nil), hashes...)
+	m.holdings[sourceID] = append([]string(nil), hashes...)
 	return nil
 }
 
@@ -223,10 +331,49 @@ func (m *memStore) setSeeding(enabled, cache bool) {
 	m.seedEnable, m.seedCache = enabled, cache
 }
 
+// cachedCatalog returns what we hold from one node, addressed by its PEER id —
+// the handle the older tests have. It resolves through the key to the source row
+// that actually owns the rows now.
 func (m *memStore) cachedCatalog(peerID int64) []CatalogEntry {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return append([]CatalogEntry(nil), m.caches[peerID]...)
+	p, ok := m.peers[peerID]
+	if !ok {
+		return nil
+	}
+	s := m.sourceByKeyLocked(p.PublicKey)
+	if s == nil {
+		return nil
+	}
+	return append([]CatalogEntry(nil), m.caches[s.ID]...)
+}
+
+// cachedFrom returns what we hold from one node addressed by its KEY, creating
+// nothing — the read a discovery test needs, since the source row's existence is
+// itself the thing under test.
+func (m *memStore) cachedFrom(key string) []CatalogEntry {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := m.sourceByKeyLocked(key)
+	if s == nil {
+		return nil
+	}
+	return append([]CatalogEntry(nil), m.caches[s.ID]...)
+}
+
+// cachedHoldings is cachedCatalog's twin for the holdings tracker.
+func (m *memStore) cachedHoldings(peerID int64) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.peers[peerID]
+	if !ok {
+		return nil
+	}
+	s := m.sourceByKeyLocked(p.PublicKey)
+	if s == nil {
+		return nil
+	}
+	return append([]string(nil), m.holdings[s.ID]...)
 }
 
 func (m *memStore) setPublished(entries []CatalogEntry) {
@@ -312,9 +459,9 @@ func (m *memStore) UpdateFederationPeerHeardName(_ context.Context, id int64, na
 	return nil
 }
 
-// CheckPeerClaims: the store fake finds nothing — the contradiction checks are
+// CheckSourceClaims: the store fake finds nothing — the contradiction checks are
 // SQL and are tested against a real database (database/madnetwork_claims_test.go).
-func (m *memStore) CheckPeerClaims(context.Context, int64) (int, error) { return 0, nil }
+func (m *memStore) CheckSourceClaims(context.Context, int64) (int, error) { return 0, nil }
 
 func (m *memStore) ListClaimReports(context.Context) ([]*ClaimReport, error) { return nil, nil }
 

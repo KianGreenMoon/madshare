@@ -170,6 +170,11 @@ type FederationNode interface {
 	// Rescan button on /admin/network. Returns immediately; the round runs in
 	// the background and repeated calls coalesce.
 	ResyncGraph()
+	// PullFrom asks the refresh loop to fetch one node's catalog on its next
+	// round, ahead of the frontier rotation and outside its budget (F7 item 5) —
+	// so an admin looking at a node on the map does not wait for its turn.
+	// Refuses anything that is not a node key; reaching it is the loop's problem.
+	PullFrom(publicKey string) error
 	// ClaimReports lists contradicted identity claims awaiting an admin decision,
 	// and SetClaimDisposition records it (F6). Evidence beside the Block action —
 	// nothing here changes what a peer is served.
@@ -479,6 +484,7 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(fedManage).Post("/federation/block", h.federationBlockKey)
 		r.With(fedManage).Get("/federation/graph", h.federationGraph)
 		r.With(fedManage).Post("/federation/graph/resync", h.federationGraphResync)
+		r.With(fedManage).Post("/federation/discover", h.federationDiscover)
 		r.With(fedManage).Get("/federation/reports", h.federationReports)
 		r.With(fedManage).Patch("/federation/reports/{reportID}", h.federationReportPatch)
 		r.With(fedManage).Post("/federation/peers/{peerID}/unblock", h.federationPeerUnblock)

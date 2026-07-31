@@ -10,7 +10,8 @@ import (
 	"time"
 )
 
-// Catalog exchange (federation F2): pull-and-cache between direct friends.
+// Catalog exchange (federation F2): pull-and-cache. Between direct friends when
+// it was built; since F7 item 5 between any two nodes in one community.
 // The server side serves its full published catalog as a snapshot with a
 // deterministic serial; the client sends the serial it already has and gets a
 // tiny "unchanged" reply when nothing moved. True since-serial deltas are a
@@ -20,7 +21,7 @@ import (
 
 // The two cadences this file lives by are node fields (defaultIntervals in
 // node.go, overridable via WithIntervals): Intervals.CatalogSync is how often
-// the refresh loop re-pulls each friend's catalog — most rounds a cheap
+// the refresh loop re-pulls each source's catalog — most rounds a cheap
 // not-modified check — and Intervals.SnapshotTTL bounds how long a built
 // snapshot is served before the store is consulted again, so back-to-back
 // friend syncs don't rebuild the catalog per request.
@@ -108,9 +109,11 @@ func (n *Node) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(msg)
 }
 
-// syncCatalog pulls one friend's catalog: a not-modified check most rounds, a
-// full snapshot replace when their serial moved.
-func (n *Node) syncCatalog(ctx context.Context, p *Peer) {
+// syncCatalog pulls one source's catalog: a not-modified check most rounds, a
+// full snapshot replace when their serial moved. The source may be a friend or
+// any member of our community (F7 item 5) — the wire call is the same either
+// way, since the *serving* node decides what its answer contains.
+func (n *Node) syncCatalog(ctx context.Context, p *CatalogSource) {
 	addr, err := AddrForKeyHex(p.PublicKey)
 	if err != nil {
 		return
@@ -126,7 +129,10 @@ func (n *Node) syncCatalog(ctx context.Context, p *Peer) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return // e.g. an older peer without the endpoint, or not-yet-friend on their side
+		// An older node without the endpoint, a friendship their side has not
+		// recorded yet, or a member that does not count us as one of theirs —
+		// all the same to us here: nothing to cache, try again next round.
+		return
 	}
 	var msg catalogMessage
 	if err := json.NewDecoder(resp.Body).Decode(&msg); err != nil || msg.Serial == "" {
@@ -134,21 +140,21 @@ func (n *Node) syncCatalog(ctx context.Context, p *Peer) {
 	}
 	now := time.Now().Unix()
 	if msg.Unchanged {
-		if err := n.store.MarkPeerCatalogChecked(ctx, p.ID, msg.Serial, now); err != nil {
-			n.logger.Printf("federation: mark catalog checked for %q: %v", p.Label(), err)
+		if err := n.store.MarkSourceCatalogChecked(ctx, p.ID, msg.Serial, now); err != nil {
+			n.logger.Printf("federation: mark catalog checked for %q: %v", p.Display(), err)
 		}
 		n.checkClaims(ctx, p)
 		return
 	}
-	if err := n.store.ReplacePeerCatalog(ctx, p.ID, msg.Serial, now, msg.Entries); err != nil {
-		n.logger.Printf("federation: store catalog of %q: %v", p.Label(), err)
+	if err := n.store.ReplaceSourceCatalog(ctx, p.ID, msg.Serial, now, msg.Entries); err != nil {
+		n.logger.Printf("federation: store catalog of %q: %v", p.Display(), err)
 		return
 	}
-	n.logger.Printf("federation: synced catalog of %q (%s) — %d entries", p.Label(), p.PublicKey, len(msg.Entries))
+	n.logger.Printf("federation: synced catalog of %q (%s) — %d entries", p.Display(), p.PublicKey, len(msg.Entries))
 	n.checkClaims(ctx, p)
 }
 
-// checkClaims re-runs the contradiction checks over this peer's cached catalog
+// checkClaims re-runs the contradiction checks over this source's cached catalog
 // (F6). It runs on both sync paths, including the not-modified one: a peer's
 // claims stand still while *our* library moves, and every upload or materialized
 // download is a new blob those old claims can be checked against.
@@ -156,14 +162,14 @@ func (n *Node) syncCatalog(ctx context.Context, p *Peer) {
 // A finding is logged once per round and otherwise waits on /admin/network.
 // Nothing here blocks, scores or notifies — that is the whole point of the design
 // (docs/architecture/federation.md §Trust graph).
-func (n *Node) checkClaims(ctx context.Context, p *Peer) {
-	open, err := n.store.CheckPeerClaims(ctx, p.ID)
+func (n *Node) checkClaims(ctx context.Context, p *CatalogSource) {
+	open, err := n.store.CheckSourceClaims(ctx, p.ID)
 	if err != nil {
-		n.logger.Printf("federation: check claims of %q: %v", p.Label(), err)
+		n.logger.Printf("federation: check claims of %q: %v", p.Display(), err)
 		return
 	}
 	if open > 0 {
 		n.logger.Printf("federation: %d unreviewed contradicted claim(s) from %q (%s) — see /admin/network",
-			open, p.Label(), p.PublicKey)
+			open, p.Display(), p.PublicKey)
 	}
 }

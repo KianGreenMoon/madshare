@@ -67,7 +67,7 @@ func madRow(peerID int64, peer, recording, title string, hashes ...string) *data
 	for _, h := range hashes {
 		e.Renditions = append(e.Renditions, federation.CatalogRendition{Hash: h, Size: 1})
 	}
-	return &database.MadnetworkTrackRow{PeerID: peerID, PeerName: peer, Entry: e}
+	return &database.MadnetworkTrackRow{SourceID: peerID, SourceName: peer, Entry: e}
 }
 
 func TestMadnetworkTracks_VersionMerging(t *testing.T) {
@@ -321,9 +321,9 @@ func TestMadnetworkView_FailOpen(t *testing.T) {
 // fresh within the window is reachable, long-ago is not (the ⓘ panel greys it).
 func TestMadnetworkHolders_Reachability(t *testing.T) {
 	fresh := madRow(1, "fresh-peer", "r1", "Song", "h1")
-	fresh.PeerLastSeen = time.Now().Unix()
+	fresh.SourceLastSeen = time.Now().Unix()
 	stale := madRow(2, "stale-peer", "r2", "Song", "h1") // same hash → one version, two holders
-	stale.PeerLastSeen = 1
+	stale.SourceLastSeen = 1
 	fake := &fakeMadnetwork{rows: []*database.MadnetworkTrackRow{fresh, stale}}
 	r := chi.NewRouter()
 	RegisterAPI(r, Deps{Madnetwork: fake})

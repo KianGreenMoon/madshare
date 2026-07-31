@@ -22,6 +22,19 @@ func insertPeer(t *testing.T, db *DB, key, name, state string) int64 {
 	return id
 }
 
+// insertSource is insertPeer's twin for the cache side (F7 item 5): the source
+// row a cached catalog hangs off. Most tests want both — a node an admin decided
+// something about *and* whose library we hold — but they are separate rows now,
+// and a source with no peer row is exactly the member case.
+func insertSource(t *testing.T, db *DB, key string) int64 {
+	t.Helper()
+	src, err := db.EnsureCatalogSource(context.Background(), key, 1000)
+	if err != nil {
+		t.Fatalf("ensure source %s: %v", key, err)
+	}
+	return src.ID
+}
+
 func TestFederationPeers_CRUDAndOrdering(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()

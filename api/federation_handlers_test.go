@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ import (
 // HTTP mapping is under test.
 type fakeFederation struct {
 	resyncs     int
+	pulled      []string // node keys the discover endpoint asked to pull from (F7 item 5)
 	peers       []*federation.Peer
 	imported    *federation.Card
 	patched     map[string]any
@@ -63,6 +65,14 @@ func (f *fakeFederation) NetworkMap(context.Context) (federation.NetworkMap, err
 }
 
 func (f *fakeFederation) ResyncGraph() { f.resyncs++ }
+
+func (f *fakeFederation) PullFrom(publicKey string) error {
+	if len(publicKey) != 64 {
+		return errors.New("not a node key")
+	}
+	f.pulled = append(f.pulled, publicKey)
+	return nil
+}
 
 func (f *fakeFederation) ClaimReports(context.Context) ([]*federation.ClaimReport, error) {
 	return f.reports, nil
@@ -277,7 +287,7 @@ func TestFederationReports(t *testing.T) {
 	fake := &fakeFederation{
 		patched: map[string]any{},
 		reports: []*federation.ClaimReport{{
-			ID: 7, PeerID: 3, Kind: federation.ClaimHeldBlob, Hash: "3a9f",
+			ID: 7, SourceID: 3, Kind: federation.ClaimHeldBlob, Hash: "3a9f",
 			BER: 0.47, Words: 64, OurVersion: "1.5.1", TheirVersion: "1.4.3",
 			Disposition: federation.ClaimNew, PeerName: "studio", PeerKey: "ab12",
 		}},

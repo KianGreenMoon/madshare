@@ -58,6 +58,17 @@ type Node struct {
 	// mesh lab override them (docs/plans/mesh-testing.md T1).
 	intervals Intervals
 	timeouts  Timeouts
+	// discovery bounds the frontier pull (F7 item 5, discovery.go). Unlike the
+	// two above this one IS configuration — [federation] discovery_budget /
+	// discovery_cap — because it is resource policy an operator has a stake in,
+	// not a test seam.
+	discovery Discovery
+
+	// pullNow is the explicit "fetch this node's catalog on the next round"
+	// queue, so an admin's interest beats the frontier rotation instead of
+	// waiting its turn (discovery.go). Keyed by node key; drained each sweep.
+	pullMu  sync.Mutex
+	pullNow map[string]struct{}
 
 	// Memoized own-catalog snapshots served to friends, one per audience class
 	// (catalog.go, F5): a catalog is built for a specific audience, so the memo
@@ -102,8 +113,9 @@ type Node struct {
 	// healthy; wired to the netstack accessor once Phase 0 exposes it.
 	readerAlive func() bool
 	// lastTouch throttles last_seen writes from the transfer path (chunk
-	// deliveries are frequent; last_seen is monotonic, so ≤1 write per peer per
-	// peerTouchThrottle is plenty). meshAuth/pingPeer touch directly, unthrottled.
+	// deliveries are frequent; last_seen is monotonic, so ≤1 write per source per
+	// peerTouchThrottle is plenty). Keyed by SOURCE id, which is what the transfer
+	// path has. meshAuth/pingPeer touch the peer row directly, unthrottled.
 	touchMu   sync.Mutex
 	lastTouch map[int64]time.Time
 
@@ -147,7 +159,13 @@ var (
 		GraphDigestTTL: 30 * time.Second,
 		MembershipTTL:  time.Minute,
 	}
-	defaultTimeouts = Timeouts{
+	// The frontier: four member catalogs per 15-minute cycle reaches ~16 new
+	// nodes an hour, which fills the cap in about half a day without ever
+	// dialling in a storm; the cap holds a few hundred foreign libraries, which
+	// is megabytes, not gigabytes. Both are first guesses meant to be tuned
+	// against a real network — see §Open questions 2.
+	defaultDiscovery = Discovery{Budget: 4, Cap: 200}
+	defaultTimeouts  = Timeouts{
 		Control:    15 * time.Second,
 		Manifest:   20 * time.Second,
 		ChunkStall: 20 * time.Second,
@@ -206,6 +224,7 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 		graphAccept:    map[string]time.Time{},
 		intervals:      o.intervals.withDefaults(defaultIntervals),
 		timeouts:       o.timeouts.withDefaults(defaultTimeouts),
+		discovery:      o.discovery.withDefaults(defaultDiscovery),
 		core:           c,
 		stack:          stack,
 		store:          store,
@@ -213,6 +232,7 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 		logger:         logger,
 		nudge:          make(chan struct{}, 1),
 		attempts:       map[string]PairAttempt{},
+		pullNow:        map[string]struct{}{},
 		cacheDir:       o.cacheDir,
 		resolveBlob:    o.resolveBlob,
 		transfers:      map[string]*transfer{},
@@ -304,24 +324,29 @@ func (n *Node) InboundHealthy() bool {
 	return n.readerAlive == nil || n.readerAlive()
 }
 
-// observePeerAlive records that a peer just delivered data on the transfer path
-// (an in-flight download is continuous liveness proof). Throttled per peer, and
-// a no-op without a store; last_seen is monotonic so an out-of-order write is
-// harmless. meshAuth and pingPeer touch directly and are not throttled.
-func (n *Node) observePeerAlive(p *Peer) {
-	if n.store == nil || p == nil {
+// observePeerAlive records that a holder just delivered data on the transfer
+// path (an in-flight download is continuous liveness proof). Throttled per
+// holder, and a no-op without a store; last_seen is monotonic so an out-of-order
+// write is harmless. meshAuth and pingPeer touch directly and are not throttled.
+//
+// It writes to the SOURCE row, not the peer row, because since F7 item 5 most
+// holders are members with no peer row at all — and the freshness window reads
+// the later of the two clocks anyway, so a friend delivering bytes stays fresh
+// through this path exactly as it did.
+func (n *Node) observePeerAlive(p *BlobProvider) {
+	if n.store == nil || p == nil || p.SourceID == 0 {
 		return
 	}
 	now := time.Now()
 	n.touchMu.Lock()
-	if last, ok := n.lastTouch[p.ID]; ok && now.Sub(last) < peerTouchThrottle {
+	if last, ok := n.lastTouch[p.SourceID]; ok && now.Sub(last) < peerTouchThrottle {
 		n.touchMu.Unlock()
 		return
 	}
-	n.lastTouch[p.ID] = now
+	n.lastTouch[p.SourceID] = now
 	n.touchMu.Unlock()
-	if err := n.store.TouchFederationPeerSeen(n.transferCtx, p.ID, now.Unix()); err != nil {
-		n.logger.Printf("federation: touch peer %d (transfer): %v", p.ID, err)
+	if err := n.store.TouchCatalogSourceSeen(n.transferCtx, p.SourceID, now.Unix(), ""); err != nil {
+		n.logger.Printf("federation: touch source %d (transfer): %v", p.SourceID, err)
 	}
 }
 

@@ -329,7 +329,7 @@ func (n *Node) handleManifest(w http.ResponseWriter, r *http.Request) {
 
 // fetchManifest pulls one friend's manifest for hash; nil (no error surfaced)
 // when the holder lacks it or is too old to speak the endpoint.
-func (n *Node) fetchManifest(ctx context.Context, p *Peer, hash string) *blobManifest {
+func (n *Node) fetchManifest(ctx context.Context, p *BlobProvider, hash string) *blobManifest {
 	addr, err := AddrForKeyHex(p.PublicKey)
 	if err != nil {
 		return nil
@@ -365,7 +365,7 @@ func (n *Node) fetchManifest(ctx context.Context, p *Peer, hash string) *blobMan
 // fetchAnyManifest returns the first valid manifest offered by any holder (and
 // which holder), or nil when none serve one — the signal to fall back to the F3
 // whole-file fetch.
-func (n *Node) fetchAnyManifest(ctx context.Context, holders []*Peer, hash string) *blobManifest {
+func (n *Node) fetchAnyManifest(ctx context.Context, holders []*BlobProvider, hash string) *blobManifest {
 	for _, p := range holders {
 		if ctx.Err() != nil {
 			return nil
@@ -443,10 +443,11 @@ func (n *Node) handleHoldings(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(holdingsMessage{Protocol: ProtocolVersion, Hashes: hashes})
 }
 
-// syncHoldings pulls one friend's cache-holdings list and replaces the cached
+// syncHoldings pulls one source's cache-holdings list and replaces the cached
 // copy (federation_holdings), so their downloaded blobs become fetchable from
-// them. Called on the same cadence as the catalog sync.
-func (n *Node) syncHoldings(ctx context.Context, p *Peer) {
+// them. Called on the same cadence as the catalog sync, for the same set of
+// nodes — a member seeds from its cache exactly as a friend does.
+func (n *Node) syncHoldings(ctx context.Context, p *CatalogSource) {
 	addr, err := AddrForKeyHex(p.PublicKey)
 	if err != nil {
 		return
@@ -474,7 +475,7 @@ func (n *Node) syncHoldings(ctx context.Context, p *Peer) {
 			valid = append(valid, h)
 		}
 	}
-	if err := n.store.ReplacePeerHoldings(ctx, p.ID, valid); err != nil {
+	if err := n.store.ReplaceSourceHoldings(ctx, p.ID, valid); err != nil {
 		n.logger.Printf("federation: store holdings of %q: %v", p.Display(), err)
 	}
 }
@@ -569,7 +570,7 @@ func (n *Node) serveAudience(r *http.Request) (Audience, bool) {
 // fetchRange fetches [start, start+length) from one holder over the mesh (a
 // plain HTTP Range request against the F3 blob endpoint) and returns the bytes.
 // The holder clamps at EOF, so a short file yields fewer than length bytes.
-func (n *Node) fetchRange(ctx context.Context, p *Peer, hash string, start, length int64, onStall func()) ([]byte, error) {
+func (n *Node) fetchRange(ctx context.Context, p *BlobProvider, hash string, start, length int64, onStall func()) ([]byte, error) {
 	addr, err := AddrForKeyHex(p.PublicKey)
 	if err != nil {
 		return nil, err
@@ -598,16 +599,16 @@ func (n *Node) fetchRange(ctx context.Context, p *Peer, hash string, start, leng
 // only if the guessed layout matched and chunk 0 verifies.
 type chunk0Prefetch struct {
 	active   bool
-	from     *Peer       // the holder it was fetched from (for stats crediting)
-	guessLen int64       // the chunk-0 length we speculatively fetched
-	ch       chan []byte // buffered(1): the fetched bytes, or nil on failure
+	from     *BlobProvider // the holder it was fetched from (for stats crediting)
+	guessLen int64         // the chunk-0 length we speculatively fetched
+	ch       chan []byte   // buffered(1): the fetched bytes, or nil on failure
 }
 
 // speculateChunk0 starts fetching chunk 0 from the first holder using the chunk
 // layout implied by the advertised file size (deterministic via chunkSizeFor +
 // the lead ramp), so it lands in parallel with the manifest fetch. With the ramp
 // chunk 0 is a small lead chunk, so this speculative fetch is small.
-func (n *Node) speculateChunk0(t *transfer, holders []*Peer) *chunk0Prefetch {
+func (n *Node) speculateChunk0(t *transfer, holders []*BlobProvider) *chunk0Prefetch {
 	pf := &chunk0Prefetch{ch: make(chan []byte, 1)}
 	if len(holders) == 0 {
 		pf.ch <- nil
@@ -672,7 +673,7 @@ func (pf *chunk0Prefetch) discard() {}
 // whole-file hash afterwards. The part file is pre-sized so chunks can be
 // written at their offsets (WriteAt is safe for concurrent non-overlapping
 // writes).
-func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*Peer, prefetched0 []byte, from0 *Peer) error {
+func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*BlobProvider, prefetched0 []byte, from0 *BlobProvider) error {
 	layout := man.layout()
 	f, err := os.OpenFile(t.partPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
 	if err != nil {
@@ -747,7 +748,7 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*Peer, prefe
 // fetchChunk fetches one chunk over the mesh (a plain HTTP Range request against
 // the F3 blob endpoint), verifies it against the manifest, and writes it at its
 // offset.
-func (n *Node) fetchChunk(t *transfer, f *os.File, layout *chunkLayout, man *blobManifest, idx int, p *Peer) error {
+func (n *Node) fetchChunk(t *transfer, f *os.File, layout *chunkLayout, man *blobManifest, idx int, p *BlobProvider) error {
 	addr, err := AddrForKeyHex(p.PublicKey)
 	if err != nil {
 		return err
@@ -805,7 +806,7 @@ type chunkPlan struct {
 
 	layout *chunkLayout
 
-	providers []*Peer
+	providers []*BlobProvider
 	dead      []bool // per-provider
 	provFails []int  // per-provider consecutive failures (reset on success)
 	rr        int    // round-robin cursor
@@ -823,7 +824,7 @@ type chunkPlan struct {
 	stats *transferStats // diagnostics sink; nil outside a real transfer
 }
 
-func newChunkPlan(man *blobManifest, layout *chunkLayout, holders []*Peer, done0 bool, st *transferStats) *chunkPlan {
+func newChunkPlan(man *blobManifest, layout *chunkLayout, holders []*BlobProvider, done0 bool, st *transferStats) *chunkPlan {
 	nc := layout.count()
 	cp := &chunkPlan{
 		done:      make([]bool, nc),
@@ -907,7 +908,7 @@ func (cp *chunkPlan) next() (int, bool) {
 }
 
 // pickProvider returns the next non-dead holder, round-robin.
-func (cp *chunkPlan) pickProvider() (*Peer, int, bool) {
+func (cp *chunkPlan) pickProvider() (*BlobProvider, int, bool) {
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
 	for tries := 0; tries < len(cp.providers); tries++ {
@@ -927,7 +928,7 @@ func (cp *chunkPlan) pickProvider() (*Peer, int, bool) {
 func (cp *chunkPlan) succeed(idx, pidx int, t *transfer) {
 	cp.mu.Lock()
 	cp.inFlight--
-	var from *Peer
+	var from *BlobProvider
 	if pidx >= 0 {
 		cp.provFails[pidx] = 0
 		from = cp.providers[pidx]
@@ -972,7 +973,7 @@ func (cp *chunkPlan) succeed(idx, pidx int, t *transfer) {
 func (cp *chunkPlan) fail(idx, pidx int, err error, corrupt bool) {
 	cp.mu.Lock()
 	cp.inFlight--
-	var from *Peer
+	var from *BlobProvider
 	dropped := false
 	if pidx >= 0 {
 		from = cp.providers[pidx]

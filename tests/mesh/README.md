@@ -540,36 +540,44 @@ $ meshlab reach
 
 Two arms, separated because they fail for unrelated reasons. **Routing** pings
 every node by friendship distance — `/madnetwork/v0/ping` is open to strangers
-(`meshAuth` refuses only *blocked* peers), so it measures the network alone and
-needs no F7. **Reach** then tries a real content fetch from the first node for a
-track only the distant node publishes.
+(`meshAuth` refuses only *blocked* peers), so it measures the network alone.
+**Reach** then tries a real content fetch from the first node for a track only the
+distant node publishes; before F7 item 5 that arm was a row of 404s, because a
+non-friend was not a provider.
 
-Measured on a cold 5-node chain (loopback, so treat the absolute values as a
-floor and the *shape* as the finding):
+Measured on a cold 5-node chain **after F7 item 5** (loopback, so treat the
+absolute values as a floor and the *shape* as the finding):
 
 ```
   node   dist  ping warm   ping cold   first 64K   whole file  note
-  b      1     1.2ms       3.01s       35.6ms      11.1ms
-  c      2     366µs       8.6ms       —           —           stream = 404 (not a provider: c is not a friend of a)
-  d      3     1.3ms       11.3ms      —           —           stream = 404 (not a provider: d is not a friend of a)
-  e      4     1.6ms       19.9ms      —           —           stream = 404 (not a provider: e is not a friend of a)
+  b      1     1.3ms       3.03s       21.9ms      62ms
+  c      2     974µs       19.1ms      56.8ms      62.1ms
+  d      3     1.5ms       24.3ms      56.5ms      48.1ms
+  e      4     2.3ms       1m2.04s     68.7ms      61.1ms
 ```
 
 Three things worth keeping:
 
-- **Warm RTT is flat across distance** — 1.2 ms at one hop, 1.6 ms at four. There
+- **Warm RTT is flat across distance** — 1.3 ms at one hop, 2.3 ms at four. There
   is no slope to find, which is the answer to the design question.
 - **Cold contact is the cost that is actually there**, and it is paid per *peer*,
-  not per hop: `b` is the slowest of the four precisely because it was contacted
-  first and absorbed the mesh join. (An earlier run on a lab that had just come up
-  saw a first contact exceed **60 s** — the same session-setup cost the F4
-  streaming work hit. It is real, it is not distance, and it is the argument for
-  preferring holders we already have a warm session with.)
-- **Every fetch past distance 1 is a 404**, because a non-friend is not a provider
-  (`MadnetworkBlobProviders` joins `state = 'friend'`). That is the F7 gap stated
-  as a measurement rather than a claim. After F7 this run should turn green at
-  every distance — and, the hypothesis this command exists to check, take roughly
-  the same time at each.
+  not per hop: in this run `b` (3 s, contacted first, absorbing the mesh join) and
+  `e` (62 s) are the two expensive ones, at opposite ends of the chain. It is
+  yggdrasil session setup — the same cost the F4 streaming work hit — it is not
+  distance, and it is the argument for preferring holders we already have a warm
+  session with.
+- **The fetch arm is green at every distance, and flat**: ~50–70 ms to first
+  bytes and ~48–62 ms for the whole file, at one hop and at four alike. That was
+  the hypothesis this command was written to check, and it held. Before item 5
+  every row past `b` read `stream = 404 (not a provider: c is not a friend of a)`.
+
+> **This run needs the gossip graph to have converged**, since a node is pulled
+> from only once it is a *member* (mutually declared edges, §The membership rule).
+> On a chain that is several relay rounds, and the catalog cadence is 15 minutes —
+> so either wait, or press Rescan on each node
+> (`POST /api/admin/federation/graph/resync`) and check `meshlab graph` shows all
+> N nodes everywhere before running `reach`. The frontier then pulls
+> `discovery_budget` (4) catalogs per sweep.
 
 `-friends adjacent` is what makes this a chain of *friendships*; with the default
 `-friends all` every node sits at distance 1 and there is nothing to measure.

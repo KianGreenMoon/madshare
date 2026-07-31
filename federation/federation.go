@@ -248,10 +248,13 @@ const (
 // else's claim, which makes the origin of a claim a separate question from its
 // carrier).
 type ClaimReport struct {
-	ID     int64  `json:"id"`
-	PeerID int64  `json:"peer_id"`
-	Kind   string `json:"kind"`
-	Hash   string `json:"hash"`
+	ID int64 `json:"id"`
+	// SourceID is the cached catalog the finding came out of. Since F7 item 5
+	// that is a source row, not a peer row: we check what every member of our
+	// community claims, and most of them are nodes no admin here has named.
+	SourceID int64  `json:"source_id"`
+	Kind     string `json:"kind"`
+	Hash     string `json:"hash"`
 	// OtherHash is the second blob involved, for ClaimGrouping.
 	OtherHash string `json:"other_hash,omitempty"`
 	// BER is the measured bit-error rate over Words compared fingerprint words.
@@ -270,7 +273,9 @@ type ClaimReport struct {
 	FirstSeen    int64  `json:"first_seen"`
 	LastSeen     int64  `json:"last_seen"`
 
-	// Display decorations, joined by the store.
+	// Display decorations, joined by the store: what to call the node the claim
+	// came from, and the key that actually identifies it — which is also what an
+	// admin blocks by when the node is not a peer.
 	PeerName string `json:"peer_name,omitempty"`
 	PeerKey  string `json:"peer_key,omitempty"`
 }
@@ -311,11 +316,6 @@ type Peer struct {
 	UserID    *int64 `json:"user_id"`
 	CreatedAt int64  `json:"created_at"`
 	LastSeen  int64  `json:"last_seen"` // unix seconds; 0 = never
-
-	// Catalog sync state (F2, pull-and-cache): the serial of the last snapshot
-	// applied from this friend and when it was last confirmed fresh.
-	CatalogSerial   string `json:"-"`
-	CatalogSyncedAt int64  `json:"catalog_synced_at"`
 
 	// Block evidence (F6): what the published distrust mark says. Both describe
 	// the current block only — an unblock leaves them behind, and the next block
@@ -396,6 +396,80 @@ func (p *Peer) ShortKey() string {
 // shortKeyRunes matches the slice in admin/network.js's peerLabel.
 const shortKeyRunes = 12
 
+// CatalogSource is a node whose published catalog this node holds a cached copy
+// of (F7 item 5, docs/architecture/federation.md §Discovery beyond the friend
+// ring). It is deliberately NOT a [Peer]: a peer row exists because an admin
+// here decided something about that node, while a source row exists because the
+// sweep pulled from it. Every friend is a source; so is every member of our
+// community the frontier rotation has reached, and nobody decided anything about
+// those.
+//
+// The row carries only what pulling needs — whom to ask, what we already hold,
+// and when we last got an answer. Trust lives in the peer table, and the two are
+// joined by public key wherever a cached row has to know whether an admin
+// blocked its origin.
+type CatalogSource struct {
+	ID        int64
+	PublicKey string // lowercase hex ed25519; the mesh address derives from it
+	// HeardName is what the node calls itself. A source has no local label —
+	// naming a node is an admin act, and an admin who wants to name this one
+	// makes it a peer.
+	HeardName string
+
+	CatalogSerial   string // serial of the snapshot we hold; the `since=` we send
+	CatalogSyncedAt int64  // last round that confirmed the cached copy fresh
+	// AttemptedAt is when we last *tried*, successful or not. The frontier
+	// rotates on this rather than on success, so an unreachable node takes its
+	// turn and yields it instead of being retried ahead of everyone every cycle.
+	AttemptedAt int64
+	FirstSeen   int64
+	LastSeen    int64 // last successful contact; feeds the freshness window
+}
+
+// Display names a source for a log line or a UI row: what it calls itself, or
+// its short key. There is no admin label to prefer — see [Peer.Display] for the
+// case where there is.
+func (s *CatalogSource) Display() string {
+	if s.HeardName != "" {
+		return s.HeardName
+	}
+	if len(s.PublicKey) > shortKeyRunes {
+		return s.PublicKey[:shortKeyRunes]
+	}
+	return s.PublicKey
+}
+
+// BlobProvider is one node the swarm may fetch a hash from: a source whose
+// cached catalog or holdings advertise it. Separate from [Peer] because a
+// provider need not be one — since F7 item 5 most holders of a popular blob are
+// members we never friended — and separate from [CatalogSource] because the
+// fetch path also wants the peer identity when there is one, to label a stats
+// row the way the admin named that node.
+type BlobProvider struct {
+	SourceID int64
+	// PeerID is the local peer row, or 0 for a member no admin has touched.
+	PeerID    int64
+	PublicKey string
+	Name      string // admin's label, when there is a peer row
+	HeardName string
+	LastSeen  int64
+}
+
+// Display names a provider on the same rules as [Peer.Display]: the admin's
+// label if they set one, else what the node calls itself, else the short key.
+func (p *BlobProvider) Display() string {
+	if p.Name != "" {
+		return p.Name
+	}
+	if p.HeardName != "" {
+		return p.HeardName
+	}
+	if len(p.PublicKey) > shortKeyRunes {
+		return p.PublicKey[:shortKeyRunes]
+	}
+	return p.PublicKey
+}
+
 // PeerStore is the persistence the node needs: the trusted-peer table (F1) and
 // the catalog — both what this node publishes to friends and the cached copies
 // pulled from them (F2). *database.DB implements it (database/federation.go +
@@ -424,12 +498,34 @@ type PeerStore interface {
 	// recording's renditions, in a stable order (the snapshot serial is a hash
 	// over it, so each audience has its own serial).
 	PublishedCatalog(ctx context.Context, aud Audience) ([]CatalogEntry, error)
-	// ReplacePeerCatalog atomically replaces the cached copy of a friend's
+	// ReplaceSourceCatalog atomically replaces the cached copy of one source's
 	// catalog with a fresh snapshot and records its serial + sync time.
-	ReplacePeerCatalog(ctx context.Context, peerID int64, serial string, syncedAt int64, entries []CatalogEntry) error
-	// MarkPeerCatalogChecked records a sync round that found the cached copy
+	ReplaceSourceCatalog(ctx context.Context, sourceID int64, serial string, syncedAt int64, entries []CatalogEntry) error
+	// MarkSourceCatalogChecked records a sync round that found the cached copy
 	// still fresh (the not-modified path).
-	MarkPeerCatalogChecked(ctx context.Context, peerID int64, serial string, syncedAt int64) error
+	MarkSourceCatalogChecked(ctx context.Context, sourceID int64, serial string, syncedAt int64) error
+
+	// ── Catalog sources (F7 item 5, §Discovery beyond the friend ring) ───────
+	// The set of nodes we pull catalogs from: every friend, plus the members the
+	// frontier rotation has reached. Rows here are a cache in the sense
+	// federation_catalog established — rebuildable from the network, referenced
+	// by nothing local, safe to drop.
+
+	// EnsureCatalogSource returns the source row for a node key, creating it if
+	// this is the first time we have pulled from it.
+	EnsureCatalogSource(ctx context.Context, publicKey string, now int64) (*CatalogSource, error)
+	// ListCatalogSources returns every source, oldest attempt first — the order
+	// the frontier rotation consumes.
+	ListCatalogSources(ctx context.Context) ([]*CatalogSource, error)
+	// MarkCatalogSourceAttempted records that we tried, whatever came of it.
+	MarkCatalogSourceAttempted(ctx context.Context, id int64, at int64) error
+	// TouchCatalogSourceSeen records a successful contact, and what the node
+	// called itself if it said. last_seen is monotonic.
+	TouchCatalogSourceSeen(ctx context.Context, id int64, at int64, heardName string) error
+	// DropCatalogSources deletes sources and everything cached from them
+	// (CASCADE): the ones we may no longer keep, and the ones evicted past the
+	// cap. An empty list is a no-op, never "drop everything".
+	DropCatalogSources(ctx context.Context, ids []int64) error
 
 	// BlobVisibleTo reports whether the blob with this content hash may be
 	// served to aud: part of the published library (live file + an approved
@@ -440,19 +536,21 @@ type PeerStore interface {
 	// PeerAudience resolves a known peer to the audience its requests are
 	// answered for (the user mapping, §Principals & access).
 	PeerAudience(ctx context.Context, peerID int64) (Audience, error)
-	// MadnetworkBlobProviders returns the friends who hold hash — the swarm
+	// MadnetworkBlobProviders returns the nodes that hold hash — the swarm
 	// tracker (F4): the union of catalog (library) holders and holdings (cache)
 	// holders, most recently seen first (the fetch order) — plus the advertised
-	// byte size (a hint; the origin's Content-Length / manifest wins).
-	MadnetworkBlobProviders(ctx context.Context, hash string) (size int64, holders []*Peer, err error)
-	// ReplacePeerHoldings atomically replaces the cached list of what one friend
-	// holds in its download cache and will seed (F4 holdings sync).
-	ReplacePeerHoldings(ctx context.Context, peerID int64, hashes []string) error
+	// byte size (a hint; the origin's Content-Length / manifest wins). Since F7
+	// item 5 these are cached *sources*, so a holder may be any member of our
+	// community and not only a friend; a blocked node is never one.
+	MadnetworkBlobProviders(ctx context.Context, hash string) (size int64, holders []*BlobProvider, err error)
+	// ReplaceSourceHoldings atomically replaces the cached list of what one
+	// source holds in its download cache and will seed (F4 holdings sync).
+	ReplaceSourceHoldings(ctx context.Context, sourceID int64, hashes []string) error
 	// SeedingPolicy reports what this node is willing to serve over the swarm —
 	// the F4 serving gate, extended by F7's guest switch.
 	SeedingPolicy(ctx context.Context) (SeedPolicy, error)
 
-	// CheckPeerClaims re-runs the contradiction checks over one peer's cached
+	// CheckSourceClaims re-runs the contradiction checks over one source's cached
 	// catalog and records what it finds, returning how many reports are newly
 	// open. Idempotent: re-finding a contradiction refreshes it and leaves the
 	// admin's disposition alone (F6, migration 034).
@@ -462,7 +560,7 @@ type PeerStore interface {
 	// locally changes all the time — every upload and every materialized download
 	// is a new blob to check old claims against — so the check has to be able to
 	// run when only our side moved.
-	CheckPeerClaims(ctx context.Context, peerID int64) (newlyOpen int, err error)
+	CheckSourceClaims(ctx context.Context, sourceID int64) (newlyOpen int, err error)
 	// ListClaimReports returns the findings still awaiting an admin decision,
 	// newest first, decorated with the reporting peer's label and key.
 	ListClaimReports(ctx context.Context) ([]*ClaimReport, error)
@@ -644,6 +742,51 @@ type nodeOptions struct {
 	resolveBlob func(hash string) (path string, ok bool)
 	intervals   Intervals
 	timeouts    Timeouts
+	discovery   Discovery
+}
+
+// Discovery bounds how far past the friend ring this node pulls catalogs (F7
+// item 5, docs/architecture/federation.md §Discovery beyond the friend ring).
+//
+// Friends are pulled unbudgeted — they are the ring an admin chose, and there
+// are few of them. Members are not: a community has no size limit by design (§The
+// membership rule), so pulling every mapped node every cycle is the N² dialling
+// pattern that was rejected for gossip records, and caching every node's library
+// is unbounded storage. The frontier is therefore rotated a few nodes at a time
+// and capped, which trades how *fast* the network becomes visible for a cost that
+// does not grow with it.
+//
+// Both numbers are policy nobody can derive from first principles — they want a
+// real network to observe — so they are configuration ([federation]
+// discovery_budget / discovery_cap) rather than constants.
+type Discovery struct {
+	// Budget is how many member catalogs to pull per catalog cycle, beyond the
+	// friends. 0 disables discovery entirely: the node still serves its
+	// community, it just stops seeing past its friends. Default 4.
+	Budget int
+	// Cap is the largest number of non-peer catalogs to keep cached. Past it the
+	// least-recently-seen are dropped, which is safe because a cached catalog is
+	// rebuildable from the network and referenced by nothing local. Default 200.
+	Cap int
+}
+
+// WithDiscovery overrides the frontier bounds (zero fields keep defaults; a
+// negative budget is read as 0, "friends only").
+func WithDiscovery(d Discovery) Option { return func(o *nodeOptions) { o.discovery = d } }
+
+// withDefaults fills unset fields from d. Budget is distinguished from unset by
+// being negative, since 0 is a meaningful choice here — "pull from friends only"
+// — while a 0 interval is merely an unfilled struct field.
+func (dc Discovery) withDefaults(d Discovery) Discovery {
+	if dc.Budget == 0 {
+		dc.Budget = d.Budget
+	} else if dc.Budget < 0 {
+		dc.Budget = 0
+	}
+	if dc.Cap <= 0 {
+		dc.Cap = d.Cap
+	}
+	return dc
 }
 
 // Intervals overrides the node's background cadences. A zero field keeps the

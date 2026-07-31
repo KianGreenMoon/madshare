@@ -208,12 +208,39 @@ type FederationConfig struct {
 	// below MinReachableWindowSec is clamped up with a warning. Whether hiding is
 	// applied at all is the runtime toggle madnetwork.hide_unavailable.
 	ReachableWindowSec int `toml:"reachable_window_sec"`
+	// DiscoveryBudget is how many *members'* catalogs this node pulls per catalog
+	// cycle, beyond its friends — the bounded frontier of F7 item 5
+	// (docs/architecture/federation.md §Discovery beyond the friend ring).
+	// Friends are always pulled and never counted here.
+	//
+	// 0 (the default) → DefaultDiscoveryBudget. **-1 turns discovery off**: the
+	// node still serves its whole community, it simply stops looking past its own
+	// friends, which is what a node on a metered link or a deliberately inward
+	// deployment wants. Off is spelled -1 rather than 0 so that an unset key can
+	// keep meaning "the default" — the same reason 0 means unlimited above.
+	DiscoveryBudget int `toml:"discovery_budget"`
+	// DiscoveryCap is the largest number of foreign (non-peer) catalogs kept
+	// cached; past it the least-recently-seen are dropped. A cached catalog is a
+	// droppable cache — rebuildable from the network, referenced by nothing local
+	// — so this is a disk-and-query-size knob, not a correctness one. 0 (the
+	// default) → DefaultDiscoveryCap; negative is clamped with a warning.
+	DiscoveryCap int `toml:"discovery_cap"`
 }
 
 // Madnetwork availability freshness-window bounds (federation.reachable_window_sec).
 const (
 	DefaultReachableWindowSec = 180 // 3× the 1-minute refresh cadence
 	MinReachableWindowSec     = 120 // 2× cadence — the floor that keeps it from flapping
+)
+
+// Frontier-pull bounds (federation.discovery_budget / .discovery_cap). Policy
+// numbers, not derivations: they trade how fast the community's libraries become
+// visible against a cost that must not grow with the community's size. See
+// federation.Discovery for the reasoning and docs/architecture/federation.md
+// §Open questions 2 for what would change them.
+const (
+	DefaultDiscoveryBudget = 4   // member catalogs per cycle — ~16 nodes an hour
+	DefaultDiscoveryCap    = 200 // foreign catalogs kept
 )
 
 // federationSchemes are the underlay URI schemes yggdrasil accepts. socks /
@@ -439,6 +466,24 @@ func (c *Config) resolveStorageWorkers() {
 			"federation.reachable_window_sec %d is below the anti-flap floor; using %d",
 			c.Federation.ReachableWindowSec, MinReachableWindowSec))
 		c.Federation.ReachableWindowSec = MinReachableWindowSec
+	}
+	switch {
+	case c.Federation.DiscoveryBudget == 0:
+		c.Federation.DiscoveryBudget = DefaultDiscoveryBudget
+	case c.Federation.DiscoveryBudget < 0:
+		// Any negative value is "off". Normalizing to -1 keeps the one sentinel
+		// federation.Discovery understands, rather than passing an arbitrary
+		// negative number down and hoping every consumer reads it the same way.
+		c.Federation.DiscoveryBudget = -1
+	}
+	if c.Federation.DiscoveryCap < 0 {
+		c.warnings = append(c.warnings, fmt.Sprintf(
+			"federation.discovery_cap %d is invalid; using %d",
+			c.Federation.DiscoveryCap, DefaultDiscoveryCap))
+		c.Federation.DiscoveryCap = DefaultDiscoveryCap
+	}
+	if c.Federation.DiscoveryCap == 0 {
+		c.Federation.DiscoveryCap = DefaultDiscoveryCap
 	}
 }
 

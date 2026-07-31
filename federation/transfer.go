@@ -393,7 +393,7 @@ func (n *Node) EnsureBlob(ctx context.Context, hash string) (Transfer, error) {
 // manifest — an older F3-only peer — it falls back to the single-source
 // whole-file streaming fetch. Either way the assembled bytes are verified
 // against the content hash before entering the cache.
-func (n *Node) runTransfer(t *transfer, holders []*Peer) {
+func (n *Node) runTransfer(t *transfer, holders []*BlobProvider) {
 	defer func() {
 		n.transferMu.Lock()
 		delete(n.transfers, t.hash)
@@ -435,7 +435,7 @@ func (n *Node) runTransfer(t *transfer, holders []*Peer) {
 
 // runWhole is the F3 fallback: try each advertising friend in order until one
 // delivers the whole blob with bytes that verify against the content hash.
-func (n *Node) runWhole(t *transfer, holders []*Peer) {
+func (n *Node) runWhole(t *transfer, holders []*BlobProvider) {
 	t.stats.setMode("whole")
 	var lastErr error
 	for _, p := range holders {
@@ -462,7 +462,7 @@ func (n *Node) runWhole(t *transfer, holders []*Peer) {
 
 // fetchFrom streams the blob from one friend into the partial file, hashing as
 // it goes; matching bytes are renamed into the cache atomically.
-func (n *Node) fetchFrom(t *transfer, p *Peer) error {
+func (n *Node) fetchFrom(t *transfer, p *BlobProvider) error {
 	addr, err := AddrForKeyHex(p.PublicKey)
 	if err != nil {
 		return err

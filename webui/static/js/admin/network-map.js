@@ -42,6 +42,7 @@ let state = {
 let svg, gRoot, gEdges, gNodes, detail, statsEl, emptyEl;
 let onBlock = null;  // injected by network.js so the map reuses its modal + toasts
 let onFriend = null; // likewise for the pairing request a stranger node can be sent
+let onPull = null;   // and for asking the frontier to fetch this node's catalog now
 
 // ── Building ─────────────────────────────────────────────────────────────────
 
@@ -353,6 +354,17 @@ function renderDetail() {
   } else if (n.state === 'blocked') {
     actions.append(el('p', { class: 'map-note', text: 'You have blocked this node; the block is published as a distrust mark.' }));
   } else {
+    // Catalogs from beyond the friend ring are pulled a few nodes per cycle, so
+    // a particular node can be hours away from its turn. This asks for it now —
+    // interest beats rotation.
+    if (onPull) {
+      actions.append(el('button', {
+        class: 'btn btn-neutral btn-mini',
+        text: 'Fetch library now',
+        title: 'Pull this node’s catalog on the next refresh round instead of waiting for its turn',
+        onclick: () => onPull(n),
+      }));
+    }
     // A node the graph names but we have no relationship with — a friend of a
     // friend, or further out. The map already carries its key, which is all a
     // pairing needs, so the friendship graph can be grown from here instead of
@@ -402,9 +414,10 @@ function viaText(n) {
 
 // ── Public entry ─────────────────────────────────────────────────────────────
 
-export function initMap({ onBlockNode, onFriendNode }) {
+export function initMap({ onBlockNode, onFriendNode, onPullNode }) {
   onBlock = onBlockNode;
   onFriend = onFriendNode;
+  onPull = onPullNode;
   svg = document.getElementById('mapSvg');
   detail = document.getElementById('mapDetail');
   statsEl = document.getElementById('mapStats');

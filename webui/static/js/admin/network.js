@@ -144,8 +144,14 @@ function claimEvidence(r) {
   return parts.join(' · ');
 }
 
+// Findings are matched by KEY, not by peer id: since F7 item 5 a report belongs
+// to a cached catalog, and most of those come from members with no peer row at
+// all. renderOrphanClaims below is where those land.
 function renderClaims(p) {
-  const mine = reports.filter(r => r.peer_id === p.id);
+  return claimBox(reports.filter(r => r.peer_key === p.public_key));
+}
+
+function claimBox(mine) {
   if (!mine.length) return null;
   const box = el('div', { class: 'peer-claims' }, [
     el('div', { class: 'peer-claims-head' }, [
@@ -233,11 +239,54 @@ function fmtLastSeen(unix) {
 }
 
 function renderPeers(peers) {
-  if (!peers.length) {
+  const orphans = renderOrphanClaims(peers);
+  if (!peers.length && !orphans) {
     peersList.replaceChildren(el('p', { class: 'net-empty', text: 'No known nodes yet — import a friend’s node card above.' }));
     return;
   }
   peersList.replaceChildren(...peers.map(renderPeer));
+  if (orphans) peersList.append(orphans);
+}
+
+// Contradicted claims from nodes that are not peers of ours — members of the
+// community whose catalogs this node caches since F7 item 5. They have no card
+// to sit on, and leaving them out would let the dashboard count findings an
+// admin cannot reach. Block by key is the same act the network map offers.
+function renderOrphanClaims(peers) {
+  const known = new Set(peers.map(p => p.public_key));
+  const orphaned = reports.filter(r => r.peer_key && !known.has(r.peer_key));
+  if (!orphaned.length) return null;
+  const box = el('div', { class: 'peer-card peer-card--orphan-claims' }, [
+    el('div', { class: 'peer-head' }, [
+      el('span', { class: 'peer-name', text: 'Nodes you have not friended' }),
+    ]),
+    el('p', { class: 'peer-sub', text: 'Members of your community whose catalogs this node caches. You have made no decision about them; these are findings, not verdicts.' }),
+  ]);
+  const byKey = new Map();
+  for (const r of orphaned) {
+    if (!byKey.has(r.peer_key)) byKey.set(r.peer_key, []);
+    byKey.get(r.peer_key).push(r);
+  }
+  for (const [key, mine] of byKey) {
+    const node = { key, name: mine[0].peer_name || '' };
+    const group = el('div', { class: 'peer-claim-group' }, [
+      el('div', { class: 'peer-head' }, [
+        el('span', { class: 'peer-name', text: node.name || key.slice(0, 12) }),
+        el('code', { class: 'peer-key', text: key }),
+      ]),
+    ]);
+    const claims = claimBox(mine);
+    if (claims) group.append(claims);
+    group.append(el('div', { class: 'peer-actions' }, [
+      el('button', {
+        class: 'btn btn-destructive-solid btn-sm',
+        text: 'Block…',
+        onclick: () => blockMapNode(node),
+      }),
+    ]));
+    box.append(group);
+  }
+  return box;
 }
 
 function renderPeer(p) {
@@ -557,6 +606,25 @@ async function friendMapNode(n) {
   refresh();
 }
 
+// pullMapNode asks the refresh loop to fetch one node's catalog now, rather than
+// when the frontier rotation reaches it (F7 item 5). No confirmation: it costs
+// one request and reveals nothing about us that browsing the map did not.
+async function pullMapNode(n) {
+  try {
+    const res = await fetch(`${API}/api/admin/federation/discover`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ public_key: n.key }),
+    });
+    if (handleAuthError(res)) return;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { toast(data.error || `Request failed (HTTP ${res.status}).`, 'error'); return; }
+    toast('Asked for this node’s library — it appears on /madnetwork once it answers.', 'info');
+  } catch (err) {
+    toast(`Request failed: ${err.message}`, 'error');
+  }
+}
+
 async function unblockPeer(p) {
   await peerOp(p, 'unblock', 'Node unblocked; the distrust mark is withdrawn.');
 }
@@ -677,6 +745,6 @@ function confirmModal({ title, bodyNodes, confirmLabel, danger = true }) {
   if (!await loadStatus()) return;
   await loadUsers();
   await loadPeers();
-  initMap({ onBlockNode: blockMapNode, onFriendNode: friendMapNode });
+  initMap({ onBlockNode: blockMapNode, onFriendNode: friendMapNode, onPullNode: pullMapNode });
   await loadMap();
 })();

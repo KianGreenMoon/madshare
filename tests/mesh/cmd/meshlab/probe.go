@@ -73,20 +73,34 @@ func (emptyStore) DeleteFederationPeer(context.Context, int64) error            
 func (emptyStore) PublishedCatalog(context.Context, federation.Audience) ([]federation.CatalogEntry, error) {
 	return nil, nil
 }
-func (emptyStore) ReplacePeerCatalog(context.Context, int64, string, int64, []federation.CatalogEntry) error {
+func (emptyStore) ReplaceSourceCatalog(context.Context, int64, string, int64, []federation.CatalogEntry) error {
 	return nil
 }
-func (emptyStore) MarkPeerCatalogChecked(context.Context, int64, string, int64) error { return nil }
+func (emptyStore) MarkSourceCatalogChecked(context.Context, int64, string, int64) error { return nil }
+
+// Catalog sources (F7 item 5): the probe caches nothing from anyone, so it never
+// creates a source and its frontier is always empty.
+func (emptyStore) EnsureCatalogSource(_ context.Context, publicKey string, now int64) (*federation.CatalogSource, error) {
+	return &federation.CatalogSource{PublicKey: publicKey, FirstSeen: now}, nil
+}
+func (emptyStore) ListCatalogSources(context.Context) ([]*federation.CatalogSource, error) {
+	return nil, nil
+}
+func (emptyStore) MarkCatalogSourceAttempted(context.Context, int64, int64) error { return nil }
+func (emptyStore) TouchCatalogSourceSeen(context.Context, int64, int64, string) error {
+	return nil
+}
+func (emptyStore) DropCatalogSources(context.Context, []int64) error { return nil }
 func (emptyStore) BlobVisibleTo(context.Context, string, federation.Audience) (bool, bool, error) {
 	return false, false, nil
 }
 func (emptyStore) PeerAudience(context.Context, int64) (federation.Audience, error) {
 	return federation.GuestAudience, nil
 }
-func (emptyStore) MadnetworkBlobProviders(context.Context, string) (int64, []*federation.Peer, error) {
+func (emptyStore) MadnetworkBlobProviders(context.Context, string) (int64, []*federation.BlobProvider, error) {
 	return 0, nil, nil
 }
-func (emptyStore) ReplacePeerHoldings(context.Context, int64, []string) error { return nil }
+func (emptyStore) ReplaceSourceHoldings(context.Context, int64, []string) error { return nil }
 func (emptyStore) SeedingPolicy(context.Context) (federation.SeedPolicy, error) {
 	return federation.SeedPolicy{}, nil
 }
@@ -130,7 +144,7 @@ func (emptyStore) PublishFriendList(context.Context) (bool, error) { return fals
 // The probe caches no catalogs, so there is never a claim of anyone's to check
 // against bytes it holds — it holds none either (F6, contradicted identity
 // claims).
-func (emptyStore) CheckPeerClaims(context.Context, int64) (int, error) { return 0, nil }
+func (emptyStore) CheckSourceClaims(context.Context, int64) (int, error) { return 0, nil }
 func (emptyStore) ListClaimReports(context.Context) ([]*federation.ClaimReport, error) {
 	return nil, nil
 }

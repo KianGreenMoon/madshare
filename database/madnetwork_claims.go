@@ -1,7 +1,7 @@
 package database
 
 // Federation F6 — contradicted identity claims (docs/architecture/federation.md
-// §Trust graph). A peer's catalog advertises a content hash together with the
+// §Trust graph). A cached catalog advertises a content hash together with the
 // head of its own acoustic fingerprint; when we hold the same bytes, or hold both
 // halves of a grouping it asserts, the claim is checkable arithmetic rather than
 // something to take on trust.
@@ -34,20 +34,20 @@ type localPrint struct {
 	version string
 }
 
-// CheckPeerClaims runs both contradiction checks over one peer's cached catalog
-// and records what they find. Returns the number of reports that are open (not
-// dismissed or acted on) after the run — what a notification badge counts.
-func (db *DB) CheckPeerClaims(ctx context.Context, peerID int64) (int, error) {
-	if err := db.checkHeldBlobClaims(ctx, peerID); err != nil {
+// CheckSourceClaims runs both contradiction checks over one source's cached
+// catalog and records what they find. Returns the number of reports that are open
+// (not dismissed or acted on) after the run — what a notification badge counts.
+func (db *DB) CheckSourceClaims(ctx context.Context, sourceID int64) (int, error) {
+	if err := db.checkHeldBlobClaims(ctx, sourceID); err != nil {
 		return 0, err
 	}
-	if err := db.checkGroupingClaims(ctx, peerID); err != nil {
+	if err := db.checkGroupingClaims(ctx, sourceID); err != nil {
 		return 0, err
 	}
 	var open int
 	err := db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM federation_claim_reports
-		WHERE peer_id = ? AND disposition = ?`, peerID, federation.ClaimNew).Scan(&open)
+		WHERE source_id = ? AND disposition = ?`, sourceID, federation.ClaimNew).Scan(&open)
 	if err != nil {
 		return 0, fmt.Errorf("count claim reports: %w", err)
 	}
@@ -58,7 +58,7 @@ func (db *DB) CheckPeerClaims(ctx context.Context, peerID int64) (int, error) {
 // of the same bytes. The join is the whole point: it only ever considers hashes
 // present on both sides, so the work is proportional to the overlap rather than
 // to either library.
-func (db *DB) checkHeldBlobClaims(ctx context.Context, peerID int64) error {
+func (db *DB) checkHeldBlobClaims(ctx context.Context, sourceID int64) error {
 	rows, err := db.QueryContext(ctx, `
 		SELECT r.value->>'hash',
 		       r.value->'fingerprint'->>'head',
@@ -67,8 +67,8 @@ func (db *DB) checkHeldBlobClaims(ctx context.Context, peerID int64) error {
 		FROM federation_catalog c, json_each(c.renditions) r
 		JOIN files f ON f.hash = r.value->>'hash' AND f.deleted_at IS NULL
 		JOIN audio_fingerprints af ON af.file_id = f.id
-		WHERE c.peer_id = ? AND r.value->'fingerprint'->>'head' IS NOT NULL`,
-		federation.ClaimHeadWords*4, peerID)
+		WHERE c.source_id = ? AND r.value->'fingerprint'->>'head' IS NOT NULL`,
+		federation.ClaimHeadWords*4, sourceID)
 	if err != nil {
 		return fmt.Errorf("check held-blob claims: %w", err)
 	}
@@ -95,7 +95,7 @@ func (db *DB) checkHeldBlobClaims(ctx context.Context, peerID int64) error {
 			continue
 		}
 		found = append(found, &federation.ClaimReport{
-			PeerID: peerID, Kind: federation.ClaimHeldBlob, Hash: hash,
+			SourceID: sourceID, Kind: federation.ClaimHeldBlob, Hash: hash,
 			BER: ber, Words: words,
 			OurHead:    base64.StdEncoding.EncodeToString(ourHead),
 			TheirHead:  theirHead,
@@ -112,16 +112,16 @@ func (db *DB) checkHeldBlobClaims(ctx context.Context, peerID int64) error {
 // one recording, using only fingerprints we computed ourselves. It needs no wire
 // claim and no cooperation from the peer: hold two blobs it groups, and the
 // assertion is either true of our bytes or not.
-func (db *DB) checkGroupingClaims(ctx context.Context, peerID int64) error {
+func (db *DB) checkGroupingClaims(ctx context.Context, sourceID int64) error {
 	rows, err := db.QueryContext(ctx, `
 		SELECT c.recording_key, r.value->>'hash',
 		       SUBSTR(af.fingerprint, 1, ?), COALESCE(af.algo_version, '')
 		FROM federation_catalog c, json_each(c.renditions) r
 		JOIN files f ON f.hash = r.value->>'hash' AND f.deleted_at IS NULL
 		JOIN audio_fingerprints af ON af.file_id = f.id
-		WHERE c.peer_id = ? AND c.recording_key <> ''
+		WHERE c.source_id = ? AND c.recording_key <> ''
 		ORDER BY c.recording_key, r.value->>'hash'`,
-		federation.ClaimHeadWords*4, peerID)
+		federation.ClaimHeadWords*4, sourceID)
 	if err != nil {
 		return fmt.Errorf("check grouping claims: %w", err)
 	}
@@ -167,7 +167,7 @@ func (db *DB) checkGroupingClaims(ctx context.Context, peerID int64) error {
 					continue
 				}
 				found = append(found, &federation.ClaimReport{
-					PeerID: peerID, Kind: federation.ClaimGrouping,
+					SourceID: sourceID, Kind: federation.ClaimGrouping,
 					Hash: hashes[i], OtherHash: hashes[j],
 					BER: ber, Words: words,
 					OurHead: a.head, TheirHead: b.head,
@@ -194,7 +194,7 @@ func compareHeads(ours, theirs []uint32) (ber float64, words int, ok bool) {
 	return media.BitErrorRate(ours[:n], theirs[:n]), n, true
 }
 
-// recordClaimReports upserts findings. The (peer, kind, hash, other_hash) key is
+// recordClaimReports upserts findings. The (source, kind, hash, other_hash) key is
 // what makes a repeating check silent: an existing row keeps its disposition and
 // only its measurement and last_seen move, so an admin who dismissed something
 // is not asked again every fifteen minutes.
@@ -210,10 +210,10 @@ func (db *DB) recordClaimReports(ctx context.Context, reports []*federation.Clai
 	defer tx.Rollback()
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO federation_claim_reports
-			(peer_id, kind, hash, other_hash, ber, words, our_head, their_head,
+			(source_id, kind, hash, other_hash, ber, words, our_head, their_head,
 			 our_version, their_version, disposition, first_seen, last_seen)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT (peer_id, kind, hash, other_hash) DO UPDATE SET
+		ON CONFLICT (source_id, kind, hash, other_hash) DO UPDATE SET
 			ber = excluded.ber, words = excluded.words,
 			our_head = excluded.our_head, their_head = excluded.their_head,
 			our_version = excluded.our_version, their_version = excluded.their_version,
@@ -223,7 +223,7 @@ func (db *DB) recordClaimReports(ctx context.Context, reports []*federation.Clai
 	}
 	defer stmt.Close()
 	for _, r := range reports {
-		if _, err := stmt.ExecContext(ctx, r.PeerID, r.Kind, r.Hash, r.OtherHash,
+		if _, err := stmt.ExecContext(ctx, r.SourceID, r.Kind, r.Hash, r.OtherHash,
 			r.BER, r.Words, r.OurHead, r.TheirHead, r.OurVersion, r.TheirVersion,
 			federation.ClaimNew, now, now); err != nil {
 			return fmt.Errorf("insert claim report: %w", err)
@@ -233,18 +233,22 @@ func (db *DB) recordClaimReports(ctx context.Context, reports []*federation.Clai
 }
 
 const claimReportColumns = `
-	cr.id, cr.peer_id, cr.kind, cr.hash, cr.other_hash, cr.ber, cr.words,
+	cr.id, cr.source_id, cr.kind, cr.hash, cr.other_hash, cr.ber, cr.words,
 	cr.our_head, cr.their_head, cr.our_version, cr.their_version,
 	cr.disposition, cr.first_seen, cr.last_seen`
 
 // ListClaimReports returns the findings an admin has not settled yet (disposition
-// 'new'), newest first, with the reporting peer's display name and key attached —
-// the peer card needs both, since a name never identifies a node here.
+// 'new'), newest first, with the reported node's display name and key attached —
+// the card needs both, since a name never identifies a node here. The node need
+// not be a peer: since F7 item 5 we cache (and therefore check) the catalogs of
+// members nobody here has decided anything about, and the key is what an admin
+// blocks by.
 func (db *DB) ListClaimReports(ctx context.Context) ([]*federation.ClaimReport, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT `+claimReportColumns+`, `+peerLabelExpr("p")+`, p.public_key
+		SELECT `+claimReportColumns+`, `+sourceLabelExpr+`, s.public_key
 		FROM federation_claim_reports cr
-		JOIN federation_peers p ON p.id = cr.peer_id
+		JOIN federation_catalog_sources s ON s.id = cr.source_id
+		LEFT JOIN federation_peers p ON p.public_key = s.public_key
 		WHERE cr.disposition = ?
 		ORDER BY cr.last_seen DESC, cr.id DESC`, federation.ClaimNew)
 	if err != nil {
@@ -254,7 +258,7 @@ func (db *DB) ListClaimReports(ctx context.Context) ([]*federation.ClaimReport, 
 	var out []*federation.ClaimReport
 	for rows.Next() {
 		var r federation.ClaimReport
-		if err := rows.Scan(&r.ID, &r.PeerID, &r.Kind, &r.Hash, &r.OtherHash, &r.BER,
+		if err := rows.Scan(&r.ID, &r.SourceID, &r.Kind, &r.Hash, &r.OtherHash, &r.BER,
 			&r.Words, &r.OurHead, &r.TheirHead, &r.OurVersion, &r.TheirVersion,
 			&r.Disposition, &r.FirstSeen, &r.LastSeen, &r.PeerName, &r.PeerKey); err != nil {
 			return nil, fmt.Errorf("scan claim report: %w", err)
@@ -280,7 +284,7 @@ func (db *DB) CountOpenClaimReports(ctx context.Context) (int64, error) {
 
 // SetClaimReportDisposition records the admin's decision. Detection never
 // overwrites it, so dismissing a finding settles it for good unless the row is
-// re-created from scratch (a forgotten peer, a re-imported card).
+// re-created from scratch (a forgotten source, a re-imported card).
 func (db *DB) SetClaimReportDisposition(ctx context.Context, id int64, disposition string) error {
 	switch disposition {
 	case federation.ClaimNew, federation.ClaimDismissed, federation.ClaimActed:

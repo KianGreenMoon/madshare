@@ -63,6 +63,8 @@ func (n *Node) EnsureBlob(context.Context, string) (Transfer, error) {
 
 func (n *Node) ResyncGraph() {}
 
+func (n *Node) PullFrom(string) error { return errCompiledOut }
+
 func (n *Node) NetworkMap(context.Context) (NetworkMap, error) {
 	return NetworkMap{}, errCompiledOut
 }

@@ -489,6 +489,55 @@ func TestConfig_ReachableWindow_DefaultAndClamp(t *testing.T) {
 	}
 }
 
+// TestFederationDiscoveryBounds: the frontier knobs (F7 item 5). The budget's
+// off-switch is -1 rather than 0, because an unset key has to keep meaning "the
+// default" — so 0 must not be the way an admin says "friends only".
+func TestFederationDiscoveryBounds(t *testing.T) {
+	load := func(t *testing.T, body string) config.Config {
+		t.Helper()
+		f := filepath.Join(t.TempDir(), "madshare.toml")
+		if err := os.WriteFile(f, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.Load(f)
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		return cfg
+	}
+	base := "[[listen]]\naddr=\"127.0.0.1\"\nport=3000\nserve=[\"api\"]\n"
+
+	cfg := load(t, base)
+	if cfg.Federation.DiscoveryBudget != config.DefaultDiscoveryBudget ||
+		cfg.Federation.DiscoveryCap != config.DefaultDiscoveryCap {
+		t.Errorf("unset discovery = %d/%d, want defaults %d/%d",
+			cfg.Federation.DiscoveryBudget, cfg.Federation.DiscoveryCap,
+			config.DefaultDiscoveryBudget, config.DefaultDiscoveryCap)
+	}
+	cfg = load(t, base+"[federation]\ndiscovery_budget = 9\ndiscovery_cap = 50\n")
+	if cfg.Federation.DiscoveryBudget != 9 || cfg.Federation.DiscoveryCap != 50 {
+		t.Errorf("explicit discovery = %d/%d, want 9/50", cfg.Federation.DiscoveryBudget, cfg.Federation.DiscoveryCap)
+	}
+	// Off, and normalized to the one sentinel the node understands.
+	if cfg := load(t, base+"[federation]\ndiscovery_budget = -7\n"); cfg.Federation.DiscoveryBudget != -1 {
+		t.Errorf("negative budget = %d, want -1 (off)", cfg.Federation.DiscoveryBudget)
+	}
+	// A nonsensical cap falls back with a warning rather than caching nothing.
+	cfg = load(t, base+"[federation]\ndiscovery_cap = -3\n")
+	if cfg.Federation.DiscoveryCap != config.DefaultDiscoveryCap {
+		t.Errorf("negative cap = %d, want the default", cfg.Federation.DiscoveryCap)
+	}
+	var warned bool
+	for _, w := range cfg.Warnings() {
+		if strings.Contains(w, "discovery_cap") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("expected a discovery_cap warning, got %v", cfg.Warnings())
+	}
+}
+
 func TestLoad_InvalidTOML_ReturnsError(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "bad.toml")
 	os.WriteFile(f, []byte("not = valid [toml"), 0o600)

@@ -79,12 +79,13 @@ func TestClaimHeldBlobContradiction(t *testing.T) {
 	unheld := "not-a-hash-we-hold"
 
 	peer := insertPeer(t, db, "aa11", "claimer", federation.PeerFriend)
+	src := insertSource(t, db, "aa11")
 	entry := func(key, hash string, claim *federation.FingerprintClaim) federation.CatalogEntry {
 		e := catEntry(key, "rec-"+key, "Artist", "Album", "Title "+key, hash)
 		e.Renditions[0].Fingerprint = claim
 		return e
 	}
-	if err := db.ReplacePeerCatalog(ctx, peer, "s1", 100, []federation.CatalogEntry{
+	if err := db.ReplaceSourceCatalog(ctx, src, "s1", 100, []federation.CatalogEntry{
 		// Same bytes, same claim (a near-identical head, as a different
 		// chromaprint build would produce) — not a contradiction.
 		entry("1", agrees, claimOf(fpWordsNear(honest, 3))),
@@ -93,12 +94,12 @@ func TestClaimHeldBlobContradiction(t *testing.T) {
 		// A claim about bytes we do not hold is simply uncheckable.
 		entry("3", unheld, claimOf(other)),
 	}); err != nil {
-		t.Fatalf("ReplacePeerCatalog: %v", err)
+		t.Fatalf("ReplaceSourceCatalog: %v", err)
 	}
 
-	open, err := db.CheckPeerClaims(ctx, peer)
+	open, err := db.CheckSourceClaims(ctx, src)
 	if err != nil {
-		t.Fatalf("CheckPeerClaims: %v", err)
+		t.Fatalf("CheckSourceClaims: %v", err)
 	}
 	if open != 1 {
 		t.Fatalf("open reports = %d, want 1", open)
@@ -131,7 +132,7 @@ func TestClaimHeldBlobContradiction(t *testing.T) {
 	}
 
 	// Re-checking must not re-alarm: same row, and an admin's decision stands.
-	if _, err := db.CheckPeerClaims(ctx, peer); err != nil {
+	if _, err := db.CheckSourceClaims(ctx, src); err != nil {
 		t.Fatalf("second CheckPeerClaims: %v", err)
 	}
 	if got := len(claimReportRows(t, db)); got != 1 {
@@ -140,7 +141,7 @@ func TestClaimHeldBlobContradiction(t *testing.T) {
 	if err := db.SetClaimReportDisposition(ctx, r.ID, federation.ClaimDismissed); err != nil {
 		t.Fatalf("SetClaimReportDisposition: %v", err)
 	}
-	if _, err := db.CheckPeerClaims(ctx, peer); err != nil {
+	if _, err := db.CheckSourceClaims(ctx, src); err != nil {
 		t.Fatalf("third CheckPeerClaims: %v", err)
 	}
 	if got := len(claimReportRows(t, db)); got != 0 {
@@ -150,15 +151,25 @@ func TestClaimHeldBlobContradiction(t *testing.T) {
 		t.Errorf("CountOpenClaimReports = %d, %v; want 0", n, err)
 	}
 
-	// Forgetting the peer forgets what we found about it (CASCADE).
+	// Forgetting the node forgets what we found about it (CASCADE). Since F7
+	// item 5 the evidence hangs off the SOURCE — the cached catalog it was found
+	// in — so removing the peer row alone leaves it standing, and the sweep's
+	// retention walk is what collects it once the node stops being a member
+	// (§Forgetting). Dropping the source is that act, seen from the store.
 	if err := db.SetClaimReportDisposition(ctx, r.ID, federation.ClaimNew); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.DeleteFederationPeer(ctx, peer); err != nil {
 		t.Fatalf("DeleteFederationPeer: %v", err)
 	}
+	if n, _ := db.CountOpenClaimReports(ctx); n != 1 {
+		t.Errorf("report count after removing the peer row = %d, want 1 (the evidence is the cache's)", n)
+	}
+	if err := db.DropCatalogSources(ctx, []int64{src}); err != nil {
+		t.Fatalf("DropCatalogSources: %v", err)
+	}
 	if n, _ := db.CountOpenClaimReports(ctx); n != 0 {
-		t.Errorf("reports survived the peer row: %d", n)
+		t.Errorf("reports survived the cached catalog they were found in: %d", n)
 	}
 }
 
@@ -175,18 +186,19 @@ func TestClaimGroupingContradiction(t *testing.T) {
 	sameB := seedFingerprintedFile(t, db, "gb", fpWordsNear(a, 2))
 	differs := seedFingerprintedFile(t, db, "gc", b)
 
-	peer := insertPeer(t, db, "bb22", "grouper", federation.PeerFriend)
+	insertPeer(t, db, "bb22", "grouper", federation.PeerFriend)
+	src := insertSource(t, db, "bb22")
 	// One claimed recording per entry, each carrying two renditions we hold.
 	honest := catEntry("1", "rec-honest", "Artist", "Album", "Honest", sameA)
 	honest.Renditions = append(honest.Renditions, federation.CatalogRendition{Hash: sameB, Size: 2000, Codec: "mp3"})
 	wrong := catEntry("2", "rec-wrong", "Artist", "Album", "Wrong", sameA)
 	wrong.Renditions = append(wrong.Renditions, federation.CatalogRendition{Hash: differs, Size: 2000, Codec: "mp3"})
-	if err := db.ReplacePeerCatalog(ctx, peer, "s1", 100, []federation.CatalogEntry{honest, wrong}); err != nil {
-		t.Fatalf("ReplacePeerCatalog: %v", err)
+	if err := db.ReplaceSourceCatalog(ctx, src, "s1", 100, []federation.CatalogEntry{honest, wrong}); err != nil {
+		t.Fatalf("ReplaceSourceCatalog: %v", err)
 	}
 
-	if _, err := db.CheckPeerClaims(ctx, peer); err != nil {
-		t.Fatalf("CheckPeerClaims: %v", err)
+	if _, err := db.CheckSourceClaims(ctx, src); err != nil {
+		t.Fatalf("CheckSourceClaims: %v", err)
 	}
 	reports := claimReportRows(t, db)
 	if len(reports) != 1 {
@@ -211,13 +223,14 @@ func TestClaimTooShortToCheck(t *testing.T) {
 	ctx := context.Background()
 
 	held := seedFingerprintedFile(t, db, "sh", fpWords(21, 400))
-	peer := insertPeer(t, db, "cc33", "terse", federation.PeerFriend)
+	insertPeer(t, db, "cc33", "terse", federation.PeerFriend)
+	src := insertSource(t, db, "cc33")
 	e := catEntry("1", "rec-1", "Artist", "Album", "Terse", held)
 	e.Renditions[0].Fingerprint = claimOf(fpWords(22, 4)) // 4 words of unrelated audio
-	if err := db.ReplacePeerCatalog(ctx, peer, "s1", 100, []federation.CatalogEntry{e}); err != nil {
-		t.Fatalf("ReplacePeerCatalog: %v", err)
+	if err := db.ReplaceSourceCatalog(ctx, src, "s1", 100, []federation.CatalogEntry{e}); err != nil {
+		t.Fatalf("ReplaceSourceCatalog: %v", err)
 	}
-	if open, err := db.CheckPeerClaims(ctx, peer); err != nil || open != 0 {
+	if open, err := db.CheckSourceClaims(ctx, src); err != nil || open != 0 {
 		t.Errorf("CheckPeerClaims = %d, %v; want no finding from a head too short to compare", open, err)
 	}
 }

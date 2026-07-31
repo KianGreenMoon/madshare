@@ -1,4 +1,4 @@
-// Madnetwork — browsing the merged catalog of this node's friends PLUS its own
+// Madnetwork — browsing the merged catalog of this node's community PLUS its own
 // published library (federation F2/F3, docs/architecture/federation.md;
 // UI design docs/ui/madnetwork-page.md). A sibling of the library page built on
 // the shared browse core: the same rows (hearts, "⋯" quick-add menus), the same
@@ -147,9 +147,13 @@ async function loadStatus() {
     box.hidden = false;
     return;
   }
+  // The strip lists every node we hold a catalog from: the ones this admin
+  // friended, and the members of the wider community the frontier has reached.
+  // They browse identically, so the count says "libraries", not "friends".
   box.append(mkSpan('mn-status-main',
-    `${data.tracks} track${data.tracks === 1 ? '' : 's'} from ${friends.length} friend${friends.length === 1 ? '' : 's'}` +
-    (data.self_name ? ' + this library' : '')));
+    `${data.tracks} track${data.tracks === 1 ? '' : 's'} from ${friends.length} ` +
+    `librar${friends.length === 1 ? 'y' : 'ies'}` +
+    (data.self_name ? ' + this one' : '')));
   if (data.self_name) {
     const chip = document.createElement('span');
     chip.className = 'mn-friend';
@@ -162,6 +166,7 @@ async function loadStatus() {
     const chip = document.createElement('span');
     chip.className = 'mn-friend' + (f.entries ? '' : ' mn-friend--empty') + (stale ? ' mn-friend--stale' : '');
     chip.title = `${f.entries} entries · catalog synced ${fmtAgo(f.synced_at)}` +
+      (f.friend ? ' · a node this server friended directly' : ' · reached through the community') +
       (stale ? ' · not seen recently — its tracks are hidden' : '');
     chip.append(mkSpan('mn-friend-name', f.name || '(unnamed)'),
       mkSpan('mn-friend-seen', `seen ${fmtAgo(f.last_seen)}`));

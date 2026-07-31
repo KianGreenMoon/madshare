@@ -266,12 +266,12 @@ func TestHoldingsTracker(t *testing.T) {
 	makeFriends(t, a, b, storeA, storeB)
 
 	// A advertises the cache blob in holdings; B syncs it → it becomes a provider.
-	pA, err := storeB.GetFederationPeerByKey(context.Background(), a.PublicKeyHex())
+	srcA, err := storeB.EnsureCatalogSource(context.Background(), a.PublicKeyHex(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "B to learn A's holdings", func() bool {
-		b.syncHoldings(context.Background(), pA)
+		b.syncHoldings(context.Background(), srcA)
 		size, holders, _ := storeB.MadnetworkBlobProviders(context.Background(), hash)
 		return len(holders) == 1 && size == 0 // cache-only holder → no advertised size
 	})

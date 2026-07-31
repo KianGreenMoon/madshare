@@ -99,6 +99,12 @@ max_upload_mb = 500          # per-request upload cap, in MiB
 # in the madnetwork browse) when seen within it — 0 = default 180s, values below
 # 120s are clamped up (anti-flap floor). Whether hiding applies at all is the
 # runtime madnetwork.hide_unavailable toggle on /admin/settings.
+# discovery_budget / discovery_cap bound how far past the friend ring this node
+# pulls catalogs: friends are always pulled, and beyond them a few MEMBERS of the
+# community per 15-minute cycle, rotating least-recently-tried first, with the
+# cached foreign catalogs capped (coldest evicted). -1 as the budget turns
+# discovery off — the node still serves its whole community, it just stops
+# looking past the nodes this admin friended.
 #
 # fpcalc (Chromaprint) is REQUIRED once enabled = true, and the server refuses to
 # start without it: a federated node re-fingerprints downloaded audio locally
@@ -116,6 +122,8 @@ max_upload_mb = 500          # per-request upload cap, in MiB
 #listen              = ["tls://0.0.0.0:12345"] # tcp/tls/quic/ws/wss/unix
 #seed_rate_kib       = 0                        # 0 = unlimited outbound seeding rate
 #reachable_window_sec = 180                     # availability freshness window (min 120)
+#discovery_budget    = 4                        # member catalogs pulled per cycle (-1 = friends only)
+#discovery_cap       = 200                      # cached foreign catalogs kept (coldest evicted)
 #allow_missing_fingerprinting = false           # true = federate without fpcalc (unverified)
 
 # [sources] controls in-place "symlink" imports: an admin points at an external

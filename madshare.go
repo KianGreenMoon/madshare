@@ -346,7 +346,11 @@ func main() {
 		}
 		fedNode, err = federation.Start(cfg.Federation, db, log.Default(),
 			federation.WithCacheDir(cfg.MadnetworkCacheDir()),
-			federation.WithBlobResolver(resolve))
+			federation.WithBlobResolver(resolve),
+			federation.WithDiscovery(federation.Discovery{
+				Budget: cfg.Federation.DiscoveryBudget,
+				Cap:    cfg.Federation.DiscoveryCap,
+			}))
 		if err != nil {
 			log.Fatalf("start federation node: %v", err)
 		}

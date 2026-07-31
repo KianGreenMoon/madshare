@@ -4,13 +4,15 @@
 > F3 (direct transfer), F4 (swarm), F5 (depth & scope), Availability & node
 > health, and all of F6 — friend-list records, distrust marks, network map, the
 > naming split, contradicted-claim reports and underlay de-peering — are built.**
-> **F7 (reach) is in progress.** Its first four items are built (2026-07-31): the
+> **F7 (reach) is in progress.** Its first five items are built (2026-07-31): the
 > mesh classes on `Audience`, the mutual-edge membership walk, serving members
-> while refusing outsiders, and the three-value scope vocabulary with migration
-> 035. The posture is therefore running — **everything to our community, nothing
-> outside it** — but only in the *serving* direction: this node still pulls
-> catalogs from direct friends alone, so other libraries become visible with F7
-> item 5 (§Discovery beyond the friend ring). Items 5–10 remain.
+> while refusing outsiders, the three-value scope vocabulary with migration 035,
+> and the bounded frontier pull that finally makes other people's libraries
+> visible here (§Discovery beyond the friend ring, migration **036**). The posture
+> is therefore running in **both** directions — **everything to our community,
+> nothing outside it** — and `meshlab reach` is the measurement that says so.
+> Items 6–10 remain: per-member abuse controls, the map at scale, the
+> /madnetwork page rework, listener-node tokens, and trust-weighted popularity.
 > The two items in §Open questions are design-time details to settle during their
 > milestone, not blockers. Federation
 > is auth Phase 4 (`docs/architecture/auth.md` §8) and the milestone the native
@@ -1445,9 +1447,10 @@ scale and navigation, not a different metaphor.
   one (Trash, normal quarantine) to keep only the best. No nagging: a page you
   visit, at most a quiet count badge.
 - **Sync mechanism = pull-and-cache (built, F2).** Periodically (15 min) and on
-  new friendship, a node pulls a friend's catalog over the mesh
-  (`GET /madnetwork/v0/catalog?since=<serial>`, friends only — default-deny
-  toward everyone else) and keeps a local copy (`federation_catalog`, one row
+  new friendship, a node pulls a catalog over the mesh
+  (`GET /madnetwork/v0/catalog?since=<serial>`, served to our community —
+  default-deny toward everyone outside it) and keeps a local copy
+  (`federation_catalog`, rooted since F7 item 5 on the *source* it came from, one row
   per remote appearance, denormalized text — remote ids are opaque, never
   joined onto local entities). **Snapshot + not-modified**, not row deltas
   (decision 2026-07-18, superseding the earlier "changed since serial N"
@@ -1485,9 +1488,9 @@ scale and navigation, not a different metaphor.
   the expansion carries the version actions — Play, Queue, Download to
   library — acting on the version's **ladder-best rendition** (the server
   sorts each version's renditions by the quality ladder before answering).
-  While every carrier is a direct friend the count is trivially
-  trust-weighted; once catalogs travel past the friend ring (F7) the full
-  weighting applies (one branch = one voice).
+  While every carrier was a direct friend the count was trivially
+  trust-weighted; since catalogs travel past the friend ring (F7 item 5) the
+  full weighting is what item 10 owes (one branch = one voice).
 - **Catalog crossing — "N versions" (built, F2; resolves former open question
   1).** The same tagset text on *different claimed recordings* (different
   masters, live vs. studio, or a mislabel) stays **one track row** that
@@ -1500,7 +1503,7 @@ scale and navigation, not a different metaphor.
   dedup of *unshared* rips can refine this later; local verification on
   download (F3) stays the truth either way.
 
-### Discovery beyond the friend ring (F7 — serving half built, pulling half planned)
+### Discovery beyond the friend ring (F7 item 5, built 2026-07-31)
 
 Once scope decides who may *fetch*, the thing standing between an admin and "the
 whole network's libraries are reachable" is no longer authorization — it is
@@ -1510,18 +1513,11 @@ that ship separately:
 - **Serving discovery to members — built 2026-07-31** (item 3). `handleCatalog`
   and `handleHoldings` now answer any member, so our library is discoverable by
   our community.
-- **Pulling from beyond the friend ring — not built** (item 5). The sweep still
-  syncs catalogs and holdings from `state = 'friend'` peers only, and
-  `MadnetworkBlobProviders` still joins on friendship, so *other people's*
-  libraries are not visible here yet. Until this lands, item 3 is a one-sided
-  opening: symmetric across nodes, useless on any single one. `meshlab reach` is
-  the acceptance test and stays red until then.
-
-  One shape question found while building item 3: `federation_catalog` is keyed
-  by `peer_id` with a CASCADE to `federation_peers`, so caching a *member's*
-  catalog needs either a peer row for every member we pull from or a table that
-  is not peer-rooted. That is the first decision item 5 has to make, and it is a
-  migration either way.
+- **Pulling from beyond the friend ring — built 2026-07-31** (item 5). The sweep
+  pulls catalogs and holdings from a *bounded frontier* of the community, not
+  from friends alone, and `MadnetworkBlobProviders` reads the same set. Until
+  this landed, item 3 was a one-sided opening: symmetric across nodes, useless on
+  any single one.
 
 **The endpoint change was one line of policy**, as predicted. `handleCatalog`
 already answered *for an audience*, so serving a **member** meant passing the
@@ -1553,19 +1549,82 @@ directory of node keys, and a mesh address derives from a key, so every node on 
 map is dialable without any new discovery mechanism. Yggdrasil cannot enumerate the
 mesh, but we no longer need it to.
 
-**How much to pull is the open engineering question.** Pulling every mapped node's
-catalog every cycle is the N² dialing pattern that was rejected for graph records,
-and caching the entire network's public library is unbounded storage. The planned
-shape is therefore **bounded and demand-shaped** rather than exhaustive:
+**How much to pull was the phase's one open engineering question**, and it is
+answered by bounding rather than by cleverness. Pulling every mapped node's
+catalog every cycle is the N² dialling pattern that was rejected for graph
+records, and caching the entire network's public library is unbounded storage.
+What ships is therefore **bounded and demand-shaped** rather than exhaustive
+(`federation/discovery.go`, `syncSources`):
 
-- pull from friends as today (the ring that matters most, unbudgeted);
-- beyond it, a **small budget per catalog cycle** — a handful of mapped nodes,
-  most-recently-seen first, rotating, so the frontier expands steadily instead of
-  in one storm;
-- a **cap on cached foreign catalogs** with the oldest evicted, since
-  `federation_catalog` is already declared a droppable cache;
-- and an explicit **pull-now** path for a node an admin or a search is actually
-  interested in, so interest beats rotation.
+- friends are pulled every round they are due, **unbudgeted** — few, and chosen;
+- beyond them a **budget per catalog cycle** (`[federation] discovery_budget`,
+  default 4) of member catalogs, **least-recently-attempted first**, so the
+  frontier expands steadily instead of in one storm;
+- a **cap on cached foreign catalogs** (`discovery_cap`, default 200) with the
+  coldest evicted, since `federation_catalog` is already declared a droppable
+  cache. Friends and blocked peers are never counted by it: a cache that forgets
+  the nodes an admin decided about, to make room for strangers, has its
+  priorities backwards;
+- and an explicit **pull-now** (`POST /api/admin/federation/discover`, the
+  network map's *Fetch library now*) for a node an admin is actually interested
+  in, jumping both the rotation and the budget — interest beats fairness.
+
+**Rotating on attempts, not on successes.** A node that never answers must still
+lose its turn, or one dead key would be retried ahead of every live member
+forever. `attempted_at` is therefore written before the request, and the
+rotation reads it.
+
+**A member we hold nothing from has no row, and that is where the frontier
+starts.** The rotation walks source rows, so a node we have never pulled from is
+invisible to it — it is also, by definition, the least-recently-attempted thing
+there is, so it is served *first* and the row is created as we try it. Getting
+this order wrong is what a live 5-node chain caught: spending the budget on the
+members already cached meant the first two nodes reached consumed every later
+round as well, and the frontier never moved past them. Two in-process tests had
+been green throughout, one of them because it created the very row it was
+checking for.
+
+**Where the two halves of visibility divide.** Admission — whom we may cache at
+all — is decided once a minute by the sweep's retention walk, because membership
+is a graph walk SQL cannot do. Blocking is decided *in the browse query*, because
+it is a local act that must take effect the moment an admin clicks it. Retention
+keeps a source while it is a direct friend, a member, or a peer we blocked (kept
+hidden, so an unblock restores the view with no resync); everything else is
+collected, which is how §Forgetting reaches the catalog cache — a branch a block
+or a removal cut off stops being a member, and the same walk that un-draws it on
+the map drops its cached library.
+
+**The storage decision (owner, 2026-07-31): a table of its own.** Cached catalogs
+used to hang off `federation_peers` with a CASCADE, and every browse query joined
+`state = 'friend'`. Migration **036** re-roots them on
+`federation_catalog_sources` — one row per node we hold a catalog from — and
+moves the catalog sync state (serial, synced-at) there with them. The two tables
+now answer two different questions: *a peer row exists because an admin decided
+something*, *a source row exists because the sweep pulled from it*. Keeping them
+apart is what stops a table an admin reads as "decisions" from filling with
+hundreds of nodes nobody chose, and it puts the cache's retention rule on the
+cache's own table.
+
+A peer row per member was considered and refused. It looks like the cheaper
+option and is not: SQLite cannot alter a `CHECK` constraint, so admitting a
+`'member'` state means rebuilding `federation_peers` anyway — the same migration
+weight, in exchange for merging two meanings that want to stay apart. Blocking
+still hides a cached catalog without deleting it, but as a join to the peer table
+rather than as a CASCADE.
+
+**Two heard names, and both are read.** A friend's self-claimed name is
+refreshed by the friendship ping onto its *peer* row; a member's by the discovery
+ping onto its *source* row. The display chain is admin label → either heard name
+→ short key, and reading only the source's made friends render as bare key
+prefixes while strangers rendered names — backwards, and again something only the
+lab showed.
+
+**Freshness for a node we never ping.** The availability window (§Availability)
+reads `MAX(source.last_seen, peer.last_seen)` — a friend is pinged every minute
+and pulled every fifteen, a member is only ever pulled, so neither clock alone is
+the answer and the later one always is. A member's catalog answer *is* its
+liveness, including the not-modified reply; the transfer path's `observePeerAlive`
+now writes to the source row for the same reason.
 
 *Rejected — relaying catalog entries the way graph records are relayed.* Records
 work because a node's friend list is tiny and bounded (512 edges); a catalog is the
@@ -1863,8 +1922,9 @@ Unhealthy ⇒ cutoff 0 (no filtering at all) plus `inbound_healthy: false` on th
 summary, so the UI shows the last-known catalog behind a banner instead of
 blanking.
 
-**No transitive real-time presence — how the big network stays honest.** Once
-catalogs travel past the friend ring (F7) most holders are nodes we never ping, and
+**No transitive real-time presence — how the big network stays honest.** Now that
+catalogs travel past the friend ring (F7 item 5) many holders are nodes no
+friendship pings — their liveness is whatever their last catalog answer said — and
 the answer is deliberately *not* to start pinging strangers or to relay pings along
 the chain. Federated systems don't do live presence at all:
 
@@ -2058,15 +2118,17 @@ milestone directly after direct transfer works, and tokens ship with depth.
      community and would understate what it restricts.
 
   Items 1–4 landed as **one change**, as planned: narrowing the values and
-  widening the audience are only safe together. Note what this does *not* yet
-  buy — a node now serves its community, but still **pulls** catalogs only from
-  direct friends, so other people's libraries become visible to us with item 5
-  and not before. `meshlab reach` therefore still 404s past distance 1; that is
-  the acceptance test for item 5, not for these.
-  5. **Discovery beyond the friend ring** (§Discovery beyond the friend ring): the
-     bounded frontier pull that actually makes other people's libraries visible —
-     the substance of the phase, and the only part with an open engineering
-     question (how much to pull and cache).
+  widening the audience are only safe together. On their own they bought a
+  one-sided opening — every node served its community and no node could see it —
+  which item 5 closed.
+  5. **Discovery beyond the friend ring** — *built 2026-07-31*. The bounded
+     frontier pull that actually makes other people's libraries visible: friends
+     unbudgeted, a few members per cycle rotating on last attempt, foreign
+     catalogs capped and coldest-evicted, and a pull-now that jumps both. Cached
+     catalogs moved off `federation_peers` onto `federation_catalog_sources`
+     (migration **036**), because a node we pull from and a node an admin decided
+     about are two different facts. `meshlab reach`, red past distance 1 since it
+     was written, is the acceptance test.
   6. **Abuse controls for members**: `seed_rate_kib` is global today; serving nodes
      we have no direct relationship with wants a per-requester rate limit and a
      bound on what one member can cost us in a round. This is where a sybil farm is
@@ -2131,9 +2193,13 @@ milestone directly after direct transfer works, and tokens ship with depth.
    madplayer is already signed in to its home server and can ask for a fresh one
    whenever it needs it. Not decided.
 2. **How much of the frontier to pull and cache** (F7, §Discovery beyond the friend
-   ring). The budget per cycle and the cap on cached foreign catalogs are policy
-   numbers nobody can pick from first principles; they want a real network to
-   observe. The shape is decided, the numbers are not.
+   ring). The shape shipped with item 5; the *numbers* are still guesses. Four
+   member catalogs per 15-minute cycle and a cap of 200 foreign catalogs are what
+   a node runs with today, tunable per node as `[federation] discovery_budget` /
+   `discovery_cap`. Nobody can pick them from first principles — they want a real
+   network to observe, and the thing to watch is whether the rotation fills the
+   frontier faster than the network changes. If it does not, the recorded upgrade
+   path is signed catalog-digest relay, which makes "which node changed" free.
 
 (Former question 1 — catalog crossing / one tagset text on two recordings —
 was settled with F2: see §Catalog, ""N versions"". Former question 2 — chunk

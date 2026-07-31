@@ -27,15 +27,16 @@ func TestInboundHealthy(t *testing.T) {
 	}
 }
 
-// TestObservePeerAlive verifies the transfer-path liveness touch: it advances a
-// peer's last_seen, is throttled per peer, and is a safe no-op without a store.
+// TestObservePeerAlive verifies the transfer-path liveness touch: it advances
+// the holder's last_seen, is throttled per holder, and is a safe no-op without a
+// store. Since F7 item 5 it writes to the SOURCE row — most holders are members
+// with no peer row at all, and the freshness window reads the later of the two
+// clocks anyway.
 func TestObservePeerAlive(t *testing.T) {
 	ms := newMemStore()
-	id, err := ms.InsertFederationPeer(context.Background(), &Peer{
-		PublicKey: "aa", State: PeerFriend, LastSeen: 0,
-	})
+	src, err := ms.EnsureCatalogSource(context.Background(), "aa", 0)
 	if err != nil {
-		t.Fatalf("insert peer: %v", err)
+		t.Fatalf("ensure source: %v", err)
 	}
 	n := &Node{
 		store:       ms,
@@ -43,23 +44,30 @@ func TestObservePeerAlive(t *testing.T) {
 		transferCtx: context.Background(),
 		lastTouch:   map[int64]time.Time{},
 	}
+	lastSeen := func() int64 {
+		ms.mu.Lock()
+		defer ms.mu.Unlock()
+		return ms.sources[src.ID].LastSeen
+	}
 
 	// First delivery touches last_seen.
-	n.observePeerAlive(&Peer{ID: id})
-	p, _ := ms.GetFederationPeer(context.Background(), id)
-	if p.LastSeen == 0 {
+	n.observePeerAlive(&BlobProvider{SourceID: src.ID})
+	if lastSeen() == 0 {
 		t.Fatal("observePeerAlive should have advanced last_seen")
 	}
 
 	// A second delivery within the throttle window must not write again: reset
 	// the stored value to 0 and confirm the throttled call leaves it untouched.
-	ms.peers[id].LastSeen = 0
-	n.observePeerAlive(&Peer{ID: id})
-	if p, _ := ms.GetFederationPeer(context.Background(), id); p.LastSeen != 0 {
-		t.Fatalf("throttled delivery should not touch last_seen, got %d", p.LastSeen)
+	ms.mu.Lock()
+	ms.sources[src.ID].LastSeen = 0
+	ms.mu.Unlock()
+	n.observePeerAlive(&BlobProvider{SourceID: src.ID})
+	if got := lastSeen(); got != 0 {
+		t.Fatalf("throttled delivery should not touch last_seen, got %d", got)
 	}
 
-	// No store / nil peer must not panic.
-	(&Node{}).observePeerAlive(&Peer{ID: id})
+	// No store / nil holder / a holder with no source row must not panic.
+	(&Node{}).observePeerAlive(&BlobProvider{SourceID: src.ID})
 	n.observePeerAlive(nil)
+	n.observePeerAlive(&BlobProvider{})
 }

@@ -15,7 +15,7 @@ import (
 
 const peerColumns = `
 	p.id, p.public_key, p.name, p.heard_name, p.state, p.prev_state, p.user_id,
-	p.created_at, p.last_seen, p.catalog_serial, p.catalog_synced_at,
+	p.created_at, p.last_seen,
 	p.block_reason, p.blocked_at,
 	COALESCE(u.username, '')`
 
@@ -30,7 +30,7 @@ func scanPeer(row interface{ Scan(...any) error }) (*federation.Peer, error) {
 	var p federation.Peer
 	var userID sql.NullInt64
 	if err := row.Scan(&p.ID, &p.PublicKey, &p.Name, &p.HeardName, &p.State, &p.PrevState,
-		&userID, &p.CreatedAt, &p.LastSeen, &p.CatalogSerial, &p.CatalogSyncedAt,
+		&userID, &p.CreatedAt, &p.LastSeen,
 		&p.BlockReason, &p.BlockedAt, &p.Username); err != nil {
 		return nil, err
 	}

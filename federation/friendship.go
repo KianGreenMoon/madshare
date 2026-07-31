@@ -415,10 +415,11 @@ func (n *Node) refreshLoop(ctx context.Context) {
 	}
 }
 
-// sweep runs one round: pair toward every pending_outgoing peer; ping every
-// friend and, when its catalog is due (Intervals.CatalogSync, or never synced),
-// pull it. Sequential — friend lists are small and each call is bounded by the
-// client timeout.
+// sweep runs one round: pair toward every pending_outgoing peer, ping every
+// friend, then pull catalogs — from the friends and, since F7 item 5, from a
+// bounded slice of the wider community (discovery.go). Sequential: peer lists
+// are small, the frontier is budgeted, and each call is bounded by the client
+// timeout.
 func (n *Node) sweep(ctx context.Context) {
 	peers, err := n.store.ListFederationPeers(ctx)
 	if err != nil {
@@ -449,16 +450,27 @@ func (n *Node) sweep(ctx context.Context) {
 			n.pairWith(ctx, p)
 		case PeerFriend:
 			n.pingPeer(ctx, p)
-			due := time.Since(time.Unix(p.CatalogSyncedAt, 0)) >= n.intervals.CatalogSync
-			if due {
-				n.syncCatalog(ctx, p)
-				n.syncHoldings(ctx, p) // F4: refresh what they seed from cache
-			}
-			// Gossip rides the catalog cadence, except when an admin asked for it
-			// now — and then it is the graph alone, never the catalog.
-			if due || forceGraph {
-				n.syncGraph(ctx, p)
-			}
+		}
+	}
+
+	// Catalogs and holdings — friends unbudgeted, the community a few nodes per
+	// round (F7 item 5). It runs after the pings so a friendship that converged
+	// this round is pulled from in the same one.
+	dueFriends := n.syncSources(ctx, peers)
+
+	// Gossip rides the catalog cadence, except when an admin asked for it now —
+	// and then it is the graph alone, never the catalog. Friends only: a record
+	// is relayed by the nodes that vouched for us, and widening that is not what
+	// discovery does.
+	for _, p := range peers {
+		if ctx.Err() != nil {
+			return
+		}
+		if p.State != PeerFriend {
+			continue
+		}
+		if _, due := dueFriends[p.PublicKey]; due || forceGraph {
+			n.syncGraph(ctx, p)
 		}
 	}
 }

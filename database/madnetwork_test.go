@@ -92,42 +92,51 @@ func TestMadnetworkCacheAndBrowse(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
-	friendA := insertPeer(t, db, "f1a1", "friend-a", federation.PeerFriend)
-	friendB := insertPeer(t, db, "f2b2", "friend-b", federation.PeerFriend)
-	pending := insertPeer(t, db, "f3c3", "pending-one", federation.PeerPendingIncoming)
+	insertPeer(t, db, "f1a1", "friend-a", federation.PeerFriend)
+	insertPeer(t, db, "f2b2", "friend-b", federation.PeerFriend)
+	blocked := insertPeer(t, db, "f3c3", "blocked-one", federation.PeerFriend)
+	friendA := insertSource(t, db, "f1a1")
+	friendB := insertSource(t, db, "f2b2")
+	hidden := insertSource(t, db, "f3c3")
 
 	// friend-a and friend-b both offer the same track (same text, SAME hash →
 	// one version); friend-b also offers a different album, and a second claimed
 	// recording of "Crossing" with a different hash (→ two versions).
-	if err := db.ReplacePeerCatalog(ctx, friendA, "serial-a", 100, []federation.CatalogEntry{
+	if err := db.ReplaceSourceCatalog(ctx, friendA, "serial-a", 100, []federation.CatalogEntry{
 		catEntry("1", "r1", "Shared Artist", "Shared Album", "Shared Song", "hash-shared"),
 		catEntry("2", "r2", "Shared Artist", "Shared Album", "Crossing", "hash-crossing-a"),
 	}); err != nil {
-		t.Fatalf("ReplacePeerCatalog A: %v", err)
+		t.Fatalf("ReplaceSourceCatalog A: %v", err)
 	}
-	if err := db.ReplacePeerCatalog(ctx, friendB, "serial-b", 200, []federation.CatalogEntry{
+	if err := db.ReplaceSourceCatalog(ctx, friendB, "serial-b", 200, []federation.CatalogEntry{
 		catEntry("9", "r9", "shared artist", "shared album", "shared song", "hash-shared"), // case-folded dup
 		catEntry("10", "r10", "shared artist", "shared album", "Crossing", "hash-crossing-b"),
 		catEntry("11", "r11", "Only B", "B Album", "B Song", "hash-b"),
 	}); err != nil {
-		t.Fatalf("ReplacePeerCatalog B: %v", err)
+		t.Fatalf("ReplaceSourceCatalog B: %v", err)
 	}
-	// A pending (non-friend) peer's cache must stay invisible.
-	if err := db.ReplacePeerCatalog(ctx, pending, "serial-p", 300, []federation.CatalogEntry{
+	// A BLOCKED node's cache is kept but never browsed. Since F7 item 5 that is
+	// the browse's only trust condition — who may be cached at all is decided by
+	// the sweep's retention walk, which SQL cannot do (it is a graph walk).
+	if err := db.ReplaceSourceCatalog(ctx, hidden, "serial-p", 300, []federation.CatalogEntry{
 		catEntry("50", "r50", "Ghost", "Ghost Album", "Ghost Song", "hash-ghost"),
 	}); err != nil {
-		t.Fatalf("ReplacePeerCatalog pending: %v", err)
+		t.Fatalf("ReplaceSourceCatalog blocked: %v", err)
+	}
+	if err := db.BlockFederationPeer(ctx, blocked, federation.PeerFriend, "", 400); err != nil {
+		t.Fatalf("block peer: %v", err)
 	}
 
-	// Sync state landed on the peer row.
-	if p, _ := db.GetFederationPeer(ctx, friendA); p.CatalogSerial != "serial-a" || p.CatalogSyncedAt != 100 {
-		t.Errorf("peer sync state = %q/%d, want serial-a/100", p.CatalogSerial, p.CatalogSyncedAt)
+	// Sync state landed on the source row — not the peer row, which no longer
+	// carries it.
+	if s, _ := db.GetCatalogSource(ctx, "f1a1"); s.CatalogSerial != "serial-a" || s.CatalogSyncedAt != 100 {
+		t.Errorf("source sync state = %q/%d, want serial-a/100", s.CatalogSerial, s.CatalogSyncedAt)
 	}
-	if err := db.MarkPeerCatalogChecked(ctx, friendA, "serial-a", 150); err != nil {
-		t.Fatalf("MarkPeerCatalogChecked: %v", err)
+	if err := db.MarkSourceCatalogChecked(ctx, friendA, "serial-a", 150); err != nil {
+		t.Fatalf("MarkSourceCatalogChecked: %v", err)
 	}
-	if p, _ := db.GetFederationPeer(ctx, friendA); p.CatalogSyncedAt != 150 {
-		t.Errorf("synced_at after check = %d, want 150", p.CatalogSyncedAt)
+	if s, _ := db.GetCatalogSource(ctx, "f1a1"); s.CatalogSyncedAt != 150 {
+		t.Errorf("synced_at after check = %d, want 150", s.CatalogSyncedAt)
 	}
 
 	// Artists: case-insensitive merge, no Ghost.
@@ -169,8 +178,8 @@ func TestMadnetworkCacheAndBrowse(t *testing.T) {
 		t.Fatalf("track rows = %d, want 4", len(rows))
 	}
 	for _, r := range rows {
-		if r.PeerName == "" || len(r.Entry.Renditions) != 1 {
-			t.Errorf("row missing peer/renditions: %+v", r)
+		if r.SourceName == "" || len(r.Entry.Renditions) != 1 {
+			t.Errorf("row missing source/renditions: %+v", r)
 		}
 	}
 
@@ -238,12 +247,13 @@ func TestMadnetworkSelfMergeAndSorting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	friend := insertPeer(t, db, "f1a1", "friend-a", federation.PeerFriend)
-	if err := db.ReplacePeerCatalog(ctx, friend, "s", 100, []federation.CatalogEntry{
+	insertPeer(t, db, "f1a1", "friend-a", federation.PeerFriend)
+	friend := insertSource(t, db, "f1a1")
+	if err := db.ReplaceSourceCatalog(ctx, friend, "s", 100, []federation.CatalogEntry{
 		catEntry("1", "r1", "Shared Artist", "Shared Album", "Shared Song", "self0001"),
 		catEntry("2", "r2", "Zebra", "Z Album", "Z Song", "hash-z"),
 	}); err != nil {
-		t.Fatalf("ReplacePeerCatalog: %v", err)
+		t.Fatalf("ReplaceSourceCatalog: %v", err)
 	}
 
 	// Without self: only the friend's two artists.
@@ -281,7 +291,7 @@ func TestMadnetworkSelfMergeAndSorting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MadnetworkOwnTracks: %v", err)
 	}
-	if len(own) != 1 || !own[0].Self || own[0].PeerID != 0 {
+	if len(own) != 1 || !own[0].Self || own[0].SourceID != 0 {
 		t.Fatalf("own rows = %+v, want one Self row", own)
 	}
 	if own[0].Entry.Key == "" || len(own[0].Entry.Renditions) != 1 {
@@ -329,33 +339,40 @@ func TestMadnetworkSelfMergeAndSorting(t *testing.T) {
 	}
 }
 
-// TestMadnetworkBlobLookup covers the F3 lookups: which friends advertise a
-// hash (fetch order + size) and the entry text behind it — friends only, a
-// pending or blocked peer's cache never provides.
+// TestMadnetworkBlobLookup covers the F3 lookups: which nodes advertise a hash
+// (fetch order + size) and the entry text behind it. Since F7 item 5 a holder is
+// any node whose catalog we cache — a member with no peer row provides exactly
+// as a friend does — and a blocked node never provides.
 func TestMadnetworkBlobLookup(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
-	friendA := insertPeer(t, db, "a1a1", "friend-a", federation.PeerFriend)
-	friendB := insertPeer(t, db, "b2b2", "friend-b", federation.PeerFriend)
-	pending := insertPeer(t, db, "c3c3", "pending-one", federation.PeerPendingIncoming)
+	insertPeer(t, db, "a1a1", "friend-a", federation.PeerFriend)
+	friendA := insertSource(t, db, "a1a1")
+	friendB := insertSource(t, db, "b2b2") // a member: cached, but no peer row
+	blockedPeer := insertPeer(t, db, "c3c3", "blocked-one", federation.PeerFriend)
+	blocked := insertSource(t, db, "c3c3")
 
 	shared := catEntry("1", "r1", "Artist", "Album", "Shared Song", "hash-shared")
-	if err := db.ReplacePeerCatalog(ctx, friendA, "sa", 100, []federation.CatalogEntry{shared}); err != nil {
+	if err := db.ReplaceSourceCatalog(ctx, friendA, "sa", 100, []federation.CatalogEntry{shared}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.ReplacePeerCatalog(ctx, friendB, "sb", 200, []federation.CatalogEntry{
+	if err := db.ReplaceSourceCatalog(ctx, friendB, "sb", 200, []federation.CatalogEntry{
 		catEntry("9", "r9", "Artist", "Album", "Shared Song", "hash-shared"),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.ReplacePeerCatalog(ctx, pending, "sp", 300, []federation.CatalogEntry{
+	if err := db.ReplaceSourceCatalog(ctx, blocked, "sp", 300, []federation.CatalogEntry{
 		catEntry("50", "r50", "Ghost", "Ghost Album", "Ghost Song", "hash-ghost"),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// friend-b was seen more recently → first in fetch order.
-	if err := db.TouchFederationPeerSeen(ctx, friendB, 9999); err != nil {
+	if err := db.BlockFederationPeer(ctx, blockedPeer, federation.PeerFriend, "", 400); err != nil {
+		t.Fatal(err)
+	}
+	// friend-b was seen more recently → first in fetch order. It is a member with
+	// no peer row, so the only clock it has is its own source row's.
+	if err := db.TouchCatalogSourceSeen(ctx, friendB, 9999, "friend-b"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -366,8 +383,11 @@ func TestMadnetworkBlobLookup(t *testing.T) {
 	if size != 1000 {
 		t.Errorf("size = %d, want the advertised 1000", size)
 	}
-	if len(holders) != 2 || holders[0].Name != "friend-b" {
+	if len(holders) != 2 || holders[0].Display() != "friend-b" {
 		t.Errorf("holders = %+v, want friend-b first (seen most recently)", holders)
+	}
+	if holders[0].PeerID != 0 {
+		t.Errorf("the member holder carries a peer id (%d); it has no peer row", holders[0].PeerID)
 	}
 
 	entry, err := db.MadnetworkEntryForHash(ctx, "hash-shared")
@@ -378,12 +398,13 @@ func TestMadnetworkBlobLookup(t *testing.T) {
 		t.Errorf("entry = %+v, want the advertised tagset text", entry)
 	}
 
-	// A non-friend's exclusive hash provides nothing.
+	// A blocked node's exclusive hash provides nothing, and its cached text never
+	// surfaces — the rows are kept so an unblock restores them, not consulted.
 	if _, holders, _ := db.MadnetworkBlobProviders(ctx, "hash-ghost"); len(holders) != 0 {
-		t.Errorf("pending peer's hash has %d providers, want 0", len(holders))
+		t.Errorf("blocked node's hash has %d providers, want 0", len(holders))
 	}
 	if e, _ := db.MadnetworkEntryForHash(ctx, "hash-ghost"); e != nil {
-		t.Errorf("pending peer's entry surfaced: %+v", e)
+		t.Errorf("blocked node's entry surfaced: %+v", e)
 	}
 }
 
@@ -420,20 +441,25 @@ func TestMadnetworkAvailability(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
-	fresh := insertPeer(t, db, "aaaa", "fresh", federation.PeerFriend)
-	stale := insertPeer(t, db, "bbbb", "stale", federation.PeerFriend)
-	if err := db.TouchFederationPeerSeen(ctx, fresh, 10000); err != nil {
+	freshPeer := insertPeer(t, db, "aaaa", "fresh", federation.PeerFriend)
+	stalePeer := insertPeer(t, db, "bbbb", "stale", federation.PeerFriend)
+	fresh := insertSource(t, db, "aaaa")
+	stale := insertSource(t, db, "bbbb")
+	// Freshness is the later of the two clocks — the friendship ping and the
+	// catalog pull — so a friend pinged recently stays visible even though its
+	// catalog was synced long ago, which is what these ping times assert.
+	if err := db.TouchFederationPeerSeen(ctx, freshPeer, 10000); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.TouchFederationPeerSeen(ctx, stale, 100); err != nil {
+	if err := db.TouchFederationPeerSeen(ctx, stalePeer, 100); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.ReplacePeerCatalog(ctx, fresh, "sf", 1, []federation.CatalogEntry{
+	if err := db.ReplaceSourceCatalog(ctx, fresh, "sf", 1, []federation.CatalogEntry{
 		catEntry("1", "r1", "Fresh Artist", "Fresh Album", "Fresh Song", "hash-fresh"),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.ReplacePeerCatalog(ctx, stale, "ss", 1, []federation.CatalogEntry{
+	if err := db.ReplaceSourceCatalog(ctx, stale, "ss", 1, []federation.CatalogEntry{
 		catEntry("2", "r2", "Stale Artist", "Stale Album", "Stale Song", "hash-stale"),
 	}); err != nil {
 		t.Fatal(err)
@@ -487,5 +513,146 @@ func TestMadnetworkAvailability(t *testing.T) {
 	}
 	if _, tracks, _ := db.MadnetworkSummary(ctx, MadnetworkView{}); tracks != 2 {
 		t.Errorf("unfiltered track count = %d, want 2", tracks)
+	}
+}
+
+// TestCatalogSources covers the store side of F7 item 5: a source is created
+// once per node key, the rotation order is by last attempt, and dropping one
+// takes everything cached from it with it.
+func TestCatalogSources(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	first, err := db.EnsureCatalogSource(ctx, "AA11", 500)
+	if err != nil {
+		t.Fatalf("EnsureCatalogSource: %v", err)
+	}
+	if first.PublicKey != "aa11" {
+		t.Errorf("key = %q, want it lower-cased", first.PublicKey)
+	}
+	// The key is the identity: asking twice must not cache a node twice.
+	again, err := db.EnsureCatalogSource(ctx, "aa11", 900)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID != first.ID || again.FirstSeen != 500 {
+		t.Errorf("second ensure = id %d/first_seen %d, want the original %d/500", again.ID, again.FirstSeen, first.ID)
+	}
+
+	second, err := db.EnsureCatalogSource(ctx, "bb22", 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.MarkCatalogSourceAttempted(ctx, first.ID, 1000); err != nil {
+		t.Fatal(err)
+	}
+	list, err := db.ListCatalogSources(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || list[0].ID != second.ID {
+		t.Errorf("rotation order = %+v, want the never-attempted source first", list)
+	}
+
+	// last_seen is monotonic — an out-of-order write from a concurrent transfer
+	// must not age a node — and an empty name leaves the stored claim alone.
+	if err := db.TouchCatalogSourceSeen(ctx, first.ID, 2000, "calls itself this"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.TouchCatalogSourceSeen(ctx, first.ID, 100, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := db.GetCatalogSource(ctx, "aa11")
+	if got.LastSeen != 2000 || got.HeardName != "calls itself this" {
+		t.Errorf("source after touches = %d/%q, want 2000/\"calls itself this\"", got.LastSeen, got.HeardName)
+	}
+
+	// Dropping a source drops its cache (CASCADE) — the whole reason retention
+	// can be as blunt as it is.
+	if err := db.ReplaceSourceCatalog(ctx, first.ID, "s", 1, []federation.CatalogEntry{
+		catEntry("1", "r1", "Artist", "Album", "Song", "hash-x"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReplaceSourceHoldings(ctx, first.ID, []string{
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DropCatalogSources(ctx, nil); err != nil {
+		t.Errorf("dropping nothing should be a no-op, got %v", err)
+	}
+	if list, _ := db.ListCatalogSources(ctx); len(list) != 2 {
+		t.Fatal("an empty drop list removed something")
+	}
+	if err := db.DropCatalogSources(ctx, []int64{first.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := db.GetCatalogSource(ctx, "aa11"); s != nil {
+		t.Error("the dropped source is still there")
+	}
+	var rows int
+	if err := db.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM federation_catalog) + (SELECT COUNT(*) FROM federation_holdings)`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Errorf("%d cached rows survived their source", rows)
+	}
+}
+
+// TestSourceLabelPrefersAName pins the display chain a live 5-node lab caught
+// getting backwards: a *friend's* self-claimed name is refreshed by the
+// friendship ping onto the peer row, a *member's* by the discovery ping onto the
+// source row, and reading only the second made friends — the nodes an admin
+// cares most about — render as bare key prefixes while strangers rendered names.
+func TestSourceLabelPrefersAName(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	// A friend that named itself but that the admin never relabelled.
+	friendPeer := insertPeer(t, db, "aaaa", "", federation.PeerFriend)
+	if err := db.UpdateFederationPeerHeardName(ctx, friendPeer, "calls-itself-a"); err != nil {
+		t.Fatal(err)
+	}
+	friend := insertSource(t, db, "aaaa")
+	// A member with no peer row at all: its claim lands on the source.
+	member := insertSource(t, db, "bbbb")
+	if err := db.TouchCatalogSourceSeen(ctx, member, 100, "calls-itself-b"); err != nil {
+		t.Fatal(err)
+	}
+	// And one that has never said anything: the short key is the last resort.
+	silent := insertSource(t, db, "cccc")
+
+	for _, tc := range []struct {
+		src        int64
+		album, key string
+		want       string
+	}{
+		{friend, "A Album", "hash-a", "calls-itself-a"},
+		{member, "B Album", "hash-b", "calls-itself-b"},
+		{silent, "C Album", "hash-c", "cccc"},
+	} {
+		if err := db.ReplaceSourceCatalog(ctx, tc.src, "s", 1, []federation.CatalogEntry{
+			catEntry("1", "r1", "Artist", tc.album, "Song", tc.key),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := db.MadnetworkTracks(ctx, "Artist", tc.album, 0)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("tracks for %s = %d rows (err %v)", tc.album, len(rows), err)
+		}
+		if rows[0].SourceName != tc.want {
+			t.Errorf("source label = %q, want %q", rows[0].SourceName, tc.want)
+		}
+	}
+
+	// An admin's own label always wins over anything a node says about itself.
+	if err := db.UpdateFederationPeerName(ctx, friendPeer, "my label"); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := db.MadnetworkTracks(ctx, "Artist", "A Album", 0)
+	if len(rows) != 1 || rows[0].SourceName != "my label" {
+		t.Errorf("after rename label = %+v, want \"my label\"", rows)
 	}
 }

@@ -313,6 +313,34 @@ func (h *handler) federationGraphResync(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true})
 }
 
+// federationDiscover handles POST /api/admin/federation/discover: pull one
+// node's catalog on the next refresh round, ahead of the frontier rotation
+// (F7 item 5, §Discovery beyond the friend ring).
+//
+// The rotation exists so that seeing the community costs a bounded amount per
+// cycle, but fairness is the wrong answer when an admin is looking at a
+// particular node on the map — interest should beat rotation. 202 and no result,
+// for the same reason as the Rescan button: the round runs on the refresh loop,
+// and whether that node answers is between it and the mesh.
+func (h *handler) federationDiscover(w http.ResponseWriter, r *http.Request) {
+	if h.federation == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "federation is not enabled"})
+		return
+	}
+	var req struct {
+		PublicKey string `json:"public_key"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid json (want {\"public_key\": \"…\"})"})
+		return
+	}
+	if err := h.federation.PullFrom(req.PublicKey); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true})
+}
+
 // federationReports handles GET /api/admin/federation/reports: contradicted
 // identity claims awaiting a decision (federation F6). A peer's catalog makes
 // claims this node can check — it advertises a content hash together with the

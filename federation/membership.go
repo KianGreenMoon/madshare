@@ -29,6 +29,7 @@ import (
 type memberSet struct {
 	keys  map[string]struct{} // member public keys (lowercase hex)
 	addrs map[string]string   // mesh address string → public key
+	self  string              // our own key, so callers can exclude us without a live core
 	built time.Time
 }
 
@@ -53,7 +54,7 @@ func newMemberSet(selfKey string, peers []*Peer, edges []GraphEdgeClaim) *member
 			addrs[addr.String()] = key
 		}
 	}
-	return &memberSet{keys: keys, addrs: addrs, built: time.Now()}
+	return &memberSet{keys: keys, addrs: addrs, self: selfKey, built: time.Now()}
 }
 
 // refreshMembers recomputes the community from contents the caller already has

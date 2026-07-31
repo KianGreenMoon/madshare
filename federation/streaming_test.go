@@ -104,7 +104,7 @@ func TestChunkLayout(t *testing.T) {
 func TestChunkPlanPrioritizeAndDone0(t *testing.T) {
 	man := &blobManifest{ChunkSize: 10, Size: 50, Chunks: []string{"a", "b", "c", "d", "e"}}
 	layout := man.layout()
-	holders := []*Peer{{Name: "h"}}
+	holders := []*BlobProvider{{Name: "h"}}
 
 	cp := newChunkPlan(man, layout, holders, false, nil)
 	cp.prioritize(3)
@@ -137,7 +137,7 @@ func TestChunkPlanFailover(t *testing.T) {
 	layout := man.layout()
 	netErr := errors.New("mesh stalled")
 
-	cp := newChunkPlan(man, layout, []*Peer{{Name: "only"}}, false, nil)
+	cp := newChunkPlan(man, layout, []*BlobProvider{{Name: "only"}}, false, nil)
 	for i := 1; i < providerFailureLimit; i++ {
 		idx, ok := cp.next()
 		if !ok {
@@ -158,7 +158,7 @@ func TestChunkPlanFailover(t *testing.T) {
 	}
 
 	// A corrupt chunk drops the sole holder immediately → abort.
-	cp2 := newChunkPlan(man, layout, []*Peer{{Name: "liar"}}, false, nil)
+	cp2 := newChunkPlan(man, layout, []*BlobProvider{{Name: "liar"}}, false, nil)
 	idx, _ = cp2.next()
 	cp2.fail(idx, 0, errChunkCorrupt, true)
 	if !cp2.aborted {
@@ -190,7 +190,7 @@ func TestChunkPlanRetirementIsRelative(t *testing.T) {
 
 	t.Run("out of line with a delivering peer", func(t *testing.T) {
 		man, layout := wideManifest(8)
-		cp := newChunkPlan(man, layout, []*Peer{{Name: "bad"}, {Name: "good"}}, false, nil)
+		cp := newChunkPlan(man, layout, []*BlobProvider{{Name: "bad"}, {Name: "good"}}, false, nil)
 		for i := 0; i < providerFailureLimit; i++ {
 			idx, ok := cp.next()
 			if !ok {
@@ -211,7 +211,7 @@ func TestChunkPlanRetirementIsRelative(t *testing.T) {
 
 	t.Run("everyone is equally slow", func(t *testing.T) {
 		man, layout := wideManifest(8)
-		cp := newChunkPlan(man, layout, []*Peer{{Name: "a"}, {Name: "b"}}, false, nil)
+		cp := newChunkPlan(man, layout, []*BlobProvider{{Name: "a"}, {Name: "b"}}, false, nil)
 		// Both holders miss the same number of times, alternating.
 		for i := 0; i < providerFailureLimit; i++ {
 			for _, pidx := range []int{0, 1} {
@@ -232,7 +232,7 @@ func TestChunkPlanRetirementIsRelative(t *testing.T) {
 
 	t.Run("sole holder still terminates", func(t *testing.T) {
 		man, layout := wideManifest(8)
-		cp := newChunkPlan(man, layout, []*Peer{{Name: "only"}}, false, nil)
+		cp := newChunkPlan(man, layout, []*BlobProvider{{Name: "only"}}, false, nil)
 		for i := 0; i < providerFailureLimit; i++ {
 			idx, _ := cp.next()
 			cp.fail(idx, 0, netErr, false)
@@ -255,7 +255,7 @@ func TestChunkPlanRetirementIsRelative(t *testing.T) {
 // killing sources.
 func TestChunkPlanAttemptLimit(t *testing.T) {
 	man, layout := wideManifest(1) // one chunk, so every failure lands on it
-	holders := []*Peer{{Name: "a"}, {Name: "b"}}
+	holders := []*BlobProvider{{Name: "a"}, {Name: "b"}}
 	cp := newChunkPlan(man, layout, holders, false, nil)
 	netErr := errors.New("mesh stalled")
 

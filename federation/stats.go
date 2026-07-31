@@ -155,20 +155,21 @@ func (s *transferStats) finish() {
 }
 
 // providerKey identifies a holder across a transfer. The public key is the
-// identity; the label is a fallback for the synthetic peers unit tests build.
-func providerKey(p *Peer) string {
+// identity; the display name is a fallback for the synthetic holders unit tests
+// build.
+func providerKey(p *BlobProvider) string {
 	if p == nil {
 		return ""
 	}
 	if p.PublicKey != "" {
 		return p.PublicKey
 	}
-	return p.Label()
+	return p.Display()
 }
 
 // providerLocked returns (creating on first sight) the accounting row for p.
 // Caller holds s.mu; nil for an unidentifiable holder.
-func (s *transferStats) providerLocked(p *Peer) *ProviderStats {
+func (s *transferStats) providerLocked(p *BlobProvider) *ProviderStats {
 	key := providerKey(p)
 	if key == "" {
 		return nil
@@ -184,7 +185,7 @@ func (s *transferStats) providerLocked(p *Peer) *ProviderStats {
 
 // noteBytes credits a holder with bytes as they stream in — the whole-file path
 // has no piece boundary to account at, so it reports continuously.
-func (s *transferStats) noteBytes(p *Peer, bytes int64) {
+func (s *transferStats) noteBytes(p *BlobProvider, bytes int64) {
 	if s == nil {
 		return
 	}
@@ -197,7 +198,7 @@ func (s *transferStats) noteBytes(p *Peer, bytes int64) {
 
 // noteSucceed credits a holder with a delivered piece. A piece that some other
 // holder already failed counts as a failover — the swarm's headline claim.
-func (s *transferStats) noteSucceed(piece int, p *Peer, bytes int64) {
+func (s *transferStats) noteSucceed(piece int, p *BlobProvider, bytes int64) {
 	if s == nil {
 		return
 	}
@@ -224,7 +225,7 @@ func (s *transferStats) noteSucceed(piece int, p *Peer, bytes int64) {
 
 // noteFail records a failed attempt at a piece: the holder's error, the retry,
 // and — for later failover detection — that this holder failed this piece.
-func (s *transferStats) noteFail(piece int, p *Peer, err error, corrupt bool) {
+func (s *transferStats) noteFail(piece int, p *BlobProvider, err error, corrupt bool) {
 	if s == nil {
 		return
 	}
@@ -252,7 +253,7 @@ func (s *transferStats) noteFail(piece int, p *Peer, err error, corrupt bool) {
 
 // noteDropped marks a holder taken out of rotation (corrupt bytes, or too many
 // consecutive failures).
-func (s *transferStats) noteDropped(p *Peer) {
+func (s *transferStats) noteDropped(p *BlobProvider) {
 	if s == nil {
 		return
 	}

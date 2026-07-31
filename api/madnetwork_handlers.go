@@ -216,7 +216,7 @@ func sortMadnetworkRows(rows []*database.MadnetworkTrackRow) {
 		if x, y := strings.ToLower(ra.Entry.Title), strings.ToLower(rb.Entry.Title); x != y {
 			return x < y
 		}
-		return ra.PeerID < rb.PeerID // self (0) first, then peers as before
+		return ra.SourceID < rb.SourceID // self (0) first, then cached sources as before
 	})
 }
 
@@ -338,14 +338,14 @@ func mergeVersions(group []*database.MadnetworkTrackRow, selfName string, reachC
 				rd.Fingerprint = nil
 				v.Renditions = append(v.Renditions, rd)
 			}
-			if !seenPeer[row.PeerID] {
-				seenPeer[row.PeerID] = true
+			if !seenPeer[row.SourceID] {
+				seenPeer[row.SourceID] = true
 				if row.Self {
 					v.Holders = append(v.Holders, madnetworkHolder{Name: selfName, Self: true, Reachable: true})
 				} else {
 					v.Holders = append(v.Holders, madnetworkHolder{
-						Name: row.PeerName, LastSeen: row.PeerLastSeen,
-						Reachable: reachCutoff <= 0 || row.PeerLastSeen >= reachCutoff,
+						Name: row.SourceName, LastSeen: row.SourceLastSeen,
+						Reachable: reachCutoff <= 0 || row.SourceLastSeen >= reachCutoff,
 					})
 				}
 			}

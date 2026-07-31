@@ -239,12 +239,10 @@ func (db *DB) remotePlaylistItems(ctx context.Context, playlistID int64) ([]*Pla
 		SELECT i.id, i.position, i.remote_hash,
 		       COALESCE(i.remote_title, ''), COALESCE(i.remote_artist, ''), COALESCE(i.remote_album, ''),
 		       (EXISTS(SELECT 1 FROM files f WHERE f.hash = i.remote_hash AND f.deleted_at IS NULL)
-		        OR EXISTS(SELECT 1 FROM federation_catalog c
-		                  JOIN federation_peers p ON p.id = c.peer_id AND p.state = 'friend'
-		                  WHERE c.renditions LIKE '%' || i.remote_hash || '%')
-		        OR EXISTS(SELECT 1 FROM federation_holdings h
-		                  JOIN federation_peers p2 ON p2.id = h.peer_id AND p2.state = 'friend'
-		                  WHERE h.hash = i.remote_hash))
+		        OR EXISTS(SELECT 1 FROM federation_catalog c`+sourceJoin("c")+`
+		                  WHERE c.renditions LIKE '%' || i.remote_hash || '%' AND `+notBlocked+`)
+		        OR EXISTS(SELECT 1 FROM federation_holdings h`+sourceJoin("h")+`
+		                  WHERE h.hash = i.remote_hash AND `+notBlocked+`))
 		FROM playlist_items i
 		WHERE i.playlist_id = ? AND i.remote_hash IS NOT NULL
 		ORDER BY i.position, i.id`, playlistID)

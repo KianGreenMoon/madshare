@@ -70,9 +70,10 @@ func TestPlaylist_RemoteItems(t *testing.T) {
 	}
 
 	// A friend advertising the hash in holdings makes it available.
-	friend := insertPeer(t, db, "d4d4", "friend-d", federation.PeerFriend)
-	if err := db.ReplacePeerHoldings(ctx, friend, []string{remoteHash}); err != nil {
-		t.Fatalf("ReplacePeerHoldings: %v", err)
+	insertPeer(t, db, "d4d4", "friend-d", federation.PeerFriend)
+	friend := insertSource(t, db, "d4d4")
+	if err := db.ReplaceSourceHoldings(ctx, friend, []string{remoteHash}); err != nil {
+		t.Fatalf("ReplaceSourceHoldings: %v", err)
 	}
 	if _, items, _ = db.GetPlaylist(ctx, userID, p.ID); !items[1].Available {
 		t.Error("remote item still unavailable with a friend holding it")
