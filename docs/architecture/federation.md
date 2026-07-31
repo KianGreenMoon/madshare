@@ -658,8 +658,11 @@ Design notes for the implementation:
 - **Blocking:** a blocked peer is refused the *entire* protocol surface (even
   ping, HTTP 403) by the mesh-side auth wrapper. Unblock returns the peer to its
   pre-block state. Since F6 a block also publishes a **distrust mark** carrying
-  its reason, drops the peer from our published friend list, and snips the branch
-  behind it on the map; de-peering the underlay link is still to come.
+  its reason, drops the peer from our published friend list, snips the branch
+  behind it **on the map**, and cuts the underlay link wherever we dialled it
+  (built 2026-07-30; an inbound link is the documented exception). Snipping stops
+  at the drawing today — the records behind a cut branch are still stored,
+  relayed and admitted, which §Forgetting is about.
 - **Admin surface:** `/admin/network` (own card, import form, peer list with
   accept/block/unblock/remove/rename/user-mapping; pending-request badge on the
   dashboard; the F6 network map) over `/api/admin/federation*`, all gated
@@ -1195,6 +1198,90 @@ plus the edges between them — and `POST /api/admin/federation/block` blocks by
 key, since most nodes on the map have no peer row at all. The map computation is
 a pure function over peers, edges and marks, so branch snipping and mark
 weighting are tested without a mesh.
+
+### Forgetting: what a block or a removal takes with it (planned 2026-07-31)
+
+Ending a friendship is instant everywhere it is *enforced* — the peer row changes
+state, the mesh door refuses a blocked node, our own published record drops them
+on the next sweep. It is not instant in what we **remember about the network**,
+and the gap is visible: a friend we removed is still drawn joined to us, and the
+strangers we only ever heard about through a node we have now cut are still on
+our map, still relayed onward, still admitted. Three concrete gaps, and the third
+falls out of the first.
+
+**1. An edge to us is a local fact, not hearsay.** `BuildNetworkMap` links a pair
+from either side's claim, including claims *about us*. So a node whose admin
+never removed us keeps publishing "friends with you", and we keep drawing it —
+for the record's whole 7-day life, refreshed forever if they keep republishing.
+The fix is the smallest one in this list and the one everything else rests on:
+**any edge with our own key at an end comes from `federation_peers` alone**. If
+we are not friends with X, there is no X–us edge on our map, whatever X says.
+Independently of removal this closes a small integrity hole: any node already in
+our view can publish a friendship with us that does not exist, and today we draw
+it — which puts a node we have never met on the inner ring, at distance 1, as a
+branch root. Admission (`GraphKnowsKey`) keeps a *complete* stranger's record
+out, so this is bounded to nodes someone already vouched for; it is still a claim
+about us that we are in a position to know the truth of, and do not check.
+
+The asymmetry is deliberate and stays: *other* nodes' edges remain single-claim
+on the map, because an edge somebody claims is worth seeing (§The membership rule
+is where mutual claims matter). Our own edges are neither single- nor
+mutual-claim. They are not claims at all.
+
+**2. Reachability decides what we keep, not just what we draw.** The map already
+refuses to discover through a blocked node, so the branch behind one disappears
+from the picture. Nothing else follows it: those records are still offered in our
+gossip digest and served to friends who ask, their origins still satisfy
+`GraphKnowsKey` so more records from them are still admitted, and they sit in the
+store until `expires_at`. A block is complete on screen and half-done underneath.
+
+So the one walk from our key should decide all four: whether a record is drawn,
+whether it is **relayed**, whether its origin **counts as known**, and whether it
+is **kept**. Unreachable ⇒ dropped, on the sweep that already runs `ExpireGraph`.
+This is safe precisely because the graph store is a cache in the sense
+`federation_catalog` established — rebuildable from the network, referenced by
+nothing local, safe to drop — and it is the same walk F7's membership check needs
+memoized anyway, so it is shared work rather than new work.
+
+**3. A removed friend's branch dies with the edge.** Today removal is *worse* than
+blocking: the peer row is gone, so nothing marks them as a node not to discover
+through, and their one-sided claim (gap 1) keeps the whole branch behind them
+alive and admitted. `received_from` is `ON DELETE SET NULL`, so the records they
+introduced also lose the attribution that would let an admin see where they came
+from — they survive, orphaned, vouched for by nobody. With gap 1 closed there is
+nothing new to build here: no edge from us means unreachable, and unreachable is
+collected by gap 2. That is the property to preserve — **removal and blocking
+should not need separate forgetting machinery**.
+
+**"Unless we have another connection to them"** is the existing multi-source BFS
+with its merging branch labels, unchanged: a node also vouched for by another
+friend stays, at whatever distance and with whatever branch labels remain. The
+condition is already expressed correctly; it simply governs more than drawing.
+
+**What must not be forgotten.** Our own peer rows stay on the map with no edge
+drawn — a blocked node an admin cannot see is a block they cannot lift. Our own
+distrust marks are ours regardless of who is reachable. And a blocked peer's
+cached catalog stays (hidden from browse) so lifting the block restores service
+without a re-sync — that is a direct relationship of ours, not branch data;
+`RemovePeer` already CASCADEs it away, which is the right difference.
+
+**The costs, stated.** Unblocking or re-friending re-syncs what we dropped, on the
+next digest round — `UnblockPeer` already nudges the loop, so it refills promptly
+rather than on the 15-minute cadence. And if we were the only path between two
+halves of the network, cutting the branch slows *their* convergence, not just our
+view: accepted, because we are not a relay for a branch we have severed, and a
+network of friendships has other paths by construction.
+
+**Why this stops being cosmetic under F7.** After F7 this same graph decides who
+is served, so a branch we believe we cut but still hold is not a stale drawing —
+those keys are members, and members get the library. It should therefore land
+with or before F7's membership walk, and its test is the one that would otherwise
+be missing: remove a friend, and assert the nodes seen only through them are gone
+from the map, from the digest, from admission **and** from the served audience.
+
+**Smaller staleness in the same family**, worth doing with it: the in-memory
+pairing-attempt note (§Friendship) survives a `RemovePeer`, so re-importing a key
+we once failed to reach can show a "last try" from before the removal.
 
 ### The network map (requirements declared 2026-07-31)
 
@@ -1812,6 +1899,20 @@ milestone directly after direct transfer works, and tokens ship with depth.
   documented exception (an upstream panic, no handle).
 
   **F6 is complete.**
+- **Forgetting stale graph data** (planned 2026-07-31; see §Forgetting). Ending a
+  friendship is instant where it is enforced and slow in what we remember: a
+  removed friend is still drawn joined to us off their own one-sided claim, and
+  the branch behind a blocked *or* removed node is still relayed, still admitted
+  by `GraphKnowsKey`, and still stored until it expires. Three parts, in order:
+  edges with our own key come from `federation_peers` alone (which alone fixes
+  removal, since a severed edge makes the branch unreachable and the existing snip
+  collects it); one reachability walk decides drawing, relaying, admission and
+  retention together, dropping unreachable records on the sweep that already runs
+  `ExpireGraph`; and the admin surface says what an action took with it, so a map
+  that loses a third of its nodes is a result rather than a glitch. No migration —
+  the graph store is a cache. **Ships with or before F7 item 2**, which turns the
+  same walk into an access decision and would otherwise serve the library to a
+  branch we believe we cut.
 - **F7 — Reach: the community's libraries.** Rescoped 2026-07-30 when the depth
   ladder collapsed, and given its posture 2026-07-31: **everything to our
   community, nothing outside it** (§Goal & vocabulary, "Community"). What made
@@ -1831,6 +1932,8 @@ milestone directly after direct transfer works, and tokens ship with depth.
      Memoized and refreshed on the graph sync, since it is now on every mesh
      request's path. The map keeps the single-claim walk; these are two functions,
      and a test should assert they disagree exactly where a one-sided edge exists.
+     Needs the forgetting work above first, or its input still contains branches
+     we cut.
   3. **Serve members, refuse outsiders.** Madnetwork-scoped blobs, manifests,
      catalog, **holdings and cache blobs** to members (§Distribution — the swarm's
      only boundary is the madnetwork); nothing to a node outside the community, 404
