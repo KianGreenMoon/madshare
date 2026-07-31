@@ -13,9 +13,10 @@
 > nothing outside it** — and `meshlab reach` is the measurement that says so.
 > **Item 8 followed the same day** (migration **037**): the /madnetwork page now
 > lands on discovery lanes and search instead of an alphabet, which is what a
-> community's whole published output needed. Items 6, 7, 9 and 10 remain:
-> per-member abuse controls, the map at scale, listener-node tokens, and the rest
-> of trust-weighted popularity.
+> community's whole published output needed, and **item 7 with it**: the map
+> navigates a community — view radius, whole-component search, branches, paths —
+> instead of loading all of it. Items 6, 9 and 10 remain: per-member abuse
+> controls, listener-node tokens, and the rest of trust-weighted popularity.
 > The two items in §Open questions are design-time details to settle during their
 > milestone, not blockers. Federation
 > is auth Phase 4 (`docs/architecture/auth.md` §8) and the milestone the native
@@ -1367,7 +1368,7 @@ asks for a different set and it is the only one serving bulk payload. If it ever
 needs bounding, the tool is the token bucket already carrying `seed_rate_kib`
 over the blob write path, not a cooldown.
 
-### The network map (requirements declared 2026-07-31)
+### The network map (requirements declared 2026-07-31, **built the same day**)
 
 The map is how an admin *sees* the community, and since the community is
 unbounded (§The membership rule) the map has to scale by **showing less at a
@@ -1397,6 +1398,32 @@ scale and navigation, not a different metaphor.
   track's holders; each holder links into the map, positioned and selected, with
   the block action to hand. Discovery of a bad actor starts from the content that
   exposed it, not from an admin remembering to go look at a diagram.
+
+**What it is, concretely** (F7 item 7, `federation/mapview.go` — pure functions
+over an already-built `NetworkMap`, tested without a mesh):
+
+- `GET /api/admin/federation/graph?radius=N` trims to the view (`TrimMap`;
+  default 3, `radius=0` = the whole component) and reports `shown`/`hidden`.
+  `radius` keeps meaning the component's true reach, so the map can say there is
+  more out there. **Nodes we hold a peer row for are never trimmed away** — a
+  pending pairing or a blocked key is a decision of ours, not a rendering
+  casualty.
+- `GET …/graph/find?q=` searches the **whole** component (`FindNodes`: key,
+  mesh address, name; `matched` says which answered, and a name hit is labelled
+  hearsay) — a search that could only reach the drawn part would make the radius
+  a cost rather than a convenience. `?branch=<key>` (`BranchNodes`) lists
+  everything that arrived through one direct friend.
+- `GET …/graph/paths?from=&to=` (`Paths`) is breadth-first and bounded by
+  `MaxPathResults`/`MaxPathLength`, so a cyclic graph cannot produce
+  exponentially many and the truncation drops the *longest* rather than an
+  arbitrary set; `from` defaults to this node, and truncation is reported.
+- The **zoom resolves names** by counting how many nodes share the *frame*, not
+  how many exist. Counting the whole graph — which it did first — means a large
+  community can never resolve at all, since no reachable zoom level changes a
+  total.
+- The library's holder links are `/admin/network#node=<key>`, gated client-side
+  on `federation.manage`; the page selects, centres, and expands the radius when
+  the node sits outside it.
 
 ## Catalog & the madnetwork library
 
@@ -2138,11 +2165,12 @@ milestone directly after direct transfer works, and tokens ship with depth.
      answered, since membership deliberately has no admission cap (§The membership
      rule) — bounded harm rather than a bounded guest list. Cheap to add, and the
      honest price of being open.
-  7. **Map at scale** (§The network map): the 3–4-hop default view, zoom, node and
-     branch search, all-paths-between-two-nodes, and the holder → map jump from the
-     library's ⓘ expansion. Not access work at all, but it is what makes the
-     revocation half of the membership model usable, so it ships with the phase
-     rather than after it.
+  7. **Map at scale** (§The network map) — **BUILT 2026-07-31.** The 3–4-hop
+     default view, zoom that resolves names instead of cropping, node/address/name
+     and branch search over the whole component, all-paths-between-two-nodes, and
+     the holder → map jump from the library's ⓘ expansion. Not access work at all,
+     but it is what makes the revocation half of the membership model usable, so
+     it shipped with the phase rather than after it.
   8. **A madnetwork page that can hold a community's library** — **BUILT
      2026-07-31.**
      (`docs/ui/madnetwork-page.md` §Discovery). `/madnetwork` was an A→Z
