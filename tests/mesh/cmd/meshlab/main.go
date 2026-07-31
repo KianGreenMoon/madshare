@@ -73,6 +73,10 @@ func main() {
 		cmdScope(os.Args[2:])
 	case "check":
 		cmdCheck(os.Args[2:])
+	case "forget":
+		cmdForget(os.Args[2:])
+	case "graph":
+		cmdGraph(os.Args[2:])
 	case "friend":
 		cmdFriend(os.Args[2:])
 	case "reach":
@@ -104,6 +108,8 @@ func usage() {
   meshlab scope NODE default DEPTH     node-wide sharing scope (F5)
   meshlab scope NODE tracks DEPTH|guest on|off [-limit N]
   meshlab friend A B                   friend two RUNNING nodes (a-c after a-b,b-c)
+  meshlab forget A B                   A removes B (one-sided — B still holds A)
+  meshlab graph                        what each node's network map holds
   meshlab check                        assert the sharing-scope rules
   meshlab reach [-runs N] [-no-fetch]  what does friendship DISTANCE cost?
 
@@ -126,6 +132,13 @@ private, friends, network, inherit, or a hop count. 'check' then asserts the
 rules from an OUTSIDER's position: it starts a real madnetwork node that is
 nobody's friend and asks each server directly, which is the only way to see the
 guest-open swarm (a stranger may fetch guest-playable bytes and nothing else).
+
+FORGETTING (F6). 'forget A B' removes B from A only; B keeps publishing a record
+that names A, which is the honest state its admin holds. 'graph' then shows what
+each node's map contains, and the number to watch is STRANGERS — nodes A knew
+only through B must leave A's store, not merely stop being drawn. They go on A's
+next refresh sweep (a minute), or immediately if you press Rescan on
+/admin/network. A node another friend also vouches for stays.
 
 DISTANCE (F7). 'reach' measures what being far away in the FRIENDSHIP graph
 actually costs, on a chain where friendship distance and underlay distance
@@ -662,6 +675,66 @@ func cmdFriend(args []string) {
 		fatalf("%v", err)
 	}
 	fmt.Printf("%s and %s are friends\n", a, b)
+}
+
+// cmdForget ends a friendship from one side, which is the act F6 §Forgetting is
+// about: the other node keeps publishing a record that names us, and our map has
+// to stop drawing the edge anyway.
+func cmdForget(args []string) {
+	fs := flag.NewFlagSet("forget", flag.ExitOnError)
+	control := fs.String("control", defaultControl, "control API address")
+	words := knobsIn(args)
+	fs.Parse(flagsIn(args))
+	if len(words) != 2 {
+		fatalf("usage: meshlab forget NODE NODE")
+	}
+	a, b := words[0], words[1]
+	body, _ := json.Marshal(map[string]string{"a": a, "b": b})
+	if _, err := call(*control, http.MethodPost, "/forget", body); err != nil {
+		fatalf("%v", err)
+	}
+	fmt.Printf("%s forgot %s (one-sided — %s still holds %s)\n", a, b, b, a)
+}
+
+// cmdGraph prints what each node's network map holds. The number to watch after
+// a `forget` is `strangers`: nodes seen only through the removed friend must
+// leave the store, not merely stop being drawn.
+func cmdGraph(args []string) {
+	fs := flag.NewFlagSet("graph", flag.ExitOnError)
+	control := fs.String("control", defaultControl, "control API address")
+	asJSON := fs.Bool("json", false, "print the raw JSON")
+	fs.Parse(args)
+
+	raw, err := call(*control, http.MethodGet, "/graph", nil)
+	if err != nil {
+		fatalf("%v", err)
+	}
+	if *asJSON {
+		os.Stdout.Write(raw)
+		return
+	}
+	var rep struct {
+		Nodes []struct {
+			Node      string `json:"node"`
+			Nodes     int    `json:"nodes"`
+			Edges     int    `json:"edges"`
+			Radius    int    `json:"radius"`
+			Friends   int    `json:"friends"`
+			Strangers int    `json:"strangers"`
+			Error     string `json:"error"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(raw, &rep); err != nil {
+		fatalf("decoding graph: %v", err)
+	}
+	fmt.Printf("%-8s %7s %7s %7s %9s %7s\n", "NODE", "NODES", "EDGES", "FRIENDS", "STRANGERS", "RADIUS")
+	for _, r := range rep.Nodes {
+		if r.Error != "" {
+			fmt.Printf("%-8s %s\n", r.Node, r.Error)
+			continue
+		}
+		fmt.Printf("%-8s %7d %7d %7d %9d %7d\n", r.Node, r.Nodes, r.Edges, r.Friends, r.Strangers, r.Radius)
+	}
 }
 
 func cmdCheck(args []string) {

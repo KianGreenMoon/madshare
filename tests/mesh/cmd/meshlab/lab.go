@@ -343,6 +343,101 @@ func (l *lab) friend(a, b string) error {
 	return nil
 }
 
+// forget ends a friendship from one side — the act §Forgetting is about
+// (docs/architecture/federation.md). One-sided on purpose: b keeps publishing a
+// record that names a, which is the honest state its admin holds, and the whole
+// point is that a's map must stop drawing that edge anyway.
+//
+// The friendship graph is updated so `status`, `reach` and `graph` describe the
+// lab that now exists rather than the one `up` was asked for.
+func (l *lab) forget(a, b string) error {
+	na, nb := l.nodes[a], l.nodes[b]
+	if na == nil || nb == nil {
+		return fmt.Errorf("forget %s-%s names a node that is not in this lab (have: %s)", a, b, strings.Join(l.names, ", "))
+	}
+	peers, err := na.peerList()
+	if err != nil {
+		return fmt.Errorf("read %s's peers: %w", a, err)
+	}
+	key := nb.publicKey()
+	removed := false
+	for _, p := range peers {
+		if p.PublicKey != key {
+			continue
+		}
+		if err := na.do(http.MethodDelete, fmt.Sprintf("/api/admin/federation/peers/%d", p.ID), nil, "", nil); err != nil {
+			return fmt.Errorf("remove %s from %s: %w", b, a, err)
+		}
+		removed = true
+	}
+	if !removed {
+		return fmt.Errorf("%s has no peer row for %s to forget", a, b)
+	}
+
+	l.mu.Lock()
+	kept := l.friendPairs[:0]
+	for _, p := range l.friendPairs {
+		if (p[0] == a && p[1] == b) || (p[0] == b && p[1] == a) {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	l.friendPairs = kept
+	l.mu.Unlock()
+	l.logger.Printf("forgot: %s -x- %s (one-sided; %s still holds %s)", a, b, b, a)
+	return nil
+}
+
+// graphSizes reports what each node's network map currently contains: how many
+// nodes it can see and how far. It is the observable §Forgetting changes — after
+// a `forget`, the nodes seen only through the removed friend must leave this
+// count, not merely stop being drawn.
+func (l *lab) graphSizes() []graphRow {
+	out := make([]graphRow, 0, len(l.names))
+	for _, name := range l.names {
+		row := graphRow{Node: name}
+		var body struct {
+			Graph struct {
+				Nodes []struct {
+					Key      string `json:"key"`
+					State    string `json:"state"`
+					Distance int    `json:"distance"`
+				} `json:"nodes"`
+				Edges  []struct{} `json:"edges"`
+				Radius int        `json:"radius"`
+			} `json:"graph"`
+		}
+		if err := l.nodes[name].getJSON("/api/admin/federation/graph", &body); err != nil {
+			row.Error = err.Error()
+			out = append(out, row)
+			continue
+		}
+		row.Nodes = len(body.Graph.Nodes)
+		row.Edges = len(body.Graph.Edges)
+		row.Radius = body.Graph.Radius
+		for _, n := range body.Graph.Nodes {
+			switch {
+			case n.State == "friend":
+				row.Friends++
+			case n.State == "" && n.Distance > 0:
+				row.Strangers++ // known only because the graph names it
+			}
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+type graphRow struct {
+	Node      string `json:"node"`
+	Nodes     int    `json:"nodes"`
+	Edges     int    `json:"edges"`
+	Radius    int    `json:"radius"`
+	Friends   int    `json:"friends"`
+	Strangers int    `json:"strangers"`
+	Error     string `json:"error,omitempty"`
+}
+
 // acceptEachOther approves any pending_incoming request on both sides, polling
 // because the pairing handshake crosses the mesh and the mesh has just come up.
 func (l *lab) acceptEachOther(a, b *node) error {
@@ -730,6 +825,35 @@ func (l *lab) routes() http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "friends": []string{req.A, req.B}})
+	})
+
+	// End a friendship from one side, and read back what each node's map holds
+	// (F6 §Forgetting): the pair that makes "remove a friend, and the nodes seen
+	// only through them are gone" assertable against real processes.
+	mux.HandleFunc("/forget", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErr(w, http.StatusMethodNotAllowed, "POST")
+			return
+		}
+		var req struct{ A, B string }
+		raw, err := readBody(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "%v", err)
+			return
+		}
+		if err := json.Unmarshal(raw, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid request: %v", err)
+			return
+		}
+		if err := l.forget(req.A, req.B); err != nil {
+			writeErr(w, http.StatusBadRequest, "%v", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "forgot": []string{req.A, req.B}})
+	})
+
+	mux.HandleFunc("/graph", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"nodes": l.graphSizes()})
 	})
 
 	// Sharing scope (F5): set a node's default depth, or the depth / guest flag
