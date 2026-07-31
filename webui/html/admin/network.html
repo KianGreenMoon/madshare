@@ -88,13 +88,36 @@
       </p>
 
       <div class="map-toolbar">
-        <input class="map-search" id="mapSearch" type="search"
-               placeholder="Find a node by name or key…" aria-label="Find a node">
+        <div class="map-find">
+          <input class="map-search" id="mapSearch" type="search"
+                 placeholder="Find a node by name, key or mesh address…"
+                 aria-label="Find a node" autocomplete="off" spellcheck="false">
+          {{/* Results come from a search over the WHOLE community, not over what
+               the current view radius happens to be drawing — that is what makes
+               showing less at a time affordable. */}}
+          <div class="map-hits" id="mapHits" hidden role="listbox"
+               aria-label="Search results"></div>
+        </div>
+        <label class="map-radius" for="mapRadius">
+          View
+          <select id="mapRadius" aria-label="How many hops of the network to draw">
+            <option value="1">1 hop</option>
+            <option value="2">2 hops</option>
+            <option value="3" selected>3 hops</option>
+            <option value="4">4 hops</option>
+            <option value="6">6 hops</option>
+            <option value="0">whole network</option>
+          </select>
+        </label>
         <span class="map-stats" id="mapStats" aria-live="polite"></span>
         <button class="btn btn-neutral btn-mini" id="mapRescan" type="button"
                 title="Ask every friend for their graph now, instead of waiting for the next sync">Rescan</button>
         <button class="btn btn-neutral btn-mini" id="mapReset" type="button">Reset view</button>
       </div>
+      {{/* The radius draws less; it never serves less. Worth one sentence on the
+           page itself, because a number that looks like a reach is the one thing
+           an admin might mistake for a sharing setting. */}}
+      <p class="map-note" id="mapRadiusNote" hidden></p>
       <p class="map-note" id="mapRescanNote" hidden>
         Rescanning&hellip; this asks your friends what <em>they</em> currently hold, so
         it brings your view up to date with theirs &mdash; not with the whole

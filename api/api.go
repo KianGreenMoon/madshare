@@ -490,6 +490,8 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(fedManage).Post("/federation/peers/{peerID}/block", h.federationPeerBlock)
 		r.With(fedManage).Post("/federation/block", h.federationBlockKey)
 		r.With(fedManage).Get("/federation/graph", h.federationGraph)
+		r.With(fedManage).Get("/federation/graph/find", h.federationGraphFind)
+		r.With(fedManage).Get("/federation/graph/paths", h.federationGraphPaths)
 		r.With(fedManage).Post("/federation/graph/resync", h.federationGraphResync)
 		r.With(fedManage).Post("/federation/discover", h.federationDiscover)
 		r.With(fedManage).Get("/federation/reports", h.federationReports)

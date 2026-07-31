@@ -355,8 +355,25 @@ type NetworkMap struct {
 	Nodes []MapNode `json:"nodes"`
 	Edges []MapEdge `json:"edges"`
 	// Radius is the greatest distance any node sits at — how far this node can
-	// currently see.
+	// currently see. It always describes the WHOLE component, even when the map
+	// has been trimmed to a view radius (F7 item 7): it is what tells an admin
+	// there is more out there, and therefore what makes "expand" offerable.
 	Radius int `json:"radius"`
+	// Shown / Hidden report the trim. Both zero on an untrimmed map with no
+	// nodes; Hidden > 0 means the view radius is holding something back — a
+	// rendering fact, never an access one (see mapview.go).
+	Shown  int `json:"shown,omitempty"`
+	Hidden int `json:"hidden,omitempty"`
+}
+
+// MapHit is one search result: the node, plus which of its fields answered the
+// query. The field matters — a key and an address are facts, a name beyond our
+// own friends is hearsay a friend passed on — so the UI never presents a name
+// hit as if the node had been identified.
+type MapHit struct {
+	MapNode
+	Matched string `json:"matched"` // "key" | "address" | "name"
+	rank    int    // match quality, for ordering only
 }
 
 // Map node states, in the order the UI ranks them. Anything else is a stranger:

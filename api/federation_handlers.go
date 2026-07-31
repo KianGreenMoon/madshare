@@ -273,18 +273,43 @@ func writeFederationError(w http.ResponseWriter, err error) {
 	}
 }
 
-// federationGraph handles GET /api/admin/federation/graph: the gossiped network
-// map — every node reachable through a chain of friendships, with branch
-// attribution and the distrust marks against it (federation F6).
+// federationGraph handles GET /api/admin/federation/graph[?radius=N]: the
+// gossiped network map — every node reachable through a chain of friendships,
+// with branch attribution and the distrust marks against it (federation F6),
+// trimmed to a view radius (F7 item 7).
+//
+// `radius` is a RENDERING parameter and nothing else: it decides how much of the
+// map is drawn, never who is served. Absent it defaults to
+// federation.DefaultMapRadius; `radius=0` asks for the whole component, which
+// stays available because search and paths are answered over everything.
 func (h *handler) federationGraph(w http.ResponseWriter, r *http.Request) {
+	m, ok := h.networkMap(w, r)
+	if !ok {
+		return
+	}
+	radius := federation.DefaultMapRadius
+	if v := r.URL.Query().Get("radius"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "radius must be a non-negative integer"})
+			return
+		}
+		radius = n
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "graph": federation.TrimMap(m, radius)})
+}
+
+// networkMap fetches the map and writes the shared refusals, so the three
+// endpoints reading it do not each re-state what "federation is off" means.
+func (h *handler) networkMap(w http.ResponseWriter, r *http.Request) (federation.NetworkMap, bool) {
 	if h.federation == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "federation is not enabled"})
-		return
+		return federation.NetworkMap{}, false
 	}
 	m, err := h.federation.NetworkMap(r.Context())
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
-		return
+		return federation.NetworkMap{}, false
 	}
 	if m.Nodes == nil {
 		m.Nodes = []federation.MapNode{}
@@ -292,7 +317,64 @@ func (h *handler) federationGraph(w http.ResponseWriter, r *http.Request) {
 	if m.Edges == nil {
 		m.Edges = []federation.MapEdge{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "graph": m})
+	return m, true
+}
+
+// federationGraphFind handles GET /api/admin/federation/graph/find?q= or
+// ?branch=<key>: search over the WHOLE component, which is what makes a view
+// radius affordable — the map may be showing three hops, but nothing beyond it
+// has become unfindable (F7 item 7, §The network map).
+//
+// `q` matches a key, a mesh address or a name; `branch` lists everything that
+// reached us through one direct friend, which is the unit blocking operates on.
+func (h *handler) federationGraphFind(w http.ResponseWriter, r *http.Request) {
+	m, ok := h.networkMap(w, r)
+	if !ok {
+		return
+	}
+	if branch := r.URL.Query().Get("branch"); branch != "" {
+		nodes := federation.BranchNodes(m, branch)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true, "branch": branch, "nodes": nodes, "count": len(nodes),
+		})
+		return
+	}
+	q := r.URL.Query().Get("q")
+	if len(q) > 200 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "query too long"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "hits": federation.FindNodes(m, q, mapFindLimit)})
+}
+
+// mapFindLimit is how many search results are worth showing at once. A search
+// that returns two hundred nodes has not answered anything.
+const mapFindLimit = 25
+
+// federationGraphPaths handles GET /api/admin/federation/graph/paths?from=&to=:
+// every (bounded) way two nodes are connected. `from` defaults to this node,
+// because "how is this connected to ME, and through whom" is the question an
+// admin actually arrives with — and the question a block is the answer to.
+func (h *handler) federationGraphPaths(w http.ResponseWriter, r *http.Request) {
+	m, ok := h.networkMap(w, r)
+	if !ok {
+		return
+	}
+	from, to := r.URL.Query().Get("from"), r.URL.Query().Get("to")
+	if from == "" {
+		from = h.federation.Info().PublicKey
+	}
+	if to == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "to is required"})
+		return
+	}
+	paths := federation.Paths(m, from, to)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "from": from, "to": to, "paths": paths,
+		// Truncation is reported rather than hidden: a list that silently
+		// dropped the connection an admin was looking for is worse than none.
+		"truncated": len(paths) >= federation.MaxPathResults,
+	})
 }
 
 // federationGraphResync handles POST /api/admin/federation/graph/resync: pull

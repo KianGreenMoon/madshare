@@ -235,6 +235,58 @@
 .map-search:focus { outline: none; border-color: var(--accent); }
 .map-stats { font-size: 0.82rem; color: var(--text-muted); }
 
+/* Search results (F7 item 7). They come from the WHOLE community, not from what
+   the view radius is drawing, so this list is routinely the only place a distant
+   node appears — it floats over the map rather than pushing it down. */
+.map-find { position: relative; flex: 1 1 18rem; min-width: 0; }
+.map-find .map-search { width: 100%; }
+.map-hits {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 18rem;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.28);
+}
+.map-hit {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+.map-hit:last-child { border-bottom: none; }
+.map-hit:hover, .map-hit:focus-visible { background: var(--bg); outline: none; }
+.map-hit-name { font-weight: 600; color: var(--text); }
+.map-hit-why  { font-size: 0.72rem; color: var(--text-muted); }
+.map-hit-key  { font-size: 0.72rem; color: var(--text-muted); }
+.map-hit-dist { margin-left: auto; font-size: 0.75rem; color: var(--text-muted); }
+.map-hit-branch { flex-shrink: 0; }
+.map-hits-empty { margin: 0; padding: var(--space-3); font-size: 0.85rem; color: var(--text-muted); }
+
+.map-radius {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.map-radius select {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.2rem 0.4rem;
+}
+
 /* Shown only while a rescan is in flight: what the button can and cannot do,
    said where it is being done rather than in a tooltip nobody opens. */
 .map-note {
@@ -272,6 +324,11 @@
 .map-edge { stroke: var(--border); stroke-width: 1.5; }
 .map-edge.is-onesided { stroke-dasharray: 3 3; }
 .map-edge.is-lit { stroke: var(--accent); stroke-width: 2; }
+/* An edge on a drawn path: thicker than a hover highlight, because it is an
+   answer the admin asked for rather than wherever the pointer happens to be. */
+.map-edge.is-path { stroke: var(--accent); stroke-width: 3.5; opacity: 1; }
+/* Everything the branch highlight reached — the set one block would forget. */
+.map-node.is-branch .map-node-dot { stroke: var(--accent); stroke-width: 2; }
 .map-edge.is-dim { opacity: 0.25; }
 
 .map-node { cursor: pointer; }
@@ -387,3 +444,33 @@
   .map-stage { height: min(70vh, 420px); }
   .map-detail { inset: auto var(--space-2) var(--space-2) var(--space-2); width: auto; max-height: 60%; }
 }
+
+/* ── Paths and branches in the detail panel (F7 item 7) ─────────────────────── */
+/* "How is this node connected to me, and through whom" is the question a block
+   is the answer to, so it is rendered as chains of names rather than a number. */
+
+.map-paths, .map-branch {
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-3);
+  margin-top: var(--space-3);
+}
+.map-paths-head, .map-branch-head {
+  margin: 0 0 var(--space-2);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.map-path-list {
+  margin: 0 0 var(--space-2);
+  padding-left: 1.2rem;
+  display: grid;
+  gap: var(--space-1);
+}
+.map-path-list li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: 0.8rem;
+}
+.map-path-chain { color: var(--text); word-break: break-word; }
+.map-path-len   { margin-left: auto; flex-shrink: 0; color: var(--text-muted); font-size: 0.72rem; }

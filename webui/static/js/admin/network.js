@@ -5,7 +5,7 @@
 // asynchronous — the page polls while anything is pending so state flips appear
 // without a reload. Design: docs/architecture/federation.md.
 import { bootAdmin, API, toast, handleAuthError, el } from './shared.js';
-import { initMap, loadMap } from './network-map.js';
+import { initMap, loadMap, focusKey } from './network-map.js';
 
 const disabledNote = document.getElementById('disabledNote');
 const selfPanel    = document.getElementById('selfPanel');
@@ -747,4 +747,22 @@ function confirmModal({ title, bodyNodes, confirmLabel, danger = true }) {
   await loadPeers();
   initMap({ onBlockNode: blockMapNode, onFriendNode: friendMapNode, onPullNode: pullMapNode });
   await loadMap();
+  await focusFromHash();
+  window.addEventListener('hashchange', focusFromHash);
 })();
+
+// focusFromHash lands a `#node=<key>` link on that node: selected, centred, with
+// the view expanded if it sits past the current radius. The madnetwork library's
+// ⓘ holder list builds these, so tracking down whoever served something bad
+// starts from the content that exposed it (docs/architecture/federation.md §The
+// network map).
+async function focusFromHash() {
+  // Deliberately not "hex only". A real node key is hex, but the value is only
+  // ever a lookup into the map we just loaded, and a validator narrower than the
+  // data it guards fails by doing nothing at all — which is the hardest kind of
+  // broken link to notice.
+  const m = /^#node=([0-9a-zA-Z]{1,128})$/.exec(location.hash || '');
+  if (!m) return;
+  document.getElementById('mapSection')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  await focusKey(m[1].toLowerCase());
+}

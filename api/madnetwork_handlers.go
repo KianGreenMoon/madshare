@@ -41,12 +41,6 @@ func (h *handler) reachWindow() int64 {
 	return defaultReachableWindowSec
 }
 
-// madnetworkView builds the merged-browse policy for this request: whether to
-// fold in the own published set (and under which node-default share depth, F5),
-// and the reachability cutoff. The cutoff is 0 (no filtering) when either this
-// node's inbound mesh path is suspect (fail open — a local netstack fault shows
-// the last-known catalog instead of blanking it) or the admin turned the
-// madnetwork.hide_unavailable toggle off.
 // madnetworkViewFor is madnetworkView plus the request's optional single-node
 // restriction — the "By node" shelf (?source=<id>, or ?source=self for our own
 // published library). An unparseable source is the merged view rather than an
@@ -196,6 +190,12 @@ type madnetworkHolder struct {
 	LastSeen  int64  `json:"last_seen"`
 	Self      bool   `json:"self,omitempty"`      // this server
 	Reachable bool   `json:"reachable,omitempty"` // seen within the freshness window
+	// Key is the holder's node key, so the UI can link a holder to its place on
+	// the network map (F7 item 7): finding out who served something starts from
+	// the content that exposed it, not from an admin remembering to go and look
+	// at a diagram. Empty for the self holder — we are not on our own map as a
+	// stranger.
+	Key string `json:"key,omitempty"`
 }
 
 // madnetworkTracks handles GET /api/madnetwork/tracks?artist=&album=: the
@@ -380,6 +380,7 @@ func mergeVersions(group []*database.MadnetworkTrackRow, selfName string, reachC
 					v.Holders = append(v.Holders, madnetworkHolder{
 						Name: row.SourceName, LastSeen: row.SourceLastSeen,
 						Reachable: reachCutoff <= 0 || row.SourceLastSeen >= reachCutoff,
+						Key:       row.SourceKey,
 					})
 				}
 			}

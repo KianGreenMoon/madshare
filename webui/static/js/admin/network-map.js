@@ -1,5 +1,6 @@
-// The network map (federation F6): the gossiped friendship graph drawn as a
-// node-link diagram, with a detail panel that can act on what it shows.
+// The network map (federation F6; navigation at scale is F7 item 7): the
+// gossiped friendship graph drawn as a node-link diagram, with a detail panel
+// that can act on what it shows.
 //
 // Two things shape the layout. Nodes are pulled onto RINGS by hop distance —
 // your friends on the inner ring, their friends outside it — because distance
@@ -9,6 +10,18 @@
 // only the nodes you have a relationship with (plus whatever you touch) keep
 // theirs. Both are concessions to the honest weakness of a drawn graph, which
 // is that it stops being readable long before it stops being interesting.
+//
+// Since the community is unbounded, the map scales by SHOWING LESS AT A TIME:
+// a **view radius** (default 3 hops, expandable), zoom that resolves detail
+// rather than truncating it, a **search that still reaches the whole component**
+// even when the view does not, **branch highlighting** — everything that arrived
+// through one friend, which is the unit blocking operates on — and **the paths
+// between two nodes**, which is the question an admin actually has when
+// something looks wrong.
+//
+// The radius is a RENDERING setting. It never limits who is served and never
+// appears in a scope; it is about what an admin looks at, and `share_depth` is
+// about whom we answer (docs/architecture/federation.md §The network map).
 //
 // Names beyond your own friends are hearsay: the key rides along everywhere.
 
@@ -26,6 +39,11 @@ const RADIAL = 0.05;
 const DAMPING = 0.86;
 const LABEL_LIMIT = 40; // above this many nodes, labels thin out
 
+// DEFAULT_RADIUS mirrors federation.DefaultMapRadius: the neighbourhood, not
+// the component. WHOLE is the "show everything" value the server also reads.
+const DEFAULT_RADIUS = 3;
+const WHOLE = 0;
+
 let state = {
   nodes: [],
   edges: [],
@@ -37,9 +55,18 @@ let state = {
   alpha: 0,
   raf: 0,
   filter: '',
+  radius: DEFAULT_RADIUS, // hops drawn; 0 = the whole component
+  fullRadius: 0,          // how far this node can see, whatever we are drawing
+  hidden: 0,              // nodes the radius is holding back
+  branch: null,           // { key, keys:Set } — everything through one friend
+  paths: [],              // [[key, …], …] between two nodes
+  pathTo: null,           // the far end those paths run to
+  pathEdges: new Set(),   // "from|to" pairs lit as part of a path
 };
 
 let svg, gRoot, gEdges, gNodes, detail, statsEl, emptyEl;
+let hitsEl, radiusEl, radiusNote;
+let findTimer = 0;
 let onBlock = null;  // injected by network.js so the map reuses its modal + toasts
 let onFriend = null; // likewise for the pairing request a stranger node can be sent
 let onPull = null;   // and for asking the frontier to fetch this node's catalog now
@@ -53,7 +80,10 @@ function svgEl(name, attrs = {}) {
 }
 
 const shortKey = k => `${k.slice(0, 8)}…${k.slice(-4)}`;
-const labelOf = n => n.name || shortKey(n.key);
+// Our own node carries no name on the graph — nobody gossips about us to us — so
+// it would otherwise render as a bare key prefix, including at the head of every
+// path chain, where the one thing the reader already knows is where it starts.
+const labelOf = n => (n.state === 'self' ? 'This node' : n.name || shortKey(n.key));
 
 function stateClass(n) {
   if (n.state === 'self') return 'is-self';
@@ -156,10 +186,32 @@ function reheat(alpha = 1) {
 
 // ── Drawing ──────────────────────────────────────────────────────────────────
 
+// markVisible flags which nodes are inside the current viewport and whether
+// there is room to name them. This is what makes zoom a way of READING the graph
+// rather than of cropping it: pull back and the frame holds more nodes than it
+// can label, push in and the ones you are looking at resolve.
+//
+// Counting the whole graph instead — which this did first — means a large
+// community can never resolve at all, because no reachable zoom level changes a
+// total. The number that matters is how many nodes share the frame.
+function markVisible() {
+  const rect = svg.getBoundingClientRect();
+  const { x, y, scale } = state.view;
+  const pad = 48; // a node just off-screen still owns the space its label needs
+  let inFrame = 0;
+  for (const n of state.nodes) {
+    const sx = n.x * scale + x, sy = n.y * scale + y;
+    n.inView = sx >= -pad && sx <= rect.width + pad && sy >= -pad && sy <= rect.height + pad;
+    if (n.inView) inFrame++;
+  }
+  state.labelRoom = inFrame <= LABEL_LIMIT;
+}
+
 function showLabel(n) {
-  if (state.nodes.length <= LABEL_LIMIT) return true;
+  if (state.labelRoom && n.inView) return true;
   if (n.state && n.state !== '') return true; // anyone we have a relationship with
   if (state.selected === n.key || state.hovered === n.key) return true;
+  if (state.paths.length && onAnyPath(n.key)) return true;
   const near = state.neighbours.get(state.selected ?? state.hovered);
   return !!near?.has(n.key);
 }
@@ -167,15 +219,37 @@ function showLabel(n) {
 function matchesFilter(n) {
   if (!state.filter) return false;
   const f = state.filter.toLowerCase();
-  return n.key.toLowerCase().includes(f) || (n.name ?? '').toLowerCase().includes(f);
+  return n.key.toLowerCase().includes(f) || (n.name ?? '').toLowerCase().includes(f)
+    || (n.address ?? '').toLowerCase().includes(f);
+}
+
+function onAnyPath(key) {
+  return state.paths.some(p => p.includes(key));
+}
+
+// pathEdgeKey normalises an edge to the undirected pair the path highlighting
+// looks up — a path names nodes, the map draws lines, and the two have to agree
+// on which line a step is.
+function pathEdgeKey(a, b) {
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
+}
+
+function recomputePathEdges() {
+  state.pathEdges = new Set();
+  for (const p of state.paths) {
+    for (let i = 1; i < p.length; i++) state.pathEdges.add(pathEdgeKey(p[i - 1], p[i]));
+  }
 }
 
 function draw() {
   const { view } = state;
   gRoot.setAttribute('transform', `translate(${view.x} ${view.y}) scale(${view.scale})`);
+  markVisible();
 
   const focus = state.selected ?? state.hovered;
   const near = state.neighbours.get(focus);
+
+  const pathing = state.paths.length > 0;
 
   for (const e of state.edges) {
     if (!e.line) continue;
@@ -183,16 +257,24 @@ function draw() {
     if (!a || !b) continue;
     e.line.setAttribute('x1', a.x); e.line.setAttribute('y1', a.y);
     e.line.setAttribute('x2', b.x); e.line.setAttribute('y2', b.y);
-    const lit = focus && (e.from === focus || e.to === focus);
+    // A drawn path outranks the hover highlight: it is an answer the admin
+    // asked for, while the highlight is wherever the pointer happens to be.
+    const onPath = pathing && state.pathEdges.has(pathEdgeKey(e.from, e.to));
+    const lit = onPath || (!pathing && focus && (e.from === focus || e.to === focus));
+    e.line.classList.toggle('is-path', !!onPath);
     e.line.classList.toggle('is-lit', !!lit);
-    e.line.classList.toggle('is-dim', !!focus && !lit);
+    e.line.classList.toggle('is-dim', pathing ? !onPath : (!!focus && !lit));
   }
 
   for (const n of state.nodes) {
     if (!n.g) continue;
     n.g.setAttribute('transform', `translate(${n.x} ${n.y})`);
-    const dim = focus && n.key !== focus && !near?.has(n.key);
+    const inBranch = state.branch?.keys.has(n.key);
+    const dim = pathing
+      ? !onAnyPath(n.key)
+      : (state.branch ? !inBranch : focus && n.key !== focus && !near?.has(n.key));
     n.g.classList.toggle('is-dim', !!dim);
+    n.g.classList.toggle('is-branch', !!inBranch);
     n.g.classList.toggle('is-selected', state.selected === n.key);
     n.g.classList.toggle('is-hit', matchesFilter(n));
     const label = n.g.querySelector('text');
@@ -301,10 +383,144 @@ function resetView() {
   draw();
 }
 
+// centreOn pans the view so a node sits in the middle of the stage — what makes
+// "find" and the library's holder links land somewhere the eye can start from,
+// rather than merely selecting something off-screen.
+function centreOn(key) {
+  const n = state.byKey.get(key);
+  if (!n) return;
+  const rect = svg.getBoundingClientRect();
+  state.view.x = rect.width / 2 - n.x * state.view.scale;
+  state.view.y = rect.height / 2 - n.y * state.view.scale;
+  draw();
+}
+
+// ── Search over the whole community ──────────────────────────────────────────
+
+// runFind asks the server, not the loaded subgraph: the view radius decides what
+// is DRAWN, and a search that could only find the drawn part would make the
+// radius a cost instead of a convenience.
+async function runFind(q) {
+  if (!q) { renderHits(null); return; }
+  try {
+    const res = await fetch(`${API}/api/admin/federation/graph/find?q=${encodeURIComponent(q)}`);
+    if (!res.ok) return;
+    const body = await res.json();
+    renderHits(body.hits ?? []);
+  } catch { /* a failed search leaves the last results alone */ }
+}
+
+function renderHits(hits) {
+  if (!hitsEl) return;
+  if (!hits) { hitsEl.hidden = true; hitsEl.replaceChildren(); return; }
+  if (!hits.length) {
+    hitsEl.replaceChildren(el('p', { class: 'map-hits-empty', text: 'No node matches that.' }));
+    hitsEl.hidden = false;
+    return;
+  }
+  hitsEl.replaceChildren(...hits.map(h => {
+    const row = el('div', { class: 'map-hit', role: 'option', tabindex: '0' }, [
+      el('span', { class: 'map-hit-name', text: labelOf(h) }),
+      // Which field answered is part of the result: a key and an address are
+      // facts, a name past our own friends is hearsay a friend passed on.
+      el('span', { class: 'map-hit-why', text: h.matched === 'name' ? 'name (hearsay)' : `by ${h.matched}` }),
+      el('code', { class: 'map-hit-key', text: shortKey(h.key) }),
+      el('span', { class: 'map-hit-dist', text: distanceText(h) }),
+    ]);
+    const go = () => { renderHits(null); focusNode(h.key); };
+    row.addEventListener('click', go);
+    row.addEventListener('keydown', ev => {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); go(); }
+    });
+    if (h.state === 'friend') {
+      // A friend is the root of a branch, and the branch is what a block takes
+      // with it — so the shortcut belongs next to the friend, here.
+      row.append(el('button', {
+        class: 'btn btn-neutral btn-mini map-hit-branch',
+        text: 'Branch',
+        title: 'Highlight everything that reached us through this friend',
+        onclick: ev => { ev.stopPropagation(); renderHits(null); showBranch(h.key); },
+      }));
+    }
+    return row;
+  }));
+  hitsEl.hidden = false;
+}
+
+// focusNode selects and centres a node, EXPANDING THE VIEW if it sits outside
+// the current radius. Searching for something and being shown nothing would make
+// the radius feel like a limit on the network rather than on the drawing.
+async function focusNode(key) {
+  if (!state.byKey.has(key)) {
+    await loadMap({ radius: WHOLE });
+    if (!state.byKey.has(key)) {
+      toast('That node is not on the graph any more.', 'error');
+      return;
+    }
+    if (radiusEl) radiusEl.value = String(WHOLE);
+  }
+  clearOverlays();
+  state.selected = key;
+  renderDetail();
+  centreOn(key);
+  draw();
+}
+
+// ── Branches: what one block would take with it ──────────────────────────────
+
+async function showBranch(friendKey) {
+  try {
+    const res = await fetch(`${API}/api/admin/federation/graph/find?branch=${encodeURIComponent(friendKey)}`);
+    if (!res.ok) return;
+    const body = await res.json();
+    const keys = new Set((body.nodes ?? []).map(n => n.key));
+    state.branch = { key: friendKey, keys, count: body.count ?? keys.size };
+    state.paths = [];
+    state.pathEdges = new Set();
+    state.selected = friendKey;
+    renderDetail();
+    draw();
+    renderRadiusNote();
+  } catch { /* leave the view as it was */ }
+}
+
+// ── Paths: how is this node connected to me, and through whom ───────────────
+
+async function showPaths(toKey) {
+  try {
+    const res = await fetch(`${API}/api/admin/federation/graph/paths?to=${encodeURIComponent(toKey)}`);
+    if (!res.ok) return;
+    const body = await res.json();
+    state.paths = body.paths ?? [];
+    state.pathTo = toKey;
+    state.branch = null;
+    recomputePathEdges();
+    // A path can run through nodes the radius is not drawing, and a picture of
+    // a connection with its middle missing is worse than no picture.
+    const missing = state.paths.some(p => p.some(k => !state.byKey.has(k)));
+    if (missing) {
+      await loadMap({ radius: WHOLE, keepOverlays: true });
+      if (radiusEl) radiusEl.value = String(WHOLE);
+    }
+    renderDetail();
+    draw();
+  } catch { /* leave the view as it was */ }
+}
+
+function clearOverlays() {
+  state.branch = null;
+  state.paths = [];
+  state.pathTo = null;
+  state.pathEdges = new Set();
+}
+
 // ── The detail panel ─────────────────────────────────────────────────────────
 
 function select(key) {
   state.selected = state.selected === key ? null : key;
+  // Selecting somewhere else abandons the question the overlay was answering,
+  // rather than leaving a stale branch or path lit under a new subject.
+  clearOverlays();
   renderDetail();
   draw();
 }
@@ -331,6 +547,15 @@ function renderDetail() {
     el('div', {}, [el('dt', { text: 'Distance' }), el('dd', { text: distanceText(n) })]),
     el('div', {}, [el('dt', { text: 'Reachable via' }), el('dd', { text: viaText(n) })]),
   ]));
+
+  // How this node is joined to us, and through whom — the question a block is
+  // the answer to, so it sits above the actions rather than in a tooltip.
+  if (n.state !== 'self') {
+    rows.push(buildPathsSection(n));
+  }
+  if (n.state === 'friend' || state.branch?.key === n.key) {
+    rows.push(buildBranchSection(n));
+  }
 
   if (n.marks?.length) {
     const branches = n.mark_branches ?? 0;
@@ -396,6 +621,75 @@ function renderDetail() {
   detail.hidden = false;
 }
 
+// buildPathsSection: on demand, every way this node is joined to us. Shown as
+// chains of names because that is how the answer is used — "through whom" — and
+// the map lights the same lines so the two readings agree.
+function buildPathsSection(n) {
+  const box = el('div', { class: 'map-paths' });
+  const showing = state.pathTo === n.key && state.paths.length > 0;
+
+  if (!showing) {
+    box.append(el('button', {
+      class: 'btn btn-neutral btn-mini',
+      text: 'Show how we are connected',
+      title: 'Every path from this node to yours, through the friendships that carry it',
+      onclick: () => showPaths(n.key),
+    }));
+    if (state.pathTo === n.key) {
+      box.append(el('p', { class: 'map-note', text: 'No path to this node on the graph we hold.' }));
+    }
+    return box;
+  }
+
+  box.append(el('p', { class: 'map-paths-head' },
+    [`${state.paths.length} path${state.paths.length === 1 ? '' : 's'} from your node`]));
+  box.append(el('ol', { class: 'map-path-list' }, state.paths.map(p =>
+    el('li', {}, [
+      el('span', {
+        class: 'map-path-chain',
+        text: p.map(k => {
+          const node = state.byKey.get(k);
+          return node ? labelOf(node) : shortKey(k);
+        }).join(' → '),
+      }),
+      el('span', { class: 'map-path-len', text: `${p.length - 1} hop${p.length === 2 ? '' : 's'}` }),
+    ]))));
+  box.append(el('button', {
+    class: 'btn btn-neutral btn-mini',
+    text: 'Clear paths',
+    onclick: () => { clearOverlays(); renderDetail(); draw(); },
+  }));
+  return box;
+}
+
+// buildBranchSection: everything that reached us through this friend. The count
+// is the honest size of what blocking them would forget — minus whatever a
+// second friend also vouches for, which is why the highlight shows the set
+// rather than just naming a number.
+function buildBranchSection(n) {
+  const box = el('div', { class: 'map-branch' });
+  if (state.branch?.key === n.key) {
+    box.append(
+      el('p', { class: 'map-branch-head' },
+        [`${state.branch.count} node${state.branch.count === 1 ? '' : 's'} reached us through this friend`]),
+      el('p', { class: 'map-note', text: 'Highlighted on the map. Nodes another friend also vouches for would survive a block here.' }),
+      el('button', {
+        class: 'btn btn-neutral btn-mini',
+        text: 'Clear highlight',
+        onclick: () => { clearOverlays(); renderDetail(); draw(); },
+      }),
+    );
+    return box;
+  }
+  box.append(el('button', {
+    class: 'btn btn-neutral btn-mini',
+    text: 'Highlight this branch',
+    title: 'Everything that reached us through this friend — the unit a block operates on',
+    onclick: () => showBranch(n.key),
+  }));
+  return box;
+}
+
 function distanceText(n) {
   if (n.distance === 0) return 'This node';
   if (n.distance === 1) return 'Your friend (1 hop)';
@@ -422,6 +716,9 @@ export function initMap({ onBlockNode, onFriendNode, onPullNode }) {
   detail = document.getElementById('mapDetail');
   statsEl = document.getElementById('mapStats');
   emptyEl = document.getElementById('mapEmpty');
+  hitsEl = document.getElementById('mapHits');
+  radiusEl = document.getElementById('mapRadius');
+  radiusNote = document.getElementById('mapRadiusNote');
   if (!svg) return;
 
   gRoot = svgEl('g');
@@ -433,13 +730,55 @@ export function initMap({ onBlockNode, onFriendNode, onPullNode }) {
   svg.addEventListener('pointerdown', startPan);
   svg.addEventListener('wheel', onWheel, { passive: false });
   svg.addEventListener('click', ev => { if (!ev.target.closest('.map-node')) select(null); });
-  document.getElementById('mapReset')?.addEventListener('click', () => { resetView(); reheat(0.6); });
+  document.getElementById('mapReset')?.addEventListener('click', () => {
+    clearOverlays();
+    renderDetail();
+    resetView();
+    reheat(0.6);
+  });
   document.getElementById('mapRescan')?.addEventListener('click', rescan);
+
+  // The search does two things at once, on purpose: it lights matches already on
+  // screen (instant, no round trip) and it lists matches from the whole
+  // community underneath (one round trip, reaches past the radius).
   document.getElementById('mapSearch')?.addEventListener('input', ev => {
-    state.filter = ev.target.value.trim();
+    const q = ev.target.value.trim();
+    state.filter = q;
     draw();
+    clearTimeout(findTimer);
+    findTimer = setTimeout(() => runFind(q), 200);
+  });
+  hitsEl?.addEventListener('pointerdown', ev => ev.stopPropagation());
+  document.addEventListener('click', ev => {
+    if (hitsEl && !hitsEl.hidden && !ev.target.closest('.map-find')) renderHits(null);
+  });
+
+  radiusEl?.addEventListener('change', () => {
+    loadMap({ radius: Number(radiusEl.value) });
   });
   window.addEventListener('resize', () => draw());
+}
+
+// renderRadiusNote says what the current view is holding back — and says, once,
+// that the number draws less rather than serving less. An admin who reads a
+// radius as a sharing setting has misread the one thing this design most needs
+// them not to (docs/architecture/federation.md §The network map).
+function renderRadiusNote() {
+  if (!radiusNote) return;
+  const bits = [];
+  if (state.hidden > 0) {
+    bits.push(`${state.hidden} node${state.hidden === 1 ? '' : 's'} further out than this view — `
+      + `search still finds them, and “whole network” draws them.`);
+  }
+  if (state.branch) {
+    const n = state.byKey.get(state.branch.key);
+    bits.push(`Highlighting the branch behind ${n ? labelOf(n) : shortKey(state.branch.key)}.`);
+  }
+  if (state.radius !== WHOLE) {
+    bits.push('This setting changes what is drawn, never who this node shares with.');
+  }
+  radiusNote.textContent = bits.join(' ');
+  radiusNote.hidden = bits.length === 0;
 }
 
 // rescan asks the node to pull the graph from every friend on its next refresh
@@ -491,12 +830,17 @@ async function rescan() {
   }
 }
 
-export async function loadMap() {
+// loadMap fetches the graph at the current view radius and rebuilds. The radius
+// is sent to the server rather than applied here, so a large community costs a
+// small payload and a small simulation — the whole point of showing less at a
+// time (F7 item 7).
+export async function loadMap({ radius, keepOverlays } = {}) {
   const section = document.getElementById('mapSection');
   if (!section || !svg) return;
+  if (radius != null) state.radius = radius;
   let graph;
   try {
-    const res = await fetch(`${API}/api/admin/federation/graph`);
+    const res = await fetch(`${API}/api/admin/federation/graph?radius=${state.radius}`);
     if (!res.ok) return;
     const body = await res.json();
     graph = body.graph;
@@ -504,6 +848,7 @@ export async function loadMap() {
     return;
   }
   if (!graph) return;
+  if (!keepOverlays) clearOverlays();
 
   section.hidden = false;
   state.nodes = (graph.nodes ?? []).map(n => ({ ...n }));
@@ -515,16 +860,33 @@ export async function loadMap() {
     state.neighbours.get(e.to)?.add(e.from);
   }
   if (state.selected && !state.byKey.has(state.selected)) state.selected = null;
+  state.fullRadius = graph.radius ?? 0;
+  state.hidden = graph.hidden ?? 0;
+  if (state.paths.length) recomputePathEdges();
 
   const others = state.nodes.length - 1;
+  const total = others + state.hidden;
   statsEl.textContent = others > 0
-    ? `${others} node${others === 1 ? '' : 's'} · ${state.edges.length} link${state.edges.length === 1 ? '' : 's'} · reach ${graph.radius} hop${graph.radius === 1 ? '' : 's'}`
+    ? `${others} node${others === 1 ? '' : 's'} drawn`
+      + (state.hidden ? ` of ${total}` : '')
+      + ` · ${state.edges.length} link${state.edges.length === 1 ? '' : 's'}`
+      + ` · reach ${state.fullRadius} hop${state.fullRadius === 1 ? '' : 's'}`
     : '';
   emptyEl.hidden = others > 0;
+  renderRadiusNote();
 
   seedPositions(state.nodes);
   build();
   resetView();
   renderDetail();
   reheat(1);
+}
+
+// focusKey is the map's entry point from elsewhere in the UI — the madnetwork
+// library's ⓘ holder list links here, so discovery of a bad actor can start from
+// the content that exposed it rather than from an admin remembering to come look
+// at a diagram (docs/architecture/federation.md §The network map).
+export async function focusKey(key) {
+  if (!svg || !key) return;
+  await focusNode(key);
 }

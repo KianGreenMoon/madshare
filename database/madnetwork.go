@@ -528,6 +528,7 @@ func fedcatBase(view MadnetworkView) string {
 	             COALESCE(NULLIF(c.album, ''), '` + DefaultAlbumTitle + `') AS alb,
 	             ` + sourceLabelExpr + ` AS source_label,
 	             ` + srcLastSeen + ` AS source_last_seen,
+	             s.public_key AS source_key,
 	             c.*
 	      FROM federation_catalog c` + sourceJoin("c") + `
 	      WHERE ` + notBlocked + reachClause(view.Cutoff) + sourceClause(view) + `)`
@@ -742,6 +743,9 @@ type MadnetworkTrackRow struct {
 	SourceID       int64
 	SourceName     string
 	SourceLastSeen int64
+	// SourceKey is the node's public key — the map address of a holder, so the
+	// library's ⓘ list can link one (F7 item 7). Empty on Self rows.
+	SourceKey string
 	Entry          federation.CatalogEntry
 
 	// GroupArtist/GroupAlbum are the display-identity buckets (akey/alb) the
@@ -764,7 +768,7 @@ func (db *DB) remoteTrackRows(ctx context.Context, view MadnetworkView, match st
 		return nil, nil
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT source_id, source_label, source_last_seen, akey, alb,
+		SELECT source_id, source_label, source_last_seen, source_key, akey, alb,
 		       entry_key, recording_key, title, artist, album_artist,
 		       COALESCE(genre, ''), year, track_number, disc_number,
 		       COALESCE(duration, 0), COALESCE(license, ''), guest_playable, renditions
@@ -781,7 +785,7 @@ func (db *DB) remoteTrackRows(ctx context.Context, view MadnetworkView, match st
 		var r MadnetworkTrackRow
 		var year, track, disc sql.NullInt64
 		var renditions string
-		if err := rows.Scan(&r.SourceID, &r.SourceName, &r.SourceLastSeen, &r.GroupArtist, &r.GroupAlbum,
+		if err := rows.Scan(&r.SourceID, &r.SourceName, &r.SourceLastSeen, &r.SourceKey, &r.GroupArtist, &r.GroupAlbum,
 			&r.Entry.Key, &r.Entry.RecordingKey, &r.Entry.Title, &r.Entry.Artist,
 			&r.Entry.AlbumArtist, &r.Entry.Genre, &year, &track, &disc,
 			&r.Entry.Duration, &r.Entry.License, &r.Entry.GuestPlayable, &renditions); err != nil {

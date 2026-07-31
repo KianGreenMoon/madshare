@@ -123,6 +123,13 @@ function canMaterialize() {
   return !!getIdentity()?.permissions?.includes('file.upload');
 }
 
+// canSeeNetwork gates the holder → map links: /admin/network is admin ground and
+// linking a user somewhere they will only be refused is worse than not linking.
+// UX only — the admin API enforces the permission.
+function canSeeNetwork() {
+  return !!getIdentity()?.permissions?.includes('federation.manage');
+}
+
 // materializeAllItems yields the entity ⋯ menus' trailing "Materialize all"
 // item (album given = that album; null = the whole artist).
 function materializeAllItems(artist, album) {
@@ -845,10 +852,24 @@ function renderVersions(detail, t) {
     hs.append(mkSpan('mn-holders-label', 'held by '));
     (v.holders || []).forEach((h, j) => {
       if (j) hs.append(document.createTextNode(', '));
-      const holder = mkSpan('mn-holder', h.name || '(unnamed)');
       const stale = !h.self && h.reachable === false;
+      // A holder with a key links to its place on the network map, for an admin
+      // who can act on what they find there. Tracking down whoever served
+      // something starts from the content that exposed it, not from remembering
+      // to go and look at a diagram (federation.md §The network map).
+      const linked = !h.self && h.key && canSeeNetwork();
+      const holder = linked
+        ? Object.assign(document.createElement('a'), {
+            className: 'mn-holder mn-holder--linked',
+            href: `/admin/network#node=${encodeURIComponent(h.key)}`,
+            target: '_blank',
+            rel: 'noopener',
+            textContent: h.name || '(unnamed)',
+          })
+        : mkSpan('mn-holder', h.name || '(unnamed)');
       holder.title = h.self ? 'this server'
-        : `last seen ${fmtAgo(h.last_seen)}` + (stale ? ' · not seen recently' : '');
+        : `last seen ${fmtAgo(h.last_seen)}` + (stale ? ' · not seen recently' : '')
+          + (linked ? ' · open on the network map' : '');
       if (h.self) holder.classList.add('mn-holder--self');
       if (stale) holder.classList.add('mn-holder--stale');
       hs.append(holder);
