@@ -2261,7 +2261,8 @@ milestone directly after direct transfer works, and tokens ship with depth.
   is this not published" readout in the Recordings lens. Independent of both F6
   and F7, shippable on its own; the startup gate refusing a federated node without
   `fpcalc` (built 2026-07-26) is the other half of the same rule.
-- **F6 — Transparency & defense.** **Changes nothing about who may fetch what** —
+- **F6 — Transparency & defense** (built 2026-07-31, see §Trust graph). **Changes
+  nothing about who may fetch what** —
   every requester stays at distance 0 throughout, so the wire's access rules are
   exactly F5's. What it adds is sight and reach of *judgement*: an admin can see
   the graph beyond their own friend list, see whom the network distrusts, and cut
@@ -2325,9 +2326,11 @@ milestone directly after direct transfer works, and tokens ship with depth.
   success. `ResyncGraph` now clears that map first — it bounds what a peer may
   *push* at us unsolicited, and a local permission-gated act is not that. The
   toast reports the change in node count rather than claiming a refresh.
-- **F7 — Reach: the community's libraries.** Rescoped 2026-07-30 when the depth
-  ladder collapsed, and given its posture 2026-07-31: **everything to our
-  community, nothing outside it** (§Goal & vocabulary, "Community"). What made
+- **F7 — Reach: the community's libraries** (items 1–8 and 10 built 2026-07-31 /
+  2026-08-01; **item 9 is the only one left**, and it is waiting on the token
+  lifetime in §Open questions rather than on any work). Rescoped 2026-07-30 when
+  the depth ladder collapsed, and given its posture 2026-07-31: **everything to
+  our community, nothing outside it** (§Goal & vocabulary, "Community"). What made
   this phase risky — a credential
   with a lifetime, a delegation chain and a revocation story, plus an
   authorization decision computed from *gossiped* edges — is gone, because the

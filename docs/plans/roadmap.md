@@ -98,11 +98,30 @@ bandwidth (range requests; segmented ABR is a video-era non-goal). Still future:
 fingerprint index (a federation concern). Design: `docs/architecture/recordings.md`;
 build log: `docs/plans/recordings-implementation.md`.
 
-## Federation (Phase 4, deferred)
+## Federation
 
-Server-to-server trust — peer keypairs, signed requests, file provenance, library
-sharing scope (madnetwork / friends / none). Acknowledged throughout the auth and
-entity models but not designed. See `docs/architecture/auth.md` §8.
+**Built** — F0–F7 are shipped bar one item; design, build plan and status live in
+`docs/architecture/federation.md` (auth's Phase 4 hooks: `docs/architecture/auth.md`
+§8). What is deferred out of it:
+
+- **Listener-node tokens** (F7 item 9). A home server signing "this bearer is
+  mine until T", verified by that server's friends against the self-certifying
+  channel — one issuer, one hop, no chain. Not blocked on work but on a decision:
+  the token's lifetime (federation.md §Open questions 1). Its consumer, madplayer
+  (`docs/ui/native-client.md`), does not exist yet either.
+- **Frontier pull numbers** (§Open questions 2). The discovery rotation's shape
+  shipped; four member catalogs per cycle and a cap of two hundred are guesses
+  that want a real network to observe.
+- **Replication.** Subscribe/favourite → mirror, with storage caps. Manual
+  materialize already makes a node a holder, so the automatic version is a clean
+  later add-on rather than a gap.
+- **Volume from a single honest branch.** Branch weighting answers the sybil farm
+  but not one friend with fifty thousand badly tagged albums — still one voice,
+  still fifty thousand rows. The agreed direction is clustering a branch's
+  low-corroboration entries rather than interleaving them; unspecified. See
+  `docs/ui/madnetwork-page.md` §Open.
+- **Dropping the node-key → local-user mapping**, once something else supplies
+  `GuestOnly` (federation.md, "Cleanup, any time"). Needs a migration.
 
 ## Android app — Capacitor remote-URL shell (designed, not built)
 
@@ -121,7 +140,7 @@ A **separate, native pure-Go GUI** (Gio/Fyne leaning) for desktop and mobile tha
 **embeds** the madshare backend *and* a Yggdrasil node as in-process libraries —
 local-first music player by default, **federation peer** to other nodes as the
 milestone. The web UI stays HTML/JS (best tool for the browser), so this is a
-second, deliberately-accepted UI over the same HTTP API. Deferred until the backend
-and the federation model are stable; the cross-node trust model
-(`docs/architecture/federation.md`, see Federation above) is the prerequisite.
-Full design: `docs/ui/native-client.md`.
+second, deliberately-accepted UI over the same HTTP API. Its prerequisite — the
+cross-node trust model (`docs/architecture/federation.md`) — is now **built**, so
+what defers this is the work itself rather than a missing foundation. Full design:
+`docs/ui/native-client.md`.
