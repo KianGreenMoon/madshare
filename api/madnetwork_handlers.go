@@ -41,6 +41,36 @@ func (h *handler) reachWindow() int64 {
 	return defaultReachableWindowSec
 }
 
+// pullWindow is the same guarantee for a node nothing pings on our behalf — a
+// member the frontier rotation reached and no friend of ours vouches for (F7
+// item 10, docs/architecture/federation.md §Availability, "Two clocks, two
+// windows"). Its liveness clock is the catalog pull, so its window is three
+// catalog cycles rather than three ping rounds: the window measures how recently
+// we would have NOTICED, and judging such a node by the ping's window hid most
+// of what discovery had just made visible.
+//
+// Never narrower than the ping window — an operator who widens
+// reachable_window_sec past three cycles means it for every node.
+func (h *handler) pullWindow() int64 {
+	pull := int64(federation.PullFreshnessWindow / time.Second)
+	if w := h.reachWindow(); w > pull {
+		return w
+	}
+	return pull
+}
+
+// reachWindows is the pair of freshness cutoffs a request is judged by, and the
+// rule that picks between them. Passed around as one value so no caller can
+// apply a window without the class that selects it.
+type reachWindows struct{ tight, pull int64 }
+
+// ok reports whether a source last seen at lastSeen counts as reachable. pinged
+// is the row's class: true when something pings it every minute (our own friend,
+// or a friend relaying a first-hand hint about it).
+func (rw reachWindows) ok(lastSeen int64, pinged bool) bool {
+	return database.ReachableAt(lastSeen, pinged, rw.tight, rw.pull)
+}
+
 // madnetworkViewFor is madnetworkView plus the request's optional single-node
 // restriction — the "By node" shelf (?source=<id>, or ?source=self for our own
 // published library). An unparseable source is the merged view rather than an
@@ -60,7 +90,15 @@ func (h *handler) madnetworkViewFor(r *http.Request) database.MadnetworkView {
 }
 
 func (h *handler) madnetworkView(ctx context.Context) database.MadnetworkView {
-	v := database.MadnetworkView{IncludeSelf: h.includeSelf(), DefaultShareDepth: federation.DepthFriends}
+	now := time.Now().Unix()
+	v := database.MadnetworkView{
+		IncludeSelf: h.includeSelf(), DefaultShareDepth: federation.DepthFriends,
+		// Set before either early return: which window a node BELONGS to is a
+		// fact about who watches it, and the rows still carry it when this
+		// request is not filtering — that is what lets the ⓘ panel grey a holder
+		// correctly while the browse shows everything.
+		PingedSince: now - h.reachWindow(),
+	}
 	p, err := h.madnetwork.GetMadnetworkPolicy(ctx)
 	if err == nil {
 		v.DefaultShareDepth = p.DefaultShareDepth
@@ -71,7 +109,7 @@ func (h *handler) madnetworkView(ctx context.Context) database.MadnetworkView {
 	if err == nil && !p.HideUnavailable {
 		return v // hiding disabled by the admin
 	}
-	v.Cutoff = time.Now().Unix() - h.reachWindow()
+	v.Cutoff, v.PullCutoff = now-h.reachWindow(), now-h.pullWindow()
 	return v
 }
 
@@ -81,11 +119,14 @@ func (h *handler) inboundHealthy() bool {
 	return h.federation == nil || h.federation.InboundHealthy()
 }
 
-// reachCutoff is the freshness cutoff used to *display* holder reachability (the
-// ⓘ panel greys a holder past it). Always now−window, independent of the browse
-// filter cutoff — so when the view fails open (showing everything), stale holders
+// reachCutoff is the freshness cutoffs used to *display* holder reachability (the
+// ⓘ panel greys a holder past them). Always now−window, independent of the browse
+// filter cutoffs — so when the view fails open (showing everything), stale holders
 // still read as stale rather than all looking reachable.
-func (h *handler) reachCutoff() int64 { return time.Now().Unix() - h.reachWindow() }
+func (h *handler) reachCutoff() reachWindows {
+	now := time.Now().Unix()
+	return reachWindows{tight: now - h.reachWindow(), pull: now - h.pullWindow()}
+}
 
 // madnetworkSummary handles GET /api/madnetwork/summary: each friend's sync
 // state plus the merged distinct-track count — the page's status strip. With
@@ -257,7 +298,7 @@ func sortMadnetworkRows(rows []*database.MadnetworkTrackRow) {
 // mergeMadnetworkTracks folds raw per-(source,appearance) rows into logical
 // tracks and versions. Rows arrive in display order; groups keep first-seen
 // order. selfName labels the self holder of own rows.
-func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow, selfName string, reachCutoff int64) []*madnetworkTrack {
+func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow, selfName string, rw reachWindows) []*madnetworkTrack {
 	type ident struct {
 		disc, track int64
 		title       string
@@ -304,7 +345,7 @@ func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow, selfName string,
 				}
 			}
 		}
-		t.Versions = mergeVersions(group, selfName, reachCutoff)
+		t.Versions = mergeVersions(group, selfName, rw)
 		tracks = append(tracks, t)
 	}
 	return tracks
@@ -314,7 +355,7 @@ func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow, selfName string,
 // recordings are the same version iff they share a rendition content hash
 // (same bytes somewhere = same audio for sure). Everything else stays a
 // separate version — recordings are never merged on text alone.
-func mergeVersions(group []*database.MadnetworkTrackRow, selfName string, reachCutoff int64) []madnetworkVersion {
+func mergeVersions(group []*database.MadnetworkTrackRow, selfName string, rw reachWindows) []madnetworkVersion {
 	// Union-find over the group's rows, linked by shared hashes.
 	parent := make([]int, len(group))
 	for i := range parent {
@@ -379,7 +420,7 @@ func mergeVersions(group []*database.MadnetworkTrackRow, selfName string, reachC
 				} else {
 					v.Holders = append(v.Holders, madnetworkHolder{
 						Name: row.SourceName, LastSeen: row.SourceLastSeen,
-						Reachable: reachCutoff <= 0 || row.SourceLastSeen >= reachCutoff,
+						Reachable: rw.ok(row.SourceLastSeen, row.SourcePinged),
 						Key:       row.SourceKey,
 					})
 				}

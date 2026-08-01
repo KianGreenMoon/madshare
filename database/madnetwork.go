@@ -461,6 +461,26 @@ func (db *DB) MadnetworkEntryForHash(ctx context.Context, hash string) (*federat
 type MadnetworkView struct {
 	IncludeSelf bool
 	Cutoff      int64
+	// PullCutoff is the same idea for a source whose only liveness clock is the
+	// catalog pull — a member no friend of ours vouches for (F7 item 10,
+	// §Availability, "Two clocks, two windows"). Three catalog cycles rather than
+	// three ping rounds, because the window measures how recently we would have
+	// NOTICED, and for such a node that is the rotation and not the ping. Zero
+	// falls back to Cutoff, which reproduces the single-window behaviour.
+	PullCutoff int64
+	// PingedSince decides WHICH of the two a row is judged by: a source is on the
+	// ping window if it is a direct friend, or if a freshness hint about it
+	// arrived since this moment. It is *now − the ping window*, and it is set
+	// even when the two cutoffs above are not — the class of a node is a fact
+	// about who watches it, not about whether this request is filtering, and the
+	// ⓘ panel greys holders by it while the browse shows everything (fail open).
+	//
+	// Asking "is a fast observer reporting NOW" rather than "did one ever" is
+	// what keeps a healthy member visible when the friend that vouched for it
+	// dies: the hints stop, the row falls back to the pull clock our own rotation
+	// still refreshes, instead of being held to a window nothing feeds. Zero
+	// classes every source as pinged, which is the pre-F7-item-10 behaviour.
+	PingedSince int64
 	// DefaultShareDepth is the node-level sharing scope the self-merged rows
 	// inherit when a recording carries none (F5). A recording this node does not
 	// publish is not on the network, so it must not appear on the network page
@@ -495,15 +515,79 @@ func (v MadnetworkView) includeOwn() bool {
 	return v.IncludeSelf && (v.SelfOnly || v.SourceID == 0)
 }
 
-// reachClause gates a source join by reachability. cutoff is a server-computed
-// unix time (now − window), never user input, so inlining the integer is safe
-// and avoids threading a bound parameter through every shared fragment. An
-// empty clause (cutoff <= 0) leaves the join unfiltered.
-func reachClause(cutoff int64) string {
-	if cutoff <= 0 {
+// reachClause gates a source join by reachability. Both cutoffs are
+// server-computed unix times (now − window), never user input, so inlining the
+// integers is safe and avoids threading bound parameters through every shared
+// fragment. An empty clause (Cutoff <= 0) leaves the join unfiltered.
+//
+// There is one window per CLASS OF OBSERVER, not one per query, because a single
+// browse mixes them (F7 item 10, docs/architecture/federation.md §Availability,
+// "Two clocks, two windows"):
+//
+//	friend            pinged every minute        → the tight ping window
+//	hinted member     a friend pings it for us   → the tight ping window
+//	pull-only member  reached by the rotation    → three catalog cycles
+//
+// A hint counts only while it is still ARRIVING (PingedSince, one ping window
+// back), never for as long as one once did. Both failure modes turn on that:
+//
+//	the member died      hints keep coming, carrying a frozen observation, so the
+//	                     row stays on the tight window and is hidden in 3 minutes
+//	the VOUCHER died     hints stop, the row drops back to the pull clock our own
+//	                     rotation still refreshes, and a healthy member stays up
+//
+// Reading the class off a hint that arrived 40 minutes ago would get the second
+// case backwards — hiding a node we can reach, because somebody else stopped
+// talking about it.
+func reachClause(view MadnetworkView) string {
+	if view.Cutoff <= 0 {
 		return ""
 	}
-	return fmt.Sprintf(" AND "+srcLastSeen+" >= %d", cutoff)
+	pull := view.PullCutoff
+	if pull <= 0 || pull >= view.Cutoff || view.PingedSince <= 0 {
+		return fmt.Sprintf(" AND "+srcLastSeen+" >= %d", view.Cutoff)
+	}
+	return fmt.Sprintf(" AND "+srcLastSeen+" >= (CASE WHEN "+sourcePingedExpr+
+		" THEN %d ELSE %d END)", view.PingedSince, view.Cutoff, pull)
+}
+
+// sourcePingedExpr is true for a source something watches on the one-minute ping
+// cadence: our own friendship ping, or a friend's, relayed as a freshness hint.
+// It takes the hint horizon as its one argument (MadnetworkView.PingedSince) and
+// is also selected as a column, so the ⓘ panel greys a holder by the same window
+// the browse filtered it by.
+const sourcePingedExpr = `(COALESCE(p.state,'') = 'friend' OR s.hinted_at >= %d)`
+
+// sourcePinged renders sourcePingedExpr as a selectable column. Without a
+// horizon there is nothing to divide the sources by, so the column reads
+// constant-true and every row is judged on the one window.
+func sourcePinged(view MadnetworkView) string {
+	if view.PingedSince <= 0 {
+		return "1"
+	}
+	return fmt.Sprintf(sourcePingedExpr, view.PingedSince)
+}
+
+// reachable applies the view's own windows to a row judged after the query — the
+// summary strip, which lists every source and greys the stale ones rather than
+// filtering them out.
+func (v MadnetworkView) reachable(lastSeen int64, pinged bool) bool {
+	return ReachableAt(lastSeen, pinged, v.Cutoff, v.PullCutoff)
+}
+
+// ReachableAt is the Go twin of reachClause, for the callers that judge a row
+// after it has been selected. The ⓘ panel's holder greying passes its own
+// cutoffs rather than the view's, deliberately: when the browse fails open and
+// shows everything, a stale holder must still read as stale instead of every
+// holder suddenly looking reachable.
+func ReachableAt(lastSeen int64, pinged bool, cutoff, pullCutoff int64) bool {
+	if cutoff <= 0 {
+		return true
+	}
+	if !pinged && pullCutoff > 0 && pullCutoff < cutoff {
+		return lastSeen >= pullCutoff
+	}
+	return lastSeen >= cutoff
 }
 
 // sourceClause narrows a cached-row query to one source (the "By node" shelf).
@@ -528,10 +612,11 @@ func fedcatBase(view MadnetworkView) string {
 	             COALESCE(NULLIF(c.album, ''), '` + DefaultAlbumTitle + `') AS alb,
 	             ` + sourceLabelExpr + ` AS source_label,
 	             ` + srcLastSeen + ` AS source_last_seen,
+	             ` + sourcePinged(view) + ` AS source_pinged,
 	             s.public_key AS source_key,
 	             c.*
 	      FROM federation_catalog c` + sourceJoin("c") + `
-	      WHERE ` + notBlocked + reachClause(view.Cutoff) + sourceClause(view) + `)`
+	      WHERE ` + notBlocked + reachClause(view) + sourceClause(view) + `)`
 }
 
 // fedcatRemoteRows / fedcatSelfRows are the two sources of the merged counting
@@ -548,7 +633,7 @@ func fedcatRemoteRows(view MadnetworkView) string {
 	       c.title AS title, c.track_number AS track_number,
 	       c.disc_number AS disc_number, c.year AS year
 	FROM federation_catalog c` + sourceJoin("c") + `
-	WHERE ` + notBlocked + reachClause(view.Cutoff) + sourceClause(view)
+	WHERE ` + notBlocked + reachClause(view) + sourceClause(view)
 }
 
 // selfPublishedClause keeps the self-merged rows to what this node actually
@@ -743,10 +828,16 @@ type MadnetworkTrackRow struct {
 	SourceID       int64
 	SourceName     string
 	SourceLastSeen int64
+	// SourcePinged reports which freshness window this node is judged by — true
+	// for one something pings every minute (our friend, or a friend's friend
+	// vouching for it), false for one reached only by the catalog rotation (F7
+	// item 10). The ⓘ panel needs it to grey a holder by the same window the
+	// browse filtered it by; without it a perfectly fresh member reads as stale.
+	SourcePinged bool
 	// SourceKey is the node's public key — the map address of a holder, so the
 	// library's ⓘ list can link one (F7 item 7). Empty on Self rows.
 	SourceKey string
-	Entry          federation.CatalogEntry
+	Entry     federation.CatalogEntry
 
 	// GroupArtist/GroupAlbum are the display-identity buckets (akey/alb) the
 	// row belongs to — the search handler groups cross-album results by them.
@@ -768,7 +859,7 @@ func (db *DB) remoteTrackRows(ctx context.Context, view MadnetworkView, match st
 		return nil, nil
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT source_id, source_label, source_last_seen, source_key, akey, alb,
+		SELECT source_id, source_label, source_last_seen, source_pinged, source_key, akey, alb,
 		       entry_key, recording_key, title, artist, album_artist,
 		       COALESCE(genre, ''), year, track_number, disc_number,
 		       COALESCE(duration, 0), COALESCE(license, ''), guest_playable, renditions
@@ -785,7 +876,7 @@ func (db *DB) remoteTrackRows(ctx context.Context, view MadnetworkView, match st
 		var r MadnetworkTrackRow
 		var year, track, disc sql.NullInt64
 		var renditions string
-		if err := rows.Scan(&r.SourceID, &r.SourceName, &r.SourceLastSeen, &r.SourceKey, &r.GroupArtist, &r.GroupAlbum,
+		if err := rows.Scan(&r.SourceID, &r.SourceName, &r.SourceLastSeen, &r.SourcePinged, &r.SourceKey, &r.GroupArtist, &r.GroupAlbum,
 			&r.Entry.Key, &r.Entry.RecordingKey, &r.Entry.Title, &r.Entry.Artist,
 			&r.Entry.AlbumArtist, &r.Entry.Genre, &year, &track, &disc,
 			&r.Entry.Duration, &r.Entry.License, &r.Entry.GuestPlayable, &renditions); err != nil {
@@ -1000,6 +1091,10 @@ type MadnetworkFriend struct {
 	Entries   int64  `json:"entries"`
 	Reachable bool   `json:"reachable"`
 	Friend    bool   `json:"friend"`
+	// Pinged reports which freshness window judged this node — see
+	// MadnetworkTrackRow.SourcePinged. Not serialized: the client is told the
+	// verdict (Reachable), not the arithmetic behind it.
+	Pinged bool `json:"-"`
 }
 
 // MadnetworkSummary reports the merged catalog's shape: every source with sync
@@ -1012,7 +1107,7 @@ func (db *DB) MadnetworkSummary(ctx context.Context, view MadnetworkView) ([]*Ma
 	rows, err := db.QueryContext(ctx, `
 		SELECT s.id, `+sourceLabelExpr+`, `+srcLastSeen+`, s.catalog_synced_at,
 		       (SELECT COUNT(*) FROM federation_catalog c WHERE c.source_id = s.id),
-		       COALESCE(p.state, '') = 'friend'
+		       COALESCE(p.state, '') = 'friend', `+sourcePinged(view)+`
 		FROM federation_catalog_sources s
 		LEFT JOIN federation_peers p ON p.public_key = s.public_key
 		WHERE `+notBlocked+`
@@ -1026,10 +1121,10 @@ func (db *DB) MadnetworkSummary(ctx context.Context, view MadnetworkView) ([]*Ma
 	var friends []*MadnetworkFriend
 	for rows.Next() {
 		var f MadnetworkFriend
-		if err := rows.Scan(&f.ID, &f.Name, &f.LastSeen, &f.SyncedAt, &f.Entries, &f.Friend); err != nil {
+		if err := rows.Scan(&f.ID, &f.Name, &f.LastSeen, &f.SyncedAt, &f.Entries, &f.Friend, &f.Pinged); err != nil {
 			return nil, 0, fmt.Errorf("scan madnetwork source: %w", err)
 		}
-		f.Reachable = view.Cutoff <= 0 || f.LastSeen >= view.Cutoff
+		f.Reachable = view.reachable(f.LastSeen, f.Pinged)
 		friends = append(friends, &f)
 	}
 	if err := rows.Err(); err != nil {

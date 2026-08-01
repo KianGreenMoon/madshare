@@ -84,8 +84,8 @@ func TestOpen_RecordsMigrationVersion(t *testing.T) {
 	if err := db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&v); err != nil {
 		t.Fatalf("query version: %v", err)
 	}
-	if v != 37 {
-		t.Errorf("migration version = %d, want 37", v)
+	if v != 38 {
+		t.Errorf("migration version = %d, want 38", v)
 	}
 }
 
@@ -206,8 +206,8 @@ func TestOpen_IdempotentMigrations(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&rows); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if rows != 37 {
-		t.Errorf("schema_migrations row count = %d, want 37 after re-run", rows)
+	if rows != 38 {
+		t.Errorf("schema_migrations row count = %d, want 38 after re-run", rows)
 	}
 }
 

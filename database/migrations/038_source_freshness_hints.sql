@@ -1,0 +1,31 @@
+-- Federation F7 item 10 — freshness for nodes we never ping
+-- (docs/architecture/federation.md §Availability, "Two clocks, two windows").
+--
+-- The availability window was sized for the one-minute friendship ping. Item 5
+-- then made most cached sources MEMBERS, whose only clock is the catalog pull —
+-- once every fifteen minutes at best. Judged by the friend's window, a two-hop
+-- member's tracks were visible for about three minutes in every fifteen: the
+-- discovery phase reached the community's libraries and the availability filter
+-- hid them again.
+--
+-- Part of the answer is a per-class window and needs no schema. The other part
+-- is this column. A friend's ping reply now carries first-hand ages for the
+-- nodes IT pings, and those hints refresh `last_seen` like any other
+-- observation — but a bare timestamp cannot say WHO observed it, and that is
+-- exactly what decides which window applies:
+--
+--   hinted_at   the last time a friend told us about this node, i.e. the last
+--               time we knew a minute-cadence observer was watching it. Recent
+--               ⇒ judge this source by the tight ping window; stale ⇒ judge it
+--               by the pull window, because the pull is all we have.
+--
+-- Folding it into last_seen would invert the fix. A hinted member that dies
+-- stops being hinted, so last_seen freezes — and with nothing recording that we
+-- USED to hear about it every minute, the row would fall back to the wide
+-- window at the very moment the silence became the news, and keep offering the
+-- node's tracks for another 45 minutes.
+--
+-- 0 means "never hinted", which is the honest state for every existing row and
+-- for every node past the friend-of-a-friend ring.
+
+ALTER TABLE federation_catalog_sources ADD COLUMN hinted_at INTEGER NOT NULL DEFAULT 0;

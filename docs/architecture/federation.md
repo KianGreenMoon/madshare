@@ -15,8 +15,12 @@
 > lands on discovery lanes and search instead of an alphabet, which is what a
 > community's whole published output needed, and **item 7 with it**: the map
 > navigates a community — view radius, whole-component search, branches, paths —
-> instead of loading all of it. Items 6, 9 and 10 remain: per-member abuse
-> controls, listener-node tokens, and the rest of trust-weighted popularity.
+> instead of loading all of it. **Item 10's freshness half landed 2026-08-01**
+> (migration **038**): reaching the community's libraries had left them judged by
+> a window sized for the friendship ping, so most of what item 5 pulled was
+> hidden most of the time (§Availability, "Two clocks, two windows"). Item 6,
+> item 9 and item 10's weighting half remain: per-member abuse controls,
+> listener-node tokens, and trust-weighted popularity beyond the *Most held* lane.
 > The two items in §Open questions are design-time details to settle during their
 > milestone, not blockers. Federation
 > is auth Phase 4 (`docs/architecture/auth.md` §8) and the milestone the native
@@ -1905,8 +1909,9 @@ shows every friend's cached catalog regardless of reachability.
 queries and the remote-playlist availability flag). A rendition is *available*
 iff:
 
-1. a **reachable** friend holds it (catalog ∪ holdings, `last_seen` within the
-   window), **or**
+1. a **reachable** node holds it (catalog ∪ holdings, `last_seen` within that
+   node's window — 180 s for one we ping, three catalog cycles for one we only
+   pull from; see "Two clocks, two windows" below), **or**
 2. it is in the **local library**, **or**
 3. it is **fully cached** (complete file in `<data_dir>/cache/madnetwork/`, no
    `.part`) — *the one arm not built:* the request-time queries have no cheap way
@@ -1970,16 +1975,109 @@ the chain. Federated systems don't do live presence at all:
   (SepiaSearch), again not a presence protocol.
 
 We already have the analogues — the swarm's holdings *are* PeerTube redundancy,
-and reactive backoff *is* Mastodon's dead-instance handling. So the depth-≥1 plan
-is: **gossip coarse freshness hints along the catalog sync** (a friend's catalog
-carries *its* friends' `last_seen` as a per-hop-stale *claim*, cheap and already
-flowing — the relay pattern), rely on **redundancy** (any reachable holder
-serves), and **verify on demand only for the working set actually on screen**
+and reactive backoff *is* Mastodon's dead-instance handling. So the plan is:
+**gossip coarse freshness hints** (a friend tells us how recently it saw *its*
+friends — a claim, not a probe of ours), rely on **redundancy** (any reachable
+holder serves), and **verify on demand only for the working set actually on
+screen**
 (one mesh RTT to the specific holder, proof not hearsay, cost O(what you are
-looking at) not O(network)). A future enrichment of `GET /madnetwork/v0/ping`
-into a small **NodeInfo-style health card** (name, version, holdings size,
-seed policy) gives the network map real per-node health without any new probing
-cadence. No chain-relayed ping-forwarding is ever needed.
+looking at) not O(network)). The hints ride the **one-minute ping** rather than
+the catalog sync they were first sketched on — see the next section for why the
+catalog is far too slow to feed a window measured in minutes. A future further
+enrichment of `GET /madnetwork/v0/ping` into a small **NodeInfo-style health
+card** (version, holdings size, seed policy) gives the network map real per-node
+health without any new probing cadence. No chain-relayed ping-forwarding is ever
+needed.
+
+### Two clocks, two windows (F7 item 10, built 2026-08-01)
+
+Everything above was written when every source we cached was a **friend**. Item 5
+made most of them **members**, and the two are not on the same clock:
+
+- a friend is **pinged every minute**, so a 180 s window is three missed rounds;
+- a member is only ever **pulled from** — `discovery_budget` nodes per sweep, each
+  due once per catalog cycle — so its `last_seen` advances at best every fifteen
+  minutes, and more slowly as the frontier fills.
+
+Judging the second by the first is a category error, and it was measured as one on
+2026-08-01: a two-hop member's tracks were visible for about **three minutes in
+every fifteen**. Item 5 pulled the community's libraries and the availability
+filter then hid nearly all of them again. Visibility only — the bytes stayed
+fetchable the whole time, because `MadnetworkBlobProviders` never consulted the
+window — but the browse is where the feature lives, so from the page it looked
+like the community had no library.
+
+The correction has two layers, wanted for different reasons.
+
+**Layer A — the window measures how recently we would have noticed.** There is
+not one freshness window; there is one *per class of observer*, and both carry the
+same 3× anti-flap margin over the cadence that feeds them. A node we ping every
+minute is judged against `reachable_window_sec` (180 s). A node whose only clock is
+the catalog pull is judged against three catalog cycles (45 min,
+`federation.PullFreshnessWindow`). `reachClause` picks between them per row rather
+than per query, because a single browse mixes both classes:
+
+```sql
+AND MAX(s.last_seen, COALESCE(p.last_seen, 0)) >=
+    CASE WHEN COALESCE(p.state,'') = 'friend' OR s.hinted_at >= <pingedSince>
+         THEN <tightCutoff> ELSE <pullCutoff> END
+```
+
+This alone makes the bug go away, and it is the honest reading of what the stored
+timestamp means. What it costs is precision in one direction: a member that died
+two minutes ago keeps its tracks on the page until its turn in the rotation comes
+round. That is the safe direction — a stale offer fails over to another holder or
+fails one fetch, while the alternative hid a whole community's library — but it is
+still a worse answer than we can give.
+
+**Layer B — a friend's ping carries what it knows.** The refresh loop already
+contacts every friend once a minute for exactly this purpose, so the hint rides
+that request rather than the catalog: `GET /madnetwork/v0/ping?hints=1`, answered
+only to friends, carrying **ages in seconds** for the nodes the responder pings
+itself. Ages rather than timestamps, because two nodes need not agree on the clock
+and an age composes across a hop without them having to. The caller applies each
+hint to the source row it already holds for that key. So a member two hops out —
+our friend's friend, which is most of a small community — is refreshed once a
+minute by our friend's own first-hand ping, lands back inside the tight window on
+its own merit, and is hidden within three minutes of actually going away.
+
+**A node may vouch only for what it touches itself.** A hint covers the
+responder's *friends*, never the sources it merely pulls from. This is the whole
+of the trust rule and also the whole of the engineering one: a friend's knowledge
+of a node it only pulls from is already fifteen minutes stale, so relaying it could
+never satisfy a 180 s window in the first place. One hop, first-hand, bounded by
+the friend list (`MaxFreshnessHints`, the `MaxGraphEdges` bound) — and beyond that
+ring layer A is the answer, not a deeper relay. *Rejected: hints propagated with
+accumulated age.* It is a second gossip protocol — propagation, ageing, hop
+counting, a store of hints-about-hints — delivering liveness that is still bounded
+below by the pull cadence at the first relay that was not a friend.
+
+**A hint is evidence, not a second clock.** It writes `last_seen` like every other
+observation (monotonic, so an out-of-order hint cannot age a node), which is what
+keeps one column answering "when was this node last known alive" no matter who
+observed it. `hinted_at` (migration **038**) records something different and
+necessary: *when a fast observer last reported on this source*, which is what
+decides the window. Folding the two together would invert the fix — a hinted
+member that dies goes on being hinted (its friend keeps relaying a frozen
+observation), so the row must stay on the tight window and disappear in three
+minutes rather than lingering for another forty-five.
+
+**The class asks who is watching *now*, not who once did.** `hinted_at` is read
+against one *ping* window, not the pull window, and the difference is a whole
+failure mode. When the **member** dies the hints keep arriving with a frozen
+observation, so the row stays tight and is hidden in three minutes — correct. When
+the **voucher** dies the hints stop, and within a ping window the row drops back to
+the pull clock *our own rotation still refreshes*, so a perfectly healthy member
+stays visible — also correct, and the opposite of what a longer horizon would do.
+Reading the class off a hint from forty minutes ago would hide a node we can reach
+because somebody else stopped talking about it.
+
+**A friend can lie about its friends**, and the network already lives with that:
+heard names, gossiped edges and distrust marks are all a friend's word. A false
+liveness claim costs one failed fetch that fails over, which is strictly less than
+what a false *edge* costs, and hints are accepted only from friends, only about
+members, and only for sources we already cache — a hint about a node we hold no
+catalog from changes no row and creates none.
 
 ## Topology asymmetry (unchanged)
 
@@ -2197,9 +2295,22 @@ milestone directly after direct transfer works, and tokens ship with depth.
      use of a token, and the only open design question left is its lifetime
      (§Open questions).
   10. **Trust-weighted popularity** (one branch = one voice, §Trust graph), which
-     only becomes meaningful once carriers are not all direct friends, and
-     **gossiped freshness hints** for holders we never ping (§Availability) —
-     never transitive pinging.
+     only becomes meaningful once carriers are not all direct friends.
+
+     Its other half — **freshness for holders we never ping** — is **built
+     2026-08-01** (§Availability, "Two clocks, two windows", migration **038**).
+     It turned out to be a bug report rather than an enhancement: item 5 made
+     most sources members, and members were still judged by a window sized for
+     the one-minute friendship ping, so a two-hop member's tracks showed for
+     about three minutes in every fifteen. Two layers answer it — the window is
+     now chosen per row by the cadence of whatever observes that node, and a
+     friend's ping reply carries first-hand ages for the nodes *it* pings, so a
+     friend-of-a-friend is watched once a minute and earns the tight window
+     rather than being granted the wide one. Never transitive pinging, and never
+     a relayed hint: one hop, first-hand, or nothing.
+
+     Still owed by this item: the same branch weighting the *Most held* lane
+     already applies (item 8), extended beyond that one lane.
 - **Cleanup, any time — remove the node-key → local-user mapping** (§Principals &
   access). Drop `federation_peers.user_id`, `PeerAudience`'s account lookup and
   the `/admin/network` control, once the open detail under §Sharing scope decides

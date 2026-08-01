@@ -90,6 +90,9 @@ func (emptyStore) MarkCatalogSourceAttempted(context.Context, int64, int64) erro
 func (emptyStore) TouchCatalogSourceSeen(context.Context, int64, int64, string) error {
 	return nil
 }
+func (emptyStore) ApplyFreshnessHints(context.Context, map[string]int64, int64) (int, error) {
+	return 0, nil
+}
 func (emptyStore) DropCatalogSources(context.Context, []int64) error { return nil }
 func (emptyStore) BlobVisibleTo(context.Context, string, federation.Audience) (bool, bool, error) {
 	return false, false, nil

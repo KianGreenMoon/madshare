@@ -70,17 +70,33 @@ func (n *Node) peerFromRemote(r *http.Request) *Peer {
 	if n.store == nil {
 		return nil
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	ip := net.ParseIP(host)
+	ip := remoteIP(r)
 	if ip == nil {
 		return nil
 	}
 	peers, err := n.store.ListFederationPeers(r.Context())
 	if err != nil {
 		n.logger.Printf("federation: resolve peer: %v", err)
+		return nil
+	}
+	return matchPeerAddr(peers, ip)
+}
+
+// remoteIP is a mesh request's source address — self-certifying, since a
+// yggdrasil address derives from the node key.
+func remoteIP(r *http.Request) net.IP {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	return net.ParseIP(host)
+}
+
+// matchPeerAddr finds the peer whose key derives to ip. Split out of
+// peerFromRemote so a handler that has already read the peer table can match
+// against the list it holds instead of reading it again.
+func matchPeerAddr(peers []*Peer, ip net.IP) *Peer {
+	if ip == nil {
 		return nil
 	}
 	for _, p := range peers {
@@ -365,15 +381,18 @@ func (n *Node) refreshHeardName(ctx context.Context, p *Peer, heard string) {
 	p.HeardName = heard
 }
 
-// pingPeer refreshes a friend's last_seen with a protocol ping, and takes the
-// peer's own name from the reply while it is there — the contact that keeps the
-// heard name current, once a minute per friend.
+// pingPeer refreshes a friend's last_seen with a protocol ping, and takes what
+// else the reply carries while it is there: the peer's own name, and the
+// freshness hints that are this loop's other job since F7 item 10 — what our
+// friend saw of ITS friends, which is how a member two hops out stays inside the
+// one-minute window instead of waiting fifteen for its turn in the catalog
+// rotation (freshness.go).
 func (n *Node) pingPeer(ctx context.Context, p *Peer) {
 	addr, err := AddrForKeyHex(p.PublicKey)
 	if err != nil {
 		return
 	}
-	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/ping", addr, MeshPort)
+	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/ping?hints=1", addr, MeshPort)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return
@@ -387,16 +406,25 @@ func (n *Node) pingPeer(ctx context.Context, p *Peer) {
 		return
 	}
 	_ = n.store.TouchFederationPeerSeen(ctx, p.ID, time.Now().Unix())
-	// The name is additive on the ping (a pre-033 peer omits it), so a missing
-	// one simply leaves the last claim standing.
+	// Both extras are additive: a pre-033 peer omits the name, a peer older than
+	// F7 item 10 omits the hints and simply ignored the query parameter. A
+	// missing name leaves the last claim standing; missing hints leave that
+	// friend's friends on the pull clock, which is what they were on before.
 	var reply struct {
-		Name string `json:"name"`
+		Name  string           `json:"name"`
+		Hints map[string]int64 `json:"hints"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<10)).Decode(&reply); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxPingReplyBytes)).Decode(&reply); err != nil {
 		return
 	}
 	n.refreshHeardName(ctx, p, reply.Name)
+	n.applyFreshnessHints(ctx, p, reply.Hints)
 }
+
+// maxPingReplyBytes bounds a ping reply. Generous next to the handful of fields
+// it used to be, because MaxFreshnessHints keys and ages fit inside it — the
+// bound is on the reply, and the hint list has its own.
+const maxPingReplyBytes = 64 << 10
 
 // refreshLoop periodically retries outbound pairings and pings friends; Nudge
 // wakes it early after an import/accept so the admin sees the result promptly.

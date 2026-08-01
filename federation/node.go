@@ -148,7 +148,7 @@ var (
 		// catalog check. The catalog cadence is deliberately far slower than the
 		// ping — a library changes rarely, liveness constantly.
 		Refresh:     time.Minute,
-		CatalogSync: 15 * time.Minute,
+		CatalogSync: CatalogCycle,
 		SnapshotTTL: time.Minute,
 		// Gossip (F6) ages by wall clock, not by hops: a record lives 7 days and
 		// its author re-signs every 6 hours. The ratio is what makes an offline
@@ -391,8 +391,7 @@ func loadOrCreateKey(path string) (*yggconfig.NodeConfig, error) {
 func (n *Node) protocolHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /madnetwork/v0/ping", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		reply := map[string]any{
 			"protocol": ProtocolVersion,
 			"software": version.Name,
 			"version":  version.Get().Version,
@@ -403,7 +402,15 @@ func (n *Node) protocolHandler() http.Handler {
 			"name":       n.name,
 			"public_key": n.PublicKeyHex(),
 			"address":    n.Address().String(),
-		})
+		}
+		// Freshness hints (F7 item 10, freshness.go): what we saw first-hand of
+		// our own friends, for the asking friend's benefit. Opt-in, so the plain
+		// ping every other caller makes stays four small fields.
+		if hints := n.freshnessHints(r); len(hints) > 0 {
+			reply["hints"] = hints
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(reply)
 	})
 	mux.HandleFunc("POST /madnetwork/v0/pair", n.handlePair)
 	mux.HandleFunc("GET /madnetwork/v0/catalog", n.handleCatalog)

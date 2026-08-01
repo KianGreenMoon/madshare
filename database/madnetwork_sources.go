@@ -23,12 +23,12 @@ import (
 // references a source, so dropping one is always safe.
 
 const sourceColumns = `id, public_key, heard_name, catalog_serial, catalog_synced_at,
-	attempted_at, first_seen, last_seen`
+	attempted_at, first_seen, last_seen, hinted_at`
 
 func scanSource(row interface{ Scan(...any) error }) (*federation.CatalogSource, error) {
 	var s federation.CatalogSource
 	if err := row.Scan(&s.ID, &s.PublicKey, &s.HeardName, &s.CatalogSerial,
-		&s.CatalogSyncedAt, &s.AttemptedAt, &s.FirstSeen, &s.LastSeen); err != nil {
+		&s.CatalogSyncedAt, &s.AttemptedAt, &s.FirstSeen, &s.LastSeen, &s.HintedAt); err != nil {
 		return nil, err
 	}
 	return &s, nil
@@ -122,6 +122,58 @@ func (db *DB) TouchCatalogSourceSeen(ctx context.Context, id int64, at int64, he
 		return fmt.Errorf("touch catalog source: %w", err)
 	}
 	return nil
+}
+
+// ApplyFreshnessHints records liveness a friend observed first-hand for nodes we
+// only ever pull from (F7 item 10, docs/architecture/federation.md §Availability,
+// "Two clocks, two windows"). seen maps a node key to the unix time that friend
+// last touched it; at is when we heard the claim.
+//
+// The two columns say different things and both are needed. last_seen answers
+// "when was this node last known alive", whoever observed it, so a hint writes it
+// like a ping does — monotonically, since hints from two friends arrive in no
+// particular order and the older one must not age the node. hinted_at answers
+// "is a minute-cadence observer watching this node", which is what the browse
+// consults to pick a window: fold the two together and a hinted node that dies
+// would drop back to the 45-minute pull window exactly when its friends going
+// quiet is the news.
+//
+// The UPDATE is keyed on public_key, so a hint about a node we hold no catalog
+// from silently matches nothing. That is the intended shape rather than a
+// tolerated one: a source row means the sweep pulled from that node, and hearsay
+// must not be able to mint one.
+func (db *DB) ApplyFreshnessHints(ctx context.Context, seen map[string]int64, at int64) (int, error) {
+	if len(seen) == 0 {
+		return 0, nil
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("apply freshness hints: %w", err)
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `
+		UPDATE federation_catalog_sources
+		   SET last_seen = MAX(last_seen, ?),
+		       hinted_at = MAX(hinted_at, ?)
+		 WHERE public_key = ?`)
+	if err != nil {
+		return 0, fmt.Errorf("prepare freshness hint: %w", err)
+	}
+	defer stmt.Close()
+	moved := 0
+	for key, when := range seen {
+		res, err := stmt.ExecContext(ctx, when, at, strings.ToLower(strings.TrimSpace(key)))
+		if err != nil {
+			return 0, fmt.Errorf("apply freshness hint: %w", err)
+		}
+		if n, err := res.RowsAffected(); err == nil {
+			moved += int(n)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit freshness hints: %w", err)
+	}
+	return moved, nil
 }
 
 // DropCatalogSources deletes sources and, by CASCADE, every catalog row,

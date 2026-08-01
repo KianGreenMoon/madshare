@@ -764,3 +764,15 @@ so a loaded machine can miss a pairing window. Not tracked to any code path — 
 change under test that round (`depeerBlocked`) returns immediately when no peer is
 blocked, and no swarm test blocks one. Worth generous deadlines rather than a
 retry loop if it recurs.
+
+**It recurred, in a different test (2026-08-01).** One full-package run failed at
+`community_test.go:78` — `TestMemberIsServedTheMadnetworkScope` saw the catalog it
+had just narrowed still carrying both entries, as if the memoized snapshot were
+stale, though `scopePair` sets `SnapshotTTL` to 1 ms precisely so it cannot be.
+Not reproduced since, in either tree: 12 isolated runs and 2 full-package runs at
+HEAD, plus 3 isolated and 2 full-package runs with the F7-item-10 changes, all
+green. So it is not attributable to that change and the mechanism is unidentified
+— the likeliest remaining candidate is `serveAudience` momentarily resolving B as
+a *friend* rather than a member under load, which would explain the entry count
+exactly. If it recurs, log the resolved `Audience` in the failure rather than
+raising the deadline: this one is not obviously a timeout.

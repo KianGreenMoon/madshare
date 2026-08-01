@@ -187,6 +187,29 @@ func (m *memStore) MarkCatalogSourceAttempted(_ context.Context, id int64, at in
 	return nil
 }
 
+// ApplyFreshnessHints mirrors the real store: only sources we already hold are
+// moved, last_seen and hinted_at both monotonic (F7 item 10).
+func (m *memStore) ApplyFreshnessHints(_ context.Context, seen map[string]int64, at int64) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	moved := 0
+	for key, when := range seen {
+		for _, s := range m.sources {
+			if s.PublicKey != key {
+				continue
+			}
+			if when > s.LastSeen {
+				s.LastSeen = when
+			}
+			if at > s.HintedAt {
+				s.HintedAt = at
+			}
+			moved++
+		}
+	}
+	return moved, nil
+}
+
 func (m *memStore) TouchCatalogSourceSeen(_ context.Context, id int64, at int64, heardName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -1044,6 +1044,15 @@ meshlab specifically:
 - **A friend takes two minutes to go stale.** That is `reachable_window_sec`, and
   the lab already runs at the smallest value madshare accepts. Not a bug, and not
   something to work around — watch `meshlab status` rather than guessing.
+- **A partitioned *member* takes 45 minutes to go stale, not two.** Also not a
+  bug. Since F7 item 10 the freshness window follows the observer: two minutes for
+  a node this one pings every minute, three catalog cycles for one it only ever
+  pulls from (`federation.md` §Availability, "Two clocks, two windows"). The
+  availability walkthrough uses the **triangle**, where every node is a direct
+  friend, which is why it steps at exactly 120 s. On the chain topology the
+  two-hop nodes are members — and a member a friend of ours still vouches for
+  goes stale on the *two-minute* window instead, because a hint is minute-cadence
+  evidence. `reachable_window_sec` cannot shrink either of the two.
 - **The lab browse endpoints are drill-down, not flat.** `/api/albums` needs an
   `artist_id` and `/api/tracks` an `album_id`; there is no "every track"
   endpoint. Artists come back as a bare array normally and as `{"items": […]}` on

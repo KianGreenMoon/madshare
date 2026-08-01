@@ -179,10 +179,19 @@ render regardless of anyone's reachability — a transient disconnect can never
 blank content you can actually play. Only tracks whose *only* holders are
 unreachable friends drop out.
 
-**Reachability display.** The sync-status strip lists friends with a **"last
-seen"** indicator; a friend outside the freshness window is greyed. The ⓘ panel's
+**Reachability display.** The sync-status strip lists nodes with a **"last
+seen"** indicator; one outside its freshness window is greyed. The ⓘ panel's
 holder list shows the same — an unreachable holder is greyed rather than removed,
-so the provenance stays legible. (Freshness is minutes-wide; see the backend doc.)
+so the provenance stays legible.
+
+Freshness is minutes-wide, and **how many minutes depends on the node** (F7 item
+10; `federation.md` §Availability, "Two clocks, two windows"). A direct friend is
+pinged every minute, so three minutes of silence greys it. A member reached only
+by the catalog rotation is on a fifteen-minute clock, so its window is
+correspondingly wider — judging it by the friend's window is what hid most of the
+community's library for most of every quarter hour. Nothing about this is visible
+in the UI beyond the greying being *right*: the server sends a verdict, never the
+arithmetic behind it.
 
 **Empty states.** With own tracks merged in, the list truly empties only when
 there is nothing to show at all. The "no friends yet" onboarding message stays

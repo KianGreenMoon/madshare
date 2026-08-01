@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 
 	"daemonlord.ygg/madshare/federation"
 )
@@ -514,6 +515,119 @@ func TestMadnetworkAvailability(t *testing.T) {
 	if _, tracks, _ := db.MadnetworkSummary(ctx, MadnetworkView{}); tracks != 2 {
 		t.Errorf("unfiltered track count = %d, want 2", tracks)
 	}
+}
+
+// TestMadnetworkMemberFreshnessWindow is the regression for the bug measured
+// 2026-08-01 (F7 item 10, §Availability, "Two clocks, two windows"): a MEMBER —
+// a source with no peer row, reached only by the catalog rotation — was judged
+// against the window sized for the one-minute friendship ping, so its tracks were
+// visible for about three minutes in every fifteen.
+//
+// The window now follows the observer. A member nothing pings for us is judged by
+// the pull window; one a friend vouches for is judged by the tight window and must
+// therefore DISAPPEAR when the vouching stops and it goes quiet — which is the
+// half a single wide window would get wrong in the other direction.
+func TestMadnetworkMemberFreshnessWindow(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	// now-relative, because reachability is judged against wall-clock cutoffs.
+	now := time.Now().Unix()
+	const tightWindow, pullWindow = 180, 2700
+	view := MadnetworkView{
+		Cutoff: now - tightWindow, PullCutoff: now - pullWindow,
+		PingedSince: now - tightWindow,
+	}
+
+	// Four sources, none of them a friend: no peer rows at all.
+	pulled := insertSource(t, db, "cccc")   // last pulled 10 min ago, never hinted
+	vouched := insertSource(t, db, "dddd")  // hinted 1 min ago, seen 1 min ago
+	departed := insertSource(t, db, "eeee") // hinted 1 min ago, but seen 10 min ago
+	orphaned := insertSource(t, db, "ffff") // hinted 10 min ago, pulled 10 min ago
+	for _, s := range []struct {
+		id            int64
+		seen, hinted  int64
+		artist, album string
+		entryKey      string
+	}{
+		{pulled, now - 600, 0, "Pulled Artist", "Pulled Album", "1"},
+		{vouched, now - 60, now - 60, "Vouched Artist", "Vouched Album", "2"},
+		// Its friend still reports it, carrying a frozen observation: the member
+		// died, and the tight window it earned is what notices.
+		{departed, now - 600, now - 60, "Departed Artist", "Departed Album", "3"},
+		// The VOUCHER went quiet instead — no hint for ten minutes. The member
+		// itself is fine and our own rotation still reaches it, so it must fall
+		// back to the pull clock rather than be held to a window nothing feeds.
+		{orphaned, now - 600, now - 600, "Orphaned Artist", "Orphaned Album", "4"},
+	} {
+		if err := db.TouchCatalogSourceSeen(ctx, s.id, s.seen, ""); err != nil {
+			t.Fatal(err)
+		}
+		if s.hinted > 0 {
+			if _, err := db.ApplyFreshnessHints(ctx,
+				map[string]int64{sourceKey(t, db, s.id): s.seen}, s.hinted); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := db.ReplaceSourceCatalog(ctx, s.id, "s"+s.entryKey, 1, []federation.CatalogEntry{
+			catEntry(s.entryKey, "r"+s.entryKey, s.artist, s.album, s.artist+" Song", "hash-"+s.entryKey),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	artists, _, err := db.MadnetworkArtists(ctx, "", view, 0, "")
+	if err != nil {
+		t.Fatalf("MadnetworkArtists: %v", err)
+	}
+	shown := map[string]bool{}
+	for _, a := range artists {
+		shown[a.Name] = true
+	}
+	if !shown["Pulled Artist"] {
+		t.Error("a member last pulled 10 minutes ago was hidden — it is judged by the " +
+			"pull window, not by the ping window (this is the 2026-08-01 bug)")
+	}
+	if !shown["Vouched Artist"] {
+		t.Error("a member a friend vouched for a minute ago was hidden")
+	}
+	if shown["Departed Artist"] {
+		t.Error("a member still being reported every minute, but last SEEN ten minutes " +
+			"ago, was still shown — a hinted source must be judged by the tight window " +
+			"it earned, or a dead node lingers for 45 minutes")
+	}
+	if !shown["Orphaned Artist"] {
+		t.Error("a healthy member was hidden because the friend that vouched for it went " +
+			"quiet — the class must ask who is watching NOW, so this row falls back to " +
+			"the pull clock our own rotation still refreshes")
+	}
+
+	// The summary strip greys by exactly the same rule it filters by.
+	friends, tracks, err := db.MadnetworkSummary(ctx, view)
+	if err != nil {
+		t.Fatalf("MadnetworkSummary: %v", err)
+	}
+	if tracks != 3 {
+		t.Errorf("reachable track count = %d, want 3", tracks)
+	}
+	reach := map[int64]bool{}
+	for _, f := range friends {
+		reach[f.ID] = f.Reachable
+	}
+	if !reach[pulled] || !reach[vouched] || !reach[orphaned] || reach[departed] {
+		t.Errorf("strip reachability = %+v; want everything but the departed member reachable", reach)
+	}
+}
+
+// sourceKey reads a source's node key back, so a test can drive the key-addressed
+// hint API from the id the insert helper returns.
+func sourceKey(t *testing.T, db *DB, id int64) string {
+	t.Helper()
+	var key string
+	if err := db.QueryRow(`SELECT public_key FROM federation_catalog_sources WHERE id = ?`, id).Scan(&key); err != nil {
+		t.Fatalf("read source key: %v", err)
+	}
+	return key
 }
 
 // TestCatalogSources covers the store side of F7 item 5: a source is created

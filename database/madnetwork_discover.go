@@ -103,7 +103,7 @@ func laneRowsCTE(view MadnetworkView) string {
 	       (COALESCE(p.state, '') = 'friend') AS is_friend,
 	       c.first_seen AS first_seen, 0 AS is_self
 	FROM federation_catalog c` + sourceJoin("c") + `
-	WHERE ` + notBlocked + reachClause(view.Cutoff) + sourceClause(view)
+	WHERE ` + notBlocked + reachClause(view) + sourceClause(view)
 
 	self := `
 	SELECT ` + selfAkeyExpr + ` AS akey, ` + selfAlbExpr + ` AS alb,

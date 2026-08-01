@@ -35,6 +35,35 @@ const MeshPort = 1314
 // incompatible peers can refuse each other early.
 const ProtocolVersion = 0
 
+// Freshness cadences (F7 item 10, docs/architecture/federation.md §Availability,
+// "Two clocks, two windows"). These live here rather than beside the running
+// node's Intervals because the *browse* has to know them too, and the browse is
+// compiled into every build — including -tags nofederation, where the node is
+// not.
+const (
+	// CatalogCycle is how often a source's cached catalog is re-pulled. Far
+	// slower than the friendship ping on purpose: a library changes rarely,
+	// liveness constantly.
+	CatalogCycle = 15 * time.Minute
+
+	// PullFreshnessWindow is the availability window for a node whose only
+	// liveness clock IS that pull — a member no friend of ours vouches for.
+	// Three cycles, the same 3× anti-flap margin reachable_window_sec carries
+	// over the one-minute ping. Judging such a node by the ping's window is the
+	// category error that hid most of the community's library.
+	PullFreshnessWindow = 3 * CatalogCycle
+
+	// MaxFreshnessHints bounds a ping reply's hint list. A node vouches only for
+	// nodes it pings itself, so this is the friend-list bound — the same one
+	// MaxGraphEdges puts on a published friend list, for the same reason.
+	MaxFreshnessHints = MaxGraphEdges
+
+	// MaxHintAge is how stale a first-hand observation may be and still be worth
+	// relaying. Past it the claim cannot satisfy any receiver's ping window, so
+	// sending it only costs bytes.
+	MaxHintAge = time.Hour
+)
+
 // Peer states (federation_peers.state, migration 026). The friendship state
 // machine — see docs/architecture/federation.md §Trust graph and the pairing
 // handshake in node.go:
@@ -424,6 +453,12 @@ type CatalogSource struct {
 	AttemptedAt int64
 	FirstSeen   int64
 	LastSeen    int64 // last successful contact; feeds the freshness window
+	// HintedAt is when a friend last vouched for this node's liveness (F7 item
+	// 10, migration 038). It records not *that* the node was alive — LastSeen
+	// holds that, whoever observed it — but that a minute-cadence observer is
+	// watching it, which is what decides whether this source is judged by the
+	// ping window or by the far wider pull window.
+	HintedAt int64
 }
 
 // Display names a source for a log line or a UI row: what it calls itself, or
@@ -522,6 +557,14 @@ type PeerStore interface {
 	// TouchCatalogSourceSeen records a successful contact, and what the node
 	// called itself if it said. last_seen is monotonic.
 	TouchCatalogSourceSeen(ctx context.Context, id int64, at int64, heardName string) error
+	// ApplyFreshnessHints records what a friend just vouched for (F7 item 10):
+	// seen maps a node key to the unix time that friend last touched it
+	// first-hand. Only sources we already hold are updated — a hint about a node
+	// we cache nothing from names no row and must create none. last_seen moves
+	// forward as usual; hinted_at records that a minute-cadence observer is
+	// watching, which is what picks the availability window. Returns how many
+	// sources it moved.
+	ApplyFreshnessHints(ctx context.Context, seen map[string]int64, at int64) (int, error)
 	// DropCatalogSources deletes sources and everything cached from them
 	// (CASCADE): the ones we may no longer keep, and the ones evicted past the
 	// cap. An empty list is a no-op, never "drop everything".
