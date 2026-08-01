@@ -456,6 +456,23 @@ tests/mesh/bin/meshlab up -topology triangle -seed ~/music -per-node 1
 tests/mesh/bin/meshlab check          # from another shell; non-zero on failure
 ```
 
+**Two rules for anyone adding a case.**
+
+*Assert on identities, never on labels or on counts of them.* A track's title,
+an artist name and a node's name are all display text: two nodes may publish the
+same one, and the merged browse then folds them into a single row by design
+("N versions", §Catalog). A case that counts rows is therefore not asking about a
+recording at all — it silently measures whatever else the lab happens to be
+publishing. `private track leaves the node's own /madnetwork` was written that
+way and passed only while no two nodes shared a title; it now walks the node's
+own shelf and looks for the subject's **content hash**. Reach for the hash, the
+tagset id or the recording id.
+
+*`check` runs inside the `meshlab up` process*, not in the client that prints the
+report — the client POSTs to the control API. Rebuilding after editing `check.go`
+therefore changes nothing until the lab is restarted, and the symptom is a case
+that keeps failing in exactly the way you just fixed.
+
 ```
 PASS  outsider reaches the mesh                      ping = 200, want 200
 PASS  outsider refused catalog                       /madnetwork/v0/catalog = 403, want 403 (friends only)

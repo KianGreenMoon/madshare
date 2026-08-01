@@ -27,6 +27,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -198,21 +199,33 @@ func (l *lab) check() (*checkReport, error) {
 	// ── The node's own view ──────────────────────────────────────────────────
 	// The self-merge is filtered by depth, so a private recording leaves the
 	// network page while staying in the local library. No sync involved.
-	if own, err := l.madnetworkCount(holder); err != nil {
-		rep.add("private track leaves the node's own /madnetwork", false, "summary: %v", err)
-	} else {
+	//
+	// Asserted on the subject's CONTENT HASH, never on a row count. The merged
+	// view groups by display text, so two nodes that happen to label a track the
+	// same way share one row — and then the count does not move when this node's
+	// copy leaves, because the other node's version still backs the row. That is
+	// the merged view working as designed ("N versions", §Catalog); a count is
+	// simply not an answer about one recording. A label is not an identifier
+	// anywhere else in this system and must not become one here.
+	{
+		const name = "private track leaves the node's own /madnetwork"
 		if err := l.setScope(holder, subject.RecordingID, nil, true, nil); err != nil {
 			return nil, err
 		}
-		shared, err2 := l.madnetworkCount(holder)
+		shared, sErr := l.ownPublishes(holder, subject.Hash)
 		if err := l.setScope(holder, subject.RecordingID, ptr(federation.DepthPrivate), false, nil); err != nil {
 			return nil, err
 		}
-		if err2 != nil {
-			rep.add("private track leaves the node's own /madnetwork", false, "summary: %v", err2)
-		} else {
-			rep.add("private track leaves the node's own /madnetwork", shared == own+1,
-				"madnetwork on %s: %d while private, %d while shared (want +1)", holder.name, own, shared)
+		private, pErr := l.ownPublishes(holder, subject.Hash)
+		switch {
+		case sErr != nil:
+			rep.add(name, false, "own shelf while shared: %v", sErr)
+		case pErr != nil:
+			rep.add(name, false, "own shelf while private: %v", pErr)
+		default:
+			rep.add(name, shared && !private,
+				"%s's own published set carries %s: %v while shared, %v while private (want true/false)",
+				holder.name, short(subject.Hash), shared, private)
 		}
 	}
 
@@ -499,9 +512,66 @@ func (l *lab) setServeGuests(n *node, on bool) error {
 	return nil
 }
 
-func (l *lab) madnetworkCount(n *node) (int, error) {
-	tracks, _, err := n.madnetworkView()
-	return tracks, err
+// ownPublishes reports whether n's OWN published set still offers the blob
+// `hash` — the identity-based answer to "did this recording leave the network
+// page", and the reason this walks the shelf instead of reading the summary's
+// track count.
+//
+// `?source=self` restricts every step to this node's own contribution, so the
+// answer cannot be coloured by what a friend publishes. The walk mirrors the
+// page's own drill-down (artists → albums → tracks) because the merged browse
+// has no flat "everything" endpoint.
+func (l *lab) ownPublishes(n *node, hash string) (bool, error) {
+	// Decoded through the browse's OWN envelope keys, not node.getList: that
+	// helper accepts a bare array or {"items":…}, and these endpoints answer
+	// {"artists":…} / {"albums":…} / {"tracks":…}. Going through it decodes to an
+	// empty slice and returns no error, so the walk would report "not published"
+	// for everything — a silent wrong answer, which is the same trap walkLibrary
+	// documents about duration_seconds.
+	var artists struct {
+		Artists []struct {
+			Name string `json:"name"`
+		} `json:"artists"`
+	}
+	if err := n.getJSON("/api/madnetwork/artists?source=self", &artists); err != nil {
+		return false, fmt.Errorf("own artists on %s: %w", n.name, err)
+	}
+	for _, ar := range artists.Artists {
+		var albums struct {
+			Albums []struct {
+				Title string `json:"title"`
+			} `json:"albums"`
+		}
+		q := "artist=" + url.QueryEscape(ar.Name)
+		if err := n.getJSON("/api/madnetwork/albums?source=self&"+q, &albums); err != nil {
+			return false, fmt.Errorf("own albums on %s: %w", n.name, err)
+		}
+		for _, al := range albums.Albums {
+			var tracks struct {
+				Tracks []struct {
+					Versions []struct {
+						Renditions []struct {
+							Hash string `json:"hash"`
+						} `json:"renditions"`
+					} `json:"versions"`
+				} `json:"tracks"`
+			}
+			aq := q + "&album=" + url.QueryEscape(al.Title)
+			if err := n.getJSON("/api/madnetwork/tracks?source=self&"+aq, &tracks); err != nil {
+				return false, fmt.Errorf("own tracks on %s: %w", n.name, err)
+			}
+			for _, t := range tracks.Tracks {
+				for _, v := range t.Versions {
+					for _, r := range v.Renditions {
+						if r.Hash == hash {
+							return true, nil
+						}
+					}
+				}
+			}
+		}
+	}
+	return false, nil
 }
 
 // ensureProbe starts the outsider on first use and keeps it for the lab's life —

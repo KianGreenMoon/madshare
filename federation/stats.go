@@ -3,6 +3,7 @@
 package federation
 
 import (
+	"fmt"
 	"sync"
 	"time"
 )
@@ -49,6 +50,9 @@ type transferStats struct {
 
 	order []string                  // provider keys in tracker order (the fetch order)
 	prov  map[string]*ProviderStats // by provider key
+	// anon gives a keyless holder a per-transfer identity, so two of them are
+	// never merged just because they answer to the same name.
+	anon map[*BlobProvider]string
 }
 
 func newTransferStats() *transferStats {
@@ -154,23 +158,36 @@ func (s *transferStats) finish() {
 	s.mu.Unlock()
 }
 
-// providerKey identifies a holder across a transfer. The public key is the
-// identity; the display name is a fallback for the synthetic holders unit tests
-// build.
-func providerKey(p *BlobProvider) string {
+// providerKey identifies a holder across a transfer. Only the public key does
+// that — a display name is a label, and two holders may share one, which would
+// merge their rows and report one node's stalls against another's bytes.
+//
+// A holder with no key is therefore given a per-transfer synthetic identity
+// rather than being named: unplaceable must mean "counted separately", never
+// "counted together". In practice this is only the synthetic holders unit tests
+// build; the swarm's own providers always carry a key.
+func (s *transferStats) providerKey(p *BlobProvider) string {
 	if p == nil {
 		return ""
 	}
 	if p.PublicKey != "" {
 		return p.PublicKey
 	}
-	return p.Display()
+	if s.anon == nil {
+		s.anon = map[*BlobProvider]string{}
+	}
+	if k, ok := s.anon[p]; ok {
+		return k
+	}
+	k := fmt.Sprintf("anon:%d", len(s.anon)+1)
+	s.anon[p] = k
+	return k
 }
 
 // providerLocked returns (creating on first sight) the accounting row for p.
 // Caller holds s.mu; nil for an unidentifiable holder.
 func (s *transferStats) providerLocked(p *BlobProvider) *ProviderStats {
-	key := providerKey(p)
+	key := s.providerKey(p)
 	if key == "" {
 		return nil
 	}
@@ -204,7 +221,7 @@ func (s *transferStats) noteSucceed(piece int, p *BlobProvider, bytes int64) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := providerKey(p)
+	key := s.providerKey(p)
 	if ps := s.providerLocked(p); ps != nil {
 		ps.Bytes += bytes
 		if piece != wholePiece {
@@ -235,7 +252,7 @@ func (s *transferStats) noteFail(piece int, p *BlobProvider, err error, corrupt 
 	if corrupt {
 		s.corrupt++
 	}
-	key := providerKey(p)
+	key := s.providerKey(p)
 	if key == "" {
 		return // no holder to blame (the tracker ran dry)
 	}
