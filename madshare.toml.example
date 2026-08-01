@@ -92,9 +92,16 @@ max_upload_mb = 500          # per-request upload cap, in MiB
 # name is the display name shown on this node's card and to peers during
 # pairing (host name when unset) — purely descriptive, identity is the key.
 # Friendships are managed on /admin/network (exchange node cards out-of-band).
-# seed_rate_kib caps the outbound rate (KiB/s) for serving blobs to friends over
-# the swarm (0 = unlimited); the seed on/off + cache-seed toggles are runtime
-# settings on /admin/settings, not here. reachable_window_sec is the availability
+# seed_rate_kib caps the outbound rate (KiB/s) for serving blobs to EVERY
+# requester (0 = unlimited); the seed on/off + cache-seed toggles are runtime
+# settings on /admin/settings, not here. The four member_* knobs bound what a
+# node we have no direct relationship with may cost: this node serves its whole
+# community and membership has no admission cap, so bytes and concurrent blob
+# serves are each capped per requester AND across all non-friends together (N
+# forged keys would otherwise buy N per-requester quotas). Direct friends are
+# outside all four — they are an admin's choice and must never queue behind the
+# nodes the graph let in. All default to unlimited: a handful of friends needs
+# none of this, so it is opt-in. reachable_window_sec is the availability
 # freshness window: a friend counts as reachable (its exclusively-held tracks show
 # in the madnetwork browse) when seen within it — 0 = default 180s, values below
 # 120s are clamped up (anti-flap floor). Whether hiding applies at all is the
@@ -120,7 +127,11 @@ max_upload_mb = 500          # per-request upload cap, in MiB
 #key_file            = "./data/federation.key" # defaults to <data_dir>/federation.key
 #peers               = ["tls://peer.example:12345"] # tcp/tls/quic/ws/wss/unix/socks/sockstls
 #listen              = ["tls://0.0.0.0:12345"] # tcp/tls/quic/ws/wss/unix
-#seed_rate_kib       = 0                        # 0 = unlimited outbound seeding rate
+#seed_rate_kib       = 0                        # 0 = unlimited outbound seeding rate (everyone)
+#member_rate_kib     = 0                        # KiB/s to all non-friends together
+#per_member_rate_kib = 0                        # KiB/s to any one non-friend
+#member_max_transfers     = 0                   # concurrent blob serves, all non-friends
+#per_member_max_transfers = 0                   # concurrent blob serves, one non-friend
 #reachable_window_sec = 180                     # availability freshness window (min 120)
 #discovery_budget    = 4                        # member catalogs pulled per cycle (-1 = friends only)
 #discovery_cap       = 200                      # cached foreign catalogs kept (coldest evicted)

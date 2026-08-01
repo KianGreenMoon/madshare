@@ -1853,6 +1853,61 @@ it makes "which node changed" free, and only then does storing more pay off.
   **upload rate cap** `[federation] seed_rate_kib` (a token bucket over the
   blob-serve write path; `0` = unlimited), a static config knob.
 
+### What a member may cost us (F7 item 6, built 2026-08-01)
+
+`seed_rate_kib` was written when a requester was always a friend, and one bucket
+for everyone was the whole of the policy. Item 3 changed who may ask: this node
+serves its entire community, and membership deliberately has **no admission cap**
+(§The membership rule). So the question is no longer *who gets in* but *what one
+of them can cost*, and the answer is four bounds over two resources
+(`federation/quota.go`).
+
+**Friends are outside all of it.** A direct friend is an admin's decision and is
+served exactly as before, under the global cap alone. Everyone else — members,
+guests, a pending peer nobody has accepted — draws on the member budget. That
+split is the anti-starvation rule as much as the anti-abuse one: without it the
+nodes an admin actually chose queue behind the ones the graph let in.
+
+**Two resources, and concurrency is the sharper one.** Bytes are obvious and
+already have a global cap. Concurrent serves are what a swarm client multiplies
+*by design* — our own fetcher opens parallel Range requests across holders — so
+they are what one member most easily costs us in goroutines, file handles and
+netstack connections. Both get the same treatment:
+
+|                        | per requester              | all non-friends together |
+| ---------------------- | -------------------------- | ------------------------ |
+| bytes/sec              | `per_member_rate_kib`      | `member_rate_kib`        |
+| concurrent blob serves | `per_member_max_transfers` | `member_max_transfers`   |
+
+**Why a class ceiling, when §The membership rule promised only per-requester
+quotas.** Because a per-identity limit is exactly what a sybil farm defeats: N
+forged keys buy N quotas, and the member count was already declared not to be the
+defense. The per-requester half is fairness *within* the class — one member cannot
+take the whole budget — and the ceiling is the actual bound on harm. The other two
+defenses are unchanged and still do the work of *ending* an abuse rather than
+merely surviving it: every member is traceable on the map to the friend that
+introduced it, and one block cuts the branch.
+
+**Refusal is a 429, and that is a feature.** A requester over quota is told to go
+away, and the swarm on the other side does exactly the right thing with that — it
+fails over to another holder, under a retirement rule that is relative
+(`worseThanPeers`), so a busy node is de-ranked rather than condemned. Being
+unable to serve right now is honest information, not an error. The check runs
+*before* the blob is looked up, so it confirms nothing about whether we hold the
+hash — it is a fact about us. Manifests are deliberately **not** counted: a
+manifest is a small memoized JSON, and refusing one would stop a member from even
+planning a fetch it is entitled to make.
+
+**All four default to `0` — unlimited — by owner decision (2026-08-01).** The
+honest consequence: shipped this way the feature protects nobody who does not edit
+`madshare.toml`, and the first time it matters is exactly the first time nobody
+has configured it. The case for it is that a real small network — a handful of
+friends, a three-node lab — wants none of this, and a default tuned for the
+adversarial case is a permanent tax on the common one. Numbers here would have
+been guesses of the same quality as `discovery_budget` (§Open questions) with
+worse failure modes when wrong. The knobs exist and are documented; choosing them
+is an operator's call.
+
 ## Availability & node health
 
 > **Supersedes the reverted "10-second presence" feature.** An earlier attempt
@@ -2268,12 +2323,17 @@ milestone directly after direct transfer works, and tokens ship with depth.
      (migration **036**), because a node we pull from and a node an admin decided
      about are two different facts. `meshlab reach`, red past distance 1 since it
      was written, is the acceptance test.
-  6. **Abuse controls for members**: `seed_rate_kib` is global today; serving nodes
-     we have no direct relationship with wants a per-requester rate limit and a
-     bound on what one member can cost us in a round. This is where a sybil farm is
-     answered, since membership deliberately has no admission cap (§The membership
-     rule) — bounded harm rather than a bounded guest list. Cheap to add, and the
-     honest price of being open.
+  6. **Abuse controls for members** — *built 2026-08-01* (§Distribution, "What a
+     member may cost us"). `seed_rate_kib` was one bucket for everyone, written
+     when a requester was always a friend. Now bytes and concurrent serves are
+     each bounded twice, per requester and across all non-friends together, with
+     direct friends outside both — which is the anti-starvation rule as much as
+     the anti-abuse one. The class ceiling is more than §The membership rule
+     promised, and it is what actually answers a sybil farm: a per-identity limit
+     is precisely what N forged keys defeat. Refusal is a 429, which the swarm
+     reads as "ask another holder" rather than as a fault. All four knobs default
+     to unlimited by owner decision — the feature is opt-in, and the doc says
+     plainly what that costs.
   7. **Map at scale** (§The network map) — **BUILT 2026-07-31.** The 3–4-hop
      default view, zoom that resolves names instead of cropping, node/address/name
      and branch search over the whole component, all-paths-between-two-nodes, and

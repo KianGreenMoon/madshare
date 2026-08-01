@@ -179,6 +179,43 @@ type FederationConfig struct {
 	// to 0 with a warning. The seed on/off and cache-seed toggles are runtime DB
 	// settings (madnetwork.seed_enabled / .seed_cache), not config.
 	SeedRateKiB int `toml:"seed_rate_kib"`
+	// Member quotas (F7 item 6, docs/architecture/federation.md §Distribution,
+	// "What a member may cost us"). SeedRateKiB above is one bucket for every
+	// requester, which was the whole policy while a requester was always a
+	// friend. This node now serves its entire community, and membership has no
+	// admission cap by design — so what needs bounding is not who asks but what
+	// one of them can cost.
+	//
+	// These four apply to **non-friends only**: members, guests, and a pending
+	// peer nobody has accepted. A direct friend is an admin's decision and is
+	// served under the global cap alone, which is the anti-starvation rule as
+	// much as the anti-abuse one — the nodes an admin chose must never queue
+	// behind the ones the graph let in.
+	//
+	// Each resource is bounded twice, and both halves are needed: the
+	// per-requester limit is fairness *within* the class, while the class
+	// ceiling is the actual bound on harm, since N forged keys would otherwise
+	// buy N per-requester quotas.
+	//
+	// All default to 0 = unlimited (owner decision, 2026-08-01: opt-in, because a
+	// handful of friends wants none of this and a guessed default would tax the
+	// common case). Negative is clamped to 0 with a warning.
+
+	// MemberRateKiB caps the outbound rate, in KiB/s, served to all non-friends
+	// combined.
+	MemberRateKiB int `toml:"member_rate_kib"`
+	// PerMemberRateKiB caps the outbound rate, in KiB/s, served to any one
+	// non-friend node.
+	PerMemberRateKiB int `toml:"per_member_rate_kib"`
+	// MemberMaxTransfers caps how many blob requests from non-friends this node
+	// serves at once, across all of them. Concurrency is the sharper of the two
+	// resources: a swarm client opens parallel Range requests by design, so this
+	// is what a member most easily costs us in goroutines, file handles and
+	// netstack connections.
+	MemberMaxTransfers int `toml:"member_max_transfers"`
+	// PerMemberMaxTransfers caps concurrent blob requests from any one
+	// non-friend node.
+	PerMemberMaxTransfers int `toml:"per_member_max_transfers"`
 	// AllowMissingFingerprinting lets a federated node start without fpcalc on
 	// PATH. Default false — i.e. fpcalc is REQUIRED once federation is enabled,
 	// and main refuses to start otherwise.
@@ -452,11 +489,24 @@ func (c *Config) resolveStorageWorkers() {
 			c.Storage.UserMaxParallelWorkers))
 		c.Storage.UserMaxParallelWorkers = 0
 	}
-	if c.Federation.SeedRateKiB < 0 {
-		c.warnings = append(c.warnings, fmt.Sprintf(
-			"federation.seed_rate_kib %d is invalid; using 0 (unlimited)",
-			c.Federation.SeedRateKiB))
-		c.Federation.SeedRateKiB = 0
+	// The seed caps all share one rule — negative is meaningless, so it becomes
+	// "unlimited" with a warning rather than an aborted start. Kept in one loop
+	// so a knob added later cannot be forgotten here.
+	for _, cap := range []struct {
+		name string
+		val  *int
+	}{
+		{"seed_rate_kib", &c.Federation.SeedRateKiB},
+		{"member_rate_kib", &c.Federation.MemberRateKiB},
+		{"per_member_rate_kib", &c.Federation.PerMemberRateKiB},
+		{"member_max_transfers", &c.Federation.MemberMaxTransfers},
+		{"per_member_max_transfers", &c.Federation.PerMemberMaxTransfers},
+	} {
+		if *cap.val < 0 {
+			c.warnings = append(c.warnings, fmt.Sprintf(
+				"federation.%s %d is invalid; using 0 (unlimited)", cap.name, *cap.val))
+			*cap.val = 0
+		}
 	}
 	switch {
 	case c.Federation.ReachableWindowSec == 0:

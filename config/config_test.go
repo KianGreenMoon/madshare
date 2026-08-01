@@ -538,6 +538,56 @@ func TestFederationDiscoveryBounds(t *testing.T) {
 	}
 }
 
+// TestFederationMemberQuotas: the F7 item 6 caps on what a non-friend may cost.
+// Unlike the discovery knobs, unset means UNLIMITED rather than a default — the
+// caps are opt-in by owner decision, so an operator who never edits the file must
+// get exactly the pre-item-6 serving behaviour.
+func TestFederationMemberQuotas(t *testing.T) {
+	load := func(t *testing.T, body string) config.Config {
+		t.Helper()
+		f := filepath.Join(t.TempDir(), "fed.toml")
+		if err := os.WriteFile(f, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.Load(f)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		return cfg
+	}
+	base := "[[listen]]\naddr=\"127.0.0.1\"\nport=3000\nserve=[\"api\"]\n"
+
+	if cfg := load(t, base); cfg.Federation.MemberRateKiB != 0 ||
+		cfg.Federation.PerMemberRateKiB != 0 ||
+		cfg.Federation.MemberMaxTransfers != 0 ||
+		cfg.Federation.PerMemberMaxTransfers != 0 {
+		t.Errorf("unset quotas = %+v, want all zero (unlimited)", cfg.Federation)
+	}
+
+	cfg := load(t, base+"[federation]\nmember_rate_kib = 2048\nper_member_rate_kib = 256\n"+
+		"member_max_transfers = 16\nper_member_max_transfers = 4\n")
+	if cfg.Federation.MemberRateKiB != 2048 || cfg.Federation.PerMemberRateKiB != 256 ||
+		cfg.Federation.MemberMaxTransfers != 16 || cfg.Federation.PerMemberMaxTransfers != 4 {
+		t.Errorf("explicit quotas not kept: %+v", cfg.Federation)
+	}
+
+	// Negative is meaningless for every one of them, so it becomes unlimited with
+	// a warning rather than aborting a start over a typo.
+	for _, key := range []string{"member_rate_kib", "per_member_rate_kib",
+		"member_max_transfers", "per_member_max_transfers"} {
+		cfg := load(t, base+"[federation]\n"+key+" = -5\n")
+		var warned bool
+		for _, w := range cfg.Warnings() {
+			if strings.Contains(w, key) {
+				warned = true
+			}
+		}
+		if !warned {
+			t.Errorf("%s = -5 produced no warning, got %v", key, cfg.Warnings())
+		}
+	}
+}
+
 func TestLoad_InvalidTOML_ReturnsError(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "bad.toml")
 	os.WriteFile(f, []byte("not = valid [toml"), 0o600)

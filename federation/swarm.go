@@ -1104,10 +1104,12 @@ func (rl *rateLimiter) wait(ctx context.Context, n int) error {
 }
 
 // throttledResponseWriter rate-limits the body written by http.ServeContent
-// while passing Header/WriteHeader straight through.
+// while passing Header/WriteHeader straight through. Several buckets can apply
+// at once (F7 item 6): the global seed cap, the class cap over all non-friends,
+// and the requester's own — each is waited on in turn, so the slowest binds.
 type throttledResponseWriter struct {
 	http.ResponseWriter
-	rl  *rateLimiter
+	rls []*rateLimiter
 	ctx context.Context
 }
 
@@ -1118,8 +1120,10 @@ func (t *throttledResponseWriter) Write(p []byte) (int, error) {
 		if n > seedWriteChunk {
 			n = seedWriteChunk
 		}
-		if err := t.rl.wait(t.ctx, n); err != nil {
-			return written, err
+		for _, rl := range t.rls {
+			if err := rl.wait(t.ctx, n); err != nil {
+				return written, err
+			}
 		}
 		m, err := t.ResponseWriter.Write(p[written : written+n])
 		written += m

@@ -103,8 +103,13 @@ type Node struct {
 	// friends (content-addressed, so immutable once built).
 	blobClient  *http.Client
 	seedLimiter *rateLimiter
-	manifestMu  sync.Mutex
-	manifests   map[string]*blobManifest
+	// quotas bounds what a requester we have no direct relationship with may
+	// cost us — bytes and concurrent serves, per node and across the class
+	// (F7 item 6, quota.go). Friends bypass it; all-zero config admits
+	// everything, which is the shipped default.
+	quotas     *quotas
+	manifestMu sync.Mutex
+	manifests  map[string]*blobManifest
 
 	// Availability / self-health (docs/plans/availability.md Phase 1).
 	// readerAlive reports whether the netstack inbound reader is running — the
@@ -239,8 +244,10 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 		transferCtx:    transferCtx,
 		transferCancel: transferCancel,
 		seedLimiter:    newRateLimiter(int64(fc.SeedRateKiB) * 1024),
-		manifests:      map[string]*blobManifest{},
-		lastTouch:      map[int64]time.Time{},
+		quotas: newQuotas(fc.MemberRateKiB, fc.PerMemberRateKiB,
+			fc.MemberMaxTransfers, fc.PerMemberMaxTransfers),
+		manifests: map[string]*blobManifest{},
+		lastTouch: map[int64]time.Time{},
 	}
 	// Self-health signal: the netstack inbound reader's liveness (the unambiguous
 	// signal — a self-ping can't test it, HandleLocal loops local traffic inside

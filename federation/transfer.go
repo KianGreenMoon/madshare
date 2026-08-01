@@ -52,6 +52,22 @@ func (n *Node) handleBlob(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if !aud.Serves() {
+		http.NotFound(w, r) // nothing to weigh: this requester gets no bytes at all
+		return
+	}
+	// The member budget (F7 item 6, quota.go), before the blob is looked up: it
+	// is a fact about us, so refusing here confirms nothing about whether we hold
+	// the hash — and it costs no storage read. A direct friend bypasses it.
+	rls, release, ok := n.admitServe(r, aud)
+	if !ok {
+		// 429 rather than 503: the swarm reads a refusal as "ask another holder"
+		// and its retirement rule is relative, so a busy node is de-ranked, not
+		// condemned. Being unable to serve now is information, not a fault.
+		http.Error(w, "over the member quota — try another holder", http.StatusTooManyRequests)
+		return
+	}
+	defer release()
 	path, ok := n.seedableBlob(r.Context(), hash, aud)
 	if !ok {
 		http.NotFound(w, r)
@@ -70,11 +86,8 @@ func (n *Node) handleBlob(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Disposition",
 		mime.FormatMediaType("attachment", map[string]string{"filename": filepath.Base(path)}))
-	out := http.ResponseWriter(w)
-	if n.seedLimiter != nil {
-		out = &throttledResponseWriter{ResponseWriter: w, rl: n.seedLimiter, ctx: r.Context()}
-	}
-	http.ServeContent(out, r, info.Name(), info.ModTime(), f)
+	http.ServeContent(throttled(w, r.Context(), n.serveLimiters(rls)),
+		r, info.Name(), info.ModTime(), f)
 }
 
 // ── Fetching side ────────────────────────────────────────────────────────────
