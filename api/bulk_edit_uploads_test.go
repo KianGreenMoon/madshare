@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +10,7 @@ import (
 	"testing"
 
 	"daemonlord.ygg/madshare/auth"
+	"daemonlord.ygg/madshare/database"
 )
 
 // TestMyUploadsBulk_EditScopeAndRefusals covers the wiring of the staging bulk
@@ -101,60 +104,145 @@ func TestBulkEditRefusalNamesItsSurface(t *testing.T) {
 	}
 }
 
-// TestMyUploadsBulk_EditOwnerAndStateScoped is the end-to-end half: the write
-// must touch only the caller's own editable staging — another uploader's draft
-// and the caller's own already-submitted row are left alone even when their ids
-// are passed explicitly.
-func TestMyUploadsBulk_EditOwnerAndStateScoped(t *testing.T) {
+// artistOf reads one appearance's artist straight from the store, so an
+// assertion about what a write touched doesn't depend on which listing endpoint
+// still carries the row — an approved appearance has left staging.
+func artistOf(t *testing.T, db *database.DB, tagsetID int64) string {
+	t.Helper()
+	var artist sql.NullString
+	if err := db.QueryRowContext(context.Background(),
+		`SELECT artist FROM tagsets WHERE id = ?`, tagsetID).Scan(&artist); err != nil {
+		t.Fatalf("read artist of tagset %d: %v", tagsetID, err)
+	}
+	return artist.String
+}
+
+// TestMyUploads_EditsAreOwnAndStagedOnly is the authorization matrix behind the
+// staging tab's tag edits. Single-row and bulk answer to the same rule, so both
+// are run against the same five appearances: an uploader may retag their own
+// draft and their own returned row, and nothing else.
+//
+// The two halves of the rule each need their own row to be worth anything.
+// Ownership alone doesn't grant the edit — the submitted and approved rows are
+// the uploader's own, and once sent to approval a file is no longer theirs to
+// change under a moderator. Staging state alone doesn't either — another
+// uploader's row is a draft, and still refused. A refusal is a 404 rather than a
+// 403, because a 403 would confirm the appearance exists.
+func TestMyUploads_EditsAreOwnAndStagedOnly(t *testing.T) {
 	srv, db := newAuthTestServer(t)
+	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
 	makeUser(t, db, "up", "uploader-pass-1", auth.RoleUploader)
 	makeUser(t, db, "other", "uploader-pass-2", auth.RoleUploader)
 	up := clientFor(t, srv.URL, "up", "uploader-pass-1")
 	other := clientFor(t, srv.URL, "other", "uploader-pass-2")
 
-	h1 := stageBytes(t, up, srv.URL, "e1.mp3", "edit one content")
-	h2 := stageBytes(t, up, srv.URL, "e2.mp3", "edit two content")
-	h3 := stageBytes(t, up, srv.URL, "e3.mp3", "edit three content")
-	foreign := stageBytes(t, other, srv.URL, "e4.mp3", "edit four content")
-	tid1 := stagedTagsetID(t, up, srv.URL, h1)
-	tid2 := stagedTagsetID(t, up, srv.URL, h2)
-	tid3 := stagedTagsetID(t, up, srv.URL, h3)
-	foreignTID := stagedTagsetID(t, other, srv.URL, foreign)
+	// One row per state that matters. The ids are captured while everything is
+	// still staged: an approved appearance leaves /api/my/uploads, so it could
+	// not be looked up afterwards.
+	stage := func(c *http.Client, name, content string) int64 {
+		t.Helper()
+		return stagedTagsetID(t, c, srv.URL, stageBytes(t, c, srv.URL, name, content))
+	}
+	ownDraft := stage(up, "m1.mp3", "matrix draft content")
+	ownReturned := stage(up, "m2.mp3", "matrix returned content")
+	ownSubmitted := stage(up, "m3.mp3", "matrix submitted content")
+	ownApproved := stage(up, "m4.mp3", "matrix approved content")
+	foreignDraft := stage(other, "m5.mp3", "matrix foreign content")
 
-	// tid3 is sent to approval first: locked, so the edit must skip it.
-	doJSON(t, up, http.MethodPost, srv.URL+"/api/my/uploads/bulk",
-		map[string]any{"action": "submit", "tagset_ids": []int64{tid3}}, nil)
+	submit := func(tid int64) {
+		t.Helper()
+		if code := doJSON(t, up, http.MethodPost, srv.URL+"/api/my/uploads/submit",
+			map[string]any{"tagset_ids": []int64{tid}}, nil); code != http.StatusOK {
+			t.Fatalf("submit %d = %d, want 200", tid, code)
+		}
+	}
+	submit(ownReturned)
+	if code := doJSON(t, admin, http.MethodPost, modAction(srv.URL, ownReturned, "return"),
+		map[string]any{"note": "fix the artist tag"}, nil); code != http.StatusOK {
+		t.Fatalf("return = %d, want 200", code)
+	}
+	submit(ownSubmitted)
+	submit(ownApproved)
+	if code := doJSON(t, admin, http.MethodPost, modAction(srv.URL, ownApproved, "approve"),
+		map[string]any{}, nil); code != http.StatusOK {
+		t.Fatalf("approve = %d, want 200", code)
+	}
 
+	cases := []struct {
+		name     string
+		tid      int64
+		editable bool
+	}{
+		{"own draft", ownDraft, true},
+		{"own returned", ownReturned, true},
+		{"own submitted", ownSubmitted, false},
+		{"own approved", ownApproved, false},
+		{"another uploader's draft", foreignDraft, false},
+	}
+
+	// Single row: the PATCH and the GET that feeds the edit modal share one guard,
+	// so a read that leaks is as much a failure as a write that lands.
+	const viaPatch = "Patched One By One"
+	for _, c := range cases {
+		want := http.StatusNotFound
+		if c.editable {
+			want = http.StatusOK
+		}
+		if code := doJSON(t, up, http.MethodGet, muMeta(srv.URL, c.tid), nil, nil); code != want {
+			t.Errorf("%s: GET metadata = %d, want %d", c.name, code, want)
+		}
+		if code := doJSON(t, up, http.MethodPatch, muMeta(srv.URL, c.tid),
+			map[string]any{"artist": viaPatch}, nil); code != want {
+			t.Errorf("%s: PATCH metadata = %d, want %d", c.name, code, want)
+		}
+	}
+	for _, c := range cases {
+		want := ""
+		if c.editable {
+			want = viaPatch
+		}
+		if got := artistOf(t, db, c.tid); got != want {
+			t.Errorf("%s after the single-row edits: artist = %q, want %q", c.name, got, want)
+		}
+	}
+
+	// Bulk: one call naming every row, including the four the caller may not
+	// touch. They don't fail the batch — they are simply outside the owner scope
+	// the write runs under, so `affected` counts the two that were in reach.
+	const viaBulk = "Patched In Bulk"
 	var res struct {
 		OK       bool `json:"ok"`
 		Affected int  `json:"affected"`
 	}
 	if code := doJSON(t, up, http.MethodPost, srv.URL+"/api/my/uploads/bulk", map[string]any{
-		"action": "edit", "tagset_ids": []int64{tid1, tid2, tid3, foreignTID},
-		"patch": map[string]any{"album": "Studio Sessions"},
+		"action":     "edit",
+		"tagset_ids": []int64{ownDraft, ownReturned, ownSubmitted, ownApproved, foreignDraft},
+		"patch":      map[string]any{"artist": viaBulk},
 	}, &res); code != http.StatusOK {
 		t.Fatalf("bulk edit = %d, want 200", code)
 	}
 	if !res.OK || res.Affected != 2 {
-		t.Fatalf("bulk edit = %+v, want affected 2 (own drafts only)", res)
+		t.Fatalf("bulk edit = %+v, want affected 2 (own draft + own returned)", res)
 	}
-
-	albums := map[int64]string{}
-	env := getEnvelope(t, up, srv.URL+"/api/my/uploads?limit=1000")
-	for _, it := range env.Items {
-		albums[int64(it["tagset_id"].(float64))] = it["album"].(string)
-	}
-	if albums[tid1] != "Studio Sessions" || albums[tid2] != "Studio Sessions" {
-		t.Errorf("own drafts = %q/%q, want the new album on both", albums[tid1], albums[tid2])
-	}
-	if albums[tid3] == "Studio Sessions" {
-		t.Error("a submitted appearance was edited from the staging bulk path")
-	}
-
-	otherEnv := getEnvelope(t, other, srv.URL+"/api/my/uploads?limit=1000")
-	for _, it := range otherEnv.Items {
-		if it["album"] == "Studio Sessions" {
-			t.Error("another uploader's draft was edited")
+	for _, c := range cases {
+		want := ""
+		if c.editable {
+			want = viaBulk
 		}
+		if got := artistOf(t, db, c.tid); got != want {
+			t.Errorf("%s after the bulk edit: artist = %q, want %q", c.name, got, want)
+		}
+	}
+
+	// The filter path resolves its own set server-side, so "select all matching"
+	// cannot be talked into a wider one either.
+	if code := doJSON(t, up, http.MethodPost, srv.URL+"/api/my/uploads/bulk", map[string]any{
+		"action": "edit", "filter": map[string]any{"q": "", "field": ""}, "all": true,
+		"patch": map[string]any{"album": "Everything I Can Reach"},
+	}, &res); code != http.StatusOK {
+		t.Fatalf("filter edit = %d, want 200", code)
+	}
+	if res.Affected != 2 {
+		t.Errorf("filter edit affected = %d, want 2 — the caller's editable staging is the whole set", res.Affected)
 	}
 }
