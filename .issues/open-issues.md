@@ -853,3 +853,23 @@ than a product bug. Not attributable to the change under test (branch weighting
 adds a read path only, and nothing in the publish loop calls it): five isolated
 runs and two fresh full-package runs green afterwards. If it recurs, tighten the
 predicate to what the assertion actually checks instead of the count.
+
+**A fourth site, 2026-08-01 (F7 item 9).** One full-package run failed at
+`swarm_test.go:242` — `TestSwarmFailover` timed out in `makeFriends` ("timed out
+waiting for A to see B's pairing request"), i.e. it spent the whole 30 s
+`meshDeadline` without the pair request landing. Green 3/3 isolated and on the
+next full-package run.
+
+Not attributable to the change under test, and this one is checkable rather than
+merely plausible: Go runs a package's tests in declaration order, and
+`go test -list` puts `TestSwarmFailover` at #117 with every new token test at
+#121 or later — none of them had executed when it timed out. So it is mesh
+*convergence* under whatever the preceding 116 tests left behind, not a new
+access rule. Different mechanism again from the three above: no memo and no
+half-written record, just a pairing round trip that did not complete inside the
+budget.
+
+If it recurs, the thing to measure is whether `meshDeadline` is being consumed by
+convergence or by the 250 ms poll interval colliding with the 1-minute refresh
+loop — `makeFriends` waits on a loop tick, so a run that just misses one waits a
+whole cycle, and 30 s is only half of that.
