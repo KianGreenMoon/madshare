@@ -128,6 +128,25 @@ func (h *handler) reachCutoff() reachWindows {
 	return reachWindows{tight: now - h.reachWindow(), pull: now - h.pullWindow()}
 }
 
+// mergeOpts is everything folding raw rows into display tracks needs beyond the
+// rows themselves. Bundled into one value deliberately: each field is a rule the
+// merge must not be able to skip — how a holder is labelled, when it counts as
+// reachable, and whose voice it is — and a positional parameter list is how one
+// of them gets forgotten at the fourth call site.
+type mergeOpts struct {
+	selfName string
+	reach    reachWindows
+	branches database.BranchMap
+}
+
+func (h *handler) mergeOpts(ctx context.Context) mergeOpts {
+	return mergeOpts{
+		selfName: h.madnetworkName,
+		reach:    h.reachCutoff(),
+		branches: h.branchesByKey(ctx),
+	}
+}
+
 // madnetworkSummary handles GET /api/madnetwork/summary: each friend's sync
 // state plus the merged distinct-track count — the page's status strip. With
 // the own set merged in, self_name labels this node's contribution.
@@ -221,6 +240,15 @@ type madnetworkVersion struct {
 	License    string                        `json:"license,omitempty"`
 	Guest      bool                          `json:"guest_playable,omitempty"`
 
+	// Voices is how many independent branches those holders amount to — the
+	// number versions are actually ordered by (F7 item 10). Sent only when it is
+	// SMALLER than the holder count, which is the only case where it tells the
+	// reader something the holder list does not: several nodes, one voice.
+	Voices int `json:"voices,omitempty"`
+	// voices is the same count, always set, because the ordering needs it for
+	// every version and JSON is a display concern.
+	voices int
+
 	// URL is the direct local play address when the version's ladder-best
 	// rendition is in this node's library — no relay hop through the cache.
 	URL string `json:"url,omitempty"`
@@ -263,7 +291,7 @@ func (h *handler) madnetworkTracks(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, own...)
 		sortMadnetworkRows(rows)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tracks": mergeMadnetworkTracks(rows, h.madnetworkName, h.reachCutoff())})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tracks": mergeMadnetworkTracks(rows, h.mergeOpts(r.Context()))})
 }
 
 // sortMadnetworkRows restores display order over a combined remote+own row
@@ -297,8 +325,8 @@ func sortMadnetworkRows(rows []*database.MadnetworkTrackRow) {
 
 // mergeMadnetworkTracks folds raw per-(source,appearance) rows into logical
 // tracks and versions. Rows arrive in display order; groups keep first-seen
-// order. selfName labels the self holder of own rows.
-func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow, selfName string, rw reachWindows) []*madnetworkTrack {
+// order.
+func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow, opts mergeOpts) []*madnetworkTrack {
 	type ident struct {
 		disc, track int64
 		title       string
@@ -345,7 +373,7 @@ func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow, selfName string,
 				}
 			}
 		}
-		t.Versions = mergeVersions(group, selfName, rw)
+		t.Versions = mergeVersions(group, opts)
 		tracks = append(tracks, t)
 	}
 	return tracks
@@ -355,7 +383,7 @@ func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow, selfName string,
 // recordings are the same version iff they share a rendition content hash
 // (same bytes somewhere = same audio for sure). Everything else stays a
 // separate version — recordings are never merged on text alone.
-func mergeVersions(group []*database.MadnetworkTrackRow, selfName string, rw reachWindows) []madnetworkVersion {
+func mergeVersions(group []*database.MadnetworkTrackRow, opts mergeOpts) []madnetworkVersion {
 	// Union-find over the group's rows, linked by shared hashes.
 	parent := make([]int, len(group))
 	for i := range parent {
@@ -400,6 +428,13 @@ func mergeVersions(group []*database.MadnetworkTrackRow, selfName string, rw rea
 		seenHash := map[string]bool{}
 		seenPeer := map[int64]bool{}
 		objectKeys := map[string]string{} // local hash -> files object key (self rows)
+		// voiceKeys is the holder identity the branch weighting counts, which is
+		// the node KEY and not the source row: an unkeyed holder (a row cached
+		// before keys, a test double) gets a token of its own, because "we cannot
+		// place this node" must widen to one voice per node, never narrow to one
+		// voice for all of them.
+		var voiceKeys []string
+		var selfHolds bool
 		for _, i := range sets[r] {
 			row := group[i]
 			for _, rd := range row.Entry.Renditions {
@@ -416,13 +451,19 @@ func mergeVersions(group []*database.MadnetworkTrackRow, selfName string, rw rea
 			if !seenPeer[row.SourceID] {
 				seenPeer[row.SourceID] = true
 				if row.Self {
-					v.Holders = append(v.Holders, madnetworkHolder{Name: selfName, Self: true, Reachable: true})
+					selfHolds = true
+					v.Holders = append(v.Holders, madnetworkHolder{Name: opts.selfName, Self: true, Reachable: true})
 				} else {
 					v.Holders = append(v.Holders, madnetworkHolder{
 						Name: row.SourceName, LastSeen: row.SourceLastSeen,
-						Reachable: rw.ok(row.SourceLastSeen, row.SourcePinged),
+						Reachable: opts.reach.ok(row.SourceLastSeen, row.SourcePinged),
 						Key:       row.SourceKey,
 					})
+					if row.SourceKey != "" {
+						voiceKeys = append(voiceKeys, row.SourceKey)
+					} else {
+						voiceKeys = append(voiceKeys, "src:"+strconv.FormatInt(row.SourceID, 10))
+					}
 				}
 			}
 			for hash, key := range row.ObjectKeys {
@@ -454,10 +495,26 @@ func mergeVersions(group []*database.MadnetworkTrackRow, selfName string, rw rea
 				v.URL = "/files/" + key
 			}
 		}
+		v.voices = opts.branches.Voices(voiceKeys, selfHolds)
+		// Reported only when it is news — when independent agreement is thinner
+		// than the holder count suggests. Sending it always would put "1 voice"
+		// beside every single-holder row on the page, which is wallpaper.
+		if v.voices < len(v.Holders) {
+			v.Voices = v.voices
+		}
 		versions = append(versions, v)
 	}
-	// Most widely held version first — the doc's default pick for a crossing.
+	// Most widely held version first — the doc's default pick for a crossing —
+	// counted in VOICES, not in holders (F7 item 10). This is the sharpest place
+	// the sybil rule applies on the whole page: a crossing's leading version is
+	// what Play, Queue and Materialize act on, so a farm of keys behind one
+	// friendship could otherwise make its claim the default pick for everyone
+	// who browses to that track. Behind one friendship it is one voice, and it
+	// leads only if nobody independent disagrees.
 	sort.SliceStable(versions, func(a, b int) bool {
+		if versions[a].voices != versions[b].voices {
+			return versions[a].voices > versions[b].voices
+		}
 		return len(versions[a].Holders) > len(versions[b].Holders)
 	})
 	return versions
@@ -532,11 +589,11 @@ func (h *handler) madnetworkSearch(w http.ResponseWriter, r *http.Request) {
 		groups[b] = append(groups[b], row)
 	}
 	tracks := []searchTrack{}
-	rc := h.reachCutoff()
+	opts := h.mergeOpts(r.Context())
 merge:
 	for _, b := range order {
 		group := groups[b]
-		for _, t := range mergeMadnetworkTracks(group, h.madnetworkName, rc) {
+		for _, t := range mergeMadnetworkTracks(group, opts) {
 			if len(t.Versions) == 0 || len(t.Versions[0].Renditions) == 0 {
 				continue // nothing playable to offer from search
 			}

@@ -170,6 +170,11 @@ type FederationNode interface {
 	// reachable through a chain of friendships, with branch attribution and the
 	// distrust marks against it.
 	NetworkMap(ctx context.Context) (federation.NetworkMap, error)
+	// BranchMap is that same attribution as a lookup table — node key → the
+	// direct friends it reaches us through — for the browse's trust weighting
+	// (F7 item 10). Separate from NetworkMap because the browse asks for it on
+	// every request and has no use for the marks or the derived addresses.
+	BranchMap(ctx context.Context) (map[string][]string, error)
 	// ResyncGraph asks the refresh loop to pull the graph from every friend on
 	// its next round, past the catalog cadence that normally gates it — the
 	// Rescan button on /admin/network. Returns immediately; the round runs in

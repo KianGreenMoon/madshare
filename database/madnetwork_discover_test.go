@@ -440,3 +440,40 @@ func TestWeightByBranch(t *testing.T) {
 		t.Errorf("ungraphed branches = %d, want one voice per source", farm.Branches)
 	}
 }
+
+// TestBranchMapVoices pins the shared primitive's edge cases directly, because
+// every weighted surface on the page now reads it and they cannot each restate
+// them: an unplaceable key is its own voice, a node reachable through two
+// friends is still one voice per friend it corroborates, an EMPTY key is never a
+// voice (its caller has to supply a distinguishing token), and self counts once.
+func TestBranchMapVoices(t *testing.T) {
+	bm := BranchMap{
+		"s1": {"friend-a"}, "s2": {"friend-a"},
+		"m1": {"friend-a", "friend-b"}, // seen down two branches
+	}
+	cases := []struct {
+		name string
+		keys []string
+		self bool
+		want int
+	}{
+		{"farm behind one friendship", []string{"s1", "s2"}, false, 1},
+		{"farm plus our own copy", []string{"s1", "s2"}, true, 2},
+		{"multi-branch node", []string{"m1"}, false, 2},
+		{"multi-branch node overlapping the farm", []string{"s1", "m1"}, false, 2},
+		{"unplaceable keys speak for themselves", []string{"u1", "u2"}, false, 2},
+		{"empty keys are not voices", []string{"", ""}, false, 0},
+		{"self alone", nil, true, 1},
+		{"nothing at all", nil, false, 0},
+	}
+	for _, tc := range cases {
+		if got := bm.Voices(tc.keys, tc.self); got != tc.want {
+			t.Errorf("%s: voices = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+	// A nil map is the no-federation build and the no-graph-yet case: one source,
+	// one voice, and never a collapse to zero.
+	if got := BranchMap(nil).Voices([]string{"a", "b"}, true); got != 3 {
+		t.Errorf("nil branch map: voices = %d, want 3 (two sources + self)", got)
+	}
+}

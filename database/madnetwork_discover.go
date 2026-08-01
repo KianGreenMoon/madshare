@@ -141,6 +141,9 @@ func laneRowsCTE(view MadnetworkView) string {
 func laneRanking(lane string) (filter, order string) {
 	switch lane {
 	case LaneMissing:
+		// Ranked by holders here and re-sorted by branch count in Go, exactly
+		// like LaneHeld: "what can I get that I don't have" is a popularity
+		// question too, and it is the lane the page opens with.
 		return "has_self = 0 AND holders > 0", "holders DESC, ident"
 	case LaneNew:
 		return "first_at > 0", "first_at DESC, holders DESC, ident"
@@ -156,6 +159,10 @@ func laneRanking(lane string) (filter, order string) {
 		// distinguishes one rarity from another is whether you can fetch it now.
 		return "holders = 1 AND has_self = 0", "last_at DESC, first_at DESC, ident"
 	case LaneFriends:
+		// Weighted by construction, so it is deliberately not re-sorted in Go:
+		// every direct friend is the root of its own branch, which makes the
+		// friend count a branch count already. Re-weighting here would replace
+		// that with the wider one and lose the lane's whole subject.
 		return "friends > 0", "friends DESC, holders DESC, ident"
 	}
 	return "", ""
@@ -320,34 +327,59 @@ func CapPerSource(candidates []*LaneCandidate, limit int) []*LaneCandidate {
 	return out
 }
 
-// WeightByBranch fills each candidate's Branches — how many distinct direct
-// friends its holders are reachable through — and re-sorts by it. One branch is
-// one voice (docs/architecture/federation.md §Trust graph): a farm of a thousand
-// keys behind a single friendship counts once, which is the whole reason a
-// popularity lane is allowed to exist here at all.
+// BranchMap maps a node key to the direct friends it reaches us through
+// (federation.MapNode.Via) — the branch attribution every trust-weighted count
+// on the madnetwork page is computed from.
 //
-// branches maps a node key to the direct friends it reaches us through
-// (federation.MapNode.Via). A key absent from it is its own voice — that is the
-// honest reading for a node we cache but cannot currently place on the graph,
-// and it is also the degradation when there is no graph at all: one source, one
-// voice.
-func WeightByBranch(candidates []*LaneCandidate, branches map[string][]string) {
+// A key absent from the map is its own voice. That is the honest reading for a
+// node we cache but cannot currently place on the graph, and it is also the
+// degradation when there is no graph at all (no federation node, no gossip yet):
+// one source, one voice — the same rule in a smaller world, never a wrong
+// answer.
+type BranchMap map[string][]string
+
+// Voices counts the distinct voices behind a set of holder keys — the ONE place
+// the sybil rule is written, so that no surface can apply half of it. One branch
+// is one voice (docs/architecture/federation.md §Trust graph): a farm of a
+// thousand keys behind a single friendship counts once, which is the whole
+// reason popularity is allowed to order anything here.
+//
+// Empty keys are ignored; a caller with an unkeyed holder passes a token that
+// distinguishes it, because "we don't know who this is" must never collapse two
+// holders into one voice. self adds this node's own library, which is a voice
+// like any other.
+func (bm BranchMap) Voices(keys []string, self bool) int {
+	seen := map[string]bool{}
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		via := bm[key]
+		if len(via) == 0 {
+			seen[key] = true // unplaceable: it speaks for itself, once
+			continue
+		}
+		for _, b := range via {
+			seen[b] = true
+		}
+	}
+	if self {
+		seen["self"] = true
+	}
+	return len(seen)
+}
+
+// WeightByBranch fills each candidate's Branches — how many distinct voices its
+// holders amount to — and re-sorts by it, so what a lane leads with is what the
+// most independent sources agree on rather than what the most keys claim.
+//
+// Applied to the two lanes SQL ranks by a raw count (LaneHeld, LaneMissing; see
+// laneWeighted in the api package). The two-step is exact rather than an
+// approximation: branches never exceed holders, so the top K by holders always
+// contains the top K by branches.
+func WeightByBranch(candidates []*LaneCandidate, branches BranchMap) {
 	for _, c := range candidates {
-		seen := map[string]bool{}
-		for _, key := range c.HolderKeys {
-			via := branches[key]
-			if len(via) == 0 {
-				seen[key] = true // unplaceable: it speaks for itself, once
-				continue
-			}
-			for _, b := range via {
-				seen[b] = true
-			}
-		}
-		if c.Self {
-			seen["self"] = true // our own library is a voice like any other
-		}
-		c.Branches = len(seen)
+		c.Branches = branches.Voices(c.HolderKeys, c.Self)
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		if candidates[i].Branches != candidates[j].Branches {

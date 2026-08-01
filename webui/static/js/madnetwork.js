@@ -383,11 +383,21 @@ function laneTitle(name) { return LANE_TITLES[name] || 'Lane'; }
 function laneNote(lane, t) {
   const holders = t.holders || 0;
   const nodes_ = n => `${n} node${n === 1 ? '' : 's'}`;
+  // The weighted lanes rank by branches, so when the two counts disagree the
+  // note says so: this row sits where it does because of independent agreement,
+  // not because of how many keys claimed it. Said only when it is news —
+  // "5 nodes · 5 branches" would be on every row and mean nothing.
+  const held = () => {
+    const b = t.branches || 0;
+    return b > 0 && b < holders
+      ? `held by ${nodes_(holders)} · ${b} branch${b === 1 ? '' : 'es'}`
+      : `held by ${nodes_(holders)}`;
+  };
   switch (lane) {
     case 'rare':    return t.source_name ? `only ${t.source_name} has it` : 'only one node has it';
     case 'new':     return t.first_seen ? `first seen ${fmtAgo(t.first_seen)}` : 'new here';
-    case 'held':    return `held by ${nodes_(holders)} here`;
-    case 'missing': return `held by ${nodes_(holders)}`;
+    case 'held':    return `${held()} here`;
+    case 'missing': return held();
     case 'friends': return `held by ${nodes_(holders)}`;
     default:        return '';
   }
@@ -874,6 +884,16 @@ function renderVersions(detail, t) {
       if (stale) holder.classList.add('mn-holder--stale');
       hs.append(holder);
     });
+    // Versions are ordered by independent voices, not by how many nodes claim
+    // them. The server sends the count only when it is lower than the holder
+    // count — i.e. when several of these names reach us through one friendship
+    // and this list looks broader than the agreement behind it.
+    if (v.voices) {
+      const note = mkSpan('mn-voices', ` (${v.voices} branch${v.voices === 1 ? '' : 'es'})`);
+      note.title = 'these holders reach us through ' + (v.voices === 1 ? 'a single friend' : `${v.voices} friends`)
+        + ' — one branch counts once';
+      hs.append(note);
+    }
     box.append(hs);
 
     // Actions on the version's ladder-best rendition (renditions[0] — the

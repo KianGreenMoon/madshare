@@ -22,6 +22,7 @@ type laneBody struct {
 			GroupArtist string `json:"group_artist"`
 			Album       string `json:"album"`
 			Holders     int    `json:"holders"`
+			Branches    int    `json:"branches"`
 			SelfHeld    bool   `json:"self_held"`
 			SourceName  string `json:"source_name"`
 			Versions    []struct {
@@ -112,6 +113,63 @@ func TestMadnetworkDiscoverRendersLanes(t *testing.T) {
 	}
 	if body.Lanes[1].Tracks[0].Title != "Rarity" {
 		t.Errorf("rare lane = %+v", body.Lanes[1].Tracks)
+	}
+}
+
+// TestMadnetworkMissingLaneIsBranchWeighted: "Not in your library" is the lane
+// the page opens with and SQL ranks it by a raw holder count, so it gets the
+// same Go-side re-sort as "Most held" (F7 item 10). A three-key farm behind one
+// friendship must not lead the first thing a person sees.
+func TestMadnetworkMissingLaneIsBranchWeighted(t *testing.T) {
+	fake := &fakeMadnetwork{
+		rows: []*database.MadnetworkTrackRow{
+			laneRow(1, "sybil-1", "r-f", "Artist", "Album", "Farmed", 1, "h-farmed"),
+			laneRow(2, "sybil-2", "r-f", "Artist", "Album", "Farmed", 1, "h-farmed"),
+			laneRow(3, "sybil-3", "r-f", "Artist", "Album", "Farmed", 1, "h-farmed"),
+			laneRow(4, "alpha", "r-r", "Artist", "Album", "Real", 2, "h-real"),
+			laneRow(5, "beta", "r-r", "Artist", "Album", "Real", 2, "h-real"),
+		},
+		lanes: map[string][]*database.LaneCandidate{
+			// SQL's order: the farm first, because it has more holders.
+			database.LaneMissing: {
+				laneCand("Artist", "Album", "Farmed", 1, "s1", "s2", "s3"),
+				laneCand("Artist", "Album", "Real", 2, "x1", "y1"),
+			},
+		},
+	}
+	fed := &fakeFederation{branches: map[string][]string{
+		"s1": {"friend-a"}, "s2": {"friend-a"}, "s3": {"friend-a"},
+		"x1": {"friend-b"}, "y1": {"friend-c"},
+	}}
+	r := chi.NewRouter()
+	RegisterAPI(r, Deps{Madnetwork: fake, Federation: fed})
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/madnetwork/discover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body laneBody
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Lanes) != 1 || len(body.Lanes[0].Tracks) != 2 {
+		t.Fatalf("lanes = %+v, want one lane with both rows", body.Lanes)
+	}
+	tracks := body.Lanes[0].Tracks
+	if tracks[0].Title != "Real" {
+		t.Errorf("missing lane leads with %q, want Real — 3 keys behind one friendship is one voice", tracks[0].Title)
+	}
+	if tracks[0].Branches != 2 || tracks[1].Branches != 1 {
+		t.Errorf("branches = %d / %d, want 2 (independent) then 1 (the farm)",
+			tracks[0].Branches, tracks[1].Branches)
+	}
+	// The holder count is still reported as the plain fact it is — weighting
+	// changes the ORDER, it does not rewrite what the row says about itself.
+	if tracks[1].Holders != 3 {
+		t.Errorf("farmed row holders = %d, want the honest 3", tracks[1].Holders)
 	}
 }
 

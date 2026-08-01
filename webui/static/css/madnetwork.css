@@ -183,6 +183,9 @@
 /* Holder seen too long ago to count as reachable — shown (fail-open view) but
    greyed so it reads as possibly-unavailable. */
 .mn-holder--stale { color: var(--text-muted); text-decoration: line-through; }
+/* Branch count beside a holder list, shown only when it is lower than the number
+   of holders — several nodes, one voice (F7 item 10). */
+.mn-voices { color: var(--text-muted); font-style: italic; }
 
 /* ── F3 version actions (Play / Queue / Download) ──────────────────────────── */
 .mn-actions { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-1); }

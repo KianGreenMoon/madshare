@@ -69,6 +69,13 @@ func (n *Node) NetworkMap(context.Context) (NetworkMap, error) {
 	return NetworkMap{}, errCompiledOut
 }
 
+// BranchMap answers nil rather than the compiled-out error: its caller reads a
+// missing attribution as "one source, one voice", which is the correct weighting
+// for a build with no graph at all.
+func (n *Node) BranchMap(context.Context) (map[string][]string, error) {
+	return nil, nil
+}
+
 func (n *Node) ClaimReports(context.Context) ([]*ClaimReport, error) {
 	return nil, errCompiledOut
 }

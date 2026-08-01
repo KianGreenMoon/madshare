@@ -467,24 +467,33 @@ number of distinct direct friends those nodes are reachable through
 
 | lane | shown when | ranked by |
 |---|---|---|
-| `missing` — **Not in your library** | no self row in the group | `holders` desc |
+| `missing` — **Not in your library** | no self row in the group | `branches` desc, then `holders` desc |
 | `new` — **New on the network** | some source has a `first_seen` | `first_seen` desc |
 | `held` — **Most held here** | always | `branches` desc, then `holders` desc |
 | `rare` — **Only one node has it** | `holders = 1` and no self row | that node's `last_seen` desc |
 | `friends` — **From your direct friends** | some holder is a direct friend | friend `holders` desc |
 | `nodes` — **By node** | — | not a track lane; see below |
 
-`held` is the only lane needing the friend graph. It is ranked in two steps —
-SQL takes the top candidates by `holders`, then the branch weighting re-sorts
-them — and the two-step is exact rather than approximate, because `branches ≤
-holders` always holds, so the top *K* by holders necessarily contains the top *K*
-by branches. With no graph (federation off, nothing gossiped yet) it degrades to
-one source = one voice, which is the same rule with a smaller world.
+`held` and `missing` are the two lanes SQL ranks by a raw count, so they are the
+two the friend graph re-sorts (`api.laneWeighted`, F7 item 10). Both are ranked
+in two steps — SQL takes the top candidates by `holders`, then the branch
+weighting re-sorts them — and the two-step is exact rather than approximate,
+because `branches ≤ holders` always holds, so the top *K* by holders necessarily
+contains the top *K* by branches. With no graph (federation off, nothing gossiped
+yet) it degrades to one source = one voice, which is the same rule with a smaller
+world.
 
-`rare` needs no branch arithmetic at all: one holder is one branch, whatever the
-graph says. Ordering it by the holder's `last_seen` puts the rarities that are
-**fetchable right now** first, which is the only thing that distinguishes them
-from each other.
+The other three need no weighting, each for its own reason. `friends` is
+weighted **by construction**: every direct friend is the root of its own branch,
+so its friend count already *is* a branch count, and re-weighting would swap that
+for the wider one and lose the lane's subject. `rare` is one holder, which is one
+branch whatever the graph says — ordering it by the holder's `last_seen` puts the
+rarities that are **fetchable right now** first, the only thing that
+distinguishes them from each other. `new` ranks by date, not by agreement.
+
+A weighted row still reports its honest `holders`; the note under it names the
+branch count **only when that is lower** — several nodes, one voice — because
+"5 nodes · 5 branches" on every row is wallpaper rather than transparency.
 
 **The per-source cap, and where it does not apply.** On the landing view `new` and
 `rare` cap how much any one node may contribute, filling the lane round-robin
@@ -501,6 +510,20 @@ more* is decided on the ranking, before any capping runs.
 `missing`, `held` and `friends` are *not* capped. Their rankings are corroboration
 counts, so volume from a single node cannot lift a row in them at all — a cap
 there would only mean showing worse answers.
+
+### Version ordering (F7 item 10)
+
+A track row expands into its **versions**, and the leading one is the default
+pick: `renditions[0]` of `versions[0]` is what Play, Queue and Materialize act
+on. That order counts **voices, not holders** — a farm of keys behind one
+friendship is one voice — with the holder count only as a tiebreak. This is the
+sharpest place the sybil rule applies on the page, because it is the one ranking
+attached to a control people press rather than to a list they scan.
+
+The ⓘ expansion prints the branch count beside a version's holder list under the
+same "only when it is news" rule as the lanes: shown when it is **lower** than
+the number of holders, which is exactly when the list looks broader than the
+agreement behind it.
 
 ### Browsing a single node
 
@@ -565,4 +588,8 @@ empty row source rather than a special case at each call site.
 7. **Ranking rare and unverifiable structure** — the corroboration sort key and
    the "rare" badge (§Planned — ranking rare…). Independent of 6 and orthogonal
    to it: 6 decides *what a person is shown first*, 7 decides *what order claims
-   appear in once shown*. *(planned)*
+   appear in once shown*. *(planned — but its arithmetic now exists: F7 item 10
+   built the branch attribution and the voice count as shared primitives
+   (`federation.Node.BranchMap`, `database.BranchMap.Voices`), so what is left
+   here is the artist/album list ordering and the relative-rarity badge, not the
+   signal underneath them.)*

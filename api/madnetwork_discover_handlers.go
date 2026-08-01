@@ -50,6 +50,20 @@ func laneCapped(lane string) bool {
 	return lane == database.LaneNew || lane == database.LaneRare
 }
 
+// laneWeighted reports whether a lane is re-sorted by branch count in Go — the
+// lanes SQL ranks by a raw holder count, and only those (F7 item 10):
+//
+//   - "friends" is already branch-weighted by construction, since every direct
+//     friend is the root of its own branch;
+//   - "rare" is one holder, which is one branch whatever the graph says;
+//   - "new" ranks by date and not by agreement at all.
+//
+// Stated as a predicate rather than left in the caller so the answer to "which
+// popularity counts are trust-weighted" is one readable list.
+func laneWeighted(lane string) bool {
+	return lane == database.LaneHeld || lane == database.LaneMissing
+}
+
 // laneTrack is one lane row: the merged track exactly as the drill-down renders
 // it, plus the address to drill to and the facts that explain why it is here.
 // Every lane row is explainable — that is a rule of the page, not a nicety.
@@ -77,11 +91,11 @@ type laneResponse struct {
 // in one round trip, since the landing view shows them all at once.
 func (h *handler) madnetworkDiscover(w http.ResponseWriter, r *http.Request) {
 	view := h.madnetworkView(r.Context())
-	branches := h.branchesByKey(r.Context())
+	opts := h.mergeOpts(r.Context()) // one branch-map read for every lane on the page
 
 	lanes := []laneResponse{}
 	for _, name := range database.LaneNames {
-		lane, err := h.buildLane(r.Context(), name, view, branches, laneRows, 0)
+		lane, err := h.buildLane(r.Context(), name, view, opts, laneRows, 0)
 		if err != nil {
 			http.Error(w, "storage error", http.StatusInternalServerError)
 			return
@@ -109,7 +123,7 @@ func (h *handler) madnetworkLane(w http.ResponseWriter, r *http.Request) {
 		offset = 0
 	}
 	view := h.madnetworkView(r.Context())
-	lane, err := h.buildLane(r.Context(), name, view, h.branchesByKey(r.Context()), laneSeeAllRows, offset)
+	lane, err := h.buildLane(r.Context(), name, view, h.mergeOpts(r.Context()), laneSeeAllRows, offset)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -123,7 +137,7 @@ func (h *handler) madnetworkLane(w http.ResponseWriter, r *http.Request) {
 // page, which skips the per-source cap: the cap shapes a digest, and a person
 // who asked to see all of something has asked for the ranking itself.
 func (h *handler) buildLane(ctx context.Context, name string, view database.MadnetworkView,
-	branches map[string][]string, limit, offset int) (laneResponse, error) {
+	opts mergeOpts, limit, offset int) (laneResponse, error) {
 	out := laneResponse{Name: name, Title: laneTitles[name], Tracks: []laneTrack{}}
 
 	want := offset + limit + 1 // the +1 answers "is there more" without a count
@@ -131,8 +145,8 @@ func (h *handler) buildLane(ctx context.Context, name string, view database.Madn
 	if err != nil {
 		return out, err
 	}
-	if name == database.LaneHeld {
-		database.WeightByBranch(candidates, branches)
+	if laneWeighted(name) {
+		database.WeightByBranch(candidates, opts.branches)
 	}
 	// "Is there more" is decided on the RANKING, before any capping — the cap
 	// changes which rows the digest shows, never how much the lane holds.
@@ -159,7 +173,7 @@ func (h *handler) buildLane(ctx context.Context, name string, view database.Madn
 	if err != nil {
 		return out, err
 	}
-	out.Tracks = h.renderLaneTracks(candidates, rows)
+	out.Tracks = h.renderLaneTracks(candidates, rows, opts)
 	return out, nil
 }
 
@@ -193,7 +207,7 @@ func candidateKey(c *database.LaneCandidate) laneKey {
 // renderLaneTracks merges the raw rows through the same path the drill-down and
 // search use — one row anatomy on the page, not two — and returns them in the
 // lane's ranking rather than the merge's.
-func (h *handler) renderLaneTracks(candidates []*database.LaneCandidate, rows []*database.MadnetworkTrackRow) []laneTrack {
+func (h *handler) renderLaneTracks(candidates []*database.LaneCandidate, rows []*database.MadnetworkTrackRow, opts mergeOpts) []laneTrack {
 	type bucket struct{ artist, album string }
 	groups := map[bucket][]*database.MadnetworkTrackRow{}
 	for _, row := range rows {
@@ -201,12 +215,11 @@ func (h *handler) renderLaneTracks(candidates []*database.LaneCandidate, rows []
 		groups[b] = append(groups[b], row)
 	}
 
-	rc := h.reachCutoff()
 	merged := map[laneKey]*madnetworkTrack{}
 	display := map[laneKey]bucket{}
 	for b, group := range groups {
 		sortMadnetworkRows(group)
-		for _, t := range mergeMadnetworkTracks(group, h.madnetworkName, rc) {
+		for _, t := range mergeMadnetworkTracks(group, opts) {
 			k := laneKey{artist: b.artist, album: b.album, title: strings.ToLower(t.Title),
 				disc: -1, track: -1}
 			if t.Disc != nil {
@@ -253,23 +266,23 @@ func (h *handler) renderLaneTracks(candidates []*database.LaneCandidate, rows []
 }
 
 // branchesByKey maps every node we can see to the direct friends it reaches us
-// through — the branch attribution the "most held" lane weights by (one branch
-// is one voice, docs/architecture/federation.md §Trust graph). Empty when there
-// is no federation node or no graph yet, which degrades the lane to one source
-// one voice: the same rule in a smaller world, never a wrong answer.
-func (h *handler) branchesByKey(ctx context.Context) map[string][]string {
+// through — the branch attribution every trust-weighted count on this page is
+// computed from (one branch is one voice,
+// docs/architecture/federation.md §Trust graph).
+//
+// Empty when there is no federation node, no graph yet, or the read fails, which
+// degrades every weighted surface to one source one voice: the same rule in a
+// smaller world, never a wrong answer. That is also why an error is swallowed
+// rather than failing the request — a browse is not worth refusing over a
+// ranking input, and the fallback understates corroboration rather than
+// inventing it.
+func (h *handler) branchesByKey(ctx context.Context) database.BranchMap {
 	if h.federation == nil {
 		return nil
 	}
-	m, err := h.federation.NetworkMap(ctx)
+	branches, err := h.federation.BranchMap(ctx)
 	if err != nil {
 		return nil
 	}
-	out := make(map[string][]string, len(m.Nodes))
-	for _, n := range m.Nodes {
-		if len(n.Via) > 0 {
-			out[n.Key] = n.Via
-		}
-	}
-	return out
+	return branches
 }

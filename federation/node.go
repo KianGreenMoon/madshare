@@ -139,6 +139,14 @@ type Node struct {
 	// recomputed on the sweep from the same peers+edges the retention walk reads.
 	memberMu sync.Mutex
 	members  *memberSet
+
+	// Branch attribution for the browse (F7 item 10, branches.go): which direct
+	// friends each reachable node speaks through, so popularity can be counted
+	// per branch instead of per key. Same walk as the network map, memoized on
+	// the same TTL as the community and for the same reason — it is read once
+	// per browse request and changes only on the sweep.
+	branchMu sync.Mutex
+	branches *branchMemo
 }
 
 // peerTouchThrottle bounds transfer-path last_seen writes per peer.

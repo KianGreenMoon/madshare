@@ -18,9 +18,12 @@
 > instead of loading all of it. **Item 10's freshness half landed 2026-08-01**
 > (migration **038**): reaching the community's libraries had left them judged by
 > a window sized for the friendship ping, so most of what item 5 pulled was
-> hidden most of the time (§Availability, "Two clocks, two windows"). Item 6,
-> item 9 and item 10's weighting half remain: per-member abuse controls,
-> listener-node tokens, and trust-weighted popularity beyond the *Most held* lane.
+> hidden most of the time (§Availability, "Two clocks, two windows"). **Item 6
+> (per-member quotas) and item 10's weighting half landed the same day** — the
+> browse now counts popularity in branches wherever it orders anything by it,
+> including the version a crossing's Play button acts on (§Trust graph, "Where
+> the weighting applies"). **Item 9 (listener-node tokens) is all that remains**,
+> and its only open design question is the token's lifetime (§Open questions).
 > The two items in §Open questions are design-time details to settle during their
 > milestone, not blockers. Federation
 > is auth Phase 4 (`docs/architecture/auth.md` §8) and the milestone the native
@@ -934,7 +937,8 @@ stricter for emoji, which is the harmless direction.)
   2. **Popularity is trust-weighted, never raw counts** (sybil resistance):
      carriers are weighted by trust distance, and nodes reachable only through
      one friendship edge count as **one branch**, not many voices. A sybil
-     farm inflates nothing and dies with a single snip.
+     farm inflates nothing and dies with a single snip. *Built — see "Where the
+     weighting applies" below.*
   3. **Attribution:** every tagset carries signed provenance + the friend path
      that delivered it. Detect → details → block → branch snipped, distrust
      mark published. A troll gets each admin at most once and grows more
@@ -953,6 +957,63 @@ stricter for emoji, which is the harmless direction.)
   the wrong order. This is the reason the build plan puts defense in F6 and
   reach in F7, in that order, rather than in one phase: the dependency runs one
   way only, so F6 stands alone and F7 does not.
+
+### Where the weighting applies (F7 item 10, built 2026-08-01)
+
+"One branch is one voice" is a rule about **ordering**, and it is only worth
+anything if it reaches every place an order is decided by a count. Item 8 landed
+it on the *Most held* lane; this completes it.
+
+The attribution itself is the network map's, exposed as a lookup table
+(`federation/branches.go`, `Node.BranchMap` → node key → the direct friends it
+reaches us through). Deliberately the **same walk** the diagram is drawn from:
+a holder in a track's ⓘ panel links straight to its node on that map, so a
+ranking explained by one graph beside a diagram drawn from another would be two
+answers to one question (`TestBranchesMatchTheMap` pins it). It is a separate
+entry point from `NetworkMap` only because that one also groups distrust marks
+and derives a mesh address per node — ed25519 work that belongs on a diagram an
+admin opens occasionally, not on a search-as-you-type. Memoized on the
+membership TTL, for the same reason and with the same safe direction of
+staleness: a branch that just appeared is briefly counted as its own voice,
+which understates corroboration rather than inventing it.
+
+The counting rule is one function (`database.BranchMap.Voices`), because a rule
+restated per surface is a rule half-applied somewhere. Around it:
+
+- **A version's place in a crossing** — the sharpest one, and the reason this
+  half was worth finishing. A track row expands into versions ordered
+  most-widely-held first, and `renditions[0]` of the leading version is what
+  Play, Queue and Materialize act on. Ordered by raw holders, a farm of keys
+  behind one friendship could make its claim the default pick for everyone who
+  browses to that track — the "rickroll" attack landing on the one control
+  people actually press. It is now ordered by voices, holders only as a tiebreak.
+- **The *Most held* and *Not in your library* lanes** — the two SQL ranks by a
+  raw holder count. *Not in your library* is the lane the page opens with, which
+  makes it the more valuable of the two to an attacker.
+- **Not the other three lanes, on purpose.** *From your direct friends* is
+  already branch-weighted by construction, since every direct friend is the root
+  of its own branch — re-weighting it would replace that with the wider count and
+  lose the lane's whole subject. *Only one node has it* is one holder, which is
+  one branch whatever the graph says. *New on the network* ranks by date, not by
+  agreement. The predicate is `api.laneWeighted`, stated as a list so the answer
+  to "which counts are weighted" is readable in one place.
+
+Two properties are worth stating because they are what keep this honest:
+
+- **Degradation is the same rule in a smaller world.** No federation node, no
+  graph yet, a failed read, or a holder the graph cannot place: one source, one
+  voice. Never a collapse to zero, and never an ordering refusal — a browse is
+  not worth failing over a ranking input.
+- **Weighting changes the order, never the facts.** A row still reports the
+  honest holder count; the branch count appears beside it *only when it is
+  lower*, which is the only case where it says something the holder list does
+  not — several nodes, one voice. Sending it always would put "5 nodes ·
+  5 branches" on every row, which is wallpaper, not transparency.
+
+What this does **not** answer, and does not pretend to: **volume from a single
+honest branch**. One friend with fifty thousand badly tagged albums is still one
+voice and still fifty thousand rows. That is a clustering problem, tracked in
+`docs/ui/madnetwork-page.md` §Open.
 
 ### Contradicted identity claims (built 2026-07-30)
 
@@ -1524,7 +1585,9 @@ over an already-built `NetworkMap`, tested without a mesh):
   sorts each version's renditions by the quality ladder before answering).
   While every carrier was a direct friend the count was trivially
   trust-weighted; since catalogs travel past the friend ring (F7 item 5) the
-  full weighting is what item 10 owes (one branch = one voice).
+  ordering counts **branches, not holders** (F7 item 10, §Trust graph "Where
+  the weighting applies") — a farm behind one friendship cannot make its claim
+  the version everyone's Play button lands on.
 - **Catalog crossing — "N versions" (built, F2; resolves former open question
   1).** The same tagset text on *different claimed recordings* (different
   masters, live vs. studio, or a mislabel) stays **one track row** that
@@ -2358,15 +2421,29 @@ milestone directly after direct transfer works, and tokens ship with depth.
      otherwise every sync re-dates a source's whole library). Its *Most held* lane
      is the first place branch weighting reaches the browse, so it lands part of
      item 10 early — deliberately, because a popularity lane a sybil farm can lift
-     is worse than none. What item 10 still owes it: the same weighting applied
-     beyond one lane, and gossiped freshness hints.
+     is worse than none. Item 10 finished the job the same week: gossiped
+     freshness hints, then the same weighting on *Not in your library* and on
+     version ordering.
   9. **Listener-node tokens** (§Principals & access): a home server signs "this
      bearer is mine until T", verified by that server's friends against the
      self-certifying channel. One issuer, one hop, no chain — the only surviving
      use of a token, and the only open design question left is its lifetime
      (§Open questions).
   10. **Trust-weighted popularity** (one branch = one voice, §Trust graph), which
-     only becomes meaningful once carriers are not all direct friends.
+     only becomes meaningful once carriers are not all direct friends. **BUILT
+     2026-08-01** (§Trust graph, "Where the weighting applies"). No migration:
+     the attribution is computed from the gossiped graph at request time, which
+     is also what keeps a block instant — snip the branch and its voices are
+     gone from the next ranking, with nothing cached to invalidate.
+
+     The half that mattered was not a lane at all: a track row's **versions**
+     were ordered by raw holder count, and `renditions[0]` of the leading one is
+     what Play, Queue and Materialize act on — so the mislabel defense of
+     §Trust graph point 2 was missing from the one control people press. Ordered
+     by voices now, with *Not in your library* joining *Most held* as the second
+     weighted lane and the other three deliberately left alone (each for a stated
+     reason, in `laneWeighted`). The counting rule became one function so no
+     surface can apply half of it.
 
      Its other half — **freshness for holders we never ping** — is **built
      2026-08-01** (§Availability, "Two clocks, two windows", migration **038**).
@@ -2380,8 +2457,10 @@ milestone directly after direct transfer works, and tokens ship with depth.
      rather than being granted the wide one. Never transitive pinging, and never
      a relayed hint: one hop, first-hand, or nothing.
 
-     Still owed by this item: the same branch weighting the *Most held* lane
-     already applies (item 8), extended beyond that one lane.
+     What neither half claims to answer is **volume from a single honest
+     branch** — one friend with fifty thousand badly tagged albums is one voice
+     and fifty thousand rows. That is clustering, not weighting, and it stays
+     open in `docs/ui/madnetwork-page.md` §Open.
 - **Cleanup, any time — remove the node-key → local-user mapping** (§Principals &
   access). Drop `federation_peers.user_id`, `PeerAudience`'s account lookup and
   the `/admin/network` control, once the open detail under §Sharing scope decides

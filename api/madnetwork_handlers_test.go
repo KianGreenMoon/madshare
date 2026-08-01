@@ -209,6 +209,98 @@ func TestMadnetworkTracks_SelfMerge(t *testing.T) {
 	}
 }
 
+// TestMadnetworkVersions_BranchWeighted is the sybil rule where it bites
+// hardest (F7 item 10): a crossing's LEADING version is what Play, Queue and
+// Materialize act on, so ordering it by raw holder count would let a farm of
+// keys behind one friendship make its claim everyone's default pick. Three
+// forged holders behind friend-a must lose to two independent ones.
+func TestMadnetworkVersions_BranchWeighted(t *testing.T) {
+	keyed := func(id int64, name, key, recording string, hashes ...string) *database.MadnetworkTrackRow {
+		row := madRow(id, name, recording, "Crossing", hashes...)
+		row.SourceKey = key
+		return row
+	}
+	fake := &fakeMadnetwork{rows: []*database.MadnetworkTrackRow{
+		// The farm: three nodes, one claimed recording, all reached through
+		// friend-a — and a bigger holder count than the honest version.
+		keyed(1, "sybil-1", "s1", "r-fake", "h-fake"),
+		keyed(2, "sybil-2", "s2", "r-fake", "h-fake"),
+		keyed(3, "sybil-3", "s3", "r-fake", "h-fake"),
+		// Two holders, two friendships, two voices.
+		keyed(4, "alpha", "x1", "r-real", "h-real"),
+		keyed(5, "beta", "y1", "r-real", "h-real"),
+	}}
+	fed := &fakeFederation{branches: map[string][]string{
+		"s1": {"friend-a"}, "s2": {"friend-a"}, "s3": {"friend-a"},
+		"x1": {"friend-b"}, "y1": {"friend-c"},
+	}}
+	r := chi.NewRouter()
+	RegisterAPI(r, Deps{Madnetwork: fake, Federation: fed, MadnetworkName: "my node"})
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	get := func() []struct {
+		Voices     int `json:"voices"`
+		Renditions []struct {
+			Hash string `json:"hash"`
+		} `json:"renditions"`
+		Holders []struct {
+			Name string `json:"name"`
+		} `json:"holders"`
+	} {
+		t.Helper()
+		resp, err := http.Get(srv.URL + "/api/madnetwork/tracks?artist=A&album=B")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var body struct {
+			Tracks []struct {
+				Versions []struct {
+					Voices     int `json:"voices"`
+					Renditions []struct {
+						Hash string `json:"hash"`
+					} `json:"renditions"`
+					Holders []struct {
+						Name string `json:"name"`
+					} `json:"holders"`
+				} `json:"versions"`
+			} `json:"tracks"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if len(body.Tracks) != 1 {
+			t.Fatalf("tracks = %d, want 1", len(body.Tracks))
+		}
+		return body.Tracks[0].Versions
+	}
+
+	versions := get()
+	if len(versions) != 2 {
+		t.Fatalf("versions = %d, want 2 (disjoint hashes never merge)", len(versions))
+	}
+	if h := versions[0].Renditions[0].Hash; h != "h-real" {
+		t.Errorf("default pick = %q, want h-real: three keys behind one friendship outranked two independent holders", h)
+	}
+	if versions[0].Voices != 0 {
+		t.Errorf("honest version voices = %d, want it omitted — 2 holders, 2 voices is not news", versions[0].Voices)
+	}
+	if versions[1].Voices != 1 || len(versions[1].Holders) != 3 {
+		t.Errorf("farmed version = %d voices / %d holders, want 1 voice reported beside 3 holders",
+			versions[1].Voices, len(versions[1].Holders))
+	}
+
+	// Without the graph the same rows fall back to one source one voice, which
+	// puts the farm back on top. That is the honest answer for a node that
+	// cannot place anyone — and it is what makes the weighting above a fact
+	// about the graph rather than about this test's row order.
+	fed.branches = nil
+	if h := get()[0].Renditions[0].Hash; h != "h-fake" {
+		t.Errorf("ungraphed default pick = %q, want h-fake (3 unplaceable holders = 3 voices)", h)
+	}
+}
+
 // TestMadnetworkSearch: the merged search mirrors /api/search's shape — artist
 // hits capped, album hits carry the drill address, track hits merged per
 // bucket with a playable hash (and the local url for self-held tracks).
