@@ -460,9 +460,12 @@ func (n *Node) sweep(ctx context.Context) {
 	// what a block or a removal orphaned. All of it runs before the loop so a
 	// friendship accepted this round is already in the record we serve during it,
 	// and a branch we just cut is gone before we offer anyone a digest.
+	//
+	// expireGraph takes no peer list: it deletes, so it re-reads one of its own
+	// rather than acting on this one, which is by then a round old (gossip_node.go).
 	n.publishOwnRecord(ctx, peers)
 	n.publishOwnMarkRecord(ctx, peers)
-	n.expireGraph(ctx, peers)
+	n.expireGraph(ctx)
 	n.depeerBlocked(peers)
 
 	// The Rescan button (ResyncGraph). Consumed once per sweep, so presses during

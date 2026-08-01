@@ -2230,6 +2230,17 @@ milestone directly after direct transfer works, and tokens ship with depth.
      reads — two walks, one read, so the store and the perimeter cannot drift.
      `TestMapDrawsAOneSidedEdgeThatMembershipRefuses` pins the one place the two
      walks disagree.
+
+     *Memo ordering fixed 2026-08-01*, found while verifying item 6. Two
+     producers write the memo — the sweep, and a request that found it stale —
+     and they race by construction, because the sweep reads its peer list at the
+     top of a round and only turns it into a member set some real work later. The
+     set was stamped with the *write* time and installed unconditionally, so a
+     sweep could overwrite a newer answer with an older one **stamped fresh**, and
+     an accepted friendship could stop being a membership for a whole TTL. A set
+     now ages from when its inputs were read, and `installMembers` refuses a set
+     older than the one already there. Its visible symptom was a mesh test
+     serving a member as an outsider, where the TTL is a millisecond.
   3. **Serve members, refuse outsiders** — *built 2026-07-31*. Madnetwork-scoped
      blobs, manifests, catalog, **holdings and cache blobs** to members
      (§Distribution — the swarm's only boundary is the madnetwork); an outsider

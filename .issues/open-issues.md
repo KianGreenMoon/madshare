@@ -771,8 +771,28 @@ had just narrowed still carrying both entries, as if the memoized snapshot were
 stale, though `scopePair` sets `SnapshotTTL` to 1 ms precisely so it cannot be.
 Not reproduced since, in either tree: 12 isolated runs and 2 full-package runs at
 HEAD, plus 3 isolated and 2 full-package runs with the F7-item-10 changes, all
-green. So it is not attributable to that change and the mechanism is unidentified
-— the likeliest remaining candidate is `serveAudience` momentarily resolving B as
-a *friend* rather than a member under load, which would explain the entry count
-exactly. If it recurs, log the resolved `Audience` in the failure rather than
-raising the deadline: this one is not obviously a timeout.
+green. So it is not attributable to that change and the mechanism is unidentified.
+
+**Investigated again 2026-08-01 (F7 item 6), and the field narrowed.** It recurs
+at roughly one full-package run in three, always at the same line, always two
+entries where one is wanted. What is now *ruled out*:
+
+- **Not a friend audience.** That was the standing hypothesis, because
+  `inScope` admits the restricted entry exactly when `Distance == 0`. But
+  `startNodePair` never friends the two nodes, and the only peer row on A is the
+  voucher, whose key (`k("voucher")`) is not hex — so `AddrForKeyHex` errors and
+  `matchPeerAddr` can never match B to it. `serveAudience` cannot return
+  `FriendAudience` here.
+- **Not the membership memo, and not graph retention.** Both were real bugs found
+  in the same file and both are fixed (see §The membership rule, "Memo ordering",
+  and `expireGraph`'s own peer read). They accounted for the *404* failures in
+  `TestCacheSeedsToTheCommunityNotOutside` and
+  `TestOneSidedEdgeDoesNotMakeAMember`, which are gone; this one survived both
+  fixes unchanged.
+
+What is left is the memoized `ownSnapshot`, whose TTL the test deliberately sets
+to 1 ms — yet the intervening mesh round trip should make a rebuild certain, so
+the arithmetic does not add up either. Next step is instrumentation, not more
+reading: log the resolved `Audience` and the snapshot's age on the catalog path
+and run the package in a loop until it trips. Do not raise the deadline — nothing
+here is a timeout.

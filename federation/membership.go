@@ -46,7 +46,12 @@ func (m *memberSet) lookup(ip net.IP) (string, bool) {
 // mesh address. A key whose address cannot be derived is dropped from the index
 // but kept in keys: it can never be matched to a connection, and a malformed key
 // in the graph should not be able to hide the rest of the branch.
-func newMemberSet(selfKey string, peers []*Peer, edges []GraphEdgeClaim) *memberSet {
+//
+// asOf is when the INPUTS were read, not when the walk finished. The difference
+// matters because the set is memoized and compared by age: stamping it with the
+// completion time would let a slow computation over old contents pass for a
+// fresh answer.
+func newMemberSet(selfKey string, peers []*Peer, edges []GraphEdgeClaim, asOf time.Time) *memberSet {
 	keys := MemberKeys(selfKey, peers, edges)
 	addrs := make(map[string]string, len(keys))
 	for key := range keys {
@@ -54,18 +59,36 @@ func newMemberSet(selfKey string, peers []*Peer, edges []GraphEdgeClaim) *member
 			addrs[addr.String()] = key
 		}
 	}
-	return &memberSet{keys: keys, addrs: addrs, self: selfKey, built: time.Now()}
+	return &memberSet{keys: keys, addrs: addrs, self: selfKey, built: asOf}
 }
 
 // refreshMembers recomputes the community from contents the caller already has
 // in hand. Called from the sweep's graph pass, where peers and edges were just
 // read for the retention walk — the two answers come from the same inputs, so
 // computing them together keeps them from ever disagreeing.
-func (n *Node) refreshMembers(peers []*Peer, edges []GraphEdgeClaim) {
-	set := newMemberSet(n.PublicKeyHex(), peers, edges)
+//
+// readAt is when the sweep read those contents, which is NOT now: the sweep
+// reads its peer list at the top of a round and then does real work — publishing
+// records, expiring the store, walking the graph — so by the time this runs, a
+// request may already have rebuilt the set from a later state of the store. It
+// therefore refuses to replace a memo computed from newer inputs. Overwriting
+// one would serve the older perimeter *stamped as fresh*, which is how an
+// accepted friendship could briefly stop being a membership.
+func (n *Node) refreshMembers(peers []*Peer, edges []GraphEdgeClaim, readAt time.Time) {
+	n.installMembers(newMemberSet(n.PublicKeyHex(), peers, edges, readAt))
+}
+
+// installMembers publishes a computed community, unless the memo already there
+// was computed from NEWER inputs. Both producers go through it — the sweep and
+// a request that found the memo stale — because they race by construction and
+// the older answer must never win on arrival order.
+func (n *Node) installMembers(set *memberSet) {
 	n.memberMu.Lock()
+	defer n.memberMu.Unlock()
+	if n.members != nil && n.members.built.After(set.built) {
+		return
+	}
 	n.members = set
-	n.memberMu.Unlock()
 }
 
 // community returns the member set, rebuilding it if the memo is missing or
@@ -80,18 +103,22 @@ func (n *Node) community(ctx context.Context) (*memberSet, error) {
 	if n.store == nil {
 		return &memberSet{}, nil
 	}
+	readAt := time.Now()
 	peers, err := n.store.ListFederationPeers(ctx)
 	if err != nil {
 		return nil, err
 	}
-	edges, err := n.store.GraphEdges(ctx, time.Now().Unix())
+	edges, err := n.store.GraphEdges(ctx, readAt.Unix())
 	if err != nil {
 		return nil, err
 	}
-	set := newMemberSet(n.PublicKeyHex(), peers, edges)
-	n.memberMu.Lock()
-	n.members = set
-	n.memberMu.Unlock()
+	// Stamped with the read time, so this answer ages from when it was true
+	// rather than from when it finished being computed.
+	set := newMemberSet(n.PublicKeyHex(), peers, edges, readAt)
+	n.installMembers(set)
+	// The caller gets what it just computed, not whatever won the memo: this
+	// answer is at least as new, and a request must never be served a perimeter
+	// older than the one it read the store for.
 	return set, nil
 }
 

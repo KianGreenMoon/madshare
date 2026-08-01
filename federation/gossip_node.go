@@ -346,11 +346,25 @@ func (n *Node) storedOwnRecord(ctx context.Context, origin string) *GraphRecord 
 // Order matters. Expiring first means the walk runs over live edges only, so a
 // branch held up solely by a record that just aged out is collected in the same
 // pass rather than the next one.
-func (n *Node) expireGraph(ctx context.Context, peers []*Peer) {
+// It reads the peer list ITSELF rather than taking the sweep's, and that is a
+// correctness requirement and not an economy lost. The retention walk below
+// DELETES records, and the sweep's list is read at the top of a round that then
+// publishes records, pings and pairs — so deciding retention from it means
+// deleting the branch of a friendship accepted since the round began. That is
+// exactly what a loaded mesh test caught on 2026-08-01: a node vouched for
+// mid-round lost the gossip records proving it, and stopped being a member.
+//
+// The residual window is now the microseconds between this read and the delete,
+// rather than however long a round takes. Closing it entirely would mean walking
+// the graph inside the store's transaction; the cost of losing that race is one
+// branch's records until the next gossip sync restores them, which does not earn
+// it.
+func (n *Node) expireGraph(ctx context.Context) {
 	if n.store == nil {
 		return
 	}
-	now := time.Now().Unix()
+	readAt := time.Now()
+	now := readAt.Unix()
 	if dropped, err := n.store.ExpireGraph(ctx, now); err != nil {
 		n.logger.Printf("federation: expire graph: %v", err)
 		return
@@ -359,6 +373,11 @@ func (n *Node) expireGraph(ctx context.Context, peers []*Peer) {
 		n.logger.Printf("federation: expired %d gossip record(s)", dropped)
 	}
 
+	peers, err := n.store.ListFederationPeers(ctx)
+	if err != nil {
+		n.logger.Printf("federation: read peers for retention: %v", err)
+		return
+	}
 	edges, err := n.store.GraphEdges(ctx, now)
 	if err != nil {
 		n.logger.Printf("federation: read graph edges for retention: %v", err)
@@ -368,7 +387,7 @@ func (n *Node) expireGraph(ctx context.Context, peers []*Peer) {
 	// only in the mutual-edge condition, and computing them from the same inputs
 	// in the same pass is what stops the store and the perimeter from drifting —
 	// a branch collected below must not still be a member above.
-	n.refreshMembers(peers, edges)
+	n.refreshMembers(peers, edges, readAt)
 	keep := ReachableKeys(n.PublicKeyHex(), peers, edges)
 	dropped, err := n.store.DropUnreachableGraph(ctx, keep)
 	if err != nil {
