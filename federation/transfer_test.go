@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -256,5 +257,44 @@ func TestBlobTransfer_VerificationFailure(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(cacheB, hash)); !os.IsNotExist(err) {
 		t.Error("unverified bytes landed in the cache")
+	}
+}
+
+// TestEvictCachedBlobDropsTheDuplicate pins the fix for the scope leak found by
+// the F8 mesh verification (.issues/open-issues.md). It also pins what eviction
+// must NOT touch: an in-flight transfer's `.part`, and a hash never cached.
+func TestEvictCachedBlobDropsTheDuplicate(t *testing.T) {
+	dir := t.TempDir()
+	n := &Node{cacheDir: dir}
+
+	hash := strings.Repeat("ab", 32)
+	final := filepath.Join(dir, hash)
+	part := final + ".part"
+	for _, p := range []string{final, part} {
+		if err := os.WriteFile(p, []byte("bytes"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+	}
+
+	if err := n.EvictCachedBlob(hash); err != nil {
+		t.Fatalf("EvictCachedBlob: %v", err)
+	}
+	if _, err := os.Stat(final); !os.IsNotExist(err) {
+		t.Error("the cached duplicate survived eviction")
+	}
+	if _, err := os.Stat(part); err != nil {
+		t.Error("evicting the cached blob also took an in-flight transfer's .part")
+	}
+
+	// Idempotent, tolerant of nonsense, and a no-op without a cache dir — all
+	// three matter because every caller ignores the error.
+	if err := n.EvictCachedBlob(hash); err != nil {
+		t.Errorf("second eviction: %v", err)
+	}
+	if err := n.EvictCachedBlob("not-a-hash"); err != nil {
+		t.Errorf("non-hash: %v", err)
+	}
+	if err := (&Node{}).EvictCachedBlob(hash); err != nil {
+		t.Errorf("no cache dir configured: %v", err)
 	}
 }

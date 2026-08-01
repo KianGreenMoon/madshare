@@ -149,3 +149,60 @@ func (db *DB) imageHashReferenced(ctx context.Context, imageHash string) (bool, 
 	}
 	return n > 0, nil
 }
+
+// EvictCachedMadnetworkBlobs removes download-cache entries for blobs the
+// library already holds, and returns how many it dropped
+// (federation F8 follow-up; .issues/open-issues.md "Cache seeding overrides a
+// recording's sharing scope").
+//
+// A cached copy of a blob that also sits under files_dir is pure duplication —
+// the fetch path checks the library first (federation.EnsureBlob), so nothing
+// ever reads it again. It is worse than wasted disk, because the two copies are
+// served under DIFFERENT rules: the library branch of seedableBlob applies the
+// recording's sharing scope, the cache branch answers the whole community. While
+// both exist, narrowing a recording to Direct friends stops the catalog
+// advertising it and leaves this node seeding the identical bytes anyway.
+//
+// Deleting the duplicate is what closes that, rather than teaching the cache
+// branch about scope: there is nothing here to reason about once the cache holds
+// no copy of anything we publish.
+//
+// A row in ANY state counts as held, deliberately including a trashed one. Its
+// bytes stay under files_dir for the quarantine window, so the cache copy is
+// still redundant — and that is the sharper case, since a trashed blob is
+// invisible to the library branch and would otherwise be served from cache.
+//
+// In-flight transfers are untouched: they write `<hash>.part` and only rename on
+// success, and a name that is not a bare digest is skipped. Removing a file some
+// request is mid-read is safe on POSIX — the open descriptor survives the unlink.
+func EvictCachedMadnetworkBlobs(ctx context.Context, repo Repository, cacheDir string) (int, error) {
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil // federation never ran here
+		}
+		return 0, fmt.Errorf("read cache dir: %w", err)
+	}
+	evicted := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		hash := e.Name()
+		if !hashDirPattern.MatchString(hash) {
+			continue // `.part` files and anything else we did not name
+		}
+		f, err := repo.GetFileByHash(ctx, hash)
+		if err != nil {
+			return evicted, fmt.Errorf("lookup %s: %w", hash, err)
+		}
+		if f == nil {
+			continue // a genuine cache-only blob: this is what the cache is for
+		}
+		if err := os.Remove(filepath.Join(cacheDir, hash)); err != nil && !os.IsNotExist(err) {
+			return evicted, fmt.Errorf("evict cached %s: %w", hash, err)
+		}
+		evicted++
+	}
+	return evicted, nil
+}

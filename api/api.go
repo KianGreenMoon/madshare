@@ -175,6 +175,12 @@ type FederationNode interface {
 	// EnsureBlob joins (or starts) the fetch of a remote blob by content hash
 	// (federation F3); the stub answers with its compiled-out error.
 	EnsureBlob(ctx context.Context, hash string) (federation.Transfer, error)
+	// EvictCachedBlob drops the download-cache copy of a hash the library now
+	// holds. Two copies of one blob are served under two different rules — only
+	// the library's applies the recording's sharing scope — so the duplicate is
+	// deleted rather than reasoned about (.issues/open-issues.md, "Cache seeding
+	// overrides a recording's sharing scope").
+	EvictCachedBlob(hash string) error
 	// IssueCapabilityToken signs "bearer key K is my user until T" for one of
 	// this node's own users' devices (F7 item 9) — the credential a listener
 	// node presents to nodes that cannot place it in any community themselves.

@@ -29,9 +29,10 @@ type fakeFederation struct {
 	inboundDead bool   // when true, InboundHealthy() reports false (fail-open path)
 	blockReason string // what the last block carried into the published mark (F6)
 	graph       federation.NetworkMap
-	branches    map[string][]string // node key → the direct friends it reaches us through
+	branches    map[string][]string       // node key → the direct friends it reaches us through
 	reports     []*federation.ClaimReport // contradicted claims awaiting a decision (F6)
 	disposed    []string                  // "<id>:<disposition>" per PATCH
+	evicted     []string                  // hashes EvictCachedBlob was asked to drop
 	// What the last capability-token issuance was asked for (F7 item 9): the
 	// bearer key, and the guest bit the caller's account earned.
 	tokenBearer    string
@@ -84,6 +85,13 @@ func (f *fakeFederation) AcceptPeer(context.Context, int64) error { return f.opE
 func (f *fakeFederation) BlockPeer(_ context.Context, _ int64, reason string) error {
 	f.blockReason = reason
 	return f.opErr
+}
+
+// EvictCachedBlob records the hashes the handlers asked to drop, so a test can
+// assert that landing a blob in the library retires its cache copy.
+func (f *fakeFederation) EvictCachedBlob(hash string) error {
+	f.evicted = append(f.evicted, hash)
+	return nil
 }
 
 func (f *fakeFederation) BranchMap(context.Context) (map[string][]string, error) {

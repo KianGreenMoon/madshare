@@ -353,6 +353,29 @@ func (t *transfer) Stats() TransferStats {
 	return t.stats.snapshot(hash, size, progress)
 }
 
+// EvictCachedBlob drops this node's download-cache copy of hash. Safe for a hash
+// never cached, and safe while something is reading the file — POSIX keeps an
+// open descriptor alive across the unlink.
+//
+// Called once a fetched blob has landed in the library (F8 follow-up,
+// .issues/open-issues.md "Cache seeding overrides a recording's sharing scope").
+// From then on the two copies are duplicates served under DIFFERENT rules, and
+// only the library branch of seedableBlob applies the recording's sharing scope.
+// EnsureBlob resolves the library BEFORE the cache, so nothing is lost by
+// deleting the duplicate: a later fetch short-circuits locally either way.
+//
+// The `.part` of an in-flight transfer is deliberately not touched — it is not
+// this file, and a verified transfer renames over the final name anyway.
+func (n *Node) EvictCachedBlob(hash string) error {
+	if n.cacheDir == "" || !isBlobHash(hash) {
+		return nil
+	}
+	if err := os.Remove(filepath.Join(n.cacheDir, hash)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("federation: evict cached blob: %w", err)
+	}
+	return nil
+}
+
 // EnsureBlob returns the Transfer for hash, starting a fetch when needed:
 // a local library blob or an already-cached file is returned complete; an
 // in-flight fetch is joined; otherwise a new fetch starts against the friends

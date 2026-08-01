@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/federation"
 )
 
@@ -261,5 +262,55 @@ func TestParseByteRange(t *testing.T) {
 			t.Errorf("parseByteRange(%q) = (%d,%d,%v,%v), want (%d,%d,%v,%v)",
 				c.spec, start, end, partial, ok, c.start, c.end, c.partial, c.ok)
 		}
+	}
+}
+
+// TestDownloadEvictsTheCachedDuplicate is the write-path half of the fix for the
+// scope leak the F8 mesh verification found (.issues/open-issues.md, "Cache
+// seeding overrides a recording's sharing scope").
+//
+// The case exercised is the cheap one — bytes this node already holds — because
+// it reaches the eviction without a mesh: whatever brought the blob into the
+// library, a cache copy of it is a duplicate served under a rule that ignores
+// the recording's sharing scope, so it must not survive the request.
+func TestDownloadEvictsTheCachedDuplicate(t *testing.T) {
+	fed := &fakeFederation{}
+	srv, db := newModerationServerWithNetwork(t, fed)
+	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
+	makeUser(t, db, "up", "uploader-pass-1", auth.RoleUploader)
+	up := clientFor(t, srv.URL, "up", "uploader-pass-1")
+
+	hash, _ := uploadStaged(t, up, srv.URL, "held.mp3")
+
+	ctx := context.Background()
+	if _, err := db.InsertFederationPeer(ctx, &federation.Peer{
+		PublicKey: "aa11", Name: "friendly", State: federation.PeerFriend, CreatedAt: 1000,
+	}); err != nil {
+		t.Fatalf("insert peer: %v", err)
+	}
+	src, err := db.EnsureCatalogSource(ctx, "aa11", 1000)
+	if err != nil {
+		t.Fatalf("ensure source: %v", err)
+	}
+	if err := db.ReplaceSourceCatalog(ctx, src.ID, "s1", 100, []federation.CatalogEntry{{
+		Key: "e1", RecordingKey: "r1", Title: "Held", Artist: "Band",
+		Renditions: []federation.CatalogRendition{{Hash: hash, Size: 1000, Codec: "mp3"}},
+	}}); err != nil {
+		t.Fatalf("ReplaceSourceCatalog: %v", err)
+	}
+
+	var body struct {
+		Existed bool `json:"existed"`
+	}
+	if code := doJSON(t, admin, http.MethodPost, srv.URL+"/api/madnetwork/download",
+		map[string]any{"hash": hash}, &body); code != http.StatusOK {
+		t.Fatalf("download = %d, want 200 (bytes already held)", code)
+	}
+	if !body.Existed {
+		t.Fatal("handler did not take the already-held path")
+	}
+	if len(fed.evicted) != 1 || fed.evicted[0] != hash {
+		t.Errorf("evicted = %v, want exactly [%s] — a blob in the library must not stay in the cache",
+			fed.evicted, hash)
 	}
 }

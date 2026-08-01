@@ -876,7 +876,14 @@ whole cycle, and 30 s is only half of that.
 
 ## Cache seeding overrides a recording's sharing scope (found 2026-08-02, F8 mesh verification)
 
-**Open. Pre-existing — F8 did not introduce it, but F8 makes it easy to reach.**
+**FIXED 2026-08-02** — option 2 below, on the owner's call: the duplicate cache
+copy is evicted the moment the blob is in the library, so there is nothing left
+for the two rules to disagree about. Write path (`Node.EvictCachedBlob`, called
+from every branch of the download handler that leaves bytes in the library) plus
+a startup sweep (`database.EvictCachedMadnetworkBlobs`) that fixes nodes which
+already hold duplicates from before the fix. Details at the end of this entry.
+
+**Was: open. Pre-existing — F8 did not introduce it, but F8 makes it easy to reach.**
 
 `seedableBlob` (`federation/swarm.go`) resolves a blob in two steps: the library
 copy, gated by `BlobVisibleTo` (scope-aware), and — if that refuses — the
@@ -930,3 +937,41 @@ Directions, none of them decided:
 Option 2 looks strongest — the duplicate cache copy has no purpose once the blob
 is in the library, and deleting it removes the ambiguity rather than adding a
 rule about it. Wants an owner decision before anything is built.
+
+### The fix (owner chose option 2)
+
+- `(*federation.Node).EvictCachedBlob(hash)` removes `<cacheDir>/<hash>`, leaving
+  an in-flight transfer's `.part` alone. Safe under concurrency: `EnsureBlob`
+  resolves the library BEFORE the cache, so a later fetch short-circuits locally,
+  and POSIX keeps an open descriptor alive across the unlink.
+- Called from every branch of `madnetworkDownload` that ends with the bytes in
+  the library — the fresh staging path, the late byte-dup attach, and the early
+  "already held" reply (a stream can have cached what the library already has).
+  Best-effort: the download succeeded, and a stale cache entry is a leak to fix,
+  not a reason to fail the fetch.
+- `database.EvictCachedMadnetworkBlobs` at startup is the catch-all, and the only
+  thing that helps a node that already materialized tracks. It runs whether or
+  not federation is enabled now — a node that switched it off still has the cache
+  it filled while it was on. A row in ANY state counts as held, deliberately
+  including a trashed one: its bytes stay under `files_dir` for the quarantine
+  window, and that is the sharper case, since a trashed blob is invisible to the
+  library branch and would otherwise be served from cache.
+
+**The hole was bigger than this entry first described.** Verified on the lab: the
+materialized blob had **zero approved appearances** on the node serving it, so
+what leaked was not merely a narrowed recording but content that had never been
+published at all — a download sitting unreviewed in the staging bucket, seeded to
+the whole community.
+
+**Verified on real processes, both halves.** Materializing onto `a` now leaves the
+cache empty and the library holding one copy, and `meshlab check`'s
+`a token buys membership, never friendship` reads 404 where it read 200 before.
+For the sweep: a duplicate was put back by hand, `meshlab restart a` logged
+`evicted 1 cached blob(s) the library already holds`, and the cache was empty
+again. A fresh lab is 20/20 with the fixed binary.
+
+Note for whoever runs `meshlab check` on a lab where something was materialized:
+`pickSubject` can land on that blob, and two cases then fail for lab-state
+reasons rather than product ones — `vouched listener node is served…` wants 200
+but the blob is unpublished on that node, and two friend cases skip themselves.
+Judge the suite on a fresh lab.

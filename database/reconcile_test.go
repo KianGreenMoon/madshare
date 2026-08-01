@@ -213,8 +213,8 @@ func TestReconcileImageOrphans_MissingDirOK(t *testing.T) {
 // that still has an appearance is a valid state, not garbage.
 func TestReap_DoesNotManufactureAppearance(t *testing.T) {
 	for _, tc := range []struct {
-		name          string
-		removeOrphan  bool // absorb shape: the redundant blob is soft-removed
+		name         string
+		removeOrphan bool // absorb shape: the redundant blob is soft-removed
 	}{
 		{"merge leaves a live orphan rendition", false},
 		{"absorb leaves a soft-removed orphan rendition", true},
@@ -256,5 +256,81 @@ func TestReap_DoesNotManufactureAppearance(t *testing.T) {
 				t.Errorf("library-visible appearances = %d, want 1 — a nameless appearance was manufactured", n)
 			}
 		})
+	}
+}
+
+// TestEvictCachedMadnetworkBlobs is the fix for the scope leak the F8 mesh
+// verification found: a blob held in the library must not also sit in the
+// download cache, because the two copies are served under different rules and
+// only the library's applies the recording's sharing scope.
+func TestEvictCachedMadnetworkBlobs(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	cacheDir := t.TempDir()
+
+	// Real hex digests: the sweep only touches names that look like content
+	// hashes, which is what keeps it off `.part` files and anything it did not
+	// write itself.
+	insert := func(seed string) string {
+		h := hexHash(seed)
+		f := &File{Hash: h, ByteSize: 1, MimeType: "audio/mpeg",
+			StorageBackend: "local", ObjectKey: h + "/x", CreatedAt: 1}
+		if err := db.InsertFile(ctx, f, &FileUpload{Filename: "x", UploadedAt: 1},
+			&MediaMetadata{ExtractedAt: 1}); err != nil {
+			t.Fatalf("insert %s: %v", seed, err)
+		}
+		return h
+	}
+	held := insert("held")
+	trashed := insert("trashed")
+	if _, err := db.Exec(`UPDATE files SET deleted_at = 1 WHERE hash = ?`, trashed); err != nil {
+		t.Fatalf("trash file: %v", err)
+	}
+	cacheOnly := hexHash("cache-only")
+
+	write := func(name string) string {
+		p := filepath.Join(cacheDir, name)
+		if err := os.WriteFile(p, []byte("bytes"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		return p
+	}
+	heldPath := write(held)
+	trashedPath := write(trashed)
+	cacheOnlyPath := write(cacheOnly)
+	// An in-flight transfer's scratch file, and a name we never wrote.
+	partPath := write(cacheOnly + ".part")
+	strayPath := write("not-a-hash")
+
+	n, err := EvictCachedMadnetworkBlobs(ctx, db, cacheDir)
+	if err != nil {
+		t.Fatalf("EvictCachedMadnetworkBlobs: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("evicted %d, want 2 (the held blob and the trashed one)", n)
+	}
+	for _, tc := range []struct {
+		path string
+		gone bool
+		why  string
+	}{
+		{heldPath, true, "the library holds these bytes; the cache copy is a duplicate"},
+		{trashedPath, true, "a trashed blob's bytes stay under files_dir, and the cache copy would outlive the library branch's refusal"},
+		{cacheOnlyPath, false, "a blob only the cache holds is exactly what the cache is for"},
+		{partPath, false, "an in-flight transfer's .part must survive"},
+		{strayPath, false, "a name we did not write is not ours to delete"},
+	} {
+		_, err := os.Stat(tc.path)
+		if gone := os.IsNotExist(err); gone != tc.gone {
+			t.Errorf("%s: gone=%v, want %v — %s", filepath.Base(tc.path), gone, tc.gone, tc.why)
+		}
+	}
+
+	// Idempotent, and silent about a cache directory that never existed.
+	if n, err := EvictCachedMadnetworkBlobs(ctx, db, cacheDir); err != nil || n != 0 {
+		t.Errorf("second pass = %d/%v, want 0/nil", n, err)
+	}
+	if n, err := EvictCachedMadnetworkBlobs(ctx, db, filepath.Join(cacheDir, "nope")); err != nil || n != 0 {
+		t.Errorf("missing cache dir = %d/%v, want 0/nil (federation never ran)", n, err)
 	}
 }

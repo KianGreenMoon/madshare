@@ -290,6 +290,7 @@ func (h *handler) madnetworkDownload(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "storage error", http.StatusInternalServerError)
 			return
 		}
+		h.evictCached(hash) // a stream may have cached what the library already holds
 		h.audit(ctx, "madnetwork.download", hash, "bytes already held; appearance attached="+strconv.FormatBool(created))
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok": true, "existed": true, "attached": created, "tagset_id": tid})
@@ -398,6 +399,7 @@ func (h *handler) runMadnetworkDownload(hash string, entry *federation.CatalogEn
 		job.mu.Lock()
 		job.tagsetID = tid
 		job.mu.Unlock()
+		h.evictCached(hash) // held locally already: same duplicate, same fix
 		job.set("attached", "")
 		return
 	}
@@ -445,12 +447,32 @@ func (h *handler) runMadnetworkDownload(hash string, entry *federation.CatalogEn
 	} else if h.mediaPool != nil {
 		h.mediaPool.Notify()
 	}
+	// The blob is in the library now, so the cache copy is a duplicate served
+	// under a different rule — drop it (.issues/open-issues.md, "Cache seeding
+	// overrides a recording's sharing scope"). Best-effort: the download
+	// succeeded, and a stale cache entry is a leak to fix, not a reason to fail
+	// the fetch. The startup sweep catches whatever this misses.
+	h.evictCached(hash)
+
 	h.audit(ctx, "madnetwork.download", hash, "staged as "+reviewState+": "+filename)
 	if reviewState == database.ReviewApproved {
 		h.repointRemotes(ctx) // the materialized blob may back remote playlist rows
 		job.set("approved", "")
 	} else {
 		job.set("staged", "")
+	}
+}
+
+// evictCached drops the download-cache copy of a blob the library holds, and
+// swallows the outcome on purpose: every caller has already succeeded at the
+// thing the user asked for, and a cache entry that outlives its eviction is
+// picked up by the startup sweep (database.EvictCachedMadnetworkBlobs).
+func (h *handler) evictCached(hash string) {
+	if h.federation == nil {
+		return
+	}
+	if err := h.federation.EvictCachedBlob(hash); err != nil {
+		log.Printf("evict cached blob %s: %v", hash, err)
 	}
 }
 

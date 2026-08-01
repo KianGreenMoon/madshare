@@ -113,6 +113,20 @@ func main() {
 		log.Printf("reconcile orphans: %v", err)
 	}
 
+	// Drop download-cache copies of blobs the library already holds. The write
+	// path evicts as each one lands, so this is the catch-all — and the only
+	// thing that fixes a node which already materialized tracks before the
+	// eviction existed. Duplicated copies are served under two different rules
+	// and only the library's applies the recording's sharing scope
+	// (.issues/open-issues.md, "Cache seeding overrides a recording's sharing
+	// scope"). Runs regardless of whether federation is enabled now: a node that
+	// has switched it off still has the cache it filled while it was on.
+	if n, err := database.EvictCachedMadnetworkBlobs(context.Background(), db, cfg.MadnetworkCacheDir()); err != nil {
+		log.Printf("evict cached madnetwork blobs: %v", err)
+	} else if n > 0 {
+		log.Printf("evicted %d cached blob(s) the library already holds", n)
+	}
+
 	// Catch-all sweep for remote playlist rows whose blob arrived by any path
 	// the write-time hooks miss (docs/ui/madnetwork-page.md §Re-pointing).
 	if n, err := db.RepointRemotePlaylistItems(context.Background()); err != nil {

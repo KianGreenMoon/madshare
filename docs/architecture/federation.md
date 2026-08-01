@@ -2003,6 +2003,21 @@ it makes "which node changed" free, and only then does storing more pay off.
   **upload rate cap** `[federation] seed_rate_kib` (a token bucket over the
   blob-serve write path; `0` = unlimited), a static config knob.
 
+  **A cached blob is never also a library blob** (fixed 2026-08-02). The two
+  branches of `seedableBlob` answer under different rules — the library branch
+  applies the recording's sharing scope, the cache branch answers the whole
+  community — so a hash present in both would be served under whichever rule is
+  looser, and narrowing a recording would silently fail to stop this node
+  seeding it. Rather than teach the cache branch about scope, the duplicate is
+  deleted: `EvictCachedBlob` runs as each fetched blob lands in the library, and
+  `database.EvictCachedMadnetworkBlobs` sweeps at startup for nodes that already
+  hold duplicates. Nothing is lost, because `EnsureBlob` resolves the library
+  before the cache. The invariant this restores is §Sharing scope's headline one
+  — catalog and bytes read a single rule — and the leak it closes was wider than
+  scope: an unapproved download sitting in the staging bucket has no published
+  appearance, so the library branch refuses it, and only the cache copy was
+  making it reachable at all.
+
 ### What a member may cost us (F7 item 6, built 2026-08-01)
 
 `seed_rate_kib` was written when a requester was always a friend, and one bucket

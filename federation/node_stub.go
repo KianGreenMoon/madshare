@@ -87,3 +87,5 @@ func (n *Node) ClaimReports(context.Context) ([]*ClaimReport, error) {
 func (n *Node) SetClaimDisposition(context.Context, int64, string) error {
 	return errCompiledOut
 }
+
+func (n *Node) EvictCachedBlob(string) error { return nil }
