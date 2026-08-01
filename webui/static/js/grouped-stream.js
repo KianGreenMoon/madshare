@@ -10,15 +10,22 @@
 import { discKey, discLabel, isMultiDisc } from './disc.js';
 
 // createGroupedStream builds one streaming grouper. An album is buffered until its
-// boundary (`pending`) so multi-disc detection and the album's select-all hashes are
+// boundary (`pending`) so multi-disc detection and the album's select-all keys are
 // exact even when it straddles a page; an artist spans pages, so its header's "loaded
-// so far" count and select-all hashes are bumped in place as each of its albums
-// flushes. isSelectable(file) gates which rows feed the select-all hash sets.
+// so far" count and select-all keys are bumped in place as each of its albums
+// flushes. isSelectable(file) gates which rows feed the select-all key sets.
+//
+// keyOf(file) MUST be the owning scope's row identity — the same function whose
+// value the track checkboxes carry in `data-key`. Both callers of this stream key
+// rows on tagset_id, not on the blob hash: a separator built from hashes ticks
+// itself and nothing under it, and the ids it then hands the bulk endpoint are not
+// ids at all. Hence no default — a missing keyOf must fail loudly, not silently
+// select the wrong thing.
 //
 // Item shapes match file-list.js renderWindowItem: separators are
-//   { kind:'sep', sep:'artist'|'album'|'disc', label, meta, hashes, fallback, cover }
+//   { kind:'sep', sep:'artist'|'album'|'disc', label, meta, keys, fallback, cover }
 // and tracks are { kind:'grow', file }.
-export function createGroupedStream(isSelectable = () => false) {
+export function createGroupedStream(isSelectable = () => false, keyOf) {
   const lc = s => (s || '').toLowerCase();
   const albumYear = files => { for (const f of files) if (f.year) return f.year; return 9999; };
 
@@ -34,19 +41,19 @@ export function createGroupedStream(isSelectable = () => false) {
       artKeyLc = album.aKeyLc; artAlbums = 0; artTracks = 0;
       artSep = {
         kind: 'sep', sep: 'artist', label: album.aKey || 'Unknown artist', meta: '',
-        hashes: [], fallback: !album.aKey,
+        keys: [], fallback: !album.aKey,
         cover: { kind: 'artist', target: { artist: album.aKey }, hasImage: album.files[0]?.artist_has_image },
       };
       delta.push(artSep);
     }
     artAlbums += 1; artTracks += album.files.length;
     artSep.meta = `${artAlbums} album${artAlbums === 1 ? '' : 's'} · ${artTracks} track${artTracks === 1 ? '' : 's'}`;
-    for (const f of album.files) if (isSelectable(f)) artSep.hashes.push(f.hash);
+    for (const f of album.files) if (isSelectable(f)) artSep.keys.push(String(keyOf(f)));
 
     const y = albumYear(album.files);
     delta.push({
       kind: 'sep', sep: 'album', label: album.alKey || 'Other', meta: y < 9999 ? String(y) : '',
-      hashes: album.files.filter(isSelectable).map(f => f.hash), fallback: !album.alKey,
+      keys: album.files.filter(isSelectable).map(f => String(keyOf(f))), fallback: !album.alKey,
       cover: { kind: 'album', target: { artist: album.aKey, album: album.alKey }, hasImage: album.files[0]?.album_has_image },
     });
     // The album is complete here, so multi-disc detection (hence the leading "Disc N"
@@ -57,7 +64,7 @@ export function createGroupedStream(isSelectable = () => false) {
       const disc = discKey(f.disc_number);
       if (multiDisc && disc !== shownDisc) {
         shownDisc = disc;
-        delta.push({ kind: 'sep', sep: 'disc', label: discLabel(disc), meta: '', hashes: [], fallback: false, cover: null });
+        delta.push({ kind: 'sep', sep: 'disc', label: discLabel(disc), meta: '', keys: [], fallback: false, cover: null });
       }
       delta.push({ kind: 'grow', file: f });
     }

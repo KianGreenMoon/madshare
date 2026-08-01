@@ -88,9 +88,15 @@ bounded level per fetch (`/api/artists` → `/api/albums?artist_id=` →
    so the grouped view **streams page-by-page exactly like the flat list** through
    the same windowed infinite-scroll. The client inserts the artist/album/disc
    separators as the keys change between rows; an album is buffered to its boundary
-   so multi-disc detection and its select-all hashes are exact, and an artist spans
+   so multi-disc detection and its select-all set are exact, and an artist spans
    pages so its header's count and select-all set are "loaded so far" and grow as
-   you scroll. The pure grouping state machine is `grouped-stream.js`
+   you scroll. A separator's select-all set holds the **scope's own row keys** —
+   the value `rowKey` yields, which for both scopes that turn this view on (All
+   Appearances, Trash) is the `tagset_id`, not the blob hash. `createGroupedStream`
+   therefore takes `keyOf` from the caller: derive it inside the stream and the
+   separator ticks itself, cascades to nothing, and hands the bulk endpoint content
+   hashes where it wanted appearance ids. The pure grouping state machine is
+   `grouped-stream.js`
    (`createGroupedStream`, unit-tested in `tests/js/grouped-stream.test.mjs`); the
    windowing is [`infinite-scroll-virtualization.md`](infinite-scroll-virtualization.md).
    The Review / Trash / My-uploads scopes now stream the same way (2026-06-27 update
@@ -256,7 +262,7 @@ visibility honour the existing guest-listing narrowing. No new permission.
 
 - **Per-group exact counts / select-all-across-pages for the grouped view.** The
   streamed grouped view (Decision 2) shows artist-header counts and select-all
-  hashes that are "loaded so far" — exact for an album (it's buffered whole) but
+  key sets that are "loaded so far" — exact for an album (it's buffered whole) but
   growing for an artist until you've scrolled past all of it. A small server-side
   per-group aggregate (counts + cover flags) or a group-scoped "select all
   matching" (reusing `FileFilter.ArtistID`/`AlbumID`) would make both exact up

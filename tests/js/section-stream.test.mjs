@@ -7,12 +7,22 @@ import { createSectionStream } from '../../webui/static/js/section-stream.js';
 
 // row builds one server-ordered staging row. key is the group key (uploader id /
 // state); the server returns rows already sorted by it, so equal keys are contiguous.
+// hash and tagset_id are two DIFFERENT row identities, so a test can pin which one
+// the header's select-all set is built from.
 let hc = 0;
-const row = (key, opts = {}) => ({ key, state: opts.state ?? 'submitted', hash: opts.hash ?? `h${++hc}` });
+function row(key, opts = {}) {
+  const n = ++hc;
+  return {
+    key, state: opts.state ?? 'submitted',
+    hash: opts.hash ?? `h${n}`, tagset_id: opts.tagset_id ?? 1000 + n,
+  };
+}
 
-// A by-key config: header label is "g:<key>", every row selectable.
+// A by-key config: header label is "g:<key>", every row selectable, rows keyed on
+// the blob hash (rowKey is the owning scope's identity, not an assumption here).
 const byKey = () => createSectionStream({
   keyOf: f => f.key,
+  rowKey: f => f.hash,
   makeHeader: f => ({ kind: 'ghead', streamed: true, key: String(f.key), label: `g:${f.key}` }),
   isSelectable: () => true,
 });
@@ -31,16 +41,16 @@ test('single page: a header per key change, rows under their header', () => {
   assert.deepEqual(sig(ss.items), sig(delta));
 });
 
-test('running header hashes accumulate the group\'s selectable rows', () => {
+test('running header keys accumulate the group\'s selectable rows', () => {
   hc = 0;
   const ss = byKey();
   ss.ingest([row('amy', { hash: 'a1' }), row('amy', { hash: 'a2' }), row('ben', { hash: 'b1' })], true);
   const headers = ss.items.filter(it => it.kind === 'ghead');
-  assert.deepEqual(headers[0].hashes, ['a1', 'a2']);
-  assert.deepEqual(headers[1].hashes, ['b1']);
+  assert.deepEqual(headers[0].keys, ['a1', 'a2']);
+  assert.deepEqual(headers[1].keys, ['b1']);
 });
 
-test('a group straddling a page boundary keeps one header, hashes bump in place', () => {
+test('a group straddling a page boundary keeps one header, keys bump in place', () => {
   hc = 0;
   const ss = byKey();
   const d1 = ss.ingest([row('amy', { hash: 'a1' }), row('amy', { hash: 'a2' })], false);
@@ -49,14 +59,15 @@ test('a group straddling a page boundary keeps one header, hashes bump in place'
   assert.deepEqual(sig(d1), ['h:g:amy', 'r:a1', 'r:a2']);
   assert.deepEqual(sig(d2), ['r:a3', 'h:g:ben', 'r:b1']);
   const amy = ss.items.find(it => it.kind === 'ghead' && it.label === 'g:amy');
-  assert.deepEqual(amy.hashes, ['a1', 'a2', 'a3']);   // bumped in place across pages
+  assert.deepEqual(amy.keys, ['a1', 'a2', 'a3']);   // bumped in place across pages
 });
 
-test('isSelectable gates which rows feed the header hash set', () => {
+test('isSelectable gates which rows feed the header key set', () => {
   hc = 0;
   const ss = createSectionStream({
     keyOf: f => f.key,
-    makeHeader: f => ({ kind: 'ghead', key: String(f.key), label: `g:${f.key}`, hashes: [] }),
+    rowKey: f => f.hash,
+    makeHeader: f => ({ kind: 'ghead', key: String(f.key), label: `g:${f.key}`, keys: [] }),
     isSelectable: f => f.state === 'submitted',
   });
   ss.ingest([
@@ -65,15 +76,16 @@ test('isSelectable gates which rows feed the header hash set', () => {
     row('amy', { hash: 'a3', state: 'submitted' }),
   ], true);
   const amy = ss.items[0];
-  assert.deepEqual(amy.hashes, ['a1', 'a3']);
-  // Every row still renders (selectability only affects the header's hash set).
+  assert.deepEqual(amy.keys, ['a1', 'a3']);
+  // Every row still renders (selectability only affects the header's key set).
   assert.equal(ss.items.filter(it => it.kind === 'row').length, 3);
 });
 
-test('section headers (no hashes supplied) still get an empty hashes array', () => {
+test('section headers (no keys supplied) still get an empty keys array', () => {
   hc = 0;
   const ss = createSectionStream({
     keyOf: f => f.state,
+    rowKey: f => f.hash,
     makeHeader: f => ({ kind: 'shead', label: `s:${f.state}` }),
     isSelectable: () => true,
   });
@@ -83,8 +95,30 @@ test('section headers (no hashes supplied) still get an empty hashes array', () 
     row('x', { state: 'draft', hash: 'd2' }),
   ], true);
   assert.deepEqual(sig(delta), ['h:s:returned', 'r:r1', 'h:s:draft', 'r:d1', 'r:d2']);
-  // The stream fills a hashes array even on a header that didn't declare one.
-  assert.deepEqual(ss.items[0].hashes, ['r1']);
+  // The stream fills a keys array even on a header that didn't declare one.
+  assert.deepEqual(ss.items[0].keys, ['r1']);
+});
+
+// The group key and the row key are two different questions asked of the same
+// row: which header this row sits under, and which row the checkbox names. A
+// scope that keys rows on tagset_id must get tagset ids in the header's
+// select-all set — the same defect grouped-stream.js carried.
+test('header select-all keys come from rowKey, not from the blob hash', () => {
+  hc = 0;
+  const ss = createSectionStream({
+    keyOf: f => f.key,
+    rowKey: f => f.tagset_id,
+    makeHeader: f => ({ kind: 'ghead', key: String(f.key), label: `g:${f.key}` }),
+    isSelectable: () => true,
+  });
+  ss.ingest([
+    row('amy', { hash: 'a1', tagset_id: 21 }),
+    row('amy', { hash: 'a2', tagset_id: 22 }),
+    row('ben', { hash: 'b1', tagset_id: 31 }),
+  ], true);
+  const headers = ss.items.filter(it => it.kind === 'ghead');
+  assert.deepEqual(headers[0].keys, ['21', '22']);   // stringified: they round-trip through dataset
+  assert.deepEqual(headers[1].keys, ['31']);
 });
 
 test('reset clears items and the open group', () => {

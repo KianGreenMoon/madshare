@@ -86,7 +86,8 @@ function fmtBytes(n) {
  *   editDetailURL(file) → url       (GET full tags; enables track #/extended edit)
  *   editNote         note shown in the edit modal
  *   saveAccess(file,{guest,license})→Promise  (when accessEditable)
- *   bulkApply(hashes,patch)→Promise (enables the built-in "Edit tags…" bulk action)
+ *   bulkApply(keys,patch)→Promise  (enables the built-in "Edit tags…" bulk action;
+ *                    `keys` are rowKey values, so a tagset-keyed scope gets ids)
  *   grouping         null | {kind:'collapsible', by, label, counts}
  *                         | {kind:'sections', sections:[{key,label,match}]}
  *   browse           null | { loaders:{artists(),albums(a),tracks(a,al)},
@@ -143,7 +144,10 @@ export function createFileList(scope) {
   // it scales like the flat infinite-scroll instead of loading every row first. The
   // pure grouping state machine lives in createGroupedStream (unit-tested); this
   // closure only drives its I/O (fetchMoreGrouped) and reads gstream.items.
-  const gstream = createGroupedStream(isSelectable);
+  // keyOf, not f.hash: the separators' select-all sets must speak the scope's own
+  // row identity, or ticking an artist selects keys no row (and no bulk endpoint)
+  // recognises.
+  const gstream = createGroupedStream(isSelectable, keyOf);
 
   // ── Native grouping under paging (section-stream.js) ─────────────────────────
   // A paged scope with a native grouping (moderation = collapsible by uploader,
@@ -161,10 +165,10 @@ export function createFileList(scope) {
     if (g?.kind === 'sections') {
       return { kind: 'shead', label: (g.sections.find(s => s.match(f)) || {}).label || '' };
     }
-    return { kind: 'ghead', streamed: true, key: String(g.by(f)), label: g.label(f), counts: '', hashes: [] };
+    return { kind: 'ghead', streamed: true, key: String(g.by(f)), label: g.label(f), counts: '', keys: [] };
   }
   const sstream = scope.grouping
-    ? createSectionStream({ keyOf: groupKeyOf, makeHeader: makeGroupHeader, isSelectable })
+    ? createSectionStream({ keyOf: groupKeyOf, rowKey: keyOf, makeHeader: makeGroupHeader, isSelectable })
     : null;
 
   // ── Server-paged mode (scope.paged) ─────────────────────────────────────────
@@ -274,7 +278,7 @@ export function createFileList(scope) {
       // When the scope can read a file's full tags, let the bulk editor fetch them
       // for the selection so the Extended modal can pre-fill its shared values too.
       loadDetails: scope.editDetailURL ? loadSelectionDetails : null,
-      onApply: async (hashes, patch) => {
+      onApply: async (keys, patch) => {
         // Filter mode: apply to the whole matching set via the scope's runAll
         // equivalent (it owns its own success toast); else the explicit page set.
         if (paged && selectAllMatching && scope.bulkApplyAll) {
@@ -283,9 +287,9 @@ export function createFileList(scope) {
           await reload();
           return;
         }
-        await scope.bulkApply(hashes, patch);
+        await scope.bulkApply(keys, patch);
         selected.clear();
-        toast(`Updated ${hashes.length} file${hashes.length === 1 ? '' : 's'}.`, 'success');
+        toast(`Updated ${keys.length} file${keys.length === 1 ? '' : 's'}.`, 'success');
         await reload();
       },
     });
@@ -542,7 +546,7 @@ export function createFileList(scope) {
   // ── Selection ───────────────────────────────────────────────────────────────
   function isSelectable(f) { return scope.selectable ? scope.selectable(f) : false; }
 
-  // selectionTags inspects the already-loaded rows for a set of hashes and reports
+  // selectionTags inspects the already-loaded rows for a set of row keys and reports
   // which tags every selected file agrees on, so the bulk editor can pre-fill the
   // shared value and flag the rest as "multiple values". Only fields the list
   // payload actually carries (artist/album_artist/album + access) are considered;
@@ -620,13 +624,13 @@ export function createFileList(scope) {
     if (selectAll) { selectAll.checked = checks.length > 0 && visSel === checks.length; selectAll.indeterminate = visSel > 0 && visSel < checks.length; }
 
     // Group-select checkboxes on the separator / collapsible-header rows (artist,
-    // album, uploader): checked when all governed hashes are selected,
-    // indeterminate when some — works for off-screen rows too (hash-set based).
+    // album, uploader): checked when all governed row keys are selected,
+    // indeterminate when some — works for off-screen rows too (key-set based).
     mountEl.querySelectorAll('.grp-check').forEach(cb => {
-      const hs = cb.dataset.keys ? cb.dataset.keys.split(',').filter(Boolean) : [];
-      const n = hs.filter(h => selected.has(h)).length;
-      cb.checked = hs.length > 0 && n === hs.length;
-      cb.indeterminate = n > 0 && n < hs.length;
+      const govern = cb.dataset.keys ? cb.dataset.keys.split(',').filter(Boolean) : [];
+      const n = govern.filter(k => selected.has(k)).length;
+      cb.checked = govern.length > 0 && n === govern.length;
+      cb.indeterminate = n > 0 && n < govern.length;
     });
 
     // Re-evaluate the "Select all N matching" offer: in windowed mode a selection
@@ -727,7 +731,7 @@ export function createFileList(scope) {
     if (keys.length) {
       const cb = el('input', { type: 'checkbox', class: 'grp-check', 'aria-label': `Select all in ${label}` });
       cb.dataset.keys = keys.join(',');
-      cb.addEventListener('change', () => { keys.forEach(h => cb.checked ? selected.add(h) : selected.delete(h)); syncSelectionUI(); });
+      cb.addEventListener('change', () => { keys.forEach(k => cb.checked ? selected.add(k) : selected.delete(k)); syncSelectionUI(); });
       kids.push(cb);
     }
     // The label/meta/cover button live in an inner flex row; the <td> stays a
@@ -777,14 +781,14 @@ export function createFileList(scope) {
       items.push({
         kind: 'sep', sep: 'artist', label: art.key || 'Unknown artist',
         meta: `${art.albumList.length} album${art.albumList.length === 1 ? '' : 's'} · ${artFiles.length} track${artFiles.length === 1 ? '' : 's'}`,
-        hashes: artFiles.filter(isSelectable).map(keyOf), fallback: !art.key,
+        keys: artFiles.filter(isSelectable).map(keyOf), fallback: !art.key,
         cover: { kind: 'artist', target: { artist: art.key }, hasImage: artFiles[0]?.artist_has_image },
       });
       for (const al of art.albumList) {
         const y = albumYear(al.files);
         items.push({
           kind: 'sep', sep: 'album', label: al.key || 'Other', meta: y < 9999 ? String(y) : '',
-          hashes: al.files.filter(isSelectable).map(keyOf), fallback: !al.key,
+          keys: al.files.filter(isSelectable).map(keyOf), fallback: !al.key,
           cover: { kind: 'album', target: { artist: art.key, album: al.key }, hasImage: al.files[0]?.album_has_image },
         });
         // Multi-disc album → a quiet "Disc N" separator before each disc (purely
@@ -796,7 +800,7 @@ export function createFileList(scope) {
           const disc = discKey(f.disc_number);
           if (multiDisc && disc !== shownDisc) {
             shownDisc = disc;
-            items.push({ kind: 'sep', sep: 'disc', label: discLabel(disc), meta: '', hashes: [], fallback: false, cover: null });
+            items.push({ kind: 'sep', sep: 'disc', label: discLabel(disc), meta: '', keys: [], fallback: false, cover: null });
           }
           items.push({ kind: 'grow', file: f });
         });
@@ -819,7 +823,7 @@ export function createFileList(scope) {
       case 'shead': return sectionHeadRow(item);
       default: {    // 'sep' — artist / album / disc separator
         const extra = item.cover ? coverBtn(item.cover.kind, item.cover.target, item.fallback, item.cover.hasImage) : null;
-        return grpSepRow(item.sep, item.label, item.meta, item.hashes, item.fallback, extra);
+        return grpSepRow(item.sep, item.label, item.meta, item.keys, item.fallback, extra);
       }
     }
   }
@@ -896,7 +900,7 @@ export function createFileList(scope) {
       items.push({
         kind: 'ghead', key: grp.key, label: grp.label, collapsed: isCollapsed,
         counts: g.counts ? g.counts(grp.items) : String(grp.items.length),
-        hashes: grp.items.filter(isSelectable).map(keyOf),
+        keys: grp.items.filter(isSelectable).map(keyOf),
       });
       if (!isCollapsed) for (const f of grp.items) items.push({ kind: 'row', file: f });
     }
@@ -921,10 +925,10 @@ export function createFileList(scope) {
   // collapse toggle can't hide unfetched rows) — a static label, no chevron.
   function groupHeadRow(item) {
     const checkKids = [];
-    if (item.hashes.length) {
+    if (item.keys.length) {
       const cb = el('input', { type: 'checkbox', class: 'grp-check', 'aria-label': `Select all in ${item.label}` });
-      cb.dataset.keys = item.hashes.join(',');
-      cb.addEventListener('change', () => { item.hashes.forEach(h => cb.checked ? selected.add(h) : selected.delete(h)); afterSelectionChange(); });
+      cb.dataset.keys = item.keys.join(',');
+      cb.addEventListener('change', () => { item.keys.forEach(k => cb.checked ? selected.add(k) : selected.delete(k)); afterSelectionChange(); });
       checkKids.push(cb);
     }
     let labelCell;
@@ -1289,10 +1293,10 @@ export function createFileList(scope) {
       } catch (err) { toast(`${a.label} failed: ${err.message}`, 'error'); }
       return;
     }
-    const hashes = [...selected];
-    if (!hashes.length) return;
+    const keys = [...selected];
+    if (!keys.length) return;
     try {
-      const changed = await a.run(hashes);
+      const changed = await a.run(keys);
       if (changed === false) return;     // e.g. a cancelled confirm — keep selection
       selected.clear();
       await reload();

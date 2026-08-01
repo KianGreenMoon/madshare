@@ -76,9 +76,11 @@ buffer, fetchMore })` that wires scroll/resize → window → render+measure and
 `group-header` / `section`) — and windows over it. Flat = just rows; By
 artist/album = separators woven in; collapsible-by-uploader (Review) and state
 sections (My uploads) = header entries with their rows (a collapsed group simply
-omits its rows from the array). Selection stays a `Set` of hashes (off-screen rows
-re-apply their checked state when scrolled in); "select all N matching" stays the
-filter-mode bulk path, which never needs rows materialized.
+omits its rows from the array). Selection stays a `Set` of the scope's row keys —
+`rowKey`, which is the `tagset_id` on the appearance-rooted scopes and the hash
+only where the scope says so (off-screen rows re-apply their checked state when
+scrolled in); "select all N matching" stays the filter-mode bulk path, which never
+needs rows materialized.
 
 ## The problem (two halves)
 

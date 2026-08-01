@@ -8,7 +8,7 @@
 // It is the single-level sibling of grouped-stream.js: there is no buffering (a
 // header is emitted as soon as its key first appears), so unlike the artist/album
 // stream a page always yields its delta immediately. The running header's
-// select-all `hashes` are bumped in place as rows of the open group arrive. Kept
+// select-all `keys` are bumped in place as rows of the open group arrive. Kept
 // DOM-free so it unit-tests in node: tests/js/section-stream.test.mjs.
 //
 // Item shapes match file-list.js renderWindowItem: a header is whatever
@@ -16,13 +16,17 @@
 // sections), and rows are { kind:'row', file }.
 
 // createSectionStream builds one streaming single-level grouper.
-//   keyOf(file)      → the group key (compared as-is across rows; the server
+//   keyOf(file)      → the GROUP key (compared as-is across rows; the server
 //                      orders by it, so equal keys are contiguous)
-//   makeHeader(file) → the header item for a new group; gets a fresh `hashes: []`
+//   rowKey(file)     → the ROW identity, the scope's own — the same value the row
+//                      checkbox carries in `data-key`. Distinct from keyOf, and
+//                      not the blob hash: a scope may key rows on tagset_id, and a
+//                      header whose select-all set holds hashes ticks nothing.
+//   makeHeader(file) → the header item for a new group; gets a fresh `keys: []`
 //                      if it doesn't supply one, which the stream fills with the
-//                      group's selectable row hashes (for the group-select cascade)
-//   isSelectable(f)  → gates which rows feed the header's select-all hash set
-export function createSectionStream({ keyOf, makeHeader, isSelectable = () => false }) {
+//                      group's selectable row keys (for the group-select cascade)
+//   isSelectable(f)  → gates which rows feed the header's select-all key set
+export function createSectionStream({ keyOf, rowKey, makeHeader, isSelectable = () => false }) {
   let items, curKey, curHeader;
   function reset() { items = []; curKey = null; curHeader = null; }
   reset();
@@ -38,10 +42,10 @@ export function createSectionStream({ keyOf, makeHeader, isSelectable = () => fa
       if (curHeader === null || k !== curKey) {
         curKey = k;
         curHeader = makeHeader(f);
-        if (!curHeader.hashes) curHeader.hashes = [];
+        if (!curHeader.keys) curHeader.keys = [];
         delta.push(curHeader);
       }
-      if (isSelectable(f)) curHeader.hashes.push(f.hash);
+      if (isSelectable(f)) curHeader.keys.push(String(rowKey(f)));
       delta.push({ kind: 'row', file: f });
     }
     for (const it of delta) items.push(it);
