@@ -61,6 +61,10 @@ func (n *Node) EnsureBlob(context.Context, string) (Transfer, error) {
 	return nil, errCompiledOut
 }
 
+func (n *Node) IssueCapabilityToken(string, bool) (CapabilityGrant, error) {
+	return CapabilityGrant{}, errCompiledOut
+}
+
 func (n *Node) ResyncGraph() {}
 
 func (n *Node) PullFrom(string) error { return errCompiledOut }

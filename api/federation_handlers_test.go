@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -31,7 +32,15 @@ type fakeFederation struct {
 	branches    map[string][]string // node key → the direct friends it reaches us through
 	reports     []*federation.ClaimReport // contradicted claims awaiting a decision (F6)
 	disposed    []string                  // "<id>:<disposition>" per PATCH
+	// What the last capability-token issuance was asked for (F7 item 9): the
+	// bearer key, and the guest bit the caller's account earned.
+	tokenBearer    string
+	tokenGuestOnly bool
 }
+
+// federationTestTokenTTL is only how far ahead the fake stamps an expiry; the
+// real lifetime rule is federation.TokenTTL and is tested there.
+const federationTestTokenTTL = time.Hour
 
 func (f *fakeFederation) Info() federation.NodeInfo {
 	return federation.NodeInfo{
@@ -53,6 +62,22 @@ func (f *fakeFederation) ImportKey(ctx context.Context, publicKey, name string) 
 
 func (f *fakeFederation) EnsureBlob(context.Context, string) (federation.Transfer, error) {
 	return nil, federation.ErrNoHolder
+}
+
+// IssueCapabilityToken records what the handler asked for (F7 item 9) so a test
+// can assert the guest bit the caller's account earned, and hands back a grant
+// that is well-formed without being signed — signing is federation's to test.
+func (f *fakeFederation) IssueCapabilityToken(bearerKey string, guestOnly bool) (federation.CapabilityGrant, error) {
+	f.tokenBearer, f.tokenGuestOnly = bearerKey, guestOnly
+	if f.opErr != nil {
+		return federation.CapabilityGrant{}, f.opErr
+	}
+	return federation.CapabilityGrant{
+		Token:     "test-token",
+		Issuer:    f.Info().PublicKey,
+		Bearer:    bearerKey,
+		ExpiresAt: time.Now().Add(federationTestTokenTTL),
+	}, nil
 }
 func (f *fakeFederation) InboundHealthy() bool                    { return !f.inboundDead }
 func (f *fakeFederation) AcceptPeer(context.Context, int64) error { return f.opErr }

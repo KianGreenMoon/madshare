@@ -22,10 +22,13 @@
 > (per-member quotas) and item 10's weighting half landed the same day** — the
 > browse now counts popularity in branches wherever it orders anything by it,
 > including the version a crossing's Play button acts on (§Trust graph, "Where
-> the weighting applies"). **Item 9 (listener-node tokens) is all that remains**,
-> and its only open design question is the token's lifetime (§Open questions).
-> The two items in §Open questions are design-time details to settle during their
-> milestone, not blockers. Federation
+> the weighting applies"). **Item 9 (listener-node tokens) landed 2026-08-01, so
+> F7 is COMPLETE**: a home server signs "this bearer is my user until T", and any
+> node that can place the issuer in its own community honours it — one hour,
+> renewed at half-life, buying membership and never friendship (§Principals &
+> access, "The capability token"). The one item in §Open questions is a
+> design-time detail to settle with a real network to watch, not a blocker.
+> Federation
 > is auth Phase 4 (`docs/architecture/auth.md` §8) and the milestone the native
 > client (`docs/ui/native-client.md`) exists to use.
 
@@ -339,6 +342,89 @@ third kind of participant beside the full peer and the thin client (decided
 Client-side behaviour — playlist sync, and what the app does with items the
 server cannot resolve — is in `docs/ui/native-client.md`.
 
+### The capability token (F7 item 9, built 2026-08-01)
+
+The token is one signed sentence: **"bearer key K is my user until T"**, issued by
+a home server over its own ed25519 node identity — the same key its mesh address
+derives from and the same key it signs gossip records with. Four fields, no
+delegation chain, no PKI: issuer key, bearer key, expiry, and a `guest_only` bit.
+
+**What a verifier checks**, in `serveAudience`, which is the single gate all four
+mesh endpoints already resolve their audience through:
+
+1. The signature verifies against the **issuer** key the token names.
+2. The **bearer** key derives to the mesh address the request actually arrived
+   from. This is what makes a stolen token worthless — the channel is
+   self-certifying, so presenting somebody else's token from your own address
+   fails, and presenting it from theirs requires their private key.
+3. `now < T`.
+4. The issuer is **placeable in our own community** by our own mutual-edge walk.
+
+Only step 4 was a real decision, and it is the one the older text got wrong.
+"Verified by that server's *friends*" was written when direct friendship was the
+access boundary; item 3 moved that boundary to the community, and leaving the
+token behind at the old line would have made a madplayer a second-class citizen
+next to the server that vouches for it — reaching that server's four hand-picked
+friends while the server itself reaches its whole component. It is still **one
+issuer, one hop, no chain**: we place the *issuer* ourselves, from our own graph,
+and then accept exactly one claim from it about exactly one bearer. Nothing about
+the bearer is ever taken from hearsay, and the token is never re-presented onward.
+
+**What it buys: membership, not friendship** (decided 2026-08-01). A valid token
+yields `MemberAudience` — Madnetwork-scoped content, cache blobs included —
+narrowed by the token's `guest_only` bit, which is how the home server's own
+account ACL travels with the bearer. It does **not** yield the issuer's
+`DepthFriends` reach. A recording marked *Direct friends* was restricted to nodes
+this admin picked by hand, and a device somebody else enrolled is not one of them,
+however much we trust its home server. The counter-argument was considered and
+rejected on the doc's own terms: yes, the home server can fetch those bytes and
+relay them to its user anyway, but that is a statement about *its* behaviour, and
+the whole point of §"Why the ladder collapsed" is that we decide our own. The
+token grants precisely what the component could not: a way to place a node that
+publishes no friend list and appears in nobody else's.
+
+Note the direction of the `guest_only` bit — it can only ever **narrow**. A token
+that says nothing is served as a plain member, so a forged or truncated bit cannot
+buy more than membership, and membership is what the bearer's issuer already has.
+
+**Lifetime: one hour, renewed at half-life** (decided 2026-08-01, settling the
+last open question). The lifetime looks like the revocation story and mostly is
+not, which is why this was stuck: **blocking a home server revokes every token it
+ever issued, instantly and without a lifetime being involved at all** — step 4 is
+re-evaluated on every single request, so a snipped branch takes its bearers with
+it on the next one. What the expiry actually covers is much narrower and belongs
+to one node: a home server revoking one of *its own* users — an account disabled,
+`madnetwork.access` withdrawn, a phone left in a taxi. That is a one-hour window
+on one relationship, and renewal is free because a madplayer is by definition
+already signed in to its home server and can ask for a fresh token whenever it
+likes. Renewing at half-life rather than at expiry keeps a transient outage from
+becoming a service interruption.
+
+The cliff is real and accepted: a device that cannot reach its home server for an
+hour stops being served by the network, even while the mesh around it is healthy.
+That is the correct failure. The token is a *vouch*, the voucher is unreachable,
+and a credential that outlives contact with its issuer is exactly the thing the
+short lifetime exists to prevent. A madplayer in that state still plays what it
+already holds — its own library is local, and one-way publication means nothing
+about it depended on the network in the first place.
+
+**No revocation list, deliberately.** Lifetime is the revocation mechanism for the
+narrow case, community standing for the broad one, and between them there is no
+gap worth a distributed data structure that every node would have to fetch, trust,
+age out and disagree about.
+
+**Where it lives.** `federation/token.go` — the token type, signing, the four
+verifier checks, and `tokenAudience`, which `serveAudience` consults after the
+friend and member arms and before the guest fallback (a friend or member already
+has everything a token buys, so presenting one must never cost them their own
+standing). Issuance is `POST /api/madnetwork/token` (`api/madnetwork_token.go`,
+gated `madnetwork.access`): an ordinary authenticated call, since the caller is a
+person with an account rather than a node with a card. The wire form is
+base64url'd signed JSON in a `Madnetwork-Token` header. A bearer is **not** a
+friend for quota purposes — it draws on the member budget like every other
+non-friend (§"What a member may cost us"), which is the answer to a home server
+enrolling a thousand devices: they share one class ceiling.
+
 ## Sharing scope (F5 built; collapsed to three values in F7, built 2026-07-31)
 
 An admin marks each recording with one of **three** scopes, and the node has a
@@ -601,8 +687,8 @@ worth naming. A madplayer is a stranger to its home server's friends *and* it is
 usually invisible in the graph — it publishes no friend list and appears in nobody
 else's, so no membership lookup can place it. The token is therefore both "this
 bearer is mine" and the escape hatch for a node the component cannot vouch for by
-itself: one issuer, one verifying friendship, no chain (§Principals & access, and
-the lifetime question in §Open questions).
+itself: one issuer we place in our own community, one hop, no chain
+(§Principals & access, "The capability token").
 
 **The legal frame** (madshare.org), stated more plainly than before: madnetwork is a
 **community of friends** — a mesh of nodes that each had to be deliberately
@@ -1897,12 +1983,13 @@ it makes "which node changed" free, and only then does storing more pay off.
     replace the token-gated depth ≥ 1 tier *and* F5's guest-playable open swarm; see
     §Sharing scope.)
   - A **listener node** presents a **capability token** — the one surviving use:
-    its home server signs "bearer key K is mine until T", and a friend of that
-    server verifies the signature against a node it trusts *and* that the
+    its home server signs "bearer key K is mine until T", and any node that can
+    place that *issuer* in its own community verifies the signature *and* that the
     connection really is K (self-certifying channel, so a leaked token is useless
-    to anyone else). One issuer, one hop, no delegation chain. It buys a madplayer
-    what its home server's account entitles it to, which is more than the
-    Madnetwork set a stranger gets.
+    to anyone else). One issuer, one hop, no delegation chain. It buys the bearer
+    the **member** audience — the Madnetwork scope and cache blobs, narrowed by
+    the token's `guest_only` bit — and never the issuer's direct-friend reach
+    (§Principals & access, "The capability token").
 - **Seeding policy** (built F4): everything a node holds — library and
   listen-cache — seeds by default to the whole community ("who cares" is the
   default privacy stance at
@@ -2326,9 +2413,8 @@ milestone directly after direct transfer works, and tokens ship with depth.
   success. `ResyncGraph` now clears that map first — it bounds what a peer may
   *push* at us unsolicited, and a local permission-gated act is not that. The
   toast reports the change in node count rather than claiming a refresh.
-- **F7 — Reach: the community's libraries** (items 1–8 and 10 built 2026-07-31 /
-  2026-08-01; **item 9 is the only one left**, and it is waiting on the token
-  lifetime in §Open questions rather than on any work). Rescoped 2026-07-30 when
+- **F7 — Reach: the community's libraries** (**COMPLETE** — items 1–8 and 10
+  built 2026-07-31 / 2026-08-01, item 9 on 2026-08-01). Rescoped 2026-07-30 when
   the depth ladder collapsed, and given its posture 2026-07-31: **everything to
   our community, nothing outside it** (§Goal & vocabulary, "Community"). What made
   this phase risky — a credential
@@ -2427,11 +2513,28 @@ milestone directly after direct transfer works, and tokens ship with depth.
      is worse than none. Item 10 finished the job the same week: gossiped
      freshness hints, then the same weighting on *Not in your library* and on
      version ordering.
-  9. **Listener-node tokens** (§Principals & access): a home server signs "this
-     bearer is mine until T", verified by that server's friends against the
-     self-certifying channel. One issuer, one hop, no chain — the only surviving
-     use of a token, and the only open design question left is its lifetime
-     (§Open questions).
+  9. **Listener-node tokens** (§Principals & access, "The capability token"):
+     a home server signs "this bearer is mine until T", verified against the
+     self-certifying channel by any node that can place the *issuer* in its own
+     community. One issuer, one hop, no chain — the only surviving use of a
+     token. **BUILT 2026-08-01** (`federation/token.go`; no migration — a token
+     verifies from its own bytes, so issuing one creates no state to store,
+     expire or replicate).
+
+     Three decisions settled it, and two of them corrected text that predated
+     item 3. The issuer is honoured if we can place it in our **community**, not
+     merely in our friend list — the older wording was written when direct
+     friendship was the access boundary, and keeping it would have made a
+     madplayer reach strictly less than the server vouching for it. The bearer
+     gets **membership, never friendship**: a recording restricted to hand-picked
+     nodes stays off a device this admin never picked, and the fact that its home
+     server could fetch and relay those bytes anyway is a statement about *its*
+     behaviour, which §"Why the ladder collapsed" is precisely about not
+     pretending to control. And the **lifetime is one hour**, renewed at
+     half-life, which stopped being a hard question once it was clear the expiry
+     is not the main revocation mechanism: the issuer's standing is re-checked on
+     every request, so blocking a home server takes its bearers with it
+     instantly, and the hour only has to cover a node revoking *its own* user.
   10. **Trust-weighted popularity** (one branch = one voice, §Trust graph), which
      only becomes meaningful once carriers are not all direct friends. **BUILT
      2026-08-01** (§Trust graph, "Where the weighting applies"). No migration:
@@ -2490,14 +2593,7 @@ milestone directly after direct transfer works, and tokens ship with depth.
 
 ## Open questions (design-time details)
 
-1. **Listener-node token lifetime / renewal cadence** (F7). Narrower than it was:
-   the token no longer carries reach, only "this bearer is my user", so the
-   lifetime is a revocation window on one relationship. Lifetime *is* the
-   revocation mechanism — blocking a node must not leave a valid credential
-   behind — which argues for short (an hour) with renewal on demand, since a
-   madplayer is already signed in to its home server and can ask for a fresh one
-   whenever it needs it. Not decided.
-2. **How much of the frontier to pull and cache** (F7, §Discovery beyond the friend
+1. **How much of the frontier to pull and cache** (F7, §Discovery beyond the friend
    ring). The shape shipped with item 5; the *numbers* are still guesses. Four
    member catalogs per 15-minute cycle and a cap of 200 foreign catalogs are what
    a node runs with today, tunable per node as `[federation] discovery_budget` /
@@ -2512,7 +2608,11 @@ size & Merkle parameters — was settled with F4: adaptive, self-describing chun
 size in the manifest; whole-file hash is the anchor, per-chunk hashes are for
 early verification only. See §Distribution. Former question 3 — gossip payload,
 propagation and ageing — was settled 2026-07-26 ahead of F6: see §Friend-list
-gossip, including the privacy half.)
+gossip, including the privacy half. Former question 4 — listener-node token
+lifetime and renewal cadence — was settled 2026-08-01 with F7 item 9: one hour,
+renewed at half-life, because community standing already revokes a whole issuer
+instantly and the expiry only has to cover a home server revoking its own user.
+See §Principals & access, "The capability token".)
 
 Decided-and-deferred: **replication** (subscribe/favourite → mirror, storage
 caps) stays out of v1 — manual download-to-library already makes a node a

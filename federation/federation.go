@@ -1070,6 +1070,19 @@ type NodeInfo struct {
 	Card      Card   `json:"card"`
 }
 
+// CapabilityGrant is one issued listener-node token as its holder needs it
+// (F7 item 9, token.go — untagged so the API surface exists in both build
+// variants). RenewAfter is the token's half-life: a madplayer that refreshes
+// then keeps a transient outage of its home server from becoming a service
+// interruption, and no verifier enforces it.
+type CapabilityGrant struct {
+	Token      string    `json:"token"`
+	Issuer     string    `json:"issuer"`
+	Bearer     string    `json:"bearer"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	RenewAfter time.Time `json:"renew_after"`
+}
+
 // NormalizeKey validates a hex-encoded ed25519 public key and returns it
 // lowercased, the canonical form stored and compared everywhere.
 func NormalizeKey(hexKey string) (string, error) {

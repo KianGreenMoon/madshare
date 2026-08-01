@@ -195,12 +195,27 @@ func (p *probe) stop() {
 // get asks one lab node's mesh port, as the outsider. It returns the status and
 // the body so a caller can both assert the code and verify bytes.
 func (p *probe) get(target *node, path string) (int, []byte, error) {
+	return p.getAs(target, path, "")
+}
+
+// getAs is get with an optional capability token (F7 item 9) — the probe playing
+// a listener node instead of a plain outsider. Same node, same key, same
+// connection: the only difference is the vouch it carries, which is exactly the
+// comparison the item is worth making on real processes.
+func (p *probe) getAs(target *node, path, token string) (int, []byte, error) {
 	addr, err := federation.AddrForKeyHex(target.publicKey())
 	if err != nil {
 		return 0, nil, fmt.Errorf("mesh address of %s: %w", target.name, err)
 	}
 	url := fmt.Sprintf("http://[%s]:%d%s", addr, federation.MeshPort, path)
-	resp, err := p.client.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	if token != "" {
+		req.Header.Set(federation.TokenHeader, token)
+	}
+	resp, err := p.client.Do(req)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -208,6 +223,9 @@ func (p *probe) get(target *node, path string) (int, []byte, error) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	return resp.StatusCode, body, nil
 }
+
+// key is the probe's own node key — what a home server signs a token for.
+func (p *probe) key() string { return p.node.PublicKeyHex() }
 
 // wait polls a node's mesh ping until the probe can reach it, so an assertion
 // never fails merely because the mesh had not converged yet.

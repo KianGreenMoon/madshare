@@ -42,6 +42,27 @@ func (m *memberSet) lookup(ip net.IP) (string, bool) {
 	return key, ok
 }
 
+// vouches reports whether key may issue capability tokens this node honours
+// (F7 item 9, token.go): a node we place in our own community by our own walk,
+// or ourselves — our own users' devices present tokens we signed, and a
+// madplayer fetching chunks from its own home server is the ordinary case, not
+// an edge one.
+//
+// Deliberately the community and not the friend list. "Verified by that server's
+// friends" was written when direct friendship was the access boundary; item 3
+// moved that boundary, and leaving the token behind would make a device reach
+// strictly less than the server vouching for it (§"The capability token").
+func (m *memberSet) vouches(key string) bool {
+	if m == nil || key == "" {
+		return false
+	}
+	if key == m.self {
+		return true
+	}
+	_, ok := m.keys[key]
+	return ok
+}
+
 // newMemberSet computes the community from raw store contents and indexes it by
 // mesh address. A key whose address cannot be derived is dropped from the index
 // but kept in keys: it can never be matched to a connection, and a malformed key

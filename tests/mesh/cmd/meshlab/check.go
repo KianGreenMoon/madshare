@@ -270,6 +270,13 @@ func (l *lab) check() (*checkReport, error) {
 		}
 	}
 
+	// ── The outsider carrying a vouch (F7 item 9) ────────────────────────────
+	// Everything above asked what a stranger gets. This asks what changes when a
+	// node we can place says "this one is mine". Last on purpose: it rewrites the
+	// subject's scope twice, and every case above depends on the scope it was
+	// left in — the deferred restore is the only thing that has to run after it.
+	l.checkListenerToken(rep, p, holder, friend, subject)
+
 	rep.Elapsed = time.Since(started).Truncate(time.Millisecond).String()
 	return rep, nil
 }
@@ -302,6 +309,106 @@ func (l *lab) probeBlob(rep *checkReport, p *probe, holder *node, subject appear
 		return
 	}
 	rep.add(name+" (manifest agrees)", mcode == want, "manifest = %d, want %d (same as the blob)", mcode, want)
+}
+
+// issueToken asks this node to vouch for a bearer key the way a madplayer's home
+// server does (F7 item 9): an ordinary authenticated API call, no node card and
+// no friendship anywhere in it.
+func (n *node) issueToken(bearerKey string) (string, error) {
+	var grant struct {
+		Token string `json:"token"`
+	}
+	if err := n.postJSON("/api/madnetwork/token", map[string]string{"node_key": bearerKey}, &grant); err != nil {
+		return "", err
+	}
+	if grant.Token == "" {
+		return "", fmt.Errorf("%s issued an empty token", n.name)
+	}
+	return grant.Token, nil
+}
+
+// checkListenerToken is F7 item 9 on real processes: the same outsider node, the
+// same key and the same connection, served or refused purely on whether it
+// carries a vouch from a node the answering node can place.
+//
+// The shape matters more than the codes. The token is issued by `home` and
+// presented to `holder`, which is a DIFFERENT node — a madplayer's whole problem
+// is that its home server's friends have never heard of it, and a token that
+// only worked against its issuer would solve nothing. It is also why this cannot
+// be asserted with lab nodes alone: every lab node is somebody's friend, so only
+// the probe can ask the question a stranger asks.
+func (l *lab) checkListenerToken(rep *checkReport, p *probe, holder, home *node, subject appearance) {
+	names := []string{
+		"listener node without a token is refused",
+		"home server issues a capability token",
+		"vouched listener node is served by a node that is not its home",
+		"a token buys membership, never friendship",
+	}
+	// The issuer has to be a node the holder can place, and a direct friend is
+	// the cheapest one to be sure of. Without a friend pair there is nobody in
+	// this lab whose vouch would mean anything.
+	if home == nil {
+		for _, n := range names {
+			rep.skip(n, "no friend pair in this lab (-friends none?)")
+		}
+		return
+	}
+	blob := "/madnetwork/v0/blob/" + subject.Hash
+
+	// Scoped to the madnetwork (the node default) and closed to guests: the
+	// posture a listener node actually meets.
+	if err := l.setScope(holder, subject.RecordingID, nil, false, ptr(false)); err != nil {
+		rep.add("listener node: scope the subject", false, "%v", err)
+		return
+	}
+	if err := l.setServeGuests(holder, false); err != nil {
+		rep.add("listener node: close the guest switch", false, "%v", err)
+		return
+	}
+
+	// The control, and the reason the next assertion means anything: without a
+	// vouch this node is served nothing at all.
+	if code, _, err := p.getAs(holder, blob, ""); err != nil {
+		rep.add("listener node without a token is refused", false, "blob: %v", err)
+	} else {
+		rep.add("listener node without a token is refused", code == http.StatusNotFound,
+			"blob = %d, want 404", code)
+	}
+
+	token, err := home.issueToken(p.key())
+	if err != nil {
+		rep.add("home server issues a capability token", false, "%v", err)
+		return
+	}
+	rep.add("home server issues a capability token", true, "%s vouched for the probe", home.name)
+
+	code, body, err := p.getAs(holder, blob, token)
+	switch {
+	case err != nil:
+		rep.add("vouched listener node is served by a node that is not its home", false, "blob: %v", err)
+	case code != http.StatusOK:
+		rep.add("vouched listener node is served by a node that is not its home", false,
+			"blob = %d, want 200 (token issued by %s, presented to %s)", code, home.name, holder.name)
+	default:
+		got := sha256Hex(body)
+		rep.add("vouched listener node is served by a node that is not its home",
+			got == subject.Hash, "blob = %d, %d bytes, sha256 %s… (want %s…)",
+			code, len(body), short(got), short(subject.Hash))
+	}
+
+	// Membership, not friendship — the one thing the token must not buy. A
+	// recording an admin restricted to hand-picked nodes stays off a device
+	// nobody here picked.
+	if err := l.setScope(holder, subject.RecordingID, ptr(federation.DepthFriends), false, nil); err != nil {
+		rep.add("listener node: restrict the subject", false, "%v", err)
+		return
+	}
+	if code, _, err := p.getAs(holder, blob, token); err != nil {
+		rep.add("a token buys membership, never friendship", false, "blob: %v", err)
+	} else {
+		rep.add("a token buys membership, never friendship", code == http.StatusNotFound,
+			"Direct-friends blob = %d, want 404 even with a valid token", code)
+	}
 }
 
 // ── Lab plumbing for the check ───────────────────────────────────────────────

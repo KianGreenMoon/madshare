@@ -526,8 +526,14 @@ func (n *Node) seedableBlob(ctx context.Context, hash string, aud Audience) (str
 //	                     what an admin restricted to hand-picked nodes
 //	a member             our community, from the mutual-edge walk: the
 //	                     Madnetwork scope, cache blobs included
+//	a listener node      a member's signed vouch for one bearer key (F7 item 9):
+//	                     the member audience, narrowed by the token's guest bit
 //	anyone else          nothing, unless this node opted to answer guests, and
 //	                     then guest-playable content only
+//
+// Note what the token bearer is not: a friend. It draws on the member budget
+// like every other non-friend (quota.go), which is the answer to a home server
+// enrolling a thousand devices — they share one class ceiling.
 //
 // The bool reports whether the request could be *decided*, not whether it is
 // allowed: false means a storage error the caller should answer with a 500. A
@@ -553,6 +559,18 @@ func (n *Node) serveAudience(r *http.Request) (Audience, bool) {
 		return Audience{}, false
 	} else if ok {
 		return MemberAudience, true
+	}
+	// Still unplaced — but it may be carrying a vouch (F7 item 9, token.go). This
+	// is a listener node: a madplayer publishes no friend list and appears in
+	// nobody else's, so no walk can reach it, and a token from a node we *can*
+	// place is the only way it is ever more than a stranger. Checked here rather
+	// than first because a friend or a member already has everything a token
+	// buys, so presenting one must never cost them their own standing.
+	if aud, ok, err := n.tokenAudience(r); err != nil {
+		n.logger.Printf("federation: resolve capability token: %v", err)
+		return Audience{}, false
+	} else if ok {
+		return aud, true
 	}
 	policy, err := n.store.SeedingPolicy(r.Context())
 	if err != nil {

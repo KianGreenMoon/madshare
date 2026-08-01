@@ -166,6 +166,11 @@ type FederationNode interface {
 	// EnsureBlob joins (or starts) the fetch of a remote blob by content hash
 	// (federation F3); the stub answers with its compiled-out error.
 	EnsureBlob(ctx context.Context, hash string) (federation.Transfer, error)
+	// IssueCapabilityToken signs "bearer key K is my user until T" for one of
+	// this node's own users' devices (F7 item 9) — the credential a listener
+	// node presents to nodes that cannot place it in any community themselves.
+	// guestOnly carries the account's own ACL outward.
+	IssueCapabilityToken(bearerKey string, guestOnly bool) (federation.CapabilityGrant, error)
 	// NetworkMap is the gossiped graph as an admin sees it (F6): every node
 	// reachable through a chain of friendships, with branch attribution and the
 	// distrust marks against it.
@@ -370,6 +375,10 @@ func RegisterAPI(r chi.Router, d Deps) {
 			r.With(mad).Get("/api/madnetwork/stream/{hash}", h.madnetworkStream)
 			r.With(mad).Get("/api/madnetwork/transfers/{hash}", h.madnetworkTransferStatus)
 			r.With(mad, d.protect(auth.PermFileUpload)).Post("/api/madnetwork/download", h.madnetworkDownload)
+			// F7 item 9: a listener node asks its home server to vouch for it.
+			// Same permission as browsing — a madplayer participates in
+			// madnetwork, it just does its own fetching.
+			r.With(mad).Post("/api/madnetwork/token", h.madnetworkIssueToken)
 		}
 	}
 

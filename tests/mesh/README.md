@@ -142,7 +142,7 @@ tests/mesh/bin/meshlab flap b -down 10s -up 20s  # `heal b` stops it
 tests/mesh/bin/meshlab scope                     # every node's scope
 tests/mesh/bin/meshlab scope a tracks private    # take a's tracks off the network
 tests/mesh/bin/meshlab scope a tracks guest on   # …or open them to everyone
-tests/mesh/bin/meshlab check                     # 12 cases, ~3 s, non-zero on failure
+tests/mesh/bin/meshlab check                     # 20 cases, ~3 s, non-zero on failure
 ```
 
 Or relays without a lab, for faulting something you started yourself:
@@ -464,6 +464,8 @@ PASS  normal blob is invisible to an outsider        blob = 404
 PASS  normal blob is invisible to an outsider (manifest agrees) manifest = 404, want 404 (same as the blob)
 PASS  guest-playable blob still refused while guests are closed blob = 404
 PASS  guest-playable blob still refused while guests are closed (manifest agrees) manifest = 404, want 404 (same as the blob)
+PASS  guests opened still cannot reach a Direct-friends track blob = 404
+PASS  guests opened still cannot reach a Direct-friends track (manifest agrees) manifest = 404, want 404 (same as the blob)
 PASS  guest-playable blob serves an outsider once opened blob = 200, 654618 bytes, sha256 47c9d7b1c13a… (want 47c9d7b1c13a…)
 PASS  guest-playable blob serves an outsider once opened (manifest agrees) manifest = 200, want 200 (same as the blob)
 PASS  private beats guest-playable                   blob = 404
@@ -471,12 +473,16 @@ PASS  private beats guest-playable (manifest agrees) manifest = 404, want 404 (s
 PASS  private track leaves the node's own /madnetwork madnetwork on a: 2 while private, 3 while shared (want +1)
 PASS  friend is refused a now-private track          b streaming a's private track = 502, want any failure (its catalog is stale but the bytes are gated live)
 PASS  friend can stream a shared track               b received 654618 bytes from a, sha256 47c9d7b1c13a… (want 47c9d7b1c13a…)
+PASS  listener node without a token is refused       blob = 404, want 404
+PASS  home server issues a capability token          b vouched for the probe
+PASS  vouched listener node is served by a node that is not its home blob = 200, 654618 bytes, sha256 47c9d7b1c13a… (want 47c9d7b1c13a…)
+PASS  a token buys membership, never friendship      Direct-friends blob = 404, want 404 even with a valid token
 
-12 passed, 0 failed, 0 skipped in 3.157s
+20 passed, 0 failed, 0 skipped in 3.4s
 ```
 
 It picks the oldest published track on the first seeded node, walks it through
-three scopes, and asks as an outsider each time. Two of the cases are ones an
+three scopes, and asks as an outsider each time. Three of the cases are ones an
 in-process test cannot make:
 
 - **the guest swarm, once opened, serves bytes**, verified against the content hash — not
@@ -485,6 +491,13 @@ in-process test cannot make:
   now-private track is refused anyway. Catalog staleness is the *normal* state of
   a federated node (15-minute sync), which makes this the realistic case rather
   than an exotic one.
+- **a listener node's token is honoured by a node that is not its issuer** (F7
+  item 9). The token is minted by `b` through its ordinary authenticated API —
+  no node card, no accept, no peer row — and presented to `a`, which serves it
+  because it can place `b` in its own community. The same probe, same key and
+  same connection is refused without it, which is what makes the pair an
+  assertion rather than a demo. Only the probe can ask this: every lab node is
+  already somebody's friend, so none of them is a stranger to test with.
 
 The subject's original scope is restored afterwards, including on a failure — a
 check that left a track private would quietly break whatever you did next.
