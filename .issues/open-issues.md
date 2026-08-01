@@ -873,3 +873,60 @@ If it recurs, the thing to measure is whether `meshDeadline` is being consumed b
 convergence or by the 250 ms poll interval colliding with the 1-minute refresh
 loop — `makeFriends` waits on a loop tick, so a run that just misses one waits a
 whole cycle, and 30 s is only half of that.
+
+## Cache seeding overrides a recording's sharing scope (found 2026-08-02, F8 mesh verification)
+
+**Open. Pre-existing — F8 did not introduce it, but F8 makes it easy to reach.**
+
+`seedableBlob` (`federation/swarm.go`) resolves a blob in two steps: the library
+copy, gated by `BlobVisibleTo` (scope-aware), and — if that refuses — the
+download cache, gated only by `policy.Cache && aud.ServesCache()`. There is no
+scope check on the second branch, deliberately: a cached blob is somebody else's
+content and its scope is not ours to declare (§Distribution, and the F7 posture
+"the swarm must not care which node happens to hold bytes").
+
+The gap is the case where **one hash is both** — a blob this node materialized
+from the network (so it is in `<data_dir>/cache/madnetwork/`) *and* holds in its
+library (so a local recording carries a `share_depth`). Scoping that recording to
+**Direct friends** stops the catalog advertising it and stops the library branch
+serving it, and then the cache branch serves the identical bytes to any member
+anyway.
+
+That contradicts the invariant §Sharing scope leads with, and the one
+`meshlab check` exists to assert: *catalog and bytes read one rule, so what an
+audience is not shown it also cannot fetch.*
+
+**Reproduced on real processes**, and isolated to the cache branch rather than
+argued from the code: in a seeded 3-node lab, materialize an upgrade onto `a`
+(putting the blob in a's cache *and* library), then run `meshlab check`. The case
+`a token buys membership, never friendship` fails with **200, want 404**.
+Setting `seed_cache=false` on `a` and re-running flips that same case to **PASS**
+— nothing else changed.
+
+**Control experiment, so "pre-existing" is measured rather than asserted.** A
+fresh lab is 20/20. The same failure then reproduces using ONLY
+`POST /api/madnetwork/download` — the F3 endpoint shipped 2026-07-18 — with no
+F8 endpoint called at any point: download b's blob onto `a`, run `meshlab check`,
+same case, same `200, want 404`. F8 neither causes nor worsens this; it only
+gives the operation a button.
+
+Severity is bounded by who could already get the bytes: in the reproduction they
+originated on `b` at Madnetwork scope, so no content reached anyone who could not
+have fetched it from `b` directly. The defect is that the local admin's scope
+decision is silently ineffective, not (in this case) that new content escaped.
+The general case is worse in principle — an admin narrows a recording, gets no
+warning, and this node keeps seeding it to the whole community.
+
+Directions, none of them decided:
+1. Have the cache branch skip a hash this node also holds as a *library* blob,
+   and let the library branch's scope verdict stand — the local decision wins for
+   bytes we actually hold, cache relaying keeps working for everything else.
+2. Evict the cache entry when a materialized blob lands in the library (it is
+   redundant storage the moment the file exists under `files_dir`, which is a
+   second reason to do it and would close this as a side effect).
+3. Surface it instead of fixing it: the access modal warns that a scope narrower
+   than the node default cannot be enforced for a blob still in the seed cache.
+
+Option 2 looks strongest — the duplicate cache copy has no purpose once the blob
+is in the library, and deleting it removes the ambiguity rather than adding a
+rule about it. Wants an owner decision before anything is built.
