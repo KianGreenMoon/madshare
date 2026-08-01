@@ -486,6 +486,12 @@ func (m *memStore) UpdateFederationPeerHeardName(_ context.Context, id int64, na
 // SQL and are tested against a real database (database/madnetwork_claims_test.go).
 func (m *memStore) CheckSourceClaims(context.Context, int64) (int, error) { return 0, nil }
 
+// ScanSourceUpgrades / SweepUpgrades: same story for the F8 quality scan — the
+// join is SQL and the fingerprint arithmetic is measured against a real database
+// (database/upgrades_test.go). Here it only has to exist.
+func (m *memStore) ScanSourceUpgrades(context.Context, int64, int64) (int, error) { return 0, nil }
+func (m *memStore) SweepUpgrades(context.Context) error                           { return nil }
+
 func (m *memStore) ListClaimReports(context.Context) ([]*ClaimReport, error) { return nil, nil }
 
 func (m *memStore) SetClaimReportDisposition(context.Context, int64, string) error { return nil }

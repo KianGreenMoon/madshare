@@ -144,6 +144,7 @@ func (n *Node) syncCatalog(ctx context.Context, p *CatalogSource) {
 			n.logger.Printf("federation: mark catalog checked for %q: %v", p.Display(), err)
 		}
 		n.checkClaims(ctx, p)
+		n.scanUpgrades(ctx, p)
 		return
 	}
 	if err := n.store.ReplaceSourceCatalog(ctx, p.ID, msg.Serial, now, msg.Entries); err != nil {
@@ -152,6 +153,7 @@ func (n *Node) syncCatalog(ctx context.Context, p *CatalogSource) {
 	}
 	n.logger.Printf("federation: synced catalog of %q (%s) — %d entries", p.Display(), p.PublicKey, len(msg.Entries))
 	n.checkClaims(ctx, p)
+	n.scanUpgrades(ctx, p)
 }
 
 // checkClaims re-runs the contradiction checks over this source's cached catalog
@@ -171,5 +173,27 @@ func (n *Node) checkClaims(ctx context.Context, p *CatalogSource) {
 	if open > 0 {
 		n.logger.Printf("federation: %d unreviewed contradicted claim(s) from %q (%s) — see /admin/network",
 			open, p.Display(), p.PublicKey)
+	}
+}
+
+// scanUpgrades looks for renditions this source holds that would beat ours
+// (F8 item 3). It runs on both sync paths for exactly the reason checkClaims
+// does — their catalog standing still says nothing about ours — and is bounded
+// by a per-source watermark so the steady-state cost is the material that
+// changed, not the size of either library.
+//
+// Like the claim checks, it decides nothing: findings wait on /admin/upgrades,
+// and materializing one is an admin pressing a button.
+func (n *Node) scanUpgrades(ctx context.Context, p *CatalogSource) {
+	open, err := n.store.ScanSourceUpgrades(ctx, p.ID, time.Now().Unix())
+	if err != nil {
+		n.logger.Printf("federation: scan upgrades from %q: %v", p.Display(), err)
+		return
+	}
+	if err := n.store.SweepUpgrades(ctx); err != nil {
+		n.logger.Printf("federation: sweep upgrades: %v", err)
+	}
+	if open > 0 {
+		n.logger.Printf("federation: %d better rendition(s) available on the madnetwork — see /admin/upgrades", open)
 	}
 }

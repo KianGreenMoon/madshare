@@ -148,6 +148,11 @@ func (emptyStore) PublishFriendList(context.Context) (bool, error) { return fals
 // against bytes it holds — it holds none either (F6, contradicted identity
 // claims).
 func (emptyStore) CheckSourceClaims(context.Context, int64) (int, error) { return 0, nil }
+
+// The probe holds no library either, so nothing anyone advertises could ever be
+// an upgrade to it (F8 item 3, quality upgrades).
+func (emptyStore) ScanSourceUpgrades(context.Context, int64, int64) (int, error) { return 0, nil }
+func (emptyStore) SweepUpgrades(context.Context) error                           { return nil }
 func (emptyStore) ListClaimReports(context.Context) ([]*federation.ClaimReport, error) {
 	return nil, nil
 }

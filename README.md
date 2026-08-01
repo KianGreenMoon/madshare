@@ -48,7 +48,12 @@ UI.
   verification), streams through a cache while it downloads, and lands in the
   review queue like any other upload. Per-recording sharing scope (Local /
   Direct friends / Madnetwork), and a network map of who your friends' friends
-  are. [Deploying a madnetwork node](#deploying-a-madnetwork-node) ·
+  are. The network also feeds back into your own library: a review card shows
+  what other nodes call the audio being approved and warns when the tags and the
+  fingerprint disagree, and `/admin/upgrades` lists renditions out there that
+  rank above the copies you hold — additive, so nothing of yours is ever
+  replaced without you saying so.
+  [Deploying a madnetwork node](#deploying-a-madnetwork-node) ·
   [`docs/architecture/federation.md`](docs/architecture/federation.md).
 - One process, one HTTP listener per configured socket; the web UI can be
   compiled out for a pure-API binary, and federation for a standalone one.
@@ -506,7 +511,7 @@ Full design, threat model and the reasoning behind every default:
 | `GET /images/*` | api | Cover images. |
 | `GET /api/madnetwork/*` | api | Federated browse, streaming relay and fetch-to-library (gated `madnetwork.access`; present only when federation runs). |
 | `GET /`, `/static/*` | webui | Bundled web UI. |
-| `GET /admin`, `/api/admin/*` | admin | Admin page + destructive/management ops (incl. `/admin/network`, the peer and map surface). |
+| `GET /admin`, `/api/admin/*` | admin | Admin page + destructive/management ops (incl. `/admin/network`, the peer and map surface, and `/admin/upgrades`, the better-renditions findings). |
 | `GET /source` | api | AGPL §13: `tar.gz` of the git-tracked source. |
 | `GET /license` | api | The project license. |
 

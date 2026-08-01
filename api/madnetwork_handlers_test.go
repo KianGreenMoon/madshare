@@ -24,6 +24,7 @@ type fakeMadnetwork struct {
 	hideOff   bool                                 // when true, GetMadnetworkPolicy reports hiding disabled
 	matches   []database.NetworkMatch              // F8: what the join is to report
 	matchErr  error                                // F8: a cache read that fails must cost only the arm
+	upgrades  []*database.UpgradeRow               // F8 item 3: quality-upgrade findings
 }
 
 // MadnetworkArtists honours limit the way the real store does — one page plus a
@@ -69,11 +70,28 @@ func (f *fakeMadnetwork) MadnetworkSearchAlbums(context.Context, string, int, da
 func (f *fakeMadnetwork) MadnetworkSearchTrackRows(context.Context, string, database.MadnetworkView) ([]*database.MadnetworkTrackRow, error) {
 	return append(append([]*database.MadnetworkTrackRow{}, f.rows...), f.ownRows...), nil
 }
+
 // MatchRecording (F8) answers from whatever the test seeded in matches — the
 // fake never re-derives the join, since the join itself is pinned in the
 // database package where the SQL and the fingerprint arithmetic live.
 func (f *fakeMadnetwork) MatchRecording(context.Context, int64, int64) ([]database.NetworkMatch, error) {
 	return f.matches, f.matchErr
+}
+
+// The upgrade findings (F8 item 3) are written by a SQL scan and read back by
+// one query; both are pinned in database/upgrades_test.go against a real
+// database, so the fake only has to satisfy the interface.
+func (f *fakeMadnetwork) ListUpgrades(context.Context, string, int64, int, int) ([]*database.UpgradeRow, int, error) {
+	return f.upgrades, len(f.upgrades), nil
+}
+func (f *fakeMadnetwork) SetUpgradeDisposition(_ context.Context, id int64, d string) (bool, error) {
+	for _, u := range f.upgrades {
+		if u.ID == id {
+			u.Disposition = d
+			return true, nil
+		}
+	}
+	return false, nil
 }
 func (f *fakeMadnetwork) MadnetworkEntryForHash(_ context.Context, hash string) (*federation.CatalogEntry, error) {
 	for _, r := range f.rows {

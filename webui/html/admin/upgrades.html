@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Madshare &mdash; Admin &middot; Upgrades</title>
+  <meta name="api-url" content="{{.APIURL}}">
+  {{template "theme-guard" .}}
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/admin-shell.css">
+  <link rel="stylesheet" href="/static/css/admin-upgrades.css">
+</head>
+<body>
+
+{{template "header" .}}
+{{template "admin-shell" .}}
+
+<main class="admin-main">
+  <section aria-labelledby="upgHeading">
+    <h2 class="section-title" id="upgHeading">Quality upgrades</h2>
+    <p class="muted">
+      Renditions the madnetwork holds that would rank <strong>above</strong> what
+      this library has of the same recording, found while catalogs sync &mdash;
+      matched by shared bytes or by acoustic fingerprint, never by tag text.
+      Every quality figure here is the <em>other node's claim</em> about bytes we
+      have not seen; it becomes a fact when they arrive and get re-analysed
+      locally. <strong>Materialize</strong> fetches one through the ordinary
+      review bucket and <em>adds</em> it to the recording &mdash; nothing is
+      replaced, and dropping the old rendition stays a separate, deliberate act
+      on the Recordings lens. <strong>Dismiss</strong> is remembered, so the next
+      sync will not raise it again.
+    </p>
+
+    <div class="upg-toolbar" role="region" aria-label="Filter">
+      <div class="view-tabs" role="tablist" aria-label="Which findings to show">
+        <button class="view-tab is-active" role="tab" data-disposition="new">Open</button>
+        <button class="view-tab" role="tab" data-disposition="materialized">Materialized</button>
+        <button class="view-tab" role="tab" data-disposition="dismissed">Dismissed</button>
+        <button class="view-tab" role="tab" data-disposition="all">All</button>
+      </div>
+      <span class="upg-spacer"></span>
+      <span class="upg-count muted" id="upgCount"></span>
+    </div>
+
+    <div id="upgResults" aria-live="polite">
+      <p class="muted" id="upgLoading">Loading&hellip;</p>
+    </div>
+  </section>
+</main>
+
+{{template "auth-modals" .}}
+
+<script type="module" src="/static/js/admin/upgrades.js"></script>
+</body>
+</html>

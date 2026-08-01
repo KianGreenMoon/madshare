@@ -604,6 +604,16 @@ type PeerStore interface {
 	// is a new blob to check old claims against — so the check has to be able to
 	// run when only our side moved.
 	CheckSourceClaims(ctx context.Context, sourceID int64) (newlyOpen int, err error)
+	// ScanSourceUpgrades compares one source's cached catalog against the local
+	// library and records the renditions that would beat ours, returning how many
+	// findings await a decision (F8 item 3, migration 039). It rides the same
+	// cadence and reads the same cache as CheckSourceClaims, for the same reason:
+	// their catalog stands still while our library moves. Idempotent, and it
+	// never overwrites an admin's disposition.
+	ScanSourceUpgrades(ctx context.Context, sourceID, now int64) (open int, err error)
+	// SweepUpgrades drops findings that stopped being true — the remote blob left
+	// every cached catalog, or we hold those bytes now.
+	SweepUpgrades(ctx context.Context) error
 	// ListClaimReports returns the findings still awaiting an admin decision,
 	// newest first, decorated with the reporting peer's label and key.
 	ListClaimReports(ctx context.Context) ([]*ClaimReport, error)

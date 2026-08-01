@@ -2735,9 +2735,10 @@ milestone directly after direct transfer works, and tokens ship with depth.
   can see further into than you can defend is the wrong order, so defense first
   is not merely convenient sequencing — F7 is *unsafe* without F6, and F6 is
   useful without F7.
-- **F8 — Quality upgrades** (designed 2026-08-02, §Quality upgrades — the four
-  shaping decisions and the reasoning are there, not here). Three items over one
-  shared **audio-identity join** (hash, then fingerprint head; never text):
+- **F8 — Quality upgrades** (designed **and built** 2026-08-02, §Quality upgrades
+  — the four shaping decisions and the reasoning are there, not here). Three
+  items over one shared **audio-identity join** (hash, then fingerprint head;
+  never text):
   1. **Match arm on the review card** — other tagsets for this recording,
      branch-weighted, plus remote renditions ranked against ours. Advisory.
   2. **Fingerprint-vs-tagset mismatch warning** — two oracles, the network's

@@ -139,6 +139,10 @@ type MadnetworkStore interface {
 	// card's match arm. pingedSince classifies each source's freshness window;
 	// it is not a filter (docs/architecture/federation.md §Quality upgrades).
 	MatchRecording(ctx context.Context, recordingID, pingedSince int64) ([]database.NetworkMatch, error)
+	// The quality-upgrade findings the catalog sweep records (F8 item 3). The
+	// scan itself runs in the federation node, not here.
+	ListUpgrades(ctx context.Context, disposition string, pingedSince int64, limit, offset int) ([]*database.UpgradeRow, int, error)
+	SetUpgradeDisposition(ctx context.Context, id int64, disposition string) (bool, error)
 	// F3 (direct transfer): the tagset text behind a rendition hash (staging
 	// metadata for download-to-library) and the download policy.
 	MadnetworkEntryForHash(ctx context.Context, hash string) (*federation.CatalogEntry, error)
@@ -457,6 +461,15 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(moderate).Post("/moderation/{tagsetID}/approve", h.moderationApprove)
 		r.With(moderate).Post("/moderation/{tagsetID}/return", h.moderationReturn)
 		r.With(moderate).Post("/moderation/{tagsetID}/discard", h.moderationDiscard)
+
+		// Quality upgrades (federation F8 item 3). Registered only with a
+		// madnetwork store: without one there are no catalogs to have found
+		// anything in. Materializing is not here — it is the ordinary
+		// POST /api/madnetwork/download, so bytes have exactly one way in.
+		if d.Madnetwork != nil {
+			r.With(moderate).Get("/upgrades", h.upgradesList)
+			r.With(moderate).Patch("/upgrades/{id}", h.upgradeDecide)
+		}
 
 		// Duplicates / variants (recordings P2). List multi-rendition recordings
 		// and split a rendition off; delete reuses the soft-delete above.

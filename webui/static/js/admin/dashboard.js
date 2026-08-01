@@ -67,6 +67,24 @@ async function fillClaimReports() {
   } catch { /* network error — leave the badge hidden */ }
 }
 
+// Show how many quality upgrades are waiting for a decision (federation F8
+// item 3). Same design as the claim-report badge beside it: the count IS the
+// notification, and it links to the page where each finding sits next to the
+// two things you can do about it.
+async function fillUpgrades() {
+  try {
+    const res = await fetch(`${API}/api/admin/upgrades?disposition=new&limit=1`);
+    if (!res.ok) return; // federation off / lacks content.moderate — stay hidden
+    const data = await res.json();
+    const badge = document.getElementById('countUpgrades');
+    if (badge && data.total > 0) {
+      badge.textContent = String(data.total);
+      badge.title = `${data.total} better rendition(s) available on the madnetwork`;
+      badge.hidden = false;
+    }
+  } catch { /* network error — leave the badge hidden */ }
+}
+
 // Show a "scanning" badge on the Data sources card while any symlink source is
 // mid-scan (the same shared state the /admin/sources page polls).
 async function fillSourcesStatus() {
@@ -231,6 +249,7 @@ async function fillStorage() {
   fillSourcesStatus();
   fillPeerRequests();
   fillClaimReports();
+  fillUpgrades();
   fillCount('countFiles', '/api/files?limit=0');
   fillCount('countModeration', '/api/admin/moderation?limit=0');
   fillCount('countTrash', '/api/admin/trash?limit=0');

@@ -100,16 +100,13 @@ build log: `docs/plans/recordings-implementation.md`.
 
 ## Federation
 
-**Built** — F0–F7 are shipped bar one item; design, build plan and status live in
+**Built** — F0–F8 are shipped; design, build plan and status live in
 `docs/architecture/federation.md` (auth's Phase 4 hooks: `docs/architecture/auth.md`
-§8). What is deferred out of it:
+§8). F7 closed with listener-node tokens on 2026-08-01, and F8 (quality upgrades
+— the review card's madnetwork arm, the fingerprint-vs-tagset mismatch warning
+and `/admin/upgrades`) on 2026-08-02. What is deferred out of the milestone:
 
-- **Listener-node tokens** (F7 item 9). A home server signing "this bearer is
-  mine until T", verified by that server's friends against the self-certifying
-  channel — one issuer, one hop, no chain. Not blocked on work but on a decision:
-  the token's lifetime (federation.md §Open questions 1). Its consumer, madplayer
-  (`docs/ui/native-client.md`), does not exist yet either.
-- **Frontier pull numbers** (§Open questions 2). The discovery rotation's shape
+- **Frontier pull numbers** (§Open questions 1). The discovery rotation's shape
   shipped; four member catalogs per cycle and a cap of two hundred are guesses
   that want a real network to observe.
 - **Replication.** Subscribe/favourite → mirror, with storage caps. Manual

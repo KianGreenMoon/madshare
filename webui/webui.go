@@ -90,7 +90,12 @@ var adminSubPages = map[string]*template.Template{
 	// "network" is the madnetwork friendship page (federation F1,
 	// docs/architecture/federation.md): node card export/import, the trusted-peer
 	// list, block/unblock. Gated on federation.manage at the API.
-	"network":  buildPageTmpl("html/admin/network.html"),
+	"network": buildPageTmpl("html/admin/network.html"),
+	// "upgrades" lists renditions the madnetwork holds that rank above ours
+	// (federation F8 item 3, docs/architecture/federation.md §Quality upgrades).
+	// Its API is registered only when a madnetwork store is wired, so on a node
+	// with federation off the page renders and reports nothing.
+	"upgrades": buildPageTmpl("html/admin/upgrades.html"),
 	"settings": buildPageTmpl("html/admin/settings.html"),
 }
 
