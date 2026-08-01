@@ -498,8 +498,11 @@ export function createReviewScope({ play, perms }) {
     if (openCards.has(k)) { openCards.delete(k); render(); return; }
     openCards.add(k);
     render();
-    // Case-B cards need the ladder compare; fetch, then repaint that card in place.
-    if (f.class === 'new_appearance' && !classifyCache.has(f.tagset_id)) {
+    // Every expanded card fetches its classification: case B needs the ladder
+    // compare, and all three want the madnetwork arm (F8 item 1) — a case-A
+    // submission is exactly where "somebody out there already has these bytes"
+    // is worth knowing. One row, one request, only on expand.
+    if (!classifyCache.has(f.tagset_id)) {
       classify(f.tagset_id).then(() => { if (openCards.has(k)) render(); });
     }
   }
@@ -559,6 +562,75 @@ export function createReviewScope({ play, perms }) {
     return dl;
   }
 
+  // ── The madnetwork arm (F8 item 1) ────────────────────────────────────────
+  // What other nodes call this audio, and what renditions of it they hold. Two
+  // things it deliberately is NOT: an action (nothing here fetches bytes — that
+  // is the upgrades page), and a verdict (every number is somebody's claim, and
+  // the evidence that tied them to this recording travels with it).
+
+  // networkPiece returns null when this node has no madnetwork to ask, so a
+  // server with federation off draws no empty section. An empty ARM is a
+  // different statement and does get drawn.
+  function networkPiece(f, num) {
+    const c = classifyCache.get(f.tagset_id);
+    if (!c) return piece(pieceHead(num, 'On the madnetwork'), el('div', { class: 'rev-loading', text: 'Asking the network…' }));
+    if (c.error || !c.madnetwork) return null;
+    const mn = c.madnetwork;
+    const kids = [];
+    if (!mn.tagsets || !mn.tagsets.length) {
+      kids.push(el('div', { class: 'rev-note', text: mn.fingerprinted
+        ? 'No node in your madnetwork holds this audio.'
+        : 'No node in your madnetwork holds these bytes. This file has no fingerprint yet, so only exact-copy matches could be checked.' }));
+      return piece(pieceHead(num, 'On the madnetwork'), kids);
+    }
+    kids.push(el('div', { class: 'rev-mn-labels' }, mn.tagsets.map((t, i) => labelRow(f, t, i === 0))));
+    const better = (mn.renditions || []).filter(r => r.better);
+    if (better.length) {
+      kids.push(el('div', { class: 'rev-note' }, [
+        el('b', { text: `${better.length} better rendition${better.length > 1 ? 's' : ''} out there: ` }),
+        better.map(r => techLabel(r)).join(', '),
+        ' — fetch from the Upgrades page after approving; nothing is downloaded here.',
+      ]));
+    }
+    return piece(pieceHead(num, 'On the madnetwork', 'other nodes’ names for this audio'), kids);
+  }
+
+  // labelRow renders one remote labelling. The voice count is shown next to the
+  // holder count on purpose: a moderator weighing "is this what it's called?"
+  // is exactly the reader who needs to see when eight nodes are one voice.
+  function labelRow(f, t, dominant) {
+    const holders = t.holders || [];
+    const who = el('div', { class: 'rev-mn-holders' }, holders.map(h => el('span', {
+      class: `rev-mn-holder${h.reachable ? '' : ' rev-mn-holder--stale'}`, text: h.name,
+      title: h.reachable ? h.key : `${h.key} — not seen recently`,
+    })));
+    const counts = t.voices < holders.length
+      ? `${holders.length} nodes · ${t.voices} branch${t.voices === 1 ? '' : 'es'}`
+      : `${holders.length} node${holders.length === 1 ? '' : 's'}`;
+    // ber is omitempty on the wire, and a fingerprint match CAN measure exactly
+    // 0 (identical heads from identical encoders), so the zero must be printed
+    // rather than crashed on.
+    const evidence = t.match === 'fingerprint'
+      ? `fingerprint match (BER ${Number(t.ber || 0).toFixed(3)})`
+      : 'same bytes';
+    const adopt = el('button', { class: 'btn btn-neutral btn-sm', text: 'Use these tags…',
+      onclick: () => editor.open({ tagset_id: f.tagset_id, title: t.title, artist: t.artist,
+        album_artist: t.album_artist || t.artist, album: t.album }) });
+    adopt.disabled = !canEdit;
+    return el('div', { class: `rev-mn-label${dominant ? ' is-dominant' : ''}` }, [
+      el('div', { class: 'rev-mn-label-text' }, [
+        el('div', { class: 'rev-mn-title', text: t.title || '—' }),
+        el('div', { class: 'rev-mn-sub', text: [t.artist, t.album].filter(Boolean).join(' · ') || '—' }),
+      ]),
+      el('div', { class: 'rev-mn-meta' }, [
+        el('span', { class: 'rev-mn-counts', text: counts }),
+        el('span', { class: 'rev-mn-evidence', text: evidence }),
+        who,
+      ]),
+      adopt,
+    ]);
+  }
+
   function editButton(f) {
     const btn = el('button', { class: 'btn btn-neutral btn-sm', text: 'Edit tagset…',
       onclick: () => editor.open({ tagset_id: f.tagset_id, title: f.title, artist: f.artist, album_artist: f.album_artist, album: f.album }) });
@@ -588,7 +660,7 @@ export function createReviewScope({ play, perms }) {
     const primary = el('button', { class: 'btn btn-primary btn-sm', text: 'Approve', onclick: () => approve(f.tagset_id, {}) });
     return el('div', { class: 'rev-body' }, [
       landing('Approving creates a new recording from this file and publishes its appearance.'),
-      el('div', { class: 'pieces' }, [p1, p2, p3]),
+      el('div', { class: 'pieces' }, [p1, p2, p3, networkPiece(f, 4)].filter(Boolean)),
       decideBar(f, summary, primary),
     ]);
   }
@@ -613,7 +685,7 @@ export function createReviewScope({ play, perms }) {
     const primary = el('button', { class: 'btn btn-primary btn-sm', text: 'Approve appearance', onclick: () => approve(f.tagset_id, {}) });
     return el('div', { class: 'rev-body' }, [
       landing(`Content-hash dup of recording #${f.recording_id} — no file is stored. Only the appearance is new.`),
-      el('div', { class: 'pieces' }, [p1, p2]),
+      el('div', { class: 'pieces' }, [p1, p2, networkPiece(f, 3)].filter(Boolean)),
       decideBar(f, summary, primary),
     ]);
   }
@@ -658,7 +730,7 @@ export function createReviewScope({ play, perms }) {
       p3 = piece(pieceHead(3, 'The appearance (tagset)', 'published on approve'), [tagsGrid(f), editButton(f)]);
     }
 
-    const pieces = [p1, p2, p3];
+    const pieces = [p1, p2, p3, networkPiece(f, 4)].filter(Boolean);
     const summary = el('div', { class: 'summary' });
     fillSummaryB(summary, f, dec);
     let primary;

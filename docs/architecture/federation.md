@@ -2284,6 +2284,158 @@ what a false *edge* costs, and hints are accepted only from friends, only about
 members, and only for sources we already cache — a hint about a node we hold no
 catalog from changes no row and creates none.
 
+## Quality upgrades (F8, designed 2026-08-02)
+
+Every phase up to here was about *reaching* other libraries. F8 is about what
+that reach is worth to the library we already have. The synced catalogs know
+things about our own recordings — better encodings of them, other people's names
+for them, and occasionally that our tags are wrong — and none of it reaches the
+surfaces where somebody is already making a decision. Three items land it there:
+an arm on the review card, a mismatch warning beside it, and a page that scans
+the library for renditions the network holds and we do not.
+
+Underneath all three is one question, and it is the phase's real design content:
+**when do two libraries mean the same recording?**
+
+### The audio-identity join
+
+Decided 2026-08-02: **hash first, fingerprint head second, text never.** Two
+stages, both of them arithmetic this node already performs elsewhere, and both
+reading the *cached* catalog — no network call, so the join is cheap enough to sit
+on a request path.
+
+1. **Shared rendition hash.** A cached entry that advertises a hash we hold is
+   about our recording, with no inference at all. The join is the whole bound: it
+   considers only hashes present on both sides, so the work is proportional to the
+   overlap rather than to either library — the same cost profile as
+   `checkHeldBlobClaims`, whose SQL shape it reuses. It also reaches further than
+   it first appears, because **a materialized download is the same bytes**: every
+   track this node ever fetched from the network is joined for free, and those are
+   exactly the tracks most likely to have better renditions out there.
+2. **Fingerprint head.** For entries stage 1 did not match: shortlist by duration
+   within `recordingDurationTolerance` (7 s — the window the local resolver
+   already shortlists by), then compare our full fingerprint against the entry's
+   64-word `FingerprintClaim` head with `compareHeads` at `maxBitErrorRate`
+   (0.10 — the threshold the local resolver already groups by). Reusing both
+   numbers is what keeps a finding explainable in one sentence: *this is the same
+   audio by the very standard this node uses to decide that two files are the same
+   audio.* This is the stage that finds a **re-encode**, and a re-encode is where a
+   better rendition lives — without it the upgrade page would mostly find nothing,
+   since a node holding our exact bytes by definition holds nothing better.
+
+**Text is never a join, and that is a security property, not fastidiousness.**
+Tagsets attach to recordings because audio identity is the only claim a receiver
+can check; matching on artist/title would hand the join to whoever picks the
+name. It would also put that weakness at the *worst* possible surface — the review
+card exists to catch mislabels, so a match arm steerable by a chosen name would be
+an attacker's way to tell a moderator "the network agrees with this file". The
+whole point of §Trust graph layer 1 is that a mislabel lands on the true recording;
+a text join would let it land on a fabricated one.
+
+Degradation is by stage and stays quiet: no local fingerprint, or a remote entry
+that carries no claim, means stage 1 only for that pairing. An absent claim is
+uncheckable, not suspicious — the F6 rule, unchanged.
+
+**Freshness does not gate the join.** A match found in the catalog of a node that
+has gone quiet is still a true fact about the network, and hiding it would repeat
+the mistake §Availability was written to fix. Staleness is a *display* concern
+here, handled exactly as holders are handled on `/madnetwork`: the row is greyed,
+not withheld. This matches the standing rule that playlists and favourites are
+never freshness-gated — a saved or surfaced item is intentional.
+
+### The match arm on the review card (item 1)
+
+`GET /api/admin/moderation/{tagsetID}/classify` already answers *what would an
+approve change*, in the library's own terms: the case (A/B/C), the appearance
+collision, and the ladder compare of the submitted blob against the recording's
+current best. The arm extends that same answer outward — what the **network** says
+about this recording — and nothing else about the endpoint changes:
+
+- **Other tagsets.** The names other nodes give this audio, branch-weighted by
+  `BranchMap.Voices` exactly as `/madnetwork` orders versions, so a farm behind one
+  friendship cannot manufacture a consensus for a moderator to defer to. This is
+  §Trust graph layer 1 finally rendered: a mislabel arriving here is visible as a
+  minority label next to the dominant honest ones.
+- **Better renditions.** Remote renditions of the matched recording, ranked by
+  `RankRenditions` against ours — the same ladder, fed the catalog's claimed tech
+  fields. Claims, and labelled as claims: nothing is verified until bytes arrive,
+  at which point the analysis pipeline re-derives all of it locally.
+
+The arm is **advisory and takes no action**. The one thing it offers is adopting a
+remote tagset's text into the existing edit modal, which is a form fill, not a
+decision — the moderator still approves. Materializing a better rendition
+deliberately does *not* live here: mid-review is the wrong moment to start a
+transfer, and item 3 is the surface built for it.
+
+Because downloads already stage as the downloader's draft, the *download* review
+card is the same card. "Upload and download review cards" is one implementation.
+
+### The mismatch warning (item 2)
+
+Decided 2026-08-02: **both oracles.** §Trust graph names the external one (layer
+4) and the internal one (layer 1) as separate defenses, and they fail in opposite
+directions, so the pair is worth more than either.
+
+- **The network's dominant label** comes free with item 1's join and needs no
+  configuration, no key and no external service. Its blind spot is stated plainly
+  in the UI: it only speaks about audio the network already knows, and a wrong
+  label held by one honest branch reads as agreement.
+- **AcoustID → MusicBrainz** is the oracle outside the social graph entirely, via
+  the `tagsource` machinery built for tag suggestions (shared limiter, shared
+  15-minute cache, shared `Deps.AcoustID` client). Its blind spot is that it is
+  off unless an admin configured a key.
+
+Decided the same day: the external lookup fires **when a moderator expands one
+card** — one row, one lookup. That respects the process-global 1 req/s serializing
+limiter without ever queueing a page of rows against it, and it puts the warning in
+front of someone without requiring them to know to press for it. A queue nobody
+opens costs nothing.
+
+Both warn and neither acts. No auto-flag writes a state, no submission is blocked,
+nothing is scored — the no-automatic-reputation rule covers this surface too. The
+moderator gets the preview player, the two verdicts and the tags side by side.
+
+### The upgrade scan (item 3)
+
+Decided 2026-08-02 (owner, over a recommended manual job): **the scan re-runs on
+every catalog sync.** The reasoning is `checkClaims`' own, which already runs on
+*both* sync paths including not-modified — *their* catalog stands still while
+*our* library moves, so every upload and every materialized download is new
+material for old claims to be checked against. An upgrade is the same shape of
+fact, and a maintenance page nobody remembers to run is a page that reports
+nothing.
+
+The cost that choice buys has to be paid down deliberately, because the sweep is
+the one loop that must stay cheap, and the fingerprint stage is the only unbounded
+thing in this phase. It is bounded by making steady-state work proportional to
+**what changed**, not to the library:
+
+- **Stage 1 always runs, whole source.** It is a hash join; its cost is the
+  overlap, which is the same reason `checkHeldBlobClaims` was safe to put here.
+- **Stage 2 runs only over new material on either side** since this source's last
+  scan: cached rows whose `first_seen` is newer than the watermark (the column F7
+  item 8 already preserves across the wholesale replace) and local recordings
+  fingerprinted since it. Every older pairing was compared on an earlier round and
+  its answer has not changed. The first scan of a source pays the full pass once.
+- **Stored findings are re-ranked every round** regardless — that set is small,
+  and re-ranking is what makes a finding *disappear* when we materialize it or
+  when our own best rendition changes.
+
+Findings live in their own table (migration **039**) rather than being recomputed
+per view, for the reason the disposition column implies: a finding is a comparison
+made at a moment, and **dismissing one has to survive the next scan**. Detection
+never overwrites a disposition — the rule `federation_claim_reports` already
+follows. A finding whose hash no longer appears in any cached catalog is swept.
+
+The page (`/admin/upgrades`, gated `content.moderate`) lists them newest-first with
+the local rendition beside the claimed remote one, and its action is
+**additive**: materialize the better rendition onto the same recording via the
+existing `POST /api/madnetwork/download`, which stages it through the review
+bucket like every other download and re-verifies the bytes locally on arrival. The
+old rendition is left alone — soft-deleting it is a separate, manual act on the
+Recordings lens. Nothing here deletes anything, and nothing replaces a blob a human
+did not choose to replace.
+
 ## Topology asymmetry (unchanged)
 
 A backbone of always-on server nodes plus intermittent madplayer peers. Mobile
@@ -2583,11 +2735,18 @@ milestone directly after direct transfer works, and tokens ship with depth.
   can see further into than you can defend is the wrong order, so defense first
   is not merely convenient sequencing — F7 is *unsafe* without F6, and F6 is
   useful without F7.
-- **F8 — Quality upgrades.** Madnetwork-match arm on the upload/download review
-  cards (other tagsets + better renditions of the same recording), the
-  fingerprint-vs-tagset **mismatch warning** (tag-suggestions machinery reuse),
-  and the optional quality-upgrade page scanning the local library against
-  synced catalogs.
+- **F8 — Quality upgrades** (designed 2026-08-02, §Quality upgrades — the four
+  shaping decisions and the reasoning are there, not here). Three items over one
+  shared **audio-identity join** (hash, then fingerprint head; never text):
+  1. **Match arm on the review card** — other tagsets for this recording,
+     branch-weighted, plus remote renditions ranked against ours. Advisory.
+  2. **Fingerprint-vs-tagset mismatch warning** — two oracles, the network's
+     dominant label and AcoustID/MusicBrainz, the external one fired when a
+     moderator expands a card. Warns, never acts.
+  3. **Quality-upgrade scan and page** — re-run on every catalog sync beside
+     `checkClaims`, with the fingerprint stage bounded to what changed since a
+     per-source watermark; findings stored (migration 039) with dispositions that
+     survive a rescan; materializing is additive, via the existing download path.
 - **Later (decided-deferred):** subscribe→replicate with storage caps,
   announce/gossip of catalog deltas, S3-backed swarm storage.
 

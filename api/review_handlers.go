@@ -973,6 +973,12 @@ func (h *handler) moderationClassify(w http.ResponseWriter, r *http.Request) {
 	if sc.CurrentBest != nil {
 		resp["current_best"] = renditionJSON(*sc.CurrentBest)
 	}
+	// The madnetwork's take on the same recording (F8 item 1): other people's
+	// names for this audio and the renditions they hold. Absent means there was
+	// no network to ask; present-but-empty means we asked and nobody knows it.
+	if take := h.networkTakeOn(r.Context(), sc.RecordingID, sc.CurrentBest); take != nil {
+		resp["madnetwork"] = take
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 

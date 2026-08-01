@@ -22,6 +22,8 @@ type fakeMadnetwork struct {
 	lastView  database.MadnetworkView              // captured by MadnetworkSummary for assertions
 	trackView database.MadnetworkView              // captured by MadnetworkTracks for assertions
 	hideOff   bool                                 // when true, GetMadnetworkPolicy reports hiding disabled
+	matches   []database.NetworkMatch              // F8: what the join is to report
+	matchErr  error                                // F8: a cache read that fails must cost only the arm
 }
 
 // MadnetworkArtists honours limit the way the real store does — one page plus a
@@ -66,6 +68,12 @@ func (f *fakeMadnetwork) MadnetworkSearchAlbums(context.Context, string, int, da
 }
 func (f *fakeMadnetwork) MadnetworkSearchTrackRows(context.Context, string, database.MadnetworkView) ([]*database.MadnetworkTrackRow, error) {
 	return append(append([]*database.MadnetworkTrackRow{}, f.rows...), f.ownRows...), nil
+}
+// MatchRecording (F8) answers from whatever the test seeded in matches — the
+// fake never re-derives the join, since the join itself is pinned in the
+// database package where the SQL and the fingerprint arithmetic live.
+func (f *fakeMadnetwork) MatchRecording(context.Context, int64, int64) ([]database.NetworkMatch, error) {
+	return f.matches, f.matchErr
 }
 func (f *fakeMadnetwork) MadnetworkEntryForHash(_ context.Context, hash string) (*federation.CatalogEntry, error) {
 	for _, r := range f.rows {

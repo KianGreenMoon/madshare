@@ -134,6 +134,11 @@ type MadnetworkStore interface {
 	// ranking and fetches the rows behind the ones it kept.
 	MadnetworkLaneCandidates(ctx context.Context, lane string, view database.MadnetworkView, limit int) ([]*database.LaneCandidate, error)
 	MadnetworkRowsForIdents(ctx context.Context, idents []string, view database.MadnetworkView) ([]*database.MadnetworkTrackRow, error)
+	// F8 (quality upgrades): the cached catalog entries describing a local
+	// recording's audio — the shared audio-identity join behind the review
+	// card's match arm. pingedSince classifies each source's freshness window;
+	// it is not a filter (docs/architecture/federation.md §Quality upgrades).
+	MatchRecording(ctx context.Context, recordingID, pingedSince int64) ([]database.NetworkMatch, error)
 	// F3 (direct transfer): the tagset text behind a rendition hash (staging
 	// metadata for download-to-library) and the download policy.
 	MadnetworkEntryForHash(ctx context.Context, hash string) (*federation.CatalogEntry, error)
