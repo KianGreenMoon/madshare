@@ -754,7 +754,16 @@ Fixing it upstream is a two-line guard (`if state.cancel != nil`) plus, ideally,
 API to drop an inbound peering. We carry no yggdrasil-go fork (only the yggstack
 one, `third_party/yggstack`), so this is deliberately not patched locally.
 
-## Federation — mesh tests can flake under load (2026-07-30)
+## Federation — mesh tests can flake under load (2026-07-30) — **RESOLVED 2026-08-01**
+
+> **Resolution:** the two long-running flakes were one bug, and it was in the test
+> seam rather than in the product: `MembershipTTL`/`SnapshotTTL` set to
+> `time.Millisecond` to mean "no memo" is a *real* TTL, and two in-process mesh
+> requests can be closer together than that. Named the seam `noMemo =
+> time.Nanosecond` (`meshtimeouts_test.go`) and applied it. Eight consecutive
+> clean full-package runs after, against a prior rate of about one failure in
+> three — the trail below is kept because the eliminations in it are what made
+> the answer findable.
 
 One full `go test ./federation/` run failed at `swarm_test.go:219` ("timed out
 waiting for A to see B's pairing request") on a run that took 125 s; two fresh
@@ -785,10 +794,9 @@ entries where one is wanted. What is now *ruled out*:
   `FriendAudience` here.
 - **Not the membership memo, and not graph retention.** Both were real bugs found
   in the same file and both are fixed (see §The membership rule, "Memo ordering",
-  and `expireGraph`'s own peer read). They accounted for the *404* failures in
-  `TestCacheSeedsToTheCommunityNotOutside` and
-  `TestOneSidedEdgeDoesNotMakeAMember`, which are gone; this one survived both
-  fixes unchanged.
+  and `expireGraph`'s own peer read). This one survived both fixes unchanged.
+  (The claim recorded here that they had also *closed* the 404 failures was
+  wrong — see the next block.)
 
 What is left is the memoized `ownSnapshot`, whose TTL the test deliberately sets
 to 1 ms — yet the intervening mesh round trip should make a rebuild certain, so
@@ -796,3 +804,52 @@ the arithmetic does not add up either. Next step is instrumentation, not more
 reading: log the resolved `Audience` and the snapshot's age on the catalog path
 and run the package in a loop until it trips. Do not raise the deadline — nothing
 here is a timeout.
+
+**`TestCacheSeedsToTheCommunityNotOutside` is SOLVED, and it was never a load
+problem (2026-08-01, F7 item 10).** It reproduces in **isolation** at about one
+run in five — 4/20 on a clean tree, 3/20 with the item-10 changes, so the same
+rate either way and not attributable to any recent change. The cause is the test
+seam, not the product:
+
+`scopePair`-style setups pass `MembershipTTL: time.Millisecond`, meaning "no
+memo". It is not: `Intervals.withDefaults` treats only `<= 0` as absent, so a
+millisecond is a real TTL, and two in-process mesh requests over the gVisor
+netstack can be **less than a millisecond apart**. The test writes the vouching
+graph record between two probes; when the second probe lands inside that window
+it is answered from a memo built before the write, so a freshly vouched member is
+served as an outsider — the 404 the assertion reports, looking exactly like an
+access bug and being nothing of the kind. The standing note that "the intervening
+mesh round trip should make a rebuild certain" is the assumption that fails.
+
+Fixed by naming the seam: `noMemo = time.Nanosecond` in `meshtimeouts_test.go`,
+with the reasoning attached so nobody writes the millisecond again, applied at
+all three `MembershipTTL` sites. 0/20 after, and three clean full-package runs.
+
+**And `TestMemberIsServedTheMadnetworkScope` is the same bug, one memo over.**
+Its `SnapshotTTL` was left at `time.Millisecond` for one pass on purpose — that
+test needs a full-package run to fail at all (0/20 isolated), so flipping both
+TTLs at once would have made the result unattributable. It then failed on the
+very next full run, which gave the clean comparison: with `SnapshotTTL: noMemo`
+it has survived **eight consecutive full-package runs**, where the prior rate was
+about one failure in three. That is p ≈ 0.04 of happening by chance, so the
+`ownSnapshot` memo — the standing suspect all along — was indeed serving a
+pre-restriction catalog to a request that arrived less than a millisecond after
+the store write.
+
+Both flakes therefore had **one cause and one fix**, and no product change was
+needed. The instrumentation plan is not required. Worth keeping from the episode:
+a "practically zero" duration written as a millisecond is not zero next to an
+in-process mesh hop, and the give-away in both cases was a *stale read* dressed
+up as an access decision (404/403, or an unfiltered catalog) — which is why they
+read as security bugs for a week.
+
+**A third site, 2026-08-01 (F7 item 10).** One full-package run failed at
+`gossip_sync_test.go:385` — `TestBlockKeyMarksAStranger` read the published mark
+record as `{Key:…ab At:0 Reason:}`, i.e. it caught a record whose mark list had
+the right length but not yet the fields, so `waitFor`'s "len == 1" predicate
+passed on a half-written publish. Different mechanism from the two above and, on
+the face of it, a predicate that under-specifies what it is waiting for rather
+than a product bug. Not attributable to the change under test (branch weighting
+adds a read path only, and nothing in the publish loop calls it): five isolated
+runs and two fresh full-package runs green afterwards. If it recurs, tighten the
+predicate to what the assertion actually checks instead of the count.

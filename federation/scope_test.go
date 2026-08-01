@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 // Federation F5 — sharing scope over the real mesh (docs/architecture/
@@ -54,7 +53,7 @@ func scopePair(t *testing.T, storeA, storeB *memStore) (plain, guest string, a, 
 	// mid-flight, so shorten the memo rather than reaching past it — the same
 	// seam the mesh lab uses (docs/plans/mesh-testing.md T1).
 	a, b = startNodePair(t, storeA, storeB,
-		[]Option{resolve, WithIntervals(Intervals{SnapshotTTL: time.Millisecond, MembershipTTL: time.Millisecond})},
+		[]Option{resolve, WithIntervals(Intervals{SnapshotTTL: noMemo, MembershipTTL: noMemo})},
 		[]Option{WithCacheDir(t.TempDir())})
 	return plainHash, guestHash, a, b
 }

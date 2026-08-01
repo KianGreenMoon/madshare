@@ -124,7 +124,7 @@ func TestCacheSeedsToTheCommunityNotOutside(t *testing.T) {
 		t.Fatal(err)
 	}
 	a, b := startNodePair(t, storeA, storeB,
-		[]Option{WithCacheDir(cacheDir), WithIntervals(Intervals{SnapshotTTL: time.Millisecond, MembershipTTL: time.Millisecond})},
+		[]Option{WithCacheDir(cacheDir), WithIntervals(Intervals{SnapshotTTL: time.Millisecond, MembershipTTL: noMemo})},
 		[]Option{WithCacheDir(t.TempDir())})
 
 	// With the guest switch open — the most permissive an outsider can ever be —

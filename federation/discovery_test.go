@@ -329,7 +329,7 @@ func TestPullsFromAMemberItNeverFriended(t *testing.T) {
 			Renditions: []CatalogRendition{{Hash: "hash-member", Size: 5}}},
 	})
 	fast := WithIntervals(Intervals{
-		SnapshotTTL: time.Millisecond, MembershipTTL: time.Millisecond,
+		SnapshotTTL: time.Millisecond, MembershipTTL: noMemo,
 		CatalogSync: time.Millisecond, // every sweep is a due round
 	})
 	a, b := startNodePair(t, storeA, storeB, []Option{fast}, []Option{fast})
