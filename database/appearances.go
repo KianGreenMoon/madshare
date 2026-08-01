@@ -381,11 +381,22 @@ func (db *DB) BulkHardDeleteTagsets(ctx context.Context, tagsetIDs []int64) (int
 // are reported, not fatal. Chunked so one transaction never holds the write
 // lock for long.
 //
+// A valid owner narrows the scope to that user's editable staging (their own
+// non-trashed draft/returned appearances) — the My-uploads bulk edit, which
+// trusts its explicit id list no further than ownership (mirroring
+// RecodeTagsetsText and BulkDiscardOwnUploads). An invalid owner is the
+// unscoped metadata.edit path.
+//
 // applyMetadataPatchTagsetTx updates by primary key and reports no error for a
 // row that does not exist, so the ids are checked up front rather than inferred
 // from the patch — otherwise `affected` would silently count ids that matched
 // nothing.
-func (db *DB) BulkUpdateTagsetMetadata(ctx context.Context, tagsetIDs []int64, p MetadataPatch) (affected int, notFound []int64, err error) {
+func (db *DB) BulkUpdateTagsetMetadata(ctx context.Context, tagsetIDs []int64, owner sql.NullInt64, p MetadataPatch) (affected int, notFound []int64, err error) {
+	scope := ""
+	if owner.Valid {
+		scope = ` AND created_by = ? AND deleted_at IS NULL
+			AND review_state IN ('` + ReviewDraft + `','` + ReviewReturned + `')`
+	}
 	const chunk = 500
 	for i := 0; i < len(tagsetIDs); i += chunk {
 		batch := tagsetIDs[i:min(i+chunk, len(tagsetIDs))]
@@ -394,13 +405,16 @@ func (db *DB) BulkUpdateTagsetMetadata(ctx context.Context, tagsetIDs []int64, p
 			return affected, notFound, fmt.Errorf("bulk update appearances: begin: %w", err)
 		}
 		ph := make([]string, len(batch))
-		args := make([]any, len(batch))
+		args := make([]any, 0, len(batch)+1)
 		for j, id := range batch {
 			ph[j] = "?"
-			args[j] = id
+			args = append(args, id)
+		}
+		if owner.Valid {
+			args = append(args, owner.Int64)
 		}
 		found, err := scanIDs(tx.QueryContext(ctx,
-			`SELECT id FROM tagsets WHERE id IN (`+strings.Join(ph, ",")+`)`, args...))
+			`SELECT id FROM tagsets WHERE id IN (`+strings.Join(ph, ",")+`)`+scope, args...))
 		if err != nil {
 			tx.Rollback()
 			return affected, notFound, fmt.Errorf("bulk update appearances: lookup: %w", err)

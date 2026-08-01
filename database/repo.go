@@ -47,7 +47,9 @@ type Repository interface {
 	// freed blobs returned for post-commit reclaim), and the tag edit.
 	BulkRestoreTagsets(ctx context.Context, tagsetIDs []int64) (int, error)
 	BulkHardDeleteTagsets(ctx context.Context, tagsetIDs []int64) (int, []DeletedBlob, error)
-	BulkUpdateTagsetMetadata(ctx context.Context, tagsetIDs []int64, p MetadataPatch) (affected int, notFound []int64, err error)
+	// owner, when valid, narrows the edit to that user's own editable staging
+	// (the My-uploads bulk edit); invalid = the unscoped metadata.edit path.
+	BulkUpdateTagsetMetadata(ctx context.Context, tagsetIDs []int64, owner sql.NullInt64, p MetadataPatch) (affected int, notFound []int64, err error)
 
 	// Full Library · All Appearances — the live twin of the Trash lens: one row
 	// per live approved appearance, playing its recording's ladder-best

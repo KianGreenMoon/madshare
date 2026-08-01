@@ -105,12 +105,13 @@ admin CSS — renders correctly; the admin pages load it too.
 | **All Appearances** (admin, Full Library) | `GET /api/admin/appearances` (paged) | – (opt.) | all | ✓ (modal + bulk) | **windowed** list of every **live approved appearance**, keyed by `tagset_id` — the live twin of the Trash Appearances lens (both `FROM tagsets`; a blob can host several appearances). Play resolves to the recording's ladder-best rendition (like the listening surfaces); a **dormant** recording's appearance rows badge `dormant` and can't preview. Infinite scroll + server **sort dropdown** (incl. Untagged first); access is a **read-only column**, edited in the modals. Bulk Move to Trash + Edit tags… via `POST …/appearances/bulk` (selection or "select all N matching"). Grouped **By artist / album** via a separate toggle pill (streams in `sort=grouped` order; below). |
 | **Review** (admin) | `GET /api/admin/moderation` (paged) | by uploader (streamed separators) | `submitted` | ✗ (tags only) | Approve / Return-with-note / Discard; bulk via `POST …/moderation/bulk` (selection or "select all N matching"); `show()` gates per state (drafts preview-only), `editable()` gates Edit. |
 | **Trash** (admin) | `GET /api/admin/trash` (paged) | – | all | ✗ (tags only)¹ | The **Appearances** lens of the three-perspective Trash (`gc-model.md`): Restore / Delete forever / Edit, bulk via `POST …/trash/bulk` (selection or "select all N matching"); gained Play. |
-| **My uploads** (owner, `/upload`) | `GET /api/my/uploads` (paged) | by state (streamed sections) | draft/returned | ✗ (tags only) | state sections; Send to approval / Remove via `POST …/my/uploads/bulk` (selection or "select all N matching"); owner-scoped edit endpoint. |
+| **My uploads** (owner, `/upload`) | `GET /api/my/uploads` (paged) | by state (streamed sections) | draft/returned | ✗ (tags only)¹ | state sections; Send to approval / Edit tags… / Fix charset… / Remove via `POST …/my/uploads/bulk` (selection or "select all N matching"); owner-scoped edit endpoint. |
 
-¹ **Trash edits tags only.** Access lives on the recording and is meaningless on
-a trashed appearance (the Trash bulk rejects an access patch). Review is
-tags-only by choice (behaviour-preserving); an access section there is a
-possible additive follow-up.
+¹ **Trash and My uploads edit tags only.** Access lives on the recording: it is
+meaningless on a trashed appearance, and it isn't the uploader's to set on a
+staged one — both bulks reject an access-bearing patch rather than drop it
+silently. Review is tags-only by choice (behaviour-preserving); an access
+section there is a possible additive follow-up.
 
 **Access is a recording property.** The All Appearances per-row access editor
 writes `PATCH /api/admin/recordings/{id}/access` (license + guest in one

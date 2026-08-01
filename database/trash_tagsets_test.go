@@ -4,6 +4,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 )
 
@@ -173,7 +174,7 @@ func TestTrashLens_BulkEditReportsUnknownIDs(t *testing.T) {
 	trashAppearance(t, db, tid)
 
 	fixed := "The Band"
-	affected, notFound, err := db.BulkUpdateTagsetMetadata(ctx, []int64{tid, 4242}, MetadataPatch{Artist: &fixed})
+	affected, notFound, err := db.BulkUpdateTagsetMetadata(ctx, []int64{tid, 4242}, sql.NullInt64{}, MetadataPatch{Artist: &fixed})
 	if err != nil {
 		t.Fatalf("bulk edit: %v", err)
 	}

@@ -12,10 +12,10 @@ There are four bulk endpoints, one per surface:
 
 | Endpoint | Surface | Row identity | Actions | Gate |
 |----------|---------|--------------|---------|------|
-| `POST /api/admin/appearances/bulk` | live library — the All Appearances lens **and** the By-entity deletes (`/admin/library`) | `tagset_ids` | `trash`, `edit` | `file.delete` **or** `metadata.edit` (per action) |
+| `POST /api/admin/appearances/bulk` | live library — the All Appearances lens **and** the By-entity deletes (`/admin/library`) | `tagset_ids` | `trash`, `edit`, `recode` | `file.delete` **or** `metadata.edit` (per action) |
 | `POST /api/admin/trash/bulk` | Trash · Appearances (`/admin/library#trash`) | `tagset_ids` | `restore`, `delete`, `edit` | `file.delete` **or** `metadata.edit` (per action) |
 | `POST /api/admin/moderation/bulk` | review queue (`/admin/library#review`) | `tagset_ids` | `approve`, `return`, `discard` | `content.moderate` (`discard` also needs `file.delete`) |
-| `POST /api/my/uploads/bulk` | "My uploads" staging tab | `tagset_ids` | `submit`, `remove` | `file.upload` (owner-scoped) |
+| `POST /api/my/uploads/bulk` | "My uploads" staging tab | `tagset_ids` | `submit`, `remove`, `edit`, `recode` | `file.upload` (owner-scoped) |
 
 The recordings curation view (`/admin/library#recordings`, recording-tagsets P5) adds
 two set-shaped operations of its own, addressed by **`recording_ids`** and
@@ -221,10 +221,11 @@ tagset the caller doesn't own is simply not found (counts toward neither
 
 ```json
 {
-  "action": "submit" | "remove",
+  "action": "submit" | "remove" | "edit" | "recode",
   "tagset_ids": [17, 42],
   "filter": { "q": "", "field": "" },
-  "all": true
+  "all": true,
+  "patch": { "artist": "…" }
 }
 ```
 
@@ -232,6 +233,8 @@ tagset the caller doesn't own is simply not found (counts toward neither
 |----------|--------|
 | `submit` | Send to approval. Shares the `/api/my/uploads/submit` semantics: a `content.moderate` holder **self-approves** their own non-duplicate submissions, but a **duplicate-flagged** one (its audio already in the library — classification case B/C) always goes to the queue for a human look. |
 | `remove` | Discard the staged appearance to Trash (the owner-scoped tagset soft delete). |
+| `edit` | Write one tag `patch` across the set — the staging tab's "Edit tags…", same change-only contract as the admin lenses' edit (see [The edit patch](#the-edit-patch)). **Tags only**: `license` / `guest` / `share_depth` describe the recording, which an uploader does not own, so a patch carrying one is `400` rather than silently stripped. |
+| `recode` | The bulk charset fix — reinterpret the stored text tags in `charset` (`docs/architecture/tag-suggestions.md`). |
 
 ### Response
 
@@ -241,12 +244,13 @@ tagset the caller doesn't own is simply not found (counts toward neither
   moderator, why self-approve was withheld; for a regular uploader, that a
   moderator will look).
 - `remove`: `{ "ok": true, "removed": N }`.
+- `edit` / `recode`: `{ "ok": true, "affected": N }`.
 
 ---
 
 ## The edit patch
 
-`action: "edit"` (on `appearances/bulk` and `trash/bulk`) carries a `patch` object
+`action: "edit"` (on `appearances/bulk`, `trash/bulk` and `my/uploads/bulk`) carries a `patch` object
 applied to **every** appearance in the resolved set. It is the same change-only,
 never-clear contract as the per-file tag editor: **only the keys present are
 written**; an absent key leaves that column untouched across the whole selection
@@ -272,7 +276,8 @@ field must be present, else `400 "nothing to update"`.
   per-file access endpoints. They need the content-access store wired; if it is
   not, an access-bearing patch is `400 "access editing unavailable"`. `license`
   is applied before `guest` (an explicit `guest` wins over any license
-  auto-derive).
+  auto-derive). The two scopes that don't own the recording — Trash and
+  `my/uploads/bulk` — reject an access-bearing patch outright.
 
 Because the edit re-resolves each appearance's entities, the tag write applies
 per appearance (sharing one transaction per chunk, not one `UPDATE`) and can

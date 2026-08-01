@@ -464,18 +464,21 @@ type reviewBulkRequest struct {
 		Q     string `json:"q"`
 		Field string `json:"field"`
 	} `json:"filter"`
-	All     bool   `json:"all"`
-	Note    string `json:"note"`
-	Charset string `json:"charset"` // action "recode" only: the target charset
+	All     bool           `json:"all"`
+	Note    string         `json:"note"`
+	Charset string         `json:"charset"` // action "recode" only: the target charset
+	Patch   *bulkEditPatch `json:"patch"`   // action "edit" only: the tag patch
 }
 
 // myUploadsBulk handles POST /api/my/uploads/bulk — a bulk action over the
 // caller's own staged files: "submit" (send to approval), "remove" (discard to
-// Trash), or "recode" (the bulk charset fix: reinterpret the stored text tags
-// in the given charset, docs/architecture/tag-suggestions.md). Targets an
-// explicit hash list OR everything the owner has matching a filter (draft +
-// returned only — submitted files can't be withdrawn or edited). Gated on
-// file.upload; ownership scoping happens in resolveOwnUploadBulk.
+// Trash), "edit" (write one tag patch across the selection — the whole-album
+// twin of the per-file edit modal) or "recode" (the bulk charset fix:
+// reinterpret the stored text tags in the given charset,
+// docs/architecture/tag-suggestions.md). Targets an explicit hash list OR
+// everything the owner has matching a filter (draft + returned only —
+// submitted files can't be withdrawn or edited). Gated on file.upload;
+// ownership scoping happens in resolveOwnUploadBulk.
 func (h *handler) myUploadsBulk(w http.ResponseWriter, r *http.Request) {
 	id := auth.FromContext(r.Context())
 	if id == nil {
@@ -488,7 +491,7 @@ func (h *handler) myUploadsBulk(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid JSON body"})
 		return
 	}
-	if req.Action != "submit" && req.Action != "remove" && req.Action != "recode" {
+	if req.Action != "submit" && req.Action != "remove" && req.Action != "recode" && req.Action != "edit" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown action"})
 		return
 	}
@@ -496,8 +499,43 @@ func (h *handler) myUploadsBulk(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown charset"})
 		return
 	}
+	if req.Action == "edit" {
+		if !req.Patch.hasTags() {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "nothing to update"})
+			return
+		}
+		// License / guest / share scope are recording-level properties an
+		// uploader does not own — the staging editor never offers them, and a
+		// patch that carries one is refused rather than silently dropped.
+		if req.Patch.hasAccess() {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"ok": false, "error": "access is a recording property; it cannot be edited from your uploads"})
+			return
+		}
+	}
 	ids, ok := h.resolveOwnUploadBulk(w, r.Context(), id.UserID, req)
 	if !ok {
+		return
+	}
+
+	if req.Action == "edit" {
+		// Owner-scoped like the recode: the explicit-ids path is trusted only as
+		// far as ownership, so an id outside the caller's editable staging simply
+		// matches nothing.
+		affected, _, err := h.repo.BulkUpdateTagsetMetadata(r.Context(), ids,
+			sql.NullInt64{Int64: id.UserID, Valid: true}, req.Patch.tags())
+		if errors.Is(err, database.ErrInvalidMetadata) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
+			return
+		}
+		if affected > 0 {
+			h.audit(r.Context(), "metadata.bulk_edit", "files", fmt.Sprintf("%d updated (owner)", affected))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
 		return
 	}
 

@@ -267,12 +267,7 @@ func (h *handler) bulkEditLiveAppearances(w http.ResponseWriter, r *http.Request
 	failed := make([]map[string]any, 0)
 	affected := 0
 	if tags {
-		mp := database.MetadataPatch{
-			Title: patch.Title, Album: patch.Album, AlbumArtist: patch.AlbumArtist, Artist: patch.Artist,
-			Genre: patch.Genre, Composer: patch.Composer, Comment: patch.Comment,
-			TrackNumber: patch.TrackNumber, TrackTotal: patch.TrackTotal, DiscNumber: patch.DiscNumber, Year: patch.Year,
-		}
-		n, notFound, err := h.repo.BulkUpdateTagsetMetadata(r.Context(), tagsetIDs, mp)
+		n, notFound, err := h.repo.BulkUpdateTagsetMetadata(r.Context(), tagsetIDs, sql.NullInt64{}, patch.tags())
 		if errors.Is(err, database.ErrInvalidMetadata) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 			return

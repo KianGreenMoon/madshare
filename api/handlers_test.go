@@ -540,6 +540,7 @@ type fakeRepo struct {
 	lastMetaHash   string
 	lastMetaTagset int64
 	lastMetaPatch  database.MetadataPatch
+	lastMetaOwner  sql.NullInt64 // owner scope of the last bulk tagset patch
 	metaResult     *database.MediaMetadata
 	metaErr        error
 	metaGetResult  *database.MediaMetadata // FileMetadataByHash result
@@ -1211,9 +1212,10 @@ func (f *fakeRepo) BulkRestoreTagsets(_ context.Context, ids []int64) (int, erro
 	return len(ids), nil
 }
 
-func (f *fakeRepo) BulkUpdateTagsetMetadata(_ context.Context, ids []int64, p database.MetadataPatch) (int, []int64, error) {
+func (f *fakeRepo) BulkUpdateTagsetMetadata(_ context.Context, ids []int64, owner sql.NullInt64, p database.MetadataPatch) (int, []int64, error) {
 	f.metaCalls++
 	f.lastMetaPatch = p
+	f.lastMetaOwner = owner
 	f.bulkMetaTagsets = append(f.bulkMetaTagsets, ids...)
 	if f.metaErr != nil {
 		return 0, nil, f.metaErr

@@ -9,11 +9,13 @@
 //   GET    /api/my/uploads                     — one page of the caller's staging
 //   PATCH/GET /api/my/uploads/{tid}/metadata   — edit one appearance's tags
 //   DELETE /api/my/uploads/{tid}               — remove (soft delete) one
-//   POST   /api/my/uploads/bulk                — submit / remove over ids or a filter
+//   POST   /api/my/uploads/bulk                — submit / remove / edit / recode
+//                                                over ids or a filter
 //
 // Instantiated by upload.js; the preview sink (`preview`) is the shell player by
 // default, or a page-local one under the admin shell. Design: the P4 UX draft.
 import { createTrackEditor } from './track-edit.js';
+import { createBulkEditor } from './bulk-edit.js';
 import { createCharsetEditor } from './charset-edit.js';
 import { showToast } from './toast.js';
 
@@ -153,6 +155,57 @@ export function createMineList({ API = '', preview, canEditMeta = false, onCount
       showToast(`Removed ${done} file${done === 1 ? '' : 's'}.`, { type: 'success' });
       reload();
     } catch (err) { showToast(err.message, { type: 'error' }); }
+  }
+  // Bulk tag edit: the whole-album version of the per-file edit modal — one
+  // patch written across the selection, blank field = keep. No access controls
+  // here (license / guest / madnetwork scope belong to the recording, which an
+  // uploader doesn't own — the server refuses such a patch too).
+  let _bulk = null;
+  function bulkEditor() {
+    if (_bulk) return _bulk;
+    _bulk = createBulkEditor({
+      loadDetails: keys => Promise.all(keys.map(async k => {
+        const res = await fetch(`${API}/api/my/uploads/${k}/metadata`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })),
+      onApply: async (_keys, patch) => {
+        const data = await bulkCall({ action: 'edit', patch, ...actionBody() });
+        const done = data.affected ?? 0;
+        showToast(`Updated ${done} file${done === 1 ? '' : 's'}.`, { type: 'success' });
+        reload();
+      },
+    });
+    return _bulk;
+  }
+  // selectionTags reports the tags every selected row already agrees on, so the
+  // modal can pre-fill them and flag the rest as "multiple values". Only used
+  // when every selected row is loaded — a partial subset could otherwise claim a
+  // value is shared across a selection it hasn't seen.
+  function selectionTags(keys) {
+    const set = new Set(keys);
+    const files = rows.filter(f => set.has(key(f)));
+    const common = {}, mixed = new Set();
+    if (!files.length || files.length !== set.size) return { common, mixed };
+    for (const k of ['artist', 'album_artist', 'album']) {
+      const v = files[0][k] ?? '';
+      if (files.every(f => (f[k] ?? '') === v)) common[k] = v;
+      else mixed.add(k);
+    }
+    return { common, mixed };
+  }
+  function editSelected() {
+    // Select-all-matching: the modal gets the loaded page (its details fetch and
+    // pre-fill work off those), but the headline and the apply both speak for the
+    // whole matching set — so no prefill, which could only describe the page.
+    if (selectAllMatching) {
+      const keys = editableRows().map(key);
+      if (!keys.length) return;
+      bulkEditor().open(keys, {}, `Applies to all ${selectableTotal} matching files.`);
+      return;
+    }
+    const keys = [...selected];
+    bulkEditor().open(keys, selectionTags(keys));
   }
   // Bulk charset fix (tag-suggestions): the whole-album version of the edit
   // modal's per-file charset override. Preview = the loaded selected rows;
@@ -312,10 +365,11 @@ export function createMineList({ API = '', preview, canEditMeta = false, onCount
     }
     kids.push(el('span', { class: 'mu-spacer' }));
     const sendBtn = el('button', { class: 'btn btn-neutral btn-sm', text: 'Send to approval', onclick: sendSelected });
+    const editBtn = el('button', { class: 'btn btn-neutral btn-sm', text: 'Edit tags…', onclick: editSelected });
     const csBtn = el('button', { class: 'btn btn-neutral btn-sm', text: 'Fix charset…', onclick: fixCharsetSelected });
     const rmBtn = el('button', { class: 'btn btn-destructive btn-sm', text: 'Remove selected', onclick: removeSelected });
-    sendBtn.disabled = csBtn.disabled = rmBtn.disabled = count === 0;
-    kids.push(sendBtn, csBtn, rmBtn);
+    sendBtn.disabled = editBtn.disabled = csBtn.disabled = rmBtn.disabled = count === 0;
+    kids.push(sendBtn, editBtn, csBtn, rmBtn);
     return el('div', { class: 'mu-bulkbar' }, kids);
   }
 
@@ -361,7 +415,12 @@ export function createMineList({ API = '', preview, canEditMeta = false, onCount
     reload();
   }
 
-  function destroy() { editor.destroy(); if (_charset) _charset.destroy(); host = null; }
+  function destroy() {
+    editor.destroy();
+    if (_bulk) _bulk.destroy();
+    if (_charset) _charset.destroy();
+    host = null;
+  }
 
   return { mount, reload, destroy };
 }

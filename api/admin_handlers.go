@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,6 +43,9 @@ type bulkEditPatch struct {
 }
 
 func (p *bulkEditPatch) hasTags() bool {
+	if p == nil {
+		return false
+	}
 	m := p.metadataPatchRequest
 	return m.Title != nil || m.Album != nil || m.AlbumArtist != nil || m.Artist != nil ||
 		m.Genre != nil || m.Composer != nil || m.Comment != nil ||
@@ -49,6 +53,18 @@ func (p *bulkEditPatch) hasTags() bool {
 }
 func (p *bulkEditPatch) hasAccess() bool {
 	return p != nil && (p.License != nil || p.Guest != nil || len(p.ShareDepth) > 0)
+}
+
+// tags is the DB-layer patch behind the request's tag fields — one mapping for
+// every bulk-edit caller (Trash, the live lens, My uploads), so a field added to
+// metadataPatchRequest cannot reach one of them and miss the others.
+func (p *bulkEditPatch) tags() database.MetadataPatch {
+	m := p.metadataPatchRequest
+	return database.MetadataPatch{
+		Title: m.Title, Album: m.Album, AlbumArtist: m.AlbumArtist, Artist: m.Artist,
+		Genre: m.Genre, Composer: m.Composer, Comment: m.Comment,
+		TrackNumber: m.TrackNumber, TrackTotal: m.TrackTotal, DiscNumber: m.DiscNumber, Year: m.Year,
+	}
 }
 
 // bulkEditAppearances applies one bulk tag patch by tagset id — the Trash lens's
@@ -70,12 +86,7 @@ func (h *handler) bulkEditAppearances(w http.ResponseWriter, r *http.Request, ta
 		return
 	}
 
-	mp := database.MetadataPatch{
-		Title: patch.Title, Album: patch.Album, AlbumArtist: patch.AlbumArtist, Artist: patch.Artist,
-		Genre: patch.Genre, Composer: patch.Composer, Comment: patch.Comment,
-		TrackNumber: patch.TrackNumber, TrackTotal: patch.TrackTotal, DiscNumber: patch.DiscNumber, Year: patch.Year,
-	}
-	affected, notFound, err := h.repo.BulkUpdateTagsetMetadata(r.Context(), tagsetIDs, mp)
+	affected, notFound, err := h.repo.BulkUpdateTagsetMetadata(r.Context(), tagsetIDs, sql.NullInt64{}, patch.tags())
 	if errors.Is(err, database.ErrInvalidMetadata) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 		return
