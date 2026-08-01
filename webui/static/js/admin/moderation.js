@@ -8,7 +8,12 @@
 //
 // Endpoints are all tagset-addressed (the appearance is the row's identity):
 //   GET  /api/admin/moderation                     — one page of the queue
-//   GET  /api/admin/moderation/{tid}/classify      — case + ladder compare
+//   GET  /api/admin/moderation/{tid}/classify      — case + ladder compare + the
+//                                                    madnetwork arm (F8 item 1)
+//   GET  /api/admin/moderation/{tid}/identity      — the two mismatch oracles
+//                                                    (F8 item 2); its own request
+//                                                    so classify never waits on
+//                                                    an external lookup
 //   POST /api/admin/moderation/{tid}/{approve,return,discard}
 //   POST /api/admin/moderation/bulk                — batched over ids or a filter
 //   GET/PATCH /api/admin/moderation/{tid}/metadata — moderator tag edit
@@ -84,6 +89,7 @@ export function createReviewScope({ play, perms }) {
   const collapsedGroups = new Set();
   const openCards = new Set();     // expanded tagset ids (strings)
   const classifyCache = new Map(); // tid -> classify payload (or {error})
+  const identityCache = new Map(); // tid -> identity payload (or {error}) — F8 item 2
   const decisions = new Map();     // tid -> { bytes:'keep'|'drop', forceNew:bool }
   let selectAllMatching = false;   // "select all N matching" whole-set mode
   let playingKey = null;
@@ -113,6 +119,26 @@ export function createReviewScope({ play, perms }) {
     } catch (err) {
       const data = { error: String(err.message || err) };
       classifyCache.set(tid, data);
+      return data;
+    }
+  }
+
+  // identity fetches the two mismatch oracles (F8 item 2). Separate from
+  // classify on purpose: the external one can take a second or more, and the
+  // ladder compare must not wait behind a call to another continent.
+  async function identity(tid) {
+    const cached = identityCache.get(tid);
+    if (cached) return cached;
+    try {
+      const res = await fetch(`${API}/api/admin/moderation/${tid}/identity`);
+      if (handleAuthError(res)) throw new Error('auth');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      identityCache.set(tid, data);
+      return data;
+    } catch (err) {
+      const data = { error: String(err.message || err) };
+      identityCache.set(tid, data);
       return data;
     }
   }
@@ -505,6 +531,12 @@ export function createReviewScope({ play, perms }) {
     if (!classifyCache.has(f.tagset_id)) {
       classify(f.tagset_id).then(() => { if (openCards.has(k)) render(); });
     }
+    // And the identity oracles (F8 item 2), in parallel — one expanded row is
+    // one external lookup, which is the cadence the shared 1/s limiter can
+    // actually carry.
+    if (!identityCache.has(f.tagset_id)) {
+      identity(f.tagset_id).then(() => { if (openCards.has(k)) render(); });
+    }
   }
 
   // defaultApproveOpts is the per-row (compact) approve decision: for a case-B
@@ -560,6 +592,36 @@ export function createReviewScope({ play, perms }) {
     if (f.track_number) add('Track', String(f.track_number));
     if (f.year) add('Year', String(f.year));
     return dl;
+  }
+
+  // ── The mismatch warning (F8 item 2) ──────────────────────────────────────
+  // Two oracles say what this audio IS; the tags say what it CLAIMS to be. When
+  // they disagree the card says so, in both their words, with the preview player
+  // right there. It warns and stops — nothing is flagged, blocked or scored.
+  function identityWarning(f) {
+    const idn = identityCache.get(f.tagset_id);
+    if (!idn || idn.error) return null;
+    const claimed = (idn.claimed && idn.claimed.title) || '';
+    const disagreeing = ['network', 'external']
+      .map(k => [k, idn[k]])
+      .filter(([, v]) => v && v.available && !v.agrees);
+    if (!claimed || !disagreeing.length) return null;
+
+    const said = disagreeing.map(([k, v]) => {
+      const who = k === 'network' ? 'The madnetwork calls it' : 'AcoustID calls it';
+      const qual = k === 'network' && v.voices
+        ? ` (${v.voices} independent branch${v.voices === 1 ? '' : 'es'})`
+        : '';
+      return `${who} “${v.title}”${v.artist ? ` by ${v.artist}` : ''}${qual}.`;
+    });
+    return el('div', { class: 'callout is-mismatch' }, [
+      el('span', { class: 'i', text: '⚠' }),
+      el('div', {}, [
+        el('b', { text: 'The audio may not be what the tags say. ' }),
+        `These tags claim “${claimed}”. ${said.join(' ')} `,
+        'Play the preview before approving — and remember an oracle can be wrong about an obscure or live recording.',
+      ]),
+    ]);
   }
 
   // ── The madnetwork arm (F8 item 1) ────────────────────────────────────────
@@ -659,6 +721,7 @@ export function createReviewScope({ play, perms }) {
     const summary = el('div', { class: 'summary' }, ['On approve: ', el('b', { text: 'new recording + 1 rendition + published appearance' }), '.']);
     const primary = el('button', { class: 'btn btn-primary btn-sm', text: 'Approve', onclick: () => approve(f.tagset_id, {}) });
     return el('div', { class: 'rev-body' }, [
+      identityWarning(f),
       landing('Approving creates a new recording from this file and publishes its appearance.'),
       el('div', { class: 'pieces' }, [p1, p2, p3, networkPiece(f, 4)].filter(Boolean)),
       decideBar(f, summary, primary),
@@ -684,6 +747,7 @@ export function createReviewScope({ play, perms }) {
     const summary = el('div', { class: 'summary' }, ['On approve: ', el('b', { text: 'publish appearance' }), `. No blob stored.`]);
     const primary = el('button', { class: 'btn btn-primary btn-sm', text: 'Approve appearance', onclick: () => approve(f.tagset_id, {}) });
     return el('div', { class: 'rev-body' }, [
+      identityWarning(f),
       landing(`Content-hash dup of recording #${f.recording_id} — no file is stored. Only the appearance is new.`),
       el('div', { class: 'pieces' }, [p1, p2, networkPiece(f, 3)].filter(Boolean)),
       decideBar(f, summary, primary),
@@ -742,6 +806,7 @@ export function createReviewScope({ play, perms }) {
     }
 
     return el('div', { class: 'rev-body' }, [
+      identityWarning(f),
       landing(`Same audio as recording #${f.recording_id} (we already hold it). Decide the bytes against the ladder, and approve to publish the appearance — or discard to skip it.`),
       el('div', { class: 'pieces' }, pieces),
       decideBar(f, summary, primary),

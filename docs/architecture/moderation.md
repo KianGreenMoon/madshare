@@ -186,7 +186,8 @@ admin ops).
 | Endpoint | Behavior |
 |---|---|
 | `GET /api/admin/moderation` | Staged (non-trashed, non-approved) appearances with uploader id + name and the **classification** (`class`, `recording_id`, `collides`). **Paged** (`?limit&offset&q&field&sort`, default `sort=uploader`); returns `{total, selectable_total, items}` — `selectable_total` is the actionable (`submitted`) subset count. |
-| `GET /api/admin/moderation/{tagsetID}/classify` | The full classification for one row: case + `recording_id` + `collides` + the ladder compare (`current_best` vs `submitted`, `submitted_is_new_best`). Fetched when the moderator expands a card. |
+| `GET /api/admin/moderation/{tagsetID}/classify` | The full classification for one row: case + `recording_id` + `collides` + the ladder compare (`current_best` vs `submitted`, `submitted_is_new_best`), plus the **madnetwork arm** (federation F8 item 1) — `madnetwork.{tagsets,renditions,fingerprinted}`, the network's names for this audio and the renditions of it other nodes hold. An **absent** `madnetwork` key means there was no network to ask (federation off); a **present but empty** one means we asked and nobody out there knows this audio. Fetched when the moderator expands a card. |
+| `GET /api/admin/moderation/{tagsetID}/identity` | The **mismatch oracles** (federation F8 item 2): `claimed` (the submission's own title/artist) beside `network` and `external` verdicts, each `{available, agrees, title, artist, note}`. The network verdict is the branch-weighted dominant label from the same F8 join; the external one is the AcoustID→MusicBrainz lookup, available only when an admin enabled it with a key. `available:false` always carries a `note` saying why — an oracle that could not be asked must never read as agreement. Its own endpoint so `classify` never waits on an external call; fired on card expand, one row at a time, which is the cadence the shared 1 req/s limiter can carry. |
 | `POST /api/admin/moderation/{tagsetID}/approve` | Body `{"drop_bytes": bool, "force_new": bool}` (empty = plain approve) → `ApproveSubmission`. Publishes the appearance and applies the per-piece decisions atomically. |
 | `POST /api/admin/moderation/{tagsetID}/return` | Body `{"note": "…"}` (required, ≤ 1000 bytes). `submitted`/`returned` → `returned` with the note. |
 | `POST /api/admin/moderation/{tagsetID}/discard` | Trash the appearance (tagset soft delete — keeps the blob and recording; the appearance re-enters the queue on restore). Additionally requires `file.delete`. |
@@ -259,6 +260,16 @@ Files/Trash/Library/Duplicates).
   selection of **`submitted`** rows only; a group-header checkbox selects an
   uploader's whole batch (works while collapsed). The dashboard "Review" card
   deep-links here via `#review`.
+  Two federation F8 additions sit on the same expanded card
+  (`docs/architecture/federation.md` §Quality upgrades), both **advisory**:
+  a final **"On the madnetwork"** piece listing other nodes' names for this
+  audio — ordered by independent branches, with the holder count beside the
+  voice count so eight nodes acting as one voice are visible, and *Use these
+  tags…* opening the ordinary edit modal — and, above the landing text, a
+  **mismatch warning** when either oracle contradicts the tags. Neither ever
+  acts: no state is written, nothing is auto-flagged, and every submission
+  stays approvable. Expanding a card is what fetches both (`classify` +
+  `identity`, in parallel); collapsed rows cost nothing.
 - **Dashboard** card with the pending count; **Library → Trash scope** rows whose
   appearance `review_state <> 'approved'` carry a "pending review" badge (restore
   re-enters the queue).

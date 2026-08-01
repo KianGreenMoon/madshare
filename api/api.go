@@ -451,6 +451,9 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(moderate).Get("/moderation/{tagsetID}/metadata", h.moderationMetadataGet)
 		r.With(moderate).Patch("/moderation/{tagsetID}/metadata", h.moderationMetadata)
 		r.With(moderate).Get("/moderation/{tagsetID}/classify", h.moderationClassify)
+		// F8 item 2: what the two oracles say this audio is. Its own endpoint so
+		// classify never waits on an external lookup.
+		r.With(moderate).Get("/moderation/{tagsetID}/identity", h.moderationIdentity)
 		r.With(moderate).Post("/moderation/{tagsetID}/approve", h.moderationApprove)
 		r.With(moderate).Post("/moderation/{tagsetID}/return", h.moderationReturn)
 		r.With(moderate).Post("/moderation/{tagsetID}/discard", h.moderationDiscard)

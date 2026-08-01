@@ -197,6 +197,15 @@
   background: color-mix(in srgb, var(--error) 10%, transparent);
 }
 .callout .i { flex: none; }
+/* The mismatch warning (F8 item 2) is a caution, not a refusal: the submission
+   is still approvable and the oracle can be wrong about obscure audio. Warning
+   colours rather than the error red the no-op callout uses. */
+.callout.is-mismatch {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+}
+.callout.is-mismatch .i { color: var(--warning); }
 .rev-note { line-height: 1.5; }
 
 /* ── Return-note modal textarea (app.css only styles input/select) ─────────── */

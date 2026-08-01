@@ -11,6 +11,7 @@
   --border:        #252530;
   --error:         #e05c5c;
   --success:       #5cb870;
+  --warning:       #e0b24a;   /* caution tier — was .cls-warn's hardcode */
   --range-track:   #35354a;   /* lifted so bar is visible at rest */
 }
 :root[data-theme="light"] {
@@ -25,6 +26,7 @@
   --border:        #dedee8;
   --error:         #d63031;
   --success:       #00b894;
+  --warning:       #b6791f;   /* caution tier — was .cls-warn's hardcode */
   --range-track:   #c0c0d0;
 }
 :root[data-theme="ocean"] {
@@ -39,6 +41,7 @@
   --border:        #1a3050;
   --error:         #ff7675;
   --success:       #55efc4;
+  --warning:       #ffd479;   /* caution tier */
   --range-track:   #2a4060;
 }
 :root[data-theme="sunset"] {
@@ -53,6 +56,7 @@
   --border:        #3a1820;
   --error:         #ff4757;
   --success:       #7bed9f;
+  --warning:       #ffcc70;   /* caution tier */
   --range-track:   #4a2530;
 }
 
