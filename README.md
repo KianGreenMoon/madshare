@@ -4,12 +4,12 @@ Madshare is a self-hosted audio/media sharing server (primarily for music). A
 single Go process serves a JSON API, file storage/streaming, and a bundled web
 UI.
 
-> ⚠️ **Federation is not implemented yet — it is only a plan.** Server-to-server
-> federation (the "madnetwork": trusted-peer key exchange, cross-server
-> upload/download/streaming, library sharing) is a *future phase*, not part of the
-> current code. Today Madshare runs as a **standalone single-server instance**.
-> The federation concept is described in [`madshare.org`](madshare.org) for
-> reference only.
+> **Federation — the "madnetwork" — is built and off by default.** A node can
+> peer with other madshare servers over an embedded [Yggdrasil](https://yggdrasil-network.github.io)
+> mesh and browse, stream and fetch from their libraries. It stays disabled until
+> you turn it on: see [Deploying a madnetwork node](#deploying-a-madnetwork-node),
+> and read that section's posture note before you do — sharing with your
+> community means sharing with people you never individually approved.
 
 > Concept and roadmap: [`madshare.org`](madshare.org). Architecture docs live in
 > [`docs/architecture/`](docs/architecture/).
@@ -41,8 +41,17 @@ UI.
   auto-approved. Needs the optional `ffprobe`/`fpcalc` tools (see Requirements);
   without them it degrades to a tag-based duplicate check.
   [`docs/architecture/recordings.md`](docs/architecture/recordings.md).
+- **Federation (madnetwork)**, off by default: peer with other madshare servers
+  over an embedded Yggdrasil mesh — no TUN device, no root, no open host port —
+  and browse their libraries at `/madnetwork` beside your own. Content is fetched
+  from *whoever has the bytes* (multi-source chunked transfer with per-chunk
+  verification), streams through a cache while it downloads, and lands in the
+  review queue like any other upload. Per-recording sharing scope (Local /
+  Direct friends / Madnetwork), and a network map of who your friends' friends
+  are. [Deploying a madnetwork node](#deploying-a-madnetwork-node) ·
+  [`docs/architecture/federation.md`](docs/architecture/federation.md).
 - One process, one HTTP listener per configured socket; the web UI can be
-  compiled out for a pure-API binary.
+  compiled out for a pure-API binary, and federation for a standalone one.
 
 ## Requirements
 
@@ -57,6 +66,10 @@ UI.
   startup (a missing tool only logs a warning): **`ffprobe`** (FFmpeg — fills
   audio tech columns) and **`fpcalc`** (Chromaprint — acoustic fingerprint).
   Neither is a build dependency.
+  **`fpcalc` stops being optional once federation is enabled** — the server
+  refuses to start without it, because a federated node re-fingerprints what it
+  downloads instead of trusting what a peer says about it. See
+  [Deploying a madnetwork node](#deploying-a-madnetwork-node).
 
 ## Build & run
 
@@ -218,6 +231,13 @@ initial_admin_user = "admin"
 #initial_admin_password = "..."
 ```
 
+Two further sections are omitted above because they are opt-in features with
+their own walkthroughs: `[federation]`
+([Deploying a madnetwork node](#deploying-a-madnetwork-node)) and `[sources]`
+(in-place symlink imports,
+[`docs/architecture/data-sources.md`](docs/architecture/data-sources.md)).
+`madshare.toml.example` carries both, commented, with every knob annotated.
+
 **Listeners and route groups** are *deployment topology, not access control.* The
 listener/route split decides which URLs are reachable on which socket; it is not
 authentication. The bundled web UI is served same-origin with the API and uses
@@ -322,6 +342,160 @@ so the UI has no CWD dependency, but `database.path` / `storage.files_dir` do.
 **Upgrades.** Database migrations run automatically on startup; just deploy the
 new binary and restart.
 
+## Deploying a madnetwork node
+
+Federation is off by default. Turning it on makes this server a node on the
+**madnetwork**: an overlay of madshare servers that each had to be deliberately
+friended in by somebody, joined transitively. Nothing here is exposed to the
+public internet — the mesh is the only transport, every requester is
+authenticated by a key it must possess, and a node outside your community is
+served nothing at all.
+
+> ⚠️ **Read this before enabling.** With the shipped default scope, your library
+> is published to **your whole community** — every node reachable through a chain
+> of friendships, at any distance, with no radius limit. That means your friends'
+> friends' friends, people you will never meet or approve individually. This is
+> the deal by design, not an oversight, and the two things that make it
+> defensible are that nothing leaves the community and that any branch of it can
+> be cut in one action. If you want a narrower line, set the node default to
+> **Direct friends** on `/admin/settings`, and/or pin individual recordings to
+> **Local** so they never travel at all — per recording in the Recordings lens of
+> `/admin/library`, or in bulk from the All Appearances lens there.
+
+### 1. Prerequisites
+
+- **A binary with federation compiled in.** The default build has it; only
+  `-tags nofederation` strips it, and such a binary aborts at startup if the
+  config still enables federation.
+- **`fpcalc` (Chromaprint) on `PATH`.** Required, not recommended: the server
+  refuses to start otherwise. A federated node re-fingerprints downloaded audio
+  locally before it joins a recording, because a peer's claim about what a file
+  *is* is a hint and never a fact. `allow_missing_fingerprinting = true`
+  federates anyway, at the cost of importing and re-publishing content this node
+  cannot verify.
+- **`ffprobe` (FFmpeg)** is genuinely optional here, but recommended: without it
+  your published catalog carries no quality facts, so friends cannot rank your
+  renditions against their own.
+- **At least one Yggdrasil peer to dial.** A node with no `peers` and no
+  `listen` joins nothing. Public peers are listed at
+  [publicpeers.neilalexander.dev](https://publicpeers.neilalexander.dev/); if you
+  already run Yggdrasil, its own peers work here too. Madshare embeds the mesh
+  (userspace gVisor netstack) rather than using a system TUN, so it needs **no
+  root and no `VpnService`** — and note it runs its *own* node identity even on a
+  host that already has Yggdrasil installed.
+
+### 2. Enable it
+
+```toml
+[federation]
+enabled = true
+name    = "my madshare"                          # display only; identity is the key
+peers   = ["tls://peer.example:12345"]           # outbound; join the mesh
+#listen = ["tls://0.0.0.0:12345"]                # only if others peer INTO you
+```
+
+Restart. On first federated start the node writes its identity to
+`<data_dir>/federation.key` (PEM ed25519, mode 0600) and logs the address it came
+up on:
+
+```
+federation: madnetwork node up — mesh address 2xx:… (key file ./data/federation.key)
+```
+
+That address is in Yggdrasil's `200::/7` range and is derived from the key, so it
+is stable across restarts and is what a friend's node card will resolve to.
+
+**No host port is opened.** The madnetwork protocol is served on port 1314 of the
+node's *mesh* address, reachable only from inside the mesh. `listen` is a
+different thing — it accepts incoming **underlay** peerings, which only backbone
+nodes with a stable public address need. A node behind NAT dials out via `peers`
+and needs no inbound anything.
+
+**Back up `federation.key`.** The mesh address derives from it, so the key *is*
+the node's identity: lose it and you come back as a stranger who has to be
+re-friended by everyone. Back it up with your database, and never copy it to a
+second node — two hosts holding one key are one address as far as the mesh is
+concerned, so they collide rather than share the load.
+
+### 3. Make a friend
+
+Friendship is deliberate on both sides and takes an out-of-band exchange — there
+is no discovery-by-search and no way to be added without acting.
+
+1. Both admins open **`/admin/network`** (needs `federation.manage`) and copy or
+   download their **node card** — a small JSON blob with the node's name and
+   public key.
+2. Send it to the other admin through any channel you already trust. The card is
+   not secret; the point of the out-of-band step is that you know whose it is.
+3. Each side pastes the other's card into the import form.
+4. Both sides flip to **friend** once each has acted. If you both imported, the
+   handshake completes on its own. If only one of you did, the other sees an
+   **incoming request** on `/admin/network` and clicks **Accept** — importing a
+   card and accepting a request are the same decision arriving from opposite
+   directions, and a friendship is never made by one side alone.
+
+Peers you no longer want go the other way on the same page: **Remove** forgets
+the node, **Block** additionally cuts its whole branch out of your community and
+publishes the block with its reason. Both take effect on the next request.
+
+Catalogs then sync on a 15-minute cadence (with a nudge on first friendship), so
+give it a few minutes before expecting a friend's library to appear.
+
+Beyond your direct friends, the node also pulls a few **members'** catalogs per
+cycle, rotating outward through the community — that is how a network you never
+individually friended becomes browsable. `discovery_budget = -1` turns that off
+and keeps the node looking at its own friends only, while still *serving* its
+whole community.
+
+### 4. Let people use it
+
+Browsing the madnetwork is gated by **`madnetwork.access`**, which admins hold by
+default. For everyone else it comes from the built-in **`madnetwork`** role,
+which carries nothing else and so stacks onto whatever role a user already has —
+grant it on `/admin/users` and a `/madnetwork` link appears in that user's
+header. Fetching a remote track into the local library additionally needs
+`file.upload`, and the result lands in the review queue like any other upload
+rather than publishing silently.
+
+### 5. Tune the policy
+
+Runtime toggles live on **`/admin/settings`** (no restart):
+
+| Setting | Default | What it decides |
+|---|---|---|
+| `default_share_depth` | Madnetwork | The scope a recording inherits when not pinned. **Direct friends** narrows the whole node. |
+| `seed_enabled` | on | Whether this node serves blobs at all. Off = consume without serving. |
+| `seed_cache` | on | Whether blobs *downloaded* from others are re-served and advertised. Off if you would rather not re-serve content you did not publish. |
+| `serve_guests` | **off** | Whether nodes outside your community get guest-playable content. For deliberately public archive nodes. |
+| `hide_unavailable` | on | Whether tracks held only by nodes that look offline are hidden from the browse. |
+| `autoapprove_downloads` | off | Whether fetched tracks land approved instead of staged for review. |
+
+Static knobs in `[federation]` (restart required) cover the resource side:
+`seed_rate_kib` caps outbound seeding for everyone, while `member_rate_kib` /
+`per_member_rate_kib` / `member_max_transfers` / `per_member_max_transfers` bound
+what nodes you have *no direct relationship with* may cost you, per requester and
+across all of them together. All default to unlimited — a handful of friends
+needs none of it. **Direct friends bypass all four**, so the nodes you chose
+never queue behind the ones the graph let in.
+
+**Disk.** Blobs fetched from the network are cached under
+`<data_dir>/cache/madnetwork/` and **there is no eviction yet** — the directory
+grows with everything you stream or materialize. Watch it, and clear it by hand
+if it outgrows the disk; cached blobs are rebuildable from the network and
+nothing local references them. `discovery_cap` bounds the *catalog* side (foreign
+catalogs kept, coldest evicted).
+
+### Turning it off
+
+Set `enabled = false` and restart. Friendships, cached catalogs and the identity
+key survive, so re-enabling resumes where you left off. To leave for good, also
+remove `federation.key` and the `cache/madnetwork` directory — and tell your
+friends, since to them a node that simply stopped answering is indistinguishable
+from one that is briefly down.
+
+Full design, threat model and the reasoning behind every default:
+[`docs/architecture/federation.md`](docs/architecture/federation.md).
+
 ## Endpoints (overview)
 
 | Path | Group | Notes |
@@ -330,8 +504,9 @@ new binary and restart.
 | `GET /api/*` | api | Library browse (artists/albums/tracks/search), auth, UI config. |
 | `POST /files/upload`, `GET /files/*` | api | Upload (gated `file.upload`) and stream/download. |
 | `GET /images/*` | api | Cover images. |
+| `GET /api/madnetwork/*` | api | Federated browse, streaming relay and fetch-to-library (gated `madnetwork.access`; present only when federation runs). |
 | `GET /`, `/static/*` | webui | Bundled web UI. |
-| `GET /admin`, `/api/admin/*` | admin | Admin page + destructive/management ops. |
+| `GET /admin`, `/api/admin/*` | admin | Admin page + destructive/management ops (incl. `/admin/network`, the peer and map surface). |
 | `GET /source` | api | AGPL §13: `tar.gz` of the git-tracked source. |
 | `GET /license` | api | The project license. |
 

@@ -298,11 +298,13 @@ delete somebody's library — and says so.
 
 ## Build variants
 
-`nowebui` is the only build tag you choose by hand; the server-only / UI-only
-split is otherwise a *runtime* choice driven by each listener's `serve` route
-groups. The two axes are independent. (A second tag, `embedsource`, bakes the
-AGPL source archive into the binary, but the `Makefile` manages it for every
-`make build` — you don't set it manually. See the `/source` note above.)
+Two build tags are yours to choose by hand — **`nowebui`** (drop the bundled web
+UI) and **`nofederation`** (drop the madnetwork node) — and they are independent
+of each other and of the server-only / UI-only split, which is a *runtime* choice
+driven by each listener's `serve` route groups. Both tags subtract; the default
+build has everything. (A third tag, `embedsource`, bakes the AGPL source archive
+into the binary, but the `Makefile` manages it for every `make build` — you don't
+set it manually. See the `/source` note above.)
 
 ### Full stack (default)
 
@@ -330,6 +332,27 @@ You can also get an API-only deployment from a *full* binary at runtime by simpl
 not serving the `webui` group; the `nowebui` tag is the choice when you want the
 smaller artifact / no template dependency.
 
+### Standalone — no federation (`-tags nofederation`)
+
+```bash
+go build -tags nofederation -o madshare ./
+```
+
+Compiles the server **without** the madnetwork node: the `federation` package
+becomes a stub (`federation/node_stub.go`, `Available = false`) and the embedded
+yggdrasil + gVisor netstack dependencies drop out of the binary entirely. That is
+the real reason to reach for it — they are the heaviest dependencies in the tree,
+and a node that will never federate has no use for them.
+
+Guard rail, mirroring `nowebui`: such a binary **aborts at startup** if the config
+still sets `[federation].enabled = true`, rather than starting up quietly
+un-federated. Turn the setting off, or rebuild without the tag.
+
+Federation is off by default in *any* build, so this tag is about artifact size
+and dependency surface, not about disabling a feature — for that, just leave
+`[federation].enabled` alone. See the README's
+[Deploying a madnetwork node](../README.md#deploying-a-madnetwork-node).
+
 ### Web UI only (runtime, no separate build)
 
 There is **no UI-only binary**. To host the UI apart from the API, run a *full*
@@ -355,7 +378,8 @@ regularly tested.**
 ```bash
 go test ./...          # full test suite
 go vet ./...           # static checks
-go test -tags nowebui ./...   # verify the pure-API variant still compiles/passes
+go test -tags nowebui ./...        # verify the pure-API variant still compiles/passes
+go build -tags nofederation ./...  # …and the standalone one
 ```
 
 There are no JS/CSS build steps — the web UI is hand-written vanilla
