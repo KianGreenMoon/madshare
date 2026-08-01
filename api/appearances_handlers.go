@@ -8,7 +8,6 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -235,82 +234,5 @@ func (h *handler) appearancesBulk(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
 }
 
-// bulkEditLiveAppearances applies one bulk tag/access patch by tagset id. Tags
-// go through the batched tagset patch; access (one value for the whole set)
-// collapses to a guarded UPDATE per column on the recordings behind the set —
-// license before guest, so an explicit guest wins over any license
-// auto-derive.
-func (h *handler) bulkEditLiveAppearances(w http.ResponseWriter, r *http.Request, tagsetIDs []int64, patch *bulkEditPatch) {
-	tags := patch != nil && patch.hasTags()
-	access := patch.hasAccess()
-	if !tags && !access {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "nothing to update"})
-		return
-	}
-	if patch != nil && patch.License != nil && !knownLicenses[*patch.License] {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown license"})
-		return
-	}
-	var depth database.ShareDepthUpdate
-	if patch != nil {
-		var ok bool
-		if depth, ok = parseShareDepthUpdate(patch.ShareDepth); !ok {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid share_depth"})
-			return
-		}
-	}
-	if len(tagsetIDs) == 0 {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": 0, "failed": []any{}})
-		return
-	}
-
-	failed := make([]map[string]any, 0)
-	affected := 0
-	if tags {
-		n, notFound, err := h.repo.BulkUpdateTagsetMetadata(r.Context(), tagsetIDs, sql.NullInt64{}, patch.tags())
-		if errors.Is(err, database.ErrInvalidMetadata) {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
-			return
-		}
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
-			return
-		}
-		affected = n
-		for _, id := range notFound {
-			failed = append(failed, map[string]any{"tagset_id": id, "error": "appearance not found"})
-		}
-	}
-	if access {
-		var accN int
-		if patch.License != nil {
-			n, err := h.repo.BulkSetLicenseByTagsets(r.Context(), tagsetIDs, *patch.License)
-			if err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
-				return
-			}
-			accN = n
-		}
-		if patch.Guest != nil {
-			n, err := h.repo.BulkSetGuestPlayableByTagsets(r.Context(), tagsetIDs, *patch.Guest)
-			if err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
-				return
-			}
-			accN = n
-		}
-		if depth.Set {
-			n, err := h.repo.BulkSetShareDepthByTagsets(r.Context(), tagsetIDs, depth)
-			if err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
-				return
-			}
-			accN = n
-		}
-		if !tags {
-			affected = accN
-		}
-	}
-	h.audit(r.Context(), "metadata.bulk_edit", "appearances", fmt.Sprintf("%d updated", affected))
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected, "failed": failed})
-}
+// bulkEditLiveAppearances — the live lens's arm of the shared bulk edit — lives
+// with its two siblings in api/bulk_edit.go.

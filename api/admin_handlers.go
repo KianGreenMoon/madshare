@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,80 +27,8 @@ var adminHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // resolves the set server-side. Hand-picked selections never approach this.
 const bulkHashCap = 5000
 
-// bulkEditPatch is a bulk metadata edit: the per-file tag set plus the access
-// fields, applied to every resolved file (change-only / never-clear is the
-// client's job — only filled fields are sent). License/Guest mirror the per-file
-// access endpoints and need the content-access store (h.manage).
-type bulkEditPatch struct {
-	metadataPatchRequest
-	License *string `json:"license"`
-	Guest   *bool   `json:"guest"`
-	// ShareDepth is the madnetwork share scope (F5), three-valued like the
-	// single-recording setter: absent = unchanged, null = inherit the node
-	// default, a number = pin it. See api/share_depth.go.
-	ShareDepth json.RawMessage `json:"share_depth"`
-}
-
-func (p *bulkEditPatch) hasTags() bool {
-	if p == nil {
-		return false
-	}
-	m := p.metadataPatchRequest
-	return m.Title != nil || m.Album != nil || m.AlbumArtist != nil || m.Artist != nil ||
-		m.Genre != nil || m.Composer != nil || m.Comment != nil ||
-		m.TrackNumber != nil || m.TrackTotal != nil || m.DiscNumber != nil || m.Year != nil
-}
-func (p *bulkEditPatch) hasAccess() bool {
-	return p != nil && (p.License != nil || p.Guest != nil || len(p.ShareDepth) > 0)
-}
-
-// tags is the DB-layer patch behind the request's tag fields — one mapping for
-// every bulk-edit caller (Trash, the live lens, My uploads), so a field added to
-// metadataPatchRequest cannot reach one of them and miss the others.
-func (p *bulkEditPatch) tags() database.MetadataPatch {
-	m := p.metadataPatchRequest
-	return database.MetadataPatch{
-		Title: m.Title, Album: m.Album, AlbumArtist: m.AlbumArtist, Artist: m.Artist,
-		Genre: m.Genre, Composer: m.Composer, Comment: m.Comment,
-		TrackNumber: m.TrackNumber, TrackTotal: m.TrackTotal, DiscNumber: m.DiscNumber, Year: m.Year,
-	}
-}
-
-// bulkEditAppearances applies one bulk tag patch by tagset id — the Trash lens's
-// "fix a tag before restoring". Tags only: access (license / guest) is a
-// recording-level property and is meaningless on a trashed appearance, so the
-// Trash scope never offers it and a patch carrying it is rejected.
-func (h *handler) bulkEditAppearances(w http.ResponseWriter, r *http.Request, tagsetIDs []int64, patch *bulkEditPatch) {
-	if !patch.hasTags() {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "nothing to update"})
-		return
-	}
-	if patch.hasAccess() {
-		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"ok": false, "error": "access is a recording property; it cannot be edited from Trash"})
-		return
-	}
-	if len(tagsetIDs) == 0 {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": 0, "failed": []any{}})
-		return
-	}
-
-	affected, notFound, err := h.repo.BulkUpdateTagsetMetadata(r.Context(), tagsetIDs, sql.NullInt64{}, patch.tags())
-	if errors.Is(err, database.ErrInvalidMetadata) {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
-		return
-	}
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
-		return
-	}
-	failed := make([]map[string]any, 0, len(notFound))
-	for _, id := range notFound {
-		failed = append(failed, map[string]any{"tagset_id": id, "error": "appearance not found"})
-	}
-	h.audit(r.Context(), "metadata.bulk_edit", "appearances", fmt.Sprintf("%d updated", affected))
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected, "failed": failed})
-}
+// The bulk edit patch type and the three handlers that apply it live together in
+// api/bulk_edit.go.
 
 // adminTrashList handles GET /api/admin/trash — the Trash page's **Appearances**
 // lens: soft-deleted appearances, paged + filtered + sorted like the live library

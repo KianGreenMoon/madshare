@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"daemonlord.ygg/madshare/auth"
@@ -71,6 +72,32 @@ func TestMyUploadsBulk_EditScopeAndRefusals(t *testing.T) {
 		if repo.metaCalls != 0 {
 			t.Errorf("patch %v reached the store", access)
 		}
+		if !strings.Contains(rr.Body.String(), "from your uploads") {
+			t.Errorf("patch %v: refusal = %s, want it to name this surface", access, rr.Body.String())
+		}
+	}
+}
+
+// TestBulkEditRefusalNamesItsSurface — the two scopes that don't own the
+// recording share one guard, so the message must still say which rule was hit:
+// a client showing it verbatim would otherwise send a Trash user to look at
+// their uploads.
+func TestBulkEditRefusalNamesItsSurface(t *testing.T) {
+	repo := &fakeRepo{}
+	rr := httptest.NewRecorder()
+	h := &handler{repo: repo, authzEnabled: true}
+	license, artist := "cc-by", "x"
+	patch := &bulkEditPatch{License: &license}
+	patch.Artist = &artist
+	h.bulkEditAppearances(rr, recodeReq(t, "/api/admin/trash/bulk", nil, nil), []int64{4}, patch)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("trash access patch: status = %d, want 400", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "from Trash") {
+		t.Errorf("refusal = %s, want it to name Trash", rr.Body.String())
+	}
+	if repo.metaCalls != 0 {
+		t.Error("a refused patch reached the store")
 	}
 }
 

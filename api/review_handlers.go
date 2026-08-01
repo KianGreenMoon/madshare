@@ -499,19 +499,11 @@ func (h *handler) myUploadsBulk(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown charset"})
 		return
 	}
-	if req.Action == "edit" {
-		if !req.Patch.hasTags() {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "nothing to update"})
-			return
-		}
-		// License / guest / share scope are recording-level properties an
-		// uploader does not own — the staging editor never offers them, and a
-		// patch that carries one is refused rather than silently dropped.
-		if req.Patch.hasAccess() {
-			writeJSON(w, http.StatusBadRequest, map[string]any{
-				"ok": false, "error": "access is a recording property; it cannot be edited from your uploads"})
-			return
-		}
+	// License / guest / share scope are recording-level properties an uploader
+	// does not own — the staging editor never offers them, and a patch that
+	// carries one is refused rather than silently dropped.
+	if req.Action == "edit" && !checkTagsOnlyPatch(w, req.Patch, "your uploads") {
+		return
 	}
 	ids, ok := h.resolveOwnUploadBulk(w, r.Context(), id.UserID, req)
 	if !ok {
@@ -519,23 +511,7 @@ func (h *handler) myUploadsBulk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Action == "edit" {
-		// Owner-scoped like the recode: the explicit-ids path is trusted only as
-		// far as ownership, so an id outside the caller's editable staging simply
-		// matches nothing.
-		affected, _, err := h.repo.BulkUpdateTagsetMetadata(r.Context(), ids,
-			sql.NullInt64{Int64: id.UserID, Valid: true}, req.Patch.tags())
-		if errors.Is(err, database.ErrInvalidMetadata) {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
-			return
-		}
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "storage error"})
-			return
-		}
-		if affected > 0 {
-			h.audit(r.Context(), "metadata.bulk_edit", "files", fmt.Sprintf("%d updated (owner)", affected))
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
+		h.myUploadsBulkEdit(w, r, ids, id.UserID, req.Patch)
 		return
 	}
 
