@@ -473,7 +473,7 @@ number of distinct direct friends those nodes are reachable through
 | `new` — **New on the network** | some source has a `first_seen` | `first_seen` desc |
 | `held` — **Most held here** | always | `branches` desc, then `holders` desc |
 | `rare` — **Only one node has it** | `holders = 1` and no self row | that node's `last_seen` desc |
-| `local` — **Local library** | a self row is in the group | this server's own newest appearance first (§Rework) |
+| `local` — **Local library** | a self row is in the group | this server's own newest appearance first — the WHOLE library, sharing scope included (§Rework) |
 | `friends` — **From direct friends** | some holder is a direct friend | friend `holders` desc |
 | `nodes` — **Nodes** | — | not a track lane; see below |
 
@@ -570,20 +570,28 @@ here* — and a person arriving on this page has to be able to see the thing tho
 lanes are measured against. It also fixes the smaller thing: the page used to
 open on other people's libraries with no way back to this one except the header.
 
-**The rows are this server's published set**, ranked by newest appearance first
+**The rows are this server's whole library**, ranked by newest appearance first
 (`MAX(tagsets.created_at)` over the group) — "what this server has been adding" —
 which is the counterpart of *New on the network* pointed inward, and the only
 ranking of a library's own contents that is a fact rather than a taste. The
 per-source cap and the branch weighting do not apply: one source, nothing to
 corroborate.
 
-One asymmetry, stated because someone will notice it: the lane shows what this
-node **publishes**, filtered by `selfPublishedClause` like every other self row on
-this page, while "See all" lands on the library page, which shows everything —
-including recordings whose scope is *Local* and which therefore never leave the
-node. That is the right way round (every row on the madnetwork page is a row the
-network could also see), and the lane's subtitle says *as the network sees it*, so
-the difference is never a surprise.
+**Whole** is the word: the sharing scope does not filter this lane (owner,
+2026-08-02). The first build applied `selfPublishedClause` here like every other
+self row on the page and labelled the lane "as the network sees it" — which was
+the wrong instinct twice over. This lane is a **doorway to `/`**, not a view of
+the network, so a lane that quietly left out the recordings scoped *Local* would
+disagree with the page its own "See all" leads to; and a caption explaining why
+some of your records are missing is a worse answer than not omitting them. The
+`AllOwn` view flag is what expresses it, and it never widens what is served:
+publishing runs off `PublishedCatalog`, and every remote-facing query leaves the
+flag false.
+
+The same correction reaches the other lanes through `has_self`, which now means
+*in this server's library* rather than *published by it*. Scoping it to the
+published set put a recording kept Local into *Missing here* — offering a person
+a track they already had, one screen below the lane that was hiding it.
 
 ### The page stops saying "your"
 

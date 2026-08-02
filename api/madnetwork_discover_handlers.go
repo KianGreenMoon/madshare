@@ -145,6 +145,14 @@ func (h *handler) madnetworkLane(w http.ResponseWriter, r *http.Request) {
 func (h *handler) buildLane(ctx context.Context, name string, view database.MadnetworkView,
 	opts mergeOpts, limit, offset int) (laneResponse, error) {
 	out := laneResponse{Name: name, Title: laneTitles[name], Tracks: []laneTrack{}}
+	// The Local library lane is the one view on this page that is about our own
+	// shelf rather than about the network, so it carries the whole library —
+	// recordings scoped Local included. Its "See all" goes to the library page,
+	// which would show them anyway; leaving them out here would only make the
+	// lane disagree with the page it leads to.
+	if name == database.LaneLocal {
+		view.AllOwn = true
+	}
 
 	want := offset + limit + 1 // the +1 answers "is there more" without a count
 	candidates, err := h.madnetwork.MadnetworkLaneCandidates(ctx, name, view, laneCandidateBudget(want))

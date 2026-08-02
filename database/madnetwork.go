@@ -502,6 +502,14 @@ type MadnetworkView struct {
 	// library as the network sees it, which is the one shelf on the list whose
 	// contents an admin can actually change.
 	SelfOnly bool
+	// AllOwn drops the sharing-scope filter from the OWN rows: the whole local
+	// library, not only the part this node publishes. It exists for the Local
+	// library lane, which is a doorway to `/` rather than a view of the network
+	// — the reader is looking at their own server, and a lane that quietly left
+	// out the recordings scoped Local would be answering a question nobody
+	// asked. It never widens what is served: publishing runs off
+	// PublishedCatalog, and every remote-facing query leaves this false.
+	AllOwn bool
 }
 
 // includeRemote / includeOwn split a view into the two row sources the merged
@@ -656,14 +664,20 @@ func fedcatRemoteRows(view MadnetworkView) string {
 
 // selfPublishedClause keeps the self-merged rows to what this node actually
 // publishes: a recording is on the network iff its effective depth reaches at
-// least a direct friend (F5). defaultDepth is a server-resolved integer, never
-// user input, so it is inlined like reachClause's cutoff rather than threaded as
-// a bind parameter through every shared fragment.
-func selfPublishedClause(defaultDepth int) string {
-	return fmt.Sprintf(" AND COALESCE(r.share_depth, %d) >= %d", defaultDepth, federation.DepthFriends)
+// least a direct friend (F5). The depth is a server-resolved integer, never user
+// input, so it is inlined like reachClause's cutoff rather than threaded as a
+// bind parameter through every shared fragment.
+//
+// Empty for a view that asked for the whole local library (AllOwn) — the one
+// place on this page that is about our own shelf rather than about the network.
+func selfPublishedClause(view MadnetworkView) string {
+	if view.AllOwn {
+		return ""
+	}
+	return fmt.Sprintf(" AND COALESCE(r.share_depth, %d) >= %d", view.DefaultShareDepth, federation.DepthFriends)
 }
 
-func fedcatSelfRows(defaultDepth int) string {
+func fedcatSelfRows(view MadnetworkView) string {
 	return `
 	SELECT COALESCE(NULLIF(COALESCE(aar.name, m.album_artist, ''), ''),
 	                NULLIF(COALESCE(par.name, m.artist, ''), ''), '` + DefaultArtistName + `') AS akey,
@@ -674,7 +688,7 @@ func fedcatSelfRows(defaultDepth int) string {
 	LEFT JOIN artists par ON par.id = m.artist_id
 	LEFT JOIN artists aar ON aar.id = m.album_artist_id
 	LEFT JOIN albums al   ON al.id  = m.album_id
-	WHERE ` + visibleTagset + selfPublishedClause(defaultDepth)
+	WHERE ` + visibleTagset + selfPublishedClause(view)
 }
 
 // fedcatCountBase is the FROM clause of the counting queries: reachable friends'
@@ -686,11 +700,11 @@ func fedcatSelfRows(defaultDepth int) string {
 func fedcatCountBase(view MadnetworkView) string {
 	switch {
 	case view.includeRemote() && view.includeOwn():
-		return ` FROM (` + fedcatRemoteRows(view) + ` UNION ALL ` + fedcatSelfRows(view.DefaultShareDepth) + `)`
+		return ` FROM (` + fedcatRemoteRows(view) + ` UNION ALL ` + fedcatSelfRows(view) + `)`
 	case view.includeRemote():
 		return ` FROM (` + fedcatRemoteRows(view) + `)`
 	case view.includeOwn():
-		return ` FROM (` + fedcatSelfRows(view.DefaultShareDepth) + `)`
+		return ` FROM (` + fedcatSelfRows(view) + `)`
 	default:
 		return ` FROM (` + fedcatNoRows + `)`
 	}
@@ -923,17 +937,17 @@ const selfAkeyExpr = `COALESCE(NULLIF(COALESCE(aar.name, m.album_artist, ''), ''
 	NULLIF(COALESCE(par.name, m.artist, ''), ''), '` + DefaultArtistName + `')`
 const selfAlbExpr = `COALESCE(NULLIF(COALESCE(al.title, m.album, ''), ''), '` + DefaultAlbumTitle + `')`
 
-// ownTrackRows returns this node's own published appearances matching a
-// caller-supplied clause (akey/alb/title-level), shaped like cached catalog
-// rows: Self = true, SourceID 0, Entry.Key = tagset id, renditions attached from
-// the recording's live files with their local object keys. defaultDepth applies
-// the same self-published filter as the counting queries, so a recording kept
-// off the network cannot be listed by a view whose counts already exclude it.
+// ownTrackRows returns this node's own appearances matching a caller-supplied
+// clause (akey/alb/title-level), shaped like cached catalog rows: Self = true,
+// SourceID 0, Entry.Key = tagset id, renditions attached from the recording's
+// live files with their local object keys. It applies the same self-published
+// filter as the counting queries, so a recording kept off the network cannot be
+// listed by a view whose counts already exclude it — unless the view asked for
+// the whole local library (AllOwn), where the counts include it too.
 func (db *DB) ownTrackRows(ctx context.Context, view MadnetworkView, match string, args ...any) ([]*MadnetworkTrackRow, error) {
 	if !view.includeOwn() {
 		return nil, nil
 	}
-	defaultDepth := view.DefaultShareDepth
 	rows, err := db.QueryContext(ctx, `
 		SELECT m.id, m.recording_id, `+selfAkeyExpr+`, `+selfAlbExpr+`, m.title,
 		       COALESCE(par.name, m.artist, ''), COALESCE(aar.name, m.album_artist, ''),
@@ -943,7 +957,7 @@ func (db *DB) ownTrackRows(ctx context.Context, view MadnetworkView, match strin
 		LEFT JOIN artists par ON par.id = m.artist_id
 		LEFT JOIN artists aar ON aar.id = m.album_artist_id
 		LEFT JOIN albums al   ON al.id  = m.album_id
-		WHERE `+visibleTagset+selfPublishedClause(defaultDepth)+` AND `+match+`
+		WHERE `+visibleTagset+selfPublishedClause(view)+` AND `+match+`
 		ORDER BY (m.disc_number IS NULL) ASC, m.disc_number ASC, m.track_number ASC, lower(m.title) ASC, m.id ASC`,
 		args...)
 	if err != nil {

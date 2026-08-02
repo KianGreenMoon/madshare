@@ -491,3 +491,70 @@ func TestBranchMapVoices(t *testing.T) {
 		t.Errorf("nil branch map: voices = %d, want 3 (two sources + self)", got)
 	}
 }
+
+// TestLocalLaneCarriesTheWholeLibrary: the Local library lane is a doorway to
+// `/`, not a view of the network, so a recording scoped Local is IN it — while
+// the merged browse, which is what the network sees of us, still leaves it out.
+//
+// The second half is the one that must not regress: the lane may show more of
+// our own shelf than we publish, but publishing is a different question and a
+// different query.
+func TestLocalLaneCarriesTheWholeLibrary(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	public := seedScopeFile(t, db, "lane0001", "Shared Song")
+	private := seedScopeFile(t, db, "lane0002", "Private Song")
+	_ = public
+	depth := federation.DepthPrivate
+	if ok, err := db.SetRecordingAccess(ctx, private, nil, nil,
+		ShareDepthUpdate{Set: true, Depth: depth}); err != nil || !ok {
+		t.Fatalf("set private: ok=%v err=%v", ok, err)
+	}
+
+	view := MadnetworkView{IncludeSelf: true}
+	local := laneNames(t, db, LaneLocal, view, 10)
+	if len(local) != 2 {
+		t.Fatalf("local lane = %v, want both — the whole library, scope included", local)
+	}
+
+	// The merged catalog is still only what we publish.
+	albums, err := db.MadnetworkAlbums(ctx, "Scope Artist", view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(albums) != 1 || albums[0].Tracks != 1 {
+		t.Errorf("merged album = %+v, want the one published track", albums)
+	}
+	rows, err := db.MadnetworkOwnTracks(ctx, "Scope Artist", "Scope Album", view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Entry.Title != "Shared Song" {
+		t.Errorf("own rows = %d, want only the published one", len(rows))
+	}
+
+	// And the lane's ROWS come back for the private track too — a candidate that
+	// ranks but renders nothing would be a lane with holes in it.
+	cands, err := db.MadnetworkLaneCandidates(ctx, LaneLocal, view, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idents := make([]string, 0, len(cands))
+	for _, c := range cands {
+		idents = append(idents, c.Ident)
+	}
+	laneView := view
+	laneView.AllOwn = true
+	got, err := db.MadnetworkRowsForIdents(ctx, idents, laneView)
+	if err != nil {
+		t.Fatal(err)
+	}
+	titles := map[string]bool{}
+	for _, r := range got {
+		titles[r.Entry.Title] = true
+	}
+	if !titles["Private Song"] || !titles["Shared Song"] {
+		t.Errorf("lane rows = %v, want both titles", titles)
+	}
+}

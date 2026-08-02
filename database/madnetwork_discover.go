@@ -106,6 +106,12 @@ func laneRowsCTE(view MadnetworkView) string {
 	FROM federation_catalog c` + sourceJoin("c") + `
 	WHERE ` + notBlocked + reachClause(view) + sourceClause(view)
 
+	// The self half is NOT filtered by sharing scope, and that is the difference
+	// between a lane and the browse. A lane asks whether WE have something —
+	// which is a question about the local library, not about what we advertise —
+	// so `has_self` has to mean "in this server's library". Filtering it here put
+	// a recording scoped Local into "Missing here", i.e. offered a person a track
+	// they already had, while the Local library lane one screen up left it out.
 	self := `
 	SELECT ` + selfAkeyExpr + ` AS akey, ` + selfAlbExpr + ` AS alb,
 	       m.title AS title, m.track_number AS track_number, m.disc_number AS disc_number,
@@ -115,7 +121,7 @@ func laneRowsCTE(view MadnetworkView) string {
 	LEFT JOIN artists par ON par.id = m.artist_id
 	LEFT JOIN artists aar ON aar.id = m.album_artist_id
 	LEFT JOIN albums al   ON al.id  = m.album_id
-	WHERE ` + visibleTagset + selfPublishedClause(view.DefaultShareDepth)
+	WHERE ` + visibleTagset
 
 	switch {
 	case view.includeRemote() && view.includeOwn():
@@ -142,11 +148,12 @@ func laneRowsCTE(view MadnetworkView) string {
 func laneRanking(lane string) (filter, order string) {
 	switch lane {
 	case LaneLocal:
-		// This node's own published set, newest appearance first — "what this
-		// server has been adding", the counterpart of LaneNew pointed inward. It
-		// is the only ranking of a library's own contents that is a fact rather
-		// than a taste, and it needs no weighting: one source, nothing to
-		// corroborate against.
+		// This node's own library, newest appearance first — "what this server
+		// has been adding", the counterpart of LaneNew pointed inward. It is the
+		// only ranking of a library's own contents that is a fact rather than a
+		// taste, and it needs no weighting: one source, nothing to corroborate
+		// against. ALL of it, sharing scope included: this lane is a doorway to
+		// the library page, not a view of the network (§Rework).
 		return "has_self = 1", "self_at DESC, ident"
 	case LaneMissing:
 		// Ranked by holders here and re-sorted by branch count in Go, exactly

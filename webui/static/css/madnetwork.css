@@ -244,13 +244,3 @@ a.mn-lane-more { text-decoration: none; }
 .mn-node-maplink { font-size: 0.82rem; color: var(--accent); text-decoration: none; align-self: flex-start; }
 .mn-node-maplink:hover { text-decoration: underline; }
 .mn-node-card--missing { border-style: dashed; }
-
-/* A lane heading's qualifier — for a title that would otherwise overpromise
-   (the local lane shows what this server PUBLISHES, while its "See all" goes to
-   the library page, which also holds what never leaves the node). */
-.mn-lane-sub {
-  margin-left: var(--space-2);
-  font-size: 0.78rem;
-  font-weight: 400;
-  color: var(--text-muted);
-}

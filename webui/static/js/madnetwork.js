@@ -312,20 +312,10 @@ async function showDiscover() {
 
 // laneHead builds a lane's heading plus its trailing "See all", which is either
 // a link off the page or the lane's own full view.
-// LANE_SUBTITLES qualify a heading that would otherwise overpromise. The local
-// lane needs one: it shows what this server PUBLISHES (self rows are share-depth
-// filtered like everywhere else on this page), while its "See all" lands on the
-// library page, which also holds what never leaves the node.
-const LANE_SUBTITLES = { local: 'as the network sees it' };
-
 function laneHead(name, title, more) {
   const head = document.createElement('div');
   head.className = 'mn-lane-head';
-  const heading = document.createElement('span');
-  heading.className = 'mn-lane-title';
-  heading.textContent = title;
-  if (LANE_SUBTITLES[name]) heading.append(mkSpan('mn-lane-sub', LANE_SUBTITLES[name]));
-  head.append(heading);
+  head.append(mkSpan('mn-lane-title', title));
   const href = LANE_SEE_ALL_HREF[name];
   if (href) {
     const link = document.createElement('a');
