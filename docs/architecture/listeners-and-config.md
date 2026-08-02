@@ -207,6 +207,65 @@ error, since a silently non-matching origin is a security footgun. Startup
 hosted UI would be blocked), and when `*` is listed alongside specific origins
 (the specifics are redundant).
 
+### 4.3c `[[listen_mesh]]` + `[yggdrasil]` (the mesh listener)
+
+A `[[listen_mesh]]` block serves the same route groups on **this node's own
+Yggdrasil address**, over the embedded userspace netstack rather than a kernel
+socket:
+
+```toml
+[[listen_mesh]]
+port  = 80                       # optional, defaults to 80
+serve = ["api", "webui"]
+
+[yggdrasil]
+enabled = true
+peers   = ["tls://peer.example:12345"]
+```
+
+This is the no-reverse-proxy route to a reachable server: no certificate, no
+domain, no port forwarding, no root and no TUN device. Port 80 is free because
+the netstack is not a kernel socket and has no privileged-port rule, so the
+address can be handed out with no `:port` suffix. Yggdrasil encrypts end to end
+and the address is derived from the node's public key, so it is
+self-authenticating the way a `.onion` is — there is nothing for TLS to add.
+
+There is deliberately **no `addr`**: a node has exactly one mesh address and
+derives it from its key, so the key is rejected outright rather than ignored.
+Port `1314` is reserved for the madnetwork protocol on that same address,
+unconditionally — including when federation is off and it is genuinely free, so
+that enabling federation later cannot break a working config. `allow_from` is
+accepted but near-useless here (mesh addresses are key-derived, not allocated in
+prefixes).
+
+**`[yggdrasil]` is the transport**, separable from `[federation]`, which is the
+madnetwork *feature*. It owns `key_file` (the node identity — the mesh address
+derives from it), `peers` and `listen`; those three are still read from
+`[federation]` as deprecated aliases, and an explicit `[yggdrasil]` value wins.
+A mesh listener needs `[yggdrasil].enabled` **or** `[federation].enabled`:
+
+| `[federation].enabled` | `[yggdrasil].enabled` | Result |
+|---|---|---|
+| `false` | absent / `false` | No mesh; a `[[listen_mesh]]` entry is fatal |
+| `false` | `true` | Mesh on, **transport only** — no madnetwork protocol, friendship or catalogs |
+| `true` | absent | Mesh on (inferred) + madnetwork |
+| `true` | `true` | Same |
+| `true` | `false` | **Fatal** — madnetwork has no transport but the mesh |
+
+Two things that surprise people, both documented at the point of contact:
+
+- **The mesh address is not reachable from this host.** With no TUN device,
+  packets move only gVisor → `ipv6rwc` → core → mesh, so a local `curl` fails
+  while a remote mesh peer succeeds. Keep a loopback `[[listen]]` for local
+  administration.
+- **Its audience is the entire Yggdrasil network**, not your friends or your
+  madnetwork community — the protocol on 1314 has an audience model, port 80 has
+  only authentication. Serving `admin` there is allowed (administering your own
+  node from your phone is the use case) but warns at startup.
+
+Full design, including what transport-only deliberately does *not* start:
+[`docs/plans/mesh-listener.md`](../plans/mesh-listener.md).
+
 ### 4.4 Defaults (no config file, or omitted keys)
 
 If no `[[listen]]` is given, the default is a single loopback listener serving
@@ -269,6 +328,28 @@ Built with the web UI excluded:
 go build -tags nowebui ./...
 ```
 
+### 5.3a Reachable from anywhere, no reverse proxy
+
+```toml
+[[listen]]                          # local admin; the mesh address is NOT
+addr  = "127.0.0.1"                 # reachable from this host
+port  = 3000
+serve = ["api", "webui", "admin"]
+
+[[listen_mesh]]                     # everyone else, over the mesh
+port  = 80
+serve = ["api", "webui", "admin"]
+
+[yggdrasil]
+enabled = true
+peers   = ["tls://peer.example:12345"]
+```
+
+Administer at `http://127.0.0.1:3000/`; anyone on the mesh reaches
+`http://[201:abcd:…]/` (brackets required, no port), behind any NAT. Add
+`[federation].enabled = true` to join the madnetwork on the same address and the
+same key — the URL does not change.
+
 ### 5.4 Admin only on loopback, API + UI on the LAN
 
 ```toml
@@ -299,6 +380,14 @@ checks:
 5. If the binary was built with `-tags nowebui` and a listener requests `webui`
    (or the admin *page*), fail with a message pointing at the build tag.
 6. `allow_from` entries (if present) parse as CIDRs.
+7. Mesh listeners (§4.3c): `[[listen_mesh]]` requires the mesh
+   (`[yggdrasil].enabled` or `[federation].enabled`) and a build with federation
+   compiled in; `[yggdrasil].enabled = false` under `[federation].enabled` is
+   fatal; each entry's `port` is in `1..65535` and not `1314`; no two mesh
+   listeners share a port (mesh ports are **not** compared against `[[listen]]`
+   ports — different address spaces); `serve` follows the same rules as above;
+   an unknown key in either new section is fatal rather than ignored, `addr`
+   most of all. Serving `admin` on a mesh listener **warns**.
 
 Existing `[storage]` checks are unchanged (`files_dir` non-empty;
 `max_upload_mb` in `[1, MaxUploadMBLimit]`).
@@ -311,6 +400,13 @@ The design above is implemented as follows:
   `allow_from`), `WebUIConfig.APIBase`, the exported group-token constants, the
   `defaults()` single-loopback listener, and the §6 validation in `validate()`
   (with the `(ListenConfig) BindAddr()` helper). Tests in `config/config_test.go`.
+- **Mesh listeners** — `config/mesh.go`: `MeshListenConfig`, `YggdrasilConfig`,
+  `Config.MeshEnabled()` (the §4.3c table), `resolveMesh` (folds the deprecated
+  `[federation]` transport aliases and applies the port default) and
+  `validateMesh`. `federation/mesh.go` holds the transport itself: `Mesh` +
+  `StartTransport` + `(*Mesh).ListenMesh`, with `Node` running on top of one
+  (adopted via `federation.WithMesh`, and stopped by `Node.Stop`). Tests in
+  `config/mesh_test.go` and `federation/mesh_test.go`.
 - **Mountable route groups** — `api/api.go` exposes `RegisterAPI` / `RegisterAdmin`
   (bundling deps into `api.Deps`); `webui` exposes `Register` / `RegisterAdminPage`.
 - **Per-listener serving** — `madshare.go` `buildHandler` composes a `chi.Router`
@@ -346,6 +442,14 @@ Resolved with the project owner on 2026-05-29:
    middleware (`403` on non-match), meaningful over yggdrasil's unspoofable
    addresses; convenience/defense-in-depth on clearnet. Runs in the
    `buildHandler` shared middleware.
+
+5a. **The mesh listener is mesh-gated, not federation-gated** (2026-08-02).
+   `[[listen_mesh]]` needs `[yggdrasil].enabled` **or** `[federation].enabled`,
+   because being *on* the mesh is a smaller and more general thing than
+   federating over it — a server can take a stable global address and federate
+   with nobody. The **build** gate is unchanged: `-tags nofederation` strips the
+   transport too. Rationale and the deferred build-level split:
+   [`docs/plans/mesh-listener.md`](../plans/mesh-listener.md) §4, §8.
 
 5. **CORS is opt-in, default closed.** `api.CORS` runs as shared middleware on
    every listener but emits headers only for origins in `[cors].allowed_origins`

@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -68,9 +71,24 @@ func main() {
 			log.Fatalf("listen[%d] serves %q but this binary was built with -tags nowebui; rebuild without that tag or drop %q", i, config.GroupWebUI, config.GroupWebUI)
 		}
 	}
-	// Feature gate: federation may only be enabled if it is compiled in.
-	if cfg.Federation.Enabled && !federation.Available {
-		log.Fatalf("federation.enabled is set but this binary was built with -tags nofederation; rebuild without that tag or disable [federation]")
+	for i, m := range cfg.ListenMesh {
+		if m.Serves(config.GroupWebUI) && !webui.Available {
+			log.Fatalf("listen_mesh[%d] serves %q but this binary was built with -tags nowebui; rebuild without that tag or drop %q", i, config.GroupWebUI, config.GroupWebUI)
+		}
+	}
+	// Feature gate: the mesh may only be enabled if it is compiled in. Separating
+	// the transport from madnetwork in the config does not separate them in the
+	// binary — -tags nofederation strips the yggdrasil and gVisor dependencies
+	// outright, so a mesh listener has nothing to bind either.
+	if cfg.MeshEnabled() && !federation.Available {
+		// Name whichever key actually asked for it, so the fix is the line the
+		// operator wrote rather than the one they inherited.
+		key := "yggdrasil.enabled"
+		if cfg.Federation.Enabled {
+			key = "federation.enabled"
+		}
+		log.Fatalf("%s is set but this binary was built with -tags nofederation; "+
+			"rebuild without that tag, or remove [yggdrasil], [[listen_mesh]] and [federation]", key)
 	}
 	// Environment gate, same class as the one above: federation is enabled but
 	// this host cannot do it correctly.
@@ -349,6 +367,18 @@ func main() {
 	// before them so a broken key file aborts startup rather than surfacing
 	// mid-flight. The node is also wired into Deps so /api/admin/federation and
 	// the /admin/network page can manage it.
+	// The mesh comes up first and independently of madnetwork: [[listen_mesh]]
+	// serves the ordinary web UI and API on this node's own yggdrasil address
+	// whether or not federation is enabled (docs/plans/mesh-listener.md §4).
+	var mesh *federation.Mesh
+	if cfg.MeshEnabled() {
+		mesh, err = federation.StartTransport(cfg.Yggdrasil, log.Default())
+		if err != nil {
+			log.Fatalf("start yggdrasil mesh: %v", err)
+		}
+		log.Printf("yggdrasil: mesh up — address %s (key file %s)", mesh.Address(), cfg.Yggdrasil.KeyFile)
+	}
+
 	var fedNode *federation.Node
 	if cfg.Federation.Enabled {
 		// F3 wiring: the blob resolver serves published hashes to friends (and
@@ -358,7 +388,10 @@ func main() {
 			path, _, ok := storageRegistry.Resolve(hash)
 			return path, ok
 		}
+		// WithMesh hands the running transport over: from here Node.Stop owns it,
+		// so the shutdown path below stops one or the other, never both.
 		fedNode, err = federation.Start(cfg.Federation, db, log.Default(),
+			federation.WithMesh(mesh),
 			federation.WithCacheDir(cfg.MadnetworkCacheDir()),
 			federation.WithBlobResolver(resolve),
 			federation.WithDiscovery(federation.Discovery{
@@ -377,10 +410,10 @@ func main() {
 			deps.MadnetworkName = "this server"
 		}
 		deps.ReachableWindowSec = cfg.Federation.ReachableWindowSec
-		log.Printf("federation: madnetwork node up — mesh address %s (key file %s)", fedNode.Address(), cfg.Federation.KeyFile)
+		log.Printf("federation: madnetwork node up — mesh address %s (key file %s)", fedNode.Address(), cfg.Yggdrasil.KeyFile)
 	}
 
-	servers, err := startListeners(cfg, deps)
+	servers, err := startListeners(cfg, deps, mesh)
 	if err != nil {
 		log.Fatalf("start listeners: %v", err)
 	}
@@ -403,8 +436,14 @@ func main() {
 		})
 	}
 	wg.Wait()
-	if fedNode != nil {
+	// Exactly one of these owns the transport: Start adopted the mesh when
+	// federation is on, so stopping the node stops it too (federation/mesh.go,
+	// "Ownership"). A transport-only deployment stops the mesh itself.
+	switch {
+	case fedNode != nil:
 		fedNode.Stop()
+	case mesh != nil:
+		mesh.Stop()
 	}
 	// Let a running Verify & Prune finish rather than killing it mid-pass (a hard
 	// kill is still safe — prune is idempotent and re-runnable). A long deep prune
@@ -468,36 +507,65 @@ func fpcalcInstallHint() string {
 	}
 }
 
-func startListeners(cfg config.Config, deps api.Deps) ([]*http.Server, error) {
-	servers := make([]*http.Server, 0, len(cfg.Listen))
-	for _, lc := range cfg.Listen {
-		handler, err := buildHandler(lc, deps, cfg.WebUI, cfg.CORS.AllowedOrigins, cfg.Federation.Enabled)
+func startListeners(cfg config.Config, deps api.Deps, mesh *federation.Mesh) ([]*http.Server, error) {
+	servers := make([]*http.Server, 0, len(cfg.Listen)+len(cfg.ListenMesh))
+	serve := func(addr string, groups []string, allow []string, ln net.Listener) error {
+		handler, err := buildHandler(groups, allow, deps, cfg.WebUI, cfg.CORS.AllowedOrigins, cfg.Federation.Enabled)
 		if err != nil {
-			return nil, err
+			ln.Close()
+			return err
 		}
-		ln, err := net.Listen("tcp", lc.BindAddr())
-		if err != nil {
-			return nil, err
-		}
-		srv := &http.Server{Addr: lc.BindAddr(), Handler: handler}
+		srv := &http.Server{Addr: addr, Handler: handler}
 		servers = append(servers, srv)
-		log.Printf("listening on %s serving %v", lc.BindAddr(), lc.Serve)
+		log.Printf("listening on %s serving %v", addr, groups)
 		go func() {
 			if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Fatalf("serve %s: %v", srv.Addr, err)
 			}
 		}()
+		return nil
+	}
+	for _, lc := range cfg.Listen {
+		ln, err := net.Listen("tcp", lc.BindAddr())
+		if err != nil {
+			return nil, err
+		}
+		if err := serve(lc.BindAddr(), lc.Serve, lc.AllowFrom, ln); err != nil {
+			return nil, err
+		}
+	}
+	// Mesh listeners bind this node's own yggdrasil address over the federation
+	// netstack rather than a kernel socket: no privileged-port rule (hence the
+	// default of 80), and no reachability from this host (there is no TUN — see
+	// federation.Mesh.ListenMesh). config.validateMesh has already refused a mesh
+	// listener without a mesh, so a nil here would be a wiring bug, not a config
+	// one.
+	for _, mc := range cfg.ListenMesh {
+		if mesh == nil {
+			return nil, fmt.Errorf("listen_mesh port %d: the yggdrasil mesh is not running", mc.Port)
+		}
+		ln, err := mesh.ListenMesh(mc.Port)
+		if err != nil {
+			return nil, err
+		}
+		addr := net.JoinHostPort(mesh.Address().String(), strconv.Itoa(mc.Port))
+		if err := serve("mesh "+addr, mc.Serve, mc.AllowFrom, ln); err != nil {
+			return nil, err
+		}
 	}
 	return servers, nil
 }
 
 // buildHandler composes the chi router for one listener: shared middleware plus
-// only the route groups named in the listener's serve list. web carries the
-// page-render options ([webui]: api_base + the resolved GitRepo button URL);
+// only the route groups in serve. It takes the two per-listener values rather
+// than a ListenConfig because a mesh listener ([[listen_mesh]]) has no bind
+// address to give it — the transport differs, the handler does not. web carries
+// the page-render options ([webui]: api_base + the resolved GitRepo button URL);
 // corsOrigins is [cors].allowed_origins (empty → no cross-origin headers);
 // federated is [federation].enabled, which decides whether the web UI's "/"
 // front door opens on the network or on the library.
-func buildHandler(lc config.ListenConfig, deps api.Deps, web config.WebUIConfig, corsOrigins []string, federated bool) (http.Handler, error) {
+func buildHandler(serve, allow []string, deps api.Deps, web config.WebUIConfig, corsOrigins []string, federated bool) (http.Handler, error) {
+	serves := func(group string) bool { return slices.Contains(serve, group) }
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
@@ -507,8 +575,8 @@ func buildHandler(lc config.ListenConfig, deps api.Deps, web config.WebUIConfig,
 	if deps.Auth != nil {
 		r.Use(auth.Identify(deps.Auth))
 	}
-	if len(lc.AllowFrom) > 0 {
-		mw, err := allowFrom(lc.AllowFrom)
+	if len(allow) > 0 {
+		mw, err := allowFrom(allow)
 		if err != nil {
 			return nil, err
 		}
@@ -520,17 +588,17 @@ func buildHandler(lc config.ListenConfig, deps api.Deps, web config.WebUIConfig,
 	// access path as a GET. See api.SupportHEAD.
 	r.Use(api.SupportHEAD)
 
-	if lc.Serves(config.GroupAPI) {
+	if serves(config.GroupAPI) {
 		api.RegisterAPI(r, deps)
 	}
-	if lc.Serves(config.GroupAdmin) {
+	if serves(config.GroupAdmin) {
 		// RegisterAdmin gates the destructive API by file.delete when auth is
 		// configured (deps.Auth set). The admin page itself is left ungated so
 		// it can render its login prompt.
 		api.RegisterAdmin(r, deps)
 		webui.RegisterAdminPage(r, web.APIBase, web.GitRepoURL()) // no-op in -tags nowebui builds
 	}
-	if lc.Serves(config.GroupWebUI) {
+	if serves(config.GroupWebUI) {
 		webui.Register(r, web.APIBase, web.GitRepoURL(), federated)
 	}
 	return r, nil

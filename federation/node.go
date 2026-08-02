@@ -5,7 +5,6 @@ package federation
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -18,8 +17,6 @@ import (
 	"time"
 
 	yggconfig "github.com/yggdrasil-network/yggdrasil-go/src/config"
-	"github.com/yggdrasil-network/yggdrasil-go/src/core"
-	"github.com/yggdrasil-network/yggstack/src/netstack"
 
 	"daemonlord.ygg/madshare/config"
 	"daemonlord.ygg/madshare/internal/version"
@@ -35,8 +32,10 @@ const Available = true
 // table, pairing, the refresh loop) lives in friendship.go and is active only
 // when a PeerStore is wired.
 type Node struct {
-	core   *core.Core
-	stack  *netstack.YggdrasilNetstack
+	// mesh is the transport this node runs on — the yggdrasil core, the netstack
+	// and the identity key (mesh.go). Adopted from the caller via WithMesh or
+	// built by Start; either way Node.Stop stops it.
+	mesh   *Mesh
 	srv    *http.Server
 	store  PeerStore
 	name   string
@@ -187,42 +186,37 @@ var (
 	}
 )
 
-// Start loads (or creates) the node key, brings up the yggdrasil core with the
-// configured underlay peers/listeners, and serves the federation protocol on
-// [MeshPort] of the node's mesh address. store persists the trusted-peer table
-// (nil disables friendship — F0 behaviour, used by narrow tests). The returned
-// Node must be Stop()ed on shutdown. logger receives yggdrasil's info/warn/error
+// Start serves the federation protocol on [MeshPort] of the node's mesh address
+// and brings the friendship layer up. store persists the trusted-peer table (nil
+// disables friendship — F0 behaviour, used by narrow tests). The returned Node
+// must be Stop()ed on shutdown. logger receives yggdrasil's info/warn/error
 // output and the node's own friendship events.
+//
+// The transport underneath comes from [WithMesh] when the caller already has one
+// (the server starts the mesh first, because [[listen_mesh]] can be served
+// without federation at all); otherwise Start brings one up from fc's own
+// key_file/peers/listen. Either way Node.Stop stops it.
 func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts ...Option) (*Node, error) {
 	var o nodeOptions
 	for _, opt := range opts {
 		opt(&o)
 	}
-	nodeCfg, err := loadOrCreateKey(fc.KeyFile)
+	mesh := o.mesh
+	if mesh == nil {
+		var err error
+		mesh, err = StartTransport(config.YggdrasilConfig{
+			KeyFile: fc.KeyFile,
+			Peers:   fc.Peers,
+			Listen:  fc.Listen,
+		}, logger)
+		if err != nil {
+			return nil, err
+		}
+	}
+	lis, err := mesh.ListenMesh(MeshPort)
 	if err != nil {
+		mesh.Stop()
 		return nil, err
-	}
-
-	var coreOpts []core.SetupOption
-	for _, l := range fc.Listen {
-		coreOpts = append(coreOpts, core.ListenAddress(l))
-	}
-	for _, p := range fc.Peers {
-		coreOpts = append(coreOpts, core.Peer{URI: p})
-	}
-	c, err := core.New(nodeCfg.Certificate, &coreLogger{logger}, coreOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("federation: start yggdrasil core: %w", err)
-	}
-	stack, err := netstack.CreateYggdrasilNetstack(c)
-	if err != nil {
-		c.Stop()
-		return nil, fmt.Errorf("federation: create netstack: %w", err)
-	}
-	lis, err := stack.ListenTCP(&net.TCPAddr{IP: c.Address(), Port: MeshPort})
-	if err != nil {
-		c.Stop()
-		return nil, fmt.Errorf("federation: listen on mesh address: %w", err)
 	}
 
 	name := CleanPeerName(fc.Name)
@@ -233,13 +227,12 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 	}
 	transferCtx, transferCancel := context.WithCancel(context.Background())
 	n := &Node{
-		signKey:        ed25519.PrivateKey(nodeCfg.PrivateKey),
+		signKey:        mesh.signKey,
 		graphAccept:    map[string]time.Time{},
 		intervals:      o.intervals.withDefaults(defaultIntervals),
 		timeouts:       o.timeouts.withDefaults(defaultTimeouts),
 		discovery:      o.discovery.withDefaults(defaultDiscovery),
-		core:           c,
-		stack:          stack,
+		mesh:           mesh,
 		store:          store,
 		name:           name,
 		logger:         logger,
@@ -261,7 +254,7 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 	// signal — a self-ping can't test it, HandleLocal loops local traffic inside
 	// gVisor). When it reports dead, the merged browse fails open rather than
 	// blanking the view (docs/architecture/federation.md §Availability).
-	n.readerAlive = stack.InboundReaderAlive
+	n.readerAlive = mesh.InboundReaderAlive
 	n.client = &http.Client{
 		Transport: &http.Transport{DialContext: n.DialContext},
 		Timeout:   n.timeouts.Control,
@@ -302,22 +295,21 @@ func (n *Node) Stop() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = n.srv.Shutdown(ctx)
-	// Tear the userspace netstack down before the core: aborting the stack's
-	// endpoints while the mesh is still up lets their RSTs reach peers, and the
-	// inbound reader then exits on the core's own shutdown. Skipping this leaves
-	// a full gVisor stack (and its goroutines) running for the life of the
-	// process — harmless for a server that stops one node at exit, cumulative
-	// for anything that starts and stops many.
-	n.stack.Close()
-	n.core.Stop()
+	// The protocol listener is down; the transport goes with it, since Start
+	// adopted whichever Mesh it was given (mesh.go, "Ownership").
+	n.mesh.Stop()
 }
 
+// Mesh returns the transport this node runs on, so a caller that let Start build
+// it can still serve its own [[listen_mesh]] listeners on the same address.
+func (n *Node) Mesh() *Mesh { return n.mesh }
+
 // Address returns the node's self-certifying mesh IPv6 address (200::/7).
-func (n *Node) Address() net.IP { return n.core.Address() }
+func (n *Node) Address() net.IP { return n.mesh.Address() }
 
 // PublicKeyHex returns the node's ed25519 public key — its madnetwork identity
 // — as lowercase hex.
-func (n *Node) PublicKeyHex() string { return hex.EncodeToString(n.core.PublicKey()) }
+func (n *Node) PublicKeyHex() string { return n.mesh.PublicKeyHex() }
 
 // Name returns the node-card display name ([federation].name, hostname
 // fallback) — the label the merged browse uses for the self holder.
@@ -326,7 +318,7 @@ func (n *Node) Name() string { return n.name }
 // DialContext dials through the mesh (for http.Transport.DialContext), so
 // outbound protocol calls reach peers' mesh listeners without any TUN.
 func (n *Node) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	return n.stack.DialContext(ctx, network, address)
+	return n.mesh.DialContext(ctx, network, address)
 }
 
 // InboundHealthy reports whether this node's inbound mesh path appears to be

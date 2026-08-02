@@ -796,7 +796,18 @@ type nodeOptions struct {
 	intervals   Intervals
 	timeouts    Timeouts
 	discovery   Discovery
+	mesh        *Mesh
 }
+
+// WithMesh starts the node on an already-running transport instead of building
+// one from the [federation] key/peers/listen keys.
+//
+// The server uses it because the mesh is startable on its own — [[listen_mesh]]
+// serves the web UI on the node's mesh address whether or not madnetwork is
+// enabled (docs/plans/mesh-listener.md §4), so main brings the transport up
+// first and only then decides whether a Node goes on top. Start adopts the
+// mesh: Node.Stop stops it, and the caller must not.
+func WithMesh(m *Mesh) Option { return func(o *nodeOptions) { o.mesh = m } }
 
 // Discovery bounds how far past the friend ring this node pulls catalogs (F7
 // item 5, docs/architecture/federation.md §Discovery beyond the friend ring).

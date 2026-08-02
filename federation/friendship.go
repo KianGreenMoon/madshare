@@ -739,7 +739,7 @@ func (n *Node) depeerBlocked(peers []*Peer) {
 	if len(blocked) == 0 {
 		return
 	}
-	for _, info := range n.core.GetPeers() {
+	for _, info := range n.mesh.core.GetPeers() {
 		if len(info.Key) == 0 {
 			continue // a link that has not finished its handshake claims no key
 		}
@@ -763,7 +763,7 @@ func (n *Node) depeerBlocked(peers []*Peer) {
 		}
 		// The empty source interface matches how peers are configured here
 		// (core.Peer{URI} with no SourceInterface) and how listeners accept.
-		if err := n.core.RemovePeer(u, ""); err != nil {
+		if err := n.mesh.core.RemovePeer(u, ""); err != nil {
 			continue
 		}
 		n.logger.Printf("federation: de-peered blocked node %q (%s) on the underlay — %s",

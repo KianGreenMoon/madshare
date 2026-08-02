@@ -286,7 +286,63 @@ Manage users and access from the `/admin` page; review staged uploads in
 
 ## Deployment
 
-Madshare itself speaks plain HTTP and is meant to run behind a reverse proxy that
+### Reachable from anywhere, without a reverse proxy
+
+The shortest path to a server you can reach from outside your LAN. Madshare
+embeds an [Yggdrasil](https://yggdrasil-network.github.io) node (userspace
+netstack — **no TUN device and no root**), and a `[[listen_mesh]]` block serves
+the web UI and API on **that node's own address**:
+
+```toml
+[[listen]]                          # local admin
+addr  = "127.0.0.1"
+port  = 3000
+serve = ["api", "webui", "admin"]
+
+[[listen_mesh]]                     # you, from anywhere
+port  = 80
+serve = ["api", "webui", "admin"]
+
+[yggdrasil]
+enabled = true
+peers   = ["tls://peer.example:12345"]   # any public peer; see the list below
+```
+
+Pick a peer from
+[publicpeers.neilalexander.dev](https://publicpeers.neilalexander.dev/), start
+the server, and it logs the address to hand out:
+
+```
+yggdrasil: mesh up — address 201:abcd:… (key file ./data/federation.key)
+listening on mesh [201:abcd:…]:80 serving [api webui admin]
+```
+
+Anyone running Yggdrasil then reaches you at `http://[201:abcd:…]/` — brackets
+required, no port, behind any NAT, on any network that lets you out at all. **No
+certificate, no domain, no port forwarding, no `setcap`**: port 80 is free
+because the netstack is not a kernel socket, the overlay encrypts end to end,
+and the address is derived from the node's public key, so it is self-certifying
+the way a `.onion` is.
+
+Three things to know:
+
+- **That address is not reachable from the server itself** (there is no TUN
+  device). Keep the loopback `[[listen]]` for local administration — hence both
+  blocks above.
+- **Its audience is the whole Yggdrasil network**, not a chosen list.
+  Authentication is the only gate, exactly as on a LAN listener; serving `admin`
+  there is supported (that is the point — administering your node from your
+  phone) and warns at startup so the exposure is never a surprise.
+- **This does not federate you.** `[yggdrasil]` is the transport;
+  [`[federation]`](#deploying-a-madnetwork-node) is the madnetwork feature on top
+  of it, and enabling it later keeps the same key and therefore the same address.
+
+Full reference: [`docs/architecture/listeners-and-config.md`](docs/architecture/listeners-and-config.md)
+§4.3c.
+
+### Behind a reverse proxy
+
+Madshare itself speaks plain HTTP and can also run behind a reverse proxy that
 terminates TLS (or on an already-encrypted overlay like Yggdrasil). A typical
 production layout binds Madshare to loopback and lets nginx face the network:
 
@@ -302,7 +358,8 @@ Ready-to-edit reverse-proxy examples are in
 
 - `madshare-ssl.conf` — public deployment, terminates HTTPS, HTTP→HTTPS redirect.
 - `madshare-yggdrasil.conf` — plain HTTP bound to a Yggdrasil address (no TLS;
-  the overlay encrypts the link).
+  the overlay encrypts the link). Only needed with a *system* yggdrasil daemon;
+  `[[listen_mesh]]` above reaches the mesh with no proxy and no root at all.
 
 Key proxy concerns (covered in the examples): set `client_max_body_size` ≥
 `storage.max_upload_mb`, and disable response buffering + forward `Range` for

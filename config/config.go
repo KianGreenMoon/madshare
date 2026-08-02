@@ -48,6 +48,15 @@ type Config struct {
 	Sources    SourcesConfig    `toml:"sources"`
 	Federation FederationConfig `toml:"federation"`
 
+	// ListenMesh serves the same route groups as Listen, but on this node's own
+	// Yggdrasil address over the federation netstack rather than on a kernel
+	// socket. Requires the mesh (MeshEnabled); see config/mesh.go and
+	// docs/plans/mesh-listener.md.
+	ListenMesh []MeshListenConfig `toml:"listen_mesh"`
+	// Yggdrasil is the mesh transport, separable from the madnetwork feature set
+	// in Federation.
+	Yggdrasil YggdrasilConfig `toml:"yggdrasil"`
+
 	// warnings accumulates non-fatal advisories produced while loading (e.g.
 	// clamped out-of-range worker counts). It is unexported so it is not a TOML
 	// field; Warnings() returns it alongside the listener-derived advisories.
@@ -365,7 +374,15 @@ func Load(path string) (Config, error) {
 		// A present file fully replaces the default listener list rather than
 		// appending to it, so the user's [[listen]] entries are authoritative.
 		cfg.Listen = nil
-		if _, err := toml.DecodeFile(path, &cfg); err != nil {
+		md, err := toml.DecodeFile(path, &cfg)
+		if err != nil {
+			return cfg, err
+		}
+		undecoded := make([]string, 0, len(md.Undecoded()))
+		for _, k := range md.Undecoded() {
+			undecoded = append(undecoded, k.String())
+		}
+		if err := rejectUnknownMeshKeys(undecoded); err != nil {
 			return cfg, err
 		}
 		if cfg.Listen == nil {
@@ -379,6 +396,7 @@ func Load(path string) (Config, error) {
 		cfg.Auth.InitialAdminPassword = pw
 	}
 	cfg.resolveDataDir()
+	cfg.resolveMesh()
 	cfg.resolveStorageWorkers()
 	cfg.resolveGitRepo()
 	cfg.resolveSources()
@@ -407,9 +425,9 @@ func (c *Config) resolveDataDir() {
 	if c.Storage.VariantsDir == "" {
 		c.Storage.VariantsDir = filepath.Join(c.DataDir, "variants")
 	}
-	if c.Federation.KeyFile == "" {
-		c.Federation.KeyFile = filepath.Join(c.DataDir, "federation.key")
-	}
+	// The node key is derived by resolveMesh, which runs next: it belongs to the
+	// transport ([yggdrasil].key_file), and must fold the deprecated
+	// [federation].key_file alias in before defaulting.
 }
 
 // LinksDir returns the root of the shared "links" storage (the single dir of
@@ -568,35 +586,50 @@ func (c Config) validate() error {
 	if err := c.validateFederation(); err != nil {
 		return err
 	}
+	if err := c.validateMesh(); err != nil {
+		return err
+	}
 	return c.validateListeners()
 }
 
 // validateFederation rejects malformed underlay URIs. Syntax is checked even
-// when federation is disabled, so a typo does not lie dormant until the flag is
+// when the mesh is disabled, so a typo does not lie dormant until the flag is
 // flipped. A listen entry with a dial-only scheme (socks) is a hard error too.
+//
+// Both sections are walked, [federation] first: after resolveMesh an aliased
+// value appears in both, and checking the deprecated section first means the
+// error names whichever one the operator actually wrote it in.
 func (c Config) validateFederation() error {
-	check := func(field, uri string, listening bool) error {
+	check := func(section, field, uri string, listening bool) error {
 		u, err := url.Parse(uri)
 		if err != nil || u.Scheme == "" || (u.Host == "" && u.Scheme != "unix") {
-			return fmt.Errorf("config: federation.%s has invalid URI %q (want scheme://host:port)", field, uri)
+			return fmt.Errorf("config: %s.%s has invalid URI %q (want scheme://host:port)", section, field, uri)
 		}
 		s, ok := federationSchemes[u.Scheme]
 		if !ok {
-			return fmt.Errorf("config: federation.%s URI %q has unknown scheme %q (valid: tcp, tls, quic, ws, wss, unix, socks, sockstls)", field, uri, u.Scheme)
+			return fmt.Errorf("config: %s.%s URI %q has unknown scheme %q (valid: tcp, tls, quic, ws, wss, unix, socks, sockstls)", section, field, uri, u.Scheme)
 		}
 		if listening && s.peersOnly {
-			return fmt.Errorf("config: federation.%s URI %q: scheme %q is dial-only and cannot be listened on", field, uri, u.Scheme)
+			return fmt.Errorf("config: %s.%s URI %q: scheme %q is dial-only and cannot be listened on", section, field, uri, u.Scheme)
 		}
 		return nil
 	}
-	for _, p := range c.Federation.Peers {
-		if err := check("peers", p, false); err != nil {
-			return err
+	for _, sec := range []struct {
+		name           string
+		peers, listens []string
+	}{
+		{"federation", c.Federation.Peers, c.Federation.Listen},
+		{"yggdrasil", c.Yggdrasil.Peers, c.Yggdrasil.Listen},
+	} {
+		for _, p := range sec.peers {
+			if err := check(sec.name, "peers", p, false); err != nil {
+				return err
+			}
 		}
-	}
-	for _, l := range c.Federation.Listen {
-		if err := check("listen", l, true); err != nil {
-			return err
+		for _, l := range sec.listens {
+			if err := check(sec.name, "listen", l, true); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -726,10 +759,12 @@ func (c Config) Warnings() []string {
 	if slices.Contains(c.CORS.AllowedOrigins, "*") && len(c.CORS.AllowedOrigins) > 1 {
 		w = append(w, `cors.allowed_origins contains "*" plus specific origins; "*" already allows every origin, so the specific entries are redundant`)
 	}
-	// An enabled federation node with neither outbound peers nor an underlay
-	// listener cannot reach the mesh at all (F0 has no multicast discovery).
-	if c.Federation.Enabled && len(c.Federation.Peers) == 0 && len(c.Federation.Listen) == 0 {
-		w = append(w, "federation.enabled is set but neither federation.peers nor federation.listen is configured; the node starts but is unreachable on the mesh")
+	// A mesh node with neither outbound peers nor an underlay listener cannot
+	// reach the mesh at all (there is no multicast discovery). Worth flagging
+	// whichever way the mesh was switched on, since a transport-only node with
+	// no peers is a [[listen_mesh]] nobody can ever connect to.
+	if c.MeshEnabled() && len(c.Yggdrasil.Peers) == 0 && len(c.Yggdrasil.Listen) == 0 {
+		w = append(w, "the yggdrasil mesh is enabled but neither yggdrasil.peers nor yggdrasil.listen is configured; the node starts but is unreachable on the mesh")
 	}
-	return w
+	return append(w, c.meshWarnings()...)
 }

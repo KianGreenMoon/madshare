@@ -1,8 +1,10 @@
 # The mesh listener — serving madshare on the node's own Yggdrasil address
 
-**Status:** designed, not built. On ship, the durable parts fold into
+**Status:** BUILT 2026-08-02. The operator-facing reference now lives in
 [`docs/architecture/listeners-and-config.md`](../architecture/listeners-and-config.md)
-(a new §4.5 + examples) and this file is deleted.
+§4.3c / §5.3a / §6.7 and in the README; this file is kept for the *reasoning* —
+the gate, what transport-only deliberately does not start, and the deferred
+items — until those are folded in and it is deleted.
 
 ## 1. Motivation
 
@@ -398,65 +400,68 @@ there is no plaintext-downgrade path for an attacker to steal it over.
 
 ## 9. Implementation plan
 
-Five touchpoints, in order:
+Built as follows. No migration, no schema change, no new dependency: every piece
+of machinery this needed was already in the binary and already carrying the
+madnetwork protocol.
 
-1. **Split `federation.Start` in two.** The transport-only mode (§4) needs the
-   core and netstack without the protocol listener or the loops, and the
-   type system should be what enforces that rather than a comment:
+1. **`federation/mesh.go` — the transport as its own type.** `Mesh` (identity
+   key, `core.Core`, netstack) with `StartTransport(config.YggdrasilConfig,
+   *log.Logger)`, `Address`, `PublicKeyHex`, `DialContext`, `ListenMesh(port)`,
+   `InboundReaderAlive` and `Stop`. `Node` holds a `*Mesh` where it used to hold
+   `core` + `stack` and delegates to it; `Mesh.Stop` owns the teardown ordering
+   (`stack.Close()` → `core.Stop()`) that `Node.Stop` used to inline. Stubs in
+   `node_stub.go` for `-tags nofederation`.
 
-   ```go
-   // Mesh is the transport: identity key, yggdrasil core, netstack. No protocol,
-   // no friendship, no catalog.
-   func StartTransport(yc config.YggdrasilConfig, logger *log.Logger) (*Mesh, error)
-   func (m *Mesh) Address() net.IP
-   func (m *Mesh) ListenMesh(port int) (net.Listener, error)   // stack.ListenTCP
-   func (m *Mesh) Stop()
+   Distinct types are the point: `Deps.Federation` takes a `*Node`, so handing it
+   a transport-only mesh is a compile error rather than a half-working
+   `/api/madnetwork`. It is also the seam the deferred build split (§8) cuts
+   along.
 
-   // Node is madnetwork on top of a Mesh — everything Start does today.
-   func Start(m *Mesh, fc config.FederationConfig, store PeerStore, logger *log.Logger, opts ...Option) (*Node, error)
-   ```
+   `Start` **keeps its signature** and adopts a mesh via the new
+   `federation.WithMesh(m)` option, building its own from `fc`'s
+   key_file/peers/listen when none is given. Threading a `*Mesh` parameter
+   through instead would have rewritten sixteen call sites — fifteen of them
+   tests that have no interest in the distinction — to express an ownership rule
+   that a doc comment states precisely: whoever creates a Mesh stops it, except
+   that `Start` adopts it and `Node.Stop` then stops it.
 
-   `Node` gains a `*Mesh` field where it currently has `core` + `stack`, and
-   delegates `Address`/`DialContext`/`ListenMesh` to it; `Node.Stop` keeps
-   today's ordering (servers → `stack.Close()` → `core.Stop()`), which now lives
-   in `Mesh.Stop`. Making these **distinct types** is the point: `Deps.Federation`
-   takes a `*Node`, so handing it a transport-only mesh is a compile error rather
-   than a half-working `/api/madnetwork`. It is also the seam the deferred build
-   split (§8) would cut along. Matching stubs in `federation/node_stub.go`.
+2. **`config/mesh.go`** — `MeshListenConfig{Port, Serve, AllowFrom}` +
+   `Config.ListenMesh`, `YggdrasilConfig{Enabled *bool, KeyFile, Peers, Listen}`,
+   `Config.MeshEnabled()` (the §4 table, resolved once), `resolveMesh` (folds the
+   deprecated `[federation]` transport aliases, derives the key path, applies the
+   port default), `validateMesh` (§5) and `rejectUnknownMeshKeys` — the last
+   scoped to the two new sections, so `addr` on a mesh listener is an error
+   naming the reason rather than a silent no-op. `validateFederation` walks
+   `[federation]` before `[yggdrasil]` so an aliased bad URI is reported against
+   the section the operator actually wrote it in. Mesh entries are absent from
+   the kernel bind-conflict walk by construction.
 
-2. **`config`** — `MeshListenConfig{Port, Serve, AllowFrom}` +
-   `Config.ListenMesh []MeshListenConfig` (`toml:"listen_mesh"`), and
-   `YggdrasilConfig{Enabled *bool, KeyFile, Peers, Listen}` (`toml:"yggdrasil"`).
-   `Load` **normalises**: it folds the deprecated `[federation]` transport keys
-   into `[yggdrasil]` where the latter is unset and resolves the §4 table into
-   one `Config.MeshEnabled() bool`, so nothing downstream ever has to re-derive
-   either. Then the §5 rules, and exclude mesh entries from the kernel
-   bind-conflict walk at `config/config.go:648`. Tests in `config/config_test.go`.
+3. **`madshare.go`** — the mesh comes up when `cfg.MeshEnabled()`, the node only
+   when `cfg.Federation.Enabled` (with `WithMesh`), and `deps.Federation` is
+   assigned in that second branch alone (§4.2). Shutdown stops exactly one of the
+   two. The `federation.Available` gate now also fires for `[yggdrasil].enabled`,
+   naming whichever key asked for it (§4.1), and `requireFingerprinting` stays on
+   `cfg.Federation.Enabled`.
 
-3. **`madshare.go`** — bring the mesh up when `cfg.MeshEnabled()`, then the node
-   on top of it only when `cfg.Federation.Enabled`; `deps.Federation` is assigned
-   in the second branch alone (§4.2). The existing `federation.Available` gate at
-   `madshare.go:72` now also fires for `[yggdrasil].enabled` (§4.1), and
-   `requireFingerprinting` stays on `cfg.Federation.Enabled` — do not move it.
+4. **`startListeners`/`buildHandler`** — `buildHandler` now takes `serve []string,
+   allow []string` rather than a `ListenConfig`, since a mesh listener has no bind
+   address to give it; `startListeners` shares one `serve` closure across both
+   kinds, so the two listener types cannot drift in middleware or route groups.
 
-4. **`startListeners`** takes the `*federation.Mesh` and, for each mesh entry,
-   builds the handler through the **existing** `buildHandler` (mesh entries need
-   a `ListenConfig`-shaped view for it, or `buildHandler` takes `serve []string`
-   + `allowFrom []string` directly) and serves it on `mesh.ListenMesh(port)`.
-   The mesh is already started before `startListeners` (`madshare.go:353–383`),
-   so the ordering holds. Graceful shutdown is unchanged — an `http.Server` over
-   a netstack listener shuts down like any other, and the stack is closed after
-   the servers.
+5. **Tests** — `config/mesh_test.go` (the gate table, both refusals, the schema
+   rules, alias folding and precedence, the section-naming of URI errors, the
+   admin warning) and `federation/mesh_test.go`, whose main case peers two bare
+   `Mesh`es over a loopback underlay and fetches an ordinary `http.Handler` on
+   port 80 across the mesh with **no `Node` on either side** — which is the claim
+   the whole feature rests on. `federation/meshport_test.go` pins
+   `MeshPort == config.MeshProtocolPort`, the duplicated constant the port
+   reservation is checked against.
 
-5. **Docs** — `madshare.toml.example`, a new §4.5 + example in
-   `listeners-and-config.md`, a README section on reaching a node without a
-   reverse proxy (which now belongs *outside* *Deploying a madnetwork node*,
-   since it no longer requires federating), and a note in
-   `contrib/nginx/README.md` that the yggdrasil vhost is now the *alternative*
-   rather than the only route.
-
-No migration, no schema change, no new dependency: every piece of machinery this
-needs is already in the binary and already carrying the madnetwork protocol.
+6. **Docs** — `madshare.toml.example`, `listeners-and-config.md` §4.3c / §5.3a /
+   §6.7 / §7 / §8-5a, a README *Reachable from anywhere, without a reverse proxy*
+   section (outside *Deploying a madnetwork node*, since it no longer requires
+   federating), and a note in `contrib/nginx/README.md` demoting the yggdrasil
+   vhost to the alternative route.
 
 ## 10. Decisions
 

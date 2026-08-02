@@ -14,6 +14,14 @@ socket and let nginx handle TLS / the public-facing interface. See the
 | `madshare-ssl.conf` | Public deployment. Terminates HTTPS, redirects HTTP→HTTPS, ACME-ready. |
 | `madshare-yggdrasil.conf` | Plain HTTP bound to a [Yggdrasil](https://yggdrasil-network.github.io/) address. No TLS — Yggdrasil encrypts the link layer. |
 
+> **The Yggdrasil vhost is now the alternative, not the only route.** It assumes
+> a *system* yggdrasil daemon (root + a TUN device), with nginx in front because
+> port 80 is a privileged kernel socket. Madshare can instead serve its own
+> embedded mesh address directly — `[[listen_mesh]]` in `madshare.toml.example`,
+> no daemon, no root, no proxy, and per-client login throttling that works
+> (see the note below). Use this file when you already run Yggdrasil system-wide
+> and want the host's address rather than the app's own.
+
 ## Notes
 
 - **Upload size:** `client_max_body_size` must be at least `storage.max_upload_mb`

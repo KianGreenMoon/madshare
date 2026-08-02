@@ -36,6 +36,22 @@ serve = ["api", "webui", "admin"]
 #serve = ["api"]
 #allow_from = ["192.168.1.0/24"]   # optional source-IP allowlist (not auth)
 
+# [[listen_mesh]] serves the same route groups on THIS NODE'S OWN Yggdrasil
+# address, over the embedded userspace netstack — the no-reverse-proxy way to be
+# reachable from anywhere. No certificate, no domain, no port forwarding, no
+# root: port 80 is free here because it is not a kernel socket. Requires the
+# mesh ([yggdrasil] or [federation] below) and a build with federation in it.
+#
+# There is no addr: a node has exactly one mesh address and derives it from its
+# key. Port defaults to 80; 1314 is reserved for the madnetwork protocol.
+#
+# GOTCHA: that address is NOT reachable from this host (there is no TUN device),
+# so keep a [[listen]] on loopback for local administration — as above.
+#[[listen_mesh]]
+#port  = 80
+#serve = ["api", "webui"]      # add "admin" to administer from off-host; its
+                               # audience is the whole mesh, so auth is the gate
+
 # Only set api_base for a SEPARATELY hosted web UI pointing at a remote backend.
 # Leave empty (or omit) for the bundled server so the UI uses relative URLs.
 #
@@ -82,13 +98,34 @@ max_upload_mb = 500          # per-request upload cap, in MiB
 # user_max_parallel_workers   = 0   # concurrent uploads per user (0 = unlimited; no admin bypass)
 # image_processing_workers    = 0   # cover-image resize goroutines; 0 = auto (number of CPUs)
 
+# [yggdrasil] is the mesh TRANSPORT: the identity key, the underlay peering, and
+# therefore this node's address. It is separable from [federation] below, which
+# is the madnetwork FEATURE (friendship, catalogs, sharing scope). Enabling the
+# transport alone gives a server a stable global address it can be reached at —
+# see [[listen_mesh]] above — while federating with nobody.
+#
+# enabled is inferred from [federation].enabled when omitted, so a config written
+# before the split keeps working; setting it to false while federation is enabled
+# is an error, not an override (madnetwork has no other transport).
+#
+# key_file IS the node identity (PEM ed25519 — the mesh address derives from it,
+# so back it up; losing it means coming back as a stranger). peers are outbound
+# underlay URIs to join the mesh; listen accepts incoming peerings (backbone
+# nodes only — a node behind NAT needs neither).
+#
+# These three may still be written under [federation] (deprecated aliases) and an
+# explicit [yggdrasil] value wins. Requires a build WITHOUT -tags nofederation.
+#[yggdrasil]
+#enabled  = true
+#key_file = "./data/federation.key"           # defaults to <data_dir>/federation.key
+#peers    = ["tls://peer.example:12345"]      # tcp/tls/quic/ws/wss/unix/socks/sockstls
+#listen   = ["tls://0.0.0.0:12345"]           # tcp/tls/quic/ws/wss/unix
+
 # [federation] controls the embedded madnetwork node (docs/architecture/federation.md).
-# Disabled by default; requires a binary built WITHOUT -tags nofederation.
-# key_file is the node's madnetwork identity (PEM ed25519; the mesh address
-# derives from it — back it up, losing it means a new identity). peers are
-# outbound underlay URIs to join the mesh; listen accepts incoming peerings
-# (backbone nodes). The madnetwork protocol itself is served inside the mesh
-# on port 1314 of the node's mesh address — no host port is opened.
+# Disabled by default; requires a binary built WITHOUT -tags nofederation, and
+# implies [yggdrasil].enabled since madnetwork is served over the mesh.
+# The madnetwork protocol itself is served inside the mesh on port 1314 of the
+# node's mesh address — no host port is opened.
 # name is the display name shown on this node's card and to peers during
 # pairing (host name when unset) — purely descriptive, identity is the key.
 # Friendships are managed on /admin/network (exchange node cards out-of-band).
@@ -124,9 +161,7 @@ max_upload_mb = 500          # per-request upload cap, in MiB
 #[federation]
 #enabled             = false
 #name                = "my madshare"           # defaults to the host name
-#key_file            = "./data/federation.key" # defaults to <data_dir>/federation.key
-#peers               = ["tls://peer.example:12345"] # tcp/tls/quic/ws/wss/unix/socks/sockstls
-#listen              = ["tls://0.0.0.0:12345"] # tcp/tls/quic/ws/wss/unix
+# key_file / peers / listen moved to [yggdrasil] above; still accepted here.
 #seed_rate_kib       = 0                        # 0 = unlimited outbound seeding rate (everyone)
 #member_rate_kib     = 0                        # KiB/s to all non-friends together
 #per_member_rate_kib = 0                        # KiB/s to any one non-friend

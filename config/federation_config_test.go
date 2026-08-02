@@ -17,8 +17,11 @@ func TestLoad_Federation_Defaults(t *testing.T) {
 	if cfg.Federation.Enabled {
 		t.Error("federation should be disabled by default")
 	}
-	if cfg.Federation.KeyFile != filepath.Join("data", "federation.key") {
-		t.Errorf("KeyFile = %q, want data/federation.key (derived from data_dir)", cfg.Federation.KeyFile)
+	// The node key belongs to the transport now ([yggdrasil].key_file); the path
+	// and the default are unchanged, because it IS the node's identity and
+	// renaming it would orphan every existing node.
+	if cfg.Yggdrasil.KeyFile != filepath.Join("data", "federation.key") {
+		t.Errorf("KeyFile = %q, want data/federation.key (derived from data_dir)", cfg.Yggdrasil.KeyFile)
 	}
 }
 
@@ -32,8 +35,10 @@ func TestLoad_Federation_ExplicitKeyFileOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Federation.KeyFile != "/etc/madshare/node.key" {
-		t.Errorf("KeyFile = %q, want the explicit override", cfg.Federation.KeyFile)
+	// Written under the deprecated [federation] alias, so it must fold through to
+	// the transport that actually reads it.
+	if cfg.Yggdrasil.KeyFile != "/etc/madshare/node.key" {
+		t.Errorf("KeyFile = %q, want the explicit override", cfg.Yggdrasil.KeyFile)
 	}
 }
 
@@ -91,7 +96,7 @@ func TestLoad_Federation_EnabledWithoutPeersWarns(t *testing.T) {
 	}
 	found := false
 	for _, w := range cfg.Warnings() {
-		if strings.Contains(w, "federation") && strings.Contains(w, "unreachable") {
+		if strings.Contains(w, "yggdrasil") && strings.Contains(w, "unreachable") {
 			found = true
 		}
 	}

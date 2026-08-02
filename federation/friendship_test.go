@@ -706,7 +706,7 @@ func TestFriendshipHandshake(t *testing.T) {
 	// cancels yggdrasil's retry, the link must stay gone rather than come back on
 	// the next dial. (Left last: it takes the transport down.)
 	hasUnderlay := func(n *Node, key string) bool {
-		for _, info := range n.core.GetPeers() {
+		for _, info := range n.mesh.core.GetPeers() {
 			if hex.EncodeToString(info.Key) == key {
 				return true
 			}

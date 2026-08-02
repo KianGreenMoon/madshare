@@ -23,12 +23,37 @@ var errCompiledOut = errors.New("federation compiled out (-tags nofederation)")
 // Node is a placeholder; no instance is ever created in nofederation builds.
 type Node struct{}
 
+// Mesh is a placeholder for the yggdrasil transport (mesh.go). Stripping
+// federation strips the mesh with it: -tags nofederation removes the yggdrasil
+// and gVisor dependencies from the binary entirely, so there is no transport
+// left to serve [[listen_mesh]] on either. main refuses such a config at
+// startup rather than starting without it.
+type Mesh struct{}
+
 // Start always fails in nofederation builds.
 func Start(config.FederationConfig, PeerStore, *log.Logger, ...Option) (*Node, error) {
 	return nil, errCompiledOut
 }
 
+// StartTransport always fails in nofederation builds.
+func StartTransport(config.YggdrasilConfig, *log.Logger) (*Mesh, error) {
+	return nil, errCompiledOut
+}
+
+func (m *Mesh) Stop()                    {}
+func (m *Mesh) Address() net.IP          { return nil }
+func (m *Mesh) PublicKeyHex() string     { return "" }
+func (m *Mesh) InboundReaderAlive() bool { return false }
+func (m *Mesh) ListenMesh(int) (net.Listener, error) {
+	return nil, errCompiledOut
+}
+
+func (m *Mesh) DialContext(context.Context, string, string) (net.Conn, error) {
+	return nil, errCompiledOut
+}
+
 func (n *Node) Stop()                {}
+func (n *Node) Mesh() *Mesh          { return nil }
 func (n *Node) Address() net.IP      { return nil }
 func (n *Node) PublicKeyHex() string { return "" }
 func (n *Node) Name() string         { return "" }
