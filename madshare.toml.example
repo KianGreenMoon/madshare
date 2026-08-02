@@ -121,6 +121,14 @@ max_upload_mb = 500          # per-request upload cap, in MiB
 # underlay URIs to join the mesh; listen accepts incoming peerings (backbone
 # nodes only — a node behind NAT needs neither).
 #
+# Beside the key, startup writes two informational files (0644) so the address
+# and the identity are readable without the server running or a log to grep:
+#   <key_file>.pub          the public key, hex — what a friend identifies you by
+#   <key_file minus .key>.addr  the mesh address — what you hand out
+# With the default key that is data/federation.key.pub and data/federation.addr.
+# Nothing reads them back; they are outputs, so they are rewritten whenever they
+# disagree with the running identity, and deleting them just regenerates them.
+#
 # These three may still be written under [federation] (deprecated aliases) and an
 # explicit [yggdrasil] value wins. Requires a build WITHOUT -tags nofederation.
 #[yggdrasil]

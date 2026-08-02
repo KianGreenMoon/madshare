@@ -975,3 +975,36 @@ Note for whoever runs `meshlab check` on a lab where something was materialized:
 reasons rather than product ones — `vouched listener node is served…` wants 200
 but the blob is unpublished on that node, and two friend cases skip themselves.
 Judge the suite on a fresh lab.
+
+## Flake — `TestListenerNodeTokenCarriesTheAccountACL` under full-suite load (2026-08-02)
+
+Seen **once**, during a `go test ./...` run where the heavy packages (api,
+database, federation) were competing for the machine:
+
+```
+--- FAIL: TestListenerNodeTokenCarriesTheAccountACL (3.03s)
+    token_mesh_test.go:167: guest-only bearer fetching guest-playable content = 404, want 200
+```
+
+Not reproduced in seven subsequent runs — five of the test alone, two of the
+whole federation package (which was green immediately before and after, at 134s
+and 264s, the spread itself showing how load-dependent that package is). Noticed
+while adding the mesh listener's identity files; that change writes
+`federation.key.pub` / `federation.addr` at `StartTransport` and nothing reads
+them back, so there is no path from it to token audience resolution — but it is
+logged here rather than dismissed, because "unrelated" is a claim and one
+observation is not a refutation of it.
+
+Worth a look, since a real 404 came back rather than a timeout: `meshGet`'s
+`waitFor` retries only until the mesh answers *at all*, and returns the first
+status it gets, whatever it is. So the helper waits for the transport to
+converge but not for A to be able to **place the issuer** — if the vouching
+gossip record has not been accepted by the time the first response lands, the
+token arm of `serveAudience` correctly answers 404 and the test reads it as the
+verdict. `MembershipTTL: noMemo` removes the memo but not the acceptance step
+(`GraphAccept` is left at its 1-minute default here). The sibling case at
+token_mesh_test.go:125 wraps the same assertion in its own `waitFor` and did not
+fail.
+
+If that diagnosis holds, the fix is in the test seam rather than the product —
+the same shape as the two flakes closed in 3543480.

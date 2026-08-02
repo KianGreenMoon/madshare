@@ -318,6 +318,11 @@ yggdrasil: mesh up — address 201:abcd:… (key file ./data/federation.key)
 listening on mesh [201:abcd:…]:80 serving [api webui admin]
 ```
 
+It also drops that address in `data/federation.addr` and the node's public key in
+`data/federation.key.pub`, so neither needs a running server or a log to read
+back. They are informational only — nothing loads them, and deleting them just
+regenerates them on the next start.
+
 Anyone running Yggdrasil then reaches you at `http://[201:abcd:…]/` — brackets
 required, no port, behind any NAT, on any network that lets you out at all. **No
 certificate, no domain, no port forwarding, no `setcap`**: port 80 is free
@@ -488,6 +493,13 @@ the node's identity: lose it and you come back as a stranger who has to be
 re-friended by everyone. Back it up with your database, and never copy it to a
 second node — two hosts holding one key are one address as far as the mesh is
 concerned, so they collide rather than share the load.
+
+Beside it, startup writes `federation.key.pub` (the public key, hex — what a
+friend identifies this node by) and `federation.addr` (the mesh address). Both
+are informational: nothing reads them back, they hold no secret, and they are
+rewritten whenever they disagree with the running key, so they can never point
+at an identity this node no longer has. Only `federation.key` needs backing up
+— the other two derive from it.
 
 ### 3. Make a friend
 

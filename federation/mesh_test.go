@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -128,6 +129,104 @@ func TestNodeAdoptsMeshAndSharesTheAddress(t *testing.T) {
 	n.Stop() // adopted: this stops the mesh too
 	if _, err := mesh.ListenMesh(8081); err == nil {
 		t.Error("mesh still accepts listeners after Node.Stop; the transport was not stopped")
+	}
+}
+
+// The two facts an operator hands out — the address and the public key — land
+// beside the key file as plain text, so a script never has to parse a log line
+// or derive an address from an ed25519 key.
+func TestMeshWritesIdentityFiles(t *testing.T) {
+	dir := t.TempDir()
+	key := filepath.Join(dir, "federation.key")
+	m, err := StartTransport(config.YggdrasilConfig{KeyFile: key}, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatalf("StartTransport: %v", err)
+	}
+	defer m.Stop()
+
+	for path, want := range map[string]string{
+		key + ".pub":                          m.PublicKeyHex() + "\n",
+		filepath.Join(dir, "federation.addr"): m.Address().String() + "\n",
+	} {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Errorf("read %s: %v", filepath.Base(path), err)
+			continue
+		}
+		if string(got) != want {
+			t.Errorf("%s = %q, want %q", filepath.Base(path), got, want)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A public key and an address are things you publish; only the key
+		// itself is 0600.
+		if perm := info.Mode().Perm(); perm != 0o644 {
+			t.Errorf("%s mode = %o, want 644", filepath.Base(path), perm)
+		}
+	}
+}
+
+// They are derived outputs, so a stale one is corrected rather than trusted: an
+// .addr left over from a replaced key is a wrong address that looks
+// authoritative, which is worse than no file at all.
+func TestMeshRewritesStaleIdentityFiles(t *testing.T) {
+	dir := t.TempDir()
+	key := filepath.Join(dir, "federation.key")
+	addrFile := filepath.Join(dir, "federation.addr")
+	if err := os.WriteFile(key+".pub", []byte("deadbeef\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(addrFile, []byte("200:0000::1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := StartTransport(config.YggdrasilConfig{KeyFile: key}, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatalf("StartTransport: %v", err)
+	}
+	defer m.Stop()
+
+	if got, _ := os.ReadFile(addrFile); string(got) != m.Address().String()+"\n" {
+		t.Errorf("federation.addr = %q, want the running address %s", got, m.Address())
+	}
+	if got, _ := os.ReadFile(key + ".pub"); string(got) != m.PublicKeyHex()+"\n" {
+		t.Errorf("federation.key.pub = %q, want the running key", got)
+	}
+}
+
+// A read-only data dir is a legitimate deployment. A node that cannot write a
+// convenience file is still a perfectly good node.
+func TestMeshStartsWhenIdentityFilesCannotBeWritten(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: a read-only directory would not stop the write")
+	}
+	dir := t.TempDir()
+	key := filepath.Join(dir, "federation.key")
+	// Create the key first, then freeze the directory — loadOrCreateKey has to
+	// succeed for the identity-file write to be the thing under test.
+	m, err := StartTransport(config.YggdrasilConfig{KeyFile: key}, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+	m.Stop()
+	for _, f := range []string{key + ".pub", filepath.Join(dir, "federation.addr")} {
+		if err := os.Remove(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+
+	m2, err := StartTransport(config.YggdrasilConfig{KeyFile: key}, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatalf("start with an unwritable data dir: %v", err)
+	}
+	defer m2.Stop()
+	if m2.Address() == nil {
+		t.Error("node has no address")
 	}
 }
 

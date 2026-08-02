@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"strings"
 
 	"github.com/yggdrasil-network/yggdrasil-go/src/core"
 	"github.com/yggdrasil-network/yggstack/src/netstack"
@@ -68,12 +70,52 @@ func StartTransport(yc config.YggdrasilConfig, logger *log.Logger) (*Mesh, error
 		c.Stop()
 		return nil, fmt.Errorf("federation: create netstack: %w", err)
 	}
-	return &Mesh{
+	m := &Mesh{
 		core:    c,
 		stack:   stack,
 		logger:  logger,
 		signKey: ed25519.PrivateKey(nodeCfg.PrivateKey),
-	}, nil
+	}
+	m.writeIdentityFiles(yc.KeyFile)
+	return m, nil
+}
+
+// writeIdentityFiles drops this node's public key and mesh address beside the
+// key file, as <keyfile>.pub and <keyfile minus .key>.addr — with the default
+// key that is data/federation.key.pub and data/federation.addr.
+//
+// Pure convenience: nothing reads them back, they are not config, and deleting
+// them costs nothing. They exist because the two facts an operator constantly
+// needs — the address to hand out and the key a friend identifies this node by —
+// are otherwise only in a log line that scrolls away, or behind a running
+// server's admin page. A script that prints the address should not have to parse
+// logs or derive it from an ed25519 key.
+//
+// Rewritten whenever they disagree with the running identity, not merely created
+// when absent: they are derived outputs, and a stale .addr left over from a
+// replaced key is worse than no file at all — it is a wrong address that looks
+// authoritative. Deleting them still regenerates them, which is the "create if
+// missing" case.
+//
+// Never fatal. A read-only data dir is a legitimate deployment, and a node that
+// cannot write a convenience file is still a perfectly good node.
+func (m *Mesh) writeIdentityFiles(keyFile string) {
+	if keyFile == "" {
+		return
+	}
+	for path, content := range map[string]string{
+		keyFile + ".pub": m.PublicKeyHex() + "\n",
+		strings.TrimSuffix(keyFile, ".key") + ".addr": m.Address().String() + "\n",
+	} {
+		if existing, err := os.ReadFile(path); err == nil && string(existing) == content {
+			continue
+		}
+		// 0644, unlike the key's 0600: a public key and an address are things you
+		// publish, and the whole point is that anything on the host can read them.
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			m.logger.Printf("federation: could not write %s: %v (informational file only; the node is unaffected)", path, err)
+		}
+	}
 }
 
 // Address returns this node's yggdrasil address (200::/7), derived from its
