@@ -71,9 +71,9 @@ func main() {
 			log.Fatalf("listen[%d] serves %q but this binary was built with -tags nowebui; rebuild without that tag or drop %q", i, config.GroupWebUI, config.GroupWebUI)
 		}
 	}
-	for i, m := range cfg.ListenMesh {
+	for _, m := range cfg.MeshListeners() {
 		if m.Serves(config.GroupWebUI) && !webui.Available {
-			log.Fatalf("listen_mesh[%d] serves %q but this binary was built with -tags nowebui; rebuild without that tag or drop %q", i, config.GroupWebUI, config.GroupWebUI)
+			log.Fatalf("listen_mesh[%d] serves %q but this binary was built with -tags nowebui; rebuild without that tag or drop %q", m.Index, config.GroupWebUI, config.GroupWebUI)
 		}
 	}
 	// Feature gate: the mesh may only be enabled if it is compiled in. Separating
@@ -540,9 +540,9 @@ func startListeners(cfg config.Config, deps api.Deps, mesh *federation.Mesh) ([]
 	// federation.Mesh.ListenMesh). config.validateMesh has already refused a mesh
 	// listener without a mesh, so a nil here would be a wiring bug, not a config
 	// one.
-	for _, mc := range cfg.ListenMesh {
+	for _, mc := range cfg.MeshListeners() {
 		if mesh == nil {
-			return nil, fmt.Errorf("listen_mesh port %d: the yggdrasil mesh is not running", mc.Port)
+			return nil, fmt.Errorf("listen_mesh[%d] port %d: the yggdrasil mesh is not running", mc.Index, mc.Port)
 		}
 		ln, err := mesh.ListenMesh(mc.Port)
 		if err != nil {

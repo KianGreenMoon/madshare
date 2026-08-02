@@ -42,14 +42,22 @@ serve = ["api", "webui", "admin"]
 # root: port 80 is free here because it is not a kernel socket. Requires the
 # mesh ([yggdrasil] or [federation] below) and a build with federation in it.
 #
+# enabled DEFAULTS TO FALSE and must be set explicitly — writing the block is
+# not enough, and enabling federation does not switch it on. Unlike a [[listen]]
+# address you type yourself, this one is derived from the node key and its
+# audience is the WHOLE Yggdrasil network, so it is never inherited by accident
+# from an example or someone else's config. A block left off warns at startup,
+# so it cannot silently do nothing either.
+#
 # There is no addr: a node has exactly one mesh address and derives it from its
 # key. Port defaults to 80; 1314 is reserved for the madnetwork protocol.
 #
 # GOTCHA: that address is NOT reachable from this host (there is no TUN device),
 # so keep a [[listen]] on loopback for local administration — as above.
 #[[listen_mesh]]
-#port  = 80
-#serve = ["api", "webui"]      # add "admin" to administer from off-host; its
+#enabled = true                # REQUIRED; default false
+#port    = 80
+#serve   = ["api", "webui"]    # add "admin" to administer from off-host; its
                                # audience is the whole mesh, so auth is the gate
 
 # Only set api_base for a SEPARATELY hosted web UI pointing at a remote backend.

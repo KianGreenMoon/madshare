@@ -72,7 +72,7 @@ func TestMeshFederationWithoutTransportIsRefused(t *testing.T) {
 }
 
 func TestMeshListenerNeedsTheMesh(t *testing.T) {
-	err := loadErr(t, "[[listen_mesh]]\nport = 80\nserve = [\"api\"]\n")
+	err := loadErr(t, "[[listen_mesh]]\nenabled = true\nport = 80\nserve = [\"api\"]\n")
 	// The refusal has to name both ways out, since the whole point of the split
 	// is that federating is not required to be reachable.
 	for _, want := range []string{"[yggdrasil].enabled", "[federation].enabled"} {
@@ -83,9 +83,9 @@ func TestMeshListenerNeedsTheMesh(t *testing.T) {
 }
 
 func TestMeshListenerDefaults(t *testing.T) {
-	cfg := load(t, "[yggdrasil]\nenabled = true\n[[listen_mesh]]\nserve = [\"api\", \"webui\"]\n")
-	if len(cfg.ListenMesh) != 1 {
-		t.Fatalf("ListenMesh = %v, want one entry", cfg.ListenMesh)
+	cfg := load(t, "[yggdrasil]\nenabled = true\n[[listen_mesh]]\nenabled = true\nserve = [\"api\", \"webui\"]\n")
+	if len(cfg.MeshListeners()) != 1 {
+		t.Fatalf("MeshListeners = %v, want one entry", cfg.MeshListeners())
 	}
 	if got := cfg.ListenMesh[0].Port; got != config.DefaultMeshListenPort {
 		t.Errorf("port = %d, want the default %d", got, config.DefaultMeshListenPort)
@@ -95,6 +95,66 @@ func TestMeshListenerDefaults(t *testing.T) {
 	}
 	if cfg.ListenMesh[0].Serves(config.GroupAdmin) {
 		t.Error("Serves(admin) = true, want false — it was not listed")
+	}
+}
+
+// Writing the block is not enough. A mesh listener's address is derived rather
+// than chosen and its audience is the whole Yggdrasil network, so it takes a
+// second, explicit yes — even with federation on and the mesh already up.
+func TestMeshListenerIsOptInPerBlock(t *testing.T) {
+	cfg := load(t, "[federation]\nenabled = true\npeers = [\"tls://p:1\"]\n"+
+		"[[listen_mesh]]\nport = 80\nserve = [\"api\", \"webui\"]\n")
+	if len(cfg.ListenMesh) != 1 {
+		t.Fatalf("ListenMesh = %v, want the block to be parsed", cfg.ListenMesh)
+	}
+	if got := cfg.MeshListeners(); len(got) != 0 {
+		t.Errorf("MeshListeners() = %v, want none — the block never said enabled = true", got)
+	}
+	// Silently doing nothing is the failure mode this default invites, so it
+	// must not be silent.
+	found := false
+	for _, w := range cfg.Warnings() {
+		if strings.Contains(w, "listen_mesh[0]") && strings.Contains(w, "enabled = true") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a not-served advisory, got %v", cfg.Warnings())
+	}
+}
+
+func TestMeshListenerEnabledIsServed(t *testing.T) {
+	cfg := load(t, "[yggdrasil]\nenabled = true\npeers = [\"tls://p:1\"]\n"+
+		"[[listen_mesh]]\nenabled = true\nport = 80\nserve = [\"api\"]\n")
+	live := cfg.MeshListeners()
+	if len(live) != 1 || live[0].Index != 0 || live[0].Port != 80 {
+		t.Fatalf("MeshListeners() = %v, want the one enabled block at index 0", live)
+	}
+	for _, w := range cfg.Warnings() {
+		if strings.Contains(w, "not served") {
+			t.Errorf("unexpected not-served advisory: %q", w)
+		}
+	}
+}
+
+// A block that is off is still a block: its schema is checked now, so a typo
+// does not lie dormant until the day it is switched on.
+func TestMeshDisabledListenerIsStillValidated(t *testing.T) {
+	got := loadErr(t, "[yggdrasil]\nenabled = true\n[[listen_mesh]]\nport = 1314\nserve = [\"api\"]\n")
+	if !strings.Contains(got, "reserved for the madnetwork protocol") {
+		t.Errorf("error = %q, want the reserved-port refusal even for a disabled block", got)
+	}
+}
+
+// ...but a block that serves nothing needs nothing, so it does not drag the
+// mesh requirement in with it.
+func TestMeshDisabledListenerNeedsNoMesh(t *testing.T) {
+	cfg := load(t, "[[listen_mesh]]\nport = 80\nserve = [\"api\"]\n")
+	if cfg.MeshEnabled() {
+		t.Error("MeshEnabled() = true, want false — nothing asked for the mesh")
+	}
+	if got := cfg.MeshListeners(); len(got) != 0 {
+		t.Errorf("MeshListeners() = %v, want none", got)
 	}
 }
 
@@ -157,7 +217,7 @@ func TestMeshListenerValidation(t *testing.T) {
 // The mesh port lives in a different address space from the kernel sockets, so
 // reusing 80 (or 3000) on both sides is not a conflict.
 func TestMeshPortDoesNotCollideWithHostPort(t *testing.T) {
-	cfg := load(t, "[yggdrasil]\nenabled = true\n[[listen_mesh]]\nport = 3000\nserve = [\"api\"]\n")
+	cfg := load(t, "[yggdrasil]\nenabled = true\n[[listen_mesh]]\nenabled = true\nport = 3000\nserve = [\"api\"]\n")
 	if len(cfg.ListenMesh) != 1 {
 		t.Fatalf("ListenMesh = %v, want one entry", cfg.ListenMesh)
 	}
@@ -205,7 +265,7 @@ func TestMeshURIErrorNamesTheWrittenSection(t *testing.T) {
 // single-operator case the listener exists for — but it is not silent.
 func TestMeshAdminWarns(t *testing.T) {
 	cfg := load(t, "[yggdrasil]\nenabled = true\npeers = [\"tls://p:1\"]\n"+
-		"[[listen_mesh]]\nport = 80\nserve = [\"api\", \"webui\", \"admin\"]\n")
+		"[[listen_mesh]]\nenabled = true\nport = 80\nserve = [\"api\", \"webui\", \"admin\"]\n")
 	found := false
 	for _, w := range cfg.Warnings() {
 		if strings.Contains(w, "listen_mesh[0]") && strings.Contains(w, "Yggdrasil network") {
@@ -219,7 +279,7 @@ func TestMeshAdminWarns(t *testing.T) {
 
 func TestMeshWithoutAdminDoesNotWarn(t *testing.T) {
 	cfg := load(t, "[yggdrasil]\nenabled = true\npeers = [\"tls://p:1\"]\n"+
-		"[[listen_mesh]]\nport = 80\nserve = [\"api\", \"webui\"]\n")
+		"[[listen_mesh]]\nenabled = true\nport = 80\nserve = [\"api\", \"webui\"]\n")
 	for _, w := range cfg.Warnings() {
 		if strings.Contains(w, "listen_mesh") {
 			t.Errorf("unexpected warning: %q", w)

@@ -64,6 +64,18 @@ type YggdrasilConfig struct {
 // it from its key, so an address here could only be ignored or wrong (Load
 // rejects the key outright).
 type MeshListenConfig struct {
+	// Enabled serves this listener. It defaults to **false**, so writing the
+	// block is not enough — a mesh listener has to be asked for twice.
+	//
+	// The asymmetry with [[listen]] is deliberate. A host listener's exposure is
+	// written on its face: an operator who types 192.168.1.67 knows who can
+	// reach it. A mesh listener's address is derived from a key rather than
+	// chosen, and its audience is the whole Yggdrasil network — so the block is
+	// easy to paste from an example, or to inherit from a config someone else
+	// wrote, without that being a decision anybody made. A plain bool (not the
+	// tri-state used for the transport) because there is nothing to infer here:
+	// off is off, and the zero value is the safe one.
+	Enabled bool `toml:"enabled"`
 	// Port is the mesh-side TCP port; 0 resolves to DefaultMeshListenPort.
 	Port int `toml:"port"`
 	// Serve is the non-empty subset of route groups mounted on this listener,
@@ -82,6 +94,28 @@ type MeshListenConfig struct {
 // Serves reports whether this listener mounts the given route group.
 func (m MeshListenConfig) Serves(group string) bool {
 	return slices.Contains(m.Serve, group)
+}
+
+// MeshListeners returns the mesh listeners that will actually be served, paired
+// with their index in the configured list so diagnostics can still name the
+// block an operator wrote. Every consumer goes through this rather than ranging
+// over Config.ListenMesh, so a disabled block cannot leak into one code path
+// while being skipped in another.
+func (c Config) MeshListeners() []IndexedMeshListener {
+	var out []IndexedMeshListener
+	for i, m := range c.ListenMesh {
+		if m.Enabled {
+			out = append(out, IndexedMeshListener{Index: i, MeshListenConfig: m})
+		}
+	}
+	return out
+}
+
+// IndexedMeshListener is an enabled mesh listener and its position in the
+// configured list.
+type IndexedMeshListener struct {
+	Index int
+	MeshListenConfig
 }
 
 // MeshEnabled reports whether the yggdrasil transport should be started: either
@@ -139,13 +173,17 @@ func (c Config) validateMesh() error {
 	if len(c.ListenMesh) == 0 {
 		return nil
 	}
-	if !c.MeshEnabled() {
-		return fmt.Errorf("config: listen_mesh[0] needs the Yggdrasil mesh, but neither [yggdrasil].enabled\n" +
-			"  nor [federation].enabled is set. The address a listen_mesh block binds is this node's\n" +
-			"  own mesh address, which exists only while the mesh is running. Set\n" +
-			"  [yggdrasil].enabled = true for a reachable server that federates with nobody, or\n" +
-			"  [federation].enabled = true to join the madnetwork too (README, \"Deploying a\n" +
-			"  madnetwork node\"). To bind an ordinary host address instead, use [[listen]].")
+	// Schema is checked on every block, enabled or not, so a typo surfaces now
+	// rather than on the day the listener is switched on. Only the mesh
+	// requirement below is scoped to the enabled ones — a block that serves
+	// nothing needs nothing.
+	if live := c.MeshListeners(); len(live) > 0 && !c.MeshEnabled() {
+		return fmt.Errorf("config: listen_mesh[%d] needs the Yggdrasil mesh, but neither [yggdrasil].enabled\n"+
+			"  nor [federation].enabled is set. The address a listen_mesh block binds is this node's\n"+
+			"  own mesh address, which exists only while the mesh is running. Set\n"+
+			"  [yggdrasil].enabled = true for a reachable server that federates with nobody, or\n"+
+			"  [federation].enabled = true to join the madnetwork too (README, \"Deploying a\n"+
+			"  madnetwork node\"). To bind an ordinary host address instead, use [[listen]].", live[0].Index)
 	}
 	seenPorts := map[int]bool{}
 	for i, m := range c.ListenMesh {
@@ -185,10 +223,19 @@ func (c Config) validateMesh() error {
 // Warnings.
 func (c Config) meshWarnings() []string {
 	var w []string
+	// A block that is written but off is the likeliest way to arrive at a mesh
+	// listener that silently does nothing (uncommenting the example gets you
+	// here), so name it rather than leaving the operator to wonder. The
+	// counterpart of defaulting Enabled to false.
 	for i, m := range c.ListenMesh {
+		if !m.Enabled {
+			w = append(w, fmt.Sprintf("listen_mesh[%d] is configured but not served; set enabled = true on that block", i))
+		}
+	}
+	for _, m := range c.MeshListeners() {
 		if m.Serves(GroupWebUI) && !m.Serves(GroupAPI) {
 			w = append(w, fmt.Sprintf("listen_mesh[%d] serves %q without %q; the web UI would load but its API calls would 404",
-				i, GroupWebUI, GroupAPI))
+				m.Index, GroupWebUI, GroupAPI))
 		}
 		// Not an error: administering your own node from your phone is exactly
 		// what this listener is for, and the admin API is permission-gated
@@ -197,7 +244,7 @@ func (c Config) meshWarnings() []string {
 		// used to typing, so it is worth a line rather than a discovery.
 		if m.Serves(GroupAdmin) {
 			w = append(w, fmt.Sprintf("listen_mesh[%d] serves %q on this node's mesh address, which is reachable "+
-				"from the whole Yggdrasil network — authentication is the only gate there", i, GroupAdmin))
+				"from the whole Yggdrasil network — authentication is the only gate there", m.Index, GroupAdmin))
 		}
 	}
 	return w
@@ -221,7 +268,7 @@ func rejectUnknownMeshKeys(undecoded []string) error {
 					"own mesh address, which is derived from its key and cannot be chosen", key)
 			}
 			return fmt.Errorf("config: unknown key %q in [[listen_mesh]] "+
-				"(valid: port, serve, allow_from)", key)
+				"(valid: enabled, port, serve, allow_from)", key)
 		}
 	}
 	return nil

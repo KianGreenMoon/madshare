@@ -102,10 +102,24 @@ not in a footnote.
 
 ```toml
 [[listen_mesh]]
-port  = 80                          # optional, defaults to 80
-serve = ["api", "webui", "admin"]   # the same three groups as [[listen]]
+enabled = true                        # REQUIRED; defaults to false
+port    = 80                          # optional, defaults to 80
+serve   = ["api", "webui", "admin"]   # the same three groups as [[listen]]
 ```
 
+- **`enabled` defaults to `false`** and has to be set on the block. Writing the
+  block is not enough and enabling federation does not do it either. A plain
+  `bool`, not the tri-state the transport uses, because there is nothing to
+  infer: off is off, and the zero value is the safe one.
+
+  The asymmetry with `[[listen]]` is deliberate. A host listener's exposure is
+  written on its face — an operator who types `192.168.1.67` knows who can reach
+  it. A mesh listener's address is *derived from a key rather than chosen*, and
+  its audience is the entire Yggdrasil network (§7), so the block is easy to
+  paste out of an example or inherit from a config someone else wrote without
+  that being a decision anybody made. The cost of a default-off knob is the
+  listener that silently does nothing, so a configured-but-off block warns at
+  startup naming the fix.
 - **No `addr`.** There is exactly one mesh address and the node derives it from
   its key. An `addr` key here would be either ignored or wrong, so it is a
   **fatal** unknown-field error rather than a silent no-op.
@@ -254,8 +268,13 @@ accidentally couple the two back together:
 Added to `config.Load`'s existing list
 ([listeners-and-config.md §6](../architecture/listeners-and-config.md)):
 
-1. `[[listen_mesh]]` requires the mesh — `[yggdrasil].enabled` **or**
-   `[federation].enabled` (§4) — and a build with federation compiled in (§4.1).
+0. A `[[listen_mesh]]` block is served only if it says `enabled = true` (§3.1).
+   The rest of its schema is validated either way, so a typo does not lie
+   dormant until it is switched on; the mesh requirement below is scoped to the
+   enabled ones, since a block that serves nothing needs nothing.
+1. An **enabled** `[[listen_mesh]]` requires the mesh — `[yggdrasil].enabled`
+   **or** `[federation].enabled` (§4) — and a build with federation compiled in
+   (§4.1).
 2. `[yggdrasil].enabled = false` with `[federation].enabled = true` is fatal (§4).
 3. Each mesh listener: `port` in `1..65535` and `≠ 1314` unconditionally (§3.1);
    `serve` non-empty and every token a known group. No `addr` field.
@@ -282,8 +301,9 @@ port  = 3000
 serve = ["api", "webui", "admin"]
 
 [[listen_mesh]]                     # you, from anywhere
-port  = 80
-serve = ["api", "webui", "admin"]
+enabled = true
+port    = 80
+serve   = ["api", "webui", "admin"]
 
 [yggdrasil]
 enabled = true
@@ -335,8 +355,9 @@ port  = 3000
 serve = ["api", "webui", "admin"]
 
 [[listen_mesh]]
-port  = 80
-serve = ["api", "webui"]            # no admin surface on the mesh
+enabled = true
+port    = 80
+serve   = ["api", "webui"]          # no admin surface on the mesh
 ```
 
 ### 6.4 Alongside a clearnet deployment
@@ -494,3 +515,9 @@ Resolved with the project owner on 2026-08-02:
 6. **`admin` on the mesh warns, it does not fail.** Administering your own node
    from your phone is the use case; the exposure is still worth one line of log
    (§5, rule 5).
+7. **Each `[[listen_mesh]]` block is opt-in** (`enabled = false` by default,
+   2026-08-02, owner). Neither writing the block nor enabling federation serves
+   it — an address nobody chose, with the whole mesh as its audience, should not
+   arrive by inheritance or by copy-paste. Its own failure mode (a listener that
+   does nothing) is answered by a startup advisory rather than by weakening the
+   default.

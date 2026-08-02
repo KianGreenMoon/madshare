@@ -300,8 +300,9 @@ port  = 3000
 serve = ["api", "webui", "admin"]
 
 [[listen_mesh]]                     # you, from anywhere
-port  = 80
-serve = ["api", "webui", "admin"]
+enabled = true                      # required; defaults to false
+port    = 80
+serve   = ["api", "webui", "admin"]
 
 [yggdrasil]
 enabled = true
@@ -326,6 +327,11 @@ the way a `.onion` is.
 
 Three things to know:
 
+- **`enabled = true` is required on the block** — it defaults to false, and
+  turning federation on does not switch it on. Unlike a `[[listen]]` address you
+  type yourself, this one is derived from the node's key and its audience is the
+  whole mesh, so it never arrives by copy-paste or inheritance. A block left off
+  says so at startup rather than doing nothing quietly.
 - **That address is not reachable from the server itself** (there is no TUN
   device). Keep the loopback `[[listen]]` for local administration — hence both
   blocks above.

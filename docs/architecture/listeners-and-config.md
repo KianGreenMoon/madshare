@@ -215,8 +215,9 @@ socket:
 
 ```toml
 [[listen_mesh]]
-port  = 80                       # optional, defaults to 80
-serve = ["api", "webui"]
+enabled = true                   # required; defaults to false
+port    = 80                     # optional, defaults to 80
+serve   = ["api", "webui"]
 
 [yggdrasil]
 enabled = true
@@ -229,6 +230,16 @@ the netstack is not a kernel socket and has no privileged-port rule, so the
 address can be handed out with no `:port` suffix. Yggdrasil encrypts end to end
 and the address is derived from the node's public key, so it is
 self-authenticating the way a `.onion` is — there is nothing for TLS to add.
+
+**`enabled` defaults to `false` and must be set explicitly.** Writing the block
+is not enough, and turning federation on does not switch it on either — a mesh
+listener takes a second, deliberate yes. The asymmetry with `[[listen]]` is the
+point: a host listener's exposure is written on its face (an operator who types
+`192.168.1.67` knows who can reach it), while a mesh listener's address is
+derived from a key rather than chosen and its audience is the whole Yggdrasil
+network, so the block is easy to paste from an example or inherit from someone
+else's config without that being a decision anyone made. A block left off warns
+at startup, so the default cannot silently swallow a listener either.
 
 There is deliberately **no `addr`**: a node has exactly one mesh address and
 derives it from its key, so the key is rejected outright rather than ignored.
@@ -337,8 +348,9 @@ port  = 3000
 serve = ["api", "webui", "admin"]
 
 [[listen_mesh]]                     # everyone else, over the mesh
-port  = 80
-serve = ["api", "webui", "admin"]
+enabled = true
+port    = 80
+serve   = ["api", "webui", "admin"]
 
 [yggdrasil]
 enabled = true
@@ -380,14 +392,18 @@ checks:
 5. If the binary was built with `-tags nowebui` and a listener requests `webui`
    (or the admin *page*), fail with a message pointing at the build tag.
 6. `allow_from` entries (if present) parse as CIDRs.
-7. Mesh listeners (§4.3c): `[[listen_mesh]]` requires the mesh
-   (`[yggdrasil].enabled` or `[federation].enabled`) and a build with federation
+7. Mesh listeners (§4.3c): a `[[listen_mesh]]` block is served only when it says
+   `enabled = true` (default `false`), and an **enabled** one requires the mesh
+   (`[yggdrasil].enabled` or `[federation].enabled`) plus a build with federation
    compiled in; `[yggdrasil].enabled = false` under `[federation].enabled` is
    fatal; each entry's `port` is in `1..65535` and not `1314`; no two mesh
    listeners share a port (mesh ports are **not** compared against `[[listen]]`
    ports — different address spaces); `serve` follows the same rules as above;
    an unknown key in either new section is fatal rather than ignored, `addr`
-   most of all. Serving `admin` on a mesh listener **warns**.
+   most of all. The schema is checked on **every** block, enabled or not, so a
+   typo does not lie dormant until the day it is switched on; only the
+   mesh-required check is scoped to the enabled ones. A configured-but-off block
+   **warns**, and so does serving `admin` on an enabled one.
 
 Existing `[storage]` checks are unchanged (`files_dir` non-empty;
 `max_upload_mb` in `[1, MaxUploadMBLimit]`).
