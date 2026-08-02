@@ -1,6 +1,11 @@
 {{define "header"}}
 <header>
-  <span class="logo"><span>Mad</span>share</span>
+  {{/* The wordmark is the way back to the front door (owner decision
+       2026-08-02): "/" holds no page of its own — it forwards to /madnetwork or
+       /library depending on the node (webui.homeHandler) — so this is the one
+       link that means "wherever this server starts". It carries no .nav-link
+       class, so setActiveNav never marks it: it stands for no single page. */}}
+  <a href="/" class="logo" aria-label="Madshare home"><span>Mad</span>share</a>
   {{/* "Library" is a section: it stays active across its subtabs (Music,
        Playlists, …), which live in the in-page subtab bar (library-subnav).
        data-section lets the shell router keep it active after a client-side
@@ -8,7 +13,21 @@
        It is PINNED outside .nav-collapse (owner decision 2026-06-22): at every
        width the logo + Library stay inline on the left, and only the secondary
        controls fold into the ☰ menu below the narrow breakpoint. */}}
-  <a href="/library" data-section="library" class="nav-link nav-link--home{{if eq .Section "library"}} nav-link--active{{end}}"{{if eq .Section "library"}} aria-current="page"{{end}}>Library</a>
+  <a href="/library" data-section="library" class="nav-link nav-link--pinned{{if eq .Section "library"}} nav-link--active{{end}}"{{if eq .Section "library"}} aria-current="page"{{end}}>Library</a>
+
+  {{/* Madnetwork (federation F2): the merged catalog of this node's friends.
+       Server-gated on madnetwork.access like the other privileged links, and
+       reconciled client-side by auth.js applyNavPermissions (which scans the
+       whole header, not just .main-nav, precisely because this link sits
+       outside it).
+       PINNED between Library and About (owner decision 2026-08-02): the two
+       libraries a person moves between — this server's and the network's — are
+       the header's primary pair, so the network tab must not be a page down
+       inside the ☰ menu on a phone. It is a SECTION like Library (Network ·
+       Nodes · one node's page), so the tab keys on .Section, with data-section
+       so shell.js keeps it active after a client-side swap too. Keying it on
+       .Page left the tab unmarked on a node page. */}}
+  {{if .CanMadnetwork}}<a href="/madnetwork" data-section="madnetwork" class="nav-link nav-link--pinned{{if eq .Section "madnetwork"}} nav-link--active{{end}}"{{if eq .Section "madnetwork"}} aria-current="page"{{end}}>Madnetwork</a>{{end}}
 
   {{/* About: a mini-menu gathering the project links (GitRepo, the AGPL §13
        Source archive, the License) plus a Version entry that opens the About
@@ -55,13 +74,6 @@
            permission, so an anonymous/low-priv visitor never sees a flash of links
            they can't use (the API enforces the same gates). Login/logout reload the
            page, so the server re-renders these on every auth change. */}}
-      {{/* Madnetwork (federation F2): the merged catalog of this node's friends.
-           Server-gated on madnetwork.access like the other privileged links. */}}
-      {{/* Madnetwork is a SECTION like Library (Network · Nodes · one node's
-           page), so the tab stays active across its pages — keyed on .Section,
-           with data-section so shell.js keeps it active after a client-side
-           swap too. Keying it on .Page left the tab unmarked on a node page. */}}
-      {{if .CanMadnetwork}}<a href="/madnetwork" data-section="madnetwork" class="nav-link{{if eq .Section "madnetwork"}} nav-link--active{{end}}"{{if eq .Section "madnetwork"}} aria-current="page"{{end}}>Madnetwork</a>{{end}}
       {{if .CanUpload}}<a href="/upload" class="nav-link{{if eq .Page "upload"}} nav-link--active{{end}}"{{if eq .Page "upload"}} aria-current="page"{{end}}>Upload</a>{{end}}
       {{/* Admin opens in the SAME tab (owner decision 2026-06-10, reversing the
            Phase-1 new-tab default). Admin pages are outside the shell, so this

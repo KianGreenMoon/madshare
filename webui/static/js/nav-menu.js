@@ -1,8 +1,9 @@
 // nav-menu.js — the responsive header overflow (☰) menu.
 //
-// On narrow screens the header collapses everything except the logo and the
-// pinned Library link into a dropdown panel (.nav-collapse), opened by the ☰
-// toggle (#navToggle). The markup lives in the shared header partial
+// On narrow screens the header collapses everything except the pinned items —
+// the logo, Library, Madnetwork and About — into a dropdown panel
+// (.nav-collapse), opened by the ☰ toggle (#navToggle). The markup lives in the
+// shared header partial
 // (partials.html) and the wide↔narrow layout switch is pure CSS (app.css media
 // query); this only wires the open/close behavior, mirroring about-menu.js.
 //

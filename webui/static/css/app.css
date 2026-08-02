@@ -109,13 +109,27 @@ header {
   border-bottom: 1px solid var(--border);
 }
 
+/* The wordmark is an <a> to "/" (the front door), so it needs the link chrome
+   reset — it should read as the mark, not as a nav item. It never shrinks:
+   losing letters off the product name is worse than any other item wrapping. */
 .logo {
   font-size: 18px;
   font-weight: 600;
   letter-spacing: -0.02em;
   color: var(--text);
+  text-decoration: none;
+  flex-shrink: 0;
 }
 .logo span { color: var(--accent); }   /* accent on "Mad" — the differentiator */
+/* Opacity rather than a hover colour: the mark is two colours and there are four
+   themes, so dimming the whole thing is the one affordance that reads right in
+   all of them. */
+.logo:hover { opacity: 0.8; }
+.logo:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
 
 /* ── Site nav (shared between upload and library pages) ── */
 .main-nav {
@@ -166,9 +180,11 @@ button.nav-link {
   cursor: pointer;
 }
 
-/* The pinned Library tab never shrinks: it stays inline on the left at every
-   width while the rest of the nav collapses into the ☰ menu on narrow screens. */
-.nav-link--home { flex-shrink: 0; }
+/* A pinned tab never shrinks: it stays inline on the left at every width while
+   the rest of the nav collapses into the ☰ menu on narrow screens. Library and
+   Madnetwork both carry it — the two libraries a person moves between are the
+   header's primary pair, so neither may end up a page down inside the ☰. */
+.nav-link--pinned { flex-shrink: 0; }
 
 /* ── Collapsible nav group + ☰ toggle (responsive header) ──────────────────────
    On wide screens .nav-collapse is display:contents, so its children (.main-nav,
@@ -1249,13 +1265,22 @@ body.queue-open #toastStatus {
 }
 
 /* ── Narrow viewport: collapse the header into a ☰ menu ────────────────────────
-   Below this width only the logo + pinned Library + pinned About stay inline;
-   everything else (Upload, Admin, the user area / Sign in) folds into a dropdown
-   panel opened by the ☰ toggle. This keeps the header to one always-fitting row, the
-   fix for the overflow that pushed buttons off-screen and forced a horizontal
-   page scroll (worst as admin, who has the most links). */
+   Below this width only the logo + pinned Library + pinned Madnetwork + pinned
+   About stay inline; everything else (Upload, Admin, the user area / Sign in)
+   folds into a dropdown panel opened by the ☰ toggle. This keeps the header to one
+   always-fitting row, the fix for the overflow that pushed buttons off-screen and
+   forced a horizontal page scroll (worst as admin, who has the most links). */
 @media (max-width: 720px) {
   .nav-toggle { display: inline-flex; margin-left: auto; }
+
+  /* Madnetwork joined the pinned row, which is one item more than the row was
+     measured for. Tighten the row's own spacing — never the ☰ panel's, hence the
+     direct-child selectors — so a 360px phone still fits logo + two tabs + About
+     + ☰ without the horizontal scroll this media query exists to prevent. */
+  header { padding-left: var(--space-3); padding-right: var(--space-3); }
+  .logo { font-size: 16px; }
+  header > .nav-link,
+  header > .about .about__btn { padding-left: 5px; padding-right: 5px; }
 
   /* The wrapper stops being display:contents and becomes a positioned dropdown
      panel, hidden until nav-menu.js adds .is-open. It anchors to the sticky

@@ -28,11 +28,18 @@ forwarding them to a page that answers them nothing would make the front door a
 dead end. Those principals land on `/library`. Because the target depends on who
 asks, the redirect carries `Cache-Control: no-store`.
 
-Nothing in the UI links to `/` — the header tab, the Music subtab and the network
-page's *Local library* lane all address `/library` directly, so a click is one
-request. `shell.js`'s `navigate()` still follows a redirect correctly (it adopts
-`res.url` before pushing history), which is what a typed or bookmarked `/`
-reached from inside the shell depends on.
+**The Madshare wordmark is the one link to `/`** (owner decision 2026-08-02) —
+it stands for "wherever this server starts", which is exactly what the front door
+means, and it is the only header element that stands for no particular page. It
+deliberately carries no `.nav-link` class, so `setActiveNav` never marks it
+active. Everything that means a *page* addresses that page: the header tab, the
+Music subtab and the network page's *Local library* lane all point at `/library`
+directly, so a click is one request rather than a redirect hop.
+
+Clicking the wordmark inside the shell therefore goes through the redirect, which
+is why `shell.js`'s `navigate()` adopts `res.url` when `res.redirected`: the
+address bar ends on `/madnetwork` or `/library`, history holds that entry, and
+Back returns to the page you came from instead of bouncing through the door again.
 
 ### Library section + subtabs
 
@@ -87,11 +94,20 @@ buttons used to spill past the edge, widen the document, and force a horizontal
 page scroll. The fix collapses the header into a **☰ overflow menu** below a
 breakpoint (shared by both shells, since the `{{define "header"}}` partial is):
 
-- **Logo + Library + About stay pinned** inline on the left at every width (owner
-  decision: Library is the primary tab and always one tap away; About is kept a
-  visible button, never folded into the ☰ — judged inconvenient under the menu).
-  Library is a `.nav-link` carrying `data-section` (so `setActiveNav` still lights
-  it); both it and the `.about` flyout are rendered *outside* the collapsible group.
+- **Logo + Library + Madnetwork + About stay pinned** inline on the left at every
+  width (owner decisions: Library is the primary tab and always one tap away;
+  Madnetwork joined it 2026-08-02 — the two libraries a person moves between are
+  the header's primary pair, so the network tab must not be a page down under the
+  ☰ on a phone; About is kept a visible button, never folded into the ☰ — judged
+  inconvenient under the menu). Library and Madnetwork are `.nav-link`s carrying
+  `data-section` (so `setActiveNav` still lights them) plus `.nav-link--pinned`
+  (`flex-shrink: 0`); they and the `.about` flyout render *outside* the
+  collapsible group.
+
+  Because Madnetwork is gated on `madnetwork.access` yet sits outside `.main-nav`,
+  `auth.js`'s `applyNavPermissions` scopes its removal to the whole `<header>`.
+  Scoping it to `.main-nav` — as it did while every gated tab lived there — would
+  leave the pinned tab on screen for a principal who lost the permission.
 - Everything else — **Upload, Admin, the user area / Sign in** — lives in a single
   `#navCollapse` wrapper. On wide screens that wrapper is `display: contents`, so
   its children (`.main-nav`, `.header-actions`) are direct header flex items laid
@@ -101,7 +117,11 @@ breakpoint (shared by both shells, since the `{{define "header"}}` partial is):
   `margin-left: auto`) and `#navCollapse` becomes an absolutely-positioned dropdown
   panel anchored under the sticky header, hidden until `.is-open`. Inside it the
   links stack vertically; a hairline divider sets off the user area. The header row
-  is then `logo · Library · About ▾ · ☰`, which always fits, so it can never overflow.
+  is then `logo · Library · Madnetwork · About ▾ · ☰`. Adding a fourth pinned item
+  is one more than the row was measured for, so the same media query tightens the
+  row's own spacing — smaller header padding, a 16px wordmark, 5px side padding on
+  the pinned tabs, all via direct-child selectors so the ☰ panel keeps its own
+  metrics. Verified to fit without horizontal overflow down to a 320px viewport.
 
   The About flyout (`.about__menu`) is shown/hidden via an `.is-open` **class**, not
   the `hidden` attribute — the UA stylesheet's `[hidden] { display: none !important }`

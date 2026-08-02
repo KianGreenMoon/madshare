@@ -259,10 +259,66 @@ func TestLibraryPageMoved(t *testing.T) {
 		t.Errorf("%s should render the library page", LibraryPath)
 	}
 	// Header tab and Music subtab both address the page, not the redirect.
-	if strings.Contains(body, `href="/" `) || strings.Contains(body, `href="/">`) {
-		t.Errorf("no page link should still point at the front door %q", "/")
-	}
 	if n := strings.Count(body, `href="/library"`); n < 2 {
 		t.Errorf("expected the header tab and the Music subtab to link to %s, found %d link(s)", LibraryPath, n)
+	}
+	// The wordmark is the ONLY thing that still points at the front door: it
+	// stands for "wherever this server starts", which is exactly what "/" means.
+	// Any other link there would be a needless redirect hop.
+	if n := strings.Count(body, `href="/"`); n != 1 {
+		t.Errorf("expected exactly one link to the front door (the logo), found %d", n)
+	}
+	if !strings.Contains(body, `<a href="/" class="logo"`) {
+		t.Errorf("the Madshare wordmark should be the link to the front door")
+	}
+}
+
+// TestMadnetworkTabIsPinned guards the header layout decision: the Madnetwork
+// tab sits between Library and About and OUTSIDE .nav-collapse, so on a narrow
+// screen it stays inline instead of folding into the ☰ overflow menu. Position
+// is asserted structurally (offsets in the rendered document) because that is
+// the property the CSS depends on — .nav-collapse is what the media query turns
+// into the dropdown panel.
+func TestMadnetworkTabIsPinned(t *testing.T) {
+	r := chi.NewRouter()
+	Register(r, "", "", true)
+	req := httptest.NewRequest(http.MethodGet, LibraryPath, nil)
+	req = req.WithContext(auth.WithIdentity(req.Context(), &auth.Identity{
+		Username: "browser",
+		Permissions: map[string]bool{
+			auth.PermContentAccess:    true,
+			auth.PermMadnetworkAccess: true,
+			auth.PermFileUpload:       true,
+		},
+	}))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	library := strings.Index(body, `href="/library"`)
+	madnet := strings.Index(body, `href="/madnetwork"`)
+	about := strings.Index(body, `class="about" id="about"`)
+	collapse := strings.Index(body, `class="nav-collapse"`)
+	upload := strings.Index(body, `href="/upload"`)
+	for name, idx := range map[string]int{
+		"library": library, "madnetwork": madnet, "about": about,
+		"nav-collapse": collapse, "upload": upload,
+	} {
+		if idx < 0 {
+			t.Fatalf("header is missing %s", name)
+		}
+	}
+	if !(library < madnet && madnet < about) {
+		t.Errorf("Madnetwork should sit between Library and About (offsets %d, %d, %d)", library, madnet, about)
+	}
+	if madnet > collapse {
+		t.Errorf("Madnetwork should be pinned outside .nav-collapse, so the ☰ menu never swallows it")
+	}
+	// Upload is the control: it stays inside the collapsible group.
+	if upload < collapse {
+		t.Errorf("Upload should still live inside .nav-collapse")
+	}
+	if !strings.Contains(body, `class="nav-link nav-link--pinned`) {
+		t.Errorf("pinned tabs should carry .nav-link--pinned (the flex-shrink:0 rule)")
 	}
 }

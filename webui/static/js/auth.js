@@ -30,11 +30,16 @@ function hasAnyPerm(needed) {
 // cases the server render can't cover: a page rendered for a since-changed session
 // (e.g. signed out in another tab), and the in-<main> subtab bar (.subtabs) after a
 // shell swap. Exported for that reason. Idempotent (already-removed links match nothing).
+//
+// The header scope is the whole <header>, not .main-nav: Madnetwork is PINNED
+// outside the collapsible group (it sits between Library and About), and scoping
+// this to .main-nav would have left it on screen for a principal who lost the
+// permission. Every gated href below is a tab, so no other header link matches.
 export function applyNavPermissions() {
   const gates = [['/upload', UPLOAD_PERMS], ['/admin', ADMIN_PERMS], ['/playlists', PLAYLISTS_PERMS], ['/madnetwork', MADNETWORK_PERMS]];
   for (const [href, needed] of gates) {
     if (hasAnyPerm(needed)) continue;
-    document.querySelectorAll(`.main-nav a[href="${href}"], .subtabs a[href="${href}"]`).forEach(a => a.remove());
+    document.querySelectorAll(`header a[href="${href}"], .subtabs a[href="${href}"]`).forEach(a => a.remove());
   }
 }
 
