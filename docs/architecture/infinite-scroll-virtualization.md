@@ -1,6 +1,6 @@
 # Infinite Scroll + Virtualization — large lists everywhere
 
-The public **library** (`/`) and several admin lists render *every* row at once
+The public **library** (`/library`) and several admin lists render *every* row at once
 and fetch *unbounded* result sets. That is fine today but will freeze the page
 once a list grows large — and a federated library is meant to grow **very**
 large. This doc designs the durable answer: a reusable **virtualized

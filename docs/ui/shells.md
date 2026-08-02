@@ -5,27 +5,48 @@ header, navigation, and whether playback persists across navigation.
 
 ## Listening shell
 
-`webui/static/js/shell.js` — a client-side router wrapping `/`, `/playlists`, and
-`/upload`. A persistent header + player-bar + `<audio>` live outside `<main>` and
+`webui/static/js/shell.js` — a client-side router wrapping `/library`,
+`/playlists`, `/upload` and the `/madnetwork` section. A persistent header +
+player-bar + `<audio>` live outside `<main>` and
 **survive navigation**, so playback and the shared queue are continuous across
 these pages (see `docs/ui/player-and-queue.md`). A page opts in with
 `<body data-module="/static/js/x.js">`; the shell imports the module and runs its
 `init()` / `teardown()` on entry / exit. `shell.js` deliberately does **not**
 intercept `/admin*` links — those are hard navigations into the other shell.
 
+### `/` is a front door, not a page
+
+The root URL holds no content. `webui.homeHandler` `302`s it to the section this
+node opens on: **`/madnetwork`** when `[federation].enabled` is set, otherwise
+**`/library`**. A node that federates is one whose interesting surface is the
+network, and a node that doesn't has no network to show — so the entry URL states
+which kind of node this is instead of making every install the same.
+
+The madnetwork arm repeats that page's own gate (`madnetwork.access`): `/` is
+exactly where an anonymous visitor and a listener-only account arrive, and
+forwarding them to a page that answers them nothing would make the front door a
+dead end. Those principals land on `/library`. Because the target depends on who
+asks, the redirect carries `Cache-Control: no-store`.
+
+Nothing in the UI links to `/` — the header tab, the Music subtab and the network
+page's *Local library* lane all address `/library` directly, so a click is one
+request. `shell.js`'s `navigate()` still follows a redirect correctly (it adopts
+`res.url` before pushing history), which is what a typed or bookmarked `/`
+reached from inside the shell depends on.
+
 ### Library section + subtabs
 
 The header nav lists **sections**, not individual pages. **Library** is one
 section spanning a subtab bar (`{{define "library-subnav"}}` in `partials.html`,
 class `.subtabs`) rendered at the top of `<main>` on each listening page:
-**Music** (`/`, the artist/album browse) and **Playlists** (`/playlists`) today,
+**Music** (`/library`, the artist/album browse) and **Playlists** (`/playlists`) today,
 with Most played / Recently added / Podcasts intended later — each is just another
 `.subtab` link plus its route. Upload is its own section.
 
 Active state is two-level:
 
 - The **header "Library" tab** stays active across all its subtabs. Pages carry
-  `Section` (`pageData.Section`, `"library"` for `/` and `/playlists`) rendered
+  `Section` (`pageData.Section`, `"library"` for `/library` and `/playlists`) rendered
   into `<body data-section>` and onto the header link's `data-section`;
   `shell.js`'s `setActiveNav` lights a header link whose `data-section` matches the
   body's, falling back to an exact path match for section-less links (Upload).

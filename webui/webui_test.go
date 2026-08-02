@@ -61,7 +61,7 @@ func TestAdminSubPagesRender(t *testing.T) {
 // and carries its three sections plus the no-FOUC head guard.
 func TestSettingsPageRenders(t *testing.T) {
 	r := chi.NewRouter()
-	Register(r, "", "")
+	Register(r, "", "", false)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/settings", nil))
 	if rec.Code != http.StatusOK {
@@ -87,9 +87,9 @@ func TestSettingsPageRenders(t *testing.T) {
 // change-password button is gone, and the theme-switcher dots were removed.
 func TestHeaderUserArea(t *testing.T) {
 	r := chi.NewRouter()
-	Register(r, "", "")
+	Register(r, "", "", false)
 	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/library", nil))
 	body := rec.Body.String()
 	if !strings.Contains(body, `id="userName"`) || !strings.Contains(body, `href="/settings"`) {
 		t.Errorf("header: username should link to /settings")
@@ -111,11 +111,11 @@ func TestHeaderUserArea(t *testing.T) {
 // permitted links straight away (no client round-trip). See webui.makeHandler.
 func TestHeaderAuthState(t *testing.T) {
 	r := chi.NewRouter()
-	Register(r, "", "")
+	Register(r, "", "", false)
 
 	// Anonymous (no identity in context).
 	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/library", nil))
 	anon := rec.Body.String()
 	if strings.Contains(anon, `href="/upload"`) || strings.Contains(anon, `href="/admin"`) {
 		t.Errorf("anonymous header should omit the Upload/Admin nav links")
@@ -132,7 +132,7 @@ func TestHeaderAuthState(t *testing.T) {
 
 	// Signed-in admin: privileged links present, user area shows the username.
 	rec = httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/library", nil)
 	req = req.WithContext(auth.WithIdentity(req.Context(), &auth.Identity{
 		Username: "alice",
 		Permissions: map[string]bool{
@@ -162,11 +162,11 @@ func TestHeaderAuthState(t *testing.T) {
 func TestAboutMenu(t *testing.T) {
 	render := func(gitRepo string) string {
 		r := chi.NewRouter()
-		Register(r, "", gitRepo)
+		Register(r, "", gitRepo, false)
 		rec := httptest.NewRecorder()
-		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/library", nil))
 		if rec.Code != http.StatusOK {
-			t.Fatalf("GET / = %d, want 200", rec.Code)
+			t.Fatalf("GET /library = %d, want 200", rec.Code)
 		}
 		return rec.Body.String()
 	}
@@ -191,5 +191,78 @@ func TestAboutMenu(t *testing.T) {
 	hidden := render("")
 	if strings.Contains(hidden, ">GitRepo</a>") {
 		t.Errorf("GitRepo entry should be hidden for an empty URL")
+	}
+}
+
+// TestHomeIsAFrontDoor pins the "/" behaviour: it is not a page but a forward to
+// whichever section this node opens on. A node with federation off sends every
+// caller to its library; a federating node sends the principals who may browse
+// the network there, and everyone else — anonymous visitors and accounts without
+// madnetwork.access — to the library, so the entry URL is never a dead end.
+func TestHomeIsAFrontDoor(t *testing.T) {
+	listener := &auth.Identity{Username: "listener", Permissions: map[string]bool{
+		auth.PermContentAccess: true,
+	}}
+	browser := &auth.Identity{Username: "browser", Permissions: map[string]bool{
+		auth.PermContentAccess:    true,
+		auth.PermMadnetworkAccess: true,
+	}}
+
+	for _, tc := range []struct {
+		name      string
+		federated bool
+		id        *auth.Identity
+		want      string
+	}{
+		{"federation off, anonymous", false, nil, "/library"},
+		{"federation off, may browse the network", false, browser, "/library"},
+		{"federation on, anonymous", true, nil, "/library"},
+		{"federation on, no madnetwork.access", true, listener, "/library"},
+		{"federation on, may browse the network", true, browser, "/madnetwork"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := chi.NewRouter()
+			Register(r, "", "", tc.federated)
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			if tc.id != nil {
+				req = req.WithContext(auth.WithIdentity(req.Context(), tc.id))
+			}
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusFound {
+				t.Fatalf("GET / = %d, want %d", rec.Code, http.StatusFound)
+			}
+			if got := rec.Header().Get("Location"); got != tc.want {
+				t.Errorf("GET / → %q, want %q", got, tc.want)
+			}
+			// The target depends on the caller, so it must not be cached.
+			if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+				t.Errorf("Cache-Control = %q, want no-store", got)
+			}
+		})
+	}
+}
+
+// TestLibraryPageMoved checks the library browse now answers at its own URL and
+// that the header/subtab links point there rather than at the front door.
+func TestLibraryPageMoved(t *testing.T) {
+	r := chi.NewRouter()
+	Register(r, "", "", false)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, LibraryPath, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d, want 200", LibraryPath, rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `data-page="library"`) || !strings.Contains(body, `data-module="/static/js/app.js"`) {
+		t.Errorf("%s should render the library page", LibraryPath)
+	}
+	// Header tab and Music subtab both address the page, not the redirect.
+	if strings.Contains(body, `href="/" `) || strings.Contains(body, `href="/">`) {
+		t.Errorf("no page link should still point at the front door %q", "/")
+	}
+	if n := strings.Count(body, `href="/library"`); n < 2 {
+		t.Errorf("expected the header tab and the Music subtab to link to %s, found %d link(s)", LibraryPath, n)
 	}
 }

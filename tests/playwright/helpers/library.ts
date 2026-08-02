@@ -2,7 +2,7 @@ import { type Page, type Locator } from '@playwright/test';
 
 // Drills the library to the first artist's first album and returns the track rows.
 export async function openFirstAlbumTracks(page: Page): Promise<Locator> {
-  await page.goto('/');
+  await page.goto('/library');
   await page.locator('#libraryPanel .artist-row').first().click();
   await page.locator('#libraryPanel .album-row').first().click();
   const tracks = page.locator('#libraryPanel .track-row');

@@ -9,8 +9,9 @@ const PASS = process.env.TEST_PASS ?? 'password';
 test.describe('Authentication', () => {
   test('a registered user can sign in from the header', async ({ page }) => {
     // ── Arrange ────────────────────────────────────────────────────────────
-    // baseURL (config) + '/' → the library page. Auto-waits for load.
-    await page.goto('/');
+    // baseURL (config) + '/library' → the library page ('/' only forwards there).
+    // Auto-waits for load.
+    await page.goto('/library');
 
     // While logged out the header shows a single "Sign in" button. The modal's
     // own "Sign in" submit button exists in the DOM but is display:none, so it
@@ -42,7 +43,7 @@ test.describe('Authentication', () => {
   });
 
   test('a wrong password shows an inline error and stays logged out', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/library');
     await page.getByRole('button', { name: 'Sign in' }).click();
 
     const modal = page.locator('#loginModal');

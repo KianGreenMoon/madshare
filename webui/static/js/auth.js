@@ -72,7 +72,7 @@ function renderAccessDenied(anonymous) {
     action.addEventListener('click', openLoginModal);
   } else {
     action.textContent = 'Back to Library';
-    action.href = '/';
+    action.href = '/library';
   }
   panel.append(action);
 

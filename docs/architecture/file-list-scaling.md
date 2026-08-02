@@ -13,7 +13,7 @@ It builds on [`file-management-view.md`](file-management-view.md) (the shared
 
 **Scope.** This doc covers the **admin All-files flow only**, using *numbered
 pagination*. The smoother **infinite-scroll** treatment — which the *public
-library* (`/`) also needs, since it can grow far larger — is a separate effort
+library* (`/library`) also needs, since it can grow far larger — is a separate effort
 designed in
 [`infinite-scroll-virtualization.md`](infinite-scroll-virtualization.md). Both
 sit on the same paginated backend; this flow just renders one page at a time

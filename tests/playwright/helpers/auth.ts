@@ -23,7 +23,9 @@ export function storageStateFor(role: Role): string {
 export async function login(page: Page, role: Role): Promise<void> {
   const { user, pass } = ROLES[role];
 
-  await page.goto('/');
+  // Any shell page with the header will do; "/" only forwards to one, and which
+  // one depends on [federation].enabled — so name the page instead of the door.
+  await page.goto('/library');
   await page.getByRole('button', { name: 'Sign in' }).click();
 
   const modal = page.locator('#loginModal');

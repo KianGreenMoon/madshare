@@ -6,7 +6,7 @@ test.use({ storageState: storageStateFor('user') });
 
 test.describe('Library browse', () => {
   test('drills artist → album → tracks', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/library');
 
     // Artists view. Rows are rendered by app.js as .artist-row (role=button,
     // aria-label "Browse <name>"). Data-agnostic: assert there IS content, then

@@ -56,12 +56,18 @@ are simply never registered on that listener's handler (a request for them gets
 | Group   | Routes                                                                          | Purpose |
 |---------|---------------------------------------------------------------------------------|---------|
 | `api`   | `/healthz`, `/source`, `/license`, `/api/*` (library), `/files/*`, `/images/*`  | The machine-facing API. This is the product. |
-| `webui` | `/` (library page), `/static/*`                                         | The bundled reference browser UI. |
+| `webui` | `/` (front door), `/library`, `/playlists`, `/upload`, `/madnetwork*`, `/settings`, `/static/*` | The bundled reference browser UI. |
 | `admin` | `/api/admin/*` (delete, prune) and the `/admin` page                             | Destructive operations + their UI. The API is gated by `auth.RequirePermission`. |
 
 Notes:
 
 - The web UI owns `/`, so the health check is `GET /healthz`, not `/`.
+- `/` carries no page of its own: it is a **front door** that `302`s to the
+  section this node opens on — `/madnetwork` when `[federation].enabled` is set
+  *and* the caller holds `madnetwork.access`, otherwise `/library`. The target
+  depends on the caller, so the redirect is served `Cache-Control: no-store`.
+  The library browse itself lives at `/library`; that is what every link in the
+  UI addresses.
 - The bundled `webui` reaches the API with **relative** URLs, so a listener that
   serves `webui` should also serve `api` — otherwise the page loads but every
   `fetch` 404s. Validation warns on `webui` without `api` (see §6).

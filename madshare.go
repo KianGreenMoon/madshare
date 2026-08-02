@@ -471,7 +471,7 @@ func fpcalcInstallHint() string {
 func startListeners(cfg config.Config, deps api.Deps) ([]*http.Server, error) {
 	servers := make([]*http.Server, 0, len(cfg.Listen))
 	for _, lc := range cfg.Listen {
-		handler, err := buildHandler(lc, deps, cfg.WebUI, cfg.CORS.AllowedOrigins)
+		handler, err := buildHandler(lc, deps, cfg.WebUI, cfg.CORS.AllowedOrigins, cfg.Federation.Enabled)
 		if err != nil {
 			return nil, err
 		}
@@ -494,8 +494,10 @@ func startListeners(cfg config.Config, deps api.Deps) ([]*http.Server, error) {
 // buildHandler composes the chi router for one listener: shared middleware plus
 // only the route groups named in the listener's serve list. web carries the
 // page-render options ([webui]: api_base + the resolved GitRepo button URL);
-// corsOrigins is [cors].allowed_origins (empty → no cross-origin headers).
-func buildHandler(lc config.ListenConfig, deps api.Deps, web config.WebUIConfig, corsOrigins []string) (http.Handler, error) {
+// corsOrigins is [cors].allowed_origins (empty → no cross-origin headers);
+// federated is [federation].enabled, which decides whether the web UI's "/"
+// front door opens on the network or on the library.
+func buildHandler(lc config.ListenConfig, deps api.Deps, web config.WebUIConfig, corsOrigins []string, federated bool) (http.Handler, error) {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
@@ -529,7 +531,7 @@ func buildHandler(lc config.ListenConfig, deps api.Deps, web config.WebUIConfig,
 		webui.RegisterAdminPage(r, web.APIBase, web.GitRepoURL()) // no-op in -tags nowebui builds
 	}
 	if lc.Serves(config.GroupWebUI) {
-		webui.Register(r, web.APIBase, web.GitRepoURL())
+		webui.Register(r, web.APIBase, web.GitRepoURL(), federated)
 	}
 	return r, nil
 }

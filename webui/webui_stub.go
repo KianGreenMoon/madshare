@@ -12,8 +12,12 @@ import "github.com/go-chi/chi/v5"
 // Available is false in -tags nowebui builds; see webui.go for the real build.
 const Available = false
 
+// LibraryPath mirrors the real build's constant so non-UI code can name the
+// library page's URL without a build tag.
+const LibraryPath = "/library"
+
 // Register is a no-op in nowebui builds.
-func Register(r chi.Router, apiBase, gitRepo string) {}
+func Register(r chi.Router, apiBase, gitRepo string, federated bool) {}
 
 // RegisterAdminPage is a no-op in nowebui builds.
 func RegisterAdminPage(r chi.Router, apiBase, gitRepo string) {}

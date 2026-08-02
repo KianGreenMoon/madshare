@@ -12,7 +12,7 @@ reloads. The persistent shell this rides on is described in `docs/ui/shells.md`.
 | Controller | `webui/static/js/player-controller.js` | **ES-module singleton** (`getController()`), created by `shell.js`. Owns the queue, current index, shuffle/undo/persistence, Media Session, auth-error probing. |
 | Queue math | `webui/static/js/queue-ops.js` | Pure, DOM-free index/permutation helpers. Tested: `node --test tests/js/queue-ops.test.mjs`. |
 | Queue panel | `webui/static/js/queue-panel.js` | The editable queue list opened from the player-bar queue button. |
-| Shell | `webui/static/js/shell.js` | Client router. Everything outside `<main>` (header, player bar, `<audio>`, queue panel) survives page swaps, so playback is continuous across the listening pages (`/`, `/playlists`, `/upload`). |
+| Shell | `webui/static/js/shell.js` | Client router. Everything outside `<main>` (header, player bar, `<audio>`, queue panel) survives page swaps, so playback is continuous across the listening pages (`/library`, `/playlists`, `/upload`, `/madnetwork*`). |
 
 Admin pages are **outside** this system: they are full-load pages with their own
 page-local preview player and no queue UI.

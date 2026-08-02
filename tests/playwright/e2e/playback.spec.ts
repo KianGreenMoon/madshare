@@ -5,7 +5,7 @@ test.use({ storageState: storageStateFor('user') });
 
 test.describe('Playback', () => {
   test('clicking a track starts the player', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/library');
     await page.locator('#libraryPanel .artist-row').first().click();
     await page.locator('#libraryPanel .album-row').first().click();
 

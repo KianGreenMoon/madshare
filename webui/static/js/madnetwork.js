@@ -246,7 +246,7 @@ function laneTitle(name) { return LANE_TITLES[name] || 'Lane'; }
 // opening the lane's own view. Only the local library has one: its tail is the
 // library page, and a second full view of it inside the network page would be
 // two answers to one question.
-const LANE_SEE_ALL_HREF = { local: '/' };
+const LANE_SEE_ALL_HREF = { local: '/library' };
 
 // laneNote is the one-line answer to "why is this row here" — the rule that
 // every lane row is explainable, made literal. It reads facts the server sent,

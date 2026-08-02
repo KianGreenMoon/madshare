@@ -59,7 +59,7 @@ test.describe('Upload → moderation → library', () => {
       const userCtx = await browser.newContext({ storageState: storageStateFor('user') });
       const u = await userCtx.newPage();
 
-      await u.goto('/');
+      await u.goto('/library');
       await u.getByRole('button', { name: `Browse ${track.artist}`, exact: true }).click();
       await u.getByRole('button', { name: `Browse album ${track.album}`, exact: true }).click();
       await expect(u.getByRole('button', { name: `Play ${track.title}`, exact: true })).toBeVisible();

@@ -64,10 +64,10 @@ var (
 	// the directory, and one node addressed by its public key. The node page is
 	// the same document for every key — the key is read from the path by the page
 	// module, so nothing about a node's identity passes through a template.
-	mnNodesTmpl = buildPageTmpl("html/madnetwork-nodes.html")
-	mnNodeTmpl  = buildPageTmpl("html/madnetwork-node.html")
-	settingsTmpl   = buildPageTmpl("html/settings.html")
-	adminTmpl      = buildPageTmpl("html/admin/dashboard.html") // /admin landing
+	mnNodesTmpl  = buildPageTmpl("html/madnetwork-nodes.html")
+	mnNodeTmpl   = buildPageTmpl("html/madnetwork-node.html")
+	settingsTmpl = buildPageTmpl("html/settings.html")
+	adminTmpl    = buildPageTmpl("html/admin/dashboard.html") // /admin landing
 )
 
 // adminSubPages are the reworked admin sub-pages, each its own routed page under
@@ -183,13 +183,44 @@ func noCacheStatic(next http.Handler) http.Handler {
 	})
 }
 
-// Register mounts the web UI route group on r: the library page at "/", the
-// listening pages, and the static assets under
+// LibraryPath is the library page's own URL. It moved off "/" so that the root
+// can be a front door rather than a page (see homeHandler); every link to the
+// artist/album browse — header tab, Music subtab, the network page's local lane
+// — points here.
+const LibraryPath = "/library"
+
+// homeHandler answers "/", the URL a visitor types or bookmarked. It carries no
+// page of its own: it forwards to whichever section is this node's front door.
+// federated is [federation].enabled — a node that federates opens on the
+// network, a node that doesn't opens on its own library.
+//
+// The madnetwork arm repeats that page's own gate (madnetwork.access), because
+// "/" is exactly where an anonymous visitor and a listener-only account arrive:
+// forwarding them to a page that answers them nothing would make the front door
+// a dead end. Those principals land on the library instead.
+func homeHandler(federated bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		target := LibraryPath
+		if federated {
+			if id := auth.FromContext(r.Context()); id != nil && id.Has(auth.PermMadnetworkAccess) {
+				target = "/madnetwork"
+			}
+		}
+		// The destination depends on who is asking, so no shared cache may hand
+		// one principal's front door to another.
+		w.Header().Set("Cache-Control", "no-store")
+		http.Redirect(w, r, target, http.StatusFound)
+	}
+}
+
+// Register mounts the web UI route group on r: the library page at LibraryPath,
+// the other listening pages, the "/" front door, and the static assets under
 // "/static/". apiBase is the API origin for the page (empty = relative,
-// same-origin); gitRepo is the header GitRepo button's URL (empty = hidden).
+// same-origin); gitRepo is the header GitRepo button's URL (empty = hidden);
+// federated is [federation].enabled, which picks what "/" forwards to.
 // Templates and static assets are served from the embedded filesystem, so the
 // binary needs no access to webui/ on disk.
-func Register(r chi.Router, apiBase, gitRepo string) {
+func Register(r chi.Router, apiBase, gitRepo string, federated bool) {
 	static := noCacheStatic(http.FileServer(http.FS(staticRoot)))
 	r.Handle("/static/*", http.StripPrefix("/static/", static))
 	r.Get("/upload", makeHandler(uploadTmpl, "upload.html", pageData{APIURL: apiBase, Page: "upload", GitRepo: gitRepo}))
@@ -208,7 +239,8 @@ func Register(r chi.Router, apiBase, gitRepo string) {
 	// Settings is its own page (not part of the Library section) reached from the
 	// header's right-side user area; see docs/ui/user-settings.md.
 	r.Get("/settings", makeHandler(settingsTmpl, "settings.html", pageData{APIURL: apiBase, Page: "settings", GitRepo: gitRepo}))
-	r.Get("/", makeHandler(libraryTmpl, "library.html", pageData{APIURL: apiBase, Page: "library", Section: "library", GitRepo: gitRepo}))
+	r.Get(LibraryPath, makeHandler(libraryTmpl, "library.html", pageData{APIURL: apiBase, Page: "library", Section: "library", GitRepo: gitRepo}))
+	r.Get("/", homeHandler(federated))
 }
 
 // RegisterAdminPage mounts the /admin page. It belongs to the admin route

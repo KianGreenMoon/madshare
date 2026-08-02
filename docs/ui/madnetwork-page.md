@@ -1,7 +1,7 @@
 # Madnetwork Page — Library Parity & Availability
 
 The `/madnetwork` page grows from a bespoke read-only drill-down into a full
-sibling of the library page (`/`): same row anatomy, same actions (hearts, "⋯"
+sibling of the library page (`/library`): same row anatomy, same actions (hearts, "⋯"
 quick-add menus, playlists), same search behavior, shared code. On top of the
 parity work it gains two madnetwork-specific behaviors: **materialize** (the
 renamed download-to-library flow) and **availability** (tracks held only by a
@@ -560,7 +560,7 @@ in `docs/ui/madnetwork-nodes.md`; this section is the landing view's half.)*
 A new lane `local` — **Local library** — leads the landing view, above *External
 libraries*. Eight rows, ordinary track rows, "See all →" like every other lane;
 the difference is where the tail lives. **Its "See all" leaves the page and lands
-on `/`**, because the whole of this lane's subject is already a page, and
+on `/library`**, because the whole of this lane's subject is already a page, and
 building a second full view of the local library inside the network page would be
 two answers to one question.
 
@@ -580,7 +580,7 @@ corroborate.
 **Whole** is the word: the sharing scope does not filter this lane (owner,
 2026-08-02). The first build applied `selfPublishedClause` here like every other
 self row on the page and labelled the lane "as the network sees it" — which was
-the wrong instinct twice over. This lane is a **doorway to `/`**, not a view of
+the wrong instinct twice over. This lane is a **doorway to `/library`**, not a view of
 the network, so a lane that quietly left out the recordings scoped *Local* would
 disagree with the page its own "See all" leads to; and a caption explaining why
 some of your records are missing is a worse answer than not omitting them. The

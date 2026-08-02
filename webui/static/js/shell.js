@@ -50,6 +50,14 @@ async function navigate(url, { push = true } = {}) {
   try { res = await fetch(url); }
   catch { location.assign(url); return; }              // network error → full nav
   if (!res.ok) { location.assign(url); return; }
+  // The server may forward the request rather than answer it — "/" is a front
+  // door, not a page (webui.homeHandler). fetch follows that hop transparently,
+  // so adopt the URL it settled on: pushing the one we asked for would leave the
+  // address bar naming a page we are not showing, and a reload would bounce again.
+  if (res.redirected) {
+    const final = new URL(res.url);
+    if (final.origin === location.origin) url = final.pathname + final.search;
+  }
 
   const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
   if (!shellNative(doc)) { location.assign(url); return; } // not a shell page
