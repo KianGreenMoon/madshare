@@ -20,28 +20,6 @@
 .mn-status-main { color: var(--text); font-weight: 600; }
 .mn-status a { color: var(--accent); text-decoration: none; }
 .mn-status a:hover { text-decoration: underline; }
-/* A node chip is a button: it opens that node's shelf (the "By node" lane's
-   other entrance). Styled flat so the strip still reads as a status line. */
-.mn-friend {
-  display: inline-flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  padding: 0.1rem 0.5rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: none;
-  font: inherit;
-  color: inherit;
-  cursor: pointer;
-}
-.mn-friend:hover,
-.mn-friend:focus-visible { border-color: var(--accent); }
-.mn-friend--empty { opacity: 0.6; }
-/* A friend not seen within the freshness window: its exclusively-held tracks are
-   hidden from the browse, so the chip reads as dimmed/offline. */
-.mn-friend--stale { opacity: 0.5; border-style: dashed; }
-.mn-friend--stale .mn-friend-seen { color: var(--text-muted); font-style: italic; }
-
 /* Fail-open banner: this node's inbound mesh path looks dead, so nothing is
    being hidden and the catalog shown is last-known rather than live. */
 .mn-status-warn {
@@ -62,8 +40,6 @@
 }
 .mn-bar-actions { flex-shrink: 0; }
 .mn-bulk-btn { font-size: 0.82rem; padding: 0.3rem 0.8rem; white-space: nowrap; }
-.mn-friend-name { color: var(--text); font-weight: 600; }
-.mn-friend-seen { font-size: 0.75rem; }
 
 /* ── Discovery lanes (the landing view) ──────────────────────────────────────── */
 /* A lane is a heading and eight ordinary track rows — the same rows the
@@ -99,6 +75,10 @@
   border-radius: var(--radius);
 }
 .mn-lane-more:hover { text-decoration: underline; }
+/* "See all" is a link when it leaves the page (the local library's tail is the
+   library page; the Nodes lane's is the directory) and a button when it opens the
+   lane's own view. Same affordance either way. */
+a.mn-lane-more { text-decoration: none; }
 .mn-lane-nav {
   display: flex;
   gap: var(--space-3);
@@ -191,3 +171,86 @@
 .mn-actions { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-1); }
 .mn-action { font-size: 0.8rem; padding: 0.25rem 0.7rem; }
 .mn-action:disabled { opacity: 0.65; cursor: default; }
+
+/* ── Nodes: the lane digest, the directory, and one node's card ─────────────── */
+/* docs/ui/madnetwork-nodes.md. A node row is an anchor rather than a click
+   handler: a node has an address now, so opening one in a tab and copying its
+   link have to work. It reuses .panel-row/.artist-row so a library of nodes and
+   a library of artists read as the same kind of list. */
+
+.mn-node-row { text-decoration: none; color: inherit; }
+.mn-node-row .row-name { display: inline-flex; align-items: baseline; gap: var(--space-2); }
+/* The key beside the name, because beyond our own friends the name is what a
+   node claims about itself and the key is the fact. */
+.mn-node-key {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.72rem;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+.mn-node-row--self .row-name { color: var(--accent); }
+/* Not seen within its freshness window: its exclusively-held tracks are hidden
+   from the browse, so the row reads as dimmed rather than disappearing. */
+.mn-node--stale { opacity: 0.55; }
+
+.mn-node-card {
+  margin: var(--space-4) var(--space-5) var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.mn-node-card--self { border-color: var(--accent); }
+.mn-node-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+}
+.mn-node-card-name { font-size: 1.05rem; font-weight: 700; color: var(--text); }
+.mn-node-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.mn-node-chip {
+  padding: 0.1rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.mn-node-keyline { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.mn-node-fullkey {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.mn-node-copy {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  line-height: 1;
+  padding: 0.15rem 0.4rem;
+  cursor: pointer;
+}
+.mn-node-copy:hover { border-color: var(--accent); color: var(--accent); }
+.mn-node-facts { font-size: 0.85rem; color: var(--text-muted); }
+.mn-node-maplink { font-size: 0.82rem; color: var(--accent); text-decoration: none; align-self: flex-start; }
+.mn-node-maplink:hover { text-decoration: underline; }
+.mn-node-card--missing { border-style: dashed; }
+
+/* A lane heading's qualifier — for a title that would otherwise overpromise
+   (the local lane shows what this server PUBLISHES, while its "See all" goes to
+   the library page, which also holds what never leaves the node). */
+.mn-lane-sub {
+  margin-left: var(--space-2);
+  font-size: 0.78rem;
+  font-weight: 400;
+  color: var(--text-muted);
+}

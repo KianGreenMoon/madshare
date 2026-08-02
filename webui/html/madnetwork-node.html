@@ -3,31 +3,28 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Madnetwork &mdash; Madshare</title>
+  <title>Node &mdash; Madshare</title>
   <meta name="api-url" content="{{.APIURL}}">
   {{template "theme-guard" .}}
   <link rel="stylesheet" href="/static/css/app.css">
   <link rel="stylesheet" href="/static/css/player.css">
   <link rel="stylesheet" href="/static/css/madnetwork.css">
 </head>
-<body data-page="madnetwork" data-section="madnetwork" data-module="/static/js/madnetwork.js">
+<body data-page="madnetwork-node" data-section="madnetwork" data-module="/static/js/madnetwork-node.js">
 
 {{template "header" .}}
 
 <main>
   {{template "madnetwork-subnav" .}}
 
-  <!-- Status line: how much is in the view and whether it is current. The node
-       list moved to the Nodes lane and /madnetwork/nodes. -->
-  <div class="mn-status" id="mnStatus" hidden></div>
+  <!-- One node: its facts, then its shelf. The key comes from the URL — this
+       document is the same for every node. -->
+  <div id="mnNodeCard"><!-- populated by JS --></div>
 
   <!-- Bulk-materialize progress line (Materialize all); page-level so panel
-       re-renders and the 5s status poll never wipe it. -->
+       re-renders never wipe it. -->
   <div class="mn-bulk" id="mnBulk" role="status" aria-live="polite" hidden></div>
 
-  {{/* Same search anatomy as the library page: the input sits above the view
-       panels and the shared browse-search machinery swaps browse ↔ results
-       (docs/ui/madnetwork-page.md §Search). */}}
   <div class="library-search">
     <svg class="library-search__icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
       <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
@@ -35,8 +32,8 @@
     <input
       class="library-search__input"
       type="search"
-      placeholder="Search the madnetwork…"
-      aria-label="Search madnetwork"
+      placeholder="Search this node…"
+      aria-label="Search this node"
       autocomplete="off"
       spellcheck="false">
     <button class="library-search__clear" aria-label="Clear search" style="display:none">&times;</button>
@@ -44,7 +41,7 @@
 
   <div class="view-panel view-panel--active" id="view-library">
     <div class="library-bar">
-      <nav class="breadcrumb" id="mnBreadcrumb" aria-label="Madnetwork navigation">
+      <nav class="breadcrumb" id="mnBreadcrumb" aria-label="Node navigation">
         <!-- populated by JS -->
       </nav>
       <div class="mn-bar-actions" id="mnBarActions">

@@ -57,7 +57,11 @@
            page, so the server re-renders these on every auth change. */}}
       {{/* Madnetwork (federation F2): the merged catalog of this node's friends.
            Server-gated on madnetwork.access like the other privileged links. */}}
-      {{if .CanMadnetwork}}<a href="/madnetwork" class="nav-link{{if eq .Page "madnetwork"}} nav-link--active{{end}}"{{if eq .Page "madnetwork"}} aria-current="page"{{end}}>Madnetwork</a>{{end}}
+      {{/* Madnetwork is a SECTION like Library (Network · Nodes · one node's
+           page), so the tab stays active across its pages — keyed on .Section,
+           with data-section so shell.js keeps it active after a client-side
+           swap too. Keying it on .Page left the tab unmarked on a node page. */}}
+      {{if .CanMadnetwork}}<a href="/madnetwork" data-section="madnetwork" class="nav-link{{if eq .Section "madnetwork"}} nav-link--active{{end}}"{{if eq .Section "madnetwork"}} aria-current="page"{{end}}>Madnetwork</a>{{end}}
       {{if .CanUpload}}<a href="/upload" class="nav-link{{if eq .Page "upload"}} nav-link--active{{end}}"{{if eq .Page "upload"}} aria-current="page"{{end}}>Upload</a>{{end}}
       {{/* Admin opens in the SAME tab (owner decision 2026-06-10, reversing the
            Phase-1 new-tab default). Admin pages are outside the shell, so this
@@ -179,6 +183,18 @@
 <nav class="subtabs" aria-label="Library sections">
   <a href="/" class="subtab{{if eq .Page "library"}} is-active{{end}}"{{if eq .Page "library"}} aria-current="page"{{end}}>Music</a>
   {{if .CanPlaylists}}<a href="/playlists" class="subtab{{if eq .Page "playlists"}} is-active{{end}}"{{if eq .Page "playlists"}} aria-current="page"{{end}}>Playlists</a>{{end}}
+</nav>
+{{end}}
+
+{{/* The madnetwork section's subtab bar (docs/ui/madnetwork-nodes.md). Network is
+     the merged catalog — lanes, search, Browse all — and Nodes is the directory
+     of the libraries behind it. Same shared .subtabs component as the library
+     section, for the same reason: the header lists SECTIONS, and a section's
+     pages are reached from inside it. A node's own page keeps Nodes marked. */}}
+{{define "madnetwork-subnav"}}
+<nav class="subtabs" aria-label="Madnetwork sections">
+  <a href="/madnetwork" class="subtab{{if eq .Page "madnetwork"}} is-active{{end}}"{{if eq .Page "madnetwork"}} aria-current="page"{{end}}>Network</a>
+  <a href="/madnetwork/nodes" class="subtab{{if or (eq .Page "madnetwork-nodes") (eq .Page "madnetwork-node")}} is-active{{end}}"{{if eq .Page "madnetwork-nodes"}} aria-current="page"{{end}}>Nodes</a>
 </nav>
 {{end}}
 

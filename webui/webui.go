@@ -60,6 +60,12 @@ var (
 	uploadTmpl     = buildPageTmpl("html/upload.html")
 	playlistsTmpl  = buildPageTmpl("html/playlists.html")
 	madnetworkTmpl = buildPageTmpl("html/madnetwork.html")
+	// The two node surfaces of the madnetwork section (docs/ui/madnetwork-nodes.md):
+	// the directory, and one node addressed by its public key. The node page is
+	// the same document for every key — the key is read from the path by the page
+	// module, so nothing about a node's identity passes through a template.
+	mnNodesTmpl = buildPageTmpl("html/madnetwork-nodes.html")
+	mnNodeTmpl  = buildPageTmpl("html/madnetwork-node.html")
 	settingsTmpl   = buildPageTmpl("html/settings.html")
 	adminTmpl      = buildPageTmpl("html/admin/dashboard.html") // /admin landing
 )
@@ -193,6 +199,12 @@ func Register(r chi.Router, apiBase, gitRepo string) {
 	// the nav link is server-gated on madnetwork.access (the API enforces the
 	// same gate on its data).
 	r.Get("/madnetwork", makeHandler(madnetworkTmpl, "madnetwork.html", pageData{APIURL: apiBase, Page: "madnetwork", Section: "madnetwork", GitRepo: gitRepo}))
+	// The section's other two pages. A node's URL carries its public key, which
+	// is its identity everywhere — the catalog-source id is a local row number
+	// the discovery rotation recycles, so it could not be a link
+	// (docs/ui/madnetwork-nodes.md §Why a node needs an address).
+	r.Get("/madnetwork/nodes", makeHandler(mnNodesTmpl, "madnetwork-nodes.html", pageData{APIURL: apiBase, Page: "madnetwork-nodes", Section: "madnetwork", GitRepo: gitRepo}))
+	r.Get("/madnetwork/node/{key}", makeHandler(mnNodeTmpl, "madnetwork-node.html", pageData{APIURL: apiBase, Page: "madnetwork-node", Section: "madnetwork", GitRepo: gitRepo}))
 	// Settings is its own page (not part of the Library section) reached from the
 	// header's right-side user area; see docs/ui/user-settings.md.
 	r.Get("/settings", makeHandler(settingsTmpl, "settings.html", pageData{APIURL: apiBase, Page: "settings", GitRepo: gitRepo}))
