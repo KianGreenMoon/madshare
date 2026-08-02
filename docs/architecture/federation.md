@@ -1073,10 +1073,10 @@ restated per surface is a rule half-applied somewhere. Around it:
   behind one friendship could make its claim the default pick for everyone who
   browses to that track — the "rickroll" attack landing on the one control
   people actually press. It is now ordered by voices, holders only as a tiebreak.
-- **The *Most held* and *Not in your library* lanes** — the two SQL ranks by a
-  raw holder count. *Not in your library* is the lane the page opens with, which
-  makes it the more valuable of the two to an attacker.
-- **Not the other three lanes, on purpose.** *From your direct friends* is
+- **The *Most held* and *Missing here* lanes** — the two SQL ranks by a
+  raw holder count. *Missing here* is the first ranked lane on the page,
+  which makes it the more valuable of the two to an attacker.
+- **Not the other three lanes, on purpose.** *From direct friends* is
   already branch-weighted by construction, since every direct friend is the root
   of its own branch — re-weighting it would replace that with the wider count and
   lose the lane's whole subject. *Only one node has it* is one holder, which is
@@ -2678,7 +2678,7 @@ milestone directly after direct transfer works, and tokens ship with depth.
      is the first place branch weighting reaches the browse, so it lands part of
      item 10 early — deliberately, because a popularity lane a sybil farm can lift
      is worse than none. Item 10 finished the job the same week: gossiped
-     freshness hints, then the same weighting on *Not in your library* and on
+     freshness hints, then the same weighting on *Missing here* and on
      version ordering.
   9. **Listener-node tokens** (§Principals & access, "The capability token"):
      a home server signs "this bearer is mine until T", verified against the
@@ -2713,7 +2713,7 @@ milestone directly after direct transfer works, and tokens ship with depth.
      were ordered by raw holder count, and `renditions[0]` of the leading one is
      what Play, Queue and Materialize act on — so the mislabel defense of
      §Trust graph point 2 was missing from the one control people press. Ordered
-     by voices now, with *Not in your library* joining *Most held* as the second
+     by voices now, with *Missing here* joining *Most held* as the second
      weighted lane and the other three deliberately left alone (each for a stated
      reason, in `laneWeighted`). The counting rule became one function so no
      surface can apply half of it.

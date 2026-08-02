@@ -43,7 +43,9 @@ UI.
   [`docs/architecture/recordings.md`](docs/architecture/recordings.md).
 - **Federation (madnetwork)**, off by default: peer with other madshare servers
   over an embedded Yggdrasil mesh — no TUN device, no root, no open host port —
-  and browse their libraries at `/madnetwork` beside your own. Content is fetched
+  and browse their libraries at `/madnetwork` beside your own — the landing view
+  leads with your local library and a set of lanes, and every node has a page of
+  its own (`/madnetwork/node/<key>`, a link you can send). Content is fetched
   from *whoever has the bytes* (multi-source chunked transfer with per-chunk
   verification), streams through a cache while it downloads, and lands in the
   review queue like any other upload. Per-recording sharing scope (Local /
@@ -511,6 +513,7 @@ Full design, threat model and the reasoning behind every default:
 | `GET /images/*` | api | Cover images. |
 | `GET /api/madnetwork/*` | api | Federated browse, streaming relay and fetch-to-library (gated `madnetwork.access`; present only when federation runs). |
 | `GET /`, `/static/*` | webui | Bundled web UI. |
+| `GET /madnetwork`, `/madnetwork/nodes`, `/madnetwork/node/{key}` | webui | The federated browse, the directory of libraries behind it, and one node's own page (addressed by its public key). |
 | `GET /admin`, `/api/admin/*` | admin | Admin page + destructive/management ops (incl. `/admin/network`, the peer and map surface, and `/admin/upgrades`, the better-renditions findings). |
 | `GET /source` | api | AGPL §13: `tar.gz` of the git-tracked source. |
 | `GET /license` | api | The project license. |

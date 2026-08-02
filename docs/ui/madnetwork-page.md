@@ -390,12 +390,12 @@ actually arrives with:
 
 | lane | the question | cost |
 |---|---|---|
-| **Not in your library** | *what can I get that I don't have?* | ~free — the self-merge already tags rows with a `self` holder (§Own tracks in the view); this lane is the rows without one |
+| **Missing here** | *what can I get that I don't have?* | ~free — the self-merge already tags rows with a `self` holder (§Own tracks in the view); this lane is the rows without one |
 | **New on the network** | *what appeared since I last looked?* | a `first_seen` column on `federation_catalog` — it is a cache table, so a migration there costs nothing |
 | **Most held** | *what does my community actually have?* | the holder count already computed for version ordering, **branch-weighted** (one branch = one voice) |
 | **Rare finds** | *what is nearly gone?* | the same corroboration signal, read from the other end — the badge designed above becomes a destination |
 | **From your friends** | *what do the people I chose personally have?* | direct friends only: the smallest, highest-trust slice, and the one lane that needs no trust arithmetic at all |
-| **By node** | *what does that node have?* | §Browsing a single node, already sketched |
+| **Nodes** | *what does that node have?* | §Browsing a single node, already sketched |
 
 **Search is promoted to the primary affordance**, not a filter on a browse tree.
 On a network you *find*; the search box belongs at the top of the landing view
@@ -452,11 +452,13 @@ already know from A does not resurface as new when B also starts offering it. Th
 label is *new to us*: a node reached last week publishing a record from 1974 is
 new here, and the page says "new on the network", never "new music".
 
-**"From your friends" becomes "From your direct friends".** federation.md §Goal &
+**"From your friends" becomes "From direct friends".** federation.md §Goal &
 vocabulary settled the word the same day: *community* is the whole connected
 component, and **direct friend** is the node an admin friended by hand. The lane
 means the second, so it uses the second's name in full. It is the only lane whose
-membership an admin controls personally, which is exactly why it exists.
+membership an admin controls personally, which is exactly why it exists. (The
+possessive came off on 2026-08-02 — §The page stops saying "your". The lane is
+the admin's choice, and the reader is usually not the admin.)
 
 ### Lane definitions
 
@@ -467,12 +469,13 @@ number of distinct direct friends those nodes are reachable through
 
 | lane | shown when | ranked by |
 |---|---|---|
-| `missing` — **Not in your library** | no self row in the group | `branches` desc, then `holders` desc |
+| `missing` — **Missing here** | no self row in the group | `branches` desc, then `holders` desc |
 | `new` — **New on the network** | some source has a `first_seen` | `first_seen` desc |
 | `held` — **Most held here** | always | `branches` desc, then `holders` desc |
 | `rare` — **Only one node has it** | `holders = 1` and no self row | that node's `last_seen` desc |
-| `friends` — **From your direct friends** | some holder is a direct friend | friend `holders` desc |
-| `nodes` — **By node** | — | not a track lane; see below |
+| `local` — **Local library** | a self row is in the group | this server's own newest appearance first (§Rework) |
+| `friends` — **From direct friends** | some holder is a direct friend | friend `holders` desc |
+| `nodes` — **Nodes** | — | not a track lane; see below |
 
 `held` and `missing` are the two lanes SQL ranks by a raw count, so they are the
 two the friend graph re-sorts (`api.laneWeighted`, F7 item 10). Both are ranked
@@ -527,13 +530,14 @@ agreement behind it.
 
 ### Browsing a single node
 
-The **By node** lane lists the nodes whose catalogs this node holds — the same set
-as the status strip, whose chips are the other entrance — and opening one enters
-*Browse all* restricted to that node, this node's own library included as a node
-like any other. It carries no ranking: within one shelf there is nothing to
-corroborate against, so its own order is the right order (§Browsing a single node
-above). This is also where an admin looks at a source after a report, so it
-deliberately shows the node's offering complete, uncorroborated entries and all.
+The **Nodes** lane lists the nodes whose catalogs this node holds, this node's own
+library included as a node like any other, and opening one goes to that node's
+**own page** — `/madnetwork/node/<key>`, which is the shelf plus the node's facts
+(`docs/ui/madnetwork-nodes.md`). A shelf carries no ranking: within one node there
+is nothing to corroborate against, so its own order is the right order (§Browsing
+a single node above). This is also where an admin looks at a source after a
+report, so it deliberately shows the node's offering complete, uncorroborated
+entries and all.
 
 A node's shelf **never folds our own set in** — browsing a node means seeing what
 that node offers, and we are a different node. The corollary caught a real bug:
@@ -542,6 +546,119 @@ answer with nothing, and answering with the merged catalog instead is the one
 answer that is certainly wrong. The view's `includeRemote`/`includeOwn` pair
 therefore admits a view that includes *neither* half, backed by a well-typed
 empty row source rather than a special case at each call site.
+
+## Rework (2026-08-02) — the local library first, and nodes get addresses
+
+*(Owner, 2026-08-02: the local library belongs first on this page and in the same
+shape as the other lanes; the node list should be a digest with a "See all", not
+every node at once; nodes should be ordered by hops and then alphabetically; and
+the node list and each node need pages of their own. The node pages are designed
+in `docs/ui/madnetwork-nodes.md`; this section is the landing view's half.)*
+
+### The local library, first
+
+A new lane `local` — **Local library** — leads the landing view, above *External
+libraries*. Eight rows, ordinary track rows, "See all →" like every other lane;
+the difference is where the tail lives. **Its "See all" leaves the page and lands
+on `/`**, because the whole of this lane's subject is already a page, and
+building a second full view of the local library inside the network page would be
+two answers to one question.
+
+It is first for the reason the landing view exists at all. Every other lane is
+defined against the local library — *missing here*, *new to us*, *most held
+here* — and a person arriving on this page has to be able to see the thing those
+lanes are measured against. It also fixes the smaller thing: the page used to
+open on other people's libraries with no way back to this one except the header.
+
+**The rows are this server's published set**, ranked by newest appearance first
+(`MAX(tagsets.created_at)` over the group) — "what this server has been adding" —
+which is the counterpart of *New on the network* pointed inward, and the only
+ranking of a library's own contents that is a fact rather than a taste. The
+per-source cap and the branch weighting do not apply: one source, nothing to
+corroborate.
+
+One asymmetry, stated because someone will notice it: the lane shows what this
+node **publishes**, filtered by `selfPublishedClause` like every other self row on
+this page, while "See all" lands on the library page, which shows everything —
+including recordings whose scope is *Local* and which therefore never leave the
+node. That is the right way round (every row on the madnetwork page is a row the
+network could also see), and the lane's subtitle says *as the network sees it*, so
+the difference is never a surprise.
+
+### The page stops saying "your"
+
+Three titles lose a possessive in one decision (owner, 2026-08-02): *Not in your
+library* → **Missing here**, the new lane → **Local library**, and *From your
+direct friends* → **From direct friends**. The reason is one sentence: **the
+library belongs to the node's owner, not to whoever is signed in.** Most people
+reading this page are users of somebody else's server — they cannot upload to it,
+cannot moderate it, and did not choose its friends — so a possessive addresses
+the wrong person, and on a shared server it addresses several people at once with
+the same word meaning something different for each. The friends lane goes with
+them for exactly the same reason: those friendships are the admin's decisions,
+which is *why* the lane is worth having and precisely why it is not the reader's
+to be addressed about.
+
+What replaces the possessive is **where the content sits — here or not here**,
+which is a fact and true for every reader. That axis already existed on the page
+in *Most held here*, so *Local library* / *Missing here* extends a vocabulary
+rather than inventing one, and it is the rule for any lane title added later.
+
+*Missing here* was preferred over the more literal *Not in the local library* on
+length, and over *External libraries* because that reads as a list of other
+libraries — which, since this rework, is the literal subject of the section two
+lanes below it. A heading that names the wrong noun is worse than a long one.
+
+
+An empty `local` lane is omitted like any other empty lane. A server that
+publishes nothing has nothing to show there, and a lane whose only content is an
+apology is worse than no lane.
+
+### Nodes, as a lane
+
+*By node* becomes **Nodes** and behaves like the lanes around it: the first eight
+nodes and a "See all →". The list was every node this server holds a catalog
+from, rendered in full — the phone book §Discovery was written against, and F7
+item 5 made it grow without bound.
+
+Its "See all" goes to **`/madnetwork/nodes`**, and unlike a track lane it is
+**always** shown, not only when there are more than eight. A track lane's "See
+all" is the rest of a ranking, so it is pointless when the ranking fits; the
+directory is a different surface with facts a digest row has no room for (keys,
+freshness, the filter box), so there is always something behind it.
+
+**Ordering is hops, then the alphabet** — see `docs/ui/madnetwork-nodes.md`
+§Ordering for the rule and why the two-key sort is the honest one. Our own node
+sits at 0 hops and therefore first, which is the same instinct as the *Local
+library* lane one screen up.
+
+Every node row is a **link** to `/madnetwork/node/<key>` now, and so is every
+other entrance to a node on the page (the holder names in the ⓘ panel keep their
+admin map link beside it).
+
+### What the status strip keeps
+
+The strip loses its chips. It keeps the one-line count ("N tracks from M
+libraries + this one") and the fail-open banner (§Availability) — the two things
+that are about the *view* rather than about individual nodes. Listing the nodes
+was the strip's second job, and it now belongs to a lane and a page that can do
+it properly.
+
+### The in-page shelf goes away
+
+`?source=` as a *mode of the landing page* is deleted, along with the drill
+state's `source` field and its breadcrumb step. It was the only navigable state
+on this page with no URL, and the node page replaces it exactly (§One node in the
+nodes doc). The API parameter stays and gains a key-addressed form.
+
+### Section subtabs
+
+The madnetwork section gets the in-page subtab bar the Library section already
+has (the shared `.subtabs` component): **Network · Nodes**. The header keeps
+listing sections; the subtabs are how a section's pages are reached
+(`project_library_subtabs` — Library = Music + Playlists). This is what makes the
+directory a permanent entrance rather than something reachable only by scrolling
+to the bottom lane.
 
 ## Out of scope
 
@@ -593,3 +710,11 @@ empty row source rather than a special case at each call site.
    (`federation.Node.BranchMap`, `database.BranchMap.Voices`), so what is left
    here is the artist/album list ordering and the relative-rarity badge, not the
    signal underneath them.)*
+8. **Local library first, and node addresses** — §Rework above plus
+   `docs/ui/madnetwork-nodes.md`: the `local` lane, the *Nodes* digest, hops
+   ordering, `/madnetwork/nodes` and `/madnetwork/node/<key>`, the section
+   subtabs, and the removal of the strip's chips and the in-page `?source=`
+   shelf. *(**shipped 2026-08-02**, verified on a three-node meshlab chain. The
+   drill-down became a factory (`mn-browse.js` `createShelf`) on the way: a shelf
+   in module state can exist only once, on one page, which is why browsing one
+   node could not have an address before.)*
