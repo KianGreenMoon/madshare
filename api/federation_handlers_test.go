@@ -30,6 +30,7 @@ type fakeFederation struct {
 	blockReason string // what the last block carried into the published mark (F6)
 	graph       federation.NetworkMap
 	branches    map[string][]string       // node key → the direct friends it reaches us through
+	hops        map[string]int            // node key → friendship distance from us (absent = unplaceable)
 	reports     []*federation.ClaimReport // contradicted claims awaiting a decision (F6)
 	disposed    []string                  // "<id>:<disposition>" per PATCH
 	evicted     []string                  // hashes EvictCachedBlob was asked to drop
@@ -96,6 +97,10 @@ func (f *fakeFederation) EvictCachedBlob(hash string) error {
 
 func (f *fakeFederation) BranchMap(context.Context) (map[string][]string, error) {
 	return f.branches, nil
+}
+
+func (f *fakeFederation) HopMap(context.Context) (map[string]int, error) {
+	return f.hops, nil
 }
 
 func (f *fakeFederation) NetworkMap(context.Context) (federation.NetworkMap, error) {

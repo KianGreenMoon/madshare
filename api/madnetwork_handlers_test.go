@@ -15,22 +15,30 @@ import (
 )
 
 type fakeMadnetwork struct {
-	rows      []*database.MadnetworkTrackRow
-	ownRows   []*database.MadnetworkTrackRow
-	artists   []*database.MadnetworkArtist
-	lanes     map[string][]*database.LaneCandidate // per-lane ranked candidates
-	lastView  database.MadnetworkView              // captured by MadnetworkSummary for assertions
-	trackView database.MadnetworkView              // captured by MadnetworkTracks for assertions
-	hideOff   bool                                 // when true, GetMadnetworkPolicy reports hiding disabled
-	matches   []database.NetworkMatch              // F8: what the join is to report
-	matchErr  error                                // F8: a cache read that fails must cost only the arm
-	upgrades  []*database.UpgradeRow               // F8 item 3: quality-upgrade findings
+	rows       []*database.MadnetworkTrackRow
+	ownRows    []*database.MadnetworkTrackRow
+	artists    []*database.MadnetworkArtist
+	lanes      map[string][]*database.LaneCandidate // per-lane ranked candidates
+	lastView   database.MadnetworkView              // captured by MadnetworkSummary for assertions
+	trackView  database.MadnetworkView              // captured by MadnetworkTracks for assertions
+	artistView database.MadnetworkView              // captured by MadnetworkArtists (the ?source= resolution)
+	hideOff    bool                                 // when true, GetMadnetworkPolicy reports hiding disabled
+	matches    []database.NetworkMatch              // F8: what the join is to report
+	matchErr   error                                // F8: a cache read that fails must cost only the arm
+	upgrades   []*database.UpgradeRow               // F8 item 3: quality-upgrade findings
+	// The node surfaces (docs/ui/madnetwork-nodes.md): the cached sources this
+	// server holds a catalog from, the merged track count the summary reports,
+	// and how many entries our own published set has.
+	sources    []*database.MadnetworkNode
+	trackCount int64
+	ownEntries int64
 }
 
 // MadnetworkArtists honours limit the way the real store does — one page plus a
 // cursor when there is more — because the search cap is now expressed as a limit
 // passed down rather than a truncation in the handler.
-func (f *fakeMadnetwork) MadnetworkArtists(_ context.Context, _ string, _ database.MadnetworkView, limit int, _ string) ([]*database.MadnetworkArtist, string, error) {
+func (f *fakeMadnetwork) MadnetworkArtists(_ context.Context, _ string, view database.MadnetworkView, limit int, _ string) ([]*database.MadnetworkArtist, string, error) {
+	f.artistView = view
 	out := f.artists
 	if out == nil {
 		out = []*database.MadnetworkArtist{{Name: "A", Albums: 1, Tracks: 2}}
@@ -60,9 +68,20 @@ func (f *fakeMadnetwork) MadnetworkRowsForIdents(context.Context, []string, data
 func (f *fakeMadnetwork) MadnetworkOwnTracks(context.Context, string, string, database.MadnetworkView) ([]*database.MadnetworkTrackRow, error) {
 	return f.ownRows, nil
 }
-func (f *fakeMadnetwork) MadnetworkSummary(_ context.Context, view database.MadnetworkView) ([]*database.MadnetworkFriend, int64, error) {
+func (f *fakeMadnetwork) MadnetworkSummary(_ context.Context, view database.MadnetworkView) ([]*database.MadnetworkNode, int64, error) {
 	f.lastView = view
-	return nil, 0, nil
+	return f.sources, f.trackCount, nil
+}
+func (f *fakeMadnetwork) MadnetworkSourceByKey(_ context.Context, key string, _ database.MadnetworkView) (*database.MadnetworkNode, bool, error) {
+	for _, s := range f.sources {
+		if s.Key == key {
+			return s, true, nil
+		}
+	}
+	return nil, false, nil
+}
+func (f *fakeMadnetwork) MadnetworkOwnEntries(context.Context, database.MadnetworkView) (int64, error) {
+	return f.ownEntries, nil
 }
 func (f *fakeMadnetwork) MadnetworkSearchAlbums(context.Context, string, int, database.MadnetworkView) ([]*database.MadnetworkSearchAlbum, error) {
 	return []*database.MadnetworkSearchAlbum{{Artist: "A", Title: "B", Tracks: 2}}, nil

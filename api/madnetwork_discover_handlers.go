@@ -30,14 +30,20 @@ const (
 	laneCandidateSlack = 4 // extra candidates per row, so capping has room to spread
 )
 
-// laneTitles are the headings, and the vocabulary is deliberate: "here" and
-// "your" say these counts are this node's view, never a network-wide chart.
+// laneTitles are the headings, and the vocabulary is deliberate on two counts.
+// "here" says these numbers are this node's view, never a network-wide chart.
+// And no title says "your": the library and the friend list belong to the node's
+// owner, not to whoever is signed in — most readers are users of somebody else's
+// server (docs/ui/madnetwork-page.md §The page stops saying "your"). What
+// replaces the possessive is where the content sits, here or not here, which is
+// a fact and true for every reader.
 var laneTitles = map[string]string{
-	database.LaneMissing: "Not in your library",
+	database.LaneLocal:   "Local library",
+	database.LaneMissing: "Missing here",
 	database.LaneNew:     "New on the network",
 	database.LaneHeld:    "Most held here",
 	database.LaneRare:    "Only one node has it",
-	database.LaneFriends: "From your direct friends",
+	database.LaneFriends: "From direct friends",
 }
 
 // laneCapped reports whether a lane's digest limits how much one node may

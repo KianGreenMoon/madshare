@@ -126,7 +126,13 @@ type MadnetworkStore interface {
 	MadnetworkAlbums(ctx context.Context, artist string, view database.MadnetworkView) ([]*database.MadnetworkAlbum, error)
 	MadnetworkTracks(ctx context.Context, artist, album string, view database.MadnetworkView) ([]*database.MadnetworkTrackRow, error)
 	MadnetworkOwnTracks(ctx context.Context, artist, album string, view database.MadnetworkView) ([]*database.MadnetworkTrackRow, error)
-	MadnetworkSummary(ctx context.Context, view database.MadnetworkView) ([]*database.MadnetworkFriend, int64, error)
+	MadnetworkSummary(ctx context.Context, view database.MadnetworkView) ([]*database.MadnetworkNode, int64, error)
+	// MadnetworkSourceByKey backs the per-node page: one node addressed by its
+	// public key, or found=false when no catalog of its is cached here.
+	MadnetworkSourceByKey(ctx context.Context, key string, view database.MadnetworkView) (*database.MadnetworkNode, bool, error)
+	// MadnetworkOwnEntries is the entry count beside our own name in that list,
+	// counted like a friend's so the two numbers mean the same thing.
+	MadnetworkOwnEntries(ctx context.Context, view database.MadnetworkView) (int64, error)
 	MadnetworkSearchAlbums(ctx context.Context, q string, limit int, view database.MadnetworkView) ([]*database.MadnetworkSearchAlbum, error)
 	MadnetworkSearchTrackRows(ctx context.Context, q string, view database.MadnetworkView) ([]*database.MadnetworkTrackRow, error)
 	// Discovery lanes (docs/ui/madnetwork-page.md §Lane definitions): SQL ranks
@@ -195,6 +201,11 @@ type FederationNode interface {
 	// (F7 item 10). Separate from NetworkMap because the browse asks for it on
 	// every request and has no use for the marks or the derived addresses.
 	BranchMap(ctx context.Context) (map[string][]string, error)
+	// HopMap is the other half of that same walk — node key → friendship hops
+	// from us (0 = this node, 1 = a direct friend) — which is what every node
+	// list on /madnetwork is ordered by (docs/ui/madnetwork-nodes.md §Ordering).
+	// A node the graph cannot place is absent, never 0.
+	HopMap(ctx context.Context) (map[string]int, error)
 	// ResyncGraph asks the refresh loop to pull the graph from every friend on
 	// its next round, past the catalog cadence that normally gates it — the
 	// Rescan button on /admin/network. Returns immediately; the round runs in
@@ -376,6 +387,7 @@ func RegisterAPI(r chi.Router, d Deps) {
 	if d.Madnetwork != nil {
 		mad := d.protect(auth.PermMadnetworkAccess)
 		r.With(mad).Get("/api/madnetwork/summary", h.madnetworkSummary)
+		r.With(mad).Get("/api/madnetwork/nodes/{key}", h.madnetworkNode)
 		r.With(mad).Get("/api/madnetwork/discover", h.madnetworkDiscover)
 		r.With(mad).Get("/api/madnetwork/lane", h.madnetworkLane)
 		r.With(mad).Get("/api/madnetwork/artists", h.madnetworkArtists)

@@ -20,11 +20,15 @@ import (
 // opens occasionally and not on a search-as-you-type. Branch attribution is the
 // BFS alone.
 
-// branchMemo is one computed attribution table, aged from when its inputs were
-// read (the newMemberSet rule: a slow walk over old contents must not pass for a
-// fresh answer).
+// branchMemo is one walk's answers, aged from when its inputs were read (the
+// newMemberSet rule: a slow walk over old contents must not pass for a fresh
+// answer). It holds BOTH halves the walk produces — the branch attribution and
+// the hop distances — because they come out of one BFS and a page load that
+// orders versions by branches and nodes by hops would otherwise walk the graph
+// twice for one answer.
 type branchMemo struct {
 	branches map[string][]string
+	hops     map[string]int
 	built    time.Time
 }
 
@@ -38,11 +42,41 @@ type branchMemo struct {
 // direction — a branch that just appeared is at worst counted as its own voice
 // for a minute, which understates corroboration rather than inventing it.
 func (n *Node) BranchMap(ctx context.Context) (map[string][]string, error) {
+	memo, err := n.graphMemo(ctx)
+	if memo == nil || err != nil {
+		return nil, err
+	}
+	return memo.branches, nil
+}
+
+// HopMap returns each reachable node key mapped to its friendship distance from
+// us: 0 is this node, 1 a direct friend, 2 a friend's friend. Nodes we cannot
+// place are absent, which every caller reads as "distance unknown" and none as
+// zero — zero is us (docs/ui/madnetwork-nodes.md §Ordering).
+//
+// It is the other half of BranchMap's walk and shares its memo, so asking for
+// both costs one BFS. What it is FOR is ordering: the nodes an admin chose
+// personally first, then the ones they chose, outward. That is a rendering
+// order and nothing else — the same warning mapview.go carries about the view
+// radius applies here, and more sharply, because this number reaches a page
+// ordinary users see: it never limits who is served and never appears in a scope.
+func (n *Node) HopMap(ctx context.Context) (map[string]int, error) {
+	memo, err := n.graphMemo(ctx)
+	if memo == nil || err != nil {
+		return nil, err
+	}
+	return memo.hops, nil
+}
+
+// graphMemo returns the current walk, computing it when the memo has aged out.
+// Nil (with no error) when there is no store to walk — the degenerate world in
+// which every node is its own voice and none can be placed.
+func (n *Node) graphMemo(ctx context.Context) (*branchMemo, error) {
 	n.branchMu.Lock()
 	cur := n.branches
 	n.branchMu.Unlock()
 	if cur != nil && time.Since(cur.built) < n.intervals.MembershipTTL {
-		return cur.branches, nil
+		return cur, nil
 	}
 	if n.store == nil {
 		return nil, nil
@@ -56,23 +90,25 @@ func (n *Node) BranchMap(ctx context.Context) (map[string][]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	branches := branchesOf(n.PublicKeyHex(), peers, edges)
+	branches, hops := graphOf(n.PublicKeyHex(), peers, edges)
+	memo := &branchMemo{branches: branches, hops: hops, built: readAt}
 
 	n.branchMu.Lock()
 	if n.branches == nil || !n.branches.built.After(readAt) {
-		n.branches = &branchMemo{branches: branches, built: readAt}
+		n.branches = memo
 	}
 	n.branchMu.Unlock()
-	return branches, nil
+	return memo, nil
 }
 
-// branchesOf is the walk itself, pure so the attribution the browse weights by
-// can be tested — and compared against the map the admin sees — without a mesh.
-// It MUST agree with BuildNetworkMap's Via for the same inputs: a holder's ⓘ
-// panel links straight to that node on the map, so a ranking explained by one
-// graph and a diagram drawn from another would be two answers to one question.
-func branchesOf(selfKey string, peers []*Peer, edges []GraphEdgeClaim) map[string][]string {
-	_, via := walkGraph(selfKey, peers, edges)
+// graphOf is the walk itself, pure so the attribution the browse weights by and
+// the distances it orders nodes by can be tested — and compared against the map
+// the admin sees — without a mesh. It MUST agree with BuildNetworkMap for the
+// same inputs: a holder's ⓘ panel links straight to that node on the map, so a
+// ranking explained by one graph and a diagram drawn from another would be two
+// answers to one question.
+func graphOf(selfKey string, peers []*Peer, edges []GraphEdgeClaim) (map[string][]string, map[string]int) {
+	dist, via := walkGraph(selfKey, peers, edges)
 	branches := make(map[string][]string, len(via))
 	for key, labels := range via {
 		if len(labels) == 0 {
@@ -85,5 +121,12 @@ func branchesOf(selfKey string, peers []*Peer, edges []GraphEdgeClaim) map[strin
 		sort.Strings(out) // map order is not an answer; two identical graphs must agree
 		branches[key] = out
 	}
+	return branches, dist
+}
+
+// branchesOf is graphOf's attribution half, kept for the tests that pin the
+// branch rule on its own.
+func branchesOf(selfKey string, peers []*Peer, edges []GraphEdgeClaim) map[string][]string {
+	branches, _ := graphOf(selfKey, peers, edges)
 	return branches
 }

@@ -24,15 +24,16 @@ import (
 // Lane names. They are part of the API surface (the landing view asks for them
 // by name), so they are values rather than an ordering of a slice somewhere.
 const (
-	LaneMissing = "missing" // not in your library
+	LaneLocal   = "local"   // local library — what this node publishes
+	LaneMissing = "missing" // missing here — held out there, not on this node
 	LaneNew     = "new"     // new on the network (to us)
 	LaneHeld    = "held"    // most held here
 	LaneRare    = "rare"    // only one node has it
-	LaneFriends = "friends" // from your direct friends
+	LaneFriends = "friends" // from direct friends
 )
 
 // LaneNames is the landing view's order, top to bottom.
-var LaneNames = []string{LaneMissing, LaneNew, LaneHeld, LaneRare, LaneFriends}
+var LaneNames = []string{LaneLocal, LaneMissing, LaneNew, LaneHeld, LaneRare, LaneFriends}
 
 // ValidLane reports whether name is a lane this store can rank.
 func ValidLane(name string) bool {
@@ -101,7 +102,7 @@ func laneRowsCTE(view MadnetworkView) string {
 	       s.public_key AS source_key, ` + sourceLabelExpr + ` AS source_label,
 	       ` + srcLastSeen + ` AS source_last_seen,
 	       (COALESCE(p.state, '') = 'friend') AS is_friend,
-	       c.first_seen AS first_seen, 0 AS is_self
+	       c.first_seen AS first_seen, 0 AS is_self, 0 AS self_at
 	FROM federation_catalog c` + sourceJoin("c") + `
 	WHERE ` + notBlocked + reachClause(view) + sourceClause(view)
 
@@ -109,7 +110,7 @@ func laneRowsCTE(view MadnetworkView) string {
 	SELECT ` + selfAkeyExpr + ` AS akey, ` + selfAlbExpr + ` AS alb,
 	       m.title AS title, m.track_number AS track_number, m.disc_number AS disc_number,
 	       '' AS source_key, '' AS source_label, 0 AS source_last_seen,
-	       0 AS is_friend, 0 AS first_seen, 1 AS is_self
+	       0 AS is_friend, 0 AS first_seen, 1 AS is_self, m.created_at AS self_at
 	FROM tagsets m` + recordingJoin + `
 	LEFT JOIN artists par ON par.id = m.artist_id
 	LEFT JOIN artists aar ON aar.id = m.album_artist_id
@@ -129,7 +130,7 @@ func laneRowsCTE(view MadnetworkView) string {
 		return `
 	SELECT '' AS akey, '' AS alb, '' AS title, NULL AS track_number, NULL AS disc_number,
 	       '' AS source_key, '' AS source_label, 0 AS source_last_seen,
-	       0 AS is_friend, 0 AS first_seen, 1 AS is_self
+	       0 AS is_friend, 0 AS first_seen, 1 AS is_self, 0 AS self_at
 	WHERE 0`
 	}
 }
@@ -140,6 +141,13 @@ func laneRowsCTE(view MadnetworkView) string {
 // two can never be confused for each other.
 func laneRanking(lane string) (filter, order string) {
 	switch lane {
+	case LaneLocal:
+		// This node's own published set, newest appearance first — "what this
+		// server has been adding", the counterpart of LaneNew pointed inward. It
+		// is the only ranking of a library's own contents that is a fact rather
+		// than a taste, and it needs no weighting: one source, nothing to
+		// corroborate against.
+		return "has_self = 1", "self_at DESC, ident"
 	case LaneMissing:
 		// Ranked by holders here and re-sorted by branch count in Go, exactly
 		// like LaneHeld: "what can I get that I don't have" is a popularity
@@ -183,7 +191,8 @@ func laneAggregates(view MadnetworkView) string {
 	       COALESCE(GROUP_CONCAT(DISTINCT NULLIF(source_key, '')), '') AS holder_keys,
 	       COALESCE(MIN(NULLIF(first_seen, 0)), 0) AS first_at,
 	       COALESCE(MAX(source_last_seen), 0) AS last_at,
-	       COALESCE(MIN(NULLIF(source_label, '')), '') AS source_label
+	       COALESCE(MIN(NULLIF(source_label, '')), '') AS source_label,
+	       COALESCE(MAX(self_at), 0) AS self_at
 	FROM (` + laneRowsCTE(view) + `)
 	GROUP BY ident`
 }

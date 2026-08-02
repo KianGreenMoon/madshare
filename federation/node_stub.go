@@ -80,6 +80,13 @@ func (n *Node) BranchMap(context.Context) (map[string][]string, error) {
 	return nil, nil
 }
 
+// HopMap answers nil for the same reason: a build with no graph can place
+// nobody, and "distance unknown" is the honest answer its callers already
+// handle (they sort such nodes last, alphabetically).
+func (n *Node) HopMap(context.Context) (map[string]int, error) {
+	return nil, nil
+}
+
 func (n *Node) ClaimReports(context.Context) ([]*ClaimReport, error) {
 	return nil, errCompiledOut
 }

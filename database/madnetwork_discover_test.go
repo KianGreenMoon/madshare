@@ -124,7 +124,7 @@ func TestLaneRankings(t *testing.T) {
 	}
 	view := MadnetworkView{IncludeSelf: true}
 
-	// Not in your library: everything except the one we publish ourselves.
+	// Missing here: everything except the one we publish ourselves.
 	missing := laneNames(t, db, LaneMissing, view, 10)
 	if len(missing) != 3 {
 		t.Fatalf("missing lane = %v, want the three we do not hold", missing)
@@ -136,6 +136,20 @@ func TestLaneRankings(t *testing.T) {
 	}
 	if missing[0] != "Everywhere" {
 		t.Errorf("missing lane leads with %q, want the most-held one", missing[0])
+	}
+
+	// Local library: only what this node publishes. It is the one lane whose
+	// membership is decided by our own library rather than by the network, so
+	// the assertion is exactly the inverse of the missing lane's.
+	local := laneNames(t, db, LaneLocal, view, 10)
+	if len(local) != 1 || local[0] != "We Have It" {
+		t.Errorf("local lane = %v, want only the track we publish", local)
+	}
+	// With federation off there is no published set and the lane is empty —
+	// never the merged catalog, which is what a missing self-side filter would
+	// silently produce.
+	if got := laneNames(t, db, LaneLocal, MadnetworkView{}, 10); len(got) != 0 {
+		t.Errorf("local lane without the own set = %v, want nothing", got)
 	}
 
 	// Most held: three holders, then two, then one.
@@ -150,7 +164,7 @@ func TestLaneRankings(t *testing.T) {
 		t.Errorf("rare lane = %v, want only Stranger Only", rare)
 	}
 
-	// From your direct friends: excludes the member's exclusive entirely.
+	// From direct friends: excludes the member's exclusive entirely.
 	friends := laneNames(t, db, LaneFriends, view, 10)
 	for _, name := range friends {
 		if name == "Stranger Only" {

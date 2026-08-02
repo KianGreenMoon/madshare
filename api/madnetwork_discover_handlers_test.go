@@ -89,7 +89,7 @@ func TestMadnetworkDiscoverRendersLanes(t *testing.T) {
 		t.Fatalf("lanes = %d, want the 2 with candidates: %+v", len(body.Lanes), body.Lanes)
 	}
 	missing := body.Lanes[0]
-	if missing.Name != database.LaneMissing || missing.Title != "Not in your library" {
+	if missing.Name != database.LaneMissing || missing.Title != "Missing here" {
 		t.Errorf("first lane = %s/%q", missing.Name, missing.Title)
 	}
 	if len(missing.Tracks) != 1 {
@@ -116,8 +116,8 @@ func TestMadnetworkDiscoverRendersLanes(t *testing.T) {
 	}
 }
 
-// TestMadnetworkMissingLaneIsBranchWeighted: "Not in your library" is the lane
-// the page opens with and SQL ranks it by a raw holder count, so it gets the
+// TestMadnetworkMissingLaneIsBranchWeighted: "Missing here" is the first
+// ranked lane on the page and SQL ranks it by a raw holder count, so it gets the
 // same Go-side re-sort as "Most held" (F7 item 10). A three-key farm behind one
 // friendship must not lead the first thing a person sees.
 func TestMadnetworkMissingLaneIsBranchWeighted(t *testing.T) {

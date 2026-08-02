@@ -52,6 +52,44 @@ func TestBranchesMatchTheMap(t *testing.T) {
 	}
 }
 
+// TestHopsMatchTheMap pins the other half of the same walk. /madnetwork orders
+// every node list by hops, and a holder's ⓘ panel links to that node on the
+// admin map — so "2 hops" on the browse and the ring the map draws it in have to
+// be the same number, produced by the same BFS.
+func TestHopsMatchTheMap(t *testing.T) {
+	peers := []*Peer{
+		{PublicKey: k("a"), Name: "studio", State: PeerFriend},
+		{PublicKey: k("d"), Name: "loft", State: PeerFriend},
+	}
+	edges := []GraphEdgeClaim{
+		edge("a", "b", "kian's node"), edge("b", "a", "studio"),
+		edge("b", "c", "northwind"), edge("c", "b", "kian's node"),
+		edge("d", "b", "kian's node"), edge("b", "d", "loft"),
+	}
+
+	_, hops := graphOf(k("me"), peers, edges)
+	m := BuildNetworkMap(k("me"), peers, edges, nil)
+	for i := range m.Nodes {
+		n := &m.Nodes[i]
+		if got, ok := hops[n.Key]; !ok || got != n.Distance {
+			t.Errorf("%s: hops = %d (present %v), map distance = %d", n.Key, got, ok, n.Distance)
+		}
+	}
+
+	// The facts the ordering depends on, stated directly: we are 0, a friend is
+	// 1, and a node reached through two friends takes the SHORTER route — a hop
+	// count that grew with the number of ways to reach a node would sort the
+	// best-connected members last.
+	if hops[k("me")] != 0 || hops[k("a")] != 1 || hops[k("b")] != 2 || hops[k("c")] != 3 {
+		t.Errorf("hops = %v, want me:0 a:1 b:2 c:3", hops)
+	}
+	// A node nothing places is ABSENT, not 0 — zero is us, and a stranger
+	// silently promoted to the top of the list is the one wrong answer here.
+	if _, ok := hops[k("stranger")]; ok {
+		t.Errorf("an unreachable node was given a distance: %v", hops)
+	}
+}
+
 // TestBranchesSnipWithTheBlock: blocking a node drops the branch behind it, and
 // the weighting must lose those voices at the same moment the map does —
 // otherwise a blocked node keeps corroborating for as long as its records live.

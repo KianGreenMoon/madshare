@@ -72,20 +72,48 @@ func (rw reachWindows) ok(lastSeen int64, pinged bool) bool {
 }
 
 // madnetworkViewFor is madnetworkView plus the request's optional single-node
-// restriction — the "By node" shelf (?source=<id>, or ?source=self for our own
-// published library). An unparseable source is the merged view rather than an
-// error: a stale link should land somewhere useful.
+// restriction — a node's shelf. Three forms of ?source=: a node KEY (what a node
+// page is addressed by), "self" for our own published library, and a bare
+// catalog-source id (the local row number, kept because the browse has always
+// taken it).
+//
+// A source id we cannot parse falls back to the merged view — a stale row number
+// should land somewhere useful. A KEY we cannot resolve does NOT: it is an
+// explicit request for one node, and answering it with the whole community's
+// catalog is the one answer that is certainly wrong. It gets the empty view
+// instead, which the view machinery already supports (§Browsing a single node).
 func (h *handler) madnetworkViewFor(r *http.Request) database.MadnetworkView {
 	v := h.madnetworkView(r.Context())
-	switch src := r.URL.Query().Get("source"); {
+	src := r.URL.Query().Get("source")
+	switch {
 	case src == "":
+		return v
 	case src == "self":
 		v.SelfOnly = true
-	default:
-		if id, err := strconv.ParseInt(src, 10, 64); err == nil && id > 0 {
+		return v
+	}
+	if id, err := strconv.ParseInt(src, 10, 64); err == nil {
+		if id > 0 {
 			v.SourceID = id
 		}
+		return v
 	}
+	key, err := federation.NormalizeKey(src)
+	if err != nil {
+		return v // not a key and not an id: the merged view, as before
+	}
+	if self := h.selfNode(r.Context(), v); self != nil && self.Key == key {
+		v.SelfOnly = true
+		return v
+	}
+	if node, found, err := h.madnetwork.MadnetworkSourceByKey(r.Context(), key, v); err == nil && found {
+		v.SourceID = node.ID
+		return v
+	}
+	// Asked for a specific node we hold nothing from: the empty shelf is the
+	// truthful answer, and it keeps this one path from silently widening into
+	// "everything".
+	v.SourceID = database.NoSourceID
 	return v
 }
 
@@ -147,24 +175,21 @@ func (h *handler) mergeOpts(ctx context.Context) mergeOpts {
 	}
 }
 
-// madnetworkSummary handles GET /api/madnetwork/summary: each friend's sync
-// state plus the merged distinct-track count — the page's status strip. With
-// the own set merged in, self_name labels this node's contribution.
+// madnetworkSummary handles GET /api/madnetwork/summary: every node whose
+// catalog this server holds — its own included, at 0 hops — plus the merged
+// distinct-track count. It backs the page's status line, the Nodes lane and the
+// directory at /madnetwork/nodes, which is why the list arrives in display order
+// (docs/ui/madnetwork-nodes.md §Ordering) rather than each surface sorting it.
 func (h *handler) madnetworkSummary(w http.ResponseWriter, r *http.Request) {
-	friends, tracks, err := h.madnetwork.MadnetworkSummary(r.Context(), h.madnetworkView(r.Context()))
+	nodes, tracks, err := h.nodeList(r.Context(), h.madnetworkView(r.Context()))
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	if friends == nil {
-		friends = []*database.MadnetworkFriend{}
-	}
-	resp := map[string]any{"ok": true, "friends": friends, "tracks": tracks,
-		"inbound_healthy": h.inboundHealthy()}
-	if h.includeSelf() {
-		resp["self_name"] = h.madnetworkName
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "nodes": nodes, "tracks": tracks,
+		"inbound_healthy": h.inboundHealthy(),
+	})
 }
 
 // madnetworkArtistPageSize bounds one page of Browse all. The list is the

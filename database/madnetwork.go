@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -491,10 +492,11 @@ type MadnetworkView struct {
 	// private ones do not.
 	DefaultShareDepth int
 
-	// SourceID restricts the browse to ONE cached catalog — the "By node" lane's
-	// shelf (docs/ui/madnetwork-page.md §Browsing a single node). Zero is the
-	// merged view. A single node's shelf never folds the own set in: browsing a
-	// node means seeing what that node offers, and we are a different node.
+	// SourceID restricts the browse to ONE cached catalog — a node's shelf
+	// (docs/ui/madnetwork-page.md §Browsing a single node). Zero is the merged
+	// view, and NoSourceID is the shelf of a node we hold nothing from. A single
+	// node's shelf never folds the own set in: browsing a node means seeing what
+	// that node offers, and we are a different node.
 	SourceID int64
 	// SelfOnly is the same restriction pointed at ourselves — our own published
 	// library as the network sees it, which is the one shelf on the list whose
@@ -510,10 +512,20 @@ type MadnetworkView struct {
 // asking for OUR shelf on a node that publishes nothing to the network must
 // answer with nothing. Answering with the merged catalog instead — the shape
 // this had first — is the one answer that is certainly wrong.
-func (v MadnetworkView) includeRemote() bool { return !v.SelfOnly }
+func (v MadnetworkView) includeRemote() bool { return !v.SelfOnly && v.SourceID != NoSourceID }
 func (v MadnetworkView) includeOwn() bool {
 	return v.IncludeSelf && (v.SelfOnly || v.SourceID == 0)
 }
+
+// NoSourceID is the shelf of a node this server holds no catalog from: a view
+// with neither half, so every browse over it answers empty.
+//
+// It exists because the two ways of naming a node fail differently. A stale
+// catalog-source id may safely widen back to the merged view — a row number is
+// this server's own bookkeeping. A node KEY may not: it is an explicit request
+// for one node, and answering it with the whole community's catalog would put
+// other nodes' content under that node's name.
+const NoSourceID int64 = -1
 
 // reachClause gates a source join by reachability. Both cutoffs are
 // server-computed unix times (now − window), never user input, so inlining the
@@ -595,7 +607,13 @@ func ReachableAt(lastSeen int64, pinged bool, cutoff, pullCutoff int64) bool {
 // cannot carry SQL whatever it holds — so it is inlined like reachClause's
 // cutoff rather than threaded as a bind through every shared fragment.
 func sourceClause(view MadnetworkView) string {
-	if view.SourceID <= 0 {
+	switch {
+	case view.SourceID == NoSourceID:
+		// A node we hold nothing from: constant-false rather than unfiltered, so
+		// the empty shelf holds even in the queries that read this clause
+		// directly instead of going through includeRemote.
+		return " AND 0"
+	case view.SourceID <= 0:
 		return ""
 	}
 	return fmt.Sprintf(" AND s.id = %d", view.SourceID)
@@ -1076,15 +1094,23 @@ func (db *DB) MadnetworkSearchTrackRows(ctx context.Context, q string, view Madn
 	return rows, nil
 }
 
-// MadnetworkFriend is one node's sync status on the /madnetwork page strip.
-// The strip lists every node whose catalog this node caches (reachable or not);
-// Reachable drives the greying of one seen longer ago than the view's freshness
-// window, and Friend distinguishes the nodes an admin hand-picked from the
-// members the frontier reached on its own.
-type MadnetworkFriend struct {
-	// ID is the catalog-source row, the address of this node's shelf in the
-	// "By node" lane. Stable for as long as we cache the node.
-	ID        int64  `json:"id"`
+// MadnetworkNode is one node as the /madnetwork surfaces list it: the Nodes
+// lane, the directory at /madnetwork/nodes, and the card on a node's own page
+// (docs/ui/madnetwork-nodes.md). Every node whose catalog this node caches is
+// listed, reachable or not; Reachable drives the greying of one seen longer ago
+// than the view's freshness window, and Friend distinguishes the nodes an admin
+// hand-picked from the members the frontier reached on its own.
+//
+// It is not called "friend" any more because it stopped being one at F7 item 5,
+// when the sweep learned to pull from members nobody here chose.
+type MadnetworkNode struct {
+	// ID is the catalog-source row. Useful within one server's session; it is
+	// NOT this node's address — a source evicted past discovery_cap comes back
+	// with a different id, so the URL of a node page is its Key.
+	ID int64 `json:"id"`
+	// Key is the node's public key: its identity everywhere, and what the node
+	// page is addressed by.
+	Key       string `json:"key"`
 	Name      string `json:"name"`
 	LastSeen  int64  `json:"last_seen"`
 	SyncedAt  int64  `json:"synced_at"`
@@ -1100,12 +1126,15 @@ type MadnetworkFriend struct {
 // MadnetworkSummary reports the merged catalog's shape: every source with sync
 // state and reachability, plus the merged distinct track count over the visible
 // (reachable + own) set. The source list is not filtered by reachability — the
-// strip shows them all and greys the unreachable — but the track count uses the
-// view's cutoff. Direct friends sort first: they are the nodes an admin chose,
-// and the strip is where an admin looks for them.
-func (db *DB) MadnetworkSummary(ctx context.Context, view MadnetworkView) ([]*MadnetworkFriend, int64, error) {
+// surfaces show them all and grey the unreachable — but the track count uses the
+// view's cutoff.
+//
+// The ORDER BY here is a deterministic base, not the order a reader sees: nodes
+// are listed by hops first, and SQL cannot know hops (the graph is the
+// federation node's, not a table this joins). The handler sorts.
+func (db *DB) MadnetworkSummary(ctx context.Context, view MadnetworkView) ([]*MadnetworkNode, int64, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT s.id, `+sourceLabelExpr+`, `+srcLastSeen+`, s.catalog_synced_at,
+		SELECT s.id, s.public_key, `+sourceLabelExpr+`, `+srcLastSeen+`, s.catalog_synced_at,
 		       (SELECT COUNT(*) FROM federation_catalog c WHERE c.source_id = s.id),
 		       COALESCE(p.state, '') = 'friend', `+sourcePinged(view)+`
 		FROM federation_catalog_sources s
@@ -1118,14 +1147,14 @@ func (db *DB) MadnetworkSummary(ctx context.Context, view MadnetworkView) ([]*Ma
 		return nil, 0, fmt.Errorf("madnetwork summary: %w", err)
 	}
 	defer rows.Close()
-	var friends []*MadnetworkFriend
+	var nodes []*MadnetworkNode
 	for rows.Next() {
-		var f MadnetworkFriend
-		if err := rows.Scan(&f.ID, &f.Name, &f.LastSeen, &f.SyncedAt, &f.Entries, &f.Friend, &f.Pinged); err != nil {
+		var n MadnetworkNode
+		if err := rows.Scan(&n.ID, &n.Key, &n.Name, &n.LastSeen, &n.SyncedAt, &n.Entries, &n.Friend, &n.Pinged); err != nil {
 			return nil, 0, fmt.Errorf("scan madnetwork source: %w", err)
 		}
-		f.Reachable = view.reachable(f.LastSeen, f.Pinged)
-		friends = append(friends, &f)
+		n.Reachable = view.reachable(n.LastSeen, n.Pinged)
+		nodes = append(nodes, &n)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, err
@@ -1137,7 +1166,52 @@ func (db *DB) MadnetworkSummary(ctx context.Context, view MadnetworkView) ([]*Ma
 		`+fedcatCountBase(view)).Scan(&tracks); err != nil {
 		return nil, 0, fmt.Errorf("madnetwork track count: %w", err)
 	}
-	return friends, tracks, nil
+	return nodes, tracks, nil
+}
+
+// MadnetworkOwnEntries counts the distinct tracks this node publishes to the
+// network — the "entries" figure beside our own name in the node list, counted
+// the same way a friend's is (distinct display identities, not blobs) so the two
+// numbers on one screen mean the same thing.
+//
+// Scoped by the caller's view: it is what the NETWORK can see of us, so a
+// recording held back to Local is not in it (selfPublishedClause, F5).
+func (db *DB) MadnetworkOwnEntries(ctx context.Context, view MadnetworkView) (int64, error) {
+	own := MadnetworkView{IncludeSelf: true, SelfOnly: true, DefaultShareDepth: view.DefaultShareDepth}
+	var n int64
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(DISTINCT `+trackFullIdent+`)
+		`+fedcatCountBase(own)).Scan(&n); err != nil {
+		return 0, fmt.Errorf("madnetwork own entry count: %w", err)
+	}
+	return n, nil
+}
+
+// MadnetworkSourceByKey resolves a node's public key to the catalog source we
+// cache for it. Found is false when we hold no catalog from that node — which is
+// an ordinary state of the frontier rotation (we can place a node on the graph
+// long before its turn to be pulled from comes up), not an error.
+//
+// Blocked sources are excluded on the same terms as every browse query: blocking
+// is decided by the query, because it must be instant.
+func (db *DB) MadnetworkSourceByKey(ctx context.Context, key string, view MadnetworkView) (*MadnetworkNode, bool, error) {
+	var n MadnetworkNode
+	err := db.QueryRowContext(ctx, `
+		SELECT s.id, s.public_key, `+sourceLabelExpr+`, `+srcLastSeen+`, s.catalog_synced_at,
+		       (SELECT COUNT(*) FROM federation_catalog c WHERE c.source_id = s.id),
+		       COALESCE(p.state, '') = 'friend', `+sourcePinged(view)+`
+		FROM federation_catalog_sources s
+		LEFT JOIN federation_peers p ON p.public_key = s.public_key
+		WHERE `+notBlocked+` AND s.public_key = ?`, key).
+		Scan(&n.ID, &n.Key, &n.Name, &n.LastSeen, &n.SyncedAt, &n.Entries, &n.Friend, &n.Pinged)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("madnetwork source by key: %w", err)
+	}
+	n.Reachable = view.reachable(n.LastSeen, n.Pinged)
+	return &n, true, nil
 }
 
 func nullInt(v sql.NullInt64) *int64 {

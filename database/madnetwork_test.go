@@ -287,6 +287,13 @@ func TestMadnetworkSelfMergeAndSorting(t *testing.T) {
 		t.Errorf("bucket albums = %+v, want the %q bucket", albums, DefaultAlbumTitle)
 	}
 
+	// The entry count beside our own name in the node list counts the same thing
+	// a friend's does — distinct published tracks, not blobs — and it counts OUR
+	// three, never the friend's exclusive.
+	if n, err := db.MadnetworkOwnEntries(ctx, MadnetworkView{IncludeSelf: true}); err != nil || n != 3 {
+		t.Errorf("own entries = %d (err %v), want our 3 published tracks", n, err)
+	}
+
 	// Own track rows: Self, local tagset key, renditions with object keys.
 	own, err := db.MadnetworkOwnTracks(ctx, "Shared Artist", "Shared Album", MadnetworkView{IncludeSelf: true})
 	if err != nil {
@@ -768,5 +775,94 @@ func TestSourceLabelPrefersAName(t *testing.T) {
 	rows, _ := db.MadnetworkTracks(ctx, "Artist", "A Album", MadnetworkView{})
 	if len(rows) != 1 || rows[0].SourceName != "my label" {
 		t.Errorf("after rename label = %+v, want \"my label\"", rows)
+	}
+}
+
+// TestMadnetworkSourceByKey: a node is addressed by its public key, because the
+// source ID is a local row number the discovery rotation recycles. Blocked nodes
+// are not addressable, on the same terms as every browse query — blocking is
+// decided by the query, since it has to be instant.
+func TestMadnetworkSourceByKey(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertPeer(t, db, "aaaa", "vinylcellar", federation.PeerFriend)
+	friend := insertSource(t, db, "aaaa")
+	if err := db.ReplaceSourceCatalog(ctx, friend, "s", 100, []federation.CatalogEntry{
+		catEntry("1", "r1", "Artist", "Album", "Song", "hash-a"),
+		catEntry("2", "r2", "Artist", "Album", "Other", "hash-b"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	blockedPeer := insertPeer(t, db, "bbbb", "shunned", federation.PeerFriend)
+	blocked := insertSource(t, db, "bbbb")
+	if err := db.ReplaceSourceCatalog(ctx, blocked, "s", 100, []federation.CatalogEntry{
+		catEntry("3", "r3", "Artist", "Album", "Ghost", "hash-c"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.BlockFederationPeer(ctx, blockedPeer, federation.PeerFriend, "", 200); err != nil {
+		t.Fatal(err)
+	}
+
+	node, found, err := db.MadnetworkSourceByKey(ctx, "aaaa", MadnetworkView{})
+	if err != nil || !found {
+		t.Fatalf("by key = %v, found %v, err %v", node, found, err)
+	}
+	if node.ID != friend || node.Key != "aaaa" || node.Name != "vinylcellar" || !node.Friend {
+		t.Errorf("node = %+v, want the friend's source row", node)
+	}
+	if node.Entries != 2 {
+		t.Errorf("entries = %d, want the 2 cached entries", node.Entries)
+	}
+	if _, found, _ := db.MadnetworkSourceByKey(ctx, "bbbb", MadnetworkView{}); found {
+		t.Error("a blocked node is addressable")
+	}
+	if _, found, _ := db.MadnetworkSourceByKey(ctx, "ffff", MadnetworkView{}); found {
+		t.Error("an unknown key resolved to something")
+	}
+
+	// The summary carries the key, since that is what the node surfaces address
+	// a node by.
+	nodes, _, err := db.MadnetworkSummary(ctx, MadnetworkView{})
+	if err != nil || len(nodes) != 1 || nodes[0].Key != "aaaa" {
+		t.Errorf("summary = %+v (err %v), want the one unblocked source, keyed", nodes, err)
+	}
+}
+
+// TestMadnetworkNoSourceShelf: asking for the shelf of a node we hold nothing
+// from answers EMPTY, never the merged catalog. A key is an explicit request for
+// one node, so widening it would file other nodes' content under that node's
+// name.
+func TestMadnetworkNoSourceShelf(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertPeer(t, db, "aaaa", "friend-a", federation.PeerFriend)
+	friend := insertSource(t, db, "aaaa")
+	if err := db.ReplaceSourceCatalog(ctx, friend, "s", 100, []federation.CatalogEntry{
+		catEntry("1", "r1", "Artist", "Album", "Song", "hash-a"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	merged := MadnetworkView{IncludeSelf: true}
+	if artists, _, err := db.MadnetworkArtists(ctx, "", merged, 10, ""); err != nil || len(artists) != 1 {
+		t.Fatalf("merged view = %+v (err %v), want the friend's artist", artists, err)
+	}
+	empty := MadnetworkView{IncludeSelf: true, SourceID: NoSourceID}
+	artists, _, err := db.MadnetworkArtists(ctx, "", empty, 10, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(artists) != 0 {
+		t.Errorf("unheld node's shelf = %+v, want nothing", artists)
+	}
+	rows, err := db.MadnetworkTracks(ctx, "Artist", "Album", empty)
+	if err != nil || len(rows) != 0 {
+		t.Errorf("unheld node's tracks = %d rows (err %v), want none", len(rows), err)
+	}
+	if _, tracks, err := db.MadnetworkSummary(ctx, empty); err != nil || tracks != 0 {
+		t.Errorf("unheld node's track count = %d (err %v), want 0", tracks, err)
 	}
 }
