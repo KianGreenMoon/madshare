@@ -120,6 +120,21 @@ and `/admin/upgrades`) on 2026-08-02. What is deferred out of the milestone:
 - **Dropping the node-key → local-user mapping**, once something else supplies
   `GuestOnly` (federation.md, "Cleanup, any time"). Needs a migration.
 
+## Mesh listener — the UI on the node's own Yggdrasil address (designed, not built)
+
+`[[listen_mesh]]`: serve the ordinary route groups on port 80 of the node's own
+mesh address, so a first node is reachable from anywhere with **no reverse
+proxy, no certificate, no port forwarding, no root and no TUN device** — one
+config file. The machinery is already in the binary (`stack.ListenTCP` is what
+carries the madnetwork protocol on port 1314); the work is exposing it and
+gating it. Comes with a **config-level transport/feature split**: a new
+`[yggdrasil]` section owning the identity key and the underlay peering, so a
+server can take a mesh address and federate with nobody
+(`[yggdrasil].enabled` **or** `[federation].enabled` serves mesh listeners; the
+latter implies the former). The matching *build*-level split — a tag that keeps
+yggstack but strips `federation/` — stays deferred. Design, config schema and
+build plan: [`mesh-listener.md`](mesh-listener.md).
+
 ## Android app — Capacitor remote-URL shell (designed, not built)
 
 A thin Capacitor WebView that loads a running server's pages **same-origin**,
