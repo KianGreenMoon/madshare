@@ -88,6 +88,11 @@ function fmtBytes(n) {
  *   saveAccess(file,{guest,license})→Promise  (when accessEditable)
  *   bulkApply(keys,patch)→Promise  (enables the built-in "Edit tags…" bulk action;
  *                    `keys` are rowKey values, so a tagset-keyed scope gets ids)
+ *   sorts            [{id,label}] — replaces the built-in sort vocabulary for a
+ *                    scope ordered by something the library has no word for
+ *                    (the cache's "least recently used"). Server-side only:
+ *                    a scope supplying these must be paged. First entry is the
+ *                    default order.
  *   grouping         null | {kind:'collapsible', by, label, counts}
  *                         | {kind:'sections', sections:[{key,label,match}]}
  *   browse           null | { loaders:{artists(),albums(a),tracks(a,al)},
@@ -195,7 +200,7 @@ export function createFileList(scope) {
   // persisted (non-paged) so the choice sticks across visits.
   const SORT_KEY = 'madshare-files-sort';
   const GROUP_KEY = 'madshare-files-grouped';
-  let sortToken = paged ? 'created_desc' : 'default';
+  let sortToken = paged ? (scope.sorts?.[0]?.id || 'created_desc') : 'default';
   let grouped = false;           // the "By artist / album" view is on
   if (!paged) {
     try {
@@ -1105,13 +1110,21 @@ export function createFileList(scope) {
   // SORT_OPTIONS are the flat orders; the tokens mirror the server's allow-list
   // (fileSortOrder) so the same dropdown drives the paged (server) and the
   // in-memory (client) lists identically.
-  const SORT_OPTIONS = [
-    ['created_desc', 'Newest first'], ['created_asc', 'Oldest first'],
-    ['title_asc', 'Title A–Z'], ['title_desc', 'Title Z–A'],
-    ['artist_asc', 'Artist A–Z'], ['artist_desc', 'Artist Z–A'],
-    ['size_desc', 'Largest first'], ['size_asc', 'Smallest first'],
-    ['untagged_first', 'Untagged first'],
-  ];
+  //
+  // A scope may replace the vocabulary entirely (scope.sorts = [{id,label}]) when
+  // its rows are ordered by something the library has no word for — the cache's
+  // "least recently used" is the case that forced this. Custom sorts are
+  // SERVER-side only, so a scope that supplies them must be paged; sortFilesBy
+  // (the in-memory sorter) knows the built-in tokens and nothing else.
+  const SORT_OPTIONS = scope.sorts
+    ? scope.sorts.map(s => [s.id, s.label])
+    : [
+      ['created_desc', 'Newest first'], ['created_asc', 'Oldest first'],
+      ['title_asc', 'Title A–Z'], ['title_desc', 'Title Z–A'],
+      ['artist_asc', 'Artist A–Z'], ['artist_desc', 'Artist Z–A'],
+      ['size_desc', 'Largest first'], ['size_asc', 'Smallest first'],
+      ['untagged_first', 'Untagged first'],
+    ];
 
   // sortControl is the single sort dropdown for every list view. Non-paged scopes
   // also get a "Default order" (as loaded) entry. The grouped view is a separate

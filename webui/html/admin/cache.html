@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Madshare &mdash; Admin &middot; Cache</title>
+  <meta name="api-url" content="{{.APIURL}}">
+  {{template "theme-guard" .}}
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/admin-shell.css">
+  <link rel="stylesheet" href="/static/css/file-view.css">
+  <link rel="stylesheet" href="/static/css/admin-cache.css">
+  <link rel="stylesheet" href="/static/css/player.css">
+</head>
+<body>
+
+{{template "header" .}}
+{{template "admin-shell" .}}
+
+<main class="admin-main">
+  <section aria-labelledby="cacheHeading">
+    <h2 class="section-title" id="cacheHeading">Madnetwork cache</h2>
+    <p class="muted">
+      What the swarm fetched from other nodes, so it could be played or
+      materialized here. This is <strong>other people's content that this node is
+      holding</strong> &mdash; nothing in it is part of your library, and nothing
+      here is editable. Removing an entry frees the disk and
+      <strong>withdraws it as a seed</strong>: while cache seeding is on, these
+      are the bytes this node serves back to the community. Anything removed can
+      be fetched again as long as somebody still holds it.
+    </p>
+
+    <div class="cache-summary" id="cacheSummary" aria-live="polite">
+      <p class="muted" id="cacheSummaryLoading">Loading&hellip;</p>
+    </div>
+
+    <div id="cacheList"></div>
+  </section>
+</main>
+
+{{/* Removal and reclaim both confirm here — destructive actions are modal,
+     never an inline two-step (docs/ui: row-action icons). */}}
+<div class="modal-backdrop hidden" id="delModal" role="dialog" aria-modal="true" aria-labelledby="delModalTitle" aria-describedby="delModalBody">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="delModalTitle">Remove from cache?</h2>
+    </div>
+    <p class="modal-body" id="delModalBody"></p>
+    <div class="modal-actions">
+      <button class="btn btn-neutral" id="delCancel" type="button">Cancel</button>
+      <button class="btn btn-destructive" id="delConfirm" type="button">Remove</button>
+    </div>
+  </div>
+</div>
+
+{{/* The "what does the network call this" panel — the rare view. */}}
+<div class="modal-backdrop hidden" id="claimsModal" role="dialog" aria-modal="true" aria-labelledby="claimsTitle">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="claimsTitle">What the network calls this</h2>
+    </div>
+    <div class="modal-body" id="claimsBody"></div>
+    <div class="modal-actions">
+      <button class="btn btn-neutral" id="claimsClose" type="button">Close</button>
+    </div>
+  </div>
+</div>
+
+{{template "player-bar" .}}
+{{template "auth-modals" .}}
+
+<script type="module" src="/static/js/admin/cache.js"></script>
+</body>
+</html>

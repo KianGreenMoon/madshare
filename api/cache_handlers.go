@@ -2,6 +2,7 @@ package api
 
 import (
 	"log"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -107,6 +108,11 @@ func (h *handler) adminCacheSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	resp["in_flight"] = inFlight
+	// Whether a federation node is running. The cache is listed, played,
+	// downloaded and cleaned either way — but MATERIALIZE goes through
+	// POST /api/madnetwork/download, which is only registered with a node, so the
+	// page hides that action rather than offering one that 404s.
+	resp["federation"] = h.federation != nil
 
 	if h.cacheDir != "" {
 		n, b, err := database.CountAbandonedPartials(h.cacheDir, live)
@@ -123,6 +129,44 @@ func (h *handler) adminCacheSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// adminCacheAudio handles GET /api/admin/cache/{hash}/audio — the page's Play
+// and (with ?download=1) Download, served straight off the cache directory.
+//
+// Deliberately NOT the madnetwork streaming relay. That relay is registered only
+// when a federation node runs, and the cache outlives federation being switched
+// off — which is precisely when someone comes here to reclaim the disk. Asking
+// the mesh for a file already on this disk would be indirection that buys
+// nothing and breaks in the one case that matters. http.ServeContent gives
+// native Range, so seeking works.
+func (h *handler) adminCacheAudio(w http.ResponseWriter, r *http.Request) {
+	hash := strings.ToLower(chi.URLParam(r, "hash"))
+	if !isSHA256Hex(hash) || h.cacheDir == "" {
+		http.NotFound(w, r)
+		return
+	}
+	f, err := os.Open(filepath.Join(h.cacheDir, hash))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	name := h.cachedDownloadName(r.Context(), hash, "")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if r.URL.Query().Get("download") == "1" {
+		w.Header().Set("Content-Disposition",
+			mime.FormatMediaType("attachment", map[string]string{"filename": name}))
+	}
+	// ServeContent types the response from the name's extension and falls back to
+	// sniffing the bytes — which is the right order here, since a blob adopted
+	// from a pre-existing cache has no remembered name at all.
+	http.ServeContent(w, r, name, info.ModTime(), f)
 }
 
 // adminCacheClaims handles GET /api/admin/cache/{hash}/claims: what sources

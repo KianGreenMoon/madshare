@@ -1,0 +1,51 @@
+/* admin-cache.css — /admin/cache (docs/architecture/madnetwork-cache.md): the
+   madnetwork download cache, seen and cleaned. The list itself is the shared
+   file-list.js component, so everything table-shaped comes from file-view.css;
+   only the summary strip above it and the claims panel are this page's own.
+   Buttons, .modal and .linklike come from app.css + admin-shell.css. */
+
+.cache-summary {
+  display: grid; gap: var(--space-2);
+  margin: var(--space-4) 0;
+}
+
+.cache-stats {
+  display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap;
+  font-size: 14px;
+}
+.cache-stat { white-space: nowrap; }
+/* Something is arriving right now — the one figure on this page that moves. */
+.cache-stat--live { color: var(--accent); }
+
+/* Abandoned partials are dead disk, so the row states a problem and offers the
+   fix in the same breath. It appears only when there is something to reclaim —
+   a permanent "0 abandoned" line would train people to stop reading it. */
+.cache-partials {
+  display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); padding: var(--space-2) var(--space-3);
+  font-size: 13.5px;
+}
+
+.cache-tools { font-size: 13px; }
+
+/* The date columns sit beside Size and want the same restraint: a fixed, narrow
+   column, and the value muted so the title stays the thing you read first. */
+.col-when { width: 8.5rem; }
+.cell-when { color: var(--text-muted); font-size: 13px; white-space: nowrap; }
+
+/* Claims panel — what each node advertising these bytes calls them. Deliberately
+   plain: it is a rare view, and its whole job is to show disagreement legibly. */
+.cache-claims { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-3); }
+.cache-claims li {
+  border-left: 2px solid var(--border); padding-left: var(--space-3);
+}
+.cache-claim-title { font-weight: 600; }
+.cache-claim-sub { font-size: 13px; }
+.cache-claim-src { font-size: 12px; }
+
+/* Card mode: the table becomes blocks, so the fixed date width would fight the
+   layout (file-view.css does the same for its own columns). */
+@media (max-width: 640px) {
+  .col-when { width: auto; }
+}

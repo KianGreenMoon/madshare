@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"mime"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -83,15 +82,6 @@ func (h *handler) madnetworkStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	// ?download=1 saves the file instead of playing it — the cache page's
-	// "Download" row action (docs/architecture/madnetwork-cache.md). A separate
-	// parameter rather than a separate endpoint because the bytes, the range
-	// handling and the gate are identical; only the disposition differs.
-	if r.URL.Query().Get("download") == "1" {
-		w.Header().Set("Content-Disposition",
-			mime.FormatMediaType("attachment",
-				map[string]string{"filename": h.cachedDownloadName(r.Context(), hash, t.Filename())}))
-	}
 	// Completed (local blob, cache hit, or a fetch that just finished):
 	// http.ServeContent gives full native Range support.
 	select {

@@ -467,6 +467,7 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		// have (file.upload / madnetwork.access).
 		r.With(fileDelete).Get("/cache", h.adminCacheList)
 		r.With(fileDelete).Get("/cache/summary", h.adminCacheSummary)
+		r.With(fileDelete).Get("/cache/{hash}/audio", h.adminCacheAudio)
 		r.With(fileDelete).Get("/cache/{hash}/claims", h.adminCacheClaims)
 		r.With(fileDelete).Post("/cache/bulk", h.adminCacheBulk)
 		r.With(fileDelete).Post("/cache/rescan", h.adminCacheRescan)

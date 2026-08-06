@@ -103,6 +103,17 @@
         <span class="dash-card-desc">Better renditions of what you already have, found on the madnetwork.</span>
       </a>
 
+      <!-- The madnetwork download cache: other nodes' bytes this one is holding,
+           and seeding back. The count is its footprint, which is the number that
+           makes anyone open the page (docs/architecture/madnetwork-cache.md). -->
+      <a class="dash-card" href="/admin/cache">
+        <span class="dash-card-head">
+          <span class="dash-card-title">Cache</span>
+          <span class="dash-card-count" id="countCacheBytes" hidden></span>
+        </span>
+        <span class="dash-card-desc">What the swarm fetched from other nodes &mdash; review it, free the disk.</span>
+      </a>
+
       <a class="dash-card" href="/admin/library#trash">
         <span class="dash-card-head">
           <span class="dash-card-title">Trash</span>

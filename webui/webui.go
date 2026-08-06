@@ -93,6 +93,12 @@ var adminSubPages = map[string]*template.Template{
 	// "sources" manages in-place symlink imports (data-sources P6,
 	// docs/architecture/data-sources.md). Moderator-accessible.
 	"sources": buildPageTmpl("html/admin/sources.html"),
+	// "cache" controls the madnetwork download cache — what the swarm fetched
+	// from other nodes (docs/architecture/madnetwork-cache.md). Its own page
+	// rather than a Library lens: those curate content we publish under our own
+	// sharing scopes, this is somebody else's content we are holding, and none
+	// of it is editable.
+	"cache": buildPageTmpl("html/admin/cache.html"),
 	// "network" is the madnetwork friendship page (federation F1,
 	// docs/architecture/federation.md): node card export/import, the trusted-peer
 	// list, block/unblock. Gated on federation.manage at the API.

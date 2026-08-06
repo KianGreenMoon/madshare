@@ -369,16 +369,32 @@ Icon-only, per the admin row-action convention:
 
 | Action | Gate | What it does |
 |---|---|---|
-| **Play** | — | `GET /api/madnetwork/stream/{hash}` in the page's preview player. Cache hit → served straight off disk with Range support. This is the "what *is* this" button. |
-| **Materialize** | `file.upload` + `madnetwork.access` | `POST /api/madnetwork/download {hash}` — the existing path. The bytes are already local, so `EnsureBlob` short-circuits and only staging runs; it lands in **My uploads** like any upload. Always available (see below). |
-| **Download** | — | `GET /api/madnetwork/stream/{hash}?download=1` — the file to your device, no library involvement. |
-| **Claims…** | — | The rare one: every tagset currently claimed for this hash, by source. Overflow menu, not a button. |
-| **Remove** | `file.delete` | Delete the cache file (and its row). Modal confirm. |
+| **Play** | `file.delete` | `GET /api/admin/cache/{hash}/audio` in the page's preview player. This is the "what *is* this" button. |
+| **Materialize** | `file.upload` + a running node | `POST /api/madnetwork/download {hash}` — the existing path. The bytes are already local, so `EnsureBlob` short-circuits and only staging runs; it lands in **My uploads** like any upload. |
+| **Download** | `file.delete` | The same audio endpoint with `?download=1` — the file to your device, no library involvement. |
+| **Claims…** | `file.delete` | The rare one: every tagset currently claimed for this hash, by source. |
+| **Remove** | `file.delete` | Delete the cache file and its row. Modal confirm. |
 
 Materialize and Download are the acknowledged rare paths — `/madnetwork` browse
 remains the good way to bring content in. They are here because when you are
 *looking at* a cached file and decide you want to keep it, sending you elsewhere
 to find it again is silly.
+
+**Play and Download do not go through the madnetwork streaming relay**, and this
+is load-bearing rather than a preference. That relay is registered only when
+`Deps.Federation != nil` — a running node — but *the cache outlives federation
+being switched off*, which is exactly the situation in which someone opens this
+page to reclaim disk. Asking the mesh for a file already on this disk would be
+indirection that buys nothing and breaks in the one case that matters. So the
+page reads the cache directory directly, through its own admin endpoint, gated
+like the rest of the page. (Caught by running it: with federation off, every Play
+and Download 404'd.)
+
+**Materialize is the one action that does disappear** with federation off, since
+`POST /api/madnetwork/download` is itself federation-gated. The summary reports
+`federation: true|false` and the page omits the button rather than offering one
+that 404s. That asymmetry is honest: playing, downloading and removing are
+operations on a local file; materializing is a madnetwork feature.
 
 One gap closed for them: `madnetworkDownload` used to 404 with "no friend
 advertises this content" whenever `MadnetworkEntryForHash` returned nil. For a
@@ -432,6 +448,10 @@ GET  /api/admin/cache/summary
         in_flight:[{hash,size,progress,mode}],
         partials:{count,bytes}}      abandoned only — a live fetch's is not one
 
+GET  /api/admin/cache/{hash}/audio[?download=1]
+     → the bytes, straight off the cache dir (native Range; attachment when
+       download=1). NOT the madnetwork relay — see "Row actions" above.
+
 GET  /api/admin/cache/{hash}/claims
      → {ok, claims:[{source_key, source_name, title, artist, album, …}]}
 
@@ -444,10 +464,16 @@ POST /api/admin/cache/rescan     → {ok, added, dropped}
 POST /api/admin/cache/partials/reap → {ok, removed, bytes}
 ```
 
-Plus one small change outside the prefix: `GET /api/madnetwork/stream/{hash}`
-gains `?download=1`, which sets `Content-Disposition: attachment` with a filename
-from the index (falling back to a name synthesized from the tagset text and
-codec, the way `runMadnetworkDownload` already does).
+```
+GET  /api/admin/cache/summary  also reports  federation: true|false
+```
+— whether a node is running, which is what decides if Materialize is offered.
+
+The download filename comes from the index, falling back to the file's own tags
+(`Artist - Title`) and finally the hash. `http.ServeContent` types the response
+from that name's extension and sniffs the bytes when it has none, so a blob
+adopted from a pre-existing cache with no remembered name still plays (Go's
+sniffer recognises an `ID3` prefix as `audio/mpeg`).
 
 Removal is `os.Remove` + row delete, in that order, tolerating `ENOENT` at both
 ends — the disk is the truth, so a file already gone is a success, not an error.
@@ -567,8 +593,16 @@ when it happens, and nothing else here.
    file already gone; the reaper spares a RUNNING transfer's partial and takes
    the abandoned one; an unadvertised cached blob materializes while an
    unreachable hash still 404s; the download name falls back index → tags → hash.
-4. **Page** — `cache.html`, `admin/cache.js` as a `file-list.js` scope, nav link,
-   dashboard card, summary strip, partials reclaim.
+4. **Page** — ✅ built. `cache.html`, `admin/cache.js` as a `file-list.js` scope,
+   the admin nav link, a dashboard card badged with the cache's footprint, the
+   summary strip with Reclaim and Rescan, the claims panel, and the direct audio
+   endpoint. `file-list.js` gained one option — `scope.sorts`, a scope-supplied
+   sort vocabulary — because "least recently used" has no equivalent in the
+   library's orders and it is the order that previews what a retention sweep
+   would take. Verified live against a running server: adoption reads ID3v1 and
+   ID3v2 tags off the blob, search matches text and hash prefixes, Range requests
+   answer 206, removal takes file and row, the guardrail refuses an unqualified
+   clear-all, and a restart reaped the abandoned partial by itself.
 5. **Daemon** — later, on its own, once the shape above has lived on a real node
    for a while.
 
@@ -593,3 +627,5 @@ Steps 1–4 are the deliverable. Step 5 is scheduled, not promised.
 | 2026-08-06 | **A `file-list.js` scope, not a new list.** | Infinite scroll, search, select-all-N, bulk bar and Play already exist there, over exactly the paged envelope this endpoint returns. |
 | 2026-08-06 | **Abandoned partials are reaped by the system, not only by a button** — unconditionally at startup. | Owner call. A killed process cannot clean up after itself and nothing else swept them, so they were permanent dead disk. Startup needs no heuristic to be safe: a process that just started is writing nothing, so every `.part` is abandoned by definition. |
 | 2026-08-06 | **Removal does not go through `federation.EvictCachedBlob`.** | The cache outlives federation being switched off, and must stay cleanable then. The handler unlinks from `cacheDir` itself — file first, index row second. |
+| 2026-08-06 | **Play and Download read the cache directory directly**, not the madnetwork relay. | Same reason, found by running it: the relay only exists while a node runs, so with federation off every Play and Download 404'd — in exactly the situation where someone is here to reclaim disk. Materialize alone stays federation-gated, and the page hides it rather than offering a 404. |
+| 2026-08-06 | **`file-list.js` gained `scope.sorts`** — a scope-supplied sort vocabulary. | "Least recently used" has no equivalent among the library's orders, and it is the sort that previews what a retention sweep would take first. Server-side only, so a scope using it must be paged. |

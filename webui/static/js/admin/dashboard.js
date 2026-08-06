@@ -211,6 +211,17 @@ async function fillStorage() {
     const usedRow = document.getElementById('storageUsedRow');
     const categories = Array.isArray(s.categories) ? s.categories : [];
 
+    // The Cache card's badge is its footprint, taken from the breakdown we just
+    // fetched rather than a second request. Hidden at zero: an empty cache is
+    // not news, and a badge reading "0 B" is noise on every fresh install.
+    const cacheBadge = document.getElementById('countCacheBytes');
+    if (cacheBadge) {
+      const cache = categories.find(c => c.name === 'cache');
+      const bytes = cache ? cache.bytes || 0 : 0;
+      cacheBadge.textContent = fmtBytes(bytes);
+      cacheBadge.hidden = bytes <= 0;
+    }
+
     if (s.volume) {
       const total = s.volume.total_bytes;
       const used = s.volume.used_bytes;
