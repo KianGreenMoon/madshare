@@ -150,8 +150,7 @@ func TestSwarmList_CarriesStoredAndSessionTraffic(t *testing.T) {
 	}}
 	srv, db := newSwarmTestServer(t, fed)
 	swarmSeedFile(t, db, "aa11", "Moved", 100)
-	if err := db.AddSwarmTraffic(context.Background(),
-		[]database.SwarmTrafficDelta{{Hash: "aa11", Up: 900}}, 5000); err != nil {
+	if err := db.AddSwarmTraffic(context.Background(), []database.SwarmTrafficDelta{{Hash: "aa11", Up: 900}}, nil, 5000); err != nil {
 		t.Fatal(err)
 	}
 
@@ -197,8 +196,7 @@ func TestSwarmSummary_ReportsTotalsAndFederationState(t *testing.T) {
 		},
 	}
 	srv, db := newSwarmTestServer(t, fed)
-	if err := db.AddSwarmTraffic(context.Background(),
-		[]database.SwarmTrafficDelta{{Hash: "aa11", Up: 1000, Down: 500}}, 1); err != nil {
+	if err := db.AddSwarmTraffic(context.Background(), []database.SwarmTrafficDelta{{Hash: "aa11", Up: 1000, Down: 500}}, nil, 1); err != nil {
 		t.Fatal(err)
 	}
 
@@ -227,8 +225,7 @@ func TestSwarmSummary_ReportsTotalsAndFederationState(t *testing.T) {
 // database and outlive any node. Only the live half disappears.
 func TestSwarmSummary_WorksWithFederationOff(t *testing.T) {
 	srv, db := newSwarmTestServer(t, nil)
-	if err := db.AddSwarmTraffic(context.Background(),
-		[]database.SwarmTrafficDelta{{Hash: "aa11", Up: 42}}, 1); err != nil {
+	if err := db.AddSwarmTraffic(context.Background(), []database.SwarmTrafficDelta{{Hash: "aa11", Up: 42}}, nil, 1); err != nil {
 		t.Fatal(err)
 	}
 
@@ -346,8 +343,7 @@ func TestSwarmForget_GuardrailAndDeletion(t *testing.T) {
 	// a hash is what it addresses blobs by.
 	hash := strings.Repeat("a", 64)
 	swarmSeedFile(t, db, hash, "One", 10)
-	if err := db.AddSwarmTraffic(ctx,
-		[]database.SwarmTrafficDelta{{Hash: hash, Up: 100}}, 1); err != nil {
+	if err := db.AddSwarmTraffic(ctx, []database.SwarmTrafficDelta{{Hash: hash, Up: 100}}, nil, 1); err != nil {
 		t.Fatal(err)
 	}
 
@@ -453,5 +449,139 @@ func TestSwarmSummary_OmitsASessionThatNeverStarted(t *testing.T) {
 	got := swarmGET(t, withNode.URL+"/api/admin/swarm/summary")["session"].(map[string]any)["since"]
 	if got == nil || int64(got.(float64)) != started.Unix() {
 		t.Errorf("since = %v, want %d", got, started.Unix())
+	}
+}
+
+// ── Who we trade with (mig 042) ──────────────────────────────────────────────
+
+// The panel merges two sources the same way the file rows do: the stored
+// all-time counters, plus what this session has moved and not yet flushed.
+func TestSwarmPeers_MergesStoredAndSession(t *testing.T) {
+	friend := strings.Repeat("a", 64)
+	fed := &fakeFederation{traffic: federation.TrafficSnapshot{
+		Peers: []federation.PeerTraffic{{Key: friend, Up: 25}},
+	}}
+	srv, db := newSwarmTestServer(t, fed)
+	ctx := context.Background()
+	if err := db.AddSwarmTraffic(ctx, nil,
+		[]database.SwarmPeerTrafficDelta{{Key: friend, Up: 900, Down: 10}}, 5000); err != nil {
+		t.Fatal(err)
+	}
+
+	body := swarmGET(t, srv.URL+"/api/admin/swarm/peers")
+	peers := body["peers"].([]any)
+	if len(peers) != 1 {
+		t.Fatalf("peers = %v, want the one counterparty", peers)
+	}
+	row := peers[0].(map[string]any)
+	if row["up_bytes"].(float64) != 900 {
+		t.Errorf("stored up = %v, want 900", row["up_bytes"])
+	}
+	sess, ok := row["session"].(map[string]any)
+	if !ok || sess["up_bytes"].(float64) != 25 {
+		t.Errorf("session = %v, want the un-flushed 25 bytes", row["session"])
+	}
+	// The totals carry both halves, or the panel's header would disagree with the
+	// rows under it.
+	if body["totals"].(map[string]any)["up_bytes"].(float64) != 925 {
+		t.Errorf("totals = %v, want 925", body["totals"])
+	}
+}
+
+// A requester we could not place is answered as the bucket, apart from the
+// named nodes — an aggregate of strangers is not a peer.
+func TestSwarmPeers_UnplacedIsItsOwnRow(t *testing.T) {
+	srv, db := newSwarmTestServer(t, nil)
+	if err := db.AddSwarmTraffic(context.Background(), nil, []database.SwarmPeerTrafficDelta{
+		{Key: strings.Repeat("a", 64), Up: 10}, {Key: "", Up: 88},
+	}, 5000); err != nil {
+		t.Fatal(err)
+	}
+
+	body := swarmGET(t, srv.URL+"/api/admin/swarm/peers")
+	if got := body["peers"].([]any); len(got) != 1 {
+		t.Errorf("peers = %v, want only the named node", got)
+	}
+	bucket, ok := body["unplaced"].(map[string]any)
+	if !ok {
+		t.Fatalf("no unplaced bucket in %v", body)
+	}
+	if bucket["up_bytes"].(float64) != 88 || bucket["kind"] != "unplaced" {
+		t.Errorf("bucket = %v", bucket)
+	}
+}
+
+// A counterparty this session has traded with but no flush has written yet still
+// appears — otherwise the panel lists nobody while the strip says a node is
+// pulling from us.
+func TestSwarmPeers_SessionOnlyPeerStillAppears(t *testing.T) {
+	key := strings.Repeat("b", 64)
+	fed := &fakeFederation{traffic: federation.TrafficSnapshot{
+		Peers: []federation.PeerTraffic{{Key: key, Up: 64}},
+	}}
+	srv, _ := newSwarmTestServer(t, fed)
+
+	body := swarmGET(t, srv.URL+"/api/admin/swarm/peers")
+	peers := body["peers"].([]any)
+	if len(peers) != 1 {
+		t.Fatalf("peers = %v, want the un-flushed counterparty", peers)
+	}
+	row := peers[0].(map[string]any)
+	if row["key"] != key || row["up_bytes"].(float64) != 0 {
+		t.Errorf("row = %v, want the key with no stored history", row)
+	}
+	if row["session"].(map[string]any)["up_bytes"].(float64) != 64 {
+		t.Errorf("session bytes missing: %v", row)
+	}
+}
+
+// Forgetting a counterparty is explicit, and leaves the blob ledger alone: the
+// two count the same bytes, and neither is derived from the other.
+func TestSwarmPeersForget_GuardrailAndIndependence(t *testing.T) {
+	srv, db := newSwarmTestServer(t, nil)
+	ctx := context.Background()
+	key := strings.Repeat("a", 64)
+	if err := db.AddSwarmTraffic(ctx,
+		[]database.SwarmTrafficDelta{{Hash: key, Up: 100}},
+		[]database.SwarmPeerTrafficDelta{{Key: key, Up: 100}}, 5000); err != nil {
+		t.Fatal(err)
+	}
+
+	// An empty request is not "everything".
+	if code, _ := swarmPOST(t, srv.URL+"/api/admin/swarm/peers/forget", `{}`); code != 400 {
+		t.Errorf("unqualified forget-all = %d, want 400", code)
+	}
+	if peers, _ := db.ListSwarmPeerTraffic(ctx); len(peers) != 1 {
+		t.Fatal("the refused request deleted anyway")
+	}
+
+	code, body := swarmPOST(t, srv.URL+"/api/admin/swarm/peers/forget",
+		`{"keys":["`+key+`"]}`)
+	if code != 200 || body["forgotten"].(float64) != 1 {
+		t.Fatalf("forget = %d %v", code, body)
+	}
+	if peers, _ := db.ListSwarmPeerTraffic(ctx); len(peers) != 0 {
+		t.Error("the row survived being forgotten")
+	}
+	// The blob's own history is untouched — a different ledger, a different act.
+	if row, _ := db.GetSwarmTraffic(ctx, key); row == nil || row.Up != 100 {
+		t.Error("forgetting a peer rewrote what the blob had moved")
+	}
+}
+
+func TestSwarmPeersForget_AllTakesTheBucketToo(t *testing.T) {
+	srv, db := newSwarmTestServer(t, nil)
+	ctx := context.Background()
+	if err := db.AddSwarmTraffic(ctx, nil, []database.SwarmPeerTrafficDelta{
+		{Key: strings.Repeat("a", 64), Up: 1}, {Key: "", Up: 2},
+	}, 5000); err != nil {
+		t.Fatal(err)
+	}
+	code, body := swarmPOST(t, srv.URL+"/api/admin/swarm/peers/forget", `{"all":true}`)
+	if code != 200 || body["forgotten"].(float64) != 2 {
+		t.Fatalf("forget all = %d %v", code, body)
+	}
+	if peers, _ := db.ListSwarmPeerTraffic(ctx); len(peers) != 0 {
+		t.Errorf("rows survived forget-all: %v", peers)
 	}
 }

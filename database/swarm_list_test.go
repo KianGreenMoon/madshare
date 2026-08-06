@@ -212,7 +212,7 @@ func TestSwarmListing_TrafficIsOptional(t *testing.T) {
 	ctx := context.Background()
 	seedSwarmLibraryFile(t, db, "aa11", "Moved", "A", 10)
 	seedSwarmLibraryFile(t, db, "bb22", "Never Moved", "A", 10)
-	if err := db.AddSwarmTraffic(ctx, []SwarmTrafficDelta{{Hash: "aa11", Up: 999}}, 5000); err != nil {
+	if err := db.AddSwarmTraffic(ctx, []SwarmTrafficDelta{{Hash: "aa11", Up: 999}}, nil, 5000); err != nil {
 		t.Fatal(err)
 	}
 
@@ -295,7 +295,7 @@ func TestSwarmListing_SortOrders(t *testing.T) {
 	if err := db.AddSwarmTraffic(ctx, []SwarmTrafficDelta{
 		{Hash: "aa11", Up: 5, Down: 90},
 		{Hash: "cc33", Up: 50, Down: 7},
-	}, 4000); err != nil {
+	}, nil, 4000); err != nil {
 		t.Fatal(err)
 	}
 

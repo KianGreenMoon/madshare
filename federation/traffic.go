@@ -50,15 +50,20 @@ type trafficTable struct {
 	totals  TrafficCounters
 	session map[string]*TrafficCounters
 	pending map[string]*TrafficCounters
-	peers   map[string]*PeerTraffic
+	// peers is the session view of the counterparties; pendingPeers is the half
+	// not yet written. Same two-map reason as above: a drain must not empty the
+	// panel, because "this session" means since the process started.
+	peers        map[string]*PeerTraffic
+	pendingPeers map[string]*PeerTraffic
 }
 
 func newTrafficTable() *trafficTable {
 	return &trafficTable{
-		since:   time.Now(),
-		session: map[string]*TrafficCounters{},
-		pending: map[string]*TrafficCounters{},
-		peers:   map[string]*PeerTraffic{},
+		since:        time.Now(),
+		session:      map[string]*TrafficCounters{},
+		pending:      map[string]*TrafficCounters{},
+		peers:        map[string]*PeerTraffic{},
+		pendingPeers: map[string]*PeerTraffic{},
 	}
 }
 
@@ -99,17 +104,22 @@ func (t *trafficTable) notePeer(key, addr string, up, down int64) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	p := t.peers[id]
-	if p == nil {
-		p = &PeerTraffic{Key: key, Addr: addr}
-		t.peers[id] = p
+	now := time.Now()
+	credit := func(m map[string]*PeerTraffic) {
+		p := m[id]
+		if p == nil {
+			p = &PeerTraffic{Key: key, Addr: addr}
+			m[id] = p
+		}
+		if p.Addr == "" {
+			p.Addr = addr // learned on a later request from the same key
+		}
+		p.Up += up
+		p.Down += down
+		p.LastAt = now
 	}
-	if p.Addr == "" {
-		p.Addr = addr // learned on a later request from the same key
-	}
-	p.Up += up
-	p.Down += down
-	p.LastAt = time.Now()
+	credit(t.peers)
+	credit(t.pendingPeers)
 }
 
 // snapshot copies the session view. The maps are copied rather than shared: a
@@ -165,6 +175,32 @@ func (t *trafficTable) drain() []TrafficDelta {
 	return out
 }
 
+// drainPeers is drain for the counterparty half. Deltas keyed only by a mesh
+// address come back with an EMPTY Key: the address is not a durable identity to
+// file history under, and the store folds every one of them into a single
+// unplaced row rather than letting a stranger size the table
+// (docs/architecture/swarm-admin.md §Migration 042).
+func (t *trafficTable) drainPeers() []PeerTrafficDelta {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.pendingPeers) == 0 {
+		return nil
+	}
+	out := make([]PeerTrafficDelta, 0, len(t.pendingPeers))
+	for _, p := range t.pendingPeers {
+		if p.Up == 0 && p.Down == 0 {
+			continue
+		}
+		out = append(out, PeerTrafficDelta{Key: p.Key, Up: p.Up, Down: p.Down})
+	}
+	t.pendingPeers = map[string]*PeerTraffic{}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out
+}
+
 // ── Node-level hooks ─────────────────────────────────────────────────────────
 
 // noteUp credits bytes served to a peer over the mesh.
@@ -213,6 +249,11 @@ func (n *Node) Traffic() TrafficSnapshot { return n.traffic.snapshot() }
 // DrainTraffic takes the per-hash deltas that have not been persisted yet and
 // clears them. The caller commits them; the session view is unaffected.
 func (n *Node) DrainTraffic() []TrafficDelta { return n.traffic.drain() }
+
+// DrainPeerTraffic is DrainTraffic for the counterparty ledger. The caller
+// commits both in one transaction — they are two views of the same bytes, and a
+// commit of one without the other leaves totals that disagree for good.
+func (n *Node) DrainPeerTraffic() []PeerTrafficDelta { return n.traffic.drainPeers() }
 
 // ── Metering ─────────────────────────────────────────────────────────────────
 

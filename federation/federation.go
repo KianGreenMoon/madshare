@@ -785,10 +785,25 @@ type TrafficDelta struct {
 	TrafficCounters
 }
 
+// PeerTrafficDelta is one counterparty's un-flushed increment, handed to the
+// persister beside the per-hash deltas of the same drain.
+//
+// Key is EMPTY for a requester the audience resolution could not place — a
+// guest, or a listener device on a capability token. The store folds all of
+// those into one unplaced row: a keyed row set is bounded by the community,
+// while an address-keyed one is sized by whoever chooses to talk to us
+// (docs/architecture/swarm-admin.md §Migration 042).
+type PeerTrafficDelta struct {
+	Key  string
+	Up   int64
+	Down int64
+}
+
 // PeerTraffic is what one counterparty has moved with us since this process
-// started. Session-only, deliberately: persisted per-peer history is a
-// hashes×peers commitment that should wait for a real want, while "who is
-// pulling from us right now" — the common question — needs no table at all.
+// started — the live view. Its all-time twin is persisted per counterparty
+// (`swarm_peer_traffic`, mig 042), which is bounded by the size of the
+// community; what stays session-only is the per-(blob, peer) pairing, whose
+// table would be hashes × peers and grow forever.
 type PeerTraffic struct {
 	// Key is the peer's public key hex when we know it: always for an outbound
 	// fetch (we address a holder by key), and for an inbound serve whenever the

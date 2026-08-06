@@ -205,8 +205,12 @@ type FederationNode interface {
 	// DrainTraffic takes the per-hash deltas not yet written to the database and
 	// clears them; the session view above is unaffected, because "this session"
 	// means since start, not since the last flush.
+	// DrainPeerTraffic is the same for the counterparty ledger; the flusher
+	// commits both halves of one drain in a single transaction, because they
+	// count the same bytes.
 	Traffic() federation.TrafficSnapshot
 	DrainTraffic() []federation.TrafficDelta
+	DrainPeerTraffic() []federation.PeerTrafficDelta
 	// SwarmRates are the caps in force right now, in bytes/sec (0 = unlimited),
 	// resolved through override → config. The node is asked rather than the
 	// database because it is the thing actually holding the buckets.
@@ -499,6 +503,10 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(fileDelete).Get("/swarm/limits", h.adminSwarmLimitsGet)
 		r.With(d.protect(auth.PermUserManage)).Post("/swarm/limits", h.adminSwarmLimitsSet)
 		r.With(d.protect(auth.PermUserManage)).Post("/swarm/stats/forget", h.adminSwarmForget)
+		// Who we have traded with, all time (mig 042). Registered before the
+		// {hash} route so "peers" can never be read as a content hash.
+		r.With(fileDelete).Get("/swarm/peers", h.adminSwarmPeers)
+		r.With(d.protect(auth.PermUserManage)).Post("/swarm/peers/forget", h.adminSwarmPeersForget)
 		r.With(fileDelete).Get("/swarm/{hash}", h.adminSwarmFile)
 		r.With(fileDelete).Get("/trash", h.adminTrashList)
 		// Bulk Trash admits either capability; the handler enforces the per-action

@@ -439,6 +439,7 @@ type fakeRepo struct {
 	// Swarm traffic (docs/architecture/swarm-admin.md). Guarded by the same mu:
 	// the flusher runs on its own goroutine.
 	swarmTraffic map[string]*database.SwarmTraffic
+	swarmPeers   map[string]*database.SwarmPeerTraffic
 	swarmFlushes int
 	lastFile     *database.File
 	lastMeta     *database.MediaMetadata
@@ -855,11 +856,15 @@ func (f *fakeRepo) MadnetworkCacheBytes(_ context.Context) (int64, error) {
 
 // Swarm traffic: increments, never assignments — the same contract the real
 // table has, so a test that flushes twice sees the sum rather than the last one.
-func (f *fakeRepo) AddSwarmTraffic(_ context.Context, deltas []database.SwarmTrafficDelta, at int64) error {
+func (f *fakeRepo) AddSwarmTraffic(_ context.Context, deltas []database.SwarmTrafficDelta,
+	peers []database.SwarmPeerTrafficDelta, at int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.swarmTraffic == nil {
 		f.swarmTraffic = map[string]*database.SwarmTraffic{}
+	}
+	if f.swarmPeers == nil {
+		f.swarmPeers = map[string]*database.SwarmPeerTraffic{}
 	}
 	f.swarmFlushes++
 	for _, d := range deltas {
@@ -873,7 +878,60 @@ func (f *fakeRepo) AddSwarmTraffic(_ context.Context, deltas []database.SwarmTra
 		row.Wasted += d.Wasted
 		row.LastAt = at
 	}
+	// The peer half lands in the same call, as it does in the real store: both
+	// ledgers count the same bytes, so a fake that wrote only one would let a
+	// test pass over a flusher that persisted only one.
+	for _, d := range peers {
+		row := f.swarmPeers[d.Key]
+		if row == nil {
+			row = &database.SwarmPeerTraffic{Key: d.Key, FirstAt: at}
+			f.swarmPeers[d.Key] = row
+		}
+		row.Up += d.Up
+		row.Down += d.Down
+		row.LastAt = at
+	}
 	return nil
+}
+
+func (f *fakeRepo) ListSwarmPeerTraffic(_ context.Context) ([]database.SwarmPeerTraffic, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]database.SwarmPeerTraffic, 0, len(f.swarmPeers))
+	for _, row := range f.swarmPeers {
+		out = append(out, *row)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out, nil
+}
+
+func (f *fakeRepo) ResolveSwarmPeers(_ context.Context, keys []string) ([]database.SwarmPeerTraffic, error) {
+	out := make([]database.SwarmPeerTraffic, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, database.SwarmPeerTraffic{Key: k, Kind: "gone"})
+	}
+	return out, nil
+}
+
+func (f *fakeRepo) ForgetSwarmPeerTraffic(_ context.Context, keys []string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, k := range keys {
+		if _, ok := f.swarmPeers[k]; ok {
+			delete(f.swarmPeers, k)
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (f *fakeRepo) ForgetAllSwarmPeerTraffic(_ context.Context) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := len(f.swarmPeers)
+	f.swarmPeers = map[string]*database.SwarmPeerTraffic{}
+	return n, nil
 }
 
 func (f *fakeRepo) SwarmTrafficTotals(_ context.Context) (database.SwarmTraffic, error) {

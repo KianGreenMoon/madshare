@@ -171,7 +171,50 @@ Notes on the shape:
 **No provenance columns, no per-source rows here.** Which node served which
 bytes is answered live (below), not accumulated per hash — that table's size is
 hashes × peers and it would grow forever to answer a question that is almost
-always about *now*.
+always about *now*. Who we traded with **in total** is a different table, one
+row per counterparty rather than per pair:
+
+### Migration 042 — `swarm_peer_traffic`
+
+The companion to the F7 member quotas: those bound what a member *may* cost us,
+this says what one *has*. Bounded by the size of the community, never by the
+size of the library — which is exactly why it can exist while a per-pair table
+cannot.
+
+```sql
+CREATE TABLE swarm_peer_traffic (
+    public_key TEXT PRIMARY KEY,           -- ed25519 hex; '' = the unplaced bucket
+    up_bytes   INTEGER NOT NULL DEFAULT 0, -- served to that node, all time
+    down_bytes INTEGER NOT NULL DEFAULT 0, -- pulled from it, all time
+    first_at   INTEGER NOT NULL,
+    last_at    INTEGER NOT NULL
+);
+CREATE INDEX idx_swarm_peer_last ON swarm_peer_traffic(last_at);
+```
+
+- **Keyed by the public key, and it stores no name.** A node is addressed by its
+  key everywhere in this codebase (the frontier rotation recycles source ids),
+  and a heard name is a claim that changes; the page joins
+  `federation_peers`/`federation_catalog_sources` at display time to get the
+  current one. A node we have since forgotten shows as its key, which is the
+  honest answer.
+- **One `''` row is the unplaced bucket.** Friends and members arrive with a
+  key (`serveAudienceKey` establishes it while resolving the audience); a guest
+  or a token bearer arrives with only a mesh address, and every one of those
+  gets folded into a single row. Persisting them per address was rejected: a
+  keyed row set is bounded by the community, while an address-only one is sized
+  by whoever chooses to talk to us — N forged keys, N rows — and it answers a
+  question this table is not for. Dropping them entirely was rejected too: then
+  the panel's figures silently fail to add up and nobody can see why.
+- **No `wasted_bytes` column.** Waste is computed once per transfer, as
+  received minus kept, and a transfer spans several holders — attributing it to
+  one of them would be a guess.
+- **This table and `swarm_traffic` are two independent ledgers of the same
+  bytes**, written from the same drain in the same transaction, so their totals
+  agree — until someone forgets on one side. *Forget stats* on a blob does not
+  touch what a peer cost us, and *Forget* on a peer does not rewrite any blob's
+  history. Neither figure is ever computed from the other, and the page never
+  sums across them.
 
 ### Session and all-time, from two sources
 
@@ -446,6 +489,40 @@ node unusable rather than merely slow. It warns; it does not refuse. An operator
 on a genuinely tiny uplink is allowed to make that choice knowingly, and the
 modal points at the honest alternative — turning seeding off.
 
+### Who we trade with
+
+A disclosure under the strip, collapsed by default — the numbers matter when you
+go looking for them, and a list of node names above the file list would be a
+second page:
+
+```
+▸ Who we trade with — 7 nodes · ▲ 38.1 GB · ▼ 9.4 GB all time
+
+  fiona's box        ▲ 21.4 GB  ▼ 2.1 GB   friend   active 3 min ago   [Forget]
+  a-node-we-pull-from ▲ 6.2 GB  ▼ 5.9 GB   member   active 2 days ago  [Forget]
+  9f3c1e…            ▲ 410 MB   ▼ 0 B      gone     last seen 12/07
+  unnamed requesters ▲ 88 MB    ▼ 0 B      guests and listener devices
+```
+
+Rows are all-time from `swarm_peer_traffic`, plus the running node's session
+delta so a peer pulling right now moves without waiting for a flush — the same
+add the file rows already make. **Name and class are resolved at read time**
+from the peer and source tables: `friend` (a `federation_peers` row in that
+state), `member` (a `federation_catalog_sources` row — a node the sweep reached
+through the community), or `gone` (neither: a former friend, or a node the
+frontier rotation has since evicted). A `gone` row keeps its bytes: what a node
+cost us does not stop being true when we forget who it was.
+
+The bucket row is always last, and its `[Forget]` drops the whole aggregate:
+there is nothing selective to do inside it, because the requesters it counts were
+never told apart in the first place.
+
+This is the **only** home for these figures. `/admin/network` shows the same
+nodes as trust decisions (accept, rename, block, the map); adding a byte column
+there would put one number under two owners, and the F7 quotas it pairs with are
+`madshare.toml` config with no UI at all today. Traffic belongs on the traffic
+page.
+
 ### The switcher
 
 Three values, as asked: **All · In library · Cached**. It is a scope on the
@@ -567,6 +644,14 @@ POST /api/admin/swarm/limits            {up_kib?: null|0|N, down_kib?: …}
                             absent = unchanged (gate: user.manage)
 
 POST /api/admin/swarm/stats/forget      {hashes|filter+all}
+
+GET  /api/admin/swarm/peers
+     → {ok, peers:[{key, name, kind:"friend"|"member"|"unknown", up_bytes,
+        down_bytes, first_at, last_at, session:{up_bytes,down_bytes}}],
+        unplaced:{up_bytes,down_bytes,first_at,last_at,session:{…}},
+        totals:{up_bytes,down_bytes}, federation: true|false}
+POST /api/admin/swarm/peers/forget      {keys:[…]|all:true}
+     → {ok, forgotten:N}    (gate: user.manage; "" forgets the bucket)
 ```
 
 The two rate fields are three-valued for the same reason `share_depth` is —
@@ -620,9 +705,9 @@ No new permission.
 | `api.FederationNode` + `federation/node_stub.go` | the four new methods (and the `nofederation` stub must satisfy them) |
 | `MadnetworkPolicy`, `/api/admin/settings/madnetwork`, the `/admin/settings` card | **unchanged** — the rate knobs deliberately do not go there |
 | `config.FederationConfig` | `fetch_rate_kib`, plus the config example and `configuration.md` (with the sizing guidance in the comment) |
-| `PeerStore`, the catalog, gossip, quotas | **unchanged** — nothing to re-vet in `tests/mesh/` |
+| `PeerStore`, the catalog, gossip, quotas | **unchanged** — nothing to re-vet in `tests/mesh/`. Mig 042 reads `federation_peers`/`federation_catalog_sources`, but only in a LEFT JOIN on the way out: it stores no foreign key and neither table learns of it |
 | `/admin/cache` and its endpoints | **unchanged**; the swarm page calls them |
-| `database_test.go` | migration count/table assertions for 041 (standing gotcha) |
+| `database_test.go` | migration count/table assertions for 041 and 042 (standing gotcha) |
 | `api` `fakeRepo` / federation fake | new `Repository` and node methods (standing gotcha) |
 | `madnetwork-cache.md` | its "belongs to a future swarm page" decision row points here |
 | `CLAUDE.md`, `README`, `docs/ui/shells.md` | the new admin page in the route-group lists |
@@ -689,12 +774,20 @@ No new permission.
    the shared `.admin-search` / `.admin-select` in `admin-shell.css` (see
    `docs/ui/shells.md` §Admin shell) and a fixed 19rem chips track. Unclassed
    prose links were UA blue on every admin page, and are now styled with them.
-5. **Later, not now** — persisted per-peer totals ("what has this member cost us
-   all time", the natural companion to the F7 quotas). The live per-peer view in
-   step 4 answers the common question; the table can wait until someone wants
-   the history.
+5. **Persisted per-peer totals** — ✅ built (2026-08-07). `swarm_peer_traffic`
+   (mig 042) + the second pending map and `DrainPeerTraffic`; both ledgers
+   written from one drain in one transaction; `GET /api/admin/swarm/peers` and
+   its `peers/forget`; the disclosure on the page. Tests: both halves land from
+   one flush and a peer-only drain still writes; increments never assignments;
+   unplaced deltas fold into one bucket that sorts last; the identity join
+   (local name over heard name, friend / member / blocked / gone) and that a
+   node nothing knows any more keeps every byte; the un-flushed counterparty
+   still appears; forgetting either ledger leaves the other standing; the
+   empty-selection guardrail. Verified in a browser against a seeded node:
+   `[Forget]` removed a row, the panel re-totalled, and the strip's all-time
+   figure — the other ledger — did not move.
 
-Steps 1–4 are the deliverable, and are done.
+Steps 1–5 are the deliverable, and are done.
 
 ---
 
@@ -718,4 +811,9 @@ Steps 1–4 are the deliverable, and are done.
 | 2026-08-06 | **Partials are shown but never indexed.** | The cache doc's rule holds: unverified bytes are not described, advertised or retained. They render as a pinned block from `ActiveTransfers()` plus one directory walk. |
 | 2026-08-06 | **Bespoke page module, not a `file-list.js` scope.** | Progress bars, a 2-second patch loop into windowed rows, and a two-origin union with per-origin actions are three things the scope contract cannot express. Everything else is reused: `virtual-list`, `row-menu`, `toast`, the shared player, the bulk bar, `share-depth`. |
 | 2026-08-06 | **`swarm_traffic` rows outlive the blobs they describe.** | The bytes really moved; a node's contribution history should not be erasable as a side effect of clearing a cache. Only *Forget stats* deletes one, and it says what that costs. |
-| 2026-08-06 | **Per-peer totals are live-only for now**, persisted history deferred. | The common question is "who is pulling from us right now", which the in-memory table answers for free. A `hashes × peers` table is a growth commitment that should wait for a real want. |
+| 2026-08-06 | **Per-peer totals are live-only for now**, persisted history deferred. | The common question is "who is pulling from us right now", which the in-memory table answers for free. A `hashes × peers` table is a growth commitment that should wait for a real want. *(Superseded 2026-08-07 — the want arrived, and the table that answers it is per counterparty, not per pair.)* |
+| 2026-08-07 | **Persist per-peer totals (mig 042), one row per counterparty.** | Owner call: step 5. It is the companion to the F7 member quotas — those bound what a member *may* cost us, and nothing said what one *had*. The size objection that deferred it applies to `hashes × peers`, not to this: one row per node in the community, which is bounded by the community. |
+| 2026-08-07 | **Unplaced requesters get one shared bucket row, not a row each.** | Owner call. A keyed row set is bounded by the community; an address-keyed one is sized by whoever chooses to talk to us, so N forged keys would be N rows — the sybil shape the class quotas exist to answer. Dropping them silently was the worse alternative: the panel's figures would fail to add up with nothing on screen explaining it. |
+| 2026-08-07 | **The panel lives on `/admin/swarm` only.** | Owner call. Traffic belongs on the traffic page, beside the live per-peer view it extends and the rate knobs it informs. `/admin/network` owns the same nodes as *trust decisions*; a byte column there would put one number under two owners, and the quotas it would sit beside have no UI at all today. |
+| 2026-08-07 | **No name column — the key is the identity, the name is joined at read time.** | Everything else here addresses a node by its public key for the same reason (heard names are claims, and the frontier rotation recycles source ids). A node we no longer hold any row for shows as its key and keeps its bytes. |
+| 2026-08-07 | **Blob history and peer history are independent ledgers; forgetting one never rewrites the other.** | They answer different questions, and neither is derived from the other. Making *Forget stats* on a blob also debit its peers would need per-pair rows — the table this design refuses — so the honest alternative is two ledgers, a Forget on each side, and a page that never sums across them. |

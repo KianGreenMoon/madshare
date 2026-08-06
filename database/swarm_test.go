@@ -14,10 +14,10 @@ func TestSwarmTraffic_WritesAreIncrements(t *testing.T) {
 	ctx := context.Background()
 	const hash = "aa11"
 
-	if err := db.AddSwarmTraffic(ctx, []SwarmTrafficDelta{{Hash: hash, Up: 100, Down: 40}}, 1000); err != nil {
+	if err := db.AddSwarmTraffic(ctx, []SwarmTrafficDelta{{Hash: hash, Up: 100, Down: 40}}, nil, 1000); err != nil {
 		t.Fatalf("first flush: %v", err)
 	}
-	if err := db.AddSwarmTraffic(ctx, []SwarmTrafficDelta{{Hash: hash, Up: 5, Wasted: 7}}, 2000); err != nil {
+	if err := db.AddSwarmTraffic(ctx, []SwarmTrafficDelta{{Hash: hash, Up: 5, Wasted: 7}}, nil, 2000); err != nil {
 		t.Fatalf("second flush: %v", err)
 	}
 
@@ -43,10 +43,10 @@ func TestSwarmTraffic_EmptyDeltaLeavesTheClockAlone(t *testing.T) {
 	ctx := context.Background()
 	const hash = "bb22"
 
-	if err := db.AddSwarmTraffic(ctx, []SwarmTrafficDelta{{Hash: hash, Up: 10}}, 1000); err != nil {
+	if err := db.AddSwarmTraffic(ctx, []SwarmTrafficDelta{{Hash: hash, Up: 10}}, nil, 1000); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AddSwarmTraffic(ctx, []SwarmTrafficDelta{{Hash: hash}}, 9999); err != nil {
+	if err := db.AddSwarmTraffic(ctx, []SwarmTrafficDelta{{Hash: hash}}, nil, 9999); err != nil {
 		t.Fatal(err)
 	}
 	row, err := db.GetSwarmTraffic(ctx, hash)
@@ -65,7 +65,7 @@ func TestSwarmTraffic_TotalsSumTheRows(t *testing.T) {
 	if err := db.AddSwarmTraffic(ctx, []SwarmTrafficDelta{
 		{Hash: "aa", Up: 10, Down: 1},
 		{Hash: "bb", Up: 20, Down: 2, Wasted: 3},
-	}, 1000); err != nil {
+	}, nil, 1000); err != nil {
 		t.Fatal(err)
 	}
 
@@ -107,7 +107,7 @@ func TestSwarmTraffic_UnknownHashHasNoRow(t *testing.T) {
 func TestSwarmTraffic_EmptyBatchIsANoop(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
-	if err := db.AddSwarmTraffic(ctx, nil, 1); err != nil {
+	if err := db.AddSwarmTraffic(ctx, nil, nil, 1); err != nil {
 		t.Fatalf("nil batch: %v", err)
 	}
 	if n, err := db.ForgetSwarmTraffic(ctx, nil); err != nil || n != 0 {

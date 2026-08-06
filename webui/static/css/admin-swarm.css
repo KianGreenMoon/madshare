@@ -37,6 +37,29 @@
 }
 .swarm-hash { font-family: var(--font-mono, monospace); font-size: 12px; }
 
+/* Who we trade with: one row per counterparty, all time. A disclosure rather
+   than a block — it answers a question you go and ask. */
+.swarm-peers {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-4); font-size: 13px;
+}
+.swarm-peers > summary { cursor: pointer; color: var(--text-muted); }
+.swarm-peers[open] > summary { margin-bottom: var(--space-2); color: var(--text); }
+.swarm-peer-row {
+  display: grid; align-items: center; gap: var(--space-3);
+  grid-template-columns: minmax(8rem, 1fr) 11rem 8rem auto;
+  padding: 4px 0; border-top: 1px solid var(--border);
+}
+.swarm-peer-name { display: grid; gap: 1px; min-width: 0; }
+.swarm-peer-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swarm-peer-kind { font-size: 12px; }
+.swarm-peer-when { font-size: 12.5px; white-space: nowrap; }
+/* The bucket is an aggregate of strangers, not a peer: it sits apart rather
+   than sorting among them. */
+.swarm-peer-row--bucket { border-top-style: dashed; }
+.swarm-peer-row--bucket .swarm-peer-title { color: var(--text-muted); }
+
 /* Controls */
 .swarm-controls {
   display: flex; gap: var(--space-3); align-items: center; flex-wrap: wrap;
@@ -155,4 +178,14 @@
      and the dropdown drops to its own line on anything narrower still. */
   .swarm-search { margin-left: 0; width: 100%; flex-wrap: wrap; }
   .swarm-search .admin-search { min-width: 0; width: 8rem; flex: 1 1 8rem; }
+  .swarm-peer-row {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "name    when"
+      "traffic action";
+  }
+  .swarm-peer-name { grid-area: name; }
+  .swarm-peer-when { grid-area: when; }
+  .swarm-peer-row .swarm-row-traffic { grid-area: traffic; }
+  .swarm-peer-row .btn { grid-area: action; justify-self: end; }
 }

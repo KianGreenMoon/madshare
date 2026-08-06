@@ -76,12 +76,17 @@ func (f *TrafficFlusher) Run(ctx context.Context) {
 
 // Flush writes whatever the node has counted since the last one. Returns the
 // number of hashes written, which is what the tests assert on.
+//
+// Both ledgers are drained before either is written, and both are written in one
+// transaction: they are two views of the same bytes, so committing one without
+// the other would leave a permanent disagreement no later flush could repair.
 func (f *TrafficFlusher) Flush(ctx context.Context) int {
 	if f == nil {
 		return 0
 	}
 	deltas := f.Node.DrainTraffic()
-	if len(deltas) == 0 {
+	peerDeltas := f.Node.DrainPeerTraffic()
+	if len(deltas) == 0 && len(peerDeltas) == 0 {
 		return 0
 	}
 	rows := make([]database.SwarmTrafficDelta, 0, len(deltas))
@@ -90,7 +95,14 @@ func (f *TrafficFlusher) Flush(ctx context.Context) int {
 			Hash: d.Hash, Up: d.Up, Down: d.Down, Wasted: d.Wasted,
 		})
 	}
-	if err := f.Repo.AddSwarmTraffic(ctx, rows, time.Now().Unix()); err != nil {
+	peers := make([]database.SwarmPeerTrafficDelta, 0, len(peerDeltas))
+	for _, d := range peerDeltas {
+		// An empty key travels as an empty key: the store owns the decision to
+		// fold every unplaceable requester into one bucket row, so the flusher
+		// does not need to know which requesters those were.
+		peers = append(peers, database.SwarmPeerTrafficDelta{Key: d.Key, Up: d.Up, Down: d.Down})
+	}
+	if err := f.Repo.AddSwarmTraffic(ctx, rows, peers, time.Now().Unix()); err != nil {
 		// The deltas are gone from the node's pending set, so this interval's
 		// bytes are lost rather than retried. That is deliberate: re-queuing them
 		// would need a second buffer that could itself grow without bound if the

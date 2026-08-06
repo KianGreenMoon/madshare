@@ -43,14 +43,21 @@ type SwarmTrafficDelta struct {
 	Wasted int64
 }
 
-// AddSwarmTraffic folds a batch of deltas into the table in one transaction,
-// stamping last_at (and first_at for a hash never seen before) with at.
+// AddSwarmTraffic folds one drain into both ledgers in ONE transaction — the
+// per-blob deltas and the per-counterparty ones — stamping last_at (and first_at
+// for a row never seen before) with at.
+//
+// Both halves together or neither: they count the same bytes from the same
+// drain, so committing one without the other would leave two totals that
+// disagree permanently, with nothing able to say by how much (see
+// docs/architecture/swarm-admin.md §Migration 042).
 //
 // Zero-valued deltas are skipped rather than written: a drain that found nothing
 // for a hash must not move its clock, or a blob nobody has touched for a month
 // would look freshly active.
-func (db *DB) AddSwarmTraffic(ctx context.Context, deltas []SwarmTrafficDelta, at int64) error {
-	if len(deltas) == 0 {
+func (db *DB) AddSwarmTraffic(ctx context.Context, deltas []SwarmTrafficDelta,
+	peers []SwarmPeerTrafficDelta, at int64) error {
+	if len(deltas) == 0 && len(peers) == 0 {
 		return nil
 	}
 	tx, err := db.BeginTx(ctx, nil)
@@ -73,6 +80,9 @@ func (db *DB) AddSwarmTraffic(ctx context.Context, deltas []SwarmTrafficDelta, a
 		if _, err := tx.ExecContext(ctx, q, d.Hash, d.Up, d.Down, d.Wasted, at, at); err != nil {
 			return fmt.Errorf("add swarm traffic %s: %w", d.Hash, err)
 		}
+	}
+	if err := addSwarmPeerTraffic(ctx, tx, peers, at); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

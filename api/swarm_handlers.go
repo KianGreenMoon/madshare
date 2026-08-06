@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -539,5 +540,189 @@ func (h *handler) adminSwarmForget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r.Context(), "swarm.stats.forget", "", strconv.Itoa(n)+" blob(s)")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "forgotten": n})
+}
+
+// adminSwarmPeers handles GET /api/admin/swarm/peers: who this node has traded
+// with, all time, busiest first.
+//
+// The companion to the F7 member quotas — those bound what a member may cost us,
+// this says what one has. It lives here and nowhere else: /admin/network owns
+// the same nodes as trust decisions, and a byte column there would put one
+// number under two owners.
+func (h *handler) adminSwarmPeers(w http.ResponseWriter, r *http.Request) {
+	resp := map[string]any{"ok": true, "federation": h.federation != nil}
+	db, ok := h.repo.(*database.DB)
+	if !ok {
+		resp["peers"] = []any{}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	stored, err := db.ListSwarmPeerTraffic(r.Context())
+	if err != nil {
+		log.Printf("swarm peers: %v", err)
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+
+	// The session half, folded in the same way the file rows fold theirs: the
+	// stored counters lag by at most one flush, and a page watching a transfer
+	// must not appear to stall. Unplaceable requesters are summed into the
+	// bucket, exactly as the flusher will persist them.
+	session := h.sessionTraffic()
+	live := map[string]federation.TrafficCounters{}
+	for _, p := range session.Peers {
+		c := live[p.Key]
+		c.Up += p.Up
+		c.Down += p.Down
+		live[p.Key] = c
+	}
+
+	rows := make([]map[string]any, 0, len(stored)+len(live))
+	var bucket map[string]any
+	seen := map[string]bool{}
+	var upTotal, downTotal int64
+	emit := func(p database.SwarmPeerTraffic) {
+		seen[p.Key] = true
+		row := map[string]any{
+			"key": p.Key, "kind": p.Kind,
+			"up_bytes": p.Up, "down_bytes": p.Down,
+		}
+		if p.Name != "" {
+			row["name"] = p.Name
+		}
+		if p.FirstAt > 0 {
+			row["first_at"] = p.FirstAt
+		}
+		if p.LastAt > 0 {
+			row["last_at"] = p.LastAt
+		}
+		upTotal, downTotal = upTotal+p.Up, downTotal+p.Down
+		if c, ok := live[p.Key]; ok {
+			row["session"] = map[string]any{"up_bytes": c.Up, "down_bytes": c.Down}
+			upTotal, downTotal = upTotal+c.Up, downTotal+c.Down
+		}
+		if p.Key == "" {
+			bucket = row // rendered apart: an aggregate of strangers is not a peer
+			return
+		}
+		rows = append(rows, row)
+	}
+	for _, p := range stored {
+		emit(p)
+	}
+
+	// Counterparties this process has traded with but no flush has written yet.
+	// Naming them costs one more query and keeps the panel from listing nobody
+	// while the summary strip says two nodes are pulling.
+	var fresh []string
+	for key := range live {
+		if key != "" && !seen[key] {
+			fresh = append(fresh, key)
+		}
+	}
+	if len(fresh) > 0 {
+		sort.Strings(fresh) // a map's order is not an order
+		resolved, err := db.ResolveSwarmPeers(r.Context(), fresh)
+		if err != nil {
+			log.Printf("swarm peers resolve: %v", err)
+		} else {
+			for _, p := range resolved {
+				emit(p)
+			}
+		}
+	}
+	if bucket == nil && live[""].Up+live[""].Down > 0 {
+		// Unplaced traffic this session, nothing stored yet.
+		c := live[""]
+		bucket = map[string]any{
+			"key": "", "kind": "unplaced", "up_bytes": int64(0), "down_bytes": int64(0),
+			"session": map[string]any{"up_bytes": c.Up, "down_bytes": c.Down},
+		}
+		upTotal, downTotal = upTotal+c.Up, downTotal+c.Down
+	}
+
+	// Busiest first, session bytes included — otherwise a node that has pulled a
+	// gigabyte since the last flush sorts below one that moved a byte last year.
+	sort.SliceStable(rows, func(i, j int) bool {
+		return swarmRowBytes(rows[i]) > swarmRowBytes(rows[j])
+	})
+	resp["peers"] = rows
+	if bucket != nil {
+		resp["unplaced"] = bucket
+	}
+	resp["totals"] = map[string]any{"up_bytes": upTotal, "down_bytes": downTotal}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// isPublicKeyHex reports whether s could be an ed25519 public key as this
+// codebase writes them. Same shape as a content hash, and deliberately not the
+// same function: a key and a hash are different things, and a reader following
+// this call should not land in the upload code.
+func isPublicKeyHex(s string) bool { return isSHA256Hex(s) }
+
+// swarmRowBytes is one peer row's total, stored plus this session's.
+func swarmRowBytes(row map[string]any) int64 {
+	total, _ := row["up_bytes"].(int64)
+	if d, ok := row["down_bytes"].(int64); ok {
+		total += d
+	}
+	if s, ok := row["session"].(map[string]any); ok {
+		up, _ := s["up_bytes"].(int64)
+		down, _ := s["down_bytes"].(int64)
+		total += up + down
+	}
+	return total
+}
+
+// adminSwarmPeersForget handles POST /api/admin/swarm/peers/forget: drop the
+// all-time row for a set of counterparties (the empty key being the bucket).
+//
+// The peer-side twin of stats/forget, and deliberately independent of it:
+// forgetting what a blob moved does not debit the nodes that moved it, and this
+// does not rewrite any blob's history. The two ledgers count the same bytes and
+// neither is derived from the other, so the page never sums across them.
+func (h *handler) adminSwarmPeersForget(w http.ResponseWriter, r *http.Request) {
+	db, ok := h.repo.(*database.DB)
+	if !ok {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	var body struct {
+		Keys []string `json:"keys"`
+		All  bool     `json:"all"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	var n int
+	var err error
+	switch {
+	case len(body.Keys) > 0:
+		clean := make([]string, 0, len(body.Keys))
+		for _, k := range body.Keys {
+			key := strings.ToLower(strings.TrimSpace(k))
+			// The empty key is legal — it addresses the bucket — but nothing else
+			// that is not a public key is.
+			if key == "" || isPublicKeyHex(key) {
+				clean = append(clean, key)
+			}
+		}
+		n, err = db.ForgetSwarmPeerTraffic(r.Context(), clean)
+	case body.All:
+		n, err = db.ForgetAllSwarmPeerTraffic(r.Context())
+	default:
+		// The guardrail every bulk endpoint here shares: erasing the whole
+		// history has to be asked for, never implied by an empty selection.
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "error": `refusing to forget every counterparty without "all": true`})
+		return
+	}
+	if err != nil {
+		log.Printf("swarm peers forget: %v", err)
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	h.audit(r.Context(), "swarm.peers.forget", "", strconv.Itoa(n)+" node(s)")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "forgotten": n})
 }

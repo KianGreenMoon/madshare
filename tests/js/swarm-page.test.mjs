@@ -142,6 +142,22 @@ test('the query carries only the filters actually set', () => {
   assert.equal(full.get('offset'), '200');
 });
 
+// ── Who we trade with ────────────────────────────────────────────────────────
+
+test('a counterparty is named, or shown as its key — never as its address', () => {
+  const peerName = load('peerName', { shortHash: k => k.slice(0, 8) + '…' });
+
+  // The name is joined at read time and may be absent: a node we no longer hold
+  // any row for still has history, and the key is what it is addressed by
+  // everywhere else in this codebase.
+  assert.equal(peerName({ key: 'ab'.repeat(32), name: "fiona's box" }), "fiona's box");
+  assert.equal(peerName({ key: 'ab'.repeat(32) }), 'abababab…');
+
+  // The bucket is not a node and never wears a key: it is every requester we
+  // could not place, added together.
+  assert.equal(peerName({ key: '', kind: 'unplaced' }), 'Unnamed requesters');
+});
+
 // ── The limits line ──────────────────────────────────────────────────────────
 
 test('a cap says where it came from, and 0 reads as unlimited', () => {

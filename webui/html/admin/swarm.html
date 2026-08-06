@@ -35,6 +35,16 @@
 
     <div class="swarm-transfers" id="swarmTransfers" hidden></div>
 
+    {{/* Who we trade with (mig 042) — all-time per counterparty, the companion
+         to the member quotas. Collapsed by default: the numbers matter when you
+         go looking for them, and a list of node names above the file list would
+         be a second page. This is their ONLY home; /admin/network owns the same
+         nodes as trust decisions. */}}
+    <details class="swarm-peers" id="swarmPeers">
+      <summary id="swarmPeersSummary">Who we trade with</summary>
+      <div id="swarmPeersBody"><p class="muted">Loading&hellip;</p></div>
+    </details>
+
     <div class="swarm-controls">
       <div class="view-tabs" id="swarmScope" role="tablist" aria-label="Which files"></div>
       <div class="swarm-pills" id="swarmPills"></div>

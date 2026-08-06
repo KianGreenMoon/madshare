@@ -139,3 +139,64 @@ func TestTrafficTableIsNilSafe(t *testing.T) {
 		t.Errorf("snapshot on a nil table = %+v, want zeroed with a usable map", snap)
 	}
 }
+
+// The peer ledger drains like the blob one: the flusher takes what has not been
+// written, the panel keeps what this session has moved. Two counters, because
+// "this session" means since the process started, not since the last flush.
+func TestPeerTrafficDrainLeavesTheSessionView(t *testing.T) {
+	tt := newTrafficTable()
+	tt.notePeer("keyA", "200::1", 100, 0)
+	tt.notePeer("keyA", "", 0, 40)
+	tt.notePeer("", "200::9", 7, 0) // could not be placed
+
+	deltas := tt.drainPeers()
+	if len(deltas) != 2 {
+		t.Fatalf("drainPeers returned %d deltas, want 2", len(deltas))
+	}
+	byKey := map[string]PeerTrafficDelta{}
+	for _, d := range deltas {
+		byKey[d.Key] = d
+	}
+	if got := byKey["keyA"]; got.Up != 100 || got.Down != 40 {
+		t.Errorf("keyA delta = %+v, want both directions on one row", got)
+	}
+	// An address is NOT an identity to file history under: the unplaceable
+	// requester travels with an empty key, and the store folds every one of them
+	// into a single bucket rather than letting a stranger size the table.
+	got, ok := byKey[""]
+	if !ok || got.Up != 7 {
+		t.Errorf("unplaced delta = %+v (present %v), want 7 bytes under the empty key", got, ok)
+	}
+
+	snap := tt.snapshot()
+	if len(snap.Peers) != 2 {
+		t.Errorf("draining emptied the session view: %+v", snap.Peers)
+	}
+	for _, p := range snap.Peers {
+		if p.Key == "keyA" && (p.Up != 100 || p.Down != 40) {
+			t.Errorf("session row for keyA = %+v, want its bytes intact", p)
+		}
+	}
+
+	if again := tt.drainPeers(); len(again) != 0 {
+		t.Errorf("second drain returned %d deltas, want none", len(again))
+	}
+
+	// And it keeps counting after a drain, from the drained baseline.
+	tt.notePeer("keyA", "", 5, 0)
+	next := tt.drainPeers()
+	if len(next) != 1 || next[0].Up != 5 {
+		t.Errorf("post-drain delta = %+v, want only the 5 new bytes", next)
+	}
+	if snap := tt.snapshot(); snap.Peers[0].Up != 105 {
+		t.Errorf("session row = %+v, want the running 105", snap.Peers[0])
+	}
+}
+
+// Both drains are nil-safe on a node built without a traffic table.
+func TestPeerTrafficDrainIsNilSafe(t *testing.T) {
+	var tt *trafficTable
+	if got := tt.drainPeers(); got != nil {
+		t.Errorf("nil table drained %v", got)
+	}
+}

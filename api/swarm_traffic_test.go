@@ -99,6 +99,62 @@ func TestNewTrafficFlusher_NilWithoutANode(t *testing.T) {
 // failingSwarmRepo is a fakeRepo whose traffic writes always fail.
 type failingSwarmRepo struct{ *fakeRepo }
 
-func (r *failingSwarmRepo) AddSwarmTraffic(context.Context, []database.SwarmTrafficDelta, int64) error {
+func (r *failingSwarmRepo) AddSwarmTraffic(context.Context, []database.SwarmTrafficDelta,
+	[]database.SwarmPeerTrafficDelta, int64) error {
 	return errors.New("disk on fire")
+}
+
+// Both ledgers come off one drain and land in one call. Written as a test
+// because the failure it guards against is silent: a flusher that persisted only
+// the blob half would leave the peer panel permanently empty while every other
+// figure on the page kept moving.
+func TestTrafficFlusher_PersistsBothLedgersTogether(t *testing.T) {
+	key := "abc123"
+	node := &fakeFederation{
+		pending: []federation.TrafficDelta{
+			{Hash: "aa", TrafficCounters: federation.TrafficCounters{Up: 100}},
+		},
+		pendingPeers: []federation.PeerTrafficDelta{
+			{Key: key, Up: 100},
+			{Key: "", Up: 7}, // could not be placed: the bucket
+		},
+	}
+	repo := &fakeRepo{}
+	f := NewTrafficFlusher(node, repo)
+	if n := f.Flush(context.Background()); n != 1 {
+		t.Fatalf("flush wrote %d hashes, want 1", n)
+	}
+	if node.drainedPeers != 1 {
+		t.Errorf("DrainPeerTraffic called %d times, want 1 per flush", node.drainedPeers)
+	}
+
+	peers, _ := repo.ListSwarmPeerTraffic(context.Background())
+	if len(peers) != 2 {
+		t.Fatalf("persisted %d counterparties, want 2 (one node + the bucket)", len(peers))
+	}
+	byKey := map[string]database.SwarmPeerTraffic{}
+	for _, p := range peers {
+		byKey[p.Key] = p
+	}
+	if byKey[key].Up != 100 {
+		t.Errorf("node row = %+v, want 100 bytes", byKey[key])
+	}
+	// The empty key travels as the empty key: which requesters could not be
+	// placed is the store's business, not the flusher's.
+	if byKey[""].Up != 7 {
+		t.Errorf("bucket row = %+v, want the 7 unplaced bytes", byKey[""])
+	}
+
+	// A drain that finds only peer bytes still writes — the return value counts
+	// hashes, and reading it as "nothing happened" would drop the peer half.
+	node.pendingPeers = []federation.PeerTrafficDelta{{Key: key, Up: 5}}
+	if n := f.Flush(context.Background()); n != 0 {
+		t.Fatalf("peer-only flush reported %d hashes", n)
+	}
+	peers, _ = repo.ListSwarmPeerTraffic(context.Background())
+	for _, p := range peers {
+		if p.Key == key && p.Up != 105 {
+			t.Errorf("node row = %+v, want the peer-only flush added to 105", p)
+		}
+	}
 }

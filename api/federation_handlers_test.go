@@ -41,7 +41,9 @@ type fakeFederation struct {
 	// contract worth pinning.
 	traffic       federation.TrafficSnapshot
 	pending       []federation.TrafficDelta
+	pendingPeers  []federation.PeerTrafficDelta
 	drained       int
+	drainedPeers  int
 	upRate        int64 // the caps SwarmRates reports, in bytes/sec
 	downRate      int64
 	rateRefreshes int // how often a write asked the node to re-read them
@@ -92,6 +94,15 @@ func (f *fakeFederation) DrainTraffic() []federation.TrafficDelta {
 	f.drained++
 	out := f.pending
 	f.pending = nil
+	return out
+}
+
+// DrainPeerTraffic is the same for the counterparty ledger, and clears the same
+// way: the flusher takes both halves of one drain and commits them together.
+func (f *fakeFederation) DrainPeerTraffic() []federation.PeerTrafficDelta {
+	f.drainedPeers++
+	out := f.pendingPeers
+	f.pendingPeers = nil
 	return out
 }
 

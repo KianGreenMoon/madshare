@@ -261,6 +261,104 @@ function progressBar(pct, live) {
   }, [el('span', { class: 'swarm-bar-fill', style: `width:${pct}%` })]);
 }
 
+// ── Who we trade with ────────────────────────────────────────────────────────
+// All-time per counterparty (mig 042), the companion to the member quotas:
+// those bound what a member may cost us, this says what one has. Collapsed by
+// default and loaded when opened — it is a question you go and ask, not one the
+// page should answer over the file list.
+const peersHost = document.getElementById('swarmPeers');
+const peersBody = document.getElementById('swarmPeersBody');
+const peersSummary = document.getElementById('swarmPeersSummary');
+let peersLoadedAt = 0;
+
+// What a node is to us NOW, not when the bytes moved. `gone` is not an error
+// state: an unfriended node, or one the discovery rotation has evicted, keeps
+// its history — what it cost us does not stop being true.
+const KIND_LABEL = {
+  friend: 'friend',
+  member: 'member',
+  blocked: 'blocked',
+  pending_outgoing: 'pending',
+  pending_incoming: 'pending',
+  gone: 'no longer known',
+  unplaced: 'guests and listener devices',
+};
+
+function peerName(p) {
+  if (p.key === '') return 'Unnamed requesters';
+  return p.name || shortHash(p.key);
+}
+
+function renderPeerRow(p) {
+  const up = (p.up_bytes || 0) + (p.session?.up_bytes || 0);
+  const down = (p.down_bytes || 0) + (p.session?.down_bytes || 0);
+  const kids = [
+    el('div', { class: 'swarm-peer-name' }, [
+      el('span', { class: 'swarm-peer-title', text: peerName(p) }),
+      el('span', { class: 'swarm-peer-kind muted', text: KIND_LABEL[p.kind] || p.kind || '' }),
+    ]),
+    el('div', { class: 'swarm-row-traffic' }, [
+      el('span', { class: 'swarm-up', text: `▲ ${fmtBytes(up)}` }),
+      el('span', { class: 'swarm-down', text: `▼ ${fmtBytes(down)}` }),
+    ]),
+    el('span', { class: 'muted swarm-peer-when', text:
+      p.last_at ? fmtDate(p.last_at) : (p.session ? 'this session' : '') }),
+  ];
+  // Forgetting is an explicit act with a cost, so it is worded like one — and
+  // it does NOT touch any blob's history, because the two ledgers count the same
+  // bytes without either being derived from the other.
+  if (canManage) {
+    kids.push(el('button', {
+      class: 'btn btn-neutral btn-sm', type: 'button',
+      onclick: () => confirm({
+        title: 'Forget this history',
+        body: p.key === ''
+          ? 'Forget what unnamed requesters have moved? The bytes really did move. '
+            + 'Per-file traffic is a separate record and is not touched.'
+          : `Forget what “${peerName(p)}” has moved with this node? The bytes really did move, `
+            + 'and this does not change any file’s own traffic — the two are separate records.',
+        run: async () => {
+          await req(`${API}/api/admin/swarm/peers/forget`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ keys: [p.key] }),
+          });
+          toast('Forgotten.', 'success');
+          loadPeers(true);
+        },
+      }),
+    }, ['Forget']));
+  }
+  return el('div', { class: `swarm-peer-row${p.key === '' ? ' swarm-peer-row--bucket' : ''}` }, kids);
+}
+
+async function loadPeers(force) {
+  if (!force && Date.now() - peersLoadedAt < 8000) return;
+  let data;
+  try { data = await req(`${API}/api/admin/swarm/peers`); }
+  catch { peersBody.replaceChildren(el('p', { class: 'muted', text: 'Couldn’t read the peer totals.' })); return; }
+  peersLoadedAt = Date.now();
+
+  const rows = data.peers || [];
+  const bucket = data.unplaced;
+  const t = data.totals || {};
+  peersSummary.textContent = rows.length || bucket
+    ? `Who we trade with — ${rows.length} node${rows.length === 1 ? '' : 's'}`
+      + ` · ▲ ${fmtBytes(t.up_bytes || 0)} · ▼ ${fmtBytes(t.down_bytes || 0)} all time`
+    : 'Who we trade with';
+
+  if (!rows.length && !bucket) {
+    peersBody.replaceChildren(el('p', { class: 'muted', text:
+      'Nothing yet — no node has pulled from this one, and it has fetched from none.' }));
+    return;
+  }
+  peersBody.replaceChildren(
+    ...rows.map(renderPeerRow),
+    ...(bucket ? [renderPeerRow(bucket)] : []),
+  );
+}
+
+peersHost.addEventListener('toggle', () => { if (peersHost.open) loadPeers(true); });
+
 // ── Rows ─────────────────────────────────────────────────────────────────────
 function chips(f) {
   const out = [];
@@ -555,6 +653,10 @@ async function poll() {
     if (sess || tr || wasActive) changed = true;
   }
   if (changed) vlist.refresh();
+  // An open peers panel keeps up, throttled to its own interval: those figures
+  // are all-time and move slowly, so polling them at the progress bars' rate
+  // would be a request per two seconds to say the same thing.
+  if (peersHost.open) loadPeers(false);
   schedule(active.size ? POLL_ACTIVE : POLL_IDLE);
 }
 

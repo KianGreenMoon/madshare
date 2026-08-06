@@ -114,14 +114,24 @@ type Repository interface {
 	// federation node is running now, and the page that reports them must work
 	// with federation switched off.
 	//
-	// AddSwarmTraffic is the ONLY writer, called by the flusher draining the
-	// node's in-memory counters; SwarmTrafficTotals is the node's all-time
-	// contribution (SUM, not a second set of counters); ForgetSwarmTraffic is the
-	// only deleter, and never runs as a side effect of housekeeping.
-	AddSwarmTraffic(ctx context.Context, deltas []SwarmTrafficDelta, at int64) error
+	// AddSwarmTraffic is the ONLY writer of either ledger, called by the flusher
+	// draining the node's in-memory counters — the per-blob deltas and the
+	// per-counterparty ones land in one transaction, because they count the same
+	// bytes. SwarmTrafficTotals is the node's all-time contribution (SUM, not a
+	// second set of counters); the two Forget calls are the only deleters, and
+	// neither runs as a side effect of housekeeping.
+	AddSwarmTraffic(ctx context.Context, deltas []SwarmTrafficDelta,
+		peers []SwarmPeerTrafficDelta, at int64) error
 	SwarmTrafficTotals(ctx context.Context) (SwarmTraffic, error)
 	GetSwarmTraffic(ctx context.Context, hash string) (*SwarmTraffic, error)
 	ForgetSwarmTraffic(ctx context.Context, hashes []string) (int, error)
+	// ListSwarmPeerTraffic is who this node has traded with, all time, with the
+	// name and class joined at read time (docs/architecture/swarm-admin.md
+	// §Migration 042). Bounded by the community, not by the library.
+	ListSwarmPeerTraffic(ctx context.Context) ([]SwarmPeerTraffic, error)
+	ResolveSwarmPeers(ctx context.Context, keys []string) ([]SwarmPeerTraffic, error)
+	ForgetSwarmPeerTraffic(ctx context.Context, keys []string) (int, error)
+	ForgetAllSwarmPeerTraffic(ctx context.Context) (int, error)
 
 	// ListArtists returns one entry per effective artist name, ordered
 	// alphabetically. album_artist is preferred over artist for grouping.
