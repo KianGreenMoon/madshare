@@ -3,15 +3,18 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
 
+	"daemonlord.ygg/madshare/api/storage"
 	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/federation"
 )
@@ -43,6 +46,22 @@ func seedCached(t *testing.T, repo *fakeRepo, cacheDir, hash, title string, body
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// id3v2Blob is a minimal MP3: an ID3v2 header (which is what a tag reader keys
+// the CONTAINER off) carrying a title and artist.
+func id3v2Blob(title, artist string) []byte {
+	frame := func(id, text string) []byte {
+		body := append([]byte{0}, text...) // ISO-8859-1 encoding byte
+		size := len(body)
+		return append(append([]byte(id),
+			byte(size>>24), byte(size>>16), byte(size>>8), byte(size), 0, 0), body...)
+	}
+	frames := append(frame("TIT2", title), frame("TPE1", artist)...)
+	n := len(frames)
+	head := append([]byte("ID3\x03\x00\x00"),
+		byte((n>>21)&0x7f), byte((n>>14)&0x7f), byte((n>>7)&0x7f), byte(n&0x7f))
+	return append(append(head, frames...), make([]byte, 256)...)
 }
 
 func cacheGetJSON(t *testing.T, url string) map[string]any {
@@ -225,6 +244,104 @@ func TestMaterializeNeedsNoClaim(t *testing.T) {
 	code, _ = postJSONTo(t, srv.URL+"/api/madnetwork/download", `{"hash":"`+absent+`"}`)
 	if code != http.StatusNotFound {
 		t.Errorf("materialize of a hash we neither hold nor can place = %d, want 404", code)
+	}
+}
+
+// completedCacheTransfer is a finished fetch over a real cache file — what
+// EnsureBlob hands back for a blob already on disk, which is the offline case.
+type completedCacheTransfer struct{ *fakeTransfer }
+
+func (c *completedCacheTransfer) Stats() federation.TransferStats {
+	s := c.fakeTransfer.Stats()
+	s.Mode = "local"
+	return s
+}
+
+// TestMaterializeOfflineStagesFromTheFile drives the STAGING path, not just the
+// decision in front of it — which is what a decision-only test missed: with no
+// claim, entryToMetadata was still being called on a nil entry and panicking, in
+// a goroutine, taking the whole process down.
+//
+// The scenario is the reason Materialize exists: a device with no connectivity,
+// adding a cached file to its library. Nothing advertises anything, and the
+// blob was adopted into the index so it has no remembered filename either — so
+// everything the staging needs has to come out of the file itself.
+func TestMaterializeOfflineStagesFromTheFile(t *testing.T) {
+	cacheDir, filesDir := t.TempDir(), t.TempDir()
+	hash := cacheTestHash('e')
+	// A real MP3 container (ID3v2), so the file can say what it is.
+	body := id3v2Blob("Offline Track", "Offline Artist")
+	path := filepath.Join(cacheDir, hash)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ft := &fakeTransfer{hash: hash, name: hash, path: path,
+		size: int64(len(body)), progress: int64(len(body)), done: make(chan struct{})}
+	close(ft.done)
+
+	repo := &fakeRepo{}
+	h := &handler{
+		repo: repo, cacheDir: cacheDir, storage: storage.NewLocal(filesDir),
+		madnetwork: &fakeMadnetwork{}, // MadnetworkEntryForHash → nil: nobody describes it
+		federation: &fakeBlobFederation{blob: &completedCacheTransfer{ft}},
+	}
+
+	job := &mnJob{state: "transferring"}
+	h.runMadnetworkDownload(hash, nil, sql.NullInt64{}, job)
+
+	job.mu.Lock()
+	state, errText := job.state, job.errText
+	job.mu.Unlock()
+	if state != "staged" && state != "approved" {
+		t.Fatalf("state = %q (%s), want staged/approved — an offline materialize must not need a claim", state, errText)
+	}
+	if repo.lastMeta == nil {
+		t.Fatal("nothing was staged")
+	}
+	if repo.lastMeta.Title != "Offline Track" || repo.lastMeta.Artist.String != "Offline Artist" {
+		t.Errorf("staged tags = %q/%q, want the FILE's own tags", repo.lastMeta.Title, repo.lastMeta.Artist.String)
+	}
+	// The name has to be derived from the container, or the blob lands with no
+	// extension and the library cannot type it.
+	if repo.lastFile == nil || !strings.HasSuffix(repo.lastFile.ObjectKey, ".mp3") {
+		t.Errorf("object key = %q, want an .mp3 name derived from the file's own header",
+			repo.lastFile.ObjectKey)
+	}
+	if repo.lastFile.MimeType != "audio/mpeg" {
+		t.Errorf("mime = %q, want audio/mpeg", repo.lastFile.MimeType)
+	}
+}
+
+// TestMaterializeRefusesWhatIsNotAudio: the fallback chain ends somewhere. A
+// blob with no claim, no remembered name and no recognisable container is
+// refused with a plain message — and, critically, does not panic the process.
+func TestMaterializeRefusesWhatIsNotAudio(t *testing.T) {
+	cacheDir := t.TempDir()
+	hash := cacheTestHash('f')
+	path := filepath.Join(cacheDir, hash)
+	if err := os.WriteFile(path, []byte("not audio at all"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ft := &fakeTransfer{hash: hash, name: hash, path: path, size: 16, progress: 16, done: make(chan struct{})}
+	close(ft.done)
+
+	repo := &fakeRepo{}
+	h := &handler{
+		repo: repo, cacheDir: cacheDir, storage: storage.NewLocal(t.TempDir()),
+		madnetwork: &fakeMadnetwork{},
+		federation: &fakeBlobFederation{blob: &completedCacheTransfer{ft}},
+	}
+	job := &mnJob{state: "transferring"}
+	h.runMadnetworkDownload(hash, nil, sql.NullInt64{}, job)
+
+	job.mu.Lock()
+	state := job.state
+	job.mu.Unlock()
+	if state != "failed" {
+		t.Errorf("state = %q, want failed", state)
+	}
+	if repo.lastMeta != nil {
+		t.Error("something unrecognisable was staged into the library")
 	}
 }
 

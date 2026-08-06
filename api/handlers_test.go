@@ -436,6 +436,8 @@ type fakeRepo struct {
 	mu           sync.Mutex
 	cacheIndex   map[string]*database.MadnetworkCacheEntry
 	cacheTouched []string
+	lastFile     *database.File
+	lastMeta     *database.MediaMetadata
 
 	deleteFilenames []string
 	deleteFound     bool
@@ -747,13 +749,15 @@ func (f *fakeRepo) GetFileByHash(_ context.Context, _ string) (*database.File, e
 	return f.getResult, f.getErr
 }
 
-func (f *fakeRepo) InsertFile(_ context.Context, file *database.File, _ *database.FileUpload, _ *database.MediaMetadata) error {
+func (f *fakeRepo) InsertFile(_ context.Context, file *database.File, _ *database.FileUpload, meta *database.MediaMetadata) error {
 	f.insertCalls++
 	if f.insertErr != nil {
 		return f.insertErr
 	}
 	f.lastUploaded = file.UploadedBy
 	f.lastReviewState = file.ReviewState
+	f.lastFile = file
+	f.lastMeta = meta
 	file.ID = 1
 	return nil
 }

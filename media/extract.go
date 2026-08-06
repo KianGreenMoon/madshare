@@ -26,6 +26,13 @@ type Tags struct {
 	Composer    string
 	Comment     string
 	TagFormat   string
+	// FileType is the CONTAINER the tag reader recognised from the bytes
+	// ("MP3", "FLAC", "OGG", "M4A", …; empty when unknown). Distinct from
+	// TagFormat, which names the tag dialect inside it — an MP3 carries ID3v2.
+	// It is the only thing that can say what kind of file a blob is when its
+	// name was never recorded, which is what lets a cached blob with no
+	// filename still be materialized (docs/architecture/madnetwork-cache.md).
+	FileType string
 
 	Year        int
 	TrackNumber int
@@ -72,6 +79,7 @@ func ExtractTags(r io.ReadSeeker, mimeType string) (*Tags, error) {
 		Composer:    m.Composer(),
 		Comment:     m.Comment(),
 		TagFormat:   string(m.Format()),
+		FileType:    string(m.FileType()),
 		Year:        m.Year(),
 		TrackNumber: trackNum,
 		TrackTotal:  trackTotal,

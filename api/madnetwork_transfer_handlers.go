@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -373,6 +374,15 @@ func (h *handler) runMadnetworkDownload(hash string, entry *federation.CatalogEn
 		log.Printf("madnetwork download %s: %v", hash, err)
 		job.set("failed", err.Error())
 	}
+	// A panic in here would otherwise take the whole server down: chi's Recoverer
+	// wraps the handler, and this runs on its own goroutine long after that
+	// handler answered. One materialize going wrong must cost that materialize.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("madnetwork download %s: panic: %v", hash, r)
+			job.set("failed", "staging failed unexpectedly")
+		}
+	}()
 	t, err := h.ensureBlob(ctx, hash)
 	if err != nil {
 		fail(err)
@@ -402,10 +412,20 @@ func (h *handler) runMadnetworkDownload(hash string, entry *federation.CatalogEn
 		}
 	}
 	if _, ok := acceptedAudioTypes[ext]; !ok {
+		// Ask the file what it is. This is the arm that carries the offline case:
+		// a blob adopted into the index has no remembered name, and offline there
+		// is no claim to fall back on either.
+		if own := h.cachedStagingName(hash); own != "" {
+			if e := strings.ToLower(filepath.Ext(own)); acceptedAudioTypes[e] != "" {
+				filename, ext = own, e
+			}
+		}
+	}
+	if _, ok := acceptedAudioTypes[ext]; !ok {
 		if entry == nil {
-			// Nothing left to ask: no claim describes it and neither the transfer
-			// nor the index knows what kind of file it is.
-			fail(fmt.Errorf("this cached file carries no usable filename, and no node describes it"))
+			// Nothing left to ask: no claim describes it, nothing remembered its
+			// name, and its own header is not one we accept.
+			fail(fmt.Errorf("this cached file is not a recognised audio format"))
 			return
 		}
 		// Origin filename unusable — synthesize one from the tagset text and
@@ -449,8 +469,15 @@ func (h *handler) runMadnetworkDownload(hash string, entry *federation.CatalogEn
 	// With no claim to carry, the staged appearance takes its tags the way an
 	// upload does — out of the file itself. Read before storage.Put, which
 	// consumes the reader; extractTagsOrEmpty rewinds either way.
-	meta := entryToMetadata(entry, now)
-	if entry == nil {
+	//
+	// The nil check has to come FIRST: entryToMetadata dereferences its argument,
+	// so computing it and overwriting afterwards panics — and this runs in a
+	// goroutine, where a panic takes the whole process down rather than one
+	// request (chi's Recoverer only wraps the handler).
+	var meta *database.MediaMetadata
+	if entry != nil {
+		meta = entryToMetadata(entry, now)
+	} else {
 		meta = tagsToMetadata(extractTagsOrEmpty(f, mimeType), now)
 	}
 	err = h.storage.Put(hash, filename, f)
@@ -599,6 +626,58 @@ func extForCodec(codec string) string {
 		return ".wav"
 	}
 	return ""
+}
+
+// extForFileType maps the CONTAINER a tag reader recognised in the bytes
+// (media.Tags.FileType) to a filename extension. The last resort for naming a
+// blob whose filename was never recorded — see cachedStagingName.
+func extForFileType(fileType string) string {
+	switch strings.ToUpper(fileType) {
+	case "MP3":
+		return ".mp3"
+	case "FLAC":
+		return ".flac"
+	case "M4A", "M4B", "M4P", "ALAC":
+		return ".m4a"
+	case "OGG":
+		return ".ogg"
+	}
+	return ""
+}
+
+// cachedStagingName names a cached blob for staging when nothing else can: no
+// usable transfer filename, nothing remembered in the index, and no node
+// describing it. It asks the FILE what it is — the container from its own
+// header, the stem from its own tags — and returns "" only when even that fails.
+//
+// This is what makes materializing work OFFLINE, which is the entire reason the
+// button exists (docs/architecture/madnetwork-cache.md §Row actions). Every node
+// that upgrades into the cache index adopts its existing blobs with no
+// filename — the origin's name was never recorded before there was anywhere to
+// put it — so without this, a whole cache would be unmaterializable on exactly
+// the devices that have no other way to get the file.
+func (h *handler) cachedStagingName(hash string) string {
+	if h.cacheDir == "" {
+		return ""
+	}
+	f, err := os.Open(filepath.Join(h.cacheDir, hash))
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	tags := extractTagsOrEmpty(f, "")
+	ext := extForFileType(tags.FileType)
+	if ext == "" {
+		return ""
+	}
+	stem := strings.TrimSpace(tags.Title)
+	if stem != "" && strings.TrimSpace(tags.Artist) != "" {
+		stem = tags.Artist + " - " + stem
+	}
+	if stem == "" {
+		stem = hash[:16] // untagged: the digest is a poor name, but it is a name
+	}
+	return sanitizeFilename(stem + ext)
 }
 
 // downloadBaseName builds a display filename stem from the entry text.

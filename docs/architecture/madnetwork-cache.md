@@ -423,9 +423,17 @@ the uploader fixes it up in **My uploads** — the ordinary path, not a special
 case.
 
 Only the *filename* still needs care, because the staged blob needs a real
-extension: the transfer's own name is the hash for a cache file, so the handler
-falls back to the index's remembered origin name, and refuses with a plain
-message only when neither that nor a claim can say what kind of file it is.
+extension. The chain is transfer name → the index's remembered origin name →
+**the file's own container** (`media.Tags.FileType`, which the tag reader takes
+from the bytes; `extForFileType`), and only then a refusal.
+
+That third link is not a nicety — it is what carries the offline case, and it was
+missing until it was tested for real. A blob **adopted** into the index has no
+remembered filename (the origin's name was never recorded before there was
+anywhere to put it), so *every cache on every node upgrading into the index
+starts out that way*. Offline there is no claim either. Without asking the file
+what it is, a whole existing cache would be unmaterializable on exactly the
+devices with no other way to get the file.
 
 Two things stay as they were. The remote catalog text is still **preferred when a
 claim exists** — it is usually richer than the file's tags, and matching what the
@@ -629,6 +637,7 @@ Steps 1–4 are the deliverable. Step 5 is scheduled, not promised.
 | 2026-08-06 | **A row describes itself from the file's own tags** (`media.ExtractTags` at index time). | Owner call, generalising the materialize answer: a cached blob falls back to tags-inside-the-file behaviour. Local, source-independent, and it is what makes the search bar work. |
 | 2026-08-06 | **Materialize never needs a live claim.** No-claim → stage with the file's own tags. | Owner call. It goes through the upload/review path regardless, and that path already reads tags from the file. The 404 was protecting nothing — and offline (the case the button exists for) nothing advertises anything, so requiring a claim would fail exactly when it is needed. |
 | 2026-08-06 | **Materialize exists for the OFFLINE case**, not for convenience. | Owner, stating the motivating scenario: a madplayer with no connectivity, adding a cached file to its library. `/madnetwork` browse cannot serve that — it is a view of other people's catalogs. Keep this button and its no-claim path local end to end; do not "simplify" either into something that consults the network. |
+| 2026-08-06 | **The staging filename falls back to the file's own container** (`media.Tags.FileType` → extension). | Found by running the offline case rather than reasoning about it. An adopted cache row has no remembered filename, so every upgrading node's whole cache was unmaterializable. Tested end to end against a node with no peers. |
 | 2026-08-06 | **Daemon evicts by last use + size ceiling**, both off by default. | Owner call. Fetch-date-only eviction deletes the track you replay weekly at the same rate as junk; the ceiling is what makes disk predictable. |
 | 2026-08-06 | **No pin.** | Owner call. Removal stays manual; the daemon, when it lands, has nothing exempt from it. |
 | 2026-08-06 | **"Used" = local reads only**, throttled to one write per hash per 5 min. | Owner call. Seeding is a service rendered with bytes we hold, not a reason to hold them; a disk kept full purely by other people's traffic is the outcome to avoid. |
