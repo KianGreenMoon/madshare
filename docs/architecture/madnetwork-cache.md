@@ -375,10 +375,21 @@ Icon-only, per the admin row-action convention:
 | **Claims…** | `file.delete` | The rare one: every tagset currently claimed for this hash, by source. |
 | **Remove** | `file.delete` | Delete the cache file and its row. Modal confirm. |
 
-Materialize and Download are the acknowledged rare paths — `/madnetwork` browse
-remains the good way to bring content in. They are here because when you are
-*looking at* a cached file and decide you want to keep it, sending you elsewhere
-to find it again is silly.
+**Why Materialize is here at all**, when `/madnetwork` browse is the better way
+to bring content in: it is the only way that works **offline**. The motivating
+case is a madplayer somewhere with no connectivity (owner, 2026-08-06). The
+browse page is a view of other people's catalogs and goes blank without them;
+the cache is bytes already on this device. Deciding to keep one of those is a
+purely local act, and it must not require the network that is missing.
+
+That is what makes the no-claim path (below) load-bearing rather than a tidy-up:
+offline, nothing advertises anything, so a materialize that needed a live claim
+would fail in exactly the situation this button exists for. Everything the path
+touches — the gates, the policy read, `EnsureBlob`'s cache short-circuit, the
+tags, the analysis pipeline — is local.
+
+Download is the smaller companion: the same bytes, to the device, no library
+involvement.
 
 **Play and Download do not go through the madnetwork streaming relay**, and this
 is load-bearing rather than a preference. That relay is registered only when
@@ -616,7 +627,8 @@ Steps 1–4 are the deliverable. Step 5 is scheduled, not promised.
 |---|---|---|
 | 2026-08-06 | **No provenance, and no cached source claims.** Nothing records which node served the bytes or what it called them. | Owner call. `TransferStats` has the delivery detail during the fetch and it stays discarded. |
 | 2026-08-06 | **A row describes itself from the file's own tags** (`media.ExtractTags` at index time). | Owner call, generalising the materialize answer: a cached blob falls back to tags-inside-the-file behaviour. Local, source-independent, and it is what makes the search bar work. |
-| 2026-08-06 | **Materialize never needs a live claim.** No-claim → stage with the file's own tags. | Owner call. It goes through the upload/review path regardless, and that path already reads tags from the file. The 404 was protecting nothing. |
+| 2026-08-06 | **Materialize never needs a live claim.** No-claim → stage with the file's own tags. | Owner call. It goes through the upload/review path regardless, and that path already reads tags from the file. The 404 was protecting nothing — and offline (the case the button exists for) nothing advertises anything, so requiring a claim would fail exactly when it is needed. |
+| 2026-08-06 | **Materialize exists for the OFFLINE case**, not for convenience. | Owner, stating the motivating scenario: a madplayer with no connectivity, adding a cached file to its library. `/madnetwork` browse cannot serve that — it is a view of other people's catalogs. Keep this button and its no-claim path local end to end; do not "simplify" either into something that consults the network. |
 | 2026-08-06 | **Daemon evicts by last use + size ceiling**, both off by default. | Owner call. Fetch-date-only eviction deletes the track you replay weekly at the same rate as junk; the ceiling is what makes disk predictable. |
 | 2026-08-06 | **No pin.** | Owner call. Removal stays manual; the daemon, when it lands, has nothing exempt from it. |
 | 2026-08-06 | **"Used" = local reads only**, throttled to one write per hash per 5 min. | Owner call. Seeding is a service rendered with bytes we hold, not a reason to hold them; a disk kept full purely by other people's traffic is the outcome to avoid. |
