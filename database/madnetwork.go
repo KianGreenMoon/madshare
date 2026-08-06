@@ -632,9 +632,14 @@ func sourceClause(view MadnetworkView) string {
 // bucket, mirroring the local library's album-artist-only artist list; albums
 // fall back to the shared "Other" bucket. Only reachable, unblocked sources'
 // catalogs are visible (reachClause; cutoff <= 0 = every source).
+//
+// pkey is the row's other artist credit — its PERFORMER, empty when the row
+// carries none. It is what lets an artist be browsed for the tracks they play on
+// under somebody else's album artist (fedcatCreditBase).
 func fedcatBase(view MadnetworkView) string {
 	return `
 	FROM (SELECT COALESCE(NULLIF(c.album_artist, ''), NULLIF(c.artist, ''), '` + DefaultArtistName + `') AS akey,
+	             COALESCE(c.artist, '') AS pkey,
 	             COALESCE(NULLIF(c.album, ''), '` + DefaultAlbumTitle + `') AS alb,
 	             ` + sourceLabelExpr + ` AS source_label,
 	             ` + srcLastSeen + ` AS source_last_seen,
@@ -655,6 +660,7 @@ func fedcatBase(view MadnetworkView) string {
 func fedcatRemoteRows(view MadnetworkView) string {
 	return `
 	SELECT COALESCE(NULLIF(c.album_artist, ''), NULLIF(c.artist, ''), '` + DefaultArtistName + `') AS akey,
+	       COALESCE(c.artist, '') AS pkey,
 	       COALESCE(NULLIF(c.album, ''), '` + DefaultAlbumTitle + `') AS alb,
 	       c.title AS title, c.track_number AS track_number,
 	       c.disc_number AS disc_number, c.year AS year
@@ -681,6 +687,7 @@ func fedcatSelfRows(view MadnetworkView) string {
 	return `
 	SELECT COALESCE(NULLIF(COALESCE(aar.name, m.album_artist, ''), ''),
 	                NULLIF(COALESCE(par.name, m.artist, ''), ''), '` + DefaultArtistName + `') AS akey,
+	       COALESCE(par.name, m.artist, '') AS pkey,
 	       COALESCE(NULLIF(COALESCE(al.title, m.album, ''), ''), '` + DefaultAlbumTitle + `') AS alb,
 	       m.title AS title, m.track_number AS track_number,
 	       m.disc_number AS disc_number, m.year AS year
@@ -698,15 +705,21 @@ func fedcatSelfRows(view MadnetworkView) string {
 // the "list fully clears" rule. A source-filtered view (the "By node" shelf)
 // keeps exactly one of the two halves.
 func fedcatCountBase(view MadnetworkView) string {
+	return ` FROM ` + fedcatRowSource(view)
+}
+
+// fedcatRowSource is that FROM clause's parenthesized row set on its own, for
+// the queries that wrap it in something else (fedcatCreditBase).
+func fedcatRowSource(view MadnetworkView) string {
 	switch {
 	case view.includeRemote() && view.includeOwn():
-		return ` FROM (` + fedcatRemoteRows(view) + ` UNION ALL ` + fedcatSelfRows(view) + `)`
+		return `(` + fedcatRemoteRows(view) + ` UNION ALL ` + fedcatSelfRows(view) + `)`
 	case view.includeRemote():
-		return ` FROM (` + fedcatRemoteRows(view) + `)`
+		return `(` + fedcatRemoteRows(view) + `)`
 	case view.includeOwn():
-		return ` FROM (` + fedcatSelfRows(view) + `)`
+		return `(` + fedcatSelfRows(view) + `)`
 	default:
-		return ` FROM (` + fedcatNoRows + `)`
+		return `(` + fedcatNoRows + `)`
 	}
 }
 
@@ -714,9 +727,33 @@ func fedcatCountBase(view MadnetworkView) string {
 // the view that includes neither half (§includeOwn). A well-typed nothing keeps
 // every query above it unchanged; a special case at each call site would not.
 const fedcatNoRows = `
-	SELECT '' AS akey, '' AS alb, '' AS title, NULL AS track_number,
+	SELECT '' AS akey, '' AS pkey, '' AS alb, '' AS title, NULL AS track_number,
 	       NULL AS disc_number, NULL AS year
 	WHERE 0`
+
+// fedcatCreditBase is the row source of the ARTIST-scoped queries: every row
+// once per artist credit it carries — its album-artist bucket, and, when the
+// performer differs, that performer too (album_artist_credit tells the two
+// apart). It mirrors the local library, where an artist entity is browsable in
+// EITHER role (database/library.go, listAlbumsByArtistID's `al.artist_id = ? OR
+// m.artist_id = ?`): a compilation is filed under its album artist AND under
+// each performer on it, counting only that performer's tracks.
+//
+// The counting queries (summary, lanes, album search) keep fedcatCountBase: a
+// track has ONE identity there, and counting it once per credit would inflate
+// every total on the page.
+//
+// Which of those buckets the A-Z list SHOWS is the artist list's own rule, not
+// this one's — see MadnetworkArtists.
+func fedcatCreditBase(view MadnetworkView) string {
+	return ` FROM (WITH fedcat_rows AS (SELECT * FROM ` + fedcatRowSource(view) + `)
+	      SELECT akey, alb, title, track_number, disc_number, year, 1 AS album_artist_credit
+	      FROM fedcat_rows
+	      UNION ALL
+	      SELECT pkey AS akey, alb, title, track_number, disc_number, year, 0 AS album_artist_credit
+	      FROM fedcat_rows
+	      WHERE pkey <> '' AND lower(pkey) <> lower(akey))`
+}
 
 // Leading ORDER BY keys forcing the unknown buckets to the bottom of the
 // alphabetical lists (the library's norm_name trick, matched on the canonical
@@ -742,15 +779,45 @@ type MadnetworkArtist struct {
 	Tracks int64  `json:"tracks"`
 }
 
-// MadnetworkArtists lists the merged catalog's artists (display-identity
-// grouping, case-insensitive), optionally filtered by a substring. The unknown
-// bucket sorts last; includeSelf merges the own published set in.
+// MadnetworkArtists lists the merged catalog's artists — the A-Z browse of the
+// network and of a single node's shelf — optionally filtered by a substring. The
+// unknown bucket sorts last; includeSelf merges the own published set in.
 //
-// The list is keyset-paged: limit <= 0 returns everything (the search path,
-// which caps its own results), otherwise one page plus the cursor for the next.
-// Browse all is now the community's whole output rather than a few friends'
-// libraries, which is what took this off the "adopt when catalogs grow" list.
+// It lists the ALBUM ARTISTS, exactly as the local library's list does
+// (database/library.go, listArtists): an artist who only ever plays on somebody
+// else's release is not a row here (HAVING MAX(album_artist_credit) = 1), while
+// an artist who has a release of their own is — and their guest appearances are
+// counted and browsable under their name too, because the rows come from
+// fedcatCreditBase. A performer with no release of their own stays reachable
+// through search (MadnetworkSearchArtists), which is where the library leaves
+// them as well.
+//
+// The list is keyset-paged: limit <= 0 returns everything, otherwise one page
+// plus the cursor for the next. Browse all is now the community's whole output
+// rather than a few friends' libraries, which is what took this off the "adopt
+// when catalogs grow" list.
 func (db *DB) MadnetworkArtists(ctx context.Context, q string, view MadnetworkView, limit int, cursor string) ([]*MadnetworkArtist, string, error) {
+	return db.madnetworkArtists(ctx, q, view, limit, cursor, true)
+}
+
+// MadnetworkSearchArtists is the search counterpart: the same buckets WITHOUT
+// the album-artist rule, so a performer who only appears on other artists'
+// releases is a hit and their appearances are one click away. The local library
+// splits the two the same way (its Search matches either role, its browse list
+// only the album-artist one), so a name that is missing from the A-Z grid on one
+// page is missing from it on both — and found by searching on both.
+func (db *DB) MadnetworkSearchArtists(ctx context.Context, q string, limit int, view MadnetworkView) ([]*MadnetworkArtist, error) {
+	if strings.TrimSpace(q) == "" || limit <= 0 {
+		return []*MadnetworkArtist{}, nil
+	}
+	out, _, err := db.madnetworkArtists(ctx, q, view, limit, "", false)
+	if out == nil {
+		out = []*MadnetworkArtist{}
+	}
+	return out, err
+}
+
+func (db *DB) madnetworkArtists(ctx context.Context, q string, view MadnetworkView, limit int, cursor string, albumArtistsOnly bool) ([]*MadnetworkArtist, string, error) {
 	conds, args := []string{}, []any{}
 	if s := strings.TrimSpace(q); s != "" {
 		escaped := strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(s)
@@ -775,10 +842,17 @@ func (db *DB) MadnetworkArtists(ctx context.Context, q string, view MadnetworkVi
 		page = " LIMIT ?"
 		args = append(args, limit+1) // one extra row = "there is a next page"
 	}
+	// The album-artist rule is a HAVING, not a WHERE: a bucket qualifies on one
+	// credit and is then counted over ALL of them, so a guest appearance adds to
+	// the artist's totals without ever putting a pure performer in the list.
+	having := ""
+	if albumArtistsOnly {
+		having = " HAVING MAX(album_artist_credit) = 1"
+	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT MIN(akey), COUNT(DISTINCT lower(alb)), COUNT(DISTINCT `+trackIdent+`)
-		`+fedcatCountBase(view)+where+`
-		GROUP BY lower(akey)
+		`+fedcatCreditBase(view)+where+`
+		GROUP BY lower(akey)`+having+`
 		ORDER BY `+artistBucketLast+`, lower(akey)`+page, args...)
 	if err != nil {
 		return nil, "", fmt.Errorf("madnetwork artists: %w", err)
@@ -822,10 +896,14 @@ type MadnetworkAlbum struct {
 
 // MadnetworkAlbums lists one artist's albums in the merged catalog; the
 // "Other" bucket sorts last.
+//
+// "Their" albums means either credit (fedcatCreditBase): the releases filed
+// under this artist, plus the ones they only play on — those counting just their
+// own tracks, which is the same hybrid count the library's drill-down shows.
 func (db *DB) MadnetworkAlbums(ctx context.Context, artist string, view MadnetworkView) ([]*MadnetworkAlbum, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT MIN(alb), COUNT(DISTINCT `+trackIdent+`), MAX(year)
-		`+fedcatCountBase(view)+`
+		`+fedcatCreditBase(view)+`
 		WHERE lower(akey) = lower(?)
 		GROUP BY lower(alb)
 		ORDER BY `+albumBucketLast+`, year IS NULL, year, lower(alb)`, artist)
@@ -927,14 +1005,20 @@ func (db *DB) remoteTrackRows(ctx context.Context, view MadnetworkView, match st
 // MadnetworkTracks returns reachable sources' cached rows for one artist+album,
 // in display order (the view gates reachability and, for a single node's shelf,
 // which source may answer at all).
+//
+// The artist is matched in either credit, so an album reached through a
+// performer's list (MadnetworkAlbums) opens on the tracks that put it there
+// rather than on nothing.
 func (db *DB) MadnetworkTracks(ctx context.Context, artist, album string, view MadnetworkView) ([]*MadnetworkTrackRow, error) {
-	return db.remoteTrackRows(ctx, view, `lower(akey) = lower(?) AND lower(alb) = lower(?)`, artist, album)
+	return db.remoteTrackRows(ctx, view,
+		`(lower(akey) = lower(?) OR lower(pkey) = lower(?)) AND lower(alb) = lower(?)`, artist, artist, album)
 }
 
 // Self-row display-identity expressions over the tagsets join (aliases par /
 // aar / al as in fedcatSelfRows) — the WHERE side of the bucket fallbacks.
 const selfAkeyExpr = `COALESCE(NULLIF(COALESCE(aar.name, m.album_artist, ''), ''),
 	NULLIF(COALESCE(par.name, m.artist, ''), ''), '` + DefaultArtistName + `')`
+const selfPkeyExpr = `COALESCE(par.name, m.artist, '')`
 const selfAlbExpr = `COALESCE(NULLIF(COALESCE(al.title, m.album, ''), ''), '` + DefaultAlbumTitle + `')`
 
 // ownTrackRows returns this node's own appearances matching a caller-supplied
@@ -1032,10 +1116,12 @@ func (db *DB) ownTrackRows(ctx context.Context, view MadnetworkView, match strin
 }
 
 // MadnetworkOwnTracks returns the own published rows for one artist+album —
-// the Self side of the merged track view.
+// the Self side of the merged track view, matched on the same two credits as
+// the remote side.
 func (db *DB) MadnetworkOwnTracks(ctx context.Context, artist, album string, view MadnetworkView) ([]*MadnetworkTrackRow, error) {
 	return db.ownTrackRows(ctx, view,
-		`lower(`+selfAkeyExpr+`) = lower(?) AND lower(`+selfAlbExpr+`) = lower(?)`, artist, album)
+		`(lower(`+selfAkeyExpr+`) = lower(?) OR lower(`+selfPkeyExpr+`) = lower(?)) AND lower(`+selfAlbExpr+`) = lower(?)`,
+		artist, artist, album)
 }
 
 // ── Merged search (docs/ui/madnetwork-page.md §Search) ───────────────────────

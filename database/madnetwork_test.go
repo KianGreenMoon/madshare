@@ -866,3 +866,150 @@ func TestMadnetworkNoSourceShelf(t *testing.T) {
 		t.Errorf("unheld node's track count = %d (err %v), want 0", tracks, err)
 	}
 }
+
+// TestMadnetworkPerformerCredits pins the artist rule the /madnetwork browse
+// shares with the local library (docs/architecture/artist-album-model.md
+// §Artist roles): the A-Z list is the ALBUM ARTISTS, an artist who also has a
+// release of their own carries their guest appearances with them, and one who
+// has nothing but guest appearances is reachable by search only.
+func TestMadnetworkPerformerCredits(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	// A remote friend offers a compilation with two performers plus one of those
+	// performers' own release.
+	comp := func(key, recording, performer, title, hash string) federation.CatalogEntry {
+		e := catEntry(key, recording, "The Comp", "Comp Album", title, hash)
+		e.Artist = performer
+		return e
+	}
+	insertPeer(t, db, "f1a1", "friend-a", federation.PeerFriend)
+	friend := insertSource(t, db, "f1a1")
+	if err := db.ReplaceSourceCatalog(ctx, friend, "s", 100, []federation.CatalogEntry{
+		comp("1", "r1", "Guest Only", "Guest Song", "hash-guest"),
+		comp("2", "r2", "Own Release", "Featured Song", "hash-featured"),
+		catEntry("3", "r3", "Own Release", "Solo Album", "Solo Song", "hash-solo"),
+	}); err != nil {
+		t.Fatalf("ReplaceSourceCatalog: %v", err)
+	}
+
+	view := MadnetworkView{}
+	artists, _, err := db.MadnetworkArtists(ctx, "", view, 0, "")
+	if err != nil {
+		t.Fatalf("MadnetworkArtists: %v", err)
+	}
+	names := map[string]*MadnetworkArtist{}
+	for _, a := range artists {
+		names[a.Name] = a
+	}
+	if len(artists) != 2 || names["The Comp"] == nil || names["Own Release"] == nil {
+		t.Fatalf("artists = %+v, want the album artist and the performer who has a release", artists)
+	}
+	if names["Guest Only"] != nil {
+		t.Error("a performer with no release of their own must not be a row in the browse list")
+	}
+	// The qualifying performer's row counts BOTH credits — the guest appearance
+	// is what the list would otherwise be hiding from them.
+	if got := names["Own Release"]; got.Albums != 2 || got.Tracks != 2 {
+		t.Errorf("Own Release counts = %d albums / %d tracks, want 2/2 (own + featured)", got.Albums, got.Tracks)
+	}
+	// The album artist's own row is unchanged by any of this.
+	if got := names["The Comp"]; got.Albums != 1 || got.Tracks != 2 {
+		t.Errorf("The Comp counts = %d albums / %d tracks, want 1/2", got.Albums, got.Tracks)
+	}
+
+	// The performer's albums: their release, and the compilation counting only
+	// the track they play on.
+	albums, err := db.MadnetworkAlbums(ctx, "own release", view)
+	if err != nil {
+		t.Fatalf("MadnetworkAlbums: %v", err)
+	}
+	got := map[string]int64{}
+	for _, a := range albums {
+		got[a.Title] = a.Tracks
+	}
+	if len(albums) != 2 || got["Solo Album"] != 1 || got["Comp Album"] != 1 {
+		t.Fatalf("albums of the performer = %+v, want Solo Album 1 + Comp Album 1", got)
+	}
+
+	// Drilling into the compilation under the performer's name opens on the
+	// track that put it there — not on nothing, and not on the whole comp.
+	rows, err := db.MadnetworkTracks(ctx, "Own Release", "Comp Album", view)
+	if err != nil {
+		t.Fatalf("MadnetworkTracks: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Entry.Title != "Featured Song" {
+		t.Fatalf("comp tracks under the performer = %+v, want only Featured Song", rows)
+	}
+	// Under its album artist the compilation is whole.
+	if rows, _ := db.MadnetworkTracks(ctx, "The Comp", "Comp Album", view); len(rows) != 2 {
+		t.Errorf("comp tracks under its album artist = %d, want both", len(rows))
+	}
+
+	// Search is where the pure performer lives, and it is not a dead end.
+	hits, err := db.MadnetworkSearchArtists(ctx, "guest", 5, view)
+	if err != nil {
+		t.Fatalf("MadnetworkSearchArtists: %v", err)
+	}
+	if len(hits) != 1 || hits[0].Name != "Guest Only" || hits[0].Tracks != 1 {
+		t.Fatalf("search artists = %+v, want the guest performer with their one track", hits)
+	}
+	if albums, _ := db.MadnetworkAlbums(ctx, "Guest Only", view); len(albums) != 1 || albums[0].Title != "Comp Album" {
+		t.Errorf("guest performer's albums = %+v, want the comp they appear on", albums)
+	}
+	// The browse list still refuses them, whatever the filter says.
+	if got, _, _ := db.MadnetworkArtists(ctx, "guest", view, 0, ""); len(got) != 0 {
+		t.Errorf("filtered browse list = %+v, want no pure performer", got)
+	}
+}
+
+// TestMadnetworkOwnPerformerCredits is the same rule over the SELF half of the
+// merged view — this node's own published rows, which resolve their artists
+// through the entity overlay rather than through cached text.
+func TestMadnetworkOwnPerformerCredits(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	seed := func(hash, performer, albumArtist, album, title string) {
+		t.Helper()
+		meta := &MediaMetadata{
+			Title:       title,
+			Artist:      sql.NullString{String: performer, Valid: true},
+			AlbumArtist: sql.NullString{String: albumArtist, Valid: true},
+			Album:       sql.NullString{String: album, Valid: true},
+			ExtractedAt: 1700000000,
+		}
+		if err := db.InsertFile(ctx, newFile(hash), newUpload(hash+".mp3"), meta); err != nil {
+			t.Fatalf("InsertFile %s: %v", hash, err)
+		}
+	}
+	seed("own00001", "Guest Only", "The Comp", "Comp Album", "Guest Song")
+	seed("own00002", "Own Release", "The Comp", "Comp Album", "Featured Song")
+	seed("own00003", "Own Release", "Own Release", "Solo Album", "Solo Song")
+
+	view := MadnetworkView{IncludeSelf: true, SelfOnly: true}
+	artists, _, err := db.MadnetworkArtists(ctx, "", view, 0, "")
+	if err != nil {
+		t.Fatalf("MadnetworkArtists: %v", err)
+	}
+	names := map[string]*MadnetworkArtist{}
+	for _, a := range artists {
+		names[a.Name] = a
+	}
+	if len(artists) != 2 || names["Guest Only"] != nil {
+		t.Fatalf("own artists = %+v, want the album artist and the performer with a release", artists)
+	}
+	if got := names["Own Release"]; got.Albums != 2 || got.Tracks != 2 {
+		t.Errorf("Own Release counts = %d albums / %d tracks, want 2/2", got.Albums, got.Tracks)
+	}
+	rows, err := db.MadnetworkOwnTracks(ctx, "Own Release", "Comp Album", view)
+	if err != nil {
+		t.Fatalf("MadnetworkOwnTracks: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Entry.Title != "Featured Song" {
+		t.Fatalf("own comp tracks under the performer = %+v, want only Featured Song", rows)
+	}
+	if rows, _ := db.MadnetworkOwnTracks(ctx, "The Comp", "Comp Album", view); len(rows) != 2 {
+		t.Errorf("own comp tracks under its album artist = %d, want both", len(rows))
+	}
+}

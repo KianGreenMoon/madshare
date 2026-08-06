@@ -131,8 +131,9 @@ discipline, not luck:
   it server-side and return it wherever feasible, so neither UI re-implements it.
   (The existing instinct to keep grouping server-side is exactly this pattern.)
 - **Design docs are the shared behavioural spec.** `docs/ui/player-and-queue.md`,
-  `docs/ui/shells.md`, etc. define behaviour once; both UIs *follow* the spec
-  rather than each inventing it. Keep them authoritative.
+  `docs/ui/shells.md`, `docs/ui/artists-and-performers.md` (which names get an
+  artist row, and what is under each), etc. define behaviour once; both UIs
+  *follow* the spec rather than each inventing it. Keep them authoritative.
 
 ## The native client's own burdens (not shared with web)
 

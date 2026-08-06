@@ -577,16 +577,16 @@ func (h *handler) madnetworkSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	view := h.madnetworkViewFor(r)
-	artists := []*database.MadnetworkArtist{}
-	if strings.TrimSpace(q) != "" { // an empty query lists everything — search shows nothing
-		found, _, err := h.madnetwork.MadnetworkArtists(r.Context(), q, view, madnetworkSearchArtistCap, "")
-		if err != nil {
-			http.Error(w, "storage error", http.StatusInternalServerError)
-			return
-		}
-		if found != nil {
-			artists = found
-		}
+	// Search matches an artist in EITHER credit, so a performer the A-Z list
+	// leaves out (they have no release of their own) is still findable by name —
+	// the split the local library's search and browse make too.
+	artists, err := h.madnetwork.MadnetworkSearchArtists(r.Context(), q, madnetworkSearchArtistCap, view)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if artists == nil {
+		artists = []*database.MadnetworkArtist{}
 	}
 
 	albums, err := h.madnetwork.MadnetworkSearchAlbums(r.Context(), q, madnetworkSearchAlbumCap, view)

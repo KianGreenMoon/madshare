@@ -133,6 +133,10 @@ type MadnetworkStore interface {
 	// MadnetworkOwnEntries is the entry count beside our own name in that list,
 	// counted like a friend's so the two numbers mean the same thing.
 	MadnetworkOwnEntries(ctx context.Context, view database.MadnetworkView) (int64, error)
+	// MadnetworkSearchArtists is the browse list's search counterpart: the same
+	// buckets minus the album-artist rule, so a performer who has no release of
+	// their own is a search hit even though the A-Z list leaves them out.
+	MadnetworkSearchArtists(ctx context.Context, q string, limit int, view database.MadnetworkView) ([]*database.MadnetworkArtist, error)
 	MadnetworkSearchAlbums(ctx context.Context, q string, limit int, view database.MadnetworkView) ([]*database.MadnetworkSearchAlbum, error)
 	MadnetworkSearchTrackRows(ctx context.Context, q string, view database.MadnetworkView) ([]*database.MadnetworkTrackRow, error)
 	// Discovery lanes (docs/ui/madnetwork-page.md §Lane definitions): SQL ranks

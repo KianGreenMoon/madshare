@@ -206,6 +206,41 @@ Madnetwork search behaves exactly like the library's: one input, 2+ chars,
 `GET /api/madnetwork/search?q=` mirrors `/api/search`'s shape over the merged,
 availability-filtered catalog. The old artists-only filter box is retired.
 
+## Artist identity: album artists, with their guest appearances
+
+The merged catalog has no entity ids, so an artist is a **name bucket**. Which
+buckets exist, and what each one contains, follows the local library's rule
+verbatim (`docs/architecture/artist-album-model.md` §"Browse by album-artist,
+search across both roles"; stated for client authors in
+`docs/ui/artists-and-performers.md`) — the network page is a sibling of the
+library, so an artist must not appear on one and be missing from the other:
+
+- every catalog row (remote or own) carries two artist credits: its
+  **album-artist** bucket (`akey` — album artist, falling back to the performer,
+  falling back to Unknown) and, when it differs, its **performer** (`pkey`).
+  `fedcatCreditBase` emits the row under each of them, tagged with which it is;
+- the **A-Z list** (`/api/madnetwork/artists`, both on `/madnetwork` and on a
+  single node's page) shows a bucket only if the artist is the album artist of at
+  least one row (`HAVING MAX(album_artist_credit) = 1`) — a session player who
+  only ever appears on other people's releases is not a row. But the buckets that
+  do qualify are **counted over both credits**, so an artist with a release of
+  their own carries their guest appearances with them instead of leaving them
+  filed only under the compilation;
+- **an artist's albums** are the releases under their name plus the ones they
+  only play on, the latter counting just their own tracks (the library's hybrid
+  count), and **an album opened under a performer's name lists the tracks that
+  put it there** — one deliberate difference from the library, where an album is
+  addressed by id and always opens whole; here it is addressed by (artist, album)
+  text, so the whole comp is one click away under its own album artist;
+- **search** (`MadnetworkSearchArtists`) drops the album-artist rule, exactly as
+  the library's search matches both roles: a pure performer is a hit, and their
+  appearances are one drill away, so the browse list's omission is never a dead
+  end.
+
+The counting surfaces — the summary's track total, the lanes, album search —
+keep the single-identity row source: a track has one identity there, and
+counting it once per credit would inflate every total on the page.
+
 ## Sorting
 
 Alphabetical (case-insensitive) everywhere, with the **unknown buckets last** —

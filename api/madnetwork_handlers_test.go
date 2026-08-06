@@ -83,6 +83,17 @@ func (f *fakeMadnetwork) MadnetworkSourceByKey(_ context.Context, key string, _ 
 func (f *fakeMadnetwork) MadnetworkOwnEntries(context.Context, database.MadnetworkView) (int64, error) {
 	return f.ownEntries, nil
 }
+// MadnetworkSearchArtists answers from the same seeded list as MadnetworkArtists
+// — the two differ in WHICH buckets qualify, which is SQL the database package
+// pins; here only the cap is observable.
+func (f *fakeMadnetwork) MadnetworkSearchArtists(_ context.Context, _ string, limit int, view database.MadnetworkView) ([]*database.MadnetworkArtist, error) {
+	f.artistView = view
+	out := f.artists
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
 func (f *fakeMadnetwork) MadnetworkSearchAlbums(context.Context, string, int, database.MadnetworkView) ([]*database.MadnetworkSearchAlbum, error) {
 	return []*database.MadnetworkSearchAlbum{{Artist: "A", Title: "B", Tracks: 2}}, nil
 }

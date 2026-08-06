@@ -222,6 +222,18 @@ browsable by its id, so a search hit is never a dead end:
 The guest-filtered variants apply the same `OR` over the access clause. The
 unknown-bucket sorting is unchanged.
 
+These three rules are the **cross-UI contract**, restated for client authors
+(including future ones) in `docs/ui/artists-and-performers.md`.
+
+The **`/madnetwork` browse follows the same three rules** over the merged
+catalog, where an artist is a name bucket rather than an entity id: the A-Z list
+is the album artists, an album artist's own row counts and shows the comps they
+are featured on, and a pure performer is found by search only
+(`database/madnetwork.go`, `fedcatCreditBase` / `MadnetworkSearchArtists`;
+`docs/ui/madnetwork-page.md` §"Artist identity"). A name that is missing from the
+grid on one page is missing from it on both — the two pages are siblings, and an
+artist appearing on one but not the other reads as data loss.
+
 ### Cover re-keying
 
 Both image tables key on entity IDs:
