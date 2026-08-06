@@ -171,6 +171,73 @@ func TestCacheBulkRemove(t *testing.T) {
 	}
 }
 
+// TestCacheForgetsFilesDeletedOutsideTheServer: an operator's `rm`, a disk
+// cleanup job or a restored backup can empty the cache behind the server's
+// back. Nothing dangerous follows — seeding reads the directory, so a deleted
+// file is never advertised to a peer — but the page must not go on counting
+// bytes that are not there, and it must not need a restart to notice.
+func TestCacheForgetsFilesDeletedOutsideTheServer(t *testing.T) {
+	repo := &fakeRepo{}
+	srv, dir := cacheServer(t, repo, nil, nil)
+	gone, kept := cacheTestHash('g'), cacheTestHash('h')
+	seedCached(t, repo, dir, gone, "Vanished", []byte("aaaa"))
+	seedCached(t, repo, dir, kept, "Present", []byte("bbbbbb"))
+
+	if err := os.Remove(filepath.Join(dir, gone)); err != nil {
+		t.Fatal(err)
+	}
+
+	// The listing shows only what is real, and forgets the rest as it goes.
+	got := cacheGetJSON(t, srv.URL+"/api/admin/cache")
+	items, _ := got["items"].([]any)
+	if len(items) != 1 {
+		t.Errorf("items = %d, want 1 — a row whose file is gone describes nothing", len(items))
+	}
+	repo.mu.Lock()
+	_, phantom := repo.cacheIndex[gone]
+	_, survivor := repo.cacheIndex[kept]
+	repo.mu.Unlock()
+	if phantom {
+		t.Error("the index still holds a row for a file deleted outside the server")
+	}
+	if !survivor {
+		t.Error("a file that IS there was forgotten")
+	}
+
+	// And the figures follow, without a restart or a manual Rescan.
+	got = cacheGetJSON(t, srv.URL+"/api/admin/cache")
+	if got["total"] != float64(1) || got["bytes"] != float64(6) {
+		t.Errorf("total/bytes = %v/%v, want 1/6 (only the file that exists)", got["total"], got["bytes"])
+	}
+}
+
+// TestCacheAudioForgetsAPhantom: asking for bytes that are not there proves the
+// row wrong, so the request that discovers it also cleans it up.
+func TestCacheAudioForgetsAPhantom(t *testing.T) {
+	repo := &fakeRepo{}
+	srv, dir := cacheServer(t, repo, nil, nil)
+	hash := cacheTestHash('i')
+	seedCached(t, repo, dir, hash, "Gone", []byte("aaaa"))
+	if err := os.Remove(filepath.Join(dir, hash)); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Get(srv.URL + "/api/admin/cache/" + hash + "/audio")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+	repo.mu.Lock()
+	_, phantom := repo.cacheIndex[hash]
+	repo.mu.Unlock()
+	if phantom {
+		t.Error("the row survived a request that proved its file is gone")
+	}
+}
+
 // TestCacheReapPartials is the leak this page exists to close: a `.part` left by
 // a killed process was permanent dead disk. A partial belonging to a LIVE
 // transfer must survive — that is the whole reason the reaper consults the node.

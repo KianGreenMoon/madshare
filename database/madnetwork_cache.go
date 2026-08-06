@@ -492,6 +492,61 @@ func CountAbandonedPartials(cacheDir string, live map[string]bool) (int, int64, 
 // which is no longer fetching anything.
 const partialSuffix = ".part"
 
+// DropMissingMadnetworkCacheRows deletes index rows whose file is gone, and
+// returns how many. The cheap half of reconciliation: one directory listing, one
+// hash query, one delete — no stat per file and no tag reading, because
+// forgetting a file needs no evidence beyond its absence.
+//
+// This is what answers a cache emptied behind the server's back (an operator's
+// `rm`, a disk cleanup job, a restored backup). Nothing dangerous happens while
+// such a row survives — seeding reads the directory, so a deleted file is never
+// advertised to a peer — but the page would report bytes that are not there,
+// which is its own kind of wrong. Cheap enough to run on an admin page load,
+// which is what keeps the figures honest without a watcher or a daemon.
+//
+// A missing directory means every row is stale, so they all go.
+func DropMissingMadnetworkCacheRows(ctx context.Context, db *DB, cacheDir string) (int, error) {
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil && !os.IsNotExist(err) {
+		return 0, fmt.Errorf("read cache dir: %w", err)
+	}
+	onDisk := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() && hashDirPattern.MatchString(e.Name()) {
+			onDisk[e.Name()] = true
+		}
+	}
+
+	rows, err := db.QueryContext(ctx, `SELECT hash FROM madnetwork_cache`)
+	if err != nil {
+		return 0, fmt.Errorf("read cache index: %w", err)
+	}
+	var stale []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan cache index hash: %w", err)
+		}
+		if !onDisk[h] {
+			stale = append(stale, h)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(stale) == 0 {
+		return 0, nil
+	}
+	for _, h := range stale {
+		if _, err := db.ExecContext(ctx, `DELETE FROM madnetwork_cache WHERE hash = ?`, h); err != nil {
+			return 0, fmt.Errorf("drop stale cache row %s: %w", h, err)
+		}
+	}
+	return len(stale), nil
+}
+
 // describeCachedBlob builds the index row for a cache file from the file alone:
 // size and mtime from stat, tags from its own headers. mtime stands in for both
 // timestamps because it is the only evidence a directory can offer about when a

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"log"
 	"mime"
 	"net/http"
@@ -68,6 +69,7 @@ func (h *handler) adminCacheList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
+	rows = h.forgetVanished(rows)
 	total, bytes, err := h.repo.CountMadnetworkCache(r.Context(), q.MadnetworkCacheFilter)
 	if err != nil {
 		log.Printf("cache count: %v", err)
@@ -87,9 +89,59 @@ func (h *handler) adminCacheList(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// forgetVanished drops the index rows on this page whose file is no longer
+// there, and returns the page without them. Bounded by the page size, so it is a
+// hundred stats at worst — the price of never showing a row that is not real.
+//
+// The rows the operator is LOOKING at are the ones worth checking individually;
+// the whole index is swept by the summary (which reads the directory anyway),
+// at startup, and by Rescan.
+func (h *handler) forgetVanished(rows []*database.MadnetworkCacheEntry) []*database.MadnetworkCacheEntry {
+	if h.cacheDir == "" {
+		return rows
+	}
+	live, dropped := rows[:0], 0
+	for _, e := range rows {
+		if info, err := os.Stat(filepath.Join(h.cacheDir, e.Hash)); err == nil && !info.IsDir() {
+			live = append(live, e)
+			continue
+		}
+		// Absence is proof enough: the directory is what the swarm reads, so a
+		// row without a file describes nothing.
+		h.dropCacheIndex(e.Hash)
+		dropped++
+	}
+	if dropped > 0 {
+		// Worth a line: files disappearing without the server doing it is
+		// something an operator either did on purpose or wants to know about.
+		log.Printf("madnetwork cache: %d file(s) removed outside the server; index updated", dropped)
+	}
+	return live
+}
+
+// sweepVanished drops every index row whose file is gone. Called where the
+// directory is being read anyway, so it costs a query rather than any extra I/O.
+func (h *handler) sweepVanished(ctx context.Context) {
+	db, ok := h.repo.(*database.DB)
+	if !ok || h.cacheDir == "" {
+		return
+	}
+	if n, err := database.DropMissingMadnetworkCacheRows(ctx, db, h.cacheDir); err != nil {
+		log.Printf("sweep vanished cache rows: %v", err)
+	} else if n > 0 {
+		log.Printf("madnetwork cache: %d file(s) removed outside the server; index updated", n)
+	}
+}
+
 // adminCacheSummary handles GET /api/admin/cache/summary: how full the cache is,
 // what is arriving, and what is abandoned.
+//
+// It sweeps the index first. This endpoint already lists the cache directory (to
+// count abandoned partials), so noticing that files have been deleted behind the
+// server's back is nearly free here — and it is the figure most worth being
+// right, since it is what the page and the dashboard report.
 func (h *handler) adminCacheSummary(w http.ResponseWriter, r *http.Request) {
+	h.sweepVanished(r.Context())
 	entries, bytes, err := h.repo.CountMadnetworkCache(r.Context(), database.MadnetworkCacheFilter{})
 	if err != nil {
 		log.Printf("cache summary: %v", err)
@@ -148,6 +200,9 @@ func (h *handler) adminCacheAudio(w http.ResponseWriter, r *http.Request) {
 	}
 	f, err := os.Open(filepath.Join(h.cacheDir, hash))
 	if err != nil {
+		// Asked for bytes that are not there: the row describing them is wrong,
+		// and this request just proved it.
+		h.dropCacheIndex(hash)
 		http.NotFound(w, r)
 		return
 	}

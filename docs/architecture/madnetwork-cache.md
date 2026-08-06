@@ -134,8 +134,34 @@ later), and on demand from the page's **Rescan** button. It is idempotent and
 safe to run at any time.
 
 That covers the three ways a cache and its index can drift: a pre-existing cache
-from before this feature, a process killed mid-fetch, and an operator deleting
-files by hand.
+from before this feature, a process killed mid-fetch, and files removed by
+something that is not this server — an operator's `rm`, a disk cleanup job, a
+restored backup.
+
+### Files deleted behind the server's back
+
+Worth stating on its own, because it is the drift an operator will actually
+cause, and because the two halves of the answer are very different:
+
+- **Nothing dangerous happens, ever.** Seeding reads the directory
+  (`cacheHoldings` re-lists it on every request), so a deleted file is **never
+  advertised to a peer**. That is the whole payoff of making the directory
+  authoritative: the index can be wrong without the swarm being wrong.
+- **But the page must not go on counting bytes that are not there**, and it must
+  not need a restart to notice. So the index **self-heals as it is read**:
+
+| Where | What it does | Cost |
+|---|---|---|
+| The listing | stats the ≤100 rows on this page, drops the ones whose file is gone, and omits them | bounded; what you see is always real |
+| The summary | drops every stale row in the index | free — it already lists the directory to count abandoned partials |
+| `…/audio` | a request for missing bytes proves the row wrong, so it drops it | none |
+| Startup / Rescan | full reconcile, both directions | the wholesale options |
+
+Dropping is silent in the code but **logged once per sweep** — files vanishing
+without the server doing it is either deliberate or worth knowing about.
+
+No watcher, no inotify, no daemon: the index is only ever wrong between the
+deletion and the next time somebody looks, and looking is what fixes it.
 
 Steady-state writes go through one funnel: **`api.ensureBlob`**, the wrapper both
 callers of `federation.EnsureBlob` now use (the streaming relay and
@@ -638,6 +664,7 @@ Steps 1–4 are the deliverable. Step 5 is scheduled, not promised.
 | 2026-08-06 | **Materialize never needs a live claim.** No-claim → stage with the file's own tags. | Owner call. It goes through the upload/review path regardless, and that path already reads tags from the file. The 404 was protecting nothing — and offline (the case the button exists for) nothing advertises anything, so requiring a claim would fail exactly when it is needed. |
 | 2026-08-06 | **Materialize exists for the OFFLINE case**, not for convenience. | Owner, stating the motivating scenario: a madplayer with no connectivity, adding a cached file to its library. `/madnetwork` browse cannot serve that — it is a view of other people's catalogs. Keep this button and its no-claim path local end to end; do not "simplify" either into something that consults the network. |
 | 2026-08-06 | **The staging filename falls back to the file's own container** (`media.Tags.FileType` → extension). | Found by running the offline case rather than reasoning about it. An adopted cache row has no remembered filename, so every upgrading node's whole cache was unmaterializable. Tested end to end against a node with no peers. |
+| 2026-08-06 | **The index self-heals as it is read**, rather than only at startup and Rescan. | Owner asked what happens when files are deleted by the OS. Measured: the swarm was already correct (seeding reads the directory) but the page counted phantom bytes until a restart. Healing on read costs a bounded stat sweep on the listing and nothing at all on the summary, which already reads the directory. |
 | 2026-08-06 | **Daemon evicts by last use + size ceiling**, both off by default. | Owner call. Fetch-date-only eviction deletes the track you replay weekly at the same rate as junk; the ceiling is what makes disk predictable. |
 | 2026-08-06 | **No pin.** | Owner call. Removal stays manual; the daemon, when it lands, has nothing exempt from it. |
 | 2026-08-06 | **"Used" = local reads only**, throttled to one write per hash per 5 min. | Owner call. Seeding is a service rendered with bytes we hold, not a reason to hold them; a disk kept full purely by other people's traffic is the outcome to avoid. |

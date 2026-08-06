@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,12 +15,12 @@ import (
 // cacheTestHash is a distinct digest per test: cacheTouches is process-global
 // (one cache, several listener handlers), so tests that shared a hash would
 // throttle each other.
+// The digest must be REAL hex: the handlers validate with isSHA256Hex and refuse
+// anything else before doing any work, so a helper emitting 64 'i's would
+// silently exercise the rejection path instead of the behaviour under test
+// (which is how TestCacheAudioForgetsAPhantom first "failed").
 func cacheTestHash(c byte) string {
-	b := make([]byte, 64)
-	for i := range b {
-		b[i] = c
-	}
-	h := string(b)
+	h := fmt.Sprintf("%064x", c)
 	cacheTouches.Lock()
 	delete(cacheTouches.at, h)
 	cacheTouches.Unlock()
