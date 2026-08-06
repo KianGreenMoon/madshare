@@ -107,6 +107,7 @@ const CATEGORY_COLORS = {
   images: 'var(--storage-cat-images)',
   review: 'var(--storage-cat-review)',
   trash: 'var(--storage-cat-trash)',
+  cache: 'var(--storage-cat-cache)',
   video: 'var(--storage-cat-video)',
 };
 const CATEGORY_FALLBACKS = ['var(--storage-cat-alt1)', 'var(--storage-cat-alt2)', 'var(--storage-cat-alt3)'];
@@ -115,8 +116,10 @@ function categoryColor(name, i) {
   return CATEGORY_COLORS[name] || CATEGORY_FALLBACKS[i % CATEGORY_FALLBACKS.length];
 }
 
-// Display labels for categories whose name doesn't title-case nicely.
-const CATEGORY_LABELS = { review: 'On review', trash: 'In trash' };
+// Display labels for categories whose name doesn't title-case nicely. "cache"
+// is named in full because it is the one category that is not our own content —
+// it is what the swarm fetched from other nodes (docs/architecture/madnetwork-cache.md).
+const CATEGORY_LABELS = { review: 'On review', trash: 'In trash', cache: 'Madnetwork cache' };
 
 // Label a category for display: a friendly override, else title-case the name
 // ("audio" -> "Audio").

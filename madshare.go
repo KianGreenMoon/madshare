@@ -145,6 +145,18 @@ func main() {
 		log.Printf("evicted %d cached blob(s) the library already holds", n)
 	}
 
+	// Make the cache index agree with the cache directory
+	// (docs/architecture/madnetwork-cache.md). After the eviction above, which
+	// deletes files: reconciling first would only re-drop those rows a moment
+	// later. The files are authoritative — this adopts blobs the index has never
+	// seen (a cache older than the index, or a process killed between the rename
+	// and the insert) and drops rows whose file is gone.
+	if added, dropped, err := database.ReconcileMadnetworkCache(context.Background(), db, cfg.MadnetworkCacheDir()); err != nil {
+		log.Printf("reconcile madnetwork cache: %v", err)
+	} else if added > 0 || dropped > 0 {
+		log.Printf("madnetwork cache index: adopted %d blob(s), dropped %d stale row(s)", added, dropped)
+	}
+
 	// Catch-all sweep for remote playlist rows whose blob arrived by any path
 	// the write-time hooks miss (docs/ui/madnetwork-page.md §Re-pointing).
 	if n, err := db.RepointRemotePlaylistItems(context.Background()); err != nil {

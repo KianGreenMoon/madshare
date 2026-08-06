@@ -427,6 +427,7 @@ type fakeRepo struct {
 
 	breakdown    database.StorageByteBreakdown
 	breakdownErr error
+	cacheBytes   int64
 
 	deleteFilenames []string
 	deleteFound     bool
@@ -830,6 +831,10 @@ func (f *fakeRepo) BulkHardDeleteRemovedFiles(_ context.Context, fileIDs []int64
 
 func (f *fakeRepo) StorageByteBreakdown(_ context.Context) (database.StorageByteBreakdown, error) {
 	return f.breakdown, f.breakdownErr
+}
+
+func (f *fakeRepo) MadnetworkCacheBytes(_ context.Context) (int64, error) {
+	return f.cacheBytes, nil
 }
 
 func (f *fakeRepo) ListArtists(_ context.Context) ([]*database.ArtistEntry, error) {

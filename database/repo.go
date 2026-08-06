@@ -87,6 +87,12 @@ type Repository interface {
 	// and trash disk-usage categories (see adminStorageStats).
 	StorageByteBreakdown(ctx context.Context) (StorageByteBreakdown, error)
 
+	// MadnetworkCacheBytes is the download cache's footprint — the fifth
+	// disk-usage category. On Repository rather than the madnetwork store on
+	// purpose: the cache outlives federation being switched off, and a node that
+	// turned it off would otherwise stop reporting disk it is still occupying.
+	MadnetworkCacheBytes(ctx context.Context) (int64, error)
+
 	// ListArtists returns one entry per effective artist name, ordered
 	// alphabetically. album_artist is preferred over artist for grouping.
 	ListArtists(ctx context.Context) ([]*ArtistEntry, error)

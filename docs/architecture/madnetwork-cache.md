@@ -245,6 +245,28 @@ the fill against the configured ceiling.
 
 ---
 
+## The dashboard's storage panel
+
+The cache is a **fifth category** on `/admin`'s storage breakdown, beside audio,
+review, trash and images (`GET /api/admin/storage`, `categoryUsage{Name: "cache"}`),
+labelled **Madnetwork cache**.
+
+It is folded into the panel's "Madshare total" like every other category, and it
+has to be: those bytes sit under `data_dir` and occupy the volume exactly as the
+library does. A footprint that omitted them would understate the disk by however
+much the swarm had fetched — which on a busy node is the largest single thing
+missing from the picture. That the content belongs to other people is a fact
+about *what to do* with those bytes, not about whether they are there.
+
+The figure is `SUM(byte_size)` over the index — indexed and instant, not a
+directory walk, the same reasoning that put `byte_size` on `files` rather than
+walking the tree (and the opposite of the images category, whose uncached
+`DirSize` walk is a known scaling complaint).
+
+`MadnetworkCacheBytes` sits on `database.Repository`, not on the madnetwork
+store, deliberately: the cache outlives federation being switched off, and a node
+that turned it off would otherwise stop reporting disk it is still occupying.
+
 ## The page — `/admin/cache`
 
 A routed admin sub-page beside Prune, Data sources and Network: one entry in
@@ -472,10 +494,14 @@ when it happens, and nothing else here.
 
 ## Build plan
 
-1. **Migration 040 + the index** — table, `database/madnetwork_cache.go` (list /
-   count / sum / touch / delete / reconcile), reconciliation wired into
-   `madshare.go` after the eviction sweep. Tests: reconcile adopts an existing
-   cache, drops orphaned rows, is idempotent.
+1. **Migration 040 + the index** — ✅ built. Table, `database/madnetwork_cache.go`
+   (list / count / sum / hashes / touch / put / delete / reconcile),
+   reconciliation wired into `madshare.go` after the eviction sweep, and the
+   dashboard's `cache` storage category. Tests: reconcile adopts an existing
+   cache (reading the file's own tags), skips `.part` and stray names, drops
+   fileless rows, is idempotent; the listing's page/count/select-all set agree
+   under every filter; the use clock is monotonic, scoped to indexed rows, and
+   unmoved by a re-fetch.
 2. **Write path** — the completion insert (tags read from the blob), the two
    local touch points and the throttle. Tests: a completed fetch is indexed with
    its own tags; a seeking browser's Range storm writes one touch; a seed serve

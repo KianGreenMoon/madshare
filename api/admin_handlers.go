@@ -497,16 +497,29 @@ func (h *handler) storageStats(ctx context.Context) (*storageStatsResp, error) {
 	if err != nil {
 		return nil, fmt.Errorf("image dir size %q: %w", h.imagesDir, err)
 	}
+	cacheBytes, err := h.repo.MadnetworkCacheBytes(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("madnetwork cache bytes: %w", err)
+	}
 
 	// audio/review/trash are the same files table partitioned by state (one DB
-	// sum), and images is the separate on-disk cover-variant tree — so the four
-	// categories never double-count. audio = the live (approved, not-deleted)
-	// library; review and trash are its non-approved and soft-deleted rows.
+	// sum), images is the separate on-disk cover-variant tree, and cache is the
+	// madnetwork download cache — so the five categories never double-count.
+	// audio = the live (approved, not-deleted) library; review and trash are its
+	// non-approved and soft-deleted rows.
+	//
+	// The cache is other nodes' content rather than ours, but it is bytes under
+	// data_dir all the same, so it belongs in the "Madshare total" the panel
+	// reports — a footprint that omitted it would understate the disk by however
+	// much the swarm had fetched. Its own page owns the detail
+	// (docs/architecture/madnetwork-cache.md); this is the number that sends an
+	// admin there.
 	cats := []categoryUsage{
 		{Name: "audio", Bytes: nonNegBytes(bd.Library)},
 		{Name: "review", Bytes: nonNegBytes(bd.Review)},
 		{Name: "trash", Bytes: nonNegBytes(bd.Trash)},
 		{Name: "images", Bytes: imageBytes},
+		{Name: "cache", Bytes: nonNegBytes(cacheBytes)},
 	}
 	var libBytes uint64
 	for _, c := range cats {
