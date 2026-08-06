@@ -90,6 +90,11 @@ type SwarmFileRow struct {
 	// it", not "which layer decided".
 	ShareDepth  int   `json:"share_depth"`
 	RecordingID int64 `json:"recording_id,omitempty"`
+	// ObjectKey is the library blob's path under the storage root, which is what
+	// the /files server addresses it by. Empty for a cache-only row, which is
+	// played through the cache page's own audio endpoint instead — that one
+	// outlives federation being switched off, and the relay does not.
+	ObjectKey string `json:"object_key,omitempty"`
 
 	// All-time traffic. Zero for a blob that has never moved, which is most of
 	// them.
@@ -142,7 +147,8 @@ func swarmLibraryArm(f SwarmFilter, defaultDepth int) (string, []any) {
 		       COALESCE(m.review_state, '') AS review_state,
 		       (CASE WHEN f.deleted_at IS NOT NULL OR m.deleted_at IS NOT NULL THEN 1 ELSE 0 END) AS trashed,
 		       COALESCE(r.share_depth, ?) AS share_depth,
-		       f.recording_id AS recording_id
+		       f.recording_id AS recording_id,
+		       f.object_key AS object_key
 		FROM files f` + tagsetJoin + `
 		LEFT JOIN artists par ON par.id = COALESCE(m.album_artist_id, m.artist_id)
 		LEFT JOIN albums al ON al.id = m.album_id
@@ -163,7 +169,8 @@ func swarmCacheArm(f SwarmFilter) (string, []any) {
 		SELECT hash, byte_size, 0 AS in_library, 1 AS in_cache,
 		       title, artist, album, filename,
 		       fetched_at AS added_at,
-		       '' AS review_state, 0 AS trashed, ? AS share_depth, 0 AS recording_id
+		       '' AS review_state, 0 AS trashed, ? AS share_depth, 0 AS recording_id,
+		       '' AS object_key
 		FROM madnetwork_cache` + where
 	// share_depth is meaningless for a cached blob — it is somebody else's
 	// content, seeded under seed_cache and never under a recording's scope. The
@@ -197,7 +204,8 @@ func swarmUnion(f SwarmFilter, defaultDepth int) (string, []any) {
 		// a constant-false query keeps every caller on one code path.
 		return `SELECT '' AS hash, 0 AS byte_size, 0 AS in_library, 0 AS in_cache,
 		        '' AS title, '' AS artist, '' AS album, '' AS filename, 0 AS added_at,
-		        '' AS review_state, 0 AS trashed, 0 AS share_depth, 0 AS recording_id
+		        '' AS review_state, 0 AS trashed, 0 AS share_depth, 0 AS recording_id,
+		        '' AS object_key
 		        WHERE 1=0`, nil
 	}
 	return strings.Join(arms, "\n\t\tUNION ALL\n"), args
@@ -224,7 +232,8 @@ func swarmGrouped(f SwarmFilter, defaultDepth int) (string, []any) {
 		       COALESCE(MAX(CASE WHEN in_library = 1 THEN review_state END), '') AS review_state,
 		       COALESCE(MAX(CASE WHEN in_library = 1 THEN trashed END), 0) AS trashed,
 		       MAX(share_depth) AS share_depth,
-		       COALESCE(MAX(CASE WHEN in_library = 1 THEN recording_id END), 0) AS recording_id
+		       COALESCE(MAX(CASE WHEN in_library = 1 THEN recording_id END), 0) AS recording_id,
+		       COALESCE(MAX(CASE WHEN in_library = 1 THEN object_key END), '') AS object_key
 		FROM (` + union + `)
 		GROUP BY hash`, args
 }
@@ -264,6 +273,7 @@ func (db *DB) ListSwarmFiles(ctx context.Context, q SwarmQuery) ([]*SwarmFileRow
 	sqlText := `
 		SELECT g.hash, g.byte_size, g.in_library, g.in_cache, g.title, g.artist, g.album,
 		       g.filename, g.added_at, g.review_state, g.trashed, g.share_depth, g.recording_id,
+		       g.object_key,
 		       COALESCE(t.up_bytes, 0), COALESCE(t.down_bytes, 0),
 		       COALESCE(t.wasted_bytes, 0), COALESCE(t.last_at, 0)
 		FROM (` + grouped + `) g
@@ -289,7 +299,7 @@ func (db *DB) ListSwarmFiles(ctx context.Context, q SwarmQuery) ([]*SwarmFileRow
 		var inLib, inCache, trashed int
 		if err := rows.Scan(&r.Hash, &r.ByteSize, &inLib, &inCache, &r.Title, &r.Artist,
 			&r.Album, &r.Filename, &r.AddedAt, &r.ReviewState, &trashed, &r.ShareDepth,
-			&r.RecordingID, &r.Up, &r.Down, &r.Wasted, &r.LastAt); err != nil {
+			&r.RecordingID, &r.ObjectKey, &r.Up, &r.Down, &r.Wasted, &r.LastAt); err != nil {
 			return nil, fmt.Errorf("scan swarm file: %w", err)
 		}
 		r.InLibrary, r.InCache, r.Trashed = inLib == 1, inCache == 1, trashed == 1

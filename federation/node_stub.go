@@ -100,6 +100,8 @@ func (n *Node) DrainTraffic() []TrafficDelta { return nil }
 // cap, and the page reports the stored override instead.
 func (n *Node) SwarmRates() (up, down int64) { return 0, 0 }
 
+func (n *Node) RefreshRates() {}
+
 func (n *Node) IssueCapabilityToken(string, bool) (CapabilityGrant, error) {
 	return CapabilityGrant{}, errCompiledOut
 }

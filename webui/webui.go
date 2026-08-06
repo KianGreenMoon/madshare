@@ -99,6 +99,13 @@ var adminSubPages = map[string]*template.Template{
 	// sharing scopes, this is somebody else's content we are holding, and none
 	// of it is editable.
 	"cache": buildPageTmpl("html/admin/cache.html"),
+	// "swarm" is the transfer surface — what this node MOVES over the madnetwork,
+	// in both directions (docs/architecture/swarm-admin.md). A sibling of "cache"
+	// rather than part of it: the two are lenses on one node, one asking what is
+	// on the disk and whether it should stay, the other what is moving and how
+	// fast. It also carries the node's two rate knobs, which live here and
+	// nowhere else.
+	"swarm": buildPageTmpl("html/admin/swarm.html"),
 	// "network" is the madnetwork friendship page (federation F1,
 	// docs/architecture/federation.md): node card export/import, the trusted-peer
 	// list, block/unblock. Gated on federation.manage at the API.

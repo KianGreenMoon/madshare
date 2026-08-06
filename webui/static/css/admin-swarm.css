@@ -1,0 +1,145 @@
+/* admin-swarm.css — /admin/swarm (docs/architecture/swarm-admin.md): what this
+   node moves over the madnetwork, in both directions.
+
+   The list here is bespoke rather than the shared file-list.js table, so the row
+   shape is this file's; everything else is borrowed. Buttons, .modal, .muted,
+   .view-tabs and .icon-btn come from app.css + admin-shell.css, and the ⋯ menu
+   from row-menu's own styles. New here: the progress bar and the row grid, which
+   is the whole reason this page is not a file-list scope. */
+
+.swarm-summary { display: grid; gap: var(--space-2); margin: var(--space-4) 0; }
+
+.swarm-stats {
+  display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap;
+  font-size: 14px;
+}
+.swarm-stat { white-space: nowrap; }
+
+.swarm-limits {
+  display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); padding: var(--space-2) var(--space-3);
+  font-size: 13.5px;
+}
+
+/* Live transfers pin above the list: partials are in no table by design, and
+   they are also the thing an operator is actually watching. */
+.swarm-transfers {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); padding: var(--space-3);
+  margin-bottom: var(--space-4); display: grid; gap: var(--space-2);
+}
+.swarm-transfers-title { margin: 0 0 var(--space-1); font-size: 14px; }
+.swarm-transfer { display: grid; gap: 4px; }
+.swarm-transfer-head {
+  display: flex; gap: var(--space-3); align-items: baseline; flex-wrap: wrap;
+  font-size: 13px;
+}
+.swarm-hash { font-family: var(--font-mono, monospace); font-size: 12px; }
+
+/* Controls */
+.swarm-controls {
+  display: flex; gap: var(--space-3); align-items: center; flex-wrap: wrap;
+  margin-bottom: var(--space-2);
+}
+.swarm-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+.swarm-pill {
+  border: 1px solid var(--border); border-radius: 999px;
+  background: transparent; color: var(--text-muted);
+  padding: 3px 10px; font-size: 12.5px; cursor: pointer;
+}
+.swarm-pill:hover { color: var(--text); }
+.swarm-pill--active { background: var(--surface-2, var(--surface)); color: var(--text); border-color: var(--accent); }
+.swarm-search { display: flex; gap: var(--space-2); margin-left: auto; }
+.swarm-search input[type="search"] { min-width: 16rem; }
+.swarm-count { margin: 0 0 var(--space-2); font-size: 13px; }
+
+/* A row. The grid is: name (flexes) · progress · traffic · chips · menu.
+   It collapses to two lines on a phone rather than truncating the numbers,
+   which are the point of the page. */
+.swarm-row { border-bottom: 1px solid var(--border); }
+.swarm-row-main {
+  display: grid; align-items: center; gap: var(--space-3);
+  grid-template-columns: minmax(10rem, 1fr) 7rem 12rem auto 2rem;
+  padding: var(--space-2) 0;
+}
+.swarm-row--open { background: var(--surface); }
+
+.swarm-row-name {
+  display: grid; gap: 2px; text-align: left;
+  background: none; border: 0; color: inherit; cursor: pointer; padding: 0;
+  min-width: 0;
+}
+.swarm-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swarm-sub { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.swarm-row-traffic { display: flex; gap: var(--space-3); font-size: 13px; white-space: nowrap; }
+.swarm-up { color: var(--text); }
+.swarm-down { color: var(--text-muted); }
+.swarm-size { font-size: 12.5px; }
+
+.swarm-row-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.swarm-chip {
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 1px 8px; font-size: 11.5px; color: var(--text-muted);
+  white-space: nowrap;
+}
+.swarm-chip--cache { border-style: dashed; }
+.swarm-chip--warn { color: var(--warning, #d08a20); border-color: currentColor; }
+.swarm-chip--off { color: var(--text-muted); opacity: .8; }
+.swarm-chip--scope { font-variant: small-caps; }
+
+/* The progress bar. A finished blob is 100% by definition — the swarm verifies
+   the whole-file hash before the file gets its final name — so a full bar is the
+   normal state and only a live one is accented. */
+.swarm-bar {
+  height: 6px; border-radius: 3px; overflow: hidden;
+  background: var(--border);
+}
+.swarm-bar-fill { display: block; height: 100%; background: var(--text-muted); }
+.swarm-bar--live .swarm-bar-fill { background: var(--accent); }
+
+/* The info panel. Opened per row, so it must not shout. */
+.swarm-detail {
+  padding: var(--space-3) 0 var(--space-4);
+  display: grid; gap: var(--space-3); font-size: 13px;
+}
+.swarm-detail-cols {
+  display: grid; gap: var(--space-4);
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+}
+.swarm-facts { display: grid; grid-template-columns: auto 1fr; gap: 2px var(--space-3); margin: 0; }
+.swarm-facts dt { color: var(--text-muted); }
+.swarm-facts dd { margin: 0; overflow-wrap: anywhere; }
+.swarm-why { margin: 0; }
+.swarm-live h4, .swarm-holders h4 { margin: 0 0 4px; font-size: 13px; }
+.swarm-provider, .swarm-holder { font-size: 12.5px; }
+
+/* Limits modal */
+.swarm-field { display: grid; gap: 4px; margin: var(--space-3) 0; max-width: 18rem; }
+.swarm-field span { font-size: 13px; }
+.swarm-warn {
+  border-left: 3px solid var(--warning, #d08a20);
+  padding-left: var(--space-3); font-size: 13px;
+}
+.swarm-help { font-size: 13px; margin-top: var(--space-3); }
+.swarm-help summary { cursor: pointer; color: var(--text-muted); }
+.swarm-help p { margin: var(--space-2) 0; }
+
+@media (max-width: 720px) {
+  .swarm-row-main {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "name menu"
+      "bar bar"
+      "traffic chips";
+    gap: 6px;
+  }
+  .swarm-row-name { grid-area: name; }
+  .swarm-menu-btn { grid-area: menu; }
+  .swarm-row-bar { grid-area: bar; }
+  .swarm-row-traffic { grid-area: traffic; }
+  .swarm-row-chips { grid-area: chips; justify-content: flex-end; }
+  .swarm-search { margin-left: 0; width: 100%; }
+  .swarm-search input[type="search"] { min-width: 0; flex: 1; }
+}

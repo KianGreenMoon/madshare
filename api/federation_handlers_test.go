@@ -39,11 +39,12 @@ type fakeFederation struct {
 	// moved, and the deltas the next drain hands the flusher. drained records how
 	// often DrainTraffic was called, since "drains once, adds once" is the flush
 	// contract worth pinning.
-	traffic  federation.TrafficSnapshot
-	pending  []federation.TrafficDelta
-	drained  int
-	upRate   int64 // the caps SwarmRates reports, in bytes/sec
-	downRate int64
+	traffic       federation.TrafficSnapshot
+	pending       []federation.TrafficDelta
+	drained       int
+	upRate        int64 // the caps SwarmRates reports, in bytes/sec
+	downRate      int64
+	rateRefreshes int // how often a write asked the node to re-read them
 	// What the last capability-token issuance was asked for (F7 item 9): the
 	// bearer key, and the guest bit the caller's account earned.
 	tokenBearer    string
@@ -81,6 +82,8 @@ func (f *fakeFederation) ActiveTransfers() []federation.TransferStats { return f
 func (f *fakeFederation) Traffic() federation.TrafficSnapshot { return f.traffic }
 
 func (f *fakeFederation) SwarmRates() (up, down int64) { return f.upRate, f.downRate }
+
+func (f *fakeFederation) RefreshRates() { f.rateRefreshes++ }
 
 // DrainTraffic hands over the pending deltas and clears them, exactly as the
 // real one does — a second drain must come back empty, or a retrying flusher

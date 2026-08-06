@@ -65,8 +65,8 @@ rate knobs live here and not also on `/admin/settings`. Concretely:
 
 What moves *to* here is the thing the cache doc explicitly parked: **holders and
 who-has-what**, in both directions (`madnetwork-cache.md` §Decisions, "No holder
-count, no 'who has it'"). That decision row should be updated to point here once
-this ships.
+count, no 'who has it'"). It lives in this page's per-row info panel, computed
+live from the cached catalogs — a fact about now, not a recorded one.
 
 ---
 
@@ -631,22 +631,26 @@ No new permission.
 
 ## Build plan
 
-1. **Accounting** — `swarm_traffic` (mig 041) + the store methods; the Node's
+1. **Accounting** — ✅ built. `swarm_traffic` (mig 041) + the store methods; the Node's
    traffic table with `Traffic`/`DrainTraffic`; metered writer in `handleBlob`
    and metered reader in both fetch paths; the api flusher (ticker + shutdown).
    Tests: served bytes land against the right hash and peer; wire bytes count a
    chunk that later fails verification, and it also lands in `wasted`; a drain
    returns each byte exactly once and never zeroes the session view; a crash
-   between drain and commit loses at most the drained window.
-2. **Limits** — `setRate`; the node up/down limiters with their policy memo;
+   between drain and commit loses at most the drained window. Also verified end
+   to end over a real two-node mesh rather than through the wrappers alone: both
+   nodes account the same transfer and each identifies the other by public key.
+2. **Limits** — ✅ built. `setRate`; the node up/down limiters with their policy memo;
    the inbound limiter in both fetch paths (new machinery — nothing throttled
    downloads before); the `readStall` discount; `fetch_rate_kib` and the two
    settings keys. Tests: resolution (override → config → unlimited) including
    `0` overriding a configured cap; a throttled fetch records **no stall**;
    friends bypass the quotas but not the node limit; adjusting a rate
    mid-transfer neither resets the bucket nor bursts; the inbound cap actually
-   binds the *sum* of the parallel chunk workers, not each of them.
-3. **API** — the listing (union, grouped by hash, scoped and paged), summary,
+   binds the *sum* of the parallel chunk workers, not each of them. The watchdog
+   test failed on the first implementation and produced the bracketing rule now
+   in §Two hazards.
+3. **API** — ✅ built. the listing (union, grouped by hash, scoped and paged), summary,
    live, detail, the limits GET/POST, forget stats. Tests: the envelope and
    `selectable_total` agree with the page under every scope and filter; a hash
    in both library and cache yields **one** row with both flags; an absent rate
@@ -654,17 +658,25 @@ No new permission.
    guardrail; federation-off answers without a node; **posting limits leaves
    every seeding setting untouched** (the regression this endpoint split exists
    to prevent).
-4. **Page** — the module, switcher, rows with progress bars, pinned partials,
-   the ⋯ menu, the info panel with the piece map, the limits modal, the live
-   poll, the dashboard card and nav link. Verified live against a running
-   server, and against a second node over the mesh for the numbers that need
-   two ends: uploaded bytes, holders, per-provider detail.
+4. **Page** — ✅ built. The module, switcher, state pills, rows with progress
+   bars, pinned transfers, the ⋯ menu, the info panel, the limits modal with its
+   floor warning, the live poll, the dashboard card and nav link.
+
+   Verified in a real browser against a running server holding 60 library files
+   and 130 cached blobs — not by reasoning about the markup. That is what caught
+   the three defects below, none of which any unit test was going to find:
+
+   | Found by running it | Why it mattered |
+   |---|---|
+   | `since` serialized as `-62135596800` with federation off | the zero `time.Time`; the strip would have dated the session to the year 1. Now omitted rather than stamped. |
+   | The summary reported the config cap while a stored override said otherwise | `SwarmRates` read whatever the last *blob request* had left behind, and nothing but a transfer ever resolved. So the page lied — and worse, a cap set here would not have applied until the next transfer. `SwarmRates` now resolves before answering, and a write calls `RefreshRates` to take effect at once. |
+   | Untagged cache rows printed their hash twice, and a filtered empty list claimed "no files in the library yet" while sixty sat behind the filter | both only visible on a real cache, where most rows carry no tags at all. |
 5. **Later, not now** — persisted per-peer totals ("what has this member cost us
    all time", the natural companion to the F7 quotas). The live per-peer view in
    step 4 answers the common question; the table can wait until someone wants
    the history.
 
-Steps 1–4 are the deliverable.
+Steps 1–4 are the deliverable, and are done.
 
 ---
 

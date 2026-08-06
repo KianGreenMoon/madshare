@@ -211,6 +211,9 @@ type FederationNode interface {
 	// resolved through override → config. The node is asked rather than the
 	// database because it is the thing actually holding the buckets.
 	SwarmRates() (up, down int64)
+	// RefreshRates re-reads the rate overrides past the node's memo, so a cap an
+	// admin just wrote is in force at once rather than at the next resolution.
+	RefreshRates()
 	// EvictCachedBlob drops the download-cache copy of a hash the library now
 	// holds. Two copies of one blob are served under two different rules — only
 	// the library's applies the recording's sharing scope — so the duplicate is

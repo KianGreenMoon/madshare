@@ -114,6 +114,18 @@
         <span class="dash-card-desc">What the swarm fetched from other nodes &mdash; review it, free the disk.</span>
       </a>
 
+      <!-- The transfer view over the same node, the cache card's sibling: that
+           one asks what is on the disk, this one what is moving and how fast.
+           The count is what this node has contributed, which is the figure
+           anyone with a peer-to-peer node wants (swarm-admin.md). -->
+      <a class="dash-card" href="/admin/swarm">
+        <span class="dash-card-head">
+          <span class="dash-card-title">Swarm</span>
+          <span class="dash-card-count" id="countSwarmUp" hidden></span>
+        </span>
+        <span class="dash-card-desc">Traffic per file, in and out &mdash; and this node&rsquo;s rate limits.</span>
+      </a>
+
       <a class="dash-card" href="/admin/library#trash">
         <span class="dash-card-head">
           <span class="dash-card-title">Trash</span>

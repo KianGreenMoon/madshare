@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Madshare &mdash; Admin &middot; Swarm</title>
+  <meta name="api-url" content="{{.APIURL}}">
+  {{template "theme-guard" .}}
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/admin-shell.css">
+  <link rel="stylesheet" href="/static/css/file-view.css">
+  <link rel="stylesheet" href="/static/css/admin-swarm.css">
+  <link rel="stylesheet" href="/static/css/player.css">
+</head>
+<body>
+
+{{template "header" .}}
+{{template "admin-shell" .}}
+
+<main class="admin-main">
+  <section aria-labelledby="swarmHeading">
+    <h2 class="section-title" id="swarmHeading">Swarm</h2>
+    <p class="muted">
+      What this node moves over the madnetwork, in both directions &mdash; every
+      blob it has bytes for, whether that blob is part of your library or was
+      fetched from somebody else. This is the <strong>transfer</strong> view;
+      what is on the disk and whether it should stay is
+      <a href="/admin/cache">Cache</a>, and your own content is curated on
+      <a href="/admin/library">Library</a>.
+    </p>
+
+    <div class="swarm-summary" id="swarmSummary" aria-live="polite">
+      <p class="muted">Loading&hellip;</p>
+    </div>
+
+    <div class="swarm-transfers" id="swarmTransfers" hidden></div>
+
+    <div class="swarm-controls">
+      <div class="view-tabs" id="swarmScope" role="tablist" aria-label="Which files"></div>
+      <div class="swarm-pills" id="swarmPills"></div>
+      <div class="swarm-search">
+        <input type="search" id="swarmQ" placeholder="Search title, artist, album, filename or hash&hellip;" aria-label="Search">
+        <select id="swarmSort" aria-label="Sort">
+          <option value="newest">Newest</option>
+          <option value="oldest">Oldest</option>
+          <option value="name">Name</option>
+          <option value="largest">Largest</option>
+          <option value="smallest">Smallest</option>
+          <option value="up">Most uploaded</option>
+          <option value="down">Most downloaded</option>
+          <option value="active">Last active</option>
+        </select>
+      </div>
+    </div>
+
+    <p class="muted swarm-count" id="swarmCount"></p>
+    <div id="swarmList"></div>
+  </section>
+</main>
+
+{{/* The rate knobs live here and ONLY here (docs/architecture/swarm-admin.md):
+     the page that shows you the traffic is the page where you throttle it. */}}
+<div class="modal-backdrop hidden" id="limitsModal" role="dialog" aria-modal="true" aria-labelledby="limitsTitle">
+  <div class="modal modal--wide">
+    <div class="modal-head">
+      <h2 id="limitsTitle">Rate limits</h2>
+    </div>
+    <div class="modal-body">
+      <p class="muted">
+        These cap what this node's swarm traffic costs your line. They apply to
+        <strong>everyone, friends included</strong> &mdash; they describe your
+        pipe, not who deserves what. Leave a field empty to use the value from
+        <code>madshare.toml</code>; enter <strong>0</strong> for unlimited.
+      </p>
+
+      <label class="swarm-field">
+        <span>Upload (seeding) &mdash; KiB/s</span>
+        <input type="number" id="limitUp" min="0" step="1" placeholder="from config">
+      </label>
+      <label class="swarm-field">
+        <span>Download (fetching) &mdash; KiB/s</span>
+        <input type="number" id="limitDown" min="0" step="1" placeholder="from config">
+      </label>
+
+      <p class="swarm-warn hidden" id="limitWarn"></p>
+
+      <details class="swarm-help">
+        <summary>How big should these be?</summary>
+        <p>
+          Size them against your <strong>uplink</strong>, not the download speed
+          your ISP quotes: <code>KiB/s &asymp; Mbit/s &times; 128</code>. Leaving
+          about a quarter of the uplink free is a good starting point &mdash; so
+          a 20&nbsp;Mbit uplink (&asymp;2560&nbsp;KiB/s) suggests roughly
+          <strong>1900</strong>.
+        </p>
+        <p>
+          <strong>Do not set them small.</strong> One listener streaming CD-rate
+          FLAC needs ~125&nbsp;KiB/s continuously, and every concurrent transfer
+          shares the same bucket. Below that, this node does not merely get
+          slower: fetching peers time it out, the swarm de-ranks it and goes
+          elsewhere, and the bytes you already sent are wasted. If your line
+          cannot spare ~256&nbsp;KiB/s, switching seeding off on
+          <a href="/admin/settings">Settings</a> is the honest setting rather
+          than a starvation rate.
+        </p>
+        <p>
+          The download cap also slows anything you are <em>listening to</em> from
+          the network, since the player reads from the same transfer.
+        </p>
+      </details>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-neutral" id="limitsCancel" type="button">Cancel</button>
+      <button class="btn btn-primary" id="limitsSave" type="button">Save</button>
+    </div>
+  </div>
+</div>
+
+{{/* Destructive actions are modal, never an inline two-step. */}}
+<div class="modal-backdrop hidden" id="confirmModal" role="dialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmBody">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="confirmTitle"></h2>
+    </div>
+    <p class="modal-body" id="confirmBody"></p>
+    <div class="modal-actions">
+      <button class="btn btn-neutral" id="confirmCancel" type="button">Cancel</button>
+      <button class="btn btn-destructive" id="confirmOK" type="button">Confirm</button>
+    </div>
+  </div>
+</div>
+
+{{template "player-bar" .}}
+{{template "auth-modals" .}}
+
+<script type="module" src="/static/js/admin/swarm.js"></script>
+</body>
+</html>

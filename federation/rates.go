@@ -137,6 +137,25 @@ func (n *Node) downLimiter(ctx context.Context) *rateLimiter {
 // SwarmRates reports the caps in force, in bytes/sec (0 = unlimited), for the
 // admin surface — what the node is ACTUALLY limiting to right now, resolved
 // through override → config, rather than what any one layer says.
+//
+// It resolves before answering rather than reading whatever the last blob
+// request happened to leave behind. Without that the admin page reported the
+// config value while a stored override said something else — and, worse, the
+// override only took effect at the next transfer, because nothing else on this
+// node ever asks. Memoized like every other resolution, so a page that polls
+// costs one query every few seconds.
 func (n *Node) SwarmRates() (up, down int64) {
+	n.refreshRates(context.Background())
 	return n.upRate.bytesPerSec(), n.downRate.bytesPerSec()
+}
+
+// RefreshRates re-reads the overrides NOW, past the memo. The admin surface
+// calls it after writing a cap so the new value is in force immediately rather
+// than up to rateMemoTTL later — a rate limit that takes effect "soon" is not
+// what someone watching a saturated link is asking for.
+func (n *Node) RefreshRates() {
+	n.rateMu.Lock()
+	n.ratesAt = time.Time{}
+	n.rateMu.Unlock()
+	n.refreshRates(context.Background())
 }

@@ -85,6 +85,25 @@ async function fillUpgrades() {
   } catch { /* network error — leave the badge hidden */ }
 }
 
+// The Swarm card's badge is what this node has SERVED, all time — the figure
+// that makes anyone with a peer-to-peer node open the page. Hidden at zero: a
+// node that has not seeded anything yet is not news, and a badge reading "0 B"
+// would be noise on every fresh install.
+async function fillSwarmTraffic() {
+  try {
+    const res = await fetch(`${API}/api/admin/swarm/summary`);
+    if (!res.ok) return; // lacks file.delete — stay hidden
+    const data = await res.json();
+    const up = data.all_time?.up_bytes || 0;
+    const badge = document.getElementById('countSwarmUp');
+    if (badge && up > 0) {
+      badge.textContent = `▲ ${fmtBytes(up)}`;
+      badge.title = 'Served to the madnetwork, all time';
+      badge.hidden = false;
+    }
+  } catch { /* network error — leave the badge hidden */ }
+}
+
 // Show a "scanning" badge on the Data sources card while any symlink source is
 // mid-scan (the same shared state the /admin/sources page polls).
 async function fillSourcesStatus() {
@@ -264,6 +283,7 @@ async function fillStorage() {
   fillPeerRequests();
   fillClaimReports();
   fillUpgrades();
+  fillSwarmTraffic();
   fillCount('countFiles', '/api/files?limit=0');
   fillCount('countModeration', '/api/admin/moderation?limit=0');
   fillCount('countTrash', '/api/admin/trash?limit=0');

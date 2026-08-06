@@ -293,6 +293,23 @@ func TestSwarmLimits_ThreeValued(t *testing.T) {
 	}
 }
 
+// Writing a cap must put it in force at once, not whenever the node next happens
+// to resolve one. Found by running it: with federation on, the page reported the
+// config value while a stored override said something else, because nothing but
+// a blob request ever asked — so the new limit would not have applied until the
+// next transfer either.
+func TestSwarmLimits_WriteTakesEffectImmediately(t *testing.T) {
+	fed := &fakeFederation{}
+	srv, _ := newSwarmTestServer(t, fed)
+
+	if code, _ := swarmPOST(t, srv.URL+"/api/admin/swarm/limits", `{"up_kib":1900}`); code != 200 {
+		t.Fatal("set failed")
+	}
+	if fed.rateRefreshes != 1 {
+		t.Errorf("the node was asked to re-read its rates %d times, want 1", fed.rateRefreshes)
+	}
+}
+
 // The regression this endpoint split exists to prevent: posting rates must not
 // touch the seeding policy, whose handler decodes its switches as plain bools
 // with hard-coded defaults.

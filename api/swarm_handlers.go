@@ -136,6 +136,9 @@ func swarmRowJSON(row *database.SwarmFileRow, session federation.TrafficSnapshot
 	if row.RecordingID > 0 {
 		out["recording_id"] = row.RecordingID
 	}
+	if row.ObjectKey != "" {
+		out["object_key"] = row.ObjectKey
+	}
 	// The session's half is added rather than folded in: the stored counters lag
 	// by at most one flush, and the page must not appear to stall while a
 	// transfer is visibly running.
@@ -204,10 +207,7 @@ func (h *handler) adminSwarmSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	session := h.sessionTraffic()
-	resp["session"] = map[string]any{
-		"up_bytes": session.Up, "down_bytes": session.Down, "wasted_bytes": session.Wasted,
-		"since": session.Since.Unix(),
-	}
+	resp["session"] = swarmSessionJSON(session)
 	resp["peers"] = swarmPeersJSON(session)
 
 	active := []map[string]any{}
@@ -229,6 +229,19 @@ func (h *handler) adminSwarmSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// swarmSessionJSON renders the session counters. `since` is omitted rather than
+// stamped when there is no node: a zero time.Time serializes to the year 1, and
+// a page showing "since 01/01/0001" is worse than one showing nothing.
+func swarmSessionJSON(s federation.TrafficSnapshot) map[string]any {
+	out := map[string]any{
+		"up_bytes": s.Up, "down_bytes": s.Down, "wasted_bytes": s.Wasted,
+	}
+	if !s.Since.IsZero() {
+		out["since"] = s.Since.Unix()
+	}
+	return out
 }
 
 // swarmPeersJSON renders the counterparties, most active first.
@@ -271,13 +284,11 @@ func (h *handler) adminSwarmLive(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok": true,
-		"session": map[string]any{
-			"up_bytes": session.Up, "down_bytes": session.Down,
-			"wasted_bytes": session.Wasted, "since": session.Since.Unix()},
-		"active": active,
-		"peers":  swarmPeersJSON(session),
-		"rows":   rows,
+		"ok":      true,
+		"session": swarmSessionJSON(session),
+		"active":  active,
+		"peers":   swarmPeersJSON(session),
+		"rows":    rows,
 	})
 }
 
@@ -420,6 +431,11 @@ func (h *handler) adminSwarmLimitsSet(w http.ResponseWriter, r *http.Request) {
 		log.Printf("set swarm rates: %v", err)
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
+	}
+	// Put it in force now rather than whenever the node next resolves: someone
+	// setting a cap is usually watching a link that is saturated right now.
+	if h.federation != nil {
+		h.federation.RefreshRates()
 	}
 	h.audit(r.Context(), "swarm.limits", "", swarmRateAudit("up", up)+" "+swarmRateAudit("down", down))
 
