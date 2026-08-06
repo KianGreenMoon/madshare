@@ -49,18 +49,27 @@
   padding: 3px 10px; font-size: 12.5px; cursor: pointer;
 }
 .swarm-pill:hover { color: var(--text); }
-.swarm-pill--active { background: var(--surface-2, var(--surface)); color: var(--text); border-color: var(--accent); }
-.swarm-search { display: flex; gap: var(--space-2); margin-left: auto; }
-.swarm-search input[type="search"] { min-width: 16rem; }
+.swarm-pill--active { background: var(--surface-hover); color: var(--text); border-color: var(--accent); }
+/* The box and the dropdown are .admin-search / .admin-select (admin-shell.css) —
+   the shared list controls; only their width is this page's business. */
+.swarm-search { display: flex; gap: var(--space-2); margin-left: auto; align-items: center; }
+.swarm-search .admin-search { min-width: 16rem; }
 .swarm-count { margin: 0 0 var(--space-2); font-size: 13px; }
 
 /* A row. The grid is: name (flexes) · progress · traffic · chips · menu.
    It collapses to two lines on a phone rather than truncating the numbers,
-   which are the point of the page. */
+   which are the point of the page.
+
+   Every track but the name is a FIXED width, including the chips: each row is
+   its own grid, so an `auto` chips column is sized by that row's own chips —
+   which made the bars and the byte counts sit at a different x on every row,
+   depending on how many chips it happened to carry. A list whose columns do not
+   line up reads as broken. 19rem is the widest real set (library · in review ·
+   scope · not shared); a wider one wraps rather than shoving the row about. */
 .swarm-row { border-bottom: 1px solid var(--border); }
 .swarm-row-main {
   display: grid; align-items: center; gap: var(--space-3);
-  grid-template-columns: minmax(10rem, 1fr) 7rem 12rem auto 2rem;
+  grid-template-columns: minmax(6rem, 1fr) 7rem 12rem 19rem 2rem;
   padding: var(--space-2) 0;
 }
 .swarm-row--open { background: var(--surface); }
@@ -78,14 +87,14 @@
 .swarm-down { color: var(--text-muted); }
 .swarm-size { font-size: 12.5px; }
 
-.swarm-row-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.swarm-row-chips { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
 .swarm-chip {
   border: 1px solid var(--border); border-radius: 999px;
   padding: 1px 8px; font-size: 11.5px; color: var(--text-muted);
   white-space: nowrap;
 }
 .swarm-chip--cache { border-style: dashed; }
-.swarm-chip--warn { color: var(--warning, #d08a20); border-color: currentColor; }
+.swarm-chip--warn { color: var(--warning); border-color: currentColor; }
 .swarm-chip--off { color: var(--text-muted); opacity: .8; }
 .swarm-chip--scope { font-variant: small-caps; }
 
@@ -119,7 +128,7 @@
 .swarm-field { display: grid; gap: 4px; margin: var(--space-3) 0; max-width: 18rem; }
 .swarm-field span { font-size: 13px; }
 .swarm-warn {
-  border-left: 3px solid var(--warning, #d08a20);
+  border-left: 3px solid var(--warning);
   padding-left: var(--space-3); font-size: 13px;
 }
 .swarm-help { font-size: 13px; margin-top: var(--space-3); }
@@ -140,6 +149,10 @@
   .swarm-row-bar { grid-area: bar; }
   .swarm-row-traffic { grid-area: traffic; }
   .swarm-row-chips { grid-area: chips; justify-content: flex-end; }
-  .swarm-search { margin-left: 0; width: 100%; }
-  .swarm-search input[type="search"] { min-width: 0; flex: 1; }
+  /* A text input's preferred width (its `size`) is a min-content contribution,
+     which min-width: 0 does not erase: box + dropdown together held the page at
+     401px and scrolled a 390px phone sideways. A flex basis it grows FROM does,
+     and the dropdown drops to its own line on anything narrower still. */
+  .swarm-search { margin-left: 0; width: 100%; flex-wrap: wrap; }
+  .swarm-search .admin-search { min-width: 0; width: 8rem; flex: 1 1 8rem; }
 }

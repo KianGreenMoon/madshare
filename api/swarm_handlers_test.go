@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -423,5 +424,34 @@ func TestSwarmLive_AnswersOnlyTheHashesAsked(t *testing.T) {
 	}
 	if idle["session"].(map[string]any)["up_bytes"].(float64) != 5 {
 		t.Error("an idle poll should still carry the session totals")
+	}
+}
+
+// A session that never started has no start. Found by running the page with
+// federation off: `since` serialized as -62135596800 — the zero time.Time — and
+// the strip dated the session to the year 1. The field is omitted instead, which
+// is a different claim from "zero bytes since the epoch".
+func TestSwarmSummary_OmitsASessionThatNeverStarted(t *testing.T) {
+	srv, _ := newSwarmTestServer(t, nil)
+
+	body := swarmGET(t, srv.URL+"/api/admin/swarm/summary")
+	session := body["session"].(map[string]any)
+	if v, ok := session["since"]; ok {
+		t.Errorf("since = %v with no node running, want the field omitted", v)
+	}
+	// The live poll shares the renderer, so it must not stamp one either.
+	live := swarmGET(t, srv.URL+"/api/admin/swarm/live")
+	if v, ok := live["session"].(map[string]any)["since"]; ok {
+		t.Errorf("live poll since = %v, want omitted", v)
+	}
+
+	// With a node, it is a real timestamp — the strip says "this session" and has
+	// to be able to say since when.
+	started := time.Now().Add(-90 * time.Minute).Truncate(time.Second)
+	withNode, _ := newSwarmTestServer(t, &fakeFederation{
+		traffic: federation.TrafficSnapshot{Since: started}})
+	got := swarmGET(t, withNode.URL+"/api/admin/swarm/summary")["session"].(map[string]any)["since"]
+	if got == nil || int64(got.(float64)) != started.Unix() {
+		t.Errorf("since = %v, want %d", got, started.Unix())
 	}
 }

@@ -278,3 +278,106 @@ func TestSwarmListing_GetOneAndHashResolution(t *testing.T) {
 		t.Errorf("SwarmFileHashes = %v, %v", hashes, err)
 	}
 }
+
+// The sort dropdown. Every order is a whitelist token — an unrecognised one has
+// to fall back to the default rather than reach the ORDER BY — and every order
+// ends in hash, so a page boundary landing inside a tie cannot list a blob twice
+// or skip it while the operator is paging.
+func TestSwarmListing_SortOrders(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	// Cache rows, because fetched_at is the one added_at this test can set: the
+	// library half's created_at is whatever the clock said during the insert, and
+	// three rows written in the same second cannot be ordered by date at all.
+	seedSwarmCacheAt(t, db, "aa11", "Cee", 300, 1000)
+	seedSwarmCacheAt(t, db, "bb22", "Aay", 100, 3000)
+	seedSwarmCacheAt(t, db, "cc33", "Bee", 200, 2000)
+	if err := db.AddSwarmTraffic(ctx, []SwarmTrafficDelta{
+		{Hash: "aa11", Up: 5, Down: 90},
+		{Hash: "cc33", Up: 50, Down: 7},
+	}, 4000); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		sort string
+		want []string
+	}{
+		{"", []string{"bb22", "cc33", "aa11"}}, // default: newest first
+		{"newest", []string{"bb22", "cc33", "aa11"}},
+		{"oldest", []string{"aa11", "cc33", "bb22"}},
+		{"name", []string{"bb22", "cc33", "aa11"}}, // Aay · Bee · Cee
+		{"largest", []string{"aa11", "cc33", "bb22"}},
+		{"smallest", []string{"bb22", "cc33", "aa11"}},
+		{"up", []string{"cc33", "aa11", "bb22"}},   // 50 · 5 · none
+		{"down", []string{"aa11", "cc33", "bb22"}}, // 90 · 7 · none
+		// A stale link, a typo, a client that invents a token: none of them may
+		// change the order under the operator. Unknown means the default.
+		{"sideways", []string{"bb22", "cc33", "aa11"}},
+	} {
+		t.Run("sort="+tc.sort, func(t *testing.T) {
+			rows, err := db.ListSwarmFiles(ctx, SwarmQuery{
+				SwarmFilter: SwarmFilter{Scope: SwarmScopeAll}, Sort: tc.sort})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, r := range rows {
+				got = append(got, r.Hash)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("sort %q = %v, want %v", tc.sort, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// Ties break on hash, ascending, in every order — which is what makes paging
+// stable when a whole page shares one size or one second.
+func TestSwarmListing_TiesBreakOnHashSoPagingIsStable(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	for _, h := range []string{"cc33", "aa11", "bb22"} {
+		seedSwarmCacheAt(t, db, h, "Same", 100, 1000)
+	}
+
+	for _, sort := range []string{"newest", "oldest", "largest", "smallest", "name", "up", "down", "active"} {
+		var seen []string
+		for offset := 0; offset < 3; offset++ {
+			rows, err := db.ListSwarmFiles(ctx, SwarmQuery{
+				SwarmFilter: SwarmFilter{Scope: SwarmScopeAll}, Sort: sort, Limit: 1, Offset: offset})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 1 {
+				t.Fatalf("sort %q offset %d = %d rows, want 1", sort, offset, len(rows))
+			}
+			seen = append(seen, rows[0].Hash)
+		}
+		want := []string{"aa11", "bb22", "cc33"}
+		for i := range want {
+			if seen[i] != want[i] {
+				t.Errorf("sort %q paged one at a time = %v, want %v — a page boundary inside a tie repeats or drops rows", sort, seen, want)
+				break
+			}
+		}
+	}
+}
+
+// seedSwarmCacheAt is seedSwarmCacheEntry with the fetch time (the row's
+// added_at) and size under the test's control.
+func seedSwarmCacheAt(t *testing.T, db *DB, hash, title string, size, fetchedAt int64) {
+	t.Helper()
+	err := db.PutMadnetworkCacheEntry(context.Background(), &MadnetworkCacheEntry{
+		Hash: hash, ByteSize: size, Filename: title + ".flac", Title: title,
+		FetchedAt: fetchedAt, LastUsedAt: fetchedAt,
+	})
+	if err != nil {
+		t.Fatalf("PutMadnetworkCacheEntry(%s): %v", title, err)
+	}
+}

@@ -671,6 +671,24 @@ No new permission.
    | `since` serialized as `-62135596800` with federation off | the zero `time.Time`; the strip would have dated the session to the year 1. Now omitted rather than stamped. |
    | The summary reported the config cap while a stored override said otherwise | `SwarmRates` read whatever the last *blob request* had left behind, and nothing but a transfer ever resolved. So the page lied — and worse, a cap set here would not have applied until the next transfer. `SwarmRates` now resolves before answering, and a write calls `RefreshRates` to take effect at once. |
    | Untagged cache rows printed their hash twice, and a filtered empty list claimed "no files in the library yet" while sixty sat behind the filter | both only visible on a real cache, where most rows carry no tags at all. |
+
+   Tests: the page's judgement calls — the text decisions no Go test reaches —
+   are `tests/js/swarm-page.test.mjs`, which lifts each function's shipped source
+   out of `swarm.js` (it cannot be imported: page DOM at module scope) and pins
+   the two defects above plus the reason-not-seeding order (row facts before
+   node switches), the query builder's absent-vs-empty `q`, and `0 KiB/s`
+   reading as *unlimited* rather than as a throttled node. Server-side, the
+   omitted `since` and the sort whitelist — every order, its tie-break on hash,
+   and an unknown token falling back to the default — are in
+   `api/swarm_handlers_test.go` and `database/swarm_list_test.go`.
+
+   A second pass with the page in front of us found two more, both style:
+   the search box and the sort dropdown were **unstyled native controls** (a
+   white select on a dark page), and every row's grid sized its own chips
+   column, so the bars and byte counts sat at a different x on each row. Fixed by
+   the shared `.admin-search` / `.admin-select` in `admin-shell.css` (see
+   `docs/ui/shells.md` §Admin shell) and a fixed 19rem chips track. Unclassed
+   prose links were UA blue on every admin page, and are now styled with them.
 5. **Later, not now** — persisted per-peer totals ("what has this member cost us
    all time", the natural companion to the F7 quotas). The live per-peer view in
    step 4 answers the common question; the table can wait until someone wants

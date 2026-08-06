@@ -145,6 +145,39 @@
 }
 .grant-input[hidden] { display: none; }
 
+/* List controls: the search box above an admin list and the sort dropdown beside
+   it. Native widgets are the one thing on these pages that ignores the theme
+   entirely — an unstyled <select> stays light on a dark page — so any list that
+   grows a filter row uses these rather than shipping the fourth private copy of
+   the same box (file-view.css styles `.files-search input`, admin-recordings.css
+   `.rec-search`; both predate this and stay where they are). */
+.admin-search,
+.admin-select {
+  /* An explicit height rather than padding alone: a text input and a select size
+     their content boxes differently, and side by side a 4px difference reads as
+     a mistake. */
+  height: 36px;
+  padding: 0 var(--space-3);
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: inherit;
+  font-size: 14px;
+}
+.admin-search::placeholder { color: var(--text-muted); }
+.admin-select { cursor: pointer; }
+.admin-search:focus-visible,
+.admin-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Prose links — the "what lives where" sentences under a page heading. Nothing
+   styled `a` at all, so they fell through to the UA's #0000EE (and #551A8B once
+   visited), which is in none of the four themes. Unclassed anchors only:
+   everything that is a component — buttons, nav, rows — carries a class and
+   keeps its own look. Same idiom as .panel-empty a in app.css. */
+.admin-main a:not([class]) { color: var(--accent); text-decoration: none; }
+.admin-main a:not([class]):hover { text-decoration: underline; }
+
 .groups-list,
 .users-list {
   display: grid;

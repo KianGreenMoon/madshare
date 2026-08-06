@@ -210,7 +210,10 @@ async function loadSummary() {
       : 'seeding: off — this node consumes without serving');
   const peers = (s.peers || []).filter(p => p.up_bytes > 0);
   rows.push(el('div', { class: 'swarm-stats muted' }, [
-    el('span', { class: 'swarm-stat' }, [seedText]),
+    // Not a .swarm-stat: that class holds figures together with nowrap, and this
+    // is a sentence. Wearing it, it set a 418px floor under the whole page and
+    // pushed a phone into sideways scrolling.
+    el('span', {}, [seedText]),
     ...(peers.length ? [el('span', { class: 'swarm-stat' },
       [`${peers.length} node${peers.length === 1 ? '' : 's'} pulled from us this session`])] : []),
   ]));

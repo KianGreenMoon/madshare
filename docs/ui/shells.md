@@ -138,11 +138,21 @@ Upload/Admin links, `applyNavPermissions` still finds and gates them unchanged.
 ## Admin shell
 
 `{{define "admin-shell"}}` (`webui/html/partials.html`) + `bootAdmin()`
-(`webui/static/js/admin/shared.js`) — wraps `/admin` and
-`/admin/{library,users,prune,settings,upload,moderation}`. These are **full-page
-loads**: no client router, no persistent player. Each page wires its own
-**page-local preview player** from `createPlayer` (`player.js`) — e.g.
-`admin/library.js`.
+(`webui/static/js/admin/shared.js`) — wraps `/admin` and every page in
+`webui.adminSubPages` (the nav strip in the partial and the route table are the
+same list: library, upload, users, prune, duplicates, sources, network,
+upgrades, cache, swarm, settings). These are **full-page loads**: no client
+router, no persistent player. Each page wires its own **page-local preview
+player** from `createPlayer` (`player.js`) — e.g. `admin/library.js`.
+
+Shared chrome lives in `admin-shell.css`, and two classes there are worth
+knowing before styling a new list: **`.admin-search` / `.admin-select`** are the
+filter row's box and dropdown. Native form controls are the one thing on these
+pages that ignores the theme — an unstyled `<select>` stays light on a dark
+page — so a list that grows a filter row uses them rather than minting another
+private copy (`file-view.css`'s `.files-search input` and `admin-recordings.css`'s
+`.rec-search` predate them and stay). Prose links inside `.admin-main` are styled
+there too, for unclassed anchors only, so every component keeps its own look.
 
 Admin **pages** are served *ungated* (`RegisterAdminPage`, no
 `RequirePermission`) so a page can render its own login prompt; the page content
