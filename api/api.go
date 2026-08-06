@@ -207,6 +207,10 @@ type FederationNode interface {
 	// means since start, not since the last flush.
 	Traffic() federation.TrafficSnapshot
 	DrainTraffic() []federation.TrafficDelta
+	// SwarmRates are the caps in force right now, in bytes/sec (0 = unlimited),
+	// resolved through override → config. The node is asked rather than the
+	// database because it is the thing actually holding the buckets.
+	SwarmRates() (up, down int64)
 	// EvictCachedBlob drops the download-cache copy of a hash the library now
 	// holds. Two copies of one blob are served under two different rules — only
 	// the library's applies the recording's sharing scope — so the duplicate is
@@ -479,6 +483,20 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(fileDelete).Post("/cache/bulk", h.adminCacheBulk)
 		r.With(fileDelete).Post("/cache/rescan", h.adminCacheRescan)
 		r.With(fileDelete).Post("/cache/partials/reap", h.adminCacheReapPartials)
+		// The swarm transfer surface (docs/architecture/swarm-admin.md). Reading is
+		// file.delete like the rest of this group; the two rate knobs are
+		// user.manage, matching every other runtime madnetwork policy knob.
+		//
+		// It mints NO endpoint for anything /admin/cache already owns: removal,
+		// partial reaping, claims and cache audio are that page's routes, called
+		// from this one. Two lenses, one editor each.
+		r.With(fileDelete).Get("/swarm", h.adminSwarmList)
+		r.With(fileDelete).Get("/swarm/summary", h.adminSwarmSummary)
+		r.With(fileDelete).Get("/swarm/live", h.adminSwarmLive)
+		r.With(fileDelete).Get("/swarm/limits", h.adminSwarmLimitsGet)
+		r.With(d.protect(auth.PermUserManage)).Post("/swarm/limits", h.adminSwarmLimitsSet)
+		r.With(d.protect(auth.PermUserManage)).Post("/swarm/stats/forget", h.adminSwarmForget)
+		r.With(fileDelete).Get("/swarm/{hash}", h.adminSwarmFile)
 		r.With(fileDelete).Get("/trash", h.adminTrashList)
 		// Bulk Trash admits either capability; the handler enforces the per-action
 		// gate (restore/delete → file.delete, edit → metadata.edit).

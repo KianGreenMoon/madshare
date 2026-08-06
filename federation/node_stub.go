@@ -96,6 +96,10 @@ func (n *Node) Traffic() TrafficSnapshot { return TrafficSnapshot{Hashes: map[st
 
 func (n *Node) DrainTraffic() []TrafficDelta { return nil }
 
+// SwarmRates reports no caps: with the mesh compiled out there is nothing to
+// cap, and the page reports the stored override instead.
+func (n *Node) SwarmRates() (up, down int64) { return 0, 0 }
+
 func (n *Node) IssueCapabilityToken(string, bool) (CapabilityGrant, error) {
 	return CapabilityGrant{}, errCompiledOut
 }
