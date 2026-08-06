@@ -110,6 +110,12 @@ type Node struct {
 	manifestMu sync.Mutex
 	manifests  map[string]*blobManifest
 
+	// Byte accounting for the swarm page (traffic.go): what this process has
+	// moved, per hash and per counterparty, kept in memory and drained by api's
+	// flusher. Separate from transferStats on purpose — that measures the swarm's
+	// behaviour, this measures the wire.
+	traffic *trafficTable
+
 	// Availability / self-health (docs/plans/availability.md Phase 1).
 	// readerAlive reports whether the netstack inbound reader is running — the
 	// unambiguous self-health signal (a self-ping cannot test it: HandleLocal
@@ -249,6 +255,7 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 			fc.MemberMaxTransfers, fc.PerMemberMaxTransfers),
 		manifests: map[string]*blobManifest{},
 		lastTouch: map[int64]time.Time{},
+		traffic:   newTrafficTable(),
 	}
 	// Self-health signal: the netstack inbound reader's liveness (the unambiguous
 	// signal — a self-ping can't test it, HandleLocal loops local traffic inside

@@ -31,10 +31,17 @@ type fakeFederation struct {
 	graph       federation.NetworkMap
 	active      []federation.TransferStats // fetches running right now (the cache page's in-flight line)
 	branches    map[string][]string        // node key → the direct friends it reaches us through
-	hops        map[string]int            // node key → friendship distance from us (absent = unplaceable)
-	reports     []*federation.ClaimReport // contradicted claims awaiting a decision (F6)
-	disposed    []string                  // "<id>:<disposition>" per PATCH
-	evicted     []string                  // hashes EvictCachedBlob was asked to drop
+	hops        map[string]int             // node key → friendship distance from us (absent = unplaceable)
+	reports     []*federation.ClaimReport  // contradicted claims awaiting a decision (F6)
+	disposed    []string                   // "<id>:<disposition>" per PATCH
+	evicted     []string                   // hashes EvictCachedBlob was asked to drop
+	// Swarm traffic (docs/architecture/swarm-admin.md): what this session has
+	// moved, and the deltas the next drain hands the flusher. drained records how
+	// often DrainTraffic was called, since "drains once, adds once" is the flush
+	// contract worth pinning.
+	traffic federation.TrafficSnapshot
+	pending []federation.TrafficDelta
+	drained int
 	// What the last capability-token issuance was asked for (F7 item 9): the
 	// bearer key, and the guest bit the caller's account earned.
 	tokenBearer    string
@@ -68,6 +75,18 @@ func (f *fakeFederation) EnsureBlob(context.Context, string) (federation.Transfe
 }
 
 func (f *fakeFederation) ActiveTransfers() []federation.TransferStats { return f.active }
+
+func (f *fakeFederation) Traffic() federation.TrafficSnapshot { return f.traffic }
+
+// DrainTraffic hands over the pending deltas and clears them, exactly as the
+// real one does — a second drain must come back empty, or a retrying flusher
+// would double-count.
+func (f *fakeFederation) DrainTraffic() []federation.TrafficDelta {
+	f.drained++
+	out := f.pending
+	f.pending = nil
+	return out
+}
 
 // IssueCapabilityToken records what the handler asked for (F7 item 9) so a test
 // can assert the guest bit the caller's account earned, and hands back a grant

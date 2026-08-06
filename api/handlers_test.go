@@ -436,6 +436,10 @@ type fakeRepo struct {
 	mu           sync.Mutex
 	cacheIndex   map[string]*database.MadnetworkCacheEntry
 	cacheTouched []string
+	// Swarm traffic (docs/architecture/swarm-admin.md). Guarded by the same mu:
+	// the flusher runs on its own goroutine.
+	swarmTraffic map[string]*database.SwarmTraffic
+	swarmFlushes int
 	lastFile     *database.File
 	lastMeta     *database.MediaMetadata
 
@@ -847,6 +851,65 @@ func (f *fakeRepo) StorageByteBreakdown(_ context.Context) (database.StorageByte
 
 func (f *fakeRepo) MadnetworkCacheBytes(_ context.Context) (int64, error) {
 	return f.cacheBytes, nil
+}
+
+// Swarm traffic: increments, never assignments — the same contract the real
+// table has, so a test that flushes twice sees the sum rather than the last one.
+func (f *fakeRepo) AddSwarmTraffic(_ context.Context, deltas []database.SwarmTrafficDelta, at int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.swarmTraffic == nil {
+		f.swarmTraffic = map[string]*database.SwarmTraffic{}
+	}
+	f.swarmFlushes++
+	for _, d := range deltas {
+		row := f.swarmTraffic[d.Hash]
+		if row == nil {
+			row = &database.SwarmTraffic{Hash: d.Hash, FirstAt: at}
+			f.swarmTraffic[d.Hash] = row
+		}
+		row.Up += d.Up
+		row.Down += d.Down
+		row.Wasted += d.Wasted
+		row.LastAt = at
+	}
+	return nil
+}
+
+func (f *fakeRepo) SwarmTrafficTotals(_ context.Context) (database.SwarmTraffic, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var total database.SwarmTraffic
+	for _, row := range f.swarmTraffic {
+		total.Up += row.Up
+		total.Down += row.Down
+		total.Wasted += row.Wasted
+	}
+	return total, nil
+}
+
+func (f *fakeRepo) GetSwarmTraffic(_ context.Context, hash string) (*database.SwarmTraffic, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	row, ok := f.swarmTraffic[hash]
+	if !ok {
+		return nil, nil
+	}
+	cp := *row
+	return &cp, nil
+}
+
+func (f *fakeRepo) ForgetSwarmTraffic(_ context.Context, hashes []string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, h := range hashes {
+		if _, ok := f.swarmTraffic[h]; ok {
+			delete(f.swarmTraffic, h)
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (f *fakeRepo) PutMadnetworkCacheEntry(_ context.Context, e *database.MadnetworkCacheEntry) error {

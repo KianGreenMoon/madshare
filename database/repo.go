@@ -109,6 +109,20 @@ type Repository interface {
 	CountMadnetworkCache(ctx context.Context, f MadnetworkCacheFilter) (int, int64, error)
 	MadnetworkCacheHashes(ctx context.Context, f MadnetworkCacheFilter) ([]string, error)
 
+	// Per-blob swarm traffic (docs/architecture/swarm-admin.md). On Repository
+	// for the same reason as the cache index: these bytes moved whether or not a
+	// federation node is running now, and the page that reports them must work
+	// with federation switched off.
+	//
+	// AddSwarmTraffic is the ONLY writer, called by the flusher draining the
+	// node's in-memory counters; SwarmTrafficTotals is the node's all-time
+	// contribution (SUM, not a second set of counters); ForgetSwarmTraffic is the
+	// only deleter, and never runs as a side effect of housekeeping.
+	AddSwarmTraffic(ctx context.Context, deltas []SwarmTrafficDelta, at int64) error
+	SwarmTrafficTotals(ctx context.Context) (SwarmTraffic, error)
+	GetSwarmTraffic(ctx context.Context, hash string) (*SwarmTraffic, error)
+	ForgetSwarmTraffic(ctx context.Context, hashes []string) (int, error)
+
 	// ListArtists returns one entry per effective artist name, ordered
 	// alphabetically. album_artist is preferred over artist for grouping.
 	ListArtists(ctx context.Context) ([]*ArtistEntry, error)

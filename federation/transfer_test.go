@@ -219,6 +219,104 @@ func TestBlobTransfer(t *testing.T) {
 	}
 }
 
+// TestBlobTransferCountsTrafficBothWays: one real fetch across the mesh must
+// leave both nodes able to say what it cost them (docs/architecture/swarm-admin.md).
+//
+// The serving side is the half that never existed before — handleBlob handed the
+// file to http.ServeContent and counted nothing — so this asserts it end to end
+// rather than through the writer wrapper alone: bytes credited to the hash, to
+// the peer, and drained exactly once for the database.
+func TestBlobTransferCountsTrafficBothWays(t *testing.T) {
+	content := []byte("bytes that both nodes must be able to account for afterwards")
+	sum := sha256.Sum256(content)
+	hash := hex.EncodeToString(sum[:])
+
+	blobDir := t.TempDir()
+	blobPath := filepath.Join(blobDir, "counted.mp3")
+	if err := os.WriteFile(blobPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	storeA, storeB := newMemStore(), newMemStore()
+	storeA.setPublished([]CatalogEntry{{
+		Key: "1", RecordingKey: "r1", Title: "Counted",
+		Renditions: []CatalogRendition{{Hash: hash, Size: int64(len(content)), Codec: "mp3"}},
+	}})
+	resolveA := func(h string) (string, bool) {
+		if h == hash {
+			return blobPath, true
+		}
+		return "", false
+	}
+	cacheB := t.TempDir()
+	a, b := startNodePair(t, storeA, storeB,
+		[]Option{WithBlobResolver(resolveA)},
+		[]Option{WithCacheDir(cacheB)})
+
+	makeFriends(t, a, b, storeA, storeB)
+	seedBlobCatalog(t, storeB, a, hash, int64(len(content)))
+
+	tr, err := b.EnsureBlob(context.Background(), hash)
+	if err != nil {
+		t.Fatalf("EnsureBlob: %v", err)
+	}
+	select {
+	case <-tr.Done():
+	case <-time.After(meshDeadline):
+		t.Fatal("transfer did not finish")
+	}
+	if err := tr.Err(); err != nil {
+		t.Fatalf("transfer failed: %v", err)
+	}
+
+	size := int64(len(content))
+	// Not an equality: the speculative chunk-0 prefetch may overlap the manifest
+	// probe and be discarded, which is real waste and really was received.
+	down := b.Traffic()
+	if down.Down < size {
+		t.Errorf("fetcher counted %d bytes down, want at least %d", down.Down, size)
+	}
+	if got := down.Hashes[hash].Down; got < size {
+		t.Errorf("fetcher's per-hash down = %d, want at least %d", got, size)
+	}
+	if len(down.Peers) != 1 || down.Peers[0].Key != a.PublicKeyHex() || down.Peers[0].Down < size {
+		t.Errorf("fetcher's peers = %+v, want node A credited with the bytes", down.Peers)
+	}
+
+	// The serving side. A serves on its own goroutine, so the write may land
+	// microseconds after the fetcher saw the last byte.
+	waitFor(t, "seeder accounts the bytes it served", func() bool {
+		return a.Traffic().Up >= size
+	})
+	up := a.Traffic()
+	if got := up.Hashes[hash].Up; got < size {
+		t.Errorf("seeder's per-hash up = %d, want at least %d", got, size)
+	}
+	if len(up.Peers) != 1 || up.Peers[0].Key != b.PublicKeyHex() {
+		t.Errorf("seeder's peers = %+v, want node B identified by key", up.Peers)
+	}
+	if up.Peers[0].Addr == "" {
+		t.Error("an inbound serve should also record the mesh address it came from")
+	}
+
+	// What the flusher will persist: every byte once, and nothing on a re-drain.
+	deltas := b.DrainTraffic()
+	var drained int64
+	for _, d := range deltas {
+		if d.Hash == hash {
+			drained = d.Down
+		}
+	}
+	if drained != down.Hashes[hash].Down {
+		t.Errorf("drained %d bytes for the hash, want the %d counted", drained, down.Hashes[hash].Down)
+	}
+	if again := b.DrainTraffic(); len(again) != 0 {
+		t.Errorf("second drain returned %d deltas, want none", len(again))
+	}
+	if after := b.Traffic(); after.Down < size {
+		t.Error("draining must not reset the session view")
+	}
+}
+
 // TestBlobTransfer_VerificationFailure: an origin serving bytes that do not
 // match the requested hash must fail the transfer (never land in the cache).
 func TestBlobTransfer_VerificationFailure(t *testing.T) {

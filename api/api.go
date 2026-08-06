@@ -200,6 +200,13 @@ type FederationNode interface {
 	// "downloading" line, and the set whose `.part` files must not be reaped
 	// (docs/architecture/madnetwork-cache.md).
 	ActiveTransfers() []federation.TransferStats
+	// Traffic is this session's byte accounting — totals, per hash and per
+	// counterparty, since the process started (docs/architecture/swarm-admin.md).
+	// DrainTraffic takes the per-hash deltas not yet written to the database and
+	// clears them; the session view above is unaffected, because "this session"
+	// means since start, not since the last flush.
+	Traffic() federation.TrafficSnapshot
+	DrainTraffic() []federation.TrafficDelta
 	// EvictCachedBlob drops the download-cache copy of a hash the library now
 	// holds. Two copies of one blob are served under two different rules — only
 	// the library's applies the recording's sharing scope — so the duplicate is

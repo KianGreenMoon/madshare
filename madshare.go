@@ -443,6 +443,19 @@ func main() {
 		log.Printf("federation: madnetwork node up — mesh address %s (key file %s)", fedNode.Address(), cfg.Yggdrasil.KeyFile)
 	}
 
+	// Persist what the swarm moves (docs/architecture/swarm-admin.md). The node
+	// counts in memory; this drains it into swarm_traffic on a timer, so no
+	// database write ever lands on a chunk-fetch path.
+	//
+	// Guarded on the concrete pointer, not inside the constructor: a nil
+	// *federation.Node handed to an interface parameter is a NON-nil interface,
+	// so `node == nil` there would be false and the first drain would panic.
+	var trafficFlusher *api.TrafficFlusher
+	if fedNode != nil {
+		trafficFlusher = api.NewTrafficFlusher(fedNode, db)
+		go trafficFlusher.Run(ctx)
+	}
+
 	servers, err := startListeners(cfg, deps, mesh)
 	if err != nil {
 		log.Fatalf("start listeners: %v", err)
@@ -466,6 +479,13 @@ func main() {
 		})
 	}
 	wg.Wait()
+	// Persist the last interval's byte accounting while the node is still up.
+	// Done here rather than left to the flusher's own ctx.Done branch so it is
+	// ordered rather than racing process exit — a graceful shutdown must not be a
+	// small data loss.
+	if trafficFlusher != nil {
+		trafficFlusher.Flush(shutdownCtx)
+	}
 	// Exactly one of these owns the transport: Start adopted the mesh when
 	// federation is on, so stopping the node stops it too (federation/mesh.go,
 	// "Ownership"). A transport-only deployment stops the mesh itself.

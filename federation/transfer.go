@@ -43,7 +43,7 @@ func (n *Node) handleBlob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "transfer not configured", http.StatusServiceUnavailable)
 		return
 	}
-	aud, ok := n.serveAudience(r)
+	aud, key, ok := n.serveAudienceKey(r)
 	if !ok {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -87,8 +87,20 @@ func (n *Node) handleBlob(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Disposition",
 		mime.FormatMediaType("attachment", map[string]string{"filename": filepath.Base(path)}))
-	http.ServeContent(throttled(w, r.Context(), n.serveLimiters(rls)),
-		r, info.Name(), info.ModTime(), f)
+	// Count what we actually hand over (docs/architecture/swarm-admin.md). The
+	// meter wraps the throttle rather than the other way round, so it counts
+	// bytes that reached the client rather than bytes we merely intended to send;
+	// and unlike the throttle it is ALWAYS present, since the shipped default is
+	// unlimited and an unmeasured default would leave every node's contribution
+	// unknown.
+	addr := ""
+	if ip := remoteIP(r); ip != nil {
+		addr = ip.String()
+	}
+	out := metered(throttled(w, r.Context(), n.serveLimiters(rls)), func(b int64) {
+		n.noteUp(hash, key, addr, b)
+	})
+	http.ServeContent(out, r, info.Name(), info.ModTime(), f)
 }
 
 // ── Fetching side ────────────────────────────────────────────────────────────
@@ -108,6 +120,11 @@ type transfer struct {
 	changed  chan struct{} // recreated on every progress/terminal update
 	err      error
 	finished bool
+	// received is every byte that came off the wire for this transfer, including
+	// what verification later rejected and what a fallback abandoned. Waste is
+	// this minus what was delivered, computed once when the transfer ends
+	// (traffic.go) — which is why no discard site has to remember to report.
+	received int64
 
 	// Chunk-mode readiness (F4 swarm path): per-chunk completion so the streaming
 	// relay can read out-of-order regions (a prioritized tail/seek), the chunk
@@ -173,6 +190,22 @@ func (t *transfer) Err() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.err
+}
+
+// addReceived credits wire bytes. Deliberately not folded into addProgress:
+// progress is what a reader may READ (verified, in place), while this is what
+// arrived — and a chunk that fails its hash advances one and not the other.
+func (t *transfer) addReceived(n int64) {
+	t.mu.Lock()
+	t.received += n
+	t.mu.Unlock()
+}
+
+// Received is every byte this transfer pulled off the wire.
+func (t *transfer) Received() int64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.received
 }
 
 // Open opens the file for reading: the final path once the transfer completed,
@@ -458,6 +491,9 @@ func (n *Node) runTransfer(t *transfer, holders []*BlobProvider) {
 		n.transferMu.Lock()
 		delete(n.transfers, t.hash)
 		n.transferMu.Unlock()
+		// Book the waste now that the outcome is known: every path below ends in
+		// t.finish, so received-minus-delivered is final here.
+		n.noteTransferEnd(t)
 	}()
 
 	// Overlap the manifest fetch with a speculative chunk-0 prefetch so the first
@@ -566,6 +602,8 @@ func (n *Node) fetchFrom(t *transfer, p *BlobProvider) error {
 			}
 			hasher.Write(buf[:nr])
 			t.stats.noteBytes(p, int64(nr))
+			t.addReceived(int64(nr))
+			n.noteDown(t.hash, p.PublicKey, int64(nr))
 			t.addProgress(int64(nr))
 		}
 		if rerr == io.EOF {

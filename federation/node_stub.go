@@ -88,6 +88,14 @@ func (n *Node) EnsureBlob(context.Context, string) (Transfer, error) {
 
 func (n *Node) ActiveTransfers() []TransferStats { return nil }
 
+// Traffic and DrainTraffic answer empty rather than the compiled-out error: a
+// build with no mesh moves no bytes, so "nothing this session" and "nothing to
+// persist" are the true answers, and the swarm page still reports the all-time
+// figures, which come from the database and outlive any node.
+func (n *Node) Traffic() TrafficSnapshot { return TrafficSnapshot{Hashes: map[string]TrafficCounters{}} }
+
+func (n *Node) DrainTraffic() []TrafficDelta { return nil }
+
 func (n *Node) IssueCapabilityToken(string, bool) (CapabilityGrant, error) {
 	return CapabilityGrant{}, errCompiledOut
 }

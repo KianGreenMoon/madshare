@@ -543,22 +543,33 @@ func (n *Node) seedableBlob(ctx context.Context, hash string, aud Audience) (str
 // Blocked peers never arrive here; meshAuth refuses them the whole surface
 // first, and they are excluded from the community walk besides.
 func (n *Node) serveAudience(r *http.Request) (Audience, bool) {
+	aud, _, ok := n.serveAudienceKey(r)
+	return aud, ok
+}
+
+// serveAudienceKey is serveAudience plus the requester's public key when the
+// resolution happened to establish one — a friend's from the peer row, a
+// member's from the community index. It exists so the seeding path can account
+// bytes against an identity without paying for a second lookup; a requester it
+// could not place (a guest, a token bearer) comes back with an empty key and is
+// accounted by its mesh address, which is self-certifying but anonymous.
+func (n *Node) serveAudienceKey(r *http.Request) (Audience, string, bool) {
 	if p := n.peerFromRemote(r); p != nil && p.State == PeerFriend {
 		aud, err := n.store.PeerAudience(r.Context(), p.ID)
 		if err != nil {
 			n.logger.Printf("federation: resolve audience of %q: %v", p.Display(), err)
-			return Audience{}, false
+			return Audience{}, "", false
 		}
-		return aud, true
+		return aud, p.PublicKey, true
 	}
 	// Not a friend — but possibly a member. A pending peer takes this path too:
 	// it has not been accepted, so it gets whatever its key earns in the
 	// community and not a step more.
-	if _, ok, err := n.memberFromRemote(r); err != nil {
+	if key, ok, err := n.memberFromRemote(r); err != nil {
 		n.logger.Printf("federation: resolve community membership: %v", err)
-		return Audience{}, false
+		return Audience{}, "", false
 	} else if ok {
-		return MemberAudience, true
+		return MemberAudience, key, true
 	}
 	// Still unplaced — but it may be carrying a vouch (F7 item 9, token.go). This
 	// is a listener node: a madplayer publishes no friend list and appears in
@@ -568,19 +579,19 @@ func (n *Node) serveAudience(r *http.Request) (Audience, bool) {
 	// buys, so presenting one must never cost them their own standing.
 	if aud, ok, err := n.tokenAudience(r); err != nil {
 		n.logger.Printf("federation: resolve capability token: %v", err)
-		return Audience{}, false
+		return Audience{}, "", false
 	} else if ok {
-		return aud, true
+		return aud, "", true
 	}
 	policy, err := n.store.SeedingPolicy(r.Context())
 	if err != nil {
 		n.logger.Printf("federation: seeding policy: %v", err)
-		return Audience{}, false
+		return Audience{}, "", false
 	}
 	if policy.Guests {
-		return GuestAudience, true
+		return GuestAudience, "", true
 	}
-	return Audience{}, true // an outsider: decided, and served nothing
+	return Audience{}, "", true // an outsider: decided, and served nothing
 }
 
 // ── Multi-source chunk fetch ─────────────────────────────────────────────────
@@ -588,14 +599,14 @@ func (n *Node) serveAudience(r *http.Request) (Audience, bool) {
 // fetchRange fetches [start, start+length) from one holder over the mesh (a
 // plain HTTP Range request against the F3 blob endpoint) and returns the bytes.
 // The holder clamps at EOF, so a short file yields fewer than length bytes.
-func (n *Node) fetchRange(ctx context.Context, p *BlobProvider, hash string, start, length int64, onStall func()) ([]byte, error) {
+func (n *Node) fetchRange(ctx context.Context, p *BlobProvider, t *transfer, start, length int64, onStall func()) ([]byte, error) {
 	addr, err := AddrForKeyHex(p.PublicKey)
 	if err != nil {
 		return nil, err
 	}
 	cctx, cancel := context.WithTimeout(ctx, n.timeouts.PerChunk)
 	defer cancel()
-	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/blob/%s", addr, MeshPort, hash)
+	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/blob/%s", addr, MeshPort, t.hash)
 	req, err := http.NewRequestWithContext(cctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -609,7 +620,8 @@ func (n *Node) fetchRange(ctx context.Context, p *BlobProvider, hash string, sta
 	if resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("range %d-%d: holder answered %s", start, start+length-1, resp.Status)
 	}
-	return readStall(cancel, io.LimitReader(resp.Body, length), length, false, n.timeouts.ChunkStall, onStall)
+	return readStall(cancel, n.metered(t, p, io.LimitReader(resp.Body, length)),
+		length, false, n.timeouts.ChunkStall, onStall)
 }
 
 // chunk0Prefetch is a speculative chunk-0 fetch overlapped with the manifest
@@ -645,7 +657,7 @@ func (n *Node) speculateChunk0(t *transfer, holders []*BlobProvider) *chunk0Pref
 	p := holders[0]
 	pf.from = p
 	go func() {
-		data, err := n.fetchRange(n.transferCtx, p, t.hash, 0, pf.guessLen, t.stats.noteStall)
+		data, err := n.fetchRange(n.transferCtx, p, t, 0, pf.guessLen, t.stats.noteStall)
 		if err != nil {
 			pf.ch <- nil
 			return
@@ -792,7 +804,8 @@ func (n *Node) fetchChunk(t *transfer, f *os.File, layout *chunkLayout, man *blo
 		!(resp.StatusCode == http.StatusOK && len(man.Chunks) == 1) {
 		return fmt.Errorf("chunk %d: holder answered %s", idx, resp.Status)
 	}
-	body, err := readStall(cancel, io.LimitReader(resp.Body, length), length, true, n.timeouts.ChunkStall, t.stats.noteStall)
+	body, err := readStall(cancel, n.metered(t, p, io.LimitReader(resp.Body, length)),
+		length, true, n.timeouts.ChunkStall, t.stats.noteStall)
 	if err != nil {
 		return fmt.Errorf("chunk %d: %w", idx, err)
 	}

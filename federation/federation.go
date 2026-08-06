@@ -763,6 +763,55 @@ type TransferStats struct {
 	Prior []AttemptStats `json:"prior,omitempty"`
 }
 
+// ── Swarm traffic accounting (docs/architecture/swarm-admin.md) ──────────────
+//
+// What this node has MOVED, as opposed to how a transfer behaved: the shapes are
+// here rather than in traffic.go because `api` reads them and must still compile
+// with -tags nofederation, where that file is gone. The counting itself lives in
+// traffic.go; the stub answers with zero values.
+
+// TrafficCounters is a byte count in both directions, plus the part of Down that
+// was received and discarded (a chunk that failed verification, an abandoned
+// attempt).
+type TrafficCounters struct {
+	Up     int64 `json:"up_bytes"`
+	Down   int64 `json:"down_bytes"`
+	Wasted int64 `json:"wasted_bytes"`
+}
+
+// TrafficDelta is one hash's un-flushed increment, handed to the persister.
+type TrafficDelta struct {
+	Hash string
+	TrafficCounters
+}
+
+// PeerTraffic is what one counterparty has moved with us since this process
+// started. Session-only, deliberately: persisted per-peer history is a
+// hashes×peers commitment that should wait for a real want, while "who is
+// pulling from us right now" — the common question — needs no table at all.
+type PeerTraffic struct {
+	// Key is the peer's public key hex when we know it: always for an outbound
+	// fetch (we address a holder by key), and for an inbound serve whenever the
+	// requester could be placed as a friend or a member.
+	Key string `json:"key,omitempty"`
+	// Addr is the mesh address it spoke from, known for inbound serves. It is
+	// the fallback identity for a requester we could not place — an outsider
+	// served under the guest switch, or a token bearer.
+	Addr   string    `json:"addr,omitempty"`
+	Up     int64     `json:"up_bytes"`
+	Down   int64     `json:"down_bytes"`
+	LastAt time.Time `json:"last_at"`
+}
+
+// TrafficSnapshot is this session's accounting: totals since process start, the
+// per-hash breakdown, and the counterparties.
+type TrafficSnapshot struct {
+	TrafficCounters
+	Hashes map[string]TrafficCounters `json:"hashes"`
+	Peers  []PeerTraffic              `json:"peers"`
+	Since  time.Time                  `json:"since"`
+}
+
 // AttemptStats is what one abandoned fetch attempt achieved before giving way to
 // the next. The cumulative counters (retries, failovers, stalls, corrupt and the
 // per-provider rows) are NOT split per attempt — they are transfer-wide history
