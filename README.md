@@ -56,7 +56,11 @@ UI.
   what other nodes call the audio being approved and warns when the tags and the
   fingerprint disagree, and `/admin/upgrades` lists renditions out there that
   rank above the copies you hold — additive, so nothing of yours is ever
-  replaced without you saying so.
+  replaced without you saying so. Two admin pages watch the traffic itself:
+  `/admin/cache` is what this node fetched and whether it should stay, and
+  `/admin/swarm` is what it *moves* — every blob it has bytes for, up and down,
+  all time and this session, which nodes it has traded with and what each has
+  cost, plus the two rate caps, changeable while the link is busy.
   [Deploying a madnetwork node](#deploying-a-madnetwork-node) ·
   [`docs/architecture/federation.md`](docs/architecture/federation.md).
 - One process, one HTTP listener per configured socket; the web UI can be
