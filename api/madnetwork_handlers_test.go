@@ -23,7 +23,8 @@ type fakeMadnetwork struct {
 	trackView  database.MadnetworkView              // captured by MadnetworkTracks for assertions
 	artistView database.MadnetworkView              // captured by MadnetworkArtists (the ?source= resolution)
 	hideOff    bool                                 // when true, GetMadnetworkPolicy reports hiding disabled
-	matches    []database.NetworkMatch              // F8: what the join is to report
+	claims     map[string][]*database.MadnetworkCacheClaim // per-hash: what sources currently call it
+	matches    []database.NetworkMatch                     // F8: what the join is to report
 	matchErr   error                                // F8: a cache read that fails must cost only the arm
 	upgrades   []*database.UpgradeRow               // F8 item 3: quality-upgrade findings
 	// The node surfaces (docs/ui/madnetwork-nodes.md): the cached sources this
@@ -136,6 +137,10 @@ func (f *fakeMadnetwork) MadnetworkEntryForHash(_ context.Context, hash string) 
 }
 func (f *fakeMadnetwork) GetMadnetworkPolicy(context.Context) (database.MadnetworkPolicy, error) {
 	return database.MadnetworkPolicy{HideUnavailable: !f.hideOff}, nil
+}
+
+func (f *fakeMadnetwork) MadnetworkCacheClaims(_ context.Context, hash string) ([]*database.MadnetworkCacheClaim, error) {
+	return f.claims[hash], nil
 }
 
 func madRow(peerID int64, peer, recording, title string, hashes ...string) *database.MadnetworkTrackRow {

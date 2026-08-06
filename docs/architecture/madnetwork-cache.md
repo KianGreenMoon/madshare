@@ -261,14 +261,25 @@ partial. Incompleteness lives in `.part` files, and there are two kinds:
 
 - **In flight** — a transfer running right now. Progress is live
   (`Transfer.Progress()` / `Size()`), and the page shows it as a progress row.
-- **Orphaned** — a `.part` with no running transfer, left by a killed process.
-  Dead disk, today invisible and unreclaimable. The page lists them and offers
-  **Reclaim partials**, which is the first time anything in Madshare can delete
-  them.
+- **Abandoned** — a `.part` with no running transfer, left by a killed process.
+  Dead disk that nothing could reclaim before this.
 
 Live transfers come from a new `FederationNode.ActiveTransfers() []federation.TransferStats`
 — the `n.transfers` map is already keyed by hash and every entry already has
-`Stats()`; this only exposes it.
+`Stats()`; this only exposes it. It is not just a display convenience: **it is
+what tells an abandoned partial from a live one**, and reaping a running fetch's
+scratch file would be data loss mid-transfer.
+
+**Abandoned partials are swept automatically, at startup, unconditionally**
+(`database.ReapAbandonedPartials`, called from `madshare.go` before the index
+reconcile). The rule that makes this safe needs no age heuristic, no policy and
+no knob: *a process that has just started is writing nothing*, so every `.part`
+it finds is abandoned by definition — the live set is correctly `nil` there.
+
+At runtime the same function backs the page's **Reclaim partials** button, and
+must be passed the live set. This is deliberately **not** folded into
+`ReconcileMadnetworkCache`, which the Rescan button can run while transfers are
+in flight.
 
 **In aggregate.** The summary strip carries entries, total bytes, in-flight
 count, orphaned-partial count and bytes, and — once the daemon's knobs exist —
@@ -369,11 +380,10 @@ remains the good way to bring content in. They are here because when you are
 *looking at* a cached file and decide you want to keep it, sending you elsewhere
 to find it again is silly.
 
-One gap to close for them: `madnetworkDownload` currently 404s with "no friend
-advertises this content" when `MadnetworkEntryForHash` returns nil, and stages
-using `entryToMetadata(entry, now)` — the remote catalog text. For a cache entry
-nobody advertises any more, that refusal is simply wrong: the bytes are already
-on this disk, and `EnsureBlob` would hand them straight back.
+One gap closed for them: `madnetworkDownload` used to 404 with "no friend
+advertises this content" whenever `MadnetworkEntryForHash` returned nil. For a
+cache entry nobody advertises any more that refusal was protecting nothing — the
+bytes are already on this disk, and `EnsureBlob` hands them straight back.
 
 **A materialize needs no source at all.** It stages into the review bucket like
 any upload, so it takes its metadata the way an upload does — from the file's own
@@ -385,10 +395,15 @@ empty too (migration 016), so even a completely untagged blob stages cleanly and
 the uploader fixes it up in **My uploads** — the ordinary path, not a special
 case.
 
-The remote catalog text stays preferred **when a claim exists**: it is usually
-richer than the file's tags, and matching what the network shows for a track is
-the behaviour `/madnetwork` materialize already has. This only removes the
-refusal.
+Only the *filename* still needs care, because the staged blob needs a real
+extension: the transfer's own name is the hash for a cache file, so the handler
+falls back to the index's remembered origin name, and refuses with a plain
+message only when neither that nor a claim can say what kind of file it is.
+
+Two things stay as they were. The remote catalog text is still **preferred when a
+claim exists** — it is usually richer than the file's tags, and matching what the
+network shows is the behaviour `/madnetwork` materialize already has. And a hash
+we neither hold nor can find a holder for is still a 404.
 
 ### Bulk actions
 
@@ -415,7 +430,7 @@ GET  /api/admin/cache?limit=&offset=&q=&field=&sort=
 GET  /api/admin/cache/summary
      → {ok, entries, bytes, seeding:{enabled,cache},
         in_flight:[{hash,size,progress,mode}],
-        partials:{count,bytes}}
+        partials:{count,bytes}}      abandoned only — a live fetch's is not one
 
 GET  /api/admin/cache/{hash}/claims
      → {ok, claims:[{source_key, source_name, title, artist, album, …}]}
@@ -486,9 +501,12 @@ than inventing a second pattern:
 - One goroutine, one sweep at a time, started from `madshare.go` only when a knob
   is non-zero.
 - Cadence hourly; a sweep is cheap (two indexed queries and some `unlink`s).
-- **Never touches an in-flight transfer** — a hash in `n.transfers` is skipped,
-  and `.part` files are not eviction candidates at all (orphaned ones are the
-  Reclaim button's job, which the daemon may also perform on a longer fuse).
+- **Never touches an in-flight transfer** — a hash in `ActiveTransfers()` is
+  skipped, which is also how it must call `ReapAbandonedPartials`. Abandoned
+  partials are already swept unconditionally at startup and on demand, so the
+  daemon only adds "without waiting for a restart"; they are never eviction
+  *candidates* in the retention sense, because unverified bytes have no value to
+  weigh in the first place.
 - Nothing is exempt: there is no pin (decided 2026-08-06). What the daemon
   deletes is re-fetchable from the swarm as long as a holder remains.
 - Every sweep logs what it removed and why (age vs. ceiling), and reports its
@@ -541,10 +559,14 @@ when it happens, and nothing else here.
    the origin filename; a born-complete transfer and a library blob are both
    skipped; a Range storm writes one touch, and the throttle is per hash;
    eviction drops the row and its throttle memory.
-3. **API** — the five endpoints plus `?download=1`, and the no-claim fallback in
-   `madnetworkDownload`. Tests: envelope shape, empty-filter guardrail,
-   remove-tolerates-missing-file, an unadvertised cache entry materializes and
-   carries its own tags.
+3. **API** — ✅ built. `api/cache_handlers.go`: the six endpoints, `?download=1`
+   on the stream relay, `federation.Node.ActiveTransfers`, the startup partial
+   sweep, and the no-claim path through `madnetworkDownload`. Tests: the
+   file-list envelope and its `selectable_total`; the empty-filter guardrail and
+   `all:true`; removal takes the file, its row and nothing else, and tolerates a
+   file already gone; the reaper spares a RUNNING transfer's partial and takes
+   the abandoned one; an unadvertised cached blob materializes while an
+   unreachable hash still 404s; the download name falls back index → tags → hash.
 4. **Page** — `cache.html`, `admin/cache.js` as a `file-list.js` scope, nav link,
    dashboard card, summary strip, partials reclaim.
 5. **Daemon** — later, on its own, once the shape above has lived on a real node
@@ -569,3 +591,5 @@ Steps 1–4 are the deliverable. Step 5 is scheduled, not promised.
 | 2026-08-06 | **Directory authoritative, index derived.** | Every existing cache path keeps reading the directory unmodified; a stale row is a reconciliation problem, never a phantom the swarm could advertise. |
 | 2026-08-06 | **Its own page, not a `/admin/library` lens.** | Those lenses curate content we publish under our sharing scopes. This is other people's content under `seed_cache`, and none of it is editable. |
 | 2026-08-06 | **A `file-list.js` scope, not a new list.** | Infinite scroll, search, select-all-N, bulk bar and Play already exist there, over exactly the paged envelope this endpoint returns. |
+| 2026-08-06 | **Abandoned partials are reaped by the system, not only by a button** — unconditionally at startup. | Owner call. A killed process cannot clean up after itself and nothing else swept them, so they were permanent dead disk. Startup needs no heuristic to be safe: a process that just started is writing nothing, so every `.part` is abandoned by definition. |
+| 2026-08-06 | **Removal does not go through `federation.EvictCachedBlob`.** | The cache outlives federation being switched off, and must stay cleanable then. The handler unlinks from `cacheDir` itself — file first, index row second. |

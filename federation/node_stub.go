@@ -86,6 +86,8 @@ func (n *Node) EnsureBlob(context.Context, string) (Transfer, error) {
 	return nil, errCompiledOut
 }
 
+func (n *Node) ActiveTransfers() []TransferStats { return nil }
+
 func (n *Node) IssueCapabilityToken(string, bool) (CapabilityGrant, error) {
 	return CapabilityGrant{}, errCompiledOut
 }

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 )
 
@@ -351,6 +352,29 @@ func (t *transfer) Stats() TransferStats {
 	hash, size, progress := t.hash, t.size, t.progress
 	t.mu.Unlock()
 	return t.stats.snapshot(hash, size, progress)
+}
+
+// ActiveTransfers snapshots every fetch running right now
+// (docs/architecture/madnetwork-cache.md). Two things need it: the cache page's
+// "downloading" line, and — load-bearing — deciding which `.part` files are
+// abandoned. A partial belonging to a live transfer must never be reaped, and
+// this is the only thing that knows which those are.
+//
+// Ordered by hash so a repeated read of an unchanged set does not reshuffle.
+func (n *Node) ActiveTransfers() []TransferStats {
+	n.transferMu.Lock()
+	live := make([]*transfer, 0, len(n.transfers))
+	for _, t := range n.transfers {
+		live = append(live, t)
+	}
+	n.transferMu.Unlock()
+
+	out := make([]TransferStats, 0, len(live))
+	for _, t := range live {
+		out = append(out, t.Stats())
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Hash < out[j].Hash })
+	return out
 }
 
 // EvictCachedBlob drops this node's download-cache copy of hash. Safe for a hash

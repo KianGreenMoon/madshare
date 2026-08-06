@@ -13,6 +13,7 @@ import (
 	"net/textproto"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -873,6 +874,65 @@ func (f *fakeRepo) DeleteMadnetworkCacheEntry(_ context.Context, hash string) er
 	defer f.mu.Unlock()
 	delete(f.cacheIndex, hash)
 	return nil
+}
+
+// cacheRows returns the index sorted by hash — a deterministic stand-in for the
+// real query's ORDER BY, enough for the handler tests (the filter and sort
+// semantics themselves are pinned in database/madnetwork_cache_test.go).
+func (f *fakeRepo) cacheRows(filter database.MadnetworkCacheFilter) []*database.MadnetworkCacheEntry {
+	var out []*database.MadnetworkCacheEntry
+	for _, e := range f.cacheIndex {
+		if q := strings.ToLower(filter.Q); q != "" &&
+			!strings.Contains(strings.ToLower(e.Title), q) &&
+			!strings.Contains(strings.ToLower(e.Artist), q) &&
+			!strings.HasPrefix(e.Hash, q) {
+			continue
+		}
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Hash < out[j].Hash })
+	return out
+}
+
+func (f *fakeRepo) ListMadnetworkCachePage(_ context.Context, q database.MadnetworkCacheQuery) ([]*database.MadnetworkCacheEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rows := f.cacheRows(q.MadnetworkCacheFilter)
+	if q.Offset >= len(rows) {
+		return nil, nil
+	}
+	rows = rows[q.Offset:]
+	if q.Limit > 0 && q.Limit < len(rows) {
+		rows = rows[:q.Limit]
+	}
+	return rows, nil
+}
+
+func (f *fakeRepo) CountMadnetworkCache(_ context.Context, filter database.MadnetworkCacheFilter) (int, int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rows := f.cacheRows(filter)
+	var bytes int64
+	for _, e := range rows {
+		bytes += e.ByteSize
+	}
+	return len(rows), bytes, nil
+}
+
+func (f *fakeRepo) MadnetworkCacheHashes(_ context.Context, filter database.MadnetworkCacheFilter) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, e := range f.cacheRows(filter) {
+		out = append(out, e.Hash)
+	}
+	return out, nil
+}
+
+func (f *fakeRepo) GetMadnetworkCacheEntry(_ context.Context, hash string) (*database.MadnetworkCacheEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.cacheIndex[hash], nil
 }
 
 func (f *fakeRepo) ListArtists(_ context.Context) ([]*database.ArtistEntry, error) {

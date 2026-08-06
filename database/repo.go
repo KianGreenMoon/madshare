@@ -101,6 +101,13 @@ type Repository interface {
 	PutMadnetworkCacheEntry(ctx context.Context, e *MadnetworkCacheEntry) error
 	TouchMadnetworkCache(ctx context.Context, hash string, at int64) error
 	DeleteMadnetworkCacheEntry(ctx context.Context, hash string) error
+	// The control page's three reads over one filter — the page, its headline
+	// count/bytes, and the "select all N matching" set. They share one predicate
+	// so a bulk removal can never target a different set than the one on screen.
+	ListMadnetworkCachePage(ctx context.Context, q MadnetworkCacheQuery) ([]*MadnetworkCacheEntry, error)
+	GetMadnetworkCacheEntry(ctx context.Context, hash string) (*MadnetworkCacheEntry, error)
+	CountMadnetworkCache(ctx context.Context, f MadnetworkCacheFilter) (int, int64, error)
+	MadnetworkCacheHashes(ctx context.Context, f MadnetworkCacheFilter) ([]string, error)
 
 	// ListArtists returns one entry per effective artist name, ordered
 	// alphabetically. album_artist is preferred over artist for grouping.

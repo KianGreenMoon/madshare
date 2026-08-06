@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"daemonlord.ygg/madshare/federation"
 	"daemonlord.ygg/madshare/media"
 )
 
@@ -367,6 +368,129 @@ func ReconcileMadnetworkCache(ctx context.Context, db *DB, cacheDir string) (add
 	}
 	return added, dropped, nil
 }
+
+// MadnetworkCacheClaim is one source's current description of a cached blob.
+type MadnetworkCacheClaim struct {
+	SourceKey  string `json:"source_key"`
+	SourceName string `json:"source_name"`
+	Title      string `json:"title"`
+	Artist     string `json:"artist"`
+	Album      string `json:"album"`
+	LastSeen   int64  `json:"last_seen"`
+}
+
+// MadnetworkCacheClaims lists what the network currently says about a hash: one
+// row per source advertising it, most recently seen first.
+//
+// The cache page's rare "what did people call this" view. Deliberately computed
+// live rather than recorded (decided 2026-08-06): no growing table for a button
+// nobody opens twice, and a claim that disappeared with its node is not history
+// worth keeping. The blob's own description — the one the listing shows — comes
+// from the file itself and needs none of this.
+//
+// One hash at a time on purpose. This walks the cached catalogs, which is fine
+// for a click and would be ruinous for a page of a hundred rows.
+func (db *DB) MadnetworkCacheClaims(ctx context.Context, hash string) ([]*MadnetworkCacheClaim, error) {
+	var out []*MadnetworkCacheClaim
+	err := db.madnetworkRowsForHash(ctx, hash,
+		func(p *federation.BlobProvider, e *federation.CatalogEntry, _ *federation.CatalogRendition) bool {
+			name := p.Name
+			if name == "" {
+				name = p.HeardName
+			}
+			out = append(out, &MadnetworkCacheClaim{
+				SourceKey: p.PublicKey, SourceName: name,
+				Title: e.Title, Artist: e.Artist, Album: e.Album,
+				LastSeen: p.LastSeen,
+			})
+			return true
+		})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ReapAbandonedPartials deletes `<hash>.part` scratch files that no transfer is
+// writing, returning how many and how many bytes were freed.
+//
+// These are the one thing in the cache that is pure waste. A failed fetch cleans
+// up after itself, but a KILLED PROCESS cannot, and nothing swept them
+// afterwards: the eviction sweep and the holdings listing both skip non-digest
+// names on purpose, so an abandoned partial was permanent dead disk.
+//
+// `live` is the set of hashes with a running transfer, whose partials must
+// survive. **At startup it is correctly nil** — a process that has just started
+// is writing nothing, so every partial it finds is abandoned by definition. That
+// is what makes the startup sweep unconditional and safe: no age heuristic, no
+// policy, no knob. At runtime the caller must pass the live set.
+//
+// Deliberately NOT folded into ReconcileMadnetworkCache, which runs from the
+// page's Rescan button while transfers may be in flight.
+func ReapAbandonedPartials(cacheDir string, live map[string]bool) (int, int64, error) {
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, 0, nil
+		}
+		return 0, 0, fmt.Errorf("read cache dir: %w", err)
+	}
+	var removed int
+	var freed int64
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), partialSuffix) {
+			continue
+		}
+		hash := strings.TrimSuffix(e.Name(), partialSuffix)
+		if !hashDirPattern.MatchString(hash) || live[hash] {
+			continue
+		}
+		size := int64(0)
+		if info, err := e.Info(); err == nil {
+			size = info.Size()
+		}
+		if err := os.Remove(filepath.Join(cacheDir, e.Name())); err != nil && !os.IsNotExist(err) {
+			return removed, freed, fmt.Errorf("reap partial %s: %w", e.Name(), err)
+		}
+		removed++
+		freed += size
+	}
+	return removed, freed, nil
+}
+
+// CountAbandonedPartials reports what ReapAbandonedPartials would free, without
+// freeing it — the cache page's "N abandoned partials" line.
+func CountAbandonedPartials(cacheDir string, live map[string]bool) (int, int64, error) {
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, 0, nil
+		}
+		return 0, 0, fmt.Errorf("read cache dir: %w", err)
+	}
+	var count int
+	var bytes int64
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), partialSuffix) {
+			continue
+		}
+		hash := strings.TrimSuffix(e.Name(), partialSuffix)
+		if !hashDirPattern.MatchString(hash) || live[hash] {
+			continue
+		}
+		count++
+		if info, err := e.Info(); err == nil {
+			bytes += info.Size()
+		}
+	}
+	return count, bytes, nil
+}
+
+// partialSuffix is what federation names an in-progress fetch's scratch file.
+// Duplicated here rather than imported: the sweeps must keep working when
+// federation is compiled out, and the whole point is that they run on a node
+// which is no longer fetching anything.
+const partialSuffix = ".part"
 
 // describeCachedBlob builds the index row for a cache file from the file alone:
 // size and mtime from stat, tags from its own headers. mtime stands in for both

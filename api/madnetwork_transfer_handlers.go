@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -82,6 +83,15 @@ func (h *handler) madnetworkStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// ?download=1 saves the file instead of playing it — the cache page's
+	// "Download" row action (docs/architecture/madnetwork-cache.md). A separate
+	// parameter rather than a separate endpoint because the bytes, the range
+	// handling and the gate are identical; only the disposition differs.
+	if r.URL.Query().Get("download") == "1" {
+		w.Header().Set("Content-Disposition",
+			mime.FormatMediaType("attachment",
+				map[string]string{"filename": h.cachedDownloadName(r.Context(), hash, t.Filename())}))
+	}
 	// Completed (local blob, cache hit, or a fetch that just finished):
 	// http.ServeContent gives full native Range support.
 	select {
@@ -266,7 +276,13 @@ func (h *handler) madnetworkDownload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	if entry == nil {
+	// No live claim is NOT a refusal when we already hold the bytes
+	// (docs/architecture/madnetwork-cache.md). Materializing stages into the
+	// review bucket exactly like an upload, and an upload takes its metadata from
+	// the file's own tags — so a cached blob whose source has left the network
+	// has everything it needs right here. Only a hash we neither hold nor can
+	// find a holder for is a 404.
+	if entry == nil && !h.holdsCached(hash) {
 		http.Error(w, "no friend advertises this content", http.StatusNotFound)
 		return
 	}
@@ -283,6 +299,14 @@ func (h *handler) madnetworkDownload(w http.ResponseWriter, r *http.Request) {
 		if existing.DeletedAt.Valid {
 			writeJSON(w, http.StatusConflict, map[string]any{
 				"ok": false, "error": "this content is in the trash — restore it instead of re-downloading"})
+			return
+		}
+		if entry == nil {
+			// We hold the bytes and nobody describes them: there is no remote
+			// appearance to offer, and the library's own already exists.
+			h.evictCached(hash)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok": true, "existed": true, "attached": false})
 			return
 		}
 		tid, created, err := h.attachRemoteTagset(ctx, existing.ID, actor, entry)
@@ -377,6 +401,23 @@ func (h *handler) runMadnetworkDownload(hash string, entry *federation.CatalogEn
 	filename := sanitizeFilename(t.Filename())
 	ext := strings.ToLower(filepath.Ext(filename))
 	if _, ok := acceptedAudioTypes[ext]; !ok {
+		// The transfer's name is unusable. For a blob already in the cache that
+		// is the normal case, not a fault — a finished transfer is named after
+		// its own path, which for a cache file is the hash — so ask the index,
+		// which kept the origin's name across the restart.
+		if indexed := h.cachedDownloadName(ctx, hash, ""); indexed != hash {
+			if e := strings.ToLower(filepath.Ext(indexed)); acceptedAudioTypes[e] != "" {
+				filename, ext = indexed, e
+			}
+		}
+	}
+	if _, ok := acceptedAudioTypes[ext]; !ok {
+		if entry == nil {
+			// Nothing left to ask: no claim describes it and neither the transfer
+			// nor the index knows what kind of file it is.
+			fail(fmt.Errorf("this cached file carries no usable filename, and no node describes it"))
+			return
+		}
 		// Origin filename unusable — synthesize one from the tagset text and
 		// the advertised codec so the staged file still looks sane.
 		ext = extForCodec(entryRenditionCodec(entry, hash))
@@ -391,6 +432,11 @@ func (h *handler) runMadnetworkDownload(hash string, entry *federation.CatalogEn
 	// Late byte-dup check: the blob may have entered the library while the
 	// fetch ran (e.g. a parallel upload of the same bytes).
 	if existing, err := h.repo.GetFileByHash(ctx, hash); err == nil && existing != nil && !existing.DeletedAt.Valid {
+		if entry == nil {
+			h.evictCached(hash)
+			job.set("attached", "")
+			return
+		}
 		tid, _, aerr := h.attachRemoteTagset(ctx, existing.ID, actor, entry)
 		if aerr != nil {
 			fail(aerr)
@@ -409,6 +455,14 @@ func (h *handler) runMadnetworkDownload(hash string, entry *federation.CatalogEn
 		fail(err)
 		return
 	}
+	now := time.Now().Unix()
+	// With no claim to carry, the staged appearance takes its tags the way an
+	// upload does — out of the file itself. Read before storage.Put, which
+	// consumes the reader; extractTagsOrEmpty rewinds either way.
+	meta := entryToMetadata(entry, now)
+	if entry == nil {
+		meta = tagsToMetadata(extractTagsOrEmpty(f, mimeType), now)
+	}
 	err = h.storage.Put(hash, filename, f)
 	f.Close()
 	if err != nil {
@@ -425,7 +479,6 @@ func (h *handler) runMadnetworkDownload(hash string, entry *federation.CatalogEn
 	if policy.AutoapproveDownloads || !h.authzEnabled {
 		reviewState = database.ReviewApproved
 	}
-	now := time.Now().Unix()
 	file := &database.File{
 		Hash:           hash,
 		ByteSize:       t.Size(),
@@ -437,7 +490,7 @@ func (h *handler) runMadnetworkDownload(hash string, entry *federation.CatalogEn
 		ReviewState:    reviewState,
 	}
 	upload := &database.FileUpload{Filename: filename, UploadedAt: now}
-	if err := h.repo.InsertFile(ctx, file, upload, entryToMetadata(entry, now)); err != nil {
+	if err := h.repo.InsertFile(ctx, file, upload, meta); err != nil {
 		log.Printf("orphan blob (madnetwork download): hash=%s err=%v", hash, err)
 		fail(fmt.Errorf("record download: %w", err))
 		return

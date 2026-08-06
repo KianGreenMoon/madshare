@@ -29,7 +29,8 @@ type fakeFederation struct {
 	inboundDead bool   // when true, InboundHealthy() reports false (fail-open path)
 	blockReason string // what the last block carried into the published mark (F6)
 	graph       federation.NetworkMap
-	branches    map[string][]string       // node key → the direct friends it reaches us through
+	active      []federation.TransferStats // fetches running right now (the cache page's in-flight line)
+	branches    map[string][]string        // node key → the direct friends it reaches us through
 	hops        map[string]int            // node key → friendship distance from us (absent = unplaceable)
 	reports     []*federation.ClaimReport // contradicted claims awaiting a decision (F6)
 	disposed    []string                  // "<id>:<disposition>" per PATCH
@@ -65,6 +66,8 @@ func (f *fakeFederation) ImportKey(ctx context.Context, publicKey, name string) 
 func (f *fakeFederation) EnsureBlob(context.Context, string) (federation.Transfer, error) {
 	return nil, federation.ErrNoHolder
 }
+
+func (f *fakeFederation) ActiveTransfers() []federation.TransferStats { return f.active }
 
 // IssueCapabilityToken records what the handler asked for (F7 item 9) so a test
 // can assert the guest bit the caller's account earned, and hands back a grant

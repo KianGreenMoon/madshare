@@ -148,6 +148,46 @@ func (h *handler) indexCacheEntry(ctx context.Context, hash, filename string) er
 	return h.repo.PutMadnetworkCacheEntry(ctx, e)
 }
 
+// holdsCached reports whether the download cache holds these bytes right now.
+// Asked of the FILE rather than the index, because it decides whether a request
+// can be served at all — and the file is what would serve it.
+func (h *handler) holdsCached(hash string) bool {
+	if h.cacheDir == "" {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(h.cacheDir, hash))
+	return err == nil && !info.IsDir()
+}
+
+// cachedDownloadName picks the filename a saved cache blob lands under. The
+// transfer's own name is right while it is running, but a finished one is named
+// after its path — which for a cache file IS the hash — so the index is what
+// remembers the origin's name across a restart. A blob that never had one falls
+// back to its tags, then to the hash: an extensionless digest is a poor name, but
+// it is honest and the browser still saves the right bytes.
+func (h *handler) cachedDownloadName(ctx context.Context, hash, live string) string {
+	if name := sanitizeFilename(live); name != "" && name != hash {
+		return name
+	}
+	if h.repo == nil {
+		return hash
+	}
+	e, err := h.repo.GetMadnetworkCacheEntry(ctx, hash)
+	if err != nil || e == nil {
+		return hash
+	}
+	if e.Filename != "" {
+		return e.Filename
+	}
+	if e.Title != "" {
+		if e.Artist != "" {
+			return sanitizeFilename(e.Artist + " - " + e.Title)
+		}
+		return sanitizeFilename(e.Title)
+	}
+	return hash
+}
+
 // dropCacheIndex makes the index agree that a cache file is gone. Best-effort
 // like the eviction it follows: the file is what matters, and a row that
 // outlives it is dropped by the next reconcile pass anyway.

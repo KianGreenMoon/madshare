@@ -145,6 +145,20 @@ func main() {
 		log.Printf("evicted %d cached blob(s) the library already holds", n)
 	}
 
+	// Delete the scratch files of fetches that died. A failed transfer cleans up
+	// after itself; a killed process cannot, and nothing swept them afterwards —
+	// both the eviction sweep and the holdings listing skip non-digest names on
+	// purpose, so an abandoned `.part` was permanent dead disk.
+	//
+	// Unconditional here, and safe for one reason: a process that has just
+	// started is writing nothing, so every partial it finds is abandoned by
+	// definition. No age heuristic, no policy, no knob.
+	if n, freed, err := database.ReapAbandonedPartials(cfg.MadnetworkCacheDir(), nil); err != nil {
+		log.Printf("reap abandoned partials: %v", err)
+	} else if n > 0 {
+		log.Printf("reaped %d abandoned partial fetch(es), %d bytes", n, freed)
+	}
+
 	// Make the cache index agree with the cache directory
 	// (docs/architecture/madnetwork-cache.md). After the eviction above, which
 	// deletes files: reconciling first would only re-drop those rows a moment

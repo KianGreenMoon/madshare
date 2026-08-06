@@ -1,0 +1,272 @@
+package api
+
+import (
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/go-chi/chi/v5"
+
+	"daemonlord.ygg/madshare/database"
+)
+
+// The madnetwork cache control surface (docs/architecture/madnetwork-cache.md):
+// see what the swarm fetched, and clean it up. Primarily a deletion surface,
+// which is why it sits in the admin group behind file.delete; materialize and
+// download keep their own gates on their existing endpoints.
+//
+// Every listing read goes through one filter (database.MadnetworkCacheFilter),
+// shared by the page, the headline figures and the select-all-N resolver, so a
+// bulk removal can never act on a different set than the one on screen.
+
+// cachePageSize bounds one page of the listing.
+const cachePageSize = 100
+
+// cacheFilterFrom reads the shared filter off the query string.
+func cacheFilterFrom(r *http.Request) database.MadnetworkCacheFilter {
+	return database.MadnetworkCacheFilter{
+		Q:     strings.TrimSpace(r.URL.Query().Get("q")),
+		Field: r.URL.Query().Get("field"),
+	}
+}
+
+// liveTransferHashes is the set of hashes being fetched right now. It is what
+// keeps a running transfer's `.part` file out of the reaper's way — the only
+// thing that knows a partial is alive rather than abandoned.
+func (h *handler) liveTransferHashes() map[string]bool {
+	if h.federation == nil {
+		return nil
+	}
+	live := map[string]bool{}
+	for _, t := range h.federation.ActiveTransfers() {
+		live[t.Hash] = true
+	}
+	return live
+}
+
+// adminCacheList handles GET /api/admin/cache: one page of cached blobs, in the
+// envelope file-list.js consumes ({items, total, selectable_total}).
+func (h *handler) adminCacheList(w http.ResponseWriter, r *http.Request) {
+	q := database.MadnetworkCacheQuery{
+		MadnetworkCacheFilter: cacheFilterFrom(r),
+		Sort:                  r.URL.Query().Get("sort"),
+		Limit:                 cachePageSize,
+	}
+	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 && n <= 500 {
+		q.Limit = n
+	}
+	if n, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && n > 0 {
+		q.Offset = n
+	}
+	rows, err := h.repo.ListMadnetworkCachePage(r.Context(), q)
+	if err != nil {
+		log.Printf("cache list: %v", err)
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	total, bytes, err := h.repo.CountMadnetworkCache(r.Context(), q.MadnetworkCacheFilter)
+	if err != nil {
+		log.Printf("cache count: %v", err)
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	items := rows
+	if items == nil {
+		items = []*database.MadnetworkCacheEntry{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "items": items, "total": total,
+		// Every row is actionable here — there is no half-selectable state — but
+		// the field is what the shared list reads to offer "select all N".
+		"selectable_total": total,
+		"bytes":            bytes,
+	})
+}
+
+// adminCacheSummary handles GET /api/admin/cache/summary: how full the cache is,
+// what is arriving, and what is abandoned.
+func (h *handler) adminCacheSummary(w http.ResponseWriter, r *http.Request) {
+	entries, bytes, err := h.repo.CountMadnetworkCache(r.Context(), database.MadnetworkCacheFilter{})
+	if err != nil {
+		log.Printf("cache summary: %v", err)
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	resp := map[string]any{"ok": true, "entries": entries, "bytes": bytes}
+
+	live := h.liveTransferHashes()
+	inFlight := []map[string]any{}
+	if h.federation != nil {
+		for _, t := range h.federation.ActiveTransfers() {
+			inFlight = append(inFlight, map[string]any{
+				"hash": t.Hash, "size": t.Size, "progress": t.Progress, "mode": t.Mode,
+			})
+		}
+	}
+	resp["in_flight"] = inFlight
+
+	if h.cacheDir != "" {
+		n, b, err := database.CountAbandonedPartials(h.cacheDir, live)
+		if err != nil {
+			log.Printf("count abandoned partials: %v", err)
+		}
+		resp["partials"] = map[string]any{"count": n, "bytes": b}
+	}
+	// Whether these bytes are being served to the community, so the page can say
+	// plainly what removing one costs.
+	if h.madnetwork != nil {
+		if p, err := h.madnetwork.GetMadnetworkPolicy(r.Context()); err == nil {
+			resp["seeding"] = map[string]any{"enabled": p.SeedEnabled, "cache": p.SeedCache}
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// adminCacheClaims handles GET /api/admin/cache/{hash}/claims: what sources
+// currently say this blob is. The rare view — one hash at a time, because it
+// walks the cached catalogs.
+func (h *handler) adminCacheClaims(w http.ResponseWriter, r *http.Request) {
+	hash := strings.ToLower(chi.URLParam(r, "hash"))
+	if !isSHA256Hex(hash) {
+		http.Error(w, "invalid hash", http.StatusBadRequest)
+		return
+	}
+	if h.madnetwork == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "claims": []any{}})
+		return
+	}
+	claims, err := h.madnetwork.MadnetworkCacheClaims(r.Context(), hash)
+	if err != nil {
+		log.Printf("cache claims %s: %v", hash, err)
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if claims == nil {
+		claims = []*database.MadnetworkCacheClaim{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "claims": claims})
+}
+
+// adminCacheBulk handles POST /api/admin/cache/bulk — removal, by explicit set
+// or over the whole matching filter.
+func (h *handler) adminCacheBulk(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Action string   `json:"action"`
+		Hashes []string `json:"hashes"`
+		All    bool     `json:"all"`
+		Filter struct {
+			Q     string `json:"q"`
+			Field string `json:"field"`
+		} `json:"filter"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if body.Action != "remove" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "error": `unknown action (want "remove")`})
+		return
+	}
+
+	hashes := body.Hashes
+	if len(hashes) == 0 {
+		filter := database.MadnetworkCacheFilter{
+			Q: strings.TrimSpace(body.Filter.Q), Field: body.Filter.Field,
+		}
+		// The guardrail every bulk endpoint here shares: an empty filter means
+		// "everything", and wiping the whole cache has to be asked for.
+		if filter.Q == "" && !body.All {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"ok": false, "error": `refusing to clear the whole cache without "all": true`})
+			return
+		}
+		resolved, err := h.repo.MadnetworkCacheHashes(r.Context(), filter)
+		if err != nil {
+			log.Printf("cache bulk resolve: %v", err)
+			http.Error(w, "storage error", http.StatusInternalServerError)
+			return
+		}
+		hashes = resolved
+	}
+
+	removed, freed := 0, int64(0)
+	for _, raw := range hashes {
+		hash := strings.ToLower(strings.TrimSpace(raw))
+		if !isSHA256Hex(hash) {
+			continue
+		}
+		n, ok := h.removeCached(hash)
+		if ok {
+			removed++
+			freed += n
+		}
+	}
+	h.audit(r.Context(), "madnetwork.cache.remove", "",
+		strconv.Itoa(removed)+" blob(s), "+strconv.FormatInt(freed, 10)+" bytes")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": removed, "bytes": freed})
+}
+
+// removeCached deletes one cache file and its index row, returning the bytes
+// freed. The FILE goes first: it is what the swarm reads, and the row only
+// describes it. A file already gone is a success — the caller's job was to make
+// both agree that it is not there.
+//
+// Removing bytes some request is mid-read is safe: POSIX keeps the open
+// descriptor alive across the unlink, which is what EvictCachedBlob already
+// relies on. Note this does NOT go through federation: the cache outlives
+// federation being switched off, and it must stay cleanable then.
+func (h *handler) removeCached(hash string) (int64, bool) {
+	if h.cacheDir == "" {
+		return 0, false
+	}
+	path := filepath.Join(h.cacheDir, hash)
+	var size int64
+	if info, err := os.Stat(path); err == nil {
+		size = info.Size()
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		log.Printf("remove cached blob %s: %v", hash, err)
+		return 0, false
+	}
+	h.dropCacheIndex(hash)
+	return size, true
+}
+
+// adminCacheRescan handles POST /api/admin/cache/rescan: make the index agree
+// with the directory on demand, for a cache that was changed underneath us.
+func (h *handler) adminCacheRescan(w http.ResponseWriter, r *http.Request) {
+	db, ok := h.repo.(*database.DB)
+	if !ok || h.cacheDir == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "added": 0, "dropped": 0})
+		return
+	}
+	added, dropped, err := database.ReconcileMadnetworkCache(r.Context(), db, h.cacheDir)
+	if err != nil {
+		log.Printf("cache rescan: %v", err)
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "added": added, "dropped": dropped})
+}
+
+// adminCacheReapPartials handles POST /api/admin/cache/partials/reap: delete the
+// scratch files of fetches that died, which nothing swept before this existed.
+// Transfers running right now are excluded — their partials are not abandoned.
+func (h *handler) adminCacheReapPartials(w http.ResponseWriter, r *http.Request) {
+	if h.cacheDir == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": 0, "bytes": 0})
+		return
+	}
+	removed, freed, err := database.ReapAbandonedPartials(h.cacheDir, h.liveTransferHashes())
+	if err != nil {
+		log.Printf("reap abandoned partials: %v", err)
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	h.audit(r.Context(), "madnetwork.cache.reap", "",
+		strconv.Itoa(removed)+" partial(s), "+strconv.FormatInt(freed, 10)+" bytes")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": removed, "bytes": freed})
+}

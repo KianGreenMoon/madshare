@@ -163,6 +163,11 @@ type MadnetworkStore interface {
 	// metadata for download-to-library) and the download policy.
 	MadnetworkEntryForHash(ctx context.Context, hash string) (*federation.CatalogEntry, error)
 	GetMadnetworkPolicy(ctx context.Context) (database.MadnetworkPolicy, error)
+	// MadnetworkCacheClaims is what the network currently says about one cached
+	// hash (docs/architecture/madnetwork-cache.md). A catalog read, which is why
+	// it lives here and not beside the cache INDEX on Repository: the index
+	// describes our disk, this describes other people's claims.
+	MadnetworkCacheClaims(ctx context.Context, hash string) ([]*database.MadnetworkCacheClaim, error)
 }
 
 // FederationNode is the admin-facing surface of the embedded madnetwork node
@@ -191,6 +196,10 @@ type FederationNode interface {
 	// EnsureBlob joins (or starts) the fetch of a remote blob by content hash
 	// (federation F3); the stub answers with its compiled-out error.
 	EnsureBlob(ctx context.Context, hash string) (federation.Transfer, error)
+	// ActiveTransfers snapshots the fetches running right now — the cache page's
+	// "downloading" line, and the set whose `.part` files must not be reaped
+	// (docs/architecture/madnetwork-cache.md).
+	ActiveTransfers() []federation.TransferStats
 	// EvictCachedBlob drops the download-cache copy of a hash the library now
 	// holds. Two copies of one blob are served under two different rules — only
 	// the library's applies the recording's sharing scope — so the duplicate is
@@ -451,6 +460,17 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(fileDelete).Get("/prune/status", h.adminPruneStatus)
 		r.With(fileDelete).Post("/prune/cancel", h.adminPruneCancel)
 		r.With(fileDelete).Get("/storage", h.adminStorageStats)
+		// The madnetwork cache control surface
+		// (docs/architecture/madnetwork-cache.md). file.delete throughout: it is
+		// primarily a surface for destroying local data. Materialize and download
+		// are NOT here — they keep their own gates on the endpoints they already
+		// have (file.upload / madnetwork.access).
+		r.With(fileDelete).Get("/cache", h.adminCacheList)
+		r.With(fileDelete).Get("/cache/summary", h.adminCacheSummary)
+		r.With(fileDelete).Get("/cache/{hash}/claims", h.adminCacheClaims)
+		r.With(fileDelete).Post("/cache/bulk", h.adminCacheBulk)
+		r.With(fileDelete).Post("/cache/rescan", h.adminCacheRescan)
+		r.With(fileDelete).Post("/cache/partials/reap", h.adminCacheReapPartials)
 		r.With(fileDelete).Get("/trash", h.adminTrashList)
 		// Bulk Trash admits either capability; the handler enforces the per-action
 		// gate (restore/delete → file.delete, edit → metadata.edit).

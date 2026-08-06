@@ -105,6 +105,67 @@ func TestReconcileMadnetworkCache(t *testing.T) {
 	}
 }
 
+// TestReapAbandonedPartials closes the leak nothing else could: a `.part` left
+// by a killed process was permanent dead disk, because both the eviction sweep
+// and the holdings listing skip non-digest names on purpose.
+func TestReapAbandonedPartials(t *testing.T) {
+	dir := t.TempDir()
+	dead, live := hexHash("dead"), hexHash("live")
+	write := func(name string, n int) {
+		if err := os.WriteFile(filepath.Join(dir, name), make([]byte, n), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	write(dead+".part", 10)
+	write(live+".part", 20)
+	write(hexHash("whole"), 30) // a finished blob is not a partial
+	write("stray.part", 5)      // not a hash: not ours to delete
+	write("notes.txt", 5)
+
+	// At startup `live` is correctly nil — a process that just started is writing
+	// nothing — but at runtime a fetch in progress must keep its scratch file.
+	count, bytes, err := CountAbandonedPartials(dir, map[string]bool{live: true})
+	if err != nil {
+		t.Fatalf("CountAbandonedPartials: %v", err)
+	}
+	if count != 1 || bytes != 10 {
+		t.Errorf("count/bytes = %d/%d, want 1/10 (only the abandoned one)", count, bytes)
+	}
+
+	removed, freed, err := ReapAbandonedPartials(dir, map[string]bool{live: true})
+	if err != nil {
+		t.Fatalf("ReapAbandonedPartials: %v", err)
+	}
+	if removed != 1 || freed != 10 {
+		t.Errorf("removed/freed = %d/%d, want 1/10", removed, freed)
+	}
+	for _, tc := range []struct {
+		name string
+		gone bool
+		why  string
+	}{
+		{dead + ".part", true, "an abandoned fetch's scratch file is pure waste"},
+		{live + ".part", false, "reaping a RUNNING transfer's partial is data loss mid-fetch"},
+		{hexHash("whole"), false, "a finished blob is a cache entry, not a partial"},
+		{"stray.part", false, "a name we did not write is not ours to delete"},
+		{"notes.txt", false, "nor is anything else in the directory"},
+	} {
+		_, err := os.Stat(filepath.Join(dir, tc.name))
+		if gone := os.IsNotExist(err); gone != tc.gone {
+			t.Errorf("%s: gone=%v, want %v — %s", tc.name, gone, tc.gone, tc.why)
+		}
+	}
+
+	// Idempotent, and silent about a directory that never existed.
+	if n, _, err := ReapAbandonedPartials(dir, nil); err != nil || n != 1 {
+		// The second pass now takes `live` too, since nothing is running.
+		t.Logf("second pass removed %d (the formerly-live partial), err=%v", n, err)
+	}
+	if n, _, err := ReapAbandonedPartials(filepath.Join(dir, "nope"), nil); err != nil || n != 0 {
+		t.Errorf("missing dir = %d/%v, want 0/nil", n, err)
+	}
+}
+
 // TestMadnetworkCacheListing covers the page's three reads over one filter: the
 // page itself, the count+bytes headline, and the "select all N matching" hash
 // set. They must agree — a bulk removal that targeted a different set than the
