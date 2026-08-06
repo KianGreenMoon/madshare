@@ -216,8 +216,8 @@ curl -H "Authorization: Bearer $TOKEN" \
   password and store it in a secret manager, not in source control.
 - **Scope.** A token can do anything its owner can. It is not a reduced-scope
   credential — revoke it if it leaks.
-- **Transport.** Send tokens only over a trusted/encrypted channel. On a plain-HTTP
-  origin the browser Clipboard API is unavailable, so the Settings page falls back
-  to selecting the value for a manual copy.
+- **Transport.** Send tokens only over a trusted/encrypted channel. The Settings
+  page's Copy button works on a plain-HTTP origin, where the browser Clipboard API
+  does not exist (`webui/static/js/clipboard.js`, docs/ui/clipboard.md).
 - **Expiry.** Prefer setting an expiry for automated clients so a forgotten token
   doesn't live forever; rotate by creating a new token and revoking the old one.

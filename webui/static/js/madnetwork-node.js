@@ -86,8 +86,12 @@ function renderCard(node) {
   const box = document.getElementById('mnNodeCard');
   if (!box) return;
   box.replaceChildren(buildNodeCard(node, {
-    onCopy: ok => showToast(ok ? 'Node key copied.' : 'Could not copy the key.',
-      { type: ok ? 'success' : 'error' }),
+    onCopy: (ok, selected) => {
+      if (ok) { showToast('Node key copied.', { type: 'success' }); return; }
+      showToast(selected
+        ? 'Copy is blocked here — press Ctrl/Cmd+C for the selected key.'
+        : 'Could not copy the key.', { type: 'error' });
+    },
   }));
 }
 

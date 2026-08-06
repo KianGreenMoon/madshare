@@ -6,6 +6,7 @@
 // without a reload. Design: docs/architecture/federation.md.
 import { bootAdmin, API, toast, handleAuthError, el } from './shared.js';
 import { initMap, loadMap, focusKey } from './network-map.js';
+import { copyText, selectElementText } from '../clipboard.js';
 
 const disabledNote = document.getElementById('disabledNote');
 const selfPanel    = document.getElementById('selfPanel');
@@ -33,9 +34,9 @@ let lastPeersJSON = '';    // skip re-render (and select clobbering) when nothin
 let reports = [];          // contradicted-claim findings, rendered on the peer they came from (F6)
 
 importForm.addEventListener('submit', onImport);
-document.getElementById('copyAddr').addEventListener('click', () => copyText(selfAddr.textContent, 'Mesh address copied.'));
-document.getElementById('copyKey').addEventListener('click', () => copyText(selfKey.textContent, 'Public key copied.'));
-document.getElementById('copyCard').addEventListener('click', () => copyText(JSON.stringify(ownCard, null, 2), 'Node card copied — send it to your friend.'));
+document.getElementById('copyAddr').addEventListener('click', () => copyToClipboard(selfAddr.textContent, 'Mesh address copied.', selfAddr));
+document.getElementById('copyKey').addEventListener('click', () => copyToClipboard(selfKey.textContent, 'Public key copied.', selfKey));
+document.getElementById('copyCard').addEventListener('click', () => copyToClipboard(JSON.stringify(ownCard, null, 2), 'Node card copied — send it to your friend.'));
 document.getElementById('downloadCard').addEventListener('click', downloadCard);
 
 // ── Load + poll ───────────────────────────────────────────────────────────────
@@ -696,13 +697,18 @@ function refresh() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-async function copyText(text, doneMsg) {
-  try {
-    await navigator.clipboard.writeText(text);
-    toast(doneMsg, 'info');
-  } catch {
-    toast('Copy failed — select and copy manually.', 'error');
+// copyToClipboard copies and says so. `shown` is the element displaying the same
+// text, if there is one: when even the legacy path is refused we select it, so
+// the reader's next move is one keystroke instead of a careful drag across 64
+// hex characters. The node card has no such element — it has a Download button,
+// which is what the message points at.
+async function copyToClipboard(text, doneMsg, shown = null) {
+  if (await copyText(text)) { toast(doneMsg, 'info'); return; }
+  if (shown && selectElementText(shown)) {
+    toast('Copy is blocked here — press Ctrl/Cmd+C for the selected text.', 'error');
+    return;
   }
+  toast('Copy is blocked by the browser — use Download node card instead.', 'error');
 }
 
 function downloadCard() {

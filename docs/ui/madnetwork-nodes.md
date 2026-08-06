@@ -125,7 +125,7 @@ a second query:
 | shown | why |
 |---|---|
 | **name** (or *(unnamed)*) | the label chain the summary already resolves: our own name for a friend, the heard name otherwise |
-| **key**, truncated, click to copy | beyond our own friends a name is hearsay and the key is the fact — the same rule the network map follows, and it is what the URL is built from |
+| **key**, truncated | beyond our own friends a name is hearsay and the key is the fact — the same rule the network map follows, and it is what the URL is built from. The whole row is the link to the node, so the key gets its copy control on the card there, not here |
 | **hops + class** — *this server* / *direct friend* / *member* | the ordering key, made visible so the order is not a mystery |
 | **entries · seen · synced** | reachability and catalog freshness in the vocabulary the chips already use; a node outside its freshness window is greyed, not removed |
 

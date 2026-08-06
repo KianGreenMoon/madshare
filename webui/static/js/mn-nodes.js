@@ -13,6 +13,7 @@
 // what a node page is addressed by.
 import { API, fmtAgo, mkSpan, fetchJSON, canSeeNetwork, nodeHref } from './mn-browse.js';
 import { esc } from './browse-rows.js';
+import { copyText, selectElementText } from './clipboard.js';
 
 export { nodeHref };
 
@@ -89,6 +90,10 @@ export function buildNodeRow(n) {
 // buildNodeCard is the header of a node's own page: the same facts with room to
 // breathe, the full key with a copy control, and — for an admin only — the way
 // on to the network map.
+//
+// onCopy(ok, selected) reports the copy attempt: `selected` says the key was
+// left selected on the page instead, so the caller can name the keystroke that
+// finishes the job rather than just declaring failure.
 export function buildNodeCard(n, { onCopy } = {}) {
   const card = document.createElement('section');
   card.className = 'mn-node-card';
@@ -110,7 +115,7 @@ export function buildNodeCard(n, { onCopy } = {}) {
   const key = mkSpan('mn-node-fullkey', n.key || '(no key)');
   key.title = 'This node’s public key — its identity, and this page’s address';
   keyLine.append(key);
-  if (n.key && navigator.clipboard) {
+  if (n.key) {
     const copy = document.createElement('button');
     copy.type = 'button';
     copy.className = 'mn-node-copy';
@@ -118,10 +123,12 @@ export function buildNodeCard(n, { onCopy } = {}) {
     copy.title = 'Copy the node key';
     copy.setAttribute('aria-label', 'Copy the node key');
     copy.addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(n.key);
-        onCopy?.(true);
-      } catch { onCopy?.(false); }
+      // The button is offered unconditionally. It used to appear only where
+      // navigator.clipboard exists, which is a secure context — so on the plain
+      // http:// origin most nodes are actually reached on, the one control that
+      // hands you the address of the page you are looking at was simply absent.
+      if (await copyText(n.key)) { onCopy?.(true); return; }
+      onCopy?.(false, selectElementText(key));
     });
     keyLine.append(copy);
   }

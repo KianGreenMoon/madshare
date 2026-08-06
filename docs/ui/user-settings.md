@@ -315,6 +315,6 @@ of split between the listening header and the admin header.
   we later want theme to follow the account across devices, add a `theme` column to
   a per-user settings store and seed `localStorage` from `/api/auth/me`. Out of
   scope here; the `theme.js` seam makes it a localized change.
-- **Token "copy" affordance:** `navigator.clipboard.writeText`; fall back to
-  select-all if unavailable (non-HTTPS origins lack the Clipboard API — relevant on
-  the plain-HTTP `.ygg` deployment).
+- **Token "copy" affordance:** the shared `clipboard.js` (docs/ui/clipboard.md) —
+  it copies on the plain-HTTP `.ygg` deployment, where `navigator.clipboard` does
+  not exist, and only selects the value for a manual copy if even that is refused.

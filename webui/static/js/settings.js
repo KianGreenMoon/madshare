@@ -7,6 +7,7 @@
 import { getIdentity, openLoginModal } from './auth.js';
 import { showToast } from './toast.js';
 import { applyTheme, currentTheme } from './theme.js';
+import { copyText, selectElementText } from './clipboard.js';
 
 const API = document.querySelector('meta[name="api-url"]')?.content || '';
 
@@ -168,16 +169,13 @@ function wireTokens() {
   });
 
   copyBtn.addEventListener('click', async () => {
-    const text = revealValue.textContent;
-    try {
-      await navigator.clipboard.writeText(text);
+    if (await copyText(revealValue.textContent)) {
       showToast('Token copied.', { type: 'success' });
-    } catch {
-      // Clipboard API is unavailable on non-secure origins (e.g. the plain-HTTP
-      // .ygg deployment) — select the text so the user can copy it by hand.
-      selectText(revealValue);
-      showToast('Press Ctrl/Cmd+C to copy the selected token.');
+      return;
     }
+    // Neither path was allowed — select the text so it is one keystroke away.
+    selectElementText(revealValue);
+    showToast('Press Ctrl/Cmd+C to copy the selected token.');
   });
 
   doneBtn.addEventListener('click', () => {
@@ -289,12 +287,4 @@ function note(text) {
   p.className = 'token-empty';
   p.textContent = text;
   return p;
-}
-
-function selectText(el) {
-  const range = document.createRange();
-  range.selectNodeContents(el);
-  const sel = window.getSelection();
-  sel.removeAllRanges();
-  sel.addRange(range);
 }
