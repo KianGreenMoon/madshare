@@ -87,11 +87,20 @@ type Repository interface {
 	// and trash disk-usage categories (see adminStorageStats).
 	StorageByteBreakdown(ctx context.Context) (StorageByteBreakdown, error)
 
-	// MadnetworkCacheBytes is the download cache's footprint — the fifth
-	// disk-usage category. On Repository rather than the madnetwork store on
-	// purpose: the cache outlives federation being switched off, and a node that
-	// turned it off would otherwise stop reporting disk it is still occupying.
+	// The madnetwork download cache index (docs/architecture/madnetwork-cache.md).
+	// On Repository rather than the madnetwork store on purpose: the cache
+	// outlives federation being switched off, and a node that turned it off would
+	// otherwise stop reporting — and stop being able to clean up — disk it is
+	// still occupying.
+	//
+	// MadnetworkCacheBytes is the footprint, the fifth disk-usage category.
+	// PutMadnetworkCacheEntry records a blob that has landed;
+	// TouchMadnetworkCache moves the last-used clock for a LOCAL read;
+	// DeleteMadnetworkCacheEntry makes the index agree that a file is gone.
 	MadnetworkCacheBytes(ctx context.Context) (int64, error)
+	PutMadnetworkCacheEntry(ctx context.Context, e *MadnetworkCacheEntry) error
+	TouchMadnetworkCache(ctx context.Context, hash string, at int64) error
+	DeleteMadnetworkCacheEntry(ctx context.Context, hash string) error
 
 	// ListArtists returns one entry per effective artist name, ordered
 	// alphabetically. album_artist is preferred over artist for grouping.

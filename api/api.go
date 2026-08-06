@@ -115,6 +115,12 @@ type Deps struct {
 	// ReachableWindowSec is the availability freshness window in seconds
 	// (config.FederationConfig.ReachableWindowSec); 0 falls back to the default.
 	ReachableWindowSec int
+	// MadnetworkCacheDir is where fetched blobs land
+	// (config.MadnetworkCacheDir). The handler needs it to tell a blob that just
+	// landed in the CACHE from one the local library already held — EnsureBlob
+	// resolves the library first, and only the former is a cache entry to index.
+	// Empty disables indexing (docs/architecture/madnetwork-cache.md).
+	MadnetworkCacheDir string
 }
 
 // MadnetworkStore reads the merged madnetwork catalog (cached friend catalogs
@@ -288,6 +294,7 @@ func (d Deps) newHandler() *handler {
 		madnetwork:      d.Madnetwork,
 		madnetworkName:  d.MadnetworkName,
 		reachWindowSec:  d.ReachableWindowSec,
+		cacheDir:        d.MadnetworkCacheDir,
 	}
 	if d.SourceArchive != nil || d.LicenseText != nil || d.SourceRoot != "" {
 		h.source = &sourceArchiver{

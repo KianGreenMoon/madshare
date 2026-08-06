@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"daemonlord.ygg/madshare/api/storage"
@@ -428,6 +429,12 @@ type fakeRepo struct {
 	breakdown    database.StorageByteBreakdown
 	breakdownErr error
 	cacheBytes   int64
+	// The madnetwork cache index. Guarded by mu because indexCachedBlob runs in
+	// a goroutine that outlives the request (cache-through streaming keeps
+	// filling the cache after the browser disconnects).
+	mu           sync.Mutex
+	cacheIndex   map[string]*database.MadnetworkCacheEntry
+	cacheTouched []string
 
 	deleteFilenames []string
 	deleteFound     bool
@@ -835,6 +842,37 @@ func (f *fakeRepo) StorageByteBreakdown(_ context.Context) (database.StorageByte
 
 func (f *fakeRepo) MadnetworkCacheBytes(_ context.Context) (int64, error) {
 	return f.cacheBytes, nil
+}
+
+func (f *fakeRepo) PutMadnetworkCacheEntry(_ context.Context, e *database.MadnetworkCacheEntry) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.cacheIndex == nil {
+		f.cacheIndex = map[string]*database.MadnetworkCacheEntry{}
+	}
+	cp := *e
+	if prev, ok := f.cacheIndex[e.Hash]; ok {
+		cp.LastUsedAt = prev.LastUsedAt // landing in the cache is not a use
+	}
+	f.cacheIndex[e.Hash] = &cp
+	return nil
+}
+
+func (f *fakeRepo) TouchMadnetworkCache(_ context.Context, hash string, at int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cacheTouched = append(f.cacheTouched, hash)
+	if e, ok := f.cacheIndex[hash]; ok && e.LastUsedAt < at {
+		e.LastUsedAt = at
+	}
+	return nil
+}
+
+func (f *fakeRepo) DeleteMadnetworkCacheEntry(_ context.Context, hash string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.cacheIndex, hash)
+	return nil
 }
 
 func (f *fakeRepo) ListArtists(_ context.Context) ([]*database.ArtistEntry, error) {

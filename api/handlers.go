@@ -149,6 +149,10 @@ type handler struct {
 	madnetwork     MadnetworkStore
 	madnetworkName string
 	reachWindowSec int // availability freshness window (seconds); 0 = default
+	// cacheDir is the madnetwork download cache (Deps.MadnetworkCacheDir). Used
+	// to recognise a blob that landed in the CACHE, as opposed to one the local
+	// library already held — see madnetwork_cache.go. Empty = no indexing.
+	cacheDir string
 	// source, when non-nil, serves the AGPL-required source archive at GET /source.
 	// Nil when no SourceRoot was configured (e.g. in tests via NewRouter).
 	source *sourceArchiver

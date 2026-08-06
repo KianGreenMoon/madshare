@@ -371,6 +371,10 @@ func main() {
 		LicenseText:    licenseText,
 		SourceRoot:     sourceRoot,
 		Madnetwork:     db,
+		// Unconditional, like Madnetwork above: the cache outlives federation
+		// being switched off, and the index has to keep describing it either way
+		// (docs/architecture/madnetwork-cache.md).
+		MadnetworkCacheDir: cfg.MadnetworkCacheDir(),
 	}
 
 	// The embedded madnetwork node (federation F0/F1): mesh identity, protocol

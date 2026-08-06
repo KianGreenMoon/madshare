@@ -62,7 +62,7 @@ func (h *handler) madnetworkStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid hash", http.StatusBadRequest)
 		return
 	}
-	t, err := h.federation.EnsureBlob(r.Context(), hash)
+	t, err := h.ensureBlob(r.Context(), hash)
 	if err != nil {
 		if errors.Is(err, federation.ErrNoHolder) {
 			http.Error(w, "no friend holds this content", http.StatusNotFound)
@@ -359,7 +359,7 @@ func (h *handler) runMadnetworkDownload(hash string, entry *federation.CatalogEn
 		log.Printf("madnetwork download %s: %v", hash, err)
 		job.set("failed", err.Error())
 	}
-	t, err := h.federation.EnsureBlob(ctx, hash)
+	t, err := h.ensureBlob(ctx, hash)
 	if err != nil {
 		fail(err)
 		return
@@ -474,6 +474,9 @@ func (h *handler) evictCached(hash string) {
 	if err := h.federation.EvictCachedBlob(hash); err != nil {
 		log.Printf("evict cached blob %s: %v", hash, err)
 	}
+	// The file is what the swarm reads, so it goes first; the index row only
+	// describes it (docs/architecture/madnetwork-cache.md).
+	h.dropCacheIndex(hash)
 }
 
 // attachRemoteTagset offers the remote entry as a draft appearance on a blob

@@ -137,9 +137,32 @@ That covers the three ways a cache and its index can drift: a pre-existing cache
 from before this feature, a process killed mid-fetch, and an operator deleting
 files by hand.
 
-Steady-state writes go through the one funnel every cached byte already passes:
-a completed `runTransfer` rename. It is the only place a `<hash>` file is ever
-created, so a row written there cannot be missed.
+Steady-state writes go through one funnel: **`api.ensureBlob`**, the wrapper both
+callers of `federation.EnsureBlob` now use (the streaming relay and
+download-to-library — there are no others). It records the read, and arranges for
+the blob to be indexed once the fetch lands.
+
+The index deliberately does **not** live in `runTransfer`, even though that is
+where the bytes physically arrive. Fetching does not require an index, so the
+transfer engine has no business knowing about a database — and putting it there
+would mean either a `PeerStore` change (re-vetting `tests/mesh/`) or a fourth
+injected callback, plus a new `federation → media` dependency edge for the tag
+read. Coverage is the same either way, because those two callers are the only
+route into `EnsureBlob`.
+
+Indexing happens in a **goroutine waiting on `t.Done()`**, not on the response
+path: the fetch outlives the request that started it (cache-through streaming
+keeps filling the cache after a browser disconnects), so waiting inline would tie
+the row to whether someone stayed on the page. It is best-effort for the same
+reason it can be — anything a crash loses between the rename and the insert is
+adopted by the next reconcile.
+
+Two kinds of finished transfer are **not** cache entries, and the indexer skips
+both: one whose `Stats().Mode` is `"local"` (born complete — the bytes were
+already here, and re-putting a cache hit would overwrite its real origin filename
+with the hash, since `completedTransfer` names a transfer after its own path),
+and one whose hash has no file under the cache dir (the library short-circuit —
+`EnsureBlob` resolves the library before the cache).
 
 ### What counts as "used"
 
@@ -152,19 +175,27 @@ this?* Seeding is a service we render with bytes we happen to hold, not a reason
 to keep holding them — and a node whose disk fills with content nobody local ever
 touches, kept alive purely by other people's traffic, is the outcome to avoid.
 
-That means the touch points are both in `api`, and `federation` needs no
-knowledge of them at all:
+That means the touch lives in `api`, and `federation` needs no knowledge of it at
+all. Both local paths — the streaming relay (`madnetworkStream`) and
+download-to-library (`runMadnetworkDownload`) — reach it through the single
+`ensureBlob` wrapper, so the touch is tied to *asking for the bytes* rather than
+to a successful response: a stream the browser abandons was still a person
+wanting that track.
 
-| Path | Where |
-|---|---|
-| Streaming relay, and a cache hit served to a browser | `api.madnetworkStream` |
-| Materialize (fetch + stage into the library) | `api.runMadnetworkDownload` |
+The seeding side is served entirely inside `federation.handleBlob`, which has no
+route into this package. So "seed serves don't count" is **structural, not a
+rule someone has to remember** — there is nothing to switch off.
 
-Touching is still **throttled in memory** — at most one write per hash per
+Touching is **throttled in memory** — at most one write per hash per
 `cacheTouchInterval` (5 min). A seeking browser issues many Range requests and
-each one is its own `madnetworkStream` call; without the throttle, scrubbing
-through a track would write a row per drag. Five minutes is far finer than any
-retention window will ever be.
+each one is its own relay call; without the throttle, scrubbing through a track
+would write a row per drag. Five minutes is far finer than any retention window
+will ever be. Evicting a blob clears its throttle memory too, so a re-fetch
+inside the window cannot inherit a stale clock.
+
+The write is monotonic in SQL (`WHERE last_used_at < ?`), so an out-of-order
+touch — a throttled writer racing, or a clock stepping back — can never walk a
+row *toward* eviction.
 
 No `PeerStore` change and no new federation option, so there is nothing to
 re-vet in `tests/mesh/`.
@@ -416,7 +447,8 @@ relies on. Every removal is written to the audit log.
 | Existing thing | Change |
 |---|---|
 | `EvictCachedMadnetworkBlobs` (startup) | unchanged; reconciliation now runs after it and drops the rows for what it deleted |
-| `Node.EvictCachedBlob` | also deletes the index row (via the touch callback's sibling, or the caller in `api`) |
+| `Node.EvictCachedBlob` | unchanged; its `api` caller (`h.evictCached`) now drops the index row after it — file first, description second |
+| `Deps` | gains `MadnetworkCacheDir`, wired unconditionally like `Madnetwork` (the cache outlives federation being switched off) |
 | `seedableBlob`, `cacheHoldings`, `EnsureBlob`, `handleBlob` | **unchanged** — they read the directory, and the directory stays the truth |
 | `PeerStore`, federation options | **unchanged** — nothing to re-vet in `tests/mesh/`; the only addition to `FederationNode` is `ActiveTransfers()` |
 | `file-list.js` | **unchanged** — this is a new scope, not a component change |
@@ -502,10 +534,13 @@ when it happens, and nothing else here.
    fileless rows, is idempotent; the listing's page/count/select-all set agree
    under every filter; the use clock is monotonic, scoped to indexed rows, and
    unmoved by a re-fetch.
-2. **Write path** — the completion insert (tags read from the blob), the two
-   local touch points and the throttle. Tests: a completed fetch is indexed with
-   its own tags; a seeking browser's Range storm writes one touch; a seed serve
-   writes none.
+2. **Write path** — ✅ built. `api/madnetwork_cache.go`: the `ensureBlob` wrapper
+   (touch + index-on-complete) adopted by both `EnsureBlob` callers, the
+   background indexer reading the blob's own tags, the throttle, and index
+   removal on eviction. Tests: a completed fetch is indexed with its own tags and
+   the origin filename; a born-complete transfer and a library blob are both
+   skipped; a Range storm writes one touch, and the throttle is per hash;
+   eviction drops the row and its throttle memory.
 3. **API** — the five endpoints plus `?download=1`, and the no-claim fallback in
    `madnetworkDownload`. Tests: envelope shape, empty-filter guardrail,
    remove-tolerates-missing-file, an unadvertised cache entry materializes and
