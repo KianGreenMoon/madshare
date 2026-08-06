@@ -148,17 +148,6 @@ func (q *quotas) pruneLocked() {
 	}
 }
 
-// serveLimiters is the whole rate-limit policy for one blob response: the global
-// seed cap that has always applied to every requester, plus whatever the member
-// budget added for this one. Empty when nothing is capped, so the shipped
-// default writes through an unwrapped ResponseWriter.
-func (n *Node) serveLimiters(extra []*rateLimiter) []*rateLimiter {
-	if n.seedLimiter == nil {
-		return extra
-	}
-	return append([]*rateLimiter{n.seedLimiter}, extra...)
-}
-
 // admitServe applies the member budget to one incoming blob request. A direct
 // friend bypasses it entirely and is served as it always was. The returned
 // release must be called when the response is finished.

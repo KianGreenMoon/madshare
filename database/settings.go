@@ -25,6 +25,14 @@ const (
 	settingMadnetworkDefaultDepth    = "madnetwork.default_share_depth"
 	settingMadnetworkPublishFriends  = "madnetwork.publish_friend_list"
 	settingMadnetworkServeGuests     = "madnetwork.serve_guests"
+	// The node's two swarm rate caps, in KiB/s (docs/architecture/swarm-admin.md).
+	// Deliberately NOT part of MadnetworkPolicy: that object is written whole by
+	// the settings card, whose handler decodes the seed switches as plain bools
+	// with hard-coded defaults — so a second client saving only a rate would
+	// switch seeding on and autoapprove off as a side effect. An UNSET key means
+	// "inherit the config file"; "0" means unlimited, which is a real override.
+	settingSwarmUpRateKiB   = "swarm.up_rate_kib"
+	settingSwarmDownRateKiB = "swarm.down_rate_kib"
 )
 
 // Trash-restore policy modes — what may happen to a trashed file whose content
@@ -209,6 +217,59 @@ func (db *DB) SeedingPolicy(ctx context.Context) (federation.SeedPolicy, error) 
 		Cache:   p.SeedCache,
 		Guests:  p.ServeGuests,
 	}, nil
+}
+
+// GetSwarmRates reads the node's runtime rate overrides
+// (docs/architecture/swarm-admin.md). A nil pointer means "no override — inherit
+// the config file"; a non-nil 0 means unlimited, which is a real override and
+// how one node escapes a cap its config ships with.
+//
+// An unparseable stored value reads as no override rather than as an error: the
+// resolution chain always has a config value to fall back to, and a node must
+// not stop serving because somebody typed into the settings table.
+func (db *DB) GetSwarmRates(ctx context.Context) (up, down *int, err error) {
+	read := func(key string) (*int, error) {
+		v, ok, err := db.GetSetting(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		if !ok || strings.TrimSpace(v) == "" {
+			return nil, nil
+		}
+		n, cerr := strconv.Atoi(strings.TrimSpace(v))
+		if cerr != nil || n < 0 {
+			return nil, nil
+		}
+		return &n, nil
+	}
+	if up, err = read(settingSwarmUpRateKiB); err != nil {
+		return nil, nil, err
+	}
+	if down, err = read(settingSwarmDownRateKiB); err != nil {
+		return nil, nil, err
+	}
+	return up, down, nil
+}
+
+// SetSwarmRates writes the overrides. Each argument is three-valued the way the
+// API is: a nil pointer clears the override (back to the config file), a
+// non-nil value pins it. Passing the same value twice is idempotent.
+func (db *DB) SetSwarmRates(ctx context.Context, up, down *int) error {
+	write := func(key string, v *int) error {
+		if v == nil {
+			_, err := db.ExecContext(ctx, `DELETE FROM settings WHERE key = ?`, key)
+			return err
+		}
+		n := *v
+		if n < 0 {
+			n = 0
+		}
+		return db.SetSetting(ctx, key, strconv.Itoa(n))
+	}
+	if err := write(settingSwarmUpRateKiB, up); err != nil {
+		return err
+	}
+	return write(settingSwarmDownRateKiB, down)
 }
 
 // PublishFriendList reports whether this node publishes its own friend-list

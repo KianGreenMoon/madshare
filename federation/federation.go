@@ -840,12 +840,13 @@ type ProviderStats struct {
 type Option func(*nodeOptions)
 
 type nodeOptions struct {
-	cacheDir    string
-	resolveBlob func(hash string) (path string, ok bool)
-	intervals   Intervals
-	timeouts    Timeouts
-	discovery   Discovery
-	mesh        *Mesh
+	cacheDir     string
+	resolveBlob  func(hash string) (path string, ok bool)
+	rateResolver func(context.Context) (RateOverrides, error)
+	intervals    Intervals
+	timeouts     Timeouts
+	discovery    Discovery
+	mesh         *Mesh
 }
 
 // WithMesh starts the node on an already-running transport instead of building
@@ -1034,6 +1035,26 @@ func WithCacheDir(dir string) Option { return func(o *nodeOptions) { o.cacheDir 
 // of a hash the library already holds short-circuits to the local copy.
 func WithBlobResolver(f func(hash string) (path string, ok bool)) Option {
 	return func(o *nodeOptions) { o.resolveBlob = f }
+}
+
+// RateOverrides is what a node's runtime settings say about its two caps
+// (docs/architecture/swarm-admin.md). A nil field means "no override — use the
+// config file"; a non-nil 0 means unlimited, which is a real override and how a
+// node escapes a cap its config file ships with.
+type RateOverrides struct {
+	Up   *int // KiB/s
+	Down *int // KiB/s
+}
+
+// WithRateResolver wires the runtime rate overrides (docs/architecture/swarm-admin.md).
+// The node calls it, memoized, to learn whether an admin has capped this node's
+// uplink or downlink since it started; without it only the config values apply.
+//
+// An injected function rather than a store method on purpose: what it reads
+// lives in the settings table, and this package's whole discipline is that
+// moving bytes requires no database — the same reason WithBlobResolver exists.
+func WithRateResolver(f func(context.Context) (RateOverrides, error)) Option {
+	return func(o *nodeOptions) { o.rateResolver = f }
 }
 
 // CatalogRendition is one blob of a recording as advertised in a catalog

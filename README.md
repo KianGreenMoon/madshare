@@ -554,13 +554,26 @@ Runtime toggles live on **`/admin/settings`** (no restart):
 | `hide_unavailable` | on | Whether tracks held only by nodes that look offline are hidden from the browse. |
 | `autoapprove_downloads` | off | Whether fetched tracks land approved instead of staged for review. |
 
-Static knobs in `[federation]` (restart required) cover the resource side:
-`seed_rate_kib` caps outbound seeding for everyone, while `member_rate_kib` /
+The resource side lives in `[federation]`. `seed_rate_kib` and `fetch_rate_kib`
+cap what this node's uplink and downlink spend on the swarm; both can also be
+changed **without a restart** on `/admin/swarm`, which is where you will want
+them when the link is already saturated. `member_rate_kib` /
 `per_member_rate_kib` / `member_max_transfers` / `per_member_max_transfers` bound
 what nodes you have *no direct relationship with* may cost you, per requester and
-across all of them together. All default to unlimited — a handful of friends
-needs none of it. **Direct friends bypass all four**, so the nodes you chose
-never queue behind the ones the graph let in.
+across all of them together, and need a restart. All default to unlimited — a
+handful of friends needs none of it. **Direct friends bypass the four member
+quotas** (so the nodes you chose never queue behind the ones the graph let in),
+but nobody bypasses the node's own two caps: those are a statement about your
+pipe, not about who deserves what.
+
+Size the two caps against your **uplink**, not the download figure your ISP
+quotes: `KiB/s ≈ Mbit/s × 128`, and leaving about a quarter of it free is a good
+starting point. Setting one *too low* is worse than leaving it off — one listener
+streaming CD-rate FLAC needs ~125 KiB/s continuously and every concurrent
+transfer shares the same bucket, so below that your node does not merely get
+slower: fetching peers time it out, the swarm de-ranks it and goes elsewhere, and
+the bytes you did send are wasted. If your line cannot spare ~256 KiB/s, turning
+`seed_enabled` off is the honest setting.
 
 **Disk.** Blobs fetched from the network are cached under
 `<data_dir>/cache/madnetwork/` and **there is no eviction yet** — the directory

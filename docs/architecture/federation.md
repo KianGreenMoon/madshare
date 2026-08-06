@@ -1999,9 +1999,16 @@ it makes "which node changed" free, and only then does storing more pay off.
   (whether the download cache is served **and** advertised in holdings), both
   runtime DB settings on `/admin/settings` defaulting **on** — `seed_cache` is
   the switch for an operator unwilling to re-serve content this node did not
-  publish; plus a global
-  **upload rate cap** `[federation] seed_rate_kib` (a token bucket over the
-  blob-serve write path; `0` = unlimited), a static config knob.
+  publish; plus the node's two **rate caps** — `[federation] seed_rate_kib` over
+  the blob-serve write path and `fetch_rate_kib` over the fetch read path (`0` =
+  unlimited). Since the swarm admin page (`swarm-admin.md`) both are *defaults*
+  rather than fixed values: the settings keys `swarm.up_rate_kib` /
+  `swarm.down_rate_kib` override them at runtime, resolved override → config →
+  unlimited, and the buckets are adjusted in place so a change keeps its tokens.
+  Nobody bypasses these two, friends included — they describe this node's pipe,
+  not who deserves what, unlike the member quotas below. A throttled read
+  **suspends** the idle-stall watchdog for the length of its own pause, because a
+  limit we imposed must never be counted against a holder.
 
   **A cached blob is never also a library blob** (fixed 2026-08-02). The two
   branches of `seedableBlob` answer under different rules — the library branch

@@ -375,15 +375,30 @@ than slower", that knob does not exist yet.
 
 ### Two hazards, named
 
-**A throttled read looks like a stalled holder.** `fetchRange` wraps its body in
-`readStall`, whose watchdog fires after `Timeouts.ChunkStall` without progress
-and counts a stall against the holder. Put a 50 KiB/s bucket inside that and a
-1 MiB chunk spends 20 s not progressing, and the swarm will retire a perfectly
+**A throttled read looks like a stalled holder.** The chunk readers wrap their
+body in `readStall`, whose watchdog fires after `Timeouts.ChunkStall` without
+progress and counts a stall against the holder. Put a 50 KiB/s bucket inside that
+and a 1 MiB chunk spends 20 s not progressing, and the swarm retires a perfectly
 healthy peer. The answer: the throttle sits **inside** the watchdog (so
-backpressure reaches TCP, which is the whole point of a rate limit), and
-`readStall` is told to **discount time spent waiting on tokens** — the metered
-reader reports its own blocked duration, and the watchdog credits it. A limit we
-imposed is never evidence against a peer.
+backpressure reaches TCP, which is the whole point of a rate limit), and the
+reader **suspends the watchdog for the length of its own pause** —
+`readStall` hands the reader a hook that stops the timer and returns the func
+re-arming it (`pausingReader`). A limit we imposed is never evidence against a
+peer.
+
+It has to *bracket* the wait, not follow it. Resetting the timer after the sleep
+was the first implementation and it failed the test immediately: one `Read` can
+return a whole chunk buffer, whose tokens take seconds to earn, so the watchdog
+fires in the middle of that single call and there is no "after" to reset from.
+
+**Below ~9 KiB/s inbound, fetching stops working entirely.** `Timeouts.PerChunk`
+(2 min) bounds one chunk fetch *including* time spent waiting on our own tokens,
+and the bulk chunk is 1 MiB — so a cap under roughly 8.7 KiB/s cannot complete a
+bulk chunk at all, and every chunk fails, retries and fails. The whole-file
+fallback has the same shape against `Timeouts.Transfer` (30 min). This is far
+below the ~256 KiB/s floor the guidance already gives, so an operator following
+it never approaches the cliff — but the cliff is real and the number is worth
+having written down.
 
 **The inbound cap throttles listening to the mesh.** The streaming relay serves
 from the same transfer the limiter is slowing, so a cap below the bitrate of what
@@ -599,9 +614,9 @@ No new permission.
 |---|---|
 | `handleBlob` | metered writer (always on); the node up limiter becomes adjustable |
 | `fetchRange`, `fetchFrom` | metered reader + the node down limiter (new — nothing throttled inbound before) |
-| `readStall` | discounts time blocked on a rate-limit token |
-| `rateLimiter` | gains `setRate` (token-preserving) |
-| `Node` | traffic table, `Traffic()`, `DrainTraffic()`, `SetRates()` |
+| `readStall` | suspends its watchdog around a wait on our own tokens (`pausingReader`) |
+| `rateLimiter` | gains `setRate` (token-preserving); `adjustableRate` wraps one live cap |
+| `Node` | traffic table, `Traffic()`, `DrainTraffic()`, `SwarmRates()`, `WithRateResolver` |
 | `api.FederationNode` + `federation/node_stub.go` | the four new methods (and the `nofederation` stub must satisfy them) |
 | `MadnetworkPolicy`, `/api/admin/settings/madnetwork`, the `/admin/settings` card | **unchanged** — the rate knobs deliberately do not go there |
 | `config.FederationConfig` | `fetch_rate_kib`, plus the config example and `configuration.md` (with the sizing guidance in the comment) |

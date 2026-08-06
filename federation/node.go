@@ -100,8 +100,18 @@ type Node struct {
 	// (each fetch is bounded by its own context), the outbound seed rate cap
 	// (nil = unlimited), and the memoized per-hash chunk manifests served to
 	// friends (content-addressed, so immutable once built).
-	blobClient  *http.Client
-	seedLimiter *rateLimiter
+	blobClient *http.Client
+	// The node's two live rate caps (rates.go), each adjustable at runtime:
+	// outbound (what seeding costs the uplink) and inbound (what fetching costs
+	// the downlink — a cap that did not exist before the swarm page). cfg*KiB are
+	// the config-file values they fall back to when no override is set, and
+	// rateResolver reads the override without this package knowing what a
+	// database is.
+	upRate, downRate     *adjustableRate
+	cfgUpKiB, cfgDownKiB int
+	rateMu               sync.Mutex
+	ratesAt              time.Time
+	rateResolver         func(context.Context) (RateOverrides, error)
 	// quotas bounds what a requester we have no direct relationship with may
 	// cost us — bytes and concurrent serves, per node and across the class
 	// (F7 item 6, quota.go). Friends bypass it; all-zero config admits
@@ -250,7 +260,11 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 		transfers:      map[string]*transfer{},
 		transferCtx:    transferCtx,
 		transferCancel: transferCancel,
-		seedLimiter:    newRateLimiter(int64(fc.SeedRateKiB) * 1024),
+		upRate:       &adjustableRate{},
+		downRate:     &adjustableRate{},
+		cfgUpKiB:     fc.SeedRateKiB,
+		cfgDownKiB:   fc.FetchRateKiB,
+		rateResolver: o.rateResolver,
 		quotas: newQuotas(fc.MemberRateKiB, fc.PerMemberRateKiB,
 			fc.MemberMaxTransfers, fc.PerMemberMaxTransfers),
 		manifests: map[string]*blobManifest{},
@@ -262,6 +276,10 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 	// gVisor). When it reports dead, the merged browse fails open rather than
 	// blanking the view (docs/architecture/federation.md §Availability).
 	n.readerAlive = mesh.InboundReaderAlive
+	// Apply the config caps up front so the very first request is limited by what
+	// the file says, without waiting for the first override refresh to resolve.
+	n.upRate.set(int64(fc.SeedRateKiB) * 1024)
+	n.downRate.set(int64(fc.FetchRateKiB) * 1024)
 	n.client = &http.Client{
 		Transport: &http.Transport{DialContext: n.DialContext},
 		Timeout:   n.timeouts.Control,

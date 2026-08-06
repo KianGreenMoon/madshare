@@ -31,6 +31,33 @@ runtime.
   able to flip without touching the box: behaviour policies, feature on/off,
   thresholds.
 
+### When a setting needs to be both: the override layer
+
+The swarm rate caps (`docs/architecture/swarm-admin.md`) were the first knob that
+genuinely needed **both** tiers, which is the case the OPEN section below parked.
+The answer, and the pattern to copy:
+
+> **TOML stays the deploy-time default. The DB carries an optional *override*.
+> Resolution is `runtime override → config → built-in default`, and nothing ever
+> writes the TOML back.**
+
+Concretely: `[federation] seed_rate_kib` / `fetch_rate_kib` are what the node
+starts with, and `swarm.up_rate_kib` / `swarm.down_rate_kib` in `settings` are
+what an admin may set from `/admin/swarm` while the link is saturated. An **unset**
+settings key means "no override" — deliberately distinct from a stored `0`, which
+means unlimited and is a real override (it is how one node escapes a cap its
+deployment ships with). That three-valued shape is the whole trick, and it is the
+same one `share_depth` uses for absent / inherit / pinned.
+
+This keeps every property tier (A) was chosen for: the file remains
+operator-owned and readable, there is no write-back and no comment destruction,
+and there is no split-brain over authority — the two layers do not compete,
+because one is explicitly a *default* and the other explicitly an *override*.
+
+It does **not** extend to trust boundaries. `symlink_roots` gets no override
+layer, for the reason in the next section: a boundary a web admin can move is not
+a boundary.
+
 ### Security: some things are TOML *on purpose*
 
 `[sources].symlink_roots` (the import allow-list) is the clearest case. Its value
@@ -68,8 +95,11 @@ data-sources feature surfaced UI controls that *look* like config. Two direction
   as a boundary** (a UI that can edit it defeats the point).
 
 Owner has parked the decision. My lean is **(A)**; nothing in data-sources v0 is
-blocked by it either way. Revisit before any setting needs to be both
-UI-editable *and* TOML-sourced.
+blocked by it either way.
+
+**Revisited 2026-08-06**, when the swarm rate caps became the first setting
+needing to be both UI-editable and TOML-sourced: **(A) holds**, with the override
+layer described above. No TOML write-back was needed then and none is now.
 
 ## Related
 

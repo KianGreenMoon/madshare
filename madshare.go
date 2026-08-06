@@ -424,6 +424,13 @@ func main() {
 			federation.WithMesh(mesh),
 			federation.WithCacheDir(cfg.MadnetworkCacheDir()),
 			federation.WithBlobResolver(resolve),
+			// The node's rate caps are editable at runtime on /admin/swarm; this
+			// is how it learns about a change without a restart. Memoized inside
+			// the node, so this runs at most once every few seconds.
+			federation.WithRateResolver(func(ctx context.Context) (federation.RateOverrides, error) {
+				up, down, err := db.GetSwarmRates(ctx)
+				return federation.RateOverrides{Up: up, Down: down}, err
+			}),
 			federation.WithDiscovery(federation.Discovery{
 				Budget: cfg.Federation.DiscoveryBudget,
 				Cap:    cfg.Federation.DiscoveryCap,

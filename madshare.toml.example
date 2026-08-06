@@ -146,8 +146,15 @@ max_upload_mb = 500          # per-request upload cap, in MiB
 # pairing (host name when unset) — purely descriptive, identity is the key.
 # Friendships are managed on /admin/network (exchange node cards out-of-band).
 # seed_rate_kib caps the outbound rate (KiB/s) for serving blobs to EVERY
-# requester (0 = unlimited); the seed on/off + cache-seed toggles are runtime
-# settings on /admin/settings, not here. The four member_* knobs bound what a
+# requester (0 = unlimited), and fetch_rate_kib the inbound rate this node
+# pulls at. Both are node-wide — a cap protects the line, which every transfer
+# shares — and both can be overridden at runtime on /admin/swarm, which is
+# where they belong when the link is already saturated. Size them against your
+# UPLINK (KiB/s ≈ Mbit/s × 128), leaving about a quarter free; below what one
+# listener needs (~125 KiB/s for CD-rate FLAC, shared by every concurrent
+# serve) a node does not just get slower — fetching peers time it out and the
+# swarm de-ranks it, so the bytes it did send are wasted. The seed on/off +
+# cache-seed toggles are runtime settings on /admin/settings, not here. The four member_* knobs bound what a
 # node we have no direct relationship with may cost: this node serves its whole
 # community and membership has no admission cap, so bytes and concurrent blob
 # serves are each capped per requester AND across all non-friends together (N
@@ -179,6 +186,7 @@ max_upload_mb = 500          # per-request upload cap, in MiB
 #name                = "my madshare"           # defaults to the host name
 # key_file / peers / listen moved to [yggdrasil] above; still accepted here.
 #seed_rate_kib       = 0                        # 0 = unlimited outbound seeding rate (everyone)
+#fetch_rate_kib      = 0                        # 0 = unlimited inbound fetching rate
 #member_rate_kib     = 0                        # KiB/s to all non-friends together
 #per_member_rate_kib = 0                        # KiB/s to any one non-friend
 #member_max_transfers     = 0                   # concurrent blob serves, all non-friends

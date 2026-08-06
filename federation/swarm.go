@@ -72,6 +72,20 @@ func readStall(cancel context.CancelFunc, r io.Reader, n int64, exact bool, stal
 		cancel()
 	})
 	defer watchdog.Stop()
+	// A reader that blocks on OUR OWN rate limiter is not a silent holder, so the
+	// watchdog is suspended for the length of that pause and re-armed after
+	// (traffic.go, wireReader). It has to bracket the wait rather than follow it:
+	// one Read can return a whole chunk buffer whose tokens take seconds to earn,
+	// and the timer would otherwise fire mid-sleep. Every call here is on this
+	// goroutine — Read is synchronous — so the timer is never touched
+	// concurrently. Without this, capping the inbound rate would make every
+	// holder look stalled and get it retired.
+	if pr, ok := r.(pausingReader); ok {
+		pr.onPause(func() func() {
+			watchdog.Stop()
+			return func() { watchdog.Reset(stall) }
+		})
+	}
 	var got int64
 	for got < n {
 		watchdog.Reset(stall)
@@ -620,7 +634,7 @@ func (n *Node) fetchRange(ctx context.Context, p *BlobProvider, t *transfer, sta
 	if resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("range %d-%d: holder answered %s", start, start+length-1, resp.Status)
 	}
-	return readStall(cancel, n.metered(t, p, io.LimitReader(resp.Body, length)),
+	return readStall(cancel, n.wire(cctx, t, p, io.LimitReader(resp.Body, length)),
 		length, false, n.timeouts.ChunkStall, onStall)
 }
 
@@ -804,7 +818,7 @@ func (n *Node) fetchChunk(t *transfer, f *os.File, layout *chunkLayout, man *blo
 		!(resp.StatusCode == http.StatusOK && len(man.Chunks) == 1) {
 		return fmt.Errorf("chunk %d: holder answered %s", idx, resp.Status)
 	}
-	body, err := readStall(cancel, n.metered(t, p, io.LimitReader(resp.Body, length)),
+	body, err := readStall(cancel, n.wire(ctx, t, p, io.LimitReader(resp.Body, length)),
 		length, true, n.timeouts.ChunkStall, t.stats.noteStall)
 	if err != nil {
 		return fmt.Errorf("chunk %d: %w", idx, err)
@@ -1104,6 +1118,26 @@ func newRateLimiter(bytesPerSec int64) *rateLimiter {
 	}
 	r := float64(bytesPerSec)
 	return &rateLimiter{rate: r, burst: r, tokens: r, last: time.Now()}
+}
+
+// setRate changes the cap in place, KEEPING the tokens accumulated so far
+// (settled at the old rate first). Rebuilding the bucket instead would hand a
+// full burst to whoever nudged the knob — a rate limit an operator could reset
+// by fidgeting, and one a requester could provoke.
+func (rl *rateLimiter) setRate(bytesPerSec int64) {
+	if bytesPerSec < 0 {
+		bytesPerSec = 0
+	}
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	now := time.Now()
+	rl.tokens += rl.rate * now.Sub(rl.last).Seconds()
+	rl.last = now
+	r := float64(bytesPerSec)
+	rl.rate, rl.burst = r, r
+	if rl.tokens > rl.burst {
+		rl.tokens = rl.burst
+	}
 }
 
 // wait blocks until n bytes' worth of tokens are available (or ctx ends).

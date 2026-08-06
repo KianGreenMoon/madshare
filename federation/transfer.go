@@ -97,7 +97,11 @@ func (n *Node) handleBlob(w http.ResponseWriter, r *http.Request) {
 	if ip := remoteIP(r); ip != nil {
 		addr = ip.String()
 	}
-	out := metered(throttled(w, r.Context(), n.serveLimiters(rls)), func(b int64) {
+	// The node's outbound cap is resolved here, once per response. A swarm fetch
+	// is one response per chunk, so a change an admin just made lands within a
+	// chunk; only the F3 whole-file fallback holds a single response long enough
+	// to miss one.
+	out := metered(throttled(w, r.Context(), n.upLimiters(r.Context(), rls)), func(b int64) {
 		n.noteUp(hash, key, addr, b)
 	})
 	http.ServeContent(out, r, info.Name(), info.ModTime(), f)
@@ -593,8 +597,14 @@ func (n *Node) fetchFrom(t *transfer, p *BlobProvider) error {
 	}
 	hasher := sha256.New()
 	buf := make([]byte, 256<<10)
+	// Counting and the inbound cap both live in the wire reader. This path has no
+	// stall watchdog to appease — it is bounded by ctx (Timeouts.Transfer), which
+	// a cap eats into, so a very low one can time a large whole-file fetch out.
+	// That is inherent to slowing a transfer down, and the swarm path (the norm)
+	// is bounded per chunk instead.
+	src := n.wire(ctx, t, p, resp.Body)
 	for {
-		nr, rerr := resp.Body.Read(buf)
+		nr, rerr := src.Read(buf)
 		if nr > 0 {
 			if _, werr := f.Write(buf[:nr]); werr != nil {
 				f.Close()
@@ -602,8 +612,6 @@ func (n *Node) fetchFrom(t *transfer, p *BlobProvider) error {
 			}
 			hasher.Write(buf[:nr])
 			t.stats.noteBytes(p, int64(nr))
-			t.addReceived(int64(nr))
-			n.noteDown(t.hash, p.PublicKey, int64(nr))
 			t.addProgress(int64(nr))
 		}
 		if rerr == io.EOF {

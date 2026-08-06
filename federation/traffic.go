@@ -3,6 +3,7 @@
 package federation
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"sort"
@@ -237,32 +238,85 @@ func metered(w http.ResponseWriter, count func(int64)) http.ResponseWriter {
 	return &meteredResponseWriter{ResponseWriter: w, count: count}
 }
 
-// meteredReader counts bytes as they are read. It wraps the response body INSIDE
-// the stall watchdog, so what it counts is what crossed the wire even when the
-// read is later abandoned.
-type meteredReader struct {
+// wireReader is the fetching side's single wrapper around a holder's response
+// body: it counts what arrives and holds it to the node's inbound cap. Both jobs
+// belong to one layer because the throttle's pause has to be visible to the
+// counting layer's caller — see resetWatchdog.
+//
+// It sits INSIDE the stall watchdog, so backpressure reaches TCP (the whole
+// point of a rate limit) and so what it counts is what crossed the wire, even
+// when the read is later abandoned.
+type wireReader struct {
 	r     io.Reader
+	ctx   context.Context
 	count func(int64)
+	// limiter is resolved per read rather than captured, so a cap an admin
+	// changes mid-transfer takes effect within one read instead of at the next
+	// fetch. nil means this direction is unlimited.
+	limiter func() *rateLimiter
+	// hold, when set by readStall, SUSPENDS its idle watchdog for the duration of
+	// a deliberate pause and returns the func that re-arms it. It has to bracket
+	// the wait rather than follow it: one Read can hand back a whole chunk
+	// buffer, whose tokens take seconds to earn, and the watchdog would fire in
+	// the middle of that sleep.
+	//
+	// Without this a throttle is indistinguishable from a hung holder — the
+	// watchdog fires, the stall is counted against the peer, and worseThanPeers
+	// retires a node that was only obeying OUR cap. A limit we imposed is never
+	// evidence against a peer.
+	hold func() (resume func())
 }
 
-func (m *meteredReader) Read(p []byte) (int, error) {
-	n, err := m.r.Read(p)
-	if n > 0 {
-		m.count(int64(n))
+func (w *wireReader) Read(p []byte) (int, error) {
+	n, err := w.r.Read(p)
+	if n <= 0 {
+		return n, err
+	}
+	w.count(int64(n))
+	// Charged after the fact, for what actually arrived: simpler than reserving
+	// tokens up front, and it keeps read sizes natural.
+	if rl := w.limiter(); rl != nil {
+		var resume func()
+		if w.hold != nil {
+			resume = w.hold()
+		}
+		werr := rl.wait(w.ctx, n)
+		if resume != nil {
+			resume()
+		}
+		if werr != nil && err == nil {
+			err = werr
+		}
 	}
 	return n, err
 }
 
-// metered wraps a reader so every byte read is credited to hash against the
-// holder p, and to the transfer's own received total (which is what the waste
-// calculation is a difference of).
-func (n *Node) metered(t *transfer, p *BlobProvider, r io.Reader) io.Reader {
+// onPause receives the watchdog's suspend hook (see [pausingReader]).
+func (w *wireReader) onPause(hold func() func()) { w.hold = hold }
+
+// pausingReader is a reader that may deliberately block, and wants the caller's
+// idle watchdog suspended while it does. Implemented by wireReader; recognised
+// by readStall.
+type pausingReader interface {
+	onPause(hold func() (resume func()))
+}
+
+// wire wraps a holder's response body so every byte read is credited to the hash
+// against that holder and to the transfer's own received total (which is what
+// the waste calculation is a difference of), and so the read obeys the node's
+// inbound cap.
+func (n *Node) wire(ctx context.Context, t *transfer, p *BlobProvider, r io.Reader) io.Reader {
 	key := ""
 	if p != nil {
 		key = p.PublicKey
 	}
-	return &meteredReader{r: r, count: func(b int64) {
-		t.addReceived(b)
-		n.noteDown(t.hash, key, b)
-	}}
+	return &wireReader{
+		r:   r,
+		ctx: ctx,
+		count: func(b int64) {
+			t.addReceived(b)
+			n.noteDown(t.hash, key, b)
+		},
+		limiter: func() *rateLimiter { return n.downLimiter(ctx) },
+	}
 }

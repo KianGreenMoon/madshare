@@ -188,6 +188,24 @@ type FederationConfig struct {
 	// to 0 with a warning. The seed on/off and cache-seed toggles are runtime DB
 	// settings (madnetwork.seed_enabled / .seed_cache), not config.
 	SeedRateKiB int `toml:"seed_rate_kib"`
+	// FetchRateKiB caps the inbound rate, in KiB/s, at which this node pulls
+	// blobs off the mesh — the counterpart of the cap above, and the first
+	// limiter this codebase has ever had on the fetching side. 0 (the default) is
+	// unlimited; negative is clamped to 0 with a warning.
+	//
+	// Both are node-wide by design (docs/architecture/swarm-admin.md): a cap
+	// protects the LINE, which every transfer shares, so only the sum means
+	// anything, and fairness between peers is the member quotas' job below.
+	//
+	// Sizing, because the failure mode of a too-small cap is not obvious: this
+	// is a share of your UPLINK (KiB/s ≈ Mbit/s × 128), and roughly three
+	// quarters of it is a good starting point. Set it below what one listener
+	// needs — CD-rate FLAC is ~110-125 KiB/s, and every concurrent serve shares
+	// the same bucket — and the node does not merely become slow: fetching peers'
+	// stall watchdogs fire, worseThanPeers de-ranks it, and the swarm fails over
+	// to another holder, so the bytes it did send are wasted. On a link that
+	// cannot spare ~256 KiB/s, turning seeding off is the honest setting.
+	FetchRateKiB int `toml:"fetch_rate_kib"`
 	// Member quotas (F7 item 6, docs/architecture/federation.md §Distribution,
 	// "What a member may cost us"). SeedRateKiB above is one bucket for every
 	// requester, which was the whole policy while a requester was always a
@@ -515,6 +533,7 @@ func (c *Config) resolveStorageWorkers() {
 		val  *int
 	}{
 		{"seed_rate_kib", &c.Federation.SeedRateKiB},
+		{"fetch_rate_kib", &c.Federation.FetchRateKiB},
 		{"member_rate_kib", &c.Federation.MemberRateKiB},
 		{"per_member_rate_kib", &c.Federation.PerMemberRateKiB},
 		{"member_max_transfers", &c.Federation.MemberMaxTransfers},

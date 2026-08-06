@@ -114,3 +114,62 @@ func TestSwarmTraffic_EmptyBatchIsANoop(t *testing.T) {
 		t.Fatalf("empty forget = %d, %v", n, err)
 	}
 }
+
+// The node's two rate overrides are three-valued the way the API is: absent
+// means "inherit the config file", and an explicit 0 means unlimited — a real
+// override, and how one node escapes a cap its config ships with.
+func TestSwarmRates_ThreeValued(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	up, down, err := db.GetSwarmRates(ctx)
+	if err != nil {
+		t.Fatalf("GetSwarmRates: %v", err)
+	}
+	if up != nil || down != nil {
+		t.Errorf("fresh node = %v/%v, want no overrides", up, down)
+	}
+
+	zero, cap := 0, 1900
+	if err := db.SetSwarmRates(ctx, &zero, &cap); err != nil {
+		t.Fatalf("SetSwarmRates: %v", err)
+	}
+	up, down, err = db.GetSwarmRates(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if up == nil || *up != 0 {
+		t.Errorf("up = %v, want an explicit 0 (unlimited), not absence", up)
+	}
+	if down == nil || *down != 1900 {
+		t.Errorf("down = %v, want 1900", down)
+	}
+
+	// Clearing puts the node back on its config file.
+	if err := db.SetSwarmRates(ctx, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	up, down, err = db.GetSwarmRates(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if up != nil || down != nil {
+		t.Errorf("after clearing = %v/%v, want no overrides", up, down)
+	}
+}
+
+// A node must not stop serving because somebody typed into the settings table.
+func TestSwarmRates_GarbageReadsAsNoOverride(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	if err := db.SetSetting(ctx, "swarm.up_rate_kib", "fast please"); err != nil {
+		t.Fatal(err)
+	}
+	up, _, err := db.GetSwarmRates(ctx)
+	if err != nil {
+		t.Fatalf("GetSwarmRates: %v", err)
+	}
+	if up != nil {
+		t.Errorf("up = %v, want no override for an unparseable value", up)
+	}
+}
