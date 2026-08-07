@@ -144,21 +144,55 @@ func (h *handler) serveGrowingTransfer(w http.ResponseWriter, r *http.Request, t
 
 // copyTransfer copies [start, end] (end < 0 = to EOF) from the transfer's
 // growing file to the client, waiting for the fetch whenever it catches up.
+//
+// Every exit that is not a clean end names itself in the log, because a failure
+// here is otherwise invisible from both sides. The response headers are
+// committed before the first byte is copied, so a transfer that dies midway is
+// delivered as 200 + the full Content-Length + a short body: the client sees no
+// error to react to (player.js binds only `ended` and `error`, and neither
+// fires), and the server used to leave no trace at all. That combination is what
+// made the mid-track stop unattributable for a week
+// (.issues/open-issues.md, "Madnetwork playback stops mid-track").
+//
+// Client-gone exits stay quiet on purpose: skipping a track is the single most
+// common way a stream ends, and logging it would bury the failures underneath
+// ordinary use. Note that a proxy cutting an idle stream (nginx `send_timeout`)
+// also arrives here as a write error, so this is where to add a temporary line
+// if that is the question being chased.
 func (h *handler) copyTransfer(ctx context.Context, w http.ResponseWriter, t federation.Transfer, start, end int64) {
+	want := t.Size() - start
+	if end >= 0 {
+		want = end - start + 1
+	}
 	f, err := t.Open()
 	if err != nil {
-		return // headers may be written already — just drop the connection
+		// Headers may be written already — the connection is all we can drop.
+		log.Printf("madnetwork stream %s: open failed at offset %d: %v", t.Hash(), start, err)
+		return
 	}
 	defer f.Close()
 	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		log.Printf("madnetwork stream %s: seek to %d failed: %v", t.Hash(), start, err)
 		return
 	}
 	flusher, _ := w.(http.Flusher)
 	buf := make([]byte, 64<<10)
 	offset := start
+	short := func(reason string, err error) {
+		log.Printf("madnetwork stream %s: %s after %d of %d bytes (stopped at offset %d): %v",
+			t.Hash(), reason, offset-start, want, offset, err)
+	}
 	for end < 0 || offset <= end {
 		if err := t.WaitFor(ctx, offset); err != nil {
-			return // EOF (done), client gone, or the transfer failed midway
+			switch {
+			case errors.Is(err, io.EOF):
+				// The verified end of the blob: the normal end of an open range.
+			case ctx.Err() != nil:
+				// Client went away mid-stream.
+			default:
+				short("transfer failed", err)
+			}
+			return
 		}
 		n := int64(len(buf))
 		if avail := t.Available(offset); avail < n {
@@ -173,7 +207,7 @@ func (h *handler) copyTransfer(ctx context.Context, w http.ResponseWriter, t fed
 		rn, rerr := f.Read(buf[:n])
 		if rn > 0 {
 			if _, werr := w.Write(buf[:rn]); werr != nil {
-				return
+				return // client gone (or a proxy hung up) — see the note above
 			}
 			offset += int64(rn)
 			if flusher != nil {
@@ -181,6 +215,7 @@ func (h *handler) copyTransfer(ctx context.Context, w http.ResponseWriter, t fed
 			}
 		}
 		if rerr != nil && rerr != io.EOF {
+			short("read failed", rerr)
 			return
 		}
 	}
