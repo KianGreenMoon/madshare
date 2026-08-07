@@ -82,6 +82,38 @@ func (db *DB) ResolveRecording(ctx context.Context, fileID int64) (int64, error)
 	); err != nil {
 		return 0, fmt.Errorf("resolve recording: move tagsets: %w", err)
 	}
+	// The audio has left. Anything still on the old recording — a hand-authored
+	// appearance (origin NULL), or one MoveTagset re-homed here while its origin
+	// blob stayed elsewhere — describes audio that is now over there, so it goes
+	// too. `origin_file_id` is provenance, not structure (recording-tagsets P7);
+	// this was the last place still moving appearances by it.
+	//
+	// Without this the rows are left on a recording with no file rows, where
+	// reaper P2 trashes them — and restoring is futile, because the next reaper
+	// run trashes them again. That bounce is why quarantining them is not an
+	// acceptable outcome for an UNATTENDED path: the background analysis worker
+	// runs this, so nobody is watching, and the startup backfill can regroup a
+	// whole library at once the first time fpcalc is installed.
+	//
+	// Identity collisions on the target are allowed rather than deduped: this
+	// path has no human to refuse to, and destroying a curated row to keep the
+	// identity set tidy is the trade the wrong way round. /admin/duplicates is
+	// the cleanup surface (see the standing note that resolver moves do not
+	// enforce identity dedup). is_primary is cleared — the target keeps its own.
+	var filesLeft int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM files WHERE recording_id = ?`, currentRec,
+	).Scan(&filesLeft); err != nil {
+		return 0, fmt.Errorf("resolve recording: count renditions: %w", err)
+	}
+	if filesLeft == 0 {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE tagsets SET recording_id = ?, is_primary = 0 WHERE recording_id = ?`,
+			bestRec, currentRec,
+		); err != nil {
+			return 0, fmt.Errorf("resolve recording: move stranded appearances: %w", err)
+		}
+	}
 	if err := reapRecordingsTx(ctx, tx, []int64{currentRec}); err != nil {
 		return 0, err
 	}
@@ -300,6 +332,19 @@ func (db *DB) RecordingRenditionsByTagsetID(ctx context.Context, tagsetID int64)
 	return out, rows.Err()
 }
 
+// SplitRenditionOutcome reports a SplitRendition attempt. Found is false (no
+// error) when no live file matches the id; StrandedAppearances > 0 is a refusal
+// (an outcome, not an error, so the API can answer it specifically) and nothing
+// was changed.
+type SplitRenditionOutcome struct {
+	NewRecordingID int64
+	Found          bool
+	// StrandedAppearances counts the appearances the split would have orphaned:
+	// rows this recording holds that are not read from the departing blob. See
+	// SplitRendition for why that is refused rather than resolved.
+	StrandedAppearances int
+}
+
 // SplitRendition detaches a file into its own brand-new recording and pins it so
 // the resolver never re-merges it (the "save as another composition" action).
 // The file's offered tagsets move with it (its appearance follows the audio),
@@ -307,12 +352,28 @@ func (db *DB) RecordingRenditionsByTagsetID(ctx context.Context, tagsetID int64)
 // (primary re-promoted; removed if the split emptied it). When the file has no
 // tagset of its own (an absorbed rendition — recording-tagsets P3), the new
 // recording instead takes a *copy* of the source recording's primary appearance
-// so it stays browsable (the moderator fixes its tags afterward). found is false
-// (no error) when no live file matches the id. Atomic.
-func (db *DB) SplitRendition(ctx context.Context, fileID int64) (newRecordingID int64, found bool, err error) {
+// so it stays browsable (the moderator fixes its tags afterward). Atomic.
+//
+// It REFUSES when it would take the recording's last rendition away while
+// appearances remain that are not read from that blob — a hand-authored
+// appearance (CreateAppearance, origin NULL) or one that MoveTagset re-homed
+// here while its origin blob stayed elsewhere. Those rows describe this
+// recording's audio, and the split takes all of it, so they would be left on a
+// recording with no file rows: reaper P2 then trashes them, and restoring is
+// futile because the next reaper run trashes them again. The moderator has to
+// break that loop by hand (Move… them onto a recording that still has a
+// rendition), so we ask before creating it rather than after.
+//
+// Refusing rather than moving them along is deliberate, and it is where this
+// differs from ResolveRecording, which does move them: a split ASSERTS the
+// rendition is a different composition, so carrying a curator's hand-added
+// appearance across would file it under the very composition the moderator just
+// declared separate. The resolver has fingerprint proof of the opposite (same
+// audio) and no human to ask. Owner decision, 2026-08-07.
+func (db *DB) SplitRendition(ctx context.Context, fileID int64) (SplitRenditionOutcome, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, false, fmt.Errorf("split rendition: begin: %w", err)
+		return SplitRenditionOutcome{}, fmt.Errorf("split rendition: begin: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -322,28 +383,52 @@ func (db *DB) SplitRendition(ctx context.Context, fileID int64) (newRecordingID 
 		fileID,
 	).Scan(&oldRecordingID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, false, nil // no live file with that id
+		return SplitRenditionOutcome{}, nil // no live file with that id
 	}
 	if err != nil {
-		return 0, false, fmt.Errorf("split rendition: load file: %w", err)
+		return SplitRenditionOutcome{}, fmt.Errorf("split rendition: load file: %w", err)
 	}
 
+	// Would this empty the source? Count file ROWS, not live ones: a recording
+	// keeping a soft-removed rendition is dormant, not a husk, so reaper P2 never
+	// fires on it and its appearances stay put.
+	var filesLeft int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM files WHERE recording_id = ? AND id <> ?`, oldRecordingID, fileID,
+	).Scan(&filesLeft); err != nil {
+		return SplitRenditionOutcome{}, fmt.Errorf("split rendition: count renditions: %w", err)
+	}
+	if filesLeft == 0 {
+		var stranded int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM tagsets
+			  WHERE recording_id = ? AND deleted_at IS NULL
+			    AND (origin_file_id IS NULL OR origin_file_id <> ?)`, oldRecordingID, fileID,
+		).Scan(&stranded); err != nil {
+			return SplitRenditionOutcome{}, fmt.Errorf("split rendition: count stranded: %w", err)
+		}
+		if stranded > 0 {
+			return SplitRenditionOutcome{Found: true, StrandedAppearances: stranded}, nil
+		}
+	}
+
+	var newRecordingID int64
 	if err := tx.QueryRowContext(ctx,
 		`INSERT INTO recordings (created_at) VALUES (?) RETURNING id`, time.Now().Unix(),
 	).Scan(&newRecordingID); err != nil {
-		return 0, false, fmt.Errorf("split rendition: create recording: %w", err)
+		return SplitRenditionOutcome{}, fmt.Errorf("split rendition: create recording: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE files SET recording_id=?, recording_pinned=1 WHERE id=?`,
 		newRecordingID, fileID,
 	); err != nil {
-		return 0, false, fmt.Errorf("split rendition: reassign: %w", err)
+		return SplitRenditionOutcome{}, fmt.Errorf("split rendition: reassign: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE tagsets SET recording_id=? WHERE origin_file_id=?`,
 		newRecordingID, fileID,
 	); err != nil {
-		return 0, false, fmt.Errorf("split rendition: move tagsets: %w", err)
+		return SplitRenditionOutcome{}, fmt.Errorf("split rendition: move tagsets: %w", err)
 	}
 	// Tagset-less split (the file carried no appearance of its own): copy the
 	// source recording's representative appearance (derived: live first, then
@@ -353,7 +438,7 @@ func (db *DB) SplitRendition(ctx context.Context, fileID int64) (newRecordingID 
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM tagsets WHERE recording_id=?`, newRecordingID,
 	).Scan(&newTagsetCount); err != nil {
-		return 0, false, fmt.Errorf("split rendition: count tagsets: %w", err)
+		return SplitRenditionOutcome{}, fmt.Errorf("split rendition: count tagsets: %w", err)
 	}
 	if newTagsetCount == 0 {
 		if _, err := tx.ExecContext(ctx, `
@@ -367,16 +452,16 @@ func (db *DB) SplitRendition(ctx context.Context, fileID int64) (newRecordingID 
 			  ORDER BY (deleted_at IS NULL) DESC, is_primary DESC, id ASC LIMIT 1`,
 			newRecordingID, fileID, time.Now().Unix(), oldRecordingID,
 		); err != nil {
-			return 0, false, fmt.Errorf("split rendition: copy primary: %w", err)
+			return SplitRenditionOutcome{}, fmt.Errorf("split rendition: copy primary: %w", err)
 		}
 	}
 	if err := reapRecordingsTx(ctx, tx, []int64{oldRecordingID}); err != nil {
-		return 0, false, err
+		return SplitRenditionOutcome{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, false, fmt.Errorf("split rendition: commit: %w", err)
+		return SplitRenditionOutcome{}, fmt.Errorf("split rendition: commit: %w", err)
 	}
-	return newRecordingID, true, nil
+	return SplitRenditionOutcome{NewRecordingID: newRecordingID, Found: true}, nil
 }
 
 // RemoveRendition soft-removes a rendition — the file-side (blob) removal, the

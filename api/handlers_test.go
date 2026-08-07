@@ -476,6 +476,7 @@ type fakeRepo struct {
 	duplicateRecordings []database.DuplicateRecording
 	splitFileID         int64
 	splitNotFound       bool
+	splitStranded       int
 
 	absorbRecordingID int64
 	absorbKeepFileID  int64
@@ -1177,12 +1178,15 @@ func (f *fakeRepo) ListDuplicateRecordings(_ context.Context) ([]database.Duplic
 	return f.duplicateRecordings, nil
 }
 
-func (f *fakeRepo) SplitRendition(_ context.Context, fileID int64) (int64, bool, error) {
+func (f *fakeRepo) SplitRendition(_ context.Context, fileID int64) (database.SplitRenditionOutcome, error) {
 	f.splitFileID = fileID
 	if f.splitNotFound {
-		return 0, false, nil
+		return database.SplitRenditionOutcome{}, nil
 	}
-	return 999, true, nil
+	if f.splitStranded > 0 {
+		return database.SplitRenditionOutcome{Found: true, StrandedAppearances: f.splitStranded}, nil
+	}
+	return database.SplitRenditionOutcome{NewRecordingID: 999, Found: true}, nil
 }
 
 func (f *fakeRepo) AbsorbRenditions(_ context.Context, recordingID, keepFileID int64, absorbFileIDs []int64) (database.AbsorbOutcome, error) {

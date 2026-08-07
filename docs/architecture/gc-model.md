@@ -263,6 +263,42 @@ Legal steady states after a reap: **reachable** (≥ 1 tagset row), **dormant**
 (no tagset rows, all files trashed — restorable from Trash › Files as a
 re-staged draft, or purgeable), **gone**.
 
+### Don't hand P2 a husk that still has appearances
+
+P2 is a demotion, and the invariant above promises demotions are reversible.
+For appearances it is **not**, and this is the one place the guarantee has a
+hole: restoring a P2-trashed appearance puts a live row back on a recording
+with no file rows, which is P2's own trigger, so the next reap trashes it
+again. It bounces. Escaping needs a `Move…` onto a recording that still has a
+rendition *before* the restore — two steps, in that order, and nothing in the
+UI says so.
+
+So the rule is upstream: **an operation that takes a recording's last rendition
+away must not leave appearances behind.** `origin_file_id` is provenance, not
+structure (recording-tagsets P7), so "the appearances that move" is decided by
+recording membership, never by which blob a row was read from — a hand-authored
+appearance (`CreateAppearance`, origin NULL) and one `MoveTagset` re-homed here
+both describe this recording's audio.
+
+The two operations that can empty a recording answer it differently, on purpose
+(owner decision, 2026-08-07):
+
+- **`ResolveRecording` moves them along.** The fingerprint proves the target is
+  the same audio, so its appearances belong there; the caller is the background
+  analysis worker, so there is nobody to ask — and the startup backfill can
+  regroup a whole library the first time `fpcalc` is installed. Identity
+  collisions on the target are **allowed**, not deduped: destroying a curated
+  row to keep an identity set tidy is the wrong trade on an unattended path.
+  `/admin/duplicates` is the cleanup surface.
+- **`SplitRendition` refuses** (`SplitRenditionOutcome.StrandedAppearances` →
+  409). A split *asserts* the rendition is a different composition, so carrying
+  a curator's hand-added appearance across would file it under the very thing
+  the moderator just declared separate. A human is present, so ask instead of
+  guessing.
+
+Both check file **rows**, not live renditions: a recording keeping a
+soft-removed sibling is *dormant*, not a husk, so P2 never fires on it.
+
 Worked example — the old "delete the last appearance forever" cascade,
 staged: purge the trashed tagset row → reaper P1 soft-removes the
 recording's files into Trash › Files → their purge (explicit or aged)

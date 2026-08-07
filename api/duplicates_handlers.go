@@ -261,15 +261,30 @@ func (h *handler) duplicatesSplit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "file_id must be a positive integer", http.StatusBadRequest)
 		return
 	}
-	newRec, found, err := h.repo.SplitRendition(r.Context(), fileID)
+	out, err := h.repo.SplitRendition(r.Context(), fileID)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	if !found {
+	if !out.Found {
 		http.NotFound(w, r)
 		return
 	}
-	h.audit(r.Context(), "recording.split", strconv.FormatInt(fileID, 10), "new recording "+strconv.FormatInt(newRec, 10))
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "recording_id": newRec})
+	// Refusal, not a failure: the split would take this recording's last
+	// rendition and leave appearances behind that are not read from that blob.
+	// They would be trashed by the reaper and could not be restored (the next
+	// reap trashes them again), so the moderator is asked to re-home them first.
+	if out.StrandedAppearances > 0 {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"ok": false, "error": "stranded_appearances",
+			"stranded_appearances": out.StrandedAppearances,
+			"message": fmt.Sprintf(
+				"This is the recording's last rendition, and %d appearance(s) here are not read from it. "+
+					"Move them onto another recording (or remove them) before splitting.",
+				out.StrandedAppearances),
+		})
+		return
+	}
+	h.audit(r.Context(), "recording.split", strconv.FormatInt(fileID, 10), "new recording "+strconv.FormatInt(out.NewRecordingID, 10))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "recording_id": out.NewRecordingID})
 }

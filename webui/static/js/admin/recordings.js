@@ -245,6 +245,15 @@ export function createRecordingsView({ play, perms }) {
   async function splitOff(rec, f) {
     const res = await post(`${API}/api/admin/duplicates/${f.file_id}/split`);
     if (!res) return;
+    // 409 is a refusal with something to do about it, not a failure: this is the
+    // recording's last rendition and appearances here are not read from it.
+    // Splitting would leave them on a recording with no audio, where the reaper
+    // trashes them and restoring bounces — so say what to do instead of a code.
+    if (res.status === 409) {
+      const body = await res.json().catch(() => null);
+      toast(body?.message || 'Move the other appearances off this recording before splitting its last rendition.', 'error');
+      return;
+    }
     if (!res.ok) { toast(`Split failed (HTTP ${res.status}).`, 'error'); return; }
     toast('Split into its own recording.', 'success');
     expanded.delete(rec.id);

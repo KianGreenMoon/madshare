@@ -215,7 +215,8 @@ func TestSplitRendition_TagsetLessCopiesRepresentative(t *testing.T) {
 		t.Fatalf("strip f2 tagset: %v", err)
 	}
 
-	newRec, found, err := db.SplitRendition(ctx, f2.ID)
+	sp, err := db.SplitRendition(ctx, f2.ID)
+	newRec, found := sp.NewRecordingID, sp.Found
 	if err != nil || !found {
 		t.Fatalf("split: found=%v err=%v", found, err)
 	}

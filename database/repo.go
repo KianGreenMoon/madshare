@@ -381,8 +381,10 @@ type Repository interface {
 	ListDuplicateRecordings(ctx context.Context) ([]DuplicateRecording, error)
 
 	// SplitRendition detaches a file into a new pinned recording (the "save as
-	// another composition" action). found is false when no live file matches.
-	SplitRendition(ctx context.Context, fileID int64) (newRecordingID int64, found bool, err error)
+	// another composition" action). Found is false when no live file matches;
+	// StrandedAppearances > 0 is a refusal (the split would take the recording's
+	// last rendition and orphan appearances not read from that blob).
+	SplitRendition(ctx context.Context, fileID int64) (SplitRenditionOutcome, error)
 
 	// AbsorbRenditions keeps keepFileID's blob and absorbs absorbFileIDs into the
 	// recording — their blobs soft-removed, their distinct appearances preserved,

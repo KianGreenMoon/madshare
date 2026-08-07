@@ -243,7 +243,8 @@ func TestSplitRendition(t *testing.T) {
 	b := insertFP(t, db, "q2", 200, fp)
 	db.ResolveRecording(ctx, b)
 
-	newRec, found, err := db.SplitRendition(ctx, a)
+	sp, err := db.SplitRendition(ctx, a)
+	newRec, found := sp.NewRecordingID, sp.Found
 	if err != nil || !found {
 		t.Fatalf("split: found=%v err=%v", found, err)
 	}
@@ -263,7 +264,7 @@ func TestSplitRendition(t *testing.T) {
 	}
 
 	// Splitting an unknown file id is a clean not-found.
-	if _, found, _ := db.SplitRendition(ctx, 999999); found {
+	if sp, _ := db.SplitRendition(ctx, 999999); sp.Found {
 		t.Error("split of unknown file reported found=true")
 	}
 }
@@ -465,5 +466,161 @@ func TestRankRenditions_DegradedSizeOnly(t *testing.T) {
 	})
 	if ranked[0].FileID != 2 {
 		t.Errorf("best = file %d, want 2 (larger size in degraded mode)", ranked[0].FileID)
+	}
+}
+
+// An appearance not read from the departing blob — hand-authored
+// (CreateAppearance, origin NULL) or re-homed here by MoveTagset — describes
+// this recording's audio. ResolveRecording takes all of that audio away, so the
+// appearance goes with it. Before this, it was left on a recording with no file
+// rows, where reaper P2 trashes it; restoring is futile because the next reap
+// trashes it again, and this path is the unattended background worker.
+func TestResolveRecording_StrandedAppearancesFollowTheAudio(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	fp := repeated(0xABCD1234, 120)
+
+	a := insertFP(t, db, "sa1", 200.0, fp)
+	insertFP(t, db, "sa2", 200.0, fp)
+	recA, _ := recordingOf(t, db, a)
+
+	outc, err := db.CreateAppearance(ctx, recA, AppearanceInput{
+		Title: "Hand Added", Artist: "The Band", AlbumArtist: "The Band", Album: "Rarities",
+	}, sql.NullInt64{})
+	if err != nil || outc.TagsetID == 0 {
+		t.Fatalf("CreateAppearance: %v %+v", err, outc)
+	}
+	hand := outc.TagsetID
+
+	merged, err := db.ResolveRecording(ctx, a)
+	if err != nil {
+		t.Fatalf("ResolveRecording: %v", err)
+	}
+	if merged == recA {
+		t.Fatalf("the resolver did not regroup (still on recording %d)", recA)
+	}
+
+	var rec int64
+	var deleted sql.NullInt64
+	var primary int
+	if err := db.QueryRow(
+		`SELECT recording_id, deleted_at, is_primary FROM tagsets WHERE id=?`, hand).
+		Scan(&rec, &deleted, &primary); err != nil {
+		t.Fatalf("the hand-authored appearance was destroyed: %v", err)
+	}
+	if deleted.Valid {
+		t.Error("the hand-authored appearance was trashed instead of following the audio")
+	}
+	if rec != merged {
+		t.Errorf("appearance is on recording %d, want the merged one %d", rec, merged)
+	}
+	if primary != 0 {
+		t.Error("a moved appearance must not arrive primary — the target keeps its own")
+	}
+	// And the husk is gone: with nothing left on it, the reap deletes it.
+	if n := countRow(t, db, `SELECT COUNT(*) FROM recordings WHERE id=?`, recA); n != 0 {
+		t.Errorf("emptied recording %d survived as a husk", recA)
+	}
+
+	// The fix must survive the reaper, which is what made the old behaviour
+	// unrecoverable rather than merely surprising.
+	if _, err := db.Reap(ctx); err != nil {
+		t.Fatalf("Reap: %v", err)
+	}
+	if n := countRow(t, db,
+		`SELECT COUNT(*) FROM tagsets WHERE id=? AND deleted_at IS NULL`, hand); n != 1 {
+		t.Error("the appearance was trashed by a later reap")
+	}
+}
+
+// Splitting the LAST rendition of a recording that still holds appearances not
+// read from it is refused: the split asserts a different composition, so
+// carrying a curator's appearance across would file it under the very thing the
+// moderator just declared separate — and leaving it behind is unrecoverable.
+func TestSplitRendition_RefusesToStrandAppearances(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	f1 := insertTaggedFile(t, db, hash64("sr1"), "studio.flac", "The Band", "Studio Album")
+	rec := recordingOfFile(t, db, f1.ID)
+	outc, err := db.CreateAppearance(ctx, rec, AppearanceInput{
+		Title: "Hand Added", Artist: "The Band", AlbumArtist: "The Band", Album: "Rarities",
+	}, sql.NullInt64{})
+	if err != nil || outc.TagsetID == 0 {
+		t.Fatalf("CreateAppearance: %v %+v", err, outc)
+	}
+
+	sp, err := db.SplitRendition(ctx, f1.ID)
+	if err != nil {
+		t.Fatalf("SplitRendition: %v", err)
+	}
+	if !sp.Found {
+		t.Fatal("split reported not found")
+	}
+	if sp.StrandedAppearances != 1 {
+		t.Errorf("StrandedAppearances = %d, want 1", sp.StrandedAppearances)
+	}
+	if sp.NewRecordingID != 0 {
+		t.Error("a refused split must not create a recording")
+	}
+	// Nothing moved, nothing was trashed.
+	if got := recordingOfFile(t, db, f1.ID); got != rec {
+		t.Errorf("the rendition moved to %d despite the refusal", got)
+	}
+	if n := countRow(t, db,
+		`SELECT COUNT(*) FROM tagsets WHERE recording_id=? AND deleted_at IS NULL`, rec); n != 2 {
+		t.Errorf("live appearances = %d, want 2 untouched", n)
+	}
+}
+
+// The refusal is narrow: with another rendition left behind, the recording keeps
+// file rows, so it never becomes a husk and nothing is stranded.
+func TestSplitRendition_AllowedWhenARenditionRemains(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	f1 := insertTaggedFile(t, db, hash64("sr2"), "studio.flac", "The Band", "Studio Album")
+	f2 := insertTaggedFile(t, db, hash64("sr3"), "live.mp3", "The Band", "Live")
+	rec := groupIntoRecording(t, db, f1.ID, f2.ID)
+	if _, err := db.CreateAppearance(ctx, rec, AppearanceInput{
+		Title: "Hand Added", Artist: "The Band", AlbumArtist: "The Band", Album: "Rarities",
+	}, sql.NullInt64{}); err != nil {
+		t.Fatalf("CreateAppearance: %v", err)
+	}
+
+	sp, err := db.SplitRendition(ctx, f2.ID)
+	if err != nil {
+		t.Fatalf("SplitRendition: %v", err)
+	}
+	if !sp.Found || sp.StrandedAppearances != 0 || sp.NewRecordingID == 0 {
+		t.Errorf("outcome = %+v, want a clean split", sp)
+	}
+}
+
+// A soft-removed sibling is still a file ROW, so the recording stays dormant
+// rather than becoming a husk — reaper P2 never fires and nothing is stranded.
+// This is why the check counts rows, not live renditions.
+func TestSplitRendition_SoftRemovedSiblingIsNotAHusk(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	f1 := insertTaggedFile(t, db, hash64("sr4"), "studio.flac", "The Band", "Studio Album")
+	f2 := insertTaggedFile(t, db, hash64("sr5"), "live.mp3", "The Band", "Live")
+	rec := groupIntoRecording(t, db, f1.ID, f2.ID)
+	if _, err := db.CreateAppearance(ctx, rec, AppearanceInput{
+		Title: "Hand Added", Artist: "The Band", AlbumArtist: "The Band", Album: "Rarities",
+	}, sql.NullInt64{}); err != nil {
+		t.Fatalf("CreateAppearance: %v", err)
+	}
+	if _, err := db.RemoveRendition(ctx, f1.ID); err != nil {
+		t.Fatalf("RemoveRendition: %v", err)
+	}
+
+	sp, err := db.SplitRendition(ctx, f2.ID)
+	if err != nil {
+		t.Fatalf("SplitRendition: %v", err)
+	}
+	if sp.StrandedAppearances != 0 || sp.NewRecordingID == 0 {
+		t.Errorf("outcome = %+v, want a clean split (the removed sibling keeps it dormant, not a husk)", sp)
 	}
 }
