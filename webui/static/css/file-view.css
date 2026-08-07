@@ -38,6 +38,17 @@
 .files-table tbody tr.playing-row,
 .entity-row.playing-row { background: var(--accent-glow); }
 .playing-row .play-btn { color: var(--accent); }
+/* The button-level twin of the rule above. The two bespoke staging lists — the
+   Review queue (admin/moderation.js) and My uploads (mine-list.js) — mark the
+   previewing row by putting .is-playing on the button itself rather than on a
+   row, because neither has a .files-table tr or an .entity-row to mark. Both
+   have set that class since they were written and nothing styled it, so the
+   "which row is previewing" highlight was invisible on both pages (BUG-20).
+   Note these lists show no row tint, only the accent icon: --accent-glow would
+   have to replace the card/row's own --surface background rather than sit over a
+   table row, which is a different compositing case and a design change beyond
+   the missing rule. */
+.play-btn.is-playing { color: var(--accent); }
 
 /* Destructive actions (Move to Trash, Delete forever) stay muted at rest so a
    list of rows isn't a wall of red, and turn red under the cursor. Both confirm
