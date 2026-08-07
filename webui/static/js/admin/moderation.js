@@ -22,6 +22,7 @@
 // the shared preview player is injected as `play`. Design: the P4 UX draft and
 // docs/architecture/recording-tagsets.md.
 import { API, fmtBytes, toast, handleAuthError, el } from './shared.js';
+import { PLAY_ICON } from '../icons.js';
 import { createTrackEditor } from '../track-edit.js';
 
 const PAGE_SIZE = 200;
@@ -490,7 +491,8 @@ export function createReviewScope({ play, perms }) {
     const meta = el('div', { class: 'rev-meta' });
     shortMeta(f).forEach((s, i) => { if (i) meta.append(el('span', { class: 'dot', text: '•' })); meta.append(document.createTextNode(s)); });
 
-    const playBtn = el('button', { class: 'icon-btn rev-play', 'data-play-key': k, title: 'Preview submitted file', text: '▶',
+    const playBtn = el('button', { class: 'play-btn rev-play', 'data-play-key': k, title: 'Preview submitted file',
+      'aria-label': `Preview ${displayTitle(f)}`, html: PLAY_ICON,
       onclick: e => { e.stopPropagation(); playRow(f); } });
 
     const actions = [playBtn, el('span', { class: 'rev-act-sep' })];
@@ -713,7 +715,8 @@ export function createReviewScope({ play, perms }) {
     const p1 = piece(pieceHead(1, 'The file', 'preview plays the submitted blob'),
       el('div', { class: 'file-line' }, [
         el('div', { text: `${f.filename} · only rendition (new recording)` }),
-        el('button', { class: 'icon-btn rev-play', 'data-play-key': key(f), title: 'Play submitted', text: '▶', onclick: () => playRow(f) }),
+        el('button', { class: 'play-btn rev-play', 'data-play-key': key(f), title: 'Play submitted',
+          'aria-label': `Play ${displayTitle(f)}`, html: PLAY_ICON, onclick: () => playRow(f) }),
       ]));
     const p2 = piece(pieceHead(2, 'Recording assignment'),
       el('div', { class: 'assign' }, [el('span', { class: 'match', text: '✓ new' }), el('span', { text: 'Approving creates a new recording from this file.' })]));

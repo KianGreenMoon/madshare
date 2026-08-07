@@ -399,13 +399,26 @@
 .files-table tbody tr.fl-spacer:hover { background: transparent; }
 .files-table tbody td.fl-spacer-cell { padding: 0; border: 0; }
 
-/* Title + state badge share one line; the title ellipsises (min-width: 0 lets
-   the flex item shrink below its content), the badge never shrinks or clips. */
-.cell-title-line { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+/* Title + state badge share one line; the title ellipsises, the badge never
+   shrinks or clips.
+   The badge being unshrinkable means the title absorbs the whole deficit, and
+   with a floor of 0 it absorbed it all the way to nothing: a long badge (Trash's
+   "pending review", ~120px) in a narrow title column left the title zero width,
+   so the row rendered as badge + hash with no title at all (BUG-19). The floor
+   below keeps the title readable; the overflow: hidden keeps what no longer fits
+   inside the cell, since table-layout: fixed would otherwise let the badge land
+   on top of the neighbouring column the way the actions buttons used to. */
+.cell-title-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow: hidden;
+}
 .cell-title-line .state-badge { flex-shrink: 0; }
 .cell-title {
   font-weight: 500;
-  min-width: 0;
+  min-width: 3.5rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -558,7 +571,9 @@
   .files-table tbody td.cell-text,
   .files-table tbody td.cell-access,
   .cell-title { overflow: visible; text-overflow: clip; white-space: normal; }
-  .cell-title-line { flex-wrap: wrap; }
+  /* The badge wraps onto its own line here, so there is no fixed column to keep
+     it out of and nothing to clip — release the BUG-19 guard. */
+  .cell-title-line { flex-wrap: wrap; overflow: visible; }
   .cell-size { text-align: right; }
   /* The icon row needs no card-mode special case: the cell's own flex layout
      puts the "Actions" label left and the icons right, like every other cell. */

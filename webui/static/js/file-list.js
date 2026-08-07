@@ -476,8 +476,10 @@ export function createFileList(scope) {
     // The title can be overlong; it ellipsises (see .cell-title) so the columns
     // stay put — the full text rides along in a hover tooltip and the Edit modal.
     const titleSpan = el('span', { class: f.title ? 'cell-title' : 'cell-title is-fallback', title: titleText, text: titleText });
-    // Title + badge share one flex line so the title ellipsises but the badge,
-    // which must stay readable, never gets clipped.
+    // Title + badge share one flex line: the title ellipsises, the badge does not
+    // shrink. Squeezed hard enough (a long badge in a narrow column) the badge is
+    // clipped at the cell edge rather than the title collapsing to nothing — see
+    // .cell-title's min-width floor in file-view.css (BUG-19).
     const line = [titleSpan];
     // The badge fn gets whether the list is in the grouped view, so a scope can
     // show a state badge only when its native (sectioned) grouping is hidden.

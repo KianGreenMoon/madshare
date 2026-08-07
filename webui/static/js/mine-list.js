@@ -14,6 +14,7 @@
 //
 // Instantiated by upload.js; the preview sink (`preview`) is the shell player by
 // default, or a page-local one under the admin shell. Design: the P4 UX draft.
+import { PLAY_ICON } from './icons.js';
 import { createTrackEditor } from './track-edit.js';
 import { createBulkEditor } from './bulk-edit.js';
 import { createCharsetEditor } from './charset-edit.js';
@@ -30,13 +31,17 @@ const SECTIONS = [
 
 const title = f => f.title || f.filename || 'this file';
 
-// el('button', {class, onclick, text}, [children]) — minimal local DOM builder.
+// el('button', {class, onclick, text|html}, [children]) — minimal local DOM
+// builder. Mirrors admin/shared.js's el(), including the `html` branch the row
+// icons need: without it `html:` falls through to setAttribute and renders an
+// empty button carrying a bogus html="<svg…>" attribute.
 function el(tag, props = {}, children = []) {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(props)) {
     if (v == null) continue;
     if (k === 'class') node.className = v;
     else if (k === 'text') node.textContent = v;
+    else if (k === 'html') node.innerHTML = v;            // trusted markup only (icons.js)
     else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2), v);
     else node.setAttribute(k, v);
   }
@@ -325,7 +330,8 @@ export function createMineList({ API = '', preview, canEditMeta = false, onCount
       main.append(el('div', { class: 'mu-note', text: `✎ ${f.note}` }));
     }
 
-    const playBtn = el('button', { class: 'icon-btn mu-play', 'data-k': k, title: 'Preview', text: '▶', onclick: () => playRow(f) });
+    const playBtn = el('button', { class: 'play-btn mu-play', 'data-k': k, title: 'Preview',
+      'aria-label': `Preview ${title(f)}`, html: PLAY_ICON, onclick: () => playRow(f) });
     const actions = [playBtn];
     if (editable) {
       const editBtn = el('button', { class: 'btn btn-neutral btn-sm', text: 'Edit…',
