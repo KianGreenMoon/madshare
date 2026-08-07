@@ -718,3 +718,76 @@ func TestCreateAppearance_DiscTrackDistinguish(t *testing.T) {
 		t.Errorf("track 2 outcome = %+v, want a distinct create (not a collision)", b)
 	}
 }
+
+// Merge shares the dedup rule with absorb (loadAppearances), and shares its bug:
+// a TRASHED appearance on the target claimed an identity, so the source's LIVE
+// approved twin was hard-deleted instead of moved.
+func TestMergeRecordings_TrashedTargetAppearanceIsNotAKeptKey(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	f1 := insertTaggedFile(t, db, hash64("mt1"), "studio.flac", "The Band", "Studio Album")
+	f2 := insertTaggedFile(t, db, hash64("mt2"), "reissue.mp3", "The Band", "Studio Album")
+	target := recordingOfFile(t, db, f1.ID)
+	source := recordingOfFile(t, db, f2.ID)
+
+	if _, err := db.Exec(`UPDATE tagsets SET deleted_at=1700000000 WHERE id=?`,
+		tagsetOfFile(t, db, f1.ID)); err != nil {
+		t.Fatalf("trash target appearance: %v", err)
+	}
+	live := tagsetOfFile(t, db, f2.ID)
+
+	out, err := db.MergeRecordings(ctx, target, []int64{source})
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if !out.Found {
+		t.Fatal("merge reported not found")
+	}
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE id=? AND recording_id=?`, live, target); n != 1 {
+		t.Errorf("the live appearance did not survive onto the target (outcome %+v)", out)
+	}
+	if got := visibleTagsetCount(t, db, target); got != 1 {
+		t.Errorf("library-visible appearances = %d, want 1", got)
+	}
+}
+
+// A non-live appearance takes no part in merge's dedup, but it must still MOVE:
+// the source recording is going away, and a row left behind is reaped with it.
+func TestMergeRecordings_NonLiveAppearancesMoveWithTheSource(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	f1 := insertTaggedFile(t, db, hash64("mv1"), "studio.flac", "The Band", "Studio Album")
+	f2 := insertTaggedFile(t, db, hash64("mv2"), "reissue.mp3", "The Band", "Studio Album")
+	target := recordingOfFile(t, db, f1.ID)
+	source := recordingOfFile(t, db, f2.ID)
+
+	// The source's only appearance is trashed — same identity as the target's
+	// live one, so the old rule would have dropped it as a duplicate.
+	trashed := tagsetOfFile(t, db, f2.ID)
+	if _, err := db.Exec(`UPDATE tagsets SET deleted_at=1700000000 WHERE id=?`, trashed); err != nil {
+		t.Fatalf("trash source appearance: %v", err)
+	}
+
+	if _, err := db.MergeRecordings(ctx, target, []int64{source}); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	var rec int64
+	if err := db.QueryRow(`SELECT recording_id FROM tagsets WHERE id=?`, trashed).Scan(&rec); err != nil {
+		t.Fatalf("the trashed appearance was destroyed by the merge: %v", err)
+	}
+	if rec != target {
+		t.Errorf("trashed appearance is on recording %d, want the merge target %d", rec, target)
+	}
+}
+
+// recordingOfFile returns the recording a file is a rendition of.
+func recordingOfFile(t *testing.T, db *DB, fileID int64) int64 {
+	t.Helper()
+	var id int64
+	if err := db.QueryRow(`SELECT recording_id FROM files WHERE id=?`, fileID).Scan(&id); err != nil {
+		t.Fatalf("recording of file %d: %v", fileID, err)
+	}
+	return id
+}

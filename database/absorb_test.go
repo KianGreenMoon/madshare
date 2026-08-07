@@ -263,3 +263,141 @@ func setCodec(t *testing.T, db *DB, fileID int64, codec string, sampleRate, bitD
 		t.Fatalf("set codec on file %d: %v", fileID, err)
 	}
 }
+
+// Dedup must not cost a user a saved track. Absorb drops a duplicate appearance
+// on purpose, but playlist_items.tagset_id is ON DELETE CASCADE (migration 029),
+// so before this was fixed the drop silently emptied every playlist and
+// favorites list holding it — while an identical appearance of the same audio
+// survived on the recording, available to point at.
+func TestAbsorb_DroppedAppearanceKeepsItsPlaylistEntries(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	user, err := db.CreateUser(ctx, "listener", "x", false)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	// Same audio, same identity → f2's appearance is the redundant one.
+	f1 := insertTaggedFile(t, db, hash64("pl1"), "studio.flac", "The Band", "Studio Album")
+	f2 := insertTaggedFile(t, db, hash64("pl2"), "reissue.mp3", "The Band", "Studio Album")
+	rec := groupIntoRecording(t, db, f1.ID, f2.ID)
+
+	keep := tagsetOfFile(t, db, f1.ID)
+	doomed := tagsetOfFile(t, db, f2.ID)
+
+	pl, err := db.CreatePlaylist(ctx, user, "Mine", []int64{doomed}, nil)
+	if err != nil {
+		t.Fatalf("CreatePlaylist: %v", err)
+	}
+	// A favorites list is a playlist row too (kind='favorites'), so one fix
+	// covers both — assert it explicitly rather than trusting that.
+	fav, err := db.CreatePlaylist(ctx, user, "Favs", []int64{doomed}, nil)
+	if err != nil {
+		t.Fatalf("CreatePlaylist(favs): %v", err)
+	}
+
+	out, err := db.AbsorbRenditions(ctx, rec, f1.ID, []int64{f2.ID})
+	if err != nil {
+		t.Fatalf("absorb: %v", err)
+	}
+	if out.AppearancesDropped != 1 {
+		t.Fatalf("outcome = %+v, want the duplicate appearance dropped", out)
+	}
+	for _, p := range []struct {
+		id   int64
+		name string
+	}{{pl.ID, "playlist"}, {fav.ID, "second list"}} {
+		var pointsAt int64
+		if err := db.QueryRow(
+			`SELECT COALESCE(tagset_id,0) FROM playlist_items WHERE playlist_id=?`, p.id).Scan(&pointsAt); err != nil {
+			t.Fatalf("%s lost its only item: %v", p.name, err)
+		}
+		if pointsAt != keep {
+			t.Errorf("%s points at tagset %d, want the surviving appearance %d", p.name, pointsAt, keep)
+		}
+	}
+}
+
+// The re-point must not create a duplicate entry: when the playlist already
+// holds the survivor, the redundant row is dropped rather than doubled.
+//
+// Unlike its siblings here this one does NOT fail against the pre-fix code —
+// without a re-point the doomed row simply cascaded away and the count was 1
+// either way. It is a guard on the new path (a naive `UPDATE … SET tagset_id`
+// would leave the same track in the list twice), not a reproduction.
+func TestAbsorb_RepointDoesNotDuplicateAPlaylistEntry(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	user, err := db.CreateUser(ctx, "listener", "x", false)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	f1 := insertTaggedFile(t, db, hash64("pd1"), "studio.flac", "The Band", "Studio Album")
+	f2 := insertTaggedFile(t, db, hash64("pd2"), "reissue.mp3", "The Band", "Studio Album")
+	rec := groupIntoRecording(t, db, f1.ID, f2.ID)
+	keep, doomed := tagsetOfFile(t, db, f1.ID), tagsetOfFile(t, db, f2.ID)
+
+	pl, err := db.CreatePlaylist(ctx, user, "Both", []int64{keep, doomed}, nil)
+	if err != nil {
+		t.Fatalf("CreatePlaylist: %v", err)
+	}
+	if _, err := db.AbsorbRenditions(ctx, rec, f1.ID, []int64{f2.ID}); err != nil {
+		t.Fatalf("absorb: %v", err)
+	}
+	n := countRow(t, db, `SELECT COUNT(*) FROM playlist_items WHERE playlist_id=?`, pl.ID)
+	if n != 1 {
+		t.Errorf("playlist has %d item(s), want 1 (the survivor, not two copies of it)", n)
+	}
+}
+
+// A TRASHED appearance is not "the one we are keeping", so it must not seed a
+// kept key: doing so made absorb drop the LIVE approved twin as its duplicate
+// and take the recording out of the library entirely.
+func TestAbsorb_TrashedAppearanceIsNotAKeptKey(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	f1 := insertTaggedFile(t, db, hash64("tk1"), "studio.flac", "The Band", "Studio Album")
+	f2 := insertTaggedFile(t, db, hash64("tk2"), "reissue.mp3", "The Band", "Studio Album")
+	rec := groupIntoRecording(t, db, f1.ID, f2.ID)
+
+	if _, err := db.Exec(`UPDATE tagsets SET deleted_at=1700000000 WHERE id=?`,
+		tagsetOfFile(t, db, f1.ID)); err != nil {
+		t.Fatalf("trash kept appearance: %v", err)
+	}
+
+	out, err := db.AbsorbRenditions(ctx, rec, f1.ID, []int64{f2.ID})
+	if err != nil {
+		t.Fatalf("absorb: %v", err)
+	}
+	if out.AppearancesDropped != 0 {
+		t.Errorf("dropped %d appearance(s); a trashed row must not claim an identity", out.AppearancesDropped)
+	}
+	if got := visibleTagsetCount(t, db, rec); got != 1 {
+		t.Errorf("library-visible appearances = %d, want 1 — the recording left the library", got)
+	}
+}
+
+// A pending appearance belongs to its uploader and the review queue. Dropping it
+// as a duplicate removed an entry from moderation with no approve/return/deny.
+func TestAbsorb_PendingAppearanceIsNotDropped(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	f1 := insertTaggedFile(t, db, hash64("pn1"), "studio.flac", "The Band", "Studio Album")
+	f2 := insertTaggedFile(t, db, hash64("pn2"), "reissue.mp3", "The Band", "Studio Album")
+	rec := groupIntoRecording(t, db, f1.ID, f2.ID)
+
+	pending := tagsetOfFile(t, db, f2.ID)
+	if _, err := db.Exec(`UPDATE tagsets SET review_state=? WHERE id=?`, ReviewSubmitted, pending); err != nil {
+		t.Fatalf("mark submitted: %v", err)
+	}
+
+	if _, err := db.AbsorbRenditions(ctx, rec, f1.ID, []int64{f2.ID}); err != nil {
+		t.Fatalf("absorb: %v", err)
+	}
+	if n := countRow(t, db, `SELECT COUNT(*) FROM tagsets WHERE id=?`, pending); n != 1 {
+		t.Error("the submitted appearance was hard-deleted; it would leave the review queue with no decision")
+	}
+}

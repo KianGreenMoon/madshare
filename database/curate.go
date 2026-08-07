@@ -422,13 +422,19 @@ func (db *DB) MergeRecordings(ctx context.Context, targetID int64, sourceIDs []i
 
 	out := MergeOutcome{Found: true}
 
-	// The target's appearance identities always win the dedup.
+	// The target's appearance identities always win the dedup — but only its LIVE
+	// ones seed a key, for the reason spelled out on loadAppearances: a trashed
+	// or pending row is not an appearance we are keeping, and letting it claim an
+	// identity drops the live twin instead.
 	targetApps, err := loadAppearances(ctx, tx, targetID)
 	if err != nil {
 		return MergeOutcome{}, err
 	}
 	keptKeys := make(map[appearanceKey]struct{}, len(targetApps))
 	for _, a := range targetApps {
+		if !a.live {
+			continue
+		}
 		keptKeys[a.key] = struct{}{}
 	}
 
@@ -439,6 +445,16 @@ func (db *DB) MergeRecordings(ctx context.Context, targetID int64, sourceIDs []i
 		}
 		var dropIDs, moveIDs []int64
 		for _, a := range apps {
+			// A non-live appearance is never dropped (Trash and the review queue
+			// own those), but it must still MOVE: unlike absorb, the source
+			// recording is going away, and a row left behind would be reaped with
+			// it. It takes no part in the dedup, so it claims no key — the target
+			// may legitimately end up holding a live and a trashed appearance of
+			// the same identity, which is the state MoveTagset already permits.
+			if !a.live {
+				moveIDs = append(moveIDs, a.id)
+				continue
+			}
 			if _, dup := keptKeys[a.key]; dup || !a.meaningful {
 				dropIDs = append(dropIDs, a.id)
 				continue
