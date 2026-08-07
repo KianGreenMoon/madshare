@@ -6,8 +6,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime"
 	"net/http"
 	"os"
@@ -336,6 +338,37 @@ func (t *transfer) resetProgress() {
 	t.stats.resetAttempt()
 }
 
+// discardPartial drops a failed attempt's bytes so the next one starts from a
+// clean file, and does it by truncating IN PLACE — never by unlinking.
+//
+// That distinction is the whole point. api.copyTransfer opens the part file
+// exactly once and holds that descriptor for the entire response, so replacing
+// the path with a fresh inode does not give the reader a fresh file: it strands
+// the reader on the old, now-unlinked one. fetchSwarm pre-sizes that file to the
+// blob's full length (`f.Truncate(man.Size)`, swarm.go), so past the last chunk
+// that landed it reads as ZEROS rather than EOF. The client then receives a
+// response that satisfies Content-Length exactly, reports no error, and logs
+// nothing, while the decoder falls silent wherever the swarm stopped
+// (.issues/open-issues.md, "Madnetwork playback stops mid-track").
+//
+// Progress is reset FIRST so no reader is cleared to read the region being
+// dropped while it is being dropped; after the reset, WaitFor holds every
+// reader until the next attempt has actually written past its offset.
+//
+// The success path needs none of this — os.Rename preserves the inode — and
+// neither do runWhole's per-holder retries, which O_TRUNC the same file. Only
+// this transition ever replaced it.
+func (t *transfer) discardPartial() error {
+	t.resetProgress()
+	if t.partPath == "" {
+		return nil
+	}
+	if err := os.Truncate(t.partPath, 0); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 // beginChunks switches the transfer into chunk mode: readability becomes
 // per-chunk (for the streaming relay's random-access reads) and WaitFor gains a
 // seek-priority hook into the fetch plan. Called by fetchSwarm before dispatch.
@@ -523,9 +556,13 @@ func (n *Node) runTransfer(t *transfer, holders []*BlobProvider) {
 				return
 			}
 		}
-		os.Remove(t.partPath)
 		n.logger.Printf("federation: swarm fetch %s failed (%v); falling back to whole-file", t.hash, err)
-		t.resetProgress()
+		if derr := t.discardPartial(); derr != nil {
+			// Not fatal — fetchFrom opens with O_TRUNC anyway, so the next attempt
+			// starts clean regardless. Logged because a part file we cannot shrink
+			// is a disk leak until the startup reaper gets it.
+			n.logger.Printf("federation: discard partial %s: %v", t.hash, derr)
+		}
 	} else {
 		pf.discard()
 	}

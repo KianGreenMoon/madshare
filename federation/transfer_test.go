@@ -396,3 +396,117 @@ func TestEvictCachedBlobDropsTheDuplicate(t *testing.T) {
 		t.Errorf("no cache dir configured: %v", err)
 	}
 }
+
+// TestSwarmFallbackKeepsTheReadersFile pins the fix for the mid-track stop
+// (.issues/open-issues.md, "Madnetwork playback stops mid-track").
+//
+// It replays the exact file lifecycle of a swarm fetch that fails after landing
+// its lead ramp, because that is the only part of the bug that is deterministic:
+// api.copyTransfer opens the part file ONCE and keeps that descriptor for the
+// whole response, so if the swarm→whole transition unlinks the path and lets
+// fetchFrom create a fresh inode, the reader is left on the old one — pre-sized
+// to the blob's full length by fetchSwarm, and therefore full of zeros past the
+// last chunk that landed.
+//
+// The assertion that matters is the CONTENT one. A length check scores the bug a
+// pass: the stranded file is exactly the right size, which is why the response
+// satisfies Content-Length and nothing anywhere reports an error.
+func TestSwarmFallbackKeepsTheReadersFile(t *testing.T) {
+	dir := t.TempDir()
+	hash := strings.Repeat("cd", 32)
+	part := filepath.Join(dir, hash+".part")
+
+	const fullSize = 64 << 10
+	const landed = 8 << 10 // the lead ramp that arrived before the swarm gave up
+
+	real := make([]byte, fullSize)
+	for i := range real {
+		real[i] = byte(i%251) + 1 // never 0, so a zero byte can only be a hole
+	}
+
+	// 1. fetchSwarm: create, pre-size to the full length, land a prefix.
+	f, err := os.OpenFile(part, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
+	if err != nil {
+		t.Fatalf("create part: %v", err)
+	}
+	if err := f.Truncate(fullSize); err != nil {
+		t.Fatalf("pre-size: %v", err)
+	}
+	if _, err := f.WriteAt(real[:landed], 0); err != nil {
+		t.Fatalf("write landed prefix: %v", err)
+	}
+	f.Close()
+
+	tr := newTransfer(hash, filepath.Join(dir, hash), part)
+	tr.setMeta(fullSize, "song.flac")
+	tr.addProgress(landed)
+
+	// 2. The reader opens it once and holds the descriptor, as copyTransfer does.
+	reader, err := tr.Open()
+	if err != nil {
+		t.Fatalf("reader open: %v", err)
+	}
+	defer reader.Close()
+	before := make([]byte, landed)
+	if _, err := io.ReadFull(reader, before); err != nil {
+		t.Fatalf("read landed prefix: %v", err)
+	}
+	if string(before) != string(real[:landed]) {
+		t.Fatal("the landed prefix did not read back correctly")
+	}
+
+	// 3. The swarm gives up and the transfer falls back to the whole-file path.
+	if err := tr.discardPartial(); err != nil {
+		t.Fatalf("discardPartial: %v", err)
+	}
+	if got := tr.Progress(); got != 0 {
+		t.Errorf("progress after the fallback = %d, want 0 — readers must be gated "+
+			"until the next attempt has written past their offset", got)
+	}
+
+	// 4. runWhole → fetchFrom re-opens the SAME path and streams the real blob.
+	w, err := os.OpenFile(part, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		t.Fatalf("reopen for whole-file fetch: %v", err)
+	}
+	if _, err := w.Write(real); err != nil {
+		t.Fatalf("whole-file write: %v", err)
+	}
+	w.Close()
+	tr.addProgress(fullSize)
+
+	// 5. The reader's ORIGINAL descriptor must see those bytes.
+	if _, err := reader.Seek(0, io.SeekStart); err != nil {
+		t.Fatalf("rewind reader: %v", err)
+	}
+	got := make([]byte, fullSize)
+	if _, err := io.ReadFull(reader, got); err != nil {
+		t.Fatalf("read after the fallback: %v", err)
+	}
+	for i, b := range got {
+		if b != real[i] {
+			zeros := 0
+			for _, c := range got[i:] {
+				if c != 0 {
+					break
+				}
+				zeros++
+			}
+			t.Fatalf("byte %d = %d, want %d (%d zero bytes follow) — the reader is "+
+				"stranded on an unlinked, pre-sized inode and is serving silence", i, b, real[i], zeros)
+		}
+	}
+
+	// The sharp version of the same claim: same file, not merely same contents.
+	held, err := reader.Stat()
+	if err != nil {
+		t.Fatalf("stat held descriptor: %v", err)
+	}
+	onDisk, err := os.Stat(part)
+	if err != nil {
+		t.Fatalf("stat part path: %v", err)
+	}
+	if !os.SameFile(held, onDisk) {
+		t.Error("the part file at the path is not the one the reader holds — the fallback replaced the inode")
+	}
+}
