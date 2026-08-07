@@ -379,7 +379,13 @@ func TestBlockKeyMarksAStranger(t *testing.T) {
 	waitFor(t, "the stranger's mark to be published", func() bool {
 		a.Nudge()
 		rec = heldMarks(t, storeA, a.PublicKeyHex())
-		return rec != nil && len(rec.Marks) == 1
+		// Wait for a mark that is actually written, not merely counted: a publish
+		// can be observed with the list sized but the fields still empty, and a
+		// len()-only predicate passes on that half-written record — the assertion
+		// below then reads the blanks and fails a test that had nothing wrong with
+		// it. Checking wholeness here rather than the values keeps the assertion
+		// live, so a genuinely wrong mark still fails loudly.
+		return rec != nil && len(rec.Marks) == 1 && rec.Marks[0].Key != ""
 	})
 	if rec.Marks[0].Key != stranger || rec.Marks[0].Reason != "claims audio it does not have" {
 		t.Errorf("mark = %+v", rec.Marks[0])

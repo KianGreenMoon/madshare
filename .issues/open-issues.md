@@ -1001,6 +1001,18 @@ the assertion still reads it. Folding the field checks into the `waitFor`
 closure is a two-line change that costs nothing when the record is written whole,
 so there is no reason to keep waiting for a recurrence before making it.
 
+**FIXED 2026-08-08 — with one deliberate deviation from the suggestion above.**
+Folding the *field checks* into the predicate would have worked, but `waitFor`
+`t.Fatalf`s on timeout (`friendship_test.go:530`), so a predicate that also
+checked the values would have made the trailing assertion **dead code** — and
+turned a genuinely wrong mark from a clear `mark = {...}` failure into a vague
+"timed out waiting for the stranger's mark to be published". So the predicate now
+waits for **wholeness** (`len(rec.Marks) == 1 && rec.Marks[0].Key != ""`) and the
+assertion keeps checking **correctness**. That is the split the finding actually
+calls for: the defect was a predicate that under-specified what "published"
+means, not an assertion in the wrong place. `TestBlockKeyMarksAStranger` passes in
+0.26 s, so the added condition costs nothing when the record is written whole.
+
 **A fourth site, 2026-08-01 (F7 item 9).** One full-package run failed at
 `swarm_test.go:242` — `TestSwarmFailover` timed out in `makeFriends` ("timed out
 waiting for A to see B's pairing request"), i.e. it spent the whole 30 s
@@ -1168,6 +1180,21 @@ does not mean A has placed the issuer by the time the first mesh response lands.
 The fix is the one-line seam change (wrap the 200 assertion in `waitFor`, as the
 sibling does); no product change is implied. Left unfixed only because it has
 been seen once.
+
+**FIXED 2026-08-08 — at TWO sites, not one, because the "safe sibling" was not
+safe.** The seam change above was applied at `token_mesh_test.go:166`. But the
+sibling this entry cites as the correct shape is only wrapped at its *last* step
+(the un-vouch transition, line 132); its **first** assertion — line 127, a bare
+`meshGet` expecting 200 immediately after `vouchFor` — is the identical race,
+`t.Fatalf` and all. This entry read "the sibling did not fail" as evidence that
+the sibling was correctly written, and it is not: it is the same armed seam that
+happens not to have tripped yet. Both now wait for A to place the issuer before
+asserting 200. **The whole point of the wait is that 404 is the pre-acceptance
+answer**, so the failing form and the not-yet form are indistinguishable to a
+single `meshGet` — which is exactly why this read as an access bug. All six
+`TestListenerNodeToken*` / `TestBlockKeyMarksAStranger` cases pass at unchanged
+timings (~3.0 s each), confirming the wait is a no-op once the graph has
+converged.
 
 ## Madnetwork playback stops mid-track — investigation, no fix (2026-08-07)
 

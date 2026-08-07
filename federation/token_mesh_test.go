@@ -124,9 +124,15 @@ func TestListenerNodeTokenNeedsAnIssuerWeCanPlace(t *testing.T) {
 	homePriv, homeKey := newSigner(t)
 	vouchFor(t, storeA, k("voucher"), homeKey)
 	good := mustSign(t, homePriv, homeKey, b.PublicKeyHex(), false, time.Now())
-	if code, _ := meshGet(t, a, b, blobPath, good); code != http.StatusOK {
-		t.Fatalf("vouched listener node = %d, want 200 before the edge is cut", code)
-	}
+	// Wait, don't assert: vouchFor writes the record, but A *accepting* it is a
+	// separate step (GraphAccept, 1 minute by default) that MembershipTTL: noMemo
+	// does not remove. meshGet retries only until the mesh answers at all and
+	// returns the first status it gets, so a bare 200 here reads "issuer not
+	// placed yet" as the verdict.
+	waitFor(t, "A to place the issuer", func() bool {
+		code, _ := meshGet(t, a, b, blobPath, good)
+		return code == http.StatusOK
+	})
 	unvouch(storeA, homeKey)
 	a.Nudge()
 	waitFor(t, "A to stop placing the issuer", func() bool {
@@ -163,9 +169,12 @@ func TestListenerNodeTokenCarriesTheAccountACL(t *testing.T) {
 	vouchFor(t, storeA, k("voucher"), homeKey)
 	token := mustSign(t, homePriv, homeKey, b.PublicKeyHex(), true, time.Now())
 
-	if code, _ := meshGet(t, a, b, "/madnetwork/v0/blob/"+guest, token); code != http.StatusOK {
-		t.Errorf("guest-only bearer fetching guest-playable content = %d, want 200", code)
-	}
+	// Same convergence race as the sibling above: wait for A to place the issuer
+	// rather than reading the pre-acceptance 404 as the answer.
+	waitFor(t, "A to place the issuer", func() bool {
+		code, _ := meshGet(t, a, b, "/madnetwork/v0/blob/"+guest, token)
+		return code == http.StatusOK
+	})
 	if code, _ := meshGet(t, a, b, "/madnetwork/v0/blob/"+plain, token); code != http.StatusNotFound {
 		t.Errorf("guest-only bearer fetching ordinary content = %d, want 404", code)
 	}
