@@ -232,21 +232,39 @@ type DuplicateRecording struct {
 // ListDuplicateRecordings returns every recording with >1 non-trashed rendition,
 // each with its renditions (tech info + display fields), ordered by recording id
 // then file id. Single-rendition recordings (the norm) are excluded.
+//
+// A rendition is a live FILE row of the recording — the same definition
+// RecordingRenditionsByTagsetID and the quality ladder use, and deliberately
+// nothing to do with appearances. This query used to root on
+// `t.origin_file_id = f.id`, so it counted *provenance links* rather than
+// renditions and got both directions wrong (recording-tagsets P7):
+//
+//   - a recording whose second rendition is an orphan — no appearance of its own,
+//     which is exactly what appearance dedup in merge and absorb produces — fell
+//     under the >1 test and was not listed at all, hiding the very shape this
+//     page exists to reconcile;
+//   - a single blob carrying two live appearances (a byte-dup draft from
+//     AttachDraftTagset) passed the test and was emitted twice, listing one file
+//     as two renditions of itself.
+//
+// Display text therefore comes from the file's representative appearance
+// (reprTagset), which searches the recording and so still names an orphan; the
+// join is LEFT so a recording momentarily holding no tagset at all cannot drop
+// its renditions off the page on the way to being reaped.
 func (db *DB) ListDuplicateRecordings(ctx context.Context) ([]DuplicateRecording, error) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT f.recording_id, f.id, f.hash, f.object_key, f.byte_size, f.mime_type,
-		        t.title, COALESCE(t.artist, ''), COALESCE(t.album_artist, ''),
+		        COALESCE(t.title, ''), COALESCE(t.artist, ''), COALESCE(t.album_artist, ''),
 		        COALESCE(t.album, ''),
 		        COALESCE(mm.codec, ''), COALESCE(mm.bitrate, 0),
 		        COALESCE(mm.sample_rate, 0), COALESCE(mm.bit_depth, 0),
 		        COALESCE(mm.duration_seconds, 0)
 		   FROM files f
-		   JOIN tagsets t ON t.origin_file_id = f.id AND t.deleted_at IS NULL
+		   LEFT JOIN tagsets t ON t.id = `+reprTagset+`
 		   LEFT JOIN media_metadata mm ON mm.file_id = f.id
 		  WHERE f.deleted_at IS NULL
 		    AND f.recording_id IN (
 		        SELECT f2.recording_id FROM files f2
-		         JOIN tagsets t2 ON t2.origin_file_id = f2.id AND t2.deleted_at IS NULL
 		         WHERE f2.deleted_at IS NULL
 		         GROUP BY f2.recording_id HAVING COUNT(*) > 1)
 		  ORDER BY f.recording_id, f.id`,

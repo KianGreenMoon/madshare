@@ -226,10 +226,109 @@ func TestListDuplicateRecordings(t *testing.T) {
 		t.Errorf("got recording %d with %d renditions, want %d with 2", dups[0].RecordingID, len(dups[0].Renditions), recA)
 	}
 
-	// Trashing one rendition drops the recording below the >1 threshold.
+	// Trashing an APPEARANCE does not remove a rendition: the reaper deliberately
+	// leaves a blob alone while its tagsets are merely trashed (reap pass 1), so
+	// both blobs are still on disk and still need reconciling here. This is the
+	// one behaviour the P7 re-rooting changed — before it, trashing the appearance
+	// hid the duplicate while both blobs remained.
 	trashAppearancesByHash(t, db, hash64("p1"))
+	if dups, _ := db.ListDuplicateRecordings(ctx); len(dups) != 1 {
+		t.Errorf("after trashing one APPEARANCE, duplicates = %d, want 1 (both blobs are still renditions)", len(dups))
+	}
+
+	// Removing the RENDITION is what drops the recording below the >1 threshold.
+	if found, err := db.RemoveRendition(ctx, a); err != nil || !found {
+		t.Fatalf("remove rendition: found=%v err=%v", found, err)
+	}
 	if dups, _ := db.ListDuplicateRecordings(ctx); len(dups) != 0 {
-		t.Errorf("after trashing one rendition, duplicates = %d, want 0", len(dups))
+		t.Errorf("after removing one rendition, duplicates = %d, want 0", len(dups))
+	}
+}
+
+// liveFilesOf counts the rendition rows of a recording — the canonical
+// definition RecordingRenditionsByTagsetID uses (a live file row), with no
+// appearance involved.
+func liveFilesOf(t *testing.T, db *DB, recID int64) int {
+	t.Helper()
+	return countRow(t, db, `SELECT COUNT(*) FROM files WHERE recording_id=? AND deleted_at IS NULL`, recID)
+}
+
+// TestListDuplicateRecordings_ListsAnOrphanedRendition pins the shape the page
+// exists to fix and could not see. Appearance dedup (merge, absorb) keeps the
+// blob and drops the redundant tagset, so the second rendition has no appearance
+// of its own — and a listing rooted on `t.origin_file_id = f.id` counted
+// provenance links rather than renditions, dropping the whole recording.
+func TestListDuplicateRecordings_ListsAnOrphanedRendition(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	// Two blobs the resolver keeps apart (different fingerprints), each with its
+	// own appearance. The appearances collide on identity because the shared test
+	// metadata is identical — which is what makes merge drop one of them.
+	a := insertFP(t, db, "orph-a", 200, repeated(0x41414141, 120))
+	recA, _ := db.ResolveRecording(ctx, a)
+	b := insertFP(t, db, "orph-b", 90, repeated(0x52525252, 120))
+	recB, _ := db.ResolveRecording(ctx, b)
+	if recA == recB {
+		t.Fatalf("setup: both files landed on recording %d; the fixtures must stay apart", recA)
+	}
+
+	out, err := db.MergeRecordings(ctx, recA, []int64{recB})
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if out.AppearancesDropped != 1 || out.RenditionsMoved != 1 {
+		t.Fatalf("merge outcome = %+v, want 1 appearance dropped and 1 rendition moved", out)
+	}
+	if n := liveFilesOf(t, db, recA); n != 2 {
+		t.Fatalf("setup: recording has %d live renditions, want 2", n)
+	}
+
+	dups, err := db.ListDuplicateRecordings(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(dups) != 1 {
+		t.Fatalf("duplicate recordings = %d, want 1 (a recording with two live blobs is a duplicate "+
+			"whether or not both carry an appearance)", len(dups))
+	}
+	if got := len(dups[0].Renditions); got != 2 {
+		t.Errorf("renditions listed = %d, want 2 (the orphaned blob must be reconcilable here)", got)
+	}
+}
+
+// TestListDuplicateRecordings_ByteDupDraftIsOneRendition is the same defect from
+// the other side: counting provenance links let a SINGLE blob carrying two live
+// appearances (a byte-dup draft, AttachDraftTagset) pass the >1 test and be
+// listed as two renditions of itself. One blob is one rendition.
+func TestListDuplicateRecordings_ByteDupDraftIsOneRendition(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	a := insertFP(t, db, "bdup-a", 200, repeated(0x63636363, 120))
+	recA, _ := db.ResolveRecording(ctx, a)
+
+	// A second upload of the same bytes attaches another appearance to the very
+	// same blob rather than storing it twice. It has to be a genuinely different
+	// appearance — the attach dedups on album/album-artist/disc/track — so give
+	// it another album, which is also the real case: the same recording turning
+	// up on a compilation.
+	second := newMeta()
+	second.Album = sql.NullString{String: "A Compilation", Valid: true}
+	if _, created, err := db.AttachDraftTagset(ctx, a, sql.NullInt64{}, second, "again.mp3"); err != nil || !created {
+		t.Fatalf("attach draft tagset: created=%v err=%v", created, err)
+	}
+	if n := liveFilesOf(t, db, recA); n != 1 {
+		t.Fatalf("setup: recording has %d live renditions, want 1", n)
+	}
+
+	dups, err := db.ListDuplicateRecordings(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(dups) != 0 {
+		t.Fatalf("duplicate recordings = %d, want 0; one blob with two appearances is not two "+
+			"renditions (listed %d of them)", len(dups), len(dups[0].Renditions))
 	}
 }
 
