@@ -123,9 +123,27 @@ const uploadsBase = "m.created_by = ? AND m.deleted_at IS NULL AND m.review_stat
 // reviewable unit, one queue row per appearance) with the blob it was read from
 // (alias f — for preview + tech). A blob can carry several appearances after a
 // byte-dup upload, so the queue is tagset-rooted (recording-tagsets P4).
+//
+// When the provenance link has been cleared the blob is resolved through the
+// appearance's RECORDING instead. origin_file_id is ON DELETE SET NULL and
+// MoveTagset re-homes an appearance without touching it, so purging the
+// recording that owns the ORIGIN blob strips the link from a row that by then
+// lives on another recording — and a plain `f.id = m.origin_file_id` join then
+// dropped it from the queue while it was still submitted: invisible and
+// unapprovable, with no approve/return/deny available. P7d argued this could not
+// arise ("origin_file_id never reaches NULL on a live draft"); it does, via a
+// move. The fallback is deliberately COALESCE rather than a recording-rooted
+// lookup, so a row whose provenance survives resolves exactly as before and only
+// the broken case changes. An appearance whose recording has no files at all
+// still drops out, which is correct: that is reaper pass 2's target and it
+// leaves the queue as trashed anyway.
 const reviewFrom = `
 		FROM tagsets m
-		JOIN files f ON f.id = m.origin_file_id`
+		JOIN files f ON f.id = COALESCE(m.origin_file_id,
+			(SELECT rf.id FROM files rf
+			  WHERE rf.recording_id = m.recording_id
+			  ORDER BY (rf.deleted_at IS NULL) DESC, rf.id ASC
+			  LIMIT 1))`
 
 func scanReviewRows(rows *sql.Rows, withUploader bool) ([]*ReviewEntry, error) {
 	out := make([]*ReviewEntry, 0)

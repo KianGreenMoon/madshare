@@ -386,3 +386,79 @@ func TestMigration017_GrantsModeratorPermissions(t *testing.T) {
 		}
 	}
 }
+
+// inReviewQueue reports whether the moderation queue lists an appearance.
+func inReviewQueue(t *testing.T, db *DB, tagsetID int64) bool {
+	t.Helper()
+	rows, err := db.ListPendingReview(context.Background())
+	if err != nil {
+		t.Fatalf("list pending review: %v", err)
+	}
+	for _, e := range rows {
+		if e.TagsetID == tagsetID {
+			return true
+		}
+	}
+	return false
+}
+
+// TestReviewQueue_KeepsAMovedPendingAppearance drives the one shape P7d's claim
+// ("origin_file_id never reaches NULL on a live draft") does not cover: an
+// appearance moved to another recording still points at its ORIGIN blob for
+// provenance, and purging the recording that owns that blob can strip the link
+// while the appearance is still submitted. reviewFrom joins files INNER, so such
+// a row would leave the queue unapprovable and invisible.
+func TestReviewQueue_KeepsAMovedPendingAppearance(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	// Recording A: one blob with its own approved appearance, plus a SUBMITTED
+	// second appearance (the byte-dup upload shape) so the move is not refused
+	// as "last appearance".
+	fa := insertFP(t, db, "mv-a", 200, repeated(0x11223344, 120))
+	recA, _ := db.ResolveRecording(ctx, fa)
+	pending := newMeta()
+	pending.Album = sql.NullString{String: "A Compilation", Valid: true}
+	tid, created, err := db.AttachDraftTagset(ctx, fa, sql.NullInt64{}, pending, "again.mp3")
+	if err != nil || !created {
+		t.Fatalf("attach pending appearance: created=%v err=%v", created, err)
+	}
+	if _, err := db.Exec(`UPDATE tagsets SET review_state='submitted' WHERE id=?`, tid); err != nil {
+		t.Fatalf("mark submitted: %v", err)
+	}
+	if !inReviewQueue(t, db, tid) {
+		t.Fatalf("setup: the submitted appearance is not in the queue to begin with")
+	}
+
+	// Recording B: a separate blob to re-home the appearance onto.
+	fb := insertFP(t, db, "mv-b", 90, repeated(0x55667788, 120))
+	recB, _ := db.ResolveRecording(ctx, fb)
+	if recA == recB {
+		t.Fatalf("setup: both blobs landed on recording %d", recA)
+	}
+
+	out, err := db.MoveTagset(ctx, tid, recB)
+	if err != nil || !out.Moved {
+		t.Fatalf("move tagset: %+v err=%v", out, err)
+	}
+
+	// Purge recording A — the recording that owns the blob this appearance was
+	// read from. The appearance itself now belongs to recording B and must
+	// survive, still submitted and still reviewable.
+	if _, err := db.HardDeleteRecording(ctx, recA); err != nil {
+		t.Fatalf("hard delete recording A: %v", err)
+	}
+
+	var state string
+	var origin sql.NullInt64
+	if err := db.QueryRow(`SELECT review_state, origin_file_id FROM tagsets WHERE id=?`, tid).
+		Scan(&state, &origin); err != nil {
+		t.Fatalf("the moved appearance is gone entirely: %v", err)
+	}
+	t.Logf("after purge: review_state=%q origin_file_id valid=%v", state, origin.Valid)
+
+	if !inReviewQueue(t, db, tid) {
+		t.Errorf("a still-%s appearance fell out of the review queue after its origin blob was purged "+
+			"(origin_file_id valid=%v) — unapprovable and invisible", state, origin.Valid)
+	}
+}
