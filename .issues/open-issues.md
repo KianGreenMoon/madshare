@@ -15,6 +15,12 @@
 >
 > Rule this pass followed: a finding is only closed when the *code* shows it
 > closed. Nothing was closed for being old.
+>
+> **A follow-up attempt to FIX three of the confirmed rows was rolled back the
+> same day** — see "An attempt was built and rolled back" at the end of the
+> madnetwork-playback section. The standing rule that came out of it: *do not fix
+> an issue that has not been reproduced.* An entry in this file being confirmed
+> present in the code is **not** the same as its failure having been observed.
 
 | Severity | Issue | Status |
 |---|---|---|
@@ -1310,3 +1316,68 @@ absent.
 
 Raw probe data, the harnesses and the throwaway Go test are in the session
 scratchpad; none of it was committed.
+
+### An attempt was built and rolled back — it is parked on `wave1-rolled-back` (2026-08-07)
+
+Three fixes for the rows above were written, tested, committed, and then
+**reverted on the owner's call, because none of them had been reproduced**. The
+work is not lost: it sits on the local branch **`wave1-rolled-back`**, based on
+`7636328`, and `aidev` was reset back to that base.
+
+```
+65b450e  fix(contrib): set the client-facing send_timeout in the nginx examples
+197b1cf  feat(api): name every way a madnetwork stream ends early
+908be9e  fix(federation): keep the reader's file across the swarm→whole fallback
+```
+
+`git diff 7636328 wave1-rolled-back` — 6 files, +220/−5. Whole suite was green
+(`go build`, `go vet`, `go test ./...`, the full `federation` package at 152 s,
+and the `nofederation`/`nowebui`/combined tag builds).
+
+**Why it was pulled.** The owner's rule, stated the same day: *don't fix an issue
+that has not been reproduced, because then there is no way to be sure the fix
+fixes what it is meant to fix.* The three changes each rested on a mechanism read
+out of the code, not on an observed failure:
+
+- The **stranded inode** had a Go test that reproduced the *file-lifecycle
+  arithmetic* — but that test builds the scenario itself (create, pre-size,
+  unlink, observe zeros), so it confirms the theory rather than the bug. The
+  end-to-end symptom never occurred here: 45 cold streams all served correct
+  bytes.
+- The **exit logging** came purely from reading `copyTransfer`.
+- The **nginx `send_timeout`** numbers were measured, but in an *earlier* session;
+  they were carried forward as if freshly observed.
+
+A fix shipped without a reproduction also costs the reproduction: once the code
+changes, a later tester report can no longer be compared against the original
+behaviour. That is the concrete reason to park rather than merge.
+
+**What each commit contains, so nobody re-derives it:**
+
+| Commit | Change | Independent of a repro? |
+|---|---|---|
+| `908be9e` | New `(*transfer).discardPartial()` — resets progress, then `os.Truncate(partPath, 0)` instead of `os.Remove`, so the swarm→whole transition keeps the inode the reader holds. `runTransfer` calls it where the unlink was. Plus `TestSwarmFallbackKeepsTheReadersFile`, which asserts on **content, not length** (the stranded file is exactly the right size) and was verified to fail against the old behaviour: *byte 8192 = 0, want 161 (57344 zero bytes follow)*. | **No.** This is the speculative one — it changes fetch behaviour on the strength of a theory. |
+| `197b1cf` | `copyTransfer` names each early exit (open/seek failure, transfer failed, read failed) with bytes delivered, bytes promised and the **stop offset**. Client-gone stays quiet. | **Partly.** It adds no behaviour, only log lines — but it is also not a fix, so merging it proves nothing and only helps if the bug recurs while it is in place. |
+| `65b450e` | `send_timeout 3600s` in both `contrib/nginx/*.conf` + a README note that the neighbouring `proxy_read_timeout`/`proxy_send_timeout` pair governs nginx↔madshare, not nginx↔browser. | **Almost.** The measurement exists in this file (45 s completes, 70/90 s truncate); it just was not re-run. Cheapest of the three to re-measure. |
+
+**What would justify bringing each back.** These are the missing facts, not a
+plan:
+
+1. **`908be9e`** — an observed swarm→whole fallback that coincides with a stopped
+   track. The server-side tell is the existing log line `swarm fetch <hash>
+   failed (…); falling back to whole-file` appearing while a listener reports
+   silence. Note the reader's own signals cannot show it (see the row above:
+   that path completes "successfully" and delivers zeros), so the evidence has to
+   come from the fallback log plus a client that stopped, or from a captured
+   response body that hashes wrong at full length.
+2. **`197b1cf`** — nothing to reproduce; it is instrumentation. If the owner wants
+   the next report to arrive with a stop offset attached, this is the piece that
+   does it, and it can be judged on that basis alone rather than as a fix.
+3. **`65b450e`** — re-run the idle-stream measurement against the current
+   instance (hold the socket without consuming for 90 s through the proxy, then
+   over the direct mesh route as the control). Two probes.
+
+**If the branch is ever deleted**, the mechanism descriptions in the rows above
+plus this table are enough to rebuild all three; the only thing genuinely worth
+recovering is the test in `908be9e`, because getting its assertion right —
+content rather than length — is the non-obvious part.
