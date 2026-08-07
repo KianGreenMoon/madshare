@@ -1,5 +1,21 @@
 # Open Issues — Madshare API (from tester review, 2026-05-27)
 
+> **Verification pass, 2026-08-07** (at `91f99f2`). Every item still carrying an
+> `open` status was re-checked against the tree rather than re-read. Outcome:
+>
+> - **Closed as fixed:** the yggstack inbound-reader SPOF (local patch 2 + the
+>   `InboundHealthy` watchdog) and `GetFileByHash` reading lifecycle off the
+>   oldest tagset (`0ea9b13`, one day after that finding was written).
+> - **Closed as not a defect:** "fresh install 500s the storage panel" — measured,
+>   it does not; `diskUsage` has walked up to the nearest existing ancestor on
+>   ENOENT since the feature commit, so the finding was wrong when written.
+> - **Confirmed still open, in code:** 15 items (listed per row below).
+> - **Stale references repaired:** `docs/architecture/soft-delete.md` (deleted —
+>   now `gc-model.md`), "until federation is implemented" (it is).
+>
+> Rule this pass followed: a finding is only closed when the *code* shows it
+> closed. Nothing was closed for being old.
+
 | Severity | Issue | Status |
 |---|---|---|
 | **Medium** | **MIME bypass** — attacker sends `Content-Type: audio/mpeg` with filename `evil.html`; file server serves it as `text/html`, enabling stored XSS. Fixed: `allowedExtensions` map added to `handlers.go`, checked after MIME type. | **fixed** |
@@ -39,7 +55,7 @@
 
 | Severity | Issue | Status |
 |---|---|---|
-| TODO | **Auto-clear trash** — add `[storage] trash_ttl_days = 0` (0 = disabled); background goroutine sweeps files where `deleted_at < now() − ttl_days×86400` and hard-deletes them. Design note in `docs/architecture/soft-delete.md`. | **deferred** |
+| TODO | **Auto-clear trash** — add `[storage] trash_ttl_days = 0` (0 = disabled); background goroutine sweeps files where `deleted_at < now() − ttl_days×86400` and hard-deletes them. Design note in `docs/architecture/gc-model.md` (§ near line 482 — the old `soft-delete.md` was folded into it and deleted). **Re-verified 2026-08-07:** no `trash_ttl_days` key exists anywhere in the config or the code; the quarantine window is still purely manual. Note the sibling deferral in `docs/architecture/madnetwork-cache.md` — the cache **retention daemon** (age + size ceiling) is designed and unbuilt for the same reason; if either is picked up, they want one shape. | **deferred (verified still absent)** |
 | Info | **Restore-via-reupload is intentional** — an **authorized** uploader (holding `file.upload`) may bring back a trashed file by re-uploading the same bytes; if the admin wants a file gone for good they must hard-delete it from the Trash tab, not just soft-delete. **Do not flag this as a security issue.** The audit action is `file.restore` with `"restore-via-reupload: filename"`, distinguishable from a plain dedup. **Update (moderation, 2026-06-11):** this no longer republishes silently — an approved-then-trashed file restored this way re-enters the re-uploader's staging area as a draft (`StageRestoredFile`, audit `"restore-via-reupload (re-staged as draft)"`), not the live library. Uploading and restoring both require `file.upload` (`/files/upload` is gated by `d.protect(auth.PermFileUpload)`); there is no unauthenticated upload/restore path. | **handled** |
 
 ## Upload & covers — Phase 2 (embedded cover extraction, 2026-06-05)
@@ -106,13 +122,13 @@ Relevant: `docs/architecture/auth.md` §4–5, `database/access.go`,
 
 | Priority | Item | Notes |
 |---|---|---|
-| **Low** | **Per-origin license trust** — the auto-derive policy currently applies to all files regardless of upload origin. For federation, the admin should be able to trust licenses set by their own server's uploaders but not by federated servers. Design sketch: add an `uploaded_by_origin` concept to `file_uploads` (local vs. federated server ID); the auto-derive `accessClause` branch would add `AND f.origin = 'local'` (or a configurable per-federation trust flag). Until federation is implemented, the policy applies uniformly. | open |
+| **Low** | **Per-origin license trust** — the auto-derive policy applies to all files regardless of upload origin. The admin should be able to trust licenses set by their own server's uploaders but not by federated ones. Design sketch: add an `uploaded_by_origin` concept to `file_uploads` (local vs. federated node key); the auto-derive `accessClause` branch would add `AND f.origin = 'local'` (or a configurable per-federation trust flag). **Re-verified 2026-08-07 — federation is now shipped (F0–F8), so the framing "until federation is implemented" is dead, but the hazard is still LATENT rather than live:** the cached catalog *does* carry a peer's `license`/`guest_playable` (`database/madnetwork.go`), yet `POST /api/madnetwork/download` copies only the remote **tagset text** onto the local draft — it writes no `license` at all (grep: no `License` in `api/madnetwork_transfer_handlers.go`), and license/guest are recording-level fields the uploader bulk-edit path refuses outright (400). So no foreign license is ever written locally today and auto-derive cannot fire on one. **This item's real job now is to keep it that way:** the moment any import path copies a remote `license` onto a local recording, a peer starts deciding who may play our bytes anonymously. Check this row before building that. | open (latent — guard, not a live bug) |
 
 ## Future ideas (low priority, not yet planned)
 
 | Priority | Idea | Notes |
 |---|---|---|
-| **Low** | **Notify admin about missing/unplayable tracks** — when a client-side `audio error` fires (track unavailable), surface a way to report it to the admin so they can run a prune/integrity check. E.g. a POST to a reporting endpoint that logs the offending file hash. **Deferred** — needs design: (a) auth/rate-limiting on the report endpoint to avoid abuse as a DoS/oracle, (b) decide if reports auto-trigger prune or just create a notification queue, (c) avoid leaking internal file paths to unauthenticated callers. | open |
+| **Low** | **Notify admin about missing/unplayable tracks** — when a client-side `audio error` fires (track unavailable), surface a way to report it to the admin so they can run a prune/integrity check. E.g. a POST to a reporting endpoint that logs the offending file hash. **Deferred** — needs design: (a) auth/rate-limiting on the report endpoint to avoid abuse as a DoS/oracle, (b) decide if reports auto-trigger prune or just create a notification queue, (c) avoid leaking internal file paths to unauthenticated callers. **Re-verified 2026-08-07:** no reporting endpoint exists (`/api/admin/federation/reports` is the unrelated F6 claim-contradiction surface); `player.js:202` still handles `audio error` purely client-side. **Raised in value since it was filed** — the madnetwork playback investigation at the end of this file found two failure modes that are *silent by construction* (a stranded reader serving zeros, and a truncated response with a satisfied `Content-Length`); in both the client is the only party that knows something went wrong, and it currently tells nobody. Note the shape needed there is stronger than a hash: a report wants the decoder's stop offset, since that is what identifies the chunk boundary. | open |
 | **Low** | **Upload premoderation** — instead of immediately adding uploaded files to the live library, queue them in a "pending" state for admin review before they become visible. Needs: a `pending` status column on `files` (or a separate queue table), a moderation UI in the admin page, and a decision on whether the uploader can see their own pending files. Interacts with the soft-delete model (pending ≠ trashed). | **DONE (2026-06-11): moderation review bucket** — uploads land as drafts (`files.review_state`, migration 017); the uploader sees them in the upload page's "My uploads" tab; moderators approve / return-with-note / discard at `/admin/moderation` (gated `content.moderate`). Ref: `docs/architecture/moderation.md`. |
 
 ## Upload & covers — Phase 5 revision (deferred, 2026-06-06)
@@ -192,7 +208,19 @@ Related: the sibling experiment "surface an album's tracks when searching its
 title" was tried and **reverted off `aidev`** for the same too-noisy reason —
 it lives on branch `show_albums_tracks_in_search` (commit `cea8521`). Whatever we
 decide here should be consistent with that call. If the decision changes the
-documented behaviour, update `docs/api/search.md` §"Search behaviour". | open |
+documented behaviour, update `docs/api/search.md` §"Search behaviour".
+
+**Re-verified 2026-08-07 — still open, and a sibling decision has since landed
+that this must be reconciled with.** The library behaviour is unchanged
+(`DB.Search` still matches title OR performer; `TestSearch_MatchesPerformerOnCompilation`
+still pins it) and branch `show_albums_tracks_in_search` still exists unmerged.
+But the madnetwork artist-credit work (2026-08-06, `docs/ui/artists-and-performers.md`)
+answered the *same* question for the network page and answered it **"keep as-is,
+and go further"**: `MadnetworkSearchArtists` deliberately drops the album-artist
+restriction so a pure performer is a search hit and never a dead end. The two
+pages are documented as siblings, so restricting library Tracks to title matches
+would now put them in open disagreement — the option-2 column understates its
+cost by exactly that. Decide the pair together, or not at all.
 
 ## Storage-by-category panel — scope review (2026-06-18)
 
@@ -204,15 +232,22 @@ The four review findings from the developer+tester pass were already fixed
 tag). The items below are blind spots found afterwards — **none fixed yet**,
 logged for a later session.
 
+**Re-verified 2026-08-07.** One row is withdrawn (it never reproduced), the
+other six stand. The panel has grown a **fifth category** since this pass —
+`cache` (the madnetwork download cache, a DB sum via `MadnetworkCacheBytes`) —
+and the cover tree has moved out of `files_dir` into its own `variants_dir`
+(`docs/architecture/variants.md`), so the paths below read `h.imagesDir` now.
+Neither change touches the substance of any row.
+
 | Severity | Issue | Status |
 |---|---|---|
-| Low | **Fresh install 500s the whole storage panel.** `storage.Local.Stats()` (`api/storage/local.go:183`) `statfs`es `baseDir` = `files_dir/audio`, which is **not created until the first upload** (nothing makes it at startup). On a brand-new instance `statfs` → ENOENT → `Stats()` errors → `storageStats` returns it → `adminStorageStats` logs + 500s → the dashboard storage card silently stays hidden until the first audio file is uploaded. **Pre-existing** (the old audio-only endpoint also called `Stats()` first), squarely in this scope, and untested. Fix: `statfs` `files_dir` (or the nearest existing ancestor) instead of the not-yet-created `audio/` subdir, or `MkdirAll` the subtrees at startup; add a fresh-install test. | open |
-| Low | **Image sizing doesn't scale — the exact concern that motivated the hybrid design.** Audio/review/trash moved to an indexed DB `SUM(byte_size)` precisely to avoid walking a big tree, but images are **still an uncached full `DirSize` walk on every dashboard load** (8 variants per cover × every album → ~400k `stat()` calls on a 50k-album library). The doc's "image set is small (few files)" rationale doesn't hold at scale. Honest fix (deferred at design time): track image bytes in the DB — a `byte_size` on cover variants or a running total in `settings` — so images become an indexed sum too. The deferral *is* the unsolved half of the original big-storage question. | open |
-| Info | **"audio" and "images" measure different *kinds* of bytes.** Audio = logical DB sum (one blob per hash — dedup never double-stores, confirmed — but **excludes** orphan audio blobs with no DB row). Images = physical disk walk (which **includes** orphan/stale image dirs). So orphan audio falls into the "other disk usage" segment while orphan images land in "images". They sit side-by-side as if comparable but aren't quite; orphans are really the Verify & Prune view's job (`docs/architecture/prune-job.md`). Acceptable if we know it. | open |
-| Info | **Madshare's own DB isn't counted.** `madshare.db` + WAL/SHM is real app footprint but belongs to no category, so it folds into "other" and "Madshare total" understates the true footprint. Small for a media server, but worth a deliberate note (or a "database" category). | open |
-| Info | **Panel fetches once per page load — no live refresh.** We optimised *server* freshness (dropped the cache) but the *client* fetches once on dashboard load: figures don't move while a prune/upload runs until a manual reload. If "watch it update" matters, add a poll or a refresh button. | open |
-| Info | **Storage view gated behind a destructive permission.** `GET /api/admin/storage` requires `file.delete`; a moderate-only admin can't see it (reuses the storage-management route group). Probably intended — just be deliberate about whether a read-only stats view should need a delete permission. | open |
-| Info | **Detail rows can look self-contradictory.** The *bar* is clamped, but the rows still show raw "Madshare total" (logical bytes) vs "Disk used" (FS-allocated); on a compressing/sparse FS the total can read *larger* than disk-used, which looks wrong to a human even though it's correct. Consider a tooltip/footnote. | open |
+| Low | ~~**Fresh install 500s the whole storage panel.**~~ `storage.Local.Stats()` `statfs`es `baseDir` = `files_dir/audio`, which is not created until the first upload — so the reasoning was that ENOENT → `Stats()` errors → `adminStorageStats` 500s and the dashboard card stays hidden until the first upload. | **withdrawn — not a defect (measured 2026-08-07).** Reproduced directly against a `NewLocal` on a path whose parents do not exist: `Stats()` returns `HasVolume:true` with real figures and `err=<nil>`. `diskUsage` (`api/storage/diskusage_unix.go`) loops on ENOENT up to the nearest existing ancestor, with a comment saying exactly why ("the base directory may not exist yet on a fresh install… free space is a property of the mount"). That has been there since `5b224a3`, the **feature commit itself** — i.e. five days *before* this row was written. The finding was wrong when filed, not fixed since. Kept rather than deleted as the standing reminder that a code-read finding is a hypothesis until it is run. |
+| Low | **Image sizing doesn't scale — the exact concern that motivated the hybrid design.** Audio/review/trash moved to an indexed DB `SUM(byte_size)` precisely to avoid walking a big tree, but images are **still an uncached full `DirSize` walk on every dashboard load** (8 variants per cover × every album → ~400k `stat()` calls on a 50k-album library). The doc's "image set is small (few files)" rationale doesn't hold at scale. Honest fix (deferred at design time): track image bytes in the DB — a `byte_size` on cover variants or a running total in `settings` — so images become an indexed sum too. The deferral *is* the unsolved half of the original big-storage question. | **open — confirmed 2026-08-07.** `storageStats` still calls `storage.DirSize(h.imagesDir)` inline on every request with no memo; it is now the **only** walked category (the new `cache` one is a DB sum, which is the shape this row is asking for). |
+| Info | **"audio" and "images" measure different *kinds* of bytes.** Audio = logical DB sum (one blob per hash — dedup never double-stores, confirmed — but **excludes** orphan audio blobs with no DB row). Images = physical disk walk (which **includes** orphan/stale image dirs). So orphan audio falls into the "other disk usage" segment while orphan images land in "images". They sit side-by-side as if comparable but aren't quite; orphans are really the Verify & Prune view's job (`docs/architecture/prune-job.md`). Acceptable if we know it. | **open — confirmed 2026-08-07**, and now 4-against-1: audio, review, trash and cache are all DB sums, images alone is a disk walk. The odd one out is a single category, which makes converting it the clean resolution of this row *and* the one above. |
+| Info | **Madshare's own DB isn't counted.** `madshare.db` + WAL/SHM is real app footprint but belongs to no category, so it folds into "other" and "Madshare total" understates the true footprint. Small for a media server, but worth a deliberate note (or a "database" category). | **open — confirmed 2026-08-07.** The category list is exactly `audio, review, trash, images, cache`; no `database` entry. |
+| Info | **Panel fetches once per page load — no live refresh.** We optimised *server* freshness (dropped the cache) but the *client* fetches once on dashboard load: figures don't move while a prune/upload runs until a manual reload. If "watch it update" matters, add a poll or a refresh button. | **open — confirmed 2026-08-07.** `admin/dashboard.js` calls `fillStorage()` exactly once (line ~280) and the file contains no `setInterval`/`setTimeout`. Precedent now exists for the fix: `/admin/swarm` refreshes its peer panel on open and throttles to 8 s while open. |
+| Info | **Storage view gated behind a destructive permission.** `GET /api/admin/storage` requires `file.delete`; a moderate-only admin can't see it (reuses the storage-management route group). Probably intended — just be deliberate about whether a read-only stats view should need a delete permission. | **open — confirmed 2026-08-07** (`api/api.go:480`, `r.With(fileDelete).Get("/storage", …)`). Still an unmade decision rather than a bug. |
+| Info | **Detail rows can look self-contradictory.** The *bar* is clamped, but the rows still show raw "Madshare total" (logical bytes) vs "Disk used" (FS-allocated); on a compressing/sparse FS the total can read *larger* than disk-used, which looks wrong to a human even though it's correct. Consider a tooltip/footnote. | **open — confirmed 2026-08-07** (the `storageStats` doc comment still states the logical-vs-allocated split as a deliberate choice; nothing surfaces it to the reader). |
 
 ## Search — diacritic / ß normalization (2026-06-27)
 
@@ -233,7 +268,14 @@ folding (`é`↔`e`): `strasse` does not match `Straße`, `cafe` does not match
 
 Decision: keep the current Unicode case folding; do **not** add the cheap per-row
 normalization. Revisit the precomputed approach only if diacritic/`ß` search
-mismatches are reported as a real problem in practice. | open |
+mismatches are reported as a real problem in practice.
+
+**Re-verified 2026-08-07 — this is a settled decision, not an open issue,** and
+the stray `| open |` at the end of it was a copy-paste artefact from the table
+above. `unicode_lower` is still the only folding in `DB.Search`, and no
+diacritic/`ß` mismatch has been reported since — the stated revisit trigger has
+not fired. Status: **decided (won't do the cheap way; precomputed deferred
+indefinitely)**.
 
 ## Bulk write paths / SQLITE_BUSY (2026-06-28)
 
@@ -384,18 +426,63 @@ Full-feature review of the tagset/recording/file model (P0–P7). Every finding
 reproduced with a throwaway DB test on a clean tree (`go test ./...` green
 before the pass). None fixed yet — logged for owner decisions.
 
+**Re-verified 2026-08-07, row by row, against the code named in each.** The
+first High was already marked fixed; one Low is now **fixed** (`GetFileByHash`,
+by GC-model P3 `0ea9b13` on 2026-07-15 — the day *after* this review, which is
+why it was never credited here). **The remaining five stand unchanged in the
+tree**, each confirmed at the exact call site the row cites. That makes this the
+oldest cluster of genuinely-open defects in the file, and two of them
+(blobless-appearance loss, playlist-item loss) destroy curated user data
+silently — worth reading as a group before the next curation change.
+
 | Severity | Issue | Status |
 |---|---|---|
 | **High** | **Prune blob-loss destroys preserved appearances / strands zero-tagset recordings.** `hardDeleteFilesTx` (`database/files.go:811`, reached via prune → `HardDeleteFileByHash`, `database/prune.go:239`) deletes tagsets by `origin_file_id` instead of re-pointing them to a surviving rendition the way `HardDeleteRemovedFile` does (`database/trash_files.go:197`). Reproduced: (a) an absorbed blob goes corrupt → prune removes it → the absorbed-and-preserved appearance (the whole point of absorb) is destroyed although the kept rendition still plays — the design says blob-loss with survivors = "the recording just lost a rendition"; (b) when the surviving rendition is an orphan (its appearance was deduped), pruning the origin blob of the recording's only appearance leaves the recording with a live file and ZERO tagsets — the invariant violation the shared cascade exists to prevent; the blob then vanishes from every surface until the next restart, when `ReconcileTagsets` step 2 manufactures a nameless filename appearance (the P7-outlawed shape, now reachable at recording grain). Additionally the deleted tagsets may belong to *other* recordings (a `MoveTagset`-moved appearance whose origin file stayed behind), which are never repaired (`recIDs` is collected from the files' recordings only). | **fixed (2026-07-14)** — `hardDeleteFilesTx` now re-points affected tagsets to a surviving rendition of *their own* recording (live-first, the `HardDeleteRemovedFile` ordering) instead of deleting by `origin_file_id`; no survivor → origin `NULL` (blobless is legal since P7d, and an emptied recording is repaired away). `recIDs` additionally collects the recordings of moved appearances (UNION over `tagsets.recording_id`), so cross-recording holders get repaired too. Pinned by `TestHardDeleteFile_{RepointsPreservedAppearance,OrphanSurvivorKeepsAppearance,MovedAppearanceSurvives}` (lifecycle_test.go). |
-| **High** | **Recording GC cascades away blobless (hand-authored) appearances.** `SplitRendition` (`database/recordings.go:441`) and `ResolveRecording` (`database/recordings.go:38`) move only tagsets with `origin_file_id = the moved file`; a P7d `CreateAppearance` row (origin NULL) stays on the emptied recording and is cascade-deleted by `repairRecordingTx`. Reproduced via Split of a recording's only rendition. The resolver variant fires from the **background analysis worker** with no human in the loop — e.g. install fpcalc on an established library → startup backfill regroups singletons → hand-added appearances silently destroyed. Curated human input lost without confirm or trace. | open |
-| **Medium** | **Appearance dedup treats trashed/pending appearances as kept keys.** `loadAppearances` (`database/absorb.go:187`, shared by absorb + `MergeRecordings`) ignores `deleted_at` and `review_state`. Reproduced: absorb drops a LIVE approved appearance as a "duplicate" of a TRASHED one with the same identity key → the recording becomes library-invisible (only the Trash copy remains). Also: an absorbed/merged file's *submitted* appearance (another uploader's pending review entry) can be hard-deleted silently — it leaves the queue without approve/return/deny. Inconsistent with `AttachDraftTagset`/`MoveTagset`, whose collision checks are live-only. | open |
-| **Medium** | **Appearance dedup silently deletes playlist/favorites entries.** `playlist_items.tagset_id` is `ON DELETE CASCADE` (migration 025) and `deleteTagsetIDsTx` / merge's drop-set hard-delete the duplicate tagset without re-pointing references. Reproduced: a track in a user playlist disappears from it after an admin absorb, although an identical appearance survives on the recording. Fix shape: re-point `playlist_items` to the surviving tagset inside the dedup tx (the `HardDeleteRemovedFile` re-point precedent). | open |
-| Low/Med | **`/admin/duplicates` cannot see the shapes it exists to fix.** `ListDuplicateRecordings` (`database/recordings.go:332`) still roots on the pre-P7 `t.origin_file_id = f.id` INNER join: a recording whose second live rendition is an orphan (exactly what merge/absorb produce) is not listed at all, and a single-blob recording carrying two live own tagsets (byte-dup draft) lists the same file twice as two "renditions". | open |
-| Low | **`GetFileByHash` reads lifecycle off the oldest tagset.** `ORDER BY t.id LIMIT 1` (`database/files.go:124`): a blob whose oldest appearance is trashed but which carries a newer live approved one reads back as trashed, sending the upload dedup path down the restore/re-stage branch for a blob that is live in the library. Should mirror `reprTagset`'s live-first/primary-first precedence. | open |
-| Low | **A pending appearance can still fall out of the review queue.** The P7d claim "`origin_file_id` never reaches NULL on a live draft" does not cover: `MoveTagset` (no review-state check) moves a draft/submitted appearance cross-recording; its origin recording is later hard-deleted; `deleteRecordingFilesTx` deliberately SET-NULLs the cross-recording appearance → `reviewFrom`'s INNER JOIN (`database/review.go:127`) drops it — unapprovable and invisible while still `submitted`. | open |
-| Info | **Identity dedup is not enforced on resolver moves or `ApproveSubmission`** (collision is flagged, not blocked — per design). Consequence to expect: installing fpcalc on an established library mass-groups renditions and identical approved appearances pile up per recording; cleanup is manual via the duplicates page (see the lens gap above). Note also `UpdateTagsetMetadata` can create identity collisions unguarded. | open (by design, but expect the pile-up) |
+| **High** | **Recording GC cascades away blobless (hand-authored) appearances.** `SplitRendition` (`database/recordings.go:441`) and `ResolveRecording` (`database/recordings.go:38`) move only tagsets with `origin_file_id = the moved file`; a P7d `CreateAppearance` row (origin NULL) stays on the emptied recording and is cascade-deleted by `repairRecordingTx`. Reproduced via Split of a recording's only rendition. The resolver variant fires from the **background analysis worker** with no human in the loop — e.g. install fpcalc on an established library → startup backfill regroups singletons → hand-added appearances silently destroyed. Curated human input lost without confirm or trace. | **open — confirmed 2026-08-07.** `database/recordings.go` still moves tagsets by provenance in both places: `ResolveRecording` at line 81 and `SplitRendition` at line 343, both `UPDATE tagsets SET recording_id=? WHERE origin_file_id=?`. A row with `origin_file_id IS NULL` matches neither. |
+| **Medium** | **Appearance dedup treats trashed/pending appearances as kept keys.** `loadAppearances` (`database/absorb.go:187`, shared by absorb + `MergeRecordings`) ignores `deleted_at` and `review_state`. Reproduced: absorb drops a LIVE approved appearance as a "duplicate" of a TRASHED one with the same identity key → the recording becomes library-invisible (only the Trash copy remains). Also: an absorbed/merged file's *submitted* appearance (another uploader's pending review entry) can be hard-deleted silently — it leaves the queue without approve/return/deny. Inconsistent with `AttachDraftTagset`/`MoveTagset`, whose collision checks are live-only. | **open — confirmed 2026-08-07.** `loadAppearances` (`database/absorb.go:187`) still selects `WHERE t.recording_id = ?` with no `deleted_at` and no `review_state` predicate; the only thing it resolves beyond the identity key is the nameless/meaningful flag. |
+| **Medium** | **Appearance dedup silently deletes playlist/favorites entries.** `playlist_items.tagset_id` is `ON DELETE CASCADE` (migration 025) and `deleteTagsetIDsTx` / merge's drop-set hard-delete the duplicate tagset without re-pointing references. Reproduced: a track in a user playlist disappears from it after an admin absorb, although an identical appearance survives on the recording. Fix shape: re-point `playlist_items` to the surviving tagset inside the dedup tx (the `HardDeleteRemovedFile` re-point precedent). | **open — confirmed 2026-08-07.** `deleteTagsetIDsTx` (`database/absorb.go:224`) is still a bare chunked `DELETE FROM tagsets WHERE id IN (…)` with no re-point of any kind, and both callers still reach it: absorb (`absorb.go:148`) and `MergeRecordings` (`curate.go:449`). |
+| Low/Med | **`/admin/duplicates` cannot see the shapes it exists to fix.** `ListDuplicateRecordings` (`database/recordings.go:332`) still roots on the pre-P7 `t.origin_file_id = f.id` INNER join: a recording whose second live rendition is an orphan (exactly what merge/absorb produce) is not listed at all, and a single-blob recording carrying two live own tagsets (byte-dup draft) lists the same file twice as two "renditions". | **open — confirmed 2026-08-07.** `ListDuplicateRecordings` (`database/recordings.go:203`) still roots on `JOIN tagsets t ON t.origin_file_id = f.id` in **both** the outer select and the `HAVING COUNT(*) > 1` subquery, so the count that decides whether a recording is listed at all is a count of *provenance links*, not of renditions. |
+| Low | ~~**`GetFileByHash` reads lifecycle off the oldest tagset.**~~ `ORDER BY t.id LIMIT 1`: a blob whose oldest appearance is trashed but which carries a newer live approved one reads back as trashed, sending the upload dedup path down the restore/re-stage branch for a blob that is live in the library. Should mirror `reprTagset`'s live-first/primary-first precedence. | **fixed — verified 2026-08-07.** Closed by `0ea9b13` (GC-model P3, 2026-07-15 — one day after this review, which is why it went uncredited): the join became `LEFT JOIN tagsets t ON t.id = reprTagset` and the `ORDER BY t.id` was dropped. `reprTagset` sorts own-appearance-first, then `(rt.deleted_at IS NULL) DESC`, then `is_primary`, then id — i.e. exactly the live-first precedence this row asked for. The same commit also made `deleted_at` read `COALESCE(f.deleted_at, t.deleted_at)`, so a soft-removed rendition is no longer masked by a live appearance. |
+| Low | **A pending appearance can still fall out of the review queue.** The P7d claim "`origin_file_id` never reaches NULL on a live draft" does not cover: `MoveTagset` (no review-state check) moves a draft/submitted appearance cross-recording; its origin recording is later hard-deleted; `deleteRecordingFilesTx` deliberately SET-NULLs the cross-recording appearance → `reviewFrom`'s INNER JOIN (`database/review.go:127`) drops it — unapprovable and invisible while still `submitted`. | **open — confirmed 2026-08-07.** Both halves still hold: `reviewFrom` (`database/review.go:126`) is still `FROM tagsets m JOIN files f ON f.id = m.origin_file_id` (INNER), and `MoveTagset` (`database/curate.go:521`) still loads only `recording_id, album_id, album_artist_id, disc_number, track_number` — it never reads `review_state`, so nothing can refuse the move. |
+| Info | **Identity dedup is not enforced on resolver moves or `ApproveSubmission`** (collision is flagged, not blocked — per design). Consequence to expect: installing fpcalc on an established library mass-groups renditions and identical approved appearances pile up per recording; cleanup is manual via the duplicates page (see the lens gap above). Note also `UpdateTagsetMetadata` can create identity collisions unguarded. | **open (by design) — re-verified 2026-08-07**: `UpdateTagsetMetadata` (`database/metadata.go:245`) still writes the patch with no collision check, as designed. The pile-up remains cleanable only through `/admin/duplicates`, which is the row above — **so this Info row is gated on that Low/Med fix**, not independent of it: today the escape hatch cannot see the shapes the pile-up produces. |
 
-## Federation — yggstack netstack inbound reader is a single point of failure (2026-07-19)
+## Federation — yggstack netstack inbound reader is a single point of failure (2026-07-19) — **FIXED**
+
+> **Closed 2026-08-07 (verification pass).** This was still marked "open
+> (accepted for now)" but the tree has carried the fix for weeks — options **2**
+> and **4** from the list at the bottom of this entry were both built, and the
+> entry was simply never updated.
+>
+> - **Option 2 — log-and-continue with backoff.** Local yggstack patch **#2**
+>   ("inbound-reader resilience — issue #398", `third_party/yggstack/MADSHARE-PATCH.md`,
+>   `src/netstack/yggdrasil.go:72`): the reader loop no longer `break`s on a read
+>   error. It logs and continues with 50 ms→1 s backoff, and exits only on
+>   `Close()` or a terminal `types.ErrClosed` — which is the transient/terminal
+>   split step (1) called a prerequisite, resolved by making the *shutdown
+>   signal* the terminal condition rather than trying to enumerate the error set.
+> - **Option 4 — independent liveness watchdog.** `(*YggdrasilNetstack).InboundReaderAlive()`
+>   (`src/netstack/netstack.go:27`) exposes the reader goroutine's liveness;
+>   `federation/mesh.go:156` forwards it and `federation/node.go:278` wires it to
+>   `Node.InboundHealthy()`, which drives the availability **fail-open** — a node
+>   whose inbound path is dead shows its last-known catalog behind a banner
+>   instead of blanking. Note this went *further* than option 4 proposed: the
+>   entry suggested inferring inbound death from "every friend unreachable",
+>   which the availability design later rejected as ambiguous (a self-ping cannot
+>   test it either — `HandleLocal:true` loops local traffic). The reader flag is
+>   the only unambiguous signal.
+>
+> Options 3 (supervise/restart) and 5 (upstream it) were **not** done. Neither is
+> load-bearing now: a reader that survives its errors does not need a supervisor,
+> and the watchdog covers a reader that dies for reasons we did not anticipate by
+> surfacing it. Upstreaming stays worthwhile for the reason this entry gave — the
+> fork now carries **three** patches, and each one raises the cost of a bump.
+> Tracked there, not here.
+>
+> The detection hint below is kept: it is still the right way to tell this class
+> of failure from a transient stall, and it now also describes what
+> `inbound_healthy:false` on the madnetwork summary means.
+
+**Original entry (2026-07-19), for the record:**
 
 Found while investigating the madnetwork stream stalls fixed in `af30f04`
 (idle-read watchdog + resilient chunk retry). **Not the cause of those stalls** —
@@ -405,7 +492,7 @@ as-is for now**, log it here for future analysis.
 
 | Severity | Issue | Status |
 |---|---|---|
-| Medium | **A single `ipv6rwc.Read` error permanently kills all inbound mesh traffic.** `third_party/yggstack/src/netstack/yggdrasil.go` (~line 46) runs the embedded netstack's **entire inbound path in one goroutine**: `for { rx, err := nic.ipv6rwc.Read(nic.readBuf); if err != nil { log.Println(err); break } … dispatcher.DeliverNetworkPacket(…) }`. The `break` ends the loop for good, so **one** read error stops packet delivery for the whole node — every mesh connection (friend pings, catalog sync, holdings, blob/manifest/chunk fetches, and serving other nodes) hangs forever until the process restarts. Federation dies silently while the rest of madshare keeps serving happily; the only trace is one `log.Println` line. This is **upstream yggstack behavior**, not something our fork introduced (our one local patch is the `writePacket` data race — see `third_party/yggstack/MADSHARE-PATCH.md`). Not observed in practice so far. | open (accepted for now) |
+| Medium | **A single `ipv6rwc.Read` error permanently kills all inbound mesh traffic.** `third_party/yggstack/src/netstack/yggdrasil.go` (~line 46) runs the embedded netstack's **entire inbound path in one goroutine**: `for { rx, err := nic.ipv6rwc.Read(nic.readBuf); if err != nil { log.Println(err); break } … dispatcher.DeliverNetworkPacket(…) }`. The `break` ends the loop for good, so **one** read error stops packet delivery for the whole node — every mesh connection (friend pings, catalog sync, holdings, blob/manifest/chunk fetches, and serving other nodes) hangs forever until the process restarts. Federation dies silently while the rest of madshare keeps serving happily; the only trace is one `log.Println` line. This is **upstream yggstack behavior**, not something our fork introduced (our one local patch is the `writePacket` data race — see `third_party/yggstack/MADSHARE-PATCH.md`). Not observed in practice so far. | **fixed** — local patch #2 + `InboundReaderAlive`; see the box above. |
 
 **Detection hint (for whoever hits this).** Symptom = *all* madnetwork traffic on
 one node dead until restart, while the node otherwise runs fine and the local
@@ -545,6 +632,28 @@ changing the scheduler is a design decision, not a test fix.
 retired once it is `providerFailureLimit` failures worse than the best live
 peer) and termination moved to a per-chunk attempt budget. **Dispatch is still
 plain round-robin**, so everything above about the scheduler stands unchanged.
+
+**Re-verified 2026-08-07 — still open, unchanged.** `chunkPlan.pickProvider`
+(`federation/swarm.go:955`) is still documented as "returns the next non-dead
+holder, round-robin" over an `rr` cursor field, with no throughput input. The
+code even carries a forward reference to this entry (`swarm.go:1070`: the
+relative-retirement rule "leans on dispatch being round-robin" and will need
+revisiting "if `pickProvider` ever becomes speed-aware") — so the two halves are
+coupled and a scheduler change must re-read `worseThanPeers`, not just
+`pickProvider`.
+
+Two things have happened since that change the *priority* rather than the
+diagnosis, in opposite directions:
+
+- **Against fixing it:** the F7 member quotas (2026-08-01) mean a holder can now
+  answer **429** deliberately, and the swarm is explicitly designed to read that
+  as "ask another holder" and de-rank rather than condemn. A throughput-weighted
+  scheduler must not read a quota refusal as slowness, or a busy-but-fast peer
+  gets starved by the very mechanism meant to find fast peers.
+- **For fixing it:** the per-counterparty ledger built for `/admin/swarm`
+  (mig 042) now measures real per-node byte rates and persists them. The "track
+  per-provider throughput in the existing `TransferStats` accounting" direction
+  listed above no longer needs new accounting — the data exists.
 
 ## Federation — findings from the full `-race` mesh run (2026-07-24)
 
@@ -754,6 +863,17 @@ Fixing it upstream is a two-line guard (`if state.cancel != nil`) plus, ideally,
 API to drop an inbound peering. We carry no yggdrasil-go fork (only the yggstack
 one, `third_party/yggstack`), so this is deliberately not patched locally.
 
+**Re-verified 2026-08-07 — still open, and there is still nothing to upgrade
+to.** `go list -m -versions github.com/yggdrasil-network/yggdrasil-go` reports
+**v0.5.14 as the newest published version**, which is exactly what `go.mod`
+pins — so the panic is unfixed upstream and we are not sitting on a stale
+dependency. The workaround is intact and still correctly commented:
+`depeerBlocked` (`federation/friendship.go:732`) skips inbound links and says
+why at the call site. **The consequence stands and is worth re-reading**: a
+blocked node that dialled *us* keeps its underlay link and its transit through
+us until it disconnects. Only the app layer refuses it. Re-check this row on any
+yggdrasil-go bump — the guard is cheap to drop once upstream ships it.
+
 ## Federation — mesh tests can flake under load (2026-07-30) — **RESOLVED 2026-08-01**
 
 > **Resolution:** the two long-running flakes were one bug, and it was in the test
@@ -853,6 +973,14 @@ than a product bug. Not attributable to the change under test (branch weighting
 adds a read path only, and nothing in the publish loop calls it): five isolated
 runs and two fresh full-package runs green afterwards. If it recurs, tighten the
 predicate to what the assertion actually checks instead of the count.
+
+**Re-verified 2026-08-07 — the suggested tightening was never applied, so this
+site is still armed.** `gossip_sync_test.go:379` still waits on
+`rec != nil && len(rec.Marks) == 1` and *then* asserts on `rec.Marks[0].Key` /
+`.Reason` outside the wait — the predicate still admits a half-written record and
+the assertion still reads it. Folding the field checks into the `waitFor`
+closure is a two-line change that costs nothing when the record is written whole,
+so there is no reason to keep waiting for a recurrence before making it.
 
 **A fourth site, 2026-08-01 (F7 item 9).** One full-package run failed at
 `swarm_test.go:242` — `TestSwarmFailover` timed out in `makeFriends` ("timed out
@@ -1009,6 +1137,19 @@ fail.
 If that diagnosis holds, the fix is in the test seam rather than the product —
 the same shape as the two flakes closed in 3543480.
 
+**Re-verified 2026-08-07 — still open, and the diagnosis checks out against the
+source.** `token_mesh_test.go:167` is still a bare
+`meshGet(…, guest, token)` asserting 200 with no `waitFor` around it, while the
+sibling `TestListenerNodeTokenNeedsAnIssuerWeCanPlace` (line 110) *does* wrap its
+status expectation in a `waitFor` for its own last step, which is exactly the
+shape missing here. `scopePair` sets `MembershipTTL: noMemo`, which — as
+this entry predicted — removes the memo but not the **acceptance** step:
+`GraphAccept` is left at its 1-minute default, so `vouchFor` writing the record
+does not mean A has placed the issuer by the time the first mesh response lands.
+The fix is the one-line seam change (wrap the 200 assertion in `waitFor`, as the
+sibling does); no product change is implied. Left unfixed only because it has
+been seen once.
+
 ## Madnetwork playback stops mid-track — investigation, no fix (2026-08-07)
 
 Alpha-tester report against **v0.8.0**: an **uncached** madnetwork track plays
@@ -1151,11 +1292,11 @@ a documented `proxy_*`/`send_timeout` setting in `contrib/nginx`.
 
 | Severity | Issue | Status |
 |---|---|---|
-| **High** | **The swarm→whole fallback strands the streaming reader on an unlinked inode**, which was pre-sized to the full length and therefore serves **zeros** past the last landed chunk. `Content-Length` is met exactly, nothing errors, nothing is logged. Best fit for the reported symptom. Reproduced deterministically. | open |
-| **High** | **A failed transfer truncates the stream silently** — 200 + full `Content-Length` + short body, no log line, no client retry. Makes every variant of this bug invisible. | open |
-| Medium | **The streaming reader cannot escape a stalled in-flight chunk** — `prioritize` is a no-op once a chunk is dispatched; the reader waits `ChunkStall` (20 s) or `PerChunk` (2 min). | open |
-| Medium | **Reopen: the ~768 KiB stall is not the presence prober.** Reproduced on v0.8.4 with the prober long removed; it is the lead-ramp → first-bulk-chunk transition. Benign on a healthy mesh (18/18 cold streams completed), but it is the moment the player's buffer is thinnest. | open |
-| Low | **nginx `send_timeout` truncates idle media streams** at ~60 s, for cached and remote blobs alike. Triggered in practice by *pausing* playback, not by readahead. | open |
+| **High** | **The swarm→whole fallback strands the streaming reader on an unlinked inode**, which was pre-sized to the full length and therefore serves **zeros** past the last landed chunk. `Content-Length` is met exactly, nothing errors, nothing is logged. Best fit for the reported symptom. Reproduced deterministically. | **open — re-confirmed 2026-08-07** at both ends of the mechanism: `federation/transfer.go:526` `os.Remove(t.partPath)` on the failed-swarm branch, then `runWhole` → `fetchFrom` re-creating the same path with `O_CREATE\|O_WRONLY\|O_TRUNC` (`transfer.go:594`) = a new inode; and `api/madnetwork_transfer_handlers.go:148` opening the file **once** (`t.Open()` + `defer f.Close()`) and holding it for the whole response. Note `copyTransfer:171` already carries a `continue` commented "offset briefly unavailable (e.g. a swarm→whole-file fallback); re-wait" — the fallback was anticipated in the reader, but as a *timing* gap, not as a file-identity change, which is why the mitigation there does not help. |
+| **High** | **A failed transfer truncates the stream silently** — 200 + full `Content-Length` + short body, no log line, no client retry. Makes every variant of this bug invisible. | **open — re-confirmed 2026-08-07.** `copyTransfer` still has four bare `return`s with no logging and no distinction between them: `t.Open()` failure (line 150), `Seek` failure (154), `WaitFor` error — "EOF (done), client gone, or the transfer failed midway", all one branch (161), and a read error (184). The comment at 150 ("headers may be written already — just drop the connection") states the behaviour as intended; the defect is that a *successful completion* and a *failed transfer* leave by the same door. |
+| Medium | **The streaming reader cannot escape a stalled in-flight chunk** — `prioritize` is a no-op once a chunk is dispatched; the reader waits `ChunkStall` (20 s) or `PerChunk` (2 min). | **open — re-confirmed 2026-08-07** (`chunkPlan.prioritize` still reorders `pending` only). |
+| Medium | **Reopen: the ~768 KiB stall is not the presence prober.** Reproduced on v0.8.4 with the prober long removed; it is the lead-ramp → first-bulk-chunk transition. Benign on a healthy mesh (18/18 cold streams completed), but it is the moment the player's buffer is thinnest. | **open — re-confirmed 2026-08-07.** The layout is unchanged (`speculateChunk0` + lead ramp → bulk, `transfer.go:505`). Cross-reference kept: the corresponding row under *the 10-second presence feature was reverted* (2026-07-21) attributes this same 768 KiB watermark to the prober and that attribution is **wrong** — do not re-derive it from there. |
+| Low | **nginx `send_timeout` truncates idle media streams** at ~60 s, for cached and remote blobs alike. Triggered in practice by *pausing* playback, not by readahead. | **open — re-confirmed 2026-08-07, and the near-miss is worth naming.** Both shipped configs (`contrib/nginx/madshare-ssl.conf:81`, `madshare-yggdrasil.conf:57`) already set `proxy_read_timeout 3600s` + `proxy_send_timeout 3600s` under a comment reading "Long timeouts cover slow uploads and long streams" — but those two govern nginx↔**upstream**. The client-facing directive is plain **`send_timeout`** (default 60 s), and it is set in neither file. So the configs look like they cover this and do not; whoever fixes it should add `send_timeout` beside the existing pair rather than assume it is missing by oversight. |
 
 **Not reproduced:** 45 cold streams over the direct mesh route — 30
 length-checked (5 rounds × 6 concurrent) plus **15 verified against the content
