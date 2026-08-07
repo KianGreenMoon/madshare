@@ -1008,3 +1008,164 @@ fail.
 
 If that diagnosis holds, the fix is in the test seam rather than the product —
 the same shape as the two flakes closed in 3543480.
+
+## Madnetwork playback stops mid-track — investigation, no fix (2026-08-07)
+
+Alpha-tester report against **v0.8.0**: an **uncached** madnetwork track plays
+~15 s and stops; asking Firefox (140.13.0esr, Windows 10) to fetch it again by
+hand makes it play "a little further", repeatedly. Reached over a **direct
+yggdrasil node under `[[listen_mesh]]`**. Local and cached files unaffected;
+Materialize unaffected. The owner reproduced it separately on v0.8.0 (playing
+~1 s) and could not reproduce it afterwards.
+
+Investigated against the live two-node test instance (`v0.8.4`, reached both
+through the nginx reverse proxy on :81 and on the node's own mesh address).
+**The end-to-end symptom did not reproduce** — every cold stream completed. What
+did reproduce, on every single cold stream, is the *stall point* the symptom is
+built on, and the delivery path that turns a stall into a dead player.
+
+### The stall point is structural and reproduces every time
+
+The swarm's chunk layout front-loads a **lead ramp** (256 KiB, then 512 KiB)
+before switching to 1 MiB bulk chunks, and chunk 0 is additionally
+*speculatively prefetched* during the manifest round trip (`speculateChunk0`).
+So the first 768 KiB arrive almost instantly, and the reader then has to wait a
+**full bulk-chunk fetch** for the first time. Measured gaps at exactly those
+boundaries, on cold uncached FLACs:
+
+| Scenario | Route | Outcome | Gap |
+|---|---|---|---|
+| single stream, full speed | direct mesh | complete | **4.46 s @ 786432** |
+| single stream, full speed | nginx :81 | complete | **4.39 s @ 786432** |
+| 6 concurrent streams | direct mesh | 4/5 complete | 1.74–2.84 s @ 262144 |
+| 6 concurrent streams | direct mesh | complete | **20.35 s @ 9175040** (= `ChunkStall`) |
+| 6 concurrent streams | direct mesh | probe gave up @ 6029312 | >30 s (probe's own socket timeout, **not** a server truncation) |
+| 5 cold rounds × 6 concurrent | direct mesh | **30/30 completed** | gaps at chunk 1/2, up to 9.7 s |
+| real-time paced, 256 s | direct mesh | complete | none |
+| player sim, 60 s readahead ×3 | direct mesh | complete, 0 underruns | 1.1 s @ 786432 |
+
+Every gap lands on a chunk boundary. 786432 = 256 KiB + 512 KiB is the **same
+"~768 KiB" watermark** already logged under *the 10-second presence feature was
+reverted* (2026-07-21), where it was blamed on the 5 s presence prober. **That
+attribution is wrong**: the prober was reverted long ago and the stall is still
+here on v0.8.4. That row can be reopened as its own defect.
+
+This also explains the two different reported durations. The stop point is fixed
+in **bytes**, so the audible duration is just that byte count over the file's
+bitrate — 768 KiB is ~15 s at ~420 kbps and ~2 s at hi-res-FLAC rates, and
+262144 B is ~16 s at 128 kbps. "15 seconds" and "1 second" are the same stop.
+
+### The leading candidate: the swarm→whole fallback strands the reader
+
+A stall alone self-heals, so the stall is not the failure — the owner made this
+point and it is correct. This is:
+
+`api.copyTransfer` opens the part file **once** and holds that descriptor for the
+whole response. When the swarm fails, `runTransfer` does
+`os.Remove(t.partPath)` and then `runWhole` → `fetchFrom` recreates the same path
+with `O_CREATE|O_TRUNC` — **a new inode**. The reader is left pinned to the old,
+unlinked one, which `fetchSwarm` had pre-sized to the full length with
+`f.Truncate(man.Size)`. Past the last chunk that landed, that orphaned file reads
+as **zeros, not EOF**.
+
+Reproduced deterministically (`zz_diag_staleinode_test.go`, kept in the session
+scratchpad, replays the exact file lifecycle against the real `transfer`):
+
+```
+bytes before the fallback  : correct = true
+transfer.Available(262144) : 786432   (says: readable)
+next 65536 bytes read      : 65536 of them are 0x00
+```
+
+Consequences, and why this fits the report better than anything else:
+
+- **`Content-Length` is satisfied exactly.** No truncation, no `unexpected EOF`,
+  no error, no log line — the response looks perfect. The decoder simply stops
+  where the real bytes ran out. That is "plays N seconds and stops" with nothing
+  anywhere to see.
+- **N is the swarm's last landed chunk over the bitrate** — usually the lead ramp,
+  262144 or 786432 B, which is the 15 s / 1 s the two reporters measured.
+- **A manual re-fetch opens the NEW inode**, gets real bytes, and plays further —
+  exactly the reported recovery.
+- Local and cached files never take this path; Materialize is unaffected because
+  it waits for `Done()` and reads the final renamed file.
+- Fluid by construction: it needs the swarm to fail *after* making progress, i.e.
+  one bad mesh moment. With a single holder — the common case here, most tracks
+  are held by exactly one node — 4 consecutive chunk failures
+  (`providerFailureLimit`) retire the sole holder and abort the swarm.
+
+Note the success path is safe: `os.Rename` preserves the inode. It is only the
+failure transition that unlinks. `runWhole`'s per-holder retries are also safe —
+they `O_TRUNC` the same inode rather than replacing it.
+
+### The two supporting defects
+
+1. **The reader cannot escape a stalled in-flight chunk.** `copyTransfer` blocks
+   in `WaitFor` on the *specific* chunk it needs; `chunkPlan.prioritize` only
+   reorders `pending`, so a chunk already **in flight** is a no-op and the reader
+   waits out `ChunkStall` (20 s) or `PerChunk` (**2 min** if the holder trickles
+   bytes — the watchdog resets on any read that returns data).
+2. **A failed transfer truncates the response silently.** Separate throwaway Go
+   test: once headers are committed, the client gets **200 + full
+   `Content-Length` + a short body**, `unexpected EOF`, and **nothing logged** —
+   `copyTransfer`'s three exits (client gone / EOF / transfer failed) are one
+   bare `return`. The same failure *before* the first byte is a clean 502.
+   `player.js` binds only `ended` and `error`, so the client never retries.
+
+### Ruled out
+
+- **Fetch throughput / fetch failure.** For the one truncated direct-route
+  stream, the server's own ledger shows `in_cache: true`, `down_bytes` = full
+  size, `wasted_bytes: 0` — **the fetch completed; only delivery to the client
+  stalled.** Cache-through means the fetch normally finishes in ~25 s while
+  playback lasts minutes, so fetch speed cannot itself stop playback.
+- **Rate limits.** Both node knobs read `effective_kib: 0` (unlimited, source
+  `config`), so the "throttled read looks like a stalled holder" gotcha is not
+  in play on this instance.
+- **An HTTP write deadline.** No `WriteTimeout`/`IdleTimeout` is set on any
+  `http.Server` in `madshare.go`.
+- **Netstack inbound death.** `inbound_healthy: true` throughout; a 90 s idle
+  socket and a 256 s real-time paced read both survived on the mesh listener.
+- **v0.8.0 → v0.8.4 drift.** Nothing in `madnetworkStream` /
+  `serveGrowingTransfer` / `copyTransfer` changed; the only fetch-path edits wrap
+  readers in `n.wire(...)` for accounting/throttling. The cache and swarm work
+  did **not** fix this — the stall still reproduces.
+
+### Separate defect found on the way: the reverse proxy truncates idle streams
+
+Not the tester's bug (they were on the direct route, and this hits cached files
+too), but real and equally silent. Holding the socket without consuming, as a
+media element does once its readahead buffer is full:
+
+| Idle | Result |
+|---|---|
+| 45 s | completes |
+| 70 s | **truncated**, short by 18596986 |
+| 90 s | **truncated**, short by 28410004 |
+| 90 s, already-cached blob | **truncated**, short by 16834605 |
+| 90 s, direct mesh route | completes |
+
+Consistent with nginx's default 60 s `send_timeout`; the client sees a clean EOF
+against a full `Content-Length`, i.e. the same silent truncation as above. Worth
+a documented `proxy_*`/`send_timeout` setting in `contrib/nginx`.
+
+| Severity | Issue | Status |
+|---|---|---|
+| **High** | **The swarm→whole fallback strands the streaming reader on an unlinked inode**, which was pre-sized to the full length and therefore serves **zeros** past the last landed chunk. `Content-Length` is met exactly, nothing errors, nothing is logged. Best fit for the reported symptom. Reproduced deterministically. | open |
+| **High** | **A failed transfer truncates the stream silently** — 200 + full `Content-Length` + short body, no log line, no client retry. Makes every variant of this bug invisible. | open |
+| Medium | **The streaming reader cannot escape a stalled in-flight chunk** — `prioritize` is a no-op once a chunk is dispatched; the reader waits `ChunkStall` (20 s) or `PerChunk` (2 min). | open |
+| Medium | **Reopen: the ~768 KiB stall is not the presence prober.** Reproduced on v0.8.4 with the prober long removed; it is the lead-ramp → first-bulk-chunk transition. Benign on a healthy mesh (18/18 cold streams completed), but it is the moment the player's buffer is thinnest. | open |
+| Low | **nginx `send_timeout` truncates idle media streams** at ~60 s, for cached and remote blobs alike. Triggered in practice by *pausing* playback, not by readahead. | open |
+
+**Not reproduced:** 45 cold streams over the direct mesh route — 30
+length-checked (5 rounds × 6 concurrent) plus **15 verified against the content
+hash** — served correct bytes every time. The hash check matters: the fallback
+bug below yields a stream of the *correct length*, so a length check alone would
+score it a pass. Only stalls were seen, all self-healing, the worst being **21.1 s
+at byte 262144** (a full `ChunkStall` at the first chunk boundary). The
+fallback bug above needs the swarm to fail, which did not happen on a healthy
+mesh. That is consistent with the symptom being fluid rather than with it being
+absent.
+
+Raw probe data, the harnesses and the throwaway Go test are in the session
+scratchpad; none of it was committed.
