@@ -28,6 +28,16 @@ socket and let nginx handle TLS / the public-facing interface. See the
   (default 500 MiB) or large uploads get a `413` from nginx before reaching the app.
 - **Streaming:** `proxy_buffering off` plus forwarding the `Range` header lets
   clients seek within audio without nginx buffering the whole response.
+- **Paused playback and `send_timeout`:** the examples raise **three** timeouts,
+  and the third is the one that is easy to miss. `proxy_read_timeout` and
+  `proxy_send_timeout` govern nginx ↔ madshare; **`send_timeout` governs nginx ↔
+  browser**, and it fires between successive writes *to the client*. A media
+  element that pauses stops draining its socket while its buffer is full, so on
+  the 60 s default nginx closes the connection and the browser gets a clean EOF
+  against a full `Content-Length` — a track that silently truncates mid-song,
+  with nothing logged at either end. If you write your own config from scratch,
+  set all three; setting only the `proxy_*` pair looks like it covers streaming
+  and does not.
 - **Secure cookies:** Madshare marks the session cookie `Secure` only when it
   sees a TLS connection. Behind a TLS-terminating proxy the backend connection
   is plain HTTP, so the cookie won't currently be flagged `Secure` unless the
