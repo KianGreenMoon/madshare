@@ -40,6 +40,7 @@ arts, err := inst.Library().Artists(ctx)
 | `app.Start(ctx, cfg, opts…)` | Everything that makes a madshare **node**: opens the DB, runs every reconciliation/backfill pass in its existing order, bootstraps the admin, starts the worker pools and the reaper, builds `api.Deps`, brings up the mesh and the madnetwork node when configured. |
 | `inst.Serve()` | Everything that makes it **reachable**: one `http.Server` per `[[listen]]`, plus the `[[listen_mesh]]` blocks over the netstack. |
 | `inst.Library()` | The browse/playback method set (below). |
+| `inst.Network()` | The mesh method set, and whether there is one (below). |
 | `inst.Sources()` | The `sources.Manager`, for folders-as-data-sources. |
 | `inst.Stop(ctx)` | Graceful shutdown: workers, listeners, traffic flush, node/mesh, in-flight prune. |
 
@@ -115,6 +116,54 @@ would over HTTP. **Which file to play is still the server's decision** — the r
 `ObjectKey` is already the recording's ladder-best surviving rendition, and an
 embedder that re-derives that has re-implemented the ladder
 (`docs/ui/madplayer.md` §"What the server already computes").
+
+## The mesh surface exists for one participant (built 2026-08-09)
+
+`Network()` is `Library()`'s counterpart for the madnetwork, and the same
+bargain: a small named method set promised to stay, rather than a licence to
+reach into `federation.Node`.
+
+It differs from `Library()` in one way that is worth the second return value.
+Every instance has a library; a mesh is something a configuration can simply not
+include, so `Network() (Network, bool)` reports it **up front** — a program that
+cannot use the mesh should find that out once at startup rather than from a call
+that fails.
+
+What is on it is not a general mesh API, and reading it as one will make it look
+arbitrary. It is the **listener node's** surface
+(`docs/architecture/federation.md` §"The household"): a server needs none of
+these, because it discovers its own holders, is placed by other people's graph
+walks, and has nothing to sign in to. Each method substitutes for one of the
+things a device cannot have.
+
+| Method | Stands in for |
+|---|---|
+| `Key()` / `Address()` | the identity a device names when asking for a token, and the address that token binds |
+| `SetToken(tok)` | the standing it cannot earn — the vouch its home server signed |
+| `AddHome` / `RemoveHome` / `Homes` | the community it is not in: whose word it will take about who a stranger is |
+| `Fetch(ctx, hash, size, holders)` | the holder discovery its empty catalog tables can never do |
+| `Holdings()` | the advertisement nobody would otherwise make on its behalf |
+
+Three shapes worth knowing before calling it:
+
+- **`SetToken` is safe at any time, from any goroutine**, and that is the point
+  rather than a courtesy: a token is renewed at its half-life, which is to say
+  while transfers are in flight. It is an `atomic.Pointer` read on the outbound
+  path, so a server — which never stores anything into it — pays nothing
+  measurable for the facility.
+- **`Fetch` takes public keys**, because that is what a home server's browse rows
+  and its holders endpoint carry. A key that is not 64 hex characters is dropped
+  rather than refused: a holder list arrives from another machine, and one bad
+  entry should cost that holder and not the download. With nothing left it
+  answers `federation.ErrNoHolder`, which is also what "we asked everyone and
+  nobody had it" answers — the same thing from the caller's side.
+- **`Holdings()` reads the cache directory, not an index.** A device advertising
+  from an index could advertise a blob it has already swept, and the swarm reads
+  a holder that refuses as a holder that is broken.
+
+`federation.Transfer` and `federation.HomeNode` come back as they are, on the
+same reasoning as the `database` row types above: they are the shapes the mesh
+already speaks, and a twin here would be one more thing to keep in agreement.
 
 ### Direct calls bypass the permission layer
 

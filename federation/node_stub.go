@@ -90,6 +90,10 @@ func (n *Node) EnsureBlobFrom(context.Context, string, int64, []*BlobProvider) (
 	return nil, errCompiledOut
 }
 
+// CacheHoldings is empty rather than an error: a build with no mesh has fetched
+// nothing, so "nothing" is the true answer and not a failure to look.
+func (n *Node) CacheHoldings() []string { return nil }
+
 func (n *Node) ActiveTransfers() []TransferStats { return nil }
 
 // Traffic and DrainTraffic answer empty rather than the compiled-out error: a

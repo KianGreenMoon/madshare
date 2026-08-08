@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"daemonlord.ygg/madshare/api"
@@ -72,6 +73,17 @@ type Instance struct {
 	mesh      *federation.Mesh
 	node      *federation.Node
 	traffic   *api.TrafficFlusher
+
+	// token is the capability token this node presents on outbound mesh
+	// requests, empty on everything except a listener node (Network.SetToken,
+	// docs/architecture/federation.md §"The household").
+	//
+	// It lives here rather than being passed to federation.Start because a
+	// device acquires one long after startup — it has to sign in first — and
+	// renews it every half hour thereafter. An atomic pointer rather than a
+	// mutex so the read on every outbound request costs nothing measurable on a
+	// server, which will never store anything into it.
+	token atomic.Pointer[string]
 
 	servers  []*http.Server
 	serveErr chan error
@@ -625,6 +637,16 @@ func (i *Instance) startMesh() error {
 	node, err := federation.Start(cfg.Federation, i.db, i.log,
 		federation.WithMesh(i.mesh),
 		federation.WithCacheDir(cfg.MadnetworkCacheDir()),
+		// Empty until an embedder calls Network.SetToken, which a server never
+		// does. Installed unconditionally all the same: the source is read at
+		// request time, so there is nothing to decide here that the value does
+		// not already answer.
+		federation.WithCapabilityToken(func() string {
+			if tok := i.token.Load(); tok != nil {
+				return *tok
+			}
+			return ""
+		}),
 		federation.WithBlobResolver(resolve),
 		// The node's rate caps are editable at runtime on /admin/swarm; this is
 		// how it learns about a change without a restart. Memoized inside the

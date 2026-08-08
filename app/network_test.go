@@ -1,0 +1,213 @@
+package app_test
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"daemonlord.ygg/madshare/app"
+	"daemonlord.ygg/madshare/config"
+	"daemonlord.ygg/madshare/federation"
+)
+
+// The mesh half of the embedder surface (docs/architecture/embedding.md
+// §"Network", docs/architecture/federation.md §"The household"). It exists for
+// the listener node, so these tests are the listener node's own path: no
+// listeners, federation on, and every substitute for the things a device cannot
+// earn by itself.
+
+// meshConfig is embeddedConfig with the mesh switched on. fpcalc is not required
+// of a test the way it is of a deployment — the gate is about verifying content
+// this node redistributes, and nothing here fetches any.
+func meshConfig(t *testing.T, dataDir string) config.Config {
+	t.Helper()
+	cfg, _ := embeddedConfig(t, dataDir)
+	cfg.Federation.Enabled = true
+	cfg.Federation.AllowMissingFingerprinting = true
+	cfg, err := cfg.Prepare()
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	return cfg
+}
+
+// TestNetworkIsAbsentWithoutAMesh: an embedder should learn once, at startup,
+// that this configuration has no mesh — rather than from a call that fails.
+func TestNetworkIsAbsentWithoutAMesh(t *testing.T) {
+	cfg, _ := embeddedConfig(t, t.TempDir())
+	lg, out := testLogger()
+	inst, err := app.Start(context.Background(), cfg, app.WithLogger(lg))
+	if err != nil {
+		t.Fatalf("Start: %v\nlog:\n%s", err, out)
+	}
+	defer inst.Stop(context.Background())
+
+	if _, ok := inst.Network(); ok {
+		t.Error("Network() is available with federation disabled; want not ok")
+	}
+}
+
+// TestNetworkIdentityAndHomes covers what a device does the moment it signs in:
+// it names itself, records the server it signed in to, and installs the vouch
+// that server handed back. All three are the substitutes for things an ordinary
+// node gets from a graph it is not in.
+func TestNetworkIdentityAndHomes(t *testing.T) {
+	if !federation.Available {
+		t.Skip("built with -tags nofederation")
+	}
+	lg, out := testLogger()
+	inst, err := app.Start(context.Background(), meshConfig(t, t.TempDir()), app.WithLogger(lg))
+	if err != nil {
+		t.Fatalf("Start: %v\nlog:\n%s", err, out)
+	}
+	defer inst.Stop(context.Background())
+
+	net, ok := inst.Network()
+	if !ok {
+		t.Fatal("Network() unavailable with federation enabled")
+	}
+	if len(net.Key()) != 64 {
+		t.Errorf("Key() = %q, want a 64-character hex node key", net.Key())
+	}
+	if !strings.HasPrefix(net.Address(), "2") {
+		t.Errorf("Address() = %q, want a yggdrasil 200::/7 address", net.Address())
+	}
+
+	ctx := context.Background()
+	home := strings.Repeat("ab", 32)
+	if err := net.AddHome(ctx, home, "http://home.example:3000", "home"); err != nil {
+		t.Fatalf("AddHome: %v", err)
+	}
+	homes, err := net.Homes(ctx)
+	if err != nil {
+		t.Fatalf("Homes: %v", err)
+	}
+	if len(homes) != 1 || homes[0].PublicKey != home || homes[0].BaseURL != "http://home.example:3000" {
+		t.Fatalf("Homes() = %+v, want the one just recorded", homes)
+	}
+
+	// Signing in again is the ordinary case, not a duplicate: a client that
+	// re-derives its home list on every launch must not accumulate rows.
+	if err := net.AddHome(ctx, home, "http://home.example:3000", "home renamed"); err != nil {
+		t.Fatalf("AddHome again: %v", err)
+	}
+	if homes, _ := net.Homes(ctx); len(homes) != 1 || homes[0].Name != "home renamed" {
+		t.Errorf("Homes() after a second sign-in = %+v, want one row, renamed", homes)
+	}
+
+	if err := net.RemoveHome(ctx, home); err != nil {
+		t.Fatalf("RemoveHome: %v", err)
+	}
+	if homes, _ := net.Homes(ctx); len(homes) != 0 {
+		t.Errorf("Homes() after signing out = %+v, want none", homes)
+	}
+}
+
+// TestNetworkSetTokenIsSafeWhileRunning: a token is renewed at its half-life,
+// which is to say while transfers are in flight, so installing one must not
+// require stopping anything. The value itself is federation's to verify — what
+// is under test here is that the facade will take it at any time.
+func TestNetworkSetTokenIsSafeWhileRunning(t *testing.T) {
+	if !federation.Available {
+		t.Skip("built with -tags nofederation")
+	}
+	lg, out := testLogger()
+	inst, err := app.Start(context.Background(), meshConfig(t, t.TempDir()), app.WithLogger(lg))
+	if err != nil {
+		t.Fatalf("Start: %v\nlog:\n%s", err, out)
+	}
+	defer inst.Stop(context.Background())
+
+	net, _ := inst.Network()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			net.SetToken("token-" + strings.Repeat("x", i%8))
+		}
+	}()
+	for i := 0; i < 100; i++ {
+		_ = net.Holdings() // reads the cache directory while the token churns
+	}
+	<-done
+	net.SetToken("") // and clearing it is how a device signs out
+}
+
+// TestNetworkFetchNeedsSomebodyToAsk: a listener node's own tables are empty
+// forever, so a fetch with no holders is not "we asked and nobody had it" — it
+// is a caller that named nobody. Both come back as ErrNoHolder because both mean
+// the same thing to the caller: there is nowhere to get this.
+func TestNetworkFetchNeedsSomebodyToAsk(t *testing.T) {
+	if !federation.Available {
+		t.Skip("built with -tags nofederation")
+	}
+	lg, out := testLogger()
+	inst, err := app.Start(context.Background(), meshConfig(t, t.TempDir()), app.WithLogger(lg))
+	if err != nil {
+		t.Fatalf("Start: %v\nlog:\n%s", err, out)
+	}
+	defer inst.Stop(context.Background())
+
+	net, _ := inst.Network()
+	hash := strings.Repeat("11", 32)
+	for _, tc := range []struct {
+		name    string
+		holders []string
+	}{
+		{"none named", nil},
+		// A holder list arrives from another machine, so one unusable entry must
+		// cost that holder and not the download — with nothing left, the answer
+		// is the same as naming nobody.
+		{"all unusable", []string{"nonsense", ""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := net.Fetch(context.Background(), hash, 0, tc.holders); !errors.Is(err, federation.ErrNoHolder) {
+				t.Errorf("Fetch = %v, want ErrNoHolder", err)
+			}
+		})
+	}
+}
+
+// TestNetworkHoldingsReadTheCacheDirectory: the list a device pushes to its home
+// server comes from the disk, not from an index. A device advertising from an
+// index could advertise a blob it has already swept, and the swarm reads a
+// holder that refuses as a holder that is broken.
+func TestNetworkHoldingsReadTheCacheDirectory(t *testing.T) {
+	if !federation.Available {
+		t.Skip("built with -tags nofederation")
+	}
+	dir := t.TempDir()
+	cfg := meshConfig(t, dir)
+	lg, out := testLogger()
+	inst, err := app.Start(context.Background(), cfg, app.WithLogger(lg))
+	if err != nil {
+		t.Fatalf("Start: %v\nlog:\n%s", err, out)
+	}
+	defer inst.Stop(context.Background())
+
+	net, _ := inst.Network()
+	if got := net.Holdings(); len(got) != 0 {
+		t.Fatalf("Holdings() on a fresh node = %v, want none", got)
+	}
+
+	hash := strings.Repeat("cd", 32)
+	writeCacheBlob(t, cfg.MadnetworkCacheDir(), hash)
+	got := net.Holdings()
+	if len(got) != 1 || got[0] != hash {
+		t.Errorf("Holdings() = %v, want the blob just cached", got)
+	}
+}
+
+// writeCacheBlob puts a file where a completed fetch would have left one.
+func writeCacheBlob(t *testing.T, cacheDir, hash string) {
+	t.Helper()
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, hash), []byte("fetched"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

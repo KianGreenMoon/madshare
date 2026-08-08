@@ -1,0 +1,130 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"daemonlord.ygg/madshare/federation"
+)
+
+// Network is the mesh surface an embedder calls instead of the madnetwork HTTP
+// API — the counterpart of Library, and the same bargain: a small named method
+// set that is promised to stay, rather than a licence to reach into
+// federation.Node's hundred methods.
+//
+// It exists for one participant, the listener node
+// (docs/architecture/federation.md §"The household"). A server needs none of
+// this: it discovers its own holders, is placed by other people's graph walks,
+// and has nothing to sign in to. A device has none of those things, so each
+// method here is the substitute for one of them — SetToken for the vouch it
+// cannot earn, Fetch for the holders it cannot discover, AddHome for the
+// community it is not in, Holdings for the advertisement nobody would otherwise
+// make.
+//
+// Everything here is a no-op or an error when no madnetwork node is running,
+// but you will not see that: Instance.Network reports it up front, because a
+// program that cannot use the mesh should find out once at startup rather than
+// per call.
+type Network interface {
+	// Key is this node's ed25519 public key, lowercase hex — what it calls
+	// itself when asking a home server for a token, and the bearer that token
+	// names.
+	Key() string
+	// Address is this node's yggdrasil address, derived from Key. For display:
+	// nothing is addressed by it, and it is NOT reachable from this host (there
+	// is no TUN device).
+	Address() string
+
+	// SetToken installs the capability token presented on outbound mesh
+	// requests, or clears it with "". Safe to call at any time and from any
+	// goroutine, which is the point — a token is renewed at its half-life while
+	// transfers are in flight.
+	SetToken(token string)
+
+	// AddHome records a server this node has signed in to, so that server and
+	// the devices it vouches for may fetch from this one. It is not a peering:
+	// no card, no accept, no gossip edge, and the other end never learns of it.
+	AddHome(ctx context.Context, publicKey, baseURL, name string) error
+	// RemoveHome forgets one. Signing out stops us serving its devices on the
+	// next request rather than on a timer.
+	RemoveHome(ctx context.Context, publicKey string) error
+	// Homes lists them, oldest first.
+	Homes(ctx context.Context) ([]federation.HomeNode, error)
+
+	// Fetch downloads a blob from holders the caller names, into this node's
+	// download cache, and returns the running transfer. size may be 0 when
+	// unknown; the manifest is the authority either way.
+	//
+	// The holders are public keys, because that is what a home server's browse
+	// rows and its holders endpoint carry. A hash this node already holds — in
+	// its library or its cache — comes back complete without a byte crossing
+	// the network, which is the offline case working rather than an
+	// optimisation.
+	Fetch(ctx context.Context, hash string, size int64, holders []string) (federation.Transfer, error)
+
+	// Holdings is what this node has fetched and would seed: the list a device
+	// pushes to its home server so anything can learn it holds anything.
+	Holdings() []string
+}
+
+// ErrNoMesh is returned by Network's calls when the node stopped underneath
+// them. Instance.Network's second return value is the check that matters; this
+// is the one for the race.
+var ErrNoMesh = errors.New("app: no madnetwork node is running")
+
+// Network returns the mesh surface, and whether there is one.
+//
+// False means this instance has no madnetwork node — federation is disabled, or
+// the binary was built with -tags nofederation, or only the transport is up.
+// Unlike Library, which every instance has, the mesh is a thing a configuration
+// can simply not include, and an embedder should branch on that once rather than
+// discover it from a failing call.
+func (i *Instance) Network() (Network, bool) {
+	if i == nil || i.node == nil {
+		return nil, false
+	}
+	return network{i}, true
+}
+
+type network struct{ inst *Instance }
+
+func (n network) Key() string     { return n.inst.node.PublicKeyHex() }
+func (n network) Address() string { return n.inst.node.Address().String() }
+
+func (n network) SetToken(token string) { n.inst.token.Store(&token) }
+
+func (n network) AddHome(ctx context.Context, publicKey, baseURL, name string) error {
+	return n.inst.db.AddHomeNode(ctx, publicKey, baseURL, name, time.Now().Unix())
+}
+
+func (n network) RemoveHome(ctx context.Context, publicKey string) error {
+	return n.inst.db.RemoveHomeNode(ctx, publicKey)
+}
+
+func (n network) Homes(ctx context.Context) ([]federation.HomeNode, error) {
+	return n.inst.db.ListHomeNodes(ctx)
+}
+
+func (n network) Holdings() []string { return n.inst.node.CacheHoldings() }
+
+// Fetch turns the keys a caller has into the providers the swarm wants. A key
+// that is not 64 hex characters is dropped rather than refused: a holder list
+// arrives from another machine, and one bad entry in it should cost that holder
+// and not the download.
+func (n network) Fetch(ctx context.Context, hash string, size int64, holders []string) (federation.Transfer, error) {
+	providers := make([]*federation.BlobProvider, 0, len(holders))
+	for _, key := range holders {
+		norm, err := federation.NormalizeKey(key)
+		if err != nil {
+			continue
+		}
+		providers = append(providers, &federation.BlobProvider{PublicKey: norm})
+	}
+	if len(providers) == 0 {
+		// Distinguished from "we asked everyone and nobody had it", which is what
+		// federation.ErrNoHolder means and what a caller may want to retry.
+		return nil, federation.ErrNoHolder
+	}
+	return n.inst.node.EnsureBlobFrom(ctx, hash, size, providers)
+}

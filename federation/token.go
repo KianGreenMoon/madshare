@@ -292,8 +292,11 @@ var _ [0]struct{} = [ListenerHoldingsTTL - 3*TokenRenewAfter]struct{}{}
 // consulted — while the node we most need to reach is by definition one that
 // knows nothing about us.
 //
-// A nil source is the ordinary case: only a listener node ever holds a token, so
-// a server's transport comes back unwrapped and pays nothing.
+// A nil source skips the wrapper entirely, which is what a caller with no token
+// to offer should pass. The app facade installs one unconditionally instead,
+// because a device acquires its token long after startup — so on a server the
+// cheap path is the EMPTY token rather than the absent source, and that path is
+// an atomic load and a passthrough.
 func (n *Node) present(rt http.RoundTripper) http.RoundTripper {
 	if n == nil || n.token == nil {
 		return rt

@@ -403,6 +403,15 @@ type holdingsMessage struct {
 
 // cacheHoldings lists the finished blobs in the download cache (skipping
 // in-progress ".part" files, which fail the hash-shape check).
+// CacheHoldings is cacheHoldings for a caller outside this package: what this
+// node has fetched and would seed.
+//
+// A listener node pushes exactly this list to its home server, which is the only
+// way anything learns it holds anything (§"The household", "Being found"). The
+// directory is the authority in both cases — a device advertising from an index
+// could advertise a blob it has already swept.
+func (n *Node) CacheHoldings() []string { return n.cacheHoldings() }
+
 func (n *Node) cacheHoldings() []string {
 	if n.cacheDir == "" {
 		return nil
