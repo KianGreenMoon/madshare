@@ -654,6 +654,21 @@ func (i *Instance) Config() config.Config { return i.cfg }
 // music folder" without going through the admin API.
 func (i *Instance) Sources() *sources.Manager { return i.sources }
 
+// UserID resolves a username to the row id an embedder has to act AS. Data
+// sources, uploads and playlists are all attributed to a user, so provisioning an
+// identity is only half of what an embedder needs — this is the other half.
+// Reports false when no such user exists, which is not an error.
+func (i *Instance) UserID(ctx context.Context, username string) (int64, bool, error) {
+	u, err := i.db.GetUserByUsername(ctx, username)
+	if err != nil {
+		return 0, false, err
+	}
+	if u == nil {
+		return 0, false, nil
+	}
+	return u.ID, true, nil
+}
+
 // GenerateSecret returns a random, URL-safe credential — what an embedder with no
 // operator to prompt hands to [auth].initial_admin_password so madshare's
 // empty-users refusal is satisfied by something unguessable.

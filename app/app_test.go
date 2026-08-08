@@ -92,6 +92,16 @@ func TestStart_NoListeners(t *testing.T) {
 		t.Error("Sources() should be enabled under allow_any")
 	}
 
+	// Provisioning is only half of what an embedder needs: it has to be able to
+	// act as the identity it created.
+	id, ok, err := inst.UserID(ctx, "owner")
+	if err != nil || !ok || id <= 0 {
+		t.Errorf("UserID(owner) = (%d, %v, %v), want a real id", id, ok, err)
+	}
+	if _, ok, err := inst.UserID(ctx, "nobody"); err != nil || ok {
+		t.Errorf("UserID(nobody) = (_, %v, %v), want (false, nil)", ok, err)
+	}
+
 	inst.Stop(context.Background())
 
 	// Stop closed the store: a call that worked a moment ago must now fail rather
