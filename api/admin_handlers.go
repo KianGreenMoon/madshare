@@ -8,10 +8,10 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 
-	"daemonlord.ygg/madshare/api/storage"
 	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/prune"
@@ -475,14 +475,34 @@ func (h *handler) adminStorageStats(w http.ResponseWriter, r *http.Request) {
 }
 
 // storageStats computes the storage breakdown: whole-volume capacity plus the
-// per-category footprint. Sizing is hybrid: the files-table categories (audio,
-// review, trash) come from one indexed byte_size sum (StorageByteBreakdown —
-// instant and always fresh), while images are walked on disk (no byte size is
-// tracked in the DB for cover variants). The audio/review/trash split is by
+// per-category footprint. Every media category is now an indexed DB sum — the
+// files-table ones (audio, review, trash) from StorageByteBreakdown, the cache
+// from madnetwork_cache, and images from the cover-variant byte index
+// (migration 043). Images used to be a full DirSize walk run inline here on
+// every dashboard load, which is eight variants per cover times every album; the
+// index moved that walk to a once-per-process startup reconcile. The
+// audio/review/trash split is by
 // state and is mutually exclusive. Sizes are logical (st_size / SUM(byte_size)),
 // not filesystem-allocated: the payload is already-compressed media + images,
 // so transparent FS compression saves negligibly and allocated sizing isn't
 // worth the platform-specific stat-block accounting (docs/architecture/storage.md).
+// databaseBytes sizes madshare.db plus its WAL sidecars. Best-effort and never
+// fatal: a missing sidecar (no WAL checkpoint yet) or an unset dbPath simply
+// contributes nothing, because failing the whole storage panel over the smallest
+// category would be a poor trade.
+func (h *handler) databaseBytes() uint64 {
+	if h.dbPath == "" {
+		return 0
+	}
+	var total uint64
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if info, err := os.Stat(h.dbPath + suffix); err == nil && !info.IsDir() && info.Size() > 0 {
+			total += uint64(info.Size())
+		}
+	}
+	return total
+}
+
 func (h *handler) storageStats(ctx context.Context) (*storageStatsResp, error) {
 	st, err := h.storage.Stats()
 	if err != nil {
@@ -493,9 +513,9 @@ func (h *handler) storageStats(ctx context.Context) (*storageStatsResp, error) {
 	if err != nil {
 		return nil, fmt.Errorf("byte breakdown: %w", err)
 	}
-	imageBytes, err := storage.DirSize(h.imagesDir)
+	imageBytes, err := h.repo.ImageVariantBytes(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("image dir size %q: %w", h.imagesDir, err)
+		return nil, fmt.Errorf("image variant bytes: %w", err)
 	}
 	cacheBytes, err := h.repo.MadnetworkCacheBytes(ctx)
 	if err != nil {
@@ -518,8 +538,16 @@ func (h *handler) storageStats(ctx context.Context) (*storageStatsResp, error) {
 		{Name: "audio", Bytes: nonNegBytes(bd.Library)},
 		{Name: "review", Bytes: nonNegBytes(bd.Review)},
 		{Name: "trash", Bytes: nonNegBytes(bd.Trash)},
-		{Name: "images", Bytes: imageBytes},
+		{Name: "images", Bytes: nonNegBytes(imageBytes)},
 		{Name: "cache", Bytes: nonNegBytes(cacheBytes)},
+	}
+	// madshare.db is real app footprint that belongs to no media category, so it
+	// used to fall into "other disk usage" and the reported Madshare total
+	// understated the true occupancy. Small for a media server, but the point of
+	// the panel is that the figures add up. The -wal/-shm siblings count too:
+	// under WAL the log can be a large share of the DB's bytes at any moment.
+	if dbBytes := h.databaseBytes(); dbBytes > 0 {
+		cats = append(cats, categoryUsage{Name: "database", Bytes: dbBytes})
 	}
 	var libBytes uint64
 	for _, c := range cats {

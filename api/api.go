@@ -38,7 +38,11 @@ type Deps struct {
 	// VariantsDir roots the owned derived-media tree (cover variants under
 	// VariantsDir/images). Empty falls back to FilesDir — see newHandler and
 	// docs/architecture/variants.md.
-	VariantsDir   string
+	VariantsDir string
+	// DatabasePath is madshare.db's own path, used only to size the "database"
+	// storage category (the file plus its -wal/-shm siblings). Empty omits the
+	// category, which is what NewRouter and the tests get.
+	DatabasePath  string
 	MaxUploadSize int64
 	// Storages is the read-side resolver registry (local + links) backing the
 	// /files blob server: it resolves a content hash to an on-disk path across
@@ -305,6 +309,7 @@ func (d Deps) newHandler() *handler {
 		imagesDir:       filepath.Join(variantsDir, storage.ImagesSubdir),
 		sourceImagesDir: filepath.Join(d.FilesDir, storage.ImagesSubdir),
 		filesDir:        d.FilesDir,
+		dbPath:          d.DatabasePath,
 		maxUploadSize:   d.MaxUploadSize,
 		authzEnabled:    d.Auth != nil,
 		imagePool:       d.ImagePool,

@@ -109,10 +109,42 @@ func (p *Pool) process(ctx context.Context, job *database.ImageJob) {
 	genErr := p.generate(job)
 	if genErr != nil {
 		log.Printf("imageproc: job %d (image_hash=%s): %v", job.ID, job.ImageHash, genErr)
+	} else if err := p.indexBytes(ctx, job.ImageHash); err != nil {
+		// Best-effort: the variants are on disk and serving, and the startup
+		// reconcile re-walks the tree, so a missed byte figure is a stale total
+		// until the next restart rather than a broken cover.
+		log.Printf("imageproc: index variant bytes for %s: %v", job.ImageHash, err)
 	}
 	if err := p.repo.FinishImageJob(ctx, job.ID, genErr); err != nil {
 		log.Printf("imageproc: finish job %d: %v", job.ID, err)
 	}
+}
+
+// indexBytes totals the variant directory this job just wrote and records it in
+// the cover-variant byte index (migration 043), so the storage panel can sum
+// images instead of walking them. Called only after a successful generate: a
+// failed attempt cleans up its own partial output and leaves no set to size.
+func (p *Pool) indexBytes(ctx context.Context, imageHash string) error {
+	dir := filepath.Join(p.variantsImagesDir, imageHash)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	var total int64
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		total += info.Size()
+	}
+	return p.repo.SetImageVariantBytes(ctx, imageHash, total)
 }
 
 // generate reads the source original for the job's image_hash, produces every

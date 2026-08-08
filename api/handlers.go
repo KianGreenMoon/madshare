@@ -95,6 +95,10 @@ type handler struct {
 	// filesDir is the configured source-blob root (parent of the audio/ subtree);
 	// reported as the storage panel's "location".
 	filesDir string
+	// dbPath is madshare.db's own path, used only to size the storage panel's
+	// "database" category (the file plus its -wal/-shm siblings). Empty omits
+	// that category.
+	dbPath string
 	// maxUploadSize caps the upload request body in bytes (from config).
 	maxUploadSize int64
 	// authzEnabled mirrors Deps.Auth != nil: when true, library listings are

@@ -87,6 +87,17 @@ type Repository interface {
 	// and trash disk-usage categories (see adminStorageStats).
 	StorageByteBreakdown(ctx context.Context) (StorageByteBreakdown, error)
 
+	// The cover-variant byte index (migration 043) — what makes "images" the
+	// fifth INDEXED disk-usage category instead of a DirSize walk run inline on
+	// every dashboard load. The variants directory stays authoritative and these
+	// rows only describe it: SetImageVariantBytes is written by the imageproc
+	// pool once a variant set lands, ImageVariantBytes is the panel's sum, and
+	// ReconcileImageVariants re-walks the tree at startup so a crash mid-write or
+	// an edit by hand cannot leave the index lying.
+	SetImageVariantBytes(ctx context.Context, imageHash string, bytes int64) error
+	ImageVariantBytes(ctx context.Context) (int64, error)
+	ReconcileImageVariants(ctx context.Context, variantsImagesDir string) (int, error)
+
 	// The madnetwork download cache index (docs/architecture/madnetwork-cache.md).
 	// On Repository rather than the madnetwork store on purpose: the cache
 	// outlives federation being switched off, and a node that turned it off would

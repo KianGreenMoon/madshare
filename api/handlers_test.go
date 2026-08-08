@@ -430,6 +430,7 @@ type fakeRepo struct {
 	breakdown    database.StorageByteBreakdown
 	breakdownErr error
 	cacheBytes   int64
+	imageBytes   int64
 	// The madnetwork cache index. Guarded by mu because indexCachedBlob runs in
 	// a goroutine that outlives the request (cache-through streaming keeps
 	// filling the cache after the browser disconnects).
@@ -853,6 +854,22 @@ func (f *fakeRepo) StorageByteBreakdown(_ context.Context) (database.StorageByte
 
 func (f *fakeRepo) MadnetworkCacheBytes(_ context.Context) (int64, error) {
 	return f.cacheBytes, nil
+}
+
+// The cover-variant byte index (migration 043). imageBytes is what the storage
+// panel reports for the "images" category; before the index it was a DirSize
+// walk of a real directory, so the fake had nothing to answer here at all.
+func (f *fakeRepo) SetImageVariantBytes(_ context.Context, _ string, bytes int64) error {
+	f.imageBytes = bytes
+	return nil
+}
+
+func (f *fakeRepo) ImageVariantBytes(_ context.Context) (int64, error) {
+	return f.imageBytes, nil
+}
+
+func (f *fakeRepo) ReconcileImageVariants(_ context.Context, _ string) (int, error) {
+	return 0, nil
 }
 
 // Swarm traffic: increments, never assignments — the same contract the real

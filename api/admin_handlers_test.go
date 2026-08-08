@@ -48,13 +48,19 @@ func writeFileN(t *testing.T, path string, n int) {
 func TestAdminStorageStats(t *testing.T) {
 	filesDir := t.TempDir()
 	imagesDir := filepath.Join(filesDir, "images")
-	// Hybrid sizing: the files-table categories come from the DB breakdown
-	// (audio=3000, review=700, trash=300); images are walked on disk
-	// (1000 + 500 = 1500 across two variant files).
-	writeFileN(t, filepath.Join(imagesDir, "key", "small_crop.jpg"), 1000)
-	writeFileN(t, filepath.Join(imagesDir, "key", "small_fit.jpg"), 500)
+	// Every category is an indexed DB sum: the files-table ones from the
+	// breakdown (audio=3000, review=700, trash=300) and images from the
+	// cover-variant index (1500, migration 043).
+	//
+	// The variant files on disk deliberately total something else (9999). Nothing
+	// should read them — the panel stopped walking this tree — so a reported 1500
+	// is also the assertion that the walk is gone.
+	writeFileN(t, filepath.Join(imagesDir, "key", "small_crop.jpg"), 9999)
 
-	repo := &fakeRepo{breakdown: database.StorageByteBreakdown{Library: 3000, Review: 700, Trash: 300}}
+	repo := &fakeRepo{
+		breakdown:  database.StorageByteBreakdown{Library: 3000, Review: 700, Trash: 300},
+		imageBytes: 1500,
+	}
 	h := &handler{
 		storage:   storage.NewLocal(filepath.Join(filesDir, storage.AudioSubdir)),
 		repo:      repo,
@@ -116,25 +122,29 @@ func TestAdminStorageStats(t *testing.T) {
 	}
 }
 
-// TestAdminStorageStats_WalkErrorReturns500 forces the images walk to fail by
-// pointing imagesDir below a regular file (ENOTDIR).
-func TestAdminStorageStats_WalkErrorReturns500(t *testing.T) {
+// TestAdminStorageStats_UnreadableImagesDirStillServes replaces the old
+// WalkErrorReturns500: an unreadable images tree used to fail the whole panel,
+// because sizing it meant walking it inline on every request. Since migration
+// 043 the figure comes from the index, so the same broken directory is simply
+// not consulted and the dashboard still renders. This is the behaviour change
+// the index bought, so it is asserted rather than merely implied.
+func TestAdminStorageStats_UnreadableImagesDirStillServes(t *testing.T) {
 	filesDir := t.TempDir()
 	regular := filepath.Join(filesDir, "not-a-dir")
 	writeFileN(t, regular, 1)
 
 	h := &handler{
 		storage:   storage.NewLocal(filepath.Join(filesDir, storage.AudioSubdir)),
-		repo:      &fakeRepo{},
+		repo:      &fakeRepo{imageBytes: 1500},
 		filesDir:  filesDir,
-		imagesDir: filepath.Join(regular, "sub"), // below a regular file → walk errors
+		imagesDir: filepath.Join(regular, "sub"), // below a regular file → unwalkable
 		spoolDir:  t.TempDir(), maxUploadSize: testMaxUpload,
 	}
 
 	rr := httptest.NewRecorder()
 	h.adminStorageStats(rr, httptest.NewRequest(http.MethodGet, "/api/admin/storage", nil))
-	if rr.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
 	}
 }
 

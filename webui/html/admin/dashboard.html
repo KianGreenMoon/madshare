@@ -165,8 +165,14 @@
       </p>
       <dl class="storage-detail" id="storageDetail">
         {{/* per-category rows inserted here by JS, before the total row */}}
+        {{/* The two figures are measured differently and can disagree in a way
+             that looks wrong but is not: "Madshare total" is logical bytes
+             (SUM of sizes), "Disk used" is what the filesystem has allocated,
+             so on a compressing or sparse filesystem the total can read LARGER
+             than the disk usage. The title= says so rather than leaving a
+             reader to assume a bug. */}}
         <div class="storage-detail-row" id="storageTotalRow">
-          <dt>Madshare total</dt>
+          <dt title="Logical bytes — the sum of file sizes. &quot;Disk used&quot; below is what the filesystem has actually allocated, so on a compressing or sparse filesystem this total can read larger.">Madshare total</dt>
           <dd id="storageLibrary">—</dd>
         </div>
         {{/* External (symlink-imported) bytes — outside data_dir, shown only when
@@ -176,7 +182,7 @@
           <dd id="storageExternal">—</dd>
         </div>
         <div class="storage-detail-row" id="storageUsedRow">
-          <dt><span class="storage-swatch storage-swatch--other" aria-hidden="true"></span>Disk used</dt>
+          <dt title="Filesystem-allocated bytes for the whole volume. Measured differently from &quot;Madshare total&quot; above, which is logical file sizes."><span class="storage-swatch storage-swatch--other" aria-hidden="true"></span>Disk used</dt>
           <dd id="storageUsed">—</dd>
         </div>
         <div class="storage-detail-row">

@@ -62,8 +62,13 @@ Two different numbers, sourced separately:
   figure is backend-agnostic: it is the meaningful capacity number for an object
   store too.
 
-  Sizing is **hybrid**, because the categories have different cheapest truthful
-  sources:
+  **Every category is an indexed DB sum.** Sizing used to be hybrid — the
+  files-table categories from one query, images from a `DirSize` walk run inline
+  on every request — on the rationale that the image set is small. That
+  assumption does not survive scale: eight variants per cover across every album
+  is ~400k `stat()` calls on a 50k-album library, per dashboard load, and images
+  was the only walked category left once `cache` arrived. Migration 043 indexes
+  it (see **images** below), leaving one uniform rule:
 
   - **audio / review / trash** come from the DB in one query:
     `Repository.StorageByteBreakdown` (`database/files.go`) — a single
@@ -85,28 +90,50 @@ Two different numbers, sourced separately:
     fresh**, so these figures need no caching. (They do *not* count un-pruned
     orphan audio blobs that exist on disk without a row — those are the Verify &
     Prune view's job, `docs/architecture/prune-job.md`.)
-  - **images** (and future video) are **walked on disk** with `storage.DirSize`
-    (`api/storage/dirsize.go`), because cover images have **no byte-size column**
-    in the DB (the 8 variants per cover are derived files). The image set is small
-    (few files), so the walk is cheap and is **not cached** — it re-reads the tree
-    on every request. The walk is a **best-effort advisory** measure, deliberately
-    tolerant of the tree being mutated under it (the image pool writes variants;
-    prune/delete removes them, concurrently with a dashboard load): a missing
-    subtree (a fresh install has no `images/` yet) reads as zero; an entry that
-    vanishes mid-walk, or an unreadable subdir, is **skipped** rather than failing
-    the request — so a transient race can momentarily undercount but never 500s
-    the panel or collapses the total. Only a structural error (a path component
-    that is a regular file, `ENOTDIR`) is surfaced as an error.
+  - **images** comes from the **cover-variant byte index** (`image_variants`,
+    migration 043): `SUM(bytes)` over one row per variant directory.
 
-  **Sizes are logical, not filesystem-allocated.** Both sources report logical
-  bytes — `SUM(byte_size)` and `DirSize`'s `stat` `st_size` — i.e. the apparent
-  file size, *not* the compressed on-disk allocation (`du` without `--apparent-size`,
+    The **directory stays authoritative and the index describes it** — the same
+    rule `madnetwork_cache` (migration 040) follows. The `imageproc` pool totals
+    a variant set and records it as soon as it lands, and
+    `database.ReconcileImageVariants` re-walks the tree at **startup** (after the
+    orphan sweep, so removed dirs are already gone), which is the one place the
+    expensive walk is still paid: once per process instead of once per page load.
+    A stale row is therefore a reconciliation problem, never a phantom — nothing
+    reads these rows to decide whether an image *exists*, only to total its bytes.
+
+    Keyed by `image_hash`, **not** by album: `album_images`/`artist_images` are
+    keyed by entity id and several rows can share one `image_hash` (identical
+    embedded art collapses to a single variant directory and a single job), so a
+    byte column on those tables would double-count every shared cover. One row
+    per directory is the only shape that adds up.
+
+    It totals the **derived variants only**. The source originals live in the
+    separate tree under `<files_dir>/images` and have never been part of this
+    category; they fall into "other disk usage".
+  - **database** is `madshare.db` plus its `-wal`/`-shm` siblings, `stat`ed
+    directly (`handler.databaseBytes`). Real app footprint that belongs to no
+    media category and used to land in "other disk usage", making the Madshare
+    total understate the real occupancy. Best-effort: a missing sidecar or an
+    unconfigured path contributes nothing rather than failing the panel.
+
+  **Sizes are logical, not filesystem-allocated.** Every source reports logical
+  bytes — `SUM(byte_size)`, the indexed variant totals (themselves `stat`
+  `st_size` sums taken at index time), and the database file's `st_size` — i.e.
+  the apparent file size, *not* the compressed on-disk allocation (`du` without
+  `--apparent-size`,
   `st_blocks × 512`). Filesystem-compression-aware sizing is **intentionally out
   of scope**: the payload is already-compressed media (MP3/FLAC/Opus/AAC) and
   images (JPEG/PNG), so transparent FS compression (ZFS/Btrfs) saves negligibly,
   and switching to allocated sizing would mean platform-specific stat-block
   accounting *and* abandoning the instant DB sum for audio — not worth it for this
   workload.
+
+  The consequence is visible on the panel and is **surfaced rather than left to
+  be discovered**: "Madshare total" (logical) can read *larger* than "Disk used"
+  (allocated) on a compressing or sparse filesystem, which looks like a bug to a
+  human even though both figures are right. Both rows carry a `title=` saying
+  which measure they are.
 
 ## Admin endpoint
 

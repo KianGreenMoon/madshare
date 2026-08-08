@@ -255,6 +255,17 @@ func main() {
 	} else if n > 0 {
 		log.Printf("reconciled %d orphan image dir(s)", n)
 	}
+	// Re-walk the variants tree into the cover-variant byte index (migration 043).
+	// The directory is authoritative and the index only describes it, so this is
+	// what keeps the storage panel's "images" figure honest after a crash
+	// mid-write or an edit by hand. It runs AFTER the orphan sweep above (so
+	// removed dirs are already gone) and is the one place the expensive walk is
+	// still paid — once per process, instead of once per dashboard load.
+	if n, err := db.ReconcileImageVariants(ctx, imagesDir); err != nil {
+		log.Printf("reconcile image variants: %v", err)
+	} else if n > 0 {
+		log.Printf("indexed %d cover variant dir(s)", n)
+	}
 	pool := imageproc.NewPool(db, filesImagesDir, imagesDir, cfg.Storage.ImageProcessingWorkers)
 	go pool.Start(ctx)
 
@@ -368,6 +379,7 @@ func main() {
 		SpoolDir:       os.TempDir(),
 		FilesDir:       filesDir,
 		VariantsDir:    variantsDir,
+		DatabasePath:   cfg.Database.Path,
 		Storages:       storageRegistry,
 		MaxUploadSize:  cfg.Storage.MaxUploadBytes(),
 		Auth:           db,

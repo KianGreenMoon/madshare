@@ -128,6 +128,7 @@ const CATEGORY_COLORS = {
   trash: 'var(--storage-cat-trash)',
   cache: 'var(--storage-cat-cache)',
   video: 'var(--storage-cat-video)',
+  database: 'var(--storage-cat-alt1)',
 };
 const CATEGORY_FALLBACKS = ['var(--storage-cat-alt1)', 'var(--storage-cat-alt2)', 'var(--storage-cat-alt3)'];
 
@@ -138,7 +139,15 @@ function categoryColor(name, i) {
 // Display labels for categories whose name doesn't title-case nicely. "cache"
 // is named in full because it is the one category that is not our own content —
 // it is what the swarm fetched from other nodes (docs/architecture/madnetwork-cache.md).
-const CATEGORY_LABELS = { review: 'On review', trash: 'In trash', cache: 'Madnetwork cache' };
+// "database" names the file so it does not read as a category of media: it is
+// madshare.db plus its WAL sidecars, which used to fall into "other disk usage"
+// and made the Madshare total understate the real footprint.
+const CATEGORY_LABELS = {
+  review: 'On review',
+  trash: 'In trash',
+  cache: 'Madnetwork cache',
+  database: 'Database (madshare.db)',
+};
 
 // Label a category for display: a friendly override, else title-case the name
 // ("audio" -> "Audio").
