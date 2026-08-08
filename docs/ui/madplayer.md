@@ -12,7 +12,9 @@
 > Behind it: F0–F8 all shipped, including the **F7 capability tokens** this client
 > was named as the reason for (`docs/architecture/federation.md` §Principals &
 > access), and the UI toolkit is settled on **Gio** (see *The UI toolkit*). Next
-> is level 2b, the mesh.
+> is **level 2b, the mesh — designed 2026-08-09, not yet built**: the access half
+> is `federation.md` §"The household", and what the client does with it is
+> §"Level 2b, concretely" below.
 >
 > Work happens on the temporary `madplayer` branch, in a directory of its own with
 > its own Go module, and is kept strictly separate from server commits so a
@@ -171,10 +173,15 @@ short form, because it shapes nearly every screen in this client:
   ordinary **upload** to the home server, through the review bucket, which needs
   `file.upload` — and what the network then sees belongs to the *server*.
 - **It swarms fully all the same** — fetching chunks from many holders and
-  seeding back what it fetched, discovered like any other node. Serving a hash
-  claims possession of bytes, never an identity, so seeding asserts nothing
-  anyone must trust. That is why one-way publication and two-way swarming do not
-  contradict each other.
+  seeding back what it fetched. Serving a hash claims possession of bytes, never
+  an identity, so seeding asserts nothing anyone must trust. That is why one-way
+  publication and two-way swarming do not contradict each other.
+
+  Who it seeds *to* is narrower than "anyone", and the answer is
+  `federation.md` §"The household": **it serves exactly what its home server
+  vouches for** — that server, and that server's other devices. A member of the
+  wider community cannot pull from it, which is the price of never appearing in
+  anybody's friend list.
 - **It needs a capability token** to do that: to its home server's friends the
   device is a stranger, placeable by no graph walk, because it publishes no
   friend list and appears in nobody else's. That token is now built — the flow is
@@ -598,6 +605,52 @@ What is worth knowing before building against it:
 Full design and the four verifier checks: `docs/architecture/federation.md`
 §Principals & access, "The capability token".
 
+## Level 2b, concretely (designed 2026-08-09, not built)
+
+The access model is `federation.md` §"The household" and is not restated here.
+This is what *this program* does with it, and the order matters because each step
+is what makes the next one possible.
+
+**The device becomes a node.** `playerConfig` enables the transport and
+madnetwork, so the embedded backend generates and persists a node key exactly as a
+server does. Three settings differ from a server's and each is a decision:
+`madnetwork.default_share_depth = Local` (nothing this device owns is ever served,
+whatever else goes wrong), `[yggdrasil] multicast = true` (a phone finding its
+home server on the wifi is the zero-configuration case this client is for), and
+peers, below.
+
+**Signing in also enrols the device**, so there is no second flow and no screen
+called "join the mesh". The sign-in that already exists gains three calls:
+`POST /api/madnetwork/token` with this device's node key — whose response carries
+`issuer`, which is how the device learns its home server's key and records it as a
+home node — and `GET /api/madnetwork/peering`, whose URIs are added to the
+yggdrasil core. The token is renewed at `renew_after`, not at expiry.
+
+**Getting onto the mesh is three paths, not one**, because they fail in different
+situations: the peering info above, multicast on the local network, and a typed
+peer list in Settings for the person who has one. A device on none of them is not
+broken — it is a level-1 client, which is a working program.
+
+**Playing network content prefers the swarm and falls back to the relay.** The
+holders come from the browse row being rendered (`versions[].holders[].key`) or
+from `GET /api/madnetwork/holders/{hash}` when the row is not to hand — a playlist
+item, a queue restored from disk. If no holder answers, the home server's
+`GET /api/madnetwork/stream/{hash}` is still there and still correct; level 2b
+adds a faster path, it does not remove the one that works. This is also the answer
+to "what happens on a phone with no fpcalc": that build never reaches this
+paragraph, and everything else still runs.
+
+**Seeding is a consequence, not a feature.** The cache the level-1 downloads
+already fill is what gets served, the audience is the home server and its other
+devices, and the only new work is telling the server what is in it
+(`POST /api/madnetwork/holdings`, on the same cadence the token is renewed).
+Nothing about the device's own library is involved, which is the whole point.
+
+**Materializing finally has a caller.** Level 2a deferred the human-readable
+music directory (§"Where the bytes live") because nothing produced bytes to write
+into it. The swarm does, so the writer is built here and the three questions that
+section left open get answered against a real caller rather than a guessed one.
+
 ## Before writing a client at all: `[[listen_mesh]]`
 
 A person who wants their own library on their phone over the mesh does **not**
@@ -759,9 +812,11 @@ is a claim this project has verified only on the desktop side.
    `GET /api/albums/{id}/image?size=`; nothing renders images yet, on either
    side), and the **quality picker** for a remote track, which is
    `/api/tagsets/{id}/renditions` against the right server.
-5. **Level 2b: the mesh.** Node key, capability token from the home server,
-   swarm fetch and seed-back. The trust model is `federation.md`; the token flow
-   is §"The capability token, concretely".
+5. **Level 2b: the mesh** — designed 2026-08-09, not built. Node key, capability
+   token from the home server, swarm fetch and seed-back. The access half is
+   `federation.md` §"The household" (which is also where the three things that
+   turned out to be missing are written down); the client's half is §"Level 2b,
+   concretely"; the token flow is §"The capability token, concretely".
 6. **Playlist sync**, once the levels above exist and the unresolvable-item
    question has a real UI to be answered in. Level 1 sharpened the case for it:
    the client now has two pools of music at once and no way to save a list

@@ -315,12 +315,17 @@ third kind of participant beside the full peer and the thin client (decided
   server's identity — reviewed, fingerprinted, attributable. The device is never
   the publisher.
 - **It is a full swarm member regardless.** Its own key, on the mesh, fetching
-  chunks from many holders and seeding back what it fetched, discovered like any
-  other node. Safe for exactly the reason cache blobs are exempt from the
-  fingerprint rule: serving a hash claims *possession of bytes*, never an
-  identity, so a seeder asserts nothing anyone has to trust. One-way publication
-  and two-way swarming are not in tension — the swarm carries bytes, the catalog
-  carries claims, and only the second needs vouching for.
+  chunks from many holders and seeding back what it fetched. Safe for exactly the
+  reason cache blobs are exempt from the fingerprint rule: serving a hash claims
+  *possession of bytes*, never an identity, so a seeder asserts nothing anyone has
+  to trust. One-way publication and two-way swarming are not in tension — the
+  swarm carries bytes, the catalog carries claims, and only the second needs
+  vouching for.
+
+  An earlier revision of this bullet ended "…discovered like any other node",
+  and that half was wrong: a node discovered like any other is one a graph walk
+  reaches, which is precisely what a listener node is not. Who can reach it, and
+  how anyone learns it holds anything, are answered in §"The household".
 - **Token-carrying, not relay-only** (decided 2026-07-26). Fetching everything
   through the home server would have been the cheaper first version and was
   rejected: madplayer is unbuilt, so it gets built properly. This makes **F7
@@ -424,6 +429,166 @@ base64url'd signed JSON in a `Madnetwork-Token` header. A bearer is **not** a
 friend for quota purposes — it draws on the member budget like every other
 non-friend (§"What a member may cost us"), which is the answer to a home server
 enrolling a thousand devices: they share one class ceiling.
+
+### The household — a listener node's own audience (level 2b, designed 2026-08-09)
+
+The token above is the *outbound* half: it is how a listener node is served by
+strangers. Building madplayer's level 2b (`docs/ui/madplayer.md`) established that
+the inbound half — "seeding back what it fetched" — had no mechanism behind it at
+all, in three separate places:
+
+1. **Nothing ever presents a token.** `TokenHeader` was only ever read.
+   `tokenAudience` verifies inbound tokens and `IssueCapabilityToken` signs them,
+   but every outbound mesh request in this package sets no header. The credential
+   was built from both ends and had no middle.
+2. **A listener node cannot find a holder.** `EnsureBlob` sources its providers
+   from `MadnetworkBlobProviders`, i.e. from *this* node's cached catalogs and
+   holdings. Those are populated by `syncSources`, which pulls from friends and
+   members. A node with neither has permanently empty tables and every fetch ends
+   in `ErrNoHolder`.
+3. **A listener node can place nobody.** `serveAudience` walks friend → member →
+   token → guest, and on a peerless node all four fail: no peer rows, a walk over
+   an empty peer set, `tokenAudience` needing an issuer *we* can place, and
+   `serve_guests` off by default. So it answers every requester as an outsider —
+   and nothing would ask it anyway, since it appears in no catalog and no
+   `federation_holdings`.
+
+The first two are missing code. The third is a missing *idea*, and it is the one
+this section supplies. A listener node needs an audience of its own, and the rule
+that gives it one is one sentence:
+
+> **A listener node serves exactly what its home server vouches for: that server,
+> and any bearer of a token that server issued. Nothing else, in either
+> direction.**
+
+That is the token's own trust relation read backwards. A device already accepts
+"this bearer is mine" from its home server in order to be served by third parties;
+the same statement, from the same signer, is what it now accepts in order to serve
+them. Nothing new is trusted and no new credential exists — what changes is which
+node is doing the believing.
+
+The population that can reach a device is therefore exactly the population its
+home server has authenticated: itself, and its own users' other devices. Two
+madplayers signed in to the same server can hand each other chunks; a member of
+that server's wider community cannot. That boundary is not a limitation to relax
+later, it is the definition — the device has one relationship on the mesh and it
+is one-sided.
+
+**The home-node record.** The device stores its home server as
+`federation_home_nodes(public_key, base_url, name, added_at)`. It learns the key
+from the `issuer` field of the token it was already asking for, so the record
+costs no new exchange and no new round trip.
+
+Deliberately **not** a `federation_peers` row, and this is the load-bearing part.
+A peer row publishes a gossip edge, an edge is how a node appears in everybody
+else's map, and the entire listener design rests on the device appearing in
+nobody's friend list — that is what makes it unplaceable, which is what the token
+exists to work around. Friending the home server instead would make almost all of
+this fall out of machinery that already exists, at the price of turning the device
+into an ordinary community member: an admin accept per phone, its address gossiped
+to the whole component, and its availability counting against a network that
+§"Topology asymmetry" already says should not lean on phones. That trade was
+considered and refused (2026-08-09).
+
+Nothing else in the codebase reads that table. It is a one-sided trust record, it
+is not a relationship, and it is invisible to the graph.
+
+**Two placements fall out of it**, both inside `memberSet`, which is already the
+single object every access decision consults:
+
+| What | Becomes true |
+|---|---|
+| `lookup(addr)` also matches a home node's derived address | the home server itself is placed as a member, so it can pull from the device directly |
+| `vouches(key)` also accepts a home node | tokens that server issued are honoured, so its other devices are placed |
+
+Both are additions to an existing set, so the memoisation, the TTL and the
+address-index derivation are unchanged.
+
+**It seeds the cache, never the library**, and that holds for two independent
+reasons rather than one. `seedableBlob` already splits the two halves: the library
+half is gated by `BlobVisibleTo` (the sharing scope) and the cache half by
+`policy.Cache && aud.ServesCache()`. A player sets
+`madnetwork.default_share_depth = Local`, so every recording it holds resolves to
+`DepthPrivate` and the library half refuses everyone — including a home server it
+otherwise trusts completely. Belt and braces on the one rule that must not fail:
+even a correctly-placed member gets bytes only out of the cache, which is content
+the network gave it in the first place.
+
+**Being found.** A device pushes its cache hash list to its home server
+(`POST /api/madnetwork/holdings`, an ordinary authenticated call carrying the
+device's node key), and the server answers hash queries with those devices
+alongside its catalog holders. **The home server is the tracker for its own
+devices, and only for them.**
+
+Those holdings are *not* re-published: they never enter the server's mesh catalog
+and never appear in its own `GET /madnetwork/v0/holdings`. A server that
+advertised a device to the wider community would be promising something it cannot
+make good — the device serves only what this server vouches for, so a member
+following that advertisement gets a 404 and learns nothing except that the
+advertiser is unreliable. **An advertisement whose promise the advertiser cannot
+keep is worse than no advertisement**, because the swarm's failover treats a
+holder that refuses as a holder that is broken (§"What a member may cost us" is
+the same reasoning from the refusing end).
+
+**The fetch plan comes from the home server, not from the device's own tables.**
+`EnsureBlobFrom(ctx, hash, size, holders)` takes an explicit provider list and
+shares `EnsureBlob`'s dedupe map, its cache directory and its whole swarm path —
+the store lookup stays exactly where it is for a server, which discovers its own
+holders and must keep doing so. The device gets the list from
+`GET /api/madnetwork/holders/{hash}` (catalog holders ∪ this server's listener
+devices), and the browse rows it is already rendering carry `holders[].key`
+per version, so the common case needs no extra call at all.
+
+The alternative — having the device sync catalogs over the mesh so `EnsureBlob`
+works untouched — needs it to be a friend or a member of somebody, which is the
+one thing it is not.
+
+**Presenting the token** is the small missing middle: outbound mesh requests set
+`Madnetwork-Token` when the node holds one. It is attached to every request rather
+than only to the ones expected to need it, which costs nothing — `serveAudience`
+resolves a friend or a member before it ever looks at the header, so a token
+presented to a node that already knows us is ignored, and a node that does not
+know us is exactly the case it was built for.
+
+**Getting onto the mesh at all** needed answering, because yggdrasil peers are not
+discovered: `federation/mesh.go` builds its core with `ListenAddress` and `Peer`
+and nothing else, so a fresh device with no configured peers sits on an island.
+Three paths, kept together because they fail in different situations
+(decided 2026-08-09):
+
+- **The home server publishes peering info** — `GET /api/madnetwork/peering`
+  returns its own `[yggdrasil] listen` URIs with the host substituted for the one
+  the client actually reached it on (a configured `tls://0.0.0.0:12345` is not an
+  address anyone can dial) plus its configured peers. Signing in is then enough to
+  get onto the mesh, which is the only path that asks nothing of a person who does
+  not know what an underlay is.
+- **A typed peer list**, exactly as a server operator writes `[yggdrasil] peers`.
+  The fallback that always works, and useless on its own to the person this client
+  is for.
+- **Multicast** — yggdrasil-go ships the module and madshare has simply never
+  wired it (only `third_party/yggstack`'s own `cmd` does). A phone on the same
+  wifi as its home server then finds it with no configuration and no internet.
+  New config key `[yggdrasil] multicast`, **default false**: a server has
+  configured peers and an operator who did not ask for LAN auto-peering should not
+  get it, while a player turns it on because zero-configuration on a home network
+  is the whole point.
+
+**fpcalc stays required** on a player, exactly as on a server (decided
+2026-08-09). The startup gate is not relaxed and the player does not set
+`allow_missing_fingerprinting`. The consequence is stated rather than hidden: a
+device that seeds is re-distributing audio, and an install without fpcalc cannot
+join what it fetched to what it already holds. The cost lands on **Android**,
+where fpcalc is not a package one installs — the mesh does not come up there until
+a Chromaprint build ships with the app, and until then that platform is level 1.
+
+**What this buys over the relay**, which is worth stating because level 1 already
+plays network content through `GET /api/madnetwork/stream/{hash}` and needs none
+of the above. Three things, in the order they matter: bytes keep flowing while the
+home server is merely *unreachable* rather than gone, since the holders are
+elsewhere; a fetch parallelises across holders instead of queueing behind one
+relay hop that is itself fetching; and the device stops being a pure consumer,
+which is the difference between a client and a node and the reason this level
+exists at all.
 
 ## Sharing scope (F5 built; collapsed to three values in F7, built 2026-07-31)
 
