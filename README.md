@@ -352,6 +352,26 @@ Three things to know:
   [`[federation]`](#deploying-a-madnetwork-node) is the madnetwork feature on top
   of it, and enabling it later keeps the same key and therefore the same address.
 
+Two optional keys in the same block, both off-by-default and both about how
+*other* machines find the mesh:
+
+```toml
+multicast    = true                          # peer with Yggdrasil nodes on this LAN
+share_peers  = true                          # the default: hand your peering to signed-in users
+shared_peers = ["tls://peer.example:12345"]  # what to hand out; default = peers above
+```
+
+`multicast` announces this node on the local network and peers with whatever
+answers, so two machines on one LAN find each other with no peer configured at
+all. It is off by default here, unlike upstream Yggdrasil: you wrote a peer list,
+and auto-peering with everything else on the network should be asked for.
+
+`share_peers` serves `GET /api/madnetwork/peering` to signed-in users, so a
+madplayer signing in to this server also gets onto the same mesh without anybody
+pasting underlay URIs. It is **on** by default — a peer URI is an address meant
+to be dialled, not a secret — and `shared_peers = []` turns the answer empty
+while leaving the endpoint there.
+
 Full reference: [`docs/architecture/listeners-and-config.md`](docs/architecture/listeners-and-config.md)
 §4.3c.
 
