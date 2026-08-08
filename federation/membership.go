@@ -27,13 +27,22 @@ import (
 // per request over a community of thousands would be silly, so it is done once
 // per refresh and kept as a map.
 type memberSet struct {
-	keys  map[string]struct{} // member public keys (lowercase hex)
-	addrs map[string]string   // mesh address string → public key
-	self  string              // our own key, so callers can exclude us without a live core
+	keys map[string]struct{} // member public keys (lowercase hex)
+	// homes are the servers this node signs in to (§"The household"). Kept apart
+	// from keys rather than folded in, because they are not members and the
+	// difference is visible: MemberCount reports a community, and a device whose
+	// community is empty has one all the same.
+	homes map[string]struct{}
+	addrs map[string]string // mesh address string → public key (members and homes)
+	self  string            // our own key, so callers can exclude us without a live core
 	built time.Time
 }
 
 // lookup resolves a source mesh address to the member key it derives from.
+//
+// A home node resolves here too, which is what makes the server a device signed
+// in to able to pull from it: one relationship, deliberately asymmetric, and the
+// only node a listener can place without a graph.
 func (m *memberSet) lookup(ip net.IP) (string, bool) {
 	if m == nil || ip == nil {
 		return "", false
@@ -44,14 +53,20 @@ func (m *memberSet) lookup(ip net.IP) (string, bool) {
 
 // vouches reports whether key may issue capability tokens this node honours
 // (F7 item 9, token.go): a node we place in our own community by our own walk,
-// or ourselves — our own users' devices present tokens we signed, and a
-// madplayer fetching chunks from its own home server is the ordinary case, not
-// an edge one.
+// ourselves — our own users' devices present tokens we signed, and a madplayer
+// fetching chunks from its own home server is the ordinary case, not an edge one
+// — or a home server we have signed in to.
 //
 // Deliberately the community and not the friend list. "Verified by that server's
 // friends" was written when direct friendship was the access boundary; item 3
 // moved that boundary, and leaving the token behind would make a device reach
 // strictly less than the server vouching for it (§"The capability token").
+//
+// The home arm is what gives a listener node an audience at all
+// (§"The household"). On a server it is always empty, so nothing changes there;
+// on a device it means the population that can reach it is exactly the
+// population its home server authenticated — that server, and its other devices,
+// carrying tokens it signed.
 func (m *memberSet) vouches(key string) bool {
 	if m == nil || key == "" {
 		return false
@@ -59,7 +74,10 @@ func (m *memberSet) vouches(key string) bool {
 	if key == m.self {
 		return true
 	}
-	_, ok := m.keys[key]
+	if _, ok := m.keys[key]; ok {
+		return true
+	}
+	_, ok := m.homes[key]
 	return ok
 }
 
@@ -72,15 +90,34 @@ func (m *memberSet) vouches(key string) bool {
 // matters because the set is memoized and compared by age: stamping it with the
 // completion time would let a slow computation over old contents pass for a
 // fresh answer.
-func newMemberSet(selfKey string, peers []*Peer, edges []GraphEdgeClaim, asOf time.Time) *memberSet {
+func newMemberSet(selfKey string, peers []*Peer, edges []GraphEdgeClaim, homes []HomeNode, asOf time.Time) *memberSet {
 	keys := MemberKeys(selfKey, peers, edges)
-	addrs := make(map[string]string, len(keys))
+	addrs := make(map[string]string, len(keys)+len(homes))
 	for key := range keys {
 		if addr, err := AddrForKeyHex(key); err == nil {
 			addrs[addr.String()] = key
 		}
 	}
-	return &memberSet{keys: keys, addrs: addrs, self: selfKey, built: asOf}
+	homeKeys := make(map[string]struct{}, len(homes))
+	for _, h := range homes {
+		key, err := NormalizeKey(h.PublicKey)
+		if err != nil || key == selfKey {
+			// A malformed key places nobody, and a node cannot be its own home
+			// server — SignCapabilityToken already refuses to issue that token, so
+			// honouring one would be believing something nobody can say.
+			continue
+		}
+		homeKeys[key] = struct{}{}
+		// A member key wins the address index: it was established by our own walk,
+		// while this is a decision we recorded about somebody else.
+		if _, taken := keys[key]; taken {
+			continue
+		}
+		if addr, err := AddrForKeyHex(key); err == nil {
+			addrs[addr.String()] = key
+		}
+	}
+	return &memberSet{keys: keys, homes: homeKeys, addrs: addrs, self: selfKey, built: asOf}
 }
 
 // refreshMembers recomputes the community from contents the caller already has
@@ -95,8 +132,8 @@ func newMemberSet(selfKey string, peers []*Peer, edges []GraphEdgeClaim, asOf ti
 // therefore refuses to replace a memo computed from newer inputs. Overwriting
 // one would serve the older perimeter *stamped as fresh*, which is how an
 // accepted friendship could briefly stop being a membership.
-func (n *Node) refreshMembers(peers []*Peer, edges []GraphEdgeClaim, readAt time.Time) {
-	n.installMembers(newMemberSet(n.PublicKeyHex(), peers, edges, readAt))
+func (n *Node) refreshMembers(peers []*Peer, edges []GraphEdgeClaim, homes []HomeNode, readAt time.Time) {
+	n.installMembers(newMemberSet(n.PublicKeyHex(), peers, edges, homes, readAt))
 }
 
 // installMembers publishes a computed community, unless the memo already there
@@ -133,9 +170,13 @@ func (n *Node) community(ctx context.Context) (*memberSet, error) {
 	if err != nil {
 		return nil, err
 	}
+	homes, err := n.store.ListHomeNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
 	// Stamped with the read time, so this answer ages from when it was true
 	// rather than from when it finished being computed.
-	set := newMemberSet(n.PublicKeyHex(), peers, edges, readAt)
+	set := newMemberSet(n.PublicKeyHex(), peers, edges, homes, readAt)
 	n.installMembers(set)
 	// The caller gets what it just computed, not whatever won the memo: this
 	// answer is at least as new, and a request must never be served a perimeter

@@ -505,12 +505,30 @@ func (p *BlobProvider) Display() string {
 	return p.PublicKey
 }
 
+// HomeNode is a server this node signs in to, recorded one-sidedly
+// (§"The household", migration 044).
+//
+// It is not a peer and never becomes one: no state, no gossip edge, no user
+// mapping. What it carries is a single statement — that this node is willing to
+// believe what that key says about who its users are — which is what gives a
+// listener node an audience without putting it on anybody's map.
+type HomeNode struct {
+	PublicKey string
+	BaseURL   string
+	Name      string
+	AddedAt   int64
+}
+
 // PeerStore is the persistence the node needs: the trusted-peer table (F1) and
 // the catalog — both what this node publishes to friends and the cached copies
 // pulled from them (F2). *database.DB implements it (database/federation.go +
 // database/madnetwork.go).
 type PeerStore interface {
 	ListFederationPeers(ctx context.Context) ([]*Peer, error)
+	// ListHomeNodes returns the servers this node has signed in to
+	// (§"The household"). Empty on a server, which signs in to nothing —
+	// this is the listener node's half of the access model.
+	ListHomeNodes(ctx context.Context) ([]HomeNode, error)
 	GetFederationPeer(ctx context.Context, id int64) (*Peer, error)
 	GetFederationPeerByKey(ctx context.Context, publicKey string) (*Peer, error)
 	InsertFederationPeer(ctx context.Context, p *Peer) (int64, error)

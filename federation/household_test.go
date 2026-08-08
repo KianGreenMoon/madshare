@@ -5,6 +5,7 @@ package federation
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -19,6 +20,76 @@ import (
 //
 // These tests exist because that shape was declared long before it was built,
 // and three of its pieces turned out to have no mechanism behind them at all.
+
+// TestListenerNodeServesWhatItsHomeServerVouchesFor pins the third gap, which
+// was a missing idea rather than missing code: a peerless node walks
+// friend → member → token → guest and fails all four, so it answered every
+// requester as an outsider and "seeds back what it fetched" could not happen.
+//
+// The rule is one sentence — a listener node serves exactly what its home server
+// vouches for — and it has two halves, both here: that server, placed by the key
+// the device recorded when it signed in, and any bearer of a token that server
+// issued, which is the same statement from the same signer, believed in the
+// other direction.
+func TestListenerNodeServesWhatItsHomeServerVouchesFor(t *testing.T) {
+	storeL, storeR := newMemStore(), newMemStore()
+	cacheL := t.TempDir()
+	content := []byte("bytes the swarm gave us")
+	hash := hashOf(content)
+	if err := os.WriteFile(filepath.Join(cacheL, hash), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// L is the listener: a cache with one blob in it, no peers, no community, and
+	// nothing of its own published. noMemo so a home node recorded mid-test is
+	// placed on the next request rather than a minute later.
+	l, r := startNodePair(t, storeL, storeR,
+		[]Option{WithCacheDir(cacheL), WithIntervals(Intervals{MembershipTTL: noMemo})},
+		nil)
+	path := "/madnetwork/v0/blob/" + hash
+
+	// Before anything is recorded, R is nobody to L — which is what every node is
+	// to a device that has signed in to nothing.
+	waitFor(t, "the mesh to converge on a refusal", func() bool {
+		code, _ := meshGet(t, l, r, path, "")
+		return code == http.StatusNotFound
+	})
+
+	// Half one: R is L's home server. One-sided — R has no peer row for L, no
+	// edge, and no idea this happened.
+	storeL.addHome(r.PublicKeyHex())
+	waitFor(t, "L to place its home server", func() bool {
+		code, _ := meshGet(t, l, r, path, "")
+		return code == http.StatusOK
+	})
+
+	// Half two: a token signed by a home server L recorded, presented by a device
+	// that is otherwise a stranger. This is one madplayer seeding another, and it
+	// is the reason the vouching rule is worth having — the two devices have no
+	// relationship at all, only a server they both signed in to.
+	homePriv, homeKey := newSigner(t)
+	token := mustSign(t, homePriv, homeKey, r.PublicKeyHex(), false, time.Now())
+	storeL.forgetHomes()
+	storeL.addHome(homeKey)
+	waitFor(t, "L to honour its home server's vouch", func() bool {
+		code, _ := meshGet(t, l, r, path, token)
+		return code == http.StatusOK
+	})
+	// And R on its own, without the vouch, is back to being nobody: the token is
+	// doing the work, not some standing R acquired along the way.
+	if code, _ := meshGet(t, l, r, path, ""); code != http.StatusNotFound {
+		t.Errorf("unvouched stranger = %d, want 404", code)
+	}
+
+	// Signing out stops it, on the next request rather than on a timer — the
+	// issuer's standing is re-checked every time, which is what makes the
+	// one-hour token lifetime enough (§"The capability token").
+	storeL.forgetHomes()
+	waitFor(t, "L to stop honouring a home server it forgot", func() bool {
+		code, _ := meshGet(t, l, r, path, token)
+		return code == http.StatusNotFound
+	})
+}
 
 // TestListenerNodeFetchesFromHoldersItWasHanded pins the second of those gaps.
 //

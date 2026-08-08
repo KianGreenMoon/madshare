@@ -383,11 +383,21 @@ func (n *Node) expireGraph(ctx context.Context) {
 		n.logger.Printf("federation: read graph edges for retention: %v", err)
 		return
 	}
+	// Home nodes are read here too, and not because the retention walk wants them
+	// — it does not, they are reachable through no edge at all. The perimeter
+	// installed below is a single memo, so every input it is computed from has to
+	// be read in the same pass or the sweep would publish a set that has silently
+	// forgotten one of them.
+	homes, err := n.store.ListHomeNodes(ctx)
+	if err != nil {
+		n.logger.Printf("federation: read home nodes for the perimeter: %v", err)
+		return
+	}
 	// Two walks over one read (F7): what we keep, and whom we serve. They differ
 	// only in the mutual-edge condition, and computing them from the same inputs
 	// in the same pass is what stops the store and the perimeter from drifting —
 	// a branch collected below must not still be a member above.
-	n.refreshMembers(peers, edges, readAt)
+	n.refreshMembers(peers, edges, homes, readAt)
 	keep := ReachableKeys(n.PublicKeyHex(), peers, edges)
 	dropped, err := n.store.DropUnreachableGraph(ctx, keep)
 	if err != nil {

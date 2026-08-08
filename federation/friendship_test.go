@@ -59,6 +59,10 @@ type memStore struct {
 	// assert the node's memo absorbed the repeats.
 	digests int
 	silent  bool
+
+	// homes are the servers this node signed in to (§"The household"). Empty for
+	// every node that is not a listener one, which is nearly all of them.
+	homes []HomeNode
 }
 
 func newMemStore() *memStore {
@@ -414,6 +418,26 @@ func (m *memStore) ListFederationPeers(context.Context) ([]*Peer, error) {
 		out = append(out, &cp)
 	}
 	return out, nil
+}
+
+func (m *memStore) ListHomeNodes(context.Context) ([]HomeNode, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]HomeNode(nil), m.homes...), nil
+}
+
+// addHome records a home server, as a client does after signing in.
+func (m *memStore) addHome(publicKey string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.homes = append(m.homes, HomeNode{PublicKey: publicKey, AddedAt: time.Now().Unix()})
+}
+
+// forgetHomes signs out of every home server.
+func (m *memStore) forgetHomes() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.homes = nil
 }
 
 func (m *memStore) GetFederationPeer(_ context.Context, id int64) (*Peer, error) {

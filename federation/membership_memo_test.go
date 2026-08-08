@@ -63,7 +63,7 @@ func TestInstallMembersRefusesAStaleClobber(t *testing.T) {
 // compares, so getting this wrong would quietly disable it.
 func TestMemberSetAgesFromItsInputs(t *testing.T) {
 	asOf := time.Now().Add(-time.Minute)
-	set := newMemberSet(k("me"), []*Peer{{PublicKey: k("a"), State: PeerFriend}}, nil, asOf)
+	set := newMemberSet(k("me"), []*Peer{{PublicKey: k("a"), State: PeerFriend}}, nil, nil, asOf)
 	if !set.built.Equal(asOf) {
 		t.Errorf("built = %v, want the input read time %v", set.built, asOf)
 	}

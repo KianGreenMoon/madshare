@@ -51,6 +51,9 @@ type emptyStore struct{}
 func (emptyStore) ListFederationPeers(context.Context) ([]*federation.Peer, error) {
 	return nil, nil
 }
+func (emptyStore) ListHomeNodes(context.Context) ([]federation.HomeNode, error) {
+	return nil, nil
+}
 func (emptyStore) GetFederationPeer(context.Context, int64) (*federation.Peer, error) {
 	return nil, federation.ErrPeerNotFound
 }
