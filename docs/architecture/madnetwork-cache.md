@@ -328,8 +328,8 @@ the fill against the configured ceiling.
 
 ## The dashboard's storage panel
 
-The cache is a **fifth category** on `/admin`'s storage breakdown, beside audio,
-review, trash and images (`GET /api/admin/storage`, `categoryUsage{Name: "cache"}`),
+The cache is a category on `/admin`'s storage breakdown, beside audio, review,
+trash, images and database (`GET /api/admin/storage`, `categoryUsage{Name: "cache"}`),
 labelled **Madnetwork cache**.
 
 It is folded into the panel's "Madshare total" like every other category, and it
@@ -341,8 +341,9 @@ about *what to do* with those bytes, not about whether they are there.
 
 The figure is `SUM(byte_size)` over the index — indexed and instant, not a
 directory walk, the same reasoning that put `byte_size` on `files` rather than
-walking the tree (and the opposite of the images category, whose uncached
-`DirSize` walk is a known scaling complaint).
+walking the tree. Images followed the same route in migration 043
+(`image_variants`, see `storage.md`), which was the last walked category; every
+category on the panel is now an indexed sum.
 
 `MadnetworkCacheBytes` sits on `database.Repository`, not on the madnetwork
 store, deliberately: the cache outlives federation being switched off, and a node

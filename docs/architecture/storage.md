@@ -146,10 +146,12 @@ storage-management routes) merges the volume with the per-category breakdown:
   "location": "./data/files",
   "library_bytes": 12345678,
   "categories": [
-    { "name": "audio",  "bytes": 11000000 },
-    { "name": "review", "bytes": 0 },
-    { "name": "trash",  "bytes": 0 },
-    { "name": "images", "bytes": 1345678 }
+    { "name": "audio",    "bytes": 11000000 },
+    { "name": "review",   "bytes": 0 },
+    { "name": "trash",    "bytes": 0 },
+    { "name": "images",   "bytes": 1345678 },
+    { "name": "cache",    "bytes": 0 },
+    { "name": "database", "bytes": 262144 }
   ],
   "volume": { "total_bytes": N, "free_bytes": N, "used_bytes": N, "used_percent": 42.0 }
 }
