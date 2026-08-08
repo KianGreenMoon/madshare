@@ -270,6 +270,47 @@ func (n *Node) IssueCapabilityToken(bearerKey string, guestOnly bool) (Capabilit
 	}, nil
 }
 
+// ── The presenting side ──────────────────────────────────────────────────────
+
+// present wraps a transport so every outbound mesh request carries this node's
+// capability token. It is applied to both of the node's clients in Start, which
+// is the point: a per-call-site header is a rule eleven request builders have to
+// remember and the twelfth will not, and the one it forgets is a fetch that
+// mysteriously 404s.
+//
+// Attached to every request rather than to the ones judged to need it, because
+// judging is both unnecessary and unreliable: serveAudience resolves a friend
+// from the peer table and a member from the community walk *before* it reads the
+// header, so a token presented to a node that already knows us is never
+// consulted — while the node we most need to reach is by definition one that
+// knows nothing about us.
+//
+// A nil source is the ordinary case: only a listener node ever holds a token, so
+// a server's transport comes back unwrapped and pays nothing.
+func (n *Node) present(rt http.RoundTripper) http.RoundTripper {
+	if n == nil || n.token == nil {
+		return rt
+	}
+	return &tokenTransport{rt: rt, token: n.token}
+}
+
+// tokenTransport adds the token header without mutating the caller's request,
+// which RoundTripper implementations are required not to do.
+type tokenTransport struct {
+	rt    http.RoundTripper
+	token TokenSource
+}
+
+func (t *tokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	tok := t.token()
+	if tok == "" {
+		return t.rt.RoundTrip(req)
+	}
+	clone := req.Clone(req.Context())
+	clone.Header.Set(TokenHeader, tok)
+	return t.rt.RoundTrip(clone)
+}
+
 // ── The verifying side ───────────────────────────────────────────────────────
 
 // tokenAudience resolves a presented capability token to the audience it earns,

@@ -3,9 +3,11 @@
 package federation
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 )
@@ -102,6 +104,53 @@ func TestListenerNodeTokenBuysMembership(t *testing.T) {
 	if code, _ := meshGet(t, a, b, blobPath, token); code != http.StatusNotFound {
 		t.Errorf("vouched listener node fetching a Direct-friends blob = %d, want 404", code)
 	}
+}
+
+// TestListenerNodePresentsItsOwnToken pins the half of item 9 that was never
+// built: the node putting the header on its own requests
+// (§"The household"). Every other test in this file sets TokenHeader by hand on
+// a bespoke client, which proves what a VERIFIER does and cannot notice that no
+// requester ever presents anything.
+//
+// So this one touches no header. B is configured with a token source and then
+// makes an ordinary internal call — the same fetchManifest a transfer makes —
+// and the vouch has to arrive by itself or A refuses.
+func TestListenerNodePresentsItsOwnToken(t *testing.T) {
+	storeA, storeB := newMemStore(), newMemStore()
+
+	// The source is a function precisely because a token outlives neither the
+	// node nor the test: it is renewed at half-life, and the node must present
+	// whatever is current at the moment of the request. Here that also solves a
+	// chicken and egg — a token names the bearer's key, which does not exist
+	// until the bearer has started.
+	var mu sync.Mutex
+	token := ""
+	plain, _, a, b := scopePair(t, storeA, storeB, WithCapabilityToken(func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return token
+	}))
+	setToken := func(v string) {
+		mu.Lock()
+		defer mu.Unlock()
+		token = v
+	}
+
+	homePriv, homeKey := newSigner(t)
+	vouchFor(t, storeA, k("voucher"), homeKey)
+	setToken(mustSign(t, homePriv, homeKey, b.PublicKeyHex(), false, time.Now()))
+
+	holder := &BlobProvider{PublicKey: a.PublicKeyHex()}
+	waitFor(t, "B's own request to arrive vouched for", func() bool {
+		return b.fetchManifest(context.Background(), holder, plain) != nil
+	})
+
+	// And the 200 above came from the header rather than from B being placeable
+	// some other way: take the token away and the same call stops working.
+	setToken("")
+	waitFor(t, "B to be a stranger again without one", func() bool {
+		return b.fetchManifest(context.Background(), holder, plain) == nil
+	})
 }
 
 // TestListenerNodeTokenNeedsAnIssuerWeCanPlace: one issuer, one hop, no chain. A

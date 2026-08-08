@@ -862,6 +862,29 @@ type nodeOptions struct {
 	timeouts     Timeouts
 	discovery    Discovery
 	mesh         *Mesh
+	token        TokenSource
+}
+
+// TokenSource supplies the capability token this node presents on its outbound
+// mesh requests, or "" when it holds none — which is every node except a
+// listener one (token.go, §"The household").
+//
+// A function rather than a value because a token is renewed at its half-life and
+// the node must present whatever is current at the moment of the request, not
+// whatever was current when it started. Keeping the renewal on the caller's side
+// is deliberate: asking for one is an authenticated HTTP call to a home server,
+// which is the client's business and not this package's.
+type TokenSource func() string
+
+// WithCapabilityToken makes this node present a home server's vouch on the mesh.
+//
+// Only a listener node needs it. A node that is somebody's friend or sits in
+// their community is already placeable by a walk, and serveAudience resolves
+// both of those before it ever looks at the header — so presenting a token
+// costs nothing where it is not needed, which is why the attachment is
+// unconditional rather than per-destination.
+func WithCapabilityToken(src TokenSource) Option {
+	return func(o *nodeOptions) { o.token = src }
 }
 
 // WithMesh starts the node on an already-running transport instead of building

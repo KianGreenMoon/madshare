@@ -148,6 +148,12 @@ type Node struct {
 	acceptMu    sync.Mutex
 	graphAccept map[string]time.Time
 
+	// token is the capability token this node presents outbound (token.go,
+	// §"The household") — nil on a server, which needs none. It is the missing
+	// middle of F7 item 9: issuing and verifying were both built, and nothing
+	// ever put the header on a request.
+	token TokenSource
+
 	// Our community (F7, membership.go): the keys we serve the Madnetwork scope
 	// to, derived from the gossiped graph by the mutual-edge walk and indexed by
 	// mesh address. Memoized because it is on every mesh request's path, and
@@ -257,6 +263,7 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 		pullNow:        map[string]struct{}{},
 		cacheDir:       o.cacheDir,
 		resolveBlob:    o.resolveBlob,
+		token:          o.token,
 		transfers:      map[string]*transfer{},
 		transferCtx:    transferCtx,
 		transferCancel: transferCancel,
@@ -281,7 +288,7 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 	n.upRate.set(int64(fc.SeedRateKiB) * 1024)
 	n.downRate.set(int64(fc.FetchRateKiB) * 1024)
 	n.client = &http.Client{
-		Transport: &http.Transport{DialContext: n.DialContext},
+		Transport: n.present(&http.Transport{DialContext: n.DialContext}),
 		Timeout:   n.timeouts.Control,
 	}
 	// Blob/chunk fetches can be large and slow over the mesh; each is bounded by
@@ -290,10 +297,10 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 	// that accepts the connection then never answers (a hung mesh path) fast. It
 	// shares the idle-read budget: both detect the same "connected but silent"
 	// failure, only on different sides of the response header.
-	n.blobClient = &http.Client{Transport: &http.Transport{
+	n.blobClient = &http.Client{Transport: n.present(&http.Transport{
 		DialContext:           n.DialContext,
 		ResponseHeaderTimeout: n.timeouts.ChunkStall,
-	}}
+	})}
 	n.srv = &http.Server{Handler: n.protocolHandler()}
 	go func() {
 		if err := n.srv.Serve(lis); err != nil && err != http.ErrServerClosed {

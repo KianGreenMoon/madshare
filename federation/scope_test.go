@@ -21,7 +21,10 @@ import (
 // and returns their hashes plus a started, mesh-connected node pair. The
 // entries' keys are "1" (ordinary) and "2" (guest), which the memStore's depths
 // map is keyed by.
-func scopePair(t *testing.T, storeA, storeB *memStore) (plain, guest string, a, b *Node) {
+//
+// bOpts configures the requesting node, for the tests that care what B does
+// rather than only what A decides about it.
+func scopePair(t *testing.T, storeA, storeB *memStore, bOpts ...Option) (plain, guest string, a, b *Node) {
 	t.Helper()
 	dir := t.TempDir()
 	write := func(name string, body []byte) (string, string) {
@@ -54,7 +57,7 @@ func scopePair(t *testing.T, storeA, storeB *memStore) (plain, guest string, a, 
 	// seam the mesh lab uses (docs/plans/mesh-testing.md T1).
 	a, b = startNodePair(t, storeA, storeB,
 		[]Option{resolve, WithIntervals(Intervals{SnapshotTTL: noMemo, MembershipTTL: noMemo})},
-		[]Option{WithCacheDir(t.TempDir())})
+		append([]Option{WithCacheDir(t.TempDir())}, bOpts...))
 	return plainHash, guestHash, a, b
 }
 
