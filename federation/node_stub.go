@@ -86,6 +86,10 @@ func (n *Node) EnsureBlob(context.Context, string) (Transfer, error) {
 	return nil, errCompiledOut
 }
 
+func (n *Node) EnsureBlobFrom(context.Context, string, int64, []*BlobProvider) (Transfer, error) {
+	return nil, errCompiledOut
+}
+
 func (n *Node) ActiveTransfers() []TransferStats { return nil }
 
 // Traffic and DrainTraffic answer empty rather than the compiled-out error: a

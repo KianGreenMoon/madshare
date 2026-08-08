@@ -478,6 +478,39 @@ func (n *Node) EvictCachedBlob(hash string) error {
 // (cache-through: the file keeps landing in the cache after a browser
 // disconnects).
 func (n *Node) EnsureBlob(ctx context.Context, hash string) (Transfer, error) {
+	return n.ensureBlob(ctx, hash, func(ctx context.Context) (int64, []*BlobProvider, error) {
+		return n.store.MadnetworkBlobProviders(ctx, hash)
+	})
+}
+
+// EnsureBlobFrom is EnsureBlob against a holder list the caller already has,
+// for a node whose own catalogs cannot answer the question.
+//
+// That node is a listener one (§"The household"). Its cached-catalog tables are
+// filled by syncSources, which pulls from friends and members; a node with
+// neither has empty tables forever, so EnsureBlob's discovery step returns
+// ErrNoHolder on every hash in the network. What it does have is a home server
+// it browses over HTTP, whose rows name the holders — so the list arrives from
+// outside instead of being looked up.
+//
+// A server keeps discovering its own holders and must: this is an addition for
+// the one participant that cannot, not a replacement for the one that can.
+//
+// size may be 0 when the caller does not know it; the manifest supplies the real
+// one. Everything after discovery is shared with EnsureBlob — the same dedupe
+// map, cache directory, swarm path and whole-file verification — so a fetch
+// started either way joins the other.
+func (n *Node) EnsureBlobFrom(ctx context.Context, hash string, size int64, holders []*BlobProvider) (Transfer, error) {
+	return n.ensureBlob(ctx, hash, func(context.Context) (int64, []*BlobProvider, error) {
+		return size, holders, nil
+	})
+}
+
+// ensureBlob is both entry points: everything except where the holders come
+// from, which is the only thing they disagree about.
+func (n *Node) ensureBlob(ctx context.Context, hash string,
+	discover func(context.Context) (int64, []*BlobProvider, error)) (Transfer, error) {
+
 	if !isBlobHash(hash) {
 		return nil, fmt.Errorf("federation: invalid content hash")
 	}
@@ -488,6 +521,9 @@ func (n *Node) EnsureBlob(ctx context.Context, hash string) (Transfer, error) {
 			}
 		}
 	}
+	// The store is required even when the caller supplied the holders: the
+	// transfer path itself reads and writes it (peer liveness, traffic), so a
+	// store-less node is not merely undiscoverable, it cannot run a fetch.
 	if n.store == nil || n.cacheDir == "" {
 		return nil, fmt.Errorf("federation: transfers not configured")
 	}
@@ -501,7 +537,7 @@ func (n *Node) EnsureBlob(ctx context.Context, hash string) (Transfer, error) {
 	if t, ok := n.transfers[hash]; ok {
 		return t, nil
 	}
-	size, holders, err := n.store.MadnetworkBlobProviders(ctx, hash)
+	size, holders, err := discover(ctx)
 	if err != nil {
 		return nil, err
 	}
