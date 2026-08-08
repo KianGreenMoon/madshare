@@ -1,320 +1,109 @@
 # User settings page
 
-A per-user **Settings** page in the listening shell that gathers the account-level
-controls that were previously scattered across the header (or did not exist at
-all): **change password**, **API token** management, and **theme**. It is reached
-from a new right-side header entry and is available to any signed-in user — there
-is no extra permission, every account manages its own settings.
+`/settings` gathers the account-level controls a signed-in person changes about
+**their own** account: password, API tokens, theme. It is a shell-native page in
+the listening shell, available to any signed-in user — there is **no permission**
+on it, because every account manages its own settings.
 
-This doc is the design of record. Related: `docs/ui/shells.md` (the listening
-shell + client router), `docs/architecture/auth.md` (password / token model),
-`docs/ui/toast.md` (the shared toast system this page reuses).
+Server settings are a different page. `/admin/settings` holds what the *node*
+does (licence defaults, guest access, madnetwork policy, swarm limits); this page
+holds nothing that affects anybody else.
 
-## Goals
+Related: `docs/ui/shells.md` (the shell it lives in), `docs/api/tokens.md` (the
+token API), `docs/architecture/auth.md` (the auth model), `docs/ui/clipboard.md`
+(why the copy button works the way it does).
 
-- One place for the things a signed-in user changes about *their own* account.
-- Move **change password** out of the header into the page (the header button goes
-  away; the bootstrap *forced* change keeps its modal — see below).
-- Give API tokens a real UI: list, create with an **optional expiry date**, and
-  revoke. The raw token is shown exactly once.
-- Move **theme** selection here and remove the header theme dots. Fix the theme
-  FOUC (flash) while we are at it with an inline `<head>` guard.
+## Entry point
 
-## Non-goals
+**The username in the header is the link.** When signed in, the right-hand
+`.header-actions` area is `username · Log out`, where the username is an `<a
+href="/settings">` styled as a `.nav-link` — the same underline tab as the
+left-side Library/Madnetwork tabs, on the right, underlined when the page is
+open. There is no separate Settings button, and there is no header
+change-password button or theme switcher: both moved here.
 
-- No server-side per-account settings store. Theme stays **per-device** in
-  `localStorage` (`madshare-theme`), as today. Server-side theme persistence is a
-  possible future addition, noted at the end.
-- No new permission. The page is gated only on "is signed in"; anonymous visitors
-  never see the entry point and the page renders a sign-in prompt if reached
-  directly.
-- Admin-specific settings stay on `/admin/settings` (license / guest / access
-  groups). This page is the *user's* settings, not the server's.
+The header's auth state is server-rendered, so a signed-in load paints the
+username straight away rather than swapping it in after `/api/auth/me`
+(`docs/ui/shells.md` §"Header auth state is server-rendered").
 
-## Decisions
+Settings is **not** a header *section* — it joins no subtab family, and
+`setActiveNav` lights nothing in the left-hand nav for it.
 
-1. **It is a page, not a modal.** A shell-native page at `/settings`, registered
-   like `/playlists` (`pageData{Page: "settings"}`, `data-module=/static/js/settings.js`).
-   It is **not** a header *section* (it does not join the Library subtab family);
-   it is reached from the right-side header area. Playback and the shared queue
-   survive navigation to it, like every listening-shell page.
-2. **Entry point: the username, on the right side of the header.** When signed in,
-   the header's `.header-actions` user area shows **`username · Sign out`**, where
-   the **username itself is the link to `/settings`** — there is no separate
-   Settings button. It is styled as a `.nav-link` (the same underline tab as the
-   left-side Library / Upload, with an active underline on `/settings`), only on
-   the right. The old **Change password** button is gone; `Sign out` and the
-   username stay in the header (no extra clicks to log out). `shell.js`
-   `setActiveNav` scans all `header .nav-link` anchors so the username's active
-   state updates on client-side navigation too.
-3. **Token expiry is an optional date.** The create form has an
-   `<input type="date">` (blank = never expires). The client sends an absolute
-   `expires_at` (unix seconds); the create handler is extended to accept it (the
-   table and `CreateToken` already store an absolute timestamp — no migration).
-   `expires_in_days` is kept for non-browser API clients.
-4. **Theme moves here; header dots are removed.** The `.theme-switcher` dots leave
-   the shared header partial. Theme is changed only on this page. Because the dots
-   live in the *shared* header, this also removes them from admin pages (see
-   "Admin shell" below).
-5. **No FOUC.** A tiny inline `<head>` script applies the saved theme before first
-   paint on every shell page. This is the long-deferred fix that was bundled with
-   "when the user-settings page is built".
-6. **The forced first-run password change keeps its modal.** Bootstrap forces a
-   password change before the user can do anything; that path must not depend on
-   the user navigating to a page. The existing forced modal (auto-opened from
-   `password_change_required`) stays. Only the *voluntary* change moves to the
-   page.
+## The page
 
-## Entry point & header changes
-
-`webui/html/partials.html`, `{{define "header"}}`, the `.header-actions` block:
-
-- **Remove** `#changePassBtn` (the voluntary "Change password" button).
-- **Remove** the `.theme-switcher` dot group entirely.
-- **Add** a Settings entry inside the existing `#userArea` (which is already shown
-  only when signed in), between the username and Sign out:
-
-  ```html
-  <div class="user-area" id="userArea" hidden>
-    <span class="user-name" id="userName"></span>
-    <a href="/settings" class="btn btn-neutral" id="settingsLink"
-       aria-label="Settings"><span aria-hidden="true">⚙</span> Settings</a>
-    <button class="btn btn-neutral" id="logoutBtn">Log out</button>
-  </div>
-  ```
-
-  It is an `<a href="/settings">` so the shell router intercepts it as a normal
-  in-shell navigation (and middle-click / ctrl-click open a new tab naturally). No
-  JS wiring is needed for the link itself; `applyNavPermissions` does not touch it
-  (every signed-in user may open it). It lives inside `#userArea`, which `auth.js`
-  already toggles, so it appears exactly when the user is signed in.
-
-The change-password **modal markup** (`#passModal` in `{{define "auth-modals"}}`)
-stays — it is still used by the forced first-run flow.
-
-## Route & shell wiring
-
-Server (`webui/webui.go`):
-
-```go
-// in Register():
-r.Get("/settings", makeHandler(settingsTmpl, "settings.html",
-    pageData{APIURL: apiBase, Page: "settings", GitRepo: gitRepo}))
-```
-
-`settings.html` is a new template parsed alongside the other listening-shell pages
-(mirror how `playlistsTmpl` is built). No `Section` — Settings is not part of the
-Library section, so no header tab lights up for it (`setActiveNav` simply matches
-nothing, which is correct).
-
-Page shell (`webui/html/settings.html`), modeled on `playlists.html`:
-
-```html
-<body data-page="settings" data-module="/static/js/settings.js">
-{{template "header" .}}
-<main> … the three sections … </main>
-{{template "player-bar" .}}
-{{template "auth-modals" .}}
-<script type="module" src="/static/js/shell.js"></script>
-</body>
-```
-
-Client gate (`webui/static/js/settings.js`, `init()`):
-
-- `getIdentity()` from `auth.js`. If `null`, render the same "Sign in required"
-  notice the privileged pages use (`gatePage` renders it; or reuse
-  `renderAccessDenied`). There is no permission to check — being signed in is the
-  whole gate, so a thin inline check is fine:
-  ```js
-  if (!getIdentity()) { /* render sign-in-required panel */ return; }
-  ```
-- Otherwise fetch the token list and render the three sections.
-
-`teardown()` is a no-op (no timers/listeners outside `<main>`).
-
-## Page layout
-
-A single `<main>` with a **subtab bar** over three `<section>` panels — one panel
-shown at a time, like the library (`Music · Playlists`) and upload (`Upload · My
-uploads`) pages. The bar reuses the shared `.subtabs` / `.subtab` component
-(`app.css`); each `.subtab` is a `role="tab"` button driving a `role="tabpanel"`
-card. The tab labels the panel, so the cards carry no `<h2>`. Reuse `app.css`
-form/card/button styles; `settings.css` holds only page-specific spacing.
-
-The subtab bar follows the ARIA tablist keyboard pattern (arrow keys / Home / End,
-roving `tabindex`); `settings.js` `wireTabs()` toggles `.is-active` + `hidden` +
-`aria-selected`. Default tab: **Account**.
+Three panels behind a `.subtabs` bar, one visible at a time, defaulting to
+**Account**. The bar follows the ARIA tablist keyboard pattern (arrows / Home /
+End, roving `tabindex`), and the tab is the panel's label, so the cards carry no
+heading of their own.
 
 ```
 Settings
-[ Account | API tokens | Appearance ]   ← subtab bar (one panel visible)
-├─ Account
-│   └─ Change password (current / new / confirm)  → POST /api/auth/password
-├─ API tokens
-│   ├─ Create token (name + optional expiry date) → POST /api/auth/tokens
-│   ├─ One-time reveal of the new raw token (copy button)
-│   └─ List: name · created · last used · expires · [Revoke]
-└─ Appearance
-    └─ Theme: Dark / Light / Ocean / Sunset
+[ Account | API tokens | Appearance ]
+├─ Account      → change password
+├─ API tokens   → create (optional expiry) · one-time reveal · list · revoke
+└─ Appearance   → theme
 ```
+
+A visitor who reaches `/settings` without a session gets a sign-in notice instead
+of the panels; the entry point is hidden for them anyway.
 
 ### Account — change password
 
-Reuse the existing endpoint and validation; just relocate the form into the page.
+Current / new / confirm → `POST /api/auth/password` with `{old_password,
+new_password}`. A `401` means the current password is wrong and says so; anything
+else surfaces the server's message. Success clears the form and toasts.
 
-- Form fields: current / new / confirm (same `minlength=8`, same client checks for
-  match + length that `auth.js` does today).
-- `POST /api/auth/password` with `{ old_password, new_password }`.
-- On success: clear the form, `showToast('Password changed.', { type: 'success' })`.
-- On `401`: "Current password is incorrect." On other errors: surface the body.
-- The change-password logic currently inside `auth.js`'s `initAuth` is the
-  reference; factor the voluntary path into `settings.js`. Keep `auth.js`'s
-  **forced** path (`if (_identity?.password_change_required) openPassModal(true)`)
-  — that modal is the bootstrap gate and must keep working independent of this page.
+**The forced first-run change keeps its own modal.** Bootstrap sets
+`password_change_required` on the first admin, and `auth.js` opens the modal
+automatically when the identity carries it — that gate must not depend on the
+user finding a page. Only the *voluntary* change lives here.
 
 ### API tokens
 
-**List** — `GET /api/auth/tokens` returns `[{id, name, created_at, last_used,
-expires_at, revoked}]`. Render a table; format `created_at` / `last_used` /
-`expires_at` (unix seconds, or `null`) as locale dates; show "Never" for a null
-expiry, "—" for never-used. A `revoked` row is shown struck-through / disabled
-(or filtered — see open questions). Each active row has a **Revoke** button →
-`DELETE /api/auth/tokens/{id}` (204), then re-list.
+Tokens are the credential for non-browser clients — scripts, `curl`, a native
+player (`docs/ui/madplayer.md`). A token belongs to one user and carries **that
+user's permissions**; it is an alternative credential for the same account, not a
+separate access level.
 
-**Create** — a small form:
-
-```html
-<form id="tokenForm">
-  <input type="text"  id="tokenName" maxlength="100" required placeholder="Token name">
-  <input type="date"  id="tokenExpiry">           <!-- optional; blank = never -->
-  <button type="submit">Create token</button>
-</form>
-```
-
-- Validate `name` non-empty (server also enforces).
-- If a date is set, convert it to an absolute unix timestamp at **end of that day,
-  local time** (so "expires 2026-12-31" is valid through that whole day), and post
-  `{ name, expires_at }`. Blank date → omit `expires_at` → never expires.
-- Reject a past date client-side (the server also rejects it — see backend change).
-
-**One-time reveal** — the create response is `{ id, name, token }`. Show `token`
-once in a highlighted box with a **Copy** button and a "you won't see this again"
-note; it is never returned by the list endpoint. After the user dismisses the
-reveal, refresh the list (the new row appears without its secret).
+- **Create** — name (required) plus an optional expiry **date**. Blank = never
+  expires. The client converts the date to an absolute unix timestamp at the end
+  of that day, local time, and sends `expires_at`, so "expires 2026-12-31" is
+  valid through that whole day. (`expires_in_days` still exists for API clients;
+  `expires_at` wins when both are sent, and a past expiry is a `400` on both
+  sides.)
+- **One-time reveal** — the create response carries the raw token, and it is the
+  only time it exists anywhere: the server stores only its SHA-256. It is shown
+  in a highlighted box with a **Copy** button, which goes through the shared
+  `clipboard.js` and falls back to selecting the text when the origin has no
+  clipboard API at all — the ordinary case on a plain-HTTP deployment
+  (`docs/ui/clipboard.md`).
+- **List** — name · created · last used · expires · Revoke, with `—` for
+  never-used and `Never` for a null expiry. `DELETE /api/auth/tokens/{id}`
+  revokes; the row **stays in the list**, marked *Revoked* and without the
+  button, so the user keeps the history rather than watching a row vanish.
 
 ### Appearance — theme
 
-A radio group (or a labeled dot row) for the four themes. The shared apply/persist
-logic moves into a tiny module so the page, the shell, and the no-FOUC guard agree:
+Four themes: **dark** (default), **light**, **ocean**, **sunset**. Picking one
+applies it live and globally — it sets `<html data-theme>`, which the persistent
+shell is already styled against — and persists it in `localStorage`
+(`madshare-theme`).
 
-```js
-// webui/static/js/theme.js
-export const VALID_THEMES = new Set(['dark', 'light', 'ocean', 'sunset']);
-export function applyTheme(name) {
-  if (!VALID_THEMES.has(name)) name = 'dark';
-  document.documentElement.dataset.theme = name;
-  localStorage.setItem('madshare-theme', name);
-}
-export function currentTheme() {
-  return localStorage.getItem('madshare-theme') || 'dark';
-}
-```
+Theme is **per-device, not per-account.** There is no server-side user settings
+store, so a second browser starts on the default. `theme.js` (`currentTheme` /
+`applyTheme` / `VALID_THEMES`) is the single seam if that ever changes; a
+server-side theme would seed `localStorage` from `/api/auth/me` and change
+nothing else.
 
-- `settings.js` renders the control reflecting `currentTheme()` and calls
-  `applyTheme(picked)` on change — the change is live and global (it sets the
-  `<html data-theme>` the persistent shell already styles against).
-- `shell.js`'s `wireTheme()` loses its dot-wiring (no dots in the header anymore);
-  it can just `applyTheme(currentTheme())` on boot (idempotent with the inline
-  guard) or be dropped in favor of the guard. `admin/shared.js`'s `initTheme`
-  likewise drops dot-wiring.
+**No flash of the wrong theme.** Every page template runs a tiny inline
+`<head>` script — the `theme-guard` partial, a classic script rather than a
+module, because modules are deferred and run after first paint — that applies the
+saved theme before the stylesheets load. Admin pages carry it too, which is why
+the theme dots could leave the shared header without admin losing the setting.
 
-### No-FOUC guard
+## What a second client takes from this page
 
-Add to the `<head>` of the shell page templates (and admin pages), **before** the
-stylesheets, an inline classic script (not a module — modules are deferred and run
-too late):
-
-```html
-<script>
-  try {
-    var t = localStorage.getItem('madshare-theme');
-    if (t) document.documentElement.dataset.theme = t;
-  } catch (e) {}
-</script>
-```
-
-This sets `data-theme` before first paint, eliminating the dark→saved-theme flash.
-Because every page already hard-codes `<html ... data-theme="dark">`, the guard
-only needs to *override* when a saved theme differs. (A shared head partial would
-be the clean home for this, but a copied 4-line snippet per template is acceptable.)
-
-## Backend change — accept `expires_at`
-
-`api/auth_handlers.go`, `createToken`. The store already takes an absolute
-timestamp; only the HTTP handler needs the new field.
-
-```go
-var req struct {
-    Name          string `json:"name"`
-    ExpiresAt     int64  `json:"expires_at"`      // NEW: absolute unix seconds, 0 = none
-    ExpiresInDays int    `json:"expires_in_days"` // kept for API clients
-}
-...
-var expires int64
-switch {
-case req.ExpiresAt > 0:
-    if req.ExpiresAt <= time.Now().Unix() {
-        http.Error(w, "expiry must be in the future", http.StatusBadRequest)
-        return
-    }
-    expires = req.ExpiresAt
-case req.ExpiresInDays > 0:
-    expires = time.Now().Add(time.Duration(req.ExpiresInDays) * 24 * time.Hour).Unix()
-}
-```
-
-`expires_at` wins when both are sent. No migration (the `api_tokens.expires_at`
-column and `CreateToken(..., expiresAt int64)` already exist). Update
-`docs/architecture/auth.md`'s token-endpoint note and the `fakeRepo` /
-`auth_handlers_test.go` if a new case is asserted.
-
-## Admin shell
-
-The theme dots live in the **shared** `{{define "header"}}` partial, which every
-admin page also renders. Removing the dots therefore removes them from admin too,
-and `admin/shared.js`'s `initTheme` no longer has dots to wire. Admins are signed-in
-users, so they change theme via `/settings` like everyone else (a hard navigation
-out of the admin shell, the same as clicking Library). The no-FOUC guard should be
-added to the admin templates as well so admin pages also apply the saved theme
-before paint. This keeps theme single-sourced (`localStorage` + `theme.js`) instead
-of split between the listening header and the admin header.
-
-## Files touched
-
-| File | Change |
-| --- | --- |
-| `webui/html/partials.html` | Header: drop `#changePassBtn` + `.theme-switcher`; add `#settingsLink` in `#userArea`. Keep `#passModal`. |
-| `webui/html/settings.html` | **New** shell page (three sections). |
-| `webui/webui.go` | Parse `settingsTmpl`; `r.Get("/settings", …)` in `Register`. |
-| `webui/static/js/settings.js` | **New** page module: gate, password form, token list/create/revoke, theme control. |
-| `webui/static/js/theme.js` | **New** shared `applyTheme`/`currentTheme`. |
-| `webui/static/js/shell.js` | `wireTheme` → just apply saved theme; import from `theme.js`. |
-| `webui/static/js/admin/shared.js` | `initTheme` drops dot-wiring; use `theme.js`. |
-| `webui/static/js/auth.js` | Drop voluntary change-pass wiring (`#changePassBtn`); **keep** the forced-modal path. |
-| `webui/static/css/settings.css` | **New** (minimal page spacing). |
-| Shell + admin `*.html` `<head>` | Inline no-FOUC theme guard. |
-| `api/auth_handlers.go` | `createToken` accepts `expires_at`; validates future. |
-| `docs/architecture/auth.md` | Note `expires_at` on the token-create endpoint. |
-| `webui/webui_test.go` | Settings page renders (mirror the admin-subpage render test if useful). |
-
-## Open questions / future
-
-- **Revoked tokens in the list:** show struck-through, or hide them? Default:
-  show, struck-through, no Revoke button (so the user sees history). Easy to flip.
-- **Server-side theme persistence:** today theme is per-device `localStorage`. If
-  we later want theme to follow the account across devices, add a `theme` column to
-  a per-user settings store and seed `localStorage` from `/api/auth/me`. Out of
-  scope here; the `theme.js` seam makes it a localized change.
-- **Token "copy" affordance:** the shared `clipboard.js` (docs/ui/clipboard.md) —
-  it copies on the plain-HTTP `.ygg` deployment, where `navigator.clipboard` does
-  not exist, and only selects the value for a manual copy if even that is refused.
+Only one thing, but it is load-bearing: **create a token here, send it as
+`Authorization: Bearer <token>`.** Everything else on the page is a browser
+concern — a native client owns its own theme and can offer password change
+against the same endpoint if it wants to.

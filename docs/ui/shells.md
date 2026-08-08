@@ -6,7 +6,7 @@ header, navigation, and whether playback persists across navigation.
 ## Listening shell
 
 `webui/static/js/shell.js` — a client-side router wrapping `/library`,
-`/playlists`, `/upload` and the `/madnetwork` section. A persistent header +
+`/playlists`, `/upload`, `/settings` and the `/madnetwork` section. A persistent header +
 player-bar + `<audio>` live outside `<main>` and
 **survive navigation**, so playback and the shared queue are continuous across
 these pages (see `docs/ui/player-and-queue.md`). A page opts in with
@@ -17,10 +17,11 @@ intercept `/admin*` links — those are hard navigations into the other shell.
 ### `/` is a front door, not a page
 
 The root URL holds no content. `webui.homeHandler` `302`s it to the section this
-node opens on: **`/madnetwork`** when `[federation].enabled` is set, otherwise
-**`/library`**. A node that federates is one whose interesting surface is the
-network, and a node that doesn't has no network to show — so the entry URL states
-which kind of node this is instead of making every install the same.
+node opens on: **`/madnetwork`** when `[federation].enabled` is set *and* the
+caller holds `madnetwork.access`, otherwise **`/library`**. A node that federates
+is one whose interesting surface is the network, and a node that doesn't has no
+network to show — so the entry URL states which kind of node this is instead of
+making every install the same.
 
 The madnetwork arm repeats that page's own gate (`madnetwork.access`): `/` is
 exactly where an anonymous visitor and a listener-only account arrive, and

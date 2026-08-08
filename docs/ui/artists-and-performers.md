@@ -11,8 +11,9 @@ what the endpoints return implements it for free; a client that re-derives artis
 lists from track rows breaks it (see §"The one way to get this wrong").
 
 Related: `docs/architecture/artist-album-model.md` (the entity model and the SQL
-behind the local library), `docs/ui/madnetwork-page.md` §"Artist identity" (the
-merged network catalog), `docs/ui/native-client.md`.
+behind the local library), `docs/ui/library-page.md` and
+`docs/ui/madnetwork-page.md` §"Artist identity" (the two browse surfaces that
+implement this), `docs/ui/madplayer.md` (the client this was written for).
 
 ## The rule
 

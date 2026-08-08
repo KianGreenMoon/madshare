@@ -30,7 +30,7 @@
 > design-time detail to settle with a real network to watch, not a blocker.
 > Federation
 > is auth Phase 4 (`docs/architecture/auth.md` §8) and the milestone the native
-> client (`docs/ui/native-client.md`) exists to use.
+> client (`docs/ui/madplayer.md`) exists to use.
 
 ## Goal & vocabulary
 
@@ -340,7 +340,7 @@ third kind of participant beside the full peer and the thin client (decided
   plan.
 
 Client-side behaviour — playlist sync, and what the app does with items the
-server cannot resolve — is in `docs/ui/native-client.md`.
+server cannot resolve — is in `docs/ui/madplayer.md`.
 
 ### The capability token (F7 item 9, built 2026-08-01)
 
@@ -2808,5 +2808,5 @@ holder; the automatic version is a clean later add-on.
   rendition negotiation).
 - `docs/architecture/recording-tagsets.md` (the per-recording tagset payload the
   catalog carries; provenance, trust weighting, access never imported).
-- `docs/ui/native-client.md` (madplayer — the client that consumes federation).
+- `docs/ui/madplayer.md` (madplayer — the client that consumes federation).
 - `madshare.org` (concept: trust system, sharing scopes, spam/war concern).

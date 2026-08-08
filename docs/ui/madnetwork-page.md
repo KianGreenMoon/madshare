@@ -57,7 +57,7 @@ Each page passes a **source adapter**:
 
 ```js
 {
-  artists({ q, cursor }),   // → { items, next_cursor }  (madnetwork: no cursor yet)
+  artists({ q, cursor }),   // → { items, next_cursor }  (both catalogs, opaque cursor)
   albums(artistRef),        // library ref = ids; madnetwork ref = names
   tracks(albumRef),
   search(q),                // → { artists, albums, tracks }
@@ -67,9 +67,9 @@ Each page passes a **source adapter**:
 }
 ```
 
-The library page keeps its virtualized artist scroller; the madnetwork artist
-list renders whole for now (the merged catalog is small; virtualization can
-adopt the same `createVirtualList` later without API changes). The
+Both pages window their artist list through `createVirtualList` over a
+keyset-paged endpoint — the library from the start, *Browse all* since F7 made
+the merged catalog unbounded (§"Scale stops being optional"). The
 madnetwork-only ⓘ source/versions panel stays, appended by the madnetwork
 page after the shared track row is built.
 
@@ -145,6 +145,12 @@ useful even with no friends online. The merge is a server-side UNION (see
 - Materialize is omitted for own/already-local tracks; *Materialize all* skips
   them.
 - Own tracks are **always available** — they never depend on anyone's liveness.
+- **Only what this node publishes is merged in.** A recording narrowed by its
+  sharing scope (`share_depth` — *Local*, *Direct friends*, *Madnetwork*;
+  federation F5) leaves the network page while staying in the library, because
+  this page answers "what does the mesh see". The one exception is the `local`
+  lane, which carries the whole library — it is a doorway to `/library`, not a
+  view of the network (§Rework).
 
 ## Availability
 
@@ -705,7 +711,6 @@ to the bottom lane.
 
 ## Out of scope
 
-- Per-content share scope and transfer tokens (federation F5).
 - Remote cover art (the catalog carries no images; note placeholder stays).
 - Album/artist "Download as zip" on the library page.
 - Recommendations of any kind — see the rules above; this is a permanent
@@ -733,9 +738,12 @@ to the bottom lane.
    availability predicate + self-health watchdog (fail open). UI: render the
    server's available set; hide unavailable only at page-load / search
    boundaries; grey (don't remove) unreachable holders; local/cached/own always
-   shown. *(shipped — phases 0–3; config knob + real-mesh verification are the
-   remaining phase 4. See `docs/architecture/federation.md` §Availability & node
-   health and `docs/plans/availability.md`.)*
+   shown. *(**shipped in full**. The runtime toggle `madnetwork.hide_unavailable`
+   (default on, `/admin/settings`) is the escape hatch, and F7 item 10 added the
+   second freshness window — a member reached only by the catalog rotation is
+   judged on a 45-minute clock, not the direct friend's three minutes, which is
+   the bug that hid most of the community's library for most of every quarter
+   hour. See `docs/architecture/federation.md` §Availability & node health.)*
 6. **Discovery** — the landing view above: lanes over the merged catalog, search
    promoted to the top, the A→Z drill-down demoted to *Browse all* and windowed
    with `virtual-list.js` + keyset paging. Needs `first_seen` on

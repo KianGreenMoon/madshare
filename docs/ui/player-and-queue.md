@@ -1,8 +1,15 @@
 # Player, Queue & Shuffle — Listening UI Behavior
 
-The behavior reference for the web UI's playback layer: the persistent player,
-the play queue, shuffle/repeat semantics, and how state survives navigation and
-reloads. The persistent shell this rides on is described in `docs/ui/shells.md`.
+The behavior reference for the playback layer: the persistent player, the play
+queue, shuffle/repeat semantics, and how state survives navigation and reloads.
+The persistent shell this rides on is described in `docs/ui/shells.md`.
+
+This is a **cross-client contract**, not just a description of the web UI. A
+second client (`docs/ui/madplayer.md`) implements these semantics; where the two
+disagree, the queue a person shares between their devices stops making sense.
+The queue index arithmetic is the one piece that is still client-side —
+`webui/static/js/queue-ops.js`, pure and unit-tested, is the reference
+implementation of the rules below.
 
 ## The pieces
 
@@ -12,10 +19,35 @@ reloads. The persistent shell this rides on is described in `docs/ui/shells.md`.
 | Controller | `webui/static/js/player-controller.js` | **ES-module singleton** (`getController()`), created by `shell.js`. Owns the queue, current index, shuffle/undo/persistence, Media Session, auth-error probing. |
 | Queue math | `webui/static/js/queue-ops.js` | Pure, DOM-free index/permutation helpers. Tested: `node --test tests/js/queue-ops.test.mjs`. |
 | Queue panel | `webui/static/js/queue-panel.js` | The editable queue list opened from the player-bar queue button. |
-| Shell | `webui/static/js/shell.js` | Client router. Everything outside `<main>` (header, player bar, `<audio>`, queue panel) survives page swaps, so playback is continuous across the listening pages (`/library`, `/playlists`, `/upload`, `/madnetwork*`). |
+| Shell | `webui/static/js/shell.js` | Client router. Everything outside `<main>` (header, player bar, `<audio>`, queue panel) survives page swaps, so playback is continuous across the listening pages (`/library`, `/playlists`, `/upload`, `/madnetwork*`, `/settings`). |
 
 Admin pages are **outside** this system: they are full-load pages with their own
 page-local preview player and no queue UI.
+
+## What a queue track is
+
+One shape covers both catalogs, which is what lets a queue hold local and remote
+tracks at once:
+
+| Field | Meaning |
+|---|---|
+| `url` | what to play. Library: `/files/<hash>/<name>`, the recording's ladder-best rendition, resolved server-side. Remote: `/api/madnetwork/stream/<hash>`, the cache-through relay — **unless** the chosen version is held by this node, which plays its direct `/files/` URL and skips the relay hop |
+| `tagsetId` | the local **appearance** id, or null for a remote-only track |
+| `remoteLike` | `{hash, title, artist, album}` for a remote-only track, else null — the display text captured at add time, so an item survives its source going away |
+| `rowKey` | which row this track *is*, for highlighting and pause-vs-restart |
+| `title` / `artist` / `dur` | display text; `artist` is the track's performer |
+
+**Two identities, deliberately distinct.** `rowKey` answers *"is this the row I
+am looking at?"* and `trackKey` answers *"what does the heart toggle?"*:
+
+- `rowKey` — `ts:<tagset_id>` for a library appearance, `url:<url>` when there is
+  no tagset, and on the network page a text triple of `artist␟album␟title`
+  (merged catalog rows have no ids to share). Clicking the row whose `rowKey`
+  matches the current track toggles pause; clicking any other row — *including a
+  different appearance of the same audio* — starts fresh.
+- `trackKey` (`favorites.js`) — `ts:<tagset_id>`, else `mn:<remoteLike.hash>`.
+  This is the like key, and it is what the favourites cache, the row hearts and
+  the player-bar heart all agree on.
 
 ## The queue
 
@@ -113,14 +145,43 @@ on-screen buttons (so they honor the shuffled order too).
 
 ## Favorites & quick-add (how they feed the queue)
 
-- Hearts (library rows, search rows, the player-bar Like button for the current
-  track) toggle membership in the per-user **Favorites** playlist; all hearts
-  share one liked-set cache (`favorites.js`) so they never disagree.
+- Hearts (library rows, network rows, search rows, the player-bar Like button for
+  the current track) toggle membership in the per-user **Favorites** playlist;
+  all hearts share one liked-set cache (`favorites.js`) keyed by `trackKey`, so
+  they never disagree. **The inline heart is the one favourites control** — there
+  is no "Like" item in the ⋯ menu, deliberately; Favorites still appears in the
+  *Add to playlist…* submenu like any other playlist, marked ♥.
 - Row "⋯" menus on artist/album/track rows offer *Play next*, *Add to queue*
-  (both mark the queue dirty), *Add to playlist…*, and *Like* on tracks.
+  (both mark the queue dirty) and *Add to playlist…*, plus one trailing item that
+  depends on the page: **Download** (save to device) in the library,
+  **Materialize** (fetch into this server's library) on the network page.
   Album/artist menus collect their tracks from the browse endpoints first.
 - The `/playlists` page plays through the same controller: *Play all* /
   play-from-row call `setQueue` (trashed entries are excluded from the queue
   and rendered grayed "— in Trash").
 
 Endpoint reference: `docs/api/playlists.md`.
+
+## Remote (madnetwork) tracks in the queue
+
+A queue may mix local and remote tracks freely, and everything above applies to
+both. The differences are all at the edges:
+
+- **Playing** a remote track streams through `GET /api/madnetwork/stream/{hash}`,
+  which serves bytes while the swarm fetch is still running and is seek-aware —
+  a seek into the tail fetches that chunk rather than waiting out the prefix. To
+  the player it is an ordinary Range-servable URL.
+- **Liking and playlisting** are by hash: `POST /api/favorites/remote/{hash}`,
+  and playlist adds send a `remote: [{hash, title, artist, album}]` array beside
+  `tagset_ids`. The queue panel's *Save as playlist…* splits the queue into those
+  two payloads by whether a track has a `tagsetId`.
+- **A one-time warning** is shown the first time a remote item is saved: *"Not in
+  the local library — may become unavailable."* It is honest and it is once —
+  repeating it per row would train people to dismiss it.
+- **Unavailable rows are shown, never dropped.** The playlists page marks remote
+  rows with a badge and dims the ones the server reports `available: false`. When
+  the same audio later lands locally, the server re-points the item and the badge
+  quietly disappears (`RepointRemotePlaylistItems`) — the user does nothing.
+
+Availability filtering on the *browse* is a different thing and happens only at
+refresh boundaries: `docs/ui/madnetwork-page.md` §Availability.

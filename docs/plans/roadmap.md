@@ -153,7 +153,7 @@ gated `<audio>` streaming working with no CORS/token plumbing. Full design, phas
 P0–P4 (PWA stepping stone → shell+safety gate → background audio → multi-server):
 `docs/architecture/android-app.md`.
 
-## Native desktop/mobile client (designed, not built)
+## Madplayer — native desktop/mobile client (designed, not built)
 
 A **separate, native pure-Go GUI** (Gio/Fyne leaning) for desktop and mobile that
 **embeds** the madshare backend *and* a Yggdrasil node as in-process libraries —
@@ -162,4 +162,4 @@ milestone. The web UI stays HTML/JS (best tool for the browser), so this is a
 second, deliberately-accepted UI over the same HTTP API. Its prerequisite — the
 cross-node trust model (`docs/architecture/federation.md`) — is now **built**, so
 what defers this is the work itself rather than a missing foundation. Full design:
-`docs/ui/native-client.md`.
+`docs/ui/madplayer.md`.
