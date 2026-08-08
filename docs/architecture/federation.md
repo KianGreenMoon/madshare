@@ -514,11 +514,11 @@ otherwise trusts completely. Belt and braces on the one rule that must not fail:
 even a correctly-placed member gets bytes only out of the cache, which is content
 the network gave it in the first place.
 
-**Being found.** A device pushes its cache hash list to its home server
-(`POST /api/madnetwork/holdings`, an ordinary authenticated call carrying the
-device's node key), and the server answers hash queries with those devices
-alongside its catalog holders. **The home server is the tracker for its own
-devices, and only for them.**
+**Being found** (built 2026-08-09, migration 045). A device pushes its cache hash
+list to its home server (`POST /api/madnetwork/holdings`, an ordinary
+authenticated call carrying the device's node key), and the server answers hash
+queries with those devices alongside its catalog holders. **The home server is
+the tracker for its own devices, and only for them.**
 
 Those holdings are *not* re-published: they never enter the server's mesh catalog
 and never appear in its own `GET /madnetwork/v0/holdings`. A server that
@@ -528,7 +528,32 @@ following that advertisement gets a 404 and learns nothing except that the
 advertiser is unreliable. **An advertisement whose promise the advertiser cannot
 keep is worse than no advertisement**, because the swarm's failover treats a
 holder that refuses as a holder that is broken (§"What a member may cost us" is
-the same reasoning from the refusing end).
+the same reasoning from the refusing end). That separation is structural rather
+than remembered: `handleHoldings` answers from the node's own cache *directory*
+and has no route into this table.
+
+Three shapes decided while building it:
+
+- **A push is a complete statement, not a delta**, replacing the device's whole
+  set in one transaction — a delta needs both ends to agree about a history
+  neither keeps. So an **empty list is meaningful**: it is a swept cache, and it
+  must stop the device being offered.
+- **Retention is the freshness window and nothing else.** `ListenerHoldingsTTL`
+  is three token renewals, derived the way the availability windows are — a
+  window follows its observer's cadence — and tied to `TokenRenewAfter` at
+  compile time so the two cannot drift. A device that goes away stops pushing and
+  stops being advertised; there is no heartbeat endpoint, no sweep, and nothing
+  to delete. The reply carries `refresh_after` so a client is told the cadence
+  rather than guessing it.
+- **The advertisement follows the account**, by `ON DELETE CASCADE`. It exists
+  because this server authenticated somebody, so deleting that account withdraws
+  it rather than leaving rows pointing at a device nobody can vouch for.
+
+The fetch plan is `GET /api/madnetwork/holders/{hash}` → `{size, holders[]}`,
+which is catalog holders ∪ this server's devices. An empty list is a **200, not a
+404**: nobody holding a blob is a normal answer, because the caller's fallback is
+the relay this server has always run on its behalf, and a 404 would read as "no
+such content" and send a client hunting a bug.
 
 **The fetch plan comes from the home server, not from the device's own tables.**
 `EnsureBlobFrom(ctx, hash, size, holders)` takes an explicit provider list and

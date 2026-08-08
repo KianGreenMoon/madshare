@@ -270,6 +270,13 @@ func (n *Node) IssueCapabilityToken(bearerKey string, guestOnly bool) (Capabilit
 	}, nil
 }
 
+// ListenerHoldingsTTL is derived from the renewal cadence above, and lives in
+// the untagged file because the store enforces it. This ties the two together at
+// compile time: shorten or lengthen TokenRenewAfter and the array lengths stop
+// matching, rather than leaving a window silently behind the cadence it was
+// sized from.
+var _ [0]struct{} = [ListenerHoldingsTTL - 3*TokenRenewAfter]struct{}{}
+
 // ── The presenting side ──────────────────────────────────────────────────────
 
 // present wraps a transport so every outbound mesh request carries this node's

@@ -505,6 +505,22 @@ func (p *BlobProvider) Display() string {
 	return p.PublicKey
 }
 
+// ListenerHoldingsTTL is how long a home server keeps advertising what one of
+// its devices holds without hearing from it again (§"The household",
+// "Being found", migration 045).
+//
+// Derived rather than picked, on the rule the availability windows already use:
+// a window follows its observer's cadence. A device pushes its cache list when
+// it renews its capability token, so three renewals of silence is the same
+// "three missed beats" that reachable_window_sec is three missed pings — see the
+// compile-time tie in token.go. Being wrong either way is mild (too short and a
+// live phone briefly stops being offered; too long and the swarm tries a holder
+// that has gone, and fails over), which is why it is a constant and not a knob.
+//
+// Untagged, unlike the token constants it derives from, because the store
+// enforces it and the store compiles in every build.
+const ListenerHoldingsTTL = 90 * time.Minute
+
 // HomeNode is a server this node signs in to, recorded one-sidedly
 // (§"The household", migration 044).
 //

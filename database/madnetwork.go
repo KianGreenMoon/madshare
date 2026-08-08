@@ -373,27 +373,40 @@ func (db *DB) madnetworkRowsForHash(ctx context.Context, hash string,
 }
 
 // MadnetworkBlobProviders returns the nodes that hold hash — the swarm's
-// tracker (federation F4). It unions two sources: nodes whose published catalog
-// advertises the hash as a rendition (their library) and nodes advertising it in
-// their download cache (federation_holdings). Ordered most-recently-seen first
-// (the fetch order); the advertised byte size comes from the catalog (a hint; a
-// cache-only holder contributes none and the fetch learns the size from the
-// manifest). Satisfies the F4 half of federation.PeerStore.
+// tracker (federation F4). It unions three sources: nodes whose published
+// catalog advertises the hash as a rendition (their library), nodes advertising
+// it in their download cache (federation_holdings), and this server's own
+// listener devices (federation_listener_holdings, §"The household"). Ordered
+// most-recently-seen first (the fetch order); the advertised byte size comes
+// from the catalog (a hint; a cache-only holder contributes none and the fetch
+// learns the size from the manifest). Satisfies the F4 half of
+// federation.PeerStore.
 //
 // Since F7 item 5 a holder is any node we cache a catalog from — every member of
 // our community the frontier has reached, not only a friend. That widening is
 // the whole point of the phase: authorization was never what kept other people's
 // libraries out of reach, knowing who holds a hash was.
+//
+// The devices are the same idea one step further in, and they are the reason
+// this dedupes by public key rather than by source id: a device has no source
+// row, so a source-id map would fold every one of them into a single entry. They
+// reach exactly two callers — this node's own EnsureBlob, and the fetch plan a
+// device asks for — and deliberately never the mesh, whose holdings endpoint
+// answers from its own cache directory and cannot see this table at all.
 func (db *DB) MadnetworkBlobProviders(ctx context.Context, hash string) (int64, []*federation.BlobProvider, error) {
 	var size int64
-	holders := map[int64]*federation.BlobProvider{}
+	// Keyed by public key, not source id. A node IS its key everywhere else in
+	// federation — the frontier rotation recycles ids, and a listener device has
+	// no source row at all, so a source-id map would fold every device on this
+	// server into one entry.
+	holders := map[string]*federation.BlobProvider{}
 	err := db.madnetworkRowsForHash(ctx, hash, func(p *federation.BlobProvider, _ *federation.CatalogEntry, rd *federation.CatalogRendition) bool {
 		if size == 0 {
 			size = rd.Size
 		}
-		if _, ok := holders[p.SourceID]; !ok {
+		if _, ok := holders[p.PublicKey]; !ok {
 			cp := *p
-			holders[cp.SourceID] = &cp
+			holders[cp.PublicKey] = &cp
 		}
 		return true
 	})
@@ -417,13 +430,32 @@ func (db *DB) MadnetworkBlobProviders(ctx context.Context, hash string) (int64, 
 		if err := rows.Scan(&p.SourceID, &p.PeerID, &p.PublicKey, &p.Name, &p.HeardName, &p.LastSeen); err != nil {
 			return 0, nil, fmt.Errorf("scan holdings provider: %w", err)
 		}
-		if _, ok := holders[p.SourceID]; !ok {
+		if _, ok := holders[p.PublicKey]; !ok {
 			cp := p
-			holders[cp.SourceID] = &cp
+			holders[cp.PublicKey] = &cp
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return 0, nil, err
+	}
+
+	// This server's own listener devices (§"The household", migration 045). They
+	// are here rather than in a separate call because a device seeding its cache
+	// is a holder like any other from the fetching side — the swarm asks it for
+	// chunks over the same wire, and it fails over the same way. What is
+	// different is who may learn about it, and that is a question about the
+	// endpoints, not about this list.
+	//
+	// Added last, so a node with a catalog row keeps that identity: the same
+	// machine could in principle be both.
+	devices, err := db.ListenerBlobProviders(ctx, hash)
+	if err != nil {
+		return 0, nil, err
+	}
+	for _, p := range devices {
+		if _, ok := holders[p.PublicKey]; !ok {
+			holders[p.PublicKey] = p
+		}
 	}
 
 	out := make([]*federation.BlobProvider, 0, len(holders))
@@ -434,7 +466,7 @@ func (db *DB) MadnetworkBlobProviders(ctx context.Context, hash string) (int64, 
 		if out[i].LastSeen != out[j].LastSeen {
 			return out[i].LastSeen > out[j].LastSeen // most recently seen first
 		}
-		return out[i].SourceID < out[j].SourceID
+		return out[i].PublicKey < out[j].PublicKey
 	})
 	return size, out, nil
 }

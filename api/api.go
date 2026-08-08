@@ -189,6 +189,15 @@ type MadnetworkStore interface {
 	// it lives here and not beside the cache INDEX on Repository: the index
 	// describes our disk, this describes other people's claims.
 	MadnetworkCacheClaims(ctx context.Context, hash string) ([]*database.MadnetworkCacheClaim, error)
+	// The household's tracker (§"The household", migration 045): what this
+	// server's own listener devices hold, and the fetch plan for one hash.
+	//
+	// PutListenerHoldings replaces one device's whole advertisement.
+	// MadnetworkBlobProviders is the node's existing swarm lookup — catalog
+	// holders, cache holders and now those devices — surfaced here because a
+	// madplayer does its own fetching and has to be told who to ask.
+	PutListenerHoldings(ctx context.Context, deviceKey string, userID int64, name string, hashes []string, at int64) error
+	MadnetworkBlobProviders(ctx context.Context, hash string) (int64, []*federation.BlobProvider, error)
 }
 
 // FederationNode is the admin-facing surface of the embedded madnetwork node
@@ -466,6 +475,11 @@ func RegisterAPI(r chi.Router, d Deps) {
 			// Same permission as browsing — a madplayer participates in
 			// madnetwork, it just does its own fetching.
 			r.With(mad).Post("/api/madnetwork/token", h.madnetworkIssueToken)
+			// The household's tracker (§"The household"): a device says what its
+			// cache holds, and asks who else holds a hash. The two halves of
+			// doing its own fetching — being findable, and finding.
+			r.With(mad).Post("/api/madnetwork/holdings", h.madnetworkPutHoldings)
+			r.With(mad).Get("/api/madnetwork/holders/{hash}", h.madnetworkHolders)
 		}
 	}
 

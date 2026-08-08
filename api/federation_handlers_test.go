@@ -20,6 +20,11 @@ import (
 // machine is covered by the federation package's handshake test — here only the
 // HTTP mapping is under test.
 type fakeFederation struct {
+	// selfKey overrides the node's own public key. The default is a stand-in
+	// short enough that nothing normalized can ever equal it, which is fine
+	// until a handler's rule is "refuse our own key" — then a real one is
+	// needed to reach the refusal at all.
+	selfKey     string
 	resyncs     int
 	pulled      []string // node keys the discover endpoint asked to pull from (F7 item 5)
 	peers       []*federation.Peer
@@ -58,9 +63,13 @@ type fakeFederation struct {
 const federationTestTokenTTL = time.Hour
 
 func (f *fakeFederation) Info() federation.NodeInfo {
+	key := f.selfKey
+	if key == "" {
+		key = "ab"
+	}
 	return federation.NodeInfo{
-		Name: "fake", Address: "200::1", PublicKey: "ab",
-		Card: federation.Card{Version: federation.ProtocolVersion, Name: "fake", PublicKey: "ab"},
+		Name: "fake", Address: "200::1", PublicKey: key,
+		Card: federation.Card{Version: federation.ProtocolVersion, Name: "fake", PublicKey: key},
 	}
 }
 func (f *fakeFederation) Peers(context.Context) ([]*federation.Peer, error) { return f.peers, nil }

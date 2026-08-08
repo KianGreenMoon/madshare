@@ -33,6 +33,28 @@ type fakeMadnetwork struct {
 	sources    []*database.MadnetworkNode
 	trackCount int64
 	ownEntries int64
+	// The household's tracker (§"The household"): what the swarm lookup should
+	// report for a hash, and what the last holdings push said — captured rather
+	// than stored, since the assertions are about what the handler passed down.
+	providers     map[string][]*federation.BlobProvider
+	providerSize  int64
+	putHoldings   []string
+	putDeviceKey  string
+	putDeviceName string
+	putUserID     int64
+	putErr        error
+}
+
+func (f *fakeMadnetwork) MadnetworkBlobProviders(_ context.Context, hash string) (int64, []*federation.BlobProvider, error) {
+	return f.providerSize, f.providers[hash], nil
+}
+
+func (f *fakeMadnetwork) PutListenerHoldings(_ context.Context, deviceKey string, userID int64, name string, hashes []string, _ int64) error {
+	if f.putErr != nil {
+		return f.putErr
+	}
+	f.putDeviceKey, f.putUserID, f.putDeviceName, f.putHoldings = deviceKey, userID, name, hashes
+	return nil
 }
 
 // MadnetworkArtists honours limit the way the real store does — one page plus a
