@@ -1,17 +1,18 @@
 # Madplayer — the native client
 
-> **Status: level 2a — the backend is embedded.** madshare runs in the client's
-> own process and owns the library: folders are its in-place data sources, browse
-> and search are its queries, and the client's provisional scanner and index are
-> deleted. The facade that made it possible is
-> `docs/architecture/embedding.md`. Still open in this level: the human-readable
-> materialize target (§"Where the bytes live"), which nothing feeds until the mesh
-> arrives at 2b.
+> **Status: levels 2a and 1 are built.** The backend is embedded — madshare runs
+> in the client's own process and owns the library, folders are its in-place data
+> sources, and browse and search are its queries (the facade is
+> `docs/architecture/embedding.md`). The client also **signs in to remote
+> madshares** over HTTP, and this device's library and each server's are browsed
+> as **one merged list** (§"Two libraries, one list"). Still open: the
+> human-readable materialize target (§"Where the bytes live"), which nothing
+> feeds until the mesh arrives at 2b.
 >
 > Behind it: F0–F8 all shipped, including the **F7 capability tokens** this client
 > was named as the reason for (`docs/architecture/federation.md` §Principals &
 > access), and the UI toolkit is settled on **Gio** (see *The UI toolkit*). Next
-> is level 1, signing in to somebody else's server.
+> is level 2b, the mesh.
 >
 > Work happens on the temporary `madplayer` branch, in a directory of its own with
 > its own Go module, and is kept strictly separate from server commits so a
@@ -248,6 +249,95 @@ Open, and worth settling when this is built:
 - **Which directory**, when several folders are scanned. Probably an explicit
   setting rather than a guess at "the main one".
 
+### Two libraries, one list
+
+A signed-in server does not get a second browser, a source picker or a tab. Its
+artists, albums and tracks are **merged into the lists already on screen**
+(decided 2026-08-08), with a small badge naming where a row lives. The person is
+looking for music, and which machine holds it is a property of a row, not a mode
+to be in.
+
+The merge rule is **not the client's to invent**. It is the one the server
+already applies on `/madnetwork` to fold catalogs from many nodes, because that
+is the same problem — rows from different libraries sharing no id space:
+
+| | Rule | Server's own |
+|---|---|---|
+| artist | `lower(name)`, Unknown-artist bucket last | `artistBucketLast` |
+| album | `lower(title)` inside an artist, Other bucket last | `albumBucketLast` |
+| track | disc + track number + `lower(title)` inside an album | `trackIdent` |
+
+A client that re-derives those quietly disagrees with the web UI about what the
+library contains, which is the standing rule of §"What the server already
+computes" applied to a case no single server can answer — none of them can see
+the others.
+
+Four consequences, each of which is a decision rather than a detail:
+
+- **A merged count is a lower bound**, rendered `23+`. Summing double-counts
+  everything held in two places, which is exactly what a merged view is full of.
+  The maximum is the one statement that is always true, because merging only
+  ever folds rows and never invents them.
+- **Every copy is kept, and the local one plays.** This is not an optimisation,
+  it is the offline case working: a track this machine holds must play with the
+  network unplugged, whichever server also has it. The converse falls out for
+  free — a track whose drive is unplugged still plays from a server that has it,
+  which is the merge earning its keep.
+- **Ids are per-library.** 41 on one server is not 41 on another, so nothing is
+  addressed by an id without its source beside it, and drilling asks each
+  library the row came from with the id it has *there*.
+- **One unreachable server is a footnote, not an error.** It is named above the
+  rows and the rest of the music still lists. Only when *every* library fails is
+  there a real error, because an empty list says "you own nothing", which is a
+  much worse lie than "that server did not answer".
+
+Re-ordering the merged list is the **one** place a client may sort: N lists that
+each arrived ordered do not concatenate into an ordered list. It sorts by the
+server's own keys, never by a rule of its own.
+
+### A remote track is a download, not a stream
+
+Worth stating because it looks like a shortcut and is not one. The pure-Go
+decoders settle it: go-mp3 walks every frame header before it will report a
+length (`ensureFrameStartsAndLength`), and beep's flac takes its seek path only
+over an `io.ReadSeeker`. Both amount to "the whole file, on disk". Feeding a
+decoder an HTTP-backed reader would issue a storm of Range requests to do what a
+single sequential download does once.
+
+So the client keeps a cache of fetched audio, **keyed by content hash** — the
+same audio offered by two servers is one file, and a server changing address
+orphans nothing. The directory is authoritative and there is no index, the rule
+`docs/architecture/madnetwork-cache.md` settled for the same reason: an index is
+a second thing to keep in agreement with the disk.
+
+The ceiling is a **size cap with LRU eviction**, defaulting to 2 GiB and
+editable in the app. The default is a guess from the shape of the content — a
+FLAC album is roughly 300 MB — and has never met a real library, which is the
+argument for it being editable rather than for the number.
+
+Two things follow. Playback had to become **asynchronous**, since a download
+cannot run on the goroutine that handled the click; and the next queue item is
+**prefetched**, so only the first remote track in a run pays the gap.
+
+### The credential is a token, and it belongs to that server
+
+A player must survive a restart still signed in, and storing the password to
+achieve that is the wrong answer: it opens every door the account has, including
+changing itself. The client spends the password once — log in, `POST
+/api/auth/tokens`, drop the session — and keeps the token, which that server
+lists by name and can revoke. This is the flow `docs/api/tokens.md` documents as
+the credential for a non-browser client.
+
+Two refusals must stay distinguishable, because their answers differ: a wrong
+password is retyped, while an account under a forced password change can only be
+fixed on that server's own web UI. The server already separates them — the
+latter is a 403 carrying `X-Password-Change-Required` — so a client that
+flattens both into "sign-in failed" is discarding information it was handed.
+
+A bare host typed into the address field means **http**, not https. A madshare is
+reached at a yggdrasil address or a box on the LAN, neither of which has a
+certificate (`docs/ui/clipboard.md` records the same fact from the other side).
+
 ### Playlists follow the person, not the device
 
 A listener node has three pools of music at once — what is on the device, what
@@ -294,6 +384,11 @@ Instead:
 So the HTTP client is not the client's data layer. It exists for the one thing
 that genuinely crosses a machine boundary: **reaching a server that is not this
 one**, and authenticating to it.
+
+Built, and the split held: `internal/library` puts both behind one `Source`
+interface, so the merge and every screen above it cannot tell a function call
+from a request. The difference that survives is the one that is real — a
+remote source can fail, and a local one is what still answers when it does.
 
 Two consequences, both of which are the price of this and neither of which should
 be discovered later:
@@ -368,13 +463,14 @@ pressure that should move them:
 
 - **Queue index arithmetic** — shuffle permutation, insert-after-current, the
   original-order mirror (`webui/static/js/queue-ops.js`, pure and unit-tested).
-  A native client needs a Go twin of this, or the semantics in
-  `docs/ui/player-and-queue.md` re-implemented by hand. Porting the *rules* is
-  fine; inventing different ones is not — two clients that disagree about what
-  shuffle does share a queue in `localStorage`-shaped ways that will not survive
-  the playlist sync above.
+  Now ported to Go, case for case against the same worked examples. Porting the
+  *rules* is fine; inventing different ones is not — two clients that disagree
+  about what shuffle does share a queue in `localStorage`-shaped ways that will
+  not survive the playlist sync above.
 - **Like-key normalisation** (`ts:<tagset_id>` vs `mn:<hash>`, `favorites.js`).
-  Small, but it is the identity two surfaces must agree on.
+  Small, but it is the identity two surfaces must agree on. The native client
+  has its own row key today (a path, or a URL) because it has no favourites yet;
+  reconciling the two is part of playlist sync, not before.
 
 The standing rule from *Why two UIs* is the tiebreaker: **push logic into the
 API, not the clients.** Anything a second client would have to duplicate is a
@@ -553,7 +649,10 @@ discipline, not luck:
 
 The Capacitor app (`docs/architecture/android-app.md`) is a thin WebView that
 reuses the **web UI** same-origin and is already built and on-device-verified. It
-is level 1 of §"Two levels of ambition", implemented the cheapest possible way.
+is level 1 of §"Three levels", implemented the cheapest possible way — and now
+that the native client has its own level 1, the two overlap for the first time.
+They still differ in the thing that matters: the WebView browses **one** server,
+the native client merges that server's library with the device's own.
 
 This native Go client is a **more ambitious, different direction** for the mobile
 slot: an embedded backend + a real federation peer, not a remote-URL shell. They
@@ -623,11 +722,23 @@ is a claim this project has verified only on the desktop side.
    live"), which is deliberately last — nothing produces bytes to materialize
    until the mesh arrives at 2b, so building the writer before there is anything
    to write would be guessing at its caller.
-4. **Level 1: remote servers.** Sign-in and browsing somebody else's library over
-   HTTP — the one thing the API client is for. `internal/madshare` already exists
-   for this.
+4. ~~**Level 1: remote servers.**~~ Done — sign-in over HTTP, and the server's
+   library merged into this device's rather than shown beside it
+   (§"Two libraries, one list"). The credential is a minted API token
+   (§"The credential is a token"), and remote audio is downloaded into a
+   size-capped cache because the decoders leave no choice (§"A remote track is a
+   download"). Verified end to end against a running madshare, including the
+   case that motivates the merge — the same album on both sides folding to one
+   row whose local copy plays — and the case that motivates the error handling:
+   a server on a closed port leaves the device's own music listed.
+   Still owed here: **cover art from a remote server** (the endpoints exist,
+   `GET /api/albums/{id}/image?size=`; nothing renders images yet, on either
+   side), and the **quality picker** for a remote track, which is
+   `/api/tagsets/{id}/renditions` against the right server.
 5. **Level 2b: the mesh.** Node key, capability token from the home server,
    swarm fetch and seed-back. The trust model is `federation.md`; the token flow
    is §"The capability token, concretely".
 6. **Playlist sync**, once the levels above exist and the unresolvable-item
-   question has a real UI to be answered in.
+   question has a real UI to be answered in. Level 1 sharpened the case for it:
+   the client now has two pools of music at once and no way to save a list
+   across them.
