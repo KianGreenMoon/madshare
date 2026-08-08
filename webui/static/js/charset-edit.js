@@ -44,11 +44,29 @@ function recodePreview(s, charset) {
   try { return new TextDecoder(charset).decode(bytes); } catch { return s; }
 }
 
-// detectCharset picks the default dropdown value: the charset whose preview
-// changes the most fields without introducing replacement characters. Rows
-// whose decode yields U+FFFD count against a candidate. Falls back to the
-// first candidate when nothing changes anything (the apply is then a no-op).
+// detectCharset picks the default dropdown value.
+//
+// The server's suggestion wins when the rows carry one (`charset_hint`, from
+// media.SuggestCharset): it scores candidates linguistically — penalising the
+// mid-word case flips that separate the two Cyrillic codepages, and the runs of
+// accented Latin that separate Cyrillic-read-as-cp1252 from real Latin text —
+// where the fallback below can only count how many fields a candidate changes.
+// That fallback would happily pick a Cyrillic codepage for "Björk", since it
+// changes a field and introduces no U+FFFD.
+//
+// It is kept for surfaces whose rows have no hint (the live All-Appearances
+// lens), and it is only ever a default: the preview table and the dropdown are
+// the contract, and the apply is server-side.
 function detectCharset(rows) {
+  const votes = new Map();
+  for (const row of rows) {
+    const hint = row && row.charset_hint;
+    if (hint) votes.set(hint, (votes.get(hint) || 0) + 1);
+  }
+  if (votes.size) {
+    return [...votes.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  }
+
   let best = CHARSETS[0], bestScore = 0;
   for (const cs of CHARSETS) {
     let score = 0;

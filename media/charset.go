@@ -154,16 +154,85 @@ func charsetScore(s string) int {
 // because every Latin-1-decoded rune is ≤ U+00FF; a string that doesn't fit
 // (i.e. was never Latin-1) comes back unchanged with ok=false.
 func ReencodeLatin1(s, charset string) (string, bool) {
-	b := make([]byte, 0, len(s))
-	for _, r := range s {
-		if r > 0xFF {
-			return s, false
-		}
-		b = append(b, byte(r))
+	b, ok := latin1Bytes(s)
+	if !ok {
+		return s, false
 	}
 	out, ok := DecodeWith(charset, b)
 	if !ok {
 		return s, false
 	}
 	return out, true
+}
+
+// latin1Bytes reconstructs the bytes a Latin-1 decode came from. It fails when
+// any rune is above U+00FF, which is exactly the signal that the text was NOT
+// decoded as Latin-1 — a correctly-declared UTF-8 or UTF-16 frame — and so has
+// nothing to reinterpret.
+func latin1Bytes(s string) ([]byte, bool) {
+	b := make([]byte, 0, len(s))
+	for _, r := range s {
+		if r > 0xFF {
+			return nil, false
+		}
+		b = append(b, byte(r))
+	}
+	return b, true
+}
+
+// SuggestCharset looks at tag text that has already been decoded and answers
+// which charset it should have been read as, or "" when it looks fine.
+//
+// It is the hint behind the upload review page's charset prompt: the stored text
+// is never touched automatically, but a file whose tags are visibly mis-decoded
+// should say so before it is sent for approval, rather than waiting for someone
+// to notice and go looking for "Fix charset…".
+//
+// Two guards keep it quiet, because a prompt that cries wolf on ordinary German
+// or French tags is worse than no prompt at all — people learn to dismiss it:
+//
+//   - text containing any rune above U+00FF is left alone; it came from a frame
+//     that declared its encoding honestly, so there is nothing to reinterpret;
+//   - the remaining text must contain a RUN of two or more adjacent high bytes.
+//     Real Latin-script text is mostly ASCII with isolated accents ("Björk"),
+//     whereas a multi-byte script read one byte at a time produces runs of them
+//     ("Òðåê"). This is the same observation charsetScore encodes as its
+//     adjacent-accented-Latin penalty, used here as a trigger rather than a
+//     score.
+//
+// A detection of utf-8 or iso-8859-1 means "as read is already right" and also
+// returns "".
+func SuggestCharset(fields ...string) string {
+	var raw [][]byte
+	suspicious := false
+	for _, f := range fields {
+		b, ok := latin1Bytes(f)
+		if !ok || len(b) == 0 {
+			continue
+		}
+		raw = append(raw, b)
+		suspicious = suspicious || hasHighRun(b)
+	}
+	if !suspicious {
+		return ""
+	}
+	switch cs := DetectCharset(raw); cs {
+	case CharsetUTF8, "iso-8859-1":
+		return ""
+	default:
+		return cs
+	}
+}
+
+// hasHighRun reports whether b contains two or more adjacent bytes ≥ 0x80.
+func hasHighRun(b []byte) bool {
+	prev := false
+	for _, c := range b {
+		high := c >= 0x80
+		if high && prev {
+			return true
+		}
+		prev = high
+	}
+	return false
 }

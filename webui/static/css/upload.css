@@ -311,6 +311,29 @@
    from app.css. */
 .mu-scope { display: block; }
 .mu-intro p { color: var(--text-muted); font-size: 14px; margin: 0 0 var(--space-4); max-width: 70ch; }
+/* Charset hint (tag-suggestions): the review page's mis-decode prompt. One
+   notice above the list, plus a quiet per-row chip naming the suspect charset.
+   Informational — nothing is re-decoded until "Fix charset…" is used. */
+.mu-hint {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 0 0 var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-left: 3px solid #b6791f;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 13.5px;
+}
+.mu-hint span { flex: 1 1 auto; min-width: 0; }
+.state-badge.is-charset { color: #b6791f; border-color: #b6791f; text-transform: none; }
+@media (prefers-color-scheme: dark) {
+  .mu-hint { border-left-color: #e0b24a; }
+  .state-badge.is-charset { color: #e0b24a; border-color: #e0b24a; }
+}
+
 .mu-empty { color: var(--text-muted); font-size: 13.5px; padding: var(--space-6) var(--space-3); text-align: center; }
 
 .mu-section { margin-bottom: var(--space-5); }

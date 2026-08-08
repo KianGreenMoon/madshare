@@ -287,6 +287,8 @@ export function createMineList({ API = '', preview, canEditMeta = false, onCount
       parts.push(el('div', { class: 'mu-empty', text: 'Nothing staged. Files you upload appear here for a metadata check before they reach the library.' }));
     } else {
       parts.push(bulkbar());   // above the list, so the selection actions are always in view
+      const hint = charsetNotice();
+      if (hint) parts.push(hint);
       for (const sec of SECTIONS) {
         const items = rows.filter(f => f.state === sec.key);
         if (!items.length) continue;
@@ -297,6 +299,44 @@ export function createMineList({ API = '', preview, canEditMeta = false, onCount
     }
     host.replaceChildren(...parts.filter(Boolean));
     paintPlaying();
+  }
+
+  // charsetNotice surfaces the server's mis-decode hint (media.SuggestCharset)
+  // here, before the file is sent for approval — the point at which fixing it is
+  // cheapest and the uploader still owns the row. Without it the mojibake is
+  // only ever noticed later, by someone who then has to go looking for
+  // "Fix charset…" and guess which charset it was.
+  //
+  // It is ONE prompt, not a per-row warning: a nag repeated on every line is one
+  // people learn to dismiss. The rows themselves carry a quiet chip instead, so
+  // it stays obvious WHICH files are meant.
+  function charsetNotice() {
+    const flagged = rows.filter(f => EDITABLE.has(f.state) && f.charset_hint);
+    if (!flagged.length) return null;
+
+    const votes = new Map();
+    for (const f of flagged) votes.set(f.charset_hint, (votes.get(f.charset_hint) || 0) + 1);
+    const top = [...votes.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    const n = flagged.length;
+
+    return el('div', { class: 'mu-hint' }, [
+      el('span', {
+        text: `${n} file${n === 1 ? '' : 's'} look${n === 1 ? 's' : ''} mis-decoded — the tags read like ${top}.`,
+      }),
+      el('button', {
+        class: 'btn btn-neutral btn-sm',
+        text: 'Fix charset…',
+        onclick: () => {
+          // Select exactly the flagged rows, so the fix targets them and not
+          // whatever happened to be ticked.
+          selected.clear();
+          selectAllMatching = false;
+          for (const f of flagged) selected.add(key(f));
+          render();
+          fixCharsetSelected();
+        },
+      }),
+    ]);
   }
 
   function intro() {
@@ -324,6 +364,11 @@ export function createMineList({ API = '', preview, canEditMeta = false, onCount
     const t = el('div', { class: 'mu-t' }, [
       el('span', { class: 'mu-tt', text: title(f) }),
       el('span', { class: `state-badge is-${f.state}`, text: STATE_BADGE[f.state] || f.state }),
+      // Quiet marker so the notice above says WHICH rows it means. Informational
+      // only — nothing has been re-decoded.
+      ...(f.charset_hint
+        ? [el('span', { class: 'state-badge is-charset', title: `The tags look like ${f.charset_hint}, not the charset they were read as`, text: `${f.charset_hint}?` })]
+        : []),
     ]);
     const main = el('div', { class: 'mu-main' }, [t, el('div', { class: 'mu-m', text: metaLine(f) })]);
     if (f.state === 'returned' && f.note) {

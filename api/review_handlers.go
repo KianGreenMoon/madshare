@@ -120,6 +120,13 @@ type reviewItem struct {
 	// affordance (offered only when the entity has no cover yet).
 	ArtistHasImage bool `json:"artist_has_image"`
 	AlbumHasImage  bool `json:"album_has_image"`
+	// CharsetHint names the charset this row's tags look like they should have
+	// been read as, or is absent when they look fine (media.SuggestCharset).
+	// It is a HINT, never an action: nothing re-decodes the stored text without
+	// someone pressing "Fix charset…". Its job is to get the prompt in front of
+	// the uploader before they send the file for approval, instead of leaving
+	// them to notice mojibake and go looking for the button.
+	CharsetHint string `json:"charset_hint,omitempty"`
 	// Duplicate marks a queue row that duplicates already-approved content
 	// (recordings P3); set only on the moderation listing. The queue highlights
 	// it and the matching submission could never have self-approved.
@@ -170,6 +177,8 @@ func toReviewItem(e *database.ReviewEntry) reviewItem {
 		Uploader:       e.UploaderName.String,
 		ArtistHasImage: e.ArtistHasImage,
 		AlbumHasImage:  e.AlbumHasImage,
+		CharsetHint: media.SuggestCharset(
+			e.Title, e.Artist.String, e.AlbumArtist.String, e.Album.String),
 	}
 }
 

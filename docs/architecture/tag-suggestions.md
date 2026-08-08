@@ -5,7 +5,10 @@
 charset detect/override (`media/charset.go`), `GET
 /api/tagsets/{id}/suggestions`, and the `track-edit.js` "Suggest tags…" panel
 (wired in My uploads, moderation, Recordings lens, All Appearances). P0.5
-(bulk charset fix, owner follow-up — see §Bulk charset fix) implemented. P1
+(bulk charset fix, owner follow-up — see §Bulk charset fix) implemented,
+including the review page's **mis-decode hint** (§"Suggesting it before
+approval", 2026-08-08) that raises the problem before a file is sent for
+approval instead of waiting to be spotted. P1
 (MusicBrainz via AcoustID) implemented 2026-07-17:
 `media.CompressFingerprint` (golden-tested against real fpcalc pairs),
 `tagsource/acoustid.go` (serializing 1 req/s limiter → 429 "busy", 15-min TTL
@@ -199,9 +202,44 @@ fixes decoding, it never chooses between tag blocks.
   bulk bar and the All Appearances bulk toolbar via `scope.charsetApply` /
   `charsetApplyAll`): charset dropdown + live before-preview of the loaded
   selected rows (title/artist/album, changed cells highlighted). The preview
-  is computed client-side with the same Latin-1→`TextDecoder` trick and
-  auto-picks the charset that changes the most fields without introducing
-  U+FFFD; the server-side apply is authoritative.
+  is computed client-side with the same Latin-1→`TextDecoder` trick; the
+  server-side apply is authoritative.
+- **The dropdown's default** is the server's `charset_hint` when the rows carry
+  one (below). Only when they don't does it fall back to the local heuristic —
+  "the charset that changes the most fields without introducing U+FFFD" — which
+  cannot tell a real accent from a mis-decode and would pick a Cyrillic codepage
+  for `Björk`.
+
+### Suggesting it before approval
+
+The bulk fix is a good cure, but nothing used to *raise* the problem: mojibake
+was noticed by eye, if at all, and only then did someone go hunting for the
+button and guess a charset. The review page now says it first.
+
+`media.SuggestCharset(fields…)` answers "which charset should this text have
+been read as", or `""` when it looks fine, and rides on the shared review row as
+`charset_hint` — so both the uploader's My-uploads list and the moderation queue
+carry it. **It is a hint and never an action.** Nothing re-decodes stored text
+without someone pressing "Fix charset…"; auto-applying was considered and
+rejected, because the repair path reinterprets text *through* Latin-1 and a
+silently-applied wrong guess would put the text beyond that tool's reach.
+
+Two guards keep it quiet, because a prompt that cries wolf on ordinary German or
+French tags is one people learn to dismiss:
+
+- text containing any rune above U+00FF is skipped — it came from a frame that
+  declared its encoding honestly, so there is nothing to reinterpret;
+- what remains must hold a **run of two or more adjacent high bytes**. Real
+  Latin-script text is mostly ASCII with isolated accents (`Björk`); a
+  multi-byte script read one byte at a time produces runs (`Òðåê`). This is the
+  same observation `charsetScore` already encodes as its adjacent-accented-Latin
+  penalty, used here as a trigger rather than a score.
+
+The My-uploads list renders it as **one notice** above the rows ("3 files look
+mis-decoded — the tags read like windows-1251") whose button selects exactly
+those rows and opens the modal, plus a quiet per-row chip so it is obvious which
+files are meant. One prompt, not a per-row warning — the same reasoning as the
+remote-item warning in `docs/ui/player-and-queue.md`.
 
 ## Explicitly out of scope (v1) / deferred
 
