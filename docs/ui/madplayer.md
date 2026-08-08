@@ -125,7 +125,10 @@ short form, because it shapes nearly every screen in this client:
 - **It signs in to a home server with user credentials**, not by friending it.
   The account's own rights decide what it may see. Being a node and being a
   principal are separate things here — the key is for the mesh, the account is
-  for authorisation.
+  for authorisation. That sign-in is the *whole* purpose of the HTTP client
+  (§"Local is a function call"): it is how the device joins federation at all,
+  and what it buys is that server's library plus madnetwork through it. It buys
+  nothing in the other direction.
 - **It publishes nothing.** The device's library is never catalogued or
   advertised: it is unmoderated personal content and the network cannot vouch
   for it. The single route from the device's library into the network is an
@@ -140,6 +143,24 @@ short form, because it shapes nearly every screen in this client:
   device is a stranger, placeable by no graph walk, because it publishes no
   friend list and appears in nobody else's. That token is now built — the flow is
   §"The capability token, concretely".
+
+**"Publishes nothing" is not the default, and nothing in the server enforces it.**
+This is the one item on the list that madplayer has to *do* rather than inherit.
+An unset `madnetwork.default_share_depth` resolves to `DepthUnlimited`
+(`parseShareDepth`) — "Madnetwork", the whole community — so an embedded node
+that is simply started publishes its owner's entire personal library and seeds
+every blob in it. That is the correct default for a *server*, whose library was
+uploaded deliberately and passed review; it is the wrong one for a phone.
+
+So provisioning a madplayer node **must set the node default to
+`DepthPrivate` (-1, "Local")** before federation is ever enabled. It needs no new
+mechanism — the knob exists and is per-recording overridable — but it must happen
+at first run, because the window between "federation on" and "someone changes a
+setting" is one in which a personal library is being advertised.
+
+With that set, the two halves fall out of the existing gate (`seedableBlob`): the
+library arm fails `BlobVisibleTo` for every recording, and the cache arm still
+serves, which is exactly "share nothing of our own, swarm regardless".
 
 ### Playlists follow the person, not the device
 
