@@ -50,30 +50,30 @@ settles every UI question the other two also have to answer, and it is what make
 the client honest about its own framing: a player that cannot play your own files
 without an account is not "just another music player".
 
-### The embedded backend is what level 1 talks to
+### The embedded backend does the library work
 
-The three levels are **not** three data layers. Once madshare is embedded
-in-process, level 0's local library and level 1's remote one are the same
-program talking HTTP to different base URLs — loopback or a peer — which is the
-payoff described in §"One networking layer".
+This decides what belongs in the client at all: **the embedded backend does the
+library work, and the client does not reimplement it.** Scanning folders in
+place, resolving artists and albums, guessing a mis-decoded charset — madshare
+already does all of it, and a second implementation in Go here would be a second
+thing to keep in agreement forever. Anything the client appears to need that
+madshare already decides is a reason to embed sooner, not to port.
 
-That has a consequence worth stating plainly, because it decides what belongs in
-this client at all: **the embedded backend does the library work, and the client
-does not reimplement it.** Scanning folders in place, resolving artists and
-albums, guessing a mis-decoded charset — madshare already does all of it, and a
-second implementation in Go here would be a second thing to keep in agreement
-forever. Anything the client appears to need that madshare already decides is a
-reason to embed sooner, not to port.
+Locally it calls those methods **directly**, in-process, rather than over a
+loopback HTTP hop — see §"Local is a function call". The HTTP API is for reaching
+a *different* machine.
 
 The level-0 build that exists today has its own scanner and index precisely
 because the backend is not embedded yet. Those are **provisional**, and they go
 when it is. What survives is the UI, the queue, and the playback layer.
 
-**The one gap embedding needs:** `madshare.go` is ~700 lines in `package main`,
-so none of the startup is importable — the reconciliation passes, the worker
-pools, the listeners. Embedding requires extracting that into a package `main`
-also calls. It is behaviour-preserving, and it is a madshare change, not
-something the client should work around by re-composing the startup itself.
+**The gap embedding needs:** `madshare.go` is ~700 lines in `package main`, so
+none of the startup is importable — the reconciliation passes, the worker pools,
+the listeners. Embedding requires a package that owns that startup and exposes
+it, which is also the **facade** the client should call rather than reaching into
+`database` and friends. It is a madshare change, and it is the right one: the
+alternative is the client re-composing the startup itself and drifting from
+`main` on every change.
 
 ## The decisions
 
@@ -111,7 +111,9 @@ node compiled in as libraries and run **in-process**, with the Go UI on top.
   `[[listen_mesh]]` (below) is the same machinery serving HTTP on the node's own
   mesh address. Nothing here needs `VpnService` / `NetworkExtension`.
 - **Local-first.** With the backend embedded, the app is a standalone music
-  player against its *own* library over loopback, with **no server required**.
+  player against its *own* library — **no server required**, and no loopback hop
+  either: it calls the backend's methods in-process (§"Local is a function
+  call").
 
 ### Federation: madplayer is a listener node
 
@@ -164,13 +166,52 @@ shown, searched and re-pointed later if the same audio turns up — which is wha
 Open: sync direction and conflict rules (two-way, last-writer-wins, or per-item
 merge), and whether favourites follow the same path or ride along with playlists.
 
-### The payoff: one networking layer, local and remote
+### Local is a function call; HTTP is for remote only
 
-Because the **embedded local backend speaks the same HTTP API as a remote peer**,
-the native client needs only **one** networking layer. "My local library" vs.
-"a friend's node over Yggdrasil" differ only by **base URL** (loopback vs. a peer's
-mesh address) — the same relative-URL trick the web UI already uses for
-same-origin. Local-first and federated are the *same code path*.
+This doc argued for a year that the embedded backend should speak HTTP to
+itself on loopback, so that "my library" and "a friend's node" differed only by
+base URL and the client needed one networking layer. **That is not the design**
+(decided 2026-08-08). It is a real idea with a real cost — serialising a library
+listing, running a listener, minting a local account and a token, and holding a
+port open — all to talk to code in the same process.
+
+Instead:
+
+| What | How |
+|---|---|
+| This device's library — browse, search, play, scan | **Direct Go calls** into the embedded madshare. No listener, no port, no local account. |
+| The merged network catalog | Also direct calls: the embedded node does its own federation and already holds the cached catalogs. |
+| Node-to-node federation | madshare's own business, already built (`docs/architecture/federation.md`). The client does not implement it. |
+| **Signing in to somebody else's server** | The **HTTP API**, over the network, exactly as `internal/madshare` already does. |
+
+So the HTTP client is not the client's data layer. It exists for the one thing
+that genuinely crosses a machine boundary: **reaching a server that is not this
+one**, and authenticating to it.
+
+Two consequences, both of which are the price of this and neither of which should
+be discovered later:
+
+- **madshare's Go API becomes a contract for madplayer**, in a way its HTTP API
+  already was and its packages never were. `database` alone exposes 300+ methods
+  that change freely today. The client must therefore go through a **deliberate
+  facade** — one package madshare exports *for embedders*, whose surface is
+  small enough to keep stable — rather than reaching into `database`, `api` or
+  `storages` directly. Without that, every internal refactor is a client break.
+- **Direct calls bypass the permission layer.** Access control is not in the DB:
+  the queries come in full and guest variants, and it is the HTTP handler
+  (`guestListing`, reading the identity from the request context) that picks
+  between them. A client calling the store directly is choosing for itself. For
+  a single-user player on your own machine that is correct — you own the library
+  — but it is a decision, not an accident, and it means the day madplayer serves
+  anyone but its owner, the gate has to be reinstated deliberately.
+
+### Versioned dependency, not a vendored copy
+
+In its own repo, madplayer will `require daemonlord.ygg/madshare` at a **released
+tag** and upgrade on purpose. That is what the release tagging is for: the client
+pins a known-good server, and a server change lands in the client when someone
+chooses it rather than the moment it is written. While the two still share this
+repo, a `replace` directive stands in for that.
 
 ## What the server already computes — do not re-implement it
 
@@ -209,11 +250,22 @@ The standing rule from *Why two UIs* is the tiebreaker: **push logic into the
 API, not the clients.** Anything a second client would have to duplicate is a
 candidate to compute server-side and return.
 
-## The API surface a player needs
+## The API surface a player needs — from a REMOTE server
 
-Everything below is plain HTTP on the same origin as the web UI. Gates are
-permissions (`docs/architecture/auth.md`); a request with no identity is
-anonymous, and the endpoint decides.
+Everything below is plain HTTP, and it is the surface for talking to **a server
+that is not this machine**. Against the embedded backend the client calls the
+same capabilities as Go methods instead (§"Local is a function call"), so read
+this table as "what signing in to somebody else's madshare requires", not as the
+client's data layer.
+
+It is still worth knowing in full for the local case, because the embedded
+facade answers the same questions in the same shapes — the identity of a track is
+still its `tagset_id`, the artist list is still album-artists-only — and because
+the rules in §"What the server already computes" hold whichever way they are
+called.
+
+Gates are permissions (`docs/architecture/auth.md`); a request with no identity
+is anonymous, and the endpoint decides.
 
 | Purpose | Endpoints | Gate |
 |---|---|---|
@@ -327,8 +379,11 @@ Two UIs is real maintenance cost, accepted because each is best-in-class for its
 target (JS for the web, native Go for desktop/mobile). The cost stays bounded by
 discipline, not luck:
 
-- **Push logic into the API, not the clients** — the rule and its current
-  exceptions are §"What the server already computes".
+- **Push logic into the server, not the clients** — the rule and its current
+  exceptions are §"What the server already computes". It is worth restating as
+  *server* rather than *API* now that the native client reaches the same
+  decisions by function call: the rule was never about HTTP, it was about who
+  decides. Two clients that decide separately disagree, whichever way they ask.
 - **Design docs are the shared behavioural spec.** `docs/ui/library-page.md`,
   `docs/ui/player-and-queue.md`, `docs/ui/artists-and-performers.md`,
   `docs/ui/madnetwork-page.md` define behaviour once; both UIs *follow* the spec
@@ -426,13 +481,14 @@ is a claim this project has verified only on the desktop side.
    against those docs' own worked examples. Its scanner and index are
    provisional — see §"The embedded backend is what level 1 talks to".
 3. **Level 2a: embed the core** — and note it comes BEFORE level 1 now. madshare
-   in-process on loopback, the UI talking HTTP to it, the provisional local index
-   deleted. Needs the startup extraction named above. `[[listen_mesh]]` is the
-   same wiring with a different address. Doing this before level 1 means the
-   remote case is then only a different base URL, rather than a second data path
-   built first and reconciled later.
-4. **Level 1: remote servers.** Sign-in (bearer token) and browsing somebody
-   else's library — the same client code, a different base URL.
+   in-process, called **directly** as Go methods through the facade, with the
+   provisional local scanner and index deleted. Needs the startup extraction
+   named above. Doing this before level 1 means the client's own library work is
+   gone before a second data path is added, rather than being reconciled with one
+   afterwards.
+4. **Level 1: remote servers.** Sign-in and browsing somebody else's library over
+   HTTP — the one thing the API client is for. `internal/madshare` already exists
+   for this.
 5. **Level 2b: the mesh.** Node key, capability token from the home server,
    swarm fetch and seed-back. The trust model is `federation.md`; the token flow
    is §"The capability token, concretely".
