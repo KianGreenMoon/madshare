@@ -16,9 +16,17 @@
 > is `federation.md` §"The household", and what the client does with it is
 > §"Level 2b, concretely" below.
 >
-> Work happens on the temporary `madplayer` branch, in a directory of its own with
-> its own Go module, and is kept strictly separate from server commits so a
-> server-side fix can reach the main branch without dragging client code with it.
+> **madplayer now lives in its own repository** (split out at madshare v0.9.0),
+> beside this one. It requires madshare as an ordinary Go module pinned to a
+> released tag — which is what the tagging buys: the client pins a known-good
+> server, and a server change reaches it when somebody chooses it rather than the
+> moment it is written.
+>
+> **This document stays here**, because it is a cross-client contract rather than
+> that program's private business: it is where the rules both UIs follow are
+> written down, and a copy in the client's repo would be a second one to keep in
+> agreement. A change to it is a madshare commit. Notes that concern only the
+> client's own implementation live in that repository's `README.md`.
 
 ## What this is
 
@@ -463,11 +471,20 @@ phone that nothing else can reach.
 
 ### Versioned dependency, not a vendored copy
 
-In its own repo, madplayer will `require daemonlord.ygg/madshare` at a **released
-tag** and upgrade on purpose. That is what the release tagging is for: the client
-pins a known-good server, and a server change lands in the client when someone
-chooses it rather than the moment it is written. While the two still share this
-repo, a `replace` directive stands in for that.
+madplayer `require`s `daemonlord.ygg/madshare` at a **released tag** and upgrades
+on purpose (done at v0.9.0, when it left this repo). That is what the release
+tagging is for: the client pins a known-good server, and a server change lands in
+the client when someone chooses it rather than the moment it is written.
+
+The require is resolved today by a `replace` to a checkout beside it, and that is
+a stand-in rather than the end state. **madshare's module path is
+`daemonlord.ygg/madshare`** — a Yggdrasil-only name that cannot serve go-import
+metadata over the public internet — and Go requires a replacement module's
+`go.mod` to declare the path it is required as, so pointing the replace at the
+GitHub repository is rejected outright rather than merely awkward. Renaming the
+module to its public path is what turns the two directives into one `require`
+line, and it is a decision about madshare's public identity rather than a
+packaging detail, which is why it has not been made in passing.
 
 ## What the server already computes — do not re-implement it
 

@@ -13,8 +13,12 @@ tests/playwright/playwright-report/
 tests/playwright/blob-report/
 tests/playwright/.auth/
 exe/
+# Assistant context: working notes for whoever (or whatever) is editing this
+# repo, read every session and part of no build. Kept local — they describe how
+# to work on the code, not the code.
 CLAUDE.md
 .claude/
+AGENTS.md
 madshare.toml
 webui.toml
 
