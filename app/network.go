@@ -66,6 +66,25 @@ type Network interface {
 	// Holdings is what this node has fetched and would seed: the list a device
 	// pushes to its home server so anything can learn it holds anything.
 	Holdings() []string
+
+	// PublishNothing pins this node's default sharing scope to Local, so nothing
+	// it holds is advertised in a catalog or served as bytes. Idempotent; a
+	// listener node calls it once its mesh is up.
+	//
+	// It became load-bearing the moment a device could place anybody
+	// (§"The household"). While a listener node served nobody, the scope check
+	// was simply never reached and the shipped default of "Madnetwork" was inert
+	// — which is what docs/ui/madplayer.md §"Why publishes nothing needs no
+	// setting" says, and it was true when it was written. Now a home server is a
+	// member from the device's side, so the unpinned default would let it pull
+	// the device's own catalog and its blobs: exactly the one-way publication
+	// rule, broken by the mechanism built to let the device seed.
+	//
+	// It does NOT touch the cache, which is served by a separate arm of
+	// seedableBlob. Seeding what you fetched and publishing what you own are
+	// different claims, and only the second is one nobody should make on a
+	// person's phone.
+	PublishNothing(ctx context.Context) error
 }
 
 // ErrNoMesh is returned by Network's calls when the node stopped underneath
@@ -107,6 +126,21 @@ func (n network) Homes(ctx context.Context) ([]federation.HomeNode, error) {
 }
 
 func (n network) Holdings() []string { return n.inst.node.CacheHoldings() }
+
+func (n network) PublishNothing(ctx context.Context) error {
+	policy, err := n.inst.db.GetMadnetworkPolicy(ctx)
+	if err != nil {
+		return err
+	}
+	if policy.DefaultShareDepth == federation.DepthPrivate {
+		return nil
+	}
+	// Read-modify-write rather than a single-key setter, because the policy is
+	// stored and read as one object: writing the depth alone through a private
+	// path would leave two ways to change it that could disagree.
+	policy.DefaultShareDepth = federation.DepthPrivate
+	return n.inst.db.SetMadnetworkPolicy(ctx, policy)
+}
 
 // Fetch turns the keys a caller has into the providers the swarm wants. A key
 // that is not 64 hex characters is dropped rather than refused: a holder list

@@ -10,6 +10,7 @@ import (
 
 	"daemonlord.ygg/madshare/app"
 	"daemonlord.ygg/madshare/config"
+	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/federation"
 )
 
@@ -209,5 +210,74 @@ func writeCacheBlob(t *testing.T, cacheDir, hash string) {
 	}
 	if err := os.WriteFile(filepath.Join(cacheDir, hash), []byte("fetched"), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestNetworkPublishNothing is the rule the household made load-bearing. A home
+// server is a member from the device's side, so the shipped default of
+// "Madnetwork" would let it pull the device's own catalog and its blobs —
+// exactly the one-way publication rule, broken by the mechanism built to let the
+// device seed. Seeding what you fetched and publishing what you own are
+// different claims, and a person's phone should never make the second.
+func TestNetworkPublishNothing(t *testing.T) {
+	if !federation.Available {
+		t.Skip("built with -tags nofederation")
+	}
+	dir := t.TempDir()
+	cfg := meshConfig(t, dir)
+	lg, out := testLogger()
+	inst, err := app.Start(context.Background(), cfg, app.WithLogger(lg))
+	if err != nil {
+		t.Fatalf("Start: %v\nlog:\n%s", err, out)
+	}
+	defer inst.Stop(context.Background())
+
+	// A second handle on the same file, so the assertion is about what the mesh
+	// would actually answer rather than about the setting that decides it.
+	db, err := database.Open(cfg.Database.Path)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	before, err := db.GetMadnetworkPolicy(context.Background())
+	if err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	if before.DefaultShareDepth == federation.DepthPrivate {
+		t.Fatal("a fresh node already publishes nothing; this test would prove nothing")
+	}
+
+	net, _ := inst.Network()
+	ctx := context.Background()
+	if err := net.PublishNothing(ctx); err != nil {
+		t.Fatalf("PublishNothing: %v", err)
+	}
+	after, err := db.GetMadnetworkPolicy(ctx)
+	if err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	if after.DefaultShareDepth != federation.DepthPrivate {
+		t.Errorf("default share depth = %d, want %d (Local)", after.DefaultShareDepth, federation.DepthPrivate)
+	}
+	// The seeding switches are untouched: the cache is served by a different arm
+	// of seedableBlob, and turning publication off must not turn seeding off.
+	if after.SeedEnabled != before.SeedEnabled || after.SeedCache != before.SeedCache {
+		t.Errorf("seeding changed from %v/%v to %v/%v — publishing and seeding are different claims",
+			before.SeedEnabled, before.SeedCache, after.SeedEnabled, after.SeedCache)
+	}
+
+	// And nothing is offered to the widest audience anything here ever gets.
+	entries, err := db.PublishedCatalog(ctx, federation.MemberAudience)
+	if err != nil {
+		t.Fatalf("PublishedCatalog: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("published %d entries to a member; want none", len(entries))
+	}
+
+	// Idempotent: a client calls this on every launch.
+	if err := net.PublishNothing(ctx); err != nil {
+		t.Errorf("PublishNothing again: %v", err)
 	}
 }
