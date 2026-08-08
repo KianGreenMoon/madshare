@@ -1340,10 +1340,10 @@ a documented `proxy_*`/`send_timeout` setting in `contrib/nginx`.
 | Severity | Issue | Status |
 |---|---|---|
 | **High** | **The swarm→whole fallback strands the streaming reader on an unlinked inode**, which was pre-sized to the full length and therefore serves **zeros** past the last landed chunk. `Content-Length` is met exactly, nothing errors, nothing is logged. Best fit for the reported symptom. Reproduced deterministically. | **open — re-confirmed 2026-08-07** at both ends of the mechanism: `federation/transfer.go:526` `os.Remove(t.partPath)` on the failed-swarm branch, then `runWhole` → `fetchFrom` re-creating the same path with `O_CREATE\|O_WRONLY\|O_TRUNC` (`transfer.go:594`) = a new inode; and `api/madnetwork_transfer_handlers.go:148` opening the file **once** (`t.Open()` + `defer f.Close()`) and holding it for the whole response. Note `copyTransfer:171` already carries a `continue` commented "offset briefly unavailable (e.g. a swarm→whole-file fallback); re-wait" — the fallback was anticipated in the reader, but as a *timing* gap, not as a file-identity change, which is why the mitigation there does not help. |
-| **High** | **A failed transfer truncates the stream silently** — 200 + full `Content-Length` + short body, no log line, no client retry. Makes every variant of this bug invisible. | **open — re-confirmed 2026-08-07.** `copyTransfer` still has four bare `return`s with no logging and no distinction between them: `t.Open()` failure (line 150), `Seek` failure (154), `WaitFor` error — "EOF (done), client gone, or the transfer failed midway", all one branch (161), and a read error (184). The comment at 150 ("headers may be written already — just drop the connection") states the behaviour as intended; the defect is that a *successful completion* and a *failed transfer* leave by the same door. |
+| **High** | **A failed transfer truncates the stream silently** — 200 + full `Content-Length` + short body, no log line, no client retry. Makes every variant of this bug invisible. | **open — re-confirmed 2026-08-07.** `copyTransfer` still has four bare `return`s with no logging and no distinction between them: `t.Open()` failure (line 150), `Seek` failure (154), `WaitFor` error — "EOF (done), client gone, or the transfer failed midway", all one branch (161), and a read error (184). The comment at 150 ("headers may be written already — just drop the connection") states the behaviour as intended; the defect is that a *successful completion* and a *failed transfer* leave by the same door. **HALF-ADDRESSED 2026-08-08 (`2284927`)** — the *silent* half is fixed: each exit now logs which one it was, with bytes delivered, bytes promised and the stop offset (client-gone stays quiet so skipping a track does not bury failures). **The row stays OPEN**, because the truncation itself is untouched: the client still receives 200 + a full `Content-Length` + a short body and still has nothing to react to, since `player.js` binds only `ended` and `error` and neither fires. So the server can now say what happened; the client still cannot tell. Closing this row needs the client half — which overlaps the "notify admin about missing/unplayable tracks" idea, and that idea wants exactly the stop offset this logging now produces. |
 | Medium | **The streaming reader cannot escape a stalled in-flight chunk** — `prioritize` is a no-op once a chunk is dispatched; the reader waits `ChunkStall` (20 s) or `PerChunk` (2 min). | **open — re-confirmed 2026-08-07** (`chunkPlan.prioritize` still reorders `pending` only). |
 | Medium | **Reopen: the ~768 KiB stall is not the presence prober.** Reproduced on v0.8.4 with the prober long removed; it is the lead-ramp → first-bulk-chunk transition. Benign on a healthy mesh (18/18 cold streams completed), but it is the moment the player's buffer is thinnest. | **open — re-confirmed 2026-08-07.** The layout is unchanged (`speculateChunk0` + lead ramp → bulk, `transfer.go:505`). Cross-reference kept: the corresponding row under *the 10-second presence feature was reverted* (2026-07-21) attributes this same 768 KiB watermark to the prober and that attribution is **wrong** — do not re-derive it from there. |
-| Low | **nginx `send_timeout` truncates idle media streams** at ~60 s, for cached and remote blobs alike. Triggered in practice by *pausing* playback, not by readahead. | **open — re-confirmed 2026-08-07, and the near-miss is worth naming.** Both shipped configs (`contrib/nginx/madshare-ssl.conf:81`, `madshare-yggdrasil.conf:57`) already set `proxy_read_timeout 3600s` + `proxy_send_timeout 3600s` under a comment reading "Long timeouts cover slow uploads and long streams" — but those two govern nginx↔**upstream**. The client-facing directive is plain **`send_timeout`** (default 60 s), and it is set in neither file. So the configs look like they cover this and do not; whoever fixes it should add `send_timeout` beside the existing pair rather than assume it is missing by oversight. |
+| Low | **nginx `send_timeout` truncates idle media streams** at ~60 s, for cached and remote blobs alike. Triggered in practice by *pausing* playback, not by readahead. | **open — re-confirmed 2026-08-07, and the near-miss is worth naming.** Both shipped configs (`contrib/nginx/madshare-ssl.conf:81`, `madshare-yggdrasil.conf:57`) already set `proxy_read_timeout 3600s` + `proxy_send_timeout 3600s` under a comment reading "Long timeouts cover slow uploads and long streams" — but those two govern nginx↔**upstream**. The client-facing directive is plain **`send_timeout`** (default 60 s), and it is set in neither file. So the configs look like they cover this and do not; whoever fixes it should add `send_timeout` beside the existing pair rather than assume it is missing by oversight. **FIXED 2026-08-08 (`b2911b4`)** — `send_timeout 3600s` added to both shipped configs beside the existing pair, with a README note saying to set all three and why: the trap is not that the directive is missing but that the neighbouring pair reads as if it were there. Rests on nginx's documented 60 s default plus the verified absence, not on the 45/70/90 s measurement, which was taken in an earlier session and **not re-run**. Two caveats: the configs are **not syntax-checked** (no nginx on the build host), and this only reaches operators who redeploy the example config — an existing deployment keeps its 60 s until someone edits it. |
 
 **Not reproduced:** 45 cold streams over the direct mesh route — 30
 length-checked (5 rounds × 6 concurrent) plus **15 verified against the content
@@ -1357,6 +1357,39 @@ absent.
 
 Raw probe data, the harnesses and the throwaway Go test are in the session
 scratchpad; none of it was committed.
+
+### Resolution, 2026-08-08: two of the three came back, the fix did not
+
+Owner's call, and the reasoning is worth keeping because it is the rule applied
+sharply rather than mechanically: *"without logs from the reporter, I'm not sure
+that we make useful work."* That is decisive against the **fix** — and it is an
+argument **for** the instrumentation, which is the thing that produces those
+logs. Cherry-picked onto `aidev`:
+
+- **`197b1cf` → `2284927`** — the exit logging. Merged explicitly *as
+  instrumentation, not as a fix*: it changes no behaviour, so it cannot fix the
+  wrong thing, and it does not disturb the baseline a later report would be
+  compared against — which was the concrete reason the fix was pulled. Its
+  message was amended, because the original referred to "the stranded-inode bug
+  fixed in the previous commit" and that commit is not in this history.
+- **`65b450e` → `b2911b4`** — the nginx `send_timeout`. Independent of the
+  reporter entirely: it rests on nginx's documented 60 s default plus a directive
+  verifiably absent from both shipped configs, which is checkable by reading
+  them. Message amended to say the 45/70/90 s measurement is **supporting
+  history, not a fresh run** — it was not re-measured.
+
+**`908be9e` stays parked** and `wave1-rolled-back` must not be deleted: it is the
+only copy of the fix and of its test, and that test is the part worth keeping
+(getting the assertion right — content, not length — is the non-obvious bit,
+since the stranded file is exactly the right size).
+
+What would now justify unparking it is unchanged, but is finally reachable: a
+`swarm fetch <hash> failed (…); falling back to whole-file` line next to a
+listener reporting silence, or a captured body that hashes wrong at full length.
+The new exit logging will **not** itself catch that mechanism — that path
+completes successfully by every signal `copyTransfer` has — but it does mean an
+ordinary truncation now reports its stop offset, so the two failure modes can be
+told apart in a report for the first time.
 
 ### An attempt was built and rolled back — it is parked on `wave1-rolled-back` (2026-08-07)
 
