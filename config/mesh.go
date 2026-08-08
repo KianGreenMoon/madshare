@@ -54,6 +54,38 @@ type YggdrasilConfig struct {
 	// incoming peerings — backbone nodes only; a node behind NAT dials out via
 	// Peers and needs no inbound anything.
 	Listen []string `toml:"listen"`
+	// Multicast turns on yggdrasil's local-network peer discovery: this node
+	// announces itself on the LAN and peers with anything that answers.
+	//
+	// Default **false**, which is not upstream yggdrasil's default and is a
+	// deliberate divergence. A server has an operator who wrote a peer list;
+	// auto-peering with whatever else is on the network is a thing they should
+	// ask for rather than inherit. A madplayer sets it true in code, because a
+	// phone finding its home server over the wifi with no configuration at all is
+	// the case that feature exists for (docs/architecture/federation.md
+	// §"The household").
+	Multicast bool `toml:"multicast"`
+	// SharePeers serves GET /api/madnetwork/peering, which hands SharedPeers to
+	// a signed-in caller so their device can join this mesh.
+	//
+	// A *bool because it defaults to TRUE and absent must stay distinguishable
+	// from an explicit false. Sharing is the default because a peer URI is not a
+	// secret — it is an address whose whole purpose is to be dialled, and one the
+	// account holder could read off this node's own config if they ran it — while
+	// the alternative default leaves every device owner pasting underlay URIs by
+	// hand. Resolve it via Config.SharesPeers rather than reading the pointer.
+	SharePeers *bool `toml:"share_peers"`
+	// SharedPeers is what that endpoint hands out. Unset means Peers: a node
+	// shares the way it connects, which is the answer that is right without
+	// anybody deciding anything.
+	//
+	// Three states, and the middle one is the reason this is a slice rather than
+	// a flag: absent inherits Peers, an explicit empty list shares nothing (an
+	// operator who runs the endpoint but wants devices to peer only with the
+	// listeners below), and a list shares exactly that — for a node whose own
+	// upstream peers are on a private link nobody else can reach, or which would
+	// rather send devices to a public peer than to its own uplink.
+	SharedPeers []string `toml:"shared_peers"`
 }
 
 // MeshListenConfig describes one HTTP listener on this node's *mesh* address:
@@ -131,6 +163,19 @@ func (c Config) MeshEnabled() bool {
 	return c.Federation.Enabled
 }
 
+// SharesPeers reports whether this node hands its peering out to signed-in
+// callers — [yggdrasil].share_peers, which defaults to true.
+//
+// It says nothing about whether there is anything to hand out: a node with no
+// peers and no listeners shares an empty answer, which is honest and is what a
+// device with nowhere to go should be told.
+func (c Config) SharesPeers() bool {
+	if c.Yggdrasil.SharePeers != nil {
+		return *c.Yggdrasil.SharePeers
+	}
+	return true
+}
+
 // resolveMesh folds the deprecated [federation] transport keys into [yggdrasil],
 // derives the key path from data_dir, and applies the default mesh port. It runs
 // on every load, so everything downstream reads c.Yggdrasil alone and never has
@@ -151,6 +196,12 @@ func (c *Config) resolveMesh() {
 	}
 	if c.Yggdrasil.KeyFile == "" && c.DataDir != "" {
 		c.Yggdrasil.KeyFile = filepath.Join(c.DataDir, "federation.key")
+	}
+	// After the alias fold above, so a node that still writes its peers under
+	// [federation] shares those. nil is "unset"; an explicit empty list survives
+	// and means "share nothing", which is why this cannot be an len()==0 test.
+	if c.Yggdrasil.SharedPeers == nil {
+		c.Yggdrasil.SharedPeers = c.Yggdrasil.Peers
 	}
 	for i := range c.ListenMesh {
 		if c.ListenMesh[i].Port == 0 {
@@ -261,7 +312,7 @@ func rejectUnknownMeshKeys(undecoded []string) error {
 		switch head {
 		case "yggdrasil":
 			return fmt.Errorf("config: unknown key %q in [yggdrasil] "+
-				"(valid: enabled, key_file, peers, listen)", key)
+				"(valid: enabled, key_file, peers, listen, multicast, share_peers, shared_peers)", key)
 		case "listen_mesh":
 			if strings.HasSuffix(key, ".addr") {
 				return fmt.Errorf("config: %q is not a valid key: a [[listen_mesh]] entry binds this node's "+

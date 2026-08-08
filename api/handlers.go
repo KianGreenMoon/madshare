@@ -145,6 +145,9 @@ type handler struct {
 	// federation is disabled or compiled out — the /api/admin/federation
 	// endpoints then report {enabled:false} / 503.
 	federation FederationNode
+	// peering is the mesh peering this node shares with signed-in devices
+	// ([yggdrasil].share_peers / shared_peers). Nil = the endpoint 404s.
+	peering *Peering
 	// madnetwork is the merged-catalog read store behind /api/madnetwork/*
 	// (federation F2). Nil skips registering those routes. madnetworkName is
 	// the running federation node's display name — non-empty exactly when the

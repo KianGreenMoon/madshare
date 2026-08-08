@@ -582,21 +582,47 @@ Three paths, kept together because they fail in different situations
 (decided 2026-08-09):
 
 - **The home server publishes peering info** — `GET /api/madnetwork/peering`
-  returns its own `[yggdrasil] listen` URIs with the host substituted for the one
-  the client actually reached it on (a configured `tls://0.0.0.0:12345` is not an
-  address anyone can dial) plus its configured peers. Signing in is then enough to
-  get onto the mesh, which is the only path that asks nothing of a person who does
-  not know what an underlay is.
+  (gate `madnetwork.access`) returns its own `[yggdrasil] listen` URIs plus
+  `shared_peers`. Signing in is then enough to get onto the mesh, which is the
+  only path that asks nothing of a person who does not know what an underlay is.
 - **A typed peer list**, exactly as a server operator writes `[yggdrasil] peers`.
   The fallback that always works, and useless on its own to the person this client
   is for.
-- **Multicast** — yggdrasil-go ships the module and madshare has simply never
-  wired it (only `third_party/yggstack`'s own `cmd` does). A phone on the same
-  wifi as its home server then finds it with no configuration and no internet.
-  New config key `[yggdrasil] multicast`, **default false**: a server has
-  configured peers and an operator who did not ask for LAN auto-peering should not
-  get it, while a player turns it on because zero-configuration on a home network
-  is the whole point.
+- **Multicast** — yggdrasil-go ships the module and madshare had simply never
+  wired it (only `third_party/yggstack`'s own `cmd` did). A phone on the same wifi
+  as its home server then finds it with no configuration and no internet. Config
+  key `[yggdrasil] multicast`, **default false** — a divergence from upstream,
+  because a server has configured peers and an operator who did not ask for LAN
+  auto-peering should not get it, while a player turns it on since
+  zero-configuration on a home network is the whole point. Never fatal: a host
+  with no multicast route logs and carries on, since discovery is an alternative
+  to configured peers rather than a replacement for them.
+
+Four decisions inside the endpoint (built 2026-08-09):
+
+- **Sharing is on by default** (`[yggdrasil] share_peers`, default true). A peer
+  URI is not a secret — it is an address whose entire purpose is to be dialled,
+  the account holder could read it off this node's config if they ran it, and
+  yggdrasil authenticates every peering by key regardless of how it was found. The
+  opposite default would leave every device owner pasting underlay URIs by hand,
+  which is the problem this solves.
+- **`shared_peers` defaults to `peers`** — a node shares the way it connects,
+  which is right without anybody deciding anything. An explicit list replaces
+  them (for a node whose own uplink is on a private link nobody else can reach),
+  and an **explicit empty list shares none while leaving the endpoint on**. That
+  middle state is why it is a list rather than a flag, and why the default is
+  resolved from `nil` rather than from `len() == 0`.
+- **A wildcard bind is rewritten per request.** `listen = ["tls://0.0.0.0:12345"]`
+  is a correct bind and a useless address; the host the caller just reached us on
+  is by construction a host that reaches us, so it is substituted in, keeping the
+  listener's own port. Better than any answer this node could derive by
+  enumerating its interfaces, because only the caller knows which of them it can
+  see. A `unix://` listener is dropped — a real listener, and not an address
+  anybody else can dial.
+- **Off and empty are different answers.** Sharing disabled is a **404** ("this
+  operator switched it off, stop asking"); sharing enabled with nothing to give is
+  a **200 with empty lists**, which is the honest answer for a node that was
+  itself only ever reached over the mesh.
 
 **fpcalc stays required** on a player, exactly as on a server (decided
 2026-08-09). The startup gate is not relaxed and the player does not set

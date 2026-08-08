@@ -257,6 +257,15 @@ func (i *Instance) start(o options) error {
 		MadnetworkCacheDir: cfg.MadnetworkCacheDir(),
 		CacheSweep:         i.sweepCache,
 		CacheDefaultBytes:  cfg.CacheDefaultBytes(),
+		// How a signed-in device joins this node's mesh (§"The household").
+		// Built from config rather than from the running node: it describes what
+		// this node was told to dial, which is the useful answer whether or not
+		// the transport came up.
+		Peering: &api.Peering{
+			Share:  cfg.SharesPeers(),
+			Peers:  cfg.Yggdrasil.SharedPeers,
+			Listen: cfg.Yggdrasil.Listen,
+		},
 	}
 
 	i.startCacheRetention()

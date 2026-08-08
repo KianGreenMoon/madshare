@@ -129,13 +129,34 @@ max_upload_mb = 500          # per-request upload cap, in MiB
 # Nothing reads them back; they are outputs, so they are rewritten whenever they
 # disagree with the running identity, and deleting them just regenerates them.
 #
-# These three may still be written under [federation] (deprecated aliases) and an
-# explicit [yggdrasil] value wins. Requires a build WITHOUT -tags nofederation.
+# multicast turns on local-network peer discovery: this node announces itself on
+# the LAN and peers with whatever answers, so two madshares on one network find
+# each other with no peers configured at all. Default FALSE, unlike upstream
+# yggdrasil — a server has an operator who wrote a peer list, and auto-peering
+# with everything else on the network is a thing to ask for rather than inherit.
+# Never fatal: a host with no multicast route logs and carries on.
+#
+# share_peers / shared_peers serve GET /api/madnetwork/peering, which hands this
+# node's peering to a SIGNED-IN caller so their madplayer can join the same mesh
+# (docs/architecture/federation.md §"The household"). On by default: a peer URI
+# is an address whose purpose is to be dialled, not a secret, and the alternative
+# leaves every device owner pasting underlay URIs by hand. shared_peers is what
+# gets handed out and defaults to peers above — an explicit list replaces them
+# (a node whose own uplink is on a private link nobody else can reach), and an
+# explicit EMPTY list shares none while leaving the endpoint on. Wildcard listen
+# binds are rewritten per request to the host the caller reached this node on,
+# since "0.0.0.0" is a correct bind and a useless address.
+#
+# The first four may still be written under [federation] (deprecated aliases) and
+# an explicit [yggdrasil] value wins. Requires a build WITHOUT -tags nofederation.
 #[yggdrasil]
 #enabled  = true
 #key_file = "./data/federation.key"           # defaults to <data_dir>/federation.key
 #peers    = ["tls://peer.example:12345"]      # tcp/tls/quic/ws/wss/unix/socks/sockstls
 #listen   = ["tls://0.0.0.0:12345"]           # tcp/tls/quic/ws/wss/unix
+#multicast    = false                         # LAN peer discovery
+#share_peers  = true                          # serve GET /api/madnetwork/peering
+#shared_peers = ["tls://peer.example:12345"]  # default = peers; [] = share none
 
 # [federation] controls the embedded madnetwork node (docs/architecture/federation.md).
 # Disabled by default; requires a binary built WITHOUT -tags nofederation, and

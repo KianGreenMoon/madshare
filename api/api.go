@@ -111,6 +111,10 @@ type Deps struct {
 	// (federation F2) — *database.DB in the running server. When nil, the
 	// madnetwork browse endpoints are not registered.
 	Madnetwork MadnetworkStore
+	// Peering is what this node hands a signed-in device so it can join the
+	// mesh (§"The household"). Nil, or with Share false, 404s the endpoint —
+	// which is a different answer from an empty one, see madnetworkPeering.
+	Peering *Peering
 	// MadnetworkName is the running federation node's display name. Non-empty
 	// exactly when the node runs: it labels the self holder of own tracks in
 	// the merged browse, and an empty value keeps the own set OUT of the view
@@ -349,6 +353,7 @@ func (d Deps) newHandler() *handler {
 		acoustid:        d.AcoustID,
 		musicbrainz:     d.MusicBrainz,
 		federation:      d.Federation,
+		peering:         d.Peering,
 		madnetwork:      d.Madnetwork,
 		madnetworkName:  d.MadnetworkName,
 		reachWindowSec:  d.ReachableWindowSec,
@@ -480,6 +485,10 @@ func RegisterAPI(r chi.Router, d Deps) {
 			// doing its own fetching — being findable, and finding.
 			r.With(mad).Post("/api/madnetwork/holdings", h.madnetworkPutHoldings)
 			r.With(mad).Get("/api/madnetwork/holders/{hash}", h.madnetworkHolders)
+			// And how it reaches the mesh in the first place: yggdrasil peers are
+			// dialled, never discovered, so a device with an empty peer list can
+			// do none of the above.
+			r.With(mad).Get("/api/madnetwork/peering", h.madnetworkPeering)
 		}
 	}
 

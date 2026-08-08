@@ -734,6 +734,17 @@ func (c Config) validateFederation() error {
 			}
 		}
 	}
+	// shared_peers is handed to somebody else's node to dial, so a typo here does
+	// not fail here — it fails on a device the operator cannot see. Checked as a
+	// peer URI, because that is exactly what the receiver does with it, and
+	// checked whether or not sharing is on, on the same rule the mesh listeners
+	// follow: a typo must not lie dormant until the day the flag is flipped.
+	// After resolveMesh this usually re-checks Peers, which costs nothing.
+	for _, p := range c.Yggdrasil.SharedPeers {
+		if err := check("yggdrasil", "shared_peers", p, false); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
