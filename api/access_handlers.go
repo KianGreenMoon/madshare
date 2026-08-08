@@ -69,6 +69,11 @@ var knownLicenses = map[string]bool{
 
 type manageHandler struct {
 	store ManageStore
+	// sweep enforces the download cache's ceiling right after it is changed. It
+	// is injected rather than built here because it needs the cache directory and
+	// the running transfers, neither of which is this package's to know; nil
+	// simply means the hourly sweep is the only one.
+	sweep CacheSweeper
 }
 
 // registerManage mounts the content-access management endpoints. Group/grant/
@@ -76,7 +81,7 @@ type manageHandler struct {
 // guest_playable/license edits are metadata.edit. The caller applies those
 // gates per-route (see RegisterAdmin).
 func registerManage(r chi.Router, d Deps) {
-	h := &manageHandler{store: d.Manage}
+	h := &manageHandler{store: d.Manage, sweep: d.CacheSweep}
 	userManage := d.protect(auth.PermUserManage)
 	metaEdit := d.protect(auth.PermMetadataEdit)
 
@@ -341,6 +346,7 @@ func (h *manageHandler) getMadnetworkSettings(w http.ResponseWriter, r *http.Req
 		"default_share_depth":   p.DefaultShareDepth,
 		"serve_guests":          p.ServeGuests,
 		"publish_friend_list":   p.PublishFriendList,
+		"cache_max_bytes":       p.CacheMaxBytes,
 	})
 }
 
@@ -361,13 +367,14 @@ func (h *manageHandler) getMadnetworkSettings(w http.ResponseWriter, r *http.Req
 // absent field must not narrow the node to it.
 func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Request) {
 	req := struct {
-		AutoapproveDownloads bool  `json:"autoapprove_downloads"`
-		SeedEnabled          bool  `json:"seed_enabled"`
-		SeedCache            bool  `json:"seed_cache"`
-		HideUnavailable      bool  `json:"hide_unavailable"`
-		DefaultShareDepth    *int  `json:"default_share_depth"`
-		ServeGuests          *bool `json:"serve_guests"`
-		PublishFriendList    *bool `json:"publish_friend_list"`
+		AutoapproveDownloads bool   `json:"autoapprove_downloads"`
+		SeedEnabled          bool   `json:"seed_enabled"`
+		SeedCache            bool   `json:"seed_cache"`
+		HideUnavailable      bool   `json:"hide_unavailable"`
+		DefaultShareDepth    *int   `json:"default_share_depth"`
+		ServeGuests          *bool  `json:"serve_guests"`
+		PublishFriendList    *bool  `json:"publish_friend_list"`
+		CacheMaxBytes        *int64 `json:"cache_max_bytes"`
 	}{SeedEnabled: true, SeedCache: true, HideUnavailable: true}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -385,6 +392,16 @@ func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
+	// A ceiling is a pointer for the sharpest version of the reason the others
+	// are: an absent field read as 0 would not merely reset a preference, it
+	// would switch the eviction of other people's content on or off.
+	ceiling := current.CacheMaxBytes
+	if req.CacheMaxBytes != nil {
+		if ceiling = *req.CacheMaxBytes; ceiling < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "cache ceiling cannot be negative"})
+			return
+		}
+	}
 	keep := func(v *bool, cur bool) bool {
 		if v == nil {
 			return cur
@@ -399,6 +416,7 @@ func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Req
 		DefaultShareDepth:    depth,
 		ServeGuests:          keep(req.ServeGuests, current.ServeGuests),
 		PublishFriendList:    keep(req.PublishFriendList, current.PublishFriendList),
+		CacheMaxBytes:        ceiling,
 	}
 	if err := h.store.SetMadnetworkPolicy(r.Context(), p); err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
@@ -411,8 +429,10 @@ func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Req
 			" hide_unavailable="+strconv.FormatBool(p.HideUnavailable)+
 			" default_share_depth="+strconv.Itoa(p.DefaultShareDepth)+
 			" serve_guests="+strconv.FormatBool(p.ServeGuests)+
-			" publish_friend_list="+strconv.FormatBool(p.PublishFriendList))
-	writeJSON(w, http.StatusOK, map[string]any{
+			" publish_friend_list="+strconv.FormatBool(p.PublishFriendList)+
+			" cache_max_bytes="+strconv.FormatInt(p.CacheMaxBytes, 10))
+
+	resp := map[string]any{
 		"ok":                    true,
 		"autoapprove_downloads": p.AutoapproveDownloads,
 		"seed_enabled":          p.SeedEnabled,
@@ -421,7 +441,31 @@ func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Req
 		"default_share_depth":   p.DefaultShareDepth,
 		"serve_guests":          p.ServeGuests,
 		"publish_friend_list":   p.PublishFriendList,
-	})
+		"cache_max_bytes":       p.CacheMaxBytes,
+	}
+	// Enforce it now rather than at the next hourly sweep. Somebody who has just
+	// lowered a ceiling is watching the disk, and a number that takes an hour to
+	// mean anything reads as a control that does not work.
+	if removed, freed := h.sweepCache(r.Context(), p.CacheMaxBytes); removed > 0 {
+		resp["evicted"], resp["freed_bytes"] = removed, freed
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// sweepCache applies the ceiling immediately, logging rather than failing: the
+// setting HAS been saved by the time this runs, and reporting a 500 for a
+// housekeeping pass would tell the caller their change did not stick.
+func (h *manageHandler) sweepCache(ctx context.Context, maxBytes int64) (int, int64) {
+	if maxBytes <= 0 || h.sweep == nil {
+		return 0, 0
+	}
+	removed, freed, err := h.sweep(ctx, maxBytes)
+	if err != nil {
+		log.Printf("cache ceiling sweep: %v", err)
+	} else if removed > 0 {
+		log.Printf("cache ceiling: evicted %d blob(s), freed %d bytes", removed, freed)
+	}
+	return removed, freed
 }
 
 // decodeJSON decodes the request body into v, writing a 400 and returning false

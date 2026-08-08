@@ -255,9 +255,70 @@ func (i *Instance) start(o options) error {
 		// being switched off, and the index has to keep describing it either way
 		// (docs/architecture/madnetwork-cache.md).
 		MadnetworkCacheDir: cfg.MadnetworkCacheDir(),
+		CacheSweep:         i.sweepCache,
 	}
 
+	i.startCacheRetention()
 	return i.startMesh()
+}
+
+// cacheRetentionInterval is how often the ceiling is re-applied. A sweep is two
+// indexed queries and some unlinks, so the cadence is set by how long a node may
+// sit over its ceiling rather than by cost.
+const cacheRetentionInterval = time.Hour
+
+// sweepCache enforces the download cache's retention ceiling. It is the api
+// package's CacheSweeper: the handler that changes the number applies it in the
+// same request, because somebody who has just lowered a ceiling is watching the
+// disk.
+func (i *Instance) sweepCache(ctx context.Context, maxBytes int64) (int, int64, error) {
+	live := map[string]bool{}
+	if i.node != nil {
+		for _, t := range i.node.ActiveTransfers() {
+			live[t.Hash] = true
+		}
+	}
+	return database.SweepCacheCeiling(ctx, i.db, i.cfg.MadnetworkCacheDir(), maxBytes, live)
+}
+
+// startCacheRetention runs the ceiling sweep on a timer.
+//
+// It starts UNCONDITIONALLY and reads the ceiling every pass, which is a
+// deliberate departure from the original design note ("started only when a knob
+// is non-zero"): the ceiling is a runtime setting, and a daemon that has to be
+// started at boot would make switching it on need a restart — which is the one
+// property the setting was made runtime to avoid. An off ceiling costs one
+// settings read an hour.
+func (i *Instance) startCacheRetention() {
+	if i.cfg.MadnetworkCacheDir() == "" {
+		return
+	}
+	go func() {
+		t := time.NewTicker(cacheRetentionInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-i.ctx.Done():
+				return
+			case <-t.C:
+				p, err := i.db.GetMadnetworkPolicy(i.ctx)
+				if err != nil {
+					i.log.Printf("cache retention: read policy: %v", err)
+					continue
+				}
+				if p.CacheMaxBytes <= 0 {
+					continue
+				}
+				removed, freed, err := i.sweepCache(i.ctx, p.CacheMaxBytes)
+				if err != nil {
+					i.log.Printf("cache retention: %v", err)
+				} else if removed > 0 {
+					i.log.Printf("cache retention: evicted %d blob(s) over the %d-byte ceiling, freed %d bytes",
+						removed, p.CacheMaxBytes, freed)
+				}
+			}
+		}
+	}()
 }
 
 // relocate runs the one-time, idempotent blob-layout migrations, then the orphan

@@ -125,7 +125,19 @@ type Deps struct {
 	// resolves the library first, and only the former is a cache entry to index.
 	// Empty disables indexing (docs/architecture/madnetwork-cache.md).
 	MadnetworkCacheDir string
+	// CacheSweep enforces the download cache's retention ceiling
+	// (madnetwork.cache_max_bytes) on demand, so lowering it in the settings card
+	// reclaims the disk in that request rather than at the next hourly pass.
+	//
+	// Injected because the sweep needs the cache directory AND the set of running
+	// transfers, and a handler package should know about neither. nil is valid:
+	// the periodic sweep is then the only one.
+	CacheSweep CacheSweeper
 }
+
+// CacheSweeper evicts least-recently-used cached blobs until the cache fits
+// under maxBytes, reporting what went. A ceiling of 0 sweeps nothing.
+type CacheSweeper func(ctx context.Context, maxBytes int64) (removed int, freed int64, err error)
 
 // MadnetworkStore reads the merged madnetwork catalog (cached friend catalogs
 // plus, when includeSelf, the own published set; database/madnetwork.go). A

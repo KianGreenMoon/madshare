@@ -141,6 +141,20 @@
         (<a href="/admin/library#recordings">Full Library &rsaquo; Recordings</a>) and in the
         All&nbsp;Appearances bulk editor.
       </p>
+      <label class="rec-access-field">Download cache limit
+        <input type="number" id="madnetworkCacheMax" min="0" step="1" inputmode="numeric"
+               placeholder="0" aria-describedby="madnetworkCacheMaxHint">
+      </label>
+      <p class="section-copy" id="madnetworkCacheMaxHint">
+        In <strong>MiB</strong>, for what the swarm has fetched from other nodes
+        (<a href="/admin/cache">Madnetwork cache</a>). While the cache is over the
+        limit, the least recently used blobs are deleted until it fits; lowering it
+        takes effect immediately. <strong>0 means no limit</strong>, which is the
+        default &mdash; the number is yours to choose, because a guessed one would
+        start deleting other people&rsquo;s content the moment you upgraded.
+        Nothing here is lost for good: what the swarm fetched can be fetched again
+        while a holder remains.
+      </p>
       <p class="section-copy">
         The outbound seeding rate cap is a server setting
         (<code>[federation] seed_rate_kib</code>); leave it at 0 for unlimited.

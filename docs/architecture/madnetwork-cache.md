@@ -10,16 +10,17 @@ Two deliverables, deliberately staged:
 1. **`/admin/cache`, a manual control page** — built now. Primarily a cleaning
    surface; occasionally a rescue one (materialize a cached blob into the
    library, or download it to the device).
-2. **The retention daemon** — designed here, **still to be built**. Same shape as
-   the planned trash reaper: a policy that deletes by age and by ceiling, shipped
-   with both knobs **off**.
+2. **The retention daemon** — its **size ceiling is BUILT** (2026-08-08, see
+   §"The retention ceiling"); its age half is designed here and still is not.
+   Shipped **off**, as designed.
 
-   **Not scheduled yet** (owner decision, 2026-08-08): offered as one shared
-   reaper serving both this cache and the trash quarantine, and put back — not
-   because it is unwanted, but because nothing has been reported as painful, both
-   surfaces already have manual controls, and (the reason specific to *this*
-   half) deleting a cache entry does not only reclaim disk, it **withdraws a seed
-   from the swarm**. See "what makes deletion a real decision" below.
+   The **age** half is still not scheduled (owner decision, 2026-08-08): offered
+   as one shared reaper serving both this cache and the trash quarantine, and put
+   back — not because it is unwanted, but because nothing has been reported as
+   painful, both surfaces already have manual controls, and (the reason specific
+   to *this* half) deleting a cache entry does not only reclaim disk, it
+   **withdraws a seed from the swarm**. See "what makes deletion a real decision"
+   below.
 
    When it is picked up it should be built as **one mechanism with two
    consumers**, shared with `gc-model.md`'s trash TTL, so the two policies cannot
@@ -557,35 +558,62 @@ relies on. Every removal is written to the audit log.
 
 ---
 
-## Planned — the retention daemon (not built here)
-
-Designed now because its storage requirement is what shaped migration 040; built
-later, and off until an operator turns it on.
+## The retention ceiling (built 2026-08-08)
 
 **Policy: age since last use, plus a size ceiling.** Both apply; either can be
-disabled alone.
+disabled alone. The **ceiling is built**; the age knob is not.
 
-- `madnetwork.cache_max_age_days` — evict entries whose `last_used_at` is older
-  than N days.
 - `madnetwork.cache_max_bytes` — while the total exceeds the ceiling, evict
-  least-recently-used first until it fits.
+  least-recently-used first until it fits. **Built.**
+- `madnetwork.cache_max_age_days` — evict entries whose `last_used_at` is older
+  than N days. **Not built.**
 
 Both are **runtime settings in `MadnetworkPolicy`** (`GET/POST
 /api/admin/settings/madnetwork`, a card on `/admin/settings`), not static config,
 so an operator can change them without a restart — matching `seed_enabled`,
-`seed_cache` and `autoapprove_downloads`.
+`seed_cache` and `autoapprove_downloads`. **There is deliberately no TOML key**
+(owner, 2026-08-08): a ceiling is something an operator adjusts while watching a
+disk fill, and a knob that needs a config edit and a restart to move is a knob
+that stays wrong.
 
 **Both default to 0 = off.** The mechanism is built in full; the numbers are the
 operator's. A guessed default here would silently delete other people's content
 on every existing node the moment they upgrade — the worst possible way to learn
 a feature exists.
 
+The **API field is a pointer** (`cache_max_bytes`, absent = unchanged), for the
+sharpest version of the reason the neighbouring fields are: this row is written
+whole, so an absent field read as 0 would not merely reset a preference, it would
+switch the eviction of other people's content on or off. The card types **MiB**
+and stores **bytes** — one conversion, at the edge.
+
+**Lowering it evicts in the same request**, and the reply carries `evicted` /
+`freed_bytes` so the toast can say what went. Somebody who has just lowered a
+ceiling is watching the disk; a number that takes an hour to mean anything reads
+as a control that does not work.
+
 Shape, matching the prune job (`prune/`, `docs/architecture/prune-job.md`) rather
 than inventing a second pattern:
 
-- One goroutine, one sweep at a time, started from `app.Start` only when a knob
-  is non-zero.
+- One goroutine, one sweep at a time, started from `app.Start`
+  **unconditionally**, re-reading the ceiling every pass. (The original design
+  said "only when a knob is non-zero"; that was wrong and is corrected here —
+  starting conditionally at boot would make switching a *runtime* setting on
+  require a restart, which is the one property it was made runtime to avoid. An
+  off ceiling costs one settings read an hour.)
 - Cadence hourly; a sweep is cheap (two indexed queries and some `unlink`s).
+- **File first, row second** (`database.SweepCacheCeiling`). The directory is the
+  truth: a row without its file is stale and reconciliation drops it, while a
+  file without its row is a blob that keeps being served and never counted. Only
+  one of those two orders leaves a dangerous residue.
+- One unremovable file is skipped, not fatal — the next-coldest blob frees the
+  space just as well, and refusing to evict anything because of one file is how a
+  ceiling silently stops being enforced.
+- **An embedder shares the number, not the sweep.** `app.Instance.CacheLimit` /
+  `SetCacheLimit` expose the setting, and a program with its own cache of remote
+  audio enforces the same ceiling over its own directory — which is what madplayer
+  does with its downloads (`docs/ui/madplayer.md`). The ceiling therefore applies
+  *per cache of remote audio a node keeps*, not to their sum.
 - **Never touches an in-flight transfer** — a hash in `ActiveTransfers()` is
   skipped, which is also how it must call `ReapAbandonedPartials`. Abandoned
   partials are already swept unconditionally at startup and on demand, so the
@@ -680,6 +708,9 @@ Steps 1–4 are the deliverable. Step 5 is scheduled, not promised.
 | 2026-08-06 | **The staging filename falls back to the file's own container** (`media.Tags.FileType` → extension). | Found by running the offline case rather than reasoning about it. An adopted cache row has no remembered filename, so every upgrading node's whole cache was unmaterializable. Tested end to end against a node with no peers. |
 | 2026-08-06 | **The index self-heals as it is read**, rather than only at startup and Rescan. | Owner asked what happens when files are deleted by the OS. Measured: the swarm was already correct (seeding reads the directory) but the page counted phantom bytes until a restart. Healing on read costs a bounded stat sweep on the listing and nothing at all on the summary, which already reads the directory. |
 | 2026-08-06 | **Daemon evicts by last use + size ceiling**, both off by default. | Owner call. Fetch-date-only eviction deletes the track you replay weekly at the same rate as junk; the ceiling is what makes disk predictable. |
+| 2026-08-08 | **The ceiling is a settings-panel control, never a TOML key** — and the size half was built for it. | Owner call. A ceiling is adjusted while watching a disk fill; a knob needing a config edit and a restart is a knob that stays wrong. The age half stays unbuilt. |
+| 2026-08-08 | **The sweep goroutine starts unconditionally and re-reads the ceiling**, correcting this doc's own "start only when a knob is non-zero". | Starting conditionally at boot would make switching a *runtime* setting on require a restart — the one property it was made runtime to avoid. An off ceiling costs one settings read an hour. |
+| 2026-08-08 | **An embedder shares the number, not the sweep** (`app.Instance.CacheLimit`/`SetCacheLimit`). | madplayer keeps its own cache of remote audio and enforces the same ceiling over its own directory. One policy number, one enforcer per cache — so the ceiling is per cache, not over their sum. |
 | 2026-08-06 | **No pin.** | Owner call. Removal stays manual; the daemon, when it lands, has nothing exempt from it. |
 | 2026-08-06 | **"Used" = local reads only**, throttled to one write per hash per 5 min. | Owner call. Seeding is a service rendered with bytes we hold, not a reason to hold them; a disk kept full purely by other people's traffic is the outcome to avoid. |
 | 2026-08-06 | **Live catalog claims** for the per-entry tagset view, no claim history. | No new growing table for a rarely-used button; truthful about now, which is what the button is for. |

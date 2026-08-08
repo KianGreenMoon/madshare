@@ -25,6 +25,7 @@ const (
 	settingMadnetworkDefaultDepth    = "madnetwork.default_share_depth"
 	settingMadnetworkPublishFriends  = "madnetwork.publish_friend_list"
 	settingMadnetworkServeGuests     = "madnetwork.serve_guests"
+	settingMadnetworkCacheMaxBytes   = "madnetwork.cache_max_bytes"
 	// The node's two swarm rate caps, in KiB/s (docs/architecture/swarm-admin.md).
 	// Deliberately NOT part of MadnetworkPolicy: that object is written whole by
 	// the settings card, whose handler decodes the seed switches as plain bools
@@ -110,6 +111,25 @@ type MadnetworkPolicy struct {
 	// line. It is byte endpoints only: catalog and holdings never leave the
 	// community, whatever this says.
 	ServeGuests bool
+	// CacheMaxBytes is the ceiling on cached remote audio: while a cache exceeds
+	// it, least-recently-used blobs are evicted until it fits
+	// (docs/architecture/madnetwork-cache.md §"The retention ceiling").
+	//
+	// **0 means off**, and that is the shipped default rather than a number
+	// somebody guessed. A guessed ceiling would silently delete other people's
+	// content on every existing node the moment they upgrade — the worst possible
+	// way to learn a feature exists. The mechanism is built in full; the number is
+	// the operator's.
+	//
+	// It is a RUNTIME setting and not config, so turning it on needs no restart —
+	// which is also why the sweep re-reads it every pass rather than being started
+	// conditionally.
+	//
+	// A ceiling applies per cache of remote audio a node keeps. A server keeps
+	// one (the swarm's, <data_dir>/cache/madnetwork); madplayer embeds this
+	// backend and keeps its own downloads beside it, governed by this same number
+	// (docs/ui/madplayer.md §"A remote track is a download").
+	CacheMaxBytes int64
 }
 
 // GetMadnetworkPolicy reads the madnetwork settings. Missing keys read as the
@@ -144,6 +164,10 @@ func (db *DB) GetMadnetworkPolicy(ctx context.Context) (MadnetworkPolicy, error)
 	if err != nil {
 		return MadnetworkPolicy{}, err
 	}
+	ceiling, _, err := db.GetSetting(ctx, settingMadnetworkCacheMaxBytes)
+	if err != nil {
+		return MadnetworkPolicy{}, err
+	}
 	return MadnetworkPolicy{
 		AutoapproveDownloads: auto == "1",
 		SeedEnabled:          seed != "0",  // default on
@@ -152,7 +176,19 @@ func (db *DB) GetMadnetworkPolicy(ctx context.Context) (MadnetworkPolicy, error)
 		DefaultShareDepth:    parseShareDepth(depth),
 		PublishFriendList:    publish != "0", // default on
 		ServeGuests:          guests == "1",  // default OFF
+		CacheMaxBytes:        parseCacheCeiling(ceiling),
 	}, nil
+}
+
+// parseCacheCeiling reads the stored ceiling. Anything unset, negative or
+// unparseable reads as 0 = OFF, which is the safe direction: a cache that keeps
+// too much wastes disk, while a ceiling conjured out of a typo deletes content.
+func parseCacheCeiling(raw string) int64 {
+	n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 // parseShareDepth reads the stored node-default depth, falling back to ∞ for an
@@ -195,6 +231,7 @@ func (db *DB) SetMadnetworkPolicy(ctx context.Context, p MadnetworkPolicy) error
 		{settingMadnetworkDefaultDepth, strconv.Itoa(p.DefaultShareDepth)},
 		{settingMadnetworkPublishFriends, bit(p.PublishFriendList)},
 		{settingMadnetworkServeGuests, bit(p.ServeGuests)},
+		{settingMadnetworkCacheMaxBytes, strconv.FormatInt(max(p.CacheMaxBytes, 0), 10)},
 	} {
 		if _, err := tx.ExecContext(ctx, upsert, kv.key, kv.val); err != nil {
 			return err

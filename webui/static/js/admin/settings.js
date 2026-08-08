@@ -145,6 +145,12 @@ const madnetworkSeedCache   = document.getElementById('madnetworkSeedCache');
 const madnetworkHideUnavail = document.getElementById('madnetworkHideUnavail');
 const madnetworkDepth       = document.getElementById('madnetworkDefaultDepth');
 const madnetworkServeGuests = document.getElementById('madnetworkServeGuests');
+const madnetworkCacheMax    = document.getElementById('madnetworkCacheMax');
+
+// The ceiling is stored in BYTES and typed in MiB. Converting at the edge keeps
+// the stored number the one the API and the sweep agree on, rather than a unit
+// each surface has to remember.
+const MIB = 1024 * 1024;
 
 async function loadMadnetwork() {
   try {
@@ -165,6 +171,10 @@ async function loadMadnetwork() {
       madnetworkDepth.value = depthSelectValue(
         typeof p.default_share_depth === 'number' ? p.default_share_depth : DEPTH_UNLIMITED);
     }
+    if (madnetworkCacheMax) {
+      const bytes = typeof p.cache_max_bytes === 'number' ? p.cache_max_bytes : 0;
+      madnetworkCacheMax.value = bytes > 0 ? String(Math.round(bytes / MIB)) : '0';
+    }
   } catch (err) {
     console.error('load madnetwork settings:', err);
     toast(`Couldn't load madnetwork settings: ${err.message}`, 'error');
@@ -172,6 +182,19 @@ async function loadMadnetwork() {
 }
 
 async function saveMadnetwork() {
+  // A ceiling that cannot be read is not sent at all: the field is a pointer on
+  // the server, so omitting it leaves the stored one alone. Sending 0 for a typo
+  // would silently switch eviction OFF, and sending NaN would be a 400 that
+  // loses the rest of the form with it.
+  let cacheField = {};
+  if (madnetworkCacheMax) {
+    const mib = Number(madnetworkCacheMax.value);
+    if (!Number.isFinite(mib) || mib < 0) {
+      toast('The download cache limit must be a whole number of MiB, or 0 for no limit.', 'error');
+      return;
+    }
+    cacheField = { cache_max_bytes: Math.round(mib) * MIB };
+  }
   try {
     const res = await fetch(`${API}/api/admin/settings/madnetwork`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -182,11 +205,20 @@ async function saveMadnetwork() {
         hide_unavailable:      madnetworkHideUnavail.checked,
         ...(madnetworkServeGuests ? { serve_guests: madnetworkServeGuests.checked } : {}),
         ...(madnetworkDepth ? { default_share_depth: depthFromSelect(madnetworkDepth.value) } : {}),
+        ...cacheField,
       }),
     });
     if (handleAuthError(res)) return;
     if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
-    toast('Madnetwork settings saved.', 'success');
+    const saved = await res.json().catch(() => ({}));
+    // Say what the save actually did to the disk. A ceiling that quietly deleted
+    // forty tracks should not report "saved" and nothing else.
+    if (saved.evicted > 0) {
+      toast(`Madnetwork settings saved — removed ${saved.evicted} cached ` +
+            `${saved.evicted === 1 ? 'track' : 'tracks'} to fit the limit.`, 'success');
+    } else {
+      toast('Madnetwork settings saved.', 'success');
+    }
   } catch (err) {
     toast(`Couldn't save madnetwork settings: ${err.message}`, 'error');
   }
