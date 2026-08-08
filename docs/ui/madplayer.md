@@ -59,6 +59,32 @@ already does all of it, and a second implementation in Go here would be a second
 thing to keep in agreement forever. Anything the client appears to need that
 madshare already decides is a reason to embed sooner, not to port.
 
+**Same engine, inverted primary path.** That one sentence is the whole concept.
+A madshare server ingests by **upload**, into storage it manages (`files_dir`,
+object storage later), and what lands there is content it owns and has moderated.
+madplayer ingests by **scanning folders in place** — files that already exist,
+where they already are, never written to — and reuses everything downstream. It
+is not a smaller madshare or a fork of one; it is the same library engine
+entered from the other end.
+
+The parts already fit, which is the argument for reusing rather than rewriting:
+
+| madplayer needs | madshare already has |
+|---|---|
+| add a music folder | `sources.Manager.Add` |
+| scan it without touching anything | `sources/scan.go` — one symlink per hash, `LinkTarget` at the original |
+| files playable at once, no review queue | scans land `ReviewApproved` **by design** — "they come from an admin behind the allow-list, not the public upload staging flow" |
+| artists / albums / tracks / search | `ListArtists`, `ListAlbumsByArtistID`, `ListTracksByAlbumID`, `Search` |
+| tags, entity resolution, charset repair | `media.ExtractTags`, the resolver, `SuggestCharset` + Fix charset |
+| the whole madnetwork | federation, swarm, cached catalogs — the actual payoff |
+
+One difference a player must handle that a server treats as an incident: **a
+dangling link is normal here.** An unplugged drive, an ejected SD card, a folder
+the user moved. `serveBlobs` already falls through on a broken link, but the UI
+should say "that drive isn't connected" rather than reporting the track as
+missing — on a server this means something has gone wrong, on a player it means
+somebody unplugged something.
+
 Locally it calls those methods **directly**, in-process, rather than over a
 loopback HTTP hop — see §"Local is a function call". The HTTP API is for reaching
 a *different* machine.
@@ -144,23 +170,74 @@ short form, because it shapes nearly every screen in this client:
   friend list and appears in nobody else's. That token is now built — the flow is
   §"The capability token, concretely".
 
-**"Publishes nothing" is not the default, and nothing in the server enforces it.**
-This is the one item on the list that madplayer has to *do* rather than inherit.
-An unset `madnetwork.default_share_depth` resolves to `DepthUnlimited`
-(`parseShareDepth`) — "Madnetwork", the whole community — so an embedded node
-that is simply started publishes its owner's entire personal library and seeds
-every blob in it. That is the correct default for a *server*, whose library was
-uploaded deliberately and passed review; it is the wrong one for a phone.
+### Why "publishes nothing" needs no setting
 
-So provisioning a madplayer node **must set the node default to
-`DepthPrivate` (-1, "Local")** before federation is ever enabled. It needs no new
-mechanism — the knob exists and is per-recording overridable — but it must happen
-at first run, because the window between "federation on" and "someone changes a
-setting" is one in which a personal library is being advertised.
+Sharing scope does not apply to a listener node, and it is worth understanding
+why rather than reaching for `share_depth` — the reflex answer, and the wrong
+one.
 
-With that set, the two halves fall out of the existing gate (`seedableBlob`): the
-library arm fails `BlobVisibleTo` for every recording, and the cache arm still
-serves, which is exactly "share nothing of our own, swarm regardless".
+**A listener node never exchanges keys.** It does not friend anyone and nobody
+friends it; its access comes from a normal node granting it a capability token,
+which is a different flow entirely (§"The capability token, concretely"). So no
+community ever forms *around* it, and that is what decides the question:
+`serveAudience` walks friend → member → token → guest, and on a peerless node all
+four fail. There are no friend rows. `MemberKeys` over an empty peer set places
+nobody. `tokenAudience` needs an issuer *this* node can place, and it can place
+none. The guest fallback is `madnetwork.serve_guests`, which is **off by
+default**.
+
+Nothing serving means the scope check is never reached. `share_depth`,
+`DepthPrivate` and the whole publishing model exist in the binary — madshare is a
+dependency, all of it comes along — and are simply **inert here**. That is
+normal and not worth engineering around: dead code in a dependency is the price
+of reusing it, and cheaper than a fork.
+
+The one switch that *would* expose the library is `madnetwork.serve_guests`, and
+a player has no reason to offer it.
+
+> An earlier revision of this doc claimed the opposite — that an unset
+> `madnetwork.default_share_depth` (which does resolve to `DepthUnlimited`) means
+> a freshly-started embedded node advertises its owner's library. That is true of
+> a node **with friends**, and a listener node has none. The default is inert
+> rather than dangerous. Recorded because the worry is easy to re-derive.
+
+### Where the bytes live: three directories, two of them technical
+
+A server ingests by **upload** into storage it manages, and nobody browses
+`files_dir` by hand — it is hash-named on purpose. A player inverts that: its
+primary path is scanning folders that already exist, and the person using it
+opens a file manager. So the directories divide by *who reads them*:
+
+| Directory | Who reads it | Layout |
+|---|---|---|
+| `links/` | the program | one symlink per hash, target = the original file. Purely technical, exactly as on a server. |
+| `cache/madnetwork/` | the program | hash-named blobs the swarm fetched, and the only thing this node seeds. Opaque by design; needs no layout and gets none. |
+| **the music directory** | **a person** | `Artist/Album/NN - Title.ext`. Browsable, backup-able, indistinguishable from the rest of the collection. |
+
+**Materializing writes into the third one**, laid out from the tags. This is the
+one place the player should *not* copy the server's behaviour: on a server,
+fetching remote content stages it through the review bucket into managed storage,
+because it is becoming part of a moderated catalogue. On a player it is becoming
+part of *your music*, and music you pulled off the network should sit next to
+music you already had — same folders, same naming, no second class of file that
+only the app can find.
+
+The cache is deliberately left alone. It is scratch space for the swarm, its
+contents come and go, and giving it a human layout would invite people to treat
+it as a library it is not.
+
+Open, and worth settling when this is built:
+
+- **Does a materialized file get registered directly, or picked up by the next
+  scan?** Registering it immediately is better — a track that vanishes until a
+  rescan is a bug report — but it has to land as an ordinary links-backed row so
+  there is exactly one kind of library entry.
+- **Naming and collisions.** Tags are dirty; `/` in a title, an empty artist, two
+  different recordings with identical tags. The Unknown-artist and Other buckets
+  already name the empty cases (`docs/architecture/artist-album-model.md`), so
+  the directory layout should reuse them rather than invent placeholders.
+- **Which directory**, when several folders are scanned. Probably an explicit
+  setting rather than a guess at "the main one".
 
 ### Playlists follow the person, not the device
 
@@ -225,6 +302,29 @@ be discovered later:
   a single-user player on your own machine that is correct — you own the library
   — but it is a decision, not an accident, and it means the day madplayer serves
   anyone but its owner, the gate has to be reinstated deliberately.
+
+### There is no local account, and no local login
+
+madshare refuses to start on a fresh database without an initial admin. A player
+must therefore create that identity **silently, at first run** — a generated
+credential the user never sees, never types and never needs. Locally it is
+bookkeeping: an actor id for data sources and uploads, and the owner of the
+playlists. Direct calls bypass the permission layer anyway (§"Local is a function
+call"), so it is not guarding anything on this machine.
+
+That splits settings in two, and the split is what the user actually sees:
+
+- **App settings** — theme, folders, playback. Local, always present, and they
+  are *preferences*. There is no "change password" here, because there is no
+  password.
+- **Account settings** — password, API tokens, the things
+  `docs/ui/user-settings.md` describes. These appear **only when signed in to
+  another node**, and they belong to *that* node: they are the remote server's
+  user settings, surfaced in this client for the account you signed in with.
+
+Getting this wrong in the obvious way — shipping the web UI's settings page
+wholesale — would ask a person to manage credentials for a database on their own
+phone that nothing else can reach.
 
 ### Versioned dependency, not a vendored copy
 
@@ -437,6 +537,8 @@ discipline, not luck:
   and touches no network, reading the tags and the container out of the file the
   way an upload does (`docs/architecture/madnetwork-cache.md`). A client that
   routes that path through the network has broken the one case it was built for.
+  Where those bytes then land differs from the server — a human-readable music
+  directory rather than managed storage; see §"Where the bytes live".
 
 ## Relationship to the Capacitor Android app
 
@@ -506,7 +608,9 @@ is a claim this project has verified only on the desktop side.
    provisional local scanner and index deleted. Needs the startup extraction
    named above. Doing this before level 1 means the client's own library work is
    gone before a second data path is added, rather than being reconciled with one
-   afterwards.
+   afterwards. Its own sub-parts, in order: silent provisioning (§"There is no
+   local account"), folders as data sources, browse and playback off the embedded
+   store, then the human-readable materialize target (§"Where the bytes live").
 4. **Level 1: remote servers.** Sign-in and browsing somebody else's library over
    HTTP — the one thing the API client is for. `internal/madshare` already exists
    for this.
