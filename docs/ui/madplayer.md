@@ -310,10 +310,23 @@ orphans nothing. The directory is authoritative and there is no index, the rule
 `docs/architecture/madnetwork-cache.md` settled for the same reason: an index is
 a second thing to keep in agreement with the disk.
 
-The ceiling is a **size cap with LRU eviction**, defaulting to 2 GiB and
-editable in the app. The default is a guess from the shape of the content — a
-FLAC album is roughly 300 MB — and has never met a real library, which is the
-argument for it being editable rather than for the number.
+The ceiling is a **size cap with LRU eviction**, and it is **madshare's runtime
+setting, not a key in the client's config file** (decided 2026-08-08):
+`madnetwork.cache_max_bytes`, reached through `app.Instance.CacheLimit` /
+`SetCacheLimit` and edited on the client's Settings panel. It is the same number
+a server's settings card writes, because it is the same policy — a second copy
+beside it would be a number that can disagree with itself.
+
+One policy, one enforcer **per cache**: madshare sweeps the swarm's cache, the
+client sweeps its own downloads. The ceiling is not a budget over their sum.
+
+The defaults differ, and the difference is the point. A **server** ships it off,
+because a guessed number would start deleting other people's content on a node
+that already has some (`docs/architecture/madnetwork-cache.md` §"The retention
+ceiling"). A **player's first run has an empty cache**, so it writes 2 GiB into
+the setting once — *written*, not assumed, so the field shows a real value the
+person can see and change rather than a hidden fallback contradicting it. After
+that the number is theirs, including a deliberate 0 for no limit.
 
 Two things follow. Playback had to become **asynchronous**, since a download
 cannot run on the goroutine that handled the click; and the next queue item is
@@ -421,6 +434,12 @@ That splits settings in two, and the split is what the user actually sees:
 - **App settings** — theme, folders, playback. Local, always present, and they
   are *preferences*. There is no "change password" here, because there is no
   password.
+
+  One thing on that panel is **not** a preference and is worth telling apart: the
+  download ceiling is a *policy*, and it lives in the embedded backend's settings
+  rather than in the client's config file (§"A remote track is a download").
+  The rule the split follows is where the value belongs, not which panel shows
+  it: preferences are this program's, policy is madshare's.
 - **Account settings** — password, API tokens, the things
   `docs/ui/user-settings.md` describes. These appear **only when signed in to
   another node**, and they belong to *that* node: they are the remote server's
