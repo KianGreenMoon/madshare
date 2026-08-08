@@ -310,23 +310,28 @@ orphans nothing. The directory is authoritative and there is no index, the rule
 `docs/architecture/madnetwork-cache.md` settled for the same reason: an index is
 a second thing to keep in agreement with the disk.
 
-The ceiling is a **size cap with LRU eviction**, and it is **madshare's runtime
-setting, not a key in the client's config file** (decided 2026-08-08):
-`madnetwork.cache_max_bytes`, reached through `app.Instance.CacheLimit` /
-`SetCacheLimit` and edited on the client's Settings panel. It is the same number
-a server's settings card writes, because it is the same policy — a second copy
-beside it would be a number that can disagree with itself.
+The ceiling is a **size cap with LRU eviction**, and it is **madshare's setting,
+not a key in the client's config file** (decided 2026-08-08): reached through
+`app.Instance.CacheCeiling` / `SetCacheCeiling` and edited on the client's
+Settings panel. It is the same number a server's settings card writes, because
+it is the same policy — a second copy beside it would be a number that can
+disagree with itself.
 
 One policy, one enforcer **per cache**: madshare sweeps the swarm's cache, the
 client sweeps its own downloads. The ceiling is not a budget over their sum.
 
-The defaults differ, and the difference is the point. A **server** ships it off,
-because a guessed number would start deleting other people's content on a node
-that already has some (`docs/architecture/madnetwork-cache.md` §"The retention
-ceiling"). A **player's first run has an empty cache**, so it writes 2 GiB into
-the setting once — *written*, not assumed, so the field shows a real value the
-person can see and change rather than a hidden fallback contradicting it. After
-that the number is theirs, including a deliberate 0 for no limit.
+It has **three layers, here as on a server** (`docs/architecture/madnetwork-cache.md`
+§"The retention ceiling"): a config default, a runtime override, and an unset
+override meaning *inherit the default*. The client has no TOML file, so it fills
+the config layer itself — `playerConfig` sets `Federation.CacheMaxMB = 2048`.
+
+That last point is what makes the defaults differ meaningfully. A **server**
+ships 0 (no limit), because a guessed number would start deleting other people's
+content on a node that already has some. A **player's cache starts empty**, so it
+has no such history to protect and a stated 2 GiB is a better answer than none.
+Supplying it as *config* rather than writing it into the setting is the part that
+matters: a value written once is indistinguishable from a value the person chose,
+so clearing an override would land on "no limit" instead of back on the default.
 
 Two things follow. Playback had to become **asynchronous**, since a download
 cannot run on the goroutine that handled the click; and the next queue item is
