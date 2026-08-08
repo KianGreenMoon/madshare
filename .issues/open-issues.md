@@ -1034,6 +1034,18 @@ convergence or by the 250 ms poll interval colliding with the 1-minute refresh
 loop — `makeFriends` waits on a loop tick, so a run that just misses one waits a
 whole cycle, and 30 s is only half of that.
 
+**It recurred 2026-08-08**, identically: `TestSwarmFailover`, `swarm_test.go:242`,
+"timed out waiting for A to see B's pairing request", on a full `go test ./...`
+run (33.6 s into the test, package total 181 s). Checked rather than assumed to
+be unrelated to the change under test (`da6c056`, the swarm→whole part-file fix):
+the failure is inside `makeFriends`, i.e. the pairing handshake in test SETUP,
+before any transfer runs, while `discardPartial` is reachable only from
+`runTransfer`'s failed-swarm branch — so there is no path from one to the other.
+Confirmed empirically: 3/3 green isolated, and the full federation package green
+on rerun (156 s). Still unmeasured, and the measurement above is still the one to
+take — this recurrence adds a second data point but no new information, since
+nothing was instrumented to catch it.
+
 ## Cache seeding overrides a recording's sharing scope (found 2026-08-02, F8 mesh verification)
 
 **FIXED 2026-08-02** — option 2 below, on the owner's call: the duplicate cache
@@ -1339,7 +1351,7 @@ a documented `proxy_*`/`send_timeout` setting in `contrib/nginx`.
 
 | Severity | Issue | Status |
 |---|---|---|
-| **High** | **The swarm→whole fallback strands the streaming reader on an unlinked inode**, which was pre-sized to the full length and therefore serves **zeros** past the last landed chunk. `Content-Length` is met exactly, nothing errors, nothing is logged. Best fit for the reported symptom. Reproduced deterministically. | **open — re-confirmed 2026-08-07** at both ends of the mechanism: `federation/transfer.go:526` `os.Remove(t.partPath)` on the failed-swarm branch, then `runWhole` → `fetchFrom` re-creating the same path with `O_CREATE\|O_WRONLY\|O_TRUNC` (`transfer.go:594`) = a new inode; and `api/madnetwork_transfer_handlers.go:148` opening the file **once** (`t.Open()` + `defer f.Close()`) and holding it for the whole response. Note `copyTransfer:171` already carries a `continue` commented "offset briefly unavailable (e.g. a swarm→whole-file fallback); re-wait" — the fallback was anticipated in the reader, but as a *timing* gap, not as a file-identity change, which is why the mitigation there does not help. |
+| **High** | **The swarm→whole fallback strands the streaming reader on an unlinked inode**, which was pre-sized to the full length and therefore serves **zeros** past the last landed chunk. `Content-Length` is met exactly, nothing errors, nothing is logged. Best fit for the reported symptom. Reproduced deterministically. | **open — re-confirmed 2026-08-07** at both ends of the mechanism: `federation/transfer.go:526` `os.Remove(t.partPath)` on the failed-swarm branch, then `runWhole` → `fetchFrom` re-creating the same path with `O_CREATE\|O_WRONLY\|O_TRUNC` (`transfer.go:594`) = a new inode; and `api/madnetwork_transfer_handlers.go:148` opening the file **once** (`t.Open()` + `defer f.Close()`) and holding it for the whole response. Note `copyTransfer:171` already carries a `continue` commented "offset briefly unavailable (e.g. a swarm→whole-file fallback); re-wait" — the fallback was anticipated in the reader, but as a *timing* gap, not as a file-identity change, which is why the mitigation there does not help. **POSSIBLY RESOLVED 2026-08-08 (`da6c056`) — NOT VERIFIED END TO END, so this row stays OPEN.** `discardPartial` truncates the part file in place instead of unlinking it, so the swarm→whole transition keeps the inode the reader holds; `TestSwarmFallbackKeepsTheReadersFile` asserts on **content, not length** (the stranded file is exactly the right size, so a length check scores the bug a PASS) and was confirmed to fail against the old behaviour: *byte 8192 = 0, want 161, 57344 zero bytes following*. **Merged as a correctness fix in its own right, not as a confirmed fix for the report:** serving zeros to a reader pinned to an unlinked pre-sized file is wrong whether or not it is what the alpha tester hit, and that much is deterministically reproduced. What is still missing is the link to the SYMPTOM — 45 cold streams here all served correct bytes, so nothing establishes this as the cause of the mid-track stop. **Honest cost of merging, recorded deliberately: the baseline is spent.** A recurrence can no longer be compared against the original behaviour, which is exactly why this was rolled back on 2026-08-07. Partly mitigated by the exit logging (`2284927`), which now leaves a fallback log line and a stop offset. **Close this row only on evidence from a real deployment** — either the mid-track stop not recurring over a meaningful period on a node running this build, or a recurrence whose stop offset and `swarm fetch … failed; falling back to whole-file` line show the fallback is no longer stranding anyone. |
 | **High** | **A failed transfer truncates the stream silently** — 200 + full `Content-Length` + short body, no log line, no client retry. Makes every variant of this bug invisible. | **open — re-confirmed 2026-08-07.** `copyTransfer` still has four bare `return`s with no logging and no distinction between them: `t.Open()` failure (line 150), `Seek` failure (154), `WaitFor` error — "EOF (done), client gone, or the transfer failed midway", all one branch (161), and a read error (184). The comment at 150 ("headers may be written already — just drop the connection") states the behaviour as intended; the defect is that a *successful completion* and a *failed transfer* leave by the same door. **HALF-ADDRESSED 2026-08-08 (`2284927`)** — the *silent* half is fixed: each exit now logs which one it was, with bytes delivered, bytes promised and the stop offset (client-gone stays quiet so skipping a track does not bury failures). **The row stays OPEN**, because the truncation itself is untouched: the client still receives 200 + a full `Content-Length` + a short body and still has nothing to react to, since `player.js` binds only `ended` and `error` and neither fires. So the server can now say what happened; the client still cannot tell. Closing this row needs the client half — which overlaps the "notify admin about missing/unplayable tracks" idea, and that idea wants exactly the stop offset this logging now produces. |
 | Medium | **The streaming reader cannot escape a stalled in-flight chunk** — `prioritize` is a no-op once a chunk is dispatched; the reader waits `ChunkStall` (20 s) or `PerChunk` (2 min). | **open — re-confirmed 2026-08-07** (`chunkPlan.prioritize` still reorders `pending` only). |
 | Medium | **Reopen: the ~768 KiB stall is not the presence prober.** Reproduced on v0.8.4 with the prober long removed; it is the lead-ramp → first-bulk-chunk transition. Benign on a healthy mesh (18/18 cold streams completed), but it is the moment the player's buffer is thinnest. | **open — re-confirmed 2026-08-07.** The layout is unchanged (`speculateChunk0` + lead ramp → bulk, `transfer.go:505`). Cross-reference kept: the corresponding row under *the 10-second presence feature was reverted* (2026-07-21) attributes this same 768 KiB watermark to the prober and that attribution is **wrong** — do not re-derive it from there. |
@@ -1378,18 +1390,24 @@ logs. Cherry-picked onto `aidev`:
   them. Message amended to say the 45/70/90 s measurement is **supporting
   history, not a fresh run** — it was not re-measured.
 
-**`908be9e` stays parked** and `wave1-rolled-back` must not be deleted: it is the
-only copy of the fix and of its test, and that test is the part worth keeping
-(getting the assertion right — content, not length — is the non-obvious bit,
-since the stranded file is exactly the right size).
+**Then `908be9e` came back too, later the same day (`da6c056`)** — owner's call,
+on the reframing that it is defensible on its own terms: serving zeros to a
+reader pinned to an unlinked, pre-sized file is a defect whether or not it is the
+reported one, and that mechanism *is* deterministically reproduced by its test.
+**Its issue row is deliberately NOT closed** — marked "possibly resolved, not
+verified end to end" — because nothing links the fix to the symptom.
 
-What would now justify unparking it is unchanged, but is finally reachable: a
-`swarm fetch <hash> failed (…); falling back to whole-file` line next to a
-listener reporting silence, or a captured body that hashes wrong at full length.
-The new exit logging will **not** itself catch that mechanism — that path
-completes successfully by every signal `copyTransfer` has — but it does mean an
-ordinary truncation now reports its stop offset, so the two failure modes can be
-told apart in a report for the first time.
+**The cost is real and is written into that row rather than glossed: merging
+spends the baseline.** A recurrence can no longer be compared against the
+original behaviour, which was the concrete reason for the 2026-08-07 rollback.
+The exit logging partly covers it — a fallback now leaves a log line and a stop
+offset — but only partly, because the stranded-inode path completes successfully
+by every signal `copyTransfer` has and so will not announce itself.
+
+**`wave1-rolled-back` is now redundant** and may be deleted: all three commits
+are on `aidev`, so it is no longer the only copy of the fix or of its test. (The
+advice one entry above, written when only two had been picked, said the opposite;
+it was right at the time and is superseded.)
 
 ### An attempt was built and rolled back — it is parked on `wave1-rolled-back` (2026-08-07)
 
