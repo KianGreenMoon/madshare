@@ -4,7 +4,7 @@ All packages of the `daemonlord.ygg/madshare` module and every internal import
 edge between them, generated from `go list`. Arrows point from importer to
 imported. Regenerate after structural changes (command at the bottom).
 
-Generated 2026-07-18 with the default build tags, so `federation` and `webui`
+Generated 2026-08-08 with the default build tags, so `federation` and `webui`
 are included; a `nofederation`/`nowebui` build drops those nodes and their
 edges. Test-only imports are not shown.
 
@@ -13,10 +13,14 @@ edges. Test-only imports are not shown.
 ```mermaid
 flowchart TD
   main["madshare.go (main)"]
+  app["app"]
 
   subgraph HTTP["HTTP surface"]
     api["api"]
     webui["webui"]
+  end
+
+  subgraph MESH["Mesh"]
     federation["federation"]
   end
 
@@ -41,25 +45,29 @@ flowchart TD
     version["internal/version"]
   end
 
-  main --> api
-  main --> webui
-  main --> federation
-  main --> imageproc
-  main --> mediaproc
-  main --> prune
-  main --> sources
-  main --> storages
-  main --> tagsource
-  main --> database
-  main --> auth
+  main --> app
   main --> config
-  main --> media
-  main --> apistorage
+
+  app --> api
+  app --> apistorage
+  app --> auth
+  app --> config
+  app --> database
+  app --> federation
+  app --> imageproc
+  app --> media
+  app --> mediaproc
+  app --> prune
+  app --> sources
+  app --> storages
+  app --> tagsource
+  app --> webui
 
   api --> apistorage
   api --> auth
   api --> config
   api --> database
+  api --> federation
   api --> media
   api --> prune
   api --> sources
@@ -81,41 +89,54 @@ flowchart TD
   tagsource --> version
   tagsource --> media
   database --> auth
+  database --> federation
   database --> media
 
-  linkStyle 0,1,2,3,4,5,6,7,8,9,10,11,12,13 stroke:#9aa8a5,stroke-width:1px,stroke-dasharray:4 4
+  linkStyle 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 stroke:#9aa8a5,stroke-width:1px,stroke-dasharray:4 4
 
   classDef entry fill:#2e6e63,stroke:#2e6e63,color:#ffffff
+  classDef compose fill:#3f8a7d,stroke:#2e6e63,color:#ffffff
   classDef http fill:#dcebe7,stroke:#5f8f85,color:#1d2b28
+  classDef mesh fill:#e4e0ef,stroke:#8a80ad,color:#241f33
   classDef work fill:#e8e4d8,stroke:#a09a7f,color:#2b2818
   classDef data fill:#dfe3ee,stroke:#7c86a8,color:#1f2436
   classDef found fill:#efefef,stroke:#9aa0a0,color:#2a2e2e
 
   class main entry
-  class api,webui,federation http
+  class app compose
+  class api,webui http
+  class federation mesh
   class imageproc,mediaproc,prune,sources,storages,tagsource work
   class database data
   class auth,config,media,apistorage,version found
 ```
 
-The dashed grey edges are `madshare.go`'s own imports — the entry point wires
-every package together, so those 14 edges carry no structural information. The
-solid edges are the ones worth reading.
+The dashed grey edges are the **composition** edges — `app` wires every package
+together and `madshare.go` is a shim over `app`
+(`docs/architecture/embedding.md`), so those 16 edges carry no structural
+information. The solid edges are the ones worth reading.
 
 ## How to read it
 
 The layering is strict — there are no import cycles, and nothing below ever
 imports upward:
 
-- **HTTP surface** — `api` is the hub: it composes nearly everything into the
-  router. `webui` and `federation` are deliberately thin (both can be compiled
-  out via `nowebui` / `nofederation`, which only works because their edges are
-  so few).
+- **`app`** — the composition root: it owns startup and shutdown and is the only
+  package that touches every layer. `main` imports it and almost nothing else,
+  which is what lets an embedder run the same startup the server does
+  (`docs/architecture/embedding.md`).
+- **HTTP surface** — `api` is the router hub. `webui` is deliberately thin (it can
+  be compiled out via `nowebui`, which only works because its edges are so few).
+- **Mesh** — `federation` sits *below* `database` as well as beside `api`: it owns
+  the embedded node, but it also defines the madnetwork vocabulary the queries are
+  written in (`Audience`, scopes, peer/source types), which is why the data layer
+  imports it. Compiled out via `nofederation`. Its own edges are only `config` and
+  `internal/version`, so it stays cheap to depend on.
 - **Services & workers** — background pools and maintenance jobs. Each touches
   only `database`, `media`, and the small foundation packages.
-- **Data layer** — `database` is the single funnel to SQLite; its two downward
-  edges (`auth` for the store types, `media` for the tag structs) are type
-  dependencies, not logic.
+- **Data layer** — `database` is the single funnel to SQLite; its three downward
+  edges (`auth` for the store types, `media` for the tag structs, `federation` for
+  the madnetwork types) are type dependencies, not logic.
 - **Foundations** — pure leaf packages with zero internal imports. Safe to
   change in isolation; everything above may break, nothing below can.
 
@@ -123,9 +144,10 @@ imports upward:
 
 | Package            | Role                                                                | Imported by |
 |--------------------|---------------------------------------------------------------------|------------:|
+| `app`              | startup/shutdown + the embedder facade (Start/Serve/Stop, Library)  | 1 |
 | `api`              | chi router, all HTTP endpoints (browse, upload, admin, moderation)  | 1 |
 | `webui`            | embedded HTML/JS/CSS web interface (build tag `nowebui`)            | 1 |
-| `federation`       | embedded madnetwork node, F0 skeleton (build tag `nofederation`)    | 1 |
+| `federation`       | embedded madnetwork node + the shared mesh types (tag `nofederation`) | 3 |
 | `imageproc`        | cover-image resize worker pool                                      | 1 |
 | `mediaproc`        | ffprobe/fpcalc analysis worker pool, recording resolution           | 1 |
 | `prune`            | background prune job manager (singleton)                            | 2 |

@@ -305,7 +305,7 @@ ALTER TABLE files ADD COLUMN license        TEXT;
 
 ## 7. Enforcement on the listener/route-group architecture
 
-Authorization is **middleware composed in `buildHandler`** (`madshare.go`),
+Authorization is **middleware composed in `buildHandler`** (`app/serve.go`),
 inserted into the chain after `Recoverer`/`CORS` and before the route groups:
 
 1. **`identify`** (always runs): resolves the session cookie or Bearer token to a

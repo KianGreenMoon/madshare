@@ -644,6 +644,34 @@ func RankRenditions(rs []Rendition) []Rendition {
 	return out
 }
 
+// RankDuplicateRenditions returns rs in quality-ladder order, best first. It
+// feeds RankRenditions the tech facts the ladder reads and reorders the richer
+// rows to match, so the HTTP handler and the embedder facade order a recording's
+// renditions through ONE rule instead of two copies of the same mapping.
+//
+// Renditions of one recording have distinct file ids, so the reorder is exact.
+func RankDuplicateRenditions(rs []DuplicateRendition) []DuplicateRendition {
+	ladder := make([]Rendition, len(rs))
+	byFile := make(map[int64]DuplicateRendition, len(rs))
+	for i, r := range rs {
+		ladder[i] = Rendition{
+			FileID:     r.FileID,
+			Hash:       r.Hash,
+			Codec:      r.Codec,
+			Bitrate:    r.Bitrate,
+			SampleRate: r.SampleRate,
+			BitDepth:   r.BitDepth,
+			ByteSize:   r.ByteSize,
+		}
+		byFile[r.FileID] = r
+	}
+	out := make([]DuplicateRendition, 0, len(rs))
+	for _, r := range RankRenditions(ladder) {
+		out = append(out, byFile[r.FileID])
+	}
+	return out
+}
+
 const (
 	classLossless = 0
 	classLossy    = 1

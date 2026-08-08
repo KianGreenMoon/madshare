@@ -58,6 +58,12 @@ It does **not** extend to trust boundaries. `symlink_roots` gets no override
 layer, for the reason in the next section: a boundary a web admin can move is not
 a boundary.
 
+`[sources].allow_any` is not a counter-example. It *removes* that boundary rather
+than overriding it, it is TOML-only like the roots it replaces, and it exists for
+the deployment where the boundary protects nothing — an **embedded** madshare that
+never binds a listener (`docs/architecture/embedding.md`). Setting it on anything
+that serves warns at startup.
+
 ### Security: some things are TOML *on purpose*
 
 `[sources].symlink_roots` (the import allow-list) is the clearest case. Its value

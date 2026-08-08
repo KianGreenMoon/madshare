@@ -289,8 +289,7 @@ moderators to prune, that is a separate role-permission change, out of scope her
   start → 202 / 409), `adminPruneStatus`, `adminPruneCancel`; the response is
   shaped by `pruneStatusJSON`. Wired via `Deps.PruneManager` → `handler.pruneMgr`
   (nil ⇒ 503); routes in `RegisterAdmin`. The manager is constructed in
-  `madshare.go` (sharing the audio blob store) and `pruneMgr.Wait()` is called in
-  the shutdown path.
+  `app.Start` (sharing the audio blob store) and waited for in `app.Instance.Stop`.
 - **Web UI** — `webui/static/js/admin/prune.js` (start + poll `/status`,
   in-progress panel with progress bar + Cancel, last-run summary lines) and the
   dashboard "in progress" badge in `webui/static/js/admin/dashboard.js`. Styles in

@@ -146,13 +146,23 @@ type CORSConfig struct {
 // uploads are unaffected. Each entry must be an absolute, Clean-stable path.
 type SourcesConfig struct {
 	SymlinkRoots []string `toml:"symlink_roots"`
+	// AllowAny drops the allow-list entirely: any absolute directory may be
+	// imported in place. It is for a deployment with NO HTTP surface — typically
+	// an embedded one, like a native player whose owner is at the keyboard
+	// (docs/architecture/embedding.md). The allow-list guards the fact that the
+	// surface adding a source is reachable; with nothing bound there is nothing
+	// left for it to guard. On anything that serves — embedded or not — this
+	// removes exactly the boundary that listener needs, so combining the two
+	// warns at startup.
+	AllowAny bool `toml:"allow_any"`
 }
 
-// SymlinkSourcesEnabled reports whether any symlink root is configured. When
-// false the symlink source kind is disabled: POST /api/admin/sources is refused
-// and the Add form is hidden.
+// SymlinkSourcesEnabled reports whether in-place symlink imports are possible at
+// all: either an allow-list is configured, or AllowAny has dropped the allow-list
+// requirement. When false the symlink source kind is disabled: POST
+// /api/admin/sources is refused and the Add form is hidden.
 func (s SourcesConfig) SymlinkSourcesEnabled() bool {
-	return len(s.SymlinkRoots) > 0
+	return len(s.SymlinkRoots) > 0 || s.AllowAny
 }
 
 type DatabaseConfig struct {
@@ -377,6 +387,33 @@ func defaults() Config {
 	}
 }
 
+// Default returns the built-in defaults, before any file or programmatic
+// override. It is the starting point for an embedder that has no config file at
+// all (docs/architecture/embedding.md): set the few fields that differ, then call
+// Prepare. Load builds on the same values.
+func Default() Config { return defaults() }
+
+// Prepare derives every path and worker count that follows from the fields a
+// caller set, then validates the result — the exact chain Load runs after
+// decoding a file, exposed so a Config built in code goes through it too rather
+// than through a second, drifting copy of the rules. The returned Config is the
+// prepared one; on error it is returned anyway (partially resolved) so a caller
+// can report what it was about to use.
+//
+// It deliberately does NOT require a listener: that is a rule about config
+// FILES, enforced in Load. A program embedding madshare may serve nothing.
+func (c Config) Prepare() (Config, error) {
+	c.resolveDataDir()
+	c.resolveMesh()
+	c.resolveStorageWorkers()
+	c.resolveGitRepo()
+	c.resolveSources()
+	if err := c.validate(); err != nil {
+		return c, err
+	}
+	return c, nil
+}
+
 // Load reads the TOML config file at path. If the file does not exist the
 // defaults are returned. Fields absent from the file keep their default values.
 // The resulting config is validated before it is returned, so callers can rely
@@ -413,15 +450,15 @@ func Load(path string) (Config, error) {
 	if pw := os.Getenv(InitialAdminPasswordEnv); pw != "" {
 		cfg.Auth.InitialAdminPassword = pw
 	}
-	cfg.resolveDataDir()
-	cfg.resolveMesh()
-	cfg.resolveStorageWorkers()
-	cfg.resolveGitRepo()
-	cfg.resolveSources()
-	if err := cfg.validate(); err != nil {
-		return cfg, err
+	// A config FILE describes a server, and a server that binds nothing is an
+	// operator mistake — so this requirement lives here rather than in validate,
+	// which an embedder also runs (docs/architecture/embedding.md §"A config built
+	// in code"). Unreachable via a missing or [[listen]]-less file, both of which
+	// restore the default listener above; reachable via an explicit `listen = []`.
+	if len(cfg.Listen) == 0 {
+		return cfg, errors.New("config: at least one [[listen]] entry is required")
 	}
-	return cfg, nil
+	return cfg.Prepare()
 }
 
 // resolveDataDir derives the effective database and files paths from DataDir
@@ -482,6 +519,23 @@ func (c *Config) resolveGitRepo() {
 // and the hard format checks live in validateSources. Malformed entries (caught
 // there) are skipped here so a single advisory does not pre-empt the fatal error.
 func (c *Config) resolveSources() {
+	// allow_any is an embedder's key (docs/architecture/embedding.md). Name both
+	// ways it can be wrong here rather than leaving them to be discovered: a
+	// listener re-arms the very surface the allow-list protects, and a
+	// silently-ignored allow-list is worse security config than none.
+	if c.Sources.AllowAny {
+		if len(c.Listen) > 0 || len(c.ListenMesh) > 0 {
+			c.warnings = append(c.warnings, fmt.Sprintf(
+				"sources.allow_any drops the symlink allow-list, but this deployment binds %d listener(s): "+
+					"any admin session can then import any readable directory into the library and serve it back. "+
+					"The key is meant for an embedded deployment that serves nothing",
+				len(c.Listen)+len(c.ListenMesh)))
+		}
+		if n := len(c.Sources.SymlinkRoots); n > 0 {
+			c.warnings = append(c.warnings, fmt.Sprintf(
+				"sources.allow_any is set, so the %d sources.symlink_roots entr(ies) are ignored", n))
+		}
+	}
 	for _, root := range c.Sources.SymlinkRoots {
 		if !filepath.IsAbs(root) || filepath.Clean(root) != root {
 			continue // validateSources turns this into a hard error
@@ -692,10 +746,10 @@ func (c Config) validateCORS() error {
 	return nil
 }
 
+// validateListeners checks every [[listen]] entry and the binds they claim. It
+// does not require the list to be non-empty — that is Load's rule about config
+// files, because an embedded madshare may serve nothing at all.
 func (c Config) validateListeners() error {
-	if len(c.Listen) == 0 {
-		return errors.New("config: at least one [[listen]] entry is required")
-	}
 	// seenKey maps a normalised bind key to the original addr for error text.
 	wildcardPorts := map[int]bool{}
 	specificKeys := map[string]bool{}

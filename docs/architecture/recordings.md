@@ -298,7 +298,7 @@ machine, and `IsDuplicateSubmission` is recomputed at submit/listing time:
 ## Resolver & backfill
 
 Mirrors the artist/album startup reconcile pass exactly (the orphan-blob /
-`FoldUnknownBuckets` pattern in `madshare.go`):
+`FoldUnknownBuckets` pattern in `app.Start`):
 
 - **Inline at upload** — every insert creates a singleton recording; after the
   analysis job computes the fingerprint, the resolver either moves the file

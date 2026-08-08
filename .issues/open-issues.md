@@ -1362,7 +1362,7 @@ they `O_TRUNC` the same inode rather than replacing it.
   `config`), so the "throttled read looks like a stalled holder" gotcha is not
   in play on this instance.
 - **An HTTP write deadline.** No `WriteTimeout`/`IdleTimeout` is set on any
-  `http.Server` in `madshare.go`.
+  `http.Server` the listeners build (`app/serve.go`).
 - **Netstack inbound death.** `inbound_healthy: true` throughout; a 90 s idle
   socket and a 256 s real-time paced read both survived on the mesh listener.
 - **v0.8.0 → v0.8.4 drift.** Nothing in `madnetworkStream` /

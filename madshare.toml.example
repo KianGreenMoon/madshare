@@ -206,3 +206,9 @@ max_upload_mb = 500          # per-request upload cap, in MiB
 # See docs/architecture/data-sources.md.
 #[sources]
 #symlink_roots = ["/srv/music", "/mnt/nas/audio"]
+# allow_any drops the allow-list: ANY absolute directory may be imported. It is
+# for an EMBEDDED madshare with no listener (a native player — see
+# docs/architecture/embedding.md), where the person adding a folder is at the
+# keyboard. On a deployment that serves, this removes the boundary that listener
+# needs, and startup warns about it.
+#allow_any = false

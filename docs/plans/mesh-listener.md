@@ -231,7 +231,7 @@ Separating the two at the *config* level does not separate them in the
 *binary*. `-tags nofederation` compiles the yggdrasil and gVisor dependencies
 out entirely, so under that tag there is no transport either and
 `[yggdrasil].enabled` is as unserveable as `[federation].enabled`. It reuses the
-existing gate at `madshare.go:72`, now naming whichever key asked for it:
+existing gate (`app/gates.go` `checkGates`), now naming whichever key asked for it:
 
 ```
 config: [yggdrasil].enabled is set but this binary was built with
@@ -257,7 +257,7 @@ accidentally couple the two back together:
   are not registered, and `webui.Register`'s `federated` flag stays false — `/`
   keeps forwarding to `/library` rather than `/madnetwork`, which is right,
   since there is no network to land on.
-- **`fpcalc` is not required.** `requireFingerprinting` (`madshare.go:432`) is
+- **`fpcalc` is not required.** `requireFingerprinting` (`app/gates.go`) is
   gated on `cfg.Federation.Enabled` and must stay that way: it exists because a
   federated node re-fingerprints *downloaded* audio before trusting it, and a
   transport-only node downloads nothing from anyone. Serving your own library

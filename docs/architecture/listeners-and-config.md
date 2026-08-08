@@ -425,7 +425,7 @@ The design above is implemented as follows:
   `config/mesh_test.go` and `federation/mesh_test.go`.
 - **Mountable route groups** — `api/api.go` exposes `RegisterAPI` / `RegisterAdmin`
   (bundling deps into `api.Deps`); `webui` exposes `Register` / `RegisterAdminPage`.
-- **Per-listener serving** — `madshare.go` `buildHandler` composes a `chi.Router`
+- **Per-listener serving** — `app.Instance.buildHandler` (`app/serve.go`) composes a `chi.Router`
   per listener with shared middleware (Logger, Recoverer, `api.CORS`,
   `auth.Identify`, the `allow_from` filter, and `api.SupportHEAD`), mounts only the
   requested groups, and `startListeners` runs one `http.Server` per `[[listen]]`

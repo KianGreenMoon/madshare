@@ -57,19 +57,7 @@ func (h *handler) duplicatesList(w http.ResponseWriter, r *http.Request) {
 // ffprobe probed it; otherwise it falls back to size (the degraded path), and
 // the displayed format becomes the MIME type.
 func buildDuplicateDTO(g database.DuplicateRecording) duplicateRecordingDTO {
-	ladder := make([]database.Rendition, len(g.Renditions))
-	for i, r := range g.Renditions {
-		ladder[i] = database.Rendition{
-			FileID:     r.FileID,
-			Hash:       r.Hash,
-			Codec:      r.Codec,
-			Bitrate:    r.Bitrate,
-			SampleRate: r.SampleRate,
-			BitDepth:   r.BitDepth,
-			ByteSize:   r.ByteSize,
-		}
-	}
-	ranked := database.RankRenditions(ladder)
+	ranked := database.RankDuplicateRenditions(g.Renditions)
 	rankByFile := make(map[int64]int, len(ranked))
 	for i, r := range ranked {
 		rankByFile[r.FileID] = i + 1 // 1-based, best first

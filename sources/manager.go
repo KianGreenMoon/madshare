@@ -112,6 +112,7 @@ type Manager struct {
 	linker   Linker
 	notify   Notifier          // optional (media pool); nil skips the wake
 	roots    []string          // cleaned absolute allow-list entries
+	anyRoot  bool              // [sources].allow_any: no allow-list at all
 	accepted map[string]string // accepted audio extension -> canonical MIME
 	clock    func() int64      // injectable for tests; defaults to time.Now().Unix
 
@@ -159,8 +160,21 @@ func (m *Manager) WithCovers(sourceImagesDir string, imagePool Notifier) *Manage
 	return m
 }
 
-// Enabled reports whether any symlink root is configured.
-func (m *Manager) Enabled() bool { return len(m.roots) > 0 }
+// WithAnyRoot drops the allow-list when allow is true: any absolute directory may
+// then be imported in place. It takes the flag rather than being a no-arg toggle
+// so a call site reads as wiring [sources].allow_any through, and so forgetting to
+// call it leaves the strict, allow-list-only behaviour. Only a deployment with no
+// reachable admin surface should pass true — the reasoning, and the startup
+// warning when a listener is configured too, are in
+// docs/architecture/embedding.md.
+func (m *Manager) WithAnyRoot(allow bool) *Manager {
+	m.anyRoot = allow
+	return m
+}
+
+// Enabled reports whether in-place imports are possible: an allow-list entry
+// exists, or the allow-list has been dropped outright (WithAnyRoot).
+func (m *Manager) Enabled() bool { return len(m.roots) > 0 || m.anyRoot }
 
 // Roots returns a copy of the configured allow-list (for the UI's Add form hint).
 func (m *Manager) Roots() []string { return append([]string(nil), m.roots...) }
@@ -472,7 +486,11 @@ func (m *Manager) resolveAllowedRoot(root string) (string, error) {
 	if err != nil || !info.IsDir() {
 		return "", ErrInvalidRoot
 	}
-	if !withinAllowlist(real, m.roots) {
+	// The resolve-then-check order above is what stops a symlink inside the
+	// requested path from escaping the allow-list; with no allow-list there is
+	// nothing to escape, so the check is skipped rather than passed a wildcard
+	// root (which would only work on a single-rooted filesystem anyway).
+	if !m.anyRoot && !withinAllowlist(real, m.roots) {
 		return "", ErrRootNotAllowed
 	}
 	return real, nil

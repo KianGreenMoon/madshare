@@ -100,7 +100,8 @@ curl http://localhost:3000/license
 ### Implementation notes
 
 - `LICENSE.md` is **always embedded** into the binary unconditionally
-  (`//go:embed LICENSE.md` in `madshare.go`, passed as `Deps.LicenseText`), so
+  (`//go:embed LICENSE.md` in `madshare.go`, handed to `app.WithLicenseText` and
+  passed on as `Deps.LicenseText`), so
   `/license` works in every build — no build tag and no working tree required.
   Only when those embedded bytes are absent (e.g. the api package's own
   `NewRouter` in tests) does it fall back to reading `<SourceRoot>/LICENSE.md`

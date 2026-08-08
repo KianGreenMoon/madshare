@@ -153,7 +153,7 @@ copy. Clean rule: **owned content keeps its cover source; linked content re-scan
   regenerate them under `variants/images/<full_hash>/` (one code path, no fragile
   move). Idempotent and crash-safe (copy-before-re-key; a final sweep drops any
   unreferenced leftover 16-char dir). Runs after the cover backfills and before
-  `ReconcileImageOrphans` / the worker pool (`madshare.go`).
+  `ReconcileImageOrphans` / the worker pool (`app.Start`).
 - `ReconcileImageOrphans` now sweeps **both** trees (variants + source) for
   unreferenced `<image_hash>/` dirs, since the split spreads an orphan's debris
   across both.
@@ -161,7 +161,7 @@ copy. Clean rule: **owned content keeps its cover source; linked content re-scan
 ### The `CacheDir` → `SpoolDir` rename (terminology hygiene)
 
 Today the upload path has a thing called `CacheDir` (`api.Deps.CacheDir`,
-`madshare.go` defaults it to `os.TempDir()` — system temp, no TOML key). It is
+`app.Start` defaults it to `os.TempDir()` — system temp, no TOML key). It is
 **not a cache**: it is transient per-upload staging where a large upload is
 *spooled* to a temp file while its hash is computed (`api/storage/hash.go`, above
 `memBufferLimit`), cleaned up after each request. It is a **spool** in the classic
@@ -169,7 +169,7 @@ Unix sense (print/mail spool).
 
 To stop "cache" being overloaded, rename it `SpoolDir`/`spool` (≈6 internal sites:
 `api.Deps.CacheDir`, `handlers.cacheDir`, `NewRouter` param, `HashUpload` param,
-`madshare.go` wiring — **no TOML/DB/user-facing surface**). Result: three short,
+`app.Start` wiring — **no TOML/DB/user-facing surface**). Result: three short,
 accurate, non-overlapping names —
 
 - **`spool`** — transient upload staging (system temp).
@@ -185,7 +185,7 @@ accurate, non-overlapping names —
 > 022 + `db.SplitImageSources`). The cost notes below described the relocation step.
 
 Small and precedented; the image-dir path is derived in only **two** sites
-(`madshare.go` → reconcile + imageproc pool; `api/api.go` → the `/images/*` mount
+(`app.Start` → reconcile + imageproc pool; `api/api.go` → the `/images/*` mount
 and every cover read/write via `h.imagesDir`). Everything else takes the dir as a
 parameter, so it is already path-agnostic.
 

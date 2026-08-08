@@ -3,6 +3,7 @@ package sources_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -286,6 +287,32 @@ func TestAdd_RootNotAllowed(t *testing.T) {
 	}
 	if _, err := m.Add(context.Background(), "x", "relative/path", sql.NullInt64{}); err != sources.ErrInvalidRoot {
 		t.Errorf("Add(relative) = %v, want ErrInvalidRoot", err)
+	}
+}
+
+// WithAnyRoot is what an embedded, listener-less madshare uses instead of an
+// allow-list (docs/architecture/embedding.md): any absolute directory is
+// importable, but a relative path is still refused — that check is about a path
+// being unambiguous, not about trust.
+func TestAdd_AnyRoot(t *testing.T) {
+	outside := t.TempDir()
+	store := newFakeStore()
+	m := sources.New(store, storages.NewLinker(t.TempDir()), nil, nil, accepted).WithAnyRoot(true)
+
+	if !m.Enabled() {
+		t.Fatal("allow_any should enable the manager with no roots")
+	}
+	if _, err := m.Add(context.Background(), "x", outside, sql.NullInt64{}); err != nil {
+		t.Errorf("Add(outside) with allow_any = %v, want success", err)
+	}
+	m.Wait()
+	if _, err := m.Add(context.Background(), "y", "relative/path", sql.NullInt64{}); err != sources.ErrInvalidRoot {
+		t.Errorf("Add(relative) with allow_any = %v, want ErrInvalidRoot", err)
+	}
+	// A missing directory wraps the sentinel with the lstat detail, so match on
+	// the chain rather than on identity.
+	if _, err := m.Add(context.Background(), "z", filepath.Join(outside, "not-there"), sql.NullInt64{}); !errors.Is(err, sources.ErrInvalidRoot) {
+		t.Errorf("Add(missing dir) with allow_any = %v, want ErrInvalidRoot", err)
 	}
 }
 

@@ -245,6 +245,82 @@ func TestSourcesConfig_SymlinkSourcesEnabled(t *testing.T) {
 	if !(config.SourcesConfig{SymlinkRoots: []string{"/srv/music"}}).SymlinkSourcesEnabled() {
 		t.Error("a configured root should enable symlink sources")
 	}
+	// allow_any is the embedder's key: no roots, but imports are possible
+	// (docs/architecture/embedding.md).
+	if !(config.SourcesConfig{AllowAny: true}).SymlinkSourcesEnabled() {
+		t.Error("allow_any should enable symlink sources with no roots")
+	}
+}
+
+// An embedded madshare serves nothing, so allow_any is unremarkable there; on a
+// deployment that binds a listener it removes the boundary that listener needs,
+// and the operator has to be told so.
+func TestLoad_Sources_AllowAnyWithListener_Warns(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "sources.toml")
+	body := validListeners + "[sources]\nallow_any = true\nsymlink_roots = [\"/srv/music\"]\n"
+	if err := os.WriteFile(f, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(f)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	var listener, ignored bool
+	for _, w := range cfg.Warnings() {
+		if strings.Contains(w, "allow_any") && strings.Contains(w, "listener") {
+			listener = true
+		}
+		if strings.Contains(w, "allow_any") && strings.Contains(w, "ignored") {
+			ignored = true
+		}
+	}
+	if !listener {
+		t.Errorf("expected an allow_any + listener warning, got %v", cfg.Warnings())
+	}
+	if !ignored {
+		t.Errorf("expected a warning that symlink_roots is ignored, got %v", cfg.Warnings())
+	}
+}
+
+// A Config built in code, with no file and no listener, is valid and fully
+// resolved: the embedder's entry point (docs/architecture/embedding.md).
+func TestPrepare_NoListeners_IsValid(t *testing.T) {
+	dataDir := t.TempDir()
+	base := config.Default()
+	base.DataDir = dataDir
+	base.Listen = nil
+	base.Sources.AllowAny = true
+
+	cfg, err := base.Prepare()
+	if err != nil {
+		t.Fatalf("Prepare with no listeners: %v", err)
+	}
+	if want := filepath.Join(dataDir, "madshare.db"); cfg.Database.Path != want {
+		t.Errorf("Database.Path = %q, want %q (Prepare must derive it)", cfg.Database.Path, want)
+	}
+	if want := filepath.Join(dataDir, "files"); cfg.Storage.FilesDir != want {
+		t.Errorf("Storage.FilesDir = %q, want %q", cfg.Storage.FilesDir, want)
+	}
+	if cfg.Storage.ImageProcessingWorkers < 1 {
+		t.Errorf("ImageProcessingWorkers = %d, want the resolved auto value", cfg.Storage.ImageProcessingWorkers)
+	}
+	if len(cfg.Warnings()) != 0 {
+		t.Errorf("a listener-less embedder config should warn about nothing, got %v", cfg.Warnings())
+	}
+}
+
+// The listener requirement is a rule about config FILES, so it stays enforced
+// where a file is read — an explicit empty list is the one way to reach it.
+func TestLoad_EmptyListenList_Errors(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "nolisten.toml")
+	if err := os.WriteFile(f, []byte("listen = []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(f); err == nil {
+		t.Fatal("Load with listen = [] should fail")
+	} else if !strings.Contains(err.Error(), "[[listen]]") {
+		t.Errorf("error %v should name [[listen]]", err)
+	}
 }
 
 func TestLoad_Sources_ValidRoots(t *testing.T) {

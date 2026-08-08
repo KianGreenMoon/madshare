@@ -284,6 +284,8 @@ data_dir = "./data"          # default root for db + files + links + variants; "
 # Roots a 'symlink' source may reference. Empty (default) = symlink sources disabled
 # (the /admin/sources Add form is hidden; the local storage still works).
 symlink_roots = ["/srv/music", "/mnt/nas/audio"]
+# allow_any = true drops the allow-list entirely — for an EMBEDDED madshare with
+# no listener (docs/architecture/embedding.md), never for one that serves.
 ```
 
 `config.Load`: derive effective `database.path` / `files_dir` / `variants_dir`
@@ -297,6 +299,17 @@ with the variants-dir relocation — see `docs/architecture/variants.md`.)
 trust boundary — see `docs/architecture/configuration.md`). Symlink *sources*,
 which live within the allow-list, are DB-backed (`data_sources`) and added from
 the UI, so no TOML write-back is needed for this feature.
+
+**`allow_any = true` drops the allow-list**, for the one deployment where it
+guards nothing: an **embedded** madshare with no HTTP surface, whose owner is at
+the keyboard (a native player — `docs/architecture/embedding.md`,
+`docs/ui/madplayer.md`). What the allow-list actually protects is the fact that
+the surface adding a source is *reachable*: without it, an admin session can
+symlink `/etc/shadow` into the library and read it back through `/files/`. With no
+listener there is nothing to reach and nothing to protect. Combining it with a
+listener — or with `symlink_roots`, which it then ignores — warns at startup, and
+`/admin/sources`' Add form still offers only configured roots, so the web surface
+stays constrained even when the manager is not.
 
 ## Lifecycle & safety
 
@@ -418,7 +431,7 @@ admin shell, `shared.js`, `toast.js`. Moderator-gated client-side
 - **P3.5 — `variants/` directory relocation** *(pre-P4; independent of the links
   work — can land anytime before P4, but P4 depends on it).* Add `variants_dir`
   (derive from `data_dir`, default `<data_dir>/variants`, overridable); point the
-  two image-dir derivation sites (`madshare.go` reconcile + imageproc; `api/api.go`
+  two image-dir derivation sites (`app.Start` reconcile + imageproc; `api/api.go`
   `/images/*` mount + cover read/write) at `variants/images`; one idempotent
   startup relocation of an existing `files/images` → `variants/images` (à la
   `storage.RelocateLegacyBlobs`). The `/images/*` URL is unchanged. Also rename the

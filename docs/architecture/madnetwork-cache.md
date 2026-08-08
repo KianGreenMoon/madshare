@@ -310,7 +310,7 @@ what tells an abandoned partial from a live one**, and reaping a running fetch's
 scratch file would be data loss mid-transfer.
 
 **Abandoned partials are swept automatically, at startup, unconditionally**
-(`database.ReapAbandonedPartials`, called from `madshare.go` before the index
+(`database.ReapAbandonedPartials`, called from `app.Start` before the index
 reconcile). The rule that makes this safe needs no age heuristic, no policy and
 no knob: *a process that has just started is writing nothing*, so every `.part`
 it finds is abandoned by definition — the live set is correctly `nil` there.
@@ -583,7 +583,7 @@ a feature exists.
 Shape, matching the prune job (`prune/`, `docs/architecture/prune-job.md`) rather
 than inventing a second pattern:
 
-- One goroutine, one sweep at a time, started from `madshare.go` only when a knob
+- One goroutine, one sweep at a time, started from `app.Start` only when a knob
   is non-zero.
 - Cadence hourly; a sweep is cheap (two indexed queries and some `unlink`s).
 - **Never touches an in-flight transfer** — a hash in `ActiveTransfers()` is
@@ -631,7 +631,7 @@ when it happens, and nothing else here.
 
 1. **Migration 040 + the index** — ✅ built. Table, `database/madnetwork_cache.go`
    (list / count / sum / hashes / touch / put / delete / reconcile),
-   reconciliation wired into `madshare.go` after the eviction sweep, and the
+   reconciliation wired into `app.Start` after the eviction sweep, and the
    dashboard's `cache` storage category. Tests: reconcile adopts an existing
    cache (reading the file's own tags), skips `.part` and stray names, drops
    fileless rows, is idempotent; the listing's page/count/select-all set agree
