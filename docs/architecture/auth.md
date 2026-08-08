@@ -173,6 +173,28 @@ override (`guest_playable_manual = 1`) always wins regardless of the policy.
 The admin opts in and owns the legal risk (tag-sourced licenses are unverified).
 See `docs/architecture/license-access.md` for implementation details.
 
+> **Guard — do not let a peer's license reach this policy.** The auto-derive
+> allowlist applies to a recording's `license` whatever its origin, so the moment
+> any import path copies a **remote** license onto a local recording, a foreign
+> node starts deciding who may play our bytes anonymously. One admin's opt-in
+> would then be extended by every peer whose tags we happen to cache.
+>
+> That cannot happen today, and the point of this note is to keep it that way.
+> The cached catalog *does* carry a peer's `license`/`guest_playable`
+> (`database/madnetwork.go`), but `POST /api/madnetwork/download` copies only the
+> remote **tagset text** onto the local draft — it writes no `license` at all —
+> and `license`/`guest`/`share_depth` are recording-level fields the uploader
+> bulk-edit path refuses outright with a 400. So no foreign license is ever
+> written locally and auto-derive cannot fire on one.
+>
+> **Read this before building any import path that copies license metadata.** If
+> per-origin trust is ever wanted, the sketch is an `uploaded_by_origin` concept
+> on `file_uploads` (local vs federated node key) with the auto-derive
+> `accessClause` gaining `AND f.origin = 'local'`, or a configurable per-peer
+> trust flag. Moved here from `.issues/open-issues.md` (2026-08-08) because the
+> person who needs the warning is whoever writes that import path, and they will
+> be reading this section rather than auditing an issues log.
+
 ### 5.2 The access decision
 
 For a request to play/download file *F* — access/license live on its **recording**
