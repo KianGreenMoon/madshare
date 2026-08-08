@@ -130,6 +130,34 @@ All three arrays are always present (never `null`). Each is capped at **50 resul
 - **Soft-deleted files** are excluded from all result sets.
 - **Result order:** alphabetical by name/title within each set.
 
+### Why Tracks matches the performer too (settled 2026-08-08)
+
+This was reopened as a UX question — searching a prolific artist fills the Tracks
+section with rows the Artists drill-down already gives you — and **decided in
+favour of keeping it**. Recorded here so it is not re-litigated.
+
+The reason is consistency with `/madnetwork`, not inertia. That page is the
+library's sibling and asked the same question first: `MadnetworkSearchArtists`
+deliberately drops the album-artist restriction so that **a pure performer is a
+search hit and never a dead end** (`docs/ui/artists-and-performers.md`). Removing
+performer matching from library Tracks would leave the two pages disagreeing
+about what an artist query means, which is a worse cost than a noisy section —
+and one the original framing of the question did not account for.
+
+The affordance it protects is narrow but real: a performer on a compilation they
+do not headline is reachable *only* this way, since they are not the album-artist
+the Artists grid lists. `TestSearch_MatchesPerformerOnCompilation` pins it.
+
+Consistent with the sibling call on album-title matching, which was tried and
+reverted off `aidev` for the same noise concern (branch
+`show_albums_tracks_in_search`): that experiment added rows that duplicated an
+album row already on screen, whereas performer matching adds rows reachable no
+other way. The two look alike and are not.
+
+If the noise is ever judged the bigger problem, the shape to reach for is
+**ranking or capping** performer-only matches below title matches — not dropping
+them, which is the option that breaks the sibling contract.
+
 ---
 
 ## Examples

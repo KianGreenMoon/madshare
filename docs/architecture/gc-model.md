@@ -514,8 +514,15 @@ Each phase leaves the system running; tests accompany each phase.
   `prune-job.md` / `file-list-scaling.md` updated to GC terms.
 
 Open (small) decisions, defaulted here, overridable at implementation time:
-trash **age-based** auto-purge is *off* by default (purge stays explicit;
-if ever wanted: a `[storage] trash_ttl_days = 0` sweep purging trashed rows
-older than the TTL — design when implementing); the reaper nudge is
+trash **age-based** auto-purge is *off* by default — and as of 2026-08-08 it is
+**deliberately not built at all**, not merely defaulted off. It was offered as
+one shared reaper (age + size ceiling) serving both this quarantine and the
+madnetwork download cache, and declined: nothing has been reported as painful,
+purge is already reachable by hand, and automatic deletion of data an admin
+explicitly kept earns its risk only once someone is actually short of disk. If
+ever wanted, the shape is unchanged — a `[storage] trash_ttl_days = 0` sweep
+purging trashed rows older than the TTL, sharing its mechanism with
+`docs/architecture/madnetwork-cache.md`'s retention daemon so the two cannot
+drift. The reaper nudge is
 asynchronous with the synchronous `purge→reap→purge` composition reserved
 for the delete-forever endpoints.
