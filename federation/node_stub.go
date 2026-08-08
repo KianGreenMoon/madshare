@@ -41,6 +41,7 @@ func StartTransport(config.YggdrasilConfig, *log.Logger) (*Mesh, error) {
 }
 
 func (m *Mesh) Stop()                    {}
+func (m *Mesh) AddPeer(string) error     { return errCompiledOut }
 func (m *Mesh) Address() net.IP          { return nil }
 func (m *Mesh) PublicKeyHex() string     { return "" }
 func (m *Mesh) InboundReaderAlive() bool { return false }

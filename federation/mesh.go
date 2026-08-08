@@ -6,9 +6,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -157,6 +159,33 @@ func (m *Mesh) writeIdentityFiles(keyFile string) {
 			m.logger.Printf("federation: could not write %s: %v (informational file only; the node is unaffected)", path, err)
 		}
 	}
+}
+
+// AddPeer dials an underlay peer while the node is running.
+//
+// Configured peers are dialled at startup, which is the whole story for a
+// server: an operator writes a peer list and restarts. A listener node cannot
+// work that way — it learns where the mesh is by signing in to a home server,
+// which happens long after startup and again whenever somebody adds a server
+// (docs/architecture/federation.md §"The household", "Getting onto the mesh at
+// all").
+//
+// Adding a peer that is already configured succeeds rather than failing.
+// yggdrasil itself refuses it (core.ErrLinkAlreadyConfigured), which is the
+// right answer to an operator writing the same line twice and the wrong one
+// here: the caller is a refresh loop re-offering everything it knows, and
+// "already there" is the outcome it wanted. Swallowed at this boundary rather
+// than at each caller, so no caller has to keep a set of what it has already
+// added — which would be a second, staler copy of what the core already knows.
+func (m *Mesh) AddPeer(uri string) error {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return fmt.Errorf("federation: peer %q: %w", uri, err)
+	}
+	if err := m.core.AddPeer(u, ""); err != nil && !errors.Is(err, core.ErrLinkAlreadyConfigured) {
+		return fmt.Errorf("federation: add peer %q: %w", uri, err)
+	}
+	return nil
 }
 
 // Address returns this node's yggdrasil address (200::/7), derived from its

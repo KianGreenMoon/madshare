@@ -281,3 +281,33 @@ func TestNetworkPublishNothing(t *testing.T) {
 		t.Errorf("PublishNothing again: %v", err)
 	}
 }
+
+// TestNetworkAddPeer: a device learns where the mesh is by signing in, which
+// happens long after startup — so a peer added now has to be dialled now, not at
+// the next launch. Re-adding is not a second link, which is what lets a periodic
+// refresh re-add everything it knows.
+func TestNetworkAddPeer(t *testing.T) {
+	if !federation.Available {
+		t.Skip("built with -tags nofederation")
+	}
+	lg, out := testLogger()
+	inst, err := app.Start(context.Background(), meshConfig(t, t.TempDir()), app.WithLogger(lg))
+	if err != nil {
+		t.Fatalf("Start: %v\nlog:\n%s", err, out)
+	}
+	defer inst.Stop(context.Background())
+
+	net, _ := inst.Network()
+	// A peer that will never answer: the claim under test is that the URI is
+	// accepted and dialling starts, not that anything is on the other end.
+	const uri = "tcp://127.0.0.1:1"
+	if err := net.AddPeer(uri); err != nil {
+		t.Fatalf("AddPeer: %v", err)
+	}
+	if err := net.AddPeer(uri); err != nil {
+		t.Errorf("AddPeer again: %v — re-adding a known peer must be a no-op, not an error", err)
+	}
+	if err := net.AddPeer("://nonsense"); err == nil {
+		t.Error("AddPeer accepted a malformed URI")
+	}
+}

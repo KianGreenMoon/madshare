@@ -67,6 +67,14 @@ type Network interface {
 	// pushes to its home server so anything can learn it holds anything.
 	Holdings() []string
 
+	// AddPeer dials an underlay peer now, rather than at the next start.
+	//
+	// A device learns where the mesh is by signing in, which happens long after
+	// startup — so without this, "signing in also gets you onto the mesh" would
+	// mean "next time you open the app". Re-adding a peer already dialled is not
+	// a second link, so a caller needs no bookkeeping.
+	AddPeer(uri string) error
+
 	// PublishNothing pins this node's default sharing scope to Local, so nothing
 	// it holds is advertised in a catalog or served as bytes. Idempotent; a
 	// listener node calls it once its mesh is up.
@@ -126,6 +134,8 @@ func (n network) Homes(ctx context.Context) ([]federation.HomeNode, error) {
 }
 
 func (n network) Holdings() []string { return n.inst.node.CacheHoldings() }
+
+func (n network) AddPeer(uri string) error { return n.inst.node.Mesh().AddPeer(uri) }
 
 func (n network) PublishNothing(ctx context.Context) error {
 	policy, err := n.inst.db.GetMadnetworkPolicy(ctx)
