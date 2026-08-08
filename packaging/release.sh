@@ -20,8 +20,16 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
 : "${DIST:=dist}"
-: "${TARGETS:=linux/amd64 linux/arm64 freebsd/amd64 freebsd/arm64}"
+: "${TARGETS:=linux/amd64 linux/arm64 linux/armhf freebsd/amd64 freebsd/arm64}"
 : "${FREEBSD_ABI:=14}"
+# armhf is a PACKAGING name, not a GOARCH: it means 32-bit ARM with hardware
+# floating point, which Go spells GOARCH=arm plus a GOARM level. 7 is what
+# "armhf" means to Debian and Fedora (ARMv7-A + VFPv3), and it is the level the
+# artifacts are named for. Set explicitly rather than left to the toolchain's
+# default, which is 7 today but has not always been. A Raspberry Pi 1 / Zero is
+# ARMv6 and needs ARMHF_GOARM=6 — that binary still runs on ARMv7, so it is the
+# safe choice for a mixed fleet, at the cost of the newer instructions.
+: "${ARMHF_GOARM:=7}"
 : "${GO:=go}"
 : "${NFPM_VERSION:=v2.43.0}"
 NFPM="$GO run github.com/goreleaser/nfpm/v2/cmd/nfpm@${NFPM_VERSION}"
@@ -113,6 +121,22 @@ for target in $TARGETS; do
 	GOOS=${target%/*}
 	GOARCH=${target#*/}
 
+	# ARCH is the name in artifacts and package metadata; GOARCH/GOARM are what
+	# the toolchain wants. They differ only for armhf, where "arm" alone would
+	# name three incompatible ABIs (armel/armhf, v5/v6/v7) and tell a person
+	# downloading it nothing. NFPM_ARCH is nfpm's own spelling, which it maps per
+	# packager (arm7 -> deb armhf, rpm armv7hl).
+	ARCH=$GOARCH
+	GOARM=
+	NFPM_ARCH=$GOARCH
+	case "$GOARCH" in
+	armhf)
+		GOARCH=arm
+		GOARM=$ARMHF_GOARM
+		NFPM_ARCH=arm$ARMHF_GOARM
+		;;
+	esac
+
 	case "$GOOS" in
 	freebsd)
 		PREFIX=/usr/local
@@ -132,16 +156,20 @@ for target in $TARGETS; do
 		;;
 	esac
 
-	say "Building ${GOOS}/${GOARCH}"
-	BIN="$WORK/bin/${GOOS}-${GOARCH}/madshare"
+	if [ -n "$GOARM" ]; then
+		say "Building ${GOOS}/${ARCH} (GOARCH=${GOARCH} GOARM=${GOARM})"
+	else
+		say "Building ${GOOS}/${ARCH}"
+	fi
+	BIN="$WORK/bin/${GOOS}-${ARCH}/madshare"
 	mkdir -p "$(dirname "$BIN")"
-	CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+	CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" GOARM="$GOARM" \
 		"$GO" build -tags embedsource -trimpath -ldflags "$LDFLAGS" -o "$BIN" ./
 
 	# ── Plain tarball ────────────────────────────────────────────────────
 	# Self-contained and prefix-agnostic: unpack it anywhere, or follow the
 	# generated INSTALL.txt to land it under /usr/local.
-	NAME="madshare-${FILEVER}-${GOOS}-${GOARCH}"
+	NAME="madshare-${FILEVER}-${GOOS}-${ARCH}"
 	TARDIR="$WORK/tar/$NAME"
 	mkdir -p "$TARDIR/contrib"
 	install -m 0755 "$BIN" "$TARDIR/madshare"
@@ -165,16 +193,16 @@ for target in $TARGETS; do
 		# ── deb + rpm (nfpm) ─────────────────────────────────────────
 		# The unit ships with /usr/local rewritten to the package
 		# prefix; everything else in it is already package-correct.
-		UNIT="$WORK/systemd/${GOARCH}/madshare.service"
+		UNIT="$WORK/systemd/${ARCH}/madshare.service"
 		mkdir -p "$(dirname "$UNIT")"
 		sed -e "s|/usr/local/bin|/usr/bin|g" contrib/systemd/madshare.service >"$UNIT"
 
 		# The ${MADSHARE_*} markers are filled in here rather than left to
 		# nfpm's own environment expansion, which does not reach into
 		# contents[].src.
-		CFG="$WORK/nfpm-${GOARCH}.yaml"
+		CFG="$WORK/nfpm-${ARCH}.yaml"
 		sed \
-			-e "s|\${MADSHARE_ARCH}|${GOARCH}|g" \
+			-e "s|\${MADSHARE_ARCH}|${NFPM_ARCH}|g" \
 			-e "s|\${MADSHARE_VERSION}|${PKG_VERSION}|g" \
 			-e "s|\${MADSHARE_RELEASE}|${PKG_RELEASE}|g" \
 			-e "s|\${MADSHARE_BIN}|${BIN}|g" \
@@ -184,17 +212,17 @@ for target in $TARGETS; do
 			$NFPM package --config "$CFG" \
 				--packager "$packager" --target "$DIST" >/dev/null
 		done
-		echo "    madshare ${PKG_VERSION}-${PKG_RELEASE} ${GOARCH}: .deb .rpm"
+		echo "    madshare ${PKG_VERSION}-${PKG_RELEASE} ${ARCH}: .deb .rpm"
 		;;
 	freebsd)
 		# ── FreeBSD .pkg ─────────────────────────────────────────────
 		case "$GOARCH" in
 		amd64) FBSD_ABI="FreeBSD:${FREEBSD_ABI}:amd64"; FBSD_ARCH="freebsd:${FREEBSD_ABI}:x86:64" ;;
 		arm64) FBSD_ABI="FreeBSD:${FREEBSD_ABI}:aarch64"; FBSD_ARCH="freebsd:${FREEBSD_ABI}:aarch64:64" ;;
-		*) echo "release: no FreeBSD ABI mapping for $GOARCH" >&2; exit 1 ;;
+		*) echo "release: no FreeBSD ABI mapping for $ARCH (32-bit arm is a Linux target only)" >&2; exit 1 ;;
 		esac
 
-		STAGE="$WORK/stage/freebsd-$GOARCH"
+		STAGE="$WORK/stage/freebsd-$ARCH"
 		rm -rf "$STAGE"
 		mkdir -p "$STAGE$BINDIR" "$STAGE$RCDIR" "$STAGE$CONFDIR" "$STAGE$DOCDIR/nginx"
 		install -m 0555 "$BIN" "$STAGE$BINDIR/madshare"
@@ -206,14 +234,14 @@ for target in $TARGETS; do
 		install -m 0644 README.md LICENSE.md "$STAGE$DOCDIR/"
 		install -m 0644 contrib/nginx/* "$STAGE$DOCDIR/nginx/"
 
-		SCRIPTS="$WORK/freebsd-scripts/$GOARCH"
+		SCRIPTS="$WORK/freebsd-scripts/$ARCH"
 		mkdir -p "$SCRIPTS"
 		for s in pre-install post-install post-deinstall; do
 			subst "packaging/freebsd/${s}.sh" "$SCRIPTS/${s}.sh" 0644
 		done
 		subst packaging/freebsd/pkg-message "$SCRIPTS/pkg-message" 0644
 
-		PKGFILE="$DIST/madshare-${FBSD_VERSION}-freebsd${FREEBSD_ABI}-${GOARCH}.pkg"
+		PKGFILE="$DIST/madshare-${FBSD_VERSION}-freebsd${FREEBSD_ABI}-${ARCH}.pkg"
 		"$GO" run -tags tools ./packaging/cmd/fbsdpkg \
 			-stage "$STAGE" \
 			-name madshare \
@@ -236,8 +264,8 @@ for target in $TARGETS; do
 			-script "pre-install=$SCRIPTS/pre-install.sh" \
 			-script "post-install=$SCRIPTS/post-install.sh" \
 			-script "post-deinstall=$SCRIPTS/post-deinstall.sh" \
-			-o "$WORK/freebsd-$GOARCH.tar"
-		zstd -19 -q -f -o "$PKGFILE" "$WORK/freebsd-$GOARCH.tar"
+			-o "$WORK/freebsd-$ARCH.tar"
+		zstd -19 -q -f -o "$PKGFILE" "$WORK/freebsd-$ARCH.tar"
 		echo "    $(basename "$PKGFILE")"
 		;;
 	esac

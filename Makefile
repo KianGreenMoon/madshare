@@ -76,14 +76,16 @@ clean:
 	rm -rf tests/mesh/bin dist
 
 # Release artifacts for every supported platform, into ./dist: a .deb and .rpm
-# per Linux architecture, a FreeBSD .pkg per FreeBSD architecture, a plain
-# tarball for each, and SHA256SUMS over the lot. Everything is cross-built on
+# per Linux architecture (amd64, arm64 and armhf — 32-bit ARM, hard float), a
+# FreeBSD .pkg per FreeBSD architecture, a plain tarball for each, and SHA256SUMS
+# over the lot. Everything is cross-built on
 # this host — no root, no distro tooling, no FreeBSD box (see
 # packaging/release.sh and docs/building.md "Release packages").
 #
 # Refuses a dirty tree, because a release binary embeds `git archive HEAD` as
 # its AGPL Corresponding Source: `make release ALLOW_DIRTY=1` for a trial run.
-# Other knobs: VERSION, TARGETS, DIST, FREEBSD_ABI.
+# Other knobs: VERSION, TARGETS, DIST, ARMHF_GOARM (7; use 6 for a Pi 1/Zero),
+# FREEBSD_ABI.
 release:
 	./packaging/release.sh
 

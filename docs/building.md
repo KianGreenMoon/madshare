@@ -208,14 +208,33 @@ Builds the distributable artifacts for every supported platform **on one host**,
 without root, without distro tooling and without a FreeBSD machine — the whole
 matrix is cross-compiled, and each packager is a program that runs anywhere:
 
-| Target | Artifacts |
-|---|---|
-| `linux/amd64` | `.deb`, `.rpm`, `.tar.gz` |
-| `linux/arm64` | `.deb`, `.rpm`, `.tar.gz` |
-| `freebsd/amd64` | `.pkg`, `.tar.gz` |
-| `freebsd/arm64` | `.pkg`, `.tar.gz` |
+| Target | Artifacts | Package architecture |
+|---|---|---|
+| `linux/amd64` | `.deb`, `.rpm`, `.tar.gz` | `amd64` / `x86_64` |
+| `linux/arm64` | `.deb`, `.rpm`, `.tar.gz` | `arm64` / `aarch64` |
+| `linux/armhf` | `.deb`, `.rpm`, `.tar.gz` | `armhf` / `armv7hl` |
+| `freebsd/amd64` | `.pkg`, `.tar.gz` | `freebsd:14:x86:64` |
+| `freebsd/arm64` | `.pkg`, `.tar.gz` | `freebsd:14:aarch64` |
 
-plus a `SHA256SUMS` over all of them. The orchestration lives in
+plus a `SHA256SUMS` over all of them.
+
+**`armhf` is a packaging name, not a `GOARCH`.** It means 32-bit ARM with
+hardware floating point, which Go spells `GOARCH=arm` plus a `GOARM` level, and
+which deb and rpm each spell differently again — so the script keeps the label
+(`armhf`, used in filenames and metadata) separate from the toolchain values.
+`ARMHF_GOARM` picks the level: **7** by default, because that is what "armhf"
+means to Debian and Fedora (ARMv7-A + VFPv3). A **Raspberry Pi 1 or Zero is
+ARMv6** and needs `ARMHF_GOARM=6`; an ARMv6 build also runs on ARMv7, so it is
+the safe choice for a mixed fleet at the cost of the newer instructions.
+
+The 32-bit target is a full build, not a reduced one: federation included.
+Verified under `qemu-arm-static` (this project's development host is Apple
+silicon, which cannot execute 32-bit ARM at all) — SQLite, an 18 MB upload with
+tag extraction, cover-variant generation, `ffprobe`/`fpcalc` analysis, the
+yggdrasil transport, a `[[listen_mesh]]` bind on the node's own mesh address, and
+an ordered shutdown all behave. Byte accounting across the codebase is `int64`
+and every 64-bit atomic is a typed `atomic.Int64`, so neither of the two usual
+32-bit hazards — truncated sizes, unaligned atomics — applies. The orchestration lives in
 [`packaging/release.sh`](../packaging/release.sh); `make release` only calls it,
 so the script is equally usable on its own.
 
@@ -229,10 +248,12 @@ endpoint does not match it — a licensing defect rather than a matter of taste.
 Use `make release ALLOW_DIRTY=1` for a throwaway build.
 
 Knobs (environment variables): `VERSION`, `DIST` (default `dist`), `TARGETS`
-(default all four), `FREEBSD_ABI` (default `14`), `GO`, `NFPM_VERSION`.
+(default: all five above), `ARMHF_GOARM` (default `7`), `FREEBSD_ABI` (default
+`14`), `GO`, `NFPM_VERSION`.
 
 ```bash
 make release TARGETS="linux/amd64"           # one platform
+make release TARGETS="linux/armhf" ARMHF_GOARM=6   # Raspberry Pi 1 / Zero
 make release FREEBSD_ABI=15                  # .pkg for FreeBSD 15
 ```
 
@@ -393,8 +414,13 @@ For the supported release targets this is already done for you — see
 is pure Go, cross-compiling is just `GOOS`/`GOARCH`:
 
 ```bash
-# Linux arm64 (e.g. a Raspberry Pi / ARM server)
+# Linux arm64 (e.g. a Raspberry Pi 3+ / ARM server)
 CGO_ENABLED=0 GOOS=linux  GOARCH=arm64 go build -o madshare-linux-arm64 ./
+
+# Linux armhf — 32-bit ARM, hard float (ARMv7 boards, older Pi). Go 1.26 already
+# defaults GOARM to 7; it is spelled out because that default has changed before,
+# and because 6 is what an ARMv6 board (Pi 1 / Zero) needs.
+CGO_ENABLED=0 GOOS=linux  GOARCH=arm GOARM=7 go build -o madshare-linux-armhf ./
 
 # Linux amd64, API-only
 CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 go build -tags nowebui -o madshare-api-linux-amd64 ./

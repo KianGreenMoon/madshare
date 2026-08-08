@@ -22,10 +22,17 @@ import (
 
 // fillBytes returns n deterministic, chunk-distinct bytes (so per-chunk hashes
 // differ and a multi-chunk transfer is a real test).
+//
+// The multiplier is 0x9E3779B1, which does not fit in a 32-bit int — so the
+// arithmetic is done in uint64 rather than in int, or this package fails to
+// COMPILE on a 32-bit platform (GOARCH=arm, i.e. the armhf release target) and
+// takes the whole test suite with it. uint64 also keeps the byte pattern
+// identical to what 64-bit hosts produced before, since i is never negative and
+// the products never came close to wrapping.
 func fillBytes(n int) []byte {
 	b := make([]byte, n)
 	for i := range b {
-		b[i] = byte((i*2654435761 + i/251) & 0xff)
+		b[i] = byte((uint64(i)*2654435761 + uint64(i)/251) & 0xff)
 	}
 	return b
 }
