@@ -1,11 +1,15 @@
 # Madplayer — the native client
 
-> **Status: designed, prerequisites cleared, not started.** This doc opened for a
+> **Status: designed, prerequisites cleared, started.** This doc opened for a
 > year with "waits until federation is designed and landed". That wait is over —
 > F0–F8 all shipped, including the **F7 capability tokens** this client was named
-> as the reason for (`docs/architecture/federation.md` §Principals & access). What
-> remains is a scheduling decision and one unmade technical choice (the UI
-> toolkit), not a blocked dependency.
+> as the reason for (`docs/architecture/federation.md` §Principals & access). The
+> last unmade technical choice, the UI toolkit, is now settled on **Gio** (see
+> *The UI toolkit*), so what remains is only the building.
+>
+> Work happens on the temporary `madplayer` branch, in a directory of its own with
+> its own Go module, and is kept strictly separate from server commits so a
+> server-side fix can reach the main branch without dragging client code with it.
 
 ## What this is
 
@@ -56,10 +60,9 @@ two products.
   web UI already delivers them. A canvas-rendered Go UI (Gio/Fyne compile to a
   WebAssembly `<canvas>`) was considered for web reuse and **rejected** — the
   canvas loses all of the above. So web stays JS.
-- **Native → a separate pure-Go GUI.** Desktop + mobile get a Go UI (Gio / Fyne
-  leaning; toolkit not finalised — see *Open: UI toolkit*). Not Flutter/Godot:
-  those still leave a second language + an FFI seam, and don't reuse on the web
-  the way you'd want anyway.
+- **Native → a separate pure-Go GUI**, in **Gio** (decided 2026-08-08 — see *The
+  UI toolkit*). Not Flutter/Godot: those still leave a second language + an FFI
+  seam, and don't reuse on the web the way you'd want anyway.
 
 ### The native client embeds the backend as a library
 
@@ -349,26 +352,43 @@ repo has the opposite property — it ships its own UI and can outrun the server
 talks to, which is why the API contract, not the shared code, is what keeps them
 in agreement.
 
-## Open: UI toolkit
+## The UI toolkit
 
-Gio vs. Fyne (or something better) is **not** decided. The criterion is the one
-tradeoff that matters:
+**Gio** (decided 2026-08-08). The shortlist was Gio vs. Fyne, on the one tradeoff
+that mattered — single-language Go end to end, no FFI seam, one build for desktop
+and mobile, at the cost of weaker UI polish, a smaller widget ecosystem, and
+owning audio playback yourself. A two-language stack with a Go core was rejected
+for the seam and the lack of web reuse.
 
-- **Single-language Go (Gio / Fyne):** one language end-to-end, no FFI seam, one
-  build for desktop + mobile (+ a WASM/canvas web build we are *not* using). Cost:
-  weaker UI polish / smaller widget ecosystem, and you own audio playback.
-- vs. a two-language stack with a Go core — rejected here for the seam and the
-  lack of web reuse.
+It was settled the way this section always said to settle it: build the same real
+screen — a 5000-row track list and a player bar — in **both**, over identical
+rows so nothing but the toolkit could differ, and look at it. Gio won on the look,
+which was the stated criterion. The supporting numbers, on Linux/aarch64/Wayland:
 
-**De-risk before committing:** build one real screen (a track list + the player
-bar) in the candidate toolkit, compile it to the actual target (desktop *and* a
-phone), and **look at it** — load size, scroll feel, text rendering, "real app vs.
-game UI". The feel is the thing you cannot take on faith.
+| | Gio v0.10.1 | Fyne v2.8.0 |
+|---|---|---|
+| Binary, unstripped, all backends | **14.2 MiB** | 28.4 MiB |
+| Native Wayland | yes | yes |
+| Extra system dev packages | 2, both optional (each backend has a fallback) | 1, **mandatory** — will not link without it |
+
+Two things were kept out of the comparison because they could not discriminate
+between the candidates: **audio decoding** (the same oto/beep burden either way —
+it remains real work, see *The native client's own burdens*) and **icons** (Fyne
+ships a themed set, Gio does not; that is now a cost Gio has to pay).
+
+**The phone half of "compile it to the actual target" is still owed.** It could
+not be done on the development host: `gogio` resolves the NDK through an
+`archNDK()` that panics on `linux/arm64`, the NDK ships no linux-aarch64 host
+toolchain, and the 16 KB-page emulation wall from
+`docs/architecture/android-app.md` sits behind both — the same split that app
+already lives with, so the APK is built on x86_64 and installed over `adb`. Until
+someone has actually looked at it on a phone, "one build for desktop and mobile"
+is a claim this project has verified only on the desktop side.
 
 ## First steps when it's time
 
-1. **UI-toolkit prototype + decision** (above). It is now the only blocking
-   unknown, which is why it moved to the front.
+1. ~~**UI-toolkit prototype + decision.**~~ Done — Gio, see *The UI toolkit*. The
+   one thing it still owes is a look at the phone build.
 2. **Level 1: the API client.** Sign-in (bearer token), library browse, playback,
    playlists — against a *running* madshare, no embedding. Read
    `docs/ui/library-page.md` and `docs/ui/player-and-queue.md` as the spec, and
