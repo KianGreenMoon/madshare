@@ -93,13 +93,16 @@ The level-0 build that exists today has its own scanner and index precisely
 because the backend is not embedded yet. Those are **provisional**, and they go
 when it is. What survives is the UI, the queue, and the playback layer.
 
-**The gap embedding needs:** `madshare.go` is ~700 lines in `package main`, so
-none of the startup is importable — the reconciliation passes, the worker pools,
+**The gap embedding needs:** `madshare.go` was ~700 lines in `package main`, so
+none of the startup was importable — the reconciliation passes, the worker pools,
 the listeners. Embedding requires a package that owns that startup and exposes
 it, which is also the **facade** the client should call rather than reaching into
 `database` and friends. It is a madshare change, and it is the right one: the
 alternative is the client re-composing the startup itself and drifting from
-`main` on every change.
+`main` on every change. That package is
+**`daemonlord.ygg/madshare/app`** — design, surface and the four decisions behind
+it in `docs/architecture/embedding.md`; `madshare.go` is now a shim over the same
+`app.Start` the client calls, which is what stops the two from drifting.
 
 ## The decisions
 
