@@ -10,16 +10,22 @@ Two deliverables, deliberately staged:
 1. **`/admin/cache`, a manual control page** — built now. Primarily a cleaning
    surface; occasionally a rescue one (materialize a cached blob into the
    library, or download it to the device).
-2. **The retention daemon** — designed here and **deliberately not built**
-   (owner decision, 2026-08-08). Same shape as the planned trash reaper: a policy
-   that deletes by age and by ceiling, shipped with both knobs **off**. It was
-   offered as one shared reaper serving both this cache and the trash quarantine,
-   and declined — not for lack of time, but because nothing has been reported as
-   painful, both surfaces already have manual controls, and (the reason specific
-   to *this* half) deleting a cache entry does not only reclaim disk, it
-   **withdraws a seed from the swarm**. See "what makes deletion a real decision"
-   below. The design stays here so it can be built quickly if an operator's cache
-   is ever genuinely growing unbounded; that evidence is what would re-open it.
+2. **The retention daemon** — designed here, **still to be built**. Same shape as
+   the planned trash reaper: a policy that deletes by age and by ceiling, shipped
+   with both knobs **off**.
+
+   **Not scheduled yet** (owner decision, 2026-08-08): offered as one shared
+   reaper serving both this cache and the trash quarantine, and put back — not
+   because it is unwanted, but because nothing has been reported as painful, both
+   surfaces already have manual controls, and (the reason specific to *this*
+   half) deleting a cache entry does not only reclaim disk, it **withdraws a seed
+   from the swarm**. See "what makes deletion a real decision" below.
+
+   When it is picked up it should be built as **one mechanism with two
+   consumers**, shared with `gc-model.md`'s trash TTL, so the two policies cannot
+   drift. This doc is where the work is tracked; it is deliberately not carried
+   in `.issues/open-issues.md`, which is for defects and unanswered questions
+   rather than for designed features awaiting their turn.
 
 Reference for the cache's place in the transfer machinery:
 [`federation.md`](federation.md) §Distribution.
