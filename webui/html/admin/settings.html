@@ -143,17 +143,20 @@
       </p>
       <label class="rec-access-field">Download cache limit
         <input type="number" id="madnetworkCacheMax" min="0" step="1" inputmode="numeric"
-               placeholder="0" aria-describedby="madnetworkCacheMaxHint">
+               placeholder="Default" aria-describedby="madnetworkCacheMaxHint">
       </label>
       <p class="section-copy" id="madnetworkCacheMaxHint">
         In <strong>MiB</strong>, for what the swarm has fetched from other nodes
         (<a href="/admin/cache">Madnetwork cache</a>). While the cache is over the
         limit, the least recently used blobs are deleted until it fits; lowering it
-        takes effect immediately. <strong>0 means no limit</strong>, which is the
-        default &mdash; the number is yours to choose, because a guessed one would
-        start deleting other people&rsquo;s content the moment you upgraded.
-        Nothing here is lost for good: what the swarm fetched can be fetched again
-        while a holder remains.
+        takes effect immediately.
+        <strong>Leave it empty</strong> to use the configured default
+        (<code>[federation] cache_max_mb</code>, <span id="madnetworkCacheDefault">0</span>),
+        or type <strong>0</strong> for no limit at all &mdash; which is a setting of
+        its own, not the same as leaving it empty. A default of 0 ships on purpose:
+        a guessed one would start deleting other people&rsquo;s content the moment
+        you upgraded. Nothing here is lost for good, since what the swarm fetched
+        can be fetched again while a holder remains.
       </p>
       <p class="section-copy">
         The outbound seeding rate cap is a server setting

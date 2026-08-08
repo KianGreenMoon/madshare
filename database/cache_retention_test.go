@@ -125,45 +125,106 @@ func TestSweepCacheCeilingSpareTheTransferInFlight(t *testing.T) {
 	}
 }
 
-// The ceiling is a runtime setting, and 0 = off is what an untouched node reads.
-func TestMadnetworkPolicyCarriesTheCacheCeiling(t *testing.T) {
+// The ceiling is three-valued: no override (inherit the config), a pinned
+// number, or a pinned 0 meaning "no limit". The last two are different
+// settings, and collapsing them is the bug this pins.
+func TestCacheCeilingOverrideIsThreeValued(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
+	got, err := db.GetCacheCeiling(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Errorf("a fresh node has an override of %d, want none", *got)
+	}
+
+	pin := int64(2) << 30
+	if err := db.SetCacheCeiling(ctx, &pin); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = db.GetCacheCeiling(ctx); err != nil || got == nil || *got != pin {
+		t.Fatalf("override = %v (%v), want %d", got, err, pin)
+	}
+
+	// A pinned 0 is "no limit", chosen — NOT the absence of a choice.
+	zero := int64(0)
+	if err := db.SetCacheCeiling(ctx, &zero); err != nil {
+		t.Fatal(err)
+	}
+	got, err = db.GetCacheCeiling(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("a pinned 0 read back as no override; 'no limit' and 'use the default' are different")
+	}
+	if *got != 0 {
+		t.Errorf("override = %d, want 0", *got)
+	}
+
+	// Clearing goes back to the config file.
+	if err := db.SetCacheCeiling(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = db.GetCacheCeiling(ctx); err != nil || got != nil {
+		t.Errorf("after clearing: %v (%v), want no override", got, err)
+	}
+
+	// A garbage stored value reads as no override rather than as some number:
+	// the fallback chain always has a config value, and a node must not start
+	// deleting on something nobody can read.
+	if err := db.SetSetting(ctx, settingMadnetworkCacheMaxBytes, "two gigs"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = db.GetCacheCeiling(ctx); err != nil || got != nil {
+		t.Errorf("unparseable override read as %v, want none", got)
+	}
+}
+
+// The resolution rule the settings card and the sweep must agree on.
+func TestResolveCacheCeiling(t *testing.T) {
+	pin := func(n int64) *int64 { return &n }
+	cases := []struct {
+		name     string
+		override *int64
+		def      int64
+		want     int64
+	}{
+		{"no override inherits the config", nil, 512, 512},
+		{"no override, no config = no limit", nil, 0, 0},
+		{"an override wins over the config", pin(256), 512, 256},
+		{"a pinned 0 beats a configured limit — that is what an override is for", pin(0), 512, 0},
+		{"a negative override is treated as none", pin(-5), 512, 0},
+	}
+	for _, tc := range cases {
+		if got := ResolveCacheCeiling(tc.override, tc.def); got != tc.want {
+			t.Errorf("%s: got %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// Saving the rest of the madnetwork policy must not disturb the ceiling: they
+// are separate keys precisely so the whole-object write cannot reach it.
+func TestSavingThePolicyLeavesTheCeilingAlone(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	pin := int64(700)
+	if err := db.SetCacheCeiling(ctx, &pin); err != nil {
+		t.Fatal(err)
+	}
 	p, err := db.GetMadnetworkPolicy(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.CacheMaxBytes != 0 {
-		t.Errorf("a fresh node reads a ceiling of %d, want 0 = off", p.CacheMaxBytes)
-	}
-
-	p.CacheMaxBytes = 2 << 30
+	p.AutoapproveDownloads = true
 	if err := db.SetMadnetworkPolicy(ctx, p); err != nil {
 		t.Fatal(err)
 	}
-	got, err := db.GetMadnetworkPolicy(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.CacheMaxBytes != 2<<30 {
-		t.Errorf("ceiling = %d, want %d", got.CacheMaxBytes, int64(2<<30))
-	}
-	// Writing the policy must not disturb its neighbours — this row is written
-	// whole, and the seed switches default ON.
-	if !got.SeedEnabled || !got.SeedCache {
-		t.Error("saving a ceiling switched seeding off")
-	}
-
-	// A garbage stored value reads as off rather than as some number: the safe
-	// direction is keeping too much, never deleting on a typo.
-	if err := db.SetSetting(ctx, settingMadnetworkCacheMaxBytes, "two gigs"); err != nil {
-		t.Fatal(err)
-	}
-	if got, err = db.GetMadnetworkPolicy(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if got.CacheMaxBytes != 0 {
-		t.Errorf("unparseable ceiling read as %d, want 0", got.CacheMaxBytes)
+	got, err := db.GetCacheCeiling(ctx)
+	if err != nil || got == nil || *got != pin {
+		t.Errorf("ceiling after a policy save = %v (%v), want %d", got, err, pin)
 	}
 }

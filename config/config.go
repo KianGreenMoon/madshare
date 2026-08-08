@@ -216,6 +216,22 @@ type FederationConfig struct {
 	// to another holder, so the bytes it did send are wasted. On a link that
 	// cannot spare ~256 KiB/s, turning seeding off is the honest setting.
 	FetchRateKiB int `toml:"fetch_rate_kib"`
+	// CacheMaxMB is the DEFAULT ceiling on the download cache, in MiB: while the
+	// cache exceeds it, least-recently-used blobs are evicted until it fits
+	// (docs/architecture/madnetwork-cache.md §"The retention ceiling").
+	//
+	// 0 (the default) is no limit; negative is clamped to 0 with a warning. It is
+	// the same three-layer arrangement the rate caps above use — config here,
+	// overridable at runtime from the settings card, and an unset override means
+	// "inherit this". The runtime override is stored in BYTES
+	// (`madnetwork.cache_max_bytes`); this is MiB because that is the unit a
+	// person writing a config file thinks in, matching storage.max_upload_mb.
+	//
+	// Shipping 0 is deliberate: a guessed ceiling would start deleting other
+	// people's content on every existing node the moment it upgraded. An embedder
+	// with no config file sets this itself — madplayer defaults it to 2 GiB,
+	// because a fresh install has an empty cache and no such history.
+	CacheMaxMB int `toml:"cache_max_mb"`
 	// Member quotas (F7 item 6, docs/architecture/federation.md §Distribution,
 	// "What a member may cost us"). SeedRateKiB above is one bucket for every
 	// requester, which was the whole policy while a requester was always a
@@ -499,6 +515,18 @@ func (c Config) MadnetworkCacheDir() string {
 	return filepath.Join(c.DataDir, "cache", "madnetwork")
 }
 
+// CacheDefaultBytes is [federation].cache_max_mb in bytes — the ceiling used
+// when no runtime override is set. 0 means no limit.
+//
+// One conversion, here, so nothing downstream has to remember that the config
+// speaks MiB while the setting and the sweep speak bytes.
+func (c Config) CacheDefaultBytes() int64 {
+	if c.Federation.CacheMaxMB <= 0 {
+		return 0
+	}
+	return int64(c.Federation.CacheMaxMB) << 20
+}
+
 // resolveGitRepo trims [webui].git_repo and warns (non-fatal) when a non-empty
 // value doesn't look like an http(s) URL — the UI links to it verbatim.
 func (c *Config) resolveGitRepo() {
@@ -592,6 +620,7 @@ func (c *Config) resolveStorageWorkers() {
 		{"per_member_rate_kib", &c.Federation.PerMemberRateKiB},
 		{"member_max_transfers", &c.Federation.MemberMaxTransfers},
 		{"per_member_max_transfers", &c.Federation.PerMemberMaxTransfers},
+		{"cache_max_mb", &c.Federation.CacheMaxMB},
 	} {
 		if *cap.val < 0 {
 			c.warnings = append(c.warnings, fmt.Sprintf(

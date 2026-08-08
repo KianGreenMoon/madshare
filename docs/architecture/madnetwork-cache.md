@@ -568,24 +568,42 @@ disabled alone. The **ceiling is built**; the age knob is not.
 - `madnetwork.cache_max_age_days` — evict entries whose `last_used_at` is older
   than N days. **Not built.**
 
-Both are **runtime settings in `MadnetworkPolicy`** (`GET/POST
-/api/admin/settings/madnetwork`, a card on `/admin/settings`), not static config,
-so an operator can change them without a restart — matching `seed_enabled`,
-`seed_cache` and `autoapprove_downloads`. **There is deliberately no TOML key**
-(owner, 2026-08-08): a ceiling is something an operator adjusts while watching a
-disk fill, and a knob that needs a config edit and a restart to move is a knob
-that stays wrong.
+**Three layers, exactly like the swarm rate caps** (owner, 2026-08-08) — a
+config default, a runtime override, and an "unset" that means inherit:
 
-**Both default to 0 = off.** The mechanism is built in full; the numbers are the
-operator's. A guessed default here would silently delete other people's content
-on every existing node the moment they upgrade — the worst possible way to learn
-a feature exists.
+| Layer | Where | Meaning |
+|---|---|---|
+| Config default | `[federation] cache_max_mb` (MiB) | the ceiling when nothing overrides it; **0 = no limit**, and it is what ships |
+| Runtime override | `madnetwork.cache_max_bytes` (bytes) | set on the settings card; a stored **0 is a real override** meaning "no limit" |
+| Unset override | key absent | **inherit the config file** — the UI's *Default* |
 
-The **API field is a pointer** (`cache_max_bytes`, absent = unchanged), for the
-sharpest version of the reason the neighbouring fields are: this row is written
-whole, so an absent field read as 0 would not merely reset a preference, it would
-switch the eviction of other people's content on or off. The card types **MiB**
-and stores **bytes** — one conversion, at the edge.
+`database.ResolveCacheCeiling(override, configDefault)` is the one function both
+the sweep and the card resolve through, so they cannot disagree about what is in
+force. Config in MiB and the setting in bytes is deliberate: MiB is the unit
+somebody writing a config file thinks in (matching `storage.max_upload_mb`),
+bytes is what the sweep compares, and `Config.CacheDefaultBytes()` is the single
+conversion.
+
+The runtime layer exists because a ceiling is adjusted while watching a disk
+fill, and a knob that needs a config edit and a restart to move is a knob that
+stays wrong. The config layer exists because an **embedder has no TOML file** and
+still needs a default it chooses — madplayer sets 2 GiB there
+(`docs/ui/madplayer.md`), so its UI's *Default* is a real number rather than
+"none".
+
+**The shipped default is 0 = off.** The mechanism is built in full; the number is
+the operator's. A guessed default here would silently delete other people's
+content on every existing node the moment they upgrade — the worst possible way
+to learn a feature exists.
+
+The **API field is three-valued** (`cache_max_bytes`: absent = unchanged, `null`
+= clear the override, a number = pin it) — the shape `share_depth` and the swarm
+rates already use, decoded as `json.RawMessage` because a `*int64` collapses
+"absent" and "null" into one nil and those are opposite instructions. GET reports
+all three parts: `cache_max_bytes` (null when unset), `cache_default_bytes` and
+`cache_effective_bytes`, because a UI choice called *Default* is meaningless
+unless it can say what the default is. The card types **MiB** and an **empty
+field is the null** — the same vocabulary `/admin/swarm`'s limits modal uses.
 
 **Lowering it evicts in the same request**, and the reply carries `evicted` /
 `freed_bytes` so the toast can say what went. Somebody who has just lowered a
@@ -609,11 +627,12 @@ than inventing a second pattern:
 - One unremovable file is skipped, not fatal — the next-coldest blob frees the
   space just as well, and refusing to evict anything because of one file is how a
   ceiling silently stops being enforced.
-- **An embedder shares the number, not the sweep.** `app.Instance.CacheLimit` /
-  `SetCacheLimit` expose the setting, and a program with its own cache of remote
-  audio enforces the same ceiling over its own directory — which is what madplayer
-  does with its downloads (`docs/ui/madplayer.md`). The ceiling therefore applies
-  *per cache of remote audio a node keeps*, not to their sum.
+- **An embedder shares the number, not the sweep.** `app.Instance.CacheCeiling`
+  (effective / override / default) and `SetCacheCeiling` expose the setting, and a
+  program with its own cache of remote audio enforces the same ceiling over its
+  own directory — which is what madplayer does with its downloads
+  (`docs/ui/madplayer.md`). The ceiling therefore applies *per cache of remote
+  audio a node keeps*, not to their sum.
 - **Never touches an in-flight transfer** — a hash in `ActiveTransfers()` is
   skipped, which is also how it must call `ReapAbandonedPartials`. Abandoned
   partials are already swept unconditionally at startup and on demand, so the
@@ -708,7 +727,8 @@ Steps 1–4 are the deliverable. Step 5 is scheduled, not promised.
 | 2026-08-06 | **The staging filename falls back to the file's own container** (`media.Tags.FileType` → extension). | Found by running the offline case rather than reasoning about it. An adopted cache row has no remembered filename, so every upgrading node's whole cache was unmaterializable. Tested end to end against a node with no peers. |
 | 2026-08-06 | **The index self-heals as it is read**, rather than only at startup and Rescan. | Owner asked what happens when files are deleted by the OS. Measured: the swarm was already correct (seeding reads the directory) but the page counted phantom bytes until a restart. Healing on read costs a bounded stat sweep on the listing and nothing at all on the summary, which already reads the directory. |
 | 2026-08-06 | **Daemon evicts by last use + size ceiling**, both off by default. | Owner call. Fetch-date-only eviction deletes the track you replay weekly at the same rate as junk; the ceiling is what makes disk predictable. |
-| 2026-08-08 | **The ceiling is a settings-panel control, never a TOML key** — and the size half was built for it. | Owner call. A ceiling is adjusted while watching a disk fill; a knob needing a config edit and a restart is a knob that stays wrong. The age half stays unbuilt. |
+| 2026-08-08 | **The size half was built**, as a settings-panel control. | Owner call. A ceiling is adjusted while watching a disk fill; a knob needing a config edit and a restart is a knob that stays wrong. The age half stays unbuilt. |
+| 2026-08-08 | **Three layers, not two**: `[federation] cache_max_mb` as the default, a runtime override on the card, and empty = inherit. | Owner call, same day, correcting the settings-only first cut. It is the arrangement the swarm rates already use, and it is what lets an embedder with no TOML file (madplayer, 2 GiB) have a *Default* that means something. |
 | 2026-08-08 | **The sweep goroutine starts unconditionally and re-reads the ceiling**, correcting this doc's own "start only when a knob is non-zero". | Starting conditionally at boot would make switching a *runtime* setting on require a restart — the one property it was made runtime to avoid. An off ceiling costs one settings read an hour. |
 | 2026-08-08 | **An embedder shares the number, not the sweep** (`app.Instance.CacheLimit`/`SetCacheLimit`). | madplayer keeps its own cache of remote audio and enforces the same ceiling over its own directory. One policy number, one enforcer per cache — so the ceiling is per cache, not over their sum. |
 | 2026-08-06 | **No pin.** | Owner call. Removal stays manual; the daemon, when it lands, has nothing exempt from it. |

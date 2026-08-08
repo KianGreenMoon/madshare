@@ -101,43 +101,53 @@ func (l library) BlobPath(objectKey string) (string, bool) {
 	return path, ok
 }
 
-// CacheLimit reports the ceiling on cached remote audio, in bytes; 0 means no
-// ceiling. It is the runtime setting `madnetwork.cache_max_bytes`, the same one
-// the server's own settings card writes — so a program embedding madshare reads
-// the operator's number rather than inventing a parallel one in a config file of
-// its own (docs/architecture/madnetwork-cache.md §"The retention ceiling").
-//
-// A node may keep more than one cache of remote audio: the swarm's, and — in an
-// embedder like madplayer — its own downloads. The ceiling applies to each, and
-// each enforces it over its own directory. This call is only the number.
-func (i *Instance) CacheLimit(ctx context.Context) (int64, error) {
-	p, err := i.db.GetMadnetworkPolicy(ctx)
-	if err != nil {
-		return 0, err
-	}
-	return p.CacheMaxBytes, nil
+// CacheCeiling is the download cache's size limit in its three parts, which is
+// what a settings screen needs to render it honestly
+// (docs/architecture/madnetwork-cache.md §"The retention ceiling").
+type CacheCeiling struct {
+	// Effective is the ceiling actually in force, in bytes. 0 = no limit.
+	Effective int64
+	// Override is the runtime setting, or nil when there is none and the
+	// configured default applies. A non-nil 0 is a real override meaning "no
+	// limit", which is why this is a pointer.
+	Override *int64
+	// Default is [federation].cache_max_mb in bytes — what "Default" means on
+	// this node. A server ships 0 (no limit); an embedder sets its own, as
+	// madplayer does.
+	Default int64
 }
 
-// SetCacheLimit changes that ceiling, leaving every other madnetwork setting
-// alone. It sweeps the swarm cache immediately for the same reason the settings
-// card does: a lowered ceiling that waits an hour reads as a control that does
-// not work. An embedder enforcing its own cache does that itself.
-func (i *Instance) SetCacheLimit(ctx context.Context, maxBytes int64) error {
-	if maxBytes < 0 {
-		maxBytes = 0
+// CacheCeiling reports that limit. An embedder keeping its own cache of remote
+// audio enforces this same number over its own directory — one policy, one
+// enforcer per cache, never a second copy of the setting.
+func (i *Instance) CacheCeiling(ctx context.Context) (CacheCeiling, error) {
+	override, err := i.db.GetCacheCeiling(ctx)
+	if err != nil {
+		return CacheCeiling{}, err
 	}
-	p, err := i.db.GetMadnetworkPolicy(ctx)
+	def := i.cfg.CacheDefaultBytes()
+	return CacheCeiling{
+		Effective: database.ResolveCacheCeiling(override, def),
+		Override:  override,
+		Default:   def,
+	}, nil
+}
+
+// SetCacheCeiling writes the runtime override: nil clears it back to the
+// configured default, and a value pins it (0 = no limit).
+//
+// It sweeps the swarm cache immediately for the same reason the settings card
+// does: a lowered ceiling that waits an hour reads as a control that does not
+// work. An embedder enforcing its own cache does that itself.
+func (i *Instance) SetCacheCeiling(ctx context.Context, maxBytes *int64) error {
+	if err := i.db.SetCacheCeiling(ctx, maxBytes); err != nil {
+		return err
+	}
+	effective, err := i.effectiveCacheCeiling(ctx)
 	if err != nil {
 		return err
 	}
-	if p.CacheMaxBytes == maxBytes {
-		return nil
-	}
-	p.CacheMaxBytes = maxBytes
-	if err := i.db.SetMadnetworkPolicy(ctx, p); err != nil {
-		return err
-	}
-	if _, _, err := i.sweepCache(ctx, maxBytes); err != nil {
+	if _, _, err := i.sweepCache(ctx, effective); err != nil {
 		i.log.Printf("cache ceiling sweep: %v", err)
 	}
 	return nil

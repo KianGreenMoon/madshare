@@ -145,7 +145,8 @@ const madnetworkSeedCache   = document.getElementById('madnetworkSeedCache');
 const madnetworkHideUnavail = document.getElementById('madnetworkHideUnavail');
 const madnetworkDepth       = document.getElementById('madnetworkDefaultDepth');
 const madnetworkServeGuests = document.getElementById('madnetworkServeGuests');
-const madnetworkCacheMax    = document.getElementById('madnetworkCacheMax');
+const madnetworkCacheMax     = document.getElementById('madnetworkCacheMax');
+const madnetworkCacheDefault = document.getElementById('madnetworkCacheDefault');
 
 // The ceiling is stored in BYTES and typed in MiB. Converting at the edge keeps
 // the stored number the one the API and the sweep agree on, rather than a unit
@@ -172,8 +173,19 @@ async function loadMadnetwork() {
         typeof p.default_share_depth === 'number' ? p.default_share_depth : DEPTH_UNLIMITED);
     }
     if (madnetworkCacheMax) {
-      const bytes = typeof p.cache_max_bytes === 'number' ? p.cache_max_bytes : 0;
-      madnetworkCacheMax.value = bytes > 0 ? String(Math.round(bytes / MIB)) : '0';
+      // Empty = no override, so the configured default applies. A stored 0 is a
+      // different thing — "no limit", chosen — and must show as 0, not as empty.
+      madnetworkCacheMax.value = typeof p.cache_max_bytes === 'number'
+        ? String(Math.round(p.cache_max_bytes / MIB))
+        : '';
+    }
+    if (madnetworkCacheDefault) {
+      const def = typeof p.cache_default_bytes === 'number' ? p.cache_default_bytes : 0;
+      // Naming what "Default" resolves to is the whole point of showing it: on a
+      // server it is usually no limit, and a person should not have to read the
+      // config file to find that out.
+      madnetworkCacheDefault.textContent =
+        def > 0 ? `${Math.round(def / MIB)} MiB` : 'no limit';
     }
   } catch (err) {
     console.error('load madnetwork settings:', err);
@@ -182,18 +194,25 @@ async function loadMadnetwork() {
 }
 
 async function saveMadnetwork() {
-  // A ceiling that cannot be read is not sent at all: the field is a pointer on
-  // the server, so omitting it leaves the stored one alone. Sending 0 for a typo
-  // would silently switch eviction OFF, and sending NaN would be a 400 that
-  // loses the rest of the form with it.
+  // Three-valued on the wire, and the three states are genuinely different: an
+  // EMPTY field is an explicit null — "go back to the configured default" — a
+  // number pins it, and 0 pins "no limit". Omitting the field entirely means
+  // unchanged, which is what a value we cannot parse falls back to rather than
+  // guessing.
   let cacheField = {};
   if (madnetworkCacheMax) {
-    const mib = Number(madnetworkCacheMax.value);
-    if (!Number.isFinite(mib) || mib < 0) {
-      toast('The download cache limit must be a whole number of MiB, or 0 for no limit.', 'error');
-      return;
+    const raw = madnetworkCacheMax.value.trim();
+    if (raw === '') {
+      cacheField = { cache_max_bytes: null };
+    } else {
+      const mib = Number(raw);
+      if (!Number.isFinite(mib) || mib < 0) {
+        toast('The download cache limit must be a whole number of MiB, 0 for no limit, ' +
+              'or empty to use the configured default.', 'error');
+        return;
+      }
+      cacheField = { cache_max_bytes: Math.round(mib) * MIB };
     }
-    cacheField = { cache_max_bytes: Math.round(mib) * MIB };
   }
   try {
     const res = await fetch(`${API}/api/admin/settings/madnetwork`, {
@@ -219,6 +238,11 @@ async function saveMadnetwork() {
     } else {
       toast('Madnetwork settings saved.', 'success');
     }
+    // Re-read rather than trusting the form: the field should end up showing
+    // what is STORED — blank for "use the default", a number for an override —
+    // so a save that was interpreted differently from how it was typed says so
+    // instead of leaving the form asserting something else.
+    await loadMadnetwork();
   } catch (err) {
     toast(`Couldn't save madnetwork settings: ${err.message}`, 'error');
   }

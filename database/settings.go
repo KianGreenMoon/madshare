@@ -111,25 +111,62 @@ type MadnetworkPolicy struct {
 	// line. It is byte endpoints only: catalog and holdings never leave the
 	// community, whatever this says.
 	ServeGuests bool
-	// CacheMaxBytes is the ceiling on cached remote audio: while a cache exceeds
-	// it, least-recently-used blobs are evicted until it fits
-	// (docs/architecture/madnetwork-cache.md §"The retention ceiling").
-	//
-	// **0 means off**, and that is the shipped default rather than a number
-	// somebody guessed. A guessed ceiling would silently delete other people's
-	// content on every existing node the moment they upgrade — the worst possible
-	// way to learn a feature exists. The mechanism is built in full; the number is
-	// the operator's.
-	//
-	// It is a RUNTIME setting and not config, so turning it on needs no restart —
-	// which is also why the sweep re-reads it every pass rather than being started
-	// conditionally.
-	//
-	// A ceiling applies per cache of remote audio a node keeps. A server keeps
-	// one (the swarm's, <data_dir>/cache/madnetwork); madplayer embeds this
-	// backend and keeps its own downloads beside it, governed by this same number
-	// (docs/ui/madplayer.md §"A remote track is a download").
-	CacheMaxBytes int64
+}
+
+// The download cache's ceiling is deliberately NOT in MadnetworkPolicy, for the
+// reason the swarm rates are not either: that object is written whole by the
+// settings card, and it is three-valued in a way a plain field cannot express —
+// UNSET means "inherit [federation].cache_max_mb", which is a different state
+// from a stored 0 ("no limit", a real override).
+//
+// docs/architecture/madnetwork-cache.md §"The retention ceiling".
+
+// GetCacheCeiling reads the runtime override on the download cache's size
+// ceiling, in bytes. A nil pointer means no override — inherit the config file;
+// a non-nil 0 means no limit, which is a real override and how one node escapes
+// a ceiling its config ships with.
+//
+// An unparseable stored value reads as no override rather than as an error: the
+// resolution chain always has a config value to fall back to, and a node must
+// not start deleting on a number nobody can read.
+func (db *DB) GetCacheCeiling(ctx context.Context) (*int64, error) {
+	v, ok, err := db.GetSetting(ctx, settingMadnetworkCacheMaxBytes)
+	if err != nil {
+		return nil, err
+	}
+	if !ok || strings.TrimSpace(v) == "" {
+		return nil, nil
+	}
+	n, cerr := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	if cerr != nil || n < 0 {
+		return nil, nil
+	}
+	return &n, nil
+}
+
+// SetCacheCeiling writes the override. nil CLEARS it (back to the config file),
+// which is why the key is deleted rather than zeroed: a stored 0 is a real
+// setting meaning "no limit", and the two must stay tellable apart.
+func (db *DB) SetCacheCeiling(ctx context.Context, maxBytes *int64) error {
+	if maxBytes == nil {
+		_, err := db.ExecContext(ctx, `DELETE FROM settings WHERE key = ?`, settingMadnetworkCacheMaxBytes)
+		return err
+	}
+	n := *maxBytes
+	if n < 0 {
+		n = 0
+	}
+	return db.SetSetting(ctx, settingMadnetworkCacheMaxBytes, strconv.FormatInt(n, 10))
+}
+
+// ResolveCacheCeiling applies the override to a config default, giving the
+// number the sweep actually enforces. One function, so the settings card and the
+// daemon cannot disagree about what is in force.
+func ResolveCacheCeiling(override *int64, configDefault int64) int64 {
+	if override != nil {
+		return max(*override, 0)
+	}
+	return max(configDefault, 0)
 }
 
 // GetMadnetworkPolicy reads the madnetwork settings. Missing keys read as the
@@ -164,10 +201,6 @@ func (db *DB) GetMadnetworkPolicy(ctx context.Context) (MadnetworkPolicy, error)
 	if err != nil {
 		return MadnetworkPolicy{}, err
 	}
-	ceiling, _, err := db.GetSetting(ctx, settingMadnetworkCacheMaxBytes)
-	if err != nil {
-		return MadnetworkPolicy{}, err
-	}
 	return MadnetworkPolicy{
 		AutoapproveDownloads: auto == "1",
 		SeedEnabled:          seed != "0",  // default on
@@ -176,19 +209,7 @@ func (db *DB) GetMadnetworkPolicy(ctx context.Context) (MadnetworkPolicy, error)
 		DefaultShareDepth:    parseShareDepth(depth),
 		PublishFriendList:    publish != "0", // default on
 		ServeGuests:          guests == "1",  // default OFF
-		CacheMaxBytes:        parseCacheCeiling(ceiling),
 	}, nil
-}
-
-// parseCacheCeiling reads the stored ceiling. Anything unset, negative or
-// unparseable reads as 0 = OFF, which is the safe direction: a cache that keeps
-// too much wastes disk, while a ceiling conjured out of a typo deletes content.
-func parseCacheCeiling(raw string) int64 {
-	n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
-	if err != nil || n < 0 {
-		return 0
-	}
-	return n
 }
 
 // parseShareDepth reads the stored node-default depth, falling back to ∞ for an
@@ -231,7 +252,6 @@ func (db *DB) SetMadnetworkPolicy(ctx context.Context, p MadnetworkPolicy) error
 		{settingMadnetworkDefaultDepth, strconv.Itoa(p.DefaultShareDepth)},
 		{settingMadnetworkPublishFriends, bit(p.PublishFriendList)},
 		{settingMadnetworkServeGuests, bit(p.ServeGuests)},
-		{settingMadnetworkCacheMaxBytes, strconv.FormatInt(max(p.CacheMaxBytes, 0), 10)},
 	} {
 		if _, err := tx.ExecContext(ctx, upsert, kv.key, kv.val); err != nil {
 			return err

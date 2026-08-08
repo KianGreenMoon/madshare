@@ -145,6 +145,12 @@ max_upload_mb = 500          # per-request upload cap, in MiB
 # name is the display name shown on this node's card and to peers during
 # pairing (host name when unset) — purely descriptive, identity is the key.
 # Friendships are managed on /admin/network (exchange node cards out-of-band).
+# cache_max_mb is the DEFAULT ceiling on the download cache (what the swarm
+# fetched from other nodes), in MiB; 0 = no limit. Over it, least-recently-used
+# blobs are evicted until it fits. Like the rates below it is overridable at
+# runtime — on /admin/settings, where an empty field means "use this value" and
+# a typed 0 means "no limit" as a deliberate choice. 0 ships as the default
+# because a guessed one would start deleting other people's content on upgrade.
 # seed_rate_kib caps the outbound rate (KiB/s) for serving blobs to EVERY
 # requester (0 = unlimited), and fetch_rate_kib the inbound rate this node
 # pulls at. Both are node-wide — a cap protects the line, which every transfer
@@ -191,6 +197,7 @@ max_upload_mb = 500          # per-request upload cap, in MiB
 #per_member_rate_kib = 0                        # KiB/s to any one non-friend
 #member_max_transfers     = 0                   # concurrent blob serves, all non-friends
 #per_member_max_transfers = 0                   # concurrent blob serves, one non-friend
+#cache_max_mb        = 0                        # download-cache ceiling, MiB; 0 = no limit
 #reachable_window_sec = 180                     # availability freshness window (min 120)
 #discovery_budget    = 4                        # member catalogs pulled per cycle (-1 = friends only)
 #discovery_cap       = 200                      # cached foreign catalogs kept (coldest evicted)

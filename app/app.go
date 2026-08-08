@@ -256,6 +256,7 @@ func (i *Instance) start(o options) error {
 		// (docs/architecture/madnetwork-cache.md).
 		MadnetworkCacheDir: cfg.MadnetworkCacheDir(),
 		CacheSweep:         i.sweepCache,
+		CacheDefaultBytes:  cfg.CacheDefaultBytes(),
 	}
 
 	i.startCacheRetention()
@@ -281,6 +282,16 @@ func (i *Instance) sweepCache(ctx context.Context, maxBytes int64) (int, int64, 
 	return database.SweepCacheCeiling(ctx, i.db, i.cfg.MadnetworkCacheDir(), maxBytes, live)
 }
 
+// effectiveCacheCeiling is the ceiling actually in force: the runtime override
+// when there is one, and [federation].cache_max_mb otherwise. 0 means no limit.
+func (i *Instance) effectiveCacheCeiling(ctx context.Context) (int64, error) {
+	override, err := i.db.GetCacheCeiling(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return database.ResolveCacheCeiling(override, i.cfg.CacheDefaultBytes()), nil
+}
+
 // startCacheRetention runs the ceiling sweep on a timer.
 //
 // It starts UNCONDITIONALLY and reads the ceiling every pass, which is a
@@ -301,20 +312,20 @@ func (i *Instance) startCacheRetention() {
 			case <-i.ctx.Done():
 				return
 			case <-t.C:
-				p, err := i.db.GetMadnetworkPolicy(i.ctx)
+				ceiling, err := i.effectiveCacheCeiling(i.ctx)
 				if err != nil {
-					i.log.Printf("cache retention: read policy: %v", err)
+					i.log.Printf("cache retention: read ceiling: %v", err)
 					continue
 				}
-				if p.CacheMaxBytes <= 0 {
+				if ceiling <= 0 {
 					continue
 				}
-				removed, freed, err := i.sweepCache(i.ctx, p.CacheMaxBytes)
+				removed, freed, err := i.sweepCache(i.ctx, ceiling)
 				if err != nil {
 					i.log.Printf("cache retention: %v", err)
 				} else if removed > 0 {
 					i.log.Printf("cache retention: evicted %d blob(s) over the %d-byte ceiling, freed %d bytes",
-						removed, p.CacheMaxBytes, freed)
+						removed, ceiling, freed)
 				}
 			}
 		}

@@ -51,6 +51,11 @@ type ManageStore interface {
 
 	GetMadnetworkPolicy(ctx context.Context) (database.MadnetworkPolicy, error)
 	SetMadnetworkPolicy(ctx context.Context, p database.MadnetworkPolicy) error
+	// The download cache's ceiling is separate from the policy above because it
+	// is three-valued: nil = inherit [federation].cache_max_mb, a value = pin it
+	// (0 meaning "no limit", a real override).
+	GetCacheCeiling(ctx context.Context) (*int64, error)
+	SetCacheCeiling(ctx context.Context, maxBytes *int64) error
 
 	RecordAudit(ctx context.Context, actorUserID sql.NullInt64, action, target, detail string) error
 }
@@ -74,6 +79,9 @@ type manageHandler struct {
 	// the running transfers, neither of which is this package's to know; nil
 	// simply means the hourly sweep is the only one.
 	sweep CacheSweeper
+	// cacheDefault is [federation].cache_max_mb in bytes — what the settings
+	// card's "Default" resolves to, and what an unset override inherits.
+	cacheDefault int64
 }
 
 // registerManage mounts the content-access management endpoints. Group/grant/
@@ -81,7 +89,7 @@ type manageHandler struct {
 // guest_playable/license edits are metadata.edit. The caller applies those
 // gates per-route (see RegisterAdmin).
 func registerManage(r chi.Router, d Deps) {
-	h := &manageHandler{store: d.Manage, sweep: d.CacheSweep}
+	h := &manageHandler{store: d.Manage, sweep: d.CacheSweep, cacheDefault: d.CacheDefaultBytes}
 	userManage := d.protect(auth.PermUserManage)
 	metaEdit := d.protect(auth.PermMetadataEdit)
 
@@ -338,7 +346,7 @@ func (h *manageHandler) getMadnetworkSettings(w http.ResponseWriter, r *http.Req
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"autoapprove_downloads": p.AutoapproveDownloads,
 		"seed_enabled":          p.SeedEnabled,
 		"seed_cache":            p.SeedCache,
@@ -346,8 +354,32 @@ func (h *manageHandler) getMadnetworkSettings(w http.ResponseWriter, r *http.Req
 		"default_share_depth":   p.DefaultShareDepth,
 		"serve_guests":          p.ServeGuests,
 		"publish_friend_list":   p.PublishFriendList,
-		"cache_max_bytes":       p.CacheMaxBytes,
-	})
+	}
+	h.describeCeiling(r, out)
+	writeJSON(w, http.StatusOK, out)
+}
+
+// describeCeiling reports the download cache's ceiling in the three parts a
+// client needs to render it: the override (null when there is none), what the
+// config file says, and which of the two is therefore in force.
+//
+// Naming the DEFAULT matters as much as the value. "Default" as a UI choice is
+// meaningless unless it says what it resolves to — and on a server that is
+// usually 0, meaning the cache is not capped at all.
+func (h *manageHandler) describeCeiling(r *http.Request, out map[string]any) {
+	override, err := h.store.GetCacheCeiling(r.Context())
+	if err != nil {
+		log.Printf("read cache ceiling: %v", err)
+		return
+	}
+	out["cache_max_bytes"] = nil
+	out["cache_source"] = "config"
+	if override != nil {
+		out["cache_max_bytes"] = *override
+		out["cache_source"] = "override"
+	}
+	out["cache_default_bytes"] = h.cacheDefault
+	out["cache_effective_bytes"] = database.ResolveCacheCeiling(override, h.cacheDefault)
 }
 
 // setMadnetworkSettings updates the madnetwork download + seeding settings. The
@@ -367,14 +399,19 @@ func (h *manageHandler) getMadnetworkSettings(w http.ResponseWriter, r *http.Req
 // absent field must not narrow the node to it.
 func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Request) {
 	req := struct {
-		AutoapproveDownloads bool   `json:"autoapprove_downloads"`
-		SeedEnabled          bool   `json:"seed_enabled"`
-		SeedCache            bool   `json:"seed_cache"`
-		HideUnavailable      bool   `json:"hide_unavailable"`
-		DefaultShareDepth    *int   `json:"default_share_depth"`
-		ServeGuests          *bool  `json:"serve_guests"`
-		PublishFriendList    *bool  `json:"publish_friend_list"`
-		CacheMaxBytes        *int64 `json:"cache_max_bytes"`
+		AutoapproveDownloads bool  `json:"autoapprove_downloads"`
+		SeedEnabled          bool  `json:"seed_enabled"`
+		SeedCache            bool  `json:"seed_cache"`
+		HideUnavailable      bool  `json:"hide_unavailable"`
+		DefaultShareDepth    *int  `json:"default_share_depth"`
+		ServeGuests          *bool `json:"serve_guests"`
+		PublishFriendList    *bool `json:"publish_friend_list"`
+		// Three-valued, the same shape share_depth and the swarm rates use and
+		// for the same reason: absent ≠ null ≠ a number. Absent leaves the
+		// ceiling alone, null clears the override back to the config file, and a
+		// number pins it — including 0, which means "no limit" and is a real
+		// override rather than a synonym for "unset".
+		CacheMaxBytes json.RawMessage `json:"cache_max_bytes"`
 	}{SeedEnabled: true, SeedCache: true, HideUnavailable: true}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -392,16 +429,6 @@ func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
-	// A ceiling is a pointer for the sharpest version of the reason the others
-	// are: an absent field read as 0 would not merely reset a preference, it
-	// would switch the eviction of other people's content on or off.
-	ceiling := current.CacheMaxBytes
-	if req.CacheMaxBytes != nil {
-		if ceiling = *req.CacheMaxBytes; ceiling < 0 {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "cache ceiling cannot be negative"})
-			return
-		}
-	}
 	keep := func(v *bool, cur bool) bool {
 		if v == nil {
 			return cur
@@ -416,11 +443,22 @@ func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Req
 		DefaultShareDepth:    depth,
 		ServeGuests:          keep(req.ServeGuests, current.ServeGuests),
 		PublishFriendList:    keep(req.PublishFriendList, current.PublishFriendList),
-		CacheMaxBytes:        ceiling,
+	}
+	// Decided before anything is written, so a malformed ceiling refuses the
+	// whole save rather than applying half of it.
+	ceiling, changed, ok := h.ceilingUpdate(w, r, req.CacheMaxBytes)
+	if !ok {
+		return
 	}
 	if err := h.store.SetMadnetworkPolicy(r.Context(), p); err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
+	}
+	if changed {
+		if err := h.store.SetCacheCeiling(r.Context(), ceiling); err != nil {
+			http.Error(w, "storage error", http.StatusInternalServerError)
+			return
+		}
 	}
 	h.mAudit(r.Context(), "madnetwork.settings", "",
 		"autoapprove_downloads="+strconv.FormatBool(p.AutoapproveDownloads)+
@@ -430,7 +468,7 @@ func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Req
 			" default_share_depth="+strconv.Itoa(p.DefaultShareDepth)+
 			" serve_guests="+strconv.FormatBool(p.ServeGuests)+
 			" publish_friend_list="+strconv.FormatBool(p.PublishFriendList)+
-			" cache_max_bytes="+strconv.FormatInt(p.CacheMaxBytes, 10))
+			" cache_ceiling="+ceilingLabel(ceiling, changed))
 
 	resp := map[string]any{
 		"ok":                    true,
@@ -441,15 +479,48 @@ func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Req
 		"default_share_depth":   p.DefaultShareDepth,
 		"serve_guests":          p.ServeGuests,
 		"publish_friend_list":   p.PublishFriendList,
-		"cache_max_bytes":       p.CacheMaxBytes,
 	}
+	h.describeCeiling(r, resp)
 	// Enforce it now rather than at the next hourly sweep. Somebody who has just
 	// lowered a ceiling is watching the disk, and a number that takes an hour to
 	// mean anything reads as a control that does not work.
-	if removed, freed := h.sweepCache(r.Context(), p.CacheMaxBytes); removed > 0 {
+	effective, _ := resp["cache_effective_bytes"].(int64)
+	if removed, freed := h.sweepCache(r.Context(), effective); removed > 0 {
 		resp["evicted"], resp["freed_bytes"] = removed, freed
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// ceilingUpdate decodes the three-valued cache ceiling. changed is false when
+// the field was absent; ok is false when the caller has already been answered
+// with a 400.
+func (h *manageHandler) ceilingUpdate(w http.ResponseWriter, r *http.Request, raw json.RawMessage) (*int64, bool, bool) {
+	if len(raw) == 0 {
+		return nil, false, true // absent: unchanged
+	}
+	if string(raw) == "null" {
+		return nil, true, true // explicit null: back to the config file
+	}
+	var n int64
+	if err := json.Unmarshal(raw, &n); err != nil || n < 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "error": "cache_max_bytes must be null (use the configured default) or a byte count ≥ 0"})
+		return nil, false, false
+	}
+	return &n, true, true
+}
+
+// ceilingLabel renders a ceiling update for the audit log.
+func ceilingLabel(v *int64, changed bool) string {
+	switch {
+	case !changed:
+		return "unchanged"
+	case v == nil:
+		return "default"
+	case *v == 0:
+		return "unlimited"
+	}
+	return strconv.FormatInt(*v, 10)
 }
 
 // sweepCache applies the ceiling immediately, logging rather than failing: the

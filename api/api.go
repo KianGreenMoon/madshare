@@ -133,6 +133,11 @@ type Deps struct {
 	// transfers, and a handler package should know about neither. nil is valid:
 	// the periodic sweep is then the only one.
 	CacheSweep CacheSweeper
+	// CacheDefaultBytes is [federation].cache_max_mb in bytes: the ceiling in
+	// force when no runtime override is set, and what the settings card's
+	// "Default" resolves to. A UI choice called "Default" is meaningless unless
+	// it can say what the default IS.
+	CacheDefaultBytes int64
 }
 
 // CacheSweeper evicts least-recently-used cached blobs until the cache fits
