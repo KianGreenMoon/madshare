@@ -1,12 +1,17 @@
 # Madplayer — the native client
 
-> **Status: level 0 built — an offline player that needs no server.** This doc
-> opened for a year with "waits until federation is designed and landed". That
-> wait is over — F0–F8 all shipped, including the **F7 capability tokens** this
-> client was named as the reason for (`docs/architecture/federation.md`
-> §Principals & access). The UI toolkit is settled on **Gio** (see *The UI
-> toolkit*), and the offline player it was chosen for now scans folders, indexes
-> them and plays. Next is embedding the backend (§"Three levels").
+> **Status: level 2a — the backend is embedded.** madshare runs in the client's
+> own process and owns the library: folders are its in-place data sources, browse
+> and search are its queries, and the client's provisional scanner and index are
+> deleted. The facade that made it possible is
+> `docs/architecture/embedding.md`. Still open in this level: the human-readable
+> materialize target (§"Where the bytes live"), which nothing feeds until the mesh
+> arrives at 2b.
+>
+> Behind it: F0–F8 all shipped, including the **F7 capability tokens** this client
+> was named as the reason for (`docs/architecture/federation.md` §Principals &
+> access), and the UI toolkit is settled on **Gio** (see *The UI toolkit*). Next
+> is level 1, signing in to somebody else's server.
 >
 > Work happens on the temporary `madplayer` branch, in a directory of its own with
 > its own Go module, and is kept strictly separate from server commits so a
@@ -89,9 +94,10 @@ Locally it calls those methods **directly**, in-process, rather than over a
 loopback HTTP hop — see §"Local is a function call". The HTTP API is for reaching
 a *different* machine.
 
-The level-0 build that exists today has its own scanner and index precisely
-because the backend is not embedded yet. Those are **provisional**, and they go
-when it is. What survives is the UI, the queue, and the playback layer.
+The level-0 build had its own scanner and index precisely because the backend was
+not embedded yet. Those are **gone** as of level 2a. What survived is the UI, the
+queue, the playback layer, and one display rule the server has no opinion about:
+turning contiguous same-disc tracks into "Disc N" separators.
 
 **The gap embedding needs:** `madshare.go` was ~700 lines in `package main`, so
 none of the startup was importable — the reconciliation passes, the worker pools,
@@ -606,14 +612,17 @@ is a claim this project has verified only on the desktop side.
    rules are ports of `queue-ops.js` and `database/entities.go`, pinned by tests
    against those docs' own worked examples. Its scanner and index are
    provisional — see §"The embedded backend is what level 1 talks to".
-3. **Level 2a: embed the core** — and note it comes BEFORE level 1 now. madshare
-   in-process, called **directly** as Go methods through the facade, with the
-   provisional local scanner and index deleted. Needs the startup extraction
-   named above. Doing this before level 1 means the client's own library work is
-   gone before a second data path is added, rather than being reconciled with one
-   afterwards. Its own sub-parts, in order: silent provisioning (§"There is no
-   local account"), folders as data sources, browse and playback off the embedded
-   store, then the human-readable materialize target (§"Where the bytes live").
+3. **Level 2a: embed the core** — mostly done, and it came BEFORE level 1 on
+   purpose: the client's own library work is gone before a second data path is
+   added, rather than being reconciled with one afterwards. madshare is
+   in-process, called **directly** as Go methods through the facade
+   (`docs/architecture/embedding.md`), and the provisional scanner and index are
+   deleted. ~~Silent provisioning~~ (§"There is no local account"), ~~folders as
+   data sources~~ and ~~browse and playback off the embedded store~~ are built.
+   **Still owed: the human-readable materialize target** (§"Where the bytes
+   live"), which is deliberately last — nothing produces bytes to materialize
+   until the mesh arrives at 2b, so building the writer before there is anything
+   to write would be guessing at its caller.
 4. **Level 1: remote servers.** Sign-in and browsing somebody else's library over
    HTTP — the one thing the API client is for. `internal/madshare` already exists
    for this.
