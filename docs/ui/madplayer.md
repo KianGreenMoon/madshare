@@ -1,11 +1,12 @@
 # Madplayer — the native client
 
-> **Status: designed, prerequisites cleared, started.** This doc opened for a
-> year with "waits until federation is designed and landed". That wait is over —
-> F0–F8 all shipped, including the **F7 capability tokens** this client was named
-> as the reason for (`docs/architecture/federation.md` §Principals & access). The
-> last unmade technical choice, the UI toolkit, is now settled on **Gio** (see
-> *The UI toolkit*), so what remains is only the building.
+> **Status: level 0 built — an offline player that needs no server.** This doc
+> opened for a year with "waits until federation is designed and landed". That
+> wait is over — F0–F8 all shipped, including the **F7 capability tokens** this
+> client was named as the reason for (`docs/architecture/federation.md`
+> §Principals & access). The UI toolkit is settled on **Gio** (see *The UI
+> toolkit*), and the offline player it was chosen for now scans folders, indexes
+> them and plays. Next is embedding the backend (§"Three levels").
 >
 > Work happens on the temporary `madplayer` branch, in a directory of its own with
 > its own Go module, and is kept strictly separate from server commits so a
@@ -22,15 +23,19 @@ The deliberate consequence is **two UIs that solve the same task**: the existing
 HTML/CSS/JS web UI for the browser, and this native client for desktop/mobile.
 That cost is accepted on purpose — see *Why two UIs*.
 
-## Two levels of ambition, and only one of them is hard
+## Three levels, and the first one has no server in it
 
-The word "madplayer" covers two quite different programs, and conflating them is
-the fastest way to make this look impossible:
+The word "madplayer" covers programs of quite different ambition, and conflating
+them is the fastest way to make this look impossible:
 
-1. **An API client.** It signs in to a home server with an account, browses that
+0. **An offline player.** It scans folders on this device, indexes what it finds
+   and plays it. **No server, no account, nothing to sign in to.** This is the
+   baseline product and the default posture — "just another music player" — not
+   a stepping stone that gets replaced.
+1. **An API client.** It signs in to a server with an account, browses that
    server's library, and plays. It needs **no mesh, no node key and no
    capability token** — including for madnetwork content, because
-   `GET /api/madnetwork/stream/{hash}` is a cache-through relay the home server
+   `GET /api/madnetwork/stream/{hash}` is a cache-through relay the server
    already runs on the client's behalf. Every endpoint this needs exists today
    over plain HTTP, and the Capacitor Android app is exactly this program in a
    WebView.
@@ -39,11 +44,36 @@ the fastest way to make this look impossible:
    fetched. This is where the netstack, the capability token, the mobile process
    lifecycle and the audio-decode work all live.
 
-**Build 1 first, and ship it.** It is a real product on its own, it settles every
-UI question the second one also has to answer, and it is the half that can be
-written against a server that already exists rather than against one compiled
-into the app. Level 2 then changes *where the base URL points* far more than it
-changes the UI — which is the payoff described in §"One networking layer".
+**Level 0 first** (decided 2026-08-08, reversing an earlier "build the API client
+first"). It is the only level that is a product with nothing else running, it
+settles every UI question the other two also have to answer, and it is what makes
+the client honest about its own framing: a player that cannot play your own files
+without an account is not "just another music player".
+
+### The embedded backend is what level 1 talks to
+
+The three levels are **not** three data layers. Once madshare is embedded
+in-process, level 0's local library and level 1's remote one are the same
+program talking HTTP to different base URLs — loopback or a peer — which is the
+payoff described in §"One networking layer".
+
+That has a consequence worth stating plainly, because it decides what belongs in
+this client at all: **the embedded backend does the library work, and the client
+does not reimplement it.** Scanning folders in place, resolving artists and
+albums, guessing a mis-decoded charset — madshare already does all of it, and a
+second implementation in Go here would be a second thing to keep in agreement
+forever. Anything the client appears to need that madshare already decides is a
+reason to embed sooner, not to port.
+
+The level-0 build that exists today has its own scanner and index precisely
+because the backend is not embedded yet. Those are **provisional**, and they go
+when it is. What survives is the UI, the queue, and the playback layer.
+
+**The one gap embedding needs:** `madshare.go` is ~700 lines in `package main`,
+so none of the startup is importable — the reconciliation passes, the worker
+pools, the listeners. Embedding requires extracting that into a package `main`
+also calls. It is behaviour-preserving, and it is a madshare change, not
+something the client should work around by re-composing the startup itself.
 
 ## The decisions
 
@@ -389,15 +419,22 @@ is a claim this project has verified only on the desktop side.
 
 1. ~~**UI-toolkit prototype + decision.**~~ Done — Gio, see *The UI toolkit*. The
    one thing it still owes is a look at the phone build.
-2. **Level 1: the API client.** Sign-in (bearer token), library browse, playback,
-   playlists — against a *running* madshare, no embedding. Read
-   `docs/ui/library-page.md` and `docs/ui/player-and-queue.md` as the spec, and
-   `docs/ui/artists-and-performers.md` before writing the artist list.
-3. **Level 2a: embed the core.** madshare + yggdrasil in-process; the UI keeps
-   talking HTTP, now to loopback. `[[listen_mesh]]` is the same wiring with a
-   different address, and is the working reference for the netstack path.
-4. **Level 2b: the mesh.** Node key, capability token from the home server,
+2. ~~**Level 0: the offline player.**~~ Done — folder scan, index, browse, search,
+   queue, playback. `docs/ui/library-page.md`, `docs/ui/player-and-queue.md` and
+   `docs/ui/artists-and-performers.md` were the spec; the queue and identity
+   rules are ports of `queue-ops.js` and `database/entities.go`, pinned by tests
+   against those docs' own worked examples. Its scanner and index are
+   provisional — see §"The embedded backend is what level 1 talks to".
+3. **Level 2a: embed the core** — and note it comes BEFORE level 1 now. madshare
+   in-process on loopback, the UI talking HTTP to it, the provisional local index
+   deleted. Needs the startup extraction named above. `[[listen_mesh]]` is the
+   same wiring with a different address. Doing this before level 1 means the
+   remote case is then only a different base URL, rather than a second data path
+   built first and reconciled later.
+4. **Level 1: remote servers.** Sign-in (bearer token) and browsing somebody
+   else's library — the same client code, a different base URL.
+5. **Level 2b: the mesh.** Node key, capability token from the home server,
    swarm fetch and seed-back. The trust model is `federation.md`; the token flow
    is §"The capability token, concretely".
-5. **Playlist sync**, once 2 and 3 exist and the unresolvable-item question has a
-   real UI to be answered in.
+6. **Playlist sync**, once the levels above exist and the unresolvable-item
+   question has a real UI to be answered in.

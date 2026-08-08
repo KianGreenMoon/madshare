@@ -161,6 +161,10 @@ libraries — local-first music player by default, **federation peer** to other
 nodes as the milestone. The web UI stays HTML/JS (best tool for the browser), so
 this is a second, deliberately-accepted UI over the same HTTP API. Its
 prerequisite — the cross-node trust model (`docs/architecture/federation.md`) — is
-**built**, and the last open technical choice (the toolkit) is now settled, so
-what remains is the building. It happens on the temporary `madplayer` branch,
-kept strictly separate from server commits. Full design: `docs/ui/madplayer.md`.
+**built**, and the last open technical choice (the toolkit) is now settled. The
+**offline player is done** — it scans folders, indexes them and plays, with no
+server and no account, which is the baseline product rather than a stepping
+stone. Next is embedding the backend, which is what turns "my library" and "a
+peer's library" into one code path over two base URLs. It happens on the
+temporary `madplayer` branch, kept strictly separate from server commits. Full
+design: `docs/ui/madplayer.md`.
