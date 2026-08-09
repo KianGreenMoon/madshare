@@ -10,10 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -501,6 +504,272 @@ func (n *Node) syncHoldings(ctx context.Context, p *CatalogSource) {
 	if err := n.store.ReplaceSourceHoldings(ctx, p.ID, valid); err != nil {
 		n.logger.Printf("federation: store holdings of %q: %v", p.Display(), err)
 	}
+}
+
+// ── Partial holdings (F9 item 1) ─────────────────────────────────────────────
+
+// haveMessage is the reply to GET /madnetwork/v0/have/{hash}: which byte extents
+// of one blob this node holds complete and will serve. A finished blob answers
+// with the single range [0, size); a fetch in progress answers with its verified
+// chunks, coalesced. See [ByteRange] for why this is bytes and not chunk indices.
+type haveMessage struct {
+	Protocol int         `json:"protocol"`
+	Hash     string      `json:"hash"`
+	Size     int64       `json:"size"`     // 0 when not yet known
+	Complete bool        `json:"complete"` // the whole blob is here
+	Ranges   []ByteRange `json:"ranges"`
+}
+
+// maxHaveRanges bounds the reply. Our partials are near-prefixes — dispatch is
+// sequential-priority, so a fetch in progress is usually ONE range and at most a
+// few; only seek-priority fragments one at all. (This is the opposite of a
+// BitTorrent client, whose rarest-first picker scatters pieces on purpose and so
+// needs a bitmap.) The cap exists so that a pathological partial cannot make this
+// reply unbounded. Truncating to the LARGEST ranges keeps a short answer useful:
+// a fetcher told about less than we hold loses a little parallelism, never
+// correctness.
+const maxHaveRanges = 64
+
+// liveTransfer returns the in-flight fetch for hash, or nil.
+func (n *Node) liveTransfer(hash string) *transfer {
+	n.transferMu.Lock()
+	defer n.transferMu.Unlock()
+	return n.transfers[hash]
+}
+
+// seedsPartials reports whether an unfinished download may be served to aud.
+//
+// A `.part` answers under the CACHE branch's rule EXACTLY — the same condition
+// handleHoldings applies to the cache list, which is what advertises it. It is
+// deliberately not a third branch beside library and cache (§Distribution,
+// "Making it a swarm", item 1): an unlanded blob has no published appearance and
+// cannot acquire one until it verifies, so the library rule could never admit it
+// anyway, and a third rule would be a third thing to keep in agreement with the
+// invariant that catalog and bytes read one rule.
+func (n *Node) seedsPartials(ctx context.Context, aud Audience) bool {
+	if !aud.Serves() || aud.GuestOnly || !aud.ServesCache() {
+		return false
+	}
+	policy, err := n.store.SeedingPolicy(ctx)
+	if err != nil {
+		n.logger.Printf("federation: seeding policy: %v", err)
+		return false
+	}
+	return policy.Enabled && policy.Cache
+}
+
+// haveRanges answers what this node can serve of hash to aud. The bool is false
+// when there is nothing to offer — the caller answers 404, never an empty 200,
+// because this request names a hash and a reply must not confirm one exists here
+// (the same rule the blob and manifest endpoints follow). "I am fetching this but
+// can serve none of it yet" is precisely the fact `seed_cache` lets an operator
+// withhold.
+func (n *Node) haveRanges(ctx context.Context, hash string, aud Audience) (haveMessage, bool) {
+	msg := haveMessage{Protocol: ProtocolVersion, Hash: hash}
+	// A blob held whole answers whole, through the ordinary seeding gate — the
+	// same resolution handleBlob does, so /have can never advertise a byte the
+	// blob endpoint would refuse.
+	if path, ok := n.seedableBlob(ctx, hash, aud); ok {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			msg.Size = info.Size()
+			msg.Complete = true
+			msg.Ranges = []ByteRange{{Start: 0, End: info.Size()}}
+			return msg, true
+		}
+	}
+	if !n.seedsPartials(ctx, aud) {
+		return msg, false
+	}
+	t := n.liveTransfer(hash)
+	if t == nil {
+		return msg, false
+	}
+	rs := capRanges(t.CompleteRanges())
+	if len(rs) == 0 {
+		return msg, false
+	}
+	msg.Size = t.Size()
+	msg.Ranges = rs
+	return msg, true
+}
+
+// capRanges trims a range list to maxHaveRanges, keeping the largest extents and
+// restoring offset order (a fetcher reads them as a plan, so order is kindness).
+func capRanges(rs []ByteRange) []ByteRange {
+	if len(rs) <= maxHaveRanges {
+		return rs
+	}
+	out := append([]ByteRange(nil), rs...)
+	sort.Slice(out, func(i, j int) bool { return out[i].End-out[i].Start > out[j].End-out[j].Start })
+	out = out[:maxHaveRanges]
+	sort.Slice(out, func(i, j int) bool { return out[i].Start < out[j].Start })
+	return out
+}
+
+// parseSingleRange parses a single-range `bytes=` header against a known size and
+// returns the half-open [start, end). Multi-range requests are refused: the swarm
+// never sends one, and a partial holder answering a multipart body would have to
+// prove every part present.
+//
+// This exists because a partial CANNOT go through http.ServeContent, which parses
+// the range against the file's extent — and a part file's extent is a lie (see
+// servePartialBlob).
+func parseSingleRange(hdr string, size int64) (int64, int64, bool) {
+	const prefix = "bytes="
+	if size <= 0 || !strings.HasPrefix(hdr, prefix) {
+		return 0, 0, false
+	}
+	spec := strings.TrimSpace(strings.TrimPrefix(hdr, prefix))
+	if spec == "" || strings.Contains(spec, ",") {
+		return 0, 0, false
+	}
+	dash := strings.IndexByte(spec, '-')
+	if dash < 0 {
+		return 0, 0, false
+	}
+	first, last := strings.TrimSpace(spec[:dash]), strings.TrimSpace(spec[dash+1:])
+	var start, end int64
+	if first == "" { // suffix form: the final N bytes
+		n, err := strconv.ParseInt(last, 10, 64)
+		if err != nil || n <= 0 {
+			return 0, 0, false
+		}
+		if n > size {
+			n = size
+		}
+		start, end = size-n, size
+	} else {
+		s, err := strconv.ParseInt(first, 10, 64)
+		if err != nil || s < 0 || s >= size {
+			return 0, 0, false
+		}
+		start, end = s, size
+		if last != "" {
+			e, err := strconv.ParseInt(last, 10, 64)
+			if err != nil || e < s {
+				return 0, 0, false
+			}
+			if end = e + 1; end > size { // HTTP ranges are inclusive
+				end = size
+			}
+		}
+	}
+	if end <= start {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+// rangeCovered reports whether [start, end) lies entirely within ONE advertised
+// extent. Deliberately one rather than a union of several: the extents are
+// already coalesced into maximal runs, so a request spanning two of them is a
+// request that spans a hole.
+func rangeCovered(rs []ByteRange, start, end int64) bool {
+	for _, x := range rs {
+		if start >= x.Start && end <= x.End {
+			return true
+		}
+	}
+	return false
+}
+
+// servePartialBlob answers out of an in-flight download's verified chunks, for a
+// hash this node does not hold whole (F9 item 1). The quota admission and the
+// rate limiters have already been taken by handleBlob, so a partial costs a
+// requester exactly what a complete blob does.
+//
+// **The part file's length is a lie, and that is the trap this function exists
+// for.** fetchSwarm pre-truncates it to the full size so chunks can be written at
+// their offsets, so it is full-length and mostly ZEROS from the first moment.
+// http.ServeContent would happily serve any range of it — megabytes of zeros that
+// verify at neither chunk nor file level. Every byte handed out here is therefore
+// gated on CompleteRanges (per-chunk SHA-256 verified), never on the file's
+// extent.
+//
+// A partial answers RANGED requests only. A request with no Range is answered as
+// if we did not hold the hash at all: a short 200 body would tell the F3
+// whole-file path it had received the blob, and it would learn otherwise only at
+// the final hash — one wasted transfer to say something a 404 says for free.
+func (n *Node) servePartialBlob(w http.ResponseWriter, r *http.Request, hash string, aud Audience, rls []*rateLimiter, key string) {
+	if !n.seedsPartials(r.Context(), aud) {
+		http.NotFound(w, r)
+		return
+	}
+	t := n.liveTransfer(hash)
+	if t == nil || t.partPath == "" {
+		http.NotFound(w, r)
+		return
+	}
+	ranges := t.CompleteRanges()
+	size := t.Size()
+	if len(ranges) == 0 || size <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	start, end, ok := parseSingleRange(r.Header.Get("Range"), size)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if !rangeCovered(ranges, start, end) {
+		// 416 rather than 404: the hash IS here, this slice of it is not yet. The
+		// distinction matters to a fetcher deciding whether to come back.
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", size))
+		http.Error(w, "that range has not arrived here yet", http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
+	f, err := os.Open(t.partPath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+
+	if name := t.Filename(); name != "" {
+		w.Header().Set("Content-Disposition",
+			mime.FormatMediaType("attachment", map[string]string{"filename": name}))
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end-1, size))
+	w.Header().Set("Content-Length", strconv.FormatInt(end-start, 10))
+
+	addr := ""
+	if ip := remoteIP(r); ip != nil {
+		addr = ip.String()
+	}
+	out := metered(throttled(w, r.Context(), n.upLimiters(r.Context(), rls)), func(b int64) {
+		n.noteUp(hash, key, addr, b)
+	})
+	out.WriteHeader(http.StatusPartialContent)
+	if _, err := io.Copy(out, io.NewSectionReader(f, start, end-start)); err != nil {
+		n.logger.Printf("federation: serve partial %s [%d,%d): %v", hash, start, end, err)
+	}
+}
+
+// handleHave serves GET /madnetwork/v0/have/{hash}.
+func (n *Node) handleHave(w http.ResponseWriter, r *http.Request) {
+	if n.store == nil {
+		http.Error(w, "transfer not configured", http.StatusServiceUnavailable)
+		return
+	}
+	aud, ok := n.serveAudience(r)
+	if !ok {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	hash := r.PathValue("hash")
+	if !isBlobHash(hash) {
+		http.NotFound(w, r)
+		return
+	}
+	msg, ok := n.haveRanges(r.Context(), hash, aud)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(msg)
 }
 
 // ── Seeding gate ─────────────────────────────────────────────────────────────

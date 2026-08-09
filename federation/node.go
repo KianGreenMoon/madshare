@@ -456,6 +456,7 @@ func (n *Node) protocolHandler() http.Handler {
 	mux.HandleFunc("GET /madnetwork/v0/blob/{hash}", n.handleBlob)
 	mux.HandleFunc("GET /madnetwork/v0/manifest/{hash}", n.handleManifest)
 	mux.HandleFunc("GET /madnetwork/v0/holdings", n.handleHoldings)
+	mux.HandleFunc("GET /madnetwork/v0/have/{hash}", n.handleHave)
 	mux.HandleFunc("GET /madnetwork/v0/graph", n.handleGraph)
 	mux.HandleFunc("POST /madnetwork/v0/graph/fetch", n.handleGraphFetch)
 	return n.meshAuth(mux)

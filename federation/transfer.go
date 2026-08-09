@@ -73,7 +73,9 @@ func (n *Node) handleBlob(w http.ResponseWriter, r *http.Request) {
 	defer release()
 	path, ok := n.seedableBlob(r.Context(), hash, aud)
 	if !ok {
-		http.NotFound(w, r)
+		// Not held whole — but a download in progress may still be able to answer
+		// a range out of its verified chunks (F9 item 1, swarm.go).
+		n.servePartialBlob(w, r, hash, aud, rls, key)
 		return
 	}
 	f, err := os.Open(path)
@@ -298,6 +300,61 @@ func (t *transfer) Available(offset int64) int64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.availLocked(offset)
+}
+
+// ByteRange is a half-open [Start, End) extent of a blob that a node holds
+// complete — the unit F9 item 1 advertises and serves.
+//
+// Deliberately bytes rather than chunk indices. The chunk layout is a policy
+// output derived from the file size, and it is NOT bound to the content hash
+// (the swarm id is the flat whole-file SHA-256, not a hash of a metadata block
+// the way a BitTorrent infohash is), so §Distribution reserves the right to
+// change the sizing policy "without a protocol break". That freedom holds only
+// while chunk indices never leave the fetcher — today they do not, because
+// fetchChunk speaks `Range: bytes=…`. Advertising indices would quietly convert
+// the freedom into a compatibility break; a byte offset means the same thing on
+// every node forever.
+type ByteRange struct {
+	Start int64 `json:"start"`
+	End   int64 `json:"end"`
+}
+
+// CompleteRanges reports the byte extents of this transfer that are VERIFIED and
+// therefore safe to re-seed, coalesced into maximal runs.
+//
+// "Verified" is the whole point, and it is why the sequential path contributes
+// nothing. In chunk mode each entry of chunkOK was set only after that chunk's
+// SHA-256 matched the manifest (fetchChunk verifies before WriteAt), so those
+// bytes are as trustworthy as a finished blob's. The F3 whole-file fallback has
+// no such guarantee: it streams straight into the part file and checks the hash
+// only at the end, so its `progress` watermark counts bytes RECEIVED, not bytes
+// proven, and re-seeding them would spread whatever a bad holder sent us. A
+// transfer running in that mode advertises nothing.
+func (t *transfer) CompleteRanges() []ByteRange {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.finished {
+		if t.err != nil || t.size <= 0 {
+			return nil
+		}
+		return []ByteRange{{Start: 0, End: t.size}}
+	}
+	if t.layout == nil || len(t.chunkOK) == 0 {
+		return nil // sequential mode: received but unproven, see above
+	}
+	var out []ByteRange
+	for i := 0; i < len(t.chunkOK); i++ {
+		if !t.chunkOK[i] {
+			continue
+		}
+		j := i
+		for j+1 < len(t.chunkOK) && t.chunkOK[j+1] {
+			j++
+		}
+		out = append(out, ByteRange{Start: t.layout.offsetOf(i), End: t.layout.offsetOf(j + 1)})
+		i = j
+	}
+	return out
 }
 
 // setMeta records the origin's Content-Length and filename (first responder
