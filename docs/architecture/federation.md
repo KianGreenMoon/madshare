@@ -2620,9 +2620,25 @@ item 1 no longer waits on anything. Item 2 without item 1 still shortens the pat
 for completed fetches, so the two orderings differ only in how fast item 1's
 payoff arrives.
 
-No migration is expected: `federation_holdings` and `federation_catalog_sources`
-already carry what item 2 writes. That should be confirmed rather than assumed
-when item 2 is picked up.
+No migration was needed: `federation_holdings` and `federation_catalog_sources`
+already carried what item 2 writes.
+
+**Items 1 and 2 are verified over a real mesh**, not only by unit tests —
+`TestPartialHolderAnnouncesItselfAndSeedsIntoALiveSwarm` (`swarmlive_test.go`):
+three genuine yggdrasil cores, the gVisor netstack, the real HTTP-over-mesh path
+and the real audience gate. One node holds a blob whole, one holds its first
+half as an in-flight `.part`, and the third learns of the partial holder *from
+its announce* and then takes chunks off it. Both halves of the assertion were
+checked against a disabled feature before being trusted: with partial seeding
+off the partial holder delivers 0 bytes, collects 404s and is **dropped**; with
+the announce off the discovery never happens.
+
+It is deliberately ONE test over three nodes rather than two tests over five.
+Starting real cores is the expensive part, and an earlier split added five to the
+package — enough extra load to tip an unrelated gossip test into its timeout.
+That is the standing hazard in this package (`.issues`, "mesh tests can flake
+under load"), and the lesson for the next real-mesh test is to count the cores it
+adds, not just the seconds it takes.
 
 ### Merkle verification (F10, decided-and-parked 2026-08-09)
 
