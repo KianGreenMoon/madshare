@@ -484,6 +484,12 @@ func (n *Node) sweep(ctx context.Context) {
 		}
 	}
 
+	// Tell our friends what we have just acquired (F9 item 2). Before the pulls
+	// below, because it is the half that is time-critical: a blob we finished
+	// seconds ago is seedable NOW, and the alternative is that nobody learns until
+	// somebody's fifteen-minute holdings sync comes round.
+	n.announceHoldings(ctx, peers)
+
 	// Catalogs and holdings — friends unbudgeted, the community a few nodes per
 	// round (F7 item 5). It runs after the pings so a friendship that converged
 	// this round is pulled from in the same one.

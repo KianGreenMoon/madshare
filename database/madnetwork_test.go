@@ -1113,3 +1113,58 @@ func TestMadnetworkOwnPerformerCredits(t *testing.T) {
 		t.Errorf("own comp tracks under its album artist = %d, want both", len(rows))
 	}
 }
+
+// The announce path (federation F9 item 2) adds without removing: a node pushing
+// "I have just acquired these" is speaking about an increment, never about the
+// whole of what it holds, so it must not be able to erase what a full holdings
+// sync established.
+func TestAddSourceHoldingsIsAdditive(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	src := insertSource(t, db, "a1a1")
+	const (
+		synced    = "1111111111111111111111111111111111111111111111111111111111111111"
+		announced = "2222222222222222222222222222222222222222222222222222222222222222"
+	)
+	if err := db.ReplaceSourceHoldings(ctx, src, []string{synced}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddSourceHoldings(ctx, src, []string{announced, announced, "not-a-hash"}); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := db.QueryContext(ctx,
+		`SELECT hash FROM federation_holdings WHERE source_id = ? ORDER BY hash`, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, h)
+	}
+	want := []string{synced, announced}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("holdings = %v, want %v — an announce must add, never replace, "+
+			"and must drop malformed hashes and duplicates", got, want)
+	}
+
+	// The wholesale replace still replaces, so the fifteen-minute pull stays the
+	// correcting sweep for anything an increment cannot express (a removal).
+	if err := db.ReplaceSourceHoldings(ctx, src, []string{synced}); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM federation_holdings WHERE source_id = ?`, src).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("after a full sync the source has %d holdings, want 1", n)
+	}
+}

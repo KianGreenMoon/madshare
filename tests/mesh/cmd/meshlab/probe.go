@@ -106,6 +106,7 @@ func (emptyStore) PeerAudience(context.Context, int64) (federation.Audience, err
 func (emptyStore) MadnetworkBlobProviders(context.Context, string) (int64, []*federation.BlobProvider, error) {
 	return 0, nil, nil
 }
+func (emptyStore) AddSourceHoldings(context.Context, int64, []string) error     { return nil }
 func (emptyStore) ReplaceSourceHoldings(context.Context, int64, []string) error { return nil }
 func (emptyStore) SeedingPolicy(context.Context) (federation.SeedPolicy, error) {
 	return federation.SeedPolicy{}, nil

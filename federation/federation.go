@@ -620,6 +620,15 @@ type PeerStore interface {
 	// item 5 these are cached *sources*, so a holder may be any member of our
 	// community and not only a friend; a blocked node is never one.
 	MadnetworkBlobProviders(ctx context.Context, hash string) (size int64, holders []*BlobProvider, err error)
+	// AddSourceHoldings adds to the cached list of what one source will seed
+	// without removing anything (F9 item 2) — the announce path's twin of the
+	// wholesale replace below. An announce is an INCREMENT ("I have acquired
+	// these"); a holdings pull is a complete statement. So additions land within
+	// a refresh round while REMOVALS wait for the next full pull, which is a
+	// deliberate asymmetry: a stale positive costs one fast 404 from a live node
+	// and drops that holder from the transfer, while a holder we never heard
+	// about costs the swarm a whole source.
+	AddSourceHoldings(ctx context.Context, sourceID int64, hashes []string) error
 	// ReplaceSourceHoldings atomically replaces the cached list of what one
 	// source holds in its download cache and will seed (F4 holdings sync).
 	ReplaceSourceHoldings(ctx context.Context, sourceID int64, hashes []string) error

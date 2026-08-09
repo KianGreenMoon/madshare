@@ -246,6 +246,37 @@ func (db *DB) MarkSourceCatalogChecked(ctx context.Context, sourceID int64, seri
 // holds in its download cache and will seed (federation F4 holdings tracker,
 // GET /madnetwork/v0/holdings). Invalid entries are skipped; duplicates collapse
 // on the composite primary key.
+// AddSourceHoldings adds hashes to one source's cached holdings without removing
+// anything — the announce path (federation F9 item 2), where a node pushes what
+// it has just acquired instead of waiting to be pulled from. Additive on purpose:
+// an announce says "I now have these", never "these are all I have", so it can
+// arrive without a complete list and cannot erase what a full sync established.
+func (db *DB) AddSourceHoldings(ctx context.Context, sourceID int64, hashes []string) error {
+	if len(hashes) == 0 {
+		return nil
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("add source holdings: %w", err)
+	}
+	defer tx.Rollback()
+	ins, err := tx.PrepareContext(ctx,
+		`INSERT OR IGNORE INTO federation_holdings (source_id, hash) VALUES (?, ?)`)
+	if err != nil {
+		return fmt.Errorf("prepare holdings insert: %w", err)
+	}
+	defer ins.Close()
+	for _, h := range hashes {
+		if !isContentHash(h) {
+			continue // remote input — a content hash is 64 lowercase hex
+		}
+		if _, err := ins.ExecContext(ctx, sourceID, h); err != nil {
+			return fmt.Errorf("insert source holding: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
 func (db *DB) ReplaceSourceHoldings(ctx context.Context, sourceID int64, hashes []string) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {

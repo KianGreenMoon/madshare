@@ -319,6 +319,13 @@ type ByteRange struct {
 	End   int64 `json:"end"`
 }
 
+// succeeded reports whether the fetch ended with the blob in hand.
+func (t *transfer) succeeded() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.finished && t.err == nil
+}
+
 // CompleteRanges reports the byte extents of this transfer that are VERIFIED and
 // therefore safe to re-seed, coalesced into maximal runs.
 //
@@ -624,6 +631,12 @@ func (n *Node) runTransfer(t *transfer, holders []*BlobProvider) {
 		// Book the waste now that the outcome is known: every path below ends in
 		// t.finish, so received-minus-delivered is final here.
 		n.noteTransferEnd(t)
+		// A blob that just landed is seedable from this moment, and the swarm
+		// should not wait out a fifteen-minute holdings pull to hear about it
+		// (F9 item 2, announce.go).
+		if t.succeeded() {
+			n.noteAcquired(t.hash)
+		}
 	}()
 
 	// Overlap the manifest fetch with a speculative chunk-0 prefetch so the first

@@ -2443,30 +2443,63 @@ ephemeral by nature and our tracker is a slow *pull*; the two are structurally
 mismatched. It is also what makes item 1 nearly worthless on its own: a partial
 seeder that is discovered a quarter of an hour later has usually finished.
 
-**What it needs.** Push a small signed record over `federation/gossip.go` — the
-sibling of the freshness hints in `freshness.go`, which already gossip
-community-scoped, hop-limited, capped, self-ageing facts.
+**Built 2026-08-09** (`federation/announce.go`, `POST /madnetwork/v0/announce`).
 
-**Decisions to settle.**
+**It is not gossip, and the sketch that said it was got two things wrong.** The
+freshness hints in `freshness.go` were named as the sibling to imitate — but they
+are not a gossip record either; they ride the one-minute ping as a query
+parameter. And this item's own rule that an announce is **never relayed** means a
+gossip record would never propagate past the first hop, which is not gossip at
+all. What is left when a record may not be relayed is a **direct push**, so that
+is what it is, riding the same refresh round the pings do rather than opening a
+cadence of its own.
 
-- *When.* Recommend two events, not a stream: on fetch completion, and once on
-  first-chunk-complete for an in-flight fetch. An announce per fetch is naturally
-  rate-bounded by fetch rate; cap the fan-out as `MaxFreshnessHints` does.
-- *May an announce mint a holdings row?* The freshness hints say no — "hearsay
-  can refresh a row, never mint one". **Here the answer is the opposite, and the
-  distinction is the design point: an announce is first-hand.** A node announcing
-  `H` is speaking about itself, where a freshness hint speaks about a third party.
-  So a member's own announce may mint, and an announce is **never relayed** — the
-  moment it would be, it becomes hearsay and the rule flips back.
-- *Does an announce create a `federation_catalog_sources` row for a node we have
-  never pulled from?* Probably yes, but it interacts with `discovery_cap`
-  eviction and wants deciding explicitly.
-- **The trap, learned from the 2026-08-09 stale-holder fix:**
-  `EnsureCatalogSource` sets `first_seen` and **not** `last_seen`. An announce
-  path that forgets to set `last_seen` produces a holder that is stale on arrival
-  and filtered straight back out by `StaleHolderWindow`. Conversely, done right,
-  an announce refreshes `last_seen` and an announced holder is inside the window
-  by construction — which is the good interaction.
+**Nothing is signed, and that is stronger rather than weaker.** The sketch said
+"a small signed record". The mesh address derives from the node key, so the
+connection is already self-certifying: the receiver attributes the announce to
+the key it is *talking to* and ignores any identity in the body. A signature
+would add a second, weaker way to say the same thing — one that could be replayed
+by whoever collected it.
+
+**The decisions, as taken:**
+
+- *May an announce mint a holdings row?* **Yes** — and the freshness hints' "no"
+  is not inconsistent with it. A hint is about a THIRD party, so accepting one
+  would let hearsay claim what only first-hand contact may; an announce is a node
+  speaking about **itself**. That is also exactly why it must never be relayed:
+  relayed, it becomes hearsay and the permission has to flip back.
+- *An unattributable announce is refused.* A guest or a capability-token bearer
+  arrives with no key, and a claim about nobody cannot mint anything. A listener
+  node's holdings have their own path — the household tracker at
+  `POST /api/madnetwork/holdings`, scoped to the device's own account.
+- *Friends only.* A member still learns from the holdings pull. Pushing to the
+  wider community would mean dialling nodes the frontier rotation deliberately
+  budgets, and reach past the first hop is somebody else's announce to make.
+- *Additions only; the 15-minute pull stays as the correcting sweep.* An
+  increment cannot express a removal, so a blob evicted from a peer's cache
+  lingers in our index until the next full sync. The asymmetry is the right way
+  round: a stale positive costs one fast 404 from a live node, where a holder we
+  never heard of costs the swarm a whole source. Hence `AddSourceHoldings`
+  beside `ReplaceSourceHoldings` — same table, opposite promise.
+- *Completions are a delta, partials are read live.* Only finished fetches need
+  remembering, because what we hold PARTIALLY can be recomputed from the transfer
+  table at announce time, and what we hold whole is already the entire cache
+  directory — announcing all of that every minute is the traffic this exists to
+  avoid. The pending set is also dropped whether or not the sends succeed: an
+  announce is an optimisation over a sync that is still running, so losing one
+  costs at most the fifteen minutes it would have saved, and a retry queue would
+  be state to age, bound and reason about for that.
+- *Nothing is announced when seeding is off*, because the blob endpoint would
+  refuse to serve any of it. Never advertise what you will not hand over.
+- **The trap, from the 2026-08-09 stale-holder fix, and it is real:**
+  `EnsureCatalogSource` sets `first_seen` and **not** `last_seen`, so a source
+  minted by an announce and not explicitly touched is stale on arrival and
+  filtered straight back out by `StaleHolderWindow` — recorded as a holder and
+  never used. `handleAnnounce` calls `TouchCatalogSourceSeen` for exactly this
+  reason, and `TestAnnounceMintsAHolderAndMarksItSeen` pins it.
+
+**No migration**, as predicted: `AddSourceHoldings` is a new method over the
+existing `federation_holdings` and `federation_catalog_sources` tables.
 
 Relationship to the Build plan's deferred *"announce/gossip of catalog deltas"*:
 **different object**. That one gossips *library* changes; this gossips *holdings*.
@@ -3377,16 +3410,18 @@ milestone directly after direct transfer works, and tokens ship with depth.
      `checkClaims`, with the fingerprint stage bounded to what changed since a
      per-source watermark; findings stored (migration 039) with dispositions that
      survive a rescan; materializing is additive, via the existing download path.
-- **F9 — Making it a swarm** (designed 2026-08-09, **not built** — §Distribution
-  "Making it a swarm" carries the four items, the decisions each still owes and
-  the traps; not repeated here). F4 parallelises a fetch across holders but does
-  not let the swarm grow, because a downloader seeds nothing until it finishes.
-  Four items: **partial seeding** (a chunk-availability endpoint + serving Ranges
-  out of the `.part`), **holdings announce** over the existing gossip layer
-  (first-hand, never relayed), a **scheduler** that measures throughput and
-  in-flight bytes instead of dispatching round-robin — reworking `worseThanPeers`
-  with it — and **pipelining + endgame hedging**. Items 1 and 3 are one job; item
-  4 is independent of everything and was deliberately not pulled forward.
+- **F9 — Making it a swarm** (designed 2026-08-09, **items 1 and 2 built the same
+  day** — §Distribution "Making it a swarm" carries the four items, the decisions
+  each took and the traps; not repeated here). F4 parallelises a fetch across
+  holders but does not let the swarm grow, because a downloader seeds nothing
+  until it finishes. Four items: **partial seeding** (a chunk-availability
+  endpoint + serving Ranges out of the `.part`) ✅, **holdings announce** — a
+  direct push to friends, first-hand and never relayed, which is why it is *not*
+  gossip ✅, a **scheduler** that measures throughput and in-flight bytes instead
+  of dispatching round-robin — reworking `worseThanPeers` with it, and carrying
+  the two manifest hardenings — and **pipelining + endgame hedging**. Item 3 must
+  not be designed before item 1 lands; item 4 is independent of everything and
+  was deliberately not pulled forward.
 - **F10 — Merkle verification** (decided **and parked** 2026-08-09, §Distribution
   "Merkle verification" — the two decisions, the costs and the one counterintuitive
   turn are there). Fixed 16 KiB leaves and a per-blob merkle root beside the

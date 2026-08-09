@@ -96,6 +96,13 @@ type Node struct {
 	transferCtx    context.Context
 	transferCancel context.CancelFunc
 
+	// Blobs this node has just finished fetching, waiting to be pushed to our
+	// friends on the next refresh round (F9 item 2, announce.go). Completions
+	// only: what we hold partially is read live from the transfer table, and what
+	// we hold whole is already the entire cache directory.
+	announceMu  sync.Mutex
+	announceNew map[string]bool
+
 	// F4 swarm wiring (swarm.go): a timeout-free client for blob/chunk fetches
 	// (each fetch is bounded by its own context), the outbound seed rate cap
 	// (nil = unlimited), and the memoized per-hash chunk manifests served to
@@ -457,6 +464,7 @@ func (n *Node) protocolHandler() http.Handler {
 	mux.HandleFunc("GET /madnetwork/v0/manifest/{hash}", n.handleManifest)
 	mux.HandleFunc("GET /madnetwork/v0/holdings", n.handleHoldings)
 	mux.HandleFunc("GET /madnetwork/v0/have/{hash}", n.handleHave)
+	mux.HandleFunc("POST /madnetwork/v0/announce", n.handleAnnounce)
 	mux.HandleFunc("GET /madnetwork/v0/graph", n.handleGraph)
 	mux.HandleFunc("POST /madnetwork/v0/graph/fetch", n.handleGraphFetch)
 	return n.meshAuth(mux)

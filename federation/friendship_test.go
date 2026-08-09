@@ -332,6 +332,27 @@ func (m *memStore) peerByKeyLocked(key string) *Peer {
 	return nil
 }
 
+// AddSourceHoldings mirrors the DB: add to one source's cache-holdings list
+// without removing anything (the F9 item 2 announce path).
+func (m *memStore) AddSourceHoldings(_ context.Context, sourceID int64, hashes []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.sources[sourceID]; !ok {
+		return ErrPeerNotFound
+	}
+	have := make(map[string]bool, len(m.holdings[sourceID]))
+	for _, h := range m.holdings[sourceID] {
+		have[h] = true
+	}
+	for _, h := range hashes {
+		if !have[h] {
+			have[h] = true
+			m.holdings[sourceID] = append(m.holdings[sourceID], h)
+		}
+	}
+	return nil
+}
+
 // ReplaceSourceHoldings mirrors the DB: replace one source's cache-holdings list.
 func (m *memStore) ReplaceSourceHoldings(_ context.Context, sourceID int64, hashes []string) error {
 	m.mu.Lock()
