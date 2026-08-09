@@ -1650,3 +1650,86 @@ node is gone, a node just inside the window is kept, an all-stale plan comes bac
 empty), `federation.TestChunkPlanKeepsDispatchingToAHolderThatNeverAnswers` (the
 dispatch cost, still true for handed-in plans) and the four-node
 `TestStaleHoldersCostAFetch` as the end-to-end number.
+
+## Madnetwork — library discovery is slow, and the fix is undecided (design question, 2026-08-09)
+
+**Open question, no code change.** Raised by the owner while scoping the swarm
+work, and parked here deliberately so the swarm design (§Distribution "Making it
+a swarm", F9) does not have to answer it. The two are independent: F9 makes a
+*known* holder deliver faster, this is about how long it takes to learn a node
+exists at all.
+
+### The measurement
+
+`syncSources` (`federation/discovery.go`) pulls `discovery_budget` — default
+**4** — member catalogs per `CatalogCycle` (**15 min**), bounded by
+`discovery_cap`, default **200**. That is 16 nodes an hour, so filling the cap
+takes **~12.5 hours**. `federation/node.go:196` says as much in its own comment
+("fills the cap in about half a day"). A node that joins the madnetwork today is
+invisible to most of the network until tomorrow, and a library it publishes today
+is not searchable network-wide until then either.
+
+Where the time goes matters for choosing a fix: **not in the lookup**. Browse and
+search are local SQLite over `federation_catalog` — sub-millisecond. The whole
+latency is in *moving catalogs on a deliberately slow rotation*. So any fix has
+to either move the bulk sooner, or stop needing it moved.
+
+Related, and narrower: §Open questions 1 in `docs/architecture/federation.md`
+already flags that both numbers are guesses wanting a real network to tune
+against, and already names an upgrade path (**signed catalog-digest relay**,
+"which makes *which node changed* free"). This entry is the wider question — is
+tuning the answer at all, or is the pull rotation the wrong shape.
+
+### Options
+
+| Option | What it buys | What it costs |
+|---|---|---|
+| **Tune the two numbers** (raise `discovery_budget`, or shorten the cycle) | Nothing to build; both are already per-node config. Linear: budget 16 fills the cap in ~3 h. | Does not change the shape — still O(N) catalogs pulled by every node, still a full catalog per pull. Raising it far enough to matter is what the "without ever dialling in a storm" clause exists to prevent, and the cap itself stays the ceiling. |
+| **Signed catalog-digest relay / gossip a pointer** (the path already recorded in §Open questions 1) | Gossip carries a small signed record — *"node X's catalog serial is S"* — over `federation/gossip.go`, which already does community-scoped, hop-limited, self-ageing spread. Nodes then pull only what actually changed, on demand, instead of rotating blindly through 200 sources. Cuts "a new library exists" from ~12 h to gossip-propagation time. | A new gossip record type and its ageing rules. Does not fix the storage half — a node still caches the catalogs it pulled. Needs a decision on whether a digest is pulled eagerly or only when a search misses. |
+| **Community-scoped DHT** | Bounded storage: no node holds the whole index, which is the only real answer once the network outgrows `discovery_cap`. Announce/expire semantics are also a naturally self-freshening peer list. | Large. Kademlia routing tables, iterative lookups, republish/expiry, and a membership check on every routing operation. **Only viable if node IDs are bound to the ed25519 identity and routing entries are accepted only from keys `MemberKeys` can place** — otherwise it imports a sybil surface that `BranchMap.Voices` cannot reach, since DHT nodes are not in the friendship graph. Buys nothing for browse (below). |
+
+Nothing here is chosen. The middle option is the one with an existing recorded
+upgrade path and the smallest new trust surface, and it is what the swarm's own
+holder-announce (F9 item 2) would be a sibling of — worth deciding the pair
+together, since both are "gossip a small fact instead of polling for a big one".
+
+### Why a global DHT is not on that list
+
+Written down so it is not re-litigated from scratch. A DHT was proposed and
+analysed on 2026-08-09; three findings, in descending order of how load-bearing
+they are:
+
+1. **It cannot serve browse at all**, and that is structural rather than an
+   implementation gap. A DHT is a *point lookup* over a hashed keyspace. Browse
+   is range and full-text — "artists starting with B", "newest first", "search
+   radiohead", the `rare` lane. Consistent hashing destroys ordering by design.
+   And DHT records are small (BEP 5 peer lists, BEP 44 mutable items ~1 KB);
+   a library catalog is megabytes, so the most a DHT could hold is a *pointer*
+   to a catalog — which is exactly what option 2 gossips, for far less.
+2. **It is slower per query, not faster.** The intuition that drove the question
+   is backwards for our workload. Today's lookup is a local join,
+   sub-millisecond. An O(log N) iterative Kademlia lookup over yggdrasil
+   (multi-hop, ~100–500 ms RTT) is 0.5–2.5 s. A DHT trades query latency away in
+   exchange for freshness and bounded storage; those are the things to shop for,
+   and only the second is unobtainable another way.
+3. **A *global* DHT contradicts the access model** in three places: announces
+   publish "hash H is at address A" to nodes chosen by XOR distance rather than
+   by our friend list, which is the fact `handleBlob` returns 404 to protect and
+   which makes `DepthPrivate`/`DepthFriends` unenforceable at announce time; a
+   DHT record is one value for all askers, so `ownSnapshot`'s per-audience
+   memoization has no expression in it; and sybil resistance would rest on
+   Kademlia rather than on the friendship graph. The community-scoped variant in
+   the table above is the version that survives all three — it is the only DHT
+   shape worth designing here.
+
+ygg v0.5.14 is a spanning-tree/CRDT router, not the Kademlia it carried back in
+v0.3, so there is nothing to reuse from the transport — but equally nothing to
+build: every node already has a globally routable key-derived address, so any
+future DHT would need the *content* index only, never the routing half.
+
+### Loose end found while measuring
+
+`federation/node.go:200` cross-references "§Open questions 2" for these numbers;
+the doc has been renumbered since (former questions 1–4 were settled) and it is
+now **question 1**. One-word fix, deliberately not made here — noted so the next
+reader does not chase it.

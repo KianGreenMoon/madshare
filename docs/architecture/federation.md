@@ -2296,6 +2296,195 @@ been guesses of the same quality as `discovery_budget` (§Open questions) with
 worse failure modes when wrong. The knobs exist and are documented; choosing them
 is an operator's call.
 
+### Making it a swarm (F9, designed 2026-08-09, **not built**)
+
+F4 parallelises a fetch across holders. It does not make the swarm *grow*: every
+downloader is a pure leech until it finishes, so ten nodes pulling a new track
+leave the origin carrying all ten transfers. The claim two sections up — that
+holdings "lets a popular track spread as the community fetches it" — is true only
+*after* each fetch completes. F9 closes that, and fixes the two scheduling
+defects that the measurements of 2026-07-24 and 2026-08-09 left open.
+
+Four items. Items 1 and 3 are one job; item 2 is what makes item 1 worth having;
+item 4 is independent of all of them.
+
+#### Item 1 — Partial seeding
+
+**The defect.** A fetch writes `<hash>.part`, and nothing can see it.
+`seedableBlob` resolves `filepath.Join(cacheDir, hash)` only, and `cacheHoldings`
+skips `.part` files via the hash-shape check. So a node 90 % through a download
+serves nothing of it, and a new seeder appears only at 100 %. This is the single
+largest divergence from torrent behaviour and the reason a flash crowd on a new
+track does not disperse.
+
+**What it needs.** A way to say *which chunks I have*, and a serve path that
+honours it — BitTorrent's bitfield plus `HAVE`, in our idiom:
+
+- `GET /madnetwork/v0/have/{hash}` → a chunk bitmap. At the 1 MiB bulk cap a
+  100 MB file is 100 chunks = 13 bytes, so a plain bitmap is bounded and needs no
+  run-length encoding.
+- A bitmap is meaningless without the layout it indexes, so the reply must also
+  pin the layout (`chunk_size` + `lead_sizes`, or the manifest it came from).
+  The layout is deterministic from the size, but the *serving* node's manifest is
+  the authority — a fetcher must never index a bitmap against a guessed layout.
+- `handleBlob` learns to serve a Range out of a `.part` when the covering chunks
+  are complete.
+
+**Three decisions this must settle.**
+
+*The scope gate.* `seedableBlob`'s two branches answer under different rules, and
+there is a standing invariant (fixed 2026-08-02) that a cached blob is never also
+a library blob. A `.part` is a third case, and the temptation is a third branch.
+Do not: **a `.part` seeds under the cache branch's rule, exactly.** It is a cache
+object that is not finished, and it can never be a library blob — it has no
+published appearance and cannot acquire one until it lands and verifies. That
+keeps "catalog and bytes read one rule" intact instead of adding a rule that
+would have to be kept in agreement with two others.
+
+*The zero-fill trap.* `fetchSwarm` pre-truncates the `.part` to the full size so
+chunks can be written at their offsets. A `.part` is therefore **full-length and
+mostly zeros from the first moment**, and a naive `http.ServeContent` on it would
+hand over megabytes that verify at neither chunk nor file level. Serving must be
+gated on `chunkOK`, never on the file's extent. This is the one way item 1 can
+silently poison the swarm, so it wants its own test.
+
+*What is safe to serve.* Bytes in a `.part` have already passed their per-chunk
+SHA-256 (`fetchChunk` verifies before `WriteAt`), so re-seeding them is sound —
+the fetcher downstream still verifies the assembled whole-file hash, which
+remains the authoritative anchor. Nothing about the trust model changes.
+
+#### Item 2 — Announce, rather than wait to be pulled
+
+**The defect.** Holdings sync on the catalog cadence — 15 minutes. Fetch a track,
+go offline in ten, and nobody ever learned you held it. A swarm's peer set is
+ephemeral by nature and our tracker is a slow *pull*; the two are structurally
+mismatched. It is also what makes item 1 nearly worthless on its own: a partial
+seeder that is discovered a quarter of an hour later has usually finished.
+
+**What it needs.** Push a small signed record over `federation/gossip.go` — the
+sibling of the freshness hints in `freshness.go`, which already gossip
+community-scoped, hop-limited, capped, self-ageing facts.
+
+**Decisions to settle.**
+
+- *When.* Recommend two events, not a stream: on fetch completion, and once on
+  first-chunk-complete for an in-flight fetch. An announce per fetch is naturally
+  rate-bounded by fetch rate; cap the fan-out as `MaxFreshnessHints` does.
+- *May an announce mint a holdings row?* The freshness hints say no — "hearsay
+  can refresh a row, never mint one". **Here the answer is the opposite, and the
+  distinction is the design point: an announce is first-hand.** A node announcing
+  `H` is speaking about itself, where a freshness hint speaks about a third party.
+  So a member's own announce may mint, and an announce is **never relayed** — the
+  moment it would be, it becomes hearsay and the rule flips back.
+- *Does an announce create a `federation_catalog_sources` row for a node we have
+  never pulled from?* Probably yes, but it interacts with `discovery_cap`
+  eviction and wants deciding explicitly.
+- **The trap, learned from the 2026-08-09 stale-holder fix:**
+  `EnsureCatalogSource` sets `first_seen` and **not** `last_seen`. An announce
+  path that forgets to set `last_seen` produces a holder that is stale on arrival
+  and filtered straight back out by `StaleHolderWindow`. Conversely, done right,
+  an announce refreshes `last_seen` and an announced holder is inside the window
+  by construction — which is the good interaction.
+
+Relationship to the Build plan's deferred *"announce/gossip of catalog deltas"*:
+**different object**. That one gossips *library* changes; this gossips *holdings*.
+They are siblings — both replace polling for a big thing with gossiping a small
+one — and the discovery-speed question in `.issues/open-issues.md` (2026-08-09)
+argues they should be decided together.
+
+#### Item 3 — A scheduler that is not speed-blind
+
+**The defect**, open since 2026-07-24 and re-verified 2026-08-07:
+`chunkPlan.pickProvider` is plain round-robin with no throughput input, so a slow
+holder keeps taking half the dispatches and is discovered only by burning
+`Timeouts.PerChunk` repeatedly. The 2026-08-09 measurement put a number on the
+worst case: **one dead holder in a plan cost ~150× the entire clean fetch**, and
+that is `PerChunk` (2 min), not `ChunkStall` (20 s), because a dead holder never
+connects and the idle-read watchdog is never armed.
+
+**Item 1 forces this change regardless.** With partial holders, "pick a provider,
+then a chunk" is simply wrong — not every holder can serve every chunk. The
+scheduler must select the *pair*. That is why 1 and 3 are one job: committing to
+a dispatch shape twice would be the waste.
+
+**What to measure** — four inputs, three of them nearly free:
+
+1. **Per-provider throughput**, EWMA over completed chunks. `ProviderStats.Bytes`
+   already accumulates; it has no time dimension. Bracket `fetchChunk` and it is
+   done.
+2. **In-flight bytes per provider** — not tracked at all today, and the input that
+   turns a rate estimate into a scheduling decision. Recommend dispatching to
+   **fewest outstanding bytes**: simpler than weighted random, self-correcting,
+   and it needs no decay constant anyone would have to guess.
+3. **A connect deadline split out of `PerChunk`** — on the order of 5 s. "Never
+   connected" and "connected then slow" are different diagnoses sharing one
+   two-minute budget today. This alone removes most of the dead-holder cost.
+4. **429 as timed backoff, never as slowness.** F7 quotas mean a holder can
+   refuse *deliberately*, and the swarm is documented to read that as "ask another
+   holder". A throughput-weighted scheduler that reads a quota refusal as
+   slowness would starve a busy-but-fast peer by the very mechanism meant to find
+   fast peers.
+
+**`worseThanPeers` must be reworked in the same commit.** `swarm.go` documents the
+coupling in its own comment: the rule reads a 0-failure streak as "this peer is
+doing fine", which is only sound because round-robin guarantees every live holder
+is handed work. Under speed-aware dispatch a deprioritised holder holds a 0 streak
+without having earned it, and the benchmark silently stops meaning anything. The
+fix is to exclude holders not tried within a recent window when computing `best`.
+
+**Rarest-first becomes meaningful here and only here.** With complete holders
+every chunk has identical rarity, which is why F4 has no piece picker. Once item 1
+lands there are genuinely rare chunks. Recommend deferring it to a measurement
+rather than shipping it on principle — the swarms this serves are small, and
+fewest-outstanding-bytes may well be enough.
+
+#### Item 4 — Pipelining and endgame
+
+**The defect.** Each worker fetches one chunk, waits for the whole response, then
+asks for the next. Over ygg — multi-hop, high RTT — every chunk pays a full round
+trip of dead air, and `maxChunkWorkers` caps the parallelism at 8.
+
+- **Pipelining:** keep a request queue depth ≥ 2 per holder, so the pipe stays
+  full across the RTT.
+- **Endgame / hedging:** duplicate-request the last few outstanding chunks across
+  several holders and take whichever lands first; generalised, re-dispatch any
+  chunk in flight longer than *k* × the median chunk time. This fixes precisely
+  the case the open-issues entry calls unfixable today — *"a holder that is slow
+  but just fast enough to beat `PerChunk` is never retired and keeps taking half
+  the dispatches indefinitely"* — without the scheduler needing to be clever.
+
+**Entirely independent of items 1–3**: no protocol change, no new measurement,
+contained in `chunkPlan`. It is the best ratio of speedup to code touched, and it
+was deliberately **not** pulled forward — owner's call, 2026-08-09 — so the
+sequencing is a decision on record rather than an oversight.
+
+#### Deliberately not in F9
+
+- **Choking / unchoking / tit-for-tat.** BitTorrent's reciprocity engine answers
+  strangers who might freeload. Our swarm boundary is the community, every member
+  is vouched for, and the freeload case is already answered by the F7 member
+  quotas. Here it would mostly penalise a node with a small library.
+- **A DHT.** Analysed and set aside on 2026-08-09; the reasoning lives in
+  `.issues/open-issues.md` §"library discovery is slow". Short form: wrong query
+  shape for browse, slower per lookup than the local index it would replace, and
+  a global one contradicts the audience model in three places.
+- **Super-seeding.** Item 1 delivers nearly all of its benefit.
+- **Merkle-rooted chunk hashes.** Unchanged from F4: the swarm id is the flat
+  whole-file SHA-256, per-chunk hashes exist for early verification, and the
+  assembled hash stays the anchor. Nothing in F9 needs that revisited.
+
+#### Build order
+
+In dependency order: **item 4** (standalone, any time) → **item 2** (small, and
+what makes item 1 discoverable) → **items 1 + 3** as a single job. Item 1 without
+item 2 still helps holders already named in a plan, and item 2 without item 1
+still shortens the path for completed fetches — but item 1's real payoff needs the
+announce.
+
+No migration is expected: `federation_holdings` and `federation_catalog_sources`
+already carry what item 2 writes. That should be confirmed rather than assumed
+when item 2 is picked up.
+
 ## Availability & node health
 
 > **Supersedes the reverted "10-second presence" feature.** An earlier attempt
@@ -2986,8 +3175,21 @@ milestone directly after direct transfer works, and tokens ship with depth.
      `checkClaims`, with the fingerprint stage bounded to what changed since a
      per-source watermark; findings stored (migration 039) with dispositions that
      survive a rescan; materializing is additive, via the existing download path.
+- **F9 — Making it a swarm** (designed 2026-08-09, **not built** — §Distribution
+  "Making it a swarm" carries the four items, the decisions each still owes and
+  the traps; not repeated here). F4 parallelises a fetch across holders but does
+  not let the swarm grow, because a downloader seeds nothing until it finishes.
+  Four items: **partial seeding** (a chunk-availability endpoint + serving Ranges
+  out of the `.part`), **holdings announce** over the existing gossip layer
+  (first-hand, never relayed), a **scheduler** that measures throughput and
+  in-flight bytes instead of dispatching round-robin — reworking `worseThanPeers`
+  with it — and **pipelining + endgame hedging**. Items 1 and 3 are one job; item
+  4 is independent of everything and was deliberately not pulled forward.
 - **Later (decided-deferred):** subscribe→replicate with storage caps,
-  announce/gossip of catalog deltas, S3-backed swarm storage.
+  announce/gossip of catalog deltas (the *library* sibling of F9 item 2's
+  holdings announce — see the discovery-speed question in
+  `.issues/open-issues.md`, which argues the pair should be decided together),
+  S3-backed swarm storage.
 
 ## Open questions (design-time details)
 
