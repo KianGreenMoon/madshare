@@ -20,7 +20,7 @@ func TestMergeRecordings_UnionDedupAndPin(t *testing.T) {
 	ctx := context.Background()
 
 	f1 := insertTaggedFile(t, db, hash64("mg1"), "studio.flac", "The Band", "Studio Album")
-	f2 := insertTaggedFile(t, db, hash64("mg2"), "bestof.mp3", "The Band", "Best Of")     // distinct → moves
+	f2 := insertTaggedFile(t, db, hash64("mg2"), "bestof.mp3", "The Band", "Best Of")       // distinct → moves
 	f3 := insertTaggedFile(t, db, hash64("mg3"), "reissue.mp3", "The Band", "Studio Album") // dup identity → dropped
 	target := recordingIDOf(t, db, f1.ID)
 	src2 := recordingIDOf(t, db, f2.ID)
@@ -335,15 +335,15 @@ func TestListRecordings_FiltersSearchPaging(t *testing.T) {
 		opts RecordingListOptions
 		want []int64
 	}{
-		"multi_rendition":  {RecordingListOptions{Filter: "multi_rendition"}, []int64{multi}},
-		"multi_appearance": {RecordingListOptions{Filter: "multi_appearance"}, []int64{multi}},
-		"dormant":          {RecordingListOptions{Filter: "dormant"}, []int64{dormantRec}},
-		"pinned":           {RecordingListOptions{Filter: "pinned"}, []int64{pinnedRec}},
-		"unknown filter":   {RecordingListOptions{Filter: "nope"}, nil},
-		"search id":        {RecordingListOptions{Search: "#" + itoa(multi)}, []int64{multi}},
+		"multi_rendition":   {RecordingListOptions{Filter: "multi_rendition"}, []int64{multi}},
+		"multi_appearance":  {RecordingListOptions{Filter: "multi_appearance"}, []int64{multi}},
+		"dormant":           {RecordingListOptions{Filter: "dormant"}, []int64{dormantRec}},
+		"pinned":            {RecordingListOptions{Filter: "pinned"}, []int64{pinnedRec}},
+		"unknown filter":    {RecordingListOptions{Filter: "nope"}, nil},
+		"search id":         {RecordingListOptions{Search: "#" + itoa(multi)}, []int64{multi}},
 		"search any tagset": {RecordingListOptions{Search: "best of"}, []int64{multi}},
-		"search artist":    {RecordingListOptions{Search: "solo act"}, []int64{dormantRec}},
-		"search none":      {RecordingListOptions{Search: "zzz-nothing"}, nil},
+		"search artist":     {RecordingListOptions{Search: "solo act"}, []int64{dormantRec}},
+		"search none":       {RecordingListOptions{Search: "zzz-nothing"}, nil},
 	}
 	for name, tc := range cases {
 		rows, err := db.ListRecordings(ctx, tc.opts)
@@ -618,10 +618,10 @@ func TestCreateAppearance(t *testing.T) {
 		t.Fatalf("outcome = %+v, want a created tagset", out)
 	}
 	var (
-		album, state         string
-		primary              int
-		origin, createdBy    sql.NullInt64
-		albumID, albumArtID  sql.NullInt64
+		album, state        string
+		primary             int
+		origin, createdBy   sql.NullInt64
+		albumID, albumArtID sql.NullInt64
 	)
 	if err := db.QueryRowContext(ctx,
 		`SELECT COALESCE(album,''), review_state, is_primary, origin_file_id, created_by, album_id, album_artist_id

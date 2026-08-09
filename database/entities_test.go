@@ -1176,7 +1176,7 @@ func TestMergeArtistsPreview_CountsAndNoMutation(t *testing.T) {
 
 	insertSearchFile(t, db, "pv00a001", "TA", "Artist A", "Greatest Hits", "")
 	insertSearchFile(t, db, "pv00a002", "TB", "Artist B", "greatest hits", "") // collides (norm)
-	insertSearchFile(t, db, "pv00a003", "TC", "Artist B", "Solo", "")           // non-colliding
+	insertSearchFile(t, db, "pv00a003", "TC", "Artist B", "Solo", "")          // non-colliding
 	aID, _, _ := db.LookupArtistID(ctx, "Artist A")
 	bID, _, _ := db.LookupArtistID(ctx, "Artist B")
 	// Source has a cover, target does not → the cover would move.
