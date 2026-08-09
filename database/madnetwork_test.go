@@ -416,6 +416,74 @@ func TestMadnetworkBlobLookup(t *testing.T) {
 	}
 }
 
+// TestMadnetworkBlobProvidersKeepStaleCatalogHolders pins a REAL COST measured
+// against a live server on 2026-08-09, and is written to fail the day it is
+// fixed.
+//
+// A madplayer fetching a 20 MB track was handed a plan naming holders last seen
+// 21 and 54 hours earlier. Each one is dialled, stalls, and costs
+// Timeouts.ChunkStall × providerFailureLimit before it is retired: with the
+// stale entries the fetch took 4m12s–4m25s, and against the same server with one
+// live holder and none stale, 1m43s. Roughly ninety seconds of pure waiting on
+// nodes that were not there.
+//
+// The inconsistency is inside this one function. Its listener-device branch DOES
+// age out — ListenerBlobProviders applies ListenerHoldingsTTL, pinned by
+// TestListenerHoldingsGoStaleWithoutAPush — and its catalog-source branch does
+// not. The /madnetwork browse has a Cutoff for exactly this reason, but that is
+// about display; this list is a fetch plan, and a fetch plan saying "dial these"
+// has a stronger obligation than a page saying "this might exist".
+//
+// Deliberately NOT fixed here: the window is a policy decision (three catalog
+// cycles? the browse's own Cutoff? fail open when everything is stale, as the
+// availability model does elsewhere?), and this file's own rule is to reproduce
+// before fixing. This is the reproduction.
+func TestMadnetworkBlobProvidersKeepStaleCatalogHolders(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	live := insertSource(t, db, "a1a1")
+	longGone := insertSource(t, db, "b2b2")
+	for _, s := range []struct {
+		id   int64
+		name string
+	}{{live, "live-node"}, {longGone, "long-gone"}} {
+		if err := db.ReplaceSourceCatalog(ctx, s.id, "s"+s.name, 100, []federation.CatalogEntry{
+			catEntry("1", "r1", "Artist", "Album", "Song", "hash-stale"),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	now := time.Now().Unix()
+	if err := db.TouchCatalogSourceSeen(ctx, live, now, "live-node"); err != nil {
+		t.Fatal(err)
+	}
+	// Two days and change — far past any window this project treats as fresh.
+	if err := db.TouchCatalogSourceSeen(ctx, longGone, now-54*3600, "long-gone"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, holders, err := db.MadnetworkBlobProviders(ctx, "hash-stale")
+	if err != nil {
+		t.Fatalf("MadnetworkBlobProviders: %v", err)
+	}
+
+	// The ordering half is right and worth keeping right: freshest first, so a
+	// fetcher's round-robin at least starts with somebody who was recently there.
+	if len(holders) == 0 || holders[0].Display() != "live-node" {
+		t.Fatalf("holders = %+v, want the live node first", holders)
+	}
+
+	// And the half that is not. When a cutoff is added this becomes
+	// `len(holders) != 1`, and the message below stops being true.
+	if len(holders) != 2 {
+		t.Fatalf("holders = %d, want 2 — this test pins the CURRENT behaviour", len(holders))
+	}
+	t.Log("a holder last seen 54h ago is still in the fetch plan: " +
+		"no freshness cutoff on the catalog branch (see this test's comment)")
+}
+
 // TestMadnetworkPolicy: the autoapprove_downloads setting round-trips and
 // defaults to off (downloads go through the review bucket).
 func TestMadnetworkPolicy(t *testing.T) {

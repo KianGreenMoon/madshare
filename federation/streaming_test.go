@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestTransferChunkAvailability pins the per-chunk readiness the streaming relay
@@ -246,6 +247,64 @@ func TestChunkPlanRetirementIsRelative(t *testing.T) {
 			t.Error("transfer did not abort with no live holder left")
 		}
 	})
+}
+
+// TestChunkPlanKeepsDispatchingToAHolderThatNeverAnswers puts a number on what a
+// stale holder in the fetch plan costs, measured against a live server on
+// 2026-08-09: a madplayer fetching a 20 MB track was handed holders last seen 21
+// and 54 hours earlier, and the fetch took 4m12s–4m25s against 1m43s for the
+// same server with one live holder and none stale.
+//
+// This is where that ninety seconds comes from. Dispatch is plain round-robin
+// (pickProvider), so a holder that has never delivered a single byte keeps being
+// handed chunks until it has failed providerFailureLimit times — and in
+// production each of those failures is a full Timeouts.ChunkStall (20 s) spent
+// waiting for a node that is not there.
+//
+// The waste is bounded and the transfer is correct, which is why this is a cost
+// rather than a bug: the live holder carries everything and the fetch completes.
+// It is pinned because the fix has two halves in two repos — a freshness cutoff
+// on the plan (database.MadnetworkBlobProviders, see
+// TestMadnetworkBlobProvidersKeepStaleCatalogHolders) and, if dispatch ever
+// becomes speed-aware, worseThanPeers has to be re-read with it
+// (.issues/open-issues.md §"swarm provider selection is speed-blind").
+func TestChunkPlanKeepsDispatchingToAHolderThatNeverAnswers(t *testing.T) {
+	man, layout := wideManifest(24)
+	// Index 0 is the ghost — advertised, dialled, never there. Index 1 is real.
+	cp := newChunkPlan(man, layout, []*BlobProvider{{Name: "ghost"}, {Name: "live"}}, false, nil)
+	netErr := errors.New("mesh stalled")
+
+	wasted := 0
+	for !cp.dead[0] {
+		idx, ok := cp.next()
+		if !ok {
+			t.Fatal("ran out of chunks before the ghost was retired")
+		}
+		p, pidx, ok := cp.pickProvider()
+		if !ok {
+			t.Fatal("no live provider left")
+		}
+		if p.Name == "ghost" {
+			wasted++
+			cp.fail(idx, pidx, netErr, false)
+			continue
+		}
+		cp.succeed(idx, pidx, newTransfer("h", "p", "p.part"))
+	}
+
+	if wasted != providerFailureLimit {
+		t.Errorf("the ghost absorbed %d dispatches before retirement, want %d",
+			wasted, providerFailureLimit)
+	}
+	if cp.dead[1] {
+		t.Error("the holder that was actually delivering got retired")
+	}
+	if cp.aborted {
+		t.Error("aborted with a live holder still in hand")
+	}
+	// The claim in production terms, so the number above means something.
+	t.Logf("a never-present holder costs %d × Timeouts.ChunkStall before it is "+
+		"retired — %s at the shipped 20s", wasted, time.Duration(wasted)*20*time.Second)
 }
 
 // TestChunkPlanAttemptLimit pins the other half of that change: retiring holders
