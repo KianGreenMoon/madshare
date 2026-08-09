@@ -11,10 +11,12 @@
 >
 > Behind it: F0–F8 all shipped, including the **F7 capability tokens** this client
 > was named as the reason for (`docs/architecture/federation.md` §Principals &
-> access), and the UI toolkit is settled on **Gio** (see *The UI toolkit*). Next
-> is **level 2b, the mesh — designed 2026-08-09, not yet built**: the access half
-> is `federation.md` §"The household", and what the client does with it is
-> §"Level 2b, concretely" below.
+> access), and the UI toolkit is settled on **Gio** (see *The UI toolkit*).
+> **Level 2b, the mesh, is most of the way there**: the device becomes a node,
+> signing in enrols it, and playback now prefers the swarm and falls back to the
+> relay. What is left of 2b is the materialize target above, which it is the
+> first caller for. The access half is `federation.md` §"The household", and what
+> the client does with it is §"Level 2b, concretely" below.
 >
 > **madplayer now lives in its own repository** (split out at madshare v0.9.0),
 > beside this one. It requires madshare as an ordinary Go module pinned to a
@@ -648,20 +650,72 @@ situations: the peering info above, multicast on the local network, and a typed
 peer list in Settings for the person who has one. A device on none of them is not
 broken — it is a level-1 client, which is a working program.
 
-**Playing network content prefers the swarm and falls back to the relay.** The
-holders come from the browse row being rendered (`versions[].holders[].key`) or
-from `GET /api/madnetwork/holders/{hash}` when the row is not to hand — a playlist
-item, a queue restored from disk. If no holder answers, the home server's
-`GET /api/madnetwork/stream/{hash}` is still there and still correct; level 2b
-adds a faster path, it does not remove the one that works. This is also the answer
-to "what happens on a phone with no fpcalc": that build never reaches this
-paragraph, and everything else still runs.
+**Playing network content prefers the swarm and falls back to the relay.** Built
+2026-08-09. The holders come from `GET /api/madnetwork/holders/{hash}`, and on
+this client that is the **only** source rather than the fallback: an earlier
+revision named the browse row's own `versions[].holders[].key` as the cheap path,
+but those rows belong to the `/madnetwork` page, which browses *other nodes'*
+catalogs — madplayer merges each server's **ordinary** library, and an ordinary
+track row carries no holders. If nobody holds it, or the fetch fails, or the
+device has no vouch from that server yet, the level-1 download is still there and
+still correct; 2b adds a faster path, it does not remove the one that works. This
+is also the answer to "what happens on a phone with no fpcalc": that build never
+reaches this paragraph, and everything else still runs.
 
-**Seeding is a consequence, not a feature.** The cache the level-1 downloads
-already fill is what gets served, the audience is the home server and its other
-devices, and the only new work is telling the server what is in it
+**Measured 2026-08-09, and not yet good enough to hand to anybody.** Against a
+live server over the public yggdrasil overlay, the relay delivered a 20 MB track
+in **3.8 s** and the swarm took **1 m 43 s – 4 m 25 s** for tracks of similar
+size. Two separate causes, and only one of them is a defect:
+
+- **Stale holders cost ~1.5 minutes.** The fetch plan named nodes last seen 21 h
+  and 54 h earlier, and each dead one burns `ChunkStall` × `providerFailureLimit`
+  before it is retired. `MadnetworkBlobProviders` sorts by `last_seen` and applies
+  **no cutoff**, while the `/madnetwork` browse has one for display. A plan that
+  says "dial these" should not name a node that has been gone for two days.
+- **The remainder is the route.** With one live holder and no stale ones the
+  transfer is clean — zero stalls, zero retries, every chunk from that holder —
+  and still only 105–170 KB/s, because those bytes cross the yggdrasil overlay
+  while the relay is ordinary HTTPS to a well-connected host.
+
+So on *this* topology the swarm is the slower path by a wide margin, and the
+paragraph above is aspirational rather than descriptive. It is left as the design
+because the shape is right — the swarm is what makes a device useful to its
+household, and a mesh route can be the *only* path when the relay is unreachable
+— but a client shipping this must bound how long it will wait (madplayer's
+`remote.DefaultSwarmBudget`) rather than assume the mesh is faster.
+
+Two consequences of *how* it falls back, both decisions:
+
+- **A fallback after bytes have landed is not a fallback.** The swarm's copy is
+  written into the playback cache only once the transfer is complete and
+  verified, and if that write then fails part-way the relay is **not** tried:
+  appending a second source's copy to the first's produces a file that decodes as
+  noise rather than one that fails.
+- **Mesh fetches run one at a time**, because the mesh carries one vouch and it
+  is installed process-wide. Presenting the token and fetching has to be
+  indivisible, or a prefetch for another server's track swaps it out from under a
+  fetch already running. The cost is that a slow fetch delays the next one — and
+  the next one is the queue's *guess* about what will play, on a context that is
+  cancelled the moment the guess turns out wrong.
+
+**Seeding is a consequence, not a feature** — of *swarm* fetching specifically.
+An earlier revision said the cache the level-1 downloads already fill is what
+gets served, and that is wrong: a node seeds from `cache/madnetwork/` (federation's
+`seedableBlob`, and the same directory `Holdings` advertises), while relay
+downloads land in the client's own playback cache and are never offered to
+anybody. So a device that only ever used the relay seeds nothing, and a swarm
+fetch is what makes it useful to the household — the blob lands in madshare's
+cache as a side effect of arriving at all. The audience is the home server and
+its other devices, and the only new work is telling the server what is in it
 (`POST /api/madnetwork/holdings`, on the same cadence the token is renewed).
 Nothing about the device's own library is involved, which is the whole point.
+
+That is also why the bytes exist twice on a device that fetched over the swarm:
+madshare's cache holds the hash-named blob it will seed, and the client copies it
+into its own cache under a name a decoder can read — the seeding cache has no
+extensions, and the pure-Go decoders pick by extension. Two caches under one
+ceiling number, each swept by its own enforcer, is what §"A remote track is a
+download" already describes; this is the case that makes both copies real.
 
 **Materializing finally has a caller.** Level 2a deferred the human-readable
 music directory (§"Where the bytes live") because nothing produced bytes to write
@@ -829,11 +883,15 @@ is a claim this project has verified only on the desktop side.
    `GET /api/albums/{id}/image?size=`; nothing renders images yet, on either
    side), and the **quality picker** for a remote track, which is
    `/api/tagsets/{id}/renditions` against the right server.
-5. **Level 2b: the mesh** — designed 2026-08-09, not built. Node key, capability
-   token from the home server, swarm fetch and seed-back. The access half is
-   `federation.md` §"The household" (which is also where the three things that
-   turned out to be missing are written down); the client's half is §"Level 2b,
-   concretely"; the token flow is §"The capability token, concretely".
+5. **Level 2b: the mesh** — designed 2026-08-09, and built the same week except
+   for the writer. ~~Node key~~, ~~capability token from the home server~~,
+   ~~swarm fetch~~ and ~~seed-back~~ are done: signing in enrols the device, and
+   playing a network track asks who holds it, fetches from them and falls back to
+   the level-1 download. **Still owed: the materialize target**, item 3's debt,
+   which 2b is the first caller for. The access half is `federation.md` §"The
+   household" (which is also where the three things that turned out to be missing
+   are written down); the client's half is §"Level 2b, concretely"; the token flow
+   is §"The capability token, concretely".
 6. **Playlist sync**, once the levels above exist and the unresolvable-item
    question has a real UI to be answered in. Level 1 sharpened the case for it:
    the client now has two pools of music at once and no way to save a list
