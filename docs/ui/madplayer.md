@@ -667,11 +667,24 @@ live server over the public yggdrasil overlay, the relay delivered a 20 MB track
 in **3.8 s** and the swarm took **1 m 43 s – 4 m 25 s** for tracks of similar
 size. Two separate causes, and only one of them is a defect:
 
-- **Stale holders cost ~1.5 minutes.** The fetch plan named nodes last seen 21 h
-  and 54 h earlier, and each dead one burns `ChunkStall` × `providerFailureLimit`
-  before it is retired. `MadnetworkBlobProviders` sorts by `last_seen` and applies
-  **no cutoff**, while the `/madnetwork` browse has one for display. A plan that
-  says "dial these" should not name a node that has been gone for two days.
+- **Stale holders are the expensive half**, and a four-node experiment
+  (`federation.TestStaleHoldersCostAFetch`: three holders, one fetcher, the same
+  2 MiB blob, walking 0→3 of them stale) puts numbers on it. All three live: **72
+  ms**. One stale: **12 s**. Two: **18 s**. All three: **24 s and a failure**.
+  Scaled to the shipped timeouts that is ~1 s, 4 m, 6 m, 8 m — against **3 ms**
+  for the same bytes over plain HTTP, which is what the relay is. One dead entry
+  in the plan is worth ~150× the whole clean fetch.
+
+  The binding deadline is **`PerChunk` (2 minutes), not `ChunkStall` (20 s)** —
+  the arithmetic in an earlier revision of this section, and the first thing the
+  experiment corrected. A stale holder's dial never connects, so no response
+  header ever arrives and the idle-read watchdog is never armed; every run
+  reports `stalls=0` and dies on the per-chunk backstop. A dead holder is
+  therefore six times dearer than the guess.
+
+  `MadnetworkBlobProviders` sorts by `last_seen` and applies **no cutoff**, while
+  the `/madnetwork` browse has one for display. A plan that says "dial these"
+  should not name a node that has been gone for two days.
 - **The remainder is the route.** With one live holder and no stale ones the
   transfer is clean — zero stalls, zero retries, every chunk from that holder —
   and still only 105–170 KB/s, because those bytes cross the yggdrasil overlay

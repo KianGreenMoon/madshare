@@ -255,11 +255,15 @@ func TestChunkPlanRetirementIsRelative(t *testing.T) {
 // and 54 hours earlier, and the fetch took 4m12s–4m25s against 1m43s for the
 // same server with one live holder and none stale.
 //
-// This is where that ninety seconds comes from. Dispatch is plain round-robin
+// This is where that time comes from. Dispatch is plain round-robin
 // (pickProvider), so a holder that has never delivered a single byte keeps being
-// handed chunks until it has failed providerFailureLimit times — and in
-// production each of those failures is a full Timeouts.ChunkStall (20 s) spent
-// waiting for a node that is not there.
+// handed chunks until it has failed providerFailureLimit times.
+//
+// What each of those failures COSTS is measured in TestStaleHoldersCostAFetch,
+// and it is not what this comment first claimed. The obvious answer is
+// Timeouts.ChunkStall (20 s), the idle-read watchdog — but a stale holder's dial
+// never connects, so no response header ever arrives and that watchdog is never
+// armed. The binding deadline is the per-chunk backstop, **PerChunk, 2 minutes**.
 //
 // The waste is bounded and the transfer is correct, which is why this is a cost
 // rather than a bug: the live holder carries everything and the fetch completes.
@@ -303,8 +307,9 @@ func TestChunkPlanKeepsDispatchingToAHolderThatNeverAnswers(t *testing.T) {
 		t.Error("aborted with a live holder still in hand")
 	}
 	// The claim in production terms, so the number above means something.
-	t.Logf("a never-present holder costs %d × Timeouts.ChunkStall before it is "+
-		"retired — %s at the shipped 20s", wasted, time.Duration(wasted)*20*time.Second)
+	t.Logf("a never-present holder absorbs %d dispatches before retirement — %s at "+
+		"the shipped 2-minute PerChunk (NOT ChunkStall: the dial never connects, so "+
+		"the idle-read watchdog never arms)", wasted, time.Duration(wasted)*2*time.Minute)
 }
 
 // TestChunkPlanAttemptLimit pins the other half of that change: retiring holders
