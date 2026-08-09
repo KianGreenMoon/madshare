@@ -102,6 +102,13 @@ func TestListenerDevicesJoinTheProviderLookup(t *testing.T) {
 	if err := db.ReplaceSourceHoldings(ctx, srcID, []string{hash}); err != nil {
 		t.Fatalf("ReplaceSourceHoldings: %v", err)
 	}
+	// A node we are in touch with. Advertising a hash is not on its own evidence
+	// that anybody can reach it, so a fetch plan drops a source nothing has
+	// observed inside StaleHolderWindow — in production that clock is moved by
+	// the catalog pull, a delivered transfer or the friendship ping.
+	if err := db.TouchCatalogSourceSeen(ctx, srcID, time.Now().Unix(), "a node"); err != nil {
+		t.Fatalf("touch source: %v", err)
+	}
 	// And one of this server's own devices.
 	dev := deviceKey("ab")
 	if err := db.PutListenerHoldings(ctx, dev, user, "kian's phone", []string{hash}, time.Now().Unix()); err != nil {

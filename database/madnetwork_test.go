@@ -378,9 +378,16 @@ func TestMadnetworkBlobLookup(t *testing.T) {
 	if err := db.BlockFederationPeer(ctx, blockedPeer, federation.PeerFriend, "", 400); err != nil {
 		t.Fatal(err)
 	}
-	// friend-b was seen more recently → first in fetch order. It is a member with
-	// no peer row, so the only clock it has is its own source row's.
-	if err := db.TouchCatalogSourceSeen(ctx, friendB, 9999, "friend-b"); err != nil {
+	// Both are nodes we are actually in touch with — a fetch plan drops anything
+	// nothing has observed inside StaleHolderWindow, so a fixture that never set
+	// last_seen would now be testing the cutoff rather than the lookup. friend-b
+	// was seen more recently → first in fetch order. It is a member with no peer
+	// row, so the only clock it has is its own source row's.
+	now := time.Now().Unix()
+	if err := db.TouchCatalogSourceSeen(ctx, friendA, now-60, "friend-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.TouchCatalogSourceSeen(ctx, friendB, now-10, "friend-b"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -416,9 +423,8 @@ func TestMadnetworkBlobLookup(t *testing.T) {
 	}
 }
 
-// TestMadnetworkBlobProvidersKeepStaleCatalogHolders pins a REAL COST measured
-// against a live server on 2026-08-09, and is written to fail the day it is
-// fixed.
+// TestMadnetworkBlobProvidersDropStaleCatalogHolders pins the fix for a REAL
+// COST measured against a live server on 2026-08-09.
 //
 // A madplayer fetching a 20 MB track was handed a plan naming holders last seen
 // 21 and 54 hours earlier. Each one is dialled, stalls, and costs
@@ -427,18 +433,17 @@ func TestMadnetworkBlobLookup(t *testing.T) {
 // live holder and none stale, 1m43s. Roughly ninety seconds of pure waiting on
 // nodes that were not there.
 //
-// The inconsistency is inside this one function. Its listener-device branch DOES
-// age out — ListenerBlobProviders applies ListenerHoldingsTTL, pinned by
-// TestListenerHoldingsGoStaleWithoutAPush — and its catalog-source branch does
+// The inconsistency was inside this one function. Its listener-device branch has
+// always aged out — ListenerBlobProviders applies ListenerHoldingsTTL, pinned by
+// TestListenerHoldingsGoStaleWithoutAPush — and its catalog-source branch did
 // not. The /madnetwork browse has a Cutoff for exactly this reason, but that is
 // about display; this list is a fetch plan, and a fetch plan saying "dial these"
 // has a stronger obligation than a page saying "this might exist".
 //
-// Deliberately NOT fixed here: the window is a policy decision (three catalog
-// cycles? the browse's own Cutoff? fail open when everything is stale, as the
-// availability model does elsewhere?), and this file's own rule is to reproduce
-// before fixing. This is the reproduction.
-func TestMadnetworkBlobProvidersKeepStaleCatalogHolders(t *testing.T) {
+// StaleHolderWindow carries the two decisions in the fix — why the pull window
+// rather than the browse's tighter one, and why this fails closed where the
+// browse fails open.
+func TestMadnetworkBlobProvidersDropStaleCatalogHolders(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
@@ -469,19 +474,46 @@ func TestMadnetworkBlobProvidersKeepStaleCatalogHolders(t *testing.T) {
 		t.Fatalf("MadnetworkBlobProviders: %v", err)
 	}
 
-	// The ordering half is right and worth keeping right: freshest first, so a
-	// fetcher's round-robin at least starts with somebody who was recently there.
-	if len(holders) == 0 || holders[0].Display() != "live-node" {
-		t.Fatalf("holders = %+v, want the live node first", holders)
+	// Ordering stays freshest-first, so a fetcher's round-robin starts with
+	// whoever was most recently there.
+	if len(holders) != 1 || holders[0].Display() != "live-node" {
+		t.Fatalf("holders = %+v, want only the live node", holders)
 	}
 
-	// And the half that is not. When a cutoff is added this becomes
-	// `len(holders) != 1`, and the message below stops being true.
-	if len(holders) != 2 {
-		t.Fatalf("holders = %d, want 2 — this test pins the CURRENT behaviour", len(holders))
+	// The size still comes back, even though it was the stale node's catalog row
+	// that advertised it in the other direction: the byte count is a fact about
+	// the blob, not about who is awake.
+	if _, holders, err := db.MadnetworkBlobProviders(ctx, "hash-stale"); err != nil || len(holders) != 1 {
+		t.Fatalf("second call: %d holder(s), err %v", len(holders), err)
 	}
-	t.Log("a holder last seen 54h ago is still in the fetch plan: " +
-		"no freshness cutoff on the catalog branch (see this test's comment)")
+
+	// A node just inside the window is kept — the fix must exclude the gone, not
+	// everything that has been quiet for a minute.
+	if err := db.TouchCatalogSourceSeen(ctx, longGone, now-int64(StaleHolderWindow.Seconds())+60, "long-gone"); err != nil {
+		t.Fatal(err)
+	}
+	if _, holders, _ := db.MadnetworkBlobProviders(ctx, "hash-stale"); len(holders) != 2 {
+		t.Errorf("holders = %d, want 2 — a node seen inside the window is still worth dialling", len(holders))
+	}
+
+	// And when EVERY holder is stale the plan is empty rather than a list of
+	// corpses. That is the good answer: the holders endpoint documents empty as
+	// 200-not-404 because the caller's fallback is the relay, so this costs a
+	// client milliseconds instead of minutes.
+	if err := db.TouchCatalogSourceSeen(ctx, longGone, now-54*3600, "long-gone"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.TouchCatalogSourceSeen(ctx, live, now-21*3600, "live-node"); err != nil {
+		t.Fatal(err)
+	}
+	// TouchCatalogSourceSeen only moves last_seen forward (MAX), so age it in SQL.
+	if _, err := db.ExecContext(ctx,
+		`UPDATE federation_catalog_sources SET last_seen = ?`, now-21*3600); err != nil {
+		t.Fatal(err)
+	}
+	if _, holders, _ := db.MadnetworkBlobProviders(ctx, "hash-stale"); len(holders) != 0 {
+		t.Errorf("holders = %d, want 0 — a plan of nothing but stale nodes is worse than no plan", len(holders))
+	}
 }
 
 // TestMadnetworkPolicy: the autoapprove_downloads setting round-trips and

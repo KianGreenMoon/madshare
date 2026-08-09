@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"daemonlord.ygg/madshare/federation"
 )
@@ -372,6 +373,34 @@ func (db *DB) madnetworkRowsForHash(ctx context.Context, hash string,
 	return rows.Err()
 }
 
+// StaleHolderWindow is how far back a FETCH PLAN will look. A node nothing has
+// observed within it is not offered as somewhere to fetch from, however recently
+// it advertised the hash.
+//
+// It exists because a plan without one is expensive in a way that is easy to
+// miss. Measured 2026-08-09 against a live server, a device was handed holders
+// last seen 21 and 54 hours earlier, and the four-node experiment
+// federation.TestStaleHoldersCostAFetch put the price at ~150× the whole clean
+// fetch for ONE dead entry — paid while a live holder sits there carrying every
+// byte, because dispatch is round-robin and a dial that never connects burns
+// Timeouts.PerChunk (2 minutes) rather than ChunkStall.
+//
+// The window is the PULL window rather than the browse's tighter ping window,
+// and one window rather than the browse's two. A fetch plan's job is to exclude
+// the definitely-gone, not to be precise about the briefly-quiet: the two errors
+// are not symmetric, since dropping a live holder costs a fetch one source while
+// keeping a dead one costs it minutes. Three catalog cycles is long enough that
+// anything past it is not being observed by us at all, and short enough that the
+// 21-hour case never survives it.
+//
+// Fetching FAILS CLOSED, unlike the browse, which fails open when this node's own
+// inbound is sick. An empty plan is a good answer — the holders endpoint already
+// documents empty as 200-not-404 because the caller's fallback is the relay — so
+// a client pays milliseconds to learn there is nobody, instead of minutes to
+// learn it from a list of corpses. An empty browse page, by contrast, would be a
+// lie about the library, which is why that one leans the other way.
+const StaleHolderWindow = federation.PullFreshnessWindow
+
 // MadnetworkBlobProviders returns the nodes that hold hash — the swarm's
 // tracker (federation F4). It unions three sources: nodes whose published
 // catalog advertises the hash as a rendition (their library), nodes advertising
@@ -400,9 +429,17 @@ func (db *DB) MadnetworkBlobProviders(ctx context.Context, hash string) (int64, 
 	// no source row at all, so a source-id map would fold every device on this
 	// server into one entry.
 	holders := map[string]*federation.BlobProvider{}
+	// A node nothing has observed within StaleHolderWindow is not offered as
+	// somewhere to fetch from. The size is still taken from its catalog row: the
+	// advertised byte count is a fact about the blob, and dropping it because its
+	// advertiser went quiet would make an unknown size out of a known one.
+	cutoff := time.Now().Add(-StaleHolderWindow).Unix()
 	err := db.madnetworkRowsForHash(ctx, hash, func(p *federation.BlobProvider, _ *federation.CatalogEntry, rd *federation.CatalogRendition) bool {
 		if size == 0 {
 			size = rd.Size
+		}
+		if p.LastSeen < cutoff {
+			return true
 		}
 		if _, ok := holders[p.PublicKey]; !ok {
 			cp := *p
@@ -420,7 +457,7 @@ func (db *DB) MadnetworkBlobProviders(ctx context.Context, hash string) (int64, 
 		SELECT s.id, COALESCE(p.id, 0), s.public_key, COALESCE(p.name, ''),
 		       `+sourceHeardExpr+`, `+srcLastSeen+`
 		FROM federation_holdings h`+sourceJoin("h")+`
-		WHERE h.hash = ? AND `+notBlocked, hash)
+		WHERE h.hash = ? AND `+notBlocked+` AND `+srcLastSeen+` >= ?`, hash, cutoff)
 	if err != nil {
 		return 0, nil, fmt.Errorf("holdings providers: %w", err)
 	}

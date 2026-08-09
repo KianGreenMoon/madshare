@@ -702,6 +702,18 @@ data now available to fix it (mig 042's per-node rates), and the trap
 two functions). **Trigger to pick it up: an actual report of slow transfers**,
 not a tidy-up pass.
 
+**THE TRIGGER FIRED, 2026-08-09 — see "a fetch plan names holders that have been
+gone for days" at the end of this file.** A madplayer's fetches took 4m12s
+against 1m43s clean, and a four-node experiment put one dead holder at ~150× the
+whole clean fetch. Two corrections to this entry fall out of it. The holders in
+the report were not *slow*, they were **absent** — the cheaper case, never named
+here. And the per-failure cost this entry quotes as `PerChunk` is right for a
+reason worth stating, because the number everyone reaches for instead is
+`ChunkStall`'s 20 s and it is wrong: a dial that never connects yields no
+response header, so the idle-read watchdog never arms. The scheduler rework
+described above is still the second half and still a design job; a freshness
+cutoff on the plan is the first half and removes most of the pain on its own.
+
 ## Federation — findings from the full `-race` mesh run (2026-07-24)
 
 The first end-to-end run of
@@ -1512,3 +1524,129 @@ plan:
 plus this table are enough to rebuild all three; the only thing genuinely worth
 recovering is the test in `908be9e`, because getting its assertion right —
 content rather than length — is the non-obvious part.
+
+## Federation — a fetch plan names holders that have been gone for days (2026-08-09) — **FIXED**
+
+**Confirmed, reproduced twice, and the cause of a real report.** This is the
+trigger the "swarm provider selection is speed-blind" entry above was waiting
+for, and the measurement moved it from efficiency-on-a-working-path to the
+dominant cost of a madnetwork fetch.
+
+`database.MadnetworkBlobProviders` — the fetch plan behind
+`GET /api/madnetwork/holders/{hash}` and `Node.EnsureBlob` — returns catalog
+holders and holdings holders **with no freshness cutoff at all**. It sorts by
+`last_seen` and then hands over everything it found. Its own third branch, this
+server's listener devices, *does* age out (`ListenerBlobProviders` applies
+`ListenerHoldingsTTL`, pinned by `TestListenerHoldingsGoStaleWithoutAPush`), so
+the inconsistency is inside one function. `/madnetwork`'s browse has had a
+`Cutoff` for this since Availability shipped — but that governs **display**, and a
+plan that says *dial these* carries a stronger obligation than a page saying
+*this might exist*.
+
+### What it costs
+
+Reported first from a live madplayer against `madshare.daemonlord.de`: a plan
+naming holders last seen **21 hours** and **54 hours** earlier. A 20 MB track
+took **4m12s–4m25s**; the same server with one live holder and none stale
+delivered in **1m43s**.
+
+Then reproduced under control — `federation.TestStaleHoldersCostAFetch`, four
+nodes (three holders carrying the same 2 MiB blob, one fetcher), walking 0→3 of
+the holders stale, with the same bytes over plain HTTP as the floor:
+
+| scenario | measured | at shipped timeouts | outcome |
+|---|---:|---:|---|
+| relay (plain HTTP) | 3 ms | — | ok |
+| 0 stale (3 live) | 72 ms | ~1 s | ok — 8/8 chunks, 0 retries |
+| 1 stale (2 live) | 12.035 s | ~4 m | ok — 3 retries, 2 failovers |
+| 2 stale (1 live) | 18.058 s | ~6 m | ok — 9 retries, 4 failovers |
+| 3 stale (0 live) | 24.007 s | ~8 m | **failed** |
+
+**One dead entry is worth ~150× the entire clean fetch**, and it is paid while a
+live holder sits there carrying every byte — the 2-stale run shows one holder
+delivering all 8 chunks and still taking 250× the all-live time. Each further
+stale holder adds one flat `PerChunk` budget.
+
+### The constant is PerChunk, not ChunkStall
+
+Worth stating separately because the arithmetic was wrong for a day and the wrong
+number is the intuitive one. A stale holder's dial **never connects**, so no
+response header ever arrives and `ChunkStall`'s idle-read watchdog is never armed
+— every run reports `stalls=0` and dies on the per-chunk backstop. That is
+**`PerChunk`, 2 minutes**, not `ChunkStall`'s 20 s, so a dead holder is six times
+dearer than "20 s × `providerFailureLimit`" suggests. `chaoshelp_test.go` already
+said this in a comment about the whole-file fallback; nobody had carried it over
+to the holder case.
+
+### The fix, and the one decision in it
+
+Filter the catalog and holdings branches of `MadnetworkBlobProviders` by the
+freshness rule **that already exists** — `sourcePingedExpr` / `reachClause`'s two
+windows (`reachable_window_sec` for a node something pings, `PullFreshnessWindow`
+for one reached only by the catalog rotation). No new constant, no new policy: the
+browse's own availability rule, applied to the plan instead of only to the page.
+Ordering stays freshest-first.
+
+**Fail CLOSED here, unlike the browse.** If nothing survives the cutoff the caller
+gets an empty list, and that is the good outcome: `GET /api/madnetwork/holders`
+already documents empty as 200-not-404 precisely because the caller's fallback is
+the relay, so an empty plan costs a client milliseconds where a plan of corpses
+costs it minutes. The browse fails open because an empty page is a lie about the
+library; an empty fetch plan is not a lie about anything.
+
+Two things to check while doing it, neither of which is the main change:
+
+- `EnsureBlob` and the holders endpoint are the only two callers, so the filter
+  can live in the query rather than at either call site.
+- A **second half** is available and optional: give a holder that has not
+  connected a much shorter deadline than a holder that connected and went quiet.
+  That is the "speed-blind" entry's territory, it must re-read `worseThanPeers`
+  (which leans on dispatch being round-robin), and the freshness cutoff above
+  removes most of the pain without it.
+
+### Fixed, 2026-08-09
+
+`database.StaleHolderWindow` (= `federation.PullFreshnessWindow`, three catalog
+cycles) now filters both the catalog and the holdings branch of
+`MadnetworkBlobProviders`; the listener-device branch already aged out. Ordering
+stays freshest-first. The size still comes from the catalog row even when its
+advertiser is stale — the byte count is a fact about the blob, not about who is
+awake — and `MadnetworkEntryForHash` is deliberately NOT filtered, because a gone
+node's cached tagset text is still the right text for staging metadata.
+
+Two decisions live on that constant. It is the PULL window, not the browse's
+tighter ping window, and one window rather than the browse's two: a fetch plan
+exists to exclude the definitely-gone, and the two errors are not symmetric —
+dropping a live holder costs a fetch one source, keeping a dead one costs it
+minutes. And it FAILS CLOSED where the browse fails open, because an empty plan
+is a good answer (the endpoint already documents empty as 200-not-404, the
+caller's fallback being the relay) whereas an empty browse page would be a lie
+about the library.
+
+Both real callers are covered, which is the point: this node's own `EnsureBlob`,
+and `GET /api/madnetwork/holders/{hash}` — so a madplayer is fixed too, since the
+plan it hands to `EnsureBlobFrom` is exactly what that endpoint returned.
+
+What the fix does NOT do is make a dead holder cheap once it is *in* a plan. A
+caller that assembles holders some other way, or a node that dies between the
+plan being issued and the fetch running, still pays `PerChunk` per dispatch. That
+is the scheduler half, still open, in the "speed-blind" entry — and it is why the
+`chunkPlan` dispatch test stays.
+
+**Two existing tests failed on the change and both were fixtures, not
+regressions** — worth recording because it is the trap in this area.
+`TestMadnetworkBlobLookup` ordered its sources with `last_seen = 9999` (1970) and
+`TestListenerDevicesJoinTheProviderLookup` never set it at all, because until now
+nothing in this call read the column. Both now use realistic recent timestamps.
+Production is unaffected: `last_seen` is moved by a successful catalog pull
+(`discovery.go`), by a delivered transfer (`observePeerAlive`, throttled 30 s)
+and by the friendship ping, so anything actually reachable sits far inside the
+window. The lesson for the next change here is that `EnsureCatalogSource` sets
+`first_seen` and NOT `last_seen`, so a freshly discovered source is stale until
+something touches it.
+
+Tests: `database.TestMadnetworkBlobProvidersDropStaleCatalogHolders` (the 54 h
+node is gone, a node just inside the window is kept, an all-stale plan comes back
+empty), `federation.TestChunkPlanKeepsDispatchingToAHolderThatNeverAnswers` (the
+dispatch cost, still true for handed-in plans) and the four-node
+`TestStaleHoldersCostAFetch` as the end-to-end number.

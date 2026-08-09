@@ -682,9 +682,15 @@ size. Two separate causes, and only one of them is a defect:
   reports `stalls=0` and dies on the per-chunk backstop. A dead holder is
   therefore six times dearer than the guess.
 
-  `MadnetworkBlobProviders` sorts by `last_seen` and applies **no cutoff**, while
-  the `/madnetwork` browse has one for display. A plan that says "dial these"
-  should not name a node that has been gone for two days.
+  **Fixed the same day.** `database.StaleHolderWindow` (three catalog cycles)
+  now filters the fetch plan, so a node nothing has observed inside it is not
+  offered as somewhere to dial — the rule the `/madnetwork` browse already
+  applied to display, applied to the plan. It fails CLOSED, unlike the browse: an
+  empty plan is a good answer, because the holders endpoint documents empty as
+  200-not-404 precisely so the caller can fall back to the relay in milliseconds
+  rather than learn it from a list of corpses. A client is still right to bound
+  how long it waits — a node can die between the plan being issued and the fetch
+  running, and that case costs `PerChunk` per dispatch as before.
 - **The remainder is the route.** With one live holder and no stale ones the
   transfer is clean — zero stalls, zero retries, every chunk from that holder —
   and still only 105–170 KB/s, because those bytes cross the yggdrasil overlay
