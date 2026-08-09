@@ -2320,15 +2320,58 @@ track does not disperse.
 **What it needs.** A way to say *which chunks I have*, and a serve path that
 honours it — BitTorrent's bitfield plus `HAVE`, in our idiom:
 
-- `GET /madnetwork/v0/have/{hash}` → a chunk bitmap. At the 1 MiB bulk cap a
-  100 MB file is 100 chunks = 13 bytes, so a plain bitmap is bounded and needs no
-  run-length encoding.
-- A bitmap is meaningless without the layout it indexes, so the reply must also
-  pin the layout (`chunk_size` + `lead_sizes`, or the manifest it came from).
-  The layout is deterministic from the size, but the *serving* node's manifest is
-  the authority — a fetcher must never index a bitmap against a guessed layout.
+- `GET /madnetwork/v0/have/{hash}` → the **byte ranges** this node holds
+  complete, e.g. `[[0, 786432], [2097152, 3145728]]`.
 - `handleBlob` learns to serve a Range out of a `.part` when the covering chunks
   are complete.
+- `cacheHoldings` learns to advertise partials, so a partial holder is
+  discoverable at the existing sync cadence (see "the advertisement path" below).
+
+**Byte ranges rather than a chunk bitmap** (decided 2026-08-09, owner's
+question). A bitmap is the obvious BitTorrent-shaped answer and it is the wrong
+one here, for a reason worth writing down because it is not obvious:
+
+*Our swarm id does not pin the chunk layout.* BitTorrent's infohash is a hash of
+the metadata dict **including `piece length`**, so the piece table is part of
+swarm identity and two peers physically cannot disagree about what piece 5 is.
+Our swarm id is the flat whole-file SHA-256 (§Distribution, "the manifest's chunk
+hashes are not cryptographically bound to it"), so it says nothing about
+chunking. The layout is a *policy output* — deterministic from the size, so two
+nodes running the same code agree, but two nodes running **different**
+`maxChunkSize` do not, and the design explicitly reserves the right to change
+that policy "without a protocol break".
+
+That reservation is safe today only because **the wire never speaks chunk
+indices**: `fetchChunk` sends `Range: bytes=start-end`, and the layout never
+leaves the fetcher. A bitmap would be the first thing to put chunk indices on the
+wire, and it would quietly convert a documented freedom into a compatibility
+break. Byte ranges keep the freedom: they are layout-independent by construction,
+they match the idiom the fetch path already uses, and they need no layout pinned
+or validated in the reply.
+
+They are also *smaller* for us, which is the part that inverts the BitTorrent
+intuition. Dispatch is sequential-priority, so a madshare partial is a near-prefix
+— usually one range, at most a few. Bitmaps win when pieces are scattered, which
+is what rarest-first does and what we deliberately do not do. Only seek-priority
+fragments a partial at all; cap the reply to the largest N ranges and the worst
+case is bounded.
+
+`transfer.availLocked` already computes exactly this shape (it walks `chunkOK`
+forward for the contiguous extent from an offset), so the readiness data needs
+exposing, not building.
+
+**The advertisement path** (found 2026-08-09 while starting the build). On its
+own this item is **inert**: a fetcher's holders come from
+`MadnetworkBlobProviders` = catalog ∪ holdings ∪ listener devices, and
+`cacheHoldings` skips `.part` via the hash-shape check, so a partial holder is in
+none of the three and nothing would ever call `/have`. (An earlier draft of this
+section claimed item 1 "still helps holders already named in a plan" — no such
+case could be constructed; the claim was wrong.) So item 1 carries its own
+minimum advertisement: **holdings reports partials**, distinguishably from
+complete blobs. That is discoverable at the existing 15-minute sync cadence,
+which is too slow for a 20 MB track and exactly what item 2 exists to fix — but
+it makes item 1 a complete and testable feature rather than an endpoint with no
+caller.
 
 **Three decisions this must settle.**
 
@@ -2348,10 +2391,21 @@ hand over megabytes that verify at neither chunk nor file level. Serving must be
 gated on `chunkOK`, never on the file's extent. This is the one way item 1 can
 silently poison the swarm, so it wants its own test.
 
-*What is safe to serve.* Bytes in a `.part` have already passed their per-chunk
-SHA-256 (`fetchChunk` verifies before `WriteAt`), so re-seeding them is sound —
-the fetcher downstream still verifies the assembled whole-file hash, which
-remains the authoritative anchor. Nothing about the trust model changes.
+*What is safe to serve — and it is not every `.part`* (corrected 2026-08-09 while
+building; the first draft of this paragraph was wrong). In the **swarm** path
+each chunk has passed its own SHA-256 before `fetchChunk` writes it, so those
+bytes are as trustworthy as a finished blob's and re-seeding them is sound — the
+fetcher downstream still verifies the assembled whole-file hash, which remains
+the authoritative anchor, so nothing about the trust model changes.
+
+The **F3 whole-file fallback has no such guarantee.** It streams straight into
+the part file and checks the hash only at the end, so its `progress` watermark
+counts bytes *received*, not bytes *proven*. Seeding those would make this node
+re-broadcast whatever a bad holder sent it — the exact failure per-chunk
+verification exists to prevent, arriving through the door we just opened. **A
+transfer running in sequential mode therefore advertises nothing**, and since
+that is a silent-wrongness bug rather than a visible one it is pinned by
+`TestCompleteRangesRefusesUnverifiedSequentialBytes`.
 
 #### Item 2 — Announce, rather than wait to be pulled
 
@@ -2432,6 +2486,26 @@ is handed work. Under speed-aware dispatch a deprioritised holder holds a 0 stre
 without having earned it, and the benchmark silently stops meaning anything. The
 fix is to exclude holders not tried within a recent window when computing `best`.
 
+**Two manifest hardenings ride along with the retirement rework** (added
+2026-08-09; the defect is written up in `.issues/open-issues.md`, "a lying
+manifest retires every honest holder"). They belong to item 3 because both live
+in the code it is already rewriting, and because F10 — which would be the
+thorough answer — is parked behind triggers that have not fired.
+
+- *Cross-check the manifest.* `fetchAnyManifest` takes the **first** valid
+  manifest offered, and `valid()` only checks structural soundness. Requiring two
+  holders to agree catches a single liar for almost nothing: manifests are small
+  and already memoized. It does not catch collusion, and is not meant to.
+- *Attribute blame correctly.* `fail()` treats `errChunkCorrupt` as unambiguous
+  evidence and retires the chunk's **sender** immediately, bypassing the relative
+  rule. But the accusation comes from the **manifest's** sender, and those are
+  different nodes — so one lying manifest retires every honest holder in the
+  swarm. When chunks from several distinct holders all fail against one manifest,
+  the manifest is the more likely liar and the senders should not be condemned.
+
+Neither changes what a completed fetch guarantees — the assembled whole-file hash
+is the anchor and always was, so this is denial-of-service, never corruption.
+
 **Rarest-first becomes meaningful here and only here.** With complete holders
 every chunk has identical rarity, which is why F4 has no piece picker. Once item 1
 lands there are genuinely rare chunks. Recommend deferring it to a measurement
@@ -2475,15 +2549,115 @@ sequencing is a decision on record rather than an oversight.
 
 #### Build order
 
-In dependency order: **item 4** (standalone, any time) → **item 2** (small, and
-what makes item 1 discoverable) → **items 1 + 3** as a single job. Item 1 without
-item 2 still helps holders already named in a plan, and item 2 without item 1
-still shortens the path for completed fetches — but item 1's real payoff needs the
-announce.
+In dependency order: **item 4** (standalone, any time) → **item 1** (which now
+carries its own minimum advertisement, so it stands alone) → **item 2** (which
+makes item 1 *timely* rather than possible) → **item 3**.
+
+Items 1 and 3 remain one job in the sense that item 3 must not be designed before
+item 1 lands — pair-selection is only meaningful once holders can be partial — but
+item 1 no longer waits on anything. Item 2 without item 1 still shortens the path
+for completed fetches, so the two orderings differ only in how fast item 1's
+payoff arrives.
 
 No migration is expected: `federation_holdings` and `federation_catalog_sources`
 already carry what item 2 writes. That should be confirmed rather than assumed
 when item 2 is picked up.
+
+### Merkle verification (F10, decided-and-parked 2026-08-09)
+
+Raised by the owner while building F9 item 1: should we adopt BitTorrent v2
+wholesale, on the grounds that it is proven by time and will answer problems we
+cannot yet name? **Decision: yes in substance, parked as F10, with explicit
+triggers — not folded into F9.** Recorded here in full because the reasoning has
+one counterintuitive turn that a future reader will otherwise re-derive wrongly.
+
+**"Copy BT v2" bundles three separable decisions**, and only one of them is
+actually open:
+
+1. *The identity model* — infohash = SHA-256 of the info dict, which commits to
+   the file tree. **Not ours to copy.** Our content address is the whole-file
+   SHA-256 and it is the upload dedup key, the storage path, the cache filename,
+   the DB identity, the catalog advertisement and a playlist's `remote_hash`. It
+   is not changeable, and it is not the weak part.
+2. *The verification structure* — merkle trees over fixed 16 KiB leaves. **This is
+   the open question.**
+3. *The wire protocol* — peer messages, `hash request`, extension negotiation.
+   Already declined in F4 ("we control both endpoints").
+
+#### The two decisions
+
+**A — flat chunk list, hardened** (what F9 ships on). On-demand manifest of
+per-chunk SHA-256, adaptive layout, whole-file hash as the anchor, plus the two
+cheap hardenings folded into item 3. Costs: verification granularity is the chunk
+(256 KiB–1 MiB, welded to seek granularity); the layout is *in* the protocol, so
+a sizing-policy change breaks manifest compatibility; **it does not scale to
+video** (deferred, not cancelled — a 4 GB file at 16 KiB granularity would need
+8 MB of flat hashes, so fine-grained verification of a large file is simply
+unavailable); and **a blob that exists only as partials cannot be reassembled**,
+because `buildManifest` reads the whole file, so no partial holder can produce
+one. BitTorrent has no such failure mode, metadata being independent of data.
+
+**B — merkle verification, our identity.** Fixed 16 KiB leaves, a tree per blob,
+the root stored per blob and advertised in the catalog beside the content hash;
+any byte range verifies against the root with ~log₂(n) sibling hashes. The
+whole-file SHA-256 remains the identity and the final anchor.
+
+**The non-obvious part: B does not cost chunk-size flexibility, it buys more of
+it.** The owner offered to pay that price and does not have to. A leaf is a
+*verification* unit, not a *transfer* unit, so once verification is leaf-aligned
+the chunk layout leaves the protocol entirely: request any size from anyone,
+verify the covered leaves, seek at 16 KiB instead of 1 MiB, keep the lead ramp as
+a pure dispatch decision, and change the sizing policy forever with **zero**
+protocol impact — where today "the policy can change without a protocol break"
+holds only while chunk indices stay off the wire. Today verification, transfer
+and seek granularity are one welded number; B unwelds them. It also scales to
+video (~576 bytes of proof for a 4 GB blob), lets partial holders serve proofs,
+and isolates a bad block to 16 KiB.
+
+Its costs are real: a **second identifier per blob** — migration, storage,
+catalog protocol change, a backfill over every existing blob, and a permanent
+"root unknown" state for anything predating it or arriving from an older node —
+and more work than F9 items 1–4 combined.
+
+#### The turn in the reasoning: merkle does not buy trust
+
+This is what the question started from, and it does not survive scrutiny, so it
+must not be the reason anyone reaches for F10 later.
+
+BitTorrent's root is trustworthy because the infohash — the thing you used to
+*find* the swarm — commits to it, self-verifying by construction. **Ours would
+not be**: the root arrives in the catalog, from a peer. A peer-supplied merkle
+root is exactly as trustworthy as a peer-supplied chunk list; a liar lies about
+the root instead. The fix is identical in both worlds — cross-check the claim
+across independent sources and treat disagreement as a contradicted claim, which
+`federation_claim_reports` (F6) already exists to carry.
+
+The root *is* a better-shaped fact than today's manifest — one stable value per
+content hash, asserted independently by many catalogs, rather than a per-transfer
+trust decision made by whichever holder answers first. But that follows from
+putting it in the catalog, not from it being a tree. **B buys granularity, scale
+and protocol simplicity. It does not buy trust.**
+
+"Proven by time" is worth something here and less than it sounds: we would
+inherit the data structure's pedigree, not the protocol's scrutiny, because we
+are not adopting their wire protocol. Merkle-over-fixed-leaves is a construction
+nobody will find a hole in; the bugs in bespoke systems live in the protocol
+around it, and we are writing that either way.
+
+#### Triggers, and what F9 must not assume
+
+F10 is picked up when **either** of these lands, and the decision is then made on
+evidence rather than on a fear we can already name:
+
+- **video support** — a flat list cannot verify a multi-GB blob finely; or
+- **a measured case of the all-partials reassembly gap** — a blob the community
+  collectively holds but no single node can produce a manifest for.
+
+What survives either way, and is therefore safe to build now: **`/have` byte
+ranges** (item 1) are correct under both designs — indeed byte offsets are what
+B generalises. What **reverses** under B: item 1's rule that *partials serve
+bytes, never manifests*. Under merkle a partial holder can serve proofs for the
+leaves it holds, which is exactly what closes the reassembly gap.
 
 ## Availability & node health
 
@@ -3185,6 +3359,16 @@ milestone directly after direct transfer works, and tokens ship with depth.
   in-flight bytes instead of dispatching round-robin — reworking `worseThanPeers`
   with it — and **pipelining + endgame hedging**. Items 1 and 3 are one job; item
   4 is independent of everything and was deliberately not pulled forward.
+- **F10 — Merkle verification** (decided **and parked** 2026-08-09, §Distribution
+  "Merkle verification" — the two decisions, the costs and the one counterintuitive
+  turn are there). Fixed 16 KiB leaves and a per-blob merkle root beside the
+  content hash, taking BT v2's *verification structure* without its identity model
+  or its wire protocol. It unwelds verification, transfer and seek granularity —
+  so it **buys** chunk-size flexibility rather than costing it — scales to video,
+  and lets a partial holder serve proofs. It does **not** buy trust: a
+  peer-supplied root is exactly as trustworthy as a peer-supplied chunk list, so
+  nobody should reach for this to fix a lying manifest. Picked up on either of two
+  triggers: **video support**, or a **measured** all-partials reassembly failure.
 - **Later (decided-deferred):** subscribe→replicate with storage caps,
   announce/gossip of catalog deltas (the *library* sibling of F9 item 2's
   holdings announce — see the discovery-speed question in

@@ -1733,3 +1733,77 @@ future DHT would need the *content* index only, never the routing half.
 the doc has been renumbered since (former questions 1–4 were settled) and it is
 now **question 1**. One-word fix, deliberately not made here — noted so the next
 reader does not chase it.
+
+## Federation — a lying manifest retires every honest holder (2026-08-09)
+
+**Found by reading, not by observation — unreproduced, and deliberately not
+fixed.** Raised by the owner's question "can the downloader be sure both seeders
+give him the same file?", which is exactly the right question to ask of this
+code.
+
+### The mechanism
+
+A swarm fetch takes its per-chunk hashes from `fetchAnyManifest`, which returns
+the **first** valid manifest any holder offers. `blobManifest.valid()` checks
+structure only — the hash field matches the request, the sizes are sane, the
+chunk count matches the declared layout. **Nothing binds those per-chunk hashes
+to the content hash**, and nothing can: the swarm id is a flat whole-file SHA-256,
+not a hash over a metadata block the way a BitTorrent infohash is (§Distribution
+says this outright).
+
+So if the first responder lies, every chunk fetched from every *honest* holder
+fails verification against the lie. `chunkPlan.fail` reads `errChunkCorrupt` as
+unambiguous evidence and sets `dead[pidx]` **immediately**, bypassing the
+relative retirement rule — the comment reasons that "no amount of environmental
+bad luck produces bad bytes", which is true and quietly assumes the *reference*
+is honest.
+
+The asymmetry the code cannot see: **`errChunkCorrupt` blames the chunk's sender,
+while the accusation comes from the manifest's sender.** Those are different
+nodes.
+
+### What it actually costs — calibrated, because it is less bad than it sounds
+
+- The downloader **never gets the wrong file.** The assembled whole-file SHA-256
+  is verified before anything enters the cache, and it is the anchor whichever
+  way the manifest lied.
+- `cp.dead` lives on the `chunkPlan`, which is built per `fetchSwarm` call, so
+  honest holders take **no lasting reputation damage** — next fetch, clean slate.
+- Cost is one transfer's wasted bandwidth and a failed fetch (either all holders
+  retired, or the liar delivers a consistent wrong file that the whole-file check
+  rejects at the end).
+
+So: nuisance-grade denial of service, attributable, inside a vouched community.
+Not corruption.
+
+### Why it is worth an entry anyway
+
+§Distribution accepted this in F4 with the sentence *"Manifests from friends are
+cross-checkable and a lie only wastes bandwidth (caught by the whole-file check)
+— acceptable because every holder is trusted."* That was written when **the swarm
+was direct friends only**. F7 widened the swarm to the whole community — members
+reached through the mutual-edge walk, plus capability-token bearers. Those are
+vouched nodes, but not nodes this admin picked. **The premise moved and the
+sentence did not.**
+
+### The fix, and where it goes
+
+Folded into F9 item 3, because both halves live in the code that item is already
+rewriting (see §Distribution "Making it a swarm", item 3):
+
+- *Cross-check the manifest* — require two holders to agree instead of taking the
+  first. Cheap; manifests are small and memoized. Catches a single liar, not
+  collusion, and is not meant to.
+- *Attribute blame correctly* — when chunks from several distinct holders all
+  fail against one manifest, suspect the manifest rather than condemning the
+  senders.
+
+**Not fixed now**, per the standing rule: this is a mechanism found by reading,
+and no failure has been observed. The write-up exists so that item 3 arrives
+already knowing, and so the next person to read `fail()`'s confident comment
+about bad bytes sees the assumption it rests on.
+
+**F10 (merkle verification) is NOT the answer to this**, and the parked design
+record says so explicitly. A merkle root would arrive in the catalog, from a
+peer, so it is exactly as trustworthy as a peer-supplied chunk list — a liar
+lies about the root instead. Cross-checking is the fix in both worlds.
