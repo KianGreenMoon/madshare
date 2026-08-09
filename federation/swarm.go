@@ -61,6 +61,14 @@ const (
 // (unlike a transient network error, which is retried).
 var errChunkCorrupt = errors.New("chunk failed per-chunk verification")
 
+// errChunkAbsent marks a holder answering 416 for a chunk: it has the blob but
+// not this slice of it yet (F9 item 1 — a partial seeder). Unlike every other
+// failure this is a fact about the CHUNK, not about the holder, so it must not
+// count towards retiring anyone. It still costs the chunk an attempt, which is
+// what keeps a swarm of partials that collectively lack a chunk terminating
+// rather than looping.
+var errChunkAbsent = errors.New("holder does not have that chunk yet")
+
 // readStall reads up to n bytes from r, cancelling the fetch (via cancel) if no
 // bytes arrive for `stall` — so a hung mesh connection is detected in ~stall
 // rather than waiting out the whole Timeouts.PerChunk backstop. exact requires
@@ -402,6 +410,12 @@ func (n *Node) fetchAnyManifest(ctx context.Context, holders []*BlobProvider, ha
 type holdingsMessage struct {
 	Protocol int      `json:"protocol"`
 	Hashes   []string `json:"hashes"`
+	// Partial carries downloads in flight that already have verified bytes to
+	// serve (F9 item 1). Separate from Hashes because the two are different
+	// promises — a hash here answers only some ranges — and because an older node
+	// ignoring an unknown field degrades exactly right: it simply does not learn
+	// about partial seeders.
+	Partial []string `json:"partial,omitempty"`
 }
 
 // cacheHoldings lists the finished blobs in the download cache (skipping
@@ -429,6 +443,39 @@ func (n *Node) cacheHoldings() []string {
 			out = append(out, e.Name())
 		}
 	}
+	return out
+}
+
+// partialHoldings lists the in-flight downloads that have verified bytes to
+// offer, excluding any hash already complete in the cache.
+//
+// It reads the LIVE TRANSFER TABLE, never the directory — the one place this
+// deliberately differs from cacheHoldings. A finished blob is self-describing:
+// its name is its hash and its bytes verify. A `.part` is not. Which of its
+// bytes are proven lives only in the running transfer's chunk map, so a part
+// file left behind by a previous process has nothing advertisable in it at all
+// — which is the same reason the cache page reaps those unconditionally at
+// startup.
+func (n *Node) partialHoldings(complete []string) []string {
+	n.transferMu.Lock()
+	live := make([]*transfer, 0, len(n.transfers))
+	for _, t := range n.transfers {
+		live = append(live, t)
+	}
+	n.transferMu.Unlock()
+
+	done := make(map[string]bool, len(complete))
+	for _, h := range complete {
+		done[h] = true
+	}
+	out := make([]string, 0, len(live))
+	for _, t := range live {
+		if t.partPath == "" || done[t.hash] || len(t.CompleteRanges()) == 0 {
+			continue
+		}
+		out = append(out, t.hash)
+	}
+	sort.Strings(out) // a stable answer, so a repeated read does not reshuffle
 	return out
 }
 
@@ -462,11 +509,15 @@ func (n *Node) handleHoldings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hashes := []string{}
+	var partial []string
 	if policy.Enabled && policy.Cache && aud.ServesCache() && !aud.GuestOnly {
 		hashes = n.cacheHoldings()
+		partial = n.partialHoldings(hashes)
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(holdingsMessage{Protocol: ProtocolVersion, Hashes: hashes})
+	_ = json.NewEncoder(w).Encode(holdingsMessage{
+		Protocol: ProtocolVersion, Hashes: hashes, Partial: partial,
+	})
 }
 
 // syncHoldings pulls one source's cache-holdings list and replaces the cached
@@ -495,9 +546,21 @@ func (n *Node) syncHoldings(ctx context.Context, p *CatalogSource) {
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&msg); err != nil {
 		return
 	}
-	valid := make([]string, 0, len(msg.Hashes))
-	for _, h := range msg.Hashes {
-		if isBlobHash(h) {
+	// Complete and partial holdings are UNIONED into the stored set. The wire
+	// keeps them apart — an operator reading the endpoint should see the truth,
+	// and a scheduler that ranks a complete holder above a partial one will want
+	// it — but nothing downstream can act on the distinction yet, so persisting
+	// it would mean a migration for a column no query reads. Storing a partial as
+	// an ordinary holder is safe because the fetcher no longer punishes a 416
+	// (errChunkAbsent): the worst case is one fast refusal from a live node,
+	// which is nothing like the connect timeout a genuinely dead holder costs.
+	// Ranking partials is item 3's call, and that is where the column belongs if
+	// it is ever wanted.
+	valid := make([]string, 0, len(msg.Hashes)+len(msg.Partial))
+	seen := make(map[string]bool, cap(valid))
+	for _, h := range append(append([]string(nil), msg.Hashes...), msg.Partial...) {
+		if isBlobHash(h) && !seen[h] {
+			seen[h] = true
 			valid = append(valid, h)
 		}
 	}
@@ -1090,6 +1153,12 @@ func (n *Node) fetchChunk(t *transfer, f *os.File, layout *chunkLayout, man *blo
 		return err
 	}
 	defer resp.Body.Close()
+	// A partial seeder answers 416 for a slice it has not fetched yet. That is
+	// information about the chunk, not a fault of the holder's, so it carries its
+	// own error and never counts against anyone (see errChunkAbsent).
+	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+		return fmt.Errorf("chunk %d from %q: %w", idx, p.Display(), errChunkAbsent)
+	}
 	// 206 for a range; 200 is tolerated only for a single-chunk blob (the whole
 	// file IS the one chunk).
 	if resp.StatusCode != http.StatusPartialContent &&
@@ -1300,9 +1369,17 @@ func (cp *chunkPlan) fail(idx, pidx int, err error, corrupt bool) {
 	dropped := false
 	if pidx >= 0 {
 		from = cp.providers[pidx]
-		if corrupt {
+		switch {
+		case corrupt:
 			cp.dead[pidx] = true
-		} else {
+		case errors.Is(err, errChunkAbsent):
+			// A partial seeder that has not reached this chunk yet. It told us
+			// something true about the chunk and nothing bad about itself, so its
+			// failure streak is left alone — condemning it would retire exactly the
+			// nodes F9 item 1 exists to recruit. The streak is not RESET either: a
+			// holder mid-way through its own troubles should not launder them by
+			// happening to lack a chunk.
+		default:
 			cp.provFails[pidx]++
 			if cp.provFails[pidx] >= providerFailureLimit && cp.worseThanPeers(pidx) {
 				cp.dead[pidx] = true

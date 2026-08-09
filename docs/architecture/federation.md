@@ -2373,6 +2373,34 @@ which is too slow for a 20 MB track and exactly what item 2 exists to fix — bu
 it makes item 1 a complete and testable feature rather than an endpoint with no
 caller.
 
+**Built 2026-08-09.** `/have`, `handleBlob` serving out of a `.part`, holdings
+carrying a `partial` list, and the fetch-side change that had to ship with them.
+Three decisions taken during the build are worth keeping:
+
+- **A 416 is a fact about the chunk, not about the holder** (`errChunkAbsent`).
+  Before this, a partial seeder answering "I have not reached chunk 7" was an
+  ordinary transient failure, so it accumulated a streak and was retired like a
+  broken node — the retirement rule would have thrown out exactly the holders
+  this item exists to recruit. Its streak is now left alone, and deliberately not
+  *reset* either: a holder already in trouble should not launder it by happening
+  to lack a chunk. The attempt still counts against the CHUNK, which is what
+  keeps a swarm of partials that between them lack a chunk terminating instead of
+  looping.
+- **The store unions complete and partial holdings; only the wire keeps them
+  apart.** Persisting the distinction would mean a migration for a column no
+  query reads. It is safe because of the previous point: the worst case is one
+  fast refusal from a live node, which is nothing like the connect timeout a
+  genuinely dead holder costs (that being the whole lesson of the stale-holder
+  fix). Ranking complete holders above partial ones is item 3's business, and
+  that is where the column belongs if it is ever wanted.
+- **The fetcher does not call `/have` yet, and the endpoint ships anyway.** The
+  lazy path — dispatch, take a 416, move on — gets nearly all the benefit for a
+  fraction of the code, and the eager path (consult `/have`, dispatch only
+  covered chunks) is pair-selection, which is item 3's rewrite. Shipping the
+  server half early is not premature here but the opposite: **a federated
+  protocol endpoint has to exist on the network before the code that depends on
+  it**, or item 3 can only use it against nodes upgraded after item 3.
+
 **Three decisions this must settle.**
 
 *The scope gate.* `seedableBlob`'s two branches answer under different rules, and
@@ -2549,9 +2577,9 @@ sequencing is a decision on record rather than an oversight.
 
 #### Build order
 
-In dependency order: **item 4** (standalone, any time) → **item 1** (which now
-carries its own minimum advertisement, so it stands alone) → **item 2** (which
-makes item 1 *timely* rather than possible) → **item 3**.
+In dependency order: **item 4** (standalone, any time) → **item 1** (**built
+2026-08-09**; it carries its own minimum advertisement, so it stood alone) →
+**item 2** (which makes item 1 *timely* rather than possible) → **item 3**.
 
 Items 1 and 3 remain one job in the sense that item 3 must not be designed before
 item 1 lands — pair-selection is only meaningful once holders can be partial — but

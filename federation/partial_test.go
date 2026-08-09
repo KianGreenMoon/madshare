@@ -257,3 +257,95 @@ func TestPartialFollowsTheCacheSeedingSwitch(t *testing.T) {
 		t.Fatalf("status = %d, want 404 with seed_cache off", rec.Code)
 	}
 }
+
+// ── The advertisement path ───────────────────────────────────────────────────
+
+func TestPartialHoldingsReadsLiveTransfersNotTheDirectory(t *testing.T) {
+	const (
+		fetching = "1111111111111111111111111111111111111111111111111111111111111111"
+		empty    = "2222222222222222222222222222222222222222222222222222222222222222"
+		complete = "3333333333333333333333333333333333333333333333333333333333333333"
+		born     = "4444444444444444444444444444444444444444444444444444444444444444"
+	)
+	n := &Node{transfers: map[string]*transfer{}}
+
+	// Verified bytes to offer — the one that should be advertised.
+	withBytes := newTransfer(fetching, "final", "final.part")
+	withBytes.setMeta(40, "")
+	withBytes.beginChunks(buildLayout(40, 10, nil), nil)
+	withBytes.chunkDone(0, 10)
+	n.transfers[fetching] = withBytes
+
+	// In flight but nothing proven yet: a holder with no ranges is not a holder.
+	noBytes := newTransfer(empty, "final2", "final2.part")
+	noBytes.setMeta(40, "")
+	noBytes.beginChunks(buildLayout(40, 10, nil), nil)
+	n.transfers[empty] = noBytes
+
+	// Already in the cache list — must not be advertised twice, under two
+	// different promises.
+	alsoDone := newTransfer(complete, "final3", "final3.part")
+	alsoDone.setMeta(40, "")
+	alsoDone.beginChunks(buildLayout(40, 10, nil), nil)
+	alsoDone.chunkDone(0, 10)
+	n.transfers[complete] = alsoDone
+
+	// A born-complete transfer (cache hit / local blob) has no part file.
+	n.transfers[born] = completedTransfer(born, "somewhere", 40)
+
+	got := n.partialHoldings([]string{complete})
+	want := []string{fetching}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("partialHoldings() = %v, want %v", got, want)
+	}
+}
+
+// ── 416 is a fact about the chunk, not about the holder ──────────────────────
+
+// F9 item 1 recruits partial seeders, and the retirement rule would have thrown
+// them straight back out: before this, a 416 was an ordinary transient failure,
+// so a holder that simply had not reached chunk 7 accumulated a streak and was
+// dropped like a broken one.
+func TestChunkPlanDoesNotRetireAHolderForNotHavingAChunkYet(t *testing.T) {
+	man, layout := wideManifest(8)
+	absent := errChunkAbsent
+
+	cp := newChunkPlan(man, layout, []*BlobProvider{{Name: "partial"}, {Name: "full"}}, false, nil)
+	for i := 0; i < providerFailureLimit*2; i++ {
+		idx, ok := cp.next()
+		if !ok {
+			break
+		}
+		cp.fail(idx, 0, absent, false)
+	}
+	if cp.dead[0] {
+		t.Error("a holder that answered 416 was retired; it told us about the chunk, not itself")
+	}
+	if cp.provFails[0] != 0 {
+		t.Errorf("provFails[0] = %d, want 0 — an absent chunk must not build a streak", cp.provFails[0])
+	}
+}
+
+// ...but it still costs the chunk an attempt, or a swarm of partials that
+// between them lack a chunk would re-queue it forever.
+func TestChunkPlanStillGivesUpWhenNobodyHasAChunk(t *testing.T) {
+	man, layout := wideManifest(8)
+	cp := newChunkPlan(man, layout, []*BlobProvider{{Name: "a"}, {Name: "b"}}, false, nil)
+
+	// Chunks are re-queued round-robin, so one of them only reaches attemptLimit
+	// after roughly attemptLimit × chunks dispatches. next() stops handing work
+	// out once the plan aborts, so the loop ends on its own.
+	for i := 0; i < 1000; i++ {
+		idx, ok := cp.next()
+		if !ok {
+			break
+		}
+		cp.fail(idx, i%2, errChunkAbsent, false)
+	}
+	if !cp.aborted {
+		t.Fatal("a chunk no holder has must end the transfer, not loop")
+	}
+	if cp.dead[0] || cp.dead[1] {
+		t.Error("the transfer ended by exhausting attempts, so nobody should have been condemned")
+	}
+}
