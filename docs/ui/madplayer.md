@@ -18,7 +18,7 @@
 > first caller for. The access half is `federation.md` §"The household", and what
 > the client does with it is §"Level 2b, concretely" below.
 >
-> **madplayer now lives in its own repository** (split out at madshare v0.9.0),
+> **madplayer now lives in its own repository** (split out at madshare v0.8.6),
 > beside this one. It requires madshare as an ordinary Go module pinned to a
 > released tag — which is what the tagging buys: the client pins a known-good
 > server, and a server change reaches it when somebody chooses it rather than the
@@ -474,7 +474,7 @@ phone that nothing else can reach.
 ### Versioned dependency, not a vendored copy
 
 madplayer `require`s `daemonlord.ygg/madshare` at a **released tag** and upgrades
-on purpose (done at v0.9.0, when it left this repo). That is what the release
+on purpose (done at v0.8.6, when it left this repo). That is what the release
 tagging is for: the client pins a known-good server, and a server change lands in
 the client when someone chooses it rather than the moment it is written.
 
