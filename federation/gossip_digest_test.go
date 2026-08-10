@@ -13,7 +13,7 @@ import (
 // The digest served to friends is memoized, which is the entire rate limit on
 // GET /madnetwork/v0/graph: a friend pulling too often gets the memo rather
 // than a refusal, because syncGraph cannot tell a 429 from a peer that has no
-// such endpoint (docs/architecture/federation.md §Refreshing the graph on
+// such endpoint (docs/architecture/federation-trust.md §Refreshing the graph on
 // demand).
 func TestGraphDigestIsMemoized(t *testing.T) {
 	store := newMemStore()

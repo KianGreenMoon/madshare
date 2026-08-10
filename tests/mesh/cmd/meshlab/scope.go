@@ -2,7 +2,7 @@
 
 package main
 
-// Sharing scope (federation F5, docs/architecture/federation.md §Sharing scope):
+// Sharing scope (federation F5, docs/architecture/federation-access.md §Sharing scope):
 // the lab-side knobs for share depth and guest-playability, plus the vocabulary
 // shared between the CLI, the status readout and the check pass.
 //

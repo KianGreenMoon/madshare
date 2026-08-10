@@ -9,7 +9,7 @@ import (
 )
 
 // Federation F5 — the audience predicate at the storage layer
-// (docs/architecture/federation.md §Sharing scope). The load-bearing claim is
+// (docs/architecture/federation-access.md §Sharing scope). The load-bearing claim is
 // that PublishedCatalog and BlobVisibleTo answer from ONE rule, so a hash that
 // falls out of an audience's catalog also stops being fetchable by it.
 

@@ -12,7 +12,7 @@ import (
 )
 
 // Federation F5 — sharing scope over the real mesh (docs/architecture/
-// federation.md §Sharing scope). The claim these tests defend is that catalog
+// federation-access.md §Sharing scope). The claim these tests defend is that catalog
 // and bytes read ONE rule: whatever an audience is not shown, it also cannot
 // fetch, and whatever a stranger may fetch, a stranger may fetch without being
 // anyone's friend.

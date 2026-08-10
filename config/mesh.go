@@ -62,7 +62,7 @@ type YggdrasilConfig struct {
 	// auto-peering with whatever else is on the network is a thing they should
 	// ask for rather than inherit. A madplayer sets it true in code, because a
 	// phone finding its home server over the wifi with no configuration at all is
-	// the case that feature exists for (docs/architecture/federation.md
+	// the case that feature exists for (docs/architecture/federation-access.md
 	// §"The household").
 	Multicast bool `toml:"multicast"`
 	// SharePeers serves GET /api/madnetwork/peering, which hands SharedPeers to

@@ -131,7 +131,7 @@ that fails.
 
 What is on it is not a general mesh API, and reading it as one will make it look
 arbitrary. It is the **listener node's** surface
-(`docs/architecture/federation.md` §"The household"): a server needs none of
+(`docs/architecture/federation-access.md` §"The household"): a server needs none of
 these, because it discovers its own holders, is placed by other people's graph
 walks, and has nothing to sign in to. Each method substitutes for one of the
 things a device cannot have.

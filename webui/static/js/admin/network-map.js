@@ -21,7 +21,7 @@
 //
 // The radius is a RENDERING setting. It never limits who is served and never
 // appears in a scope; it is about what an admin looks at, and `share_depth` is
-// about whom we answer (docs/architecture/federation.md §The network map).
+// about whom we answer (docs/architecture/federation-trust.md §The network map).
 //
 // Names beyond your own friends are hearsay: the key rides along everywhere.
 
@@ -762,7 +762,7 @@ export function initMap({ onBlockNode, onFriendNode, onPullNode }) {
 // renderRadiusNote says what the current view is holding back — and says, once,
 // that the number draws less rather than serving less. An admin who reads a
 // radius as a sharing setting has misread the one thing this design most needs
-// them not to (docs/architecture/federation.md §The network map).
+// them not to (docs/architecture/federation-trust.md §The network map).
 function renderRadiusNote() {
   if (!radiusNote) return;
   const bits = [];
@@ -792,7 +792,7 @@ function renderRadiusNote() {
 //
 // What it buys is deliberately understated in the note beside it: gossip travels
 // one ring per round, so this makes the map as fresh as our FRIENDS' stores, not
-// as fresh as the network (docs/architecture/federation.md §Refreshing the graph
+// as fresh as the network (docs/architecture/federation-trust.md §Refreshing the graph
 // on demand).
 async function rescan() {
   const btn = document.getElementById('mapRescan');
@@ -885,7 +885,7 @@ export async function loadMap({ radius, keepOverlays } = {}) {
 // focusKey is the map's entry point from elsewhere in the UI — the madnetwork
 // library's ⓘ holder list links here, so discovery of a bad actor can start from
 // the content that exposed it rather than from an admin remembering to come look
-// at a diagram (docs/architecture/federation.md §The network map).
+// at a diagram (docs/architecture/federation-trust.md §The network map).
 export async function focusKey(key) {
   if (!svg || !key) return;
   await focusNode(key);

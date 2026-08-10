@@ -11,7 +11,7 @@ import (
 	"daemonlord.ygg/madshare/auth"
 )
 
-// Peering info (docs/architecture/federation.md §"The household", "Getting onto
+// Peering info (docs/architecture/federation-access.md §"The household", "Getting onto
 // the mesh at all"). What the handler owns is the rewrite — a bind address is
 // not a dial address — and the two refusals that must stay distinguishable.
 

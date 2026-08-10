@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// What a member may cost us (F7 item 6, docs/architecture/federation.md
+// What a member may cost us (F7 item 6, docs/architecture/federation-swarm.md
 // §Distribution, "What a member may cost us").
 //
 // `seed_rate_kib` is one bucket for every requester, which was the whole of the

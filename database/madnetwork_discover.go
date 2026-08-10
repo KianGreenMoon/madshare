@@ -356,7 +356,7 @@ type BranchMap map[string][]string
 
 // Voices counts the distinct voices behind a set of holder keys — the ONE place
 // the sybil rule is written, so that no surface can apply half of it. One branch
-// is one voice (docs/architecture/federation.md §Trust graph): a farm of a
+// is one voice (docs/architecture/federation-trust.md §Trust graph): a farm of a
 // thousand keys behind a single friendship counts once, which is the whole
 // reason popularity is allowed to order anything here.
 //

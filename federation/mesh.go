@@ -167,7 +167,7 @@ func (m *Mesh) writeIdentityFiles(keyFile string) {
 // server: an operator writes a peer list and restarts. A listener node cannot
 // work that way — it learns where the mesh is by signing in to a home server,
 // which happens long after startup and again whenever somebody adds a server
-// (docs/architecture/federation.md §"The household", "Getting onto the mesh at
+// (docs/architecture/federation-access.md §"The household", "Getting onto the mesh at
 // all").
 //
 // Adding a peer that is already configured succeeds rather than failing.

@@ -10,7 +10,7 @@ import (
 )
 
 // Membership — who belongs to our community, resolved for the running node (F7,
-// docs/architecture/federation.md §The membership rule). The rule itself is
+// docs/architecture/federation-access.md §The membership rule). The rule itself is
 // [MemberKeys], which is pure and lives in gossip.go; this file is the part that
 // needs a node: the store reads, the memo, and the address lookup a mesh request
 // arrives with.

@@ -13,7 +13,7 @@ import (
 )
 
 // Federation F7 item 9 — listener-node tokens over the real mesh
-// (docs/architecture/federation.md §Principals & access, "The capability
+// (docs/architecture/federation-access.md §Principals & access, "The capability
 // token"). The unit tests in token_test.go pin what a token says; these pin
 // what a node *does* about one, which is a different thing and the one that
 // broke every other time an access rule moved.

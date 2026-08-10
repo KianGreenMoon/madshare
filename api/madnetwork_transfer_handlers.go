@@ -21,7 +21,7 @@ import (
 	"daemonlord.ygg/madshare/federation"
 )
 
-// Madnetwork direct transfer (federation F3, docs/architecture/federation.md):
+// Madnetwork direct transfer (federation F3, docs/architecture/federation-swarm.md):
 // the cache-through streaming relay for thin clients and download-to-library
 // through the review bucket. Both ride federation.Node.EnsureBlob — concurrent
 // streams and downloads of the same hash join one fetch.

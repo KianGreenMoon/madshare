@@ -14,7 +14,7 @@ import (
 // federation.Node's hundred methods.
 //
 // It exists for one participant, the listener node
-// (docs/architecture/federation.md §"The household"). A server needs none of
+// (docs/architecture/federation-access.md §"The household"). A server needs none of
 // this: it discovers its own holders, is placed by other people's graph walks,
 // and has nothing to sign in to. A device has none of those things, so each
 // method here is the substitute for one of them — SetToken for the vouch it

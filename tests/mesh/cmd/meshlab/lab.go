@@ -344,7 +344,7 @@ func (l *lab) friend(a, b string) error {
 }
 
 // forget ends a friendship from one side — the act §Forgetting is about
-// (docs/architecture/federation.md). One-sided on purpose: b keeps publishing a
+// (docs/architecture/federation-trust.md). One-sided on purpose: b keeps publishing a
 // record that names a, which is the honest state its admin holds, and the whole
 // point is that a's map must stop drawing that edge anyway.
 //

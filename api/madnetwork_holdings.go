@@ -12,7 +12,7 @@ import (
 	"daemonlord.ygg/madshare/federation"
 )
 
-// The household's tracker (docs/architecture/federation.md §"The household",
+// The household's tracker (docs/architecture/federation-access.md §"The household",
 // "Being found") — the two calls a listener device makes to this server that are
 // about bytes rather than about the library.
 //

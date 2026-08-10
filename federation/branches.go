@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// Branch attribution for the browse (F7 item 10, docs/architecture/federation.md
+// Branch attribution for the browse (F7 item 10, docs/architecture/federation-trust.md
 // §Trust graph). The network map already computes "which direct friends does this
 // node reach us through" for the admin diagram; this is the same walk exposed as
 // a plain lookup table, because the madnetwork page needs it on every request

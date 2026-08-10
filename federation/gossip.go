@@ -2,7 +2,7 @@ package federation
 
 // Friend-list gossip (federation F6): the two record types nodes relay, their
 // canonical encoding, and signing/verification. Design:
-// docs/architecture/federation.md §"Friend-list gossip & the network graph".
+// docs/architecture/federation-trust.md §"Friend-list gossip & the network graph".
 //
 // Untagged, like federation.go and for the same reason: the database layer
 // stores these records and is built in both tag variants, so the types (and the
@@ -36,7 +36,7 @@ import (
 
 // Bounds on a single record. These are anti-flood limits, not policy: they cap
 // what one document can cost a receiver, and are checked before anything is
-// stored (docs/architecture/federation.md §Friend-list gossip, "Anti-flood
+// stored (docs/architecture/federation-trust.md §Friend-list gossip, "Anti-flood
 // bounds").
 const (
 	// MaxGraphEdges caps the friendships one record may claim. A longer list is
@@ -73,7 +73,7 @@ var ErrBadSignature = errors.New("federation: gossip record signature does not v
 //
 // The name is *hearsay about a stranger* — the publisher's private label for a
 // node the receiver may never have met — so every surface rendering it shows
-// the key beside it (docs/architecture/federation.md §Friendship, naming).
+// the key beside it (docs/architecture/federation-trust.md §Friendship, naming).
 // Since is a durability signal: an old edge is worth more than a fresh one when
 // trust weighting arrives (F7).
 type GraphEdge struct {
@@ -104,7 +104,7 @@ type GraphRecord struct {
 // downvote that forces the reader to ask out-of-band what happened. It is also
 // why marks are the most dangerous thing in this file: they relay network-wide
 // and are readable by their target (see the accepted risk recorded in
-// docs/architecture/federation.md §Friend-list gossip).
+// docs/architecture/federation-trust.md §Friend-list gossip).
 type DistrustMark struct {
 	Key    string `json:"key"`
 	At     int64  `json:"at"`
@@ -449,7 +449,7 @@ type MapMark struct {
 // stay single-claim, because an edge somebody claims is worth seeing. And
 // **branch snipping falls out of the walk**: nodes reachable only behind a
 // blocked node drop out, while a node also vouched for by another friend keeps
-// whatever distance and labels remain (docs/architecture/federation.md
+// whatever distance and labels remain (docs/architecture/federation-trust.md
 // §Forgetting).
 func walkGraph(selfKey string, peers []*Peer, edges []GraphEdgeClaim) (dist map[string]int, via map[string]map[string]bool) {
 	adj := map[string]map[string]bool{}
@@ -550,7 +550,7 @@ func ReachableKeys(selfKey string, peers []*Peer, edges []GraphEdgeClaim) map[st
 
 // MemberKeys is the access-side twin of [walkGraph]: every key that belongs to
 // our community and may therefore be served the Madnetwork scope (F7,
-// docs/architecture/federation.md §The membership rule). Same store, same
+// docs/architecture/federation-access.md §The membership rule). Same store, same
 // branch snipping — and one difference that is the whole point.
 //
 // **A gossiped edge counts only when both ends claim it.** The map links two

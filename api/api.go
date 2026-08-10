@@ -205,7 +205,7 @@ type MadnetworkStore interface {
 }
 
 // FederationNode is the admin-facing surface of the embedded madnetwork node
-// (*federation.Node implements it; see docs/architecture/federation.md F1). An
+// (*federation.Node implements it; see docs/architecture/federation-trust.md F1). An
 // interface so the api package carries no yggdrasil dependency decisions — the
 // nofederation build never wires one.
 type FederationNode interface {

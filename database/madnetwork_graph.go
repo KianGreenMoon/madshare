@@ -2,7 +2,7 @@ package database
 
 // The gossiped network graph (federation F6): the signed records this node
 // holds and the denormalized edges/marks queried off them. *DB satisfies
-// federation.GraphStore here. Design: docs/architecture/federation.md
+// federation.GraphStore here. Design: docs/architecture/federation-trust.md
 // §"Friend-list gossip & the network graph"; the record format and its
 // verification live in federation/gossip.go.
 //
@@ -275,7 +275,7 @@ func (db *DB) ExpireGraph(ctx context.Context, now int64) (int, error) {
 
 // DropUnreachableGraph deletes every record whose origin is not in keep, with
 // its derived rows, and returns how many records went — the retention half of
-// the reachability walk (docs/architecture/federation.md §Forgetting).
+// the reachability walk (docs/architecture/federation-trust.md §Forgetting).
 //
 // Deleting is safe because this store is a cache: rebuildable from the network,
 // referenced by nothing local. Re-friending or unblocking re-syncs what went on

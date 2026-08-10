@@ -9,7 +9,7 @@ package main
 // enough for "what do friends see", and useless for the question F5 introduced —
 // what does a STRANGER see? Since F5 the answer is no longer a flat "nothing":
 // guest-playable content serves any mesh node, friend or not
-// (docs/architecture/federation.md §Sharing scope, "Guest-playable is an open
+// (docs/architecture/federation-access.md §Sharing scope, "Guest-playable is an open
 // swarm"), while catalog and holdings stay friends-only and anything else 404s.
 //
 // That asymmetry cannot be driven through a lab node's own HTTP API, because a

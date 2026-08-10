@@ -4,7 +4,7 @@ package federation
 
 // Listener-node capability tokens (federation F7 item 9): one signed sentence,
 // "bearer key K is my user until T", issued by a home server over its own node
-// identity. Design: docs/architecture/federation.md §Principals & access, "The
+// identity. Design: docs/architecture/federation-access.md §Principals & access, "The
 // capability token".
 //
 // This is the only credential in madnetwork, and it exists for exactly one

@@ -232,7 +232,7 @@ type FederationConfig struct {
 	// with no config file sets this itself — madplayer defaults it to 2 GiB,
 	// because a fresh install has an empty cache and no such history.
 	CacheMaxMB int `toml:"cache_max_mb"`
-	// Member quotas (F7 item 6, docs/architecture/federation.md §Distribution,
+	// Member quotas (F7 item 6, docs/architecture/federation-swarm.md §Distribution,
 	// "What a member may cost us"). SeedRateKiB above is one bucket for every
 	// requester, which was the whole policy while a requester was always a
 	// friend. This node now serves its entire community, and membership has no

@@ -65,7 +65,7 @@ func TestCleanPeerName(t *testing.T) {
 }
 
 // TestSanitizePeerName is the golden table for the display-integrity rules
-// (docs/architecture/federation.md §Name sanitization). Every case is a way two
+// (docs/architecture/federation-trust.md §Name sanitization). Every case is a way two
 // nodes could otherwise render identically, or a way one name could render as
 // something it is not — plus the two accepted losses, asserted so that removing
 // them is a deliberate act rather than an accident.

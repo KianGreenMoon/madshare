@@ -9,7 +9,7 @@ import (
 	"daemonlord.ygg/madshare/federation"
 )
 
-// Federation F5 — sharing scope (docs/architecture/federation.md §Sharing
+// Federation F5 — sharing scope (docs/architecture/federation-access.md §Sharing
 // scope). Every mesh request that reveals or delivers library content is
 // answered *for an audience*, and catalog and bytes read the same rule, so the
 // node never advertises what it would not serve.
@@ -108,7 +108,7 @@ func (db *DB) BlobVisibleTo(ctx context.Context, hash string, aud federation.Aud
 // PeerAudience resolves a *direct friend* to the audience its requests are
 // answered for: class friend, distance 0 (both scopes — Direct friends and
 // Madnetwork — are served at distance 0), so the interesting half is the user
-// mapping (federation.md §Principals & access):
+// mapping (federation-access.md §Principals & access):
 //
 //	unmapped                     the default regular-user identity: the whole
 //	                             published set. Unmapped is a rule, not a missing

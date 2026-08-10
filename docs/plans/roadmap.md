@@ -101,8 +101,10 @@ build log: `docs/plans/recordings-implementation.md`.
 ## Federation
 
 **Built** — F0–F8 are shipped; design, build plan and status live in
-`docs/architecture/federation.md` (auth's Phase 4 hooks: `docs/architecture/auth.md`
-§8). F7 closed with listener-node tokens on 2026-08-01, and F8 (quality upgrades
+`docs/architecture/federation.md` and its three companions —
+`federation-access.md` (principals and scope), `federation-trust.md` (the
+graph), `federation-swarm.md` (transfer and distribution). Auth's Phase 4 hooks:
+`docs/architecture/auth.md` §8. F7 closed with listener-node tokens on 2026-08-01, and F8 (quality upgrades
 — the review card's madnetwork arm, the fingerprint-vs-tagset mismatch warning
 and `/admin/upgrades`) on 2026-08-02. What is deferred out of the milestone:
 

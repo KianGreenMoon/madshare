@@ -8,7 +8,7 @@ import (
 	"daemonlord.ygg/madshare/federation"
 )
 
-// Home nodes (migration 044, docs/architecture/federation.md §"The household") —
+// Home nodes (migration 044, docs/architecture/federation-access.md §"The household") —
 // the servers a listener node signs in to, recorded one-sidedly.
 //
 // The whole table is four columns and three queries, and that is the point: it

@@ -10,9 +10,12 @@ friend who is currently unreachable drop out of the view at the next refresh).
 This is the **UI** design. The server-side mechanics referenced here are
 documented with the backend:
 
-- Catalog merge, the availability predicate, node-health/liveness, the swarm:
-  `docs/architecture/federation.md` (§Catalog, §Distribution, §Availability &
-  node health).
+- Catalog merge, the availability predicate, node health and liveness:
+  `docs/architecture/federation.md` (§Catalog, §Availability & node health).
+- The swarm the ⓘ panel's holders and Materialize act through:
+  `docs/architecture/federation-swarm.md` §Distribution.
+- Who a holder will actually serve, and why a row may be hidden:
+  `docs/architecture/federation-access.md` §Sharing scope.
 - Remote playlist/favorite items (migration 029, API surface, re-pointing):
   `docs/api/playlists.md` §"Remote (madnetwork) items".
 - Queue semantics: `docs/ui/player-and-queue.md`.
@@ -280,7 +283,7 @@ is right, because their effect on the artist list is identical.
 Two inputs, both already part of the design's vocabulary:
 
 - **Corroboration, counted per branch, never per node.** Nodes reachable only
-  through one friend are **one voice** (federation.md §Trust graph, the sybil
+  through one friend are **one voice** (federation-trust.md §Trust graph, the sybil
   rule). A farm of fifty nodes behind a single friendship edge corroborates
   nothing, and dies with one snip.
 - **Trust distance of the nearest holder**, which cuts the other way and is why
@@ -351,7 +354,7 @@ in the hierarchy may depend on it.
 
 A user who finds garbage reports it from the row; the report reaches the admin
 with the **source node or nodes** attached, next to a Block action — the same
-inbox as the contradicted-claim reports (federation.md §Trust graph), and
+inbox as the contradicted-claim reports (federation-trust.md §Trust graph), and
 manual in exactly the same way. Nothing about a peer's service changes because a
 user complained; blocking stays a decision a person makes.
 
@@ -449,7 +452,7 @@ arrangement and correct for the opposite reason.
   catalogs, its own friend graph, its own branch weighting. There is no
   network-global chart, no shared counter, nothing to game from outside, and
   nothing that could grow into the automatic reputation score the design refuses
-  (federation.md §Trust graph). "Most held" means *most held among nodes I can
+  (federation-trust.md §Trust graph). "Most held" means *most held among nodes I can
   see*, and the UI should say so rather than imply a chart.
 - **Lanes rank, they never hide.** Same rule as the rarity ordering: the long tail
   is reachable through *Browse all* and through search, always. A lane is a
@@ -506,7 +509,7 @@ the admin's choice, and the reader is usually not the admin.)
 Each lane is one ranking over the merged, availability-filtered set. `holders` is
 the number of distinct **nodes** offering a logical track; `branches` is the
 number of distinct direct friends those nodes are reachable through
-(federation.md §Trust graph — one branch is one voice).
+(federation-trust.md §Trust graph — one branch is one voice).
 
 | lane | shown when | ranked by |
 |---|---|---|
@@ -748,7 +751,7 @@ to the bottom lane.
    promoted to the top, the A→Z drill-down demoted to *Browse all* and windowed
    with `virtual-list.js` + keyset paging. Needs `first_seen` on
    `federation_catalog` (a cache-table migration) and the branch weighting from
-   federation.md §Trust graph; everything else reads aggregates the page already
+   federation-trust.md §Trust graph; everything else reads aggregates the page already
    computes. *(**shipped 2026-07-31** as F7 item 8 — §Settled, §Lane
    definitions, §Browsing a single node. Migration 037, `GET
    /api/madnetwork/discover` + `/lane`, `?source=` on the browse endpoints, a

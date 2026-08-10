@@ -15,7 +15,7 @@ import (
 )
 
 // The mesh half of the embedder surface (docs/architecture/embedding.md
-// §"Network", docs/architecture/federation.md §"The household"). It exists for
+// §"Network", docs/architecture/federation-access.md §"The household"). It exists for
 // the listener node, so these tests are the listener node's own path: no
 // listeners, federation on, and every substitute for the things a device cannot
 // earn by itself.

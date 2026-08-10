@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// The household (docs/architecture/federation.md §"The household") — what a
+// The household (docs/architecture/federation-access.md §"The household") — what a
 // listener node can actually do, as opposed to what the access model says about
 // it. A madplayer is the shape under test throughout: nobody's friend, in
 // nobody's community, and unable to reach anything by a graph walk.

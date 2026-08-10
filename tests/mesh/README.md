@@ -320,7 +320,7 @@ over the same topology, not a meshlab rewrite.
 ### What each principal gets since F7
 
 F5 made "not a friend" stop meaning one thing; F7
-(`docs/architecture/federation.md` §Principals & access) split it again, into a
+(`docs/architecture/federation-access.md` §Principals & access) split it again, into a
 **member of our community** and an **outsider**. Three columns, and the middle
 one is the phase:
 
@@ -663,7 +663,7 @@ Three readings worth knowing:
 - **Nobody `dropped=true` on a failed transfer** is normal now, not a puzzle: a
   chunk that exhausts its attempt budget aborts the fetch with every holder still
   live. Retiring holders and ending transfers are separate mechanisms
-  (`docs/architecture/federation.md` §Distribution).
+  (`docs/architecture/federation-swarm.md` §Distribution).
 
 ## Writing a new scenario
 

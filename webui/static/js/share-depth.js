@@ -1,7 +1,7 @@
 // Madnetwork sharing scope — the shared vocabulary between the surfaces that
 // edit it (the Recordings lens's access modal, the All Appearances bulk bar, the
 // /admin/settings node default) and the chips that display it. Federation F5,
-// collapsed to three values in F7: docs/architecture/federation.md §Sharing
+// collapsed to three values in F7: docs/architecture/federation-access.md §Sharing
 // scope.
 //
 // Three scopes, and no ladder between them:

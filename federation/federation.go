@@ -65,7 +65,7 @@ const (
 )
 
 // Peer states (federation_peers.state, migration 026). The friendship state
-// machine — see docs/architecture/federation.md §Trust graph and the pairing
+// machine — see docs/architecture/federation-trust.md §Trust graph and the pairing
 // handshake in node.go:
 //
 //	pending_outgoing → friend   when the peer's node confirms (their admin
@@ -84,7 +84,7 @@ const (
 // published to. Stored per recording (recordings.share_depth, migration 030;
 // NULL = inherit the node default) and compared against an [Audience]'s
 // Distance: content is visible iff depth >= Distance. See
-// docs/architecture/federation.md §Sharing scope.
+// docs/architecture/federation-access.md §Sharing scope.
 //
 // The constants still read as distances because that is how the SQL compares
 // them, and keeping the encoding is what let the vocabulary change without a
@@ -117,7 +117,7 @@ const (
 // stored ones onto [DepthFriends]; a peer or an admin sending one now is
 // refused rather than silently rounded, since rounding a sharing decision is
 // exactly the kind of quiet widening this predicate exists to prevent
-// (docs/architecture/federation.md §Sharing scope).
+// (docs/architecture/federation-access.md §Sharing scope).
 func ValidDepth(d int) bool {
 	return d == DepthPrivate || d == DepthFriends || d == DepthUnlimited
 }
@@ -208,7 +208,7 @@ func (a Audience) ServesCache() bool { return a.InCommunity() }
 
 // FriendAudience is the audience of an unmapped direct friend: the default
 // regular-user identity, which sees the whole published set
-// (docs/architecture/federation.md §Principals & access).
+// (docs/architecture/federation-access.md §Principals & access).
 var FriendAudience = Audience{Class: ClassFriend, Distance: DepthFriends}
 
 // MemberAudience is the audience of a node in our community that is not a direct
@@ -551,7 +551,7 @@ type PeerStore interface {
 	SetFederationPeerState(ctx context.Context, id int64, state, prevState string) error
 	// BlockFederationPeer blocks a peer and records the evidence the published
 	// distrust mark carries: when, and why. Every block publishes a mark — there
-	// are no private blocks (docs/architecture/federation.md §Friend-list gossip).
+	// are no private blocks (docs/architecture/federation-trust.md §Friend-list gossip).
 	BlockFederationPeer(ctx context.Context, id int64, prevState, reason string, at int64) error
 	UpdateFederationPeerName(ctx context.Context, id int64, name string) error
 	// UpdateFederationPeerHeardName records what the peer calls itself, learned
@@ -712,7 +712,7 @@ type GraphStore interface {
 	// other ageing mechanism, and the one that answers an admin's action rather
 	// than a clock. Blocking or removing a friend severs an edge, which makes
 	// the branch behind it unreachable, which this collects ([ReachableKeys],
-	// docs/architecture/federation.md §Forgetting).
+	// docs/architecture/federation-trust.md §Forgetting).
 	DropUnreachableGraph(ctx context.Context, keep map[string]struct{}) (int, error)
 
 	// GraphEdges and GraphMarks are the unexpired denormalized claims, for the
@@ -1174,7 +1174,7 @@ const ClaimHeadWords = 64
 // FingerprintClaim is what a rendition says its audio *is* — the head of the
 // origin's own acoustic fingerprint, so a receiver holding the same bytes can
 // check the claim instead of taking it on trust
-// (docs/architecture/federation.md §Trust graph, contradicted claims).
+// (docs/architecture/federation-trust.md §Trust graph, contradicted claims).
 //
 // Publishing it leaks nothing new: a friend already receives the content hash and
 // the full tag text of everything in scope, so the claim only makes an existing
@@ -1290,7 +1290,7 @@ func ParseCard(raw []byte) (Card, error) {
 // octets), so no realistic host name — the default self-name — is ever
 // truncated, while staying short enough not to disturb a layout. A name is only
 // a label: identity is the key, and every surface showing a name shows the mesh
-// address beside it (docs/architecture/federation.md §Friendship).
+// address beside it (docs/architecture/federation-trust.md §Friendship).
 const MaxPeerNameRunes = 64
 
 // CleanPeerName sanitizes and length-caps a peer-supplied display name (cards,
@@ -1308,7 +1308,7 @@ func CleanPeerName(name string) string { return sanitizeLabel(name, MaxPeerNameR
 const maxCombiningMarks = 2
 
 // sanitizeLabel is the display-integrity rule set shared by peer names and
-// distrust-mark reasons (docs/architecture/federation.md §Name sanitization).
+// distrust-mark reasons (docs/architecture/federation-trust.md §Name sanitization).
 //
 // This is NOT an injection defense and must never be sold as one: the admin UI
 // escapes by assigning textContent, and that stays the defense against XSS. What

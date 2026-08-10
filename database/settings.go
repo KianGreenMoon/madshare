@@ -103,7 +103,7 @@ type MadnetworkPolicy struct {
 	// ends, and friends' own records still name this node, so it stays on the
 	// map with visible edges — only its own list goes missing. Any UI for this
 	// must say exactly that rather than imply invisibility
-	// (docs/architecture/federation.md §Friend-list gossip).
+	// (docs/architecture/federation-trust.md §Friend-list gossip).
 	PublishFriendList bool
 	// ServeGuests answers mesh nodes outside our community with guest-playable
 	// content (F7). Default OFF — the node's posture is everything to our

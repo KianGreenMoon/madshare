@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// Peering info (docs/architecture/federation.md §"The household", "Getting onto
+// Peering info (docs/architecture/federation-access.md §"The household", "Getting onto
 // the mesh at all").
 //
 // Yggdrasil peers are not discovered: a node dials what it was configured to

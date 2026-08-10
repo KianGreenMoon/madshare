@@ -10,12 +10,12 @@
 > feeds until the mesh arrives at 2b.
 >
 > Behind it: F0–F8 all shipped, including the **F7 capability tokens** this client
-> was named as the reason for (`docs/architecture/federation.md` §Principals &
+> was named as the reason for (`docs/architecture/federation-access.md` §Principals &
 > access), and the UI toolkit is settled on **Gio** (see *The UI toolkit*).
 > **Level 2b, the mesh, is most of the way there**: the device becomes a node,
 > signing in enrols it, and playback now prefers the swarm and falls back to the
 > relay. What is left of 2b is the materialize target above, which it is the
-> first caller for. The access half is `federation.md` §"The household", and what
+> first caller for. The access half is `federation-access.md` §"The household", and what
 > the client does with it is §"Level 2b, concretely" below.
 >
 > **madplayer now lives in its own repository** (split out at madshare v0.8.6),
@@ -167,7 +167,7 @@ node compiled in as libraries and run **in-process**, with the Go UI on top.
 
 The point of embedding the backend is to make every install a **node**. What
 kind of node is settled: a **listener node**, defined in
-`docs/architecture/federation.md` §Principals & access (decided 2026-07-26). The
+`docs/architecture/federation-access.md` §Principals & access (decided 2026-07-26). The
 short form, because it shapes nearly every screen in this client:
 
 - **It signs in to a home server with user credentials**, not by friending it.
@@ -188,7 +188,7 @@ short form, because it shapes nearly every screen in this client:
   publication and two-way swarming do not contradict each other.
 
   Who it seeds *to* is narrower than "anyone", and the answer is
-  `federation.md` §"The household": **it serves exactly what its home server
+  `federation-access.md` §"The household": **it serves exactly what its home server
   vouches for** — that server, and that server's other devices. A member of the
   wider community cannot pull from it, which is the price of never appearing in
   anybody's friend list.
@@ -621,12 +621,12 @@ What is worth knowing before building against it:
   (`per_member_*` / `member_*`), which is what answers a home server enrolling a
   thousand devices.
 
-Full design and the four verifier checks: `docs/architecture/federation.md`
+Full design and the four verifier checks: `docs/architecture/federation-access.md`
 §Principals & access, "The capability token".
 
 ## Level 2b, concretely (designed 2026-08-09, not built)
 
-The access model is `federation.md` §"The household" and is not restated here.
+The access model is `federation-access.md` §"The household" and is not restated here.
 This is what *this program* does with it, and the order matters because each step
 is what makes the next one possible.
 
@@ -907,7 +907,7 @@ is a claim this project has verified only on the desktop side.
    ~~swarm fetch~~ and ~~seed-back~~ are done: signing in enrols the device, and
    playing a network track asks who holds it, fetches from them and falls back to
    the level-1 download. **Still owed: the materialize target**, item 3's debt,
-   which 2b is the first caller for. The access half is `federation.md` §"The
+   which 2b is the first caller for. The access half is `federation-access.md` §"The
    household" (which is also where the three things that turned out to be missing
    are written down); the client's half is §"Level 2b, concretely"; the token flow
    is §"The capability token, concretely".

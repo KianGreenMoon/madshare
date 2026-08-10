@@ -47,7 +47,7 @@ type snapshot struct {
 // its own memo and its own serial: a friend restricted to guest-playable content
 // sees a different catalog, so it must not be told the full snapshot's serial —
 // that would make its next not-modified check answer about a catalog it never
-// received (F5, docs/architecture/federation.md §Sharing scope).
+// received (F5, docs/architecture/federation-access.md §Sharing scope).
 func (n *Node) ownSnapshot(ctx context.Context, aud Audience) (*snapshot, error) {
 	n.snapMu.Lock()
 	defer n.snapMu.Unlock()
@@ -163,7 +163,7 @@ func (n *Node) syncCatalog(ctx context.Context, p *CatalogSource) {
 //
 // A finding is logged once per round and otherwise waits on /admin/network.
 // Nothing here blocks, scores or notifies — that is the whole point of the design
-// (docs/architecture/federation.md §Trust graph).
+// (docs/architecture/federation-trust.md §Trust graph).
 func (n *Node) checkClaims(ctx context.Context, p *CatalogSource) {
 	open, err := n.store.CheckSourceClaims(ctx, p.ID)
 	if err != nil {

@@ -23,7 +23,7 @@ import (
 
 // The swarm (federation F4): multi-source chunk fetch, the chunk manifest, the
 // holdings tracker, and the seeding rate cap. Design:
-// docs/architecture/federation.md §Distribution.
+// docs/architecture/federation-swarm.md §Distribution.
 //
 // A blob's swarm id is its whole-file SHA-256 (the same content address used
 // everywhere), so it is NOT a Merkle root and per-chunk hashes cannot be

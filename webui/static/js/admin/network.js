@@ -3,7 +3,7 @@
 // the trusted-peer list (accept / block / unblock / remove, local label, local
 // user mapping). Gated on federation.manage (the API enforces it). Pairing is
 // asynchronous — the page polls while anything is pending so state flips appear
-// without a reload. Design: docs/architecture/federation.md.
+// without a reload. Design: docs/architecture/federation-trust.md.
 import { bootAdmin, API, toast, handleAuthError, el } from './shared.js';
 import { initMap, loadMap, focusKey } from './network-map.js';
 import { copyText, selectElementText } from '../clipboard.js';
@@ -506,7 +506,7 @@ async function acceptPeer(p) {
 
 // Blocking is a PUBLIC act: the block is published as a signed distrust mark
 // that relays across the whole network and is readable by the node being
-// blocked (docs/architecture/federation.md §Friend-list gossip). The modal has
+// blocked (docs/architecture/federation-trust.md §Friend-list gossip). The modal has
 // to say so plainly and collect the reason, because a mark without one is an
 // anonymous downvote nobody downstream can act on.
 //
@@ -760,7 +760,7 @@ function confirmModal({ title, bodyNodes, confirmLabel, danger = true }) {
 // focusFromHash lands a `#node=<key>` link on that node: selected, centred, with
 // the view expanded if it sits past the current radius. The madnetwork library's
 // ⓘ holder list builds these, so tracking down whoever served something bad
-// starts from the content that exposed it (docs/architecture/federation.md §The
+// starts from the content that exposed it (docs/architecture/federation-trust.md §The
 // network map).
 async function focusFromHash() {
   // Deliberately not "hex only". A real node key is hex, but the value is only

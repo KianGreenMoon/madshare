@@ -23,7 +23,7 @@ import (
 // 2026-07-18 — chunking IS HTTP ranges between two trusted endpoints);
 // integrity is the content hash itself, verified over the full byte stream,
 // with the Merkle chunk protocol deferred to F4 where multi-source fetch
-// actually needs per-chunk verification. Design: docs/architecture/federation.md.
+// actually needs per-chunk verification. Design: docs/architecture/federation-swarm.md.
 
 // ── Serving side: GET /madnetwork/v0/blob/{hash} ─────────────────────────────
 

@@ -8,7 +8,7 @@ import (
 	"daemonlord.ygg/madshare/federation"
 )
 
-// Share-depth request plumbing (federation F5, docs/architecture/federation.md
+// Share-depth request plumbing (federation F5, docs/architecture/federation-access.md
 // §Sharing scope). A share-depth edit is three-valued and JSON says so directly:
 //
 //	field absent   leave the recording's scope alone

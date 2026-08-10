@@ -12,7 +12,7 @@ import (
 )
 
 // /api/admin/federation — the madnetwork friendship surface behind the
-// /admin/network page (federation F1, docs/architecture/federation.md). All
+// /admin/network page (federation F1, docs/architecture/federation-trust.md). All
 // routes are gated on federation.manage; the running node is h.federation
 // (nil when federation is disabled or compiled out).
 
@@ -384,7 +384,7 @@ func (h *handler) federationGraphPaths(w http.ResponseWriter, r *http.Request) {
 // 202 rather than 200, and no result: the round runs on the refresh loop, so
 // there is nothing to report back except that it was asked for. Repeated presses
 // coalesce into the round already running, which is why this needs no throttle
-// of its own — see docs/architecture/federation.md §Refreshing the graph on
+// of its own — see docs/architecture/federation-trust.md §Refreshing the graph on
 // demand for why the *serving* side answers with a memo instead of a refusal.
 func (h *handler) federationGraphResync(w http.ResponseWriter, r *http.Request) {
 	if h.federation == nil {

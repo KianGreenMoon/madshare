@@ -9,7 +9,7 @@ import (
 	"daemonlord.ygg/madshare/federation"
 )
 
-// The household's tracker (docs/architecture/federation.md §"The household",
+// The household's tracker (docs/architecture/federation-access.md §"The household",
 // "Being found") — what a home server records about its own listener devices,
 // and how those devices reach the swarm's provider lookup.
 

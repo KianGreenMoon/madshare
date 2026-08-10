@@ -5,7 +5,7 @@ package federation
 // Friend-list gossip, node side (federation F6): publishing this node's own
 // record, serving the graph to friends, and pulling theirs. The record format
 // and its verification are in gossip.go; the store is
-// database/madnetwork_graph.go. Design: docs/architecture/federation.md
+// database/madnetwork_graph.go. Design: docs/architecture/federation-trust.md
 // §"Friend-list gossip & the network graph".
 //
 // The shape of a sync round, and why it is not a crawl:
@@ -86,7 +86,7 @@ type graphDigest struct {
 //
 // What it cannot do is worth saying where the method is: gossip reaches one ring
 // per round, so this makes our view as fresh as our friends' STORES, not as
-// fresh as the network (docs/architecture/federation.md §Refreshing the graph on
+// fresh as the network (docs/architecture/federation-trust.md §Refreshing the graph on
 // demand).
 func (n *Node) ResyncGraph() {
 	// Clear the per-origin accept throttle first, or the button silently does
@@ -185,7 +185,7 @@ func (n *Node) publishOwnRecord(ctx context.Context, peers []*Peer) {
 // Deliberately NOT gated on the publish-friend-list setting: that switch is
 // about naming third parties this node is friends with, while a mark is this
 // node's own judgement, and the decision was that every block is published
-// (docs/architecture/federation.md §Friend-list gossip, D6b — there are no
+// (docs/architecture/federation-trust.md §Friend-list gossip, D6b — there are no
 // private blocks).
 func (n *Node) publishOwnMarkRecord(ctx context.Context, peers []*Peer) {
 	if n.store == nil || n.signKey == nil {
@@ -424,7 +424,7 @@ func (n *Node) expireGraph(ctx context.Context) {
 // answering 429 was rejected on purpose — syncGraph reads every non-200 as "an
 // older peer without the endpoint" and returns, so a refusal is indistinguishable
 // from absence and a mistuned one would silently stop two honest nodes
-// converging (docs/architecture/federation.md §Refreshing the graph on demand).
+// converging (docs/architecture/federation-trust.md §Refreshing the graph on demand).
 //
 // Unlike the catalog there is no per-audience split: the graph is served to
 // friends and to nobody else, so every caller gets the same bytes.

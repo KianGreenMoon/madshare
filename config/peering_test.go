@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// Peer sharing (docs/architecture/federation.md §"The household", "Getting onto
+// Peer sharing (docs/architecture/federation-access.md §"The household", "Getting onto
 // the mesh at all"): what [yggdrasil].share_peers / shared_peers resolve to, and
 // the one distinction the whole shape rests on — an absent list is not an empty
 // one.

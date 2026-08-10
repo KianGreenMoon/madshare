@@ -13,7 +13,7 @@ import (
 	"daemonlord.ygg/madshare/federation"
 )
 
-// The household's tracker (docs/architecture/federation.md §"The household",
+// The household's tracker (docs/architecture/federation-access.md §"The household",
 // "Being found"). The store's job is covered in the database package; what is
 // under test here is what the API owns — who may push, what a push may contain,
 // and the shape a device's fetch plan comes back in.

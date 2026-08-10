@@ -76,7 +76,7 @@ type Instance struct {
 
 	// token is the capability token this node presents on outbound mesh
 	// requests, empty on everything except a listener node (Network.SetToken,
-	// docs/architecture/federation.md §"The household").
+	// docs/architecture/federation-access.md §"The household").
 	//
 	// It lives here rather than being passed to federation.Start because a
 	// device acquires one long after startup — it has to sign in first — and

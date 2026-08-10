@@ -2,7 +2,7 @@ package federation
 
 import "testing"
 
-// Forgetting (docs/architecture/federation.md §Forgetting). Three properties,
+// Forgetting (docs/architecture/federation-trust.md §Forgetting). Three properties,
 // all of them consequences of one walk: an edge with our own key comes from our
 // peer rows and nowhere else, reachability decides retention and not merely
 // drawing, and removal therefore needs no machinery of its own.

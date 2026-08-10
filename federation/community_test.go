@@ -14,7 +14,7 @@ import (
 )
 
 // Federation F7 — serving our community over the real mesh
-// (docs/architecture/federation.md §Principals & access, §The membership rule).
+// (docs/architecture/federation-access.md §Principals & access, §The membership rule).
 // The claim under test is the phase's whole point: a node that is nobody's
 // friend here, but that our community vouches for mutually, is served the
 // Madnetwork scope — catalog, bytes and cache alike — while a node outside the

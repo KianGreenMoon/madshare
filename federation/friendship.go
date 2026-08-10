@@ -22,7 +22,7 @@ import (
 
 // Friendship (federation F1): the pairing handshake, the mesh-side peer
 // identity check, and the refresh loop that retries pending pairings and keeps
-// friends' last_seen fresh. Design: docs/architecture/federation.md §Trust
+// friends' last_seen fresh. Design: docs/architecture/federation-trust.md §Trust
 // graph and §Build plan F1.
 //
 // The handshake needs no signatures: a yggdrasil mesh address is derived from
@@ -622,7 +622,7 @@ func (n *Node) AcceptPeer(ctx context.Context, id int64) error {
 //
 // reason is what the mark carries to the rest of the network, so blocking is a
 // public act here by construction — see the accepted risk in
-// docs/architecture/federation.md §Friend-list gossip. It is capped and
+// docs/architecture/federation-trust.md §Friend-list gossip. It is capped and
 // sanitized on the peer-name rules; empty is allowed but makes the mark an
 // anonymous downvote nobody downstream can act on.
 func (n *Node) BlockPeer(ctx context.Context, id int64, reason string) error {

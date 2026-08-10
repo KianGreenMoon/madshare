@@ -9,7 +9,7 @@ import (
 	"daemonlord.ygg/madshare/federation"
 )
 
-// Listener devices (migration 045, docs/architecture/federation.md
+// Listener devices (migration 045, docs/architecture/federation-access.md
 // §"The household", "Being found") — this server's side of the household.
 //
 // household.go is the other side, and the two are easy to confuse: that one is

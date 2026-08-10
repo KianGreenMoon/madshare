@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Member quotas (F7 item 6, docs/architecture/federation.md §Distribution, "What
+// Member quotas (F7 item 6, docs/architecture/federation-swarm.md §Distribution, "What
 // a member may cost us"). What these pin is that both halves of the bound exist
 // and that friends are outside them — the two properties the design turns on.
 

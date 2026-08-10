@@ -11,7 +11,7 @@ with per-file transfer accounting, live progress, the node's two rate knobs, and
 the totals underneath them.
 
 Reference for the transfer machinery it reports on:
-[`federation.md`](federation.md) §Distribution. Reference for the cache half of
+[`federation-swarm.md`](federation-swarm.md) §Distribution. Reference for the cache half of
 the row set: [`madnetwork-cache.md`](madnetwork-cache.md).
 
 ---

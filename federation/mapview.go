@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// Navigating the map at scale (F7 item 7, docs/architecture/federation.md §The
+// Navigating the map at scale (F7 item 7, docs/architecture/federation-trust.md §The
 // network map). The community is unbounded, so the map scales by SHOWING LESS AT
 // A TIME rather than by the network being smaller: a view radius, a search that
 // still reaches everything outside it, and the paths between any two nodes.

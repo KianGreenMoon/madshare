@@ -330,7 +330,7 @@ func TestMarkRecordReplacementDropsLiftedMarks(t *testing.T) {
 
 // DropUnreachableGraph is the retention half of the reachability walk: whatever
 // the caller's walk did not reach goes, with its derived rows, exactly as
-// expiry drops what aged out (docs/architecture/federation.md §Forgetting).
+// expiry drops what aged out (docs/architecture/federation-trust.md §Forgetting).
 func TestDropUnreachableGraphCollectsCutBranches(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()

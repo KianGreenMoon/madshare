@@ -282,7 +282,7 @@ func (h *handler) renderLaneTracks(candidates []*database.LaneCandidate, rows []
 // branchesByKey maps every node we can see to the direct friends it reaches us
 // through — the branch attribution every trust-weighted count on this page is
 // computed from (one branch is one voice,
-// docs/architecture/federation.md §Trust graph).
+// docs/architecture/federation-trust.md §Trust graph).
 //
 // Empty when there is no federation node, no graph yet, or the read fails, which
 // degrades every weighted surface to one source one voice: the same rule in a

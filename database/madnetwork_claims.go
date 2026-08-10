@@ -1,6 +1,6 @@
 package database
 
-// Federation F6 — contradicted identity claims (docs/architecture/federation.md
+// Federation F6 — contradicted identity claims (docs/architecture/federation-trust.md
 // §Trust graph). A cached catalog advertises a content hash together with the
 // head of its own acoustic fingerprint; when we hold the same bytes, or hold both
 // halves of a grouping it asserts, the claim is checkable arithmetic rather than

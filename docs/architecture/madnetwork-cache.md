@@ -29,7 +29,7 @@ Two deliverables, deliberately staged:
    rather than for designed features awaiting their turn.
 
 Reference for the cache's place in the transfer machinery:
-[`federation.md`](federation.md) §Distribution.
+[`federation-swarm.md`](federation-swarm.md) §Distribution.
 
 ---
 
@@ -53,7 +53,7 @@ Consequences, all of them live today:
   `filename = filepath.Base(path)` — which for a cache hit is *the hash*
   (`federation/transfer.go:142`). A cached file is a 64-hex name and nothing
   else.
-- **There is no eviction at all.** Stated in `federation.md` §Principals ("the
+- **There is no eviction at all.** Stated in `federation-access.md` §Principals ("the
   madnetwork cache has no eviction") and in `config.go`'s own comment. The cache
   grows until the disk is full.
 - **Orphaned `.part` files are never cleaned.** A failed fetch removes its own
@@ -669,7 +669,7 @@ The page sits in the admin route group, so reaching it already requires
 - Download — `madnetwork.access` via the existing stream endpoint.
 
 No new permission. The planned `madnetwork.access` split into browse-vs-relay
-(`federation.md` §Principals) would touch this page's Materialize and Download
+(`federation-access.md` §Principals) would touch this page's Materialize and Download
 when it happens, and nothing else here.
 
 ---

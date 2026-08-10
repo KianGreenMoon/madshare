@@ -107,7 +107,7 @@ var adminSubPages = map[string]*template.Template{
 	// nowhere else.
 	"swarm": buildPageTmpl("html/admin/swarm.html"),
 	// "network" is the madnetwork friendship page (federation F1,
-	// docs/architecture/federation.md): node card export/import, the trusted-peer
+	// docs/architecture/federation-trust.md): node card export/import, the trusted-peer
 	// list, block/unblock. Gated on federation.manage at the API.
 	"network": buildPageTmpl("html/admin/network.html"),
 	// "upgrades" lists renditions the madnetwork holds that rank above ours

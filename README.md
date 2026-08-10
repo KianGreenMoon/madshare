@@ -615,7 +615,11 @@ friends, since to them a node that simply stopped answering is indistinguishable
 from one that is briefly down.
 
 Full design, threat model and the reasoning behind every default:
-[`docs/architecture/federation.md`](docs/architecture/federation.md).
+[`docs/architecture/federation.md`](docs/architecture/federation.md) — the
+spine, with three companions for who is served what
+([`federation-access.md`](docs/architecture/federation-access.md)), how nodes
+judge each other ([`federation-trust.md`](docs/architecture/federation-trust.md))
+and how bytes move ([`federation-swarm.md`](docs/architecture/federation-swarm.md)).
 
 ## Endpoints (overview)
 

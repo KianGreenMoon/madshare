@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// Holdings announce (F9 item 2, docs/architecture/federation.md §Distribution,
+// Holdings announce (F9 item 2, docs/architecture/federation-swarm.md §Distribution,
 // "Making it a swarm").
 //
 // Holdings were discoverable only by being pulled from, on the catalog cadence —

@@ -2,7 +2,7 @@ package federation
 
 import "testing"
 
-// The membership rule (docs/architecture/federation.md §The membership rule).
+// The membership rule (docs/architecture/federation-access.md §The membership rule).
 // MemberKeys and BuildNetworkMap read one store and answer two questions, and
 // the whole of F7's perimeter is the single place they disagree: the map draws
 // an edge somebody claims, membership requires both ends to claim it.

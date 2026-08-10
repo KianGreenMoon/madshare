@@ -9,7 +9,7 @@ import (
 )
 
 // Listener-node capability tokens (federation F7 item 9,
-// docs/architecture/federation.md §Principals & access, "The capability token").
+// docs/architecture/federation-access.md §Principals & access, "The capability token").
 //
 // This is the issuing end, and it is deliberately an ordinary authenticated API
 // call rather than anything federation-shaped. A madplayer is a person's device:
