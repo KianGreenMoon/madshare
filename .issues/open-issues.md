@@ -626,7 +626,7 @@ Not yet implemented.
   or a netstack stress harness before trusting any fix — loopback will not
   show it.
 
-## Federation — swarm provider selection is speed-blind (2026-07-24)
+## Federation — swarm provider selection is speed-blind (2026-07-24) — **FIXED 2026-08-12**
 
 Found by the T2 chaos suite (`federation/chaos_test.go`
 `TestChaosSlowAndFastSeeder`), which was written to assert the plan's claim that
@@ -713,6 +713,41 @@ reason worth stating, because the number everyone reaches for instead is
 response header, so the idle-read watchdog never arms. The scheduler rework
 described above is still the second half and still a design job; a freshness
 cutoff on the plan is the first half and removes most of the pain on its own.
+
+### Fixed, 2026-08-12 (F9 item 3)
+
+`federation/scheduler.go`. Dispatch goes to the holder with the **fewest bytes
+outstanding**, so a holder that is not delivering keeps its dispatches and stops
+being chosen — the mechanism this entry asked for, and the one that needs no
+decay constant. Throughput (an EWMA over completed chunks, `ProviderStats.Rate`)
+only breaks ties. The per-node rates mig 042 made available were NOT used: they
+measure a counterparty across transfers, and what a scheduler needs is how this
+holder is doing on THIS fetch, right now.
+
+The three things this entry flagged as traps all held:
+
+- **429** carries its own error (`errChunkBusy`) and costs a timed backoff, never
+  a failure streak and never a rate sample — the busy-but-fast peer is not
+  starved.
+- **`worseThanPeers` was one change to two functions**, as predicted. A holder
+  nobody has asked within `Timeouts.PerChunk` is no longer counted as a
+  benchmark, because a 0 streak only meant "delivering" while round-robin
+  guaranteed everyone was asked.
+- **The holders in the report were absent, not slow**, and that is now the cheap
+  case explicitly: `Timeouts.Connect` (5 s) bounds the dial on its own, so a
+  dispatch to a node with no route costs seconds instead of the two-minute
+  per-chunk backstop.
+
+Re-measured by the same four-node experiment (`TestStaleHoldersCostAFetch`),
+before/after on one machine: 1 stale holder **12.054s → 545ms**, 2 stale
+**18.064s → 1.069s**, and the clean 3-live case **1.299s → 103ms**. A ghost now
+absorbs two dispatches rather than `providerFailureLimit`, and is never retired
+because it is never chosen while a live holder is delivering.
+
+**What is NOT fixed, and is item 4's:** a chunk already in a slow holder's hands
+is not re-dispatched, so a transfer's tail is still as slow as its slowest live
+holder. Hedging is the answer and it is designed
+(`docs/architecture/federation-swarm.md`, F9 item 4).
 
 ## Federation — findings from the full `-race` mesh run (2026-07-24)
 
@@ -850,8 +885,10 @@ fetch into an infinite retry loop, so the two halves are not separable.
 Tests: `TestChunkPlanRetirementIsRelative` (out-of-line holder retired, equally
 slow holders spared, sole holder still terminates) and
 `TestChunkPlanAttemptLimit` (an unfetchable chunk aborts with nobody retired).
-**Dispatch is untouched** — still plain round-robin, so the speed-blind
-scheduler issue above remains open by design.
+**Dispatch was untouched at the time** — still plain round-robin, so the
+speed-blind scheduler issue above remained open by design; it was rewritten on
+2026-08-12, which is what forced the "recently asked" condition into
+`worseThanPeers`.
 
 **Correction (same day, after the fix in item 1).** An earlier revision of this
 entry blamed `readStall`'s per-stream stall timer, reasoning that the
@@ -1627,11 +1664,14 @@ Both real callers are covered, which is the point: this node's own `EnsureBlob`,
 and `GET /api/madnetwork/holders/{hash}` — so a madplayer is fixed too, since the
 plan it hands to `EnsureBlobFrom` is exactly what that endpoint returned.
 
-What the fix does NOT do is make a dead holder cheap once it is *in* a plan. A
+What the fix did NOT do is make a dead holder cheap once it is *in* a plan. A
 caller that assembles holders some other way, or a node that dies between the
-plan being issued and the fetch running, still pays `PerChunk` per dispatch. That
-is the scheduler half, still open, in the "speed-blind" entry — and it is why the
-`chunkPlan` dispatch test stays.
+plan being issued and the fetch running, still paid `PerChunk` per dispatch. That
+was the scheduler half — **done 2026-08-12**, see the "speed-blind" entry: the
+dial has its own five-second deadline and a holder that fails stops being chosen,
+so the same experiment now measures 545ms against 12.054s for one stale holder.
+The `chunkPlan` dispatch test stays, with its claim inverted: it pins that a
+ghost absorbs ONE dispatch, not `providerFailureLimit`.
 
 **Two existing tests failed on the change and both were fixtures, not
 regressions** — worth recording because it is the trap in this area.
@@ -1734,7 +1774,7 @@ the doc has been renumbered since (former questions 1–4 were settled) and it i
 now **question 1**. One-word fix, deliberately not made here — noted so the next
 reader does not chase it.
 
-## Federation — a lying manifest retires every honest holder (2026-08-09)
+## Federation — a lying manifest retires every honest holder (2026-08-09) — **FIXED 2026-08-12**
 
 **Found by reading, not by observation — unreproduced, and deliberately not
 fixed.** Raised by the owner's question "can the downloader be sure both seeders
@@ -1798,10 +1838,40 @@ rewriting (see §Distribution "Making it a swarm", item 3):
   fail against one manifest, suspect the manifest rather than condemning the
   senders.
 
-**Not fixed now**, per the standing rule: this is a mechanism found by reading,
-and no failure has been observed. The write-up exists so that item 3 arrives
-already knowing, and so the next person to read `fail()`'s confident comment
-about bad bytes sees the assumption it rests on.
+**Not fixed at the time**, per the standing rule: this was a mechanism found by
+reading, and no failure had been observed. The write-up existed so that item 3
+would arrive already knowing, and so the next person to read `fail()`'s confident
+comment about bad bytes would see the assumption it rests on.
+
+### Fixed, 2026-08-12, with item 3 as planned
+
+Both halves, in `federation/swarm.go` and `federation/scheduler.go`:
+
+- `fetchAgreedManifest` probes holders in parallel and takes the manifest **two
+  of them describe the same way**, returning on the second vote rather than
+  waiting out the slowest probe. Two edges decided the shape. **Agreement
+  excludes the filename** — the library seeder knows the blob by name, a node
+  that fetched it has it under its hash, and reading that as disagreement would
+  make every mixed swarm look like a lie. And **a sole voice is believed**,
+  because a partial holder cannot build a manifest at all (`buildManifest` reads
+  the whole file), so a swarm of one complete holder and several partials has
+  exactly one voice by construction; refusing it would have refused F9 item 1.
+  Two holders answering *differently* with no majority ends the swarm attempt
+  rather than picking a side.
+- `fail()` no longer condemns the second sender. A corrupt chunk from a **second
+  distinct holder** means the reference they were both judged against is the
+  likelier liar: the attempt ends with `errManifestSuspect`, the holder retired
+  for the first corrupt chunk is **reinstated** (including in the readout, or it
+  reports an honest node as dropped for bytes it never got wrong), and the
+  whole-file fallback takes over carrying the content hash as its own reference.
+
+Tests: `TestAgreedManifestNeedsASecondOpinion` (all three outcomes, mesh stubbed
+out — the rule is what is under test), `TestManifestAgreementIgnoresTheHoldersOwnName`
+and `TestBlameFallsOnTheReferenceWhenHoldersDisagreeWithIt`.
+
+Still unreproduced, and still nobody's observed failure — what changed is that
+the fix rode along in code being rewritten anyway, which is the condition this
+entry set for itself.
 
 **F10 (merkle verification) is NOT the answer to this**, and the parked design
 record says so explicitly. A merkle root would arrive in the catalog, from a

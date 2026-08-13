@@ -690,7 +690,16 @@ size. Two separate causes, and only one of them is a defect:
   200-not-404 precisely so the caller can fall back to the relay in milliseconds
   rather than learn it from a list of corpses. A client is still right to bound
   how long it waits — a node can die between the plan being issued and the fetch
-  running, and that case costs `PerChunk` per dispatch as before.
+  running — but that case stopped being expensive on **2026-08-12** (F9 item 3):
+  the dial has its own five-second deadline instead of falling through to the
+  per-chunk backstop, and dispatch goes to whoever has the fewest bytes
+  outstanding, so a holder that is not delivering is passed over rather than
+  handed a quarter of the transfer. The same experiment re-run before and after
+  the change **in one session, so the two columns are comparable** (the 72 ms
+  above came from a different day and is not the baseline for these): one stale
+  holder **12.054 s → 545 ms**, two **18.064 s → 1.069 s**, all three live
+  **1.299 s → 103 ms**. The remaining reason to bound the wait is the route, not
+  the plan.
 - **The remainder is the route.** With one live holder and no stale ones the
   transfer is clean — zero stalls, zero retries, every chunk from that holder —
   and still only 105–170 KB/s, because those bytes cross the yggdrasil overlay

@@ -30,8 +30,10 @@ import (
 // derived from it. The manifest carries the per-chunk hashes explicitly; they
 // enable early per-chunk verification and bad-chunk re-fetch across sources,
 // while the assembled whole-file hash stays the authoritative anchor (verified
-// before a blob enters the cache). Manifests come from trusted friends and a
-// lie only wastes bandwidth (caught by the whole-file check).
+// before a blob enters the cache). A lying manifest therefore costs bandwidth
+// and a failed transfer, never the wrong file — and since F9 item 3 a manifest
+// is only believed when two holders describe the blob the same way, because F7
+// widened the swarm from "holders an admin picked" to the whole community.
 
 const (
 	// Adaptive chunk sizing: the bulk chunk size scales with the file so a small

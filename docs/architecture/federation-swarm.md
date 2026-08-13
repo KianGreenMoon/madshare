@@ -6,10 +6,10 @@
 > operator's view of live transfers is [`swarm-admin.md`](swarm-admin.md).
 >
 > **Status:** F3 (direct transfer) and F4 (multi-source chunk fetch) are built, as
-> are the F7 per-member quotas and F9 items 1–2 (partial seeding, holdings
-> announce). F9 items 3 (a scheduler that is not speed-blind) and 4 (pipelining
-> and endgame) are designed and **not built**. F10 (merkle verification) is
-> decided and parked behind two triggers.
+> are the F7 per-member quotas and F9 items 1–3 (partial seeding, holdings
+> announce, the scheduler). F9 item 4 (pipelining and endgame) is designed and
+> **not built**. F10 (merkle verification) is decided and parked behind two
+> triggers.
 
 ## Direct transfer (F3, built)
 
@@ -93,10 +93,14 @@
   hashes are not cryptographically bound to it; they enable **early per-chunk
   verification and bad-chunk re-fetch**, while the **assembled whole-file hash
   remains the authoritative anchor** (verified before a blob enters the cache).
-  Manifests from friends are cross-checkable and a lie only wastes bandwidth
-  (caught by the whole-file check) — acceptable because every holder is
-  trusted. Chunks are fetched with plain HTTP Range requests (the F3 blob
-  endpoint already serves them).
+  A lying manifest therefore costs bandwidth and a failed transfer, never the
+  wrong file. F4 accepted that on the grounds that "every holder is trusted",
+  which was written when the swarm was direct friends only; **F7 widened it to
+  the whole community and the sentence did not move with it**, so since F9 item 3
+  a manifest is taken only when **two holders describe the blob the same way**
+  (`fetchAgreedManifest`) and a chunk that fails against it no longer condemns
+  its sender on the word of whoever supplied the reference. Chunks are fetched
+  with plain HTTP Range requests (the F3 blob endpoint already serves them).
 - **Multi-source fetch, sequential-priority + seek** (built F4): chunks are
   dispatched lowest-index-first (so the streaming prefix grows in order) but
   fetched by a small worker pool **in parallel across all advertising holders**.
@@ -271,7 +275,7 @@ here would have been guesses of the same quality as `discovery_budget`
 (`federation.md` §Open questions) with worse failure modes when wrong. The
 knobs exist and are documented; choosing them is an operator's call.
 
-### Making it a swarm (F9, designed 2026-08-09; items 1–2 built the same day, 3–4 open)
+### Making it a swarm (F9, designed 2026-08-09; items 1–2 built the same day, item 3 on 2026-08-12, item 4 open)
 
 F4 parallelises a fetch across holders. It does not make the swarm *grow*: every
 downloader is a pure leech until it finishes, so ten nodes pulling a new track
@@ -368,14 +372,16 @@ Three decisions taken during the build are worth keeping:
   fast refusal from a live node, which is nothing like the connect timeout a
   genuinely dead holder costs (that being the whole lesson of the stale-holder
   fix). Ranking complete holders above partial ones is item 3's business, and
-  that is where the column belongs if it is ever wanted.
+  that is where the column belongs if it is ever wanted. *(It never was: item 3
+  asks `/have` and gets a live answer, so the distinction is never persisted.)*
 - **The fetcher does not call `/have` yet, and the endpoint ships anyway.** The
   lazy path — dispatch, take a 416, move on — gets nearly all the benefit
   for a fraction of the code, and the eager path (consult `/have`, dispatch only
   covered chunks) is pair-selection, which is item 3's rewrite. Shipping the
   server half early is not premature here but the opposite: **a federated
   protocol endpoint has to exist on the network before the code that depends on
-  it**, or item 3 can only use it against nodes upgraded after item 3.
+  it**, or item 3 can only use it against nodes upgraded after item 3. *(Item 3
+  now calls it, three days later — and this is why it can expect an answer.)*
 
 **Three decisions this must settle.**
 
@@ -484,74 +490,131 @@ Relationship to the Build plan's deferred *"announce/gossip of catalog deltas"*:
 gossiping a small one — and the discovery-speed question in
 `.issues/open-issues.md` (2026-08-09) argues they should be decided together.
 
-#### Item 3 — A scheduler that is not speed-blind
+#### Item 3 — A scheduler that is not speed-blind (built 2026-08-12)
 
 **The defect**, open since 2026-07-24 and re-verified 2026-08-07:
-`chunkPlan.pickProvider` is plain round-robin with no throughput input, so a
-slow holder keeps taking half the dispatches and is discovered only by burning
+`chunkPlan.pickProvider` was plain round-robin with no throughput input, so a
+slow holder kept taking half the dispatches and was discovered only by burning
 `Timeouts.PerChunk` repeatedly. The 2026-08-09 measurement put a number on the
 worst case: **one dead holder in a plan cost ~150× the entire clean fetch**,
 and that is `PerChunk` (2 min), not `ChunkStall` (20 s), because a dead holder
 never connects and the idle-read watchdog is never armed.
 
-**Item 1 forces this change regardless.** With partial holders, "pick a
+**Item 1 forced this change regardless.** With partial holders, "pick a
 provider, then a chunk" is simply wrong — not every holder can serve every
-chunk. The scheduler must select the *pair*. That is why 1 and 3 are one job:
-committing to a dispatch shape twice would be the waste.
+chunk. The scheduler selects the *pair*. That is why 1 and 3 were one job:
+committing to a dispatch shape twice would have been the waste.
 
-**What to measure** — four inputs, three of them nearly free:
+**What it measures** — the four inputs the design named, all four built:
 
-1. **Per-provider throughput**, EWMA over completed chunks.
-   `ProviderStats.Bytes` already accumulates; it has no time dimension. Bracket
-   `fetchChunk` and it is done.
-2. **In-flight bytes per provider** — not tracked at all today, and the input
-   that turns a rate estimate into a scheduling decision. Recommend dispatching
-   to **fewest outstanding bytes**: simpler than weighted random,
-   self-correcting, and it needs no decay constant anyone would have to guess.
-3. **A connect deadline split out of `PerChunk`** — on the order of 5 s.
-   "Never connected" and "connected then slow" are different diagnoses sharing
-   one two-minute budget today. This alone removes most of the dead-holder cost.
-4. **429 as timed backoff, never as slowness.** F7 quotas mean a holder can
-   refuse *deliberately*, and the swarm is documented to read that as "ask
-   another holder". A throughput-weighted scheduler that reads a quota refusal
-   as slowness would starve a busy-but-fast peer by the very mechanism meant to
-   find fast peers.
+1. **Per-provider throughput**, EWMA over completed chunks (`ProviderStats.Rate`;
+   `Bytes` accumulated but had no time dimension). The clock brackets
+   `fetchChunk` alone, so it is a throughput sample and not a queueing one.
+2. **In-flight bytes per provider**, and dispatch goes to the **fewest**. This is
+   the whole scheduler: a holder that is not delivering keeps its dispatches, so
+   its outstanding total stays high and it stops being chosen — no timeout has
+   to expire and nobody has to decide it is slow.
+3. **`Timeouts.Connect`, 5 s**, bounding the dial alone. "Never connected" and
+   "connected then slow" were sharing one two-minute budget, and only the second
+   deserves it. As predicted, this alone removes most of the dead-holder cost.
+4. **429 as timed backoff** (`errChunkBusy`), never as slowness or as a failure.
 
-**`worseThanPeers` must be reworked in the same commit.** `swarm.go` documents
-the coupling in its own comment: the rule reads a 0-failure streak as "this peer
-is doing fine", which is only sound because round-robin guarantees every live
-holder is handed work. Under speed-aware dispatch a deprioritised holder holds a
-0 streak without having earned it, and the benchmark silently stops meaning
-anything. The fix is to exclude holders not tried within a recent window when
-computing `best`.
+**Three things the design did not anticipate, decided while building:**
 
-**Two manifest hardenings ride along with the retirement rework** (added
-2026-08-09; the defect is written up in `.issues/open-issues.md`, "a lying
-manifest retires every honest holder"). They belong to item 3 because both live
-in the code it is already rewriting, and because F10 — which would be the
-thorough answer — is parked behind triggers that have not fired.
+- **A failure has to cost a pause**, or fewest-outstanding-bytes inverts. A
+  holder that fails *instantly* has nothing outstanding, so the fastest way to
+  look idle would be to keep refusing, and one broken holder would take every
+  dispatch. Hence `Timeouts.Retry` (500 ms, doubling per consecutive failure,
+  capped) — the same knob a 429 draws on, and what a 416 costs when a partial
+  holder is the only one left to ask.
+- **"Never asked" outranks "fastest"** among idle holders. Ranking by measured
+  throughput alone would let the first holder to be measured keep the work for
+  the whole transfer, because an unmeasured holder can never win a comparison it
+  has no number for. It is one free sample each, not a preference — and a holder
+  that HAS been asked and still has no number is one that only ever failed, so it
+  sinks to the bottom. That is where the two readings of "no rate" stop agreeing,
+  and why the rule is written on `lastTried` rather than on `rate == 0`.
+- **Coverage deprioritises, it does not exclude.** `/have` is probed per holder
+  in the background at plan start (never blocking dispatch — the answer is an
+  optimisation, the first chunk is what a listener is waiting for), and a 416 is
+  remembered. But a partial holder is a GROWING thing, so "does not have chunk 7"
+  is only true until it isn't: when no other holder will take a chunk, the one
+  known to lack it is asked anyway. Being wrong costs one fast refusal; never
+  asking costs a source for the rest of the transfer. This also answers the note
+  left in `syncHoldings` — the store still unions complete and partial holdings
+  under no distinguishing column, because a scheduler that wants to know asks the
+  holder and gets a live answer rather than a fifteen-minute-old one.
 
-- *Cross-check the manifest.* `fetchAnyManifest` takes the **first** valid
-  manifest offered, and `valid()` only checks structural soundness. Requiring
-  two holders to agree catches a single liar for almost nothing: manifests are
-  small and already memoized. It does not catch collusion, and is not meant to.
-- *Attribute blame correctly.* `fail()` treats `errChunkCorrupt` as unambiguous
-  evidence and retires the chunk's **sender** immediately, bypassing the
-  relative rule. But the accusation comes from the **manifest's** sender, and
-  those are different nodes — so one lying manifest retires every honest
-  holder in the swarm. When chunks from several distinct holders all fail
-  against one manifest, the manifest is the more likely liar and the senders
-  should not be condemned.
+**`worseThanPeers` was reworked in the same commit**, as required. The rule reads
+a 0-failure streak as "this peer is doing fine", which was only sound because
+round-robin guaranteed every live holder was handed work. A holder not asked
+within `Timeouts.PerChunk` — the time one ask may take — is no longer a
+benchmark. Note the direction: excluding it makes retirement *less* aggressive,
+because an idle holder sitting at 0 would otherwise keep the strict absolute rule
+in force against a holder merely having the same bad moment as everybody else.
+
+**Two manifest hardenings rode along with the retirement rework** (the defect is
+written up in `.issues/open-issues.md`, "a lying manifest retires every honest
+holder"). They belong to item 3 because both live in the code it was already
+rewriting, and because F10 — which would be the thorough answer — is parked
+behind triggers that have not fired.
+
+- *Cross-check the manifest.* `fetchAgreedManifest` (was `fetchAnyManifest`,
+  which took the **first** valid answer) probes holders in parallel and takes the
+  manifest **two of them describe the same way**, returning as soon as the second
+  vote lands. Two edges decide the design: **agreement excludes the filename**,
+  because a blob's name is a fact about the holder's copy — the library seeder
+  knows it by name, a node that fetched it has it under its hash — and reading
+  that as disagreement would make every mixed swarm look like a lie; and **a sole
+  voice is believed**, because a partial holder cannot BUILD a manifest
+  (`buildManifest` reads the whole file), so a swarm of one complete holder and
+  several partials has exactly one voice by construction and refusing it would
+  refuse item 1 itself. Two holders answering *differently* with no majority ends
+  the swarm attempt: nothing here can say which is lying, so it gives way to the
+  whole-file path rather than picking a side.
+- *Attribute blame correctly.* A corrupt chunk still retires its sender — no
+  amount of environmental bad luck produces wrong bytes. But a corrupt chunk from
+  a **second distinct holder** says something else: the accusation comes from the
+  MANIFEST's sender and the two are different nodes, so the reference is the
+  likelier liar. The attempt ends with `errManifestSuspect`, the first holder is
+  **reinstated** (in the readout too, or it reports an honest node as dropped for
+  bytes it never got wrong), and the whole-file fallback takes over carrying its
+  own reference.
 
 Neither changes what a completed fetch guarantees — the assembled whole-file
 hash is the anchor and always was, so this is denial-of-service, never
 corruption.
 
-**Rarest-first becomes meaningful here and only here.** With complete holders
-every chunk has identical rarity, which is why F4 has no piece picker. Once item
-1 lands there are genuinely rare chunks. Recommend deferring it to a measurement
-rather than shipping it on principle — the swarms this serves are small, and
-fewest-outstanding-bytes may well be enough.
+**What it cost**, measured on one machine by `TestStaleHoldersCostAFetch` (four
+nodes, 2 MiB, three holders, one of them progressively replaced by a key nothing
+answers to), before and after:
+
+| scenario | before | after |
+|---|---:|---:|
+| 0 stale (3 live) | 1.299s | 103ms |
+| 1 stale (2 live) | 12.054s | 545ms |
+| 2 stale (1 live) | 18.064s | 1.069s |
+| 3 stale (0 live) | 24.004s | 2.002s (fails either way) |
+
+A ghost absorbs **two** dispatches rather than `providerFailureLimit`, run after
+run: one before anybody has delivered anything, and one more when the live
+holders are all loaded and it is briefly the least-loaded thing in the plan. It
+is never retired and does not need to be — it is simply not chosen while anyone
+else is delivering, which is also why the clean case got faster rather than
+paying for the machinery.
+
+**A bug the rewrite surfaced, unrelated to scheduling:** the whole-file fallback
+built its own `http.Client`, which is the one place `WithCapabilityToken` cannot
+reach. A listener node whose only standing is its home server's vouch would have
+been served 404 the moment a fetch fell back to that path — precisely the failure
+§"The household" predicts when a request builder forgets the header, which is why
+the token is presented by a `RoundTripper`. It uses the pooled blob client now.
+
+**Rarest-first remains deferred**, and the measurement to justify it has still
+not been taken. With complete holders every chunk has identical rarity, which is
+why F4 has no piece picker; item 1 creates genuinely rare chunks, but the swarms
+this serves are small and fewest-outstanding-bytes was enough to make every
+scenario above terminate quickly.
 
 #### Item 4 — Pipelining and endgame
 
@@ -563,14 +626,18 @@ full round trip of dead air, and `maxChunkWorkers` caps the parallelism at 8.
   full across the RTT.
 - **Endgame / hedging:** duplicate-request the last few outstanding chunks
   across several holders and take whichever lands first; generalised,
-  re-dispatch any chunk in flight longer than *k* × the median chunk time. This
-  fixes precisely the case the open-issues entry calls unfixable today — *"a
-  holder that is slow but just fast enough to beat `PerChunk` is never retired
-  and keeps taking half the dispatches indefinitely"* — without the scheduler
-  needing to be clever.
+  re-dispatch any chunk in flight longer than *k* × the median chunk time.
+
+  Item 3 took half of what this was for. *"A holder that is slow but just fast
+  enough to beat `PerChunk` keeps taking half the dispatches indefinitely"* is
+  no longer true — outstanding bytes stay high while it dawdles, so it stops
+  being chosen. What item 3 cannot do is get back the chunk **already** in that
+  holder's hands: nothing re-dispatches it, so the transfer's tail is still as
+  slow as its slowest live holder. That is the remaining case, and hedging is
+  still the answer to it.
 
 **Entirely independent of items 1–3**: no protocol change, no new measurement,
-contained in `chunkPlan`. It is the best ratio of speedup to code touched, and
+contained in the scheduler. It is the best ratio of speedup to code touched, and
 it was deliberately **not** pulled forward — owner's call, 2026-08-09 — so
 the sequencing is a decision on record rather than an oversight.
 
@@ -593,13 +660,17 @@ the sequencing is a decision on record rather than an oversight.
 
 In dependency order: **item 4** (standalone, any time) → **item 1** (**built
 2026-08-09**; it carries its own minimum advertisement, so it stood alone) →
-**item 2** (which makes item 1 *timely* rather than possible) → **item 3**.
+**item 2** (**built 2026-08-09**, which makes item 1 *timely* rather than
+possible) → **item 3** (**built 2026-08-12**).
 
-Items 1 and 3 remain one job in the sense that item 3 must not be designed
-before item 1 lands — pair-selection is only meaningful once holders can be
-partial — but item 1 no longer waits on anything. Item 2 without item 1 still
-shortens the path for completed fetches, so the two orderings differ only in how
-fast item 1's payoff arrives.
+Items 1 and 3 were one job in the sense that item 3 must not be designed before
+item 1 lands — pair-selection is only meaningful once holders can be partial —
+but item 1 did not wait on anything. Item 2 without item 1 still shortens the
+path for completed fetches, so the two orderings differ only in how fast item 1's
+payoff arrives.
+
+**Item 4 is what is left**, and it was deliberately not pulled forward (owner's
+call, 2026-08-09) even though nothing depends on it.
 
 No migration was needed: `federation_holdings` and `federation_catalog_sources`
 already carried what item 2 writes.
