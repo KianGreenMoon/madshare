@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // cached writes a blob into the cache directory and indexes it, with an explicit
@@ -226,5 +227,112 @@ func TestSavingThePolicyLeavesTheCeilingAlone(t *testing.T) {
 	got, err := db.GetCacheCeiling(ctx)
 	if err != nil || got == nil || *got != pin {
 		t.Errorf("ceiling after a policy save = %v (%v), want %d", got, err, pin)
+	}
+}
+
+// TestSweepCacheAgeEvictsOnlyWhatIsPastTheWindow: the age rule asks an absolute
+// question, so it must not evict a blob merely for being the coldest — that is
+// the ceiling's job, and it is the one thing the two rules could be confused
+// for.
+func TestSweepCacheAgeEvictsOnlyWhatIsPastTheWindow(t *testing.T) {
+	db := openMem(t)
+	dir := t.TempDir()
+	ctx := context.Background()
+	now := time.Now()
+
+	ancient, stale, recent := hashOf("a"), hashOf("b"), hashOf("c")
+	cached(t, db, dir, ancient, 100, now.Add(-40*24*time.Hour).Unix())
+	cached(t, db, dir, stale, 100, now.Add(-31*24*time.Hour).Unix())
+	cached(t, db, dir, recent, 100, now.Add(-2*24*time.Hour).Unix())
+
+	removed, freed, err := SweepCacheAge(ctx, db, dir, 30, nil)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if removed != 2 || freed != 200 {
+		t.Fatalf("removed=%d freed=%d, want 2 and 200", removed, freed)
+	}
+	for _, gone := range []string{ancient, stale} {
+		if _, err := os.Stat(filepath.Join(dir, gone)); !os.IsNotExist(err) {
+			t.Errorf("a blob unused for more than 30 days survived (%s)", gone[:8])
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, recent)); err != nil {
+		t.Error("a blob used two days ago was evicted by a 30-day rule")
+	}
+	// File first, row second: the index must not keep describing a file that is
+	// gone, or the swarm would go on advertising a blob it cannot serve.
+	if n, _, _ := db.CountMadnetworkCache(ctx, MadnetworkCacheFilter{}); n != 1 {
+		t.Errorf("index rows after the sweep = %d, want 1", n)
+	}
+}
+
+func TestSweepCacheAgeOffKeepsEverything(t *testing.T) {
+	db := openMem(t)
+	dir := t.TempDir()
+	cached(t, db, dir, hashOf("a"), 100, 1000) // 1970: as old as it gets
+
+	for _, days := range []int64{0, -1} {
+		removed, _, err := SweepCacheAge(context.Background(), db, dir, days, nil)
+		if err != nil {
+			t.Fatalf("sweep(%d): %v", days, err)
+		}
+		if removed != 0 {
+			t.Errorf("age=%d evicted %d blob(s); 0 and below are OFF", days, removed)
+		}
+	}
+}
+
+// TestSweepCacheAgeSparesTheTransferInFlight: the same protection the ceiling
+// has, and it must live in one place — a blob a fetch is about to publish is
+// not a retention candidate whichever rule is asking.
+func TestSweepCacheAgeSparesTheTransferInFlight(t *testing.T) {
+	db := openMem(t)
+	dir := t.TempDir()
+	live := hashOf("a")
+	cached(t, db, dir, live, 100, 1000)
+
+	removed, _, err := SweepCacheAge(context.Background(), db, dir, 1, map[string]bool{live: true})
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if removed != 0 {
+		t.Error("evicted a blob a transfer is about to publish, which makes that fetch pointless")
+	}
+	if _, err := os.Stat(filepath.Join(dir, live)); err != nil {
+		t.Error("the in-flight blob's file was removed")
+	}
+}
+
+// TestCacheMaxAgeDaysRoundTrip: the age knob is TWO-valued, which is the one
+// way it differs from the ceiling beside it — there is no config layer beneath
+// it, so unset and 0 mean the same thing and neither needs preserving.
+func TestCacheMaxAgeDaysRoundTrip(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	if got, err := db.GetCacheMaxAgeDays(ctx); err != nil || got != 0 {
+		t.Fatalf("unset age = %d (err %v), want 0 — the shipped default keeps everything", got, err)
+	}
+	if err := db.SetCacheMaxAgeDays(ctx, 30); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := db.GetCacheMaxAgeDays(ctx); err != nil || got != 30 {
+		t.Fatalf("age = %d (err %v), want 30", got, err)
+	}
+	// Off is stored, not deleted: there is nothing above it to fall back to, so
+	// the two states are the same answer and either spelling must read as 0.
+	if err := db.SetCacheMaxAgeDays(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.GetCacheMaxAgeDays(ctx); got != 0 {
+		t.Errorf("age after switching off = %d, want 0", got)
+	}
+	// A negative is an operator saying "off" in a way the number cannot hold.
+	if err := db.SetCacheMaxAgeDays(ctx, -7); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.GetCacheMaxAgeDays(ctx); got != 0 {
+		t.Errorf("age after a negative = %d, want it clamped to 0", got)
 	}
 }

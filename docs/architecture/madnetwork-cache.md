@@ -11,22 +11,20 @@ Two deliverables, deliberately staged:
    surface; occasionally a rescue one (materialize a cached blob into the
    library, or download it to the device).
 2. **The retention daemon** — its **size ceiling is BUILT** (2026-08-08, see
-   §"The retention ceiling"); its age half is designed here and still is not.
-   Shipped **off**, as designed.
+   §"The retention ceiling"), and its **age half since 2026-08-13**. Both ship
+   **off**, as designed.
 
-   The **age** half is still not scheduled (owner decision, 2026-08-08): offered
-   as one shared reaper serving both this cache and the trash quarantine, and put
-   back — not because it is unwanted, but because nothing has been reported as
-   painful, both surfaces already have manual controls, and (the reason specific
-   to *this* half) deleting a cache entry does not only reclaim disk, it
-   **withdraws a seed from the swarm**. See "what makes deletion a real decision"
-   below.
+   The age half was held back on 2026-08-08 (owner decision) because nothing had
+   been reported as painful and — the reason specific to *this* half — deleting a
+   cache entry does not only reclaim disk, it **withdraws a seed from the
+   swarm**. See "what makes deletion a real decision" below. It is on now with
+   that cost written into the settings card's own copy and the default left at 0.
 
-   When it is picked up it should be built as **one mechanism with two
-   consumers**, shared with `gc-model.md`'s trash TTL, so the two policies cannot
-   drift. This doc is where the work is tracked; it is deliberately not carried
-   in `.issues/open-issues.md`, which is for defects and unanswered questions
-   rather than for designed features awaiting their turn.
+   Still **not** shared with `gc-model.md`'s trash TTL: the two want the same
+   "scheduled reaper" harness, and the two policies must not become one setting
+   (trash holds *our* content somebody deleted and may want back; the cache holds
+   *other people's* content we can fetch again). Merging the harness is a
+   refactor waiting for the trash TTL to be built, not a gap in this feature.
 
 Reference for the cache's place in the transfer machinery:
 [`federation-swarm.md`](federation-swarm.md) §Distribution.
@@ -558,15 +556,40 @@ relies on. Every removal is written to the audit log.
 
 ---
 
-## The retention ceiling (built 2026-08-08)
+## The retention ceiling (ceiling built 2026-08-08, age half 2026-08-13)
 
 **Policy: age since last use, plus a size ceiling.** Both apply; either can be
-disabled alone. The **ceiling is built**; the age knob is not.
+disabled alone. Both are now built, and both ship OFF.
 
 - `madnetwork.cache_max_bytes` — while the total exceeds the ceiling, evict
-  least-recently-used first until it fits. **Built.**
+  least-recently-used first until it fits.
 - `madnetwork.cache_max_age_days` — evict entries whose `last_used_at` is older
-  than N days. **Not built.**
+  than N days.
+
+**Age runs first, then the ceiling.** The order is not arbitrary: age asks an
+absolute question ("does anyone here still want this?") while the ceiling asks
+how much room is left, so running the ceiling first would evict by coldness
+blobs the age rule was about to remove anyway — and report the wrong reason for
+it. Each sweep logs its own count, because the two answers lead to different
+knobs. Both evict through one `evictCacheEntry`, so the parts that are about the
+cache rather than about the policy — sparing a hash in `ActiveTransfers()`,
+tolerating one unremovable file, file-then-row order — cannot drift apart.
+
+**The age knob has only TWO layers, deliberately**, where the ceiling has three.
+The placement rule (`swarm-admin.md` §"Which layers a knob gets") says a config
+layer is earned when a deployment without this UI must ship the value — and the
+embedder story on this cache is a *size* (madplayer's 2 GiB), a bound on a
+device's disk that an age cannot express. With no config layer there is no
+"inherit" state to tell apart from 0, so the setting is a plain number, its API
+field is a `*int64` (absent = unchanged, a number = set, 0 = off) rather than a
+`json.RawMessage`, and the count of full three-layer knobs stays at three.
+
+**What `last_used_at` means matters more here than for the ceiling.** It moves
+on LOCAL reads only — a mesh peer pulling from our cache never counts, and
+structurally cannot, since seeding is served in `federation.handleBlob` which
+has no route into `api`. So this rule says *we* stopped using a blob, not that
+nobody wants it, and switching it on can withdraw a seed the community is still
+fetching. That is the operator's call, which is why the default is 0.
 
 **Three layers, exactly like the swarm rate caps** (owner, 2026-08-08) — a
 config default, a runtime override, and an "unset" that means inherit:
@@ -709,10 +732,17 @@ when it happens, and nothing else here.
    ID3v2 tags off the blob, search matches text and hash prefixes, Range requests
    answer 206, removal takes file and row, the guardrail refuses an unqualified
    clear-all, and a restart reaped the abandoned partial by itself.
-5. **Daemon** — later, on its own, once the shape above has lived on a real node
-   for a while.
+5. **Daemon** — ✅ built. The size half 2026-08-08 (hourly goroutine from
+   `app.Start`, re-reading the ceiling each pass), the age half 2026-08-13:
+   `database.SweepCacheAge`, the `madnetwork.cache_max_age_days` setting, its
+   field on the settings card, and both rules applied in the save request as
+   well as on the timer. Tests: the age rule evicts only what is past the window
+   (never merely the coldest — that is the ceiling's job and the one thing the
+   two could be confused for), 0 and below are off, an in-flight transfer is
+   spared, and the setting round-trips including the negative clamp.
 
-Steps 1–4 are the deliverable. Step 5 is scheduled, not promised.
+Steps 1–5 are all built. What is deliberately still not: sharing one reaper
+harness with `gc-model.md`'s trash TTL, which waits for that TTL to exist.
 
 ---
 
@@ -727,7 +757,9 @@ Steps 1–4 are the deliverable. Step 5 is scheduled, not promised.
 | 2026-08-06 | **The staging filename falls back to the file's own container** (`media.Tags.FileType` → extension). | Found by running the offline case rather than reasoning about it. An adopted cache row has no remembered filename, so every upgrading node's whole cache was unmaterializable. Tested end to end against a node with no peers. |
 | 2026-08-06 | **The index self-heals as it is read**, rather than only at startup and Rescan. | Owner asked what happens when files are deleted by the OS. Measured: the swarm was already correct (seeding reads the directory) but the page counted phantom bytes until a restart. Healing on read costs a bounded stat sweep on the listing and nothing at all on the summary, which already reads the directory. |
 | 2026-08-06 | **Daemon evicts by last use + size ceiling**, both off by default. | Owner call. Fetch-date-only eviction deletes the track you replay weekly at the same rate as junk; the ceiling is what makes disk predictable. |
-| 2026-08-08 | **The size half was built**, as a settings-panel control. | Owner call. A ceiling is adjusted while watching a disk fill; a knob needing a config edit and a restart is a knob that stays wrong. The age half stays unbuilt. |
+| 2026-08-08 | **The size half was built**, as a settings-panel control. | Owner call. A ceiling is adjusted while watching a disk fill; a knob needing a config edit and a restart is a knob that stays wrong. |
+| 2026-08-13 | **The age half was built**, and got **two** layers where the ceiling has three. | The placement rule (`swarm-admin.md` §"Which layers a knob gets") answers it: a config layer is earned by a deployment that must ship the value without this UI, and the embedder story on this cache is a SIZE — a bound on a device's disk, which an age cannot express. No config layer means no "inherit" state, so unset and 0 are the same answer and the setting is a plain number. |
+| 2026-08-13 | **Age is swept before the ceiling**, and each logs its own count. | Age asks an absolute question, the ceiling asks how much room is left. The other order evicts by coldness what the age rule was about to take anyway, and then reports the wrong reason — and the reason is what tells an operator which knob to reach for. |
 | 2026-08-08 | **Three layers, not two**: `[federation] cache_max_mb` as the default, a runtime override on the card, and empty = inherit. | Owner call, same day, correcting the settings-only first cut. It is the arrangement the swarm rates already use, and it is what lets an embedder with no TOML file (madplayer, 2 GiB) have a *Default* that means something. |
 | 2026-08-08 | **The sweep goroutine starts unconditionally and re-reads the ceiling**, correcting this doc's own "start only when a knob is non-zero". | Starting conditionally at boot would make switching a *runtime* setting on require a restart — the one property it was made runtime to avoid. An off ceiling costs one settings read an hour. |
 | 2026-08-08 | **An embedder shares the number, not the sweep** (`app.Instance.CacheLimit`/`SetCacheLimit`). | madplayer keeps its own cache of remote audio and enforces the same ceiling over its own directory. One policy number, one enforcer per cache — so the ceiling is per cache, not over their sum. |

@@ -353,6 +353,13 @@ Full three-layer knobs today: **three** — `swarm.up_rate_kib`,
 `swarm.down_rate_kib`, `madnetwork.cache_max_bytes`. A fourth should copy this
 section, not invent a fourth spelling.
 
+The rule has since been applied once and answered *two* layers:
+`madnetwork.cache_max_age_days` (built 2026-08-13) is runtime-only, because the
+config test names no consumer — an embedder's bound on this cache is a size, not
+an age. With no config layer there is nothing to inherit, so unset and 0 are the
+same answer and the setting is a plain number rather than the three-valued
+encoding above. Answering "two" is the rule working, not an exception to it.
+
 ### Making the limiters adjustable
 
 `rateLimiter` gains `setRate(bytesPerSec)`, adjusting rate and burst under its

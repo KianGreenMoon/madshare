@@ -56,13 +56,14 @@ holder with no row at all.
   build.** If yes, the readout/editor belongs on `/admin/swarm` (the lens
   rule: the page that shows the traffic is the page that throttles it).
 
-### 4. Cache retention, the age half
+### 4. Cache retention, the age half  ✅ DONE 2026-08-13
 
-- **Design:** `docs/architecture/madnetwork-cache.md` §"The retention
-  ceiling": `madnetwork.cache_max_age_days` — evict entries whose
-  `last_used_at` is older. The size half shipped 2026-08-08 with the
-  three-layer arrangement; the age half reuses the same sweep and the same
-  settings-card shape. Small, self-contained, no open decisions.
+`madnetwork.cache_max_age_days`, shipped off, swept before the ceiling on the
+same hourly pass and in the same save request. Written up in
+`docs/architecture/madnetwork-cache.md` §"The retention ceiling" + its decision
+log. One thing the plan did not anticipate: the knob got **two** layers, not
+the ceiling's three — the placement rule in `swarm-admin.md` names no config
+consumer for an age, and that section now records the answer.
 
 ### Parked — named triggers, do NOT schedule
 

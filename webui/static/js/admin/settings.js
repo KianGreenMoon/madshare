@@ -147,6 +147,7 @@ const madnetworkDepth       = document.getElementById('madnetworkDefaultDepth');
 const madnetworkServeGuests = document.getElementById('madnetworkServeGuests');
 const madnetworkCacheMax     = document.getElementById('madnetworkCacheMax');
 const madnetworkCacheDefault = document.getElementById('madnetworkCacheDefault');
+const madnetworkCacheMaxAge  = document.getElementById('madnetworkCacheMaxAge');
 
 // The ceiling is stored in BYTES and typed in MiB. Converting at the edge keeps
 // the stored number the one the API and the sweep agree on, rather than a unit
@@ -178,6 +179,14 @@ async function loadMadnetwork() {
       madnetworkCacheMax.value = typeof p.cache_max_bytes === 'number'
         ? String(Math.round(p.cache_max_bytes / MIB))
         : '';
+    }
+    if (madnetworkCacheMaxAge) {
+      // Two-valued, unlike the limit above: there is no configured default under
+      // it, so there is no empty state to preserve — 0 is simply "keep
+      // everything", and that is what a missing field means too.
+      madnetworkCacheMaxAge.value = typeof p.cache_max_age_days === 'number'
+        ? String(p.cache_max_age_days)
+        : '0';
     }
     if (madnetworkCacheDefault) {
       const def = typeof p.cache_default_bytes === 'number' ? p.cache_default_bytes : 0;
@@ -214,6 +223,18 @@ async function saveMadnetwork() {
       cacheField = { cache_max_bytes: Math.round(mib) * MIB };
     }
   }
+  // Two-valued: a number sets it (0 = off), and an unreadable field is omitted
+  // so a typo leaves the policy alone instead of switching it off.
+  let ageField = {};
+  if (madnetworkCacheMaxAge) {
+    const raw = madnetworkCacheMaxAge.value.trim();
+    const days = raw === '' ? 0 : Number(raw);
+    if (!Number.isFinite(days) || days < 0) {
+      toast('The cache age limit must be a whole number of days, 0 to keep everything.', 'error');
+      return;
+    }
+    ageField = { cache_max_age_days: Math.round(days) };
+  }
   try {
     const res = await fetch(`${API}/api/admin/settings/madnetwork`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -225,6 +246,7 @@ async function saveMadnetwork() {
         ...(madnetworkServeGuests ? { serve_guests: madnetworkServeGuests.checked } : {}),
         ...(madnetworkDepth ? { default_share_depth: depthFromSelect(madnetworkDepth.value) } : {}),
         ...cacheField,
+        ...ageField,
       }),
     });
     if (handleAuthError(res)) return;

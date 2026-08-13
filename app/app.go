@@ -284,6 +284,18 @@ func (i *Instance) start(o options) error {
 	return i.startMesh()
 }
 
+// liveTransferHashes names the blobs a fetch is about to publish, which no
+// retention rule may evict.
+func (i *Instance) liveTransferHashes() map[string]bool {
+	live := map[string]bool{}
+	if i.node != nil {
+		for _, t := range i.node.ActiveTransfers() {
+			live[t.Hash] = true
+		}
+	}
+	return live
+}
+
 // cacheRetentionInterval is how often the ceiling is re-applied. A sweep is two
 // indexed queries and some unlinks, so the cadence is set by how long a node may
 // sit over its ceiling rather than by cost.
@@ -293,14 +305,18 @@ const cacheRetentionInterval = time.Hour
 // package's CacheSweeper: the handler that changes the number applies it in the
 // same request, because somebody who has just lowered a ceiling is watching the
 // disk.
-func (i *Instance) sweepCache(ctx context.Context, maxBytes int64) (int, int64, error) {
-	live := map[string]bool{}
-	if i.node != nil {
-		for _, t := range i.node.ActiveTransfers() {
-			live[t.Hash] = true
-		}
+func (i *Instance) sweepCache(ctx context.Context, maxBytes, maxAgeDays int64) (int, int64, error) {
+	live := i.liveTransferHashes()
+	dir := i.cfg.MadnetworkCacheDir()
+	// Age first: it asks an absolute question, and the ceiling then measures what
+	// survived. Running them the other way round would evict by coldness blobs
+	// the age rule was about to remove anyway, and report the wrong reason for it.
+	removed, freed, err := database.SweepCacheAge(ctx, i.db, dir, maxAgeDays, live)
+	if err != nil {
+		return removed, freed, err
 	}
-	return database.SweepCacheCeiling(ctx, i.db, i.cfg.MadnetworkCacheDir(), maxBytes, live)
+	byCeiling, freedByCeiling, err := database.SweepCacheCeiling(ctx, i.db, dir, maxBytes, live)
+	return removed + byCeiling, freed + freedByCeiling, err
 }
 
 // effectiveCacheCeiling is the ceiling actually in force: the runtime override
@@ -311,6 +327,17 @@ func (i *Instance) effectiveCacheCeiling(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	return database.ResolveCacheCeiling(override, i.cfg.CacheDefaultBytes()), nil
+}
+
+// cacheRetention reads both halves of the policy. They are read together
+// because the sweep applies them together, and a partial read would silently
+// disable whichever one failed.
+func (i *Instance) cacheRetention(ctx context.Context) (ceiling, ageDays int64, err error) {
+	if ceiling, err = i.effectiveCacheCeiling(ctx); err != nil {
+		return 0, 0, err
+	}
+	ageDays, err = i.db.GetCacheMaxAgeDays(ctx)
+	return ceiling, ageDays, err
 }
 
 // startCacheRetention runs the ceiling sweep on a timer.
@@ -333,17 +360,27 @@ func (i *Instance) startCacheRetention() {
 			case <-i.ctx.Done():
 				return
 			case <-t.C:
-				ceiling, err := i.effectiveCacheCeiling(i.ctx)
+				ceiling, ageDays, err := i.cacheRetention(i.ctx)
 				if err != nil {
-					i.log.Printf("cache retention: read ceiling: %v", err)
+					i.log.Printf("cache retention: read policy: %v", err)
 					continue
 				}
-				if ceiling <= 0 {
+				if ceiling <= 0 && ageDays <= 0 {
 					continue
 				}
-				removed, freed, err := i.sweepCache(i.ctx, ceiling)
+				// Reported per rule rather than as one number: an operator reading
+				// this line wants to know WHY bytes went, and the two answers lead
+				// to different knobs.
+				byAge, freedByAge, err := database.SweepCacheAge(i.ctx, i.db, i.cfg.MadnetworkCacheDir(), ageDays, i.liveTransferHashes())
 				if err != nil {
-					i.log.Printf("cache retention: %v", err)
+					i.log.Printf("cache retention: age: %v", err)
+				} else if byAge > 0 {
+					i.log.Printf("cache retention: evicted %d blob(s) unused for %d day(s), freed %d bytes",
+						byAge, ageDays, freedByAge)
+				}
+				removed, freed, err := database.SweepCacheCeiling(i.ctx, i.db, i.cfg.MadnetworkCacheDir(), ceiling, i.liveTransferHashes())
+				if err != nil {
+					i.log.Printf("cache retention: ceiling: %v", err)
 				} else if removed > 0 {
 					i.log.Printf("cache retention: evicted %d blob(s) over the %d-byte ceiling, freed %d bytes",
 						removed, ceiling, freed)

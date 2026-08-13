@@ -26,6 +26,7 @@ const (
 	settingMadnetworkPublishFriends  = "madnetwork.publish_friend_list"
 	settingMadnetworkServeGuests     = "madnetwork.serve_guests"
 	settingMadnetworkCacheMaxBytes   = "madnetwork.cache_max_bytes"
+	settingMadnetworkCacheMaxAgeDays = "madnetwork.cache_max_age_days"
 	// The node's two swarm rate caps, in KiB/s (docs/architecture/swarm-admin.md).
 	// Deliberately NOT part of MadnetworkPolicy: that object is written whole by
 	// the settings card, whose handler decodes the seed switches as plain bools
@@ -178,6 +179,34 @@ func ResolveCacheCeiling(override *int64, configDefault int64) int64 {
 		return max(*override, 0)
 	}
 	return max(configDefault, 0)
+}
+
+// GetCacheMaxAgeDays reads the download cache's age policy: evict entries
+// nothing local has read for N days. 0 (the default, and an unset or
+// unreadable key) is OFF.
+//
+// TWO-valued, unlike the ceiling beside it, and the placement rule in
+// docs/architecture/swarm-admin.md §"Which layers a knob gets" is why: a knob
+// earns a config layer when a deployment without this UI must ship the value,
+// and nothing does — the embedder story on this cache is a SIZE (madplayer's
+// 2 GiB), a bound on a device's disk that an age cannot express. With no config
+// layer there is no "inherit" state to tell apart from 0, so unset and 0 are the
+// same thing and the setting is a plain number. A fourth THREE-layer knob should
+// copy that section; this is not one.
+func (db *DB) GetCacheMaxAgeDays(ctx context.Context) (int64, error) {
+	v, err := db.optionalIntSetting(ctx, settingMadnetworkCacheMaxAgeDays)
+	if err != nil || v == nil {
+		return 0, err
+	}
+	return *v, nil
+}
+
+// SetCacheMaxAgeDays writes the age policy; 0 turns it off. Negative clamps to
+// 0 rather than erroring — there is no meaning to give it, and the honest
+// reading of "less than no days" is that the operator wants it off.
+func (db *DB) SetCacheMaxAgeDays(ctx context.Context, days int64) error {
+	d := max(days, 0)
+	return db.setOptionalIntSetting(ctx, settingMadnetworkCacheMaxAgeDays, &d)
 }
 
 // GetMadnetworkPolicy reads the madnetwork settings. Missing keys read as the

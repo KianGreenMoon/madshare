@@ -56,6 +56,11 @@ type ManageStore interface {
 	// (0 meaning "no limit", a real override).
 	GetCacheCeiling(ctx context.Context) (*int64, error)
 	SetCacheCeiling(ctx context.Context, maxBytes *int64) error
+	// The cache's age rule is a plain number beside it (0 = off): with no
+	// config layer there is no "inherit" state to tell apart from zero. See
+	// database.GetCacheMaxAgeDays for why it has none.
+	GetCacheMaxAgeDays(ctx context.Context) (int64, error)
+	SetCacheMaxAgeDays(ctx context.Context, days int64) error
 
 	RecordAudit(ctx context.Context, actorUserID sql.NullInt64, action, target, detail string) error
 }
@@ -380,6 +385,11 @@ func (h *manageHandler) describeCeiling(r *http.Request, out map[string]any) {
 	}
 	out["cache_default_bytes"] = h.cacheDefault
 	out["cache_effective_bytes"] = database.ResolveCacheCeiling(override, h.cacheDefault)
+	if days, err := h.store.GetCacheMaxAgeDays(r.Context()); err != nil {
+		log.Printf("read cache age policy: %v", err)
+	} else {
+		out["cache_max_age_days"] = days
+	}
 }
 
 // setMadnetworkSettings updates the madnetwork download + seeding settings. The
@@ -412,6 +422,10 @@ func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Req
 		// number pins it — including 0, which means "no limit" and is a real
 		// override rather than a synonym for "unset".
 		CacheMaxBytes json.RawMessage `json:"cache_max_bytes"`
+		// The age half is two-valued (0 = off), so a pointer is enough: absent
+		// leaves it alone, a number sets it. There is no third state to spell,
+		// because there is no config layer under it to inherit from.
+		CacheMaxAgeDays *int64 `json:"cache_max_age_days"`
 	}{SeedEnabled: true, SeedCache: true, HideUnavailable: true}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -450,12 +464,23 @@ func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
+	if req.CacheMaxAgeDays != nil && *req.CacheMaxAgeDays < 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "error": "cache_max_age_days must be a count of days ≥ 0 (0 = keep everything)"})
+		return
+	}
 	if err := h.store.SetMadnetworkPolicy(r.Context(), p); err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
 	if changed {
 		if err := h.store.SetCacheCeiling(r.Context(), ceiling); err != nil {
+			http.Error(w, "storage error", http.StatusInternalServerError)
+			return
+		}
+	}
+	if req.CacheMaxAgeDays != nil {
+		if err := h.store.SetCacheMaxAgeDays(r.Context(), *req.CacheMaxAgeDays); err != nil {
 			http.Error(w, "storage error", http.StatusInternalServerError)
 			return
 		}
@@ -468,7 +493,8 @@ func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Req
 			" default_share_depth="+strconv.Itoa(p.DefaultShareDepth)+
 			" serve_guests="+strconv.FormatBool(p.ServeGuests)+
 			" publish_friend_list="+strconv.FormatBool(p.PublishFriendList)+
-			" cache_ceiling="+ceilingLabel(ceiling, changed))
+			" cache_ceiling="+ceilingLabel(ceiling, changed)+
+			" cache_max_age_days="+ageLabel(req.CacheMaxAgeDays))
 
 	resp := map[string]any{
 		"ok":                    true,
@@ -485,7 +511,8 @@ func (h *manageHandler) setMadnetworkSettings(w http.ResponseWriter, r *http.Req
 	// lowered a ceiling is watching the disk, and a number that takes an hour to
 	// mean anything reads as a control that does not work.
 	effective, _ := resp["cache_effective_bytes"].(int64)
-	if removed, freed := h.sweepCache(r.Context(), effective); removed > 0 {
+	ageDays, _ := resp["cache_max_age_days"].(int64)
+	if removed, freed := h.sweepCache(r.Context(), effective, ageDays); removed > 0 {
 		resp["evicted"], resp["freed_bytes"] = removed, freed
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -510,6 +537,19 @@ func (h *manageHandler) ceilingUpdate(w http.ResponseWriter, r *http.Request, ra
 	return &n, true, true
 }
 
+// ageLabel renders an age-policy update for the audit log. An absent field is
+// "unchanged", which is a different thing from 0 ("keep everything") and the
+// log must not blur them.
+func ageLabel(days *int64) string {
+	if days == nil {
+		return "unchanged"
+	}
+	if *days == 0 {
+		return "off"
+	}
+	return strconv.FormatInt(*days, 10)
+}
+
 // ceilingLabel renders a ceiling update for the audit log.
 func ceilingLabel(v *int64, changed bool) string {
 	switch {
@@ -526,15 +566,15 @@ func ceilingLabel(v *int64, changed bool) string {
 // sweepCache applies the ceiling immediately, logging rather than failing: the
 // setting HAS been saved by the time this runs, and reporting a 500 for a
 // housekeeping pass would tell the caller their change did not stick.
-func (h *manageHandler) sweepCache(ctx context.Context, maxBytes int64) (int, int64) {
-	if maxBytes <= 0 || h.sweep == nil {
+func (h *manageHandler) sweepCache(ctx context.Context, maxBytes, maxAgeDays int64) (int, int64) {
+	if (maxBytes <= 0 && maxAgeDays <= 0) || h.sweep == nil {
 		return 0, 0
 	}
-	removed, freed, err := h.sweep(ctx, maxBytes)
+	removed, freed, err := h.sweep(ctx, maxBytes, maxAgeDays)
 	if err != nil {
-		log.Printf("cache ceiling sweep: %v", err)
+		log.Printf("cache retention sweep: %v", err)
 	} else if removed > 0 {
-		log.Printf("cache ceiling: evicted %d blob(s), freed %d bytes", removed, freed)
+		log.Printf("cache retention: evicted %d blob(s), freed %d bytes", removed, freed)
 	}
 	return removed, freed
 }

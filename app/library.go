@@ -143,11 +143,11 @@ func (i *Instance) SetCacheCeiling(ctx context.Context, maxBytes *int64) error {
 	if err := i.db.SetCacheCeiling(ctx, maxBytes); err != nil {
 		return err
 	}
-	effective, err := i.effectiveCacheCeiling(ctx)
+	ceiling, ageDays, err := i.cacheRetention(ctx)
 	if err != nil {
 		return err
 	}
-	if _, _, err := i.sweepCache(ctx, effective); err != nil {
+	if _, _, err := i.sweepCache(ctx, ceiling, ageDays); err != nil {
 		i.log.Printf("cache ceiling sweep: %v", err)
 	}
 	return nil

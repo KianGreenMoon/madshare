@@ -158,6 +158,20 @@
         you upgraded. Nothing here is lost for good, since what the swarm fetched
         can be fetched again while a holder remains.
       </p>
+      <label class="rec-access-field">Delete cached tracks unused for
+        <input type="number" id="madnetworkCacheMaxAge" min="0" step="1" inputmode="numeric"
+               placeholder="0" aria-describedby="madnetworkCacheMaxAgeHint">
+      </label>
+      <p class="section-copy" id="madnetworkCacheMaxAgeHint">
+        In <strong>days</strong>, and <strong>0 (the default) keeps everything</strong>.
+        The clock is the last time <em>this server</em> played or downloaded the blob
+        &mdash; another node fetching it from us does not count &mdash; so this rule
+        means &ldquo;we have stopped using it&rdquo;, not &ldquo;nobody wants it&rdquo;.
+        It runs beside the limit above rather than instead of it: age goes first,
+        then the limit takes the coldest of what is left. Deleting an entry also
+        withdraws it as a seed for the madnetwork, which is why neither rule is on
+        until you turn it on.
+      </p>
       <p class="section-copy">
         The outbound seeding rate cap is a server setting
         (<code>[federation] seed_rate_kib</code>); leave it at 0 for unlimited.
