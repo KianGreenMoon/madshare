@@ -38,8 +38,11 @@ const shareDepthClause = `COALESCE(r.share_depth, ?) >= ?`
 // An audience that is served nothing (the zero value — an outsider, or a
 // resolution that failed) yields a constant-false predicate and binds no
 // parameters. This is the SQL half of [federation.Class]'s fail-closed zero
-// value: without it a bare Audience{} reads as distance 0, which is a *direct
-// friend*, so the widest audience in the system would be the one nobody set.
+// value. When Distance was a stored field a bare Audience{} read as distance 0
+// — a *direct friend*, the widest audience in the system — so this guard was
+// the only thing standing; the derived Distance() now answers beyond every
+// legal depth for an outsider, but the constant-false clause stays as the
+// first layer, because it also skips the depth arithmetic entirely.
 func audienceClause(aud federation.Audience) string {
 	if !aud.Serves() {
 		return `0`
@@ -59,7 +62,7 @@ func scopeArgs(defaultDepth int, aud federation.Audience) []any {
 	if !aud.Serves() {
 		return nil
 	}
-	return []any{defaultDepth, aud.Distance}
+	return []any{defaultDepth, aud.Distance()}
 }
 
 // nodeDefaultDepth reads the node-level sharing scope every recording without an
@@ -151,7 +154,6 @@ func (db *DB) PeerAudience(ctx context.Context, peerID int64) (federation.Audien
 	// *who it is*, so a guest-limited friend keeps the swarm and the catalog.
 	return federation.Audience{
 		Class:     federation.ClassFriend,
-		Distance:  federation.DepthFriends,
 		GuestOnly: !full,
 	}, nil
 }

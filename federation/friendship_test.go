@@ -91,7 +91,7 @@ func (m *memStore) inScope(e CatalogEntry, aud Audience) bool {
 	if !ok {
 		depth = DepthUnlimited
 	}
-	if depth < aud.Distance {
+	if depth < aud.Distance() {
 		return false
 	}
 	return !aud.GuestOnly || e.GuestPlayable

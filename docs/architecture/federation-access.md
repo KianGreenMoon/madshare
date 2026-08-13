@@ -642,18 +642,20 @@ is what the audience *is* — not something a caller derives from loose fields:
 
 | class | resolved from | scope predicate |
 |---|---|---|
-| **friend** | a `state='friend'` peer row for the connection's key | `Distance: DepthFriends` → everything except Local |
-| **member** | the key is a member of our community (§The membership rule) | `Distance: DepthUnlimited` → Madnetwork, which is the default scope |
+| **friend** | a `state='friend'` peer row for the connection's key | `Distance() = DepthFriends` → everything except Local |
+| **member** | the key is a member of our community (§The membership rule) | `Distance() = DepthUnlimited` → Madnetwork, which is the default scope |
 | **guest** | anything else — any node we cannot place in our community | nothing, unless the node opts in to serving guest-playable |
 
-Built 2026-07-31 (`federation/federation.go`):
+Built 2026-07-31 (`federation/federation.go`); `Distance` became a derived
+method 2026-08-13 — the class→distance pairing never varies, and a stored field
+allowed constructing audiences whose two halves disagreed:
 
 ```go
 type Audience struct {
     Class     Class // outsider (zero value) | guest | member | friend
-    Distance  int   // the reach the class earns, compared against the scope
     GuestOnly bool  // a friend demoted by the user mapping, while it exists
 }
+func (a Audience) Distance() int // the reach the class earns, compared against the scope
 ```
 
 Four constants rather than the three classes above, because "outsider" and

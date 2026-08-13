@@ -187,7 +187,7 @@ func TestGuestOnlyFriendSeesGuestContentOnly(t *testing.T) {
 		t.Fatalf("look up peer B on A: %v", err)
 	}
 	storeA.mu.Lock()
-	storeA.audiences[p.ID] = Audience{Class: ClassFriend, Distance: DepthFriends, GuestOnly: true}
+	storeA.audiences[p.ID] = Audience{Class: ClassFriend, GuestOnly: true}
 	storeA.mu.Unlock()
 
 	msg := fetchCatalog(t, a, b)
@@ -253,7 +253,7 @@ func TestGuestOnlyFriendIsNotServedCacheBlobs(t *testing.T) {
 		t.Fatalf("look up peer B on A: %v", err)
 	}
 	storeA.mu.Lock()
-	storeA.audiences[p.ID] = Audience{Class: ClassFriend, Distance: DepthFriends, GuestOnly: true}
+	storeA.audiences[p.ID] = Audience{Class: ClassFriend, GuestOnly: true}
 	storeA.mu.Unlock()
 
 	if got := blobStatus(t, a, b, cached); got != http.StatusNotFound {

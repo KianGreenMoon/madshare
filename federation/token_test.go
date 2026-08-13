@@ -45,8 +45,8 @@ func TestCapabilityTokenRoundTrip(t *testing.T) {
 		t.Error("a token buys membership, never friendship: content restricted to " +
 			"hand-picked nodes must not follow a device its admin never picked")
 	}
-	if aud.Distance != DepthUnlimited {
-		t.Errorf("Distance = %d, want DepthUnlimited", aud.Distance)
+	if aud.Distance() != DepthUnlimited {
+		t.Errorf("Distance = %d, want DepthUnlimited", aud.Distance())
 	}
 	if aud.GuestOnly {
 		t.Error("an unrestricted account's token must not be guest-limited")

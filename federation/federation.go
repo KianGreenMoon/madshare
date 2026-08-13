@@ -158,25 +158,44 @@ const (
 // node must never advertise what it would not serve, so both halves read one
 // rule.
 //
-// Class and Distance answer different questions and both are needed. Class is
-// *who is asking*, and it gates the endpoints: whether this requester may pull a
-// catalog at all, whether it may be served a cache blob. Distance is *how far
-// away they are*, and it meets each recording's share depth in SQL
-// (`COALESCE(r.share_depth, default) >= Distance`) — DepthFriends for a direct
-// friend, DepthUnlimited for anyone further out, which yields exactly the
-// recordings marked Madnetwork and nothing else.
+// Class and [Audience.Distance] answer different questions and both are needed.
+// Class is *who is asking*, and it gates the endpoints: whether this requester
+// may pull a catalog at all, whether it may be served a cache blob. Distance is
+// *how far away they are*, and it meets each recording's share depth in SQL —
+// but it is derived from the class rather than carried beside it, because the
+// pairing never varies and a stored field allowed constructing audiences whose
+// two halves disagreed (a ClassFriend at DepthUnlimited would have silently
+// widened, unnoticed by every predicate).
 type Audience struct {
 	// Class is the mesh principal this request resolved to. The zero value
 	// ([ClassOutsider]) is served nothing.
 	Class Class
-	// Distance is the reach the requester's class earns: DepthFriends (0) for a
-	// direct friend, DepthUnlimited for a member or a guest, since a scope is a
-	// statement about *whom* rather than about hop counts.
-	Distance int
 	// GuestOnly limits the audience to guest-accessible recordings (the
 	// guest-playable / license policy). True for a friend mapped to a local
 	// account without content.access, and for [ClassGuest].
 	GuestOnly bool
+}
+
+// Distance is the reach the requester's class earns, met against each
+// recording's share depth in SQL (`COALESCE(r.share_depth, default) >=
+// Distance`): DepthFriends (0) for a direct friend — which reaches both the
+// Direct-friends and Madnetwork scopes — and DepthUnlimited for a member or a
+// guest, which yields exactly the recordings marked Madnetwork and nothing
+// else. A scope is a statement about *whom*, never about hop counts, and a
+// stranger must never outrank a member.
+//
+// An outsider's distance lies beyond every legal depth, so even a caller that
+// forgot to check Serves() first selects nothing — the same fail-closed
+// posture as the zero-value class, held on the second axis.
+func (a Audience) Distance() int {
+	switch a.Class {
+	case ClassFriend:
+		return DepthFriends
+	case ClassMember, ClassGuest:
+		return DepthUnlimited
+	default:
+		return DepthUnlimited + 1
+	}
 }
 
 // Serves reports whether this audience is answered at all. False for an
@@ -216,13 +235,14 @@ func (a Audience) ServesCache() bool { return a.InCommunity() && !a.GuestOnly }
 // FriendAudience is the audience of an unmapped direct friend: the default
 // regular-user identity, which sees the whole published set
 // (docs/architecture/federation-access.md §Principals & access).
-var FriendAudience = Audience{Class: ClassFriend, Distance: DepthFriends}
+var FriendAudience = Audience{Class: ClassFriend}
 
 // MemberAudience is the audience of a node in our community that is not a direct
-// friend (F7). Distance [DepthUnlimited] is what makes the F5 depth predicate
-// select exactly the recordings marked Madnetwork — no new clause, no new
-// column: the tier that needs no credential was always expressible as a reach.
-var MemberAudience = Audience{Class: ClassMember, Distance: DepthUnlimited}
+// friend (F7). Its [DepthUnlimited] distance is what makes the F5 depth
+// predicate select exactly the recordings marked Madnetwork — no new clause, no
+// new column: the tier that needs no credential was always expressible as a
+// reach.
+var MemberAudience = Audience{Class: ClassMember}
 
 // GuestAudience is the audience of a node outside our community, on the node
 // that opted to answer them: guest-playable content within the Madnetwork scope,
@@ -231,7 +251,7 @@ var MemberAudience = Audience{Class: ClassMember, Distance: DepthUnlimited}
 // Its distance is DepthUnlimited rather than F5's 0, so an outsider can never be
 // served something an admin restricted to direct friends — a stranger must never
 // outrank a member.
-var GuestAudience = Audience{Class: ClassGuest, Distance: DepthUnlimited, GuestOnly: true}
+var GuestAudience = Audience{Class: ClassGuest, GuestOnly: true}
 
 // SeedPolicy is the node-level answer to "what do we serve over the swarm"
 // (runtime settings, /admin/settings). The two seeding switches are F4's; Guests
