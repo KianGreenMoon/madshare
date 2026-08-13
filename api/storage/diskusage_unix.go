@@ -52,7 +52,9 @@ func diskUsage(path string) (total, free, used uint64, err error) {
 
 // statCount is the set of types the various platforms give the statfs block
 // counters and block size.
-type statCount interface{ ~int32 | ~uint32 | ~int64 | ~uint64 }
+type statCount interface {
+	~int32 | ~uint32 | ~int64 | ~uint64
+}
 
 // blocks64 widens a statfs counter to uint64, treating a negative value as zero.
 func blocks64[T statCount](v T) uint64 {

@@ -119,9 +119,9 @@ func (h *handler) createPlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name      string                     `json:"name"`
-		TagsetIDs []int64                    `json:"tagset_ids"`
-		Remote    []database.RemoteTrackRef  `json:"remote"`
+		Name      string                    `json:"name"`
+		TagsetIDs []int64                   `json:"tagset_ids"`
+		Remote    []database.RemoteTrackRef `json:"remote"`
 	}
 	if !decodePlaylistBody(w, r, &body) {
 		return
@@ -301,8 +301,8 @@ func (h *handler) addPlaylistItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		TagsetIDs []int64                    `json:"tagset_ids"`
-		Remote    []database.RemoteTrackRef  `json:"remote"`
+		TagsetIDs []int64                   `json:"tagset_ids"`
+		Remote    []database.RemoteTrackRef `json:"remote"`
 	}
 	if !decodePlaylistBody(w, r, &body) {
 		return

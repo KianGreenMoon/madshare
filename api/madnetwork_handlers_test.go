@@ -18,15 +18,15 @@ type fakeMadnetwork struct {
 	rows       []*database.MadnetworkTrackRow
 	ownRows    []*database.MadnetworkTrackRow
 	artists    []*database.MadnetworkArtist
-	lanes      map[string][]*database.LaneCandidate // per-lane ranked candidates
-	lastView   database.MadnetworkView              // captured by MadnetworkSummary for assertions
-	trackView  database.MadnetworkView              // captured by MadnetworkTracks for assertions
-	artistView database.MadnetworkView              // captured by MadnetworkArtists (the ?source= resolution)
-	hideOff    bool                                 // when true, GetMadnetworkPolicy reports hiding disabled
+	lanes      map[string][]*database.LaneCandidate        // per-lane ranked candidates
+	lastView   database.MadnetworkView                     // captured by MadnetworkSummary for assertions
+	trackView  database.MadnetworkView                     // captured by MadnetworkTracks for assertions
+	artistView database.MadnetworkView                     // captured by MadnetworkArtists (the ?source= resolution)
+	hideOff    bool                                        // when true, GetMadnetworkPolicy reports hiding disabled
 	claims     map[string][]*database.MadnetworkCacheClaim // per-hash: what sources currently call it
 	matches    []database.NetworkMatch                     // F8: what the join is to report
-	matchErr   error                                // F8: a cache read that fails must cost only the arm
-	upgrades   []*database.UpgradeRow               // F8 item 3: quality-upgrade findings
+	matchErr   error                                       // F8: a cache read that fails must cost only the arm
+	upgrades   []*database.UpgradeRow                      // F8 item 3: quality-upgrade findings
 	// The node surfaces (docs/ui/madnetwork-nodes.md): the cached sources this
 	// server holds a catalog from, the merged track count the summary reports,
 	// and how many entries our own published set has.
@@ -106,6 +106,7 @@ func (f *fakeMadnetwork) MadnetworkSourceByKey(_ context.Context, key string, _ 
 func (f *fakeMadnetwork) MadnetworkOwnEntries(context.Context, database.MadnetworkView) (int64, error) {
 	return f.ownEntries, nil
 }
+
 // MadnetworkSearchArtists answers from the same seeded list as MadnetworkArtists
 // — the two differ in WHICH buckets qualify, which is SQL the database package
 // pins; here only the cap is observable.

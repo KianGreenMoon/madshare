@@ -177,9 +177,9 @@ type acoustidArtist struct {
 }
 
 type acoustidReleaseGroup struct {
-	Title    string           `json:"title"`
-	Type     string           `json:"type"`
-	Artists  []acoustidArtist `json:"artists"`
+	Title    string            `json:"title"`
+	Type     string            `json:"type"`
+	Artists  []acoustidArtist  `json:"artists"`
 	Releases []acoustidRelease `json:"releases"`
 }
 

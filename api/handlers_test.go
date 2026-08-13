@@ -566,11 +566,11 @@ type fakeRepo struct {
 
 	// Playlist stubs (UI roadmap Phase 5). playlistErr is returned by every
 	// playlist method, so each error branch is one knob away.
-	playlistErr       error
-	playlistList      []*database.Playlist
-	playlistGet       *database.Playlist
-	playlistItems     []*database.PlaylistItemEntry
-	playlistItemFound bool
+	playlistErr          error
+	playlistList         []*database.Playlist
+	playlistGet          *database.Playlist
+	playlistItems        []*database.PlaylistItemEntry
+	playlistItemFound    bool
 	favoriteLiked        bool
 	favoriteTagsetIDs    []int64
 	favoriteRemoteHashes []string

@@ -12,11 +12,11 @@ import (
 // both an online brute-force target and a resource-exhaustion vector (each
 // verify costs ~64 MiB). loginThrottle caps both axes.
 const (
-	loginBurst        = 10            // attempts an idle IP may make immediately
-	loginRefillPerSec = 10.0 / 60.0   // sustained rate: ~10 attempts / minute / IP
-	loginMaxInFlight  = 8             // concurrent password verifications, server-wide
+	loginBurst        = 10          // attempts an idle IP may make immediately
+	loginRefillPerSec = 10.0 / 60.0 // sustained rate: ~10 attempts / minute / IP
+	loginMaxInFlight  = 8           // concurrent password verifications, server-wide
 	bucketIdleTTL     = 10 * time.Minute
-	bucketSweepAt     = 4096          // sweep idle IP buckets once the map grows past this
+	bucketSweepAt     = 4096 // sweep idle IP buckets once the map grows past this
 )
 
 // loginThrottle defends the login endpoint against brute-force and flood
