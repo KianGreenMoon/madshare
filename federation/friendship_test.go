@@ -44,10 +44,9 @@ type memStore struct {
 	serveGuests bool
 
 	// Sharing scope (F5): depths overrides one published entry's share depth by
-	// entry key (absent = the node default, ∞ here); audiences overrides what a
-	// peer resolves to (absent = FriendAudience, the unmapped default).
-	depths    map[string]int
-	audiences map[int64]Audience
+	// entry key (absent = the node default, ∞ here). A peer's guest-only
+	// demotion lives on the peer row itself, as in the real store.
+	depths map[string]int
 
 	// Gossiped graph (F6, methods in gossip_store_test.go): signed records by
 	// origin, for friend lists and distrust lists respectively. silent turns
@@ -74,7 +73,6 @@ func newMemStore() *memStore {
 		seedEnable: true, // seed by default, mirroring the DB defaults
 		seedCache:  true,
 		depths:     map[string]int{},
-		audiences:  map[int64]Audience{},
 		graph:      map[string]*memRecord{},
 		marks:      map[string]*memRecord{},
 	}
@@ -107,17 +105,6 @@ func (m *memStore) PublishedCatalog(_ context.Context, aud Audience) ([]CatalogE
 		}
 	}
 	return out, nil
-}
-
-// PeerAudience returns the peer's configured audience, defaulting to the
-// unmapped friend (the whole published set).
-func (m *memStore) PeerAudience(_ context.Context, peerID int64) (Audience, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if aud, ok := m.audiences[peerID]; ok {
-		return aud, nil
-	}
-	return FriendAudience, nil
 }
 
 func (m *memStore) ReplaceSourceCatalog(_ context.Context, sourceID int64, serial string, syncedAt int64, entries []CatalogEntry) error {
@@ -541,14 +528,14 @@ func (m *memStore) ListClaimReports(context.Context) ([]*ClaimReport, error) { r
 
 func (m *memStore) SetClaimReportDisposition(context.Context, int64, string) error { return nil }
 
-func (m *memStore) SetFederationPeerUser(_ context.Context, id int64, userID *int64) error {
+func (m *memStore) SetFederationPeerGuestOnly(_ context.Context, id int64, guestOnly bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	p, ok := m.peers[id]
 	if !ok {
 		return ErrPeerNotFound
 	}
-	p.UserID = userID
+	p.GuestOnly = guestOnly
 	return nil
 }
 

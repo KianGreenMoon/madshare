@@ -105,14 +105,10 @@
 /* What a node calls itself, shown beside the label we chose for it. Italic so it
    reads as a quotation of the peer's claim rather than as a fact about it. */
 .peer-heard { font-style: italic; }
-.peer-user-select {
-  padding: 0.15rem 0.4rem;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  font-size: 0.82rem;
-}
+/* The guest-only demotion checkbox (replaced the account-mapping select): one
+   flag, inline with the meta line, clickable as a whole label. */
+.peer-guest-label { display: inline-flex; align-items: center; gap: 0.3rem; cursor: pointer; font-size: 0.82rem; }
+.peer-guest-only { accent-color: var(--accent, currentColor); }
 /* What our last pairing attempt did. The whole point is that a pairing which is
    merely WAITING must not read as a fault, so a delivered request is styled as
    progress and only a real failure is coloured as one. */

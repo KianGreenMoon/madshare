@@ -50,7 +50,7 @@ CREATE TABLE federation_nodes (
                  ('pending_outgoing','pending_incoming','friend','blocked')),
     prev_state   TEXT    NOT NULL DEFAULT '',
     label        TEXT    NOT NULL DEFAULT '', -- the admin's local name (was peers.name)
-    user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    guest_only   INTEGER NOT NULL DEFAULT 0,  -- admin demotion to guest-accessible content (047; was user_id)
     trusted_at   INTEGER NOT NULL DEFAULT 0,  -- was peers.created_at
     block_reason TEXT    NOT NULL DEFAULT '',
     blocked_at   INTEGER NOT NULL DEFAULT 0,

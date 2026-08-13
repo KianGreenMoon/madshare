@@ -1,7 +1,7 @@
 // Admin · Network — the madnetwork friendship page (federation F1). Shows this
 // node's identity + exportable node card, imports friends' cards, and manages
-// the trusted-peer list (accept / block / unblock / remove, local label, local
-// user mapping). Gated on federation.manage (the API enforces it). Pairing is
+// the trusted-peer list (accept / block / unblock / remove, local label,
+// guest-only demotion). Gated on federation.manage (the API enforces it). Pairing is
 // asynchronous — the page polls while anything is pending so state flips appear
 // without a reload. Design: docs/architecture/federation-trust.md.
 import { bootAdmin, API, toast, handleAuthError, el } from './shared.js';
@@ -29,7 +29,6 @@ const cfClose   = document.getElementById('cfClose');
 const POLL_MS = 5000;
 let pollTimer = null;
 let ownCard = null;
-let users = null;          // [{id, username}] or null when not loadable (no user.manage)
 let lastPeersJSON = '';    // skip re-render (and select clobbering) when nothing changed
 let reports = [];          // contradicted-claim findings, rendered on the peer they came from (F6)
 
@@ -203,18 +202,6 @@ async function disposeClaim(r, disposition) {
   refresh();
 }
 
-// Users for the mapping dropdown; needs user.manage — degrade to plain text
-// without it.
-async function loadUsers() {
-  try {
-    const res = await fetch(`${API}/api/admin/users`);
-    if (!res.ok) return;
-    const data = await res.json().catch(() => ({}));
-    users = data.users || data || null;
-    if (users && !Array.isArray(users)) users = null;
-  } catch { /* mapping select simply not offered */ }
-}
-
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
 const STATE_LABEL = {
@@ -307,7 +294,7 @@ function renderPeer(p) {
     meta.append(el('span', { class: 'peer-heard', title: 'The name this node gives itself, refreshed on every contact' },
       [`calls itself “${p.heard_name}”`]));
   }
-  meta.append(renderUserMapping(p));
+  meta.append(renderGuestOnly(p));
 
   const actions = el('div', { class: 'peer-actions' });
   if (p.state === 'pending_incoming') {
@@ -370,27 +357,22 @@ function fmtAgo(unix) {
   return new Date(unix * 1000).toLocaleDateString(undefined, { dateStyle: 'medium' });
 }
 
-// Mapping a personal (madplayer) node to a local account: all existing ACLs
-// then apply to its owner. Select needs the users list (user.manage); without
-// it the mapping is shown read-only.
-function renderUserMapping(p) {
-  if (!users) {
-    return el('span', {}, [p.username ? `account: ${p.username}` : '']);
-  }
-  const sel = el('select', { class: 'peer-user-select', title: 'Map this node to a local user account' });
-  sel.append(el('option', { value: '', text: '— no linked account —' }));
-  for (const u of users) {
-    const opt = el('option', { value: String(u.id), text: u.username });
-    if (p.user_id === u.id) opt.selected = true;
-    sel.append(opt);
-  }
-  sel.addEventListener('change', async () => {
-    const userID = sel.value === '' ? null : Number(sel.value);
-    const ok = await patchPeer(p.id, { user_id: userID });
-    if (ok) toast(userID === null ? 'Account link cleared.' : 'Node linked to local account.', 'info');
+// The guest-only demotion (it replaced the old local-account mapping): a
+// demoted friend keeps its standing — the swarm, the catalog — but sees only
+// guest-accessible content, exactly what an anonymous visitor of this server
+// may play.
+function renderGuestOnly(p) {
+  const box = el('input', { type: 'checkbox', class: 'peer-guest-only' });
+  box.checked = !!p.guest_only;
+  box.addEventListener('change', async () => {
+    const next = box.checked;
+    const ok = await patchPeer(p.id, { guest_only: next });
+    if (ok) toast(next ? 'Limited to guest-accessible content.' : 'Serving the full published set again.', 'info');
     refresh();
   });
-  return el('label', {}, ['account: ', sel]);
+  return el('label', { class: 'peer-guest-label',
+    title: 'Serve this node only guest-accessible content (what an anonymous visitor may play)' },
+  [box, ' guest-only']);
 }
 
 // peerLabel is the client half of federation.Peer.Label: the admin's own label
@@ -749,7 +731,6 @@ function confirmModal({ title, bodyNodes, confirmLabel, danger = true }) {
 (async function boot() {
   if (!await bootAdmin({ require: 'federation.manage' })) return;
   if (!await loadStatus()) return;
-  await loadUsers();
   await loadPeers();
   initMap({ onBlockNode: blockMapNode, onFriendNode: friendMapNode, onPullNode: pullMapNode });
   await loadMap();

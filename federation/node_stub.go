@@ -79,7 +79,7 @@ func (n *Node) BlockKey(context.Context, string, string, string) error {
 func (n *Node) UnblockPeer(context.Context, int64) error        { return errCompiledOut }
 func (n *Node) RemovePeer(context.Context, int64) error         { return errCompiledOut }
 func (n *Node) RenamePeer(context.Context, int64, string) error { return errCompiledOut }
-func (n *Node) MapPeerUser(context.Context, int64, *int64) error {
+func (n *Node) SetPeerGuestOnly(context.Context, int64, bool) error {
 	return errCompiledOut
 }
 

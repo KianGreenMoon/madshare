@@ -26,8 +26,8 @@
   appearance on its recording); a staged, trashed, or unknown hash is 404 even
   for a friend. Since F5 that predicate is evaluated **for the requester's
   audience** (`federation-access.md` §Sharing scope): the recording's scope and
-  the per-friend user mapping filter the catalog and the byte endpoints from the
-  same rule. F5 additionally served a guest-accessible recording to any mesh
+  the per-friend guest-only demotion filter the catalog and the byte endpoints
+  from the same rule. F5 additionally served a guest-accessible recording to any mesh
   node (the open swarm); F7 withdraws that and answers a **member** of our
   component with the Madnetwork-scoped set instead.
 - **Fetching** (`federation.Node.EnsureBlob`): one transfer per hash, joined by

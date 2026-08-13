@@ -20,10 +20,9 @@ import (
 // column mapping is: name→label, state→trust_state, created_at→trusted_at.
 
 const peerColumns = `
-	p.id, p.public_key, p.label, p.heard_name, p.trust_state, p.prev_state, p.user_id,
+	p.id, p.public_key, p.label, p.heard_name, p.trust_state, p.prev_state, p.guest_only,
 	p.trusted_at, p.last_seen,
-	p.block_reason, p.blocked_at,
-	COALESCE(u.username, '')`
+	p.block_reason, p.blocked_at`
 
 // peerLabelExpr resolves a node's display name in SQL for the surfaces that
 // only ever show one — the admin's local label if set, else what the node
@@ -35,14 +34,10 @@ func peerLabelExpr(alias string) string {
 
 func scanPeer(row interface{ Scan(...any) error }) (*federation.Peer, error) {
 	var p federation.Peer
-	var userID sql.NullInt64
 	if err := row.Scan(&p.ID, &p.PublicKey, &p.Name, &p.HeardName, &p.State, &p.PrevState,
-		&userID, &p.CreatedAt, &p.LastSeen,
-		&p.BlockReason, &p.BlockedAt, &p.Username); err != nil {
+		&p.GuestOnly, &p.CreatedAt, &p.LastSeen,
+		&p.BlockReason, &p.BlockedAt); err != nil {
 		return nil, err
-	}
-	if userID.Valid {
-		p.UserID = &userID.Int64
 	}
 	return &p, nil
 }
@@ -53,7 +48,6 @@ func (db *DB) ListFederationPeers(ctx context.Context) ([]*federation.Peer, erro
 	rows, err := db.QueryContext(ctx, `
 		SELECT `+peerColumns+`
 		FROM federation_nodes p
-		LEFT JOIN users u ON u.id = p.user_id
 		WHERE p.trust_state IS NOT NULL
 		ORDER BY CASE p.trust_state
 			WHEN 'friend' THEN 0
@@ -85,7 +79,6 @@ func (db *DB) GetFederationPeer(ctx context.Context, id int64) (*federation.Peer
 	p, err := scanPeer(db.QueryRowContext(ctx, `
 		SELECT `+peerColumns+`
 		FROM federation_nodes p
-		LEFT JOIN users u ON u.id = p.user_id
 		WHERE p.id = ? AND p.trust_state IS NOT NULL`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, federation.ErrPeerNotFound
@@ -102,7 +95,6 @@ func (db *DB) GetFederationPeerByKey(ctx context.Context, publicKey string) (*fe
 	p, err := scanPeer(db.QueryRowContext(ctx, `
 		SELECT `+peerColumns+`
 		FROM federation_nodes p
-		LEFT JOIN users u ON u.id = p.user_id
 		WHERE p.public_key = ? AND p.trust_state IS NOT NULL`, publicKey))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, federation.ErrPeerNotFound
@@ -125,7 +117,7 @@ func (db *DB) InsertFederationPeer(ctx context.Context, p *federation.Peer) (int
 	var id int64
 	err := db.QueryRowContext(ctx, `
 		INSERT INTO federation_nodes
-			(public_key, label, heard_name, trust_state, prev_state, user_id,
+			(public_key, label, heard_name, trust_state, prev_state, guest_only,
 			 trusted_at, first_seen, last_seen)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(public_key) DO UPDATE SET
@@ -134,14 +126,14 @@ func (db *DB) InsertFederationPeer(ctx context.Context, p *federation.Peer) (int
 			                   ELSE federation_nodes.heard_name END,
 			trust_state = excluded.trust_state,
 			prev_state  = excluded.prev_state,
-			user_id     = excluded.user_id,
+			guest_only  = excluded.guest_only,
 			trusted_at  = excluded.trusted_at,
 			first_seen  = CASE WHEN federation_nodes.first_seen = 0 THEN excluded.first_seen
 			                   ELSE federation_nodes.first_seen END,
 			last_seen   = MAX(federation_nodes.last_seen, excluded.last_seen)
 		WHERE federation_nodes.trust_state IS NULL
 		RETURNING id`,
-		p.PublicKey, p.Name, p.HeardName, p.State, p.PrevState, nullableID(p.UserID),
+		p.PublicKey, p.Name, p.HeardName, p.State, p.PrevState, p.GuestOnly,
 		p.CreatedAt, p.CreatedAt, p.LastSeen).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, fmt.Errorf("insert federation peer: key already has a trust state")
@@ -206,14 +198,14 @@ func (db *DB) UpdateFederationPeerHeardName(ctx context.Context, id int64, name 
 	return requirePeerRow(res)
 }
 
-// SetFederationPeerUser maps the peer node to a local user account (nil clears
-// the mapping).
-func (db *DB) SetFederationPeerUser(ctx context.Context, id int64, userID *int64) error {
+// SetFederationPeerGuestOnly sets or clears the admin's per-peer demotion
+// (federation.Peer.GuestOnly).
+func (db *DB) SetFederationPeerGuestOnly(ctx context.Context, id int64, guestOnly bool) error {
 	res, err := db.ExecContext(ctx, `
-		UPDATE federation_nodes SET user_id = ?
-		 WHERE id = ? AND trust_state IS NOT NULL`, nullableID(userID), id)
+		UPDATE federation_nodes SET guest_only = ?
+		 WHERE id = ? AND trust_state IS NOT NULL`, guestOnly, id)
 	if err != nil {
-		return fmt.Errorf("update federation peer user: %w", err)
+		return fmt.Errorf("update federation peer guest_only: %w", err)
 	}
 	return requirePeerRow(res)
 }
@@ -244,7 +236,7 @@ func (db *DB) DeleteFederationPeer(ctx context.Context, id int64) error {
 	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx, `
 		UPDATE federation_nodes
-		   SET trust_state = NULL, prev_state = '', label = '', user_id = NULL,
+		   SET trust_state = NULL, prev_state = '', label = '', guest_only = 0,
 		       trusted_at = 0, block_reason = '', blocked_at = 0
 		 WHERE id = ? AND trust_state IS NOT NULL`, id)
 	if err != nil {
@@ -259,13 +251,6 @@ func (db *DB) DeleteFederationPeer(ctx context.Context, id int64) error {
 		return fmt.Errorf("delete federation node row: %w", err)
 	}
 	return tx.Commit()
-}
-
-func nullableID(id *int64) any {
-	if id == nil {
-		return nil
-	}
-	return *id
 }
 
 func requirePeerRow(res sql.Result) error {

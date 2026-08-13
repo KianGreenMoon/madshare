@@ -172,23 +172,22 @@ func TestPrivateDepthHidesFromFriends(t *testing.T) {
 	}
 }
 
-// TestGuestOnlyFriendSeesGuestContentOnly: a friend mapped to a local account
-// without content.access is a guest-only audience — the same catalog and the
-// same bytes an anonymous local visitor gets, no more.
+// TestGuestOnlyFriendSeesGuestContentOnly: a friend the admin demoted
+// (Peer.GuestOnly) is a guest-only audience — the same catalog and the same
+// bytes an anonymous local visitor gets, no more.
 func TestGuestOnlyFriendSeesGuestContentOnly(t *testing.T) {
 	storeA, storeB := newMemStore(), newMemStore()
 	plain, guest, a, b := scopePair(t, storeA, storeB)
 	makeFriends(t, a, b, storeA, storeB)
 
-	// Restrict B on A's side, the way a user mapping to a content.access-less
-	// account does.
+	// Demote B on A's side — the admin's per-peer guest-only flag.
 	p, err := storeA.GetFederationPeerByKey(t.Context(), b.PublicKeyHex())
 	if err != nil {
 		t.Fatalf("look up peer B on A: %v", err)
 	}
-	storeA.mu.Lock()
-	storeA.audiences[p.ID] = Audience{Class: ClassFriend, GuestOnly: true}
-	storeA.mu.Unlock()
+	if err := storeA.SetFederationPeerGuestOnly(t.Context(), p.ID, true); err != nil {
+		t.Fatalf("demote peer B: %v", err)
+	}
 
 	msg := fetchCatalog(t, a, b)
 	if len(msg.Entries) != 1 || msg.Entries[0].Key != "2" {
@@ -225,8 +224,8 @@ func TestGuestOnlyFriendSeesGuestContentOnly(t *testing.T) {
 // else's content with no local recording row, so its guest-playability cannot
 // be evaluated; the conservative reading both of those sites implement is
 // deny. This test pins the third site, seedableBlob's cache branch, to the
-// same rule: a friend demoted by the user mapping gets 404 on a cached hash
-// and on its manifest, exactly as it is told nothing about the cache.
+// same rule: a demoted friend gets 404 on a cached hash and on its manifest,
+// exactly as it is told nothing about the cache.
 func TestGuestOnlyFriendIsNotServedCacheBlobs(t *testing.T) {
 	storeA, storeB := newMemStore(), newMemStore()
 	cacheDir := t.TempDir()
@@ -246,15 +245,15 @@ func TestGuestOnlyFriendIsNotServedCacheBlobs(t *testing.T) {
 		t.Fatalf("full friend fetching a cache blob = %d, want 200", got)
 	}
 
-	// Restrict B on A's side, the way a user mapping to a content.access-less
-	// account does. PeerAudience is read per request, so this lands immediately.
+	// Demote B on A's side. The peer row is read per request, so this lands
+	// immediately.
 	p, err := storeA.GetFederationPeerByKey(t.Context(), b.PublicKeyHex())
 	if err != nil {
 		t.Fatalf("look up peer B on A: %v", err)
 	}
-	storeA.mu.Lock()
-	storeA.audiences[p.ID] = Audience{Class: ClassFriend, GuestOnly: true}
-	storeA.mu.Unlock()
+	if err := storeA.SetFederationPeerGuestOnly(t.Context(), p.ID, true); err != nil {
+		t.Fatalf("demote peer B: %v", err)
+	}
 
 	if got := blobStatus(t, a, b, cached); got != http.StatusNotFound {
 		t.Errorf("guest-only friend fetching a cache blob = %d, want 404 — holdings and partials already refuse this audience", got)

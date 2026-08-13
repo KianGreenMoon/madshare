@@ -125,9 +125,9 @@ type CapabilityToken struct {
 	ExpiresAt int64 `json:"expires_at"`
 	// GuestOnly carries the home server's own ACL outward: true when the account
 	// this token was issued for lacks content.access, so the bearer sees only
-	// guest-playable recordings — the same bit an unmapped friend gets from
-	// PeerAudience. Absent means "a full member", which is the ceiling anyway, so
-	// nothing is gained by stripping it.
+	// guest-playable recordings — the same bit a demoted friend carries on its
+	// peer row ([Peer.GuestOnly]). Absent means "a full member", which is the
+	// ceiling anyway, so nothing is gained by stripping it.
 	GuestOnly bool   `json:"guest_only,omitempty"`
 	Signature string `json:"sig,omitempty"`
 }

@@ -21,10 +21,12 @@ import (
 //     audience iff depth >= the audience's distance, which makes DepthPrivate
 //     (-1) invisible to everyone and DepthUnlimited visible to any reach we ever
 //     grow into.
-//   - guest-only — the per-friend half, resolved from the user mapping: a friend
-//     mapped to a local account without content.access sees exactly what an
-//     anonymous local visitor sees (the guest-playable / license policy), and so
-//     does an outsider on a node that opted to answer guests at all (F7).
+//   - guest-only — the per-friend half, a plain flag on the peer row
+//     (federation.Peer.GuestOnly, set by the admin): a demoted friend sees
+//     exactly what an anonymous local visitor sees (the guest-playable /
+//     license policy), and so does an outsider on a node that opted to answer
+//     guests at all (F7). The audience derives from the row in
+//     federation.serveAudienceKey — no resolver lives here any more.
 
 // shareDepthClause is the depth predicate over the recording aliased `r`. It
 // binds two parameters in order — the node's default depth (for recordings that
@@ -106,56 +108,6 @@ func (db *DB) BlobVisibleTo(ctx context.Context, hash string, aud federation.Aud
 		return false, false, fmt.Errorf("blob visible to audience: %w", err)
 	}
 	return v, true, nil
-}
-
-// PeerAudience resolves a *direct friend* to the audience its requests are
-// answered for: class friend, distance 0 (both scopes — Direct friends and
-// Madnetwork — are served at distance 0), so the interesting half is the user
-// mapping (federation-access.md §Principals & access):
-//
-//	unmapped                     the default regular-user identity: the whole
-//	                             published set. Unmapped is a rule, not a missing
-//	                             row, so it is deliberately not the narrow case.
-//	mapped, has content.access   the same — the mapping confirms rather than limits
-//	mapped, without it           guest-accessible content only, exactly what that
-//	                             account sees when its owner logs in here
-//	mapped to a disabled account guest-only too: disabling an account must cut the
-//	                             friend's reach the same way it cuts the person's
-//
-// A peer id with no row resolves to the outsider audience, which is served
-// nothing — a friendship that vanished between the lookup and here must not
-// leave a wider audience behind. Whether a *stranger* may be served at all is
-// the caller's decision, not this function's.
-func (db *DB) PeerAudience(ctx context.Context, peerID int64) (federation.Audience, error) {
-	var userID sql.NullInt64
-	err := db.QueryRowContext(ctx,
-		`SELECT user_id FROM federation_nodes WHERE id = ? AND trust_state IS NOT NULL`, peerID).Scan(&userID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return federation.Audience{}, nil
-	}
-	if err != nil {
-		return federation.Audience{}, fmt.Errorf("peer audience: %w", err)
-	}
-	if !userID.Valid {
-		return federation.FriendAudience, nil
-	}
-	var full bool
-	err = db.QueryRowContext(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM users u
-			JOIN user_roles ur       ON ur.user_id = u.id
-			JOIN role_permissions rp ON rp.role_id = ur.role_id
-			WHERE u.id = ? AND u.disabled = 0 AND rp.permission = ?
-		)`, userID.Int64, "content.access").Scan(&full)
-	if err != nil {
-		return federation.Audience{}, fmt.Errorf("peer audience permissions: %w", err)
-	}
-	// Still a friend, only a demoted one: the mapping narrows *what* it sees, not
-	// *who it is*, so a guest-limited friend keeps the swarm and the catalog.
-	return federation.Audience{
-		Class:     federation.ClassFriend,
-		GuestOnly: !full,
-	}, nil
 }
 
 // ShareDepthUpdate expresses the three states a share-depth edit can be in,

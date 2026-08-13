@@ -30,7 +30,7 @@ import (
 // handleBlob serves a blob this node holds and will seed to the requester. What
 // it serves is decided by the requester's *audience* (F5, F7): a friend may
 // fetch any blob its own catalog advertises — matching what the catalog and
-// holdings showed it, filtered by scope and the user mapping — a member of our
+// holdings showed it, filtered by scope and its guest-only flag — a member of our
 // community reaches everything scoped Madnetwork, and a node outside the
 // community reaches nothing unless this node opted to answer guests, and then
 // guest-playable content only. Beyond that the seeding gate applies: a published

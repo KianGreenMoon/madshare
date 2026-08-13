@@ -1066,8 +1066,9 @@ func (n *Node) seedableBlob(ctx context.Context, hash string, aud Audience) (str
 // and whether it may be answered at all (F7, §Principals & access). Three
 // classes, resolved in order of how much we know:
 //
-//	a direct friend      its mapped audience — the only class that also reaches
-//	                     what an admin restricted to hand-picked nodes
+//	a direct friend      its audience from the peer row (full, or demoted to
+//	                     guest-only) — the only class that also reaches what an
+//	                     admin restricted to hand-picked nodes
 //	a member             our community, from the mutual-edge walk: the
 //	                     Madnetwork scope, cache blobs included
 //	a listener node      a member's signed vouch for one bearer key (F7 item 9):
@@ -1099,11 +1100,11 @@ func (n *Node) serveAudience(r *http.Request) (Audience, bool) {
 // accounted by its mesh address, which is self-certifying but anonymous.
 func (n *Node) serveAudienceKey(r *http.Request) (Audience, string, bool) {
 	if p := n.peerFromRemote(r); p != nil && p.State == PeerFriend {
-		aud, err := n.store.PeerAudience(r.Context(), p.ID)
-		if err != nil {
-			n.logger.Printf("federation: resolve audience of %q: %v", p.Display(), err)
-			return Audience{}, "", false
-		}
+		// The audience is the peer row: still a friend when demoted, only
+		// narrowed to guest-accessible content — the mapping this flag replaced
+		// narrowed *what* it sees, never *who it is*.
+		aud := FriendAudience
+		aud.GuestOnly = p.GuestOnly
 		return aud, p.PublicKey, true
 	}
 	// Not a friend — but possibly a member. A pending peer takes this path too:

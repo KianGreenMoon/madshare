@@ -133,26 +133,28 @@ declaration above changed none of it:
 
 - **Node-level trust is the default relationship.** A friend node is trusted as
   a unit; its internal user model is its own business.
-- **The node-key → local-user mapping is being removed** (decided 2026-07-26;
-  built and still present — `federation_peers.user_id`, `PeerAudience`, the
-  user-mapping control on `/admin/network`). It let an admin bind a friend
-  node's key to a local account so that node was answered with that account's
-  rights. It came from misreading "authorize the node as a user": the
-  requirement was never *a node acting as an account*, it is the **listener
-  node** below — a person who signs in with credentials, from a device that
-  happens to also be a mesh node. Two consequences to handle when it goes: the
-  `GuestOnly` half of the audience is derived from it today (see the open detail
-  under §Sharing scope), and the removal needs a migration.
-- **Unmapped friends are not a special case** (decided 2026-07-18): a friend
-  node *without* a user mapping is treated as a **default regular-user
-  identity** — it may see and fetch whatever a plain `user`-role local account
-  may. The mapping is the per-friend *override* (more or less than the default),
-  not a prerequisite. Deliberately a rule, not a magic local account row —
-  nothing to log into, rename, or accidentally delete. Since F5 this is enforced
-  as the `GuestOnly` half of the audience (§Sharing scope): unmapped and
-  mapped-with-`content.access` friends see the full published set, a friend
-  mapped to an account without it sees only guest-accessible recordings — in
-  the catalog and at the byte endpoints alike.
+- **The node-key → local-user mapping is REPLACED by a plain per-peer
+  guest-only flag** (decided 2026-07-26, replacement built 2026-08-13,
+  migration 047 — `federation_nodes.guest_only`, `Peer.GuestOnly`, a checkbox
+  on `/admin/network`). The mapping let an admin bind a friend node's key to a
+  local account so that node was answered with that account's rights. It came
+  from misreading "authorize the node as a user": the requirement was never *a
+  node acting as an account*, it is the **listener node** below — a person who
+  signs in with credentials, from a device that happens to also be a mesh
+  node. And since the local model grants either `content.access` or nothing
+  beyond the guest-playable policy, the whole binding ever expressed exactly
+  one bit — which is now the flag itself, set directly. The 047 backfill froze
+  each mapped peer's effective audience (mapped to an active
+  `content.access` holder → full; anything else → demoted); the audience now
+  derives from the peer row in `serveAudienceKey`, with no account lookup.
+- **Undemoted friends are not a special case** (decided 2026-07-18 for the
+  mapping, carried over): a friend node with the flag clear — the default —
+  is a **default regular-user identity** and may see and fetch whatever a
+  plain `user`-role local account may. The flag is the per-friend *demotion*,
+  not a prerequisite, and it narrows *what* the friend sees, never *who it
+  is*: a demoted friend keeps the swarm and the catalog but sees only
+  guest-accessible recordings — in the catalog and at the byte endpoints
+  alike.
 - **Thin clients have no madnetwork access by default.** Madnetwork browsing is
   a new permission (working name `madnetwork.access`), granted to admin by
   default and grantable to trusted local users. The header section for the
@@ -653,7 +655,7 @@ allowed constructing audiences whose two halves disagreed:
 ```go
 type Audience struct {
     Class     Class // outsider (zero value) | guest | member | friend
-    GuestOnly bool  // a friend demoted by the user mapping, while it exists
+    GuestOnly bool  // a friend the admin demoted (Peer.GuestOnly), or a demoted token bearer
 }
 func (a Audience) Distance() int // the reach the class earns, compared against the scope
 ```
@@ -706,7 +708,7 @@ layer too and not only in the handlers.
     `!GuestOnly` conjunct beside the class check, and all three sites read it.
     A cache blob has no local recording row, so a guest-limited audience's
     "guest-accessible only" can never be evaluated for it — deny is the only
-    reading that keeps the mapping's promise. This also narrows a guest-only
+    reading that keeps the demotion's promise. This also narrows a guest-only
     *token bearer* off the cache, which was already the advertised behaviour
     (holdings refused them) and is the same argument.
   - `serveAudience` returned `Audience{}` on a store error, which was `Distance
@@ -716,23 +718,23 @@ layer too and not only in the handlers.
   So the type carries an explicit class with positive predicates, the zero value
   denies, and the SQL arguments derive from the class instead of being assembled
   at each call site.
-- **GuestOnly** is the per-friend half, resolved from the **user mapping**
-  (§Principals & access): a friend mapped to a local account inherits that
-  account's rights, and since the local model grants either `content.access`
-  (the whole library) or nothing beyond the guest-playable/license policy, the
-  mapping collapses to exactly this bit. An **unmapped** friend is the *default
-  regular-user identity* — `GuestOnly: false`, i.e. the full published set —
-  per the 2026-07-18 decision that unmapped is a rule, not a missing row. So the
-  mapping is what an admin reaches for to give a friend *less*.
+- **GuestOnly** is the per-friend half: since 2026-08-13 a plain flag on the
+  peer row (`Peer.GuestOnly`, §Principals & access), set directly by the admin
+  and carried into the audience in `serveAudienceKey` with no lookup. Its
+  ancestor was the user mapping, which — since the local model grants either
+  `content.access` (the whole library) or nothing beyond the
+  guest-playable/license policy — only ever expressed this one bit; migration
+  047 froze each mapped peer's effective audience into the flag and dropped
+  the column. An **undemoted** friend is the *default regular-user identity*
+  — `GuestOnly: false`, i.e. the full published set — per the 2026-07-18
+  decision that the wide default is a rule, not a missing row. The flag is
+  what an admin reaches for to give a friend *less*.
 
-  **Since the scope collapse the mapping is its ONLY source** (2026-07-30).
-  Strangers used to arrive as `GuestOnly` — that is how the guest-open swarm
-  was expressed — and they now arrive as `Distance: DepthUnlimited` instead,
-  with `GuestOnly: false`. So the bit is set by the user mapping and nothing
-  else, and the mapping is being removed (§Principals & access). When it goes,
-  `Audience` collapses to `Distance` alone unless a plain per-peer *guest-only*
-  flag replaces the account binding. That is the open detail; the audience model
-  itself is unaffected either way.
+  Strangers used to arrive as `GuestOnly` — that is how F5's guest-open swarm
+  was expressed — and since the scope collapse (2026-07-30) they arrive as
+  `Distance() = DepthUnlimited` with `GuestOnly: false` instead. So the bit
+  has exactly two sources: the peer row's flag, and a capability token whose
+  issuer demoted its bearer (§"The capability token").
 
 **Where depth lives: on the recording.** Access already lives there (`license`,
 `guest_playable` — one audio identity, one license,
@@ -750,7 +752,7 @@ artist" in practice.
 **Per-audience snapshots.** The memoized own-catalog (`federation.md` §Catalog)
 is no longer one global snapshot: it is memoized **per audience class**, not per
 peer. The class space is small and *closed*, which is what keeps this bounded: a
-friend, a guest-only friend while the user mapping still exists, and a member.
+friend, a demoted (guest-only) friend, and a member.
 There is no per-hop class to multiply it, because there are no hops, and an
 outsider needs no snapshot at all. The serial keeps its meaning — each peer
 stores the serial of the snapshot *it* was served, so the not-modified check

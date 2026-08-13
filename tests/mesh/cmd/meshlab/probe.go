@@ -69,7 +69,7 @@ func (emptyStore) BlockFederationPeer(context.Context, int64, string, string, in
 }
 func (emptyStore) UpdateFederationPeerName(context.Context, int64, string) error      { return nil }
 func (emptyStore) UpdateFederationPeerHeardName(context.Context, int64, string) error { return nil }
-func (emptyStore) SetFederationPeerUser(context.Context, int64, *int64) error         { return nil }
+func (emptyStore) SetFederationPeerGuestOnly(context.Context, int64, bool) error      { return nil }
 func (emptyStore) TouchFederationPeerSeen(context.Context, int64, int64) error        { return nil }
 func (emptyStore) DeleteFederationPeer(context.Context, int64) error                  { return nil }
 
@@ -99,9 +99,6 @@ func (emptyStore) ApplyFreshnessHints(context.Context, map[string]int64, int64) 
 func (emptyStore) DropCatalogSources(context.Context, []int64) error { return nil }
 func (emptyStore) BlobVisibleTo(context.Context, string, federation.Audience) (bool, bool, error) {
 	return false, false, nil
-}
-func (emptyStore) PeerAudience(context.Context, int64) (federation.Audience, error) {
-	return federation.GuestAudience, nil
 }
 func (emptyStore) MadnetworkBlobProviders(context.Context, string) (int64, []*federation.BlobProvider, error) {
 	return 0, nil, nil

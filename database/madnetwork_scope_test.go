@@ -229,76 +229,103 @@ func TestGuestOnlyAudienceSeesGuestContentOnly(t *testing.T) {
 	}
 }
 
-// TestPeerAudienceFromUserMapping: unmapped is the wide default, a mapping to an
-// account without content.access is the narrow one, and a disabled account
-// narrows too.
-func TestPeerAudienceFromUserMapping(t *testing.T) {
-	db := openMem(t)
-	ctx := context.Background()
-
-	peerID, err := db.InsertFederationPeer(ctx, &federation.Peer{
-		PublicKey: "aa11", Name: "peer", State: federation.PeerFriend, CreatedAt: 1700000000,
-	})
+// TestMigration047_GuestOnlyBackfill: the user mapping becomes the plain
+// guest-only flag, freezing each mapped peer's effective audience at upgrade
+// time — mapped to an active content.access holder stays full, everything
+// else a mapping could express (no permission, disabled account) lands
+// demoted, and unmapped peers are untouched. The user_id column is gone after.
+func TestMigration047_GuestOnlyBackfill(t *testing.T) {
+	sqlDB, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
-		t.Fatalf("InsertFederationPeer: %v", err)
+		t.Fatalf("open: %v", err)
 	}
-
-	aud, err := db.PeerAudience(ctx, peerID)
-	if err != nil {
-		t.Fatalf("PeerAudience: %v", err)
-	}
-	if aud != federation.FriendAudience {
-		t.Errorf("unmapped peer audience = %+v, want the full friend audience", aud)
-	}
-
-	// Map it to a listener (holds content.access, role 4 from migration 003/011).
-	full := createScopeUser(t, db, "mapped-full", 4)
-	if err := db.SetFederationPeerUser(ctx, peerID, &full); err != nil {
-		t.Fatalf("SetFederationPeerUser: %v", err)
-	}
-	if aud, _ := db.PeerAudience(ctx, peerID); aud.GuestOnly {
-		t.Error("a peer mapped to a content.access holder should keep the full audience")
-	}
-
-	// Map it to an account with no roles at all.
-	none := createScopeUser(t, db, "mapped-none", 0)
-	if err := db.SetFederationPeerUser(ctx, peerID, &none); err != nil {
-		t.Fatalf("SetFederationPeerUser: %v", err)
-	}
-	if aud, _ := db.PeerAudience(ctx, peerID); !aud.GuestOnly {
-		t.Error("a peer mapped to an account without content.access should be guest-only")
-	}
-
-	// Disabling the mapped account narrows it the same way.
-	if _, err := db.Exec(`UPDATE users SET disabled = 1 WHERE id = ?`, full); err != nil {
-		t.Fatalf("disable user: %v", err)
-	}
-	if err := db.SetFederationPeerUser(ctx, peerID, &full); err != nil {
-		t.Fatalf("SetFederationPeerUser: %v", err)
-	}
-	if aud, _ := db.PeerAudience(ctx, peerID); !aud.GuestOnly {
-		t.Error("a peer mapped to a disabled account should be guest-only")
-	}
-}
-
-// createScopeUser inserts a user, optionally granting one role id (0 = none).
-func createScopeUser(t *testing.T, db *DB, name string, roleID int64) int64 {
-	t.Helper()
-	res, err := db.Exec(
-		`INSERT INTO users (username, password_hash, created_at) VALUES (?, 'x', 1700000000)`, name)
-	if err != nil {
-		t.Fatalf("insert user %s: %v", name, err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("user id: %v", err)
-	}
-	if roleID != 0 {
-		if _, err := db.Exec(`INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)`, id, roleID); err != nil {
-			t.Fatalf("grant role: %v", err)
+	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB.SetMaxOpenConns(1)
+	for _, p := range []string{"PRAGMA foreign_keys = ON", "PRAGMA journal_mode = WAL"} {
+		if _, err := sqlDB.Exec(p); err != nil {
+			t.Fatalf("pragma %q: %v", p, err)
 		}
 	}
-	return id
+	db := &DB{DB: sqlDB}
+
+	migs, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("bootstrap schema_migrations: %v", err)
+	}
+	var m047 migration
+	for _, m := range migs {
+		switch {
+		case m.version <= 46:
+			if err := db.applyMigration(m); err != nil {
+				t.Fatalf("apply migration %d: %v", m.version, err)
+			}
+		case m.version == 47:
+			m047 = m
+		}
+	}
+	if m047.version != 47 {
+		t.Fatal("migration 047 not found")
+	}
+
+	// Pre-047 state: role 4 (migration 003/011) holds content.access.
+	seedUser := func(name string, roleID int64, disabled int) int64 {
+		res, err := db.Exec(`INSERT INTO users (username, password_hash, created_at, disabled)
+			VALUES (?, 'x', 1000, ?)`, name, disabled)
+		if err != nil {
+			t.Fatalf("insert user %s: %v", name, err)
+		}
+		id, _ := res.LastInsertId()
+		if roleID != 0 {
+			mustExec(t, db, `INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)`, id, roleID)
+		}
+		return id
+	}
+	full := seedUser("mapped-full", 4, 0)
+	none := seedUser("mapped-none", 0, 0)
+	off := seedUser("mapped-disabled", 4, 1)
+	seedPeer := func(key string, userID any) {
+		mustExec(t, db, `INSERT INTO federation_nodes (public_key, trust_state, user_id, trusted_at)
+			VALUES (?, 'friend', ?, 1000)`, key, userID)
+	}
+	seedPeer("aa01", full)
+	seedPeer("aa02", none)
+	seedPeer("aa03", off)
+	seedPeer("aa04", nil)
+
+	if err := db.applyMigration(m047); err != nil {
+		t.Fatalf("apply migration 047: %v", err)
+	}
+
+	for _, tc := range []struct {
+		key  string
+		want int
+		why  string
+	}{
+		{"aa01", 0, "mapped to an active content.access holder stays full"},
+		{"aa02", 1, "mapped without content.access is demoted"},
+		{"aa03", 1, "mapped to a disabled account is demoted"},
+		{"aa04", 0, "unmapped stays the full default"},
+	} {
+		var got int
+		if err := db.QueryRow(`SELECT guest_only FROM federation_nodes WHERE public_key = ?`, tc.key).Scan(&got); err != nil {
+			t.Fatalf("read guest_only of %s: %v", tc.key, err)
+		}
+		if got != tc.want {
+			t.Errorf("%s: guest_only = %d, want %d (%s)", tc.key, got, tc.want, tc.why)
+		}
+	}
+
+	// The mapping column itself is gone.
+	var cols int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('federation_nodes') WHERE name = 'user_id'`).Scan(&cols); err != nil {
+		t.Fatalf("table_info: %v", err)
+	}
+	if cols != 0 {
+		t.Error("user_id column still present after 047")
+	}
 }
 
 // TestBulkSetShareDepthByTagsets: the bulk arm writes through appearances onto

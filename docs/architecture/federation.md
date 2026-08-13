@@ -211,8 +211,8 @@ is **transparent by default** — its social graph is visible to its members.
   is decided at request time by the availability predicate (§Availability &
   node health) — storage and visibility are separate concerns. What a node
   publishes is its **whole approved live library** minus what the requesting
-  audience may not see — per-content share depth and the per-friend user
-  mapping (`federation-access.md` §Sharing scope, F5); the snapshot is memoized
+  audience may not see — per-content share depth and the per-friend guest-only
+  demotion (`federation-access.md` §Sharing scope, F5); the snapshot is memoized
   per audience class rather than globally. Push/gossip of changes is a later
   optimization, not v1.
 - **Playback needs a holder, not the origin.** Because the swarm is keyed by
@@ -796,7 +796,8 @@ own milestone directly after direct transfer works, and tokens ship with depth.
   skeleton; the `nofederation` build tag (standalone build, mirrors `nowebui`).
 - **F1 — Friendship** (built 2026-07-18, see `federation-trust.md`
   §Friendship). Node cards (export/import), pairing handshake, trusted-peer
-  table (+ user-level mapping to local accounts), block/unblock (local effect
+  table (+ user-level mapping to local accounts — replaced 2026-08-13 by the
+  per-peer guest-only flag, migration 047), block/unblock (local effect
   only), admin network page (list form).
 - **F2 — Catalog** (built 2026-07-18, see §Catalog). Pull-and-cache catalog
   sync with direct friends (snapshot + not-modified, "last seen"), madnetwork
@@ -829,8 +830,9 @@ own milestone directly after direct transfer works, and tokens ship with depth.
 - **F5 — Depth & scope** (built 2026-07-25, see `federation-access.md`
   §Sharing scope). Share-depth knob (node default + per recording, migration
   030), the audience model filtering catalog and bytes from one rule, per-friend
-  filtering via the user mapping, and the guest-open swarm. Two parts of it were
-  **superseded on 2026-07-30**: the per-hop ladder collapsed to three scopes,
+  filtering via the user mapping (itself replaced by the per-peer guest-only
+  flag on 2026-08-13, migration 047), and the guest-open swarm. Two parts of it
+  were **superseded on 2026-07-30**: the per-hop ladder collapsed to three scopes,
   and the guest-open swarm was withdrawn in favour of scope being the network's
   only authority (`federation-access.md` §Sharing scope, "Why the ladder
   collapsed"). What survived is the part that mattered — one audience value
@@ -1058,12 +1060,12 @@ own milestone directly after direct transfer works, and tokens ship with depth.
      branch** — one friend with fifty thousand badly tagged albums is one
      voice and fifty thousand rows. That is clustering, not weighting, and it
      stays open in `docs/ui/madnetwork-page.md` §Open.
-- **Cleanup, any time — remove the node-key → local-user mapping**
-  (`federation-access.md` §Principals & access). Drop
-  `federation_peers.user_id`, `PeerAudience`'s account lookup and the
-  `/admin/network` control, once the open detail under `federation-access.md`
-  §Sharing scope decides what — if anything — replaces it as the source of
-  `GuestOnly`. Independent of the phases around it; needs a migration.
+- **Cleanup — remove the node-key → local-user mapping: DONE 2026-08-13**
+  (`federation-access.md` §Principals & access). Replaced by the plain
+  per-peer guest-only flag (migration 047 backfills the effective audience and
+  drops `user_id`); `PeerAudience` is gone entirely — the audience derives
+  from the peer row in `serveAudienceKey` — and the `/admin/network` control
+  is a checkbox.
 
   **Why the split** (decided 2026-07-26, superseding the single F6): the two
   halves have opposite risk profiles. F6 is additive and observational — new

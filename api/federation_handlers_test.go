@@ -185,8 +185,8 @@ func (f *fakeFederation) RenamePeer(_ context.Context, _ int64, name string) err
 	f.patched["name"] = name
 	return f.opErr
 }
-func (f *fakeFederation) MapPeerUser(_ context.Context, _ int64, userID *int64) error {
-	f.patched["user_id"] = userID
+func (f *fakeFederation) SetPeerGuestOnly(_ context.Context, _ int64, guestOnly bool) error {
+	f.patched["guest_only"] = guestOnly
 	return f.opErr
 }
 
@@ -291,9 +291,9 @@ func TestFederationEndpoints_ImportAndErrors(t *testing.T) {
 		t.Errorf("bad card = %d, want 400", resp.StatusCode)
 	}
 
-	// PATCH applies name and user_id (null clears).
+	// PATCH applies name and the guest-only demotion, each only when present.
 	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/admin/federation/peers/1",
-		strings.NewReader(`{"name": "renamed", "user_id": null}`))
+		strings.NewReader(`{"name": "renamed", "guest_only": true}`))
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -305,8 +305,20 @@ func TestFederationEndpoints_ImportAndErrors(t *testing.T) {
 	if fake.patched["name"] != "renamed" {
 		t.Errorf("patched name = %v, want renamed", fake.patched["name"])
 	}
-	if got, ok := fake.patched["user_id"].(*int64); !ok || got != nil {
-		t.Errorf("patched user_id = %v, want explicit nil (clear)", fake.patched["user_id"])
+	if got, ok := fake.patched["guest_only"].(bool); !ok || !got {
+		t.Errorf("patched guest_only = %v, want true", fake.patched["guest_only"])
+	}
+
+	// A null is a type error, not a clear — the flag is two-valued.
+	req, _ = http.NewRequest(http.MethodPatch, srv.URL+"/api/admin/federation/peers/1",
+		strings.NewReader(`{"guest_only": null}`))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("null guest_only = %d, want 400", resp.StatusCode)
 	}
 
 	// Error mapping: state conflict → 409, unknown peer → 404.

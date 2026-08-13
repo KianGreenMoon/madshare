@@ -171,8 +171,9 @@ type Audience struct {
 	// ([ClassOutsider]) is served nothing.
 	Class Class
 	// GuestOnly limits the audience to guest-accessible recordings (the
-	// guest-playable / license policy). True for a friend mapped to a local
-	// account without content.access, and for [ClassGuest].
+	// guest-playable / license policy). True for a friend the admin demoted
+	// ([Peer.GuestOnly]), for a token whose issuer demoted its bearer, and for
+	// [ClassGuest].
 	GuestOnly bool
 }
 
@@ -232,9 +233,10 @@ func (a Audience) InCommunity() bool { return a.Class >= ClassMember }
 // as a conjunct, this time beside the class check instead of standing in for one.
 func (a Audience) ServesCache() bool { return a.InCommunity() && !a.GuestOnly }
 
-// FriendAudience is the audience of an unmapped direct friend: the default
+// FriendAudience is the audience of an undemoted direct friend: the default
 // regular-user identity, which sees the whole published set
-// (docs/architecture/federation-access.md §Principals & access).
+// (docs/architecture/federation-access.md §Principals & access). A demoted
+// friend ([Peer.GuestOnly]) is this plus the GuestOnly bit.
 var FriendAudience = Audience{Class: ClassFriend}
 
 // MemberAudience is the audience of a node in our community that is not a direct
@@ -348,10 +350,9 @@ var ErrNoHolder = errors.New("no friend holds this content")
 // The admin API maps it to 409.
 var ErrPeerState = errors.New("invalid peer state for this operation")
 
-// Peer is a row of the trusted-peer table plus display decorations: Username is
-// the mapped local account's name (joined by the store), Address the mesh IPv6
-// derived from PublicKey (filled by the running node — key derivation lives in
-// the !nofederation build).
+// Peer is a row of the trusted-peer table plus one display decoration: Address
+// is the mesh IPv6 derived from PublicKey (filled by the running node — key
+// derivation lives in the !nofederation build).
 //
 // Two names, with different owners, deliberately never overwriting each other
 // (migration 033): Name is the local label this admin chose and nothing else
@@ -369,9 +370,13 @@ type Peer struct {
 	HeardName string `json:"heard_name"`
 	State     string `json:"state"`
 	PrevState string `json:"-"`
-	UserID    *int64 `json:"user_id"`
-	CreatedAt int64  `json:"created_at"`
-	LastSeen  int64  `json:"last_seen"` // unix seconds; 0 = never
+	// GuestOnly narrows this friend to guest-accessible content — the admin's
+	// per-peer demotion, replacing the old node-key → local-account mapping
+	// (which only ever expressed this one bit). It travels into the audience
+	// verbatim; see [Audience.GuestOnly].
+	GuestOnly bool  `json:"guest_only"`
+	CreatedAt int64 `json:"created_at"`
+	LastSeen  int64 `json:"last_seen"` // unix seconds; 0 = never
 
 	// Block evidence (F6): what the published distrust mark says. Both describe
 	// the current block only — an unblock leaves them behind, and the next block
@@ -379,8 +384,7 @@ type Peer struct {
 	BlockReason string `json:"block_reason,omitempty"`
 	BlockedAt   int64  `json:"blocked_at,omitempty"`
 
-	Username string `json:"username,omitempty"` // mapped account, display only
-	Address  string `json:"address,omitempty"`  // derived mesh address, display only
+	Address string `json:"address,omitempty"` // derived mesh address, display only
 	// LastAttempt is what our last outbound pairing attempt toward this node
 	// did (display only, filled by the running node). Nil when we have not tried
 	// since this process started.
@@ -585,7 +589,10 @@ type PeerStore interface {
 	// from a ping or pairing reply. Separate from the rename above because the
 	// two names have separate owners: this one must never touch a local label.
 	UpdateFederationPeerHeardName(ctx context.Context, id int64, name string) error
-	SetFederationPeerUser(ctx context.Context, id int64, userID *int64) error
+	// SetFederationPeerGuestOnly sets the admin's per-peer demotion: true limits
+	// this friend to guest-accessible content ([Peer.GuestOnly]). The audience
+	// derives from the peer row itself, so there is no separate resolver to ask.
+	SetFederationPeerGuestOnly(ctx context.Context, id int64, guestOnly bool) error
 	TouchFederationPeerSeen(ctx context.Context, id int64, when int64) error
 	DeleteFederationPeer(ctx context.Context, id int64) error
 
@@ -637,9 +644,6 @@ type PeerStore interface {
 	// rule the catalog above answers by, so the node never advertises what it
 	// would not serve (database/madnetwork_scope.go).
 	BlobVisibleTo(ctx context.Context, hash string, aud Audience) (visible, found bool, err error)
-	// PeerAudience resolves a known peer to the audience its requests are
-	// answered for (the user mapping, §Principals & access).
-	PeerAudience(ctx context.Context, peerID int64) (Audience, error)
 	// MadnetworkBlobProviders returns the nodes that hold hash — the swarm
 	// tracker (F4): the union of catalog (library) holders and holdings (cache)
 	// holders, most recently seen first (the fetch order) — plus the advertised

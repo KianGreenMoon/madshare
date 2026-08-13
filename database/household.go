@@ -14,8 +14,8 @@ import (
 // the group present.
 //
 // It is a trust record rather than a relationship: the trust group has a
-// state machine, a block reason, a user mapping and a gossip edge because a
-// peering is negotiated by two admins; this is one device deciding, by
+// state machine, a block reason, a guest-only demotion and a gossip edge
+// because a peering is negotiated by two admins; this is one device deciding, by
 // itself, whose word it will take about who a stranger is. Holding it on the
 // same ROW as everything else known about that key publishes nothing — only
 // gossip publishes edges (federation-nodes.md property 2).

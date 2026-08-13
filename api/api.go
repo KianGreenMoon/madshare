@@ -226,7 +226,10 @@ type FederationNode interface {
 	UnblockPeer(ctx context.Context, id int64) error
 	RemovePeer(ctx context.Context, id int64) error
 	RenamePeer(ctx context.Context, id int64, name string) error
-	MapPeerUser(ctx context.Context, id int64, userID *int64) error
+	// SetPeerGuestOnly sets or clears the admin's per-peer demotion: a
+	// guest-only friend sees guest-accessible content only (it replaced the
+	// node-key → local-account mapping).
+	SetPeerGuestOnly(ctx context.Context, id int64, guestOnly bool) error
 	// EnsureBlob joins (or starts) the fetch of a remote blob by content hash
 	// (federation F3); the stub answers with its compiled-out error.
 	EnsureBlob(ctx context.Context, hash string) (federation.Transfer, error)

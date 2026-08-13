@@ -799,9 +799,11 @@ func (n *Node) SetClaimDisposition(ctx context.Context, id int64, disposition st
 	return n.store.SetClaimReportDisposition(ctx, id, disposition)
 }
 
-// MapPeerUser maps the peer node to a local user account (nil clears). All
-// existing local ACLs then apply to that node's owner — federation adds no
-// parallel permission system.
-func (n *Node) MapPeerUser(ctx context.Context, id int64, userID *int64) error {
-	return n.store.SetFederationPeerUser(ctx, id, userID)
+// SetPeerGuestOnly sets or clears the admin's per-peer demotion: a guest-only
+// friend keeps its standing (the swarm, the catalog) but sees only
+// guest-accessible content — exactly what an anonymous local visitor may play.
+// It replaced the node-key → local-account mapping, which only ever expressed
+// this one bit (§Principals & access).
+func (n *Node) SetPeerGuestOnly(ctx context.Context, id int64, guestOnly bool) error {
+	return n.store.SetFederationPeerGuestOnly(ctx, id, guestOnly)
 }

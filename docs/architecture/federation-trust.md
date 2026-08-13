@@ -27,9 +27,10 @@
   (host name when unset); identity is always the key.
 - **Trusted-peer table** (`federation_peers`, migration 026): one row per known
   node — key (identity; the mesh address is derived, never stored), local
-  label, state, `last_seen`, and the optional **user mapping** (`user_id`) that
-  binds a personal madplayer node to a local account (`federation-access.md`
-  §Principals & access). States: `pending_outgoing` (we imported their card) ·
+  label, state, `last_seen`, and the **guest-only flag** (`guest_only`,
+  migration 047 — it replaced the old user mapping) that demotes a friend to
+  guest-accessible content (`federation-access.md` §Principals & access).
+  States: `pending_outgoing` (we imported their card) ·
   `pending_incoming` (their node introduced itself, awaiting our accept) ·
   `friend` · `blocked` (with the pre-block state remembered for unblock).
 - **Pairing handshake** (`POST /madnetwork/v0/pair` on the mesh): a node
@@ -54,7 +55,7 @@
   stops at the drawing today — the records behind a cut branch are still
   stored, relayed and admitted, which §Forgetting is about.
 - **Admin surface:** `/admin/network` (own card, import form, peer list with
-  accept/block/unblock/remove/rename/user-mapping; pending-request badge on the
+  accept/block/unblock/remove/rename/guest-only demotion; pending-request badge on the
   dashboard; the F6 network map) over `/api/admin/federation*`, all gated
   `federation.manage`.
 

@@ -37,7 +37,7 @@ func (h *handler) federationStatus(w http.ResponseWriter, r *http.Request) {
 
 // federationPeers handles GET /api/admin/federation/peers: the trusted-peer
 // table, friends first (see database.ListFederationPeers), with derived mesh
-// addresses and mapped local usernames.
+// addresses.
 func (h *handler) federationPeers(w http.ResponseWriter, r *http.Request) {
 	if h.federation == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "federation is not enabled"})
@@ -107,9 +107,8 @@ func (h *handler) federationImportCard(w http.ResponseWriter, r *http.Request) {
 }
 
 // federationPeerPatch handles PATCH /api/admin/federation/peers/{peerID}:
-// rename the local label and/or map the node to a local user account
-// ({"name": "..."} / {"user_id": 3} / {"user_id": null} to clear — user_id is
-// applied only when the key is present).
+// rename the local label and/or set the guest-only demotion ({"name": "..."} /
+// {"guest_only": true|false} — each applied only when its key is present).
 func (h *handler) federationPeerPatch(w http.ResponseWriter, r *http.Request) {
 	node, id, ok := h.federationPeerID(w, r)
 	if !ok {
@@ -117,9 +116,9 @@ func (h *handler) federationPeerPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
 	var body struct {
-		Name   *string `json:"name"`
-		UserID *int64  `json:"user_id"`
-		raw    map[string]json.RawMessage
+		Name      *string `json:"name"`
+		GuestOnly *bool   `json:"guest_only"`
+		raw       map[string]json.RawMessage
 	}
 	buf := json.NewDecoder(r.Body)
 	if err := buf.Decode(&body.raw); err != nil {
@@ -132,11 +131,9 @@ func (h *handler) federationPeerPatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	hasUser := false
-	if v, ok := body.raw["user_id"]; ok {
-		hasUser = true
-		if err := json.Unmarshal(v, &body.UserID); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "user_id must be a number or null"})
+	if v, ok := body.raw["guest_only"]; ok {
+		if err := json.Unmarshal(v, &body.GuestOnly); err != nil || body.GuestOnly == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "guest_only must be a boolean"})
 			return
 		}
 	}
@@ -146,14 +143,9 @@ func (h *handler) federationPeerPatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if hasUser {
-		if err := node.MapPeerUser(r.Context(), id, body.UserID); err != nil {
-			// A dangling user id trips the foreign key — a client error, not ours.
-			if errors.Is(err, federation.ErrPeerNotFound) {
-				writeFederationError(w, err)
-			} else {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "no such user"})
-			}
+	if body.GuestOnly != nil {
+		if err := node.SetPeerGuestOnly(r.Context(), id, *body.GuestOnly); err != nil {
+			writeFederationError(w, err)
 			return
 		}
 	}

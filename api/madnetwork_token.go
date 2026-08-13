@@ -27,9 +27,9 @@ import (
 // "this bearer is my user until T" for the calling account's own device.
 //
 // The account's rights travel with it. A user without content.access is vouched
-// for as guest-only, exactly as a friend node mapped to such an account would
-// be — so a restricted account cannot widen its own reach by walking its library
-// onto a phone.
+// for as guest-only, exactly as a friend node the admin demoted would be — so a
+// restricted account cannot widen its own reach by walking its library onto a
+// phone.
 func (h *handler) madnetworkIssueToken(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		NodeKey string `json:"node_key"`

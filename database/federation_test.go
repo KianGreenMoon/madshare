@@ -108,49 +108,55 @@ func TestFederationPeers_CRUDAndOrdering(t *testing.T) {
 	}
 }
 
-func TestFederationPeers_UserMapping(t *testing.T) {
+func TestFederationPeers_GuestOnly(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 
-	res, err := db.Exec(`INSERT INTO users (username, password_hash, created_at) VALUES ('mapped', 'x', 1000)`)
-	if err != nil {
-		t.Fatalf("insert user: %v", err)
-	}
-	userID, _ := res.LastInsertId()
 	peerID := insertPeer(t, db, "dd44", "madplayer", federation.PeerFriend)
 
-	if err := db.SetFederationPeerUser(ctx, peerID, &userID); err != nil {
-		t.Fatalf("map user: %v", err)
-	}
+	// Fresh peers are full friends.
 	p, _ := db.GetFederationPeer(ctx, peerID)
-	if p.UserID == nil || *p.UserID != userID || p.Username != "mapped" {
-		t.Errorf("mapping = %v/%q, want %d/mapped", p.UserID, p.Username, userID)
+	if p.GuestOnly {
+		t.Error("fresh peer is guest-only, want the full audience by default")
 	}
 
-	// A dangling user id must trip the foreign key, not create an orphan mapping.
-	bogus := userID + 1000
-	if err := db.SetFederationPeerUser(ctx, peerID, &bogus); err == nil {
-		t.Error("dangling user_id accepted; want FK violation")
-	}
-
-	// Clearing the mapping.
-	if err := db.SetFederationPeerUser(ctx, peerID, nil); err != nil {
-		t.Fatalf("clear mapping: %v", err)
+	if err := db.SetFederationPeerGuestOnly(ctx, peerID, true); err != nil {
+		t.Fatalf("demote peer: %v", err)
 	}
 	p, _ = db.GetFederationPeer(ctx, peerID)
-	if p.UserID != nil || p.Username != "" {
-		t.Errorf("cleared mapping = %v/%q, want nil/empty", p.UserID, p.Username)
+	if !p.GuestOnly {
+		t.Error("demoted peer not guest-only")
 	}
 
-	// Deleting the mapped user leaves the peer row with the mapping nulled.
-	if err := db.SetFederationPeerUser(ctx, peerID, &userID); err != nil {
-		t.Fatalf("re-map user: %v", err)
-	}
-	if _, err := db.Exec(`DELETE FROM users WHERE id = ?`, userID); err != nil {
-		t.Fatalf("delete user: %v", err)
+	if err := db.SetFederationPeerGuestOnly(ctx, peerID, false); err != nil {
+		t.Fatalf("restore peer: %v", err)
 	}
 	p, _ = db.GetFederationPeer(ctx, peerID)
-	if p.UserID != nil {
-		t.Errorf("user_id after user delete = %v, want nil (ON DELETE SET NULL)", p.UserID)
+	if p.GuestOnly {
+		t.Error("restored peer still guest-only")
+	}
+
+	// A peer id without a trust row is refused, as every trust-group setter is.
+	if err := db.SetFederationPeerGuestOnly(ctx, peerID+1000, true); !errors.Is(err, federation.ErrPeerNotFound) {
+		t.Errorf("demote unknown peer = %v, want ErrPeerNotFound", err)
+	}
+
+	// Removing the peer clears the demotion with the rest of the trust group,
+	// so a later re-friending starts from the full default.
+	if err := db.SetFederationPeerGuestOnly(ctx, peerID, true); err != nil {
+		t.Fatalf("re-demote peer: %v", err)
+	}
+	if err := db.DeleteFederationPeer(ctx, peerID); err != nil {
+		t.Fatalf("delete peer: %v", err)
+	}
+	refriended, err := db.InsertFederationPeer(ctx, &federation.Peer{
+		PublicKey: "dd44", Name: "madplayer", State: federation.PeerFriend, CreatedAt: 2000,
+	})
+	if err != nil {
+		t.Fatalf("re-friend peer: %v", err)
+	}
+	p, _ = db.GetFederationPeer(ctx, refriended)
+	if p.GuestOnly {
+		t.Error("re-friended peer inherited a cleared demotion")
 	}
 }
