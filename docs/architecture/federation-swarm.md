@@ -738,14 +738,37 @@ payoff arrives.
 
 #### What F9 left standing
 
-- **Rarest-first** is still not built and still not measured (item 3).
-- **A holder is never reconsidered** once retired within a transfer, which the
-  2026-07-24 write-up listed as a defect. It matters much less now: retirement is
-  relative, a 416 and a 429 do not cause it, and a holder that is merely slow is
-  passed over rather than condemned — so the population that gets retired at all
-  is smaller than the rule was written for.
-- **The chunk layout is still policy, not protocol identity**, which is what F10
-  would change. Nothing in F9 needed it revisited.
+Two things, and both are decided rather than pending. This section was first
+written as a list of open items, which is how a finished phase rots: nobody
+re-reads it, and a year later it reads as a backlog that was never worked.
+
+**Reconsidering a retired holder — closed, not deferred.** The 2026-07-24
+write-up listed it as a defect: *"retirement is permanent for the transfer, so a
+holder that was briefly congested is not reconsidered."* The complaint was
+correct and its case no longer exists. A briefly congested holder is not retired
+at all now — it fails, **rests** (`Timeouts.Retry`, doubling), and comes back;
+the backoff IS the reconsideration mechanism, and it arrived as a side effect of
+load-aware dispatch rather than as an answer to this. What still stays out for
+the rest of a transfer is a holder that is `providerFailureLimit` consecutive
+failures worse than a live peer, or one that served corrupt bytes — both
+demonstrated, both judged against an alternative we actually have in hand, and
+both forgotten when the next fetch builds a new plan. Reviving that is not worth
+a mechanism.
+
+**Rarest-first — still not built, and now with a trigger instead of a shrug.**
+Deferring it "to a measurement" was right and too vague to act on, so: the harm
+it prevents is a chunk whose only holder leaves before it spreads, and the
+observable is a fetch that dies on **one** chunk (`chunk N unfetchable after M
+attempts`) while every other chunk came easily, in a swarm whose holders are
+mostly partial. Nothing else produces that signature. Until it is seen, two
+mechanisms cover the same ground from different sides — partial seeding means a
+downloader starts spreading its chunks immediately rather than at 100 %, and
+hedging means the last outstanding chunk is raced rather than waited on — and a
+piece picker would be a third opinion about a swarm of half a dozen nodes.
+
+The chunk layout being policy rather than protocol identity was on this list too
+and should not have been: it is F10's, recorded there with its own triggers, and
+repeating it here is a second copy to keep in agreement.
 
 No migration was needed: `federation_holdings` and `federation_catalog_sources`
 already carried what item 2 writes.

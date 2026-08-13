@@ -738,6 +738,17 @@ The three things this entry flagged as traps all held:
   dispatch to a node with no route costs seconds instead of the two-minute
   per-chunk backstop.
 
+All three of the symptoms at the top of this entry are answered, including the
+one the fix did not set out to address. *"Retirement is permanent for the
+transfer, so a holder that was briefly congested is not reconsidered"* is no
+longer a case that arises: a briefly congested holder is not retired at all now,
+it fails, **rests** (`Timeouts.Retry`, doubling) and comes back. That backoff
+exists because load-based dispatch needs it — a holder that fails instantly has
+no bytes outstanding, so without a pause the fastest way to look idle is to keep
+refusing — and it happens to be the reconsideration mechanism this entry wanted.
+What still stays retired is a holder demonstrably worse than a live peer, or one
+that served corrupt bytes, and the plan is per-transfer either way.
+
 Re-measured by the same four-node experiment (`TestStaleHoldersCostAFetch`),
 before/after on one machine: 1 stale holder **12.054s → 545ms**, 2 stale
 **18.064s → 1.069s**, and the clean 3-live case **1.299s → 103ms**. A ghost now
