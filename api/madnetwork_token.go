@@ -15,7 +15,7 @@ import (
 // call rather than anything federation-shaped. A madplayer is a person's device:
 // it signs in to its home server with the same session or bearer token a browser
 // uses, and asks for a vouch it can present on the mesh. There is no node card,
-// no admin accept and no federation_peers row anywhere in this flow — that is
+// no admin accept and no peer trust group anywhere in this flow — that is
 // the whole point of the listener node being a third kind of participant.
 //
 // Nothing is stored. The grant verifies from its own bytes, so there is no

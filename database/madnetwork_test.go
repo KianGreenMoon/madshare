@@ -508,7 +508,7 @@ func TestMadnetworkBlobProvidersDropStaleCatalogHolders(t *testing.T) {
 	}
 	// TouchCatalogSourceSeen only moves last_seen forward (MAX), so age it in SQL.
 	if _, err := db.ExecContext(ctx,
-		`UPDATE federation_catalog_sources SET last_seen = ?`, now-21*3600); err != nil {
+		`UPDATE federation_nodes SET last_seen = ?`, now-21*3600); err != nil {
 		t.Fatal(err)
 	}
 	if _, holders, _ := db.MadnetworkBlobProviders(ctx, "hash-stale"); len(holders) != 0 {
@@ -731,7 +731,7 @@ func TestMadnetworkMemberFreshnessWindow(t *testing.T) {
 func sourceKey(t *testing.T, db *DB, id int64) string {
 	t.Helper()
 	var key string
-	if err := db.QueryRow(`SELECT public_key FROM federation_catalog_sources WHERE id = ?`, id).Scan(&key); err != nil {
+	if err := db.QueryRow(`SELECT public_key FROM federation_nodes WHERE id = ?`, id).Scan(&key); err != nil {
 		t.Fatalf("read source key: %v", err)
 	}
 	return key
@@ -1135,7 +1135,7 @@ func TestAddSourceHoldingsIsAdditive(t *testing.T) {
 	}
 
 	rows, err := db.QueryContext(ctx,
-		`SELECT hash FROM federation_holdings WHERE source_id = ? ORDER BY hash`, src)
+		`SELECT hash FROM federation_holdings WHERE node_key = (SELECT public_key FROM federation_nodes WHERE id = ?) ORDER BY hash`, src)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1161,7 +1161,7 @@ func TestAddSourceHoldingsIsAdditive(t *testing.T) {
 	}
 	var n int
 	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM federation_holdings WHERE source_id = ?`, src).Scan(&n); err != nil {
+		`SELECT COUNT(*) FROM federation_holdings WHERE node_key = (SELECT public_key FROM federation_nodes WHERE id = ?)`, src).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {

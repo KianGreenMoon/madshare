@@ -212,8 +212,8 @@ func payloadsFrom(ctx context.Context, db *DB, table string, origins []string, n
 func (db *DB) GraphKnowsKey(ctx context.Context, key string) (bool, error) {
 	var found int
 	err := db.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM federation_peers      WHERE public_key = ?)
-		     OR EXISTS(SELECT 1 FROM federation_graph_edges WHERE peer       = ?)`,
+		`SELECT EXISTS(SELECT 1 FROM federation_nodes WHERE public_key = ? AND trust_state IS NOT NULL)
+		     OR EXISTS(SELECT 1 FROM federation_graph_edges WHERE peer = ?)`,
 		key, key).Scan(&found)
 	if err != nil {
 		return false, fmt.Errorf("check graph key: %w", err)

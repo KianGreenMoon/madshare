@@ -64,7 +64,7 @@ const (
 	MaxHintAge = time.Hour
 )
 
-// Peer states (federation_peers.state, migration 026). The friendship state
+// Peer states (federation_nodes.trust_state since migration 046). The friendship state
 // machine — see docs/architecture/federation-trust.md §Trust graph and the pairing
 // handshake in node.go:
 //
@@ -147,7 +147,7 @@ const (
 	// Madnetwork scope — by default the whole library — and the swarm, cache
 	// included.
 	ClassMember
-	// ClassFriend is a node in federation_peers with state='friend'. A local
+	// ClassFriend is a node whose trust group says friend (federation_nodes). A local
 	// fact rather than hearsay, and the only class that additionally reaches
 	// what an admin restricted to hand-picked nodes.
 	ClassFriend

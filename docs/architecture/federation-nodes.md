@@ -55,7 +55,10 @@ CREATE TABLE federation_nodes (
     block_reason TEXT    NOT NULL DEFAULT '',
     blocked_at   INTEGER NOT NULL DEFAULT 0,
 
-    -- Sync group: attempted_at > 0 = the sweep pulls from it (the old source row).
+    -- Sync group: sync_added_at > 0 = in the pull rotation (the old source
+    -- row's EXISTENCE, which one table must carry explicitly — a pending peer
+    -- is a trust row the sweep must not pull from by accident).
+    sync_added_at     INTEGER NOT NULL DEFAULT 0,
     catalog_serial    TEXT    NOT NULL DEFAULT '',
     catalog_synced_at INTEGER NOT NULL DEFAULT 0,
     attempted_at      INTEGER NOT NULL DEFAULT 0,
@@ -95,12 +98,18 @@ received, a log — not knowledge about a node.
    `discovery_cap` the coldest member-only rows are deleted and CASCADE
    clears their satellites. Same rule as today, one table.
 
-## What the merge deletes
+## What the merge deleted (built 2026-08-13)
 
-`srcLastSeen`, `sourceHeardExpr`, `swarmPeerIdentityCols`' CASE and second
-join, the peers/sources halves of the freshness-window pick
-(`sourcePingedExpr` reads one row), and migration 036's two-table dance in
-every new query.
+The MAX()-of-two-clocks (`srcLastSeen` is now just `s.last_seen`), the
+two-landing-spot heard-name chain (`sourceHeardExpr` is just `s.heard_name`),
+the second join and peer-table COALESCEs in `swarmPeerIdentityCols`,
+`sourceJoin`'s LEFT JOIN onto peers, and the two-table freshness-window pick
+(`sourcePingedExpr` reads one row). Class is still a CASE — "what is this
+node to us" is genuinely computed — but over one row's columns. Two
+behaviours quietly improved: a member the sweep cached becomes a friend
+WITHOUT losing its catalog (the old flow inserted a fresh peer row beside
+the source), and a brand-new friend appears on the /madnetwork strip
+immediately instead of after its first sweep.
 
 ## Migration (046, one shot)
 

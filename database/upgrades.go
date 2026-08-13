@@ -72,7 +72,7 @@ type localHead struct {
 func (db *DB) ScanSourceUpgrades(ctx context.Context, sourceID, now int64) (int, error) {
 	var watermark int64
 	if err := db.QueryRowContext(ctx,
-		`SELECT upgrade_scanned_at FROM federation_catalog_sources WHERE id = ?`, sourceID,
+		`SELECT upgrade_scanned_at FROM federation_nodes WHERE id = ?`, sourceID,
 	).Scan(&watermark); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, nil // the source went away mid-round; nothing to scan
@@ -91,7 +91,7 @@ func (db *DB) ScanSourceUpgrades(ctx context.Context, sourceID, now int64) (int,
 		return 0, err
 	}
 	if _, err := db.ExecContext(ctx,
-		`UPDATE federation_catalog_sources SET upgrade_scanned_at = ? WHERE id = ?`, now, sourceID,
+		`UPDATE federation_nodes SET upgrade_scanned_at = ? WHERE id = ?`, now, sourceID,
 	); err != nil {
 		return 0, fmt.Errorf("upgrade scan: watermark update: %w", err)
 	}
@@ -107,7 +107,7 @@ func (db *DB) scanUpgradesByHash(ctx context.Context, sourceID int64, cands map[
 		FROM federation_catalog c
 		JOIN json_each(c.renditions) r
 		JOIN files f ON f.hash = r.value->>'hash' AND f.deleted_at IS NULL
-		WHERE c.source_id = ?
+		WHERE c.node_key = (SELECT public_key FROM federation_nodes WHERE id = ?)
 		GROUP BY c.entry_key, f.recording_id`, sourceID)
 	if err != nil {
 		return fmt.Errorf("upgrade scan: hash stage: %w", err)
@@ -210,7 +210,7 @@ func (db *DB) compareCatalogAgainst(ctx context.Context, sourceID, since int64,
 	query := `
 		SELECT c.entry_key, COALESCE(c.duration, 0), c.renditions
 		FROM federation_catalog c
-		WHERE c.source_id = ? AND c.renditions LIKE '%"fingerprint"%'`
+		WHERE c.node_key = (SELECT public_key FROM federation_nodes WHERE id = ?) AND c.renditions LIKE '%"fingerprint"%'`
 	args := []any{sourceID}
 	if since > 0 {
 		query += ` AND c.first_seen >= ?`
@@ -355,11 +355,11 @@ func holdsHash(rs []Rendition, hash string) bool {
 func (db *DB) upsertUpgrade(ctx context.Context, sourceID, now int64, best Rendition, c upgradeCandidate, claimed Rendition) error {
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO library_upgrades
-		    (recording_id, remote_hash, source_id, entry_key, match, ber, our_file_id,
+		    (recording_id, remote_hash, node_id, entry_key, match, ber, our_file_id,
 		     codec, bitrate, sample_rate, bit_depth, byte_size, disposition, first_seen, last_seen)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT (recording_id, remote_hash) DO UPDATE SET
-		    source_id   = excluded.source_id,
+		    node_id     = excluded.node_id,
 		    entry_key   = excluded.entry_key,
 		    match       = excluded.match,
 		    ber         = excluded.ber,
@@ -489,8 +489,7 @@ func (db *DB) ListUpgrades(ctx context.Context, disposition string, pingedSince 
 		        ORDER BY (t2.deleted_at IS NULL) DESC, t2.is_primary DESC, t2.id ASC LIMIT 1)
 		  LEFT JOIN files of ON of.id = u.our_file_id
 		  LEFT JOIN media_metadata omm ON omm.file_id = of.id
-		  LEFT JOIN federation_catalog_sources s ON s.id = u.source_id
-		  LEFT JOIN federation_peers p ON p.public_key = s.public_key` + where + `
+		  LEFT JOIN federation_nodes s ON s.id = u.node_id` + where + `
 		 ORDER BY u.last_seen DESC, u.id DESC
 		 LIMIT ? OFFSET ?`
 	rows, err := db.QueryContext(ctx, query, append(append([]any{}, args...), limit, max(offset, 0))...)

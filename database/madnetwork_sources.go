@@ -10,17 +10,19 @@ import (
 	"daemonlord.ygg/madshare/federation"
 )
 
-// Federation F7 item 5 — catalog sources (docs/architecture/federation.md
-// §Discovery beyond the friend ring): the nodes this node holds a cached
-// catalog from. Migration 036 split them out of federation_peers, because the
-// two tables answer different questions — a peer row says an admin decided
-// something, a source row says the sweep pulled from it — and the community is
-// full of nodes only the second is true of.
+// The sync-group VIEW over federation_nodes (migration 046,
+// docs/architecture/federation-nodes.md): the nodes this node pulls a cached
+// catalog from. `sync_added_at > 0` marks a row as IN THE PULL ROTATION — the
+// fact the pre-046 schema encoded as row existence in
+// federation_catalog_sources — so a pending peer or a household home never
+// joins the rotation by accident.
 //
-// Everything here is cache management: create a row when we first pull, record
-// attempts and successes so the rotation is fair and the freshness window has
-// something to read, and drop rows we may no longer keep. Nothing local
-// references a source, so dropping one is always safe.
+// Everything here is cache management: mark a node for pulling on first
+// contact, record attempts and successes so the rotation is fair and the
+// freshness window has something to read, and clear what we may no longer
+// keep. The cached satellites (catalog, holdings, claim reports) key on the
+// public key and are removed with the sync group; the node ROW survives while
+// any other group (trust, household) still claims it.
 
 const sourceColumns = `id, public_key, heard_name, catalog_serial, catalog_synced_at,
 	attempted_at, first_seen, last_seen, hinted_at`
@@ -34,9 +36,11 @@ func scanSource(row interface{ Scan(...any) error }) (*federation.CatalogSource,
 	return &s, nil
 }
 
-// EnsureCatalogSource returns the source row for a node key, creating it on
-// first contact. The key is the identity, so the insert is an upsert on it: two
-// sweeps racing to reach the same node must not produce two caches of it.
+// EnsureCatalogSource returns the sync view of a node key, adding the node to
+// the pull rotation on first contact. The key is the identity, so the insert
+// is an upsert on it: two sweeps racing to reach the same node must not
+// produce two caches of it — and since 046 a node the admin already trusts
+// keeps its row, id and observations when the sweep starts pulling from it.
 func (db *DB) EnsureCatalogSource(ctx context.Context, publicKey string, now int64) (*federation.CatalogSource, error) {
 	// The strict 64-hex check lives where a key ENTERS from outside — the pull-now
 	// request, a card import — rather than here, which is called with keys the
@@ -47,24 +51,31 @@ func (db *DB) EnsureCatalogSource(ctx context.Context, publicKey string, now int
 		return nil, fmt.Errorf("ensure catalog source: empty key")
 	}
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO federation_catalog_sources (public_key, first_seen)
-		VALUES (?, ?)
-		ON CONFLICT (public_key) DO NOTHING`, key, now); err != nil {
+		INSERT INTO federation_nodes (public_key, first_seen, sync_added_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT (public_key) DO UPDATE SET
+			sync_added_at = CASE WHEN federation_nodes.sync_added_at = 0 THEN excluded.sync_added_at
+			                     ELSE federation_nodes.sync_added_at END,
+			first_seen    = CASE WHEN federation_nodes.first_seen = 0 THEN excluded.first_seen
+			                     ELSE federation_nodes.first_seen END`,
+		key, now, now); err != nil {
 		return nil, fmt.Errorf("ensure catalog source: %w", err)
 	}
 	src, err := scanSource(db.QueryRowContext(ctx,
-		`SELECT `+sourceColumns+` FROM federation_catalog_sources WHERE public_key = ?`, key))
+		`SELECT `+sourceColumns+` FROM federation_nodes WHERE public_key = ?`, key))
 	if err != nil {
 		return nil, fmt.Errorf("read catalog source: %w", err)
 	}
 	return src, nil
 }
 
-// GetCatalogSource returns one source by key, or nil when we cache nothing from
-// that node.
+// GetCatalogSource returns one pull-rotation node by key, or nil when we cache
+// nothing from that node (a trust-only or household-only row answers nil too —
+// existence of the ROW no longer means membership in the rotation).
 func (db *DB) GetCatalogSource(ctx context.Context, publicKey string) (*federation.CatalogSource, error) {
 	src, err := scanSource(db.QueryRowContext(ctx,
-		`SELECT `+sourceColumns+` FROM federation_catalog_sources WHERE public_key = ?`,
+		`SELECT `+sourceColumns+` FROM federation_nodes
+		  WHERE public_key = ? AND sync_added_at > 0`,
 		strings.ToLower(strings.TrimSpace(publicKey))))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -75,12 +86,13 @@ func (db *DB) GetCatalogSource(ctx context.Context, publicKey string) (*federati
 	return src, nil
 }
 
-// ListCatalogSources returns every source, least-recently-attempted first —
-// which is the order the frontier rotation wants, so it can take the head of
-// the list and be fair by construction.
+// ListCatalogSources returns every pull-rotation node, least-recently-attempted
+// first — which is the order the frontier rotation wants, so it can take the
+// head of the list and be fair by construction.
 func (db *DB) ListCatalogSources(ctx context.Context) ([]*federation.CatalogSource, error) {
 	rows, err := db.QueryContext(ctx,
-		`SELECT `+sourceColumns+` FROM federation_catalog_sources ORDER BY attempted_at, id`)
+		`SELECT `+sourceColumns+` FROM federation_nodes
+		  WHERE sync_added_at > 0 ORDER BY attempted_at, id`)
 	if err != nil {
 		return nil, fmt.Errorf("list catalog sources: %w", err)
 	}
@@ -102,7 +114,7 @@ func (db *DB) ListCatalogSources(ctx context.Context) ([]*federation.CatalogSour
 // other member forever.
 func (db *DB) MarkCatalogSourceAttempted(ctx context.Context, id int64, at int64) error {
 	if _, err := db.ExecContext(ctx,
-		`UPDATE federation_catalog_sources SET attempted_at = ? WHERE id = ?`, at, id); err != nil {
+		`UPDATE federation_nodes SET attempted_at = ? WHERE id = ?`, at, id); err != nil {
 		return fmt.Errorf("mark catalog source attempted: %w", err)
 	}
 	return nil
@@ -111,11 +123,12 @@ func (db *DB) MarkCatalogSourceAttempted(ctx context.Context, id int64, at int64
 // TouchCatalogSourceSeen records a successful contact, and what the node called
 // itself when it said so. last_seen only moves forward (an out-of-order write
 // from a concurrent transfer must not age a node), and an empty name leaves the
-// stored one alone.
+// stored one alone. One clock and one heard_name since 046 — this writes the
+// same columns the friendship ping does.
 func (db *DB) TouchCatalogSourceSeen(ctx context.Context, id int64, at int64, heardName string) error {
 	name := federation.CleanPeerName(heardName)
 	if _, err := db.ExecContext(ctx, `
-		UPDATE federation_catalog_sources
+		UPDATE federation_nodes
 		   SET last_seen  = MAX(last_seen, ?),
 		       heard_name = CASE WHEN ? = '' THEN heard_name ELSE ? END
 		 WHERE id = ?`, at, name, name, id); err != nil {
@@ -138,10 +151,10 @@ func (db *DB) TouchCatalogSourceSeen(ctx context.Context, id int64, at int64, he
 // would drop back to the 45-minute pull window exactly when its friends going
 // quiet is the news.
 //
-// The UPDATE is keyed on public_key, so a hint about a node we hold no catalog
-// from silently matches nothing. That is the intended shape rather than a
-// tolerated one: a source row means the sweep pulled from that node, and hearsay
-// must not be able to mint one.
+// The UPDATE is scoped to pull-rotation rows, so a hint about a node we hold no
+// catalog from silently matches nothing. That is the intended shape rather than
+// a tolerated one: the sync group means the sweep pulled from that node, and
+// hearsay must not be able to mint it.
 func (db *DB) ApplyFreshnessHints(ctx context.Context, seen map[string]int64, at int64) (int, error) {
 	if len(seen) == 0 {
 		return 0, nil
@@ -152,10 +165,10 @@ func (db *DB) ApplyFreshnessHints(ctx context.Context, seen map[string]int64, at
 	}
 	defer tx.Rollback()
 	stmt, err := tx.PrepareContext(ctx, `
-		UPDATE federation_catalog_sources
+		UPDATE federation_nodes
 		   SET last_seen = MAX(last_seen, ?),
 		       hinted_at = MAX(hinted_at, ?)
-		 WHERE public_key = ?`)
+		 WHERE public_key = ? AND sync_added_at > 0`)
 	if err != nil {
 		return 0, fmt.Errorf("prepare freshness hint: %w", err)
 	}
@@ -176,10 +189,14 @@ func (db *DB) ApplyFreshnessHints(ctx context.Context, seen map[string]int64, at
 	return moved, nil
 }
 
-// DropCatalogSources deletes sources and, by CASCADE, every catalog row,
-// holding and claim report cached from them. An empty list is a no-op — the
-// same refusal DropUnreachableGraph makes, for the same reason: "drop nothing"
-// and "drop everything" must never be one call.
+// DropCatalogSources takes nodes out of the pull rotation and deletes every
+// catalog row, holding and claim report cached from them. The node ROW is
+// deleted only when no other group claims it — an admin's trust decision and a
+// household enrolment both outlive the cache (federation-nodes.md property 5),
+// as do the observations they carry.
+//
+// An empty list is a no-op — the same refusal DropUnreachableGraph makes, for
+// the same reason: "drop nothing" and "drop everything" must never be one call.
 func (db *DB) DropCatalogSources(ctx context.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
@@ -189,14 +206,22 @@ func (db *DB) DropCatalogSources(ctx context.Context, ids []int64) error {
 		return fmt.Errorf("drop catalog sources: %w", err)
 	}
 	defer tx.Rollback()
-	stmt, err := tx.PrepareContext(ctx, `DELETE FROM federation_catalog_sources WHERE id = ?`)
-	if err != nil {
-		return fmt.Errorf("prepare drop catalog source: %w", err)
-	}
-	defer stmt.Close()
 	for _, id := range ids {
-		if _, err := stmt.ExecContext(ctx, id); err != nil {
-			return fmt.Errorf("drop catalog source %d: %w", id, err)
+		// The satellites key on the public key and must go with the sync group
+		// even when the row itself stays (CASCADE only covers row deletion).
+		for _, q := range []string{
+			`DELETE FROM federation_catalog WHERE node_key = (SELECT public_key FROM federation_nodes WHERE id = ?)`,
+			`DELETE FROM federation_holdings WHERE node_key = (SELECT public_key FROM federation_nodes WHERE id = ?)`,
+			`DELETE FROM federation_claim_reports WHERE node_key = (SELECT public_key FROM federation_nodes WHERE id = ?)`,
+			`UPDATE federation_nodes
+			    SET sync_added_at = 0, catalog_serial = '', catalog_synced_at = 0, attempted_at = 0
+			  WHERE id = ?`,
+			`DELETE FROM federation_nodes
+			  WHERE id = ? AND trust_state IS NULL AND home_added_at = 0`,
+		} {
+			if _, err := tx.ExecContext(ctx, q, id); err != nil {
+				return fmt.Errorf("drop catalog source %d: %w", id, err)
+			}
 		}
 	}
 	return tx.Commit()

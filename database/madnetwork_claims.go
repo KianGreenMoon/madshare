@@ -47,7 +47,7 @@ func (db *DB) CheckSourceClaims(ctx context.Context, sourceID int64) (int, error
 	var open int
 	err := db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM federation_claim_reports
-		WHERE source_id = ? AND disposition = ?`, sourceID, federation.ClaimNew).Scan(&open)
+		WHERE node_key = (SELECT public_key FROM federation_nodes WHERE id = ?) AND disposition = ?`, sourceID, federation.ClaimNew).Scan(&open)
 	if err != nil {
 		return 0, fmt.Errorf("count claim reports: %w", err)
 	}
@@ -67,7 +67,8 @@ func (db *DB) checkHeldBlobClaims(ctx context.Context, sourceID int64) error {
 		FROM federation_catalog c, json_each(c.renditions) r
 		JOIN files f ON f.hash = r.value->>'hash' AND f.deleted_at IS NULL
 		JOIN audio_fingerprints af ON af.file_id = f.id
-		WHERE c.source_id = ? AND r.value->'fingerprint'->>'head' IS NOT NULL`,
+		WHERE c.node_key = (SELECT public_key FROM federation_nodes WHERE id = ?)
+		  AND r.value->'fingerprint'->>'head' IS NOT NULL`,
 		federation.ClaimHeadWords*4, sourceID)
 	if err != nil {
 		return fmt.Errorf("check held-blob claims: %w", err)
@@ -119,7 +120,7 @@ func (db *DB) checkGroupingClaims(ctx context.Context, sourceID int64) error {
 		FROM federation_catalog c, json_each(c.renditions) r
 		JOIN files f ON f.hash = r.value->>'hash' AND f.deleted_at IS NULL
 		JOIN audio_fingerprints af ON af.file_id = f.id
-		WHERE c.source_id = ? AND c.recording_key <> ''
+		WHERE c.node_key = (SELECT public_key FROM federation_nodes WHERE id = ?) AND c.recording_key <> ''
 		ORDER BY c.recording_key, r.value->>'hash'`,
 		federation.ClaimHeadWords*4, sourceID)
 	if err != nil {
@@ -210,10 +211,10 @@ func (db *DB) recordClaimReports(ctx context.Context, reports []*federation.Clai
 	defer tx.Rollback()
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO federation_claim_reports
-			(source_id, kind, hash, other_hash, ber, words, our_head, their_head,
+			(node_key, kind, hash, other_hash, ber, words, our_head, their_head,
 			 our_version, their_version, disposition, first_seen, last_seen)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT (source_id, kind, hash, other_hash) DO UPDATE SET
+		VALUES ((SELECT public_key FROM federation_nodes WHERE id = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (node_key, kind, hash, other_hash) DO UPDATE SET
 			ber = excluded.ber, words = excluded.words,
 			our_head = excluded.our_head, their_head = excluded.their_head,
 			our_version = excluded.our_version, their_version = excluded.their_version,
@@ -233,7 +234,7 @@ func (db *DB) recordClaimReports(ctx context.Context, reports []*federation.Clai
 }
 
 const claimReportColumns = `
-	cr.id, cr.source_id, cr.kind, cr.hash, cr.other_hash, cr.ber, cr.words,
+	cr.id, s.id, cr.kind, cr.hash, cr.other_hash, cr.ber, cr.words,
 	cr.our_head, cr.their_head, cr.our_version, cr.their_version,
 	cr.disposition, cr.first_seen, cr.last_seen`
 
@@ -247,8 +248,7 @@ func (db *DB) ListClaimReports(ctx context.Context) ([]*federation.ClaimReport, 
 	rows, err := db.QueryContext(ctx, `
 		SELECT `+claimReportColumns+`, `+sourceLabelExpr+`, s.public_key
 		FROM federation_claim_reports cr
-		JOIN federation_catalog_sources s ON s.id = cr.source_id
-		LEFT JOIN federation_peers p ON p.public_key = s.public_key
+		JOIN federation_nodes s ON s.public_key = cr.node_key
 		WHERE cr.disposition = ?
 		ORDER BY cr.last_seen DESC, cr.id DESC`, federation.ClaimNew)
 	if err != nil {

@@ -97,7 +97,7 @@ func (db *DB) MatchRecording(ctx context.Context, recordingID, pingedSince int64
 // overlap between the two libraries rather than the size of either.
 func (db *DB) matchByHash(ctx context.Context, recordingID int64, pinged string, seen map[srcEntry]bool) ([]NetworkMatch, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT s.id, COALESCE(p.id, 0), s.public_key, COALESCE(p.name, ''),
+		SELECT s.id, `+peerIDExpr+`, s.public_key, s.label,
 		       `+sourceHeardExpr+`, `+srcLastSeen+`, `+pinged+`, f.hash,
 		       c.entry_key, c.recording_key, c.title, c.artist, c.album_artist,
 		       c.album, COALESCE(c.genre, ''), c.year, c.track_number, c.disc_number,
@@ -138,7 +138,7 @@ func (db *DB) matchByFingerprint(ctx context.Context, raw []uint32, dur float64,
 	// advertise no duration and cannot be shortlisted — they stay in, because a
 	// missed upgrade costs more than a fingerprint compare, which is 2048 bits.
 	rows, err := db.QueryContext(ctx, `
-		SELECT s.id, COALESCE(p.id, 0), s.public_key, COALESCE(p.name, ''),
+		SELECT s.id, `+peerIDExpr+`, s.public_key, s.label,
 		       `+sourceHeardExpr+`, `+srcLastSeen+`, `+pinged+`, '',
 		       c.entry_key, c.recording_key, c.title, c.artist, c.album_artist,
 		       c.album, COALESCE(c.genre, ''), c.year, c.track_number, c.disc_number,

@@ -89,17 +89,16 @@ func addSwarmPeerTraffic(ctx context.Context, tx *sql.Tx, peers []SwarmPeerTraff
 // row's state when there is one (so a blocked node says so), "member" when only
 // the discovery sweep knows it, "gone" when nothing does.
 const swarmPeerIdentityCols = `
-	       COALESCE(NULLIF(p.name, ''), NULLIF(p.heard_name, ''), NULLIF(s.heard_name, ''), '') AS name,
+	       COALESCE(NULLIF(s.label, ''), NULLIF(s.heard_name, ''), '') AS name,
 	       CASE
 	         WHEN k.key = ''               THEN 'unplaced'
-	         WHEN p.state IS NOT NULL      THEN p.state
+	         WHEN s.trust_state IS NOT NULL THEN s.trust_state
 	         WHEN s.public_key IS NOT NULL THEN 'member'
 	         ELSE 'gone'
 	       END AS kind`
 
 const swarmPeerIdentityJoins = `
-	LEFT JOIN federation_peers p ON p.public_key = k.key
-	LEFT JOIN federation_catalog_sources s ON s.public_key = k.key`
+	LEFT JOIN federation_nodes s ON s.public_key = k.key`
 
 // ListSwarmPeerTraffic returns every counterparty this node has ever traded
 // with, busiest first, with the bucket row last whatever its size — it is a

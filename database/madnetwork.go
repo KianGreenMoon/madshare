@@ -20,7 +20,8 @@ import (
 // from other nodes (ReplaceSourceCatalog), and the merged browse queries behind
 // /api/madnetwork/*. *DB satisfies the catalog half of federation.PeerStore here.
 //
-// Since F7 item 5 a cached copy hangs off a *source* (federation_catalog_sources,
+// Since F7 item 5 a cached copy hangs off the node the sweep pulled it from
+// (the sync group of federation_nodes since migration 046 — see
 // madnetwork_sources.go) rather than off a friendship, because this node pulls
 // from every member of its community and not only from the nodes an admin
 // hand-picked. The one trust condition the browse queries still carry is the
@@ -161,15 +162,19 @@ func (db *DB) ReplaceSourceCatalog(ctx context.Context, sourceID int64, serial s
 	}
 	defer tx.Rollback()
 
-	seen, err := catalogFirstSeen(ctx, tx, sourceID)
+	key, err := nodeKeyByID(ctx, tx, sourceID)
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM federation_catalog WHERE source_id = ?`, sourceID); err != nil {
+	seen, err := catalogFirstSeen(ctx, tx, key)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM federation_catalog WHERE node_key = ?`, key); err != nil {
 		return fmt.Errorf("clear source catalog: %w", err)
 	}
 	ins, err := tx.PrepareContext(ctx, `
-		INSERT INTO federation_catalog (source_id, entry_key, recording_key, title, artist,
+		INSERT INTO federation_catalog (node_key, entry_key, recording_key, title, artist,
 			album_artist, album, genre, year, track_number, disc_number, duration,
 			license, guest_playable, renditions, first_seen)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -189,14 +194,14 @@ func (db *DB) ReplaceSourceCatalog(ctx context.Context, sourceID int64, serial s
 		if prior, ok := seen[e.Key]; ok && prior > 0 {
 			firstSeen = prior
 		}
-		if _, err := ins.ExecContext(ctx, sourceID, e.Key, e.RecordingKey, e.Title, e.Artist,
+		if _, err := ins.ExecContext(ctx, key, e.Key, e.RecordingKey, e.Title, e.Artist,
 			e.AlbumArtist, e.Album, e.Genre, e.Year, e.TrackNumber, e.DiscNumber,
 			nullFloat(e.Duration), e.License, e.GuestPlayable, string(renditions), firstSeen); err != nil {
 			return fmt.Errorf("insert source catalog entry: %w", err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE federation_catalog_sources
+		UPDATE federation_nodes
 		   SET catalog_serial = ?, catalog_synced_at = ?, last_seen = MAX(last_seen, ?)
 		 WHERE id = ?`, serial, syncedAt, syncedAt, sourceID); err != nil {
 		return fmt.Errorf("update source sync state: %w", err)
@@ -204,13 +209,27 @@ func (db *DB) ReplaceSourceCatalog(ctx context.Context, sourceID int64, serial s
 	return tx.Commit()
 }
 
+// nodeKeyByID resolves a node's id to its public key inside a write
+// transaction. The callers keep their id-shaped signatures (the id is the
+// admin-surface handle and PeerStore is unchanged by 046), while every stored
+// satellite row keys on the identity itself.
+func nodeKeyByID(ctx context.Context, tx *sql.Tx, id int64) (string, error) {
+	var key string
+	err := tx.QueryRowContext(ctx,
+		`SELECT public_key FROM federation_nodes WHERE id = ?`, id).Scan(&key)
+	if err != nil {
+		return "", fmt.Errorf("resolve node %d: %w", id, err)
+	}
+	return key, nil
+}
+
 // catalogFirstSeen reads one source's entry_key → first_seen map inside the
 // replace transaction. A source's catalog is bounded by what we chose to cache,
 // so holding it in memory for the length of the replace is the same order of
 // cost as the snapshot being applied.
-func catalogFirstSeen(ctx context.Context, tx *sql.Tx, sourceID int64) (map[string]int64, error) {
+func catalogFirstSeen(ctx context.Context, tx *sql.Tx, nodeKey string) (map[string]int64, error) {
 	rows, err := tx.QueryContext(ctx,
-		`SELECT entry_key, first_seen FROM federation_catalog WHERE source_id = ?`, sourceID)
+		`SELECT entry_key, first_seen FROM federation_catalog WHERE node_key = ?`, nodeKey)
 	if err != nil {
 		return nil, fmt.Errorf("read source catalog dates: %w", err)
 	}
@@ -233,7 +252,7 @@ func catalogFirstSeen(ctx context.Context, tx *sql.Tx, sourceID int64) (map[stri
 // and the transfer path are the only liveness this node ever observes.
 func (db *DB) MarkSourceCatalogChecked(ctx context.Context, sourceID int64, serial string, syncedAt int64) error {
 	_, err := db.ExecContext(ctx, `
-		UPDATE federation_catalog_sources
+		UPDATE federation_nodes
 		   SET catalog_serial = ?, catalog_synced_at = ?, last_seen = MAX(last_seen, ?)
 		 WHERE id = ?`, serial, syncedAt, syncedAt, sourceID)
 	if err != nil {
@@ -260,8 +279,12 @@ func (db *DB) AddSourceHoldings(ctx context.Context, sourceID int64, hashes []st
 		return fmt.Errorf("add source holdings: %w", err)
 	}
 	defer tx.Rollback()
+	key, err := nodeKeyByID(ctx, tx, sourceID)
+	if err != nil {
+		return err
+	}
 	ins, err := tx.PrepareContext(ctx,
-		`INSERT OR IGNORE INTO federation_holdings (source_id, hash) VALUES (?, ?)`)
+		`INSERT OR IGNORE INTO federation_holdings (node_key, hash) VALUES (?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare holdings insert: %w", err)
 	}
@@ -270,7 +293,7 @@ func (db *DB) AddSourceHoldings(ctx context.Context, sourceID int64, hashes []st
 		if !isContentHash(h) {
 			continue // remote input — a content hash is 64 lowercase hex
 		}
-		if _, err := ins.ExecContext(ctx, sourceID, h); err != nil {
+		if _, err := ins.ExecContext(ctx, key, h); err != nil {
 			return fmt.Errorf("insert source holding: %w", err)
 		}
 	}
@@ -283,11 +306,15 @@ func (db *DB) ReplaceSourceHoldings(ctx context.Context, sourceID int64, hashes 
 		return fmt.Errorf("replace source holdings: %w", err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM federation_holdings WHERE source_id = ?`, sourceID); err != nil {
+	key, err := nodeKeyByID(ctx, tx, sourceID)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM federation_holdings WHERE node_key = ?`, key); err != nil {
 		return fmt.Errorf("clear source holdings: %w", err)
 	}
 	ins, err := tx.PrepareContext(ctx,
-		`INSERT OR IGNORE INTO federation_holdings (source_id, hash) VALUES (?, ?)`)
+		`INSERT OR IGNORE INTO federation_holdings (node_key, hash) VALUES (?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare holdings insert: %w", err)
 	}
@@ -296,7 +323,7 @@ func (db *DB) ReplaceSourceHoldings(ctx context.Context, sourceID int64, hashes 
 		if !isContentHash(h) {
 			continue // remote input — a content hash is 64 lowercase hex
 		}
-		if _, err := ins.ExecContext(ctx, sourceID, h); err != nil {
+		if _, err := ins.ExecContext(ctx, key, h); err != nil {
 			return fmt.Errorf("insert source holding: %w", err)
 		}
 	}
@@ -322,40 +349,42 @@ func isContentHash(s string) bool {
 // ── Cached rows and the node they came from ──────────────────────────────────
 
 // sourceJoin attaches a cached catalog or holdings row (alias) to the node it
-// was pulled from — its SOURCE — and to the local peer row for that node when
-// there is one. The peer join is LEFT because since F7 item 5 most sources are
-// members no admin ever touched; it carries the two things a source row
-// deliberately does not hold: the admin's label, and whether the admin blocked
-// this node.
+// was pulled from. ONE join since migration 046 (federation-nodes.md): the
+// node row carries the sync facts, the trust facts and the observations
+// together, so the old LEFT JOIN onto federation_peers — and every
+// two-table COALESCE it forced — is gone.
 func sourceJoin(alias string) string {
 	return `
-	JOIN federation_catalog_sources s ON s.id = ` + alias + `.source_id
-	LEFT JOIN federation_peers p ON p.public_key = s.public_key`
+	JOIN federation_nodes s ON s.public_key = ` + alias + `.node_key`
 }
 
 // notBlocked hides a blocked node's cached rows without deleting them, so an
-// unblock restores the view with no resync. Before migration 036 this was the
-// `p.state = 'friend'` join every browse query carried; it is the only trust
-// condition left, because pulling a catalog no longer implies friendship.
-const notBlocked = `COALESCE(p.state, '') <> 'blocked'`
+// unblock restores the view with no resync. It is the only trust condition the
+// browse carries, because pulling a catalog no longer implies friendship — and
+// since 046 it is a direct column read, not a join.
+const notBlocked = `COALESCE(s.trust_state, '') <> 'blocked'`
 
-// srcLastSeen is a source's freshness: the newest of what a catalog pull
-// observed and what a friendship ping observed. A friend is pinged every minute
-// and pulled every fifteen, a member is only ever pulled — so neither clock
-// alone is the answer, and the later one always is.
-const srcLastSeen = `MAX(s.last_seen, COALESCE(p.last_seen, 0))`
+// srcLastSeen is a source's freshness. ONE clock since 046: the friendship
+// ping, the catalog pull, a transfer delivery and a freshness hint all advance
+// the same column, so the old MAX() over two tables' clocks is simply the
+// column.
+const srcLastSeen = `s.last_seen`
 
-// sourceLabelExpr names a cached row's origin: the admin's label if this node is
-// a peer they named, else what the node calls itself, else its short key. The
-// SQL twin of federation.BlobProvider.Display.
-//
-// Two heard names, and both are consulted: a *friend's* claim is refreshed by the
-// friendship ping and lands on the peer row, a *member's* by the discovery ping
-// and lands on the source row. Reading only one of them made friends — the nodes
-// an admin cares most about — show as bare key prefixes while strangers showed
-// their names, which is exactly backwards.
-const sourceHeardExpr = `COALESCE(NULLIF(p.heard_name, ''), s.heard_name)`
-const sourceLabelExpr = `COALESCE(NULLIF(p.name, ''), NULLIF(` + sourceHeardExpr + `, ''), substr(s.public_key, 1, 12))`
+// sourceHeardExpr is what the node calls itself. ONE landing spot since 046 —
+// the friendship ping and the discovery ping write the same column, so the
+// bug class this expression used to paper over (friends showing as bare key
+// prefixes while strangers showed names) cannot recur.
+const sourceHeardExpr = `s.heard_name`
+
+// sourceLabelExpr names a cached row's origin: the admin's label if they named
+// this node, else what the node calls itself, else its short key. The SQL twin
+// of federation.BlobProvider.Display.
+const sourceLabelExpr = `COALESCE(NULLIF(s.label, ''), NULLIF(s.heard_name, ''), substr(s.public_key, 1, 12))`
+
+// peerIDExpr preserves the pre-046 "peer id, or 0 when the admin never acted"
+// column shape: the id is one number now, but a consumer reading PeerID != 0
+// as "this node has a peer card" must keep getting that answer.
+const peerIDExpr = `CASE WHEN s.trust_state IS NOT NULL THEN s.id ELSE 0 END`
 
 // ── Blob lookup (federation F3/F4) ───────────────────────────────────────────
 
@@ -365,7 +394,7 @@ const sourceLabelExpr = `COALESCE(NULLIF(p.name, ''), NULLIF(` + sourceHeardExpr
 func (db *DB) madnetworkRowsForHash(ctx context.Context, hash string,
 	visit func(provider *federation.BlobProvider, entry *federation.CatalogEntry, rendition *federation.CatalogRendition) bool) error {
 	rows, err := db.QueryContext(ctx, `
-		SELECT s.id, COALESCE(p.id, 0), s.public_key, COALESCE(p.name, ''),
+		SELECT s.id, `+peerIDExpr+`, s.public_key, s.label,
 		       `+sourceHeardExpr+`, `+srcLastSeen+`,
 		       c.entry_key, c.recording_key, c.title, c.artist, c.album_artist,
 		       c.album, COALESCE(c.genre, ''), c.year, c.track_number, c.disc_number,
@@ -485,7 +514,7 @@ func (db *DB) MadnetworkBlobProviders(ctx context.Context, hash string) (int64, 
 	// Cache holders (federation_holdings) — nodes seeding the blob from their
 	// download cache without it being in their library catalog.
 	rows, err := db.QueryContext(ctx, `
-		SELECT s.id, COALESCE(p.id, 0), s.public_key, COALESCE(p.name, ''),
+		SELECT s.id, `+peerIDExpr+`, s.public_key, s.label,
 		       `+sourceHeardExpr+`, `+srcLastSeen+`
 		FROM federation_holdings h`+sourceJoin("h")+`
 		WHERE h.hash = ? AND `+notBlocked+` AND `+srcLastSeen+` >= ?`, hash, cutoff)
@@ -676,7 +705,7 @@ func reachClause(view MadnetworkView) string {
 // It takes the hint horizon as its one argument (MadnetworkView.PingedSince) and
 // is also selected as a column, so the ⓘ panel greys a holder by the same window
 // the browse filtered it by.
-const sourcePingedExpr = `(COALESCE(p.state,'') = 'friend' OR s.hinted_at >= %d)`
+const sourcePingedExpr = `(COALESCE(s.trust_state,'') = 'friend' OR s.hinted_at >= %d)`
 
 // sourcePinged renders sourcePingedExpr as a selectable column. Without a
 // horizon there is nothing to divide the sources by, so the column reads
@@ -741,6 +770,7 @@ func fedcatBase(view MadnetworkView) string {
 	FROM (SELECT COALESCE(NULLIF(c.album_artist, ''), NULLIF(c.artist, ''), '` + DefaultArtistName + `') AS akey,
 	             COALESCE(c.artist, '') AS pkey,
 	             COALESCE(NULLIF(c.album, ''), '` + DefaultAlbumTitle + `') AS alb,
+	             s.id AS source_id,
 	             ` + sourceLabelExpr + ` AS source_label,
 	             ` + srcLastSeen + ` AS source_last_seen,
 	             ` + sourcePinged(view) + ` AS source_pinged,
@@ -1333,16 +1363,19 @@ type MadnetworkNode struct {
 // are listed by hops first, and SQL cannot know hops (the graph is the
 // federation node's, not a table this joins). The handler sorts.
 func (db *DB) MadnetworkSummary(ctx context.Context, view MadnetworkView) ([]*MadnetworkNode, int64, error) {
+	// One table since 046: a friend is listed the moment the friendship exists
+	// (it used to wait for the first sweep to mint its source row), a member
+	// once we cache a catalog from it; a pending peer or a household home is
+	// neither and stays off the strip.
 	rows, err := db.QueryContext(ctx, `
 		SELECT s.id, s.public_key, `+sourceLabelExpr+`, `+srcLastSeen+`, s.catalog_synced_at,
-		       (SELECT COUNT(*) FROM federation_catalog c WHERE c.source_id = s.id),
-		       COALESCE(p.state, '') = 'friend', `+sourcePinged(view)+`
-		FROM federation_catalog_sources s
-		LEFT JOIN federation_peers p ON p.public_key = s.public_key
+		       (SELECT COUNT(*) FROM federation_catalog c WHERE c.node_key = s.public_key),
+		       COALESCE(s.trust_state, '') = 'friend', `+sourcePinged(view)+`
+		FROM federation_nodes s
 		WHERE `+notBlocked+`
-		  AND (COALESCE(p.state, '') = 'friend'
-		       OR EXISTS (SELECT 1 FROM federation_catalog c2 WHERE c2.source_id = s.id))
-		ORDER BY (COALESCE(p.state, '') = 'friend') DESC, lower(`+sourceLabelExpr+`), s.id`)
+		  AND (COALESCE(s.trust_state, '') = 'friend'
+		       OR EXISTS (SELECT 1 FROM federation_catalog c2 WHERE c2.node_key = s.public_key))
+		ORDER BY (COALESCE(s.trust_state, '') = 'friend') DESC, lower(`+sourceLabelExpr+`), s.id`)
 	if err != nil {
 		return nil, 0, fmt.Errorf("madnetwork summary: %w", err)
 	}
@@ -1398,11 +1431,10 @@ func (db *DB) MadnetworkSourceByKey(ctx context.Context, key string, view Madnet
 	var n MadnetworkNode
 	err := db.QueryRowContext(ctx, `
 		SELECT s.id, s.public_key, `+sourceLabelExpr+`, `+srcLastSeen+`, s.catalog_synced_at,
-		       (SELECT COUNT(*) FROM federation_catalog c WHERE c.source_id = s.id),
-		       COALESCE(p.state, '') = 'friend', `+sourcePinged(view)+`
-		FROM federation_catalog_sources s
-		LEFT JOIN federation_peers p ON p.public_key = s.public_key
-		WHERE `+notBlocked+` AND s.public_key = ?`, key).
+		       (SELECT COUNT(*) FROM federation_catalog c WHERE c.node_key = s.public_key),
+		       COALESCE(s.trust_state, '') = 'friend', `+sourcePinged(view)+`
+		FROM federation_nodes s
+		WHERE `+notBlocked+` AND s.public_key = ? AND sync_added_at > 0`, key).
 		Scan(&n.ID, &n.Key, &n.Name, &n.LastSeen, &n.SyncedAt, &n.Entries, &n.Friend, &n.Pinged)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil

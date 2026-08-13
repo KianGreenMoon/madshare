@@ -101,7 +101,7 @@ func laneRowsCTE(view MadnetworkView) string {
 	       c.title AS title, c.track_number AS track_number, c.disc_number AS disc_number,
 	       s.public_key AS source_key, ` + sourceLabelExpr + ` AS source_label,
 	       ` + srcLastSeen + ` AS source_last_seen,
-	       (COALESCE(p.state, '') = 'friend') AS is_friend,
+	       (COALESCE(s.trust_state, '') = 'friend') AS is_friend,
 	       c.first_seen AS first_seen, 0 AS is_self, 0 AS self_at
 	FROM federation_catalog c` + sourceJoin("c") + `
 	WHERE ` + notBlocked + reachClause(view) + sourceClause(view)

@@ -126,7 +126,7 @@ func (db *DB) BlobVisibleTo(ctx context.Context, hash string, aud federation.Aud
 func (db *DB) PeerAudience(ctx context.Context, peerID int64) (federation.Audience, error) {
 	var userID sql.NullInt64
 	err := db.QueryRowContext(ctx,
-		`SELECT user_id FROM federation_peers WHERE id = ?`, peerID).Scan(&userID)
+		`SELECT user_id FROM federation_nodes WHERE id = ? AND trust_state IS NOT NULL`, peerID).Scan(&userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return federation.Audience{}, nil
 	}

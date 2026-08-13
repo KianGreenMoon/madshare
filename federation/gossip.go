@@ -565,7 +565,7 @@ func ReachableKeys(selfKey string, peers []*Peer, edges []GraphEdgeClaim) map[st
 // Two consequences worth stating because they look like bugs from the outside:
 //
 //   - **Our own direct friends are members unconditionally**, from
-//     federation_peers rather than from the graph. That edge is a local fact, so
+//     the trust group of federation_nodes rather than from the graph. That edge is a local fact, so
 //     a friend who publishes no friend list is still a full friend of ours.
 //   - **Further out, a silent node cannot be a member.** Nothing it signs names
 //     anyone, so no edge to it is ever mutual. That is the already-documented
