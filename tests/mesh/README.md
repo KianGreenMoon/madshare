@@ -443,6 +443,70 @@ peering — a cut link deliberately cannot cause it (see §Two things this suite
 deliberately does not test). `meshlab status` shows `INBOUND DEAD (browse fails
 open)` if it ever does.
 
+### The down-mark walkthrough (Phase 5, measured 2026-08-13)
+
+The walkthrough above shows the *window*. This one shows the **down-mark**
+(`federation.md` §Availability, "Reactive down-mark + the ping floor"), and it
+needs a different shape: the mark is inert on the ping window by design, so the
+subject has to be a node judged by the **pull** window — a member no friend of
+ours vouches for, which means **three hops**.
+
+```bash
+meshlab up -nodes 4 -topology chain -friends adjacent -seed ~/music -per-node 1
+```
+
+From `a`: `b` is a friend, `c` is a member `b` hints about (tight window), and
+`d` is unhinted at three hops — the 45-minute pull window. Check it before
+trusting the run, straight out of `a`'s database:
+
+```sql
+SELECT substr(public_key,1,8), trust_state, last_seen, hinted_at, unreachable_at
+  FROM federation_nodes;      -- d must show hinted_at = 0
+```
+
+Then, with all four nodes at `madnetwork 4`:
+
+```
+$ meshlab partition d
+   t+5s    a: madnetwork 4     # nothing hidden — d is 4 min old on a 45-min window
+$ curl … -X POST /api/madnetwork/download {"hash": <d's exclusive track>}
+   → failed: mesh dial failed: context deadline exceeded
+   t+20s   a: madnetwork 3     # d's track is gone, on ONE failed fetch
+```
+
+Measured: `unreachable_at` lands on `d`'s row above its `last_seen`, `b` and
+`c` are **not** marked (they were answering — the guard recording evidence about
+`d`, not about the network), the strip greys `d` alone, and `d`'s shelf goes
+empty. Without the mark that state would have lasted another ~40 minutes.
+
+Healing is the same fetch again: `last_seen` moves past the mark and everything
+returns, with no clearing step and no admin action. Allow ~1 minute after `heal`
+for the yggdrasil session to re-establish — the first retries fail on the dial
+and simply move the mark forward, which is the forward-only rule working.
+
+**The other half of the guard is worth running too:** `meshlab partition a`
+— the observer itself. Every ping fails, and *nothing* is marked, because `a`
+pings only its friend `b`, and `b` is also the node whose successful contact is
+the most recent, so the "some **other** node answered" clause absorbs exactly
+the node that fails most often. `a`'s browse still shrinks, but from the
+ordinary 120 s friend window, not from a mark.
+
+**The ping floor is not observable in a small lab, by construction.** It fires
+for cached sources the pull rotation could not reach within a cycle, and with
+three sources against a budget of four per minute there are none. It exists for
+a frontier at `discovery_cap`; that half stays unit-tested.
+
+> **Gotcha found while writing this.** `POST /api/admin/federation/discover`
+> (pull-now) deliberately ignores membership — "an admin who pasted a key is
+> asking us to try" — but **retention does not**, so a catalog pulled that way is
+> dropped by the next sweep if the gossip graph has not yet made that node a
+> member. The symptom is a node appearing in `madnetwork` and vanishing a minute
+> later with *"dropped 1 cached catalog(s) from nodes outside our community"* in
+> the log. Wait for `meshlab graph` to show every node **and** for the pull to
+> happen on its own before starting a run. `graph` is the map (single-claim
+> edges); membership needs **mutual** ones, so the map showing a node is not yet
+> proof the frontier will keep it.
+
 ### `meshlab check` — the scope rules, asserted
 
 Everything above is a knob for a person to turn. `check` is the one command that

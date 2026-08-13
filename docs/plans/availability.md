@@ -316,6 +316,14 @@ guard). What shipped, in the order it was built:
    the connect-class classifier, the floor over a whole cycle with one node up
    and one gone, the budget arithmetic). The SQL half was negative-checked by
    disabling the clause and watching the corridor assertion fail.
+7. **Live, on a real mesh** (2026-08-13, `tests/mesh/README.md` §"The down-mark
+   walkthrough"): a 4-node chain, where the subject is a 3-hop unhinted member
+   on the 45-minute pull window. Partitioned, it stayed visible — then **one**
+   failed fetch marked it and its exclusively-held track left the browse, while
+   the two nodes still answering were not marked. Retrying after the heal
+   retired the mark by moving `last_seen` past it. Partitioning the OBSERVER
+   marked nobody. The ping floor is not observable at this scale (three sources
+   against a budget of four per minute are never overdue) and stays unit-tested.
 
 ## Dependencies & sequencing
 

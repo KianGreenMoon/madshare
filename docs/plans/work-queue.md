@@ -25,11 +25,13 @@ are written up in `docs/plans/availability.md` §Phase 5 and
 `docs/architecture/federation.md` §Availability. The 429-proof-of-life fix rode
 along as designed.
 
-**Not done, and deliberately:** no live two-node check that a killed member's
-tracks vanish on the next browse. The unit coverage is there (including a
-negative check of the SQL clause), but the walkthrough in
-`tests/mesh/README.md` §The availability walkthrough is the honest place to
-confirm it end to end — worth one meshlab run when the lab is next up.
+**Confirmed live** on 2026-08-13, on a 4-node meshlab chain: a partitioned
+3-hop member (the pull-window case the mark exists for) kept its tracks until
+one failed fetch, then lost them within seconds; the nodes still answering were
+not marked; the mark retired itself on the next successful fetch; and
+partitioning the observer marked nobody. Written up as
+`tests/mesh/README.md` §"The down-mark walkthrough". The ping floor cannot be
+seen at that scale and stays unit-tested.
 
 ### 2. Node struct fold — the follow-up of migration 046  ✅ DONE 2026-08-13
 
