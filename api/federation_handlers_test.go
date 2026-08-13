@@ -51,7 +51,8 @@ type fakeFederation struct {
 	drainedPeers  int
 	upRate        int64 // the caps SwarmRates reports, in bytes/sec
 	downRate      int64
-	rateRefreshes int // how often a write asked the node to re-read them
+	quotas        federation.QuotaLimits // what MemberQuotas reports
+	rateRefreshes int                    // how often a write asked the node to re-read them
 	// What the last capability-token issuance was asked for (F7 item 9): the
 	// bearer key, and the guest bit the caller's account earned.
 	tokenBearer    string
@@ -96,7 +97,9 @@ func (f *fakeFederation) Traffic() federation.TrafficSnapshot { return f.traffic
 
 func (f *fakeFederation) SwarmRates() (up, down int64) { return f.upRate, f.downRate }
 
-func (f *fakeFederation) RefreshRates() { f.rateRefreshes++ }
+func (f *fakeFederation) MemberQuotas() federation.QuotaLimits { return f.quotas }
+
+func (f *fakeFederation) RefreshLimits() { f.rateRefreshes++ }
 
 // DrainTraffic hands over the pending deltas and clears them, exactly as the
 // real one does — a second drain must come back empty, or a retrying flusher

@@ -273,6 +273,15 @@ netstack connections. Both get the same treatment:
 | bytes/sec              | `per_member_rate_kib`      | `member_rate_kib`        |
 | concurrent blob serves | `per_member_max_transfers` | `member_max_transfers`   |
 
+All four are **runtime knobs** since 2026-08-14 (`swarm-admin.md` §"The member
+budget"): `[federation]` sets what the node starts with, `/admin/swarm` overrides
+any of them without a restart, and clearing an override there falls back to the
+file. They shipped config-only, which put the one limiter family an operator
+reaches for *while watching a node be drained* behind an edit-and-restart, and
+made what a running node enforced unreadable except by opening the TOML it
+started with. The policy is unchanged: all four still default to 0 = unlimited,
+and friends still bypass them.
+
 **Why a class ceiling, when `federation-access.md` §The membership rule
 promised only per-requester quotas.** Because a per-identity limit is exactly
 what a sybil farm defeats: N forged keys buy N quotas, and the member count was

@@ -173,3 +173,31 @@ test('a cap says where it came from, and 0 reads as unlimited', () => {
   assert.match(rateText({ effective_kib: 0, source: 'override' }), /^unlimited \(set here\)$/);
   assert.equal(rateText(null), '—');
 });
+
+test('the member budget names only the bounds that are set — and always names friends', () => {
+  const memberText = load('memberText');
+
+  // The shipped default is four zeroes. Printing them as "0 KiB/s" would read as
+  // a node throttled to a standstill; printing four "unlimited"s is wallpaper.
+  assert.equal(memberText({}),
+    'Non-friends — no budget set; friends are exempt from any');
+  assert.equal(memberText(undefined),
+    'Non-friends — no budget set; friends are exempt from any');
+
+  // A set bound is named with its unit and its scope, and an unset sibling stays
+  // out of the line entirely.
+  assert.equal(
+    memberText({
+      member_rate_kib: { effective_kib: 2048, source: 'override' },
+      per_member_max_transfers: { effective: 4, source: 'config' },
+    }),
+    'Non-friends — 2048 KiB/s together · 4 transfers each (friends are exempt)',
+  );
+
+  // A count must not be read out of the _kib field or vice versa: the two units
+  // travel in differently named fields precisely so this cannot be guessed.
+  assert.equal(
+    memberText({ member_max_transfers: { effective_kib: 16 } }),
+    'Non-friends — no budget set; friends are exempt from any',
+  );
+});

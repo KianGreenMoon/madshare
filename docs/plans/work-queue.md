@@ -46,17 +46,23 @@ called `Node` (the running mesh node owns that name in this package), and
 `BlobProvider` deliberately stayed its own flat type — a household device is a
 holder with no row at all.
 
-### 3. Member quotas: runtime + visibility — BLOCKED on an owner decision  ← NEXT (ask first)
+### 3. Member quotas: runtime + visibility  ✅ DONE 2026-08-14
 
-- The question row lives in `.issues/open-issues.md` §"knob-resolution dig
-  findings": the four F7 quotas are the only limiter family still requiring
-  edit-and-restart, and nothing reports what a running node enforces.
-- The mechanism is pre-paved (`WithRateResolver` shape + the
-  `optionalIntSetting` spelling + the placement rule in
-  `docs/architecture/swarm-admin.md` §"Which layers a knob gets") — what is
-  missing is the decision that they should be live at all. **Ask, don't
-  build.** If yes, the readout/editor belongs on `/admin/swarm` (the lens
-  rule: the page that shows the traffic is the page that throttles it).
+Owner answered yes to both halves: config keeps the default, the override is
+stored in the database, and an unset override falls back to the file. All four
+quotas are three-layer knobs now, resolved on the rates' own memo through
+`WithLimitResolver` (one struct, one query per refresh) and edited in the
+`/admin/swarm` limits modal — the page that shows the traffic is the page that
+throttles it, and it is also where the per-counterparty panel makes an operator
+notice a member worth bounding. No migration: settings keys only.
+
+Written up in `docs/architecture/swarm-admin.md` §"The member budget"; the
+placement rule above it now records that it has been applied twice and answered
+differently each time (this one three layers, the cache age two). Two things a
+future reader should not re-derive: the buckets are **live** (`setLimits` reaches
+the requesters already being served), and the refresh happens **at admission**,
+because the concurrency halves of the budget are spent there rather than on the
+write path.
 
 ### 4. Cache retention, the age half  ✅ DONE 2026-08-13
 

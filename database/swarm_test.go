@@ -3,6 +3,8 @@ package database
 import (
 	"context"
 	"testing"
+
+	"daemonlord.ygg/madshare/federation"
 )
 
 // The swarm traffic table's contract (docs/architecture/swarm-admin.md): writes
@@ -155,6 +157,51 @@ func TestSwarmRates_ThreeValued(t *testing.T) {
 	}
 	if up != nil || down != nil {
 		t.Errorf("after clearing = %v/%v, want no overrides", up, down)
+	}
+}
+
+// The member budget stores the same way, and under key names that mirror the
+// [federation] ones it overrides — an operator reading the settings table and an
+// operator reading the TOML must be looking at the same four words.
+func TestMemberQuotas_ThreeValued(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	q, err := db.GetMemberQuotas(ctx)
+	if err != nil {
+		t.Fatalf("GetMemberQuotas: %v", err)
+	}
+	if q != (federation.QuotaOverrides{}) {
+		t.Errorf("fresh node = %+v, want no overrides", q)
+	}
+
+	zero, cap := 0, 4
+	if err := db.SetMemberQuotas(ctx, federation.QuotaOverrides{
+		MemberRateKiB: &zero, PerMemberMaxTransfers: &cap}); err != nil {
+		t.Fatalf("SetMemberQuotas: %v", err)
+	}
+	q, err = db.GetMemberQuotas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.MemberRateKiB == nil || *q.MemberRateKiB != 0 {
+		t.Errorf("member_rate_kib = %v, want an explicit 0 (unlimited), not absence", q.MemberRateKiB)
+	}
+	if q.PerMemberMaxTransfers == nil || *q.PerMemberMaxTransfers != 4 {
+		t.Errorf("per_member_max_transfers = %v, want 4", q.PerMemberMaxTransfers)
+	}
+	if q.PerMemberRateKiB != nil || q.MemberMaxTransfers != nil {
+		t.Errorf("untouched bounds gained overrides: %+v", q)
+	}
+	if v, ok, _ := db.GetSetting(ctx, "swarm.per_member_max_transfers"); !ok || v != "4" {
+		t.Errorf("stored under %q = %q/%v, want the [federation] key name", "swarm.per_member_max_transfers", v, ok)
+	}
+
+	if err := db.SetMemberQuotas(ctx, federation.QuotaOverrides{}); err != nil {
+		t.Fatal(err)
+	}
+	if q, _ = db.GetMemberQuotas(ctx); q != (federation.QuotaOverrides{}) {
+		t.Errorf("after clearing = %+v, want no overrides", q)
 	}
 }
 

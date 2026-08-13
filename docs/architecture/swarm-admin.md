@@ -7,8 +7,9 @@ questions an operator of a peer-to-peer node actually asks — *what is my node
 moving?* and *what may it cost?* — have no surface.
 
 This doc designs `/admin/swarm`: one list of every blob this node has bytes for,
-with per-file transfer accounting, live progress, the node's two rate knobs, and
-the totals underneath them.
+with per-file transfer accounting, live progress, every transfer limit this node
+has (its two rate caps and the four member quotas), and the totals underneath
+them.
 
 Reference for the transfer machinery it reports on:
 [`federation-swarm.md`](federation-swarm.md) §Distribution. Reference for the cache half of
@@ -38,7 +39,7 @@ has to explain retention.
 | Asks | *What is on my disk, and should it stay?* | *What is my node moving, and how fast?* |
 | Rows | the download cache | **every blob with bytes** — library, cache, partials |
 | Columns | what it is · when fetched · when last used | up · down · rate · progress |
-| Owns | the cache index, reconciliation, Rescan, the retention daemon | the traffic counters, and the node's two rate knobs |
+| Owns | the cache index, reconciliation, Rescan, the retention daemon | the traffic counters, and every transfer limit |
 | Deletes | cache blobs | nothing of its own — it *calls* the cache's remover |
 
 What separates a lens from a copy is one rule, and it is a requirement on the
@@ -338,27 +339,68 @@ one test:
   are different states; that encoding (`unset ≠ 0`, key deleted to clear) has
   one spelling at the settings table, `database.optionalIntSetting` /
   `setOptionalIntSetting`, and every consumer resolves it the same way
-  (`refreshRates`, `ResolveCacheCeiling`).
+  (`refreshLimits`, `ResolveCacheCeiling`, `QuotaOverrides.Resolve`).
 - The `MadnetworkPolicy` switches are **runtime-only** (defaults hard-coded in
   `GetMadnetworkPolicy`): pure policy with a universal default and no embedder
   story — an embedder's sharing posture is `default_share_depth`, not a config
   twin of every checkbox.
-- The four member quotas are **config-only** (fixed at Node construction) —
-  the one family where the two tests disagree with the implementation, since a
-  node being drained by members is exactly an operator watching something.
-  Recorded as an open question in `.issues/open-issues.md`, not silently
-  accepted.
 
-Full three-layer knobs today: **three** — `swarm.up_rate_kib`,
-`swarm.down_rate_kib`, `madnetwork.cache_max_bytes`. A fourth should copy this
-section, not invent a fourth spelling.
+Full three-layer knobs today: **seven** — `swarm.up_rate_kib`,
+`swarm.down_rate_kib`, `madnetwork.cache_max_bytes`, and the four member quotas
+below. An eighth should copy this section, not invent another spelling.
 
-The rule has since been applied once and answered *two* layers:
-`madnetwork.cache_max_age_days` (built 2026-08-13) is runtime-only, because the
-config test names no consumer — an embedder's bound on this cache is a size, not
-an age. With no config layer there is nothing to inherit, so unset and 0 are the
-same answer and the setting is a plain number rather than the three-valued
+The rule has since been applied twice, and answered differently each time —
+which is what a rule is for.
+
+`madnetwork.cache_max_age_days` (built 2026-08-13) is **runtime-only**, because
+the config test names no consumer — an embedder's bound on this cache is a size,
+not an age. With no config layer there is nothing to inherit, so unset and 0 are
+the same answer and the setting is a plain number rather than the three-valued
 encoding above. Answering "two" is the rule working, not an exception to it.
+
+The **four member quotas** (built 2026-08-14, owner's call) were the family this
+section recorded as a disagreement between its own tests and the implementation:
+config-only, fixed at Node construction, invisible at runtime. Both tests said
+three layers. The config layer is real — a headless node ships its posture in the
+TOML it deploys with — and so is the runtime one, because *a node being drained
+by members is exactly an operator watching something*, and the four bounds are
+what they would reach for. They now resolve `override → config → unlimited` like
+the rates, through the same memo and the same resolver (below), and are edited in
+the same modal. Nothing about the *policy* changed: all four still ship 0 =
+unlimited, and friends still bypass them.
+
+### The member budget
+
+The four quotas (`federation-swarm.md` §"What a member may cost us") are on
+`/admin/swarm` for the reason the rate caps are: the page that shows you the
+traffic is the page where you throttle it, and here the page also names *who* is
+spending it — the per-counterparty panel directly below the limits line is how an
+operator notices a member worth bounding in the first place.
+
+Three things about the implementation are worth not re-deriving:
+
+- **They ride the rates' resolver and memo**, not their own
+  (`WithLimitResolver`, one struct, one query per refresh). A second resolver
+  would double the per-request cost of a knob family nobody sets, to keep two
+  things apart that the same operator changes on the same page in the same modal.
+- **The buckets are live.** `quotas.setLimits` reaches the `adjustableRate` of
+  every requester currently being served, so a tightened cap binds the transfer
+  that made the operator tighten it. Concurrency changes are not retroactive in
+  the other direction: a lowered ceiling refuses the *next* admission rather than
+  cutting a response already streaming, which is the same rule the rate caps
+  follow.
+- **The refresh happens at admission**, not only on the write path, because the
+  concurrency halves of the budget are spent there. Without it a new ceiling
+  would first bind at the first byte of the *next* response.
+
+The readout (`GET /api/admin/swarm/limits`) reports all six knobs as
+`{source, override, effective}` — the layer that answered, as well as the answer.
+Before this existed, nothing could be asked at all: the quotas were built once in
+`Start`, so an operator could not confirm what a running node enforced without
+reading the TOML it had started with. Rates carry their unit in the field name
+(`*_kib`); counts do not, and the one decoder reads the unit off the name so the
+six share a write path without any of them telling a client the wrong thing about
+itself.
 
 ### Making the limiters adjustable
 
@@ -370,11 +412,11 @@ requester could reset by making the admin fidget.
 The Node keeps exactly two of them — one up, one down — whose rates are
 re-resolved on a short memo (5 s) rather than per request. `seedableBlob`
 already does a per-request policy read and this must not add a second. The
-override arrives through **one injected resolver** (`WithRateResolver`, wired in
-`app.startMesh` to `db.GetSwarmRates`) because `federation` stays DB-free; what
-the per-file design would have needed and this does not is a per-hash limiter
-table and a `PeerStore` change — with per-file limits gone, the whole knob
-surface is two numbers behind one option.
+override arrives through **one injected resolver** (`WithLimitResolver`, wired
+in `app.startMesh` to `db.GetSwarmRates` + `db.GetMemberQuotas`) because
+`federation` stays DB-free; what the per-file design would have needed and this
+does not is a per-hash limiter table and a `PeerStore` change — with per-file
+limits gone, the whole knob surface is six numbers behind one option.
 
 ### The chains
 
@@ -511,18 +553,30 @@ A routed admin sub-page (`adminSubPages["swarm"]`, `webui/html/admin/swarm.html`
 ▲ 118 MB   · ▼ 2.4 GB                this session          [Reset…]
 3 downloading · 22.4/58.1 MB · ▼ 1.2 MB/s      2 peers pulling · ▲ 340 KB/s
 limits   up: 1 900 KiB/s (set here)   down: unlimited (from config)   [Change…]
+         non-friends — 2048 KiB/s together · 4 transfers each (friends are exempt)
 seeding: on · cache seeding: on      1 284 cached · 41.2 GB · 2 partials [Reclaim]
 ```
 
 Every figure is already available or defined above. The limits line is the
-**only** editor for the two rate knobs anywhere in the UI, and it names where
+**only** editor for any transfer limit anywhere in the UI, and it names where
 each value came from (set here / from config / unlimited) so an operator can see
 whether an override is in force without opening the modal. `[Change…]` posts to
 `/api/admin/swarm/limits`; `[Reclaim]` calls the cache page's existing partial
 reaper.
 
-The modal behind `[Change…]` carries the sizing guidance from §Choosing a rate
-in short form: the `Mbit/s × 128` conversion, the ¾-of-uplink suggestion, and the
+Its second line is the member budget, and it names only the bounds that are
+actually set — four zeroes is the shipped default, so printing all four would be
+wallpaper, and printing them as `0 KiB/s` would read as a node throttled to a
+standstill. When none are set it says so, because "no budget" is a real answer an
+operator may be checking for. Friends are named on the line every time: a reader
+seeing "non-friends" throttled should not have to remember who that excludes.
+
+The modal behind `[Change…]` is titled **Transfer limits** and holds both
+families under their own headings — this node's line, then the member budget,
+each with its own prose. Only an *override* prefills a field; a config value
+shown in the box would be saved back as an override on the next Save, quietly
+pinning a number the operator only ever read. It carries the sizing guidance from
+§Choosing a rate in short form: the `Mbit/s × 128` conversion, the ¾-of-uplink suggestion, and the
 floor warning — with a **live check** that flags a value below ~256 KiB/s (or
 below 4× the bitrate of a typical file in this library) as likely to make the
 node unusable rather than merely slow. It warns; it does not refuse. An operator
@@ -741,7 +795,7 @@ No new permission.
 | `fetchRange`, `fetchFrom` | metered reader + the node down limiter (new — nothing throttled inbound before) |
 | `readStall` | suspends its watchdog around a wait on our own tokens (`pausingReader`) |
 | `rateLimiter` | gains `setRate` (token-preserving); `adjustableRate` wraps one live cap |
-| `Node` | traffic table, `Traffic()`, `DrainTraffic()`, `SwarmRates()`, `WithRateResolver` |
+| `Node` | traffic table, `Traffic()`, `DrainTraffic()`, `SwarmRates()`, `MemberQuotas()`, `WithLimitResolver` |
 | `api.FederationNode` + `federation/node_stub.go` | the four new methods (and the `nofederation` stub must satisfy them) |
 | `MadnetworkPolicy`, `/api/admin/settings/madnetwork`, the `/admin/settings` card | **unchanged** — the rate knobs deliberately do not go there |
 | `config.FederationConfig` | `fetch_rate_kib`, plus the config example and `configuration.md` (with the sizing guidance in the comment) |

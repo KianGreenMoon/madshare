@@ -35,6 +35,14 @@ const (
 	// "inherit the config file"; "0" means unlimited, which is a real override.
 	settingSwarmUpRateKiB   = "swarm.up_rate_kib"
 	settingSwarmDownRateKiB = "swarm.down_rate_kib"
+	// The member budget (F7 item 6), same three-valued encoding and the same
+	// reason for living outside MadnetworkPolicy. The key names mirror the
+	// [federation] ones they override, so an operator reading the settings table
+	// and an operator reading the TOML are looking at the same four words.
+	settingSwarmMemberRateKiB         = "swarm.member_rate_kib"
+	settingSwarmPerMemberRateKiB      = "swarm.per_member_rate_kib"
+	settingSwarmMemberMaxTransfers    = "swarm.member_max_transfers"
+	settingSwarmPerMemberMaxTransfers = "swarm.per_member_max_transfers"
 )
 
 // Trash-restore policy modes — what may happen to a trashed file whose content
@@ -321,23 +329,10 @@ func (db *DB) SeedingPolicy(ctx context.Context) (federation.SeedPolicy, error) 
 // the config file"; a non-nil 0 means unlimited, which is a real override and
 // how one node escapes a cap its config ships with.
 func (db *DB) GetSwarmRates(ctx context.Context) (up, down *int, err error) {
-	read := func(key string) (*int, error) {
-		n, err := db.optionalIntSetting(ctx, key)
-		if err != nil || n == nil {
-			return nil, err
-		}
-		// A value that does not survive the round trip through int (32-bit
-		// platforms) reads as unset, exactly as Atoi refused it before.
-		v := int(*n)
-		if int64(v) != *n {
-			return nil, nil
-		}
-		return &v, nil
-	}
-	if up, err = read(settingSwarmUpRateKiB); err != nil {
+	if up, err = db.optionalIntOverride(ctx, settingSwarmUpRateKiB); err != nil {
 		return nil, nil, err
 	}
-	if down, err = read(settingSwarmDownRateKiB); err != nil {
+	if down, err = db.optionalIntOverride(ctx, settingSwarmDownRateKiB); err != nil {
 		return nil, nil, err
 	}
 	return up, down, nil
@@ -347,18 +342,79 @@ func (db *DB) GetSwarmRates(ctx context.Context) (up, down *int, err error) {
 // API is: a nil pointer clears the override (back to the config file), a
 // non-nil value pins it. Passing the same value twice is idempotent.
 func (db *DB) SetSwarmRates(ctx context.Context, up, down *int) error {
-	write := func(key string, v *int) error {
-		var n *int64
-		if v != nil {
-			n = new(int64)
-			*n = int64(*v)
-		}
-		return db.setOptionalIntSetting(ctx, key, n)
-	}
-	if err := write(settingSwarmUpRateKiB, up); err != nil {
+	if err := db.setIntOverride(ctx, settingSwarmUpRateKiB, up); err != nil {
 		return err
 	}
-	return write(settingSwarmDownRateKiB, down)
+	return db.setIntOverride(ctx, settingSwarmDownRateKiB, down)
+}
+
+// GetMemberQuotas reads the runtime overrides on the member budget — what
+// non-friends may cost this node (federation-swarm.md §"What a member may cost
+// us"). Same three-valued encoding as the rate caps beside it: nil inherits the
+// [federation] value, a non-nil 0 is a real override meaning unlimited.
+func (db *DB) GetMemberQuotas(ctx context.Context) (federation.QuotaOverrides, error) {
+	var q federation.QuotaOverrides
+	for _, f := range []struct {
+		key string
+		dst **int
+	}{
+		{settingSwarmMemberRateKiB, &q.MemberRateKiB},
+		{settingSwarmPerMemberRateKiB, &q.PerMemberRateKiB},
+		{settingSwarmMemberMaxTransfers, &q.MemberMaxTransfers},
+		{settingSwarmPerMemberMaxTransfers, &q.PerMemberMaxTransfers},
+	} {
+		v, err := db.optionalIntOverride(ctx, f.key)
+		if err != nil {
+			return federation.QuotaOverrides{}, err
+		}
+		*f.dst = v
+	}
+	return q, nil
+}
+
+// SetMemberQuotas writes the member-budget overrides; a nil field clears that
+// one back to the config file.
+func (db *DB) SetMemberQuotas(ctx context.Context, q federation.QuotaOverrides) error {
+	for _, f := range []struct {
+		key string
+		v   *int
+	}{
+		{settingSwarmMemberRateKiB, q.MemberRateKiB},
+		{settingSwarmPerMemberRateKiB, q.PerMemberRateKiB},
+		{settingSwarmMemberMaxTransfers, q.MemberMaxTransfers},
+		{settingSwarmPerMemberMaxTransfers, q.PerMemberMaxTransfers},
+	} {
+		if err := db.setIntOverride(ctx, f.key, f.v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// optionalIntOverride is optionalIntSetting in the `int` the config-shaped knobs
+// are written in.
+func (db *DB) optionalIntOverride(ctx context.Context, key string) (*int, error) {
+	n, err := db.optionalIntSetting(ctx, key)
+	if err != nil || n == nil {
+		return nil, err
+	}
+	// A value that does not survive the round trip through int (32-bit
+	// platforms) reads as unset, exactly as Atoi refused it before.
+	v := int(*n)
+	if int64(v) != *n {
+		return nil, nil
+	}
+	return &v, nil
+}
+
+// setIntOverride is setOptionalIntSetting's `int` twin; nil clears the key.
+func (db *DB) setIntOverride(ctx context.Context, key string, v *int) error {
+	var n *int64
+	if v != nil {
+		n = new(int64)
+		*n = int64(*v)
+	}
+	return db.setOptionalIntSetting(ctx, key, n)
 }
 
 // PublishFriendList reports whether this node publishes its own friend-list

@@ -212,6 +212,8 @@ max_upload_mb = 500          # per-request upload cap, in MiB
 #enabled             = false
 #name                = "my madshare"           # defaults to the host name
 # key_file / peers / listen moved to [yggdrasil] above; still accepted here.
+# The six transfer limits below are DEFAULTS: /admin/swarm overrides any of them
+# at runtime, and clearing the field there falls back to what is written here.
 #seed_rate_kib       = 0                        # 0 = unlimited outbound seeding rate (everyone)
 #fetch_rate_kib      = 0                        # 0 = unlimited inbound fetching rate
 #member_rate_kib     = 0                        # KiB/s to all non-friends together

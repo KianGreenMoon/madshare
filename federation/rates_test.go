@@ -23,29 +23,29 @@ func TestSwarmRates_ResolutionOrder(t *testing.T) {
 	cases := []struct {
 		name             string
 		cfgUp, cfgDown   int
-		override         RateOverrides
+		override         LimitOverrides
 		wantUp, wantDown int64 // bytes/sec, 0 = unlimited
 	}{
 		{name: "no override uses the config file", cfgUp: 100, cfgDown: 50,
 			wantUp: 100 * 1024, wantDown: 50 * 1024},
 		{name: "an override wins", cfgUp: 100, cfgDown: 50,
-			override: RateOverrides{Up: intp(10), Down: intp(20)},
+			override: LimitOverrides{Up: intp(10), Down: intp(20)},
 			wantUp:   10 * 1024, wantDown: 20 * 1024},
 		{
 			// The case the three-valued encoding exists for: 0 is not "unset", it
 			// is how one node escapes a cap its config file ships with.
 			name: "an explicit zero override means unlimited", cfgUp: 100, cfgDown: 100,
-			override: RateOverrides{Up: intp(0)},
+			override: LimitOverrides{Up: intp(0)},
 			wantUp:   0, wantDown: 100 * 1024,
 		},
 		{name: "nothing anywhere is unlimited"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			n := newRateTestNode(tc.cfgUp, tc.cfgDown, func(context.Context) (RateOverrides, error) {
+			n := newRateTestNode(tc.cfgUp, tc.cfgDown, func(context.Context) (LimitOverrides, error) {
 				return tc.override, nil
 			})
-			n.refreshRates(context.Background())
+			n.refreshLimits(context.Background())
 			up, down := n.SwarmRates()
 			if up != tc.wantUp || down != tc.wantDown {
 				t.Errorf("rates = up %d down %d, want %d/%d", up, down, tc.wantUp, tc.wantDown)
@@ -59,20 +59,20 @@ func TestSwarmRates_ResolutionOrder(t *testing.T) {
 // database hiccuped — the opposite of what a cap is for.
 func TestSwarmRates_AResolverErrorKeepsTheCapInForce(t *testing.T) {
 	fail := false
-	n := newRateTestNode(1000, 0, func(context.Context) (RateOverrides, error) {
+	n := newRateTestNode(1000, 0, func(context.Context) (LimitOverrides, error) {
 		if fail {
-			return RateOverrides{}, errors.New("database is away")
+			return LimitOverrides{}, errors.New("database is away")
 		}
-		return RateOverrides{Up: intp(10)}, nil
+		return LimitOverrides{Up: intp(10)}, nil
 	})
-	n.refreshRates(context.Background())
+	n.refreshLimits(context.Background())
 	if up, _ := n.SwarmRates(); up != 10*1024 {
 		t.Fatalf("up = %d, want the override", up)
 	}
 
 	fail = true
 	n.ratesAt = time.Time{} // expire the memo
-	n.refreshRates(context.Background())
+	n.refreshLimits(context.Background())
 	if up, _ := n.SwarmRates(); up != 10*1024 {
 		t.Errorf("up = %d after a failed read, want the override still in force", up)
 	}
@@ -81,12 +81,12 @@ func TestSwarmRates_AResolverErrorKeepsTheCapInForce(t *testing.T) {
 // The memo is what keeps a per-read resolution from being a per-read query.
 func TestSwarmRates_ResolverIsMemoized(t *testing.T) {
 	calls := 0
-	n := newRateTestNode(0, 0, func(context.Context) (RateOverrides, error) {
+	n := newRateTestNode(0, 0, func(context.Context) (LimitOverrides, error) {
 		calls++
-		return RateOverrides{}, nil
+		return LimitOverrides{}, nil
 	})
 	for i := 0; i < 50; i++ {
-		n.refreshRates(context.Background())
+		n.refreshLimits(context.Background())
 	}
 	if calls != 1 {
 		t.Errorf("resolver called %d times, want 1 within the memo window", calls)
@@ -145,7 +145,7 @@ func TestAdjustableRate_UnlimitedHasNoLimiter(t *testing.T) {
 // silent holder to the stall watchdog, and would get a healthy peer retired.
 func TestThrottledReadIsNotCountedAsAStall(t *testing.T) {
 	n := newRateTestNode(0, 4, nil) // 4 KiB/s inbound
-	n.refreshRates(context.Background())
+	n.refreshLimits(context.Background())
 	tr := newTransfer("hh", "", "")
 
 	const size = 8 << 10 // 8 KiB at 4 KiB/s ≈ 2s of deliberate pausing
@@ -177,7 +177,7 @@ func TestThrottledReadIsNotCountedAsAStall(t *testing.T) {
 // bucket would multiply the operator's number by however many holders answered.
 func TestInboundCapBindsTheSumOfParallelReads(t *testing.T) {
 	n := newRateTestNode(0, 8, nil) // 8 KiB/s inbound; the bucket starts full
-	n.refreshRates(context.Background())
+	n.refreshLimits(context.Background())
 
 	const each = 8 << 10 // two workers, 16 KiB total: 8 KiB of burst + 8 KiB earned ≈ 1s
 	start := time.Now()
@@ -210,13 +210,13 @@ func TestInboundCapBindsTheSumOfParallelReads(t *testing.T) {
 // friends DO bypass, are a separate chain — see quota.go.)
 func TestNodeCapAppliesWithNoMemberBudget(t *testing.T) {
 	n := newRateTestNode(64, 0, nil)
-	n.refreshRates(context.Background())
+	n.refreshLimits(context.Background())
 	if got := n.upLimiters(context.Background(), nil); len(got) != 1 {
 		t.Errorf("outbound limiters = %d, want the node cap even with no member budget", len(got))
 	}
 	// And nothing is wrapped when the node is unlimited, which is the default.
 	free := newRateTestNode(0, 0, nil)
-	free.refreshRates(context.Background())
+	free.refreshLimits(context.Background())
 	if got := free.upLimiters(context.Background(), nil); len(got) != 0 {
 		t.Errorf("unlimited node produced %d limiters, want none", len(got))
 	}
@@ -224,15 +224,15 @@ func TestNodeCapAppliesWithNoMemberBudget(t *testing.T) {
 
 // newRateTestNode builds the minimum Node the rate machinery needs: no mesh, no
 // store, no listener.
-func newRateTestNode(cfgUpKiB, cfgDownKiB int, resolve func(context.Context) (RateOverrides, error)) *Node {
+func newRateTestNode(cfgUpKiB, cfgDownKiB int, resolve func(context.Context) (LimitOverrides, error)) *Node {
 	return &Node{
-		upRate:       &adjustableRate{},
-		downRate:     &adjustableRate{},
-		cfgUpKiB:     cfgUpKiB,
-		cfgDownKiB:   cfgDownKiB,
-		rateResolver: resolve,
-		traffic:      newTrafficTable(),
-		logger:       log.New(io.Discard, "", 0),
+		upRate:        &adjustableRate{},
+		downRate:      &adjustableRate{},
+		cfgUpKiB:      cfgUpKiB,
+		cfgDownKiB:    cfgDownKiB,
+		limitResolver: resolve,
+		traffic:       newTrafficTable(),
+		logger:        log.New(io.Discard, "", 0),
 	}
 }
 

@@ -109,11 +109,13 @@ func (n *Node) DrainTraffic() []TrafficDelta { return nil }
 
 func (n *Node) DrainPeerTraffic() []PeerTrafficDelta { return nil }
 
-// SwarmRates reports no caps: with the mesh compiled out there is nothing to
-// cap, and the page reports the stored override instead.
+// SwarmRates and MemberQuotas report no caps: with the mesh compiled out there
+// is nothing to cap, and the page reports the stored override instead.
 func (n *Node) SwarmRates() (up, down int64) { return 0, 0 }
 
-func (n *Node) RefreshRates() {}
+func (n *Node) MemberQuotas() QuotaLimits { return QuotaLimits{} }
+
+func (n *Node) RefreshLimits() {}
 
 func (n *Node) IssueCapabilityToken(string, bool) (CapabilityGrant, error) {
 	return CapabilityGrant{}, errCompiledOut

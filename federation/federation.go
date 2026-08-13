@@ -970,14 +970,14 @@ type ProviderStats struct {
 type Option func(*nodeOptions)
 
 type nodeOptions struct {
-	cacheDir     string
-	resolveBlob  func(hash string) (path string, ok bool)
-	rateResolver func(context.Context) (RateOverrides, error)
-	intervals    Intervals
-	timeouts     Timeouts
-	discovery    Discovery
-	mesh         *Mesh
-	token        TokenSource
+	cacheDir      string
+	resolveBlob   func(hash string) (path string, ok bool)
+	limitResolver func(context.Context) (LimitOverrides, error)
+	intervals     Intervals
+	timeouts      Timeouts
+	discovery     Discovery
+	mesh          *Mesh
+	token         TokenSource
 }
 
 // TokenSource supplies the capability token this node presents on its outbound
@@ -1218,24 +1218,69 @@ func WithBlobResolver(f func(hash string) (path string, ok bool)) Option {
 	return func(o *nodeOptions) { o.resolveBlob = f }
 }
 
-// RateOverrides is what a node's runtime settings say about its two caps
-// (docs/architecture/swarm-admin.md). A nil field means "no override — use the
-// config file"; a non-nil 0 means unlimited, which is a real override and how a
-// node escapes a cap its config file ships with.
-type RateOverrides struct {
-	Up   *int // KiB/s
-	Down *int // KiB/s
+// LimitOverrides is what a node's runtime settings say about its limiters
+// (docs/architecture/swarm-admin.md): the two node-wide caps and the member
+// budget. A nil field means "no override — use the config file"; a non-nil 0
+// means unlimited, which is a real override and how a node escapes a cap its
+// config file ships with.
+//
+// One struct rather than one per family because the node resolves them together
+// on a single memo: they are read on the blob path, so a second resolver would
+// be a second query per refresh for no gain.
+type LimitOverrides struct {
+	Up     *int // KiB/s
+	Down   *int // KiB/s
+	Member QuotaOverrides
 }
 
-// WithRateResolver wires the runtime rate overrides (docs/architecture/swarm-admin.md).
+// QuotaLimits is the member budget — what non-friends may cost this node
+// (federation-swarm.md §"What a member may cost us"). Zero is unlimited in
+// every field, which is the shipped default.
+type QuotaLimits struct {
+	MemberRateKiB         int // KiB/s across all non-friends together
+	PerMemberRateKiB      int // KiB/s to any one non-friend
+	MemberMaxTransfers    int // concurrent blob serves, all non-friends
+	PerMemberMaxTransfers int // concurrent blob serves, one non-friend
+}
+
+// QuotaOverrides is the runtime override of each member-budget bound. Nil means
+// inherit the config file; a non-nil 0 is a real override meaning unlimited.
+type QuotaOverrides struct {
+	MemberRateKiB         *int
+	PerMemberRateKiB      *int
+	MemberMaxTransfers    *int
+	PerMemberMaxTransfers *int
+}
+
+// Resolve lays the overrides over a config default, giving the budget actually
+// enforced. One function, so the admin surface and the serving path cannot
+// disagree about what is in force — the same role ResolveCacheCeiling plays for
+// the cache.
+func (q QuotaOverrides) Resolve(cfg QuotaLimits) QuotaLimits {
+	pick := func(override *int, configured int) int {
+		if override != nil {
+			return max(*override, 0)
+		}
+		return max(configured, 0)
+	}
+	return QuotaLimits{
+		MemberRateKiB:         pick(q.MemberRateKiB, cfg.MemberRateKiB),
+		PerMemberRateKiB:      pick(q.PerMemberRateKiB, cfg.PerMemberRateKiB),
+		MemberMaxTransfers:    pick(q.MemberMaxTransfers, cfg.MemberMaxTransfers),
+		PerMemberMaxTransfers: pick(q.PerMemberMaxTransfers, cfg.PerMemberMaxTransfers),
+	}
+}
+
+// WithLimitResolver wires the runtime limit overrides (docs/architecture/swarm-admin.md).
 // The node calls it, memoized, to learn whether an admin has capped this node's
-// uplink or downlink since it started; without it only the config values apply.
+// uplink, downlink or member budget since it started; without it only the config
+// values apply.
 //
 // An injected function rather than a store method on purpose: what it reads
 // lives in the settings table, and this package's whole discipline is that
 // moving bytes requires no database — the same reason WithBlobResolver exists.
-func WithRateResolver(f func(context.Context) (RateOverrides, error)) Option {
-	return func(o *nodeOptions) { o.rateResolver = f }
+func WithLimitResolver(f func(context.Context) (LimitOverrides, error)) Option {
+	return func(o *nodeOptions) { o.limitResolver = f }
 }
 
 // CatalogRendition is one blob of a recording as advertised in a catalog

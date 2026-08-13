@@ -341,7 +341,11 @@ func (h *handler) adminSwarmFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// swarmLimits reports the caps in force and where each came from.
+// swarmLimits reports the caps in force and where each came from: the two
+// node-wide rates, then the four member-budget bounds (docs/architecture/
+// swarm-admin.md §"The member budget"). Both families are three-valued, so each
+// entry says which layer answered as well as what the answer is — an operator
+// asking "what is this node enforcing?" is usually asking exactly that.
 func (h *handler) swarmLimits(r *http.Request) (map[string]any, error) {
 	db, ok := h.repo.(*database.DB)
 	if !ok {
@@ -351,21 +355,18 @@ func (h *handler) swarmLimits(r *http.Request) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	describe := func(override *int, effective int64) map[string]any {
-		out := map[string]any{"source": "config"}
-		if override != nil {
-			out["source"] = "override"
-			out["override_kib"] = *override
-		}
-		// The effective value comes from the node when one runs, since it is the
-		// thing actually holding the bucket; with federation off there is nothing
-		// enforcing anything, and the override is all there is to report.
-		out["effective_kib"] = effective / 1024
-		return out
+	member, err := db.GetMemberQuotas(r.Context())
+	if err != nil {
+		return nil, err
 	}
+	// The effective value comes from the node when one runs, since it is the
+	// thing actually holding the buckets; with federation off there is nothing
+	// enforcing anything, and the override is all there is to report.
 	var upBps, downBps int64
+	var quotas federation.QuotaLimits
 	if h.federation != nil {
 		upBps, downBps = h.federation.SwarmRates()
+		quotas = h.federation.MemberQuotas()
 	} else {
 		if up != nil {
 			upBps = int64(*up) * 1024
@@ -373,10 +374,35 @@ func (h *handler) swarmLimits(r *http.Request) (map[string]any, error) {
 		if down != nil {
 			downBps = int64(*down) * 1024
 		}
+		quotas = member.Resolve(federation.QuotaLimits{})
+	}
+	rate := func(override *int, effectiveBps int64) map[string]any {
+		return describeLimit(override, int(effectiveBps/1024), "_kib")
 	}
 	return map[string]any{
-		"up": describe(up, upBps), "down": describe(down, downBps),
+		"up":   rate(up, upBps),
+		"down": rate(down, downBps),
+		// Named exactly like the [federation] keys they override, so the wire, the
+		// settings table and the TOML all say the same four words.
+		"member_rate_kib":          describeLimit(member.MemberRateKiB, quotas.MemberRateKiB, "_kib"),
+		"per_member_rate_kib":      describeLimit(member.PerMemberRateKiB, quotas.PerMemberRateKiB, "_kib"),
+		"member_max_transfers":     describeLimit(member.MemberMaxTransfers, quotas.MemberMaxTransfers, ""),
+		"per_member_max_transfers": describeLimit(member.PerMemberMaxTransfers, quotas.PerMemberMaxTransfers, ""),
 	}, nil
+}
+
+// describeLimit renders one three-valued knob: which layer answered, the
+// override if there is one, and the value actually in force. The suffix carries
+// the unit into the field names (`_kib` for a rate, nothing for a count), so a
+// client never has to know which of the six it is holding to read it.
+func describeLimit(override *int, effective int, suffix string) map[string]any {
+	out := map[string]any{"source": "config"}
+	if override != nil {
+		out["source"] = "override"
+		out["override"+suffix] = *override
+	}
+	out["effective"+suffix] = effective
+	return out
 }
 
 // adminSwarmLimitsGet handles GET /api/admin/swarm/limits.
@@ -411,11 +437,21 @@ func (h *handler) adminSwarmLimitsSet(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		UpKiB   json.RawMessage `json:"up_kib"`
 		DownKiB json.RawMessage `json:"down_kib"`
+		// The member budget, under the same names the config file uses.
+		MemberRateKiB         json.RawMessage `json:"member_rate_kib"`
+		PerMemberRateKiB      json.RawMessage `json:"per_member_rate_kib"`
+		MemberMaxTransfers    json.RawMessage `json:"member_max_transfers"`
+		PerMemberMaxTransfers json.RawMessage `json:"per_member_max_transfers"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
 	}
 	cur, curDown, err := db.GetSwarmRates(r.Context())
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	curMember, err := db.GetMemberQuotas(r.Context())
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -428,17 +464,44 @@ func (h *handler) adminSwarmLimitsSet(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	member := curMember
+	for _, f := range []struct {
+		raw  json.RawMessage
+		dst  **int
+		name string
+	}{
+		{body.MemberRateKiB, &member.MemberRateKiB, "member_rate_kib"},
+		{body.PerMemberRateKiB, &member.PerMemberRateKiB, "per_member_rate_kib"},
+		{body.MemberMaxTransfers, &member.MemberMaxTransfers, "member_max_transfers"},
+		{body.PerMemberMaxTransfers, &member.PerMemberMaxTransfers, "per_member_max_transfers"},
+	} {
+		v, ok := swarmRateField(w, f.raw, *f.dst, f.name)
+		if !ok {
+			return
+		}
+		*f.dst = v
+	}
 	if err := db.SetSwarmRates(r.Context(), up, down); err != nil {
 		log.Printf("set swarm rates: %v", err)
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if err := db.SetMemberQuotas(r.Context(), member); err != nil {
+		log.Printf("set member quotas: %v", err)
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
 	// Put it in force now rather than whenever the node next resolves: someone
 	// setting a cap is usually watching a link that is saturated right now.
 	if h.federation != nil {
-		h.federation.RefreshRates()
+		h.federation.RefreshLimits()
 	}
-	h.audit(r.Context(), "swarm.limits", "", swarmRateAudit("up", up)+" "+swarmRateAudit("down", down))
+	h.audit(r.Context(), "swarm.limits", "",
+		swarmRateAudit("up", up)+" "+swarmRateAudit("down", down)+
+			" "+swarmRateAudit("member_rate", member.MemberRateKiB)+
+			" "+swarmRateAudit("per_member_rate", member.PerMemberRateKiB)+
+			" "+swarmRateAudit("member_max", member.MemberMaxTransfers)+
+			" "+swarmRateAudit("per_member_max", member.PerMemberMaxTransfers))
 
 	limits, err := h.swarmLimits(r)
 	if err != nil {
@@ -449,8 +512,10 @@ func (h *handler) adminSwarmLimitsSet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, limits)
 }
 
-// swarmRateField decodes one three-valued rate field. ok is false when the
-// caller has already been answered with a 400.
+// swarmRateField decodes one three-valued limit field. ok is false when the
+// caller has already been answered with a 400. The unit in the refusal comes
+// from the field's own name, so the six knobs share one decoder without any of
+// them telling a client the wrong thing about itself.
 func swarmRateField(w http.ResponseWriter, raw json.RawMessage, current *int, name string) (*int, bool) {
 	if len(raw) == 0 {
 		return current, true // absent: unchanged
@@ -460,8 +525,12 @@ func swarmRateField(w http.ResponseWriter, raw json.RawMessage, current *int, na
 	}
 	var n int
 	if err := json.Unmarshal(raw, &n); err != nil || n < 0 {
+		unit := "value"
+		if strings.HasSuffix(name, "_kib") {
+			unit = "KiB/s value"
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"ok": false, "error": name + " must be null (inherit the config) or a KiB/s value ≥ 0"})
+			"ok": false, "error": name + " must be null (inherit the config) or a " + unit + " ≥ 0"})
 		return nil, false
 	}
 	return &n, true

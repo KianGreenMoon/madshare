@@ -308,6 +308,70 @@ func TestSwarmLimits_WriteTakesEffectImmediately(t *testing.T) {
 	}
 }
 
+// The member budget rides the same endpoint and the same three-valued rule.
+// What this pins is that the two families are INDEPENDENT: a write naming only
+// member fields must leave the node-wide caps alone and vice versa, since the
+// modal sends whichever ones the operator touched.
+func TestSwarmLimits_MemberQuotas(t *testing.T) {
+	fed := &fakeFederation{}
+	srv, db := newSwarmTestServer(t, fed)
+	ctx := context.Background()
+
+	if code, _ := swarmPOST(t, srv.URL+"/api/admin/swarm/limits", `{"up_kib":500}`); code != 200 {
+		t.Fatal("set rates failed")
+	}
+	if code, body := swarmPOST(t, srv.URL+"/api/admin/swarm/limits",
+		`{"member_rate_kib":2048,"per_member_rate_kib":512,"member_max_transfers":16,"per_member_max_transfers":4}`); code != 200 {
+		t.Fatalf("set quotas = %d %v", code, body)
+	}
+	q, err := db.GetMemberQuotas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.MemberRateKiB == nil || *q.MemberRateKiB != 2048 ||
+		q.PerMemberRateKiB == nil || *q.PerMemberRateKiB != 512 ||
+		q.MemberMaxTransfers == nil || *q.MemberMaxTransfers != 16 ||
+		q.PerMemberMaxTransfers == nil || *q.PerMemberMaxTransfers != 4 {
+		t.Fatalf("stored quotas = %+v", q)
+	}
+	if up, _, _ := db.GetSwarmRates(ctx); up == nil || *up != 500 {
+		t.Errorf("up = %v after a quota-only write, want 500 unchanged", up)
+	}
+
+	// Null clears one bound back to the config file without disturbing its
+	// three siblings.
+	if code, _ := swarmPOST(t, srv.URL+"/api/admin/swarm/limits", `{"member_max_transfers":null}`); code != 200 {
+		t.Fatal("clear failed")
+	}
+	q, _ = db.GetMemberQuotas(ctx)
+	if q.MemberMaxTransfers != nil {
+		t.Errorf("member_max_transfers = %v after null, want no override", q.MemberMaxTransfers)
+	}
+	if q.PerMemberMaxTransfers == nil || *q.PerMemberMaxTransfers != 4 {
+		t.Errorf("per_member_max_transfers = %v, want 4 unchanged", q.PerMemberMaxTransfers)
+	}
+	if code, _ := swarmPOST(t, srv.URL+"/api/admin/swarm/limits", `{"per_member_rate_kib":-1}`); code != 400 {
+		t.Error("a negative member rate should be a 400")
+	}
+
+	// And the readout says which layer answered, for the counts as well as the
+	// rates — an operator asking what a running node enforces is usually asking
+	// exactly that.
+	fed.quotas = federation.QuotaLimits{MemberRateKiB: 2048, PerMemberMaxTransfers: 4}
+	body := swarmGET(t, srv.URL+"/api/admin/swarm/limits")
+	rate, _ := body["member_rate_kib"].(map[string]any)
+	if rate["source"] != "override" || rate["effective_kib"].(float64) != 2048 {
+		t.Errorf("member_rate_kib = %v, want the override the node is enforcing", rate)
+	}
+	count, _ := body["member_max_transfers"].(map[string]any)
+	if count["source"] != "config" {
+		t.Errorf("member_max_transfers source = %v, want config after the clear", count["source"])
+	}
+	if _, ok := count["effective_kib"]; ok {
+		t.Error("a transfer count was reported in KiB — the unit comes from the field name")
+	}
+}
+
 // The regression this endpoint split exists to prevent: posting rates must not
 // touch the seeding policy, whose handler decodes its switches as plain bools
 // with hard-coded defaults.

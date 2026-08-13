@@ -4,6 +4,8 @@ package federation
 
 import (
 	"fmt"
+	"io"
+	"log"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -20,7 +22,7 @@ import (
 func TestQuotasBothCapsBind(t *testing.T) {
 	// Two serves each, four in total: one node can saturate itself without
 	// touching the ceiling, and three nodes cannot exceed it together.
-	q := newQuotas(0, 0, 4, 2)
+	q := newQuotas(QuotaLimits{MemberMaxTransfers: 4, PerMemberMaxTransfers: 2})
 
 	var releases []func()
 	admit := func(key string) bool {
@@ -70,7 +72,7 @@ func TestQuotasBothCapsBind(t *testing.T) {
 // TestQuotasUnlimitedByDefault: the shipped configuration is all zeroes, and it
 // must admit everything (owner decision 2026-08-01 — the caps are opt-in).
 func TestQuotasUnlimitedByDefault(t *testing.T) {
-	q := newQuotas(0, 0, 0, 0)
+	q := newQuotas(QuotaLimits{})
 	for i := 0; i < 64; i++ {
 		rls, _, ok := q.admit(fmt.Sprintf("node-%d", i%3))
 		if !ok {
@@ -89,7 +91,7 @@ func TestQuotasUnlimitedByDefault(t *testing.T) {
 // TestQuotasRateLimitersAreStable: a requester's own bucket has to survive its
 // fetches, or the rate limit is one a caller can reset by reconnecting.
 func TestQuotasRateLimitersAreStable(t *testing.T) {
-	q := newQuotas(512, 128, 0, 0)
+	q := newQuotas(QuotaLimits{MemberRateKiB: 512, PerMemberRateKiB: 128})
 
 	rls, release, ok := q.admit("a")
 	if !ok {
@@ -119,7 +121,7 @@ func TestQuotasRateLimitersAreStable(t *testing.T) {
 // it needs an expiry — but one that cannot drop a node mid-fetch, and does not
 // hand back a fresh bucket the moment a fetch ends.
 func TestQuotasPruneKeepsBusyAndRecentNodes(t *testing.T) {
-	q := newQuotas(0, 0, 0, 0)
+	q := newQuotas(QuotaLimits{})
 	_, _, _ = q.admit("busy") // never released: in flight
 
 	q.mu.Lock()
@@ -149,7 +151,7 @@ func TestQuotasPruneKeepsBusyAndRecentNodes(t *testing.T) {
 // under the global cap alone. This is the anti-starvation half of the design —
 // without it the nodes an admin chose queue behind the ones the graph let in.
 func TestAdmitServeExemptsFriends(t *testing.T) {
-	n := &Node{quotas: newQuotas(0, 0, 1, 1)}
+	n := quotaTestNode(QuotaLimits{MemberMaxTransfers: 1, PerMemberMaxTransfers: 1})
 	addr, err := AddrForKeyHex(nodeKeyN(0x51))
 	if err != nil {
 		t.Fatalf("derive address: %v", err)
@@ -179,5 +181,84 @@ func TestAdmitServeExemptsFriends(t *testing.T) {
 	n.quotas.mu.Unlock()
 	if active != 1 {
 		t.Errorf("class active = %d, want 1 — friends must not consume member slots", active)
+	}
+}
+
+// quotaTestNode builds the minimum Node the member budget needs, in the shape
+// Start builds it: the config layer and the live budget agree, because a serve
+// resolves the limits before admitting and would otherwise reset the budget the
+// test just set to a cfgQuota nobody filled in.
+func quotaTestNode(l QuotaLimits) *Node {
+	return &Node{
+		cfgQuota: l,
+		quotas:   newQuotas(l),
+		upRate:   &adjustableRate{},
+		downRate: &adjustableRate{},
+		logger:   log.New(io.Discard, "", 0),
+	}
+}
+
+// TestQuotasAreLive: the four bounds are runtime knobs (docs/architecture/
+// swarm-admin.md §"The member budget"), so a budget written while the node runs
+// has to bind the requesters already being served — the operator tightening it
+// is watching the transfer that made them tighten it.
+func TestQuotasAreLive(t *testing.T) {
+	q := newQuotas(QuotaLimits{PerMemberRateKiB: 128})
+	rls, release, ok := q.admit("a")
+	if !ok || len(rls) != 1 {
+		t.Fatalf("admit = %v with %d limiters, want one per-member bucket", ok, len(rls))
+	}
+	defer release()
+	bucket := rls[0]
+
+	// Raising the per-member rate must reach the bucket the requester is already
+	// writing through, not just the next one handed out.
+	q.setLimits(QuotaLimits{PerMemberRateKiB: 256, MemberMaxTransfers: 1})
+	bucket.mu.Lock()
+	rate := bucket.rate
+	bucket.mu.Unlock()
+	if rate != 256*1024 {
+		t.Errorf("live bucket rate = %.0f, want the new 256 KiB/s", rate)
+	}
+
+	// And the new ceiling refuses the next admission: one serve is in flight.
+	if _, _, ok := q.admit("b"); ok {
+		t.Error("a second serve was admitted past a ceiling set moments ago")
+	}
+
+	// Clearing the budget back to unlimited swaps the bucket out entirely rather
+	// than leaving a zero-rate limiter in the path.
+	q.setLimits(QuotaLimits{})
+	if rl := q.classRate.limiter(); rl != nil {
+		t.Error("the class bucket survived a return to unlimited")
+	}
+	if got := q.current(); got != (QuotaLimits{}) {
+		t.Errorf("current() = %+v, want the cleared budget", got)
+	}
+}
+
+// TestQuotaOverridesResolve: the three-valued encoding, which is the whole
+// reason these are pointers — nil inherits the config, and a stored 0 is a real
+// override meaning unlimited (docs/architecture/swarm-admin.md §"Which layers a
+// knob gets").
+func TestQuotaOverridesResolve(t *testing.T) {
+	cfg := QuotaLimits{MemberRateKiB: 2048, PerMemberRateKiB: 512,
+		MemberMaxTransfers: 16, PerMemberMaxTransfers: 4}
+
+	if got := (QuotaOverrides{}).Resolve(cfg); got != cfg {
+		t.Errorf("no overrides = %+v, want the config file", got)
+	}
+
+	zero, pinned := 0, 8
+	got := QuotaOverrides{MemberRateKiB: &zero, MemberMaxTransfers: &pinned}.Resolve(cfg)
+	if got.MemberRateKiB != 0 {
+		t.Error("an explicit 0 was read as unset — it is how a node escapes a cap " +
+			"its config file ships with")
+	}
+	if got.MemberMaxTransfers != 8 {
+		t.Errorf("member_max_transfers = %d, want the override", got.MemberMaxTransfers)
+	}
+	if got.PerMemberRateKiB != 512 || got.PerMemberMaxTransfers != 4 {
+		t.Error("an untouched field lost its config value")
 	}
 }

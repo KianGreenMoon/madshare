@@ -111,19 +111,20 @@ type Node struct {
 	blobClient *http.Client
 	// The node's two live rate caps (rates.go), each adjustable at runtime:
 	// outbound (what seeding costs the uplink) and inbound (what fetching costs
-	// the downlink — a cap that did not exist before the swarm page). cfg*KiB are
-	// the config-file values they fall back to when no override is set, and
-	// rateResolver reads the override without this package knowing what a
-	// database is.
+	// the downlink — a cap that did not exist before the swarm page). cfg*KiB and
+	// cfgQuota are the config-file values every limiter falls back to when no
+	// override is set, and limitResolver reads the overrides without this package
+	// knowing what a database is.
 	upRate, downRate     *adjustableRate
 	cfgUpKiB, cfgDownKiB int
+	cfgQuota             QuotaLimits
 	rateMu               sync.Mutex
 	ratesAt              time.Time
-	rateResolver         func(context.Context) (RateOverrides, error)
+	limitResolver        func(context.Context) (LimitOverrides, error)
 	// quotas bounds what a requester we have no direct relationship with may
 	// cost us — bytes and concurrent serves, per node and across the class
-	// (F7 item 6, quota.go). Friends bypass it; all-zero config admits
-	// everything, which is the shipped default.
+	// (F7 item 6, quota.go). Friends bypass it; all-zero admits everything, which
+	// is the shipped default. Live: it resolves on the same memo as the rates.
 	quotas       *quotas
 	manifestMu   sync.Mutex
 	manifests    map[string]*manifestEntry
@@ -274,6 +275,14 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 			name = CleanPeerName(host)
 		}
 	}
+	// The config layer of the member budget; runtime overrides are laid over it
+	// on every limit refresh (quota.go, rates.go).
+	cfgQuota := QuotaLimits{
+		MemberRateKiB:         fc.MemberRateKiB,
+		PerMemberRateKiB:      fc.PerMemberRateKiB,
+		MemberMaxTransfers:    fc.MemberMaxTransfers,
+		PerMemberMaxTransfers: fc.PerMemberMaxTransfers,
+	}
 	transferCtx, transferCancel := context.WithCancel(context.Background())
 	n := &Node{
 		signKey:        mesh.signKey,
@@ -298,13 +307,13 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 		downRate:       &adjustableRate{},
 		cfgUpKiB:       fc.SeedRateKiB,
 		cfgDownKiB:     fc.FetchRateKiB,
-		rateResolver:   o.rateResolver,
-		quotas: newQuotas(fc.MemberRateKiB, fc.PerMemberRateKiB,
-			fc.MemberMaxTransfers, fc.PerMemberMaxTransfers),
-		manifests:   map[string]*manifestEntry{},
-		lastTouch:   map[int64]time.Time{},
-		floorPinged: map[string]time.Time{},
-		traffic:     newTrafficTable(),
+		cfgQuota:       cfgQuota,
+		limitResolver:  o.limitResolver,
+		quotas:         newQuotas(cfgQuota),
+		manifests:      map[string]*manifestEntry{},
+		lastTouch:      map[int64]time.Time{},
+		floorPinged:    map[string]time.Time{},
+		traffic:        newTrafficTable(),
 	}
 	// Self-health signal: the netstack inbound reader's liveness (the unambiguous
 	// signal — a self-ping can't test it, HandleLocal loops local traffic inside

@@ -253,6 +253,12 @@ type FederationConfig struct {
 	// All default to 0 = unlimited (owner decision, 2026-08-01: opt-in, because a
 	// handful of friends wants none of this and a guessed default would tax the
 	// common case). Negative is clamped to 0 with a warning.
+	//
+	// These four are the DEFAULT layer only: /admin/swarm overrides any of them
+	// at runtime (settings keys `swarm.*` of the same name), and clearing an
+	// override there falls back to what is written here. What a running node
+	// enforces is therefore what GET /api/admin/swarm/limits reports, not
+	// necessarily what this file says.
 
 	// MemberRateKiB caps the outbound rate, in KiB/s, served to all non-friends
 	// combined.

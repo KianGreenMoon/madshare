@@ -104,12 +104,21 @@ confirmOK.addEventListener('click', async () => {
 });
 
 // ── Limits modal ─────────────────────────────────────────────────────────────
-// The one editor for the node's two caps. Empty = inherit the config file,
-// 0 = unlimited; both are three-valued on the wire for the same reason.
+// The one editor for every transfer limit this node has: its two node-wide caps
+// and the four member-budget bounds. Empty = inherit the config file,
+// 0 = unlimited; all six are three-valued on the wire for the same reason.
 const limitsModal = document.getElementById('limitsModal');
 const limitUp = document.getElementById('limitUp');
 const limitDown = document.getElementById('limitDown');
 const limitWarn = document.getElementById('limitWarn');
+// The member budget, keyed by the wire field each input writes — so the save
+// path never repeats the mapping and a renamed field breaks in one place.
+const memberFields = {
+  member_rate_kib: document.getElementById('limitMemberRate'),
+  per_member_rate_kib: document.getElementById('limitPerMemberRate'),
+  member_max_transfers: document.getElementById('limitMemberMax'),
+  per_member_max_transfers: document.getElementById('limitPerMemberMax'),
+};
 
 // The floor below which a node stops being useful rather than merely slow:
 // peers' stall watchdogs fire, the swarm de-ranks it, and the bytes it did send
@@ -138,6 +147,13 @@ limitDown.addEventListener('input', checkFloor);
 function openLimits(limits) {
   limitUp.value = limits?.up?.override_kib ?? '';
   limitDown.value = limits?.down?.override_kib ?? '';
+  // Only an OVERRIDE prefills a field: a config value shown in the box would be
+  // saved back as an override on the next Save, quietly pinning a number the
+  // operator only ever read. The placeholder says where the blank comes from.
+  for (const [name, input] of Object.entries(memberFields)) {
+    const side = limits?.[name];
+    input.value = (name.endsWith('_kib') ? side?.override_kib : side?.override) ?? '';
+  }
   checkFloor();
   limitsModal.classList.remove('hidden');
 }
@@ -147,13 +163,15 @@ document.getElementById('limitsSave').addEventListener('click', async () => {
   // An empty field is an explicit null — "go back to the config file" — which is
   // a different request from omitting the field.
   const parse = input => (input.value.trim() === '' ? null : Math.max(0, Math.round(Number(input.value))));
+  const body = { up_kib: parse(limitUp), down_kib: parse(limitDown) };
+  for (const [name, input] of Object.entries(memberFields)) body[name] = parse(input);
   try {
     await req(`${API}/api/admin/swarm/limits`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ up_kib: parse(limitUp), down_kib: parse(limitDown) }),
+      body: JSON.stringify(body),
     });
     limitsModal.classList.add('hidden');
-    toast('Rate limits updated.', 'success');
+    toast('Transfer limits updated.', 'success');
     loadSummary();
   } catch (err) { toast(err.message, 'error'); }
 });
@@ -166,6 +184,24 @@ function rateText(side) {
   const kib = side.effective_kib || 0;
   const where = side.source === 'override' ? 'set here' : 'from config';
   return kib > 0 ? `${kib} KiB/s (${where})` : `unlimited (${where})`;
+}
+
+// The member budget as one line. Four numbers, all usually unlimited, would be
+// wallpaper — so the line names only the bounds that are actually set, and says
+// plainly when none are. Friends are named every time: a reader seeing "members"
+// throttled should not have to remember who that excludes.
+function memberText(limits) {
+  const val = name => (name.endsWith('_kib')
+    ? limits?.[name]?.effective_kib
+    : limits?.[name]?.effective) || 0;
+  const parts = [];
+  if (val('member_rate_kib')) parts.push(`${val('member_rate_kib')} KiB/s together`);
+  if (val('per_member_rate_kib')) parts.push(`${val('per_member_rate_kib')} KiB/s each`);
+  if (val('member_max_transfers')) parts.push(`${val('member_max_transfers')} transfers together`);
+  if (val('per_member_max_transfers')) parts.push(`${val('per_member_max_transfers')} transfers each`);
+  return parts.length
+    ? `Non-friends — ${parts.join(' · ')} (friends are exempt)`
+    : 'Non-friends — no budget set; friends are exempt from any';
 }
 
 async function loadSummary() {
@@ -195,7 +231,11 @@ async function loadSummary() {
   ];
 
   const limitsLine = el('div', { class: 'swarm-limits' }, [
-    el('span', {}, [`Limits — up: ${rateText(s.limits?.up)} · down: ${rateText(s.limits?.down)}`]),
+    el('span', {}, [
+      `Limits — up: ${rateText(s.limits?.up)} · down: ${rateText(s.limits?.down)}`,
+      el('br'),
+      el('span', { class: 'muted', text: memberText(s.limits) }),
+    ]),
     ...(canManage ? [el('button', {
       class: 'btn btn-neutral btn-sm', type: 'button',
       onclick: () => openLimits(lastLimits),

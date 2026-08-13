@@ -23,7 +23,9 @@ import (
 //
 // Resolution is `runtime override → config → unlimited`. The override lives in
 // the database, which this package deliberately knows nothing about: it arrives
-// through WithRateResolver, the same shape as WithBlobResolver.
+// through WithLimitResolver, the same shape as WithBlobResolver. The member
+// budget in quota.go rides the same resolver and the same memo — it is the same
+// operator, watching the same page, for the same reason.
 
 // rateMemoTTL bounds how often the override is read. Every blob request already
 // reads the seeding policy; this must not add a second per-request query, and
@@ -73,33 +75,35 @@ func (a *adjustableRate) bytesPerSec() int64 {
 	return a.rate
 }
 
-// RateOverrides lives in federation.go, beside the other shapes that cross into
+// LimitOverrides lives in federation.go, beside the other shapes that cross into
 // `api` and main: the option that carries it is declared there too, so both must
 // exist under -tags nofederation, where this file is gone.
 
-// refreshRates re-resolves both caps if the memo has expired. Cheap enough to
+// refreshLimits re-resolves every cap if the memo has expired: the two node-wide
+// rates and the four member-budget bounds (quota.go), which share this memo
+// because they share a resolver and are read on the same paths. Cheap enough to
 // call per read: an unexpired memo is one mutex and a time comparison.
 //
 // The stamp is taken BEFORE the resolver runs, so a burst of concurrent chunk
 // reads produces one query rather than one each.
-func (n *Node) refreshRates(ctx context.Context) {
+func (n *Node) refreshLimits(ctx context.Context) {
 	n.rateMu.Lock()
 	if !n.ratesAt.IsZero() && time.Since(n.ratesAt) < rateMemoTTL {
 		n.rateMu.Unlock()
 		return
 	}
 	n.ratesAt = time.Now()
-	resolve := n.rateResolver
+	resolve := n.limitResolver
 	n.rateMu.Unlock()
 
-	up, down := n.cfgUpKiB, n.cfgDownKiB
+	up, down, member := n.cfgUpKiB, n.cfgDownKiB, n.cfgQuota
 	if resolve != nil {
 		ov, err := resolve(ctx)
 		if err != nil {
 			// Keep whatever is in force and say so. Falling back to the config
 			// values silently would quietly undo an operator's throttle the moment
 			// the database hiccuped, which is the opposite of what a cap is for.
-			n.logger.Printf("federation: read swarm rate overrides: %v", err)
+			n.logger.Printf("federation: read swarm limit overrides: %v", err)
 			return
 		}
 		if ov.Up != nil {
@@ -108,9 +112,11 @@ func (n *Node) refreshRates(ctx context.Context) {
 		if ov.Down != nil {
 			down = *ov.Down
 		}
+		member = ov.Member.Resolve(n.cfgQuota)
 	}
 	n.upRate.set(int64(up) * 1024)
 	n.downRate.set(int64(down) * 1024)
+	n.quotas.setLimits(member)
 }
 
 // upLimiters is the whole outbound rate policy for one blob response, resolved
@@ -118,7 +124,7 @@ func (n *Node) refreshRates(ctx context.Context) {
 // whatever the member budget added for this requester. Empty means nothing is
 // capped, and then the response writer is not wrapped at all.
 func (n *Node) upLimiters(ctx context.Context, extra []*rateLimiter) []*rateLimiter {
-	n.refreshRates(ctx)
+	n.refreshLimits(ctx)
 	rl := n.upRate.limiter()
 	if rl == nil {
 		return extra
@@ -130,7 +136,7 @@ func (n *Node) upLimiters(ctx context.Context, extra []*rateLimiter) []*rateLimi
 // There is no per-requester counterpart: the peers we fetch FROM are not
 // spending our budget on their own behalf, we are.
 func (n *Node) downLimiter(ctx context.Context) *rateLimiter {
-	n.refreshRates(ctx)
+	n.refreshLimits(ctx)
 	return n.downRate.limiter()
 }
 
@@ -145,17 +151,30 @@ func (n *Node) downLimiter(ctx context.Context) *rateLimiter {
 // node ever asks. Memoized like every other resolution, so a page that polls
 // costs one query every few seconds.
 func (n *Node) SwarmRates() (up, down int64) {
-	n.refreshRates(context.Background())
+	n.refreshLimits(context.Background())
 	return n.upRate.bytesPerSec(), n.downRate.bytesPerSec()
 }
 
-// RefreshRates re-reads the overrides NOW, past the memo. The admin surface
+// MemberQuotas reports the member budget in force — the same question SwarmRates
+// answers for the node-wide caps, and answered the same way: by asking the thing
+// that actually holds the buckets, resolved through override → config, rather
+// than by reading either layer on its own.
+//
+// Before this existed, nothing on the node could be asked at all: the quotas
+// were built once in Start, so an operator could not confirm what a running node
+// enforced without reading the TOML it had started with.
+func (n *Node) MemberQuotas() QuotaLimits {
+	n.refreshLimits(context.Background())
+	return n.quotas.current()
+}
+
+// RefreshLimits re-reads the overrides NOW, past the memo. The admin surface
 // calls it after writing a cap so the new value is in force immediately rather
 // than up to rateMemoTTL later — a rate limit that takes effect "soon" is not
 // what someone watching a saturated link is asking for.
-func (n *Node) RefreshRates() {
+func (n *Node) RefreshLimits() {
 	n.rateMu.Lock()
 	n.ratesAt = time.Time{}
 	n.rateMu.Unlock()
-	n.refreshRates(context.Background())
+	n.refreshLimits(context.Background())
 }

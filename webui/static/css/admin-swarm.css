@@ -147,7 +147,14 @@
 .swarm-live h4, .swarm-holders h4 { margin: 0 0 4px; font-size: 13px; }
 .swarm-provider, .swarm-holder { font-size: 12.5px; }
 
-/* Limits modal */
+/* Limits modal. Two families of knob live in it — the node's own line and the
+   member budget — so each gets a heading; without one the four member fields
+   read as more rate caps. */
+.swarm-subhead {
+  margin: var(--space-4) 0 var(--space-2); font-size: 14px;
+  border-top: 1px solid var(--border); padding-top: var(--space-3);
+}
+.swarm-subhead:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
 .swarm-field { display: grid; gap: 4px; margin: var(--space-3) 0; max-width: 18rem; }
 .swarm-field span { font-size: 13px; }
 .swarm-warn {

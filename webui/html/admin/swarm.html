@@ -73,9 +73,10 @@
 <div class="modal-backdrop hidden" id="limitsModal" role="dialog" aria-modal="true" aria-labelledby="limitsTitle">
   <div class="modal modal--wide">
     <div class="modal-head">
-      <h2 id="limitsTitle">Rate limits</h2>
+      <h2 id="limitsTitle">Transfer limits</h2>
     </div>
     <div class="modal-body">
+      <h3 class="swarm-subhead">This node's line</h3>
       <p class="muted">
         These cap what this node's swarm traffic costs your line. They apply to
         <strong>everyone, friends included</strong> &mdash; they describe your
@@ -94,8 +95,61 @@
 
       <p class="swarm-warn hidden" id="limitWarn"></p>
 
+      <h3 class="swarm-subhead">Member budget</h3>
+      <p class="muted">
+        The caps above describe your pipe. These describe <em>who may spend it</em>:
+        they bound what nodes you have <strong>not</strong> friended &mdash; members
+        of your community, guests, a device carrying a token &mdash; may cost you.
+        <strong>Direct friends bypass all four</strong>, because a friend is a
+        decision you made and should not queue behind the ones the graph let in.
+        Empty means the value from <code>madshare.toml</code>; <strong>0</strong>
+        is unlimited.
+      </p>
+
+      <label class="swarm-field">
+        <span>All non-friends together &mdash; KiB/s</span>
+        <input type="number" id="limitMemberRate" min="0" step="1" placeholder="from config">
+      </label>
+      <label class="swarm-field">
+        <span>Any one non-friend &mdash; KiB/s</span>
+        <input type="number" id="limitPerMemberRate" min="0" step="1" placeholder="from config">
+      </label>
+      <label class="swarm-field">
+        <span>All non-friends together &mdash; concurrent transfers</span>
+        <input type="number" id="limitMemberMax" min="0" step="1" placeholder="from config">
+      </label>
+      <label class="swarm-field">
+        <span>Any one non-friend &mdash; concurrent transfers</span>
+        <input type="number" id="limitPerMemberMax" min="0" step="1" placeholder="from config">
+      </label>
+
       <details class="swarm-help">
-        <summary>How big should these be?</summary>
+        <summary>What do the member limits do?</summary>
+        <p>
+          A node over its budget is told <code>429&nbsp;busy</code> before we even
+          look up what it asked for &mdash; so the refusal says nothing about
+          whether we hold the file. A healthy fetcher takes that as
+          &ldquo;ask another holder&rdquo; and goes elsewhere; one with no other
+          holder waits the congestion out. Being unable to serve right now is
+          honest information, not an error.
+        </p>
+        <p>
+          The <strong>together</strong> limits are the ones that actually bound
+          harm. A per-node limit is what a flood of fresh identities defeats
+          &mdash; each forged key simply buys another quota &mdash; while the
+          class ceiling is one number they all share. The per-node halves are
+          fairness <em>within</em> that ceiling: one member cannot take the whole
+          budget.
+        </p>
+        <p>
+          Concurrency is worth setting even if the rates stay open: a fetching
+          node opens parallel requests <em>by design</em>, so it is transfers, not
+          bytes, that one member most easily multiplies.
+        </p>
+      </details>
+
+      <details class="swarm-help">
+        <summary>How big should the rate caps be?</summary>
         <p>
           Size them against your <strong>uplink</strong>, not the download speed
           your ISP quotes: <code>KiB/s &asymp; Mbit/s &times; 128</code>. Leaving

@@ -685,12 +685,16 @@ func (i *Instance) startMesh() error {
 			return ""
 		}),
 		federation.WithBlobResolver(resolve),
-		// The node's rate caps are editable at runtime on /admin/swarm; this is
-		// how it learns about a change without a restart. Memoized inside the
-		// node, so this runs at most once every few seconds.
-		federation.WithRateResolver(func(ctx context.Context) (federation.RateOverrides, error) {
+		// The node's rate caps and member budget are editable at runtime on
+		// /admin/swarm; this is how it learns about a change without a restart.
+		// Memoized inside the node, so this runs at most once every few seconds.
+		federation.WithLimitResolver(func(ctx context.Context) (federation.LimitOverrides, error) {
 			up, down, err := i.db.GetSwarmRates(ctx)
-			return federation.RateOverrides{Up: up, Down: down}, err
+			if err != nil {
+				return federation.LimitOverrides{}, err
+			}
+			member, err := i.db.GetMemberQuotas(ctx)
+			return federation.LimitOverrides{Up: up, Down: down, Member: member}, err
 		}),
 		federation.WithDiscovery(federation.Discovery{
 			Budget: cfg.Federation.DiscoveryBudget,

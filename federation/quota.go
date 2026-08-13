@@ -37,6 +37,13 @@ import (
 // under the global cap alone; that split is the anti-starvation rule as much as
 // the anti-abuse one, since otherwise the nodes an admin chose queue behind the
 // ones the graph let in.
+//
+// All four are three-layer knobs — runtime override → config → unlimited — and
+// resolve on the same memo as the node-wide rates (rates.go). They shipped
+// config-only, which put the one limiter family an operator reaches for while
+// watching a node be drained behind an edit-and-restart; the layer rule in
+// docs/architecture/swarm-admin.md §"Which layers a knob gets" is what said that
+// was the wrong shape.
 
 // quotaIdleTTL is how long a per-requester entry survives with nothing in
 // flight. The table is keyed by mesh address, so without expiry it would grow
@@ -53,14 +60,20 @@ const quotaSweepThreshold = 1024
 
 // quotas bounds what non-friends may cost this node. A nil *quotas, or one built
 // from all-zero limits, admits everything — which is the shipped default.
+//
+// The four bounds are LIVE: an admin edits them on /admin/swarm and setLimits
+// applies the new budget to the buckets already running (rates.go, §Rate limits
+// — "a node being drained by members is exactly an operator watching
+// something"). That is why the rates are adjustableRate and not bare limiters:
+// crossing to or from unlimited swaps the bucket in or out, and a change between
+// two positive rates keeps the tokens already accumulated, so nobody buys a
+// fresh burst by provoking an edit.
 type quotas struct {
-	classRate *rateLimiter // bytes/sec across all non-friends (nil = unlimited)
-	nodeRate  int64        // bytes/sec per non-friend (0 = unlimited)
-	classMax  int          // concurrent blob serves across all non-friends
-	nodeMax   int          // concurrent blob serves per non-friend
+	classRate *adjustableRate // bytes/sec across all non-friends
 
 	mu     sync.Mutex
-	active int // class-wide serves in flight
+	limits QuotaLimits // KiB/s and counts in force; 0 = unlimited
+	active int         // class-wide serves in flight
 	nodes  map[string]*quotaNode
 }
 
@@ -68,21 +81,52 @@ type quotas struct {
 // across fetches so the bucket cannot be reset by reconnecting.
 type quotaNode struct {
 	active int
-	rate   *rateLimiter
+	rate   *adjustableRate
 	seen   time.Time
 }
 
 // newQuotas builds the member budget from config. All-zero yields a *quotas that
 // admits everything and allocates no limiters — the unlimited default costs one
 // nil check per request.
-func newQuotas(classKiB, nodeKiB, classMax, nodeMax int) *quotas {
-	return &quotas{
-		classRate: newRateLimiter(int64(classKiB) * 1024),
-		nodeRate:  int64(nodeKiB) * 1024,
-		classMax:  max(classMax, 0),
-		nodeMax:   max(nodeMax, 0),
-		nodes:     map[string]*quotaNode{},
+func newQuotas(l QuotaLimits) *quotas {
+	q := &quotas{classRate: &adjustableRate{}, nodes: map[string]*quotaNode{}}
+	q.setLimits(l)
+	return q
+}
+
+// setLimits puts a new budget in force, including on the requesters already
+// being served: a cap an operator has just tightened must bind the transfer that
+// made them tighten it, not only the next one. Concurrency changes are not
+// retroactive in the other direction — a lowered ceiling refuses the next
+// admission rather than cutting a response already streaming, which is the same
+// rule the rate caps follow.
+func (q *quotas) setLimits(l QuotaLimits) {
+	if q == nil {
+		return
 	}
+	l = QuotaLimits{
+		MemberRateKiB:         max(l.MemberRateKiB, 0),
+		PerMemberRateKiB:      max(l.PerMemberRateKiB, 0),
+		MemberMaxTransfers:    max(l.MemberMaxTransfers, 0),
+		PerMemberMaxTransfers: max(l.PerMemberMaxTransfers, 0),
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.limits = l
+	q.classRate.set(int64(l.MemberRateKiB) * 1024)
+	for _, n := range q.nodes {
+		n.rate.set(int64(l.PerMemberRateKiB) * 1024)
+	}
+}
+
+// limits reports the budget in force, for the admin readout.
+func (q *quotas) current() QuotaLimits {
+	if q == nil {
+		return QuotaLimits{}
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.limits
 }
 
 // admit reserves one concurrent serve for the requester at key, returning the
@@ -99,7 +143,7 @@ func (q *quotas) admit(key string) (rls []*rateLimiter, release func(), ok bool)
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	if q.classMax > 0 && q.active >= q.classMax {
+	if q.limits.MemberMaxTransfers > 0 && q.active >= q.limits.MemberMaxTransfers {
 		return nil, nil, false
 	}
 	n := q.nodes[key]
@@ -107,21 +151,22 @@ func (q *quotas) admit(key string) (rls []*rateLimiter, release func(), ok bool)
 		if len(q.nodes) >= quotaSweepThreshold {
 			q.pruneLocked()
 		}
-		n = &quotaNode{rate: newRateLimiter(q.nodeRate)}
+		n = &quotaNode{rate: &adjustableRate{}}
+		n.rate.set(int64(q.limits.PerMemberRateKiB) * 1024)
 		q.nodes[key] = n
 	}
-	if q.nodeMax > 0 && n.active >= q.nodeMax {
+	if q.limits.PerMemberMaxTransfers > 0 && n.active >= q.limits.PerMemberMaxTransfers {
 		return nil, nil, false
 	}
 
 	q.active++
 	n.active++
 	n.seen = time.Now()
-	if q.classRate != nil {
-		rls = append(rls, q.classRate)
+	if rl := q.classRate.limiter(); rl != nil {
+		rls = append(rls, rl)
 	}
-	if n.rate != nil {
-		rls = append(rls, n.rate)
+	if rl := n.rate.limiter(); rl != nil {
+		rls = append(rls, rl)
 	}
 
 	var once sync.Once
@@ -155,6 +200,11 @@ func (n *Node) admitServe(r *http.Request, aud Audience) (rls []*rateLimiter, re
 	if aud.IsFriend() {
 		return nil, func() {}, true
 	}
+	// Resolve before admitting, not only before writing: the concurrency halves
+	// of the budget are spent HERE, so an admin who has just lowered the ceiling
+	// would otherwise see it bind at the first byte of the next response instead
+	// of at this admission. Memoized, so this is a mutex and a clock comparison.
+	n.refreshLimits(r.Context())
 	ip := remoteIP(r)
 	if ip == nil {
 		// No source address to account against. Refusing would be safer in the

@@ -579,16 +579,17 @@ Runtime toggles live on **`/admin/settings`** (no restart):
 | `autoapprove_downloads` | off | Whether fetched tracks land approved instead of staged for review. |
 
 The resource side lives in `[federation]`. `seed_rate_kib` and `fetch_rate_kib`
-cap what this node's uplink and downlink spend on the swarm; both can also be
-changed **without a restart** on `/admin/swarm`, which is where you will want
-them when the link is already saturated. `member_rate_kib` /
+cap what this node's uplink and downlink spend on the swarm. `member_rate_kib` /
 `per_member_rate_kib` / `member_max_transfers` / `per_member_max_transfers` bound
 what nodes you have *no direct relationship with* may cost you, per requester and
-across all of them together, and need a restart. All default to unlimited — a
-handful of friends needs none of it. **Direct friends bypass the four member
-quotas** (so the nodes you chose never queue behind the ones the graph let in),
-but nobody bypasses the node's own two caps: those are a statement about your
-pipe, not about who deserves what.
+across all of them together. All six default to unlimited — a handful of friends
+needs none of it — and all six can be changed **without a restart** on
+`/admin/swarm`, which is where you will want them when the link is already
+saturated or a member is draining it. What the TOML sets is the value this node
+*starts* with; a limit saved on that page overrides it until you clear the field
+again. **Direct friends bypass the four member quotas** (so the nodes you chose
+never queue behind the ones the graph let in), but nobody bypasses the node's own
+two caps: those are a statement about your pipe, not about who deserves what.
 
 Size the two caps against your **uplink**, not the download figure your ISP
 quotes: `KiB/s ≈ Mbit/s × 128`, and leaving about a quarter of it free is a good
