@@ -50,6 +50,11 @@ const (
 	chaosControl    = 2 * time.Second * testTimeoutScale
 	chaosChunkStall = 2 * time.Second * testTimeoutScale
 	chaosPerChunk   = 6 * time.Second * testTimeoutScale
+	// The dial deadline (F9 item 3) and the failure backoff, shrunk in the same
+	// proportion as the rest: Connect is 5 s against PerChunk's 2 min in
+	// production, and it is the constant a stale holder is now measured against.
+	chaosConnect = 500 * time.Millisecond * testTimeoutScale
+	chaosRetry   = 50 * time.Millisecond * testTimeoutScale
 	// The whole-file (F3 fallback) backstop. When every holder is unreachable a
 	// fetch runs the per-chunk budget down several times over and *then* falls
 	// back to this path, whose dial goes into a mesh with no route — ChunkStall
@@ -83,9 +88,11 @@ func chaosOpts(extra ...Option) []Option {
 		WithTimeouts(Timeouts{
 			Control:    chaosControl,
 			Manifest:   chaosChunkStall,
+			Connect:    chaosConnect,
 			ChunkStall: chaosChunkStall,
 			PerChunk:   chaosPerChunk,
 			Transfer:   chaosTransfer,
+			Retry:      chaosRetry,
 		}),
 	}, extra...)
 }
@@ -485,8 +492,14 @@ func describe(st TransferStats) string {
 			a.Mode, a.FirstByte, a.ChunksDone, a.Chunks)
 	}
 	for _, p := range st.Providers {
-		s += fmt.Sprintf("\n  %-8s bytes=%-9d chunks=%-3d failures=%d dropped=%v %s",
-			p.Name, p.Bytes, p.Chunks, p.Failures, p.Dropped, p.LastError)
+		// The rate is what the scheduler dispatched on (F9 item 3), so a readout
+		// that omits it cannot explain why one holder carried the transfer.
+		rate := "rate=—"
+		if p.Rate > 0 {
+			rate = fmt.Sprintf("rate=%.0fKiB/s", p.Rate/1024)
+		}
+		s += fmt.Sprintf("\n  %-8s bytes=%-9d chunks=%-3d %-14s failures=%d dropped=%v %s",
+			p.Name, p.Bytes, p.Chunks, rate, p.Failures, p.Dropped, p.LastError)
 	}
 	return s
 }

@@ -44,10 +44,15 @@ const (
 	maxChunkSize = 1 << 20   // 1 MiB — bulk cap = seek granularity
 	targetChunks = 12        // rough bulk-chunk count a mid-size file aims for
 
-	maxChunkWorkers      = 8        // parallel chunk fetches per transfer
-	maxManifestChunk     = 64 << 20 // reject a manifest whose chunk size exceeds this (DoS guard)
-	providerFailureLimit = 4        // consecutive fetch failures before dropping a holder (reset on success)
-	seedWriteChunk       = 32 << 10 // rate-cap granularity on the serve path
+	maxChunkWorkers  = 8        // parallel chunk fetches per transfer
+	maxManifestChunk = 64 << 20 // reject a manifest whose chunk size exceeds this (DoS guard)
+	seedWriteChunk   = 32 << 10 // rate-cap granularity on the serve path
+
+	// manifestProbes is how many holders are asked for the manifest at once. Two
+	// have to agree before it is trusted (fetchAgreedManifest), so probing one at
+	// a time would serialise a round trip nothing else waits for; probing every
+	// holder would dial a crowd to settle a question two of them can answer.
+	manifestProbes = 4
 )
 
 // The fetch deadlines this file works to — Timeouts.PerChunk (one chunk's
@@ -387,15 +392,101 @@ func (n *Node) fetchManifest(ctx context.Context, p *BlobProvider, hash string) 
 	return &m
 }
 
-// fetchAnyManifest returns the first valid manifest offered by any holder (and
-// which holder), or nil when none serve one — the signal to fall back to the F3
-// whole-file fetch.
-func (n *Node) fetchAnyManifest(ctx context.Context, holders []*BlobProvider, hash string) *blobManifest {
-	for _, p := range holders {
+// agreement is a manifest's content-identifying fingerprint: everything a
+// fetcher acts on, and nothing a holder may honestly differ about.
+//
+// Filename is excluded, and that exclusion is the point — a blob's name is a
+// fact about the holder's copy, not about the bytes. The library seeder knows it
+// as "track.mp3" while a node that fetched it has it under its hash, and reading
+// that as disagreement would make every mixed swarm look like a lie. Protocol is
+// excluded for the same reason: it describes the speaker, not the file.
+func (m *blobManifest) agreement() string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%d|%d|%v|", m.Size, m.ChunkSize, m.LeadSizes)
+	for _, c := range m.Chunks {
+		h.Write([]byte(c))
+		h.Write([]byte{'|'})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// fetchAgreedManifest returns a chunk manifest two holders independently
+// describe the same way, or nil — the signal to fall back to the F3 whole-file
+// fetch, which carries its own reference and needs no manifest at all.
+//
+// **Why agreement and not the first valid answer** (F9 item 3; the defect is
+// .issues/open-issues.md, "a lying manifest retires every honest holder"). The
+// per-chunk hashes are not bound to the content hash and cannot be — the swarm
+// id is a flat whole-file SHA-256, not a hash over a metadata block the way a
+// BitTorrent infohash is. So a manifest is a claim, taken on the word of
+// whichever holder answered first, and every chunk fetched from every HONEST
+// holder then fails against it. The assembled whole-file hash still protects the
+// downloader from the wrong file; what it does not protect is the transfer, or
+// the honest holders' standing in it.
+//
+// Two independent claims are cheap here — manifests are small, memoized, and
+// probed in parallel with everything else a transfer starts with — and they
+// catch a single liar. They do not catch collusion, and are not meant to.
+//
+// Three outcomes, and the two edges matter:
+//
+//   - Two holders agree ⇒ that manifest, returned as soon as the second vote
+//     lands rather than after the slowest probe.
+//   - Exactly one holder in the first wave that answers at all ⇒ believed.
+//     Refusing would break the case F9 item 1 exists for: a
+//     partial seeder cannot BUILD a manifest (buildManifest reads the whole
+//     file), so a swarm of one complete holder and several partials has exactly
+//     one voice by construction.
+//   - Two holders answer differently with no majority ⇒ nil. One of them is
+//     lying and nothing here can say which, so the swarm gives way rather than
+//     picking a side.
+func (n *Node) fetchAgreedManifest(ctx context.Context, holders []*BlobProvider, hash string) *blobManifest {
+	return agreedManifest(ctx, holders, func(p *BlobProvider) *blobManifest {
+		return n.fetchManifest(ctx, p, hash)
+	})
+}
+
+// agreedManifest is fetchAgreedManifest's rule with the mesh taken out of it, so
+// the three outcomes above can be exercised without three nodes.
+func agreedManifest(ctx context.Context, holders []*BlobProvider, probe func(*BlobProvider) *blobManifest) *blobManifest {
+	seen := map[string]*blobManifest{}
+	votes := map[string]int{}
+	answers := 0
+
+	for start := 0; start < len(holders); start += manifestProbes {
 		if ctx.Err() != nil {
 			return nil
 		}
-		if m := n.fetchManifest(ctx, p, hash); m != nil {
+		end := min(start+manifestProbes, len(holders))
+		wave := make(chan *blobManifest, end-start)
+		for _, p := range holders[start:end] {
+			go func(p *BlobProvider) { wave <- probe(p) }(p)
+		}
+		for range end - start {
+			m := <-wave
+			if m == nil {
+				continue
+			}
+			answers++
+			key := m.agreement()
+			if _, ok := seen[key]; !ok {
+				seen[key] = m
+			}
+			if votes[key]++; votes[key] > 1 {
+				return seen[key]
+			}
+		}
+		// A wave that produced a disagreement is already decided: a third opinion
+		// would break the tie, but asking for one means dialling further into a
+		// plan whose holders are already contradicting each other, and the
+		// whole-file path is right there. Only a wave that produced NOTHING is
+		// worth widening.
+		if answers > 0 {
+			break
+		}
+	}
+	if answers == 1 {
+		for _, m := range seen {
 			return m
 		}
 	}
@@ -810,6 +901,69 @@ func (n *Node) servePartialBlob(w http.ResponseWriter, r *http.Request, hash str
 	}
 }
 
+// fetchHave asks one holder which extents of a blob it will serve. nil when it
+// does not answer — which covers three different nodes and deliberately does not
+// tell them apart: one too old to know the endpoint (404 from the mux), one that
+// holds nothing of this hash (404 by the rule that a reply must never confirm a
+// hash exists here), and one that is simply gone. Only the last is a fault, and
+// nothing here can prove which it was, so none of them costs the holder anything
+// beyond the coverage staying unknown — read as "has everything", the pre-F9
+// assumption.
+func (n *Node) fetchHave(ctx context.Context, p *BlobProvider, hash string) *haveMessage {
+	addr, err := AddrForKeyHex(p.PublicKey)
+	if err != nil {
+		return nil
+	}
+	cctx, cancel := context.WithTimeout(ctx, n.timeouts.Manifest)
+	defer cancel()
+	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/have/%s", addr, MeshPort, hash)
+	req, err := http.NewRequestWithContext(cctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil
+	}
+	resp, err := n.blobClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	var msg haveMessage
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&msg); err != nil {
+		return nil
+	}
+	if msg.Hash != hash {
+		return nil
+	}
+	return &msg
+}
+
+// probeCoverage asks every holder in a plan what it can serve, in the
+// background, and feeds the answers to the scheduler as they land (F9 item 3).
+//
+// It does not block dispatch, and must not: the answer is an optimisation, while
+// the transfer's first chunk is the thing a listener is waiting for. Chunks
+// dispatched before the answers arrive are exactly what happened before this
+// existed — a partial holder answers 416 and the scheduler learns the same fact
+// one round trip later.
+//
+// This is also the answer to a note left in syncHoldings: the store unions
+// complete and partial holdings and no column distinguishes them, because a
+// scheduler that wants to know asks the holder directly and gets a live answer
+// rather than a fifteen-minute-old one.
+func (n *Node) probeCoverage(hash string, plan *chunkPlan) {
+	for i, p := range plan.providers {
+		go func(i int, p *BlobProvider) {
+			if msg := n.fetchHave(n.transferCtx, p, hash); msg != nil {
+				plan.setCoverage(i, msg)
+			} else {
+				plan.probeUnanswered(i)
+			}
+		}(i, p)
+	}
+}
+
 // handleHave serves GET /madnetwork/v0/have/{hash}.
 func (n *Node) handleHave(w http.ResponseWriter, r *http.Request) {
 	if n.store == nil {
@@ -1078,7 +1232,8 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*BlobProvide
 		}
 		done0 = true
 	}
-	plan := newChunkPlan(man, layout, holders, done0, t.stats)
+	plan := newChunkPlan(layout, holders, done0, t.stats, n.timeouts)
+	n.probeCoverage(t.hash, plan)
 	t.stats.setChunks(layout.count())
 	// Expose per-chunk readiness (the layout) + the seek-priority hook to the
 	// streaming relay, pre-marking chunk 0 so a waiting reader is released without
@@ -1104,20 +1259,20 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*BlobProvide
 		go func() {
 			defer wg.Done()
 			for {
-				idx, ok := plan.next()
+				idx, p, pidx, ok := plan.take()
 				if !ok {
 					return
 				}
-				p, pidx, ok := plan.pickProvider()
-				if !ok {
-					plan.fail(idx, -1, ErrNoHolder, false) // all providers dead → aborts
-					continue
-				}
+				// The clock brackets the fetch alone, which is what makes it a
+				// throughput sample rather than a queueing one: the wait for a
+				// worker, and the wait for this holder to come off a backoff, both
+				// happened inside take().
+				started := time.Now()
 				if err := n.fetchChunk(t, f, layout, man, idx, p); err != nil {
 					plan.fail(idx, pidx, err, errors.Is(err, errChunkCorrupt))
 				} else {
 					n.observePeerAlive(p) // a verified chunk is liveness proof
-					plan.succeed(idx, pidx, t)
+					plan.succeed(idx, pidx, t, time.Since(started))
 				}
 			}
 		}()
@@ -1159,6 +1314,15 @@ func (n *Node) fetchChunk(t *transfer, f *os.File, layout *chunkLayout, man *blo
 	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
 		return fmt.Errorf("chunk %d from %q: %w", idx, p.Display(), errChunkAbsent)
 	}
+	// A holder over its member quota (F7 item 6) refuses deliberately, and the
+	// design says the swarm reads that as "ask another holder". Carrying its own
+	// error is what keeps it out of the failure streak — and, since dispatch is
+	// now throughput-aware, out of the throughput estimate: a quota refusal read
+	// as slowness would starve a busy-but-fast peer by the very mechanism meant
+	// to find fast ones.
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return fmt.Errorf("chunk %d from %q: %w", idx, p.Display(), errChunkBusy)
+	}
 	// 206 for a range; 200 is tolerated only for a single-chunk blob (the whole
 	// file IS the one chunk).
 	if resp.StatusCode != http.StatusPartialContent &&
@@ -1178,279 +1342,6 @@ func (n *Node) fetchChunk(t *transfer, f *os.File, layout *chunkLayout, man *blo
 		return err
 	}
 	return nil
-}
-
-// chunkPlan schedules chunk fetches across holders: sequential-priority
-// dispatch (lowest index first, so the streaming prefix grows in order), a
-// contiguous-from-zero progress watermark, and per-chunk failover — a failed
-// chunk is re-queued to a different holder and the offending holder is dropped.
-type chunkPlan struct {
-	mu   sync.Mutex
-	cond *sync.Cond
-
-	pending   []int  // chunk indices awaiting dispatch (initially in order)
-	inFlight  int    // dispatched, not yet resolved
-	done      []bool // per-chunk completion
-	watermark int    // count of contiguous completed chunks from 0
-	remaining int    // chunks not yet done
-	aborted   bool
-	err       error
-
-	layout *chunkLayout
-
-	providers []*BlobProvider
-	dead      []bool // per-provider
-	provFails []int  // per-provider consecutive failures (reset on success)
-	rr        int    // round-robin cursor
-
-	// attempts counts every failed try at each chunk, across all holders, and
-	// attemptLimit bounds it. This is what ENDS a hopeless transfer. It used to
-	// be a side effect of retiring holders — the fetch stopped once the last one
-	// was dropped — which forced the drop rule to double as the termination
-	// rule and got healthy holders retired to make transfers finish. The two are
-	// separate concerns now: retirement decides who to ask, this decides when to
-	// give up. See the note above fail().
-	attempts     []int
-	attemptLimit int
-
-	stats *transferStats // diagnostics sink; nil outside a real transfer
-}
-
-func newChunkPlan(man *blobManifest, layout *chunkLayout, holders []*BlobProvider, done0 bool, st *transferStats) *chunkPlan {
-	nc := layout.count()
-	cp := &chunkPlan{
-		done:      make([]bool, nc),
-		remaining: nc,
-		layout:    layout,
-		providers: holders,
-		dead:      make([]bool, len(holders)),
-		provFails: make([]int, len(holders)),
-		attempts:  make([]int, nc),
-		stats:     st,
-	}
-	// One chunk may be retried as many times as the old rule allowed in total
-	// before every holder was retired — so the worst case is bounded exactly as
-	// it was, while no longer requiring anyone to be retired to get there.
-	cp.attemptLimit = providerFailureLimit * len(holders)
-	if cp.attemptLimit < providerFailureLimit {
-		cp.attemptLimit = providerFailureLimit
-	}
-	start := 0
-	if done0 && nc > 0 {
-		cp.done[0] = true
-		cp.watermark = 1
-		cp.remaining = nc - 1
-		start = 1
-	}
-	cp.pending = make([]int, 0, nc-start)
-	for i := start; i < nc; i++ {
-		cp.pending = append(cp.pending, i)
-	}
-	cp.cond = sync.NewCond(&cp.mu)
-	return cp
-}
-
-// watermarkBytes is the contiguous-from-zero readable length in bytes.
-func (cp *chunkPlan) watermarkBytes() int64 {
-	cp.mu.Lock()
-	defer cp.mu.Unlock()
-	return cp.layout.offsetOf(cp.watermark)
-}
-
-// prioritize moves the chunk covering a requested offset to the front of the
-// dispatch queue (if still pending), so the next free worker fetches it — this
-// is what makes a streaming tail/seek read fast instead of waiting out the
-// sequential prefix.
-func (cp *chunkPlan) prioritize(idx int) {
-	cp.mu.Lock()
-	if idx >= 0 && idx < len(cp.done) && !cp.done[idx] {
-		for i, p := range cp.pending {
-			if p == idx {
-				copy(cp.pending[1:i+1], cp.pending[0:i])
-				cp.pending[0] = idx
-				break
-			}
-		}
-	}
-	cp.cond.Broadcast()
-	cp.mu.Unlock()
-}
-
-// next hands out the next chunk to fetch, blocking while chunks are only
-// in-flight (a failure may re-queue one). Returns false when the transfer is
-// done or aborted.
-func (cp *chunkPlan) next() (int, bool) {
-	cp.mu.Lock()
-	defer cp.mu.Unlock()
-	for {
-		if cp.aborted || cp.remaining == 0 {
-			return 0, false
-		}
-		if len(cp.pending) > 0 {
-			idx := cp.pending[0]
-			cp.pending = cp.pending[1:]
-			cp.inFlight++
-			return idx, true
-		}
-		if cp.inFlight == 0 {
-			return 0, false // nothing pending or in flight but work remains — give up
-		}
-		cp.cond.Wait()
-	}
-}
-
-// pickProvider returns the next non-dead holder, round-robin.
-func (cp *chunkPlan) pickProvider() (*BlobProvider, int, bool) {
-	cp.mu.Lock()
-	defer cp.mu.Unlock()
-	for tries := 0; tries < len(cp.providers); tries++ {
-		i := cp.rr % len(cp.providers)
-		cp.rr++
-		if !cp.dead[i] {
-			return cp.providers[i], i, true
-		}
-	}
-	return nil, -1, false
-}
-
-// succeed records a completed chunk, advancing the contiguous progress
-// watermark and publishing it to the transfer. A success clears the provider's
-// failure streak — an intermittently-stalling holder is forgiven so it is not
-// dropped over transient hiccups.
-func (cp *chunkPlan) succeed(idx, pidx int, t *transfer) {
-	cp.mu.Lock()
-	cp.inFlight--
-	var from *BlobProvider
-	if pidx >= 0 {
-		cp.provFails[pidx] = 0
-		from = cp.providers[pidx]
-	}
-	fresh := !cp.done[idx]
-	if fresh {
-		cp.done[idx] = true
-		cp.remaining--
-		for cp.watermark < len(cp.done) && cp.done[cp.watermark] {
-			cp.watermark++
-		}
-	}
-	start, end := cp.layout.rangeOf(idx)
-	progress := cp.layout.offsetOf(cp.watermark)
-	cp.cond.Broadcast()
-	cp.mu.Unlock()
-	if fresh {
-		cp.stats.noteSucceed(idx, from, end-start)
-	}
-	t.chunkDone(idx, progress)
-}
-
-// fail re-queues the chunk for another attempt and decides whether to retire the
-// holder that missed it.
-//
-// A corrupt chunk (wrong bytes) retires its holder immediately: bad bytes are
-// evidence about the holder itself, and no amount of environmental bad luck
-// produces them. A transient error (stall, timeout, unreachable) is weaker
-// evidence, because it describes the holder AND the moment. The rule is
-// therefore relative: a holder is retired once it is providerFailureLimit
-// consecutive failures worse than the best live holder. When some peer is still
-// delivering (streak 0) that is exactly the old absolute rule; when every holder
-// is equally deep in failures the fetch is in a slow moment, not a bad holder,
-// and nobody is retired. A sole holder has nothing to be compared against, so
-// the absolute limit stands and the transfer can still end.
-//
-// Retiring holders is no longer how a hopeless transfer stops — see attempts /
-// attemptLimit, which bound each chunk individually. That separation is the
-// point: the old code could only end a fetch by killing every holder, so a
-// healthy one had to be declared faulty for the transfer to finish at all
-// (.issues/open-issues.md, -race run findings, item 3).
-func (cp *chunkPlan) fail(idx, pidx int, err error, corrupt bool) {
-	cp.mu.Lock()
-	cp.inFlight--
-	var from *BlobProvider
-	dropped := false
-	if pidx >= 0 {
-		from = cp.providers[pidx]
-		switch {
-		case corrupt:
-			cp.dead[pidx] = true
-		case errors.Is(err, errChunkAbsent):
-			// A partial seeder that has not reached this chunk yet. It told us
-			// something true about the chunk and nothing bad about itself, so its
-			// failure streak is left alone — condemning it would retire exactly the
-			// nodes F9 item 1 exists to recruit. The streak is not RESET either: a
-			// holder mid-way through its own troubles should not launder them by
-			// happening to lack a chunk.
-		default:
-			cp.provFails[pidx]++
-			if cp.provFails[pidx] >= providerFailureLimit && cp.worseThanPeers(pidx) {
-				cp.dead[pidx] = true
-			}
-		}
-		dropped = cp.dead[pidx]
-	}
-	cp.attempts[idx]++
-	switch {
-	case cp.liveProviders() == 0:
-		if !cp.aborted {
-			cp.aborted, cp.err = true, err
-		}
-	case cp.attempts[idx] >= cp.attemptLimit:
-		if !cp.aborted {
-			cp.aborted, cp.err = true, fmt.Errorf(
-				"chunk %d unfetchable after %d attempts: %w", idx, cp.attempts[idx], err)
-		}
-	default:
-		cp.pending = append(cp.pending, idx)
-	}
-	cp.cond.Broadcast()
-	cp.mu.Unlock()
-	cp.stats.noteFail(idx, from, err, corrupt)
-	if dropped {
-		cp.stats.noteDropped(from)
-	}
-}
-
-// worseThanPeers reports whether provider i is failing out of line with the
-// other live holders — the relative half of the retirement rule above. Caller
-// holds cp.mu.
-//
-// It compares consecutive-failure streaks, which are already maintained and are
-// reset by any success: a holder that keeps delivering sits at 0, so anything
-// providerFailureLimit above it is demonstrably the odd one out. With no live
-// peer left to compare against it returns true, leaving the absolute limit in
-// force so a fetch against a single dead holder still terminates.
-//
-// This leans on dispatch being round-robin. A streak of 0 is read as "this peer
-// is doing fine", which is only sound because every live holder is handed work
-// in rotation, so an idle holder cannot sit at 0 while others struggle. If
-// pickProvider ever becomes speed-aware (.issues/open-issues.md, "swarm provider
-// selection is speed-blind"), a deprioritised holder could hold a 0 streak
-// without having earned it, and the benchmark would need to ignore holders that
-// have not been tried recently.
-func (cp *chunkPlan) worseThanPeers(i int) bool {
-	best := -1
-	for j := range cp.providers {
-		if j == i || cp.dead[j] {
-			continue
-		}
-		if best < 0 || cp.provFails[j] < best {
-			best = cp.provFails[j]
-		}
-	}
-	if best < 0 {
-		return true
-	}
-	return cp.provFails[i] >= best+providerFailureLimit
-}
-
-// liveProviders counts non-dead holders; caller holds cp.mu.
-func (cp *chunkPlan) liveProviders() int {
-	live := 0
-	for _, d := range cp.dead {
-		if !d {
-			live++
-		}
-	}
-	return live
 }
 
 // ── Seeding rate cap ─────────────────────────────────────────────────────────

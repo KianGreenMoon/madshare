@@ -207,11 +207,17 @@ var (
 	// against a real network — see §Open questions 2.
 	defaultDiscovery = Discovery{Budget: 4, Cap: 200}
 	defaultTimeouts  = Timeouts{
-		Control:    15 * time.Second,
-		Manifest:   20 * time.Second,
+		Control:  15 * time.Second,
+		Manifest: 20 * time.Second,
+		// A mesh dial that has not completed in 5 s is into a hole in the network,
+		// not merely a distant node: the underlay is already connected, so this
+		// covers routing and one TCP handshake over it. Kept well under ChunkStall
+		// so the two failures stay distinguishable in a readout.
+		Connect:    5 * time.Second,
 		ChunkStall: 20 * time.Second,
 		PerChunk:   2 * time.Minute,
 		Transfer:   30 * time.Minute,
+		Retry:      500 * time.Millisecond,
 	}
 )
 
@@ -304,8 +310,12 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 	// that accepts the connection then never answers (a hung mesh path) fast. It
 	// shares the idle-read budget: both detect the same "connected but silent"
 	// failure, only on different sides of the response header.
+	//
+	// The DIAL is bounded separately and much sooner (F9 item 3): neither of those
+	// two covers a holder that never connects at all, which is what a stale
+	// advertisement is.
 	n.blobClient = &http.Client{Transport: n.present(&http.Transport{
-		DialContext:           n.DialContext,
+		DialContext:           n.dialHolder,
 		ResponseHeaderTimeout: n.timeouts.ChunkStall,
 	})}
 	n.srv = &http.Server{Handler: n.protocolHandler()}
@@ -358,6 +368,29 @@ func (n *Node) Name() string { return n.name }
 // outbound protocol calls reach peers' mesh listeners without any TUN.
 func (n *Node) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	return n.mesh.DialContext(ctx, network, address)
+}
+
+// dialHolder is DialContext under [Timeouts].Connect — the transfer path's
+// dialer (F9 item 3).
+//
+// It is a separate deadline rather than a smaller PerChunk because the two
+// answer different questions. Once bytes are moving, a chunk may legitimately
+// take minutes over a slow multi-hop path; before they are, a dial that has not
+// completed in seconds is into a hole in the mesh and every further second is
+// pure waste. Nothing else in the request had a bound on it: ResponseHeaderTimeout
+// starts only after the request is written, and readStall's watchdog only after
+// the response header arrives.
+//
+// The timeout governs the dial alone. Cancelling it once the connection exists
+// does not disturb the connection — the netstack's DialContext, like net.Dialer's,
+// reads ctx for the handshake and not for the conn's lifetime.
+func (n *Node) dialHolder(ctx context.Context, network, address string) (net.Conn, error) {
+	if n.timeouts.Connect <= 0 {
+		return n.DialContext(ctx, network, address)
+	}
+	dctx, cancel := context.WithTimeout(ctx, n.timeouts.Connect)
+	defer cancel()
+	return n.DialContext(dctx, network, address)
 }
 
 // InboundHealthy reports whether this node's inbound mesh path appears to be

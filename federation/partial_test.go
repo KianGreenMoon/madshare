@@ -307,45 +307,57 @@ func TestPartialHoldingsReadsLiveTransfersNotTheDirectory(t *testing.T) {
 // so a holder that simply had not reached chunk 7 accumulated a streak and was
 // dropped like a broken one.
 func TestChunkPlanDoesNotRetireAHolderForNotHavingAChunkYet(t *testing.T) {
-	man, layout := wideManifest(8)
-	absent := errChunkAbsent
-
-	cp := newChunkPlan(man, layout, []*BlobProvider{{Name: "partial"}, {Name: "full"}}, false, nil)
+	cp := testPlan(wideLayout(8), []*BlobProvider{{Name: "partial"}, {Name: "full"}}, false)
+	var refused []int
 	for i := 0; i < providerFailureLimit*2; i++ {
-		idx, ok := cp.next()
-		if !ok {
+		if len(cp.pending) == 0 {
 			break
 		}
-		cp.fail(idx, 0, absent, false)
+		idx := dispatch(t, cp, 0)
+		refused = append(refused, idx)
+		cp.fail(idx, 0, errChunkAbsent, false)
 	}
-	if cp.dead[0] {
+	if cp.prov[0].dead {
 		t.Error("a holder that answered 416 was retired; it told us about the chunk, not itself")
 	}
-	if cp.provFails[0] != 0 {
-		t.Errorf("provFails[0] = %d, want 0 — an absent chunk must not build a streak", cp.provFails[0])
+	if cp.prov[0].fails != 0 {
+		t.Errorf("fails = %d, want 0 — an absent chunk must not build a streak", cp.prov[0].fails)
+	}
+	// Since F9 item 3 the refusal is also REMEMBERED, so the scheduler stops
+	// offering that holder the chunk it just said it does not have — the 416 is
+	// coverage learned the expensive way.
+	for _, idx := range refused {
+		if cp.prov[0].canServe(cp.layout, idx) {
+			t.Errorf("chunk %d is still considered fetchable from the holder that 416'd it", idx)
+		}
+		if !cp.prov[1].canServe(cp.layout, idx) {
+			t.Errorf("chunk %d was written off for the OTHER holder too", idx)
+		}
 	}
 }
 
 // ...but it still costs the chunk an attempt, or a swarm of partials that
 // between them lack a chunk would re-queue it forever.
 func TestChunkPlanStillGivesUpWhenNobodyHasAChunk(t *testing.T) {
-	man, layout := wideManifest(8)
-	cp := newChunkPlan(man, layout, []*BlobProvider{{Name: "a"}, {Name: "b"}}, false, nil)
+	cp := testPlan(wideLayout(8), []*BlobProvider{{Name: "a"}, {Name: "b"}}, false)
 
-	// Chunks are re-queued round-robin, so one of them only reaches attemptLimit
-	// after roughly attemptLimit × chunks dispatches. next() stops handing work
-	// out once the plan aborts, so the loop ends on its own.
+	// Chunks are re-queued behind the others, so one of them only reaches
+	// attemptLimit after roughly attemptLimit × chunks dispatches. take() stops
+	// handing work out once the plan aborts, so the loop ends on its own — and it
+	// keeps handing chunks to holders known to lack them, which is matchLocked's
+	// second pass: a partial holder is a growing thing, so "does not have it" is
+	// only true until it isn't, and being wrong costs one fast 416.
 	for i := 0; i < 1000; i++ {
-		idx, ok := cp.next()
+		idx, _, pidx, ok := cp.take()
 		if !ok {
 			break
 		}
-		cp.fail(idx, i%2, errChunkAbsent, false)
+		cp.fail(idx, pidx, errChunkAbsent, false)
 	}
 	if !cp.aborted {
 		t.Fatal("a chunk no holder has must end the transfer, not loop")
 	}
-	if cp.dead[0] || cp.dead[1] {
+	if cp.prov[0].dead || cp.prov[1].dead {
 		t.Error("the transfer ended by exhausting attempts, so nobody should have been condemned")
 	}
 }

@@ -25,8 +25,27 @@ import (
 // 1m43s from one live holder took 4m12s–4m25s with those on the list. The
 // arithmetic said Timeouts.ChunkStall × providerFailureLimit per dead holder;
 // that was a hypothesis about production constants, and this is the experiment
-// that CORRECTED it — see staleScale. The binding timeout is PerChunk, and the
-// tax is far worse than the guess.
+// that CORRECTED it. The binding timeout was PerChunk, and the tax was far worse
+// than the guess.
+//
+// **It has since been fixed twice, and this test is what measured both.** First
+// the plan stopped naming holders that had been gone for days
+// (database.StaleHolderWindow); then F9 item 3 made a stale holder cheap even
+// when it IS in a plan — a dial deadline of its own (Timeouts.Connect) instead
+// of the per-chunk backstop, and load-aware dispatch that stops handing chunks
+// to a holder that is not delivering. Measured on one machine, before and after:
+//
+//	scenario     before      after
+//	0 stale      1.299s      103ms
+//	1 stale     12.054s      545ms
+//	2 stale     18.064s     1.069s
+//	3 stale     24.004s     2.002s   (fails either way — nobody has the blob)
+//
+// A stale holder now absorbs exactly TWO dispatches (retries=2 per ghost, run
+// after run) rather than providerFailureLimit: one before anybody has delivered
+// anything, and one more when the live holders are all loaded and the ghost is
+// briefly the least-loaded thing in the plan. It is never retired and does not
+// need to be — it is simply not chosen while anyone else is delivering.
 //
 // FOUR nodes: three holders carrying the same blob and one fetcher. A "stale"
 // holder is a KEY IN THE PLAN THAT NOTHING ON THE MESH ANSWERS TO, which is what
@@ -40,20 +59,20 @@ import (
 //
 // The clock is the chaos suite's shrunk one (chaosOpts), so the numbers are
 // small; what carries over is the SHAPE and the ratio. staleScale converts them
-// back to the shipped 20s ChunkStall.
+// back to the shipped constant.
 
 // staleScale converts a measured cost to what it would be at the shipped
 // timeouts.
 //
-// It is PerChunk, NOT ChunkStall, and finding that out was the point of running
-// this rather than reasoning about it. The obvious hypothesis was the idle-read
-// watchdog — no bytes for ChunkStall ⇒ the holder is hung — but a stale holder's
-// dial NEVER CONNECTS, so no response header ever arrives and that watchdog is
-// never armed. Every run below reports stalls=0 and fails with "context deadline
-// exceeded" on the GET, which is the per-chunk backstop. At the shipped values
-// that is 2 minutes rather than 20 seconds, so a dead holder is six times more
-// expensive than the arithmetic said.
-const staleScale = 2 * time.Minute / chaosPerChunk
+// **It is Connect since F9 item 3, and it was PerChunk before that** — which is
+// the whole change in one constant. The obvious hypothesis was the idle-read
+// watchdog (no bytes for ChunkStall ⇒ the holder is hung), and running this
+// rather than reasoning about it is what showed the dial NEVER CONNECTS: no
+// response header ever arrives, so that watchdog is never armed and every run
+// reports stalls=0. Nothing bounded the dial itself, so the cost fell through to
+// the per-chunk backstop — two minutes, six times the arithmetic. Now the dial
+// has its own five-second deadline, and that is what a dead holder costs.
+const staleScale = 5 * time.Second / chaosConnect
 
 // startNodeQuad starts three holders, each listening on its own underlay, and a
 // fetcher dialling all three.
@@ -243,9 +262,10 @@ func TestStaleHoldersCostAFetch(t *testing.T) {
 	}
 
 	// ── the table ────────────────────────────────────────────────────────────
-	t.Logf("2 MiB blob, 3 holders. PerChunk=%s here, %s shipped (×%d) — that is the "+
-		"binding timeout, since a dead holder's dial never connects and ChunkStall never arms",
-		chaosPerChunk, 2*time.Minute, staleScale)
+	t.Logf("2 MiB blob, 3 holders. Connect=%s here, %s shipped (×%d) — that is the "+
+		"binding timeout since F9 item 3, because a dead holder's dial never connects, "+
+		"so ChunkStall never arms and PerChunk used to be what a dispatch to it cost",
+		chaosConnect, defaultTimeouts.Connect, staleScale)
 	t.Logf("%-18s %12s %12s  %s", "scenario", "measured", "shipped", "outcome")
 	t.Logf("%-18s %12s %12s  %s", "relay (plain HTTP)", relayTook.Round(time.Millisecond), "—", "ok")
 	for _, r := range results {

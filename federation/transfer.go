@@ -646,7 +646,7 @@ func (n *Node) runTransfer(t *transfer, holders []*BlobProvider) {
 	// manifest confirms the layout and the chunk verifies.
 	pf := n.speculateChunk0(t, holders)
 
-	if man := n.fetchAnyManifest(n.transferCtx, holders, t.hash); man != nil {
+	if man := n.fetchAgreedManifest(n.transferCtx, holders, t.hash); man != nil {
 		t.setMeta(man.Size, man.Filename)
 		t.stats.setMode("swarm")
 		err := n.fetchSwarm(t, man, holders, pf.take(man), pf.from)
@@ -717,10 +717,15 @@ func (n *Node) fetchFrom(t *transfer, p *BlobProvider) error {
 	if err != nil {
 		return err
 	}
-	// The friendship client has a short global timeout for control calls; blob
-	// fetches are bounded by ctx instead.
-	client := &http.Client{Transport: &http.Transport{DialContext: n.DialContext}}
-	resp, err := client.Do(req)
+	// The pooled blob client, not a fresh one: it is bounded by ctx rather than by
+	// the control client's short global timeout, it reuses whatever connection the
+	// swarm phase warmed, and — load-bearing — its transport is the one wrapped by
+	// WithCapabilityToken. A private client here would present no token, so a
+	// listener node whose only standing is its home server's vouch would be served
+	// 404 the moment a fetch fell back to this path (§"The household": the reason
+	// the token is presented by a RoundTripper and not by each request builder is
+	// exactly that the next builder forgets).
+	resp, err := n.blobClient.Do(req)
 	if err != nil {
 		return err
 	}

@@ -890,6 +890,12 @@ type ProviderStats struct {
 	Failures  int    `json:"failures"`
 	Dropped   bool   `json:"dropped"` // taken out of rotation (corrupt bytes, or too many failures)
 	LastError string `json:"last_error,omitempty"`
+	// Rate is the holder's measured throughput in bytes/sec, smoothed over the
+	// chunks it delivered (0 = never measured). Bytes says how much a holder
+	// carried; this says how fast, which is what the scheduler dispatches on
+	// (F9 item 3) and the only way a readout can distinguish a holder that was
+	// slow from one that was merely asked for little.
+	Rate float64 `json:"rate_bps,omitempty"`
 }
 
 // Option configures Start: the transfer wiring (cache dir, blob resolver) and
@@ -1047,11 +1053,33 @@ func WithIntervals(iv Intervals) Option { return func(o *nodeOptions) { o.interv
 // scenario that waits out the production 2-minute per-chunk backstop takes
 // minutes to assert a fact that happens in the first second.
 type Timeouts struct {
-	Control    time.Duration // one control call (ping, catalog, holdings); default 15 s
-	Manifest   time.Duration // one manifest probe against a holder; default 20 s
+	Control  time.Duration // one control call (ping, catalog, holdings); default 15 s
+	Manifest time.Duration // one manifest or /have probe against a holder; default 20 s
+	// Connect bounds the DIAL to a holder, separately from everything that
+	// follows it (F9 item 3); default 5 s.
+	//
+	// "Never connected" and "connected then slow" are different diagnoses, and
+	// until this they shared one two-minute budget. A stale advertisement dials
+	// into a mesh with no route, so no response header ever arrives and
+	// ChunkStall's idle-read watchdog is never armed — the dial simply sat there
+	// until PerChunk expired, which is where the measured cost of a dead holder
+	// came from (.issues/open-issues.md, "a fetch plan names holders that have
+	// been gone for days"). A dial that has not completed in seconds is not going
+	// to.
+	Connect    time.Duration
 	ChunkStall time.Duration // idle-read watchdog: no bytes for this long ⇒ the connection is hung; default 20 s
 	PerChunk   time.Duration // overall backstop for one chunk fetch; default 2 min
 	Transfer   time.Duration // overall backstop for one whole-file fetch; default 30 min
+	// Retry is the base backoff a holder sits out after a failed chunk, doubling
+	// per consecutive failure; default 500 ms.
+	//
+	// It exists because the scheduler dispatches to whoever has the fewest bytes
+	// outstanding, and a holder that fails INSTANTLY has none — so without a
+	// pause the fastest way to look idle is to keep refusing, and one broken
+	// holder would take every dispatch. It is also what a 429 buys (that one is a
+	// deliberate refusal, so it never counts as a failure) and what a 416 buys
+	// when a partial holder is the only one left to ask.
+	Retry time.Duration
 }
 
 // WithTimeouts overrides the protocol/transfer deadlines (zero fields keep
@@ -1095,6 +1123,9 @@ func (to Timeouts) withDefaults(d Timeouts) Timeouts {
 	if to.Manifest <= 0 {
 		to.Manifest = d.Manifest
 	}
+	if to.Connect <= 0 {
+		to.Connect = d.Connect
+	}
 	if to.ChunkStall <= 0 {
 		to.ChunkStall = d.ChunkStall
 	}
@@ -1103,6 +1134,9 @@ func (to Timeouts) withDefaults(d Timeouts) Timeouts {
 	}
 	if to.Transfer <= 0 {
 		to.Transfer = d.Transfer
+	}
+	if to.Retry <= 0 {
+		to.Retry = d.Retry
 	}
 	return to
 }

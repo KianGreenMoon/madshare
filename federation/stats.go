@@ -268,6 +268,36 @@ func (s *transferStats) noteFail(piece int, p *BlobProvider, err error, corrupt 
 	s.failedBy[piece][key] = true
 }
 
+// noteRate records a holder's current throughput estimate — the input the
+// scheduler dispatches on (F9 item 3), reported so that "the fast holder carried
+// the transfer" is a readable claim and not an inference from byte counts.
+func (s *transferStats) noteRate(p *BlobProvider, bps float64) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if ps := s.providerLocked(p); ps != nil {
+		ps.Rate = bps
+	}
+	s.mu.Unlock()
+}
+
+// noteReinstated takes back a retirement. Only one thing does that: a corrupt
+// chunk retires its sender, and a second corrupt chunk from a DIFFERENT sender
+// says the manifest they were both judged against is the likelier liar (see
+// chunkPlan.fail). The readout has to be able to say so, or it reports an honest
+// holder as dropped for bytes it never got wrong.
+func (s *transferStats) noteReinstated(p *BlobProvider) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if ps := s.providerLocked(p); ps != nil {
+		ps.Dropped = false
+	}
+	s.mu.Unlock()
+}
+
 // noteDropped marks a holder taken out of rotation (corrupt bytes, or too many
 // consecutive failures).
 func (s *transferStats) noteDropped(p *BlobProvider) {
