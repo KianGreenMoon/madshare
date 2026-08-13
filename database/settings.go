@@ -121,16 +121,17 @@ type MadnetworkPolicy struct {
 //
 // docs/architecture/madnetwork-cache.md §"The retention ceiling".
 
-// GetCacheCeiling reads the runtime override on the download cache's size
-// ceiling, in bytes. A nil pointer means no override — inherit the config file;
-// a non-nil 0 means no limit, which is a real override and how one node escapes
-// a ceiling its config ships with.
+// optionalIntSetting reads a three-valued integer setting: nil means the key is
+// unset — inherit whatever the config file says — while a stored 0 is a real
+// override (usually "unlimited"). This is the ONE spelling of "unset ≠ 0" at the
+// settings table, shared by every knob that layers a runtime override over a
+// config default (the swarm rate caps, the cache ceiling).
 //
-// An unparseable stored value reads as no override rather than as an error: the
-// resolution chain always has a config value to fall back to, and a node must
-// not start deleting on a number nobody can read.
-func (db *DB) GetCacheCeiling(ctx context.Context) (*int64, error) {
-	v, ok, err := db.GetSetting(ctx, settingMadnetworkCacheMaxBytes)
+// An unparseable or negative stored value reads as unset rather than as an
+// error: the resolution chain always has a config value to fall back to, and a
+// node must not change behavior on a number nobody can read.
+func (db *DB) optionalIntSetting(ctx context.Context, key string) (*int64, error) {
+	v, ok, err := db.GetSetting(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -144,19 +145,29 @@ func (db *DB) GetCacheCeiling(ctx context.Context) (*int64, error) {
 	return &n, nil
 }
 
-// SetCacheCeiling writes the override. nil CLEARS it (back to the config file),
-// which is why the key is deleted rather than zeroed: a stored 0 is a real
-// setting meaning "no limit", and the two must stay tellable apart.
-func (db *DB) SetCacheCeiling(ctx context.Context, maxBytes *int64) error {
-	if maxBytes == nil {
-		_, err := db.ExecContext(ctx, `DELETE FROM settings WHERE key = ?`, settingMadnetworkCacheMaxBytes)
+// setOptionalIntSetting writes a three-valued integer setting. nil CLEARS the
+// override (back to the config file), which is why the key is deleted rather
+// than zeroed: a stored 0 is a real setting, and the two must stay tellable
+// apart. Negative values clamp to 0.
+func (db *DB) setOptionalIntSetting(ctx context.Context, key string, v *int64) error {
+	if v == nil {
+		_, err := db.ExecContext(ctx, `DELETE FROM settings WHERE key = ?`, key)
 		return err
 	}
-	n := *maxBytes
-	if n < 0 {
-		n = 0
-	}
-	return db.SetSetting(ctx, settingMadnetworkCacheMaxBytes, strconv.FormatInt(n, 10))
+	return db.SetSetting(ctx, key, strconv.FormatInt(max(*v, 0), 10))
+}
+
+// GetCacheCeiling reads the runtime override on the download cache's size
+// ceiling, in bytes. A nil pointer means no override — inherit the config file;
+// a non-nil 0 means no limit, which is a real override and how one node escapes
+// a ceiling its config ships with.
+func (db *DB) GetCacheCeiling(ctx context.Context) (*int64, error) {
+	return db.optionalIntSetting(ctx, settingMadnetworkCacheMaxBytes)
+}
+
+// SetCacheCeiling writes the override; nil clears it (back to the config file).
+func (db *DB) SetCacheCeiling(ctx context.Context, maxBytes *int64) error {
+	return db.setOptionalIntSetting(ctx, settingMadnetworkCacheMaxBytes, maxBytes)
 }
 
 // ResolveCacheCeiling applies the override to a config default, giving the
@@ -280,24 +291,19 @@ func (db *DB) SeedingPolicy(ctx context.Context) (federation.SeedPolicy, error) 
 // (docs/architecture/swarm-admin.md). A nil pointer means "no override — inherit
 // the config file"; a non-nil 0 means unlimited, which is a real override and
 // how one node escapes a cap its config ships with.
-//
-// An unparseable stored value reads as no override rather than as an error: the
-// resolution chain always has a config value to fall back to, and a node must
-// not stop serving because somebody typed into the settings table.
 func (db *DB) GetSwarmRates(ctx context.Context) (up, down *int, err error) {
 	read := func(key string) (*int, error) {
-		v, ok, err := db.GetSetting(ctx, key)
-		if err != nil {
+		n, err := db.optionalIntSetting(ctx, key)
+		if err != nil || n == nil {
 			return nil, err
 		}
-		if !ok || strings.TrimSpace(v) == "" {
+		// A value that does not survive the round trip through int (32-bit
+		// platforms) reads as unset, exactly as Atoi refused it before.
+		v := int(*n)
+		if int64(v) != *n {
 			return nil, nil
 		}
-		n, cerr := strconv.Atoi(strings.TrimSpace(v))
-		if cerr != nil || n < 0 {
-			return nil, nil
-		}
-		return &n, nil
+		return &v, nil
 	}
 	if up, err = read(settingSwarmUpRateKiB); err != nil {
 		return nil, nil, err
@@ -313,15 +319,12 @@ func (db *DB) GetSwarmRates(ctx context.Context) (up, down *int, err error) {
 // non-nil value pins it. Passing the same value twice is idempotent.
 func (db *DB) SetSwarmRates(ctx context.Context, up, down *int) error {
 	write := func(key string, v *int) error {
-		if v == nil {
-			_, err := db.ExecContext(ctx, `DELETE FROM settings WHERE key = ?`, key)
-			return err
+		var n *int64
+		if v != nil {
+			n = new(int64)
+			*n = int64(*v)
 		}
-		n := *v
-		if n < 0 {
-			n = 0
-		}
-		return db.SetSetting(ctx, key, strconv.Itoa(n))
+		return db.setOptionalIntSetting(ctx, key, n)
 	}
 	if err := write(settingSwarmUpRateKiB, up); err != nil {
 		return err

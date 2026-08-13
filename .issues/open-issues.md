@@ -2057,3 +2057,31 @@ Also noted while digging: the "too old to know the endpoint" comments on
 alone — F9 item 1/3 shipped after v0.8.6, so released nodes genuinely lack
 that endpoint. `/manifest` was the only one whose version-skew story was a
 myth.
+
+## Federation — knob-resolution dig findings (2026-08-13, federation-explained.txt #6)
+
+Dig verdict (not a defect row): the "three-layer pile" is smaller than it
+looked. The full `config default → runtime DB override → unlimited` arrangement
+exists exactly THREE knobs wide — `swarm.up_rate_kib`, `swarm.down_rate_kib`,
+`madnetwork.cache_max_bytes` — and its copies were diffed line by line and
+AGREE (unset/blank/unparseable/negative reads as inherit; nil deletes the key;
+a stored 0 is a real override). The seed switches the explainer listed as a
+third instance are runtime-only (hard-coded defaults in `GetMadnetworkPolicy`,
+no config layer). The DB-side encoding of `unset ≠ 0` now has one spelling
+(`database.optionalIntSetting` / `setOptionalIntSetting`, 2026-08-13); the two
+API decoders (`swarmRateField`, `ceilingUpdate`) stay separate on purpose —
+their calling conventions genuinely differ, per the standing set-resolution
+rule. The placement rule that was in five heads and no file is now written
+down: docs/architecture/swarm-admin.md §"Which layers a knob gets". One
+question fell out:
+
+| Severity | Issue | Status |
+|---|---|---|
+| Question | **Should the member quotas be runtime-adjustable, and at least visible?** The four F7 quotas (`member_rate_kib`, `per_member_rate_kib`, `member_max_transfers`, `per_member_max_transfers`) are fixed at Node construction (`newQuotas`, `federation/node.go`) — the only limiter family that still requires an edit-and-restart, and `federation/rates.go`'s own opening comment calls that "exactly the wrong shape for the knob an operator reaches for while the link is saturated". A node being drained by members is that same operator. They are also INVISIBLE at runtime: no endpoint or page reports what quota values a running node enforces (grep: zero references in api/ and webui/), so an operator cannot even confirm what is in force without reading the TOML. The mechanism to fix both exists (`WithRateResolver` shape + `optionalIntSetting`); what is missing is the owner's call on whether the household/friends-first posture wants these live at all — they ship 0 = unlimited and off by design (the standing "mechanism yes, guessed defaults no" stance). | open |
+
+Also noted while digging, below the row threshold: `GetMadnetworkPolicy` is
+seven sequential settings queries and runs once per served blob request
+(`SeedingPolicy`, five federation call sites, no memo) — the 5 s rate memo
+exists precisely to avoid adding a SECOND per-request read beside it.
+Microseconds on in-process SQLite, so recorded only so a future "why is
+serving slow" hunt starts here with the shape already mapped.

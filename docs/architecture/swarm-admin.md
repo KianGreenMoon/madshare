@@ -322,6 +322,37 @@ shipped (`publish_friend_list`, silently disabled by every save of the seed
 checkboxes). A second client is precisely the shape that trips it, so the rate
 knobs get a write path that cannot reach the seeding policy at all.
 
+### Which layers a knob gets (the rule, written down)
+
+The `override → config → unlimited` arrangement is not the shape of every knob —
+it exists exactly where BOTH of its layers earn their keep, and each layer has
+one test:
+
+- A knob gets a **config layer** when a deployment without this UI must still be
+  able to ship the value: an embedder sets `cache_max_mb` in code (madplayer,
+  2 GiB) and a headless node writes its caps into the TOML it deploys with.
+- A knob gets a **runtime override** when an operator plausibly changes it while
+  *watching* something — a saturating link (the rate caps), a filling disk (the
+  ceiling). Anything with that property must not require an edit-and-restart.
+  The override is three-valued because "inherit the config" and "0 = unlimited"
+  are different states; that encoding (`unset ≠ 0`, key deleted to clear) has
+  one spelling at the settings table, `database.optionalIntSetting` /
+  `setOptionalIntSetting`, and every consumer resolves it the same way
+  (`refreshRates`, `ResolveCacheCeiling`).
+- The `MadnetworkPolicy` switches are **runtime-only** (defaults hard-coded in
+  `GetMadnetworkPolicy`): pure policy with a universal default and no embedder
+  story — an embedder's sharing posture is `default_share_depth`, not a config
+  twin of every checkbox.
+- The four member quotas are **config-only** (fixed at Node construction) —
+  the one family where the two tests disagree with the implementation, since a
+  node being drained by members is exactly an operator watching something.
+  Recorded as an open question in `.issues/open-issues.md`, not silently
+  accepted.
+
+Full three-layer knobs today: **three** — `swarm.up_rate_kib`,
+`swarm.down_rate_kib`, `madnetwork.cache_max_bytes`. A fourth should copy this
+section, not invent a fourth spelling.
+
 ### Making the limiters adjustable
 
 `rateLimiter` gains `setRate(bytesPerSec)`, adjusting rate and burst under its
@@ -330,11 +361,13 @@ would hand a full burst to anyone who nudged the slider, which is a rate limit a
 requester could reset by making the admin fidget.
 
 The Node keeps exactly two of them — one up, one down — whose rates are
-refreshed from the policy on a short memo (5 s) rather than per request.
-`seedableBlob` already does a per-request policy read and this must not add a
-second. No per-hash table, no resolver injection, no `PeerStore` change: with
-per-file limits gone, `federation` needs to know nothing it does not already
-know.
+re-resolved on a short memo (5 s) rather than per request. `seedableBlob`
+already does a per-request policy read and this must not add a second. The
+override arrives through **one injected resolver** (`WithRateResolver`, wired in
+`app.startMesh` to `db.GetSwarmRates`) because `federation` stays DB-free; what
+the per-file design would have needed and this does not is a per-hash limiter
+table and a `PeerStore` change — with per-file limits gone, the whole knob
+surface is two numbers behind one option.
 
 ### The chains
 
