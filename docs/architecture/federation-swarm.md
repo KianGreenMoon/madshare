@@ -136,9 +136,17 @@
   A hung connection is caught by an **idle-read watchdog** (~20 s with no bytes)
   plus a response-header timeout, rather than waiting out the whole per-chunk
   backstop — so a Yggdrasil path stall costs seconds, not minutes. A
-  **single-seeder swarm degenerates to a direct transfer**, and a holder too old
-  to speak the manifest endpoint triggers a **fall-back to the F3 whole-file
-  streaming fetch** — so F4 nodes still fetch from F3 nodes.
+  **single-seeder swarm degenerates to a direct transfer**, and a swarm that
+  cannot proceed triggers a **fall-back to the F3 whole-file streaming fetch**.
+  That fallback is not version compatibility — no released node ever served
+  `/blob` without `/manifest` (F3 and F4 first shipped together, in v0.7.0) —
+  it is the one fetch mode that carries its own reference, and it is where the
+  swarm gives way when the manifest is unobtainable (only partial holders
+  remain, which cannot build one), contradicted (a 1-vs-1 disagreement,
+  `errManifestSuspect`) or proven wrong (the assembled bytes fail the content
+  hash): a whole-file fetch verified against the content hash needs no manifest
+  trust at all. It is the flat swarm id's price (§"Merkle verification (F10)")
+  — solving F10 would collapse it, and nothing short of that can.
 - **Fast first byte** (built F4): to avoid two serial mesh round-trips before
   playback starts, a fetch **overlaps the manifest probe with a speculative
   chunk-0 fetch** — chunk 0's byte range is derived from the advertised size

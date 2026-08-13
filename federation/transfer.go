@@ -628,10 +628,21 @@ func (n *Node) ensureBlob(ctx context.Context, hash string,
 }
 
 // runTransfer fetches a blob from its holders. It prefers the F4 swarm path
-// (multi-source parallel chunk fetch via the manifest); if no holder serves a
-// manifest — an older F3-only peer — it falls back to the single-source
-// whole-file streaming fetch. Either way the assembled bytes are verified
-// against the content hash before entering the cache.
+// (multi-source parallel chunk fetch via the manifest) and falls back to the
+// single-source whole-file streaming fetch when the swarm cannot be trusted or
+// cannot finish.
+//
+// The fallback is NOT version compatibility — no released node ever spoke
+// /blob without /manifest (F3 and F4 first shipped in the same release,
+// v0.7.0) — it is the one fetch mode that carries its own reference. The
+// manifest is only a claim (the swarm id is a flat SHA-256, so per-chunk
+// hashes cannot be bound to it, §Distribution), and when that claim is
+// unobtainable (only partial holders remain — they cannot build one — or the
+// probes time out), contradicted (a 1-vs-1 disagreement, errManifestSuspect)
+// or proven wrong (the assembled bytes fail the content hash), fetching whole
+// against the content hash is the only move that needs no manifest trust at
+// all. Either way the assembled bytes are verified against the content hash
+// before entering the cache.
 func (n *Node) runTransfer(t *transfer, holders []*BlobProvider) {
 	defer func() {
 		n.transferMu.Lock()
@@ -686,7 +697,7 @@ func (n *Node) runTransfer(t *transfer, holders []*BlobProvider) {
 	n.runWhole(t, holders)
 }
 
-// runWhole is the F3 fallback: try each advertising friend in order until one
+// runWhole is the F3 fallback: try each advertising holder in order until one
 // delivers the whole blob with bytes that verify against the content hash.
 func (n *Node) runWhole(t *transfer, holders []*BlobProvider) {
 	t.stats.setMode("whole")
@@ -713,7 +724,7 @@ func (n *Node) runWhole(t *transfer, holders []*BlobProvider) {
 	t.finish(fmt.Errorf("federation: fetch %s: %w", t.hash, lastErr))
 }
 
-// fetchFrom streams the blob from one friend into the partial file, hashing as
+// fetchFrom streams the blob from one holder into the partial file, hashing as
 // it goes; matching bytes are renamed into the cache atomically.
 func (n *Node) fetchFrom(t *transfer, p *BlobProvider) error {
 	url, err := holderURL(p.PublicKey, "blob/"+t.hash)

@@ -2030,3 +2030,30 @@ capped at `maxManifestMemo` (256; a miss costs one re-read of a file about to
 be streamed anyway, and 256 covers a bulk materialize's working set). Recency
 is a counter, not a clock, so eviction is deterministic. Pinned by
 `TestManifestMemoIsBounded`; the targeted `EvictCachedBlob` delete stays.
+
+## Federation — fetch-path dig findings (2026-08-13, federation-explained.txt #5)
+
+Dig verdict (not a defect row): the "three fetch paths" are TWO since the
+chunk-0 speculation joined the chunk plan (`3ff5846`), and the whole-file
+fallback's stated reason — "older F3-only peers" — is false as a population:
+F3 (`1b23830`) and F4 (`f42428a`) are five hours apart in history, one commit
+between them, both first released in **v0.7.0**, so no tagged release ever
+served `/blob` without `/manifest`. The fallback is nonetheless load-bearing:
+it is the one fetch mode carrying its own reference (the content hash), and it
+is where the swarm hands over on a 1-vs-1 manifest disagreement,
+`errManifestSuspect`, a failed assembled-hash verify, or no manifest at all
+(only partial holders left). It is problem #4's (flat swarm id) shadow and
+collapses only with F10. Comments/docs re-justified 2026-08-13 (behaviour
+untouched). Two drift findings fell out, neither reproduced in anger — per the
+standing rule, **no fix ships without a repro**:
+
+| Severity | Issue | Status |
+|---|---|---|
+| Low | **A local `os.Rename` failure triggers the network fallback.** `runTransfer` folds three failures into one `err`: swarm fetch, `verifyFileHash`, and the final `os.Rename(t.partPath, t.path)` (`federation/transfer.go`, the `rerr` arm). For the first two the whole-file fallback is the designed recovery, but a rename failure is a LOCAL filesystem error on fully VERIFIED bytes — the fallback then truncates those bytes (`discardPartial`), re-downloads the entire blob from up to N holders, and each attempt ends in the same failing rename (`fetchFrom` renames the same pair). Worst case: N full downloads to answer a disk error. Mitigating: same-directory renames essentially only fail on FS corruption/permissions, so the trigger is rare. Fix shape if ever reproduced: split the rename arm out of the fallback condition and `t.finish(rerr)` directly. | open |
+| Info | **The patience rule does not reach the whole-file mode.** `fetchFrom` reads a 429 as an ordinary holder failure (`holder answered 429`), so `runWhole` skips to the next holder and a sole busy holder fails the transfer instantly — the exact shape the 2026-08-13 patience rule exists for in the swarm path. Entry is rare by construction: manifest probes are not quota-counted (`admitServe` guards only blobs), so a busy home server still routes the fetch into the swarm path, and the fallback only follows a swarm that already gave up. Recorded for coherence, not urgency; if the whole-file path ever gains retry shape, the 429 arm should wait, not fail. | open |
+
+Also noted while digging: the "too old to know the endpoint" comments on
+`/have` (`fetchHave`, `providerState.haveKnown`) are CORRECT and were left
+alone — F9 item 1/3 shipped after v0.8.6, so released nodes genuinely lack
+that endpoint. `/manifest` was the only one whose version-skew story was a
+myth.

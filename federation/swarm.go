@@ -449,8 +449,9 @@ func (n *Node) probeJSON(ctx context.Context, key, path string, limit int64, out
 	return json.NewDecoder(io.LimitReader(resp.Body, limit)).Decode(out) == nil
 }
 
-// fetchManifest pulls one friend's manifest for hash; nil (no error surfaced)
-// when the holder lacks it or is too old to speak the endpoint.
+// fetchManifest pulls one holder's manifest for hash; nil (no error surfaced)
+// when the holder does not serve one — a partial holder cannot build a
+// manifest, and a probe can time out.
 func (n *Node) fetchManifest(ctx context.Context, p *BlobProvider, hash string) *blobManifest {
 	var m blobManifest
 	if !n.probeJSON(ctx, p.PublicKey, "manifest/"+hash, 4<<20, &m) || !m.valid(hash) {
@@ -686,7 +687,7 @@ func (n *Node) syncHoldings(ctx context.Context, p *CatalogSource) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return // older peer without the endpoint
+		return // refused (e.g. not in their community's view) — nothing to store
 	}
 	var msg holdingsMessage
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&msg); err != nil {
