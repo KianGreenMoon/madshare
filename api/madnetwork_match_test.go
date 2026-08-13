@@ -171,8 +171,8 @@ func TestClassifyCarriesTheMadnetworkArm(t *testing.T) {
 	// A friend's catalog advertises the very bytes that were just uploaded,
 	// under its own name for them.
 	ctx := context.Background()
-	if _, err := db.InsertFederationPeer(ctx, &federation.Peer{
-		PublicKey: "aa11", Name: "friendly", State: federation.PeerFriend, CreatedAt: 1000,
+	if _, err := db.InsertFederationPeer(ctx, &federation.ExternalNode{
+		PublicKey: "aa11", Label: "friendly", TrustState: federation.PeerFriend, TrustedAt: 1000,
 	}); err != nil {
 		t.Fatalf("insert peer: %v", err)
 	}

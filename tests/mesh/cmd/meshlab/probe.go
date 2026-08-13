@@ -48,19 +48,19 @@ import (
 // probe is not pretending to be isolated, it IS isolated.
 type emptyStore struct{}
 
-func (emptyStore) ListFederationPeers(context.Context) ([]*federation.Peer, error) {
+func (emptyStore) ListFederationPeers(context.Context) ([]*federation.ExternalNode, error) {
 	return nil, nil
 }
-func (emptyStore) ListHomeNodes(context.Context) ([]federation.HomeNode, error) {
+func (emptyStore) ListHomeNodes(context.Context) ([]federation.ExternalNode, error) {
 	return nil, nil
 }
-func (emptyStore) GetFederationPeer(context.Context, int64) (*federation.Peer, error) {
+func (emptyStore) GetFederationPeer(context.Context, int64) (*federation.ExternalNode, error) {
 	return nil, federation.ErrPeerNotFound
 }
-func (emptyStore) GetFederationPeerByKey(context.Context, string) (*federation.Peer, error) {
+func (emptyStore) GetFederationPeerByKey(context.Context, string) (*federation.ExternalNode, error) {
 	return nil, federation.ErrPeerNotFound
 }
-func (emptyStore) InsertFederationPeer(context.Context, *federation.Peer) (int64, error) {
+func (emptyStore) InsertFederationPeer(context.Context, *federation.ExternalNode) (int64, error) {
 	return 0, nil
 }
 func (emptyStore) SetFederationPeerState(context.Context, int64, string, string) error { return nil }
@@ -83,10 +83,10 @@ func (emptyStore) MarkSourceCatalogChecked(context.Context, int64, string, int64
 
 // Catalog sources (F7 item 5): the probe caches nothing from anyone, so it never
 // creates a source and its frontier is always empty.
-func (emptyStore) EnsureCatalogSource(_ context.Context, publicKey string, now int64) (*federation.CatalogSource, error) {
-	return &federation.CatalogSource{PublicKey: publicKey, FirstSeen: now}, nil
+func (emptyStore) EnsureCatalogSource(_ context.Context, publicKey string, now int64) (*federation.ExternalNode, error) {
+	return &federation.ExternalNode{PublicKey: publicKey, FirstSeen: now}, nil
 }
-func (emptyStore) ListCatalogSources(context.Context) ([]*federation.CatalogSource, error) {
+func (emptyStore) ListCatalogSources(context.Context) ([]*federation.ExternalNode, error) {
 	return nil, nil
 }
 func (emptyStore) MarkCatalogSourceAttempted(context.Context, int64, int64) error { return nil }

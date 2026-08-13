@@ -27,7 +27,7 @@ type fakeFederation struct {
 	selfKey     string
 	resyncs     int
 	pulled      []string // node keys the discover endpoint asked to pull from (F7 item 5)
-	peers       []*federation.Peer
+	peers       []*federation.ExternalNode
 	imported    *federation.Card
 	patched     map[string]any
 	opErr       error
@@ -72,15 +72,17 @@ func (f *fakeFederation) Info() federation.NodeInfo {
 		Card: federation.Card{Version: federation.ProtocolVersion, Name: "fake", PublicKey: key},
 	}
 }
-func (f *fakeFederation) Peers(context.Context) ([]*federation.Peer, error) { return f.peers, nil }
-func (f *fakeFederation) ImportCard(_ context.Context, c federation.Card) (*federation.Peer, error) {
+func (f *fakeFederation) Peers(context.Context) ([]*federation.ExternalNode, error) {
+	return f.peers, nil
+}
+func (f *fakeFederation) ImportCard(_ context.Context, c federation.Card) (*federation.ExternalNode, error) {
 	if f.opErr != nil {
 		return nil, f.opErr
 	}
 	f.imported = &c
-	return &federation.Peer{ID: 1, PublicKey: c.PublicKey, Name: c.Name, State: federation.PeerPendingOutgoing}, nil
+	return &federation.ExternalNode{ID: 1, PublicKey: c.PublicKey, Label: c.Name, TrustState: federation.PeerPendingOutgoing}, nil
 }
-func (f *fakeFederation) ImportKey(ctx context.Context, publicKey, name string) (*federation.Peer, error) {
+func (f *fakeFederation) ImportKey(ctx context.Context, publicKey, name string) (*federation.ExternalNode, error) {
 	return f.ImportCard(ctx, federation.Card{Version: federation.ProtocolVersion, Name: name, PublicKey: publicKey})
 }
 

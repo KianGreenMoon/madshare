@@ -27,8 +27,8 @@ import (
 // friend of ours — and it needs no third process.
 func vouchFor(t *testing.T, store *memStore, voucherKey, subjectKey string) {
 	t.Helper()
-	if _, err := store.InsertFederationPeer(context.Background(), &Peer{
-		PublicKey: voucherKey, State: PeerFriend, Name: "voucher",
+	if _, err := store.InsertFederationPeer(context.Background(), &ExternalNode{
+		PublicKey: voucherKey, TrustState: PeerFriend, Label: "voucher",
 	}); err != nil {
 		t.Fatalf("insert vouching friend: %v", err)
 	}

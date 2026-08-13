@@ -90,7 +90,7 @@ func (m *memberSet) vouches(key string) bool {
 // matters because the set is memoized and compared by age: stamping it with the
 // completion time would let a slow computation over old contents pass for a
 // fresh answer.
-func newMemberSet(selfKey string, peers []*Peer, edges []GraphEdgeClaim, homes []HomeNode, asOf time.Time) *memberSet {
+func newMemberSet(selfKey string, peers []*ExternalNode, edges []GraphEdgeClaim, homes []ExternalNode, asOf time.Time) *memberSet {
 	keys := MemberKeys(selfKey, peers, edges)
 	addrs := make(map[string]string, len(keys)+len(homes))
 	for key := range keys {
@@ -132,7 +132,7 @@ func newMemberSet(selfKey string, peers []*Peer, edges []GraphEdgeClaim, homes [
 // therefore refuses to replace a memo computed from newer inputs. Overwriting
 // one would serve the older perimeter *stamped as fresh*, which is how an
 // accepted friendship could briefly stop being a membership.
-func (n *Node) refreshMembers(peers []*Peer, edges []GraphEdgeClaim, homes []HomeNode, readAt time.Time) {
+func (n *Node) refreshMembers(peers []*ExternalNode, edges []GraphEdgeClaim, homes []ExternalNode, readAt time.Time) {
 	n.installMembers(newMemberSet(n.PublicKeyHex(), peers, edges, homes, readAt))
 }
 

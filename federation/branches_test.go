@@ -15,9 +15,9 @@ import (
 func TestBranchesMatchTheMap(t *testing.T) {
 	// me—a—b—c, plus a second friend d that also reaches b: b is corroborated
 	// down two branches, c only through a.
-	peers := []*Peer{
-		{PublicKey: k("a"), Name: "studio", State: PeerFriend},
-		{PublicKey: k("d"), Name: "loft", State: PeerFriend},
+	peers := []*ExternalNode{
+		{PublicKey: k("a"), Label: "studio", TrustState: PeerFriend},
+		{PublicKey: k("d"), Label: "loft", TrustState: PeerFriend},
 	}
 	edges := []GraphEdgeClaim{
 		edge("a", "b", "kian's node"), edge("b", "a", "studio"),
@@ -57,9 +57,9 @@ func TestBranchesMatchTheMap(t *testing.T) {
 // admin map — so "2 hops" on the browse and the ring the map draws it in have to
 // be the same number, produced by the same BFS.
 func TestHopsMatchTheMap(t *testing.T) {
-	peers := []*Peer{
-		{PublicKey: k("a"), Name: "studio", State: PeerFriend},
-		{PublicKey: k("d"), Name: "loft", State: PeerFriend},
+	peers := []*ExternalNode{
+		{PublicKey: k("a"), Label: "studio", TrustState: PeerFriend},
+		{PublicKey: k("d"), Label: "loft", TrustState: PeerFriend},
 	}
 	edges := []GraphEdgeClaim{
 		edge("a", "b", "kian's node"), edge("b", "a", "studio"),
@@ -94,7 +94,7 @@ func TestHopsMatchTheMap(t *testing.T) {
 // the weighting must lose those voices at the same moment the map does —
 // otherwise a blocked node keeps corroborating for as long as its records live.
 func TestBranchesSnipWithTheBlock(t *testing.T) {
-	peers := []*Peer{{PublicKey: k("a"), State: PeerFriend}}
+	peers := []*ExternalNode{{PublicKey: k("a"), TrustState: PeerFriend}}
 	edges := []GraphEdgeClaim{
 		edge("a", "b", "b"), edge("b", "a", "a"),
 		edge("b", "c", "c"), edge("c", "b", "b"),
@@ -103,7 +103,7 @@ func TestBranchesSnipWithTheBlock(t *testing.T) {
 		t.Fatalf("c via = %v, want one branch before the block", got[k("c")])
 	}
 
-	peers = append(peers, &Peer{PublicKey: k("b"), State: PeerBlocked})
+	peers = append(peers, &ExternalNode{PublicKey: k("b"), TrustState: PeerBlocked})
 	got := branchesOf(k("me"), peers, edges)
 	if len(got[k("c")]) != 0 {
 		t.Errorf("c via = %v after blocking b, want nothing — the branch is snipped", got[k("c")])

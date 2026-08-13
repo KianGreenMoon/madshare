@@ -14,10 +14,11 @@ import (
 // the state machine itself lives in the federation package — this layer only
 // persists rows.
 //
-// A "peer" is a node row whose trust_state is non-NULL: an admin acted. The
-// federation.Peer struct survives as that view (the recorded follow-up is to
-// fold it into a Node struct once the merged table has settled), so the
-// column mapping is: name→label, state→trust_state, created_at→trusted_at.
+// A "peer" is a node row whose trust_state is non-NULL: an admin acted
+// ([federation.ExternalNode.IsTrusted]). Since the struct fold there is one Go
+// type for the whole row and the queries here are the VIEW — they select the
+// trust group and leave the rest zero, which is why a row scanned by this file
+// must never be written back wholesale.
 
 const peerColumns = `
 	p.id, p.public_key, p.label, p.heard_name, p.trust_state, p.prev_state, p.guest_only,
@@ -27,15 +28,15 @@ const peerColumns = `
 // peerLabelExpr resolves a node's display name in SQL for the surfaces that
 // only ever show one — the admin's local label if set, else what the node
 // calls itself. One heard_name column since 046, so this chain is the whole
-// rule. federation.Peer.Label is the Go twin; keep the two in step.
+// rule. federation.ExternalNode.Name is the Go twin; keep the two in step.
 func peerLabelExpr(alias string) string {
 	return `COALESCE(NULLIF(` + alias + `.label, ''), ` + alias + `.heard_name)`
 }
 
-func scanPeer(row interface{ Scan(...any) error }) (*federation.Peer, error) {
-	var p federation.Peer
-	if err := row.Scan(&p.ID, &p.PublicKey, &p.Name, &p.HeardName, &p.State, &p.PrevState,
-		&p.GuestOnly, &p.CreatedAt, &p.LastSeen,
+func scanPeer(row interface{ Scan(...any) error }) (*federation.ExternalNode, error) {
+	var p federation.ExternalNode
+	if err := row.Scan(&p.ID, &p.PublicKey, &p.Label, &p.HeardName, &p.TrustState, &p.PrevState,
+		&p.GuestOnly, &p.TrustedAt, &p.LastSeen,
 		&p.BlockReason, &p.BlockedAt); err != nil {
 		return nil, err
 	}
@@ -44,7 +45,7 @@ func scanPeer(row interface{ Scan(...any) error }) (*federation.Peer, error) {
 
 // ListFederationPeers returns every trusted node, friends first, then pending,
 // then blocked, newest first within a state — the order the admin page shows.
-func (db *DB) ListFederationPeers(ctx context.Context) ([]*federation.Peer, error) {
+func (db *DB) ListFederationPeers(ctx context.Context) ([]*federation.ExternalNode, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT `+peerColumns+`
 		FROM federation_nodes p
@@ -59,7 +60,7 @@ func (db *DB) ListFederationPeers(ctx context.Context) ([]*federation.Peer, erro
 	}
 	defer rows.Close()
 
-	var out []*federation.Peer
+	var out []*federation.ExternalNode
 	for rows.Next() {
 		p, err := scanPeer(rows)
 		if err != nil {
@@ -75,7 +76,7 @@ func (db *DB) ListFederationPeers(ctx context.Context) ([]*federation.Peer, erro
 // group) is NOT a peer, so it answers not-found here even though its row
 // exists — the id space now spans all nodes, the peer API deliberately does
 // not.
-func (db *DB) GetFederationPeer(ctx context.Context, id int64) (*federation.Peer, error) {
+func (db *DB) GetFederationPeer(ctx context.Context, id int64) (*federation.ExternalNode, error) {
 	p, err := scanPeer(db.QueryRowContext(ctx, `
 		SELECT `+peerColumns+`
 		FROM federation_nodes p
@@ -91,7 +92,7 @@ func (db *DB) GetFederationPeer(ctx context.Context, id int64) (*federation.Peer
 
 // GetFederationPeerByKey returns one trusted node by its (lowercase hex)
 // public key, or federation.ErrPeerNotFound.
-func (db *DB) GetFederationPeerByKey(ctx context.Context, publicKey string) (*federation.Peer, error) {
+func (db *DB) GetFederationPeerByKey(ctx context.Context, publicKey string) (*federation.ExternalNode, error) {
 	p, err := scanPeer(db.QueryRowContext(ctx, `
 		SELECT `+peerColumns+`
 		FROM federation_nodes p
@@ -113,7 +114,7 @@ func (db *DB) GetFederationPeerByKey(ctx context.Context, publicKey string) (*fe
 // catalog. The guard refuses a key that already carries a trust state (the
 // callers all check first; this is the race backstop the old UNIQUE
 // constraint provided).
-func (db *DB) InsertFederationPeer(ctx context.Context, p *federation.Peer) (int64, error) {
+func (db *DB) InsertFederationPeer(ctx context.Context, p *federation.ExternalNode) (int64, error) {
 	var id int64
 	err := db.QueryRowContext(ctx, `
 		INSERT INTO federation_nodes
@@ -133,8 +134,8 @@ func (db *DB) InsertFederationPeer(ctx context.Context, p *federation.Peer) (int
 			last_seen   = MAX(federation_nodes.last_seen, excluded.last_seen)
 		WHERE federation_nodes.trust_state IS NULL
 		RETURNING id`,
-		p.PublicKey, p.Name, p.HeardName, p.State, p.PrevState, p.GuestOnly,
-		p.CreatedAt, p.CreatedAt, p.LastSeen).Scan(&id)
+		p.PublicKey, p.Label, p.HeardName, p.TrustState, p.PrevState, p.GuestOnly,
+		p.TrustedAt, p.TrustedAt, p.LastSeen).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, fmt.Errorf("insert federation peer: key already has a trust state")
 	}
@@ -199,7 +200,7 @@ func (db *DB) UpdateFederationPeerHeardName(ctx context.Context, id int64, name 
 }
 
 // SetFederationPeerGuestOnly sets or clears the admin's per-peer demotion
-// (federation.Peer.GuestOnly).
+// (federation.ExternalNode.GuestOnly).
 func (db *DB) SetFederationPeerGuestOnly(ctx context.Context, id int64, guestOnly bool) error {
 	res, err := db.ExecContext(ctx, `
 		UPDATE federation_nodes SET guest_only = ?

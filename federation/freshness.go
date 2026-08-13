@@ -43,14 +43,14 @@ import (
 // direct friend, how long ago we last saw it. Freshest first, so the cap keeps
 // the claims worth having; `except` is the asking node, which has no use for our
 // opinion of its own liveness.
-func buildFreshnessHints(peers []*Peer, except string, now int64) map[string]int64 {
+func buildFreshnessHints(peers []*ExternalNode, except string, now int64) map[string]int64 {
 	type aged struct {
 		key string
 		age int64
 	}
 	var fresh []aged
 	for _, p := range peers {
-		if p.State != PeerFriend || p.LastSeen <= 0 || p.PublicKey == except {
+		if p.TrustState != PeerFriend || p.LastSeen <= 0 || p.PublicKey == except {
 			continue
 		}
 		age := now - p.LastSeen
@@ -95,7 +95,7 @@ func (n *Node) freshnessHints(r *http.Request) map[string]int64 {
 		return nil
 	}
 	asker := matchPeerAddr(peers, remoteIP(r))
-	if asker == nil || asker.State != PeerFriend {
+	if asker == nil || asker.TrustState != PeerFriend {
 		return nil
 	}
 	return buildFreshnessHints(peers, asker.PublicKey, time.Now().Unix())
@@ -114,7 +114,7 @@ func (n *Node) freshnessHints(r *http.Request) map[string]int64 {
 // What survives updates only sources we ALREADY hold (the store's UPDATE is
 // keyed on the node key), so a hint can refresh a cached catalog's freshness but
 // can never mint the row that says we pull from that node.
-func (n *Node) applyFreshnessHints(ctx context.Context, from *Peer, hints map[string]int64) {
+func (n *Node) applyFreshnessHints(ctx context.Context, from *ExternalNode, hints map[string]int64) {
 	if n.store == nil || len(hints) == 0 {
 		return
 	}

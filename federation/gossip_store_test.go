@@ -186,7 +186,7 @@ func (m *memStore) BlockFederationPeer(_ context.Context, id int64, prevState, r
 	if !ok {
 		return ErrPeerNotFound
 	}
-	p.State, p.PrevState, p.BlockReason, p.BlockedAt = PeerBlocked, prevState, reason, at
+	p.TrustState, p.PrevState, p.BlockReason, p.BlockedAt = PeerBlocked, prevState, reason, at
 	return nil
 }
 

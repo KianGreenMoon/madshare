@@ -99,9 +99,9 @@ func TestSwarmPeerTraffic_IdentityIsResolvedNotStored(t *testing.T) {
 	ctx := context.Background()
 	friend, member, gone := nodeKey('a'), nodeKey('b'), nodeKey('c')
 
-	if _, err := db.InsertFederationPeer(ctx, &federation.Peer{
-		PublicKey: friend, Name: "fiona's box", HeardName: "some node",
-		State: federation.PeerFriend, CreatedAt: 1}); err != nil {
+	if _, err := db.InsertFederationPeer(ctx, &federation.ExternalNode{
+		PublicKey: friend, Label: "fiona's box", HeardName: "some node",
+		TrustState: federation.PeerFriend, TrustedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
 	src, err := db.EnsureCatalogSource(ctx, member, 1)
@@ -151,8 +151,8 @@ func TestSwarmPeerTraffic_BlockedNodeKeepsItsHistoryAndSaysSo(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 	key := nodeKey('d')
-	id, err := db.InsertFederationPeer(ctx, &federation.Peer{
-		PublicKey: key, Name: "noisy", State: federation.PeerFriend, CreatedAt: 1})
+	id, err := db.InsertFederationPeer(ctx, &federation.ExternalNode{
+		PublicKey: key, Label: "noisy", TrustState: federation.PeerFriend, TrustedAt: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,8 +180,8 @@ func TestSwarmPeerTraffic_ResolveNamesUnflushedKeys(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
 	friend, stranger := nodeKey('a'), nodeKey('e')
-	if _, err := db.InsertFederationPeer(ctx, &federation.Peer{
-		PublicKey: friend, Name: "fiona's box", State: federation.PeerFriend, CreatedAt: 1}); err != nil {
+	if _, err := db.InsertFederationPeer(ctx, &federation.ExternalNode{
+		PublicKey: friend, Label: "fiona's box", TrustState: federation.PeerFriend, TrustedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
 

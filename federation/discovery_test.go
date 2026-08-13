@@ -44,7 +44,7 @@ func (unreachable) RoundTrip(*http.Request) (*http.Response, error) {
 
 // seedSource creates a source row with a chosen last-seen, for the eviction
 // order.
-func seedSource(t *testing.T, ms *memStore, key string, lastSeen int64) *CatalogSource {
+func seedSource(t *testing.T, ms *memStore, key string, lastSeen int64) *ExternalNode {
 	t.Helper()
 	src, err := ms.EnsureCatalogSource(context.Background(), key, 0)
 	if err != nil {
@@ -76,10 +76,10 @@ func TestRetainSourcesKeepsWhatWeStillHaveAReasonFor(t *testing.T) {
 	pending := seedSource(t, ms, k("pending"), 100)
 	stranger := seedSource(t, ms, k("stranger"), 100)
 
-	peers := []*Peer{
-		{PublicKey: k("friend"), State: PeerFriend},
-		{PublicKey: k("blocked"), State: PeerBlocked},
-		{PublicKey: k("pending"), State: PeerPendingIncoming},
+	peers := []*ExternalNode{
+		{PublicKey: k("friend"), TrustState: PeerFriend},
+		{PublicKey: k("blocked"), TrustState: PeerBlocked},
+		{PublicKey: k("pending"), TrustState: PeerPendingIncoming},
 	}
 	members := &memberSet{keys: map[string]struct{}{k("member"): {}}}
 
@@ -93,12 +93,12 @@ func TestRetainSourcesKeepsWhatWeStillHaveAReasonFor(t *testing.T) {
 	for _, s := range kept {
 		keptIDs[s.ID] = true
 	}
-	for _, want := range []*CatalogSource{friend, blocked, member} {
+	for _, want := range []*ExternalNode{friend, blocked, member} {
 		if !keptIDs[want.ID] {
 			t.Errorf("source %s was dropped; it should be kept", want.PublicKey)
 		}
 	}
-	for _, gone := range []*CatalogSource{pending, stranger} {
+	for _, gone := range []*ExternalNode{pending, stranger} {
 		if keptIDs[gone.ID] {
 			t.Errorf("source %s was kept; nothing gives us a reason to cache it", gone.PublicKey)
 		}
@@ -126,7 +126,7 @@ func TestRetainSourcesEvictsTheColdestForeignCatalogs(t *testing.T) {
 	mid := seedSource(t, ms, k("mid"), 200)
 	cold := seedSource(t, ms, k("cold"), 100)
 
-	peers := []*Peer{{PublicKey: k("friend"), State: PeerFriend}}
+	peers := []*ExternalNode{{PublicKey: k("friend"), TrustState: PeerFriend}}
 	members := &memberSet{keys: map[string]struct{}{
 		k("warm"): {}, k("mid"): {}, k("cold"): {},
 	}}
@@ -157,11 +157,11 @@ func TestFrontierBudgetLimitsMembersButNotFriends(t *testing.T) {
 	ms := newMemStore()
 	n := discoveryNode(ms, Discovery{Budget: 2})
 
-	var peers []*Peer
+	var peers []*ExternalNode
 	memberKeys := map[string]struct{}{}
 	for _, name := range []string{"f1", "f2", "f3"} {
 		seedSource(t, ms, k(name), 0)
-		peers = append(peers, &Peer{PublicKey: k(name), State: PeerFriend})
+		peers = append(peers, &ExternalNode{PublicKey: k(name), TrustState: PeerFriend})
 	}
 	for _, name := range []string{"m1", "m2", "m3", "m4", "m5"} {
 		seedSource(t, ms, k(name), 0)
@@ -307,7 +307,7 @@ func realKey(label string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func mustSource(t *testing.T, ms *memStore, key string) *CatalogSource {
+func mustSource(t *testing.T, ms *memStore, key string) *ExternalNode {
 	t.Helper()
 	src, err := ms.EnsureCatalogSource(context.Background(), key, 0)
 	if err != nil {

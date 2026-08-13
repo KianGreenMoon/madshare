@@ -677,7 +677,7 @@ func (n *Node) handleHoldings(w http.ResponseWriter, r *http.Request) {
 // copy (federation_holdings), so their downloaded blobs become fetchable from
 // them. Called on the same cadence as the catalog sync, for the same set of
 // nodes — a member seeds from its cache exactly as a friend does.
-func (n *Node) syncHoldings(ctx context.Context, p *CatalogSource) {
+func (n *Node) syncHoldings(ctx context.Context, p *ExternalNode) {
 	url, err := holderURL(p.PublicKey, "holdings")
 	if err != nil {
 		return
@@ -1105,7 +1105,7 @@ func (n *Node) serveAudience(r *http.Request) (Audience, bool) {
 // could not place (a guest, a token bearer) comes back with an empty key and is
 // accounted by its mesh address, which is self-certifying but anonymous.
 func (n *Node) serveAudienceKey(r *http.Request) (Audience, string, bool) {
-	if p := n.peerFromRemote(r); p != nil && p.State == PeerFriend {
+	if p := n.peerFromRemote(r); p != nil && p.TrustState == PeerFriend {
 		// The audience is the peer row: still a friend when demoted, only
 		// narrowed to guest-accessible content — the mapping this flag replaced
 		// narrowed *what* it sees, never *who it is*.

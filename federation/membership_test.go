@@ -18,7 +18,7 @@ func isMember(set map[string]struct{}, label string) bool {
 // membership refuses it, because agreement is what makes a key a member rather
 // than a name in somebody's list.
 func TestMapDrawsAOneSidedEdgeThatMembershipRefuses(t *testing.T) {
-	peers := []*Peer{{PublicKey: k("b"), State: PeerFriend}}
+	peers := []*ExternalNode{{PublicKey: k("b"), TrustState: PeerFriend}}
 	edges := []GraphEdgeClaim{edge("b", "c", "")}
 
 	if n := nodeByLabel(t, BuildNetworkMap(k("me"), peers, edges, nil), "c"); n == nil {
@@ -32,7 +32,7 @@ func TestMapDrawsAOneSidedEdgeThatMembershipRefuses(t *testing.T) {
 // And the agreement case, so the refusal above is not simply "nothing is ever a
 // member": once c publishes the same friendship, it joins.
 func TestMutualEdgeAdmitsAFriendOfAFriend(t *testing.T) {
-	peers := []*Peer{{PublicKey: k("b"), State: PeerFriend}}
+	peers := []*ExternalNode{{PublicKey: k("b"), TrustState: PeerFriend}}
 	edges := []GraphEdgeClaim{edge("b", "c", ""), edge("c", "b", "")}
 
 	members := MemberKeys(k("me"), peers, edges)
@@ -49,7 +49,7 @@ func TestMutualEdgeAdmitsAFriendOfAFriend(t *testing.T) {
 // is a dead end, which is the documented "a silent node walls off its friends"
 // property arriving where F7 puts it to work.
 func TestSilentFriendIsStillAMemberButVouchesForNobody(t *testing.T) {
-	peers := []*Peer{{PublicKey: k("a"), State: PeerFriend}}
+	peers := []*ExternalNode{{PublicKey: k("a"), TrustState: PeerFriend}}
 	// a publishes nothing at all; d names a, but a never names d back.
 	edges := []GraphEdgeClaim{edge("d", "a", "")}
 
@@ -66,9 +66,9 @@ func TestSilentFriendIsStillAMemberButVouchesForNobody(t *testing.T) {
 // blocked node, so one block takes the whole branch behind it out of the
 // community — the same act that removes it from the map.
 func TestBlockingClearsTheBranchBehindIt(t *testing.T) {
-	peers := []*Peer{
-		{PublicKey: k("a"), State: PeerFriend},
-		{PublicKey: k("b"), State: PeerFriend},
+	peers := []*ExternalNode{
+		{PublicKey: k("a"), TrustState: PeerFriend},
+		{PublicKey: k("b"), TrustState: PeerFriend},
 	}
 	edges := []GraphEdgeClaim{
 		edge("b", "c", ""), edge("c", "b", ""), // b and c agree
@@ -78,7 +78,7 @@ func TestBlockingClearsTheBranchBehindIt(t *testing.T) {
 		t.Fatalf("d should be a member through b—c—d before the block")
 	}
 
-	peers[1].State = PeerBlocked
+	peers[1].TrustState = PeerBlocked
 	members := MemberKeys(k("me"), peers, edges)
 	if isMember(members, "b") {
 		t.Error("a blocked peer is not a member")
@@ -96,9 +96,9 @@ func TestBlockingClearsTheBranchBehindIt(t *testing.T) {
 // The other half of the same property: a node vouched for through a second,
 // unblocked branch stays. Over-revocation would be as wrong as under-revocation.
 func TestASecondBranchKeepsAMember(t *testing.T) {
-	peers := []*Peer{
-		{PublicKey: k("a"), State: PeerFriend},
-		{PublicKey: k("b"), State: PeerBlocked},
+	peers := []*ExternalNode{
+		{PublicKey: k("a"), TrustState: PeerFriend},
+		{PublicKey: k("b"), TrustState: PeerBlocked},
 	}
 	edges := []GraphEdgeClaim{
 		edge("b", "c", ""), edge("c", "b", ""), // via the blocked friend
@@ -125,7 +125,7 @@ func TestRemovedPeerCannotClaimItselfBackIn(t *testing.T) {
 // until an admin accepts, the key earns whatever the community says about it and
 // nothing more.
 func TestPendingPeerIsNotAMemberOnItsOwn(t *testing.T) {
-	peers := []*Peer{{PublicKey: k("a"), State: PeerPendingIncoming}}
+	peers := []*ExternalNode{{PublicKey: k("a"), TrustState: PeerPendingIncoming}}
 
 	if members := MemberKeys(k("me"), peers, nil); isMember(members, "a") {
 		t.Error("a pending peer must not be served as a member")

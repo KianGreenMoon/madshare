@@ -56,7 +56,7 @@ func (db *DB) AddHomeNode(ctx context.Context, publicKey, baseURL, name string, 
 
 // ListHomeNodes returns every home server, oldest first. Empty on a server,
 // which signs in to nothing.
-func (db *DB) ListHomeNodes(ctx context.Context) ([]federation.HomeNode, error) {
+func (db *DB) ListHomeNodes(ctx context.Context) ([]federation.ExternalNode, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT public_key, home_base_url, heard_name, home_added_at
 		FROM federation_nodes
@@ -67,10 +67,10 @@ func (db *DB) ListHomeNodes(ctx context.Context) ([]federation.HomeNode, error) 
 	}
 	defer rows.Close()
 
-	var out []federation.HomeNode
+	var out []federation.ExternalNode
 	for rows.Next() {
-		var h federation.HomeNode
-		if err := rows.Scan(&h.PublicKey, &h.BaseURL, &h.Name, &h.AddedAt); err != nil {
+		var h federation.ExternalNode
+		if err := rows.Scan(&h.PublicKey, &h.HomeBaseURL, &h.HeardName, &h.HomeAddedAt); err != nil {
 			return nil, fmt.Errorf("scan home node: %w", err)
 		}
 		out = append(out, h)

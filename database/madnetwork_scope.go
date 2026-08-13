@@ -22,7 +22,7 @@ import (
 //     (-1) invisible to everyone and DepthUnlimited visible to any reach we ever
 //     grow into.
 //   - guest-only — the per-friend half, a plain flag on the peer row
-//     (federation.Peer.GuestOnly, set by the admin): a demoted friend sees
+//     (federation.ExternalNode.GuestOnly, set by the admin): a demoted friend sees
 //     exactly what an anonymous local visitor sees (the guest-playable /
 //     license policy), and so does an outsider on a node that opted to answer
 //     guests at all (F7). The audience derives from the row in

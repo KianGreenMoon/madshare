@@ -228,13 +228,13 @@ func TestFloorBudgetSpreadsOverTheCycle(t *testing.T) {
 	}
 }
 
-func sourcesByID(t *testing.T, ms *memStore) map[int64]*CatalogSource {
+func sourcesByID(t *testing.T, ms *memStore) map[int64]*ExternalNode {
 	t.Helper()
 	list, err := ms.ListCatalogSources(context.Background())
 	if err != nil {
 		t.Fatalf("list sources: %v", err)
 	}
-	out := map[int64]*CatalogSource{}
+	out := map[int64]*ExternalNode{}
 	for _, s := range list {
 		out[s.ID] = s
 	}

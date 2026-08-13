@@ -10,11 +10,11 @@ import (
 
 func insertPeer(t *testing.T, db *DB, key, name, state string) int64 {
 	t.Helper()
-	id, err := db.InsertFederationPeer(context.Background(), &federation.Peer{
-		PublicKey: key,
-		Name:      name,
-		State:     state,
-		CreatedAt: 1000,
+	id, err := db.InsertFederationPeer(context.Background(), &federation.ExternalNode{
+		PublicKey:  key,
+		Label:      name,
+		TrustState: state,
+		TrustedAt:  1000,
 	})
 	if err != nil {
 		t.Fatalf("insert peer %s: %v", key, err)
@@ -44,7 +44,7 @@ func TestFederationPeers_CRUDAndOrdering(t *testing.T) {
 	friendID := insertPeer(t, db, "cc33", "friend-one", federation.PeerFriend)
 
 	// A duplicate key must trip the UNIQUE constraint.
-	if _, err := db.InsertFederationPeer(ctx, &federation.Peer{PublicKey: "cc33", State: federation.PeerFriend}); err == nil {
+	if _, err := db.InsertFederationPeer(ctx, &federation.ExternalNode{PublicKey: "cc33", TrustState: federation.PeerFriend}); err == nil {
 		t.Error("duplicate public_key accepted; want UNIQUE violation")
 	}
 
@@ -57,7 +57,7 @@ func TestFederationPeers_CRUDAndOrdering(t *testing.T) {
 	}
 	// Friends first, then pending, blocked last.
 	if peers[0].ID != friendID || peers[1].ID != pendingID || peers[2].ID != blockedID {
-		t.Errorf("order = %v/%v/%v, want friend, pending, blocked", peers[0].State, peers[1].State, peers[2].State)
+		t.Errorf("order = %v/%v/%v, want friend, pending, blocked", peers[0].TrustState, peers[1].TrustState, peers[2].TrustState)
 	}
 
 	p, err := db.GetFederationPeerByKey(ctx, "bb22")
@@ -73,8 +73,8 @@ func TestFederationPeers_CRUDAndOrdering(t *testing.T) {
 		t.Fatalf("set state: %v", err)
 	}
 	p, _ = db.GetFederationPeer(ctx, friendID)
-	if p.State != federation.PeerBlocked || p.PrevState != federation.PeerFriend {
-		t.Errorf("state/prev = %s/%s, want blocked/friend", p.State, p.PrevState)
+	if p.TrustState != federation.PeerBlocked || p.PrevState != federation.PeerFriend {
+		t.Errorf("state/prev = %s/%s, want blocked/friend", p.TrustState, p.PrevState)
 	}
 	if err := db.SetFederationPeerState(ctx, 9999, federation.PeerFriend, ""); !errors.Is(err, federation.ErrPeerNotFound) {
 		t.Errorf("set state on missing peer = %v, want ErrPeerNotFound", err)
@@ -96,8 +96,8 @@ func TestFederationPeers_CRUDAndOrdering(t *testing.T) {
 		t.Fatalf("rename: %v", err)
 	}
 	p, _ = db.GetFederationPeer(ctx, pendingID)
-	if p.Name != "renamed" {
-		t.Errorf("name = %q, want renamed", p.Name)
+	if p.Label != "renamed" {
+		t.Errorf("name = %q, want renamed", p.Label)
 	}
 
 	if err := db.DeleteFederationPeer(ctx, blockedID); err != nil {
@@ -149,8 +149,8 @@ func TestFederationPeers_GuestOnly(t *testing.T) {
 	if err := db.DeleteFederationPeer(ctx, peerID); err != nil {
 		t.Fatalf("delete peer: %v", err)
 	}
-	refriended, err := db.InsertFederationPeer(ctx, &federation.Peer{
-		PublicKey: "dd44", Name: "madplayer", State: federation.PeerFriend, CreatedAt: 2000,
+	refriended, err := db.InsertFederationPeer(ctx, &federation.ExternalNode{
+		PublicKey: "dd44", Label: "madplayer", TrustState: federation.PeerFriend, TrustedAt: 2000,
 	})
 	if err != nil {
 		t.Fatalf("re-friend peer: %v", err)

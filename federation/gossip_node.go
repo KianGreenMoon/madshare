@@ -126,7 +126,7 @@ func graphSerial(records, marks []GraphDigestEntry) string {
 //
 // Our own record lives in the same store as everyone else's, so serving it to a
 // friend needs no special case — the digest simply includes it.
-func (n *Node) publishOwnRecord(ctx context.Context, peers []*Peer) {
+func (n *Node) publishOwnRecord(ctx context.Context, peers []*ExternalNode) {
 	if n.store == nil || n.signKey == nil {
 		return
 	}
@@ -187,7 +187,7 @@ func (n *Node) publishOwnRecord(ctx context.Context, peers []*Peer) {
 // node's own judgement, and the decision was that every block is published
 // (docs/architecture/federation-trust.md §Friend-list gossip, D6b — there are no
 // private blocks).
-func (n *Node) publishOwnMarkRecord(ctx context.Context, peers []*Peer) {
+func (n *Node) publishOwnMarkRecord(ctx context.Context, peers []*ExternalNode) {
 	if n.store == nil || n.signKey == nil {
 		return
 	}
@@ -237,10 +237,10 @@ func (n *Node) publishOwnMarkRecord(ctx context.Context, peers []*Peer) {
 
 // ownMarks is the distrust list this node publishes: its blocked peers,
 // key-ordered so an unchanged set produces an unchanged record.
-func ownMarks(peers []*Peer) []DistrustMark {
+func ownMarks(peers []*ExternalNode) []DistrustMark {
 	marks := make([]DistrustMark, 0, len(peers))
 	for _, p := range peers {
-		if p.State != PeerBlocked {
+		if p.TrustState != PeerBlocked {
 			continue
 		}
 		marks = append(marks, DistrustMark{Key: p.PublicKey, At: p.BlockedAt, Reason: p.BlockReason})
@@ -289,13 +289,13 @@ func (n *Node) storedOwnMarks(ctx context.Context, origin string) *MarkRecord {
 // Only established friendships are published. A pending pairing is not a
 // friendship yet, and a blocked peer is a judgement we publish as a mark
 // instead — putting either on the map would misstate the graph.
-func ownEdges(peers []*Peer) []GraphEdge {
+func ownEdges(peers []*ExternalNode) []GraphEdge {
 	edges := make([]GraphEdge, 0, len(peers))
 	for _, p := range peers {
-		if p.State != PeerFriend {
+		if p.TrustState != PeerFriend {
 			continue
 		}
-		edges = append(edges, GraphEdge{Key: p.PublicKey, Name: p.Label(), Since: p.CreatedAt})
+		edges = append(edges, GraphEdge{Key: p.PublicKey, Name: p.Name(), Since: p.TrustedAt})
 	}
 	sort.Slice(edges, func(i, j int) bool { return edges[i].Key < edges[j].Key })
 	if len(edges) > MaxGraphEdges {
@@ -463,7 +463,7 @@ func (n *Node) handleGraph(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "graph not configured", http.StatusServiceUnavailable)
 		return
 	}
-	if p := n.peerFromRemote(r); p == nil || p.State != PeerFriend {
+	if p := n.peerFromRemote(r); p == nil || p.TrustState != PeerFriend {
 		http.Error(w, "the network graph is served to friends only", http.StatusForbidden)
 		return
 	}
@@ -491,7 +491,7 @@ func (n *Node) handleGraphFetch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "graph not configured", http.StatusServiceUnavailable)
 		return
 	}
-	if p := n.peerFromRemote(r); p == nil || p.State != PeerFriend {
+	if p := n.peerFromRemote(r); p == nil || p.TrustState != PeerFriend {
 		http.Error(w, "the network graph is served to friends only", http.StatusForbidden)
 		return
 	}
@@ -542,7 +542,7 @@ func (n *Node) handleGraphFetch(w http.ResponseWriter, r *http.Request) {
 
 // syncGraph runs one gossip round against one friend: pull their digest, work
 // out what we lack, fetch it, and store whatever verifies and is admissible.
-func (n *Node) syncGraph(ctx context.Context, p *Peer) {
+func (n *Node) syncGraph(ctx context.Context, p *ExternalNode) {
 	addr, err := AddrForKeyHex(p.PublicKey)
 	if err != nil {
 		return
@@ -632,7 +632,7 @@ func (n *Node) syncGraph(ctx context.Context, p *Peer) {
 		// What we just learned is what our own friends have not heard yet, so the
 		// memoized digest must not sit on it for the rest of its window.
 		n.invalidateGraphDigest()
-		n.logger.Printf("federation: learned %d gossip record(s) via %q", stored, p.Label())
+		n.logger.Printf("federation: learned %d gossip record(s) via %q", stored, p.Name())
 	}
 }
 
@@ -656,7 +656,7 @@ func missing(have, offered []GraphDigestEntry) []string {
 // acceptGraphRecord verifies, admits and stores one relayed record. Every
 // refusal below is silent: a peer relaying junk is not necessarily hostile, and
 // nothing here is grounds for an alarm an admin has to read.
-func (n *Node) acceptGraphRecord(ctx context.Context, from *Peer, raw []byte) bool {
+func (n *Node) acceptGraphRecord(ctx context.Context, from *ExternalNode, raw []byte) bool {
 	rec, err := ParseGraphRecord(raw)
 	if err != nil {
 		return false // unsigned, malformed, or over the per-record bounds
@@ -674,7 +674,7 @@ func (n *Node) acceptGraphRecord(ctx context.Context, from *Peer, raw []byte) bo
 }
 
 // acceptMarkRecord is the same for a distrust list.
-func (n *Node) acceptMarkRecord(ctx context.Context, from *Peer, raw []byte) bool {
+func (n *Node) acceptMarkRecord(ctx context.Context, from *ExternalNode, raw []byte) bool {
 	rec, err := ParseMarkRecord(raw)
 	if err != nil {
 		return false
@@ -697,7 +697,7 @@ func (n *Node) acceptMarkRecord(ctx context.Context, from *Peer, raw []byte) boo
 // single friend may introduce more than its share of the store.
 //
 // Our own record is always admissible — it is not relayed to us, we wrote it.
-func (n *Node) admitRecord(ctx context.Context, from *Peer, origin string) bool {
+func (n *Node) admitRecord(ctx context.Context, from *ExternalNode, origin string) bool {
 	if origin == n.PublicKeyHex() {
 		return true
 	}

@@ -195,8 +195,8 @@ func TestGraphKnowsKey(t *testing.T) {
 
 	// A direct friend counts even before any record names them — otherwise a
 	// brand-new friendship could not bootstrap its first record.
-	peerID, err := db.InsertFederationPeer(ctx, &federation.Peer{
-		PublicKey: stranger, Name: "new friend", State: federation.PeerFriend, CreatedAt: 1,
+	peerID, err := db.InsertFederationPeer(ctx, &federation.ExternalNode{
+		PublicKey: stranger, Label: "new friend", TrustState: federation.PeerFriend, TrustedAt: 1,
 	})
 	if err != nil {
 		t.Fatalf("InsertFederationPeer: %v", err)

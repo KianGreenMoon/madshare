@@ -27,7 +27,7 @@ func TestOwnEdgesIgnoreTheirClaims(t *testing.T) {
 // fix rather than only a staleness one: a node already in our view could put
 // ITSELF on our inner ring by claiming a friendship that never existed.
 func TestStrangerCannotClaimItselfOntoOurRing(t *testing.T) {
-	peers := []*Peer{{PublicKey: k("a"), State: PeerFriend}}
+	peers := []*ExternalNode{{PublicKey: k("a"), TrustState: PeerFriend}}
 	edges := []GraphEdgeClaim{
 		edge("a", "b", ""),    // a vouches for b — b is admissible
 		edge("b", "me", "hi"), // b claims to be OUR friend
@@ -46,7 +46,7 @@ func TestStrangerCannotClaimItselfOntoOurRing(t *testing.T) {
 // Other nodes' edges stay single-claim. The asymmetry is deliberate: an edge
 // somebody claims is worth seeing, but our own edges are not claims at all.
 func TestOthersEdgesRemainSingleClaim(t *testing.T) {
-	peers := []*Peer{{PublicKey: k("a"), State: PeerFriend}}
+	peers := []*ExternalNode{{PublicKey: k("a"), TrustState: PeerFriend}}
 	m := BuildNetworkMap(k("me"), peers, []GraphEdgeClaim{edge("a", "b", "")}, nil)
 
 	if n := nodeByLabel(t, m, "b"); n == nil || n.Distance != 2 {
@@ -63,7 +63,7 @@ func TestReachableKeysDropARemovedFriendsBranch(t *testing.T) {
 		edge("a", "me", ""),
 	}
 
-	friends := []*Peer{{PublicKey: k("a"), State: PeerFriend}}
+	friends := []*ExternalNode{{PublicKey: k("a"), TrustState: PeerFriend}}
 	before := ReachableKeys(k("me"), friends, edges)
 	for _, label := range []string{"a", "b", "c"} {
 		if _, ok := before[k(label)]; !ok {
@@ -92,16 +92,16 @@ func TestReachableKeysKeepWhatASecondFriendVouchesFor(t *testing.T) {
 		edge("d", "b", ""),
 	}
 	// a is blocked, so nothing is discovered through it; d still vouches for b.
-	peers := []*Peer{
-		{PublicKey: k("a"), State: PeerBlocked},
-		{PublicKey: k("d"), State: PeerFriend},
+	peers := []*ExternalNode{
+		{PublicKey: k("a"), TrustState: PeerBlocked},
+		{PublicKey: k("d"), TrustState: PeerFriend},
 	}
 	if _, ok := ReachableKeys(k("me"), peers, edges)[k("b")]; !ok {
 		t.Error("b is vouched for by d too and must survive a being blocked")
 	}
 
 	// With d gone as well, b has no path to us left and is collected.
-	only := []*Peer{{PublicKey: k("a"), State: PeerBlocked}}
+	only := []*ExternalNode{{PublicKey: k("a"), TrustState: PeerBlocked}}
 	if _, ok := ReachableKeys(k("me"), only, edges)[k("b")]; ok {
 		t.Error("b was reachable only behind a blocked node and should be collected")
 	}
@@ -110,7 +110,7 @@ func TestReachableKeysKeepWhatASecondFriendVouchesFor(t *testing.T) {
 // A blocked node stays: an admin who cannot see a block cannot lift it. What
 // goes is everything discovered only THROUGH it.
 func TestReachableKeysKeepBlockedPeersButNotTheirBranch(t *testing.T) {
-	peers := []*Peer{{PublicKey: k("a"), State: PeerBlocked}}
+	peers := []*ExternalNode{{PublicKey: k("a"), TrustState: PeerBlocked}}
 	edges := []GraphEdgeClaim{edge("a", "b", "")}
 	keep := ReachableKeys(k("me"), peers, edges)
 
@@ -125,7 +125,7 @@ func TestReachableKeysKeepBlockedPeersButNotTheirBranch(t *testing.T) {
 // A pending pairing has no gossiped edge yet. It is still a relationship of
 // ours, so its record is not collected out from under the admin mid-handshake.
 func TestReachableKeysKeepPendingPeers(t *testing.T) {
-	peers := []*Peer{{PublicKey: k("a"), State: PeerPendingOutgoing}}
+	peers := []*ExternalNode{{PublicKey: k("a"), TrustState: PeerPendingOutgoing}}
 	if _, ok := ReachableKeys(k("me"), peers, nil)[k("a")]; !ok {
 		t.Error("a pending peer's record should be kept while the pairing is in flight")
 	}

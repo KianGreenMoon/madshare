@@ -49,7 +49,7 @@ func (h *handler) federationPeers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if peers == nil {
-		peers = []*federation.Peer{}
+		peers = []*federation.ExternalNode{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "peers": peers})
 }
@@ -82,7 +82,7 @@ func (h *handler) federationImportCard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var (
-		peer *federation.Peer
+		peer *federation.ExternalNode
 		err  error
 	)
 	switch {

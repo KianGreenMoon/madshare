@@ -86,7 +86,7 @@ func TestNetworkIdentityAndHomes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Homes: %v", err)
 	}
-	if len(homes) != 1 || homes[0].PublicKey != home || homes[0].BaseURL != "http://home.example:3000" {
+	if len(homes) != 1 || homes[0].PublicKey != home || homes[0].HomeBaseURL != "http://home.example:3000" {
 		t.Fatalf("Homes() = %+v, want the one just recorded", homes)
 	}
 
@@ -95,7 +95,7 @@ func TestNetworkIdentityAndHomes(t *testing.T) {
 	if err := net.AddHome(ctx, home, "http://home.example:3000", "home renamed"); err != nil {
 		t.Fatalf("AddHome again: %v", err)
 	}
-	if homes, _ := net.Homes(ctx); len(homes) != 1 || homes[0].Name != "home renamed" {
+	if homes, _ := net.Homes(ctx); len(homes) != 1 || homes[0].HeardName != "home renamed" {
 		t.Errorf("Homes() after a second sign-in = %+v, want one row, renamed", homes)
 	}
 

@@ -350,46 +350,117 @@ var ErrNoHolder = errors.New("no friend holds this content")
 // The admin API maps it to 409.
 var ErrPeerState = errors.New("invalid peer state for this operation")
 
-// Peer is a row of the trusted-peer table plus one display decoration: Address
-// is the mesh IPv6 derived from PublicKey (filled by the running node — key
-// derivation lives in the !nofederation build).
+// ExternalNode is one row of `federation_nodes`: a node that is not us
+// (docs/architecture/federation-nodes.md). One row per public key since
+// migration 046, and one struct since the fold — the two used to be a schema
+// that had merged and a Go surface that had not, so a reader of the code alone
+// could not see that `Peer` and `CatalogSource` were two views of one row.
+//
+// Always present: the identity and the OBSERVATIONS every contact updates. On
+// top of that sit three OPTIONAL column groups, each marked present by its own
+// column, and the predicates below are the only correct way to ask:
+//
+//	IsTrusted()   an admin acted on this node (the old peer row)
+//	InRotation()  the sweep pulls catalogs from it (the old source row)
+//	IsHome()      this listener node signs in there (the old home row)
+//
+// A row commonly carries several: every friend is also in the rotation. The
+// groups are why "delete the row" is almost never right — unfriending clears
+// the trust group and keeps the observations and the cached catalog.
 //
 // Two names, with different owners, deliberately never overwriting each other
-// (migration 033): Name is the local label this admin chose and nothing else
-// writes it, HeardName is what the peer calls *itself* — a claim, refreshed on
-// every successful contact. [Peer.Label] resolves the two for display.
-type Peer struct {
+// (migration 033): Label is what this admin chose and nothing else writes it,
+// HeardName is what the node calls *itself* — a claim, refreshed on every
+// successful contact. [ExternalNode.Name] resolves the two for display.
+//
+// The JSON tags reproduce the pre-fold `Peer` wire exactly, because the admin
+// peer list marshals this struct and the fold changes no behaviour. The sync
+// and household groups are `json:"-"` on the same grounds: that endpoint is the
+// TRUST view of a node, and the rest of the row is not its business.
+type ExternalNode struct {
 	ID        int64  `json:"id"`
 	PublicKey string `json:"public_key"` // lowercase hex ed25519
-	// Name is the local label: written only by an admin rename, and it always
-	// wins. Empty means the admin never named this node.
-	Name string `json:"name"`
-	// HeardName is what the peer says its name is — hearsay, kept apart from the
+
+	// ── Observations: any contact may update these ──────────────────────────
+
+	// HeardName is what the node says its name is — hearsay, kept apart from the
 	// label so that refreshing it can never destroy an admin's choice and
-	// renaming can never hide what the peer calls itself.
+	// renaming can never hide what the node calls itself.
 	HeardName string `json:"heard_name"`
-	State     string `json:"state"`
-	PrevState string `json:"-"`
+	FirstSeen int64  `json:"-"`
+	LastSeen  int64  `json:"last_seen"` // last successful contact; 0 = never
+	// HintedAt is when a friend last vouched for this node's liveness (F7 item
+	// 10, migration 038). It records not *that* the node was alive — LastSeen
+	// holds that, whoever observed it — but that a minute-cadence observer is
+	// watching it, which is what decides whether this node is judged by the ping
+	// window or by the far wider pull window.
+	HintedAt int64 `json:"-"`
+	// UnreachableAt is the down-mark (migration 048): when we last tried
+	// first-hand and could not connect. Meaningful only against LastSeen, which
+	// retires it by moving past it.
+	UnreachableAt int64 `json:"-"`
+
+	// ── Trust group: TrustState != "" means an admin acted ───────────────────
+
+	TrustState string `json:"state"`
+	PrevState  string `json:"-"`
+	// Label is the local name: written only by an admin rename, and it always
+	// wins. Empty means the admin never named this node.
+	Label string `json:"name"`
 	// GuestOnly narrows this friend to guest-accessible content — the admin's
 	// per-peer demotion, replacing the old node-key → local-account mapping
 	// (which only ever expressed this one bit). It travels into the audience
 	// verbatim; see [Audience.GuestOnly].
-	GuestOnly bool  `json:"guest_only"`
-	CreatedAt int64 `json:"created_at"`
-	LastSeen  int64 `json:"last_seen"` // unix seconds; 0 = never
-
+	GuestOnly bool `json:"guest_only"`
+	// TrustedAt is when the admin first acted (the old peers.created_at). Not
+	// FirstSeen: the row may long predate anyone deciding anything about it.
+	TrustedAt int64 `json:"created_at"`
 	// Block evidence (F6): what the published distrust mark says. Both describe
 	// the current block only — an unblock leaves them behind, and the next block
 	// overwrites them.
 	BlockReason string `json:"block_reason,omitempty"`
 	BlockedAt   int64  `json:"blocked_at,omitempty"`
 
+	// ── Sync group: SyncAddedAt > 0 means the sweep pulls from this node ─────
+
+	SyncAddedAt     int64  `json:"-"`
+	CatalogSerial   string `json:"-"` // serial of the snapshot we hold; the `since=` we send
+	CatalogSyncedAt int64  `json:"-"` // last round that confirmed the cached copy fresh
+	// AttemptedAt is when we last *tried*, successful or not. The frontier
+	// rotates on this rather than on success, so an unreachable node takes its
+	// turn and yields it instead of being retried ahead of everyone every cycle.
+	AttemptedAt int64 `json:"-"`
+
+	// ── Household group: HomeAddedAt > 0 means we sign in there ──────────────
+	//
+	// Recorded one-sidedly (§"The household", migration 044). A home node is not
+	// a friend and never becomes one by being a home: no state, no gossip edge.
+	// What it carries is a single statement — that this node is willing to
+	// believe what that key says about who its users are — which is what gives a
+	// listener node an audience without putting it on anybody's map.
+	HomeAddedAt int64  `json:"-"`
+	HomeBaseURL string `json:"-"`
+
+	// ── Display decorations, filled by the running node ──────────────────────
+
 	Address string `json:"address,omitempty"` // derived mesh address, display only
 	// LastAttempt is what our last outbound pairing attempt toward this node
-	// did (display only, filled by the running node). Nil when we have not tried
-	// since this process started.
+	// did (display only). Nil when we have not tried since this process started.
 	LastAttempt *PairAttempt `json:"last_attempt,omitempty"`
 }
+
+// IsTrusted reports whether an admin has acted on this node — the fact the old
+// schema encoded as a peer row existing.
+func (n *ExternalNode) IsTrusted() bool { return n.TrustState != "" }
+
+// InRotation reports whether the sweep pulls catalogs from this node — the fact
+// the old schema encoded as a source row existing. It is deliberately a column
+// and not "has a trust row": a pending peer is an admin's unfinished decision,
+// and pulling from it would be one.
+func (n *ExternalNode) InRotation() bool { return n.SyncAddedAt > 0 }
+
+// IsHome reports whether this (listener) node signs in to that one.
+func (n *ExternalNode) IsHome() bool { return n.HomeAddedAt > 0 }
 
 // PairAttempt is the outcome of the last outbound pairing attempt toward one
 // node. It exists to answer the only question a peer stuck on
@@ -417,100 +488,60 @@ type PairAttempt struct {
 // the line between "they have not seen it" and "they have not acted on it".
 func (a PairAttempt) Delivered() bool { return a.Error == "" && a.Result != "" }
 
-// Label is the name to show for a peer: the admin's local label if they set one,
-// otherwise what the peer calls itself, otherwise empty — and an empty label is
-// rendered as the short key, never as a blank. Callers that show a Label must
-// show the mesh address or key beside it: a name is a convenience, the key is the
+// Name is the name to show for a node: the admin's local label if they set one,
+// otherwise what the node calls itself, otherwise empty — and an empty name is
+// rendered as the short key, never as a blank. Callers that show it must show
+// the mesh address or key beside it: a name is a convenience, the key is the
 // identity, and nothing may be identified by a name (see §Friendship).
-func (p *Peer) Label() string {
-	if p.Name != "" {
-		return p.Name
+//
+// It is the method and Label the field, the opposite way round from the pre-fold
+// Peer, because the column is `label` and this is the resolution over it.
+func (n *ExternalNode) Name() string {
+	if n.Label != "" {
+		return n.Label
 	}
-	return p.HeardName
+	return n.HeardName
 }
 
-// Display is Label with the fallback Label promises but deliberately does not
-// apply itself: the short key, so a peer is never named by a blank. Use it
-// wherever a peer is written into a log line or a stats row — anywhere the
+// Display is Name with the fallback Name promises but deliberately does not
+// apply itself: the short key, so a node is never named by a blank. Use it
+// wherever a node is written into a log line or a stats row — anywhere the
 // result is read by a person and there is no second field carrying the identity.
-// Label stays the raw resolution because one caller (the network map's
+// Name stays the raw resolution because one caller (the network map's
 // displayName) has a better fallback than the key: what the *graph* calls the
 // node. This is the Go twin of peerLabel() in admin/network.js.
-func (p *Peer) Display() string {
-	if label := p.Label(); label != "" {
-		return label
+//
+// A node with no trust group has no label to prefer, so this collapses to "what
+// it calls itself, else its key" — which is exactly what the old
+// ExternalNode.Display did, and why the two folded into one rule.
+func (n *ExternalNode) Display() string {
+	if name := n.Name(); name != "" {
+		return name
 	}
-	return p.ShortKey()
+	return n.ShortKey()
 }
 
 // ShortKey abbreviates the public key to the length the admin UI shows. Enough
 // to tell nodes apart at a glance, never enough to identify one — the full key
 // is what does that.
-func (p *Peer) ShortKey() string {
-	if len(p.PublicKey) > shortKeyRunes {
-		return p.PublicKey[:shortKeyRunes]
+func (n *ExternalNode) ShortKey() string {
+	if len(n.PublicKey) > shortKeyRunes {
+		return n.PublicKey[:shortKeyRunes]
 	}
-	return p.PublicKey
+	return n.PublicKey
 }
 
 // shortKeyRunes matches the slice in admin/network.js's peerLabel.
 const shortKeyRunes = 12
 
-// CatalogSource is a node whose published catalog this node holds a cached copy
-// of (F7 item 5, docs/architecture/federation.md §Discovery beyond the friend
-// ring). It is deliberately NOT a [Peer]: a peer row exists because an admin
-// here decided something about that node, while a source row exists because the
-// sweep pulled from it. Every friend is a source; so is every member of our
-// community the frontier rotation has reached, and nobody decided anything about
-// those.
-//
-// The row carries only what pulling needs — whom to ask, what we already hold,
-// and when we last got an answer. Trust lives in the peer table, and the two are
-// joined by public key wherever a cached row has to know whether an admin
-// blocked its origin.
-type CatalogSource struct {
-	ID        int64
-	PublicKey string // lowercase hex ed25519; the mesh address derives from it
-	// HeardName is what the node calls itself. A source has no local label —
-	// naming a node is an admin act, and an admin who wants to name this one
-	// makes it a peer.
-	HeardName string
-
-	CatalogSerial   string // serial of the snapshot we hold; the `since=` we send
-	CatalogSyncedAt int64  // last round that confirmed the cached copy fresh
-	// AttemptedAt is when we last *tried*, successful or not. The frontier
-	// rotates on this rather than on success, so an unreachable node takes its
-	// turn and yields it instead of being retried ahead of everyone every cycle.
-	AttemptedAt int64
-	FirstSeen   int64
-	LastSeen    int64 // last successful contact; feeds the freshness window
-	// HintedAt is when a friend last vouched for this node's liveness (F7 item
-	// 10, migration 038). It records not *that* the node was alive — LastSeen
-	// holds that, whoever observed it — but that a minute-cadence observer is
-	// watching it, which is what decides whether this source is judged by the
-	// ping window or by the far wider pull window.
-	HintedAt int64
-}
-
-// Display names a source for a log line or a UI row: what it calls itself, or
-// its short key. There is no admin label to prefer — see [Peer.Display] for the
-// case where there is.
-func (s *CatalogSource) Display() string {
-	if s.HeardName != "" {
-		return s.HeardName
-	}
-	if len(s.PublicKey) > shortKeyRunes {
-		return s.PublicKey[:shortKeyRunes]
-	}
-	return s.PublicKey
-}
-
 // BlobProvider is one node the swarm may fetch a hash from: a source whose
-// cached catalog or holdings advertise it. Separate from [Peer] because a
-// provider need not be one — since F7 item 5 most holders of a popular blob are
-// members we never friended — and separate from [CatalogSource] because the
-// fetch path also wants the peer identity when there is one, to label a stats
-// row the way the admin named that node.
+// cached catalog or holdings advertise it.
+//
+// Deliberately not an [ExternalNode] even now that the row is one struct: a
+// provider need not have a row at all — a household device has none, and since
+// F7 item 5 most holders of a popular blob are members nobody here friended —
+// and the fetch path wants a flat identity it can label a stats row with, not a
+// row whose three groups it would have to interpret.
 type BlobProvider struct {
 	SourceID int64
 	// PeerID is the local peer row, or 0 for a member no admin has touched.
@@ -521,7 +552,7 @@ type BlobProvider struct {
 	LastSeen  int64
 }
 
-// Display names a provider on the same rules as [Peer.Display]: the admin's
+// Display names a provider on the same rules as [ExternalNode.Display]: the admin's
 // label if they set one, else what the node calls itself, else the short key.
 func (p *BlobProvider) Display() string {
 	if p.Name != "" {
@@ -552,33 +583,19 @@ func (p *BlobProvider) Display() string {
 // enforces it and the store compiles in every build.
 const ListenerHoldingsTTL = 90 * time.Minute
 
-// HomeNode is a server this node signs in to, recorded one-sidedly
-// (§"The household", migration 044).
-//
-// It is not a peer and never becomes one: no state, no gossip edge, no user
-// mapping. What it carries is a single statement — that this node is willing to
-// believe what that key says about who its users are — which is what gives a
-// listener node an audience without putting it on anybody's map.
-type HomeNode struct {
-	PublicKey string
-	BaseURL   string
-	Name      string
-	AddedAt   int64
-}
-
 // PeerStore is the persistence the node needs: the trusted-peer table (F1) and
 // the catalog — both what this node publishes to friends and the cached copies
 // pulled from them (F2). *database.DB implements it (database/federation.go +
 // database/madnetwork.go).
 type PeerStore interface {
-	ListFederationPeers(ctx context.Context) ([]*Peer, error)
+	ListFederationPeers(ctx context.Context) ([]*ExternalNode, error)
 	// ListHomeNodes returns the servers this node has signed in to
 	// (§"The household"). Empty on a server, which signs in to nothing —
 	// this is the listener node's half of the access model.
-	ListHomeNodes(ctx context.Context) ([]HomeNode, error)
-	GetFederationPeer(ctx context.Context, id int64) (*Peer, error)
-	GetFederationPeerByKey(ctx context.Context, publicKey string) (*Peer, error)
-	InsertFederationPeer(ctx context.Context, p *Peer) (int64, error)
+	ListHomeNodes(ctx context.Context) ([]ExternalNode, error)
+	GetFederationPeer(ctx context.Context, id int64) (*ExternalNode, error)
+	GetFederationPeerByKey(ctx context.Context, publicKey string) (*ExternalNode, error)
+	InsertFederationPeer(ctx context.Context, p *ExternalNode) (int64, error)
 	SetFederationPeerState(ctx context.Context, id int64, state, prevState string) error
 	// BlockFederationPeer blocks a peer and records the evidence the published
 	// distrust mark carries: when, and why. Every block publishes a mark — there
@@ -616,10 +633,10 @@ type PeerStore interface {
 
 	// EnsureCatalogSource returns the source row for a node key, creating it if
 	// this is the first time we have pulled from it.
-	EnsureCatalogSource(ctx context.Context, publicKey string, now int64) (*CatalogSource, error)
+	EnsureCatalogSource(ctx context.Context, publicKey string, now int64) (*ExternalNode, error)
 	// ListCatalogSources returns every source, oldest attempt first — the order
 	// the frontier rotation consumes.
-	ListCatalogSources(ctx context.Context) ([]*CatalogSource, error)
+	ListCatalogSources(ctx context.Context) ([]*ExternalNode, error)
 	// MarkCatalogSourceAttempted records that we tried, whatever came of it.
 	MarkCatalogSourceAttempted(ctx context.Context, id int64, at int64) error
 	// TouchCatalogSourceSeen records a successful contact, and what the node

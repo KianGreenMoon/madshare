@@ -451,7 +451,7 @@ type MapMark struct {
 // blocked node drop out, while a node also vouched for by another friend keeps
 // whatever distance and labels remain (docs/architecture/federation-trust.md
 // §Forgetting).
-func walkGraph(selfKey string, peers []*Peer, edges []GraphEdgeClaim) (dist map[string]int, via map[string]map[string]bool) {
+func walkGraph(selfKey string, peers []*ExternalNode, edges []GraphEdgeClaim) (dist map[string]int, via map[string]map[string]bool) {
 	adj := map[string]map[string]bool{}
 	link := func(a, b string) {
 		if adj[a] == nil {
@@ -468,7 +468,7 @@ func walkGraph(selfKey string, peers []*Peer, edges []GraphEdgeClaim) (dist map[
 	}
 	// Our own friendships, from the only source entitled to state them.
 	for _, p := range peers {
-		if p.State == PeerFriend {
+		if p.TrustState == PeerFriend {
 			link(selfKey, p.PublicKey)
 			link(p.PublicKey, selfKey)
 		}
@@ -477,7 +477,7 @@ func walkGraph(selfKey string, peers []*Peer, edges []GraphEdgeClaim) (dist map[
 	byKey := peerByKeyOf(peers)
 	blocked := func(key string) bool {
 		p, ok := byKey[key]
-		return ok && p.State == PeerBlocked
+		return ok && p.TrustState == PeerBlocked
 	}
 
 	dist = map[string]int{selfKey: 0}
@@ -517,8 +517,8 @@ func walkGraph(selfKey string, peers []*Peer, edges []GraphEdgeClaim) (dist map[
 	return dist, via
 }
 
-func peerByKeyOf(peers []*Peer) map[string]*Peer {
-	m := make(map[string]*Peer, len(peers))
+func peerByKeyOf(peers []*ExternalNode) map[string]*ExternalNode {
+	m := make(map[string]*ExternalNode, len(peers))
 	for _, p := range peers {
 		m[p.PublicKey] = p
 	}
@@ -532,7 +532,7 @@ func peerByKeyOf(peers []*Peer) map[string]*Peer {
 //
 // Our own key is always present, so an empty result is impossible and a caller
 // deleting "everything not in here" can never empty the store by accident.
-func ReachableKeys(selfKey string, peers []*Peer, edges []GraphEdgeClaim) map[string]struct{} {
+func ReachableKeys(selfKey string, peers []*ExternalNode, edges []GraphEdgeClaim) map[string]struct{} {
 	dist, _ := walkGraph(selfKey, peers, edges)
 	out := make(map[string]struct{}, len(dist))
 	for key := range dist {
@@ -578,7 +578,7 @@ func ReachableKeys(selfKey string, peers []*Peer, edges []GraphEdgeClaim) map[st
 // in the same act that removes it from the map. Our own key is not in the
 // result: this answers "may I serve this requester", and we never ask it about
 // ourselves.
-func MemberKeys(selfKey string, peers []*Peer, edges []GraphEdgeClaim) map[string]struct{} {
+func MemberKeys(selfKey string, peers []*ExternalNode, edges []GraphEdgeClaim) map[string]struct{} {
 	claimed := make(map[[2]string]bool, len(edges))
 	for _, e := range edges {
 		if e.Origin == e.Peer || e.Origin == selfKey || e.Peer == selfKey {
@@ -601,10 +601,10 @@ func MemberKeys(selfKey string, peers []*Peer, edges []GraphEdgeClaim) map[strin
 	byKey := peerByKeyOf(peers)
 	blocked := func(key string) bool {
 		p, ok := byKey[key]
-		return ok && p.State == PeerBlocked
+		return ok && p.TrustState == PeerBlocked
 	}
 	for _, p := range peers {
-		if p.State == PeerFriend {
+		if p.TrustState == PeerFriend {
 			link(selfKey, p.PublicKey)
 			link(p.PublicKey, selfKey)
 		}
@@ -638,7 +638,7 @@ func MemberKeys(selfKey string, peers []*Peer, edges []GraphEdgeClaim) map[strin
 // BuildNetworkMap computes the map from raw store contents. Pure so the
 // reachability rules — which are the whole feature — are testable without a
 // mesh.
-func BuildNetworkMap(selfKey string, peers []*Peer, edges []GraphEdgeClaim, marks []StoredMark) NetworkMap {
+func BuildNetworkMap(selfKey string, peers []*ExternalNode, edges []GraphEdgeClaim, marks []StoredMark) NetworkMap {
 	peerByKey := peerByKeyOf(peers)
 
 	heard := map[string]map[string]int{} // key → name → times claimed
@@ -694,8 +694,8 @@ func BuildNetworkMap(selfKey string, peers []*Peer, edges []GraphEdgeClaim, mark
 	out := NetworkMap{}
 	for key, d := range dist {
 		node := MapNode{Key: key, Distance: d}
-		if p, ok := peerByKey[key]; ok && p.Name != "" {
-			node.Name, node.Named = p.Name, "local"
+		if p, ok := peerByKey[key]; ok && p.Label != "" {
+			node.Name, node.Named = p.Label, "local"
 		} else if n := commonName(heard[key]); n != "" {
 			node.Name, node.Named = n, "heard"
 		}
@@ -707,9 +707,9 @@ func BuildNetworkMap(selfKey string, peers []*Peer, edges []GraphEdgeClaim, mark
 			node.State = MapSelf
 		case peerByKey[key] == nil:
 			// a stranger: known only because the graph names it
-		case peerByKey[key].State == PeerFriend:
+		case peerByKey[key].TrustState == PeerFriend:
 			node.State = MapFriend
-		case peerByKey[key].State == PeerBlocked:
+		case peerByKey[key].TrustState == PeerBlocked:
 			node.State = MapBlocked
 		default:
 			node.State = MapPending
@@ -768,7 +768,7 @@ func BuildNetworkMap(selfKey string, peers []*Peer, edges []GraphEdgeClaim, mark
 	// we accepted the pairing, so they are drawn solid rather than weighed for
 	// mutuality like a pair of third parties' records.
 	for _, p := range peers {
-		if p.State != PeerFriend {
+		if p.TrustState != PeerFriend {
 			continue
 		}
 		lo, hi := selfKey, p.PublicKey
@@ -794,9 +794,9 @@ func BuildNetworkMap(selfKey string, peers []*Peer, edges []GraphEdgeClaim, mark
 // first: our own label, then what the node told *us* directly in a handshake or
 // ping, and only then the name the graph gossips about it — which is hearsay from
 // third parties about a node we may never have met.
-func displayName(key string, peers map[string]*Peer, heard map[string]map[string]int) string {
+func displayName(key string, peers map[string]*ExternalNode, heard map[string]map[string]int) string {
 	if p, ok := peers[key]; ok {
-		if label := p.Label(); label != "" {
+		if label := p.Name(); label != "" {
 			return label
 		}
 	}

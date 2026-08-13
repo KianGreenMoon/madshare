@@ -67,7 +67,7 @@ func makeFriends(t *testing.T, a, b *Node, storeA, storeB *memStore) {
 			return false
 		}
 		incomingID = p.ID
-		return p.State == PeerPendingIncoming
+		return p.TrustState == PeerPendingIncoming
 	})
 	if err := a.AcceptPeer(ctx, incomingID); err != nil {
 		t.Fatalf("accept on A: %v", err)
@@ -75,7 +75,7 @@ func makeFriends(t *testing.T, a, b *Node, storeA, storeB *memStore) {
 	waitFor(t, "the friendship to converge on B", func() bool {
 		b.Nudge()
 		p, err := storeB.GetFederationPeerByKey(ctx, a.PublicKeyHex())
-		return err == nil && p.State == PeerFriend
+		return err == nil && p.TrustState == PeerFriend
 	})
 }
 

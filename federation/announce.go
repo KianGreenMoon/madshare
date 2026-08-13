@@ -120,13 +120,13 @@ func (n *Node) drainAnnounce() announceMessage {
 // Nothing is announced when seeding is off, because the endpoint would refuse to
 // serve any of it. Advertising what we will not hand over is the one rule
 // §Sharing scope holds above the others.
-func (n *Node) announceHoldings(ctx context.Context, peers []*Peer) {
+func (n *Node) announceHoldings(ctx context.Context, peers []*ExternalNode) {
 	if n.store == nil {
 		return
 	}
-	friends := make([]*Peer, 0, len(peers))
+	friends := make([]*ExternalNode, 0, len(peers))
 	for _, p := range peers {
-		if p.State == PeerFriend {
+		if p.TrustState == PeerFriend {
 			friends = append(friends, p)
 		}
 	}
@@ -152,7 +152,7 @@ func (n *Node) announceHoldings(ctx context.Context, peers []*Peer) {
 // announceTo delivers one announce. Failures are silent: the friend will pull our
 // holdings on its own cadence regardless, so a missed push costs latency, never
 // correctness.
-func (n *Node) announceTo(ctx context.Context, p *Peer, msg announceMessage) {
+func (n *Node) announceTo(ctx context.Context, p *ExternalNode, msg announceMessage) {
 	addr, err := AddrForKeyHex(p.PublicKey)
 	if err != nil {
 		return

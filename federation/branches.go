@@ -107,7 +107,7 @@ func (n *Node) graphMemo(ctx context.Context) (*branchMemo, error) {
 // same inputs: a holder's ⓘ panel links straight to that node on the map, so a
 // ranking explained by one graph and a diagram drawn from another would be two
 // answers to one question.
-func graphOf(selfKey string, peers []*Peer, edges []GraphEdgeClaim) (map[string][]string, map[string]int) {
+func graphOf(selfKey string, peers []*ExternalNode, edges []GraphEdgeClaim) (map[string][]string, map[string]int) {
 	dist, via := walkGraph(selfKey, peers, edges)
 	branches := make(map[string][]string, len(via))
 	for key, labels := range via {
@@ -126,7 +126,7 @@ func graphOf(selfKey string, peers []*Peer, edges []GraphEdgeClaim) (map[string]
 
 // branchesOf is graphOf's attribution half, kept for the tests that pin the
 // branch rule on its own.
-func branchesOf(selfKey string, peers []*Peer, edges []GraphEdgeClaim) map[string][]string {
+func branchesOf(selfKey string, peers []*ExternalNode, edges []GraphEdgeClaim) map[string][]string {
 	branches, _ := graphOf(selfKey, peers, edges)
 	return branches
 }

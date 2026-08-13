@@ -152,7 +152,7 @@ func TestPeerDisplayNeverBlank(t *testing.T) {
 		{"short key when neither", "", "", key[:shortKeyRunes]},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := &Peer{PublicKey: key, Name: tc.label, HeardName: tc.heard}
+			p := &ExternalNode{PublicKey: key, Label: tc.label, HeardName: tc.heard}
 			if got := p.Display(); got != tc.want {
 				t.Errorf("Display() = %q, want %q", got, tc.want)
 			}
@@ -160,7 +160,7 @@ func TestPeerDisplayNeverBlank(t *testing.T) {
 	}
 	// Label keeps returning empty: the network map needs that case to fall
 	// through to what the *graph* calls a node before reaching for the key.
-	if got := (&Peer{PublicKey: key}).Label(); got != "" {
+	if got := (&ExternalNode{PublicKey: key}).Name(); got != "" {
 		t.Errorf("Label() with no names = %q, want empty", got)
 	}
 }

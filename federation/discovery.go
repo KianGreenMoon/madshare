@@ -44,7 +44,7 @@ import (
 //
 // peers is the caller's already-read peer list, so the sweep reads the table
 // once — the same economy expireGraph makes with the graph store.
-func (n *Node) syncSources(ctx context.Context, peers []*Peer) map[string]struct{} {
+func (n *Node) syncSources(ctx context.Context, peers []*ExternalNode) map[string]struct{} {
 	pulledFriends := map[string]struct{}{}
 	if n.store == nil {
 		return pulledFriends
@@ -55,9 +55,9 @@ func (n *Node) syncSources(ctx context.Context, peers []*Peer) map[string]struct
 	// a friendship is accepted keeps one path: whatever made us friends — an
 	// admin's accept, a pairing that converged, a restore from backup — the next
 	// sweep notices.
-	friends := map[string]*Peer{}
+	friends := map[string]*ExternalNode{}
 	for _, p := range peers {
-		if p.State == PeerFriend {
+		if p.TrustState == PeerFriend {
 			friends[p.PublicKey] = p
 		}
 	}
@@ -191,7 +191,7 @@ func (n *Node) frontier(members *memberSet, known map[string]struct{}, budget in
 }
 
 // catalogDue reports whether a source's cached catalog is stale enough to re-pull.
-func (n *Node) catalogDue(s *CatalogSource) bool {
+func (n *Node) catalogDue(s *ExternalNode) bool {
 	return time.Since(time.Unix(s.CatalogSyncedAt, 0)) >= n.intervals.CatalogSync
 }
 
@@ -199,7 +199,7 @@ func (n *Node) catalogDue(s *CatalogSource) bool {
 // has one, nil for a member — which is the only thing the two cases differ by:
 // a friend is pinged by the refresh loop every minute, so this round already
 // knows its name and that it is alive, while for a member this *is* the contact.
-func (n *Node) syncSource(ctx context.Context, s *CatalogSource, peer *Peer) {
+func (n *Node) syncSource(ctx context.Context, s *ExternalNode, peer *ExternalNode) {
 	if err := n.store.MarkCatalogSourceAttempted(ctx, s.ID, time.Now().Unix()); err != nil {
 		n.logger.Printf("federation: mark source %s attempted: %v", s.Display(), err)
 	}
@@ -219,7 +219,7 @@ func (n *Node) syncSource(ctx context.Context, s *CatalogSource, peer *Peer) {
 // client's own timeout. The floor ping below passes one, because it makes many
 // of these in a round and a node that cannot be reached must not cost it the
 // control budget each time.
-func (n *Node) pingSource(ctx context.Context, s *CatalogSource, bound time.Duration) {
+func (n *Node) pingSource(ctx context.Context, s *ExternalNode, bound time.Duration) {
 	addr, err := AddrForKeyHex(s.PublicKey)
 	if err != nil {
 		return
@@ -277,7 +277,7 @@ func (n *Node) pingSource(ctx context.Context, s *CatalogSource, bound time.Dura
 // contacted names the sources this round already reached through the pull path;
 // pinging those again would be the budget spent on the nodes that needed it
 // least.
-func (n *Node) pingFloor(ctx context.Context, sources []*CatalogSource, friends map[string]*Peer, members *memberSet, contacted map[int64]struct{}) {
+func (n *Node) pingFloor(ctx context.Context, sources []*ExternalNode, friends map[string]*ExternalNode, members *memberSet, contacted map[int64]struct{}) {
 	budget := n.floorBudget(len(sources))
 	if budget <= 0 {
 		return
@@ -393,16 +393,16 @@ func (n *Node) forgetFloorPings(live map[string]struct{}) {
 // Friends and blocked peers are never evicted by the cap. An admin decided
 // something about those nodes, and a cache that forgets them to make room for
 // strangers has its priorities backwards.
-func (n *Node) retainSources(ctx context.Context, sources []*CatalogSource, peers []*Peer, members *memberSet) []*CatalogSource {
+func (n *Node) retainSources(ctx context.Context, sources []*ExternalNode, peers []*ExternalNode, members *memberSet) []*ExternalNode {
 	known := map[string]struct{}{}
 	for _, p := range peers {
-		if p.State == PeerFriend || p.State == PeerBlocked {
+		if p.TrustState == PeerFriend || p.TrustState == PeerBlocked {
 			known[p.PublicKey] = struct{}{}
 		}
 	}
 
-	kept := make([]*CatalogSource, 0, len(sources))
-	var foreign []*CatalogSource
+	kept := make([]*ExternalNode, 0, len(sources))
+	var foreign []*ExternalNode
 	var drop []int64
 	for _, s := range sources {
 		if _, ok := known[s.PublicKey]; ok {
@@ -418,7 +418,7 @@ func (n *Node) retainSources(ctx context.Context, sources []*CatalogSource, peer
 	}
 
 	if over := len(foreign) - n.discovery.Cap; over > 0 {
-		stale := append([]*CatalogSource(nil), foreign...)
+		stale := append([]*ExternalNode(nil), foreign...)
 		sort.Slice(stale, func(i, j int) bool { return stale[i].LastSeen < stale[j].LastSeen })
 		evicted := map[int64]struct{}{}
 		for _, s := range stale[:over] {

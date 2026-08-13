@@ -128,12 +128,34 @@ and every query in `database/madnetwork*.go` that spells `p.`/`s.`.
 Zero mesh-visible change: the wire protocol, gossip, and token formats do
 not move.
 
-## The Go surface (decided 2026-08-13)
+## The Go surface — the fold (built 2026-08-13)
 
-`Peer` (the Go struct) SURVIVES as the trust-group view over a node row: the
-schema merges now, the Go types do not — a smaller diff, and the admin
-surface keeps its shape. **Deliberate follow-up, not yet scheduled: fold
-`Peer` (and `CatalogSource`) into one `Node` struct** once the merged table
-has settled; until then the two structs are two VIEWS of one row, which is
-honest, but a reader of the Go code alone cannot see that the storage is
-unified — that gap is the debt this paragraph exists to remember.
+Migration 046 shipped with the schema merged and the Go types not: `Peer`,
+`CatalogSource` and `HomeNode` stayed as three VIEWS of one row. That was a
+smaller diff and an honest description of the queries, but a reader of the Go
+code alone could not see that the storage was unified. The three are now one
+struct, **`federation.ExternalNode`**.
+
+- **The name.** Not `Node`, which is taken by the running mesh node
+  (`federation.Start` returns one) — and `ExternalNode` is more accurate than a
+  storage-shaped name would be: every row in this table is a node that is not
+  us. Self is never in it (self-as-own-home is refused).
+- **Column names win.** `State`→`TrustState`, `Name`→`Label`,
+  `CreatedAt`→`TrustedAt`, and the household group's `BaseURL`/`AddedAt` become
+  `HomeBaseURL`/`HomeAddedAt`. The point of the fold is that a reader sees the
+  storage, so the Go fields and the columns now read the same. The JSON tags
+  keep the pre-fold wire exactly (`name`, `state`, `created_at`, …), pinned by
+  `TestExternalNodeWireIsUnchangedByTheFold`, and the sync + household groups
+  are `json:"-"` — the admin peer list is the TRUST view of a node.
+- **Field/method swap.** `Label` is the field (the column), `Name()` the
+  resolution over it (label → heard name → empty), `Display()` the same with
+  the short-key fallback. The old `CatalogSource.Display` had no label to
+  prefer, so it collapses into the one rule rather than needing its own.
+- **Groups are asked, never inferred:** `IsTrusted()` / `InRotation()` /
+  `IsHome()`, each reading its own column. A pending peer is trusted-group and
+  NOT in the rotation, which is the distinction `sync_added_at` was added for.
+- **What did NOT change.** `PeerStore`, its method names, and the state
+  constants (`PeerFriend`, …) keep the word *peer*: they name the trust VIEW,
+  and views survive the fold — only the duplicated struct did not.
+  `BlobProvider` stays its own flat type on purpose: a provider need not have a
+  row at all (a household device has none).

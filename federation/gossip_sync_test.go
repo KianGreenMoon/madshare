@@ -48,7 +48,7 @@ func mustFriend(t *testing.T, from, to *Node, fromStore, toStore *memStore) {
 			return false
 		}
 		incoming = p.ID
-		return p.State == PeerPendingIncoming
+		return p.TrustState == PeerPendingIncoming
 	})
 	if err := to.AcceptPeer(ctx, incoming); err != nil {
 		t.Fatalf("accept peer: %v", err)
@@ -57,7 +57,7 @@ func mustFriend(t *testing.T, from, to *Node, fromStore, toStore *memStore) {
 		from.Nudge()
 		to.Nudge()
 		p, err := fromStore.GetFederationPeerByKey(ctx, to.PublicKeyHex())
-		return err == nil && p.State == PeerFriend
+		return err == nil && p.TrustState == PeerFriend
 	})
 }
 
@@ -143,7 +143,7 @@ func TestGossipRelaysBeyondOwnFriends(t *testing.T) {
 
 	// And A never friended C — the record travelled, the trust did not.
 	if p, err := storeA.GetFederationPeerByKey(context.Background(), c.PublicKeyHex()); err == nil {
-		t.Errorf("A has a peer row for C (state %q); gossip must not create friendships", p.State)
+		t.Errorf("A has a peer row for C (state %q); gossip must not create friendships", p.TrustState)
 	}
 }
 
@@ -371,8 +371,8 @@ func TestBlockKeyMarksAStranger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("blocked stranger has no peer row: %v", err)
 	}
-	if p.State != PeerBlocked {
-		t.Errorf("state = %q, want blocked", p.State)
+	if p.TrustState != PeerBlocked {
+		t.Errorf("state = %q, want blocked", p.TrustState)
 	}
 
 	var rec *MarkRecord

@@ -50,7 +50,7 @@ type Network interface {
 	// next request rather than on a timer.
 	RemoveHome(ctx context.Context, publicKey string) error
 	// Homes lists them, oldest first.
-	Homes(ctx context.Context) ([]federation.HomeNode, error)
+	Homes(ctx context.Context) ([]federation.ExternalNode, error)
 
 	// Fetch downloads a blob from holders the caller names, into this node's
 	// download cache, and returns the running transfer. size may be 0 when
@@ -129,7 +129,7 @@ func (n network) RemoveHome(ctx context.Context, publicKey string) error {
 	return n.inst.db.RemoveHomeNode(ctx, publicKey)
 }
 
-func (n network) Homes(ctx context.Context) ([]federation.HomeNode, error) {
+func (n network) Homes(ctx context.Context) ([]federation.ExternalNode, error) {
 	return n.inst.db.ListHomeNodes(ctx)
 }
 

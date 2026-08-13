@@ -585,8 +585,8 @@ func TestChaosPartitionThenHeal(t *testing.T) {
 		// movement means traffic crossed a link that is supposed to be cut.
 		t.Errorf("last_seen advanced from %d to %d across a partitioned link", settled, now)
 	}
-	if p, _ := storeB.GetFederationPeerByKey(context.Background(), a.PublicKeyHex()); p.State != PeerFriend {
-		t.Errorf("friendship state = %q after a partition, want it to survive", p.State)
+	if p, _ := storeB.GetFederationPeerByKey(context.Background(), a.PublicKeyHex()); p.TrustState != PeerFriend {
+		t.Errorf("friendship state = %q after a partition, want it to survive", p.TrustState)
 	}
 
 	// The browse half of "a friend went down": the row-hiding itself is a DB

@@ -27,8 +27,8 @@ import (
 const sourceColumns = `id, public_key, heard_name, catalog_serial, catalog_synced_at,
 	attempted_at, first_seen, last_seen, hinted_at`
 
-func scanSource(row interface{ Scan(...any) error }) (*federation.CatalogSource, error) {
-	var s federation.CatalogSource
+func scanSource(row interface{ Scan(...any) error }) (*federation.ExternalNode, error) {
+	var s federation.ExternalNode
 	if err := row.Scan(&s.ID, &s.PublicKey, &s.HeardName, &s.CatalogSerial,
 		&s.CatalogSyncedAt, &s.AttemptedAt, &s.FirstSeen, &s.LastSeen, &s.HintedAt); err != nil {
 		return nil, err
@@ -41,7 +41,7 @@ func scanSource(row interface{ Scan(...any) error }) (*federation.CatalogSource,
 // is an upsert on it: two sweeps racing to reach the same node must not
 // produce two caches of it — and since 046 a node the admin already trusts
 // keeps its row, id and observations when the sweep starts pulling from it.
-func (db *DB) EnsureCatalogSource(ctx context.Context, publicKey string, now int64) (*federation.CatalogSource, error) {
+func (db *DB) EnsureCatalogSource(ctx context.Context, publicKey string, now int64) (*federation.ExternalNode, error) {
 	// The strict 64-hex check lives where a key ENTERS from outside — the pull-now
 	// request, a card import — rather than here, which is called with keys the
 	// store already holds. This guards only against creating a row nothing could
@@ -72,7 +72,7 @@ func (db *DB) EnsureCatalogSource(ctx context.Context, publicKey string, now int
 // GetCatalogSource returns one pull-rotation node by key, or nil when we cache
 // nothing from that node (a trust-only or household-only row answers nil too —
 // existence of the ROW no longer means membership in the rotation).
-func (db *DB) GetCatalogSource(ctx context.Context, publicKey string) (*federation.CatalogSource, error) {
+func (db *DB) GetCatalogSource(ctx context.Context, publicKey string) (*federation.ExternalNode, error) {
 	src, err := scanSource(db.QueryRowContext(ctx,
 		`SELECT `+sourceColumns+` FROM federation_nodes
 		  WHERE public_key = ? AND sync_added_at > 0`,
@@ -89,7 +89,7 @@ func (db *DB) GetCatalogSource(ctx context.Context, publicKey string) (*federati
 // ListCatalogSources returns every pull-rotation node, least-recently-attempted
 // first — which is the order the frontier rotation wants, so it can take the
 // head of the list and be fair by construction.
-func (db *DB) ListCatalogSources(ctx context.Context) ([]*federation.CatalogSource, error) {
+func (db *DB) ListCatalogSources(ctx context.Context) ([]*federation.ExternalNode, error) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT `+sourceColumns+` FROM federation_nodes
 		  WHERE sync_added_at > 0 ORDER BY attempted_at, id`)
@@ -97,7 +97,7 @@ func (db *DB) ListCatalogSources(ctx context.Context) ([]*federation.CatalogSour
 		return nil, fmt.Errorf("list catalog sources: %w", err)
 	}
 	defer rows.Close()
-	var out []*federation.CatalogSource
+	var out []*federation.ExternalNode
 	for rows.Next() {
 		s, err := scanSource(rows)
 		if err != nil {

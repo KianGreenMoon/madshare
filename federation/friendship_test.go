@@ -27,7 +27,7 @@ import (
 type memStore struct {
 	mu    sync.Mutex
 	next  int64
-	peers map[int64]*Peer
+	peers map[int64]*ExternalNode
 
 	// Catalog half (F2): published is what this node offers; caches holds the
 	// pulled copies, keyed by SOURCE id (F7 item 5 — a cached catalog hangs off
@@ -35,7 +35,7 @@ type memStore struct {
 	// per-source cached list of cache-held hashes; seedEnabled/seedCache back
 	// SeedingPolicy.
 	published   []CatalogEntry
-	sources     map[int64]*CatalogSource
+	sources     map[int64]*ExternalNode
 	nextSource  int64
 	caches      map[int64][]CatalogEntry
 	holdings    map[int64][]string
@@ -62,13 +62,13 @@ type memStore struct {
 
 	// homes are the servers this node signed in to (§"The household"). Empty for
 	// every node that is not a listener one, which is nearly all of them.
-	homes []HomeNode
+	homes []ExternalNode
 }
 
 func newMemStore() *memStore {
 	return &memStore{
-		peers:      map[int64]*Peer{},
-		sources:    map[int64]*CatalogSource{},
+		peers:      map[int64]*ExternalNode{},
+		sources:    map[int64]*ExternalNode{},
 		caches:     map[int64][]CatalogEntry{},
 		holdings:   map[int64][]string{},
 		seedEnable: true, // seed by default, mirroring the DB defaults
@@ -139,7 +139,7 @@ func (m *memStore) MarkSourceCatalogChecked(_ context.Context, sourceID int64, s
 
 // ── Catalog sources (F7 item 5) ──────────────────────────────────────────────
 
-func (m *memStore) EnsureCatalogSource(_ context.Context, publicKey string, now int64) (*CatalogSource, error) {
+func (m *memStore) EnsureCatalogSource(_ context.Context, publicKey string, now int64) (*ExternalNode, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if s := m.sourceByKeyLocked(publicKey); s != nil {
@@ -147,16 +147,16 @@ func (m *memStore) EnsureCatalogSource(_ context.Context, publicKey string, now 
 		return &cp, nil
 	}
 	m.nextSource++
-	s := &CatalogSource{ID: m.nextSource, PublicKey: publicKey, FirstSeen: now}
+	s := &ExternalNode{ID: m.nextSource, PublicKey: publicKey, FirstSeen: now}
 	m.sources[s.ID] = s
 	cp := *s
 	return &cp, nil
 }
 
-func (m *memStore) ListCatalogSources(context.Context) ([]*CatalogSource, error) {
+func (m *memStore) ListCatalogSources(context.Context) ([]*ExternalNode, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]*CatalogSource, 0, len(m.sources))
+	out := make([]*ExternalNode, 0, len(m.sources))
 	for _, s := range m.sources {
 		cp := *s
 		out = append(out, &cp)
@@ -254,7 +254,7 @@ func (m *memStore) DropCatalogSources(_ context.Context, ids []int64) error {
 }
 
 // sourceByKeyLocked finds a source row by node key; caller holds m.mu.
-func (m *memStore) sourceByKeyLocked(key string) *CatalogSource {
+func (m *memStore) sourceByKeyLocked(key string) *ExternalNode {
 	for _, s := range m.sources {
 		if s.PublicKey == key {
 			return s
@@ -298,10 +298,10 @@ func (m *memStore) MadnetworkBlobProviders(_ context.Context, hash string) (int6
 		prov := &BlobProvider{SourceID: s.ID, PublicKey: s.PublicKey,
 			HeardName: s.HeardName, LastSeen: s.LastSeen}
 		if p := m.peerByKeyLocked(s.PublicKey); p != nil {
-			if p.State == PeerBlocked {
+			if p.TrustState == PeerBlocked {
 				return
 			}
-			prov.PeerID, prov.Name = p.ID, p.Name
+			prov.PeerID, prov.Name = p.ID, p.Label
 			if p.LastSeen > prov.LastSeen {
 				prov.LastSeen = p.LastSeen
 			}
@@ -335,7 +335,7 @@ func (m *memStore) MadnetworkBlobProviders(_ context.Context, hash string) (int6
 }
 
 // peerByKeyLocked finds a peer row by node key; caller holds m.mu.
-func (m *memStore) peerByKeyLocked(key string) *Peer {
+func (m *memStore) peerByKeyLocked(key string) *ExternalNode {
 	for _, p := range m.peers {
 		if p.PublicKey == key {
 			return p
@@ -442,10 +442,10 @@ func (m *memStore) setPublished(entries []CatalogEntry) {
 	m.published = entries
 }
 
-func (m *memStore) ListFederationPeers(context.Context) ([]*Peer, error) {
+func (m *memStore) ListFederationPeers(context.Context) ([]*ExternalNode, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]*Peer, 0, len(m.peers))
+	out := make([]*ExternalNode, 0, len(m.peers))
 	for _, p := range m.peers {
 		cp := *p
 		out = append(out, &cp)
@@ -453,17 +453,17 @@ func (m *memStore) ListFederationPeers(context.Context) ([]*Peer, error) {
 	return out, nil
 }
 
-func (m *memStore) ListHomeNodes(context.Context) ([]HomeNode, error) {
+func (m *memStore) ListHomeNodes(context.Context) ([]ExternalNode, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return append([]HomeNode(nil), m.homes...), nil
+	return append([]ExternalNode(nil), m.homes...), nil
 }
 
 // addHome records a home server, as a client does after signing in.
 func (m *memStore) addHome(publicKey string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.homes = append(m.homes, HomeNode{PublicKey: publicKey, AddedAt: time.Now().Unix()})
+	m.homes = append(m.homes, ExternalNode{PublicKey: publicKey, HomeAddedAt: time.Now().Unix()})
 }
 
 // forgetHomes signs out of every home server.
@@ -473,7 +473,7 @@ func (m *memStore) forgetHomes() {
 	m.homes = nil
 }
 
-func (m *memStore) GetFederationPeer(_ context.Context, id int64) (*Peer, error) {
+func (m *memStore) GetFederationPeer(_ context.Context, id int64) (*ExternalNode, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	p, ok := m.peers[id]
@@ -484,7 +484,7 @@ func (m *memStore) GetFederationPeer(_ context.Context, id int64) (*Peer, error)
 	return &cp, nil
 }
 
-func (m *memStore) GetFederationPeerByKey(_ context.Context, key string) (*Peer, error) {
+func (m *memStore) GetFederationPeerByKey(_ context.Context, key string) (*ExternalNode, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, p := range m.peers {
@@ -496,7 +496,7 @@ func (m *memStore) GetFederationPeerByKey(_ context.Context, key string) (*Peer,
 	return nil, ErrPeerNotFound
 }
 
-func (m *memStore) InsertFederationPeer(_ context.Context, p *Peer) (int64, error) {
+func (m *memStore) InsertFederationPeer(_ context.Context, p *ExternalNode) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.next++
@@ -513,7 +513,7 @@ func (m *memStore) SetFederationPeerState(_ context.Context, id int64, state, pr
 	if !ok {
 		return ErrPeerNotFound
 	}
-	p.State, p.PrevState = state, prev
+	p.TrustState, p.PrevState = state, prev
 	return nil
 }
 
@@ -524,7 +524,7 @@ func (m *memStore) UpdateFederationPeerName(_ context.Context, id int64, name st
 	if !ok {
 		return ErrPeerNotFound
 	}
-	p.Name = name
+	p.Label = name
 	return nil
 }
 
@@ -642,8 +642,8 @@ func TestFriendshipHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatalf("import card on B: %v", err)
 	}
-	if pB.State != PeerPendingOutgoing {
-		t.Fatalf("B's row after import = %s, want pending_outgoing", pB.State)
+	if pB.TrustState != PeerPendingOutgoing {
+		t.Fatalf("B's row after import = %s, want pending_outgoing", pB.TrustState)
 	}
 	// Importing again is idempotent.
 	if p2, err := b.ImportCard(ctx, cardA); err != nil || p2.ID != pB.ID {
@@ -661,10 +661,10 @@ func TestFriendshipHandshake(t *testing.T) {
 		incomingID = p.ID
 		// The requester's name is its own claim, so it lands in the heard name and
 		// leaves the local label — which only an admin writes — empty.
-		if p.HeardName != "node-b" || p.Name != "" {
-			t.Fatalf("A recorded requester as name=%q heard=%q, want heard node-b and no label", p.Name, p.HeardName)
+		if p.HeardName != "node-b" || p.Label != "" {
+			t.Fatalf("A recorded requester as name=%q heard=%q, want heard node-b and no label", p.Label, p.HeardName)
 		}
-		return p.State == PeerPendingIncoming
+		return p.TrustState == PeerPendingIncoming
 	})
 
 	// A's admin accepts → A is friend immediately; B converges via its retries.
@@ -678,7 +678,7 @@ func TestFriendshipHandshake(t *testing.T) {
 		b.Nudge()
 		pa, errA := storeA.GetFederationPeerByKey(ctx, b.PublicKeyHex())
 		pb, errB := storeB.GetFederationPeerByKey(ctx, a.PublicKeyHex())
-		return errA == nil && errB == nil && pa.State == PeerFriend && pb.State == PeerFriend
+		return errA == nil && errB == nil && pa.TrustState == PeerFriend && pb.TrustState == PeerFriend
 	})
 
 	// Contact updates last_seen on A's side (B's calls arrived over the mesh).
@@ -704,18 +704,18 @@ func TestFriendshipHandshake(t *testing.T) {
 		p, err := storeA.GetFederationPeerByKey(ctx, b.PublicKeyHex())
 		return err == nil && p.HeardName == "node-b"
 	})
-	if p, _ := storeA.GetFederationPeerByKey(ctx, b.PublicKeyHex()); p.Name != "B, my studio node" {
-		t.Errorf("local label after a heard-name refresh = %q, want it untouched", p.Name)
-	} else if p.Label() != "B, my studio node" {
-		t.Errorf("Label() = %q, want the local label to win", p.Label())
+	if p, _ := storeA.GetFederationPeerByKey(ctx, b.PublicKeyHex()); p.Label != "B, my studio node" {
+		t.Errorf("local label after a heard-name refresh = %q, want it untouched", p.Label)
+	} else if p.Name() != "B, my studio node" {
+		t.Errorf("Name() = %q, want the local label to win", p.Name())
 	}
 	// Clearing the label falls back to what the peer calls itself, rather than to
 	// nothing — which is why the two are stored apart.
 	if err := a.RenamePeer(ctx, pb2.ID, ""); err != nil {
 		t.Fatalf("clear label on A: %v", err)
 	}
-	if p, _ := storeA.GetFederationPeerByKey(ctx, b.PublicKeyHex()); p.Label() != "node-b" {
-		t.Errorf("Label() after clearing the label = %q, want the heard name node-b", p.Label())
+	if p, _ := storeA.GetFederationPeerByKey(ctx, b.PublicKeyHex()); p.Name() != "node-b" {
+		t.Errorf("Name() after clearing the label = %q, want the heard name node-b", p.Name())
 	}
 
 	// Block: A refuses B all service — even the ping.
@@ -746,8 +746,8 @@ func TestFriendshipHandshake(t *testing.T) {
 	if err := a.UnblockPeer(ctx, pa.ID); err != nil {
 		t.Fatalf("unblock on A: %v", err)
 	}
-	if pa, _ = storeA.GetFederationPeerByKey(ctx, b.PublicKeyHex()); pa.State != PeerFriend {
-		t.Errorf("state after unblock = %s, want friend", pa.State)
+	if pa, _ = storeA.GetFederationPeerByKey(ctx, b.PublicKeyHex()); pa.TrustState != PeerFriend {
+		t.Errorf("state after unblock = %s, want friend", pa.TrustState)
 	}
 	waitFor(t, "service to resume after unblock", func() bool {
 		resp, err := client.Get(pingA)

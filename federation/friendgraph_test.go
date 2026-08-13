@@ -70,7 +70,7 @@ func TestFriendOfAFriend(t *testing.T) {
 		c.Nudge()
 		pa, errA := sA.GetFederationPeerByKey(ctx, c.PublicKeyHex())
 		pc, errC := sC.GetFederationPeerByKey(ctx, a.PublicKeyHex())
-		return errA == nil && errC == nil && pa.State == PeerFriend && pc.State == PeerFriend
+		return errA == nil && errC == nil && pa.TrustState == PeerFriend && pc.TrustState == PeerFriend
 	})
 
 	// The friendship each node already had is untouched: a new edge must not
@@ -81,7 +81,7 @@ func TestFriendOfAFriend(t *testing.T) {
 		what  string
 	}{{sA, b, "A—B"}, {sC, b, "C—B"}} {
 		p, err := tc.store.GetFederationPeerByKey(ctx, tc.other.PublicKeyHex())
-		if err != nil || p.State != PeerFriend {
+		if err != nil || p.TrustState != PeerFriend {
 			t.Errorf("%s after the new friendship = %v (%v), want friend", tc.what, p, err)
 		}
 	}
@@ -214,11 +214,11 @@ func TestImportKey(t *testing.T) {
 	if p.PublicKey != key {
 		t.Errorf("stored key = %q, want the normalized %q", p.PublicKey, key)
 	}
-	if p.State != PeerPendingOutgoing {
-		t.Errorf("state = %q, want pending_outgoing", p.State)
+	if p.TrustState != PeerPendingOutgoing {
+		t.Errorf("state = %q, want pending_outgoing", p.TrustState)
 	}
-	if p.HeardName != "heard on the map" || p.Name != "" {
-		t.Errorf("names = label %q / heard %q, want the name as hearsay and no label", p.Name, p.HeardName)
+	if p.HeardName != "heard on the map" || p.Label != "" {
+		t.Errorf("names = label %q / heard %q, want the name as hearsay and no label", p.Label, p.HeardName)
 	}
 	if _, err := n.ImportKey(ctx, "not-a-key", ""); err == nil {
 		t.Error("importing junk succeeded; want a validation error")

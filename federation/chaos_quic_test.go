@@ -187,8 +187,8 @@ func TestChaosSustainedLossStaysReachable(t *testing.T) {
 			"%v window and blink the friend's library out of the browse",
 			worst, lossRate*100, window)
 	}
-	if p, _ := storeB.GetFederationPeerByKey(context.Background(), a.PublicKeyHex()); p.State != PeerFriend {
-		t.Errorf("friendship state = %q under packet loss, want it to survive", p.State)
+	if p, _ := storeB.GetFederationPeerByKey(context.Background(), a.PublicKeyHex()); p.TrustState != PeerFriend {
+		t.Errorf("friendship state = %q under packet loss, want it to survive", p.TrustState)
 	}
 	// Loss on a peering is a remote condition. If it flipped the local inbound
 	// health signal, fail-open would trigger and the browse would stop hiding

@@ -62,7 +62,7 @@ func announceFixture(t *testing.T) (*Node, *memStore, string, func(announceMessa
 	ms := newMemStore()
 	friend := nodeKeyN(0x11)
 	if _, err := ms.InsertFederationPeer(context.Background(),
-		&Peer{PublicKey: friend, State: PeerFriend, LastSeen: time.Now().Unix()}); err != nil {
+		&ExternalNode{PublicKey: friend, TrustState: PeerFriend, LastSeen: time.Now().Unix()}); err != nil {
 		t.Fatalf("insert friend: %v", err)
 	}
 	n := &Node{
@@ -111,7 +111,7 @@ func TestAnnounceMintsAHolderAndMarksItSeen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var src *CatalogSource
+	var src *ExternalNode
 	for _, s := range srcs {
 		if s.PublicKey == friend {
 			src = s

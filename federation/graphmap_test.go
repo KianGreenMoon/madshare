@@ -28,7 +28,7 @@ func nodeByLabel(t *testing.T, m NetworkMap, label string) *MapNode {
 // A chain me—a—b—c: distances count hops, and everything past our friend is
 // attributed to the branch it arrived through.
 func TestNetworkMapDistanceAndAttribution(t *testing.T) {
-	peers := []*Peer{{PublicKey: k("a"), Name: "studio", State: PeerFriend}}
+	peers := []*ExternalNode{{PublicKey: k("a"), Label: "studio", TrustState: PeerFriend}}
 	edges := []GraphEdgeClaim{
 		edge("a", "b", "kian's node"),
 		edge("b", "a", "studio"),
@@ -82,9 +82,9 @@ func TestNetworkMapDistanceAndAttribution(t *testing.T) {
 // Branch snipping: blocking a friend removes what was reachable only through
 // it, and keeps what another friend also vouches for.
 func TestNetworkMapSnipsBlockedBranch(t *testing.T) {
-	peers := []*Peer{
-		{PublicKey: k("a"), Name: "studio", State: PeerFriend},
-		{PublicKey: k("d"), Name: "attic", State: PeerFriend},
+	peers := []*ExternalNode{
+		{PublicKey: k("a"), Label: "studio", TrustState: PeerFriend},
+		{PublicKey: k("d"), Label: "attic", TrustState: PeerFriend},
 	}
 	edges := []GraphEdgeClaim{
 		edge("a", "b", ""), // b hangs off a only
@@ -101,7 +101,7 @@ func TestNetworkMapSnipsBlockedBranch(t *testing.T) {
 	}
 
 	// Block a. Nothing is discovered through a blocked node any more.
-	peers[0].State = PeerBlocked
+	peers[0].TrustState = PeerBlocked
 	snipped := BuildNetworkMap(k("me"), peers, edges, nil)
 
 	if n := nodeByLabel(t, snipped, "a"); n == nil || n.State != MapBlocked {
@@ -125,9 +125,9 @@ func TestNetworkMapSnipsBlockedBranch(t *testing.T) {
 // One branch is one voice: a sybil farm behind a single friendship counts once,
 // however many keys it mints.
 func TestNetworkMapWeightsMarksByBranch(t *testing.T) {
-	peers := []*Peer{
-		{PublicKey: k("a"), Name: "studio", State: PeerFriend},
-		{PublicKey: k("d"), Name: "attic", State: PeerFriend},
+	peers := []*ExternalNode{
+		{PublicKey: k("a"), Label: "studio", TrustState: PeerFriend},
+		{PublicKey: k("d"), Label: "attic", TrustState: PeerFriend},
 	}
 	edges := []GraphEdgeClaim{
 		edge("a", "1", ""), // three sybils, all behind friend a
@@ -167,7 +167,7 @@ func TestNetworkMapWeightsMarksByBranch(t *testing.T) {
 // An accusation from a node we cannot place is not evidence we can weigh, so it
 // is left off rather than shown without provenance.
 func TestNetworkMapDropsUnreachableAccusers(t *testing.T) {
-	peers := []*Peer{{PublicKey: k("a"), State: PeerFriend}}
+	peers := []*ExternalNode{{PublicKey: k("a"), TrustState: PeerFriend}}
 	edges := []GraphEdgeClaim{edge("a", "b", "")}
 	marks := []StoredMark{{Origin: k("x"), Target: k("b"), Reason: "from nowhere"}}
 
@@ -181,7 +181,7 @@ func TestNetworkMapDropsUnreachableAccusers(t *testing.T) {
 // any record carries it — and drawn solid, because our own edges are not claims
 // to be weighed for mutuality (§Forgetting).
 func TestNetworkMapIncludesOwnFriendshipsWithoutRecords(t *testing.T) {
-	peers := []*Peer{{PublicKey: k("a"), Name: "fresh", State: PeerFriend}}
+	peers := []*ExternalNode{{PublicKey: k("a"), Label: "fresh", TrustState: PeerFriend}}
 	m := BuildNetworkMap(k("me"), peers, nil, nil)
 
 	if n := nodeByLabel(t, m, "a"); n == nil || n.Distance != 1 {
@@ -195,7 +195,7 @@ func TestNetworkMapIncludesOwnFriendshipsWithoutRecords(t *testing.T) {
 // An edge both ends published is stronger evidence than one only one end
 // claims, and the map distinguishes them.
 func TestNetworkMapMarksMutualEdges(t *testing.T) {
-	peers := []*Peer{{PublicKey: k("a"), State: PeerFriend}}
+	peers := []*ExternalNode{{PublicKey: k("a"), TrustState: PeerFriend}}
 	edges := []GraphEdgeClaim{
 		edge("a", "b", ""),
 		edge("b", "a", ""), // both directions claimed
@@ -221,9 +221,9 @@ func TestNetworkMapMarksMutualEdges(t *testing.T) {
 // an admin must be able to see and undo a block where they made it, not only in
 // the peer list. The same goes for a pairing still awaiting an answer.
 func TestNetworkMapKeepsUnlinkedPeers(t *testing.T) {
-	peers := []*Peer{
-		{PublicKey: k("b"), Name: "spammer", State: PeerBlocked},
-		{PublicKey: k("p"), Name: "waiting", State: PeerPendingOutgoing},
+	peers := []*ExternalNode{
+		{PublicKey: k("b"), Label: "spammer", TrustState: PeerBlocked},
+		{PublicKey: k("p"), Label: "waiting", TrustState: PeerPendingOutgoing},
 	}
 	m := BuildNetworkMap(k("me"), peers, nil, nil)
 

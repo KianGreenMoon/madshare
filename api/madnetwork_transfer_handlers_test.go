@@ -283,8 +283,8 @@ func TestDownloadEvictsTheCachedDuplicate(t *testing.T) {
 	hash, _ := uploadStaged(t, up, srv.URL, "held.mp3")
 
 	ctx := context.Background()
-	if _, err := db.InsertFederationPeer(ctx, &federation.Peer{
-		PublicKey: "aa11", Name: "friendly", State: federation.PeerFriend, CreatedAt: 1000,
+	if _, err := db.InsertFederationPeer(ctx, &federation.ExternalNode{
+		PublicKey: "aa11", Label: "friendly", TrustState: federation.PeerFriend, TrustedAt: 1000,
 	}); err != nil {
 		t.Fatalf("insert peer: %v", err)
 	}

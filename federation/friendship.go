@@ -66,7 +66,7 @@ func (n *Node) Info() NodeInfo {
 // peerFromRemote resolves the request's source mesh address to a known peer by
 // deriving each stored key's address (derivation is one-way, so matching walks
 // the table — fine at friend-list scale). nil = unknown node.
-func (n *Node) peerFromRemote(r *http.Request) *Peer {
+func (n *Node) peerFromRemote(r *http.Request) *ExternalNode {
 	if n.store == nil {
 		return nil
 	}
@@ -95,7 +95,7 @@ func remoteIP(r *http.Request) net.IP {
 // matchPeerAddr finds the peer whose key derives to ip. Split out of
 // peerFromRemote so a handler that has already read the peer table can match
 // against the list it holds instead of reading it again.
-func matchPeerAddr(peers []*Peer, ip net.IP) *Peer {
+func matchPeerAddr(peers []*ExternalNode, ip net.IP) *ExternalNode {
 	if ip == nil {
 		return nil
 	}
@@ -113,7 +113,7 @@ func matchPeerAddr(peers []*Peer, ip net.IP) *Peer {
 func (n *Node) meshAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if p := n.peerFromRemote(r); p != nil {
-			if p.State == PeerBlocked {
+			if p.TrustState == PeerBlocked {
 				http.Error(w, "blocked", http.StatusForbidden)
 				return
 			}
@@ -192,12 +192,12 @@ func (n *Node) handlePair(w http.ResponseWriter, r *http.Request) {
 	p, err := n.store.GetFederationPeerByKey(r.Context(), key)
 	switch {
 	case err == ErrPeerNotFound:
-		_, err := n.store.InsertFederationPeer(r.Context(), &Peer{
-			PublicKey: key,
-			HeardName: CleanPeerName(req.Name),
-			State:     PeerPendingIncoming,
-			CreatedAt: time.Now().Unix(),
-			LastSeen:  time.Now().Unix(),
+		_, err := n.store.InsertFederationPeer(r.Context(), &ExternalNode{
+			PublicKey:  key,
+			HeardName:  CleanPeerName(req.Name),
+			TrustState: PeerPendingIncoming,
+			TrustedAt:  time.Now().Unix(),
+			LastSeen:   time.Now().Unix(),
 		})
 		if err != nil {
 			n.logger.Printf("federation: record pair request from %s: %v", key, err)
@@ -209,15 +209,15 @@ func (n *Node) handlePair(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
-	case p.State == PeerPendingOutgoing:
+	case p.TrustState == PeerPendingOutgoing:
 		if err := n.store.SetFederationPeerState(r.Context(), p.ID, PeerFriend, ""); err != nil {
 			http.Error(w, "storage error", http.StatusInternalServerError)
 			return
 		}
-		n.logger.Printf("federation: friendship with %q (%s) established", p.Label(), p.PublicKey)
+		n.logger.Printf("federation: friendship with %q (%s) established", p.Name(), p.PublicKey)
 		n.Nudge() // start the first catalog sync right away
 		result = "friend"
-	case p.State == PeerFriend:
+	case p.TrustState == PeerFriend:
 		result = "friend"
 	default: // pending_incoming — their retry while our admin hasn't acted
 		result = "pending"
@@ -244,7 +244,7 @@ func (n *Node) handlePair(w http.ResponseWriter, r *http.Request) {
 // Every exit records a [PairAttempt]: a pairing that does not converge is the
 // one federation failure an admin cannot debug from the outside, since both
 // halves of it look identical from the peer list (`pending_outgoing`, forever).
-func (n *Node) pairWith(ctx context.Context, p *Peer) {
+func (n *Node) pairWith(ctx context.Context, p *ExternalNode) {
 	addr, err := AddrForKeyHex(p.PublicKey)
 	if err != nil {
 		n.logger.Printf("federation: peer %d has an invalid key: %v", p.ID, err)
@@ -286,12 +286,12 @@ func (n *Node) pairWith(ctx context.Context, p *Peer) {
 		n.recordAttempt(p, PairAttempt{Result: msg.Result})
 	}
 	_ = n.store.TouchFederationPeerSeen(ctx, p.ID, time.Now().Unix())
-	if msg.Result == "friend" && p.State == PeerPendingOutgoing {
+	if msg.Result == "friend" && p.TrustState == PeerPendingOutgoing {
 		if err := n.store.SetFederationPeerState(ctx, p.ID, PeerFriend, ""); err != nil {
 			n.logger.Printf("federation: record friendship with %s: %v", p.PublicKey, err)
 			return
 		}
-		n.logger.Printf("federation: friendship with %q (%s) established", p.Label(), p.PublicKey)
+		n.logger.Printf("federation: friendship with %q (%s) established", p.Name(), p.PublicKey)
 		n.Nudge() // start the first catalog sync on the next sweep
 	}
 	n.refreshHeardName(ctx, p, msg.Name)
@@ -301,7 +301,7 @@ func (n *Node) pairWith(ctx context.Context, p *Peer) {
 // **when it changes**. The sweep retries every minute per pending peer, so a
 // node that is merely switched off would otherwise write a log line a minute
 // for as long as its admin leaves the pairing in place.
-func (n *Node) recordAttempt(p *Peer, a PairAttempt) {
+func (n *Node) recordAttempt(p *ExternalNode, a PairAttempt) {
 	a.At = time.Now().Unix()
 	n.attemptMu.Lock()
 	prev, had := n.attempts[p.PublicKey]
@@ -369,7 +369,7 @@ func refusalReason(resp *http.Response) string {
 // It cannot touch the local label (migration 033): a peer renaming itself must
 // never overwrite the admin's choice, and an admin renaming a peer must never
 // hide what that peer calls itself.
-func (n *Node) refreshHeardName(ctx context.Context, p *Peer, heard string) {
+func (n *Node) refreshHeardName(ctx context.Context, p *ExternalNode, heard string) {
 	heard = CleanPeerName(heard)
 	if heard == "" || heard == p.HeardName {
 		return
@@ -387,7 +387,7 @@ func (n *Node) refreshHeardName(ctx context.Context, p *Peer, heard string) {
 // friend saw of ITS friends, which is how a member two hops out stays inside the
 // one-minute window instead of waiting fifteen for its turn in the catalog
 // rotation (freshness.go).
-func (n *Node) pingPeer(ctx context.Context, p *Peer) {
+func (n *Node) pingPeer(ctx context.Context, p *ExternalNode) {
 	addr, err := AddrForKeyHex(p.PublicKey)
 	if err != nil {
 		return
@@ -477,7 +477,7 @@ func (n *Node) sweep(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		switch p.State {
+		switch p.TrustState {
 		case PeerPendingOutgoing:
 			n.pairWith(ctx, p)
 		case PeerFriend:
@@ -504,7 +504,7 @@ func (n *Node) sweep(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if p.State != PeerFriend {
+		if p.TrustState != PeerFriend {
 			continue
 		}
 		if _, due := dueFriends[p.PublicKey]; due || forceGraph {
@@ -524,7 +524,7 @@ func (n *Node) Nudge() {
 // ── Admin-facing operations (the /api/admin/federation surface) ──────────────
 
 // Peers lists the trusted-peer table with derived mesh addresses filled in.
-func (n *Node) Peers(ctx context.Context) ([]*Peer, error) {
+func (n *Node) Peers(ctx context.Context) ([]*ExternalNode, error) {
 	peers, err := n.store.ListFederationPeers(ctx)
 	if err != nil {
 		return nil, err
@@ -548,7 +548,7 @@ func (n *Node) Peers(ctx context.Context) ([]*Peer, error) {
 //
 // Friending stays deliberate: this is our half of the mutual intent, and the far
 // node still records a `pending_incoming` request its admin has to accept.
-func (n *Node) ImportKey(ctx context.Context, publicKey, name string) (*Peer, error) {
+func (n *Node) ImportKey(ctx context.Context, publicKey, name string) (*ExternalNode, error) {
 	key, err := NormalizeKey(publicKey)
 	if err != nil {
 		return nil, err
@@ -561,21 +561,21 @@ func (n *Node) ImportKey(ctx context.Context, publicKey, name string) (*Peer, er
 // for a node that already asked to pair (pending_incoming) completes the
 // friendship — importing the card IS the deliberate accept. Idempotent for
 // already-known peers; a blocked node's card is refused.
-func (n *Node) ImportCard(ctx context.Context, c Card) (*Peer, error) {
+func (n *Node) ImportCard(ctx context.Context, c Card) (*ExternalNode, error) {
 	if c.PublicKey == n.PublicKeyHex() {
 		return nil, fmt.Errorf("%w: this is this node's own card", ErrPeerState)
 	}
 	p, err := n.store.GetFederationPeerByKey(ctx, c.PublicKey)
 	switch {
 	case err == ErrPeerNotFound:
-		id, err := n.store.InsertFederationPeer(ctx, &Peer{
+		id, err := n.store.InsertFederationPeer(ctx, &ExternalNode{
 			PublicKey: c.PublicKey,
 			// A card's name is what that node calls itself, not a label this
 			// admin chose — so it lands in the claim, where the handshake keeps
 			// it current.
-			HeardName: c.Name,
-			State:     PeerPendingOutgoing,
-			CreatedAt: time.Now().Unix(),
+			HeardName:  c.Name,
+			TrustState: PeerPendingOutgoing,
+			TrustedAt:  time.Now().Unix(),
 		})
 		if err != nil {
 			return nil, err
@@ -584,13 +584,13 @@ func (n *Node) ImportCard(ctx context.Context, c Card) (*Peer, error) {
 		return n.store.GetFederationPeer(ctx, id)
 	case err != nil:
 		return nil, err
-	case p.State == PeerBlocked:
+	case p.TrustState == PeerBlocked:
 		return nil, fmt.Errorf("%w: this node is blocked — unblock it first", ErrPeerState)
-	case p.State == PeerPendingIncoming:
+	case p.TrustState == PeerPendingIncoming:
 		if err := n.store.SetFederationPeerState(ctx, p.ID, PeerFriend, ""); err != nil {
 			return nil, err
 		}
-		n.logger.Printf("federation: friendship with %q (%s) established (card import accepted their request)", p.Label(), p.PublicKey)
+		n.logger.Printf("federation: friendship with %q (%s) established (card import accepted their request)", p.Name(), p.PublicKey)
 		n.Nudge()
 		return n.store.GetFederationPeer(ctx, p.ID)
 	default: // pending_outgoing or friend — idempotent re-import
@@ -606,13 +606,13 @@ func (n *Node) AcceptPeer(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	if p.State != PeerPendingIncoming {
-		return fmt.Errorf("%w: peer is %s, not awaiting acceptance", ErrPeerState, p.State)
+	if p.TrustState != PeerPendingIncoming {
+		return fmt.Errorf("%w: peer is %s, not awaiting acceptance", ErrPeerState, p.TrustState)
 	}
 	if err := n.store.SetFederationPeerState(ctx, id, PeerFriend, ""); err != nil {
 		return err
 	}
-	n.logger.Printf("federation: friendship with %q (%s) established (request accepted)", p.Label(), p.PublicKey)
+	n.logger.Printf("federation: friendship with %q (%s) established (request accepted)", p.Name(), p.PublicKey)
 	n.Nudge() // tell their node right away so its side flips too
 	return nil
 }
@@ -631,11 +631,11 @@ func (n *Node) BlockPeer(ctx context.Context, id int64, reason string) error {
 	if err != nil {
 		return err
 	}
-	if p.State == PeerBlocked {
+	if p.TrustState == PeerBlocked {
 		return nil
 	}
-	n.logger.Printf("federation: blocked %q (%s)", p.Label(), p.PublicKey)
-	if err := n.store.BlockFederationPeer(ctx, id, p.State, CleanMarkReason(reason), time.Now().Unix()); err != nil {
+	n.logger.Printf("federation: blocked %q (%s)", p.Name(), p.PublicKey)
+	if err := n.store.BlockFederationPeer(ctx, id, p.TrustState, CleanMarkReason(reason), time.Now().Unix()); err != nil {
 		return err
 	}
 	n.Nudge() // republish the mark (and drop the edge) without waiting for the tick
@@ -660,11 +660,11 @@ func (n *Node) BlockKey(ctx context.Context, publicKey, name, reason string) err
 	case !errors.Is(err, ErrPeerNotFound):
 		return err
 	}
-	id, err := n.store.InsertFederationPeer(ctx, &Peer{
-		PublicKey: key,
-		HeardName: CleanPeerName(name),
-		State:     PeerBlocked,
-		CreatedAt: time.Now().Unix(),
+	id, err := n.store.InsertFederationPeer(ctx, &ExternalNode{
+		PublicKey:  key,
+		HeardName:  CleanPeerName(name),
+		TrustState: PeerBlocked,
+		TrustedAt:  time.Now().Unix(),
 	})
 	if err != nil {
 		return err
@@ -685,7 +685,7 @@ func (n *Node) UnblockPeer(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	if p.State != PeerBlocked {
+	if p.TrustState != PeerBlocked {
 		return fmt.Errorf("%w: peer is not blocked", ErrPeerState)
 	}
 	prev := p.PrevState
@@ -736,10 +736,10 @@ func (n *Node) RenamePeer(ctx context.Context, id int64, name string) error {
 // A failure is expected and silent: on a shared public-mesh segment the link is
 // not ours (`ErrLinkNotConfigured`), and transit below the app layer is
 // Yggdrasil's business. The app-layer cut is the guaranteed part.
-func (n *Node) depeerBlocked(peers []*Peer) {
-	blocked := map[string]*Peer{}
+func (n *Node) depeerBlocked(peers []*ExternalNode) {
+	blocked := map[string]*ExternalNode{}
 	for _, p := range peers {
-		if p.State == PeerBlocked {
+		if p.TrustState == PeerBlocked {
 			blocked[p.PublicKey] = p
 		}
 	}
@@ -774,7 +774,7 @@ func (n *Node) depeerBlocked(peers []*Peer) {
 			continue
 		}
 		n.logger.Printf("federation: de-peered blocked node %q (%s) on the underlay — %s",
-			p.Label(), p.PublicKey, info.URI)
+			p.Name(), p.PublicKey, info.URI)
 	}
 }
 

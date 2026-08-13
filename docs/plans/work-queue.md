@@ -31,18 +31,20 @@ negative check of the SQL clause), but the walkthrough in
 `tests/mesh/README.md` §The availability walkthrough is the honest place to
 confirm it end to end — worth one meshlab run when the lab is next up.
 
-### 2. Node struct fold — the recorded follow-up of migration 046  ← START HERE
+### 2. Node struct fold — the follow-up of migration 046  ✅ DONE 2026-08-13
 
-- **Design:** `docs/architecture/federation-nodes.md` §"The Go surface":
-  fold the `Peer` / `CatalogSource` (/ `HomeNode`) view-structs into one
-  `Node` struct. Pure refactor, no migration, no behavior change.
-- Was sequenced **after** Phase 5 on purpose, and that ordering paid: Phase 5
-  landed on today's shapes and added one `PeerStore` method
-  (`MarkNodeUnreachable`) the fold will absorb. The fold rewrites `PeerStore`
-  signatures and breaks the api `fakeRepo` + the mesh-lab stores
-  (`emptyStore`/`memStore`), so it wants a session of its own.
+`Peer` / `CatalogSource` / `HomeNode` are one `federation.ExternalNode`. The
+name and the field-naming rule (columns win; JSON tags keep the pre-fold admin
+wire) are written up in `docs/architecture/federation-nodes.md` §"The Go
+surface — the fold". Pure refactor: no migration, no wire change, `PeerStore`
+method names untouched.
 
-### 3. Member quotas: runtime + visibility — BLOCKED on an owner decision
+Two things a future reader should not re-derive: the fold could **not** be
+called `Node` (the running mesh node owns that name in this package), and
+`BlobProvider` deliberately stayed its own flat type — a household device is a
+holder with no row at all.
+
+### 3. Member quotas: runtime + visibility — BLOCKED on an owner decision  ← NEXT (ask first)
 
 - The question row lives in `.issues/open-issues.md` §"knob-resolution dig
   findings": the four F7 quotas are the only limiter family still requiring

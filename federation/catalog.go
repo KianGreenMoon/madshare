@@ -113,7 +113,7 @@ func (n *Node) handleCatalog(w http.ResponseWriter, r *http.Request) {
 // full snapshot replace when their serial moved. The source may be a friend or
 // any member of our community (F7 item 5) — the wire call is the same either
 // way, since the *serving* node decides what its answer contains.
-func (n *Node) syncCatalog(ctx context.Context, p *CatalogSource) {
+func (n *Node) syncCatalog(ctx context.Context, p *ExternalNode) {
 	addr, err := AddrForKeyHex(p.PublicKey)
 	if err != nil {
 		return
@@ -169,7 +169,7 @@ func (n *Node) syncCatalog(ctx context.Context, p *CatalogSource) {
 // A finding is logged once per round and otherwise waits on /admin/network.
 // Nothing here blocks, scores or notifies — that is the whole point of the design
 // (docs/architecture/federation-trust.md §Trust graph).
-func (n *Node) checkClaims(ctx context.Context, p *CatalogSource) {
+func (n *Node) checkClaims(ctx context.Context, p *ExternalNode) {
 	open, err := n.store.CheckSourceClaims(ctx, p.ID)
 	if err != nil {
 		n.logger.Printf("federation: check claims of %q: %v", p.Display(), err)
@@ -189,7 +189,7 @@ func (n *Node) checkClaims(ctx context.Context, p *CatalogSource) {
 //
 // Like the claim checks, it decides nothing: findings wait on /admin/upgrades,
 // and materializing one is an admin pressing a button.
-func (n *Node) scanUpgrades(ctx context.Context, p *CatalogSource) {
+func (n *Node) scanUpgrades(ctx context.Context, p *ExternalNode) {
 	open, err := n.store.ScanSourceUpgrades(ctx, p.ID, time.Now().Unix())
 	if err != nil {
 		n.logger.Printf("federation: scan upgrades from %q: %v", p.Display(), err)

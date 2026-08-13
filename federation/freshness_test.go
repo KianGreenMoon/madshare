@@ -35,13 +35,13 @@ func nodeKeyN(b byte) string {
 func TestBuildFreshnessHintsVouchesOnlyForFriends(t *testing.T) {
 	now := time.Now().Unix()
 	asker := nodeKeyN(0x01)
-	peers := []*Peer{
-		{PublicKey: asker, State: PeerFriend, LastSeen: now - 5},
-		{PublicKey: nodeKeyN(0x02), State: PeerFriend, LastSeen: now - 30},
-		{PublicKey: nodeKeyN(0x03), State: PeerPendingOutgoing, LastSeen: now - 5},
-		{PublicKey: nodeKeyN(0x04), State: PeerBlocked, LastSeen: now - 5},
-		{PublicKey: nodeKeyN(0x05), State: PeerFriend, LastSeen: 0},
-		{PublicKey: nodeKeyN(0x06), State: PeerFriend, LastSeen: now - int64(2*MaxHintAge/time.Second)},
+	peers := []*ExternalNode{
+		{PublicKey: asker, TrustState: PeerFriend, LastSeen: now - 5},
+		{PublicKey: nodeKeyN(0x02), TrustState: PeerFriend, LastSeen: now - 30},
+		{PublicKey: nodeKeyN(0x03), TrustState: PeerPendingOutgoing, LastSeen: now - 5},
+		{PublicKey: nodeKeyN(0x04), TrustState: PeerBlocked, LastSeen: now - 5},
+		{PublicKey: nodeKeyN(0x05), TrustState: PeerFriend, LastSeen: 0},
+		{PublicKey: nodeKeyN(0x06), TrustState: PeerFriend, LastSeen: now - int64(2*MaxHintAge/time.Second)},
 	}
 	hints := buildFreshnessHints(peers, asker, now)
 
@@ -74,7 +74,7 @@ func TestBuildFreshnessHintsVouchesOnlyForFriends(t *testing.T) {
 func TestBuildFreshnessHintsCapKeepsTheFreshest(t *testing.T) {
 	const staleAge = 3000
 	now := time.Now().Unix()
-	var peers []*Peer
+	var peers []*ExternalNode
 	// The 50 stale nodes come FIRST in key order, so a truncation that ignored
 	// age would keep exactly the entries worth the least.
 	for i := 0; i < MaxFreshnessHints+50; i++ {
@@ -84,10 +84,10 @@ func TestBuildFreshnessHintsCapKeepsTheFreshest(t *testing.T) {
 		if i >= 50 {
 			age = int64(i - 49)
 		}
-		peers = append(peers, &Peer{
-			PublicKey: hex.EncodeToString(raw),
-			State:     PeerFriend,
-			LastSeen:  now - age,
+		peers = append(peers, &ExternalNode{
+			PublicKey:  hex.EncodeToString(raw),
+			TrustState: PeerFriend,
+			LastSeen:   now - age,
 		})
 	}
 	hints := buildFreshnessHints(peers, "", now)
@@ -109,10 +109,10 @@ func TestFreshnessHintsServedToFriendsOnly(t *testing.T) {
 	ms := newMemStore()
 	ctx := context.Background()
 	friend, stranger := nodeKeyN(0x11), nodeKeyN(0x22)
-	if _, err := ms.InsertFederationPeer(ctx, &Peer{PublicKey: friend, State: PeerFriend, LastSeen: time.Now().Unix()}); err != nil {
+	if _, err := ms.InsertFederationPeer(ctx, &ExternalNode{PublicKey: friend, TrustState: PeerFriend, LastSeen: time.Now().Unix()}); err != nil {
 		t.Fatalf("insert friend: %v", err)
 	}
-	if _, err := ms.InsertFederationPeer(ctx, &Peer{PublicKey: nodeKeyN(0x33), State: PeerFriend, LastSeen: time.Now().Unix() - 10}); err != nil {
+	if _, err := ms.InsertFederationPeer(ctx, &ExternalNode{PublicKey: nodeKeyN(0x33), TrustState: PeerFriend, LastSeen: time.Now().Unix() - 10}); err != nil {
 		t.Fatalf("insert second friend: %v", err)
 	}
 	n := &Node{store: ms, logger: log.New(io.Discard, "", 0)}
@@ -175,7 +175,7 @@ func TestApplyFreshnessHintsRefusesWhatItCannotVerify(t *testing.T) {
 	}
 
 	now := time.Now().Unix()
-	n.applyFreshnessHints(ctx, &Peer{PublicKey: nodeKeyN(0x01)}, map[string]int64{
+	n.applyFreshnessHints(ctx, &ExternalNode{PublicKey: nodeKeyN(0x01)}, map[string]int64{
 		member:         20,
 		outsider:       1, // in the cache, outside the community: a friend cannot widen the perimeter
 		uncached:       1, // in the community, no source row: hearsay must not mint one

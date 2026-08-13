@@ -210,12 +210,12 @@ type MadnetworkStore interface {
 // nofederation build never wires one.
 type FederationNode interface {
 	Info() federation.NodeInfo
-	Peers(ctx context.Context) ([]*federation.Peer, error)
-	ImportCard(ctx context.Context, c federation.Card) (*federation.Peer, error)
+	Peers(ctx context.Context) ([]*federation.ExternalNode, error)
+	ImportCard(ctx context.Context, c federation.Card) (*federation.ExternalNode, error)
 	// ImportKey is the same act for a node an admin has only a key for — the
 	// form the network map hands out, so a node discovered there can be friended
 	// without its admin exporting a card first.
-	ImportKey(ctx context.Context, publicKey, name string) (*federation.Peer, error)
+	ImportKey(ctx context.Context, publicKey, name string) (*federation.ExternalNode, error)
 	AcceptPeer(ctx context.Context, id int64) error
 	// BlockPeer cuts the peer off and publishes the block as a distrust mark
 	// carrying reason — there are no private blocks (federation F6).

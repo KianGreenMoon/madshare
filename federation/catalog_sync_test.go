@@ -109,18 +109,18 @@ func TestCatalogSync(t *testing.T) {
 			return false
 		}
 		incomingID = p.ID
-		return p.State == PeerPendingIncoming
+		return p.TrustState == PeerPendingIncoming
 	})
 	if err := a.AcceptPeer(ctx, incomingID); err != nil {
 		t.Fatalf("accept on A: %v", err)
 	}
 
 	// The first sync follows the friendship on its own (nudged sweeps).
-	var peerAonB *Peer
+	var peerAonB *ExternalNode
 	waitFor(t, "B to pull A's catalog", func() bool {
 		b.Nudge()
 		p, err := storeB.GetFederationPeerByKey(ctx, a.PublicKeyHex())
-		if err != nil || p.State != PeerFriend {
+		if err != nil || p.TrustState != PeerFriend {
 			return false
 		}
 		if serial, _ := storeB.syncState(a.PublicKeyHex()); serial == "" {
