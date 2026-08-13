@@ -222,9 +222,11 @@ func foldMatchRenditions(matches []database.NetworkMatch, opts mergeOpts, curren
 // answered a ping in the last three minutes.
 func holderOf(m database.NetworkMatch, opts mergeOpts) madnetworkHolder {
 	return madnetworkHolder{
-		Name:      m.Source.Display(),
-		LastSeen:  m.Source.LastSeen,
-		Key:       m.Source.PublicKey,
-		Reachable: opts.reach.ok(m.Source.LastSeen, m.Pinged),
+		Name:     m.Source.Display(),
+		LastSeen: m.Source.LastSeen,
+		Key:      m.Source.PublicKey,
+		Reachable: opts.reach.ok(database.SourceReach{
+			LastSeen: m.Source.LastSeen, UnreachableAt: m.Down, Pinged: m.Pinged,
+		}),
 	}
 }

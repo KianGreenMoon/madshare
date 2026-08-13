@@ -62,7 +62,7 @@ func (h *handler) upgradesList(w http.ResponseWriter, r *http.Request) {
 			"disposition": u.Disposition, "first_seen": u.FirstSeen, "last_seen": u.LastSeen,
 			"ours": renditionJSON(u.Ours), "offered": renditionJSON(u.Offered),
 			"source": u.Source, "source_key": u.SourceKey,
-			"source_reachable": reach.ok(u.SourceSeen, u.SourcePinged),
+			"source_reachable": reach.ok(u.Reach()),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "total": total, "items": out})

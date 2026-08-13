@@ -439,6 +439,11 @@ func (n *Node) probeJSON(ctx context.Context, key, path string, limit int64, out
 		return false
 	}
 	resp, err := n.blobClient.Do(req)
+	// A probe is a first-hand contact like any other: an answer is liveness (for
+	// the down-mark's self-guard), a failure to connect is the mark itself. There
+	// is no BlobProvider here to advance last_seen through — the durable touch is
+	// the byte fetch's, which is the request that follows a good probe anyway.
+	n.observeControl(key, err)
 	if err != nil {
 		return false
 	}
@@ -1155,7 +1160,14 @@ func (n *Node) rangeBlob(ctx context.Context, p *BlobProvider, hash string, star
 		return nil, err
 	}
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end-1))
-	return n.blobClient.Do(req)
+	resp, err := n.blobClient.Do(req)
+	// The one place every byte request passes through, so it is where liveness is
+	// read off the wire: ANY status is proof of life (a 429 under the member quota
+	// is an answer, and a member protecting itself must not be marked dead by the
+	// nodes it throttles), a connect-class failure is the down-mark, and a stall
+	// or a bad chunk says nothing here — that is the scheduler's judgment.
+	n.observeReply(p, err)
+	return resp, err
 }
 
 // fetchRange fetches [start, start+length) from one holder over the mesh (a

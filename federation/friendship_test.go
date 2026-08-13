@@ -39,6 +39,7 @@ type memStore struct {
 	nextSource  int64
 	caches      map[int64][]CatalogEntry
 	holdings    map[int64][]string
+	unreachable map[string]int64 // the down-mark, by public key (migration 048)
 	seedEnable  bool
 	seedCache   bool
 	serveGuests bool
@@ -215,6 +216,30 @@ func (m *memStore) TouchCatalogSourceSeen(_ context.Context, id int64, at int64,
 		s.HeardName = heardName
 	}
 	return nil
+}
+
+// MarkNodeUnreachable mirrors the real store: keyed by public key, forward-only
+// (migration 048). A test reads it back through markOf.
+func (m *memStore) MarkNodeUnreachable(_ context.Context, publicKey string, at int64) error {
+	if publicKey == "" {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.unreachable == nil {
+		m.unreachable = map[string]int64{}
+	}
+	if at > m.unreachable[publicKey] {
+		m.unreachable[publicKey] = at
+	}
+	return nil
+}
+
+// markOf returns the down-mark recorded for a key, 0 for none.
+func (m *memStore) markOf(publicKey string) int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.unreachable[publicKey]
 }
 
 func (m *memStore) DropCatalogSources(_ context.Context, ids []int64) error {

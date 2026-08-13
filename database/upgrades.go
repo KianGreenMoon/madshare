@@ -449,6 +449,16 @@ type UpgradeRow struct {
 	SourceKey    string `json:"source_key,omitempty"`
 	SourceSeen   int64  `json:"source_last_seen,omitempty"`
 	SourcePinged bool   `json:"source_pinged,omitempty"`
+	// SourceDown is the down-mark (migration 048). Not serialized: like the ping
+	// class it is an input to the caller's reachability verdict, not a second
+	// number for the page to interpret.
+	SourceDown int64 `json:"-"`
+}
+
+// Reach bundles this finding's source freshness for the availability predicate,
+// so the upgrades page greys a node by the same rule the browse hides it by.
+func (u *UpgradeRow) Reach() SourceReach {
+	return SourceReach{LastSeen: u.SourceSeen, UnreachableAt: u.SourceDown, Pinged: u.SourcePinged}
 }
 
 // ListUpgrades returns findings newest-first. disposition "" means open ones
@@ -482,7 +492,8 @@ func (db *DB) ListUpgrades(ctx context.Context, disposition string, pingedSince 
 		       -- INNER JOIN the source, this one LEFTs it (a finding outlives the
 		       -- source row that reported it), and ` + "`NULL >= n`" + ` makes the whole
 		       -- OR null rather than false.
-		       COALESCE(` + sourcePinged(MadnetworkView{PingedSince: pingedSince}) + `, 0)
+		       COALESCE(` + sourcePinged(MadnetworkView{PingedSince: pingedSince}) + `, 0),
+		       COALESCE(` + srcUnreachable + `, 0)
 		  FROM library_upgrades u
 		  LEFT JOIN tagsets pt ON pt.id = (
 		       SELECT t2.id FROM tagsets t2 WHERE t2.recording_id = u.recording_id
@@ -506,7 +517,7 @@ func (db *DB) ListUpgrades(ctx context.Context, disposition string, pingedSince 
 			&u.Offered.Codec, &u.Offered.Bitrate, &u.Offered.SampleRate, &u.Offered.BitDepth, &u.Offered.ByteSize,
 			&u.Ours.FileID, &u.Ours.Hash, &u.Ours.Codec, &u.Ours.Bitrate, &u.Ours.SampleRate,
 			&u.Ours.BitDepth, &u.Ours.ByteSize,
-			&u.Source, &u.SourceKey, &u.SourceSeen, &u.SourcePinged); err != nil {
+			&u.Source, &u.SourceKey, &u.SourceSeen, &u.SourcePinged, &u.SourceDown); err != nil {
 			return nil, 0, fmt.Errorf("list upgrades: scan: %w", err)
 		}
 		u.Offered.Hash = u.RemoteHash

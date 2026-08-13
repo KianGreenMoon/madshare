@@ -625,6 +625,12 @@ type PeerStore interface {
 	// TouchCatalogSourceSeen records a successful contact, and what the node
 	// called itself if it said. last_seen is monotonic.
 	TouchCatalogSourceSeen(ctx context.Context, id int64, at int64, heardName string) error
+	// MarkNodeUnreachable records a first-hand connect-class failure against a
+	// node — the down-mark (§Availability, "Reactive down-mark + the ping
+	// floor"). Keyed by public key, because most write sites are on the transfer
+	// path where a holder has no source row of ours; forward-only, like every
+	// other observation. A node we hold no row for updates nothing.
+	MarkNodeUnreachable(ctx context.Context, publicKey string, at int64) error
 	// ApplyFreshnessHints records what a friend just vouched for (F7 item 10):
 	// seen maps a node key to the unix time that friend last touched it
 	// first-hand. Only sources we already hold are updated — a hint about a node

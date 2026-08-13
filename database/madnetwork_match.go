@@ -48,6 +48,10 @@ type NetworkMatch struct {
 	// window a node is judged by follows whoever observes it, and a caller that
 	// greys a stale holder without it would grey every member.
 	Pinged bool
+	// Down is the source's down-mark (migration 048), travelling for the same
+	// reason Pinged does: the caller's greying must read the same three facts
+	// the browse filtered by, or one surface contradicts the other.
+	Down int64
 	// SharedHash is the blob both sides hold, for a hash match. It is what makes
 	// the match self-evident in the UI ("you both have this exact file").
 	SharedHash string
@@ -98,7 +102,7 @@ func (db *DB) MatchRecording(ctx context.Context, recordingID, pingedSince int64
 func (db *DB) matchByHash(ctx context.Context, recordingID int64, pinged string, seen map[srcEntry]bool) ([]NetworkMatch, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT s.id, `+peerIDExpr+`, s.public_key, s.label,
-		       `+sourceHeardExpr+`, `+srcLastSeen+`, `+pinged+`, f.hash,
+		       `+sourceHeardExpr+`, `+srcLastSeen+`, `+pinged+`, `+srcUnreachable+`, f.hash,
 		       c.entry_key, c.recording_key, c.title, c.artist, c.album_artist,
 		       c.album, COALESCE(c.genre, ''), c.year, c.track_number, c.disc_number,
 		       COALESCE(c.duration, 0), COALESCE(c.license, ''), c.guest_playable, c.renditions
@@ -139,7 +143,7 @@ func (db *DB) matchByFingerprint(ctx context.Context, raw []uint32, dur float64,
 	// missed upgrade costs more than a fingerprint compare, which is 2048 bits.
 	rows, err := db.QueryContext(ctx, `
 		SELECT s.id, `+peerIDExpr+`, s.public_key, s.label,
-		       `+sourceHeardExpr+`, `+srcLastSeen+`, `+pinged+`, '',
+		       `+sourceHeardExpr+`, `+srcLastSeen+`, `+pinged+`, `+srcUnreachable+`, '',
 		       c.entry_key, c.recording_key, c.title, c.artist, c.album_artist,
 		       c.album, COALESCE(c.genre, ''), c.year, c.track_number, c.disc_number,
 		       COALESCE(c.duration, 0), COALESCE(c.license, ''), c.guest_playable, c.renditions
@@ -207,7 +211,7 @@ func scanMatchRow(rows *sql.Rows, m *NetworkMatch, hash *string) error {
 	var year, track, disc sql.NullInt64
 	var renditions string
 	if err := rows.Scan(&m.Source.SourceID, &m.Source.PeerID, &m.Source.PublicKey,
-		&m.Source.Name, &m.Source.HeardName, &m.Source.LastSeen, &m.Pinged, hash,
+		&m.Source.Name, &m.Source.HeardName, &m.Source.LastSeen, &m.Pinged, &m.Down, hash,
 		&m.Entry.Key, &m.Entry.RecordingKey, &m.Entry.Title, &m.Entry.Artist,
 		&m.Entry.AlbumArtist, &m.Entry.Album, &m.Entry.Genre, &year, &track, &disc,
 		&m.Entry.Duration, &m.Entry.License, &m.Entry.GuestPlayable, &renditions); err != nil {

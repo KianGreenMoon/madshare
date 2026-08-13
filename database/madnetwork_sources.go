@@ -137,6 +137,33 @@ func (db *DB) TouchCatalogSourceSeen(ctx context.Context, id int64, at int64, he
 	return nil
 }
 
+// MarkNodeUnreachable records a first-hand connect-class failure against a node
+// (migration 048; docs/architecture/federation.md §Availability, "Reactive
+// down-mark + the ping floor"). Forward-only, like every observation on this
+// row: two transfers failing against the same holder in either order must land
+// on the later moment, not the one that happened to commit last.
+//
+// Keyed by public key rather than by row id because most of the callers are on
+// the transfer path, where a holder frequently has no source row of ours at all
+// — and the key is the identity that never recycles. A node we hold no row for
+// updates nothing, which is the correct no-op: the mark exists to hide cached
+// catalog entries, and there are none.
+//
+// Nothing clears it. The browse reads it against last_seen, so the next
+// successful contact retires the mark by moving the other clock past it.
+func (db *DB) MarkNodeUnreachable(ctx context.Context, publicKey string, at int64) error {
+	if publicKey == "" {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE federation_nodes
+		   SET unreachable_at = MAX(unreachable_at, ?)
+		 WHERE public_key = ?`, at, publicKey); err != nil {
+		return fmt.Errorf("mark node unreachable: %w", err)
+	}
+	return nil
+}
+
 // ApplyFreshnessHints records liveness a friend observed first-hand for nodes we
 // only ever pull from (F7 item 10, docs/architecture/federation.md §Availability,
 // "Two clocks, two windows"). seen maps a node key to the unix time that friend

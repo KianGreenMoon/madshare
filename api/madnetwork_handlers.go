@@ -64,11 +64,11 @@ func (h *handler) pullWindow() int64 {
 // apply a window without the class that selects it.
 type reachWindows struct{ tight, pull int64 }
 
-// ok reports whether a source last seen at lastSeen counts as reachable. pinged
-// is the row's class: true when something pings it every minute (our own friend,
-// or a friend relaying a first-hand hint about it).
-func (rw reachWindows) ok(lastSeen int64, pinged bool) bool {
-	return database.ReachableAt(lastSeen, pinged, rw.tight, rw.pull)
+// ok reports whether a source counts as reachable, from the three facts its row
+// carries: when it was last seen, when a first-hand attempt last failed against
+// it, and which class of observer watches it.
+func (rw reachWindows) ok(r database.SourceReach) bool {
+	return database.ReachableAt(r, rw.tight, rw.pull)
 }
 
 // madnetworkViewFor is madnetworkView plus the request's optional single-node
@@ -481,8 +481,12 @@ func mergeVersions(group []*database.MadnetworkTrackRow, opts mergeOpts) []madne
 				} else {
 					v.Holders = append(v.Holders, madnetworkHolder{
 						Name: row.SourceName, LastSeen: row.SourceLastSeen,
-						Reachable: opts.reach.ok(row.SourceLastSeen, row.SourcePinged),
-						Key:       row.SourceKey,
+						Reachable: opts.reach.ok(database.SourceReach{
+							LastSeen:      row.SourceLastSeen,
+							UnreachableAt: row.SourceUnreachableAt,
+							Pinged:        row.SourcePinged,
+						}),
+						Key: row.SourceKey,
 					})
 					if row.SourceKey != "" {
 						voiceKeys = append(voiceKeys, row.SourceKey)

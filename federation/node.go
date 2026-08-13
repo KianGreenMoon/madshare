@@ -148,6 +148,18 @@ type Node struct {
 	touchMu   sync.Mutex
 	lastTouch map[int64]time.Time
 
+	// The reactive down-mark's two pieces of in-memory state (reachability.go,
+	// §Availability "Reactive down-mark + the ping floor"). contactMu guards the
+	// relative self-guard: WHO last answered us and WHEN, which is what tells
+	// "one node is silent while others answer" (evidence about it) from
+	// "everything is silent" (evidence about us). floorPinged is the ping
+	// floor's own attempt clock, so a node that neither answers nor earns a mark
+	// is still retried once per cycle rather than once a minute.
+	contactMu    sync.Mutex
+	lastReplyAt  time.Time
+	lastReplyKey string
+	floorPinged  map[string]time.Time
+
 	// Friend-list gossip (F6, gossip_node.go). signKey is this node's ed25519
 	// private key — the same identity the mesh address derives from — used to
 	// sign the records it publishes, since a relayed record cannot lean on the
@@ -289,9 +301,10 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 		rateResolver:   o.rateResolver,
 		quotas: newQuotas(fc.MemberRateKiB, fc.PerMemberRateKiB,
 			fc.MemberMaxTransfers, fc.PerMemberMaxTransfers),
-		manifests: map[string]*manifestEntry{},
-		lastTouch: map[int64]time.Time{},
-		traffic:   newTrafficTable(),
+		manifests:   map[string]*manifestEntry{},
+		lastTouch:   map[int64]time.Time{},
+		floorPinged: map[string]time.Time{},
+		traffic:     newTrafficTable(),
 	}
 	// Self-health signal: the netstack inbound reader's liveness (the unambiguous
 	// signal — a self-ping can't test it, HandleLocal loops local traffic inside
@@ -303,7 +316,7 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 	n.upRate.set(int64(fc.SeedRateKiB) * 1024)
 	n.downRate.set(int64(fc.FetchRateKiB) * 1024)
 	n.client = &http.Client{
-		Transport: n.present(&http.Transport{DialContext: n.DialContext}),
+		Transport: n.present(&http.Transport{DialContext: n.dialMesh}),
 		Timeout:   n.timeouts.Control,
 	}
 	// Blob/chunk fetches can be large and slow over the mesh; each is bounded by
@@ -388,11 +401,11 @@ func (n *Node) DialContext(ctx context.Context, network, address string) (net.Co
 // reads ctx for the handshake and not for the conn's lifetime.
 func (n *Node) dialHolder(ctx context.Context, network, address string) (net.Conn, error) {
 	if n.timeouts.Connect <= 0 {
-		return n.DialContext(ctx, network, address)
+		return n.dialMesh(ctx, network, address)
 	}
 	dctx, cancel := context.WithTimeout(ctx, n.timeouts.Connect)
 	defer cancel()
-	return n.DialContext(dctx, network, address)
+	return n.dialMesh(dctx, network, address)
 }
 
 // InboundHealthy reports whether this node's inbound mesh path appears to be

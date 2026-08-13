@@ -98,6 +98,7 @@ func (n *Node) syncSources(ctx context.Context, peers []*Peer) map[string]struct
 
 	// Phase 1 — friends and explicit requests, neither of them budgeted.
 	known := map[string]struct{}{}
+	contacted := map[int64]struct{}{}
 	for _, s := range sources {
 		if ctx.Err() != nil {
 			return pulledFriends
@@ -114,6 +115,7 @@ func (n *Node) syncSources(ctx context.Context, peers []*Peer) map[string]struct
 			}
 			pulledFriends[s.PublicKey] = struct{}{}
 		}
+		contacted[s.ID] = struct{}{}
 		n.syncSource(ctx, s, p)
 	}
 
@@ -140,7 +142,7 @@ func (n *Node) syncSources(ctx context.Context, peers []*Peer) map[string]struct
 	}
 	for _, s := range sources {
 		if ctx.Err() != nil || budget <= 0 {
-			return pulledFriends
+			break
 		}
 		if _, isFriend := friends[s.PublicKey]; isFriend {
 			continue
@@ -152,8 +154,14 @@ func (n *Node) syncSources(ctx context.Context, peers []*Peer) map[string]struct
 			continue
 		}
 		budget--
+		contacted[s.ID] = struct{}{}
 		n.syncSource(ctx, s, nil)
 	}
+
+	// The observation floor: whatever the budget could not reach this round is
+	// still owed one cheap ping per cycle, or the pull window's 3× anti-flap
+	// margin quietly stops holding at a full frontier.
+	n.pingFloor(ctx, sources, friends, members, contacted)
 	return pulledFriends
 }
 
@@ -196,7 +204,7 @@ func (n *Node) syncSource(ctx context.Context, s *CatalogSource, peer *Peer) {
 		n.logger.Printf("federation: mark source %s attempted: %v", s.Display(), err)
 	}
 	if peer == nil {
-		n.pingSource(ctx, s)
+		n.pingSource(ctx, s, 0)
 	}
 	n.syncCatalog(ctx, s)
 	n.syncHoldings(ctx, s)
@@ -206,10 +214,20 @@ func (n *Node) syncSource(ctx context.Context, s *CatalogSource, peer *Peer) {
 // records liveness and learns what the node calls itself, which is otherwise
 // blank on the /madnetwork strip because nothing else on the pull path carries a
 // name. Cheap enough to do per pull round — one small request per budgeted node.
-func (n *Node) pingSource(ctx context.Context, s *CatalogSource) {
+//
+// bound caps the whole request when positive; zero leaves it to the control
+// client's own timeout. The floor ping below passes one, because it makes many
+// of these in a round and a node that cannot be reached must not cost it the
+// control budget each time.
+func (n *Node) pingSource(ctx context.Context, s *CatalogSource, bound time.Duration) {
 	addr, err := AddrForKeyHex(s.PublicKey)
 	if err != nil {
 		return
+	}
+	if bound > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, bound)
+		defer cancel()
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		fmt.Sprintf("http://[%s]:%d/madnetwork/v0/ping", addr, MeshPort), nil)
@@ -217,6 +235,7 @@ func (n *Node) pingSource(ctx context.Context, s *CatalogSource) {
 		return
 	}
 	resp, err := n.client.Do(req)
+	n.observeControl(s.PublicKey, err)
 	if err != nil {
 		return
 	}
@@ -231,6 +250,121 @@ func (n *Node) pingSource(ctx context.Context, s *CatalogSource) {
 	_ = json.NewDecoder(io.LimitReader(resp.Body, 8<<10)).Decode(&reply)
 	if err := n.store.TouchCatalogSourceSeen(ctx, s.ID, time.Now().Unix(), reply.Name); err != nil {
 		n.logger.Printf("federation: touch source %s: %v", s.Display(), err)
+	}
+}
+
+// ── The ping floor (§Availability, "Reactive down-mark + the ping floor") ────
+//
+// The pull window is a constant; the rotation cadence that feeds it is not.
+// discovery_budget = 4 per minute is ~240 member pulls an hour, while
+// discovery_cap = 200 sources due every cycle demand ~800 — so at a full
+// frontier the real pull interval stretches past the 45-minute window and
+// unhinted members flap, which is the measured 2026-08-01 bug returning at
+// scale in a slower rhythm. Hints mask it in small communities, which is why it
+// has not been seen live.
+//
+// The floor fixes the *cadence*, not the window: every cached member source is
+// pinged at least once per catalog cycle, outside the pull budget, which exists
+// to bound full-snapshot downloads and not liveness bytes. That restores the 3×
+// anti-flap margin by construction at any frontier fill.
+//
+// It is emphatically not the 5-second prober that was reverted (§Availability's
+// preamble): cycle cadence, the same margin, and it changes nothing about the
+// request-time predicate. Listener nodes are untouched — they cache no sources
+// and run no sweep.
+
+// pingFloor pings the due members among sources, up to one round's share.
+// contacted names the sources this round already reached through the pull path;
+// pinging those again would be the budget spent on the nodes that needed it
+// least.
+func (n *Node) pingFloor(ctx context.Context, sources []*CatalogSource, friends map[string]*Peer, members *memberSet, contacted map[int64]struct{}) {
+	budget := n.floorBudget(len(sources))
+	if budget <= 0 {
+		return
+	}
+	live := make(map[string]struct{}, len(sources))
+	for _, s := range sources {
+		live[s.PublicKey] = struct{}{}
+	}
+	n.forgetFloorPings(live)
+
+	cycle := n.intervals.CatalogSync
+	for _, s := range sources {
+		if ctx.Err() != nil || budget <= 0 {
+			return
+		}
+		if _, done := contacted[s.ID]; done {
+			continue
+		}
+		if _, isFriend := friends[s.PublicKey]; isFriend {
+			continue // pinged every round by the sweep already
+		}
+		if !members.member(s.PublicKey) {
+			continue // a blocked node, or one retention is about to collect
+		}
+		if time.Since(time.Unix(s.LastSeen, 0)) < cycle {
+			continue // observed recently enough; the floor is a floor, not a poll
+		}
+		if !n.claimFloorPing(s.PublicKey, cycle) {
+			continue
+		}
+		budget--
+		n.pingSource(ctx, s, n.timeouts.Connect)
+	}
+}
+
+// floorBudget is how many floor pings one sweep round may make: the source list
+// spread over the rounds in a catalog cycle. Spreading is what keeps the cost a
+// handful of tiny requests per minute instead of a burst per cycle, and it is
+// the same rotation order the pulls consume, so the two agree on whose turn it
+// is.
+func (n *Node) floorBudget(sources int) int {
+	if sources <= 0 {
+		return 0
+	}
+	rounds := 1
+	if n.intervals.Refresh > 0 {
+		rounds = int(n.intervals.CatalogSync / n.intervals.Refresh)
+	}
+	if rounds < 1 {
+		rounds = 1
+	}
+	return (sources + rounds - 1) / rounds
+}
+
+// claimFloorPing reports whether this node's turn has come round again, and
+// takes the turn if it has.
+//
+// The clock is in memory rather than in the row on purpose. attempted_at is the
+// PULL rotation's, and stamping it here would cost a node its place in that
+// queue; last_seen only moves on success, so a node that neither answers nor
+// earns a mark (the guard refused it, or it accepted the connection and then
+// said nothing) would otherwise be retried every single round while the
+// genuinely due ones behind it starved.
+func (n *Node) claimFloorPing(key string, cycle time.Duration) bool {
+	n.contactMu.Lock()
+	defer n.contactMu.Unlock()
+	if last, ok := n.floorPinged[key]; ok && time.Since(last) < cycle {
+		return false
+	}
+	if n.floorPinged == nil {
+		// Start builds the map; a hand-assembled Node (the narrow unit tests) may
+		// not have, and a missing clock must cost a repeat ping, never a panic.
+		n.floorPinged = map[string]time.Time{}
+	}
+	n.floorPinged[key] = time.Now()
+	return true
+}
+
+// forgetFloorPings drops the clocks of sources we no longer hold, so the map
+// stays bounded by the frontier cap rather than by everything ever cached.
+func (n *Node) forgetFloorPings(live map[string]struct{}) {
+	n.contactMu.Lock()
+	defer n.contactMu.Unlock()
+	for key := range n.floorPinged {
+		if _, ok := live[key]; !ok {
+			delete(n.floorPinged, key)
+		}
 	}
 }
 

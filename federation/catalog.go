@@ -124,6 +124,11 @@ func (n *Node) syncCatalog(ctx context.Context, p *CatalogSource) {
 		return
 	}
 	resp, err := n.client.Do(req)
+	// The pull is one of the two first-hand contacts a member ever gets from us
+	// (the other is the floor ping), so it is a down-mark write site: without it,
+	// a member that died keeps its exclusively-held tracks on the page until the
+	// whole pull window runs out.
+	n.observeControl(p.PublicKey, err)
 	if err != nil {
 		return // unreachable — the refresh loop retries
 	}

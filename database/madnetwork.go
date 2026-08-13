@@ -452,6 +452,12 @@ const notBlocked = `COALESCE(s.trust_state, '') <> 'blocked'`
 // column.
 const srcLastSeen = `s.last_seen`
 
+// srcUnreachable is the down-mark: when we last tried first-hand and could not
+// connect (migration 048). Meaningful only against srcLastSeen — it says a node
+// is unreachable when it is the NEWER of the two, and any later success retires
+// it by moving the other clock past it.
+const srcUnreachable = `s.unreachable_at`
+
 // sourceHeardExpr is what the node calls itself. ONE landing spot since 046 —
 // the friendship ping and the discovery ping write the same column, so the
 // bug class this expression used to paper over (friends showing as bare key
@@ -770,6 +776,17 @@ const NoSourceID int64 = -1
 // Reading the class off a hint that arrived 40 minutes ago would get the second
 // case backwards — hiding a node we can reach, because somebody else stopped
 // talking about it.
+// The down-mark rides on top of that (migration 048, §Availability, "Reactive
+// down-mark + the ping floor"): a node also reads unavailable when our last
+// first-hand attempt FAILED more recently than our last success — but only once
+// last_seen has already left the tight window. Both halves matter. Without the
+// mark, a member that died two minutes ago keeps its tracks on the page until
+// its turn in the rotation comes round; without the tight-window guard, one
+// failed dial against a friend pinged 30 seconds ago flips it off the page,
+// which is the 1× margin the reverted presence feature died of. So the mark may
+// shorten the PULL window and never the ping window — in single-window mode
+// (below) it is inert by construction, since passing the one cutoff already
+// means being inside it.
 func reachClause(view MadnetworkView) string {
 	if view.Cutoff <= 0 {
 		return ""
@@ -779,7 +796,9 @@ func reachClause(view MadnetworkView) string {
 		return fmt.Sprintf(" AND "+srcLastSeen+" >= %d", view.Cutoff)
 	}
 	return fmt.Sprintf(" AND "+srcLastSeen+" >= (CASE WHEN "+sourcePingedExpr+
-		" THEN %d ELSE %d END)", view.PingedSince, view.Cutoff, pull)
+		" THEN %d ELSE %d END)"+
+		" AND NOT ("+srcUnreachable+" > "+srcLastSeen+" AND "+srcLastSeen+" < %d)",
+		view.PingedSince, view.Cutoff, pull, view.Cutoff)
 }
 
 // sourcePingedExpr is true for a source something watches on the one-minute ping
@@ -802,8 +821,24 @@ func sourcePinged(view MadnetworkView) string {
 // reachable applies the view's own windows to a row judged after the query — the
 // summary strip, which lists every source and greys the stale ones rather than
 // filtering them out.
-func (v MadnetworkView) reachable(lastSeen int64, pinged bool) bool {
-	return ReachableAt(lastSeen, pinged, v.Cutoff, v.PullCutoff)
+func (v MadnetworkView) reachable(r SourceReach) bool {
+	return ReachableAt(r, v.Cutoff, v.PullCutoff)
+}
+
+// SourceReach is everything the availability predicate reads off one source row:
+// when it was last seen alive, when a first-hand attempt last failed against it
+// (the down-mark, migration 048), and which class of observer watches it.
+//
+// One value rather than three arguments because the three are a single fact
+// judged together, and two of them are int64 timestamps a positional call could
+// silently swap — the same reason mergeOpts is a struct.
+type SourceReach struct {
+	LastSeen      int64
+	UnreachableAt int64
+	// Pinged is the row's class: true when something pings it every minute (our
+	// own friend, or a friend relaying a first-hand hint about it), false for a
+	// node whose only clock is our catalog rotation.
+	Pinged bool
 }
 
 // ReachableAt is the Go twin of reachClause, for the callers that judge a row
@@ -811,14 +846,22 @@ func (v MadnetworkView) reachable(lastSeen int64, pinged bool) bool {
 // cutoffs rather than the view's, deliberately: when the browse fails open and
 // shows everything, a stale holder must still read as stale instead of every
 // holder suddenly looking reachable.
-func ReachableAt(lastSeen int64, pinged bool, cutoff, pullCutoff int64) bool {
+//
+// It must agree with reachClause row for row — the summary strip and the holder
+// greying would otherwise contradict the browse they annotate — so the down-mark
+// arm carries the same tight-window guard and is likewise inert whenever the
+// query would run in single-window mode.
+func ReachableAt(r SourceReach, cutoff, pullCutoff int64) bool {
 	if cutoff <= 0 {
 		return true
 	}
-	if !pinged && pullCutoff > 0 && pullCutoff < cutoff {
-		return lastSeen >= pullCutoff
+	if !r.Pinged && pullCutoff > 0 && pullCutoff < cutoff {
+		if r.UnreachableAt > r.LastSeen && r.LastSeen < cutoff {
+			return false
+		}
+		return r.LastSeen >= pullCutoff
 	}
-	return lastSeen >= cutoff
+	return r.LastSeen >= cutoff
 }
 
 // sourceClause narrows a cached-row query to one source (the "By node" shelf).
@@ -856,6 +899,7 @@ func fedcatBase(view MadnetworkView) string {
 	             ` + sourceLabelExpr + ` AS source_label,
 	             ` + srcLastSeen + ` AS source_last_seen,
 	             ` + sourcePinged(view) + ` AS source_pinged,
+	             ` + srcUnreachable + ` AS source_unreachable,
 	             s.public_key AS source_key,
 	             c.*
 	      FROM federation_catalog c` + sourceJoin("c") + `
@@ -1156,6 +1200,10 @@ type MadnetworkTrackRow struct {
 	// item 10). The ⓘ panel needs it to grey a holder by the same window the
 	// browse filtered it by; without it a perfectly fresh member reads as stale.
 	SourcePinged bool
+	// SourceUnreachableAt is the down-mark (migration 048) — carried for the
+	// same reason: the panel greys a holder by the predicate the browse used,
+	// and the mark is part of it.
+	SourceUnreachableAt int64
 	// SourceKey is the node's public key — the map address of a holder, so the
 	// library's ⓘ list can link one (F7 item 7). Empty on Self rows.
 	SourceKey string
@@ -1181,7 +1229,7 @@ func (db *DB) remoteTrackRows(ctx context.Context, view MadnetworkView, match st
 		return nil, nil
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT source_id, source_label, source_last_seen, source_pinged, source_key, akey, alb,
+		SELECT source_id, source_label, source_last_seen, source_pinged, source_unreachable, source_key, akey, alb,
 		       entry_key, recording_key, title, artist, album_artist,
 		       COALESCE(genre, ''), year, track_number, disc_number,
 		       COALESCE(duration, 0), COALESCE(license, ''), guest_playable, renditions
@@ -1198,7 +1246,7 @@ func (db *DB) remoteTrackRows(ctx context.Context, view MadnetworkView, match st
 		var r MadnetworkTrackRow
 		var year, track, disc sql.NullInt64
 		var renditions string
-		if err := rows.Scan(&r.SourceID, &r.SourceName, &r.SourceLastSeen, &r.SourcePinged, &r.SourceKey, &r.GroupArtist, &r.GroupAlbum,
+		if err := rows.Scan(&r.SourceID, &r.SourceName, &r.SourceLastSeen, &r.SourcePinged, &r.SourceUnreachableAt, &r.SourceKey, &r.GroupArtist, &r.GroupAlbum,
 			&r.Entry.Key, &r.Entry.RecordingKey, &r.Entry.Title, &r.Entry.Artist,
 			&r.Entry.AlbumArtist, &r.Entry.Genre, &year, &track, &disc,
 			&r.Entry.Duration, &r.Entry.License, &r.Entry.GuestPlayable, &renditions); err != nil {
@@ -1433,6 +1481,14 @@ type MadnetworkNode struct {
 	// MadnetworkTrackRow.SourcePinged. Not serialized: the client is told the
 	// verdict (Reachable), not the arithmetic behind it.
 	Pinged bool `json:"-"`
+	// UnreachableAt is the down-mark (migration 048), on the same terms: an
+	// input to Reachable, not a second thing for a client to interpret.
+	UnreachableAt int64 `json:"-"`
+}
+
+// reach bundles the three availability inputs this row carries.
+func (n *MadnetworkNode) reach() SourceReach {
+	return SourceReach{LastSeen: n.LastSeen, UnreachableAt: n.UnreachableAt, Pinged: n.Pinged}
 }
 
 // MadnetworkSummary reports the merged catalog's shape: every source with sync
@@ -1452,7 +1508,7 @@ func (db *DB) MadnetworkSummary(ctx context.Context, view MadnetworkView) ([]*Ma
 	rows, err := db.QueryContext(ctx, `
 		SELECT s.id, s.public_key, `+sourceLabelExpr+`, `+srcLastSeen+`, s.catalog_synced_at,
 		       (SELECT COUNT(*) FROM federation_catalog c WHERE c.node_key = s.public_key),
-		       COALESCE(s.trust_state, '') = 'friend', `+sourcePinged(view)+`
+		       COALESCE(s.trust_state, '') = 'friend', `+sourcePinged(view)+`, `+srcUnreachable+`
 		FROM federation_nodes s
 		WHERE `+notBlocked+`
 		  AND (COALESCE(s.trust_state, '') = 'friend'
@@ -1465,10 +1521,10 @@ func (db *DB) MadnetworkSummary(ctx context.Context, view MadnetworkView) ([]*Ma
 	var nodes []*MadnetworkNode
 	for rows.Next() {
 		var n MadnetworkNode
-		if err := rows.Scan(&n.ID, &n.Key, &n.Name, &n.LastSeen, &n.SyncedAt, &n.Entries, &n.Friend, &n.Pinged); err != nil {
+		if err := rows.Scan(&n.ID, &n.Key, &n.Name, &n.LastSeen, &n.SyncedAt, &n.Entries, &n.Friend, &n.Pinged, &n.UnreachableAt); err != nil {
 			return nil, 0, fmt.Errorf("scan madnetwork source: %w", err)
 		}
-		n.Reachable = view.reachable(n.LastSeen, n.Pinged)
+		n.Reachable = view.reachable(n.reach())
 		nodes = append(nodes, &n)
 	}
 	if err := rows.Err(); err != nil {
@@ -1514,17 +1570,17 @@ func (db *DB) MadnetworkSourceByKey(ctx context.Context, key string, view Madnet
 	err := db.QueryRowContext(ctx, `
 		SELECT s.id, s.public_key, `+sourceLabelExpr+`, `+srcLastSeen+`, s.catalog_synced_at,
 		       (SELECT COUNT(*) FROM federation_catalog c WHERE c.node_key = s.public_key),
-		       COALESCE(s.trust_state, '') = 'friend', `+sourcePinged(view)+`
+		       COALESCE(s.trust_state, '') = 'friend', `+sourcePinged(view)+`, `+srcUnreachable+`
 		FROM federation_nodes s
 		WHERE `+notBlocked+` AND s.public_key = ? AND sync_added_at > 0`, key).
-		Scan(&n.ID, &n.Key, &n.Name, &n.LastSeen, &n.SyncedAt, &n.Entries, &n.Friend, &n.Pinged)
+		Scan(&n.ID, &n.Key, &n.Name, &n.LastSeen, &n.SyncedAt, &n.Entries, &n.Friend, &n.Pinged, &n.UnreachableAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, fmt.Errorf("madnetwork source by key: %w", err)
 	}
-	n.Reachable = view.reachable(n.LastSeen, n.Pinged)
+	n.Reachable = view.reachable(n.reach())
 	return &n, true, nil
 }
 

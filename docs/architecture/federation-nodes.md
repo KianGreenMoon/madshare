@@ -44,6 +44,7 @@ CREATE TABLE federation_nodes (
     first_seen  INTEGER NOT NULL DEFAULT 0,
     last_seen   INTEGER NOT NULL DEFAULT 0,
     hinted_at   INTEGER NOT NULL DEFAULT 0,   -- gossiped-freshness receipt (window pick)
+    unreachable_at INTEGER NOT NULL DEFAULT 0, -- the down-mark (048): we tried first-hand and could not connect
 
     -- Trust group: non-NULL trust_state = an admin acted (the old peer row).
     trust_state  TEXT CHECK (trust_state IS NULL OR trust_state IN

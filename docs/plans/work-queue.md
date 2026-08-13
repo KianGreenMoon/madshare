@@ -11,39 +11,36 @@ explainer (`/home/kian/federation-explained.txt` §7) were dug and closed —
 #1 node-store fold (mig 046), #2 audience ladder (mig 047), #3 catalog
 diff-apply (`c884777`), #5 fetch paths (analysis), #6 knob resolution
 (`4e79b7d`); #4 stays parked as F10. The availability round-2 design
-(`aedc662`) came out of the follow-on consultation. This queue is what
-remains.
+(`aedc662`) came out of the follow-on consultation and **shipped 2026-08-13**
+(migration 048). This queue is what remains.
 
 ## The sequence
 
-### 1. Availability Phase 5 — reactive down-mark + ping floor  ← START HERE
+### 1. Availability Phase 5 — reactive down-mark + ping floor  ✅ DONE 2026-08-13
 
-The freshest design, fully decided, nothing blocking. Do it first while the
-decisions are hot.
+Shipped as migration **048** (`federation_nodes.unreachable_at`) plus
+`federation/reachability.go`. What was built and the two decisions the design
+left to the build (the floor's per-round budget and its own in-memory clock)
+are written up in `docs/plans/availability.md` §Phase 5 and
+`docs/architecture/federation.md` §Availability. The 429-proof-of-life fix rode
+along as designed.
 
-- **Design:** `docs/architecture/federation.md` §Availability, "Reactive
-  down-mark + the ping floor". **Build order:** `docs/plans/availability.md`
-  Phase 5 (six numbered steps, starting with migration **048** —
-  `federation_nodes.unreachable_at`).
-- Shape: one migration, one predicate change (SQL + its Go twin **together**),
-  `Node.observeUnreachable` with the relative guard, three hook sites, the
-  floor ping in the sweep, and the 429-proof-of-life verification riding
-  along.
-- Verification: migration 048 breaks the `database_test.go` version/table
-  assertions (expected, fix the assertions); PeerStore grows → `go vet -tags
-  tests ./tests/mesh/...`; federation suite run **alone** (flakes when
-  parallel to other suites); optional live two-node check that a killed
-  member's tracks vanish on the next browse after a failed fetch.
+**Not done, and deliberately:** no live two-node check that a killed member's
+tracks vanish on the next browse. The unit coverage is there (including a
+negative check of the SQL clause), but the walkthrough in
+`tests/mesh/README.md` §The availability walkthrough is the honest place to
+confirm it end to end — worth one meshlab run when the lab is next up.
 
-### 2. Node struct fold — the recorded follow-up of migration 046
+### 2. Node struct fold — the recorded follow-up of migration 046  ← START HERE
 
 - **Design:** `docs/architecture/federation-nodes.md` §"The Go surface":
   fold the `Peer` / `CatalogSource` (/ `HomeNode`) view-structs into one
   `Node` struct. Pure refactor, no migration, no behavior change.
-- Sequenced **after** Phase 5 on purpose: Phase 5 is small and lands on
-  today's shapes; the fold rewrites `PeerStore` signatures and breaks the api
-  `fakeRepo` + the mesh-lab stores (`emptyStore`/`memStore`), so it wants a
-  session of its own.
+- Was sequenced **after** Phase 5 on purpose, and that ordering paid: Phase 5
+  landed on today's shapes and added one `PeerStore` method
+  (`MarkNodeUnreachable`) the fold will absorb. The fold rewrites `PeerStore`
+  signatures and breaks the api `fakeRepo` + the mesh-lab stores
+  (`emptyStore`/`memStore`), so it wants a session of its own.
 
 ### 3. Member quotas: runtime + visibility — BLOCKED on an owner decision
 
@@ -82,15 +79,9 @@ decisions are hot.
 
 ## Known-stale — clean-up candidates, smallest first
 
-1. **gofmt drift, 5 files** (pre-existing since ~`ee1578e`, flagged
-   2026-08-13, still present): `api/handlers_test.go`,
-   `api/login_throttle.go`, `api/madnetwork_handlers_test.go`,
-   `api/playlists.go`, `api/storage/diskusage_unix.go`. One trivial
-   standalone `gofmt -w` commit — do it at the start of the next session so
-   later diffs stay clean.
-2. **Migration-number claims:** the availability design claims **048**
-   (federation.md + availability.md Phase 5 + the memory note). If anything
-   else lands a migration first, renumber the claims in the same commit.
+1. ~~**gofmt drift**~~ — cleared 2026-08-13 (`e44d11c`); it was six files, not
+   five (`tagsource/acoustid.go` had drifted since the note was written).
+2. ~~**Migration-number claims**~~ — 048 is claimed and taken.
 3. **The explainer's closing priority paragraph**
    (`/home/kian/federation-explained.txt`, "If you want my priority: …") is
    stale now that all six items carry verdicts — owner's file, outside the

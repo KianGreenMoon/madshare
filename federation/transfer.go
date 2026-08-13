@@ -746,6 +746,7 @@ func (n *Node) fetchFrom(t *transfer, p *BlobProvider) error {
 	// the token is presented by a RoundTripper and not by each request builder is
 	// exactly that the next builder forgets).
 	resp, err := n.blobClient.Do(req)
+	n.observeReply(p, err) // an answer is liveness; a failure to connect is the down-mark
 	if err != nil {
 		return err
 	}

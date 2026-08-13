@@ -202,6 +202,15 @@ community's library for most of every quarter hour. Nothing about this is visibl
 in the UI beyond the greying being *right*: the server sends a verdict, never the
 arithmetic behind it.
 
+Since 2026-08-13 a node can also grey **early**, without its window running out:
+if this server tried to reach it first-hand and could not connect, that failure
+is remembered (the down-mark, `federation.md` §Availability, "Reactive down-mark
++ the ping floor"). It only ever shortens the wider rotation window — a node
+seen within the last three minutes is never greyed by a single failed dial —
+and any later contact retires it. Still a verdict, still no arithmetic on the
+wire, and still nothing that mutates the view mid-scroll: it lands at the next
+refresh like every other freshness change.
+
 **Empty states.** With own tracks merged in, the list truly empties only when
 there is nothing to show at all. The "no friends yet" onboarding message stays
 for the no-peers case; federation disabled keeps today's behavior (no

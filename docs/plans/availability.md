@@ -271,64 +271,81 @@ clamped up to a 120s anti-flap floor with a warning; `config.Default/MinReachabl
   with an injected read error; `meshlab status` surfaces the flag if it ever
   trips.
 
-## Phase 5 — Reactive down-mark + ping floor (designed 2026-08-13, NOT built)
+## Phase 5 — Reactive down-mark + ping floor (BUILT 2026-08-13, migration 048)
 
 Design and rationale live in `federation.md` §Availability, "Reactive down-mark
 + the ping floor" — owner decisions 2026-08-13 (both halves adopted; relative
-guard). This is the build order:
+guard). What shipped, in the order it was built:
 
 1. **Migration 048**: `unreachable_at INTEGER NOT NULL DEFAULT 0` on
-   `federation_nodes` (observations group). Breaks the `database_test.go`
-   version/table assertions (known gotcha).
-2. **DB**: `MarkNodeUnreachable(ctx, key, at)` (forward-only, like every
-   observation); `reachClause` gains the mark clause — unavailable additionally
-   when `unreachable_at > last_seen AND last_seen < tightCutoff` (the mark may
-   shorten the pull window, never the ping window) — **landing together with
-   its Go twin** `database.ReachableAt` and api `reachWindows.ok`, or the
-   summary strip and holder greying disagree with the browse.
-3. **federation**: `Node.observeUnreachable(key)` — classification
-   (connect-class only: dial timeout / refused / no route) + the relative
-   guard. Guard state is in-memory: the node remembers its last successful
-   contact `(time, key)`; a failure is recorded only if that contact is within
-   the tight window and from a *different* key. Hook sites: `dialHolder`
-   error, `syncCatalog`'s `client.Do` error, the floor ping.
-4. **Proof-of-life fix riding along**: verify any received HTTP response —
-   429 included — advances `last_seen` on the fetch paths; fix where it does
-   not (a quota refusal is an answer, and without this a member protecting
-   itself with quotas is marked dead by the nodes it throttles).
-5. **Floor ping in the sweep**: each round, ping cached member sources whose
-   `last_seen` is older than one catalog cycle (rotation order, outside
-   `discovery_budget`); success = ordinary observation, failure =
-   `observeUnreachable`.
-6. **Tests**: knife-edge immunity (a mark against a `last_seen` inside the
-   tight window changes nothing); member hidden after one failed dial when the
-   guard passes; nothing marked when nobody else answered (our own outage);
-   floor ping advances `last_seen` / marks on failure; SQL-vs-Go twin
-   agreement; `go vet -tags tests ./tests/mesh/...` (PeerStore grows).
+   `federation_nodes` (observations group).
+2. **DB**: `MarkNodeUnreachable(ctx, key, at)` — forward-only like every
+   observation, keyed by public key because most write sites are on the
+   transfer path, where a holder often has no source row. `reachClause` gained
+   the mark conjunct (unavailable when `unreachable_at > last_seen AND
+   last_seen < tightCutoff`), landing with its Go twin `database.ReachableAt`
+   — which now takes a `SourceReach` value, since two of its three inputs are
+   int64 timestamps a positional call could swap. Every surface that judges a
+   source carries the column: browse + lanes (SQL), the node strip, the ⓘ
+   holder list, the F8 match arm, the upgrades page.
+3. **federation** (`federation/reachability.go`): `observeUnreachable` behind
+   the relative guard (in-memory `(time, key)` of the last node that answered;
+   window `3 × Intervals.Refresh`). The class comes from `dialMesh`, which tags
+   every mesh dial's error `errMeshDial` so `connectFailure` reads it off the
+   finished request rather than parsing OS/gVisor error text; a dial *we*
+   cancelled is excluded, a dial timeout is not. Two funnels, so no call site
+   carries the rule on its own: `observeReply` (holder paths — `rangeBlob`,
+   `fetchFrom`, the manifest/have probes) and `observeControl` (key paths —
+   `syncCatalog`, `pingPeer`, `pingSource`, the floor).
+4. **Proof-of-life fix, landed with it**: only a *verified chunk* advanced
+   `last_seen` before, so a 429 (or a 404, or a 416) read as silence. Any
+   answer now counts, at `rangeBlob` and `fetchFrom`.
+5. **Floor ping** (`pingFloor`, end of `syncSources`): member sources not
+   reached by this round's pulls and unseen for a cycle, outside
+   `discovery_budget`. Two things the design did not pin down and the build
+   had to: the round's share is `floorBudget` = sources ÷ rounds-per-cycle (14
+   of 200 at the defaults, so no burst), and the floor keeps its **own**
+   in-memory clock — `attempted_at` belongs to the pull rotation and
+   `last_seen` only moves on success, so without it a node that neither answers
+   nor earns a mark would be re-pinged every round while due ones starved. Each
+   ping is bounded by `Timeouts.Connect`, not the 15 s control timeout.
+6. **Tests**: `database/madnetwork_downmark_test.go` (knife-edge immunity, the
+   corridor case, friend inertness, mark retired by a later contact, fail-open
+   suppression, SQL-vs-Go agreement on the strip, plus the twin's table) and
+   `federation/reachability_test.go` (the relative guard in all four states,
+   the connect-class classifier, the floor over a whole cycle with one node up
+   and one gone, the budget arithmetic). The SQL half was negative-checked by
+   disabling the clause and watching the corridor assertion fail.
 
 ## Dependencies & sequencing
 
 ```
 Phase 0 (netstack) ─┐  (independent; the real SPOF fix)
-Phase 1 (liveness + watchdog) ─┬─> Phase 2 (predicate) ─> Phase 3 (UI) ─> Phase 4
+Phase 1 (liveness + watchdog) ─┬─> Phase 2 (predicate) ─> Phase 3 (UI) ─> Phase 4 ─> Phase 5
                                └─> Phase 2b (cache exception, optional, after 2)
 ```
 
 Phase 2 is shippable on Phase 1 alone (watchdog fail-open covers a dead reader);
 Phase 0 upgrades "restart to recover" into "auto-recover" and should not block the
-feature. Recommended first cut: **1 → 2 → 3**, with **0** in parallel and **2b**
-deferred until cache-only content is proven to matter.
+feature. Phase 5 sits last because it sharpens what Phases 2–4 already do rather
+than adding a surface. Everything but **2b** is built; 2b stays deferred until
+cache-only content is proven to matter (it needs a complete-cache-hash table and
+its own migration).
 
 ## Known gotchas
 
 - Signature change on `MadnetworkStore` breaks `fakeMadnetwork` (api tests).
 - Migration 030 breaks `database_test.go` version/table assertions.
 - `TouchFederationPeerSeen` is monotonic — reactive *failure* can't be modelled by
-  moving `last_seen` back; it needs a separate signal. **No longer parked**:
-  designed 2026-08-13 as the down-mark (`unreachable_at`, Phase 5 above and
-  `federation.md` §Availability).
+  moving `last_seen` back; it needs a separate signal. **Closed**: that signal is
+  the down-mark (`unreachable_at`, Phase 5 above and `federation.md`
+  §Availability), built 2026-08-13.
 - Don't reintroduce any fast dedicated prober — the 1-min sweep + passive touches
   are the liveness budget by design. The **one deliberate exception** (owner,
   2026-08-13) is Phase 5's cycle-cadence ping floor: once per 15-minute cycle
   per cached source, riding the existing sweep, keeping the 3× anti-flap
   margin — none of the three mistakes the 5 s prober died of.
+- A `Node` assembled by hand (the narrow unit tests) has no mesh and no
+  `floorPinged` map. Both paths tolerate it — `observeUnreachable` reads the
+  self-key off `n.mesh` only when it is there, `claimFloorPing` lazily builds
+  its map — because a missing clock must cost a repeat ping, never a panic.

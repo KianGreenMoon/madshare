@@ -398,6 +398,7 @@ func (n *Node) pingPeer(ctx context.Context, p *Peer) {
 		return
 	}
 	resp, err := n.client.Do(req)
+	n.observeControl(p.PublicKey, err)
 	if err != nil {
 		return
 	}

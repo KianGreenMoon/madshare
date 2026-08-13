@@ -450,13 +450,13 @@ There is no dedicated high-frequency prober. Three cheap sources feed a per-peer
 3. **Reactive reachability.** When a transfer/manifest fetch fails against a
    holder, that failure should count against its availability — the
    PeerTube/Mastodon pattern (learn a peer is down by *trying*, back off), not
-   by pinging ahead of need. Status, corrected 2026-08-13: only the
-   *swarm-internal* half exists (the scheduler de-ranks and fails over inside
-   one transfer); the availability-side recording was parked at build time
-   because `last_seen` is monotonic and cannot be moved back, so the knowledge
-   died with the transfer. It is now designed as the **down-mark**
-   (§"Reactive down-mark + the ping floor" below) and unbuilt until that
-   section ships.
+   by pinging ahead of need. Two halves, both built: the *swarm-internal* one
+   (the scheduler de-ranks and fails over inside one transfer) and, since
+   2026-08-13, the availability-side **down-mark** (§"Reactive down-mark + the
+   ping floor" below). The second was parked at first because `last_seen` is
+   monotonic and cannot be moved back, so the knowledge died with the transfer;
+   it needed a column of its own rather than a different way of writing that
+   one.
 
 **Freshness window, not a knife-edge.** A friend is *reachable* if `last_seen`
 is within a **minutes-wide** window (`[federation] reachable_window_sec`,
@@ -645,47 +645,60 @@ than what a false *edge* costs, and hints are accepted only from friends, only
 about members, and only for sources we already cache — a hint about a node we
 hold no catalog from changes no row and creates none.
 
-### Reactive down-mark + the ping floor (designed 2026-08-13, NOT built)
+### Reactive down-mark + the ping floor (built 2026-08-13, migration 048)
 
 Owner decisions 2026-08-13, from the "make availability flatter" consultation.
-Two gaps, one per half:
+Two gaps it closed, one per half:
 
-- **Negative evidence evaporates.** Positive contact feeds `last_seen`
-  (`observePeerAlive`), but when `dialHolder` times out on a dead member the
-  scheduler de-ranks it for *that transfer* and the knowledge dies — the browse
-  keeps showing the member's exclusively-held tracks for up to 45 minutes, and
-  every user who clicks Play re-pays the discovery. This is liveness source 3
+- **Negative evidence evaporated.** Positive contact feeds `last_seen`
+  (`observePeerAlive`), but when `dialHolder` timed out on a dead member the
+  scheduler de-ranked it for *that transfer* and the knowledge died — the browse
+  kept showing the member's exclusively-held tracks for up to 45 minutes, and
+  every user who clicked Play re-paid the discovery. This is liveness source 3
   above, promised at design time and parked in `docs/plans/availability.md`'s
   gotchas ("`last_seen` is monotonic — reactive failure needs a separate
   signal").
-- **The pull window is a constant but the rotation cadence is not.** The sweep
+- **The pull window is a constant but the rotation cadence was not.** The sweep
   runs every minute with `discovery_budget` = 4 → ~240 member pulls/hour of
   capacity, while 200 cached sources due every 15 minutes demand ~800/hour: at
-  the `discovery_cap` default the real pull interval stretches to **~50
+  the `discovery_cap` default the real pull interval stretched to **~50
   minutes, longer than the 45-minute window**, so unhinted (3+-hop) members
-  flap ~45-visible-of-50 — the measured 2026-08-01 bug returning at scale in a
-  slower rhythm. Hints mask it in small communities, which is why it has not
-  been seen live.
+  flapped ~45-visible-of-50 — the measured 2026-08-01 bug returning at scale in
+  a slower rhythm. Hints mask it in small communities, which is why it was never
+  seen live.
 
 **The down-mark.** One new column in `federation_nodes`' observations group
 (migration **048**): `unreachable_at INTEGER NOT NULL DEFAULT 0` — an
 *observation* ("I tried first-hand and could not connect"), never a judgment,
 which is why it sits beside `last_seen`/`hinted_at` and not in the trust group.
 
-- **Write sites, connect-class failures only:** a swarm holder dial
-  (`dialHolder`), a catalog pull, a floor ping (below). Connect-class = dial
+- **Write sites, connect-class failures only:** the transfer path
+  (`rangeBlob`, `fetchFrom`, the manifest/have probes), a catalog pull, the
+  pings — each through one of the two funnels in `federation/reachability.go`,
+  `observeReply` (a holder) or `observeControl` (a key). Connect-class = dial
   timeout / refused / no route. A read stall, a corrupt chunk, or a slow body
   is a *quality* fact the scheduler owns; and **any HTTP answer — including a
-  429 — is proof of life** and must advance `last_seen` (a quota refusal is an
-  answer; riding along with this build: verify the 429 path touches
-  `last_seen` today, and fix if it does not — otherwise a member protecting
-  itself with quotas gets marked dead by the nodes it throttles).
+  429 — is proof of life** and advances `last_seen` (fixed in this build: only
+  a *verified chunk* used to, so a member protecting itself with quotas looked
+  exactly like a dead one to the nodes it throttled).
+  **How the class is decided:** `dialMesh` wraps every mesh dial and tags its
+  errors `errMeshDial`, so `connectFailure` reads the class off the finished
+  request instead of guessing at OS and gVisor error text — "did we get as far
+  as an answer" is a question the dialer can answer exactly. A dial *we*
+  cancelled (a hedge losing its race, a transfer abandoned) is excluded on the
+  same grounds a hedge's loser is never blamed; a dial *timeout* is not.
 - **The self-protection guard is relative**, the `worseThanPeers` shape: a
   failure is recorded only when some *other* node answered us within the tight
   window at failure time. "One silent while others answer" is evidence about
   them; "everyone silent" is evidence about us and marks nobody.
   (`InboundHealthy()` alone was rejected as the gate — it guards the inbound
   half only, and an outbound-path fault would still paint the community dead.)
+  The state is one `(time, key)` pair in memory, and holding one rather than a
+  set errs toward marking less: a node that is both our newest success and our
+  newest failure — a flapping link — is never marked. The window is
+  `3 × Intervals.Refresh`, derived from the ping cadence rather than read from
+  `reachable_window_sec`, because it asks a question about the mesh and not
+  about what an operator wants displayed.
 - **Predicate: the newest first-hand fact wins, but the mark may only shorten
   the PULL window, never the ping window.** A node reads unavailable when
   `unreachable_at > last_seen` **and** `last_seen` is already outside the
@@ -704,9 +717,10 @@ which is why it sits beside `last_seen`/`hinted_at` and not in the trust group.
 - Subject to the same suppression as the rest of the filter: `hide_unavailable`
   off or fail-open (cutoff 0) means marks are not applied either.
 
-**The ping floor.** The existing 1-minute sweep additionally pings
-(`GET /madnetwork/v0/ping`, no `hints` param) every cached member source whose
-`last_seen` is older than one catalog cycle — **outside the pull budget**,
+**The ping floor** (`pingFloor`, at the end of `syncSources`). The existing
+1-minute sweep additionally pings (`GET /madnetwork/v0/ping`, no `hints` param)
+every cached member source whose `last_seen` is older than one catalog cycle and
+which this round's pulls did not already reach — **outside the pull budget**,
 which exists to bound full-snapshot downloads, not liveness bytes. Success is
 an ordinary observation (`last_seen` advances); failure is a down-mark write
 site, so a dead far member is hidden within one cycle instead of surviving to
@@ -728,13 +742,29 @@ its rotation turn hours later.
   hysteresis, and a live-mutating client — this is cycle-cadence, keeps the 3×
   margin, and changes nothing about the request-time predicate model. Listener
   nodes are untouched (they cache no sources and run no pull sweep).
+- **Spread, not a burst** (`floorBudget`): a round may ping the source list
+  divided by the rounds in a cycle — 14 of 200 at the defaults — so the cost is
+  a handful of tiny requests per minute and every source is still reached once
+  per cycle by construction. Each ping is bounded by `Timeouts.Connect` rather
+  than the control client's 15 s, because a floor ping asks one question and
+  the answer over a working path is one small reply.
+- **The floor keeps its own clock** (in memory, keyed by node key, pruned to
+  the live source set). Not `attempted_at`, which is the *pull* rotation's and
+  would cost a node its turn there; and not `last_seen`, which only moves on
+  success — so a node that neither answers nor earns a mark (the guard refused
+  it, or it accepted the connection and then said nothing) would be retried
+  every single round while the genuinely due ones starved behind it.
 
-**Build notes** (details in `docs/plans/availability.md` §Down-mark + ping
-floor): migration 048 breaks the `database_test.go` version assertions (known
-gotcha); the SQL predicate change in `reachClause` must land together with its
-Go twin `database.ReachableAt` / api `reachWindows.ok`, or the summary strip
-and the holder greying disagree with the browse; new `PeerStore` surface means
-`go vet -tags tests ./tests/mesh/...`.
+**Build notes** (details in `docs/plans/availability.md` §Phase 5): migration
+048 breaks the `database_test.go` version assertions (known gotcha); the SQL
+predicate change in `reachClause` lands together with its Go twin
+`database.ReachableAt` (which took a `SourceReach` struct — two of the three
+inputs are int64 timestamps a positional call could swap) and api
+`reachWindows.ok`, or the summary strip and the holder greying disagree with
+the browse; the new `PeerStore` method means `go vet -tags tests
+./tests/mesh/...`. Every surface that judges a source now carries the mark:
+the browse and lanes (SQL), the node strip, the ⓘ holder list, the F8 match
+arm and the upgrades page.
 
 ## Quality upgrades (F8, designed and built 2026-08-02)
 

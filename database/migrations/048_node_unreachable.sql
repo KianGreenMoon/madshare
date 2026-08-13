@@ -1,0 +1,25 @@
+-- Reactive down-mark: negative evidence stops evaporating (owner 2026-08-13;
+-- docs/architecture/federation.md §Availability, "Reactive down-mark + the ping
+-- floor", build order in docs/plans/availability.md Phase 5).
+--
+-- Positive contact has always fed last_seen. A failure had nowhere to go:
+-- last_seen is monotonic by design — a hint from two friends arrives in no
+-- order, so an observation may never age a node — which means a dial that
+-- timed out could only de-rank the holder inside the one transfer that tried
+-- it. The knowledge died there, and the browse went on offering a dead
+-- member's exclusively-held tracks for up to a pull window (45 min).
+--
+-- unreachable_at is that observation, and nothing more: "I tried first-hand and
+-- could not connect". It sits in the observations group beside last_seen and
+-- hinted_at rather than in the trust group, because it is not a judgment about
+-- the node — an admin decides trust, the network decides reachability. It is
+-- written only by connect-class failures (dial timeout / refused / no route);
+-- any HTTP answer, a 429 included, is proof of life and advances last_seen
+-- instead.
+--
+-- There is no clearing column and no state machine: the mark is read against
+-- last_seen, so any later positive contact retires it by moving the other
+-- clock past it. It is never gossiped and never hinted — a relayed "X is down"
+-- is a defamation lever, exactly what keeps distrust marks advisory.
+
+ALTER TABLE federation_nodes ADD COLUMN unreachable_at INTEGER NOT NULL DEFAULT 0;
