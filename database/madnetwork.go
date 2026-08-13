@@ -951,7 +951,7 @@ func (db *DB) madnetworkArtists(ctx context.Context, q string, view MadnetworkVi
 	conds, args := []string{}, []any{}
 	if s := strings.TrimSpace(q); s != "" {
 		escaped := strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(s)
-		conds = append(conds, `lower(akey) LIKE lower(?) ESCAPE '\'`)
+		conds = append(conds, `unicode_lower(akey) LIKE unicode_lower(?) ESCAPE '\'`)
 		args = append(args, "%"+escaped+"%")
 	}
 	if c, ok := decodeArtistCursor(cursor); ok {
@@ -1274,7 +1274,7 @@ func (db *DB) MadnetworkSearchAlbums(ctx context.Context, q string, limit int, v
 	rows, err := db.QueryContext(ctx, `
 		SELECT MIN(akey), MIN(alb), COUNT(DISTINCT `+trackIdent+`), MAX(year)
 		`+fedcatCountBase(view)+`
-		WHERE lower(alb) LIKE lower(?) ESCAPE '\'
+		WHERE unicode_lower(alb) LIKE unicode_lower(?) ESCAPE '\'
 		GROUP BY lower(akey), lower(alb)
 		ORDER BY `+albumBucketLast+`, lower(alb), lower(akey)
 		LIMIT ?`, "%"+escaped+"%", limit)
@@ -1309,11 +1309,11 @@ func (db *DB) MadnetworkSearchTrackRows(ctx context.Context, q string, view Madn
 		return []*MadnetworkTrackRow{}, nil
 	}
 	escaped := "%" + strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(s) + "%"
-	rows, err := db.remoteTrackRows(ctx, view, `lower(title) LIKE lower(?) ESCAPE '\'`, escaped)
+	rows, err := db.remoteTrackRows(ctx, view, `unicode_lower(title) LIKE unicode_lower(?) ESCAPE '\'`, escaped)
 	if err != nil {
 		return nil, err
 	}
-	own, err := db.ownTrackRows(ctx, view, `lower(m.title) LIKE lower(?) ESCAPE '\'`, escaped)
+	own, err := db.ownTrackRows(ctx, view, `unicode_lower(m.title) LIKE unicode_lower(?) ESCAPE '\'`, escaped)
 	if err != nil {
 		return nil, err
 	}

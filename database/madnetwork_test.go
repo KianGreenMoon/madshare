@@ -347,6 +347,40 @@ func TestMadnetworkSelfMergeAndSorting(t *testing.T) {
 	}
 }
 
+// TestMadnetworkSearchCaseInsensitiveUnicode pins the unicode_lower fix on the
+// madnetwork search paths: SQLite's built-in lower() folds only ASCII, so a
+// Cyrillic query used to match strictly case-sensitively (the same bug the
+// library search fixed first).
+func TestMadnetworkSearchCaseInsensitiveUnicode(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertPeer(t, db, "f1a1", "friend-a", federation.PeerFriend)
+	friend := insertSource(t, db, "f1a1")
+	if err := db.ReplaceSourceCatalog(ctx, friend, "s", 100, []federation.CatalogEntry{
+		catEntry("1", "r1", "Кино", "Группа крови", "Легенда", "hash-k1"),
+	}); err != nil {
+		t.Fatalf("ReplaceSourceCatalog: %v", err)
+	}
+
+	view := MadnetworkView{}
+	for _, q := range []string{"кино", "КИНО", "Кино", "кИнО"} {
+		if hits, err := db.MadnetworkSearchArtists(ctx, q, 5, view); err != nil || len(hits) != 1 {
+			t.Errorf("MadnetworkSearchArtists(%q) = %d hits (err %v), want 1", q, len(hits), err)
+		}
+	}
+	for _, q := range []string{"группа", "ГРУППА КРОВИ", "Группа"} {
+		if hits, err := db.MadnetworkSearchAlbums(ctx, q, 5, view); err != nil || len(hits) != 1 {
+			t.Errorf("MadnetworkSearchAlbums(%q) = %d hits (err %v), want 1", q, len(hits), err)
+		}
+	}
+	for _, q := range []string{"легенда", "ЛЕГЕНДА", "леГЕНда"} {
+		if rows, err := db.MadnetworkSearchTrackRows(ctx, q, view); err != nil || len(rows) != 1 {
+			t.Errorf("MadnetworkSearchTrackRows(%q) = %d rows (err %v), want 1", q, len(rows), err)
+		}
+	}
+}
+
 // TestMadnetworkBlobLookup covers the F3 lookups: which nodes advertise a hash
 // (fetch order + size) and the entry text behind it. Since F7 item 5 a holder is
 // any node whose catalog we cache — a member with no peer row provides exactly
