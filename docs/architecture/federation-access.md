@@ -694,6 +694,19 @@ layer too and not only in the handlers.
     served cache blobs since 2026-07-31 — see "the swarm's only boundary"
     below — which makes this a correctness fix rather than a policy one: what
     the branch may never do is serve a **guest**.)
+
+    That removal had a tail (found and fixed 2026-08-13): dropping the bare
+    `!aud.GuestOnly` also dropped the guest-limited-*friend* narrowing from the
+    serve path, while the later holdings and partials code kept it — so for a
+    while a demoted friend was refused the cache's *advertisement* but served
+    its *bytes* (`TestGuestOnlyFriendIsNotServedCacheBlobs` is the repro). The
+    rule now has one spelling: `ServesCache()` itself carries the
+    `!GuestOnly` conjunct beside the class check, and all three sites read it.
+    A cache blob has no local recording row, so a guest-limited audience's
+    "guest-accessible only" can never be evaluated for it — deny is the only
+    reading that keeps the mapping's promise. This also narrows a guest-only
+    *token bearer* off the cache, which was already the advertised behaviour
+    (holdings refused them) and is the same argument.
   - `serveAudience` returned `Audience{}` on a store error, which was `Distance
     0` — *a full friend*. Inert only because every caller checked the `ok`
     flag.

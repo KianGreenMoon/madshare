@@ -198,13 +198,20 @@ func (a Audience) InCommunity() bool { return a.Class >= ClassMember }
 // ServesCache reports whether this node's download cache may be served to the
 // requester. The community, and nobody else: a cached blob is somebody else's
 // content that we merely hold, so seeding it outward is only defensible inside
-// the network it came from.
+// the network it came from. A guest-limited audience is refused even inside it:
+// a cache blob has no local recording row, so its guest-playability cannot be
+// evaluated, and denying is the only reading that keeps "sees only
+// guest-accessible content" true. This is the ONE spelling of the cache rule —
+// holdings, partials and the blob/manifest serve path all read it, so the three
+// cannot drift apart again (they did: the serve path once handed a guest-only
+// friend the cache blobs the other two refused to advertise).
 //
-// Written as a positive predicate on purpose. Its ancestor was `!aud.GuestOnly`
-// — a guard that meant "is a friend" expressed as the negation of a bit whose
-// meaning changed underneath it, and which would have started handing our cache
-// to every member the moment members existed.
-func (a Audience) ServesCache() bool { return a.InCommunity() }
+// Written as a positive predicate on purpose. Its ancestor was a bare
+// `!aud.GuestOnly` — a guard that meant "is a friend" expressed as the negation
+// of a bit whose meaning changed underneath it, and which would have started
+// handing our cache to every member the moment members existed. The bit is back
+// as a conjunct, this time beside the class check instead of standing in for one.
+func (a Audience) ServesCache() bool { return a.InCommunity() && !a.GuestOnly }
 
 // FriendAudience is the audience of an unmapped direct friend: the default
 // regular-user identity, which sees the whole published set

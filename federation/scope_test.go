@@ -218,6 +218,61 @@ func TestGuestOnlyFriendSeesGuestContentOnly(t *testing.T) {
 	}
 }
 
+// TestGuestOnlyFriendIsNotServedCacheBlobs: the byte half of the rule the
+// holdings endpoint states — "a guest-only audience is never served cache
+// blobs, so it must not be advertised either" (handleHoldings), which
+// seedsPartials repeats for unfinished downloads. A cache blob is somebody
+// else's content with no local recording row, so its guest-playability cannot
+// be evaluated; the conservative reading both of those sites implement is
+// deny. This test pins the third site, seedableBlob's cache branch, to the
+// same rule: a friend demoted by the user mapping gets 404 on a cached hash
+// and on its manifest, exactly as it is told nothing about the cache.
+func TestGuestOnlyFriendIsNotServedCacheBlobs(t *testing.T) {
+	storeA, storeB := newMemStore(), newMemStore()
+	cacheDir := t.TempDir()
+	body := []byte("a blob A downloaded from somebody else")
+	cached := hashOf(body)
+	if err := os.WriteFile(filepath.Join(cacheDir, cached), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// No blob resolver on A: the library branch never answers, so every verdict
+	// below is the cache branch's alone.
+	a, b := startNodePair(t, storeA, storeB,
+		[]Option{WithCacheDir(cacheDir)},
+		[]Option{WithCacheDir(t.TempDir())})
+	makeFriends(t, a, b, storeA, storeB)
+
+	if got := blobStatus(t, a, b, cached); got != http.StatusOK {
+		t.Fatalf("full friend fetching a cache blob = %d, want 200", got)
+	}
+
+	// Restrict B on A's side, the way a user mapping to a content.access-less
+	// account does. PeerAudience is read per request, so this lands immediately.
+	p, err := storeA.GetFederationPeerByKey(t.Context(), b.PublicKeyHex())
+	if err != nil {
+		t.Fatalf("look up peer B on A: %v", err)
+	}
+	storeA.mu.Lock()
+	storeA.audiences[p.ID] = Audience{Class: ClassFriend, Distance: DepthFriends, GuestOnly: true}
+	storeA.mu.Unlock()
+
+	if got := blobStatus(t, a, b, cached); got != http.StatusNotFound {
+		t.Errorf("guest-only friend fetching a cache blob = %d, want 404 — holdings and partials already refuse this audience", got)
+	}
+
+	// The manifest is a description of bytes we are willing to hand over, so it
+	// must give the same answer (handleManifest shares seedableBlob).
+	client := &http.Client{Transport: &http.Transport{DialContext: b.DialContext}, Timeout: meshClientTimeout}
+	resp, err := client.Get(fmt.Sprintf("http://[%s]:%d/madnetwork/v0/manifest/%s", a.Address(), MeshPort, cached))
+	if err != nil {
+		t.Fatalf("manifest request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("guest-only friend fetching a cache manifest = %d, want 404", resp.StatusCode)
+	}
+}
+
 // TestAudienceSnapshotsAreSeparate: two audiences get two catalogs and two
 // serials from the same node. A shared serial would make a restricted friend's
 // next not-modified check answer about a catalog it never received.

@@ -657,7 +657,7 @@ func (n *Node) handleHoldings(w http.ResponseWriter, r *http.Request) {
 	}
 	hashes := []string{}
 	var partial []string
-	if policy.Enabled && policy.Cache && aud.ServesCache() && !aud.GuestOnly {
+	if policy.Enabled && policy.Cache && aud.ServesCache() {
 		hashes = n.cacheHoldings()
 		partial = n.partialHoldings(hashes)
 	}
@@ -769,7 +769,7 @@ func (n *Node) liveTransfers() []*transfer {
 // anyway, and a third rule would be a third thing to keep in agreement with the
 // invariant that catalog and bytes read one rule.
 func (n *Node) seedsPartials(ctx context.Context, aud Audience) bool {
-	if !aud.Serves() || aud.GuestOnly || !aud.ServesCache() {
+	if !aud.ServesCache() {
 		return false
 	}
 	policy, err := n.store.SeedingPolicy(ctx)
