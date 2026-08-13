@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -147,14 +148,32 @@ func (db *DB) PublishedCatalog(ctx context.Context, aud federation.Audience) ([]
 	return entries, rrows.Err()
 }
 
-// ReplaceSourceCatalog atomically replaces the cached copy of one source's
-// catalog with a fresh snapshot and records the snapshot serial + sync time.
+// ReplaceSourceCatalog makes the cached copy of one source's catalog equal to
+// the snapshot, atomically, and records the snapshot serial + sync time.
 //
-// The replace is wholesale, but first_seen is NOT: the dates of the entries this
-// source already offered are read before the delete and re-applied to the ones
-// that survive (migration 037). Without that, every sync that changed anything
-// would re-date the source's whole library, and "New on the network" would be a
-// list of whoever synced most recently.
+// The RESULT is wholesale — afterwards the table holds exactly the snapshot —
+// but the WRITES are a diff (decision 2026-08-13, federation.md §Catalog):
+// existing rows are read and digested, and only changed rows are updated, new
+// ones inserted, vanished ones deleted. The old delete-everything-reinsert
+// spelling paid the snapshot arrangement's cost in bytes written — one new
+// track in a 20k-entry catalog rewrote ~18 MiB of WAL where the diff writes
+// ~20 KiB (measured, ~900×), every 15-minute cycle once a community uploads
+// actively.
+//
+// first_seen preservation (migration 037 — without it every sync that changed
+// anything would re-date the source's whole library, and "New on the network"
+// would list whoever synced most recently) is STRUCTURAL under the diff: a
+// surviving row is either untouched or updated by an upsert that never sets
+// first_seen. Only genuinely new keys get syncedAt; a first_seen of 0
+// ("unknown", the 037 backfill) stays 0 — the wholesale spelling re-dated it
+// on the next changed sync, which later dropped stale entries into the `new`
+// lane as if fresh, while the lane's first_at > 0 filter reads 0 as exactly
+// the unknown it is.
+//
+// A duplicate entry key in the (remote, untrusted) snapshot resolves last-wins
+// through the upsert; the wholesale spelling failed the whole transaction on
+// the primary key instead, wedging that source's sync until the remote fixed
+// its catalog.
 func (db *DB) ReplaceSourceCatalog(ctx context.Context, sourceID int64, serial string, syncedAt int64, entries []federation.CatalogEntry) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -166,38 +185,56 @@ func (db *DB) ReplaceSourceCatalog(ctx context.Context, sourceID int64, serial s
 	if err != nil {
 		return err
 	}
-	seen, err := catalogFirstSeen(ctx, tx, key)
+	have, err := catalogRowDigests(ctx, tx, key)
 	if err != nil {
 		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM federation_catalog WHERE node_key = ?`, key); err != nil {
-		return fmt.Errorf("clear source catalog: %w", err)
 	}
 	ins, err := tx.PrepareContext(ctx, `
 		INSERT INTO federation_catalog (node_key, entry_key, recording_key, title, artist,
 			album_artist, album, genre, year, track_number, disc_number, duration,
 			license, guest_playable, renditions, first_seen)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(node_key, entry_key) DO UPDATE SET
+			recording_key = excluded.recording_key, title = excluded.title,
+			artist = excluded.artist, album_artist = excluded.album_artist,
+			album = excluded.album, genre = excluded.genre, year = excluded.year,
+			track_number = excluded.track_number, disc_number = excluded.disc_number,
+			duration = excluded.duration, license = excluded.license,
+			guest_playable = excluded.guest_playable, renditions = excluded.renditions`)
 	if err != nil {
-		return fmt.Errorf("prepare source catalog insert: %w", err)
+		return fmt.Errorf("prepare source catalog upsert: %w", err)
 	}
 	defer ins.Close()
+	seen := make(map[string]bool, len(entries))
 	for _, e := range entries {
 		if e.Key == "" || e.Title == "" {
 			continue // remote input — skip rows that cannot be displayed or re-keyed
 		}
+		seen[e.Key] = true
 		renditions, err := json.Marshal(e.Renditions)
 		if err != nil {
 			return fmt.Errorf("marshal renditions: %w", err)
 		}
-		firstSeen := syncedAt
-		if prior, ok := seen[e.Key]; ok && prior > 0 {
-			firstSeen = prior
+		if prior, ok := have[e.Key]; ok && prior == entryDigest(&e, string(renditions)) {
+			continue // unchanged row — the whole point: no write at all
 		}
 		if _, err := ins.ExecContext(ctx, key, e.Key, e.RecordingKey, e.Title, e.Artist,
 			e.AlbumArtist, e.Album, e.Genre, e.Year, e.TrackNumber, e.DiscNumber,
-			nullFloat(e.Duration), e.License, e.GuestPlayable, string(renditions), firstSeen); err != nil {
-			return fmt.Errorf("insert source catalog entry: %w", err)
+			nullFloat(e.Duration), e.License, e.GuestPlayable, string(renditions), syncedAt); err != nil {
+			return fmt.Errorf("upsert source catalog entry: %w", err)
+		}
+	}
+	del, err := tx.PrepareContext(ctx,
+		`DELETE FROM federation_catalog WHERE node_key = ? AND entry_key = ?`)
+	if err != nil {
+		return fmt.Errorf("prepare source catalog delete: %w", err)
+	}
+	defer del.Close()
+	for entryKey := range have {
+		if !seen[entryKey] {
+			if _, err := del.ExecContext(ctx, key, entryKey); err != nil {
+				return fmt.Errorf("delete vanished catalog entry: %w", err)
+			}
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -223,27 +260,72 @@ func nodeKeyByID(ctx context.Context, tx *sql.Tx, id int64) (string, error) {
 	return key, nil
 }
 
-// catalogFirstSeen reads one source's entry_key → first_seen map inside the
-// replace transaction. A source's catalog is bounded by what we chose to cache,
-// so holding it in memory for the length of the replace is the same order of
-// cost as the snapshot being applied.
-func catalogFirstSeen(ctx context.Context, tx *sql.Tx, nodeKey string) (map[string]int64, error) {
-	rows, err := tx.QueryContext(ctx,
-		`SELECT entry_key, first_seen FROM federation_catalog WHERE node_key = ?`, nodeKey)
+// catalogRowDigests reads one source's entry_key → row digest map inside the
+// replace transaction — the "what do we already hold" half of the diff. A
+// source's catalog is bounded by what we chose to cache, so holding 32 bytes
+// per row in memory for the length of the replace is cheap; the reads it costs
+// are what the skipped writes buy (a read is a page-cache hit, a write is WAL).
+func catalogRowDigests(ctx context.Context, tx *sql.Tx, nodeKey string) (map[string][sha256.Size]byte, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT entry_key, recording_key, title, artist, album_artist, album,
+		       genre, year, track_number, disc_number, duration, license,
+		       guest_playable, renditions
+		FROM federation_catalog WHERE node_key = ?`, nodeKey)
 	if err != nil {
-		return nil, fmt.Errorf("read source catalog dates: %w", err)
+		return nil, fmt.Errorf("read source catalog rows: %w", err)
 	}
 	defer rows.Close()
-	out := map[string]int64{}
+	out := map[string][sha256.Size]byte{}
 	for rows.Next() {
-		var key string
-		var at int64
-		if err := rows.Scan(&key, &at); err != nil {
-			return nil, fmt.Errorf("scan source catalog date: %w", err)
+		var e federation.CatalogEntry
+		var genre, license sql.NullString
+		var year, track, disc sql.NullInt64
+		var duration sql.NullFloat64
+		var renditions string
+		if err := rows.Scan(&e.Key, &e.RecordingKey, &e.Title, &e.Artist,
+			&e.AlbumArtist, &e.Album, &genre, &year, &track, &disc,
+			&duration, &license, &e.GuestPlayable, &renditions); err != nil {
+			return nil, fmt.Errorf("scan source catalog row: %w", err)
 		}
-		out[key] = at
+		// Normalize back to the shape entryDigest reads off an incoming entry.
+		// A pre-046 row may hold NULL genre/license where an insert writes '';
+		// those digest as different and are rewritten once, which self-heals.
+		e.Genre, e.License = genre.String, license.String
+		e.Year, e.TrackNumber, e.DiscNumber = nullInt(year), nullInt(track), nullInt(disc)
+		if duration.Valid {
+			e.Duration = duration.Float64
+		}
+		out[e.Key] = entryDigest(&e, renditions)
 	}
 	return out, rows.Err()
+}
+
+// entryDigest is the canonical per-row fingerprint the diff compares: every
+// column the upsert writes, in order, with an explicit nil marker so NULL and
+// a zero value cannot collide. renditions is passed as its marshaled JSON —
+// the stored column IS a previous marshal of the same struct, so equal content
+// is equal text.
+func entryDigest(e *federation.CatalogEntry, renditions string) [sha256.Size]byte {
+	h := sha256.New()
+	num := func(v *int64) {
+		if v == nil {
+			h.Write([]byte{'n', 0x1f})
+			return
+		}
+		fmt.Fprintf(h, "v%d\x1f", *v)
+	}
+	for _, s := range []string{e.RecordingKey, e.Title, e.Artist, e.AlbumArtist, e.Album, e.Genre} {
+		h.Write([]byte(s))
+		h.Write([]byte{0x1f})
+	}
+	num(e.Year)
+	num(e.TrackNumber)
+	num(e.DiscNumber)
+	// Written through nullFloat: 0 stores as NULL, and scans back as 0.
+	fmt.Fprintf(h, "%g\x1f%s\x1f%t\x1f%s", e.Duration, e.License, e.GuestPlayable, renditions)
+	var sum [sha256.Size]byte
+	h.Sum(sum[:0])
+	return sum
 }
 
 // MarkSourceCatalogChecked records a sync round that confirmed the cached copy

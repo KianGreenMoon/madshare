@@ -199,13 +199,35 @@ is **transparent by default** — its social graph is visible to its members.
   never joined onto local entities). **Snapshot + not-modified**, not row deltas
   (decision 2026-07-18, superseding the earlier "changed since serial N"
   sketch): true per-row deltas would need change tracking across five tables (a
-  rename changes catalog text), while a personal-scale catalog is a few hundred
-  KB — so the serial is a **content hash over the whole snapshot**; an
-  unchanged serial gets a tiny "unchanged" reply, a changed one the full
-  snapshot, applied as an atomic replace. The wire format carries the serial, so
-  real deltas can arrive later without a protocol break. The serving node
-  memoizes its own snapshot (~1 min) so friend syncs don't rebuild it per
-  request. A friend's catalog cache is **retained** regardless of reachability
+  rename changes catalog text) — so the serial is a **content hash over the
+  whole snapshot**; an unchanged serial gets a tiny "unchanged" reply, a
+  changed one the full snapshot. Measured size (2026-08-13): **~920 B per
+  entry** — ~900 KiB at 1k tracks, ~4.4 MiB at 5k, ~17.7 MiB at 20k — about a
+  third of which is the per-rendition fingerprint claim head
+  (`ClaimHeadWords` = 64 words, base64), so "a few hundred KB" holds only for
+  small libraries; the wire format carries the serial, so real deltas can
+  arrive later without a protocol break. The serving node memoizes its own
+  snapshot (~1 min) so friend syncs don't rebuild it per request.
+  **Applied as a diff, wholesale only in effect** (decision 2026-08-13,
+  federation-explained #3 dig; owner-approved): the snapshot IS the resulting
+  table state, but `ReplaceSourceCatalog` writes only rows that changed —
+  existing rows are read and digested, changed ones upserted, vanished ones
+  deleted. The old delete-everything-reinsert spelling paid the snapshot
+  arrangement's cost in bytes written: one new track in a 20k-entry catalog
+  rewrote ~18 MiB of WAL where the diff writes ~20 KiB (measured, ~900×) —
+  flash wear and checkpoint pressure every 15-minute cycle once a community
+  uploads actively. Under the diff, `first_seen` preservation (migration 037)
+  is **structural** — a surviving row is untouched or updated by an upsert
+  that never sets `first_seen`, so the carry-map is gone. Two deliberate edges
+  (both owner calls, 2026-08-13): a `first_seen = 0` row ("unknown", the 037
+  backfill) **keeps 0 forever** — the old code re-dated it on the next changed
+  sync, which later dropped stale entries into *New on the network* as if
+  fresh, while the `new` lane's `first_at > 0` filter reads 0 as the unknown
+  it is; and a **duplicate entry key** in the (remote, untrusted) snapshot
+  resolves **last-wins** through the upsert — the wholesale spelling failed
+  the whole transaction on the primary key, wedging that source's sync until
+  the remote fixed its catalog. Holdings replace stays wholesale on purpose:
+  two-column rows, negligible churn. A friend's catalog cache is **retained** regardless of reachability
   (never TTL-purged); the friend carries a **"last seen"** indicator, and
   whether their exclusively-held tracks appear in the *merged* madnetwork view
   is decided at request time by the availability predicate (§Availability &
@@ -752,7 +774,8 @@ proportional to **what changed**, not to the library:
   overlap, which is the same reason `checkHeldBlobClaims` was safe to put here.
 - **Stage 2 runs only over new material on either side** since this source's
   last scan: cached rows whose `first_seen` is newer than the watermark (the
-  column F7 item 8 already preserves across the wholesale replace) and local
+  column F7 item 8 preserves across a sync — structurally, since the
+  2026-08-13 diff-apply) and local
   recordings fingerprinted since it. Every older pairing was compared on an
   earlier round and its answer has not changed. The first scan of a source pays
   the full pass once.
@@ -997,8 +1020,9 @@ own milestone directly after direct transfer works, and tokens ship with depth.
 
      Six lanes, eight rows each, a per-source cap on the two a single node's
      volume could otherwise own, `?source=` for one node's shelf, and migration
-     **037** (`federation_catalog.first_seen`, carried across the atomic replace
-     — otherwise every sync re-dates a source's whole library). Its *Most
+     **037** (`federation_catalog.first_seen` — otherwise every sync re-dates a
+     source's whole library; preserved structurally since the 2026-08-13
+     diff-apply, see §Catalog). Its *Most
      held* lane is the first place branch weighting reaches the browse, so it
      lands part of item 10 early — deliberately, because a popularity lane a
      sybil farm can lift is worse than none. Item 10 finished the job the same

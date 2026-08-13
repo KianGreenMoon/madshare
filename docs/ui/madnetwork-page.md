@@ -487,10 +487,11 @@ horizontal shelf is a row of artwork, and a row of artwork with no artwork is te
 grey squares. "See all" opens the lane full-page, in the same rank order, without
 the cap below.
 
-**`first_seen` is per `(source, entry)`, carried across the atomic replace, and
-aggregated as a minimum.** The column lives on `federation_catalog`; a sync reads
-the existing values for that source before the replace and re-stamps the rows that
-survive, so re-advertising an unchanged entry never makes it new again. A logical
+**`first_seen` is per `(source, entry)`, preserved across a changed sync, and
+aggregated as a minimum.** The column lives on `federation_catalog`; a sync is
+applied as a diff (federation.md §Catalog), so a surviving row is never
+rewritten and its date simply persists — re-advertising an unchanged entry
+never makes it new again. A logical
 track's date is the **earliest** date any source showed it to us, so a track we
 already know from A does not resurface as new when B also starts offering it. The
 label is *new to us*: a node reached last week publishing a record from 1974 is

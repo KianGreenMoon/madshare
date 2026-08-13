@@ -25,9 +25,11 @@ func laneNames(t *testing.T, db *DB, lane string, view MadnetworkView, limit int
 }
 
 // TestCatalogFirstSeenSurvivesReplace is the whole reason migration 037 exists:
-// a snapshot is applied by deleting every row and re-inserting it, so without
-// carrying the dates across, one sync would re-date a source's entire library
-// and "New on the network" would list whoever synced most recently.
+// without preserving the dates across a changed sync, one sync would re-date a
+// source's entire library and "New on the network" would list whoever synced
+// most recently. Since the 2026-08-13 diff-apply the preservation is
+// structural — surviving rows are not rewritten — but the observable promise
+// is the same and this pins it.
 func TestCatalogFirstSeenSurvivesReplace(t *testing.T) {
 	db := openMem(t)
 	ctx := context.Background()
@@ -71,6 +73,77 @@ func TestCatalogFirstSeenSurvivesReplace(t *testing.T) {
 	// And the lane reads it: only the genuinely new entry is new.
 	if got := laneNames(t, db, LaneNew, MadnetworkView{}, 10); len(got) != 2 || got[0] != "New Song" {
 		t.Errorf("new lane = %v, want New Song first", got)
+	}
+}
+
+// TestCatalogDiffApplyEdges pins the three decisions the diff-apply carries
+// (owner calls, 2026-08-13; federation.md §Catalog): a CHANGED row keeps its
+// first_seen, a first_seen of 0 stays 0 (unknown is not re-dated into the
+// `new` lane), and a duplicate entry key from the remote resolves last-wins
+// instead of failing the whole sync. Plus the diff's baseline: a vanished
+// entry is deleted, so the result is exactly the snapshot.
+func TestCatalogDiffApplyEdges(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	insertPeer(t, db, "a1", "friend-a", federation.PeerFriend)
+	src := insertSource(t, db, "a1")
+
+	if err := db.ReplaceSourceCatalog(ctx, src, "s1", 100, []federation.CatalogEntry{
+		catEntry("1", "r1", "Artist", "Album", "Renamed Later", "hash-1"),
+		catEntry("2", "r2", "Artist", "Album", "Vanishes", "hash-2"),
+		catEntry("3", "r3", "Artist", "Album", "Unknown Date", "hash-3"),
+	}); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	// Simulate the migration-037 backfill: entry 3's date is unknown.
+	if _, err := db.Exec(`UPDATE federation_catalog SET first_seen = 0 WHERE entry_key = '3'`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second sync: entry 1 renamed (changed row), entry 2 gone, entry 3
+	// unchanged, entry 4 sent twice with different titles (remote bug).
+	if err := db.ReplaceSourceCatalog(ctx, src, "s2", 500, []federation.CatalogEntry{
+		catEntry("1", "r1", "Artist", "Album", "New Name", "hash-1"),
+		catEntry("3", "r3", "Artist", "Album", "Unknown Date", "hash-3"),
+		catEntry("4", "r4", "Artist", "Album", "First Copy", "hash-4"),
+		catEntry("4", "r4", "Artist", "Album", "Second Copy", "hash-4"),
+	}); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+
+	rows, err := db.Query(`SELECT entry_key, title, first_seen FROM federation_catalog ORDER BY entry_key`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	type row struct {
+		title string
+		seen  int64
+	}
+	got := map[string]row{}
+	for rows.Next() {
+		var key string
+		var r row
+		if err := rows.Scan(&key, &r.title, &r.seen); err != nil {
+			t.Fatal(err)
+		}
+		got[key] = r
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got) != 3 {
+		t.Errorf("rows after sync = %d (%v), want 3 — the vanished entry must be deleted", len(got), got)
+	}
+	if r := got["1"]; r.title != "New Name" || r.seen != 100 {
+		t.Errorf("changed row = %q/first_seen %d, want New Name/100 (rename applied, date kept)", r.title, r.seen)
+	}
+	if r := got["3"]; r.seen != 0 {
+		t.Errorf("unknown-date row first_seen = %d, want 0 (unknown stays unknown)", r.seen)
+	}
+	if r := got["4"]; r.title != "Second Copy" {
+		t.Errorf("duplicate key resolved to %q, want Second Copy (last wins)", r.title)
 	}
 }
 
