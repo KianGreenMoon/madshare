@@ -271,6 +271,41 @@ clamped up to a 120s anti-flap floor with a warning; `config.Default/MinReachabl
   with an injected read error; `meshlab status` surfaces the flag if it ever
   trips.
 
+## Phase 5 — Reactive down-mark + ping floor (designed 2026-08-13, NOT built)
+
+Design and rationale live in `federation.md` §Availability, "Reactive down-mark
++ the ping floor" — owner decisions 2026-08-13 (both halves adopted; relative
+guard). This is the build order:
+
+1. **Migration 048**: `unreachable_at INTEGER NOT NULL DEFAULT 0` on
+   `federation_nodes` (observations group). Breaks the `database_test.go`
+   version/table assertions (known gotcha).
+2. **DB**: `MarkNodeUnreachable(ctx, key, at)` (forward-only, like every
+   observation); `reachClause` gains the mark clause — unavailable additionally
+   when `unreachable_at > last_seen AND last_seen < tightCutoff` (the mark may
+   shorten the pull window, never the ping window) — **landing together with
+   its Go twin** `database.ReachableAt` and api `reachWindows.ok`, or the
+   summary strip and holder greying disagree with the browse.
+3. **federation**: `Node.observeUnreachable(key)` — classification
+   (connect-class only: dial timeout / refused / no route) + the relative
+   guard. Guard state is in-memory: the node remembers its last successful
+   contact `(time, key)`; a failure is recorded only if that contact is within
+   the tight window and from a *different* key. Hook sites: `dialHolder`
+   error, `syncCatalog`'s `client.Do` error, the floor ping.
+4. **Proof-of-life fix riding along**: verify any received HTTP response —
+   429 included — advances `last_seen` on the fetch paths; fix where it does
+   not (a quota refusal is an answer, and without this a member protecting
+   itself with quotas is marked dead by the nodes it throttles).
+5. **Floor ping in the sweep**: each round, ping cached member sources whose
+   `last_seen` is older than one catalog cycle (rotation order, outside
+   `discovery_budget`); success = ordinary observation, failure =
+   `observeUnreachable`.
+6. **Tests**: knife-edge immunity (a mark against a `last_seen` inside the
+   tight window changes nothing); member hidden after one failed dial when the
+   guard passes; nothing marked when nobody else answered (our own outage);
+   floor ping advances `last_seen` / marks on failure; SQL-vs-Go twin
+   agreement; `go vet -tags tests ./tests/mesh/...` (PeerStore grows).
+
 ## Dependencies & sequencing
 
 ```
@@ -289,8 +324,11 @@ deferred until cache-only content is proven to matter.
 - Signature change on `MadnetworkStore` breaks `fakeMadnetwork` (api tests).
 - Migration 030 breaks `database_test.go` version/table assertions.
 - `TouchFederationPeerSeen` is monotonic — reactive *failure* can't be modelled by
-  moving `last_seen` back; if reactive de-ranking is wanted it's a separate
-  provider-failure signal (already partly present in `swarm.go` failover). Treat
-  as an optional refinement, out of the critical path.
+  moving `last_seen` back; it needs a separate signal. **No longer parked**:
+  designed 2026-08-13 as the down-mark (`unreachable_at`, Phase 5 above and
+  `federation.md` §Availability).
 - Don't reintroduce any fast dedicated prober — the 1-min sweep + passive touches
-  are the whole liveness budget by design.
+  are the liveness budget by design. The **one deliberate exception** (owner,
+  2026-08-13) is Phase 5's cycle-cadence ping floor: once per 15-minute cycle
+  per cached source, riding the existing sweep, keeping the 3× anti-flap
+  margin — none of the three mistakes the 5 s prober died of.
