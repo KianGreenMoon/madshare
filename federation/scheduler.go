@@ -113,6 +113,7 @@ var errManifestSuspect = errors.New("the chunk manifest is contradicted by its h
 type providerState struct {
 	dead      bool      // retired for the rest of this transfer
 	fails     int       // consecutive failures (any success clears it)
+	busy      int       // consecutive 429s (any success clears it) — escalates the backoff, never the streak
 	inFlight  int64     // bytes dispatched to it and not yet resolved
 	reqs      int       // chunk requests out to it right now (bounded by maxHolderRequests)
 	lastTried time.Time // when it was last handed a chunk (zero = never)
@@ -175,9 +176,21 @@ type chunkPlan struct {
 	// was dropped — which forced the drop rule to double as the termination
 	// rule and got healthy holders retired to make transfers finish. The two are
 	// separate concerns: retirement decides who to ask, this decides when to give
-	// up. See the note above fail().
+	// up. See the note above fail(). A 429 spends none of it — a refusal is not
+	// a fault, and the all-busy case terminates on patience instead.
 	attempts     []int
 	attemptLimit int
+
+	// patience ends a plan that is making NO progress: no chunk delivered for
+	// this long (Timeouts.Transfer; <=0 = no deadline) aborts the transfer.
+	// It exists for the holder that keeps answering 429 when nobody else can
+	// serve — the listener-node case, where the home server is the only holder
+	// by construction — because a quota refusal must cost a wait, not the
+	// attempt budget, and a wait with no bound would pin the transfer forever
+	// if the quota never clears. lastErr carries the reason into the abort.
+	patience      time.Duration
+	lastDelivered time.Time
+	lastErr       error
 
 	// flight is the attempts currently out, per chunk. A chunk normally has one;
 	// a hedged chunk has two, which is the whole of F9 item 4 (see hedgeLocked).
@@ -223,7 +236,12 @@ func newChunkPlan(ctx context.Context, layout *chunkLayout, holders []*BlobProvi
 		perChunk:     to.PerChunk,
 		retry:        to.Retry,
 		tryWindow:    to.PerChunk,
-		stats:        st,
+		// The transfer-scale timeout, reused as the no-progress bound: it
+		// already answers "how long may one blob fetch reasonably take", and a
+		// second constant would be a guess of the same quality.
+		patience:      to.Transfer,
+		lastDelivered: time.Now(),
+		stats:         st,
 	}
 	if cp.parent == nil {
 		cp.parent = context.Background()
@@ -350,6 +368,23 @@ func (cp *chunkPlan) take() (dispatch, bool) {
 			// Aborting rather than blocking is the point: a scheduler that cannot
 			// schedule must end the transfer, not hold its workers forever.
 			cp.abortLocked(fmt.Errorf("chunk %d: no holder in the plan will serve it", cp.pending[0]))
+			return dispatch{}, false
+		}
+		// The patience rule: with everything askable resting and nothing on the
+		// wire, a plan that has delivered no chunk for a whole Timeouts.Transfer
+		// is waited out no further. This is what ends the all-busy case — a 429
+		// spends no attempt budget (fail()), so without this a holder refusing
+		// under a quota that never clears would hold the transfer open forever.
+		// The backoff wake-ups re-run this check every few seconds, so the
+		// deadline is honoured shortly after it passes; any delivered chunk
+		// resets the clock (succeed()).
+		if cp.patience > 0 && cp.inFlight == 0 && time.Since(cp.lastDelivered) > cp.patience {
+			err := fmt.Errorf("no chunk delivered in %s (%d chunks left)", cp.patience, cp.remaining)
+			if cp.lastErr != nil {
+				err = fmt.Errorf("no chunk delivered in %s (%d chunks left): %w",
+					cp.patience, cp.remaining, cp.lastErr)
+			}
+			cp.abortLocked(err)
 			return dispatch{}, false
 		}
 		cp.cond.Wait()
@@ -623,6 +658,7 @@ func (cp *chunkPlan) succeed(idx, pidx int, t *transfer, took time.Duration) {
 	if pidx >= 0 {
 		ps := cp.prov[pidx]
 		ps.fails = 0
+		ps.busy = 0
 		ps.idleUntil = time.Time{}
 		if took > 0 {
 			sample := float64(end-start) / took.Seconds()
@@ -638,6 +674,7 @@ func (cp *chunkPlan) succeed(idx, pidx int, t *transfer, took time.Duration) {
 	if fresh {
 		cp.done[idx] = true
 		cp.remaining--
+		cp.lastDelivered = time.Now() // progress resets the patience clock
 		for cp.watermark < len(cp.done) && cp.done[cp.watermark] {
 			cp.watermark++
 		}
@@ -745,7 +782,12 @@ func (cp *chunkPlan) fail(idx, pidx int, err error, corrupt bool) {
 		case errors.Is(err, errChunkAbsent):
 			ps.lacks = markLacking(ps.lacks, idx)
 		case errors.Is(err, errChunkBusy):
-			ps.idleUntil = time.Now().Add(backoffFor(cp.retry, busyBackoffSteps))
+			// Consecutive refusals double the pause (through backoffFor's cap):
+			// the swarm may be waiting a quota out for minutes (see patience in
+			// take()), and re-asking a node that keeps saying no at the base
+			// cadence would be a poll, not a retry.
+			ps.busy++
+			ps.idleUntil = time.Now().Add(backoffFor(cp.retry, busyBackoffSteps+ps.busy-1))
 		default:
 			ps.fails++
 			ps.idleUntil = time.Now().Add(backoffFor(cp.retry, ps.fails))
@@ -755,7 +797,18 @@ func (cp *chunkPlan) fail(idx, pidx int, err error, corrupt bool) {
 		}
 		dropped = ps.dead
 	}
-	cp.attempts[idx]++
+	cp.lastErr = err
+	// A 429 spends no attempt budget (decided 2026-08-13): the budget is the
+	// termination rule for FAULTS, and a refusal is not one — counting it meant
+	// a sole busy holder failed the transfer in four polite refusals, which is
+	// the household's normal shape (a listener node has exactly one holder, its
+	// home server, and draws on the member budget). The all-busy case
+	// terminates on the patience deadline in take() instead. A 416 keeps
+	// counting: that is what makes a swarm of partials that collectively lack a
+	// chunk terminate rather than loop.
+	if !errors.Is(err, errChunkBusy) {
+		cp.attempts[idx]++
+	}
 	switch {
 	case cp.aborted:
 		// already given up (a suspect manifest); the chunk needs no re-queue

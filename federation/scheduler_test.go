@@ -133,6 +133,93 @@ func TestQuotaRefusalCostsAWaitNotAMark(t *testing.T) {
 	}
 }
 
+// TestQuotaRefusalSpendsNoAttemptBudget pins the 2026-08-13 decision: a 429
+// never counts toward attemptLimit. Before this, four polite refusals from a
+// sole holder aborted the transfer — and a sole holder is the household's
+// NORMAL shape, since a listener node has exactly one holder (its home server)
+// and draws on the member budget. The swarm waits a quota out; it does not
+// fail over it.
+func TestQuotaRefusalSpendsNoAttemptBudget(t *testing.T) {
+	cp := testPlan(wideLayout(1), []*BlobProvider{{Name: "busy"}}, false)
+	tr := newTransfer("h", "p", "p.part")
+
+	// Well past the attempt budget (attemptLimit is 4 for one holder).
+	for i := 0; i < 2*cp.attemptLimit; i++ {
+		cp.fail(askHolder(t, cp, 0), 0, errChunkBusy, false)
+	}
+	if cp.aborted {
+		t.Fatalf("the transfer gave up on a busy sole holder: %v", cp.err)
+	}
+	if cp.attempts[0] != 0 {
+		t.Errorf("attempts = %d, want 0 — a refusal spent the attempt budget", cp.attempts[0])
+	}
+
+	// The moment the quota clears, the transfer completes as if nothing happened.
+	cp.succeed(askHolder(t, cp, 0), 0, tr, time.Millisecond)
+	if cp.remaining != 0 {
+		t.Errorf("remaining = %d after the quota cleared, want 0", cp.remaining)
+	}
+}
+
+// TestConsecutiveRefusalsBackOffFurther: with patience the swarm may wait a
+// quota out for minutes, and re-asking a node that keeps saying no at the base
+// cadence would be a poll, not a retry — so consecutive 429s from one holder
+// double the pause (through backoffFor's cap), and any success clears the run.
+func TestConsecutiveRefusalsBackOffFurther(t *testing.T) {
+	cp := testPlan(wideLayout(2), []*BlobProvider{{Name: "busy"}}, false)
+	tr := newTransfer("h", "p", "p.part")
+
+	cp.fail(askHolder(t, cp, 0), 0, errChunkBusy, false)
+	first := cp.prov[0].idleUntil
+	cp.fail(askHolder(t, cp, 0), 0, errChunkBusy, false)
+	second := cp.prov[0].idleUntil
+
+	// The escalation step is deterministic even on a slow machine: the second
+	// rest ends at least one whole extra backoff step after the first.
+	step := backoffFor(cp.retry, busyBackoffSteps+1) - backoffFor(cp.retry, busyBackoffSteps)
+	if second.Sub(first) < step {
+		t.Errorf("second refusal rested until %v, only %v past the first — no escalation",
+			second, second.Sub(first))
+	}
+	if cp.prov[0].busy != 2 {
+		t.Errorf("busy streak = %d, want 2", cp.prov[0].busy)
+	}
+	cp.succeed(askHolder(t, cp, 0), 0, tr, time.Millisecond)
+	if cp.prov[0].busy != 0 {
+		t.Errorf("busy streak = %d after a success, want 0", cp.prov[0].busy)
+	}
+}
+
+// TestBusyOnlyPlanAbortsAfterPatience is the bound that lets refusals stop
+// counting: a plan that has delivered NOTHING for Timeouts.Transfer gives up,
+// carrying the refusal as its reason. Without this, a holder over a quota that
+// never clears would hold the transfer open forever.
+func TestBusyOnlyPlanAbortsAfterPatience(t *testing.T) {
+	cp := newChunkPlan(context.Background(), wideLayout(1), []*BlobProvider{{Name: "busy"}},
+		false, newTransferStats(),
+		Timeouts{Retry: time.Millisecond, PerChunk: time.Minute, Transfer: 30 * time.Millisecond})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			d, ok := cp.take()
+			if !ok {
+				return
+			}
+			cp.fail(d.idx, d.pidx, errChunkBusy, false)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the plan never gave up on a holder that refused forever")
+	}
+	if !errors.Is(cp.err, errChunkBusy) {
+		t.Errorf("abort reason = %v, want it to carry the quota refusal", cp.err)
+	}
+}
+
 // TestScheduleWaitsOutABackoffRatherThanSpinning: with a single holder resting
 // after a failure there is nothing else to hand out, and take() must come back
 // with the work once the rest is over rather than either spinning or blocking

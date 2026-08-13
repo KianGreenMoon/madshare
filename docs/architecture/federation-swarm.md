@@ -123,6 +123,16 @@
   aborts the transfer with every holder still live. Conflating the two is a trap
   worth naming: when the only way to end a fetch is to kill every source, a
   perfectly healthy source gets declared faulty to make the transfer terminate.
+  A **quota refusal (429) spends no attempt budget** (decided 2026-08-13): the
+  budget is the termination rule for *faults*, and a refusal is not a fault —
+  counting it meant a sole busy holder failed the transfer in four polite
+  refusals, which is the household's normal shape (a listener node has exactly
+  one holder, its home server, and draws on the member budget). The all-busy
+  case terminates on **patience** instead: a plan that has delivered nothing
+  for a continuous `Timeouts.Transfer` (30 min — reused, not a new constant;
+  it already answers "how long may one blob fetch reasonably take") aborts
+  carrying the last refusal as its reason. Any delivered chunk resets the
+  clock, so "no deadline while progress is being made" still holds.
   A hung connection is caught by an **idle-read watchdog** (~20 s with no bytes)
   plus a response-header timeout, rather than waiting out the whole per-chunk
   backstop — so a Yggdrasil path stall costs seconds, not minutes. A
@@ -257,12 +267,16 @@ cuts the branch.
 **Refusal is a 429, and that is a feature.** A requester over quota is told to
 go away, and the swarm on the other side does exactly the right thing with that
 — it fails over to another holder, under a retirement rule that is relative
-(`worseThanPeers`), so a busy node is de-ranked rather than condemned. Being
-unable to serve right now is honest information, not an error. The check runs
-*before* the blob is looked up, so it confirms nothing about whether we hold the
-hash — it is a fact about us. Manifests are deliberately **not** counted: a
-manifest is a small memoized JSON, and refusing one would stop a member from
-even planning a fetch it is entitled to make.
+(`worseThanPeers`), so a busy node is de-ranked rather than condemned. When
+there is **no other holder** — the listener-node case, where the home server is
+the only holder by construction — the swarm **waits the congestion out** rather
+than failing: a 429 costs an escalating backoff and no attempt budget, bounded
+by the patience rule (§Making it a swarm — no delivery for `Timeouts.Transfer`
+ends the plan). Being unable to serve right now is honest information, not an
+error. The check runs *before* the blob is looked up, so it confirms nothing
+about whether we hold the hash — it is a fact about us. Manifests are
+deliberately **not** counted: a manifest is a small memoized JSON, and refusing
+one would stop a member from even planning a fetch it is entitled to make.
 
 **All four default to `0` — unlimited — by owner decision (2026-08-01).**
 The honest consequence: shipped this way the feature protects nobody who does
@@ -516,7 +530,11 @@ committing to a dispatch shape twice would have been the waste.
 3. **`Timeouts.Connect`, 5 s**, bounding the dial alone. "Never connected" and
    "connected then slow" were sharing one two-minute budget, and only the second
    deserves it. As predicted, this alone removes most of the dead-holder cost.
-4. **429 as timed backoff** (`errChunkBusy`), never as slowness or as a failure.
+4. **429 as timed backoff** (`errChunkBusy`), never as slowness or as a failure
+   — and since 2026-08-13 never as an attempt either: consecutive refusals from
+   one holder double its backoff (through the existing `backoffFor` cap), and a
+   plan that has delivered nothing for `Timeouts.Transfer` aborts with the
+   refusal as its reason (the patience rule above).
 
 **Three things the design did not anticipate, decided while building:**
 

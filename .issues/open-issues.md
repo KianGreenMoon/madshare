@@ -1933,7 +1933,7 @@ as a pre-dispatched attempt at chunk 0, so hedging (`prioritize` marking a
 wanted in-flight chunk) covers it like any other slow copy, and `take()` stops
 existing. Left open with that sketch.
 
-### 2. A sole holder answering 429 exhausts the attempt budget (design question)
+### 2. A sole holder answering 429 exhausts the attempt budget (design question) — **DECIDED & FIXED 2026-08-13**
 
 `errChunkBusy` is documented as "a wait, never a streak" — it builds no failure
 streak and feeds no throughput sample. But every failed try, 429s included,
@@ -1949,6 +1949,30 @@ guarantees termination, since there is deliberately no overall swarm deadline
 (`Timeouts.Transfer` binds only the whole-file path). NOT counting them needs a
 substitute bound (e.g. a patience budget for busy waits). Question for the
 owner: is fail-fast-and-let-the-client-retry the intended behaviour here?
+
+**Owner decided (2026-08-13): patience, not fail-fast.** The deciding argument:
+a sole busy holder is the household's NORMAL shape — a listener node has exactly
+one holder (its home server) and draws on the member budget, so 429s there are
+routine contention, not an edge case. Built the same day
+(federation-swarm.md §Making it a swarm, "429 as timed backoff"):
+
+- `errChunkBusy` no longer increments `attempts[idx]` — the attempt budget is
+  the termination rule for FAULTS, and a 416 still counts (it is what makes a
+  swarm of partials that collectively lack a chunk terminate).
+- Consecutive 429s from one holder double its backoff through the existing
+  `backoffFor` cap (providerState.busy streak, cleared on success).
+- Termination moved to the **patience rule**: a plan with nothing on the wire
+  and no chunk delivered for a continuous `Timeouts.Transfer` (30 min — the
+  existing knob reused, no new constant) aborts carrying the last refusal as
+  its reason. Any delivered chunk resets the clock.
+- `runWhole` left alone for v1: the swarm path absorbs the busy case, and the
+  whole-file walk only runs against manifest-less legacy peers.
+- Optional follow-up, not built: `admitServe` sending `Retry-After` and the
+  scheduler honouring it — the holder is the party that knows when its bucket
+  clears.
+
+Tests: `TestQuotaRefusalSpendsNoAttemptBudget`,
+`TestConsecutiveRefusalsBackOffFurther`, `TestBusyOnlyPlanAbortsAfterPatience`.
 
 ### 3. Cancelled rate-limiter waits debit tokens for bytes never sent (Info)
 
