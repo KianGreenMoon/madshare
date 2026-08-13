@@ -601,11 +601,15 @@ the bytes you did send are wasted. If your line cannot spare ~256 KiB/s, turning
 `seed_enabled` off is the honest setting.
 
 **Disk.** Blobs fetched from the network are cached under
-`<data_dir>/cache/madnetwork/` and **there is no eviction yet** — the directory
-grows with everything you stream or materialize. Watch it, and clear it by hand
-if it outgrows the disk; cached blobs are rebuildable from the network and
-nothing local references them. `discovery_cap` bounds the *catalog* side (foreign
-catalogs kept, coldest evicted).
+`<data_dir>/cache/madnetwork/`, and the directory grows with everything you
+stream or materialize until you bound it. Two retention knobs on `/admin/cache`
+do that — a **size ceiling** and an **age** (evict what nothing local has played
+for N days) — and **both ship off**, because a guessed default would delete other
+people's content on first upgrade. `[federation] cache_max_mb` is the ceiling's
+starting value for a deployment that ships one. Nothing is lost by evicting:
+cached blobs are rebuildable from the network and nothing local references them.
+`discovery_cap` bounds the *catalog* side (foreign catalogs kept, coldest
+evicted).
 
 ### Turning it off
 

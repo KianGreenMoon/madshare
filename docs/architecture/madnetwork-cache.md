@@ -1,11 +1,11 @@
-# The madnetwork cache — control now, forgetting later
+# The madnetwork cache — control, and forgetting
 
 The swarm (federation F3/F4) fetches other nodes' bytes into a cache directory
 and never thinks about them again. This doc designs the missing half: a place to
-**see** what is in that cache and **act** on it, and — planned, not built here —
-a daemon that forgets by itself.
+**see** what is in that cache and **act** on it, plus a daemon that forgets by
+itself.
 
-Two deliverables, deliberately staged:
+Two deliverables, deliberately staged — both now built:
 
 1. **`/admin/cache`, a manual control page** — built now. Primarily a cleaning
    surface; occasionally a rescue one (materialize a cached blob into the
