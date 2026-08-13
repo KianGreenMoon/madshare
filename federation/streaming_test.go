@@ -143,6 +143,81 @@ func TestChunkPlanPrioritizeAndAdoptedFlight(t *testing.T) {
 	}
 }
 
+// TestBlockedReaderHedgesTheChunkItWaitsFor pins take()'s FIRST rule — the one
+// F9 item 4 added for a stalled stream, and the one nothing else covers.
+//
+// Every other hedge test here and in the chaos suite is the ENDGAME: the queue
+// is empty, so a free worker has nothing better to do than duplicate. That is
+// not the case .issues/open-issues.md reported ("the streaming reader cannot
+// escape a stalled in-flight chunk"). There the queue is full — the reader is
+// waiting on chunk 0 while chunks 1..4 are still unfetched — and the old
+// behaviour was for the free worker to start chunk 1, because prioritize could
+// only reorder a queue the reader's chunk had already left.
+//
+// So the assertion is that the hedge BEATS the pending queue, and it is driven
+// through the real reader entry point (transfer.WaitFor, what the relay's
+// copyTransfer calls) rather than by poking prioritize directly: the wiring
+// from a blocked read to a second copy is the thing that was missing.
+func TestBlockedReaderHedgesTheChunkItWaitsFor(t *testing.T) {
+	layout := buildLayout(50, 10, nil) // 5 chunks of 10 bytes
+	cp := testPlan(layout, []*BlobProvider{{Name: "slow"}, {Name: "healthy"}})
+	tr := newTransfer("h", "p", "p.part")
+	tr.size = 50
+	tr.beginChunks(layout, cp.prioritize)
+
+	// The slow holder is handed chunk 0 and never resolves it. Chunks 1..4 stay
+	// queued, which is what keeps take() out of its endgame branch.
+	if idx := askHolder(t, cp, 0); idx != 0 {
+		t.Fatalf("dispatched chunk %d, want 0", idx)
+	}
+	if len(cp.pending) == 0 {
+		t.Fatal("pending queue empty — that is the endgame case, not this one")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	readerDone := make(chan error, 1)
+	go func() { readerDone <- tr.WaitFor(ctx, 5) }() // offset 5 = inside chunk 0
+
+	// The reader's poke leaves its only possible trace on an in-flight chunk.
+	deadline := time.Now().Add(2 * time.Second * testTimeoutScale)
+	marked := false
+	for !marked && time.Now().Before(deadline) {
+		cp.mu.Lock()
+		marked = cp.wanted[0]
+		cp.mu.Unlock()
+		if !marked {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if !marked {
+		t.Fatal("a blocked reader's prioritize() left no mark on the in-flight chunk")
+	}
+
+	d, ok := cp.take()
+	if !ok {
+		t.Fatal("take() gave the free worker nothing")
+	}
+	if d.idx != 0 || !d.hedge {
+		t.Fatalf("free worker got (idx=%d hedge=%v), want a hedge of chunk 0 — the "+
+			"reader is blocked on it and chunk %d is merely next in the queue", d.idx, d.hedge, d.idx)
+	}
+	if d.pidx == 0 {
+		t.Error("the hedge went back to the holder already sitting on chunk 0")
+	}
+
+	// And it has to actually wake the reader, not merely be dispatched.
+	cp.succeed(0, d.pidx, tr, time.Millisecond)
+	select {
+	case err := <-readerDone:
+		if err != nil {
+			t.Fatalf("reader returned %v", err)
+		}
+	case <-time.After(2 * time.Second * testTimeoutScale):
+		t.Fatal("the hedge landed and the blocked reader was not woken")
+	}
+}
+
 // TestAdoptedFlightIsRacedAndItsLoserForgiven pins what adoption buys: the
 // speculative chunk-0 attempt is hedged like any slow in-flight copy (the fix
 // for the swarm start being gated on holders[0] — .issues/open-issues.md,

@@ -73,6 +73,68 @@ log. One thing the plan did not anticipate: the knob got **two** layers, not
 the ceiling's three — the placement rule in `swarm-admin.md` names no config
 consumer for an age, and that section now records the answer.
 
+### 5. Request depth on a sole capped holder — an owner call, repro in hand
+
+**The queue's first open slot, and the only one with a fresh measurement behind
+it.** Reproduced 2026-08-14 (`.issues/open-issues.md` §"Madnetwork playback
+stops mid-track", the in-flight-chunk row, which SPLIT on the measurement).
+
+The fixed half needs no slot: `prioritize` marking an in-flight chunk and
+`take()` hedging it ahead of the queue (F9 item 4) closes the multi-holder case
+outright — worst reader wait 20/39/109 ms over three runs against a holder
+throttled to 128 KiB/s, hedges won every time. Now pinned by
+`TestBlockedReaderHedgesTheChunkItWaitsFor` (`federation/streaming_test.go`),
+which is the first test of that rule; every other hedge test is the empty-queue
+endgame.
+
+**What is left is one question: how deep should a swarm ask a holder when it is
+the ONLY holder and its link is capped?** That is the household shape by
+construction — a madplayer's sole holder is its home server — and it is the
+deployment the original mid-track symptom came from.
+
+Measured, 2 MiB / 8 chunks over a 128 KiB/s link, three runs each. A 256 KiB
+chunk at 128 KiB/s is ~2 s, so depth 1 is the floor:
+
+| `maxHolderRequests` | worst reader wait | retries | rate | total |
+|---|---|---|---|---|
+| 2 (shipped) | 4.86 / 5.54 / 9.23 s | 0–4 | 76–108 KiB/s | 19.0–23.2 s |
+| 1 (control) | 2.396 / 2.405 / 2.415 s | 0 | 108 KiB/s | 19.0–19.1 s |
+
+Mechanism: the second slot puts a chunk **nobody has asked for** on the same
+capped link as the chunk the reader is blocked on. Neither existing rule can
+reclaim it — reordering cannot reach a dispatched chunk, and hedging needs a
+second holder. Contention alone, not retries: the 5.54 s run reported
+`retries=0`; chunks blowing `Timeouts.PerChunk` are a second-order consequence
+that only appears once the link is oversubscribed.
+
+**Why this was not caught by the F9 depth measurement** (1/2/4 deep =
+12.36/12.30/12.80 s, which is why depth 2 shipped): that measured THROUGHPUT,
+and throughput is genuinely unaffected here — 19.0 s either way. The entire
+cost lands on the streaming reader's tail latency, which nothing measured until
+now. Both numbers are right; they answer different questions.
+
+**The decision.** Depth is resource policy, so this is the owner's, not the
+build's — and a blanket depth 1 is the wrong answer: it would give up
+pipelining on healthy multi-holder swarms, where the second slot is what keeps
+a fast holder busy. Two shapes that do not:
+
+1. **Depth 1 while a plan has exactly one live holder.** Narrowest possible;
+   the condition is already computed (`liveProvidersLocked`). Costs nothing in
+   any multi-holder plan, and the sole-holder case is precisely where the
+   second slot can only take bandwidth from the first. Recommended.
+2. **Hold the second slot back while a reader is blocked.** More general — it
+   also covers a two-holder plan where both are capped — and the signal already
+   exists (`cp.wanted` is exactly "a reader is waiting on this"). Costs a
+   little throughput on a plan whose reader is always blocked, i.e. any stream
+   slower than its link.
+
+Neither needs a migration, a wire change, or a new constant. Verification is
+the repro pair itself, parked outside the repo (see the issue row) — the
+scheduler-level one is deterministic; the chaos one wants `MADSHARE_CHAOS=1`
+and reports the worst single `WaitFor`, which is the number that must move.
+**Note for whoever measures a swarm change after this: time the reader, not the
+transfer.** Total elapsed hid this for a month.
+
 ### Parked — named triggers, do NOT schedule
 
 - **F10 merkle identity** — trigger: video support, or a *measured*
@@ -106,13 +168,16 @@ are listed so the queue is honest about what it does *not* schedule.
 - **Madnetwork playback stops mid-track** (High, unreproduced; all three
   candidate fixes merged in v0.8.5 and the symptom never seen since — row
   stays open; a length check would falsely pass the prime suspect, only
-  content/hash verification catches it).
+  content/hash verification catches it). Its in-flight-chunk row is no longer
+  part of this bullet: it was reproduced 2026-08-14 and split — half fixed and
+  now pinned, half sequenced as slot 5 above.
 - **Fetch-path drift pair** (`.issues` §"fetch-path dig findings"): local
   `os.Rename` failure triggers the network fallback (Low); 429 in whole-file
   mode skips the patience rule (Info). Fix shapes are written in the rows.
-- **Recording-tagsets review findings**, 5 still open, re-verified in code
-  2026-08-07, two of which destroy curated data silently — repro recipes in
-  the memory/issue rows; these want an owner session of their own.
+- ~~**Recording-tagsets review findings**, 5 still open~~ — **stale, corrected
+  2026-08-14**: every row in that section carries a fix (2026-07-14 through
+  2026-08-08), each with named tests verified to fail beforehand, and the one
+  remaining Info row is closed by design. Nothing there is waiting on a slot.
 
 ## Verification ritual (applies to every slot above)
 
