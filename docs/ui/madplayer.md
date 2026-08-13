@@ -705,6 +705,16 @@ size. Two separate causes, and only one of them is a defect:
   and still only 105–170 KB/s, because those bytes cross the yggdrasil overlay
   while the relay is ordinary HTTPS to a well-connected host.
 
+  Two things about *that* case changed on 2026-08-13 (F9 item 4) and a client
+  author should know both. A holder that is slow but not broken no longer owns
+  the tail of a transfer: once there is nothing else to fetch, another holder is
+  asked for the same chunk and whichever answers first wins. And one holder is
+  never asked for more than two chunks at a time, which matters here more than
+  anywhere else — a plan naming several holders of which one answers used to put
+  every worker on the survivor, and on a bandwidth-limited link that made each
+  chunk slow enough to blow its own deadline and **fail the fetch**. Neither
+  makes the overlay faster; both stop it being made slower.
+
 So on *this* topology the swarm is the slower path by a wide margin, and the
 paragraph above is aspirational rather than descriptive. It is left as the design
 because the shape is right — the swarm is what makes a device useful to its

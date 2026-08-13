@@ -5,11 +5,10 @@
 > fetch what is in [`federation-access.md`](federation-access.md), and the
 > operator's view of live transfers is [`swarm-admin.md`](swarm-admin.md).
 >
-> **Status:** F3 (direct transfer) and F4 (multi-source chunk fetch) are built, as
-> are the F7 per-member quotas and F9 items 1–3 (partial seeding, holdings
-> announce, the scheduler). F9 item 4 (pipelining and endgame) is designed and
-> **not built**. F10 (merkle verification) is decided and parked behind two
-> triggers.
+> **Status:** everything here is built — F3 (direct transfer), F4 (multi-source
+> chunk fetch), the F7 per-member quotas, and **F9 complete**: partial seeding,
+> the holdings announce, the scheduler and the endgame. F10 (merkle verification)
+> is decided and parked behind two triggers.
 
 ## Direct transfer (F3, built)
 
@@ -275,7 +274,7 @@ here would have been guesses of the same quality as `discovery_budget`
 (`federation.md` §Open questions) with worse failure modes when wrong. The
 knobs exist and are documented; choosing them is an operator's call.
 
-### Making it a swarm (F9, designed 2026-08-09; items 1–2 built the same day, item 3 on 2026-08-12, item 4 open)
+### Making it a swarm (F9, designed 2026-08-09; items 1–2 built the same day, item 3 on 2026-08-12, item 4 on 2026-08-13 — COMPLETE)
 
 F4 parallelises a fetch across holders. It does not make the swarm *grow*: every
 downloader is a pure leech until it finishes, so ten nodes pulling a new track
@@ -616,30 +615,91 @@ why F4 has no piece picker; item 1 creates genuinely rare chunks, but the swarms
 this serves are small and fewest-outstanding-bytes was enough to make every
 scenario above terminate quickly.
 
-#### Item 4 — Pipelining and endgame
+#### Item 4 — Pipelining and endgame (built 2026-08-13)
 
 **The defect.** Each worker fetches one chunk, waits for the whole response,
 then asks for the next. Over ygg — multi-hop, high RTT — every chunk pays a
 full round trip of dead air, and `maxChunkWorkers` caps the parallelism at 8.
 
-- **Pipelining:** keep a request queue depth ≥ 2 per holder, so the pipe stays
-  full across the RTT.
-- **Endgame / hedging:** duplicate-request the last few outstanding chunks
-  across several holders and take whichever lands first; generalised,
-  re-dispatch any chunk in flight longer than *k* × the median chunk time.
+##### Endgame / hedging — built as designed
 
-  Item 3 took half of what this was for. *"A holder that is slow but just fast
-  enough to beat `PerChunk` keeps taking half the dispatches indefinitely"* is
-  no longer true — outstanding bytes stay high while it dawdles, so it stops
-  being chosen. What item 3 cannot do is get back the chunk **already** in that
-  holder's hands: nothing re-dispatches it, so the transfer's tail is still as
-  slow as its slowest live holder. That is the remaining case, and hedging is
-  still the answer to it.
+What item 3 could not do is get back the chunk **already** in a slow holder's
+hands: nothing re-dispatched it, so a transfer's tail was as slow as its slowest
+live holder while every other holder sat idle and the file was otherwise
+complete. A chunk now gets a second copy (`maxChunkCopies` = 2) in exactly two
+situations:
 
-**Entirely independent of items 1–3**: no protocol change, no new measurement,
-contained in the scheduler. It is the best ratio of speedup to code touched, and
-it was deliberately **not** pulled forward — owner's call, 2026-08-09 — so
-the sequencing is a decision on record rather than an oversight.
+1. **a reader is blocked on it.** `prioritize` can reorder the queue, but the
+   chunk a stalled stream is waiting for has usually left it — it is in flight,
+   on whichever holder happens to be slow — so the seek-priority hook now marks
+   an in-flight chunk instead of failing silently, and the mark outranks starting
+   a new one. A reader waiting *now* is worth more than a chunk nobody has asked
+   for yet.
+2. **there is nothing else for a worker to do**, the queue being empty. The
+   classic endgame.
+
+**Neither needs a timing constant, and that is a change from the design.**
+"Re-dispatch any chunk in flight longer than *k* × the median chunk time" was the
+suggestion; it is not needed, because every case it catches arrives at (2)
+anyway, and it would spend a duplicate while chunks nobody had fetched at all
+were still queued. What is left is two structural questions — *is anyone waiting
+for this*, and *is there anything better to do* — neither of which anybody has
+to tune.
+
+**Cancelling the loser is load-bearing, not tidiness.** `fetchSwarm` waits for
+every worker, so an abandoned fetch would hold the transfer open for exactly as
+long as hedging was meant to save; the plan owns each attempt's context for this
+reason. And the cancelled copy is **not blamed**: it was stopped by us, on
+purpose, so counting it would make the second-fastest holder in a swarm collect a
+failure streak for being second — the one way hedging could be worse than not
+hedging.
+
+Measured (`TestChaosSlowHolderDoesNotOwnTheTail`, two holders, one throttled to
+128 KiB/s so its chunks stay *inside* the per-chunk budget — the regime nothing
+before this could help): **4.84 s → 108 ms**, three chunks rescued out of three
+hedged. Verified against the feature disabled first, where the same scenario
+reports `hedges=0/0` and takes the full 4.84 s.
+
+##### Pipelining — measured, and the answer was a ceiling, not a floor
+
+The design asked for "a request queue depth ≥ 2 per holder, so the pipe stays
+full across the RTT". Two workers per holder is already what `workers =
+len(holders) × 2` produces, so what was actually open was whether *more* helps.
+It does not. Over a 300 ms-RTT link capped at 512 KiB/s (4 MiB, one holder):
+
+| per-holder depth | elapsed |
+|---|---:|
+| 1 | 12.36 s |
+| 2 | 12.30 s |
+| 4 | 12.80 s (retries appear) |
+| 8 | **transfer failed** |
+
+The dead air is real and it is not the bottleneck: a link with any queueing in it
+absorbs the gap, so depth 1 and depth 2 are indistinguishable. Past that,
+concurrency stops buying bandwidth and starts spending **`Timeouts.PerChunk`** —
+eight chunks sharing one capped link each take eight times as long, so they blow
+the per-chunk budget together, the swarm collapses, and the whole-file fallback
+inherits a link it cannot use either.
+
+**That is reachable in an ordinary plan.** The worker count is derived from how
+many holders were ADVERTISED and bounded only in total, so four holders of which
+one answers put all eight workers on the survivor. So the shipped depth stays at
+two and gains a **ceiling**, `maxHolderRequests`, which holds however many
+workers exist. `TestChaosOneLiveHolderIsNotFloodedWithWorkers` pins it: with the
+cap, 9/9 chunks on the swarm path; without it, `mode=swarm→whole→whole`, no
+bytes, 35 retries.
+
+This is the one place F9 contradicted its own design, and it is worth
+remembering why the design was wrong: it reasoned about an idle *connection*,
+and the thing that runs out first is a *deadline*.
+
+##### What it cost to read
+
+`TransferStats` gained `hedges`/`hedges_won` and a per-holder `lost`. The last
+one is not decoration: a holder that was asked for three chunks and beaten to
+all three otherwise disappears from the readout entirely — no bytes, no
+failures, no row — and that is precisely the holder somebody reading the stats
+is trying to find.
 
 #### Deliberately not in F9
 
@@ -658,10 +718,17 @@ the sequencing is a decision on record rather than an oversight.
 
 #### Build order
 
-In dependency order: **item 4** (standalone, any time) → **item 1** (**built
-2026-08-09**; it carries its own minimum advertisement, so it stood alone) →
-**item 2** (**built 2026-08-09**, which makes item 1 *timely* rather than
-possible) → **item 3** (**built 2026-08-12**).
+Planned in dependency order — **item 4** (standalone, any time) → **item 1** →
+**item 2** → **item 3** — and built in the opposite one: items 1 and 2 on
+**2026-08-09**, item 3 on **2026-08-12**, item 4 last on **2026-08-13**, having
+been deliberately not pulled forward (owner's call, 2026-08-09).
+
+Building item 4 last cost nothing and bought one thing the plan could not have
+predicted: item 3's dispatch rule is what made the endgame's trigger obvious. A
+worker with nothing to do is only a *reliable* signal that the tail has arrived
+once the scheduler stops handing out work to holders that are not delivering —
+before that, "the queue is empty" and "the transfer is nearly done" were
+different statements.
 
 Items 1 and 3 were one job in the sense that item 3 must not be designed before
 item 1 lands — pair-selection is only meaningful once holders can be partial —
@@ -669,8 +736,16 @@ but item 1 did not wait on anything. Item 2 without item 1 still shortens the
 path for completed fetches, so the two orderings differ only in how fast item 1's
 payoff arrives.
 
-**Item 4 is what is left**, and it was deliberately not pulled forward (owner's
-call, 2026-08-09) even though nothing depends on it.
+#### What F9 left standing
+
+- **Rarest-first** is still not built and still not measured (item 3).
+- **A holder is never reconsidered** once retired within a transfer, which the
+  2026-07-24 write-up listed as a defect. It matters much less now: retirement is
+  relative, a 416 and a 429 do not cause it, and a holder that is merely slow is
+  passed over rather than condemned — so the population that gets retired at all
+  is smaller than the rule was written for.
+- **The chunk layout is still policy, not protocol identity**, which is what F10
+  would change. Nothing in F9 needed it revisited.
 
 No migration was needed: `federation_holdings` and `federation_catalog_sources`
 already carried what item 2 writes.

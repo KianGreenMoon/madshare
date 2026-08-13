@@ -744,10 +744,26 @@ before/after on one machine: 1 stale holder **12.054s → 545ms**, 2 stale
 absorbs two dispatches rather than `providerFailureLimit`, and is never retired
 because it is never chosen while a live holder is delivering.
 
-**What is NOT fixed, and is item 4's:** a chunk already in a slow holder's hands
-is not re-dispatched, so a transfer's tail is still as slow as its slowest live
-holder. Hedging is the answer and it is designed
-(`docs/architecture/federation-swarm.md`, F9 item 4).
+**The last piece, fixed 2026-08-13 (F9 item 4).** A chunk already in a slow
+holder's hands was not re-dispatched, so a transfer's tail stayed as slow as its
+slowest live holder. It is now raced: a second copy goes out when a reader is
+blocked on that chunk, or when there is nothing else for a worker to do, and the
+loser is cancelled. Measured 4.84 s → 108 ms on a two-holder tail. The entry's
+own last open complaint — *"a holder that is slow but just fast enough to beat
+`PerChunk` keeps taking half the dispatches indefinitely"* — is answered in both
+halves now: it stops being dispatched to (item 3) and what it already holds is
+raced (item 4).
+
+**One thing this entry never suspected, found while measuring item 4:** the
+worker count is derived from how many holders were ADVERTISED and bounded only
+in total, so four holders of which one answers put all eight workers on the
+survivor — and over a link with a real bandwidth limit that FAILS the transfer,
+because eight chunks sharing the link each take eight times as long and blow
+`Timeouts.PerChunk` together. Fixed with `maxHolderRequests` (two per holder,
+whatever the worker count) and pinned by
+`TestChaosOneLiveHolderIsNotFloodedWithWorkers`, which reports
+`mode=swarm→whole→whole` and no bytes without it. The lesson worth carrying: the
+resource this scheduler runs out of first is a deadline, not bandwidth.
 
 ## Federation — findings from the full `-race` mesh run (2026-07-24)
 

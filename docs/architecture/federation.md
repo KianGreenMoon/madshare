@@ -11,8 +11,7 @@
 > | [`federation-trust.md`](federation-trust.md) | **how nodes know and judge each other** — friendship and pairing, friend-list gossip, distrust marks, contradicted claims, the network map, branch weighting |
 > | [`federation-swarm.md`](federation-swarm.md) | **how bytes move** — direct transfer, the chunk swarm, per-member quotas, F9 (making it a swarm), F10 (merkle, parked) |
 >
-> **Status** (agreed 2026-07-18). Built: F0–F8 in full, and F9 items 1–3.
-> Designed and unbuilt: F9 item 4. Decided and parked behind explicit
+> **Status** (agreed 2026-07-18). Built: F0–F9 in full. Decided and parked behind explicit
 > triggers: F10. The posture runs in both directions — **everything to our
 > community, nothing outside it** — and `meshlab reach` is the measurement that
 > says so. §Build plan carries every phase, what it settled and what it left; the
@@ -1090,8 +1089,9 @@ own milestone directly after direct transfer works, and tokens ship with depth.
      per-source watermark; findings stored (migration 039) with dispositions
      that survive a rescan; materializing is additive, via the existing download
      path.
-- **F9 — Making it a swarm** (designed 2026-08-09, **items 1 and 2 built the
-  same day, item 3 on 2026-08-12** — `federation-swarm.md` §Distribution
+- **F9 — Making it a swarm** (designed 2026-08-09 and **complete 2026-08-13**:
+  items 1 and 2 built the same day, item 3 on the 12th, item 4 on the 13th
+  — `federation-swarm.md` §Distribution
   "Making it a swarm" carries the four items, the decisions each took and the
   traps; not repeated here). F4 parallelises a fetch across holders but does not
   let the swarm grow, because a downloader seeds nothing until it finishes. Four
@@ -1103,8 +1103,14 @@ own milestone directly after direct transfer works, and tokens ship with depth.
   (chunk, holder) PAIR now that a holder may be partial, reworks
   `worseThanPeers` with it and carries the two manifest hardenings ✅ (a dead
   holder in a plan went from ~150× the clean fetch to about five seconds of
-  overlapped dial) — and **pipelining + endgame hedging**, which is what is
-  left. Item 3 must not be designed before item 1 lands; item 4 is independent
+  overlapped dial) — and **endgame hedging + pipelining** ✅, which race a
+  second copy of the chunk a slow holder is sitting on (4.84 s → 108 ms on the
+  tail) and bound what one holder may be asked for at once. That last part is
+  the one place F9 contradicted its own design: it asked for a request-depth
+  FLOOR per holder and the measurement produced a ceiling, because past two
+  concurrent chunks a capped link spends `Timeouts.PerChunk` rather than
+  bandwidth — and a plan of four holders with one answering reaches that on its
+  own. Item 3 must not be designed before item 1 lands; item 4 was independent
   of everything and was deliberately not pulled forward.
 - **F10 — Merkle verification** (decided **and parked** 2026-08-09,
   `federation-swarm.md` §Distribution "Merkle verification" — the two
