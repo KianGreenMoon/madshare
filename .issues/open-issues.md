@@ -1989,9 +1989,10 @@ routine contention, not an edge case. Built the same day
   its reason. Any delivered chunk resets the clock.
 - `runWhole` left alone for v1: the swarm path absorbs the busy case, and the
   whole-file walk only runs against manifest-less legacy peers.
-- Optional follow-up, not built: `admitServe` sending `Retry-After` and the
-  scheduler honouring it — the holder is the party that knows when its bucket
-  clears.
+- Optional follow-up, not built — PARKED as a design idea (owner, 2026-08-13)
+  in `docs/architecture/federation-swarm.md` §"What a member may cost us":
+  `Retry-After` read as a self-declared absence ("busy for an hour" = "offline
+  to us for an hour"), generalising to an explicit "don't distribute me".
 
 Tests: `TestQuotaRefusalSpendsNoAttemptBudget`,
 `TestConsecutiveRefusalsBackOffFurther`, `TestBusyOnlyPlanAbortsAfterPatience`.

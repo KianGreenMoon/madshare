@@ -289,6 +289,31 @@ about whether we hold the hash — it is a fact about us. Manifests are
 deliberately **not** counted: a manifest is a small memoized JSON, and refusing
 one would stop a member from even planning a fetch it is entitled to make.
 
+**`Retry-After` — considered and PARKED (owner, 2026-08-13), with a reframing
+worth keeping.** The obvious refinement of the busy backoff is to let the
+refusing holder say how long: `admitServe` sends `Retry-After` on the 429 and
+the scheduler sets that holder's rest from the holder's own estimate instead of
+the doubling guess. Two things stopped it. First, the server usually has **no
+honest number** — the 429 comes from the concurrency caps, and a slot frees
+whenever some other transfer happens to finish, so the estimate would be a
+guessed constant wearing a header. Second, the header is a **peer's claim**: a
+buggy or hostile holder saying "an hour" would have to be clamped, and a
+clamped claim is barely better than the guess it replaces. The owner's
+reframing dissolves the second problem and is the version to build if this is
+ever picked up: read a long `Retry-After` not as a scheduling hint but as a
+**self-declared absence** — "an hour? then you are offline to us for an hour"
+— and take the holder out of the plan (and the provider rotation) for the
+stated period instead of politely polling it. Under that reading no clamp is
+needed, because the claim only ever costs its claimant: overstating your own
+busyness just removes you as a source, which is also what makes the
+generalisation honest — the same channel becomes an explicit **"don't
+distribute me"**, a node asking not to be used as a provider, which fits the
+availability philosophy exactly (passive freshness, no probing: a
+self-declared absence is the one availability signal *better* than
+observation, and like the freshness hints it can only silence its sender,
+never anyone else). Unscheduled, no trigger; the escalating backoff plus the
+patience rule carry the busy case until someone wants this.
+
 **All four default to `0` — unlimited — by owner decision (2026-08-01).**
 The honest consequence: shipped this way the feature protects nobody who does
 not edit `madshare.toml`, and the first time it matters is exactly the first
