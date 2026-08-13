@@ -91,24 +91,30 @@ func (n *Node) handleBlob(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Disposition",
 		mime.FormatMediaType("attachment", map[string]string{"filename": filepath.Base(path)}))
-	// Count what we actually hand over (docs/architecture/swarm-admin.md). The
-	// meter wraps the throttle rather than the other way round, so it counts
-	// bytes that reached the client rather than bytes we merely intended to send;
-	// and unlike the throttle it is ALWAYS present, since the shipped default is
-	// unlimited and an unmeasured default would leave every node's contribution
-	// unknown.
+	http.ServeContent(n.seedWriter(w, r, hash, key, rls), r, info.Name(), info.ModTime(), f)
+}
+
+// seedWriter wraps a blob response in the two layers every seeded byte goes
+// through: the throttle (the node's outbound cap plus the requester's quota
+// buckets) and, around it, the meter (docs/architecture/swarm-admin.md). The
+// meter wraps the throttle rather than the other way round, so it counts bytes
+// that reached the client rather than bytes we merely intended to send; and
+// unlike the throttle it is ALWAYS present, since the shipped default is
+// unlimited and an unmeasured default would leave every node's contribution
+// unknown.
+//
+// The node's outbound cap is resolved here, once per response. A swarm fetch is
+// one response per chunk, so a change an admin just made lands within a chunk;
+// only the F3 whole-file fallback holds a single response long enough to miss
+// one.
+func (n *Node) seedWriter(w http.ResponseWriter, r *http.Request, hash, key string, rls []*rateLimiter) http.ResponseWriter {
 	addr := ""
 	if ip := remoteIP(r); ip != nil {
 		addr = ip.String()
 	}
-	// The node's outbound cap is resolved here, once per response. A swarm fetch
-	// is one response per chunk, so a change an admin just made lands within a
-	// chunk; only the F3 whole-file fallback holds a single response long enough
-	// to miss one.
-	out := metered(throttled(w, r.Context(), n.upLimiters(r.Context(), rls)), func(b int64) {
+	return metered(throttled(w, r.Context(), n.upLimiters(r.Context(), rls)), func(b int64) {
 		n.noteUp(hash, key, addr, b)
 	})
-	http.ServeContent(out, r, info.Name(), info.ModTime(), f)
 }
 
 // ── Fetching side ────────────────────────────────────────────────────────────
@@ -378,12 +384,18 @@ func (t *transfer) setMeta(size int64, filename string) {
 	}
 }
 
+// publishLocked wakes every reader blocked in WaitFor by rotating the changed
+// channel. Caller holds t.mu.
+func (t *transfer) publishLocked() {
+	close(t.changed)
+	t.changed = make(chan struct{})
+}
+
 func (t *transfer) addProgress(n int64) {
 	t.mu.Lock()
 	t.progress += n
 	readable := t.progress > 0
-	close(t.changed)
-	t.changed = make(chan struct{})
+	t.publishLocked()
 	t.mu.Unlock()
 	if readable {
 		t.stats.noteFirstByte()
@@ -396,8 +408,7 @@ func (t *transfer) resetProgress() {
 	t.layout = nil
 	t.chunkOK = nil
 	t.prioritize = nil
-	close(t.changed)
-	t.changed = make(chan struct{})
+	t.publishLocked()
 	t.mu.Unlock()
 	t.stats.resetAttempt()
 }
@@ -441,8 +452,7 @@ func (t *transfer) beginChunks(layout *chunkLayout, prioritize func(int)) {
 	t.layout = layout
 	t.chunkOK = make([]bool, layout.count())
 	t.prioritize = prioritize
-	close(t.changed)
-	t.changed = make(chan struct{})
+	t.publishLocked()
 	t.mu.Unlock()
 }
 
@@ -458,8 +468,7 @@ func (t *transfer) chunkDone(idx int, watermarkBytes int64) {
 		t.progress = watermarkBytes
 	}
 	readable := t.progress > 0
-	close(t.changed)
-	t.changed = make(chan struct{})
+	t.publishLocked()
 	t.mu.Unlock()
 	if readable {
 		t.stats.noteFirstByte()
@@ -473,8 +482,7 @@ func (t *transfer) finish(err error) {
 	if err == nil {
 		t.size = t.progress
 	}
-	close(t.changed)
-	t.changed = make(chan struct{})
+	t.publishLocked()
 	t.mu.Unlock()
 	t.stats.finish()
 	close(t.done)
@@ -496,13 +504,7 @@ func (t *transfer) Stats() TransferStats {
 //
 // Ordered by hash so a repeated read of an unchanged set does not reshuffle.
 func (n *Node) ActiveTransfers() []TransferStats {
-	n.transferMu.Lock()
-	live := make([]*transfer, 0, len(n.transfers))
-	for _, t := range n.transfers {
-		live = append(live, t)
-	}
-	n.transferMu.Unlock()
-
+	live := n.liveTransfers()
 	out := make([]TransferStats, 0, len(live))
 	for _, t := range live {
 		out = append(out, t.Stats())
@@ -528,6 +530,13 @@ func (n *Node) EvictCachedBlob(hash string) error {
 	if n.cacheDir == "" || !isBlobHash(hash) {
 		return nil
 	}
+	// The memoized manifest goes with the bytes. It is content-addressed, so a
+	// stale entry could never serve wrong data — dropping it only keeps the memo
+	// from accumulating entries for blobs this node no longer holds (it is
+	// rebuilt on demand if the blob ever comes back).
+	n.manifestMu.Lock()
+	delete(n.manifests, hash)
+	n.manifestMu.Unlock()
 	if err := os.Remove(filepath.Join(n.cacheDir, hash)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("federation: evict cached blob: %w", err)
 	}
@@ -706,13 +715,12 @@ func (n *Node) runWhole(t *transfer, holders []*BlobProvider) {
 // fetchFrom streams the blob from one friend into the partial file, hashing as
 // it goes; matching bytes are renamed into the cache atomically.
 func (n *Node) fetchFrom(t *transfer, p *BlobProvider) error {
-	addr, err := AddrForKeyHex(p.PublicKey)
+	url, err := holderURL(p.PublicKey, "blob/"+t.hash)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(n.transferCtx, n.timeouts.Transfer)
 	defer cancel()
-	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/blob/%s", addr, MeshPort, t.hash)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err

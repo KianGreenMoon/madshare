@@ -101,7 +101,9 @@ func (n *Node) ActiveTransfers() []TransferStats { return nil }
 // build with no mesh moves no bytes, so "nothing this session" and "nothing to
 // persist" are the true answers, and the swarm page still reports the all-time
 // figures, which come from the database and outlive any node.
-func (n *Node) Traffic() TrafficSnapshot { return TrafficSnapshot{Hashes: map[string]TrafficCounters{}} }
+func (n *Node) Traffic() TrafficSnapshot {
+	return TrafficSnapshot{Hashes: map[string]TrafficCounters{}}
+}
 
 func (n *Node) DrainTraffic() []TrafficDelta { return nil }
 

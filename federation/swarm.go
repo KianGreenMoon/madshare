@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -325,18 +326,31 @@ func buildManifest(path, hash string) (*blobManifest, error) {
 	return m, nil
 }
 
+// serveGate is the protocol handlers' shared prologue: 503 before the store is
+// wired, 500 when the requester's audience cannot be decided (serveAudience's
+// bool means "decided", not "allowed" — a refusal comes back as an audience
+// that serves nothing, so each handler keeps its own 404-vs-403 choice). False
+// means the response has already been written.
+func (n *Node) serveGate(w http.ResponseWriter, r *http.Request) (Audience, bool) {
+	if n.store == nil {
+		http.Error(w, "transfer not configured", http.StatusServiceUnavailable)
+		return Audience{}, false
+	}
+	aud, ok := n.serveAudience(r)
+	if !ok {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return Audience{}, false
+	}
+	return aud, true
+}
+
 // handleManifest serves GET /madnetwork/v0/manifest/{hash}: the chunk layout of
 // a blob this node holds and will seed to the requester (the same audience +
 // seedable gate as the blob endpoint — a manifest is a description of bytes we
 // are willing to hand over, so the two must never disagree).
 func (n *Node) handleManifest(w http.ResponseWriter, r *http.Request) {
-	if n.store == nil {
-		http.Error(w, "transfer not configured", http.StatusServiceUnavailable)
-		return
-	}
-	aud, ok := n.serveAudience(r)
+	aud, ok := n.serveGate(w, r)
 	if !ok {
-		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
 	hash := r.PathValue("hash")
@@ -359,36 +373,56 @@ func (n *Node) handleManifest(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(m)
 }
 
-// fetchManifest pulls one friend's manifest for hash; nil (no error surfaced)
-// when the holder lacks it or is too old to speak the endpoint.
-func (n *Node) fetchManifest(ctx context.Context, p *BlobProvider, hash string) *blobManifest {
-	addr, err := AddrForKeyHex(p.PublicKey)
+// meshURL addresses one endpoint of a node's protocol surface: every mesh
+// request in the swarm speaks to http://[<addr>]:<MeshPort>/madnetwork/v0/<path>.
+func meshURL(addr net.IP, path string) string {
+	return fmt.Sprintf("http://[%s]:%d/madnetwork/v0/%s", addr, MeshPort, path)
+}
+
+// holderURL is meshURL for a node named by its public key — the mesh address is
+// derived from it, so an unusable key is the one way this fails.
+func holderURL(key, path string) (string, error) {
+	addr, err := AddrForKeyHex(key)
 	if err != nil {
-		return nil
+		return "", err
 	}
-	// Share the pooled blob transport (not the short control client) so the
-	// chunk fetches that follow reuse this warm connection; bound this one probe
-	// so a slow holder doesn't stall the whole transfer.
+	return meshURL(addr, path), nil
+}
+
+// probeJSON asks one holder a small question: a GET against its protocol
+// surface, bounded by Timeouts.Manifest (so a slow holder doesn't stall the
+// whole transfer), decoded (up to limit body bytes) into out. False folds
+// "unreachable", "refused" and "unparseable" into one answer, because every
+// caller treats them identically: no answer at all. It runs on the pooled blob
+// transport (not the short control client) so the chunk fetches that usually
+// follow reuse the warm connection.
+func (n *Node) probeJSON(ctx context.Context, key, path string, limit int64, out any) bool {
+	url, err := holderURL(key, path)
+	if err != nil {
+		return false
+	}
 	cctx, cancel := context.WithTimeout(ctx, n.timeouts.Manifest)
 	defer cancel()
-	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/manifest/%s", addr, MeshPort, hash)
 	req, err := http.NewRequestWithContext(cctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil
+		return false
 	}
 	resp, err := n.blobClient.Do(req)
 	if err != nil {
-		return nil
+		return false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil
+		return false
 	}
+	return json.NewDecoder(io.LimitReader(resp.Body, limit)).Decode(out) == nil
+}
+
+// fetchManifest pulls one friend's manifest for hash; nil (no error surfaced)
+// when the holder lacks it or is too old to speak the endpoint.
+func (n *Node) fetchManifest(ctx context.Context, p *BlobProvider, hash string) *blobManifest {
 	var m blobManifest
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&m); err != nil {
-		return nil
-	}
-	if !m.valid(hash) {
+	if !n.probeJSON(ctx, p.PublicKey, "manifest/"+hash, 4<<20, &m) || !m.valid(hash) {
 		return nil
 	}
 	return &m
@@ -550,13 +584,7 @@ func (n *Node) cacheHoldings() []string {
 // — which is the same reason the cache page reaps those unconditionally at
 // startup.
 func (n *Node) partialHoldings(complete []string) []string {
-	n.transferMu.Lock()
-	live := make([]*transfer, 0, len(n.transfers))
-	for _, t := range n.transfers {
-		live = append(live, t)
-	}
-	n.transferMu.Unlock()
-
+	live := n.liveTransfers()
 	done := make(map[string]bool, len(complete))
 	for _, h := range complete {
 		done[h] = true
@@ -583,13 +611,8 @@ func (n *Node) partialHoldings(complete []string) []string {
 // it — what it opens is the byte endpoints, where 404 keeps a hash's existence
 // unconfirmed.
 func (n *Node) handleHoldings(w http.ResponseWriter, r *http.Request) {
-	if n.store == nil {
-		http.Error(w, "transfer not configured", http.StatusServiceUnavailable)
-		return
-	}
-	aud, ok := n.serveAudience(r)
+	aud, ok := n.serveGate(w, r)
 	if !ok {
-		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
 	if !aud.InCommunity() {
@@ -618,11 +641,10 @@ func (n *Node) handleHoldings(w http.ResponseWriter, r *http.Request) {
 // them. Called on the same cadence as the catalog sync, for the same set of
 // nodes — a member seeds from its cache exactly as a friend does.
 func (n *Node) syncHoldings(ctx context.Context, p *CatalogSource) {
-	addr, err := AddrForKeyHex(p.PublicKey)
+	url, err := holderURL(p.PublicKey, "holdings")
 	if err != nil {
 		return
 	}
-	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/holdings", addr, MeshPort)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return
@@ -651,10 +673,12 @@ func (n *Node) syncHoldings(ctx context.Context, p *CatalogSource) {
 	// it is ever wanted.
 	valid := make([]string, 0, len(msg.Hashes)+len(msg.Partial))
 	seen := make(map[string]bool, cap(valid))
-	for _, h := range append(append([]string(nil), msg.Hashes...), msg.Partial...) {
-		if isBlobHash(h) && !seen[h] {
-			seen[h] = true
-			valid = append(valid, h)
+	for _, list := range [][]string{msg.Hashes, msg.Partial} {
+		for _, h := range list {
+			if isBlobHash(h) && !seen[h] {
+				seen[h] = true
+				valid = append(valid, h)
+			}
 		}
 	}
 	if err := n.store.ReplaceSourceHoldings(ctx, p.ID, valid); err != nil {
@@ -691,6 +715,17 @@ func (n *Node) liveTransfer(hash string) *transfer {
 	n.transferMu.Lock()
 	defer n.transferMu.Unlock()
 	return n.transfers[hash]
+}
+
+// liveTransfers snapshots the in-flight fetch table.
+func (n *Node) liveTransfers() []*transfer {
+	n.transferMu.Lock()
+	defer n.transferMu.Unlock()
+	live := make([]*transfer, 0, len(n.transfers))
+	for _, t := range n.transfers {
+		live = append(live, t)
+	}
+	return live
 }
 
 // seedsPartials reports whether an unfinished download may be served to aud.
@@ -890,13 +925,7 @@ func (n *Node) servePartialBlob(w http.ResponseWriter, r *http.Request, hash str
 	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end-1, size))
 	w.Header().Set("Content-Length", strconv.FormatInt(end-start, 10))
 
-	addr := ""
-	if ip := remoteIP(r); ip != nil {
-		addr = ip.String()
-	}
-	out := metered(throttled(w, r.Context(), n.upLimiters(r.Context(), rls)), func(b int64) {
-		n.noteUp(hash, key, addr, b)
-	})
+	out := n.seedWriter(w, r, hash, key, rls)
 	out.WriteHeader(http.StatusPartialContent)
 	if _, err := io.Copy(out, io.NewSectionReader(f, start, end-start)); err != nil {
 		n.logger.Printf("federation: serve partial %s [%d,%d): %v", hash, start, end, err)
@@ -912,30 +941,8 @@ func (n *Node) servePartialBlob(w http.ResponseWriter, r *http.Request, hash str
 // beyond the coverage staying unknown — read as "has everything", the pre-F9
 // assumption.
 func (n *Node) fetchHave(ctx context.Context, p *BlobProvider, hash string) *haveMessage {
-	addr, err := AddrForKeyHex(p.PublicKey)
-	if err != nil {
-		return nil
-	}
-	cctx, cancel := context.WithTimeout(ctx, n.timeouts.Manifest)
-	defer cancel()
-	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/have/%s", addr, MeshPort, hash)
-	req, err := http.NewRequestWithContext(cctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil
-	}
-	resp, err := n.blobClient.Do(req)
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil
-	}
 	var msg haveMessage
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&msg); err != nil {
-		return nil
-	}
-	if msg.Hash != hash {
+	if !n.probeJSON(ctx, p.PublicKey, "have/"+hash, 1<<20, &msg) || msg.Hash != hash {
 		return nil
 	}
 	return &msg
@@ -968,13 +975,8 @@ func (n *Node) probeCoverage(hash string, plan *chunkPlan) {
 
 // handleHave serves GET /madnetwork/v0/have/{hash}.
 func (n *Node) handleHave(w http.ResponseWriter, r *http.Request) {
-	if n.store == nil {
-		http.Error(w, "transfer not configured", http.StatusServiceUnavailable)
-		return
-	}
-	aud, ok := n.serveAudience(r)
+	aud, ok := n.serveGate(w, r)
 	if !ok {
-		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
 	hash := r.PathValue("hash")
@@ -1107,23 +1109,29 @@ func (n *Node) serveAudienceKey(r *http.Request) (Audience, string, bool) {
 
 // ── Multi-source chunk fetch ─────────────────────────────────────────────────
 
+// rangeBlob issues one Range GET for bytes [start, end) of hash against p. The
+// caller owns the status-code reading — the two fetch paths disagree on what a
+// 200 or a 416 means — and must close the body.
+func (n *Node) rangeBlob(ctx context.Context, p *BlobProvider, hash string, start, end int64) (*http.Response, error) {
+	url, err := holderURL(p.PublicKey, "blob/"+hash)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end-1))
+	return n.blobClient.Do(req)
+}
+
 // fetchRange fetches [start, start+length) from one holder over the mesh (a
 // plain HTTP Range request against the F3 blob endpoint) and returns the bytes.
 // The holder clamps at EOF, so a short file yields fewer than length bytes.
 func (n *Node) fetchRange(ctx context.Context, p *BlobProvider, t *transfer, start, length int64, onStall func()) ([]byte, error) {
-	addr, err := AddrForKeyHex(p.PublicKey)
-	if err != nil {
-		return nil, err
-	}
 	cctx, cancel := context.WithTimeout(ctx, n.timeouts.PerChunk)
 	defer cancel()
-	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/blob/%s", addr, MeshPort, t.hash)
-	req, err := http.NewRequestWithContext(cctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, start+length-1))
-	resp, err := n.blobClient.Do(req)
+	resp, err := n.rangeBlob(cctx, p, t.hash, start, start+length)
 	if err != nil {
 		return nil, err
 	}
@@ -1250,16 +1258,7 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*BlobProvide
 	// the load-bearing one: this formula counts advertised holders, not answering
 	// ones, so four holders of which one is alive puts every worker on the
 	// survivor.
-	workers := len(holders) * 2
-	if workers > maxChunkWorkers {
-		workers = maxChunkWorkers
-	}
-	if workers > len(man.Chunks) {
-		workers = len(man.Chunks)
-	}
-	if workers < 1 {
-		workers = 1
-	}
+	workers := max(1, min(len(holders)*2, maxChunkWorkers, len(man.Chunks)))
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
@@ -1310,19 +1309,9 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*BlobProvide
 func (n *Node) fetchChunk(ctx context.Context, cancel context.CancelFunc, t *transfer,
 	f *os.File, layout *chunkLayout, man *blobManifest, idx int, p *BlobProvider) error {
 
-	addr, err := AddrForKeyHex(p.PublicKey)
-	if err != nil {
-		return err
-	}
 	start, end := layout.rangeOf(idx)
 	length := end - start
-	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/blob/%s", addr, MeshPort, t.hash)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end-1))
-	resp, err := n.blobClient.Do(req)
+	resp, err := n.rangeBlob(ctx, p, t.hash, start, end)
 	if err != nil {
 		return err
 	}

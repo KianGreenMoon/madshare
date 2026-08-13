@@ -1904,3 +1904,70 @@ entry set for itself.
 record says so explicitly. A merkle root would arrive in the catalog, from a
 peer, so it is exactly as trustworthy as a peer-supplied chunk list — a liar
 lies about the root instead. Cross-checking is the fix in both worlds.
+
+## Federation — swarm refactor pass findings (2026-08-13)
+
+A behaviour-preserving refactor of `swarm.go` / `transfer.go` / `scheduler.go`
+(mesh-URL/request building deduplicated into `meshURL`/`holderURL`/`probeJSON`/
+`rangeBlob`, the handler prologue into `serveGate`, the metered+throttled serve
+path into `seedWriter`, the `changed`-channel churn into `publishLocked`). Three
+things surfaced during the read that the refactor deliberately did NOT change.
+None has an observed failure; all are by-inspection, so per the standing rule
+they are recorded rather than fixed.
+
+### 1. The chunk-0 speculation can serialize the swarm start (Low, open)
+
+`runTransfer` calls `pf.take(man)` — a blocking receive — before `fetchSwarm`
+starts. The speculative chunk-0 fetch goes to `holders[0]`; if that holder
+accepts the dial but then dribbles or stalls, the wait is bounded only by the
+idle-read watchdog (`Timeouts.ChunkStall`) or, for a slow-but-steady dribble,
+`Timeouts.PerChunk` — while the agreed manifest is already in hand from OTHER
+holders and the plan could be fetching chunk 0 from any of them. Worst case,
+the feature built to cut time-to-first-byte ADDS up to a per-chunk budget of
+latency, on exactly the kind of holder (stale advertisement, half-dead node)
+F9 spent two items defending against. `Timeouts.Connect` only covers the case
+where the holder never connects.
+
+Not light to fix: the clean shape is folding the prefetch into the chunk plan
+as a pre-dispatched attempt at chunk 0, so hedging (`prioritize` marking a
+wanted in-flight chunk) covers it like any other slow copy, and `take()` stops
+existing. Left open with that sketch.
+
+### 2. A sole holder answering 429 exhausts the attempt budget (design question)
+
+`errChunkBusy` is documented as "a wait, never a streak" — it builds no failure
+streak and feeds no throughput sample. But every failed try, 429s included,
+increments `chunkPlan.attempts[idx]`, and with one holder `attemptLimit` is
+`providerFailureLimit` = 4. Four polite quota refusals (~1 s busy backoff each)
+therefore abort the swarm attempt, and `runWhole` then meets the same 429 and
+fails the transfer. So "the swarm reads a refusal as ask-another-holder" holds
+only when there IS another holder; against a busy sole holder the transfer
+fails in seconds rather than waiting the congestion out.
+
+This may be the right call — counting busy attempts is currently what
+guarantees termination, since there is deliberately no overall swarm deadline
+(`Timeouts.Transfer` binds only the whole-file path). NOT counting them needs a
+substitute bound (e.g. a patience budget for busy waits). Question for the
+owner: is fail-fast-and-let-the-client-retry the intended behaviour here?
+
+### 3. Cancelled rate-limiter waits debit tokens for bytes never sent (Info)
+
+`rateLimiter.wait` subtracts the tokens up front and sleeps; if the requester's
+ctx is cancelled during the sleep, the tokens stay debited though the write
+never happens. Each aborted response leaks at most one `seedWriteChunk`
+(32 KiB) per bucket — including the SHARED buckets (global cap, member-class
+cap), so repeated connect-and-abandon depresses everyone's throughput slightly.
+Magnitude is tiny and self-healing (buckets refill in ≤1 s). A refund on
+cancellation is the obvious fix but has a wrinkle: `throttledResponseWriter`
+waits several limiters in sequence, so a failure on the Nth must refund the
+N−1 already debited. Recorded, not fixed.
+
+### Fixed in the same pass (light, behaviour-safe)
+
+The manifest memo (`Node.manifests`) grew without bound: content-addressed and
+never evicted, so a node that seeds many blobs holds every manifest it ever
+built, including for blobs long gone. `EvictCachedBlob` now drops the memo
+entry with the bytes (rebuilt on demand if the blob returns; content-addressed,
+so a stale entry was never a correctness risk — only memory). Library-side
+deletions still leave their memo entries behind; that half stays open, same
+severity (Info).
