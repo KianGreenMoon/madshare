@@ -39,6 +39,8 @@ type transferStats struct {
 	failovers  int
 	stalls     int
 	corrupt    int
+	hedges     int
+	hedgesWon  int
 
 	// failedBy records which holders have already failed each piece, so a later
 	// success by a *different* holder is recognisable as a failover. Cleared per
@@ -268,6 +270,44 @@ func (s *transferStats) noteFail(piece int, p *BlobProvider, err error, corrupt 
 	s.failedBy[piece][key] = true
 }
 
+// noteHedge counts a chunk dispatched to a second holder while the first was
+// still fetching it (F9 item 4).
+func (s *transferStats) noteHedge() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.hedges++
+	s.mu.Unlock()
+}
+
+// noteHedgeWon counts a chunk that a hedge delivered before the copy it was
+// racing. Hedges minus HedgesWon is what the duplication COST; HedgesWon is what
+// it bought, and a reader can only judge the trade with both.
+func (s *transferStats) noteHedgeWon() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.hedgesWon++
+	s.mu.Unlock()
+}
+
+// noteLost records that a holder was still fetching a chunk when somebody else
+// delivered it. It creates the holder's row if this is all it ever did, which is
+// the point: a holder that was asked three times and beaten three times would
+// otherwise not appear in the readout at all.
+func (s *transferStats) noteLost(p *BlobProvider) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if ps := s.providerLocked(p); ps != nil {
+		ps.Lost++
+	}
+	s.mu.Unlock()
+}
+
 // noteRate records a holder's current throughput estimate — the input the
 // scheduler dispatches on (F9 item 3), reported so that "the fast holder carried
 // the transfer" is a readable claim and not an inference from byte counts.
@@ -331,6 +371,7 @@ func (s *transferStats) snapshot(hash string, size, progress int64) TransferStat
 	out.Chunks, out.ChunksDone = s.chunks, s.chunksDone
 	out.Retries, out.Failovers = s.retries, s.failovers
 	out.Stalls, out.Corrupt = s.stalls, s.corrupt
+	out.Hedges, out.HedgesWon = s.hedges, s.hedgesWon
 	out.Providers = make([]ProviderStats, 0, len(s.order))
 	for _, key := range s.order {
 		out.Providers = append(out.Providers, *s.prov[key])

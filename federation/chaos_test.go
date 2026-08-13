@@ -40,13 +40,17 @@ import (
 // of a multi-source swarm — and the fast holder must end up carrying the bulk of
 // the bytes.
 //
-// Note what makes this pass: chunkPlan's provider selection is plain
-// round-robin, so the slow holder is *dispatched* to about as often as the fast
-// one. What keeps it from dominating is the per-chunk timeout plus
-// providerFailureLimit — a holder that cannot deliver a chunk inside the budget
-// accumulates failures and is dropped. The observable claim is therefore
-// end-to-end (completes fast, fast holder carries the majority), not "the plan
-// prefers the fast source".
+// What makes this pass CHANGED with F9 item 3, and the old mechanism is worth
+// keeping written down because the test reads the same either way. Dispatch used
+// to be plain round-robin, so the slow holder was handed about as many chunks as
+// the fast one and what saved the transfer was the failure path: it could not
+// deliver a chunk inside the per-chunk budget, so it accumulated failures and
+// was dropped. Now it is simply not chosen — its bytes stay outstanding while it
+// crawls, so the load rule passes over it and it is never retired at all
+// (`dropped=false` in the readout, where it used to be true).
+//
+// The observable claim is end-to-end either way (completes fast, fast holder
+// carries the majority), which is why the scenario survived the rewrite.
 func TestChaosSlowAndFastSeeder(t *testing.T) {
 	requireChaos(t)
 	content := fillBytes(2 << 20) // 2 MiB
@@ -64,10 +68,11 @@ func TestChaosSlowAndFastSeeder(t *testing.T) {
 
 	// C crawls: the whole blob at this rate needs well over an hour, and even one
 	// 256 KiB chunk cannot finish inside the per-chunk budget at either clock
-	// scale. That last part is deliberate — a holder that is slow but still fits
-	// the budget keeps taking half the round-robin dispatches forever, which is a
-	// real gap (see .issues/open-issues.md, "swarm provider selection is
-	// speed-blind") rather than something to make a timing-dependent test of.
+	// scale. That last part WAS deliberate — under round-robin a holder slow
+	// enough to fail was the only kind a test could make a claim about, because
+	// one that merely dawdled kept taking half the dispatches forever. That gap
+	// is now its own scenario next door (TestChaosSlowHolderDoesNotOwnTheTail),
+	// which is the regime hedging answers.
 	linkC.Set(slowDown(4 << 10)) // 4 KiB/s
 
 	started := time.Now()
@@ -90,6 +95,136 @@ func TestChaosSlowAndFastSeeder(t *testing.T) {
 	if fast <= slow {
 		t.Errorf("fast holder carried %d bytes, slow holder %d — the swarm did not route around the slow source\n%s",
 			fast, slow, describe(st))
+	}
+	assertCached(t, cacheB, hash, content)
+}
+
+// TestChaosSlowHolderDoesNotOwnTheTail is the regime the scenario above
+// deliberately avoided, and the one F9 item 4 exists for: a holder slow enough
+// to hurt but fast enough to keep its chunks INSIDE the per-chunk budget.
+//
+// Nothing before item 4 could help here. Item 3 stopped HANDING such a holder
+// work — its bytes stay outstanding while it crawls, so the load rule passes it
+// over — but the chunks it was given before anyone knew it was slow are its
+// own, and no rule re-dispatched them. So the fetch finished fast except for a
+// tail that waited out the slowest holder in the swarm, with every other holder
+// idle and the file otherwise complete.
+//
+// C is throttled to 128 KiB/s: one 256 KiB chunk in ~2 s, comfortably inside
+// chaosPerChunk, so nothing times out and nothing is retired. It picks up two
+// chunks in the opening dispatch (before any throughput is known), and those two
+// are the tail.
+//
+// The claim is HedgesWon, not just the elapsed time: "it completed quickly"
+// would also be true of a run where C happened to get nothing. Checked against
+// the feature disabled before being trusted — with maxChunkCopies at 1 the same
+// scenario takes ~4 s and reports hedges=0/0.
+func TestChaosSlowHolderDoesNotOwnTheTail(t *testing.T) {
+	requireChaos(t)
+	content := fillBytes(2 << 20) // 2 MiB → 8 chunks of 256 KiB
+	storeA, storeB, storeC := newMemStore(), newMemStore(), newMemStore()
+	hash, resolveA := publishBlob(t, storeA, content)
+	_, resolveC := publishBlob(t, storeC, content)
+	cacheB := t.TempDir()
+
+	a, b, c, _, linkC := startFaultedTrio(t, storeA, storeB, storeC,
+		chaosOpts(resolveA), chaosOpts(WithCacheDir(cacheB)), chaosOpts(resolveC), 0, 0)
+	makeFriends(t, a, b, storeA, storeB)
+	makeFriends(t, c, b, storeC, storeB)
+	seedBlobCatalog(t, storeB, a, hash, int64(len(content)))
+	seedBlobCatalog(t, storeB, c, hash, int64(len(content)))
+
+	linkC.Set(slowDown(128 << 10)) // slow, but every chunk still lands in time
+
+	started := time.Now()
+	tr, err := b.EnsureBlob(context.Background(), hash)
+	if err != nil {
+		t.Fatalf("EnsureBlob: %v", err)
+	}
+	if err := awaitTransfer(t, tr); err != nil {
+		t.Fatalf("transfer failed: %v\n%s", err, describe(tr.Stats()))
+	}
+	elapsed := time.Since(started)
+
+	st := tr.Stats()
+	t.Logf("slow holder holding the tail: %v\n%s", elapsed, describe(st))
+	if st.HedgesWon == 0 {
+		t.Errorf("no chunk was rescued from the slow holder (hedges=%d) — either it was "+
+			"never given one, or the endgame did not fire\n%s", st.Hedges, describe(st))
+	}
+	if c := providerBytes(st, c); c > 0 {
+		t.Logf("the slow holder still delivered %d bytes, which is fine — hedging races it, "+
+			"it does not exclude it", c)
+	}
+	// Two chunks at 128 KiB/s over one link is ~4 s; the point of the hedge is
+	// that the transfer does not wait for them.
+	if budget := 3 * time.Second * testTimeoutScale; elapsed > budget {
+		t.Errorf("transfer took %v, over the %v budget — the tail was not rescued\n%s",
+			elapsed, budget, describe(st))
+	}
+	assertCached(t, cacheB, hash, content)
+}
+
+// TestChaosOneLiveHolderIsNotFloodedWithWorkers is the failure the pipelining
+// measurement turned up, and it is reachable in an ordinary plan rather than a
+// contrived one.
+//
+// The worker count is derived from how many holders were ADVERTISED, capped in
+// total — so four holders of which one answers puts all eight workers on the
+// survivor. Over a link with a real bandwidth limit that is fatal rather than
+// merely wasteful: eight chunks sharing the link each take eight times as long,
+// they blow Timeouts.PerChunk together, and the swarm gives up and falls back to
+// the whole-file path (which then fails too). Measured before the fix at 512
+// KiB/s with 300 ms RTT: `mode=swarm→whole→whole retries=6`, no bytes.
+//
+// The fix is maxHolderRequests: two chunks out to any one holder at a time,
+// whatever the worker count. Checked against the fix disabled before being
+// trusted.
+func TestChaosOneLiveHolderIsNotFloodedWithWorkers(t *testing.T) {
+	requireChaos(t)
+	content := fillBytes(4 << 20) // 4 MiB → 9 chunks, enough to saturate 8 workers
+	storeA, storeB := newMemStore(), newMemStore()
+	_, resolveA := publishBlob(t, storeA, content)
+	cacheB := t.TempDir()
+
+	a, b, link := startFaultedPair(t, storeA, storeB,
+		chaosOpts(resolveA), chaosOpts(WithCacheDir(cacheB)))
+	hash := friendsHolding(t, a, b, storeA, storeB, content)
+	warmMesh(t, a, b)
+
+	f := rtt(300 * time.Millisecond)
+	f.Down.Bandwidth = 512 << 10
+	link.Set(f)
+
+	// One real holder and three keys nothing answers to — the shape a plan takes
+	// when a source has gone away, and what makes the worker count exceed what
+	// the live holder can be asked for.
+	plan := []*BlobProvider{{PublicKey: a.PublicKeyHex()}}
+	for i := 0; i < 3; i++ {
+		_, ghost := newSigner(t)
+		plan = append(plan, &BlobProvider{PublicKey: ghost})
+	}
+
+	started := time.Now()
+	tr, err := b.EnsureBlobFrom(context.Background(), hash, int64(len(content)), plan)
+	if err != nil {
+		t.Fatalf("EnsureBlobFrom: %v", err)
+	}
+	if err := awaitTransfer(t, tr); err != nil {
+		t.Fatalf("transfer failed: %v\n%s", err, describe(tr.Stats()))
+	}
+	st := tr.Stats()
+	t.Logf("8 workers, 1 live holder: %v\n%s", time.Since(started).Round(time.Millisecond), describe(st))
+
+	// The sharp claim: it finished ON THE SWARM PATH. "It completed" alone would
+	// also be true of the fallback, which is what the flooded run did — slowly,
+	// and only sometimes.
+	if st.Mode != "swarm" || len(st.Prior) > 0 {
+		t.Errorf("mode=%s with %d abandoned attempt(s) — the swarm phase collapsed and "+
+			"the whole-file path finished it\n%s", st.Mode, len(st.Prior), describe(st))
+	}
+	if st.ChunksDone != st.Chunks || st.Chunks == 0 {
+		t.Errorf("chunks %d/%d\n%s", st.ChunksDone, st.Chunks, describe(st))
 	}
 	assertCached(t, cacheB, hash, content)
 }

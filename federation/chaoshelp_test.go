@@ -487,6 +487,11 @@ func describe(st TransferStats) string {
 	s := fmt.Sprintf("mode=%s ttfb=%v elapsed=%v chunks=%d/%d retries=%d failovers=%d stalls=%d corrupt=%d",
 		mode, st.FirstByte, st.Elapsed, st.ChunksDone, st.Chunks,
 		st.Retries, st.Failovers, st.Stalls, st.Corrupt)
+	if st.Hedges > 0 {
+		// Both halves or neither: the first is what duplication cost, the second
+		// what it bought.
+		s += fmt.Sprintf(" hedges=%d/%d", st.HedgesWon, st.Hedges)
+	}
 	for _, a := range st.Prior {
 		s += fmt.Sprintf("\n  [abandoned %s] ttfb=%v chunks=%d/%d",
 			a.Mode, a.FirstByte, a.ChunksDone, a.Chunks)
@@ -498,8 +503,8 @@ func describe(st TransferStats) string {
 		if p.Rate > 0 {
 			rate = fmt.Sprintf("rate=%.0fKiB/s", p.Rate/1024)
 		}
-		s += fmt.Sprintf("\n  %-8s bytes=%-9d chunks=%-3d %-14s failures=%d dropped=%v %s",
-			p.Name, p.Bytes, p.Chunks, rate, p.Failures, p.Dropped, p.LastError)
+		s += fmt.Sprintf("\n  %-8s bytes=%-9d chunks=%-3d %-14s failures=%d lost=%d dropped=%v %s",
+			p.Name, p.Bytes, p.Chunks, rate, p.Failures, p.Lost, p.Dropped, p.LastError)
 	}
 	return s
 }

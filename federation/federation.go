@@ -793,6 +793,12 @@ type TransferStats struct {
 	Failovers  int `json:"failovers"`   // pieces completed by a holder after another holder failed them
 	Stalls     int `json:"stalls"`      // idle-read watchdog firings (a hung mesh connection)
 	Corrupt    int `json:"corrupt"`     // per-chunk verification failures
+	// Hedges is chunks dispatched to a second holder while the first was still
+	// fetching them, and HedgesWon how many of those arrived first (F9 item 4).
+	// The difference is what the duplication cost in wasted bytes; the second
+	// number is what it bought. Neither is meaningful without the other.
+	Hedges    int `json:"hedges,omitempty"`
+	HedgesWon int `json:"hedges_won,omitempty"`
 
 	// Providers is per-holder accounting, in the order the tracker offered them.
 	Providers []ProviderStats `json:"providers"`
@@ -890,6 +896,12 @@ type ProviderStats struct {
 	Failures  int    `json:"failures"`
 	Dropped   bool   `json:"dropped"` // taken out of rotation (corrupt bytes, or too many failures)
 	LastError string `json:"last_error,omitempty"`
+	// Lost counts chunks this holder was fetching when another holder delivered
+	// the same chunk first, so its copy was cancelled (F9 item 4). It is NOT a
+	// failure — it is the cost side of hedging, and without it the readout drops
+	// a holder that was asked for three chunks and beaten to all three, which is
+	// exactly the holder a reader is trying to find.
+	Lost int `json:"lost,omitempty"`
 	// Rate is the holder's measured throughput in bytes/sec, smoothed over the
 	// chunks it delivered (0 = never measured). Bytes says how much a holder
 	// carried; this says how fast, which is what the scheduler dispatches on

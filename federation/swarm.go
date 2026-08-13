@@ -1234,7 +1234,7 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*BlobProvide
 		}
 		done0 = true
 	}
-	plan := newChunkPlan(layout, holders, done0, t.stats, n.timeouts)
+	plan := newChunkPlan(n.transferCtx, layout, holders, done0, t.stats, n.timeouts)
 	n.probeCoverage(t.hash, plan)
 	t.stats.setChunks(layout.count())
 	// Expose per-chunk readiness (the layout) + the seek-priority hook to the
@@ -1245,6 +1245,11 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*BlobProvide
 		t.stats.noteSucceed(0, from0, int64(len(prefetched0)))
 		t.chunkDone(0, plan.watermarkBytes())
 	}
+	// Two workers per holder, bounded in total — but what each HOLDER may be
+	// asked for at once is bounded separately (maxHolderRequests), and that is
+	// the load-bearing one: this formula counts advertised holders, not answering
+	// ones, so four holders of which one is alive puts every worker on the
+	// survivor.
 	workers := len(holders) * 2
 	if workers > maxChunkWorkers {
 		workers = maxChunkWorkers
@@ -1261,7 +1266,7 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*BlobProvide
 		go func() {
 			defer wg.Done()
 			for {
-				idx, p, pidx, ok := plan.take()
+				d, ok := plan.take()
 				if !ok {
 					return
 				}
@@ -1270,11 +1275,13 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*BlobProvide
 				// worker, and the wait for this holder to come off a backoff, both
 				// happened inside take().
 				started := time.Now()
-				if err := n.fetchChunk(t, f, layout, man, idx, p); err != nil {
-					plan.fail(idx, pidx, err, errors.Is(err, errChunkCorrupt))
+				err := n.fetchChunk(d.ctx, d.cancel, t, f, layout, man, d.idx, d.p)
+				d.cancel()
+				if err != nil {
+					plan.fail(d.idx, d.pidx, err, errors.Is(err, errChunkCorrupt))
 				} else {
-					n.observePeerAlive(p) // a verified chunk is liveness proof
-					plan.succeed(idx, pidx, t, time.Since(started))
+					n.observePeerAlive(d.p) // a verified chunk is liveness proof
+					plan.succeed(d.idx, d.pidx, t, time.Since(started))
 				}
 			}
 		}()
@@ -1290,15 +1297,25 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*BlobProvide
 // fetchChunk fetches one chunk over the mesh (a plain HTTP Range request against
 // the F3 blob endpoint), verifies it against the manifest, and writes it at its
 // offset.
-func (n *Node) fetchChunk(t *transfer, f *os.File, layout *chunkLayout, man *blobManifest, idx int, p *BlobProvider) error {
+//
+// The context and its cancel come from the SCHEDULER rather than being made
+// here: the plan is what knows this attempt has stopped being useful, because
+// another holder delivered the same chunk first (F9 item 4). cancel is passed
+// along as the idle-read watchdog's trigger exactly as before.
+//
+// Two copies of one chunk can therefore write at the same offset concurrently.
+// That is safe by construction rather than by luck: each copy is verified
+// against the same manifest hash before WriteAt, so the bytes are identical, and
+// pwrite of identical bytes over the same range cannot produce anything else.
+func (n *Node) fetchChunk(ctx context.Context, cancel context.CancelFunc, t *transfer,
+	f *os.File, layout *chunkLayout, man *blobManifest, idx int, p *BlobProvider) error {
+
 	addr, err := AddrForKeyHex(p.PublicKey)
 	if err != nil {
 		return err
 	}
 	start, end := layout.rangeOf(idx)
 	length := end - start
-	ctx, cancel := context.WithTimeout(n.transferCtx, n.timeouts.PerChunk)
-	defer cancel()
 	url := fmt.Sprintf("http://[%s]:%d/madnetwork/v0/blob/%s", addr, MeshPort, t.hash)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

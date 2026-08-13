@@ -28,12 +28,12 @@ func TestScheduleGoesToTheLeastLoadedHolder(t *testing.T) {
 	var got []string
 	mine := map[int][]int{} // provider index → the chunks it was handed
 	for i := 0; i < 4; i++ {
-		idx, p, pidx, ok := cp.take()
+		d, ok := cp.take()
 		if !ok {
 			t.Fatal("nothing to dispatch")
 		}
-		got = append(got, p.Name)
-		mine[pidx] = append(mine[pidx], idx)
+		got = append(got, d.p.Name)
+		mine[d.pidx] = append(mine[d.pidx], d.idx)
 	}
 	if got[0] == got[1] || got[1] == got[2] || got[2] == got[3] {
 		t.Errorf("dispatch piled onto one holder while the other was idle: %v", got)
@@ -50,13 +50,13 @@ func TestScheduleGoesToTheLeastLoadedHolder(t *testing.T) {
 	}
 
 	for i := 0; i < 2; i++ {
-		_, p, _, ok := cp.take()
+		d, ok := cp.take()
 		if !ok {
 			t.Fatal("nothing to dispatch after the free holder came back")
 		}
-		if p != holders[free] {
+		if d.p != holders[free] {
 			t.Errorf("dispatch %d went to %q, want the holder with nothing outstanding (%q)",
-				i, p.Name, holders[free].Name)
+				i, d.p.Name, holders[free].Name)
 		}
 	}
 }
@@ -70,14 +70,18 @@ func TestScheduleAsksAPartialHolderOnlyForWhatItHas(t *testing.T) {
 	cp.setCoverage(0, &haveMessage{Ranges: []ByteRange{{Start: 0, End: 20}}})
 	cp.setCoverage(1, &haveMessage{Complete: true, Ranges: []ByteRange{{Start: 0, End: 50}}})
 
+	// Each dispatch is resolved before the next is taken, as a worker does: one
+	// holder may only have maxHolderRequests out at a time.
+	tr := newTransfer("h", "p", "p.part")
 	for i := 0; i < 5; i++ {
-		idx, p, _, ok := cp.take()
+		d, ok := cp.take()
 		if !ok {
 			t.Fatalf("dispatch %d: nothing handed out", i)
 		}
-		if p.Name == "partial" && idx > 1 {
-			t.Errorf("chunk %d was asked of the holder that only has [0,20)", idx)
+		if d.p.Name == "partial" && d.idx > 1 {
+			t.Errorf("chunk %d was asked of the holder that only has [0,20)", d.idx)
 		}
+		cp.succeed(d.idx, d.pidx, tr, time.Millisecond)
 	}
 }
 
@@ -90,12 +94,14 @@ func TestScheduleAsksAPartialHolderAnywayWhenNobodyElseWill(t *testing.T) {
 	cp.setCoverage(0, &haveMessage{Ranges: []ByteRange{{Start: 0, End: 20}}})
 
 	seen := map[int]bool{}
+	tr := newTransfer("h", "p", "p.part")
 	for i := 0; i < 3; i++ {
-		idx, _, _, ok := cp.take()
+		d, ok := cp.take()
 		if !ok {
 			t.Fatalf("dispatch %d: the sole holder was written off over stale coverage", i)
 		}
-		seen[idx] = true
+		seen[d.idx] = true
+		cp.succeed(d.idx, d.pidx, tr, time.Millisecond)
 	}
 	if !seen[2] && !seen[3] && !seen[4] {
 		t.Errorf("only the covered chunks were ever dispatched: %v", seen)
@@ -111,7 +117,7 @@ func TestQuotaRefusalCostsAWaitNotAMark(t *testing.T) {
 	cp := testPlan(wideLayout(12), []*BlobProvider{{Name: "busy"}, {Name: "idle"}}, false)
 
 	for i := 0; i < providerFailureLimit; i++ {
-		cp.fail(dispatch(t, cp, 0), 0, errChunkBusy, false)
+		cp.fail(askHolder(t, cp, 0), 0, errChunkBusy, false)
 	}
 	if cp.prov[0].dead {
 		t.Error("a holder that answered 429 was retired for refusing under its own quota")
@@ -134,12 +140,12 @@ func TestQuotaRefusalCostsAWaitNotAMark(t *testing.T) {
 func TestScheduleWaitsOutABackoffRatherThanSpinning(t *testing.T) {
 	cp := testPlan(wideLayout(4), []*BlobProvider{{Name: "only"}}, false)
 	cp.retry = 40 * time.Millisecond
-	cp.fail(dispatch(t, cp, 0), 0, errors.New("mesh stalled"), false)
+	cp.fail(askHolder(t, cp, 0), 0, errors.New("mesh stalled"), false)
 
 	start := time.Now()
 	done := make(chan bool, 1)
 	go func() {
-		_, _, _, ok := cp.take()
+		_, ok := cp.take()
 		done <- ok
 	}()
 	select {
@@ -248,7 +254,7 @@ func TestBlameFallsOnTheReferenceWhenHoldersDisagreeWithIt(t *testing.T) {
 
 	// The first corrupt chunk is unambiguous evidence about its sender: no amount
 	// of environmental bad luck produces wrong bytes.
-	cp.fail(dispatch(t, cp, 0), 0, errChunkCorrupt, true)
+	cp.fail(askHolder(t, cp, 0), 0, errChunkCorrupt, true)
 	if !cp.prov[0].dead {
 		t.Fatal("the first holder to serve corrupt bytes was not retired")
 	}
@@ -257,7 +263,7 @@ func TestBlameFallsOnTheReferenceWhenHoldersDisagreeWithIt(t *testing.T) {
 	}
 
 	// The second, from a different holder, says something else entirely.
-	cp.fail(dispatch(t, cp, 1), 1, errChunkCorrupt, true)
+	cp.fail(askHolder(t, cp, 1), 1, errChunkCorrupt, true)
 	if cp.prov[1].dead {
 		t.Error("the second holder was condemned by the same reference the first was")
 	}
@@ -269,5 +275,198 @@ func TestBlameFallsOnTheReferenceWhenHoldersDisagreeWithIt(t *testing.T) {
 	}
 	if !cp.aborted {
 		t.Error("a suspect manifest must end the swarm attempt so the whole-file path can take over")
+	}
+}
+
+// ── Hedging (F9 item 4) ──────────────────────────────────────────────────────
+
+// TestEndgameHedgesAChunkNobodyElseCanRescue is the gap item 3 left behind and
+// named: dispatch stops HANDING work to a holder that is not delivering, but it
+// cannot get back the chunk already in that holder's hands, so a transfer's tail
+// was as slow as its slowest live holder however many idle holders were watching.
+func TestEndgameHedgesAChunkNobodyElseCanRescue(t *testing.T) {
+	cp := testPlan(wideLayout(2), []*BlobProvider{{Name: "slow"}, {Name: "fast"}}, false)
+	tr := newTransfer("h", "p", "p.part")
+
+	slow, ok := cp.take()
+	if !ok {
+		t.Fatal("nothing to dispatch")
+	}
+	fast, ok := cp.take()
+	if !ok {
+		t.Fatal("nothing to dispatch to the second holder")
+	}
+	// The fast holder is done and the queue is empty, so there is nothing better
+	// for the freed worker to do than help with the chunk still outstanding.
+	cp.succeed(fast.idx, fast.pidx, tr, time.Millisecond)
+
+	hedge, ok := cp.take()
+	if !ok {
+		t.Fatal("the freed worker was sent away while a chunk sat with a slow holder")
+	}
+	if !hedge.hedge || hedge.idx != slow.idx {
+		t.Fatalf("take returned chunk %d (hedge=%v), want a hedge of chunk %d",
+			hedge.idx, hedge.hedge, slow.idx)
+	}
+	if hedge.pidx == slow.pidx {
+		t.Error("the hedge went back to the holder already sitting on the chunk, which is not a second chance")
+	}
+
+	// The hedge lands first. The copy that lost must be STOPPED, not merely
+	// ignored: fetchSwarm waits for every worker, so an abandoned fetch would
+	// hold the transfer open for exactly as long as hedging was meant to save.
+	cp.succeed(hedge.idx, hedge.pidx, tr, time.Millisecond)
+	select {
+	case <-slow.ctx.Done():
+	default:
+		t.Error("the losing copy was left running after another holder delivered the chunk")
+	}
+
+	// And its holder is not blamed for losing a race we started.
+	cp.fail(slow.idx, slow.pidx, context.Canceled, false)
+	if cp.prov[slow.pidx].fails != 0 {
+		t.Errorf("the losing holder collected %d failure(s) for being second", cp.prov[slow.pidx].fails)
+	}
+	if len(cp.pending) != 0 {
+		t.Errorf("a completed chunk was re-queued by its cancelled copy: %v", cp.pending)
+	}
+	if cp.remaining != 0 {
+		t.Errorf("remaining = %d, want 0", cp.remaining)
+	}
+	st := cp.stats.snapshot("h", 0, 0)
+	if st.Hedges != 1 || st.HedgesWon != 1 {
+		t.Errorf("stats say hedges=%d won=%d, want 1 and 1 — the trade has to be readable",
+			st.Hedges, st.HedgesWon)
+	}
+}
+
+// TestHedgeJumpsAheadForAReaderThatIsBlocked: prioritize can reorder the queue,
+// but the chunk a stalled stream is waiting for has usually left it — it is in
+// flight, on whichever holder happens to be slow. A second copy is the only
+// thing that can make it arrive sooner, and it is worth more than starting a
+// chunk nobody has asked for yet.
+func TestHedgeJumpsAheadForAReaderThatIsBlocked(t *testing.T) {
+	cp := testPlan(wideLayout(6), []*BlobProvider{{Name: "slow"}, {Name: "fast"}}, false)
+
+	stuck, ok := cp.take()
+	if !ok {
+		t.Fatal("nothing to dispatch")
+	}
+	cp.prioritize(stuck.idx) // a reader blocks on the offset it covers
+
+	d, ok := cp.take()
+	if !ok {
+		t.Fatal("nothing to dispatch")
+	}
+	if !d.hedge || d.idx != stuck.idx {
+		t.Errorf("take returned chunk %d (hedge=%v) with five chunks queued, want a hedge of the "+
+			"chunk the reader is waiting for (%d)", d.idx, d.hedge, stuck.idx)
+	}
+}
+
+// A chunk is never fetched more than maxChunkCopies times over. Duplication is
+// bandwidth spent twice, and past the second copy it buys progressively less for
+// the same price each time.
+func TestHedgingStopsAtTwoCopies(t *testing.T) {
+	cp := testPlan(wideLayout(1), []*BlobProvider{{Name: "a"}, {Name: "b"}, {Name: "c"}}, false)
+
+	first, _ := cp.take()
+	cp.prioritize(first.idx)
+	second, ok := cp.take()
+	if !ok || !second.hedge {
+		t.Fatal("the wanted chunk was not hedged at all")
+	}
+	// The third holder is free, eligible, and must still not be given a copy.
+	done := make(chan bool, 1)
+	go func() {
+		d, ok := cp.take()
+		done <- ok && d.hedge
+	}()
+	select {
+	case hedged := <-done:
+		if hedged {
+			t.Error("a third copy of one chunk was dispatched")
+		}
+	case <-time.After(200 * time.Millisecond):
+		// Blocking is the right answer: there is no work this worker may do.
+	}
+}
+
+// A hedge that FAILS while the copy it was racing is still running must not
+// re-queue the chunk. Two dispatches out of one failure is how a scheduler
+// quietly doubles its own work.
+func TestAFailedHedgeDoesNotRequeueAChunkStillInFlight(t *testing.T) {
+	cp := testPlan(wideLayout(2), []*BlobProvider{{Name: "a"}, {Name: "b"}}, false)
+	tr := newTransfer("h", "p", "p.part")
+
+	first, _ := cp.take()
+	other, _ := cp.take()
+	cp.succeed(other.idx, other.pidx, tr, time.Millisecond)
+	hedge, ok := cp.take()
+	if !ok || !hedge.hedge {
+		t.Fatal("the outstanding chunk was not hedged")
+	}
+
+	cp.fail(hedge.idx, hedge.pidx, errors.New("mesh stalled"), false)
+	if len(cp.pending) != 0 {
+		t.Errorf("pending = %v, want empty — the original copy is still fetching that chunk", cp.pending)
+	}
+	if cp.prov[hedge.pidx].fails != 1 {
+		t.Errorf("the hedge's holder recorded %d failures, want 1 — it did genuinely fail",
+			cp.prov[hedge.pidx].fails)
+	}
+	// The original is still the chunk's owner and still finishes it.
+	cp.succeed(first.idx, first.pidx, tr, time.Millisecond)
+	if cp.remaining != 0 {
+		t.Errorf("remaining = %d, want 0", cp.remaining)
+	}
+}
+
+// TestOneHolderIsNotAskedForEverythingAtOnce pins the pipelining half of F9
+// item 4, which the measurement turned around: the design wanted a request-depth
+// FLOOR per holder ("keep the pipe full across the RTT"), and what the numbers
+// asked for was a ceiling.
+//
+// Measured over a 300 ms-RTT link capped at 512 KiB/s: depth 1, 2 and 4 took
+// 12.36 s, 12.30 s and 12.80 s — the dead air is real and a queueing link
+// absorbs it — while depth 8 FAILED the transfer, because eight chunks sharing
+// one capped link each take eight times as long and blow Timeouts.PerChunk
+// together. Workers are capped in total, so a plan of four holders with one
+// answering reaches exactly that.
+func TestOneHolderIsNotAskedForEverythingAtOnce(t *testing.T) {
+	cp := testPlan(wideLayout(12), []*BlobProvider{{Name: "only"}}, false)
+	tr := newTransfer("h", "p", "p.part")
+
+	var out []dispatch
+	for i := 0; i < maxHolderRequests; i++ {
+		d, ok := cp.take()
+		if !ok {
+			t.Fatalf("dispatch %d: the sole holder was not asked at all", i)
+		}
+		out = append(out, d)
+	}
+
+	// The next worker must wait rather than pile a third request on.
+	done := make(chan bool, 1)
+	go func() {
+		_, ok := cp.take()
+		done <- ok
+	}()
+	select {
+	case <-done:
+		t.Fatalf("a %dth request went to a holder already fetching %d chunks",
+			maxHolderRequests+1, maxHolderRequests)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// ...and it is released as soon as a slot frees, so nothing is stuck.
+	cp.succeed(out[0].idx, out[0].pidx, tr, time.Millisecond)
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Error("the waiting worker was sent away instead of taking the freed slot")
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("a freed request slot never woke the waiting worker")
 	}
 }

@@ -313,7 +313,7 @@ func TestChunkPlanDoesNotRetireAHolderForNotHavingAChunkYet(t *testing.T) {
 		if len(cp.pending) == 0 {
 			break
 		}
-		idx := dispatch(t, cp, 0)
+		idx := askHolder(t, cp, 0)
 		refused = append(refused, idx)
 		cp.fail(idx, 0, errChunkAbsent, false)
 	}
@@ -348,11 +348,11 @@ func TestChunkPlanStillGivesUpWhenNobodyHasAChunk(t *testing.T) {
 	// second pass: a partial holder is a growing thing, so "does not have it" is
 	// only true until it isn't, and being wrong costs one fast 416.
 	for i := 0; i < 1000; i++ {
-		idx, _, pidx, ok := cp.take()
+		d, ok := cp.take()
 		if !ok {
 			break
 		}
-		cp.fail(idx, pidx, errChunkAbsent, false)
+		cp.fail(d.idx, d.pidx, errChunkAbsent, false)
 	}
 	if !cp.aborted {
 		t.Fatal("a chunk no holder has must end the transfer, not loop")

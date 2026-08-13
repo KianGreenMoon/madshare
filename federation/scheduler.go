@@ -3,6 +3,7 @@
 package federation
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -61,6 +62,35 @@ const (
 	// average that needs ten samples would still be warming up when the fetch
 	// ends.
 	rateAlpha = 0.5
+
+	// maxHolderRequests is how many chunks one holder may be fetching at once —
+	// the pipelining half of F9 item 4, and it came out of the measurement
+	// pointing the OPPOSITE way to the design's expectation.
+	//
+	// The design asked for "queue depth ≥ 2 per holder, so the pipe stays full
+	// across the RTT". Measured over a 300 ms-RTT link capped at 512 KiB/s
+	// (4 MiB, one holder), depth 1 / 2 / 4 took 12.36 s / 12.30 s / 12.80 s: the
+	// dead air is real and it is not the bottleneck, because a link with any
+	// queueing in it absorbs the gap. Depth 4 started costing retries and depth 8
+	// **failed the transfer outright** — eight chunks sharing one capped link each
+	// take eight times as long, which spends Timeouts.PerChunk rather than the
+	// link, so every chunk times out at once and the swarm falls back to the
+	// whole-file path.
+	//
+	// That is reachable in an ordinary plan: workers are capped in TOTAL, so four
+	// advertised holders of which one answers put all eight workers on the
+	// survivor. Hence a cap per holder rather than a floor: 2 is what the pipe can
+	// use, and the third request is one the per-chunk budget pays for.
+	maxHolderRequests = 2
+
+	// maxChunkCopies is how many holders may be fetching one chunk at once
+	// (F9 item 4). Two, not "the last few chunks across several holders" as
+	// BitTorrent's endgame does it, because a duplicate costs the chunk's bytes
+	// twice over and the second copy already buys the whole claim: the tail is
+	// as fast as the FASTER of two holders instead of as slow as whichever one
+	// happened to be dispatched. A third copy would only narrow that further at
+	// the same price again.
+	maxChunkCopies = 2
 )
 
 // errChunkBusy marks a holder refusing a chunk under its own member quota (429).
@@ -84,6 +114,7 @@ type providerState struct {
 	dead      bool      // retired for the rest of this transfer
 	fails     int       // consecutive failures (any success clears it)
 	inFlight  int64     // bytes dispatched to it and not yet resolved
+	reqs      int       // chunk requests out to it right now (bounded by maxHolderRequests)
 	lastTried time.Time // when it was last handed a chunk (zero = never)
 	idleUntil time.Time // not to be asked again before this
 	rate      float64   // EWMA bytes/sec over completed chunks (0 = never measured)
@@ -148,14 +179,34 @@ type chunkPlan struct {
 	attempts     []int
 	attemptLimit int
 
-	retry     time.Duration // base failure backoff (Timeouts.Retry)
-	tryWindow time.Duration // how recently a holder must have been asked to count as a benchmark (Timeouts.PerChunk)
-	timerSet  bool          // a wake-up is already scheduled for the earliest backoff
+	// flight is the attempts currently out, per chunk. A chunk normally has one;
+	// a hedged chunk has two, which is the whole of F9 item 4 (see hedgeLocked).
+	flight map[int][]*attempt
+	// wanted marks a chunk a READER is blocked on that is already in somebody's
+	// hands. prioritize can reorder the queue, but it cannot reach a chunk that
+	// has left it — and that is precisely the chunk a stalled stream is waiting
+	// for, so a hedge is the only thing that can make it arrive sooner.
+	wanted map[int]bool
+
+	parent    context.Context // the transfer's lifetime; every attempt derives from it
+	perChunk  time.Duration   // one attempt's backstop (Timeouts.PerChunk)
+	retry     time.Duration   // base failure backoff (Timeouts.Retry)
+	tryWindow time.Duration   // how recently a holder must have been asked to count as a benchmark (Timeouts.PerChunk)
+	timerSet  bool            // a wake-up is already scheduled for the earliest backoff
 
 	stats *transferStats // diagnostics sink; nil outside a real transfer
 }
 
-func newChunkPlan(layout *chunkLayout, holders []*BlobProvider, done0 bool, st *transferStats, to Timeouts) *chunkPlan {
+// attempt is one holder's outstanding try at one chunk. The cancel is what makes
+// hedging finish a transfer rather than merely start a second copy of it: when
+// one copy lands, the other is stopped, and fetchSwarm — which waits for every
+// worker — is no longer held by a fetch whose result nobody needs.
+type attempt struct {
+	pidx   int
+	cancel context.CancelFunc
+}
+
+func newChunkPlan(ctx context.Context, layout *chunkLayout, holders []*BlobProvider, done0 bool, st *transferStats, to Timeouts) *chunkPlan {
 	nc := layout.count()
 	cp := &chunkPlan{
 		done:         make([]bool, nc),
@@ -166,9 +217,16 @@ func newChunkPlan(layout *chunkLayout, holders []*BlobProvider, done0 bool, st *
 		corruptFrom:  map[int]bool{},
 		firstCorrupt: -1,
 		attempts:     make([]int, nc),
+		flight:       map[int][]*attempt{},
+		wanted:       map[int]bool{},
+		parent:       ctx,
+		perChunk:     to.PerChunk,
 		retry:        to.Retry,
 		tryWindow:    to.PerChunk,
 		stats:        st,
+	}
+	if cp.parent == nil {
+		cp.parent = context.Background()
 	}
 	for i := range cp.prov {
 		cp.prov[i] = &providerState{}
@@ -206,15 +264,28 @@ func (cp *chunkPlan) watermarkBytes() int64 {
 // dispatch queue (if still pending), so the next free worker fetches it — this
 // is what makes a streaming tail/seek read fast instead of waiting out the
 // sequential prefix.
+//
+// **A chunk that has already left the queue gets marked instead** (F9 item 4).
+// Reordering can only help a chunk still waiting to be dispatched, and the one a
+// stalled reader is waiting for is very often not: it is in flight, on whichever
+// holder happens to be slow. Marking it lets the next free worker fetch a second
+// copy from somebody else, which is the only thing that can make it arrive
+// sooner. It takes priority over starting a new chunk, because a reader blocked
+// now is worth more than a chunk nobody has asked for yet.
 func (cp *chunkPlan) prioritize(idx int) {
 	cp.mu.Lock()
 	if idx >= 0 && idx < len(cp.done) && !cp.done[idx] {
+		queued := false
 		for i, p := range cp.pending {
 			if p == idx {
 				copy(cp.pending[1:i+1], cp.pending[0:i])
 				cp.pending[0] = idx
+				queued = true
 				break
 			}
+		}
+		if !queued && len(cp.flight[idx]) > 0 {
+			cp.wanted[idx] = true
 		}
 	}
 	cp.cond.Broadcast()
@@ -229,21 +300,44 @@ func (cp *chunkPlan) prioritize(idx int) {
 // holders the two questions stopped being independent: a chunk is only worth
 // dispatching to a holder that has it, and the answer to "which chunk next"
 // depends on who is free.
-func (cp *chunkPlan) take() (int, *BlobProvider, int, bool) {
+//
+// The order it tries things in is the policy:
+//
+//  1. a chunk a reader is BLOCKED on that somebody slow already has;
+//  2. the pending queue, in its sequential/seek-priority order;
+//  3. anything still in flight, once the queue is empty — the endgame.
+//
+// 1 and 3 are hedges, and neither needs a timing constant to decide when to
+// duplicate: one asks "is anyone waiting for this right now", the other "is
+// there anything better for this worker to do". "Re-dispatch a chunk in flight
+// longer than k × the median" was the design's suggestion and it is not needed
+// — every case it catches ends up in 3 anyway, and it would spend a duplicate
+// while chunks nobody has fetched at all were still queued.
+func (cp *chunkPlan) take() (dispatch, bool) {
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
 	for {
 		if cp.aborted || cp.remaining == 0 {
-			return 0, nil, -1, false
+			return dispatch{}, false
 		}
 		if cp.liveProvidersLocked() == 0 {
 			cp.abortLocked(ErrNoHolder)
-			return 0, nil, -1, false
+			return dispatch{}, false
+		}
+		for idx := range cp.wanted {
+			if pidx, ok := cp.hedgeLocked(idx); ok {
+				return cp.dispatchLocked(idx, pidx, true), true
+			}
 		}
 		if len(cp.pending) > 0 {
 			if pos, pidx, ok := cp.matchLocked(); ok {
-				idx, p := cp.dispatchLocked(pos, pidx)
-				return idx, p, pidx, true
+				return cp.dispatchLocked(cp.unqueueLocked(pos), pidx, false), true
+			}
+		} else {
+			for idx := range cp.flight {
+				if pidx, ok := cp.hedgeLocked(idx); ok {
+					return cp.dispatchLocked(idx, pidx, true), true
+				}
 			}
 		}
 		// Nothing to hand out this moment. Either somebody will bring work back
@@ -256,10 +350,49 @@ func (cp *chunkPlan) take() (int, *BlobProvider, int, bool) {
 			// Aborting rather than blocking is the point: a scheduler that cannot
 			// schedule must end the transfer, not hold its workers forever.
 			cp.abortLocked(fmt.Errorf("chunk %d: no holder in the plan will serve it", cp.pending[0]))
-			return 0, nil, -1, false
+			return dispatch{}, false
 		}
 		cp.cond.Wait()
 	}
+}
+
+// hedgeLocked picks a holder to fetch a SECOND copy of a chunk somebody is
+// already fetching, or reports that there is no point. Caller holds cp.mu.
+//
+// Three conditions, and each rules out a way hedging could cost more than it
+// buys: the chunk must not already have maxChunkCopies out (a swarm can spend
+// its whole bandwidth on one chunk otherwise), the holder must not be one
+// already fetching it (a second request to the same slow node is not a second
+// chance), and it must be a holder the ordinary rules would dispatch to anyway
+// — not dead, not resting, and known to hold the chunk.
+func (cp *chunkPlan) hedgeLocked(idx int) (int, bool) {
+	if idx < 0 || idx >= len(cp.done) || cp.done[idx] {
+		return 0, false
+	}
+	out := cp.flight[idx]
+	if len(out) == 0 || len(out) >= maxChunkCopies {
+		return 0, false
+	}
+	for _, pi := range cp.rankLocked() {
+		busy := false
+		for _, a := range out {
+			if a.pidx == pi {
+				busy = true
+				break
+			}
+		}
+		if !busy && cp.prov[pi].canServe(cp.layout, idx) {
+			return pi, true
+		}
+	}
+	return 0, false
+}
+
+// unqueueLocked removes pending[pos] and returns the chunk index it held.
+func (cp *chunkPlan) unqueueLocked(pos int) int {
+	idx := cp.pending[pos]
+	cp.pending = append(cp.pending[:pos], cp.pending[pos+1:]...)
+	return idx
 }
 
 // matchLocked picks the (pending position, provider) pair to dispatch. Caller
@@ -307,7 +440,7 @@ func (cp *chunkPlan) rankLocked() []int {
 	now := time.Now()
 	order := make([]int, 0, len(cp.prov))
 	for i, ps := range cp.prov {
-		if ps.dead || now.Before(ps.idleUntil) {
+		if ps.dead || now.Before(ps.idleUntil) || ps.reqs >= maxHolderRequests {
 			continue
 		}
 		order = append(order, i)
@@ -328,17 +461,77 @@ func (cp *chunkPlan) rankLocked() []int {
 	return order
 }
 
-// dispatchLocked removes pending[pos] from the queue and charges it to provider
-// pidx. Caller holds cp.mu.
-func (cp *chunkPlan) dispatchLocked(pos, pidx int) (int, *BlobProvider) {
-	idx := cp.pending[pos]
-	cp.pending = append(cp.pending[:pos], cp.pending[pos+1:]...)
+// dispatch is one unit of work: fetch chunk idx from p, under ctx.
+//
+// The context comes from the plan rather than from the worker because the plan
+// is what knows the attempt has stopped being useful — another copy landed, and
+// this one should stop reading bytes nobody will keep. cancel is handed over too
+// so the worker can release it and arm the idle-read watchdog with it.
+type dispatch struct {
+	idx    int
+	p      *BlobProvider
+	pidx   int
+	ctx    context.Context
+	cancel context.CancelFunc
+	hedge  bool
+}
+
+// dispatchLocked charges chunk idx to provider pidx and opens the attempt's
+// context. Caller holds cp.mu.
+func (cp *chunkPlan) dispatchLocked(idx, pidx int, hedge bool) dispatch {
 	cp.inFlight++
 	start, end := cp.layout.rangeOf(idx)
 	ps := cp.prov[pidx]
 	ps.inFlight += end - start
+	ps.reqs++
 	ps.lastTried = time.Now()
-	return idx, cp.providers[pidx]
+
+	ctx, cancel := context.WithTimeout(cp.parent, cp.perChunk)
+	cp.flight[idx] = append(cp.flight[idx], &attempt{pidx: pidx, cancel: cancel})
+	if hedge {
+		cp.stats.noteHedge()
+	}
+	return dispatch{idx: idx, p: cp.providers[pidx], pidx: pidx, ctx: ctx, cancel: cancel, hedge: hedge}
+}
+
+// landedLocked closes out one attempt at a chunk: it leaves the flight table,
+// its holder gets its outstanding bytes back, and — when the chunk is now done
+// — every other copy of it is cancelled. Returns whether any sibling was still
+// running, which is what makes a hedge's win visible. Caller holds cp.mu.
+func (cp *chunkPlan) landedLocked(idx, pidx int, won bool) bool {
+	out := cp.flight[idx]
+	kept := out[:0]
+	dropped := false
+	hadSibling := false
+	for _, a := range out {
+		if !dropped && a.pidx == pidx {
+			dropped = true // this attempt; the same holder may hold no second one
+			continue
+		}
+		hadSibling = true
+		if won {
+			a.cancel()
+			continue
+		}
+		kept = append(kept, a)
+	}
+	if won || len(kept) == 0 {
+		delete(cp.flight, idx)
+		delete(cp.wanted, idx)
+	} else {
+		cp.flight[idx] = kept
+	}
+	if pidx >= 0 {
+		start, end := cp.layout.rangeOf(idx)
+		ps := cp.prov[pidx]
+		if ps.inFlight -= end - start; ps.inFlight < 0 {
+			ps.inFlight = 0
+		}
+		if ps.reqs--; ps.reqs < 0 {
+			ps.reqs = 0
+		}
+	}
+	return hadSibling
 }
 
 // armBackoffLocked schedules a wake-up at the earliest moment a resting holder
@@ -423,14 +616,14 @@ func (cp *chunkPlan) succeed(idx, pidx int, t *transfer, took time.Duration) {
 	var from *BlobProvider
 	start, end := cp.layout.rangeOf(idx)
 	var rate float64
+	fresh := !cp.done[idx]
+	// Close the attempt out FIRST: it is what stops the copy that lost, and the
+	// answer decides whether this was a hedge winning or an ordinary fetch.
+	raced := cp.landedLocked(idx, pidx, fresh)
 	if pidx >= 0 {
 		ps := cp.prov[pidx]
 		ps.fails = 0
 		ps.idleUntil = time.Time{}
-		ps.inFlight -= end - start
-		if ps.inFlight < 0 {
-			ps.inFlight = 0
-		}
 		if took > 0 {
 			sample := float64(end-start) / took.Seconds()
 			if ps.rate == 0 {
@@ -442,7 +635,6 @@ func (cp *chunkPlan) succeed(idx, pidx int, t *transfer, took time.Duration) {
 		}
 		from = cp.providers[pidx]
 	}
-	fresh := !cp.done[idx]
 	if fresh {
 		cp.done[idx] = true
 		cp.remaining--
@@ -455,6 +647,9 @@ func (cp *chunkPlan) succeed(idx, pidx int, t *transfer, took time.Duration) {
 	cp.mu.Unlock()
 	if fresh {
 		cp.stats.noteSucceed(idx, from, end-start)
+		if raced {
+			cp.stats.noteHedgeWon()
+		}
 	}
 	if rate > 0 {
 		cp.stats.noteRate(from, rate)
@@ -507,16 +702,28 @@ func (cp *chunkPlan) succeed(idx, pidx int, t *transfer, took time.Duration) {
 func (cp *chunkPlan) fail(idx, pidx int, err error, corrupt bool) {
 	cp.mu.Lock()
 	cp.inFlight--
+	cp.landedLocked(idx, pidx, false)
+	// A copy that was still running when another one landed is not a failure at
+	// all — it was CANCELLED, by us, on purpose (F9 item 4). Blaming its holder
+	// would punish the losing half of every hedge, which is the one thing that
+	// could make hedging worse than not hedging: the second-fastest holder in the
+	// swarm would collect a streak for being second. Nothing is counted, nothing
+	// is re-queued, and the chunk is already done.
+	if cp.done[idx] {
+		var lost *BlobProvider
+		if pidx >= 0 {
+			lost = cp.providers[pidx]
+		}
+		cp.cond.Broadcast()
+		cp.mu.Unlock()
+		cp.stats.noteLost(lost)
+		return
+	}
 	var from, reinstated *BlobProvider
 	dropped := false
 	if pidx >= 0 {
 		ps := cp.prov[pidx]
 		from = cp.providers[pidx]
-		start, end := cp.layout.rangeOf(idx)
-		ps.inFlight -= end - start
-		if ps.inFlight < 0 {
-			ps.inFlight = 0
-		}
 		switch {
 		case corrupt:
 			cp.corruptFrom[pidx] = true
@@ -557,6 +764,10 @@ func (cp *chunkPlan) fail(idx, pidx int, err error, corrupt bool) {
 	case cp.attempts[idx] >= cp.attemptLimit:
 		cp.abortLocked(fmt.Errorf(
 			"chunk %d unfetchable after %d attempts: %w", idx, cp.attempts[idx], err))
+	case len(cp.flight[idx]) > 0:
+		// A hedge failed while the copy it was racing is still running. The chunk
+		// is not lost and must not be queued a second time, or one failure would
+		// turn into two dispatches.
 	default:
 		cp.pending = append(cp.pending, idx)
 	}

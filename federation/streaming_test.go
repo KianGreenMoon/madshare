@@ -108,14 +108,16 @@ func TestChunkPlanPrioritizeAndDone0(t *testing.T) {
 	holders := []*BlobProvider{{Name: "h"}}
 
 	cp := testPlan(layout, holders, false)
+	tr := newTransfer("h", "p", "p.part")
 	cp.prioritize(3)
-	if idx, _, _, ok := cp.take(); !ok || idx != 3 {
-		t.Fatalf("prioritized take = (%d,%v), want (3,true)", idx, ok)
-	}
-	for _, want := range []int{0, 1, 2, 4} { // the rest keep their order
-		if idx, _, _, ok := cp.take(); !ok || idx != want {
-			t.Fatalf("take = (%d,%v), want %d", idx, ok, want)
+	// Each chunk is completed before the next is taken, because one holder is
+	// only asked for maxHolderRequests at a time (F9 item 4).
+	for _, want := range []int{3, 0, 1, 2, 4} { // prioritized first, the rest in order
+		d, ok := cp.take()
+		if !ok || d.idx != want {
+			t.Fatalf("take = (%d,%v), want %d", d.idx, ok, want)
 		}
+		cp.succeed(d.idx, d.pidx, tr, time.Millisecond)
 	}
 
 	cp2 := testPlan(layout, holders, true)
@@ -125,8 +127,8 @@ func TestChunkPlanPrioritizeAndDone0(t *testing.T) {
 	if b := cp2.watermarkBytes(); b != 10 {
 		t.Errorf("watermarkBytes = %d, want 10", b)
 	}
-	if idx, _, _, ok := cp2.take(); !ok || idx != 1 {
-		t.Errorf("done0 first dispatch = (%d,%v), want (1,true)", idx, ok)
+	if d, ok := cp2.take(); !ok || d.idx != 1 {
+		t.Errorf("done0 first dispatch = (%d,%v), want (1,true)", d.idx, ok)
 	}
 }
 
@@ -140,28 +142,28 @@ func TestChunkPlanFailover(t *testing.T) {
 
 	cp := testPlan(layout, []*BlobProvider{{Name: "only"}}, false)
 	for i := 1; i < providerFailureLimit; i++ {
-		idx, _, pidx, ok := cp.take()
+		d, ok := cp.take()
 		if !ok {
 			t.Fatalf("no chunk to dispatch at retry %d", i)
 		}
-		cp.fail(idx, pidx, netErr, false)
+		cp.fail(d.idx, d.pidx, netErr, false)
 		if cp.aborted {
 			t.Fatalf("aborted after %d transient failures (limit %d) — should retry", i, providerFailureLimit)
 		}
 	}
 	// A success clears the streak, so transient failures are tolerated again.
-	idx, _, pidx, _ := cp.take()
-	cp.succeed(idx, pidx, newTransfer("h", "p", "p.part"), time.Millisecond)
-	idx, _, pidx, _ = cp.take()
-	cp.fail(idx, pidx, netErr, false)
+	d, _ := cp.take()
+	cp.succeed(d.idx, d.pidx, newTransfer("h", "p", "p.part"), time.Millisecond)
+	d, _ = cp.take()
+	cp.fail(d.idx, d.pidx, netErr, false)
 	if cp.aborted {
 		t.Fatal("aborted right after a success reset the failure streak")
 	}
 
 	// A corrupt chunk drops the sole holder immediately → abort.
 	cp2 := testPlan(layout, []*BlobProvider{{Name: "liar"}}, false)
-	idx, _, pidx, _ = cp2.take()
-	cp2.fail(idx, pidx, errChunkCorrupt, true)
+	d, _ = cp2.take()
+	cp2.fail(d.idx, d.pidx, errChunkCorrupt, true)
 	if !cp2.aborted {
 		t.Fatal("a corrupt chunk from the sole holder should abort")
 	}
@@ -177,23 +179,22 @@ func wideLayout(n int) *chunkLayout { return buildLayout(int64(10*n), 10, nil) }
 // benchmark window is long enough that every holder asked during the test still
 // counts as recently asked.
 func testPlan(layout *chunkLayout, holders []*BlobProvider, done0 bool) *chunkPlan {
-	return newChunkPlan(layout, holders, done0, nil,
+	return newChunkPlan(context.Background(), layout, holders, done0, newTransferStats(),
 		Timeouts{Retry: time.Millisecond, PerChunk: time.Minute})
 }
 
-// dispatch hands the next pending chunk to a NAMED holder, with the same
+// askHolder hands the next pending chunk to a NAMED holder, with the same
 // bookkeeping take() does. The scheduler picks the holder itself, which is the
 // point of it — these tests are about what happens after a holder was asked, so
 // they choose.
-func dispatch(t *testing.T, cp *chunkPlan, pidx int) int {
+func askHolder(t *testing.T, cp *chunkPlan, pidx int) int {
 	t.Helper()
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
 	if len(cp.pending) == 0 {
 		t.Fatal("no chunk left to dispatch")
 	}
-	idx, _ := cp.dispatchLocked(0, pidx)
-	return idx
+	return cp.dispatchLocked(cp.unqueueLocked(0), pidx, false).idx
 }
 
 // TestChunkPlanRetirementIsRelative pins the fix for a healthy holder being
@@ -211,10 +212,10 @@ func TestChunkPlanRetirementIsRelative(t *testing.T) {
 		cp := testPlan(wideLayout(12), []*BlobProvider{{Name: "bad"}, {Name: "good"}}, false)
 		tr := newTransfer("h", "p", "p.part")
 		for i := 0; i < providerFailureLimit; i++ {
-			cp.fail(dispatch(t, cp, 0), 0, netErr, false)
+			cp.fail(askHolder(t, cp, 0), 0, netErr, false)
 			// The peer has to be actually delivering, not merely present: since F9
 			// item 3 a holder nobody has asked is no longer a benchmark.
-			cp.succeed(dispatch(t, cp, 1), 1, tr, time.Millisecond)
+			cp.succeed(askHolder(t, cp, 1), 1, tr, time.Millisecond)
 		}
 		if !cp.prov[0].dead {
 			t.Error("a holder failing while its peer delivers should be retired")
@@ -232,7 +233,7 @@ func TestChunkPlanRetirementIsRelative(t *testing.T) {
 		// Both holders miss the same number of times, alternating.
 		for i := 0; i < providerFailureLimit; i++ {
 			for _, pidx := range []int{0, 1} {
-				cp.fail(dispatch(t, cp, pidx), pidx, netErr, false)
+				cp.fail(askHolder(t, cp, pidx), pidx, netErr, false)
 			}
 		}
 		if cp.prov[0].dead || cp.prov[1].dead {
@@ -247,7 +248,7 @@ func TestChunkPlanRetirementIsRelative(t *testing.T) {
 	t.Run("sole holder still terminates", func(t *testing.T) {
 		cp := testPlan(wideLayout(12), []*BlobProvider{{Name: "only"}}, false)
 		for i := 0; i < providerFailureLimit; i++ {
-			cp.fail(dispatch(t, cp, 0), 0, netErr, false)
+			cp.fail(askHolder(t, cp, 0), 0, netErr, false)
 		}
 		// Nothing to compare against, so the absolute limit stands — otherwise a
 		// fetch against a single dead holder would retry forever.
@@ -269,7 +270,7 @@ func TestChunkPlanRetirementIsRelative(t *testing.T) {
 		cp := testPlan(wideLayout(12), []*BlobProvider{{Name: "asked"}, {Name: "idle"}}, false)
 		cp.tryWindow = time.Millisecond // "recently" ends immediately
 		for i := 0; i < providerFailureLimit; i++ {
-			cp.fail(dispatch(t, cp, 0), 0, netErr, false)
+			cp.fail(askHolder(t, cp, 0), 0, netErr, false)
 			time.Sleep(2 * time.Millisecond)
 		}
 		if !cp.prov[0].dead {
@@ -277,9 +278,9 @@ func TestChunkPlanRetirementIsRelative(t *testing.T) {
 		}
 		// And the reverse: a peer asked WITHIN the window does hold the rule back.
 		cp2 := testPlan(wideLayout(12), []*BlobProvider{{Name: "asked"}, {Name: "also asked"}}, false)
-		dispatch(t, cp2, 1)
+		askHolder(t, cp2, 1)
 		for i := 0; i < providerFailureLimit; i++ {
-			cp2.fail(dispatch(t, cp2, 0), 0, netErr, false)
+			cp2.fail(askHolder(t, cp2, 0), 0, netErr, false)
 		}
 		if !cp2.prov[0].dead {
 			t.Error("a holder failing beside a peer at streak 0 should still be retired")
@@ -310,16 +311,16 @@ func TestChunkPlanStopsDispatchingToAHolderThatNeverAnswers(t *testing.T) {
 
 	wasted := 0
 	for {
-		idx, p, pidx, ok := cp.take()
+		d, ok := cp.take()
 		if !ok {
 			break
 		}
-		if p.Name == "ghost" {
+		if d.p.Name == "ghost" {
 			wasted++
-			cp.fail(idx, pidx, netErr, false)
+			cp.fail(d.idx, d.pidx, netErr, false)
 			continue
 		}
-		cp.succeed(idx, pidx, tr, time.Millisecond)
+		cp.succeed(d.idx, d.pidx, tr, time.Millisecond)
 	}
 
 	if cp.remaining != 0 {
@@ -357,7 +358,7 @@ func TestChunkPlanAttemptLimit(t *testing.T) {
 		if len(cp.pending) == 0 {
 			break
 		}
-		cp.fail(dispatch(t, cp, i%len(holders)), i%len(holders), netErr, false) // alternate, so streaks stay level
+		cp.fail(askHolder(t, cp, i%len(holders)), i%len(holders), netErr, false) // alternate, so streaks stay level
 	}
 	if !cp.aborted {
 		t.Fatal("an unfetchable chunk must abort the transfer")
