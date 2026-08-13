@@ -1144,13 +1144,25 @@ func (n *Node) fetchRange(ctx context.Context, p *BlobProvider, t *transfer, sta
 }
 
 // chunk0Prefetch is a speculative chunk-0 fetch overlapped with the manifest
-// round trip. take() consumes it once the manifest is known, keeping the bytes
-// only if the guessed layout matched and chunk 0 verifies.
+// round trip. It never blocks the swarm start: fetchSwarm ADOPTS it into the
+// chunk plan as a pre-dispatched attempt (adoptFlight) and settleSpeculation
+// resolves it through the plan's ordinary succeed/fail paths, so a holders[0]
+// that dribbles is raced by a hedge like any other slow copy instead of gating
+// the transfer on the per-chunk backstop.
 type chunk0Prefetch struct {
 	active   bool
 	from     *BlobProvider // the holder it was fetched from (for stats crediting)
 	guessLen int64         // the chunk-0 length we speculatively fetched
-	ch       chan []byte   // buffered(1): the fetched bytes, or nil on failure
+	cancel   context.CancelFunc
+	ch       chan chunk0Result // buffered(1): the fetch goroutine's single send
+}
+
+// chunk0Result is what the speculative fetch resolved to: the bytes or the
+// error, plus how long the fetch alone took (the throughput sample).
+type chunk0Result struct {
+	data []byte
+	err  error
+	took time.Duration
 }
 
 // speculateChunk0 starts fetching chunk 0 from the first holder using the chunk
@@ -1158,71 +1170,86 @@ type chunk0Prefetch struct {
 // the lead ramp), so it lands in parallel with the manifest fetch. With the ramp
 // chunk 0 is a small lead chunk, so this speculative fetch is small.
 func (n *Node) speculateChunk0(t *transfer, holders []*BlobProvider) *chunk0Prefetch {
-	pf := &chunk0Prefetch{ch: make(chan []byte, 1)}
+	pf := &chunk0Prefetch{}
 	if len(holders) == 0 {
-		pf.ch <- nil
 		return pf
 	}
 	size := t.Size()
 	bulk := chunkSizeFor(size)
 	gl := buildLayout(size, bulk, leadSizes(size, bulk))
 	if gl.count() == 0 { // unknown/zero size — skip the guess
-		pf.ch <- nil
 		return pf
 	}
 	_, end := gl.rangeOf(0)
 	pf.guessLen = end // chunk 0 = [0, end)
 	pf.active = true
-	p := holders[0]
-	pf.from = p
+	pf.from = holders[0]
+	pf.ch = make(chan chunk0Result, 1)
+	pctx, cancel := context.WithCancel(n.transferCtx)
+	pf.cancel = cancel
 	go func() {
-		data, err := n.fetchRange(n.transferCtx, p, t, 0, pf.guessLen, t.stats.noteStall)
-		if err != nil {
-			pf.ch <- nil
-			return
-		}
-		pf.ch <- data
+		started := time.Now()
+		data, err := n.fetchRange(pctx, pf.from, t, 0, pf.guessLen, t.stats.noteStall)
+		pf.ch <- chunk0Result{data: data, err: err, took: time.Since(started)}
 	}()
 	return pf
 }
 
-// take waits for the speculative fetch and returns chunk 0's bytes iff the
-// manifest confirms the guessed chunk-0 boundary and the bytes verify against
-// it; nil otherwise (fetchSwarm then fetches chunk 0 through the normal plan).
-// It blocks only until the speculative fetch resolves (bounded by perChunkTimeout).
-func (pf *chunk0Prefetch) take(man *blobManifest) []byte {
-	if !pf.active {
-		return nil
+// discard abandons the speculative fetch when it will not be adopted — no
+// manifest was obtained, or the real chunk-0 boundary differed from the guess.
+// Cancelling (rather than letting the fetch run out unread) is what keeps a
+// wrong guess from spending a holder's bandwidth on bytes nobody will keep;
+// the buffered(1) channel lets the goroutine finish its single send either way.
+func (pf *chunk0Prefetch) discard() {
+	if pf.cancel != nil {
+		pf.cancel()
 	}
-	data := <-pf.ch
-	if data == nil || len(man.Chunks) == 0 {
-		return nil
-	}
-	_, end := man.layout().rangeOf(0)
-	if end != pf.guessLen || int64(len(data)) != end {
-		return nil // the real chunk-0 boundary differed from the guess
-	}
-	sum := sha256.Sum256(data)
-	if hex.EncodeToString(sum[:]) != man.Chunks[0] {
-		return nil
-	}
-	return data
 }
 
-// discard abandons the speculative fetch when no manifest was obtained. The
-// buffered(1) channel lets the fetch goroutine finish its single send unread, so
-// nothing leaks (it never touches the part file — only in-memory bytes).
-func (pf *chunk0Prefetch) discard() {}
+// settleSpeculation waits for the adopted speculative fetch and resolves its
+// attempt through the plan, exactly as a worker resolves a dispatch: verified
+// bytes are written at offset 0 and succeed, anything else fails (a hash
+// mismatch as corrupt — the boundary already matched the manifest, so the
+// bytes are the holder's own). It runs inside fetchSwarm's WaitGroup, so the
+// part file outlives it; a rival landing chunk 0 cancels the fetch via
+// landedLocked, and the failure then lands on the done-chunk path (a cancelled
+// hedge loser, blamed on nobody).
+func (n *Node) settleSpeculation(pf *chunk0Prefetch, plan *chunkPlan, t *transfer, f *os.File, man *blobManifest) {
+	res := <-pf.ch
+	pf.cancel() // release the fetch's context (a no-op if the plan already did)
+	if res.err != nil {
+		plan.fail(0, 0, fmt.Errorf("chunk 0 (speculative): %w", res.err), false)
+		return
+	}
+	if int64(len(res.data)) != pf.guessLen {
+		plan.fail(0, 0, fmt.Errorf("chunk 0 (speculative): got %d of %d bytes",
+			len(res.data), pf.guessLen), false)
+		return
+	}
+	sum := sha256.Sum256(res.data)
+	if hex.EncodeToString(sum[:]) != man.Chunks[0] {
+		plan.fail(0, 0, fmt.Errorf("chunk 0: hash mismatch from %q: %w",
+			pf.from.Display(), errChunkCorrupt), true)
+		return
+	}
+	if _, err := f.WriteAt(res.data, 0); err != nil {
+		plan.fail(0, 0, err, false)
+		return
+	}
+	n.observePeerAlive(pf.from) // a verified chunk is liveness proof
+	plan.succeed(0, 0, t, res.took)
+}
 
 // fetchSwarm downloads a blob chunk-by-chunk from all advertising holders in
-// parallel, verifying each chunk against the manifest. prefetched0 (when
-// non-nil) is chunk 0 already fetched and verified during the manifest round
-// trip — written up front so the first byte is ready immediately (from0 is the
-// holder it came from, credited in the stats). The caller verifies the assembled
-// whole-file hash afterwards. The part file is pre-sized so chunks can be
-// written at their offsets (WriteAt is safe for concurrent non-overlapping
-// writes).
-func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*BlobProvider, prefetched0 []byte, from0 *BlobProvider) error {
+// parallel, verifying each chunk against the manifest. pf is the speculative
+// chunk-0 fetch overlapped with the manifest round trip: when the manifest
+// confirms the guessed chunk-0 boundary it is adopted into the plan as a
+// pre-dispatched attempt on holders[0] and resolved by settleSpeculation —
+// never waited on up front, so a dribbling holders[0] cannot gate the swarm
+// start. The caller verifies the assembled whole-file hash afterwards. The
+// part file is pre-sized so chunks can be written at their offsets (WriteAt is
+// safe for concurrent non-overlapping writes).
+func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*BlobProvider, pf *chunk0Prefetch) error {
 	layout := man.layout()
 	f, err := os.OpenFile(t.partPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
 	if err != nil {
@@ -1234,25 +1261,23 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*BlobProvide
 			return err
 		}
 	}
-	done0 := false
-	if len(prefetched0) > 0 {
-		if _, err := f.WriteAt(prefetched0, 0); err != nil {
-			f.Close()
-			return err
+	plan := newChunkPlan(n.transferCtx, layout, holders, t.stats, n.timeouts)
+	adopted := false
+	if pf.active && layout.count() > 0 {
+		if _, end := layout.rangeOf(0); end == pf.guessLen {
+			// pf.from IS holders[0] (runTransfer hands both the same slice), so
+			// provider index 0 is the speculation's holder by construction.
+			plan.adoptFlight(0, 0, pf.cancel)
+			adopted = true
+		} else {
+			pf.discard() // the real chunk-0 boundary differed from the guess
 		}
-		done0 = true
 	}
-	plan := newChunkPlan(n.transferCtx, layout, holders, done0, t.stats, n.timeouts)
 	n.probeCoverage(t.hash, plan)
 	t.stats.setChunks(layout.count())
 	// Expose per-chunk readiness (the layout) + the seek-priority hook to the
-	// streaming relay, pre-marking chunk 0 so a waiting reader is released without
-	// a round trip.
+	// streaming relay.
 	t.beginChunks(layout, plan.prioritize)
-	if done0 {
-		t.stats.noteSucceed(0, from0, int64(len(prefetched0)))
-		t.chunkDone(0, plan.watermarkBytes())
-	}
 	// Two workers per holder, bounded in total — but what each HOLDER may be
 	// asked for at once is bounded separately (maxHolderRequests), and that is
 	// the load-bearing one: this formula counts advertised holders, not answering
@@ -1260,6 +1285,16 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*BlobProvide
 	// survivor.
 	workers := max(1, min(len(holders)*2, maxChunkWorkers, len(man.Chunks)))
 	var wg sync.WaitGroup
+	if adopted {
+		// Inside the WaitGroup like any worker: the part file must outlive the
+		// write, and the wait is bounded — the fetch carries its own per-chunk
+		// deadline, and a rival landing chunk 0 cancels it.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			n.settleSpeculation(pf, plan, t, f, man)
+		}()
+	}
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {

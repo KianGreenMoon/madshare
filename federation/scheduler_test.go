@@ -20,7 +20,7 @@ import (
 // the holder is slow.
 func TestScheduleGoesToTheLeastLoadedHolder(t *testing.T) {
 	holders := []*BlobProvider{{Name: "a"}, {Name: "b"}}
-	cp := testPlan(wideLayout(8), holders, false)
+	cp := testPlan(wideLayout(8), holders)
 	tr := newTransfer("h", "p", "p.part")
 
 	// With everyone idle the two alternate: each dispatch loads one of them, so
@@ -66,7 +66,7 @@ func TestScheduleGoesToTheLeastLoadedHolder(t *testing.T) {
 // then a chunk" is simply wrong, because not every holder can serve every chunk.
 func TestScheduleAsksAPartialHolderOnlyForWhatItHas(t *testing.T) {
 	holders := []*BlobProvider{{Name: "partial"}, {Name: "complete"}}
-	cp := testPlan(buildLayout(50, 10, nil), holders, false) // 5 chunks of 10
+	cp := testPlan(buildLayout(50, 10, nil), holders) // 5 chunks of 10
 	cp.setCoverage(0, &haveMessage{Ranges: []ByteRange{{Start: 0, End: 20}}})
 	cp.setCoverage(1, &haveMessage{Complete: true, Ranges: []ByteRange{{Start: 0, End: 50}}})
 
@@ -90,7 +90,7 @@ func TestScheduleAsksAPartialHolderOnlyForWhatItHas(t *testing.T) {
 // anyway: being wrong costs one fast 416, and never asking costs a source for
 // the rest of the transfer.
 func TestScheduleAsksAPartialHolderAnywayWhenNobodyElseWill(t *testing.T) {
-	cp := testPlan(buildLayout(50, 10, nil), []*BlobProvider{{Name: "partial"}}, false)
+	cp := testPlan(buildLayout(50, 10, nil), []*BlobProvider{{Name: "partial"}})
 	cp.setCoverage(0, &haveMessage{Ranges: []ByteRange{{Start: 0, End: 20}}})
 
 	seen := map[int]bool{}
@@ -114,7 +114,7 @@ func TestScheduleAsksAPartialHolderAnywayWhenNobodyElseWill(t *testing.T) {
 // the limits we asked it to enforce; counting it as slowness would starve a
 // busy-but-fast peer through the mechanism meant to find fast peers.
 func TestQuotaRefusalCostsAWaitNotAMark(t *testing.T) {
-	cp := testPlan(wideLayout(12), []*BlobProvider{{Name: "busy"}, {Name: "idle"}}, false)
+	cp := testPlan(wideLayout(12), []*BlobProvider{{Name: "busy"}, {Name: "idle"}})
 
 	for i := 0; i < providerFailureLimit; i++ {
 		cp.fail(askHolder(t, cp, 0), 0, errChunkBusy, false)
@@ -140,7 +140,7 @@ func TestQuotaRefusalCostsAWaitNotAMark(t *testing.T) {
 // and draws on the member budget. The swarm waits a quota out; it does not
 // fail over it.
 func TestQuotaRefusalSpendsNoAttemptBudget(t *testing.T) {
-	cp := testPlan(wideLayout(1), []*BlobProvider{{Name: "busy"}}, false)
+	cp := testPlan(wideLayout(1), []*BlobProvider{{Name: "busy"}})
 	tr := newTransfer("h", "p", "p.part")
 
 	// Well past the attempt budget (attemptLimit is 4 for one holder).
@@ -166,7 +166,7 @@ func TestQuotaRefusalSpendsNoAttemptBudget(t *testing.T) {
 // cadence would be a poll, not a retry — so consecutive 429s from one holder
 // double the pause (through backoffFor's cap), and any success clears the run.
 func TestConsecutiveRefusalsBackOffFurther(t *testing.T) {
-	cp := testPlan(wideLayout(2), []*BlobProvider{{Name: "busy"}}, false)
+	cp := testPlan(wideLayout(2), []*BlobProvider{{Name: "busy"}})
 	tr := newTransfer("h", "p", "p.part")
 
 	cp.fail(askHolder(t, cp, 0), 0, errChunkBusy, false)
@@ -196,7 +196,7 @@ func TestConsecutiveRefusalsBackOffFurther(t *testing.T) {
 // never clears would hold the transfer open forever.
 func TestBusyOnlyPlanAbortsAfterPatience(t *testing.T) {
 	cp := newChunkPlan(context.Background(), wideLayout(1), []*BlobProvider{{Name: "busy"}},
-		false, newTransferStats(),
+		newTransferStats(),
 		Timeouts{Retry: time.Millisecond, PerChunk: time.Minute, Transfer: 30 * time.Millisecond})
 
 	done := make(chan struct{})
@@ -225,7 +225,7 @@ func TestBusyOnlyPlanAbortsAfterPatience(t *testing.T) {
 // with the work once the rest is over rather than either spinning or blocking
 // forever (the plan has no other broadcast to wake it).
 func TestScheduleWaitsOutABackoffRatherThanSpinning(t *testing.T) {
-	cp := testPlan(wideLayout(4), []*BlobProvider{{Name: "only"}}, false)
+	cp := testPlan(wideLayout(4), []*BlobProvider{{Name: "only"}})
 	cp.retry = 40 * time.Millisecond
 	cp.fail(askHolder(t, cp, 0), 0, errors.New("mesh stalled"), false)
 
@@ -337,7 +337,7 @@ func TestAgreedManifestNeedsASecondOpinion(t *testing.T) {
 // manifest would retire every honest holder in the swarm, one confident
 // judgement at a time.
 func TestBlameFallsOnTheReferenceWhenHoldersDisagreeWithIt(t *testing.T) {
-	cp := testPlan(wideLayout(12), []*BlobProvider{{Name: "a"}, {Name: "b"}, {Name: "c"}}, false)
+	cp := testPlan(wideLayout(12), []*BlobProvider{{Name: "a"}, {Name: "b"}, {Name: "c"}})
 
 	// The first corrupt chunk is unambiguous evidence about its sender: no amount
 	// of environmental bad luck produces wrong bytes.
@@ -372,7 +372,7 @@ func TestBlameFallsOnTheReferenceWhenHoldersDisagreeWithIt(t *testing.T) {
 // cannot get back the chunk already in that holder's hands, so a transfer's tail
 // was as slow as its slowest live holder however many idle holders were watching.
 func TestEndgameHedgesAChunkNobodyElseCanRescue(t *testing.T) {
-	cp := testPlan(wideLayout(2), []*BlobProvider{{Name: "slow"}, {Name: "fast"}}, false)
+	cp := testPlan(wideLayout(2), []*BlobProvider{{Name: "slow"}, {Name: "fast"}})
 	tr := newTransfer("h", "p", "p.part")
 
 	slow, ok := cp.take()
@@ -433,7 +433,7 @@ func TestEndgameHedgesAChunkNobodyElseCanRescue(t *testing.T) {
 // thing that can make it arrive sooner, and it is worth more than starting a
 // chunk nobody has asked for yet.
 func TestHedgeJumpsAheadForAReaderThatIsBlocked(t *testing.T) {
-	cp := testPlan(wideLayout(6), []*BlobProvider{{Name: "slow"}, {Name: "fast"}}, false)
+	cp := testPlan(wideLayout(6), []*BlobProvider{{Name: "slow"}, {Name: "fast"}})
 
 	stuck, ok := cp.take()
 	if !ok {
@@ -455,7 +455,7 @@ func TestHedgeJumpsAheadForAReaderThatIsBlocked(t *testing.T) {
 // bandwidth spent twice, and past the second copy it buys progressively less for
 // the same price each time.
 func TestHedgingStopsAtTwoCopies(t *testing.T) {
-	cp := testPlan(wideLayout(1), []*BlobProvider{{Name: "a"}, {Name: "b"}, {Name: "c"}}, false)
+	cp := testPlan(wideLayout(1), []*BlobProvider{{Name: "a"}, {Name: "b"}, {Name: "c"}})
 
 	first, _ := cp.take()
 	cp.prioritize(first.idx)
@@ -483,7 +483,7 @@ func TestHedgingStopsAtTwoCopies(t *testing.T) {
 // re-queue the chunk. Two dispatches out of one failure is how a scheduler
 // quietly doubles its own work.
 func TestAFailedHedgeDoesNotRequeueAChunkStillInFlight(t *testing.T) {
-	cp := testPlan(wideLayout(2), []*BlobProvider{{Name: "a"}, {Name: "b"}}, false)
+	cp := testPlan(wideLayout(2), []*BlobProvider{{Name: "a"}, {Name: "b"}})
 	tr := newTransfer("h", "p", "p.part")
 
 	first, _ := cp.take()
@@ -521,7 +521,7 @@ func TestAFailedHedgeDoesNotRequeueAChunkStillInFlight(t *testing.T) {
 // together. Workers are capped in total, so a plan of four holders with one
 // answering reaches exactly that.
 func TestOneHolderIsNotAskedForEverythingAtOnce(t *testing.T) {
-	cp := testPlan(wideLayout(12), []*BlobProvider{{Name: "only"}}, false)
+	cp := testPlan(wideLayout(12), []*BlobProvider{{Name: "only"}})
 	tr := newTransfer("h", "p", "p.part")
 
 	var out []dispatch

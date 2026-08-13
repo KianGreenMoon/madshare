@@ -1915,23 +1915,45 @@ things surfaced during the read that the refactor deliberately did NOT change.
 None has an observed failure; all are by-inspection, so per the standing rule
 they are recorded rather than fixed.
 
-### 1. The chunk-0 speculation can serialize the swarm start (Low, open)
+### 1. The chunk-0 speculation can serialize the swarm start — **REPRODUCED & FIXED 2026-08-13**
 
-`runTransfer` calls `pf.take(man)` — a blocking receive — before `fetchSwarm`
-starts. The speculative chunk-0 fetch goes to `holders[0]`; if that holder
-accepts the dial but then dribbles or stalls, the wait is bounded only by the
+`runTransfer` called `pf.take(man)` — a blocking receive — before `fetchSwarm`
+started. The speculative chunk-0 fetch goes to `holders[0]`; if that holder
+accepts the dial but then dribbles or stalls, the wait was bounded only by the
 idle-read watchdog (`Timeouts.ChunkStall`) or, for a slow-but-steady dribble,
-`Timeouts.PerChunk` — while the agreed manifest is already in hand from OTHER
-holders and the plan could be fetching chunk 0 from any of them. Worst case,
-the feature built to cut time-to-first-byte ADDS up to a per-chunk budget of
+`Timeouts.PerChunk` — while the agreed manifest was already in hand from OTHER
+holders and the plan could have fetched chunk 0 from any of them. Worst case,
+the feature built to cut time-to-first-byte ADDED up to a per-chunk budget of
 latency, on exactly the kind of holder (stale advertisement, half-dead node)
 F9 spent two items defending against. `Timeouts.Connect` only covers the case
 where the holder never connects.
 
-Not light to fix: the clean shape is folding the prefetch into the chunk plan
-as a pre-dispatched attempt at chunk 0, so hedging (`prioritize` marking a
-wanted in-flight chunk) covers it like any other slow copy, and `take()` stops
-existing. Left open with that sketch.
+**Reproduced** in `TestChaosDribblingFirstHolderDoesNotGateFirstByte` (a
+`holders[0]` that dribbles 1 KiB every 50 ms — steady enough to evade every
+watchdog — beside a healthy holder): first byte at 6.03 s, which is exactly
+`chaosPerChunk`, against a healthy holder that then delivered all four chunks
+in milliseconds. **Fixed the same day** with the sketched shape: the prefetch
+is folded into the chunk plan as a pre-dispatched attempt at chunk 0
+(`chunkPlan.adoptFlight`), resolved through the ordinary `succeed`/`fail`
+paths by `settleSpeculation` inside `fetchSwarm`'s WaitGroup, so hedging
+(`prioritize` marking a wanted in-flight chunk / the endgame) covers it like
+any other slow copy and `landedLocked` cancels it when a rival lands.
+`pf.take()` stopped existing; `discard()` now actually cancels the fetch (it
+used to run to completion unread when no manifest arrived or the guess was
+wrong). Measured after: first byte 93 ms, the dribbler's copies lost the race,
+no failure charged to it. Mechanism pinned by
+`TestChunkPlanPrioritizeAndAdoptedFlight`,
+`TestAdoptedFlightIsRacedAndItsLoserForgiven`,
+`TestAdoptedFlightFailureRequeues` (default run) + the chaos scenario
+(budget bites at scale 1; the unscaled dribble finishes inside the scaled
+budget under -race, noted in the test).
+
+Two deliberate behaviour changes beyond the latency fix, both toward normal
+plan citizenship: a failed speculation now counts as an ordinary failure
+against `holders[0]` (streak + attempt + backoff — it used to be silently
+forgotten), and a speculation whose bytes fail the manifest hash is CORRUPT
+evidence (the boundary already matched, so the bytes are the holder's own; it
+used to be a silent refetch).
 
 ### 2. A sole holder answering 429 exhausts the attempt budget (design question) — **DECIDED & FIXED 2026-08-13**
 

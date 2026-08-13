@@ -99,15 +99,17 @@ func TestChunkLayout(t *testing.T) {
 	}
 }
 
-// TestChunkPlanPrioritizeAndDone0 covers the two scheduling changes: prioritize
-// jumps a pending chunk to the front of dispatch, and done0 pre-completes chunk
-// 0 (the prefetched-chunk-0 case) so dispatch starts at chunk 1.
-func TestChunkPlanPrioritizeAndDone0(t *testing.T) {
+// TestChunkPlanPrioritizeAndAdoptedFlight covers the two scheduling entry
+// points fetchSwarm uses beyond plain dispatch: prioritize jumps a pending
+// chunk to the front, and adoptFlight registers the speculative chunk-0 fetch
+// as an attempt already on the wire, so dispatch starts at chunk 1 and the
+// speculation resolves through succeed like any worker's dispatch.
+func TestChunkPlanPrioritizeAndAdoptedFlight(t *testing.T) {
 	man := &blobManifest{ChunkSize: 10, Size: 50, Chunks: []string{"a", "b", "c", "d", "e"}}
 	layout := man.layout()
 	holders := []*BlobProvider{{Name: "h"}}
 
-	cp := testPlan(layout, holders, false)
+	cp := testPlan(layout, holders)
 	tr := newTransfer("h", "p", "p.part")
 	cp.prioritize(3)
 	// Each chunk is completed before the next is taken, because one holder is
@@ -120,15 +122,87 @@ func TestChunkPlanPrioritizeAndDone0(t *testing.T) {
 		cp.succeed(d.idx, d.pidx, tr, time.Millisecond)
 	}
 
-	cp2 := testPlan(layout, holders, true)
+	cp2 := testPlan(layout, holders)
+	cp2.adoptFlight(0, 0, func() {})
+	if len(cp2.flight[0]) != 1 || cp2.inFlight != 1 || cp2.prov[0].reqs != 1 {
+		t.Fatalf("adopted plan: flight[0]=%d inFlight=%d reqs=%d",
+			len(cp2.flight[0]), cp2.inFlight, cp2.prov[0].reqs)
+	}
+	if d, ok := cp2.take(); !ok || d.idx != 1 {
+		t.Errorf("first dispatch after adoption = (%d,%v), want (1,true)", d.idx, ok)
+	}
+	// The speculation resolving is an ordinary success: watermark, progress,
+	// and the holder's slot all come back.
+	cp2.succeed(0, 0, tr, time.Millisecond)
 	if !cp2.done[0] || cp2.watermark != 1 || cp2.remaining != 4 {
-		t.Fatalf("done0 plan: done[0]=%v watermark=%d remaining=%d", cp2.done[0], cp2.watermark, cp2.remaining)
+		t.Fatalf("after speculation landed: done[0]=%v watermark=%d remaining=%d",
+			cp2.done[0], cp2.watermark, cp2.remaining)
 	}
 	if b := cp2.watermarkBytes(); b != 10 {
 		t.Errorf("watermarkBytes = %d, want 10", b)
 	}
-	if d, ok := cp2.take(); !ok || d.idx != 1 {
-		t.Errorf("done0 first dispatch = (%d,%v), want (1,true)", d.idx, ok)
+}
+
+// TestAdoptedFlightIsRacedAndItsLoserForgiven pins what adoption buys: the
+// speculative chunk-0 attempt is hedged like any slow in-flight copy (the fix
+// for the swarm start being gated on holders[0] — .issues/open-issues.md,
+// swarm refactor pass finding 1), the rival landing cancels it, and its
+// subsequent failure is a cancelled loser — blamed on nobody, requeued nowhere.
+func TestAdoptedFlightIsRacedAndItsLoserForgiven(t *testing.T) {
+	layout := wideLayout(1) // one chunk: the speculation holds the whole plan
+	cp := testPlan(layout, []*BlobProvider{{Name: "dribbler"}, {Name: "healthy"}})
+	tr := newTransfer("h", "p", "p.part")
+
+	cancelled := false
+	cp.adoptFlight(0, 0, func() { cancelled = true })
+
+	// The queue is empty and chunk 0 is in the dribbler's hands: the endgame
+	// must hand a second copy to the healthy holder rather than wait.
+	d, ok := cp.take()
+	if !ok || d.idx != 0 || d.pidx != 1 || !d.hedge {
+		t.Fatalf("take = (idx=%d pidx=%d hedge=%v ok=%v), want a hedge of chunk 0 on the healthy holder",
+			d.idx, d.pidx, d.hedge, ok)
+	}
+
+	// The healthy copy lands: the adopted attempt must be cancelled with it.
+	cp.succeed(0, 1, tr, time.Millisecond)
+	if !cancelled {
+		t.Fatal("the rival landed and the adopted speculation was not cancelled")
+	}
+	if cp.remaining != 0 {
+		t.Fatalf("remaining = %d after the rival landed, want 0", cp.remaining)
+	}
+
+	// The cancelled speculation resolves as a failure — on the done-chunk path,
+	// so the dribbler collects no streak and nothing is requeued.
+	cp.fail(0, 0, context.Canceled, false)
+	if cp.prov[0].fails != 0 {
+		t.Errorf("the losing speculation cost its holder a failure streak (%d)", cp.prov[0].fails)
+	}
+	if len(cp.pending) != 0 || cp.aborted {
+		t.Errorf("pending=%d aborted=%v after a forgiven loser, want a finished plan",
+			len(cp.pending), cp.aborted)
+	}
+}
+
+// TestAdoptedFlightFailureRequeues: a speculation that fails while the chunk is
+// still nobody else's is an ordinary failure — the chunk goes back in the
+// queue, the attempt is counted, and the holder collects its streak.
+func TestAdoptedFlightFailureRequeues(t *testing.T) {
+	cp := testPlan(wideLayout(1), []*BlobProvider{{Name: "dribbler"}, {Name: "healthy"}})
+	cp.adoptFlight(0, 0, func() {})
+
+	cp.fail(0, 0, errors.New("mesh stalled"), false)
+	if len(cp.pending) != 1 || cp.pending[0] != 0 {
+		t.Fatalf("pending = %v after the speculation failed, want chunk 0 requeued", cp.pending)
+	}
+	if cp.attempts[0] != 1 || cp.prov[0].fails != 1 {
+		t.Errorf("attempts[0]=%d fails=%d, want the failure counted like any dispatch",
+			cp.attempts[0], cp.prov[0].fails)
+	}
+	if d, ok := cp.take(); !ok || d.idx != 0 || d.pidx != 1 {
+		t.Errorf("take = (idx=%d pidx=%d ok=%v), want chunk 0 handed to the healthy holder",
+			d.idx, d.pidx, ok)
 	}
 }
 
@@ -140,7 +214,7 @@ func TestChunkPlanFailover(t *testing.T) {
 	layout := man.layout()
 	netErr := errors.New("mesh stalled")
 
-	cp := testPlan(layout, []*BlobProvider{{Name: "only"}}, false)
+	cp := testPlan(layout, []*BlobProvider{{Name: "only"}})
 	for i := 1; i < providerFailureLimit; i++ {
 		d, ok := cp.take()
 		if !ok {
@@ -161,7 +235,7 @@ func TestChunkPlanFailover(t *testing.T) {
 	}
 
 	// A corrupt chunk drops the sole holder immediately → abort.
-	cp2 := testPlan(layout, []*BlobProvider{{Name: "liar"}}, false)
+	cp2 := testPlan(layout, []*BlobProvider{{Name: "liar"}})
 	d, _ = cp2.take()
 	cp2.fail(d.idx, d.pidx, errChunkCorrupt, true)
 	if !cp2.aborted {
@@ -178,8 +252,8 @@ func wideLayout(n int) *chunkLayout { return buildLayout(int64(10*n), 10, nil) }
 // the failure backoff is a millisecond (production is half a second), and the
 // benchmark window is long enough that every holder asked during the test still
 // counts as recently asked.
-func testPlan(layout *chunkLayout, holders []*BlobProvider, done0 bool) *chunkPlan {
-	return newChunkPlan(context.Background(), layout, holders, done0, newTransferStats(),
+func testPlan(layout *chunkLayout, holders []*BlobProvider) *chunkPlan {
+	return newChunkPlan(context.Background(), layout, holders, newTransferStats(),
 		Timeouts{Retry: time.Millisecond, PerChunk: time.Minute})
 }
 
@@ -209,7 +283,7 @@ func TestChunkPlanRetirementIsRelative(t *testing.T) {
 	netErr := errors.New("mesh stalled")
 
 	t.Run("out of line with a delivering peer", func(t *testing.T) {
-		cp := testPlan(wideLayout(12), []*BlobProvider{{Name: "bad"}, {Name: "good"}}, false)
+		cp := testPlan(wideLayout(12), []*BlobProvider{{Name: "bad"}, {Name: "good"}})
 		tr := newTransfer("h", "p", "p.part")
 		for i := 0; i < providerFailureLimit; i++ {
 			cp.fail(askHolder(t, cp, 0), 0, netErr, false)
@@ -229,7 +303,7 @@ func TestChunkPlanRetirementIsRelative(t *testing.T) {
 	})
 
 	t.Run("everyone is equally slow", func(t *testing.T) {
-		cp := testPlan(wideLayout(12), []*BlobProvider{{Name: "a"}, {Name: "b"}}, false)
+		cp := testPlan(wideLayout(12), []*BlobProvider{{Name: "a"}, {Name: "b"}})
 		// Both holders miss the same number of times, alternating.
 		for i := 0; i < providerFailureLimit; i++ {
 			for _, pidx := range []int{0, 1} {
@@ -246,7 +320,7 @@ func TestChunkPlanRetirementIsRelative(t *testing.T) {
 	})
 
 	t.Run("sole holder still terminates", func(t *testing.T) {
-		cp := testPlan(wideLayout(12), []*BlobProvider{{Name: "only"}}, false)
+		cp := testPlan(wideLayout(12), []*BlobProvider{{Name: "only"}})
 		for i := 0; i < providerFailureLimit; i++ {
 			cp.fail(askHolder(t, cp, 0), 0, netErr, false)
 		}
@@ -267,7 +341,7 @@ func TestChunkPlanRetirementIsRelative(t *testing.T) {
 		// without having earned it — and reading that as a clean record would keep
 		// the strict absolute rule in force against a holder having the same bad
 		// moment as everybody else.
-		cp := testPlan(wideLayout(12), []*BlobProvider{{Name: "asked"}, {Name: "idle"}}, false)
+		cp := testPlan(wideLayout(12), []*BlobProvider{{Name: "asked"}, {Name: "idle"}})
 		cp.tryWindow = time.Millisecond // "recently" ends immediately
 		for i := 0; i < providerFailureLimit; i++ {
 			cp.fail(askHolder(t, cp, 0), 0, netErr, false)
@@ -277,7 +351,7 @@ func TestChunkPlanRetirementIsRelative(t *testing.T) {
 			t.Error("the sole holder anyone asked was not retired, so nothing ends the fetch")
 		}
 		// And the reverse: a peer asked WITHIN the window does hold the rule back.
-		cp2 := testPlan(wideLayout(12), []*BlobProvider{{Name: "asked"}, {Name: "also asked"}}, false)
+		cp2 := testPlan(wideLayout(12), []*BlobProvider{{Name: "asked"}, {Name: "also asked"}})
 		askHolder(t, cp2, 1)
 		for i := 0; i < providerFailureLimit; i++ {
 			cp2.fail(askHolder(t, cp2, 0), 0, netErr, false)
@@ -305,7 +379,7 @@ func TestChunkPlanRetirementIsRelative(t *testing.T) {
 // and that one dispatch is now bounded by Timeouts.Connect rather than PerChunk.
 func TestChunkPlanStopsDispatchingToAHolderThatNeverAnswers(t *testing.T) {
 	// Index 0 is the ghost — advertised, dialled, never there. Index 1 is real.
-	cp := testPlan(wideLayout(24), []*BlobProvider{{Name: "ghost"}, {Name: "live"}}, false)
+	cp := testPlan(wideLayout(24), []*BlobProvider{{Name: "ghost"}, {Name: "live"}})
 	tr := newTransfer("h", "p", "p.part")
 	netErr := errors.New("mesh stalled")
 
@@ -345,7 +419,7 @@ func TestChunkPlanStopsDispatchingToAHolderThatNeverAnswers(t *testing.T) {
 // killing sources.
 func TestChunkPlanAttemptLimit(t *testing.T) {
 	holders := []*BlobProvider{{Name: "a"}, {Name: "b"}}
-	cp := testPlan(wideLayout(1), holders, false) // one chunk, so every failure lands on it
+	cp := testPlan(wideLayout(1), holders) // one chunk, so every failure lands on it
 	netErr := errors.New("mesh stalled")
 
 	if cp.attemptLimit != providerFailureLimit*len(holders) {

@@ -651,14 +651,15 @@ func (n *Node) runTransfer(t *transfer, holders []*BlobProvider) {
 	// Overlap the manifest fetch with a speculative chunk-0 prefetch so the first
 	// playable byte does not wait for two serial mesh round-trips: the chunk
 	// layout is deterministic from the file size (chunkSizeFor), so chunk 0 is
-	// fetched from the first holder while the manifest loads, and kept only if the
-	// manifest confirms the layout and the chunk verifies.
+	// fetched from the first holder while the manifest loads. fetchSwarm adopts
+	// it into the chunk plan (never waiting on it — a dribbling holders[0] must
+	// not gate the swarm start) and keeps the bytes only if they verify.
 	pf := n.speculateChunk0(t, holders)
 
 	if man := n.fetchAgreedManifest(n.transferCtx, holders, t.hash); man != nil {
 		t.setMeta(man.Size, man.Filename)
 		t.stats.setMode("swarm")
-		err := n.fetchSwarm(t, man, holders, pf.take(man), pf.from)
+		err := n.fetchSwarm(t, man, holders, pf)
 		if err == nil {
 			if verr := verifyFileHash(t.partPath, t.hash); verr != nil {
 				err = fmt.Errorf("assembled blob failed verification: %w", verr)

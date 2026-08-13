@@ -219,7 +219,7 @@ type attempt struct {
 	cancel context.CancelFunc
 }
 
-func newChunkPlan(ctx context.Context, layout *chunkLayout, holders []*BlobProvider, done0 bool, st *transferStats, to Timeouts) *chunkPlan {
+func newChunkPlan(ctx context.Context, layout *chunkLayout, holders []*BlobProvider, st *transferStats, to Timeouts) *chunkPlan {
 	nc := layout.count()
 	cp := &chunkPlan{
 		done:         make([]bool, nc),
@@ -256,19 +256,44 @@ func newChunkPlan(ctx context.Context, layout *chunkLayout, holders []*BlobProvi
 	if cp.attemptLimit < providerFailureLimit {
 		cp.attemptLimit = providerFailureLimit
 	}
-	start := 0
-	if done0 && nc > 0 {
-		cp.done[0] = true
-		cp.watermark = 1
-		cp.remaining = nc - 1
-		start = 1
-	}
-	cp.pending = make([]int, 0, nc-start)
-	for i := start; i < nc; i++ {
+	cp.pending = make([]int, 0, nc)
+	for i := 0; i < nc; i++ {
 		cp.pending = append(cp.pending, i)
 	}
 	cp.cond = sync.NewCond(&cp.mu)
 	return cp
+}
+
+// adoptFlight registers an attempt that is ALREADY on the wire — the chunk-0
+// speculation runTransfer overlaps with the manifest round trip — as an
+// ordinary dispatched copy of chunk idx on provider pidx: it leaves the pending
+// queue, its holder is charged the bytes, and the cancel is what a rival
+// landing uses to stop it.
+//
+// It used to be modelled as "chunk 0 already done" behind a blocking receive
+// BEFORE the plan existed, which let a holders[0] that dribbles gate the whole
+// swarm start on the per-chunk backstop while holders that could serve chunk 0
+// at once sat idle (.issues/open-issues.md, swarm refactor pass finding 1). As
+// a flight it is covered by the same machinery as every other slow copy:
+// prioritize/the endgame hedge a second copy from somebody else, and
+// landedLocked cancels the loser. The caller resolves it through succeed/fail
+// exactly as a worker resolves a dispatch.
+func (cp *chunkPlan) adoptFlight(idx, pidx int, cancel context.CancelFunc) {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	for pos, p := range cp.pending {
+		if p == idx {
+			cp.pending = append(cp.pending[:pos], cp.pending[pos+1:]...)
+			break
+		}
+	}
+	cp.inFlight++
+	start, end := cp.layout.rangeOf(idx)
+	ps := cp.prov[pidx]
+	ps.inFlight += end - start
+	ps.reqs++
+	ps.lastTried = time.Now()
+	cp.flight[idx] = append(cp.flight[idx], &attempt{pidx: pidx, cancel: cancel})
 }
 
 // watermarkBytes is the contiguous-from-zero readable length in bytes.

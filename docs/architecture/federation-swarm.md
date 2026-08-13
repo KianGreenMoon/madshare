@@ -144,11 +144,22 @@
   chunk-0 fetch** — chunk 0's byte range is derived from the advertised size
   via the deterministic layout (so with the lead ramp the speculative fetch is a
   *small* chunk), then confirmed and per-chunk-verified once the manifest lands
-  (dropped if the guess was wrong). Manifest probes and chunk fetches share
-  **one pooled mesh connection**, so chunk fetches reuse the manifest's warm
-  path instead of paying a fresh handshake; a manifest probe is bounded (20 s)
-  so a slow holder cannot stall the transfer. Net effect: first byte after ~one
-  small chunk + a round-trip rather than a full bulk chunk.
+  (cancelled if the guess was wrong). The speculation is **adopted by the chunk
+  plan as a pre-dispatched attempt, never waited on** (fixed 2026-08-13,
+  `adoptFlight`/`settleSpeculation`): the swarm used to block on it before
+  dispatching anything, so a `holders[0]` that accepted the dial and then
+  dribbled gated the whole transfer on the per-chunk backstop — measured 6.03 s
+  to first byte beside a healthy holder that then served everything in
+  milliseconds (93 ms after the fix;
+  `TestChaosDribblingFirstHolderDoesNotGateFirstByte`). As a plan citizen it is
+  hedged like any other slow copy, its loser is cancelled and never blamed, an
+  honest failure costs `holders[0]` its ordinary streak, and corrupt
+  speculative bytes are corrupt evidence (the boundary already matched the
+  manifest). Manifest probes and chunk fetches share **one pooled mesh
+  connection**, so chunk fetches reuse the manifest's warm path instead of
+  paying a fresh handshake; a manifest probe is bounded (20 s) so a slow holder
+  cannot stall the transfer. Net effect: first byte after ~one small chunk + a
+  round-trip rather than a full bulk chunk.
 - **Tracker = the catalog + holdings** (built F4). "Who has hash H" is the union
   of two sources: nodes whose **published catalog** advertises the hash as a
   rendition (their library — already synced in F2), and nodes advertising it

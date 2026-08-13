@@ -229,6 +229,102 @@ func TestChaosOneLiveHolderIsNotFloodedWithWorkers(t *testing.T) {
 	assertCached(t, cacheB, hash, content)
 }
 
+// TestChaosDribblingFirstHolderDoesNotGateFirstByte pins the fix for the
+// chunk-0 speculation serializing the swarm start (.issues/open-issues.md,
+// swarm refactor pass finding 1).
+//
+// runTransfer overlaps the manifest round trip with a speculative chunk-0
+// fetch from holders[0]. That is the right bet when holders[0] is healthy —
+// and it used to be a BLOCKING one: the swarm did not start until the
+// speculation resolved, so a holders[0] that accepts the dial and then
+// dribbles held the whole transfer to the per-chunk backstop while a healthy
+// holder sat idle with the manifest already agreed. Measured here before the
+// fix: first byte at ~6.5 s (chaosPerChunk plus the manifest wave — the
+// dribble never pauses long enough for the idle-read watchdog, so the ctx
+// deadline is what ends it) against a healthy holder that would have served
+// chunk 0 in milliseconds.
+//
+// Now the speculation is ADOPTED by the chunk plan as a pre-dispatched attempt
+// at chunk 0 (adoptFlight), so the machinery that covers every other slow copy
+// covers it too: the endgame hedges chunk 0 to the healthy holder and
+// landedLocked cancels the dribbling loser.
+//
+// C dribbles rather than stalls on purpose (Slice+SliceDelay, not a cut or a
+// silence): a holder that goes quiet trips ResponseHeaderTimeout/ChunkStall in
+// seconds and the old code recovered acceptably; the steady dribble is the
+// shape that evaded every watchdog and ran the speculation into the full
+// per-chunk budget.
+//
+// The budget only bites at testTimeoutScale=1: the dribble is a link property
+// and is not scaled, so under -race chunk 0 dribbles through in ~13 s — inside
+// the scaled budget with or without the fix. The plain chaos run is the
+// regression guard.
+func TestChaosDribblingFirstHolderDoesNotGateFirstByte(t *testing.T) {
+	requireChaos(t)
+	content := fillBytes(1 << 20) // 1 MiB → 4 chunks of 256 KiB, chunk 0 included
+	storeA, storeB, storeC := newMemStore(), newMemStore(), newMemStore()
+	hash, resolveA := publishBlob(t, storeA, content)
+	_, resolveC := publishBlob(t, storeC, content)
+	cacheB := t.TempDir()
+
+	a, b, c, _, linkC := startFaultedTrio(t, storeA, storeB, storeC,
+		chaosOpts(resolveA), chaosOpts(WithCacheDir(cacheB)), chaosOpts(resolveC), 0, 0)
+	makeFriends(t, a, b, storeA, storeB)
+	makeFriends(t, c, b, storeC, storeB)
+	seedBlobCatalog(t, storeB, a, hash, int64(len(content)))
+	seedBlobCatalog(t, storeB, c, hash, int64(len(content)))
+
+	// Converge first: the scenario is about a link that DRIBBLES, not one that
+	// was never up.
+	ctx := context.Background()
+	pA := &BlobProvider{PublicKey: a.PublicKeyHex()}
+	pC := &BlobProvider{PublicKey: c.PublicKeyHex()}
+	waitFor(t, "both holders to answer a manifest probe", func() bool {
+		return b.fetchManifest(ctx, pA, hash) != nil && b.fetchManifest(ctx, pC, hash) != nil
+	})
+
+	// ~20 KiB/s in 1 KiB slices: headers arrive at once, bytes never pause long
+	// enough for the idle-read watchdog, and chunk 0 alone needs ~13 s — slow
+	// enough to hurt, steady enough to evade every timeout.
+	linkC.Set(netfault.Fault{Down: netfault.Dir{Slice: 1 << 10, SliceDelay: 50 * time.Millisecond}})
+
+	// The dribbler deliberately FIRST: the chunk-0 speculation goes to holders[0].
+	plan := []*BlobProvider{pC, pA}
+
+	started := time.Now()
+	tr, err := b.EnsureBlobFrom(ctx, hash, int64(len(content)), plan)
+	if err != nil {
+		t.Fatalf("EnsureBlobFrom: %v", err)
+	}
+	if err := awaitTransfer(t, tr); err != nil {
+		t.Fatalf("transfer failed: %v\n%s", err, describe(tr.Stats()))
+	}
+	st := tr.Stats()
+	// The stats' own clock, not a Progress() poll: the transfer completes almost
+	// in the same instant the front becomes readable, so a poll races Done().
+	firstByte := st.FirstByte
+	t.Logf("dribbling holders[0]: first byte %v, total %v\n%s",
+		firstByte.Round(time.Millisecond), time.Since(started).Round(time.Millisecond), describe(st))
+
+	// Well under chaosPerChunk: the healthy holder must deliver chunk 0 while
+	// the dribbler is still dribbling it.
+	if budget := 4 * time.Second * testTimeoutScale; firstByte > budget {
+		t.Errorf("first byte took %v (budget %v) — the chunk-0 speculation gated the swarm start\n%s",
+			firstByte, budget, describe(st))
+	}
+	if st.Mode != "swarm" || len(st.Prior) > 0 {
+		t.Errorf("mode=%s with %d abandoned attempt(s) — expected a clean swarm fetch\n%s",
+			st.Mode, len(st.Prior), describe(st))
+	}
+	// Chunk 0 can only have been rescued by a hedge — the dribbler held it from
+	// the first moment of the plan.
+	if st.HedgesWon == 0 {
+		t.Errorf("no hedge won (hedges=%d) — chunk 0 was not raced away from the dribbler\n%s",
+			st.Hedges, describe(st))
+	}
+	assertCached(t, cacheB, hash, content)
+}
+
 // TestChaosSeederVanishesMidTransfer: a holder disappears once the transfer is
 // under way. The surviving holder must finish it, and the stats must show a
 // failover actually happened — "it completed" alone would also be true if the

@@ -307,7 +307,7 @@ func TestPartialHoldingsReadsLiveTransfersNotTheDirectory(t *testing.T) {
 // so a holder that simply had not reached chunk 7 accumulated a streak and was
 // dropped like a broken one.
 func TestChunkPlanDoesNotRetireAHolderForNotHavingAChunkYet(t *testing.T) {
-	cp := testPlan(wideLayout(8), []*BlobProvider{{Name: "partial"}, {Name: "full"}}, false)
+	cp := testPlan(wideLayout(8), []*BlobProvider{{Name: "partial"}, {Name: "full"}})
 	var refused []int
 	for i := 0; i < providerFailureLimit*2; i++ {
 		if len(cp.pending) == 0 {
@@ -339,7 +339,7 @@ func TestChunkPlanDoesNotRetireAHolderForNotHavingAChunkYet(t *testing.T) {
 // ...but it still costs the chunk an attempt, or a swarm of partials that
 // between them lack a chunk would re-queue it forever.
 func TestChunkPlanStillGivesUpWhenNobodyHasAChunk(t *testing.T) {
-	cp := testPlan(wideLayout(8), []*BlobProvider{{Name: "a"}, {Name: "b"}}, false)
+	cp := testPlan(wideLayout(8), []*BlobProvider{{Name: "a"}, {Name: "b"}})
 
 	// Chunks are re-queued behind the others, so one of them only reaches
 	// attemptLimit after roughly attemptLimit × chunks dispatches. take() stops
