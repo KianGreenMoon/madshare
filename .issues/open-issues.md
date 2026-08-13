@@ -1996,17 +1996,23 @@ routine contention, not an edge case. Built the same day
 Tests: `TestQuotaRefusalSpendsNoAttemptBudget`,
 `TestConsecutiveRefusalsBackOffFurther`, `TestBusyOnlyPlanAbortsAfterPatience`.
 
-### 3. Cancelled rate-limiter waits debit tokens for bytes never sent (Info)
+### 3. Cancelled rate-limiter waits debit tokens for bytes never sent — **REPRODUCED & FIXED 2026-08-13**
 
 `rateLimiter.wait` subtracts the tokens up front and sleeps; if the requester's
-ctx is cancelled during the sleep, the tokens stay debited though the write
-never happens. Each aborted response leaks at most one `seedWriteChunk`
+ctx was cancelled during the sleep, the tokens stayed debited though the write
+never happened. Each aborted response leaked at most one `seedWriteChunk`
 (32 KiB) per bucket — including the SHARED buckets (global cap, member-class
-cap), so repeated connect-and-abandon depresses everyone's throughput slightly.
-Magnitude is tiny and self-healing (buckets refill in ≤1 s). A refund on
-cancellation is the obvious fix but has a wrinkle: `throttledResponseWriter`
-waits several limiters in sequence, so a failure on the Nth must refund the
-N−1 already debited. Recorded, not fixed.
+cap), so repeated connect-and-abandon depressed everyone's throughput slightly.
+
+**Reproduced** in `TestAbortedThrottledWriteRefundsTokens`: a 1 KiB write
+against a full shared bucket plus a 16-byte per-node bucket, requester already
+gone — the shared bucket drained to 0 and the node bucket to −1008 for a write
+that never reached the wire. **Fixed**: `rateLimiter.refund(n)` (add back,
+clamp at burst) called from `throttledResponseWriter.Write` on a failed wait —
+for the failing limiter AND every one before it in the sequence (the wrinkle
+this entry recorded). Deliberately serve-side only: `wireReader` charges AFTER
+the bytes arrived, so its debit is honest even when its wait is cut short, and
+refunding there would under-count real link use.
 
 ### Fixed in the same pass (light, behaviour-safe)
 
@@ -2014,6 +2020,12 @@ The manifest memo (`Node.manifests`) grew without bound: content-addressed and
 never evicted, so a node that seeds many blobs holds every manifest it ever
 built, including for blobs long gone. `EvictCachedBlob` now drops the memo
 entry with the bytes (rebuilt on demand if the blob returns; content-addressed,
-so a stale entry was never a correctness risk — only memory). Library-side
-deletions still leave their memo entries behind; that half stays open, same
-severity (Info).
+so a stale entry was never a correctness risk — only memory).
+
+**The library-side half CLOSED 2026-08-13**: rather than wiring federation
+into every deletion path (prune, trash purge, recording hard-delete, a file
+removed by hand — the thirteenth path forgets), the memo itself is now an LRU
+capped at `maxManifestMemo` (256; a miss costs one re-read of a file about to
+be streamed anyway, and 256 covers a bulk materialize's working set). Recency
+is a counter, not a clock, so eviction is deterministic. Pinned by
+`TestManifestMemoIsBounded`; the targeted `EvictCachedBlob` delete stays.

@@ -268,13 +268,34 @@ func (m *blobManifest) valid(hash string) bool {
 	return len(m.Chunks) == m.layout().count()
 }
 
+// maxManifestMemo caps the manifest memo. A memo entry saves a full file
+// read-and-hash per manifest request, but the blobs it describes come and go
+// and only the cache-evict path ever deleted one — a library blob removed by
+// admin curation left its entry behind forever, so a long-lived seeder held a
+// manifest for every blob it EVER served. Bounding the memo itself covers
+// every deletion path at once instead of chasing them (prune, trash purge,
+// recording hard-delete, a file removed by hand). 256 comfortably covers a
+// bulk materialize's working set; a miss costs one re-read of a file we are
+// about to stream anyway.
+const maxManifestMemo = 256
+
+// manifestEntry is one memoized manifest plus its recency stamp (a counter,
+// not a clock — eviction wants an order, not a time).
+type manifestEntry struct {
+	man  *blobManifest
+	used uint64
+}
+
 // manifest returns the (memoized) chunk manifest for a blob this node holds at
-// path. Content-addressed, so it is computed once per hash and cached.
+// path. Content-addressed, so it is computed once per hash and cached — in an
+// LRU capped at maxManifestMemo, since nothing else bounds the memo's life.
 func (n *Node) manifest(path, hash string) (*blobManifest, error) {
 	n.manifestMu.Lock()
-	if m, ok := n.manifests[hash]; ok {
+	if e, ok := n.manifests[hash]; ok {
+		n.manifestTick++
+		e.used = n.manifestTick
 		n.manifestMu.Unlock()
-		return m, nil
+		return e.man, nil
 	}
 	n.manifestMu.Unlock()
 
@@ -283,7 +304,17 @@ func (n *Node) manifest(path, hash string) (*blobManifest, error) {
 		return nil, err
 	}
 	n.manifestMu.Lock()
-	n.manifests[hash] = m
+	if len(n.manifests) >= maxManifestMemo {
+		coldKey, cold := "", uint64(0)
+		for k, e := range n.manifests {
+			if coldKey == "" || e.used < cold {
+				coldKey, cold = k, e.used
+			}
+		}
+		delete(n.manifests, coldKey)
+	}
+	n.manifestTick++
+	n.manifests[hash] = &manifestEntry{man: m, used: n.manifestTick}
 	n.manifestMu.Unlock()
 	return m, nil
 }
@@ -1457,6 +1488,21 @@ func (rl *rateLimiter) wait(ctx context.Context, n int) error {
 	}
 }
 
+// refund returns tokens debited for bytes that were never sent — the cancelled
+// half of a serve-side wait. Without it every aborted response leaked up to one
+// write's worth of tokens per bucket, including the SHARED ones (global cap,
+// member-class cap), so repeated connect-and-abandon depressed everyone's
+// throughput. Only the serving side refunds: wireReader charges AFTER the bytes
+// arrived, so its debit is honest even when the wait is cut short.
+func (rl *rateLimiter) refund(n int) {
+	rl.mu.Lock()
+	rl.tokens += float64(n)
+	if rl.tokens > rl.burst {
+		rl.tokens = rl.burst
+	}
+	rl.mu.Unlock()
+}
+
 // throttledResponseWriter rate-limits the body written by http.ServeContent
 // while passing Header/WriteHeader straight through. Several buckets can apply
 // at once (F7 item 6): the global seed cap, the class cap over all non-friends,
@@ -1474,8 +1520,13 @@ func (t *throttledResponseWriter) Write(p []byte) (int, error) {
 		if n > seedWriteChunk {
 			n = seedWriteChunk
 		}
-		for _, rl := range t.rls {
+		for i, rl := range t.rls {
 			if err := rl.wait(t.ctx, n); err != nil {
+				// The write below never happens, so every bucket that already
+				// paid for it — this one included — gets its tokens back.
+				for _, paid := range t.rls[:i+1] {
+					paid.refund(n)
+				}
 				return written, err
 			}
 		}

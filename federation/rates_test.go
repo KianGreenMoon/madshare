@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -233,4 +234,54 @@ func newRateTestNode(cfgUpKiB, cfgDownKiB int, resolve func(context.Context) (Ra
 		traffic:      newTrafficTable(),
 		logger:       log.New(io.Discard, "", 0),
 	}
+}
+
+// TestAbortedThrottledWriteRefundsTokens: a wait cut short by the requester's
+// context must give the tokens back — the write they were debited for never
+// happens. The buckets include SHARED ones (global cap, member-class cap), so
+// without the refund every aborted response depressed everyone's throughput by
+// up to one write's worth per bucket (.issues/open-issues.md, swarm refactor
+// pass finding 3). The second limiter is the one that blocks, so the test also
+// pins the multi-limiter half: the first bucket already paid and must be
+// refunded by the caller, not just the one whose wait failed.
+func TestAbortedThrottledWriteRefundsTokens(t *testing.T) {
+	shared := newRateLimiter(1 << 10) // burst = 1 KiB, starts full — pays instantly
+	own := newRateLimiter(16)         // cannot cover the write, so its wait sleeps
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the requester is already gone
+
+	w := throttled(&headerOnlyWriter{}, ctx, []*rateLimiter{shared, own})
+	n, err := w.Write(make([]byte, 1<<10))
+	if n != 0 || err == nil {
+		t.Fatalf("Write = (%d, %v), want (0, the context error)", n, err)
+	}
+
+	if got := tokensOf(shared); got != 1<<10 {
+		t.Errorf("shared bucket holds %.0f tokens after the aborted write, want its full %d back", got, 1<<10)
+	}
+	if got := tokensOf(own); got != 16 {
+		t.Errorf("own bucket holds %.0f tokens after the aborted write, want its full 16 back", got)
+	}
+}
+
+func tokensOf(rl *rateLimiter) float64 {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	return rl.tokens
+}
+
+// headerOnlyWriter is the least http.ResponseWriter a throttle test needs; a
+// refunded write must never reach it, so Write failing loudly is a feature.
+type headerOnlyWriter struct{ hdr http.Header }
+
+func (h *headerOnlyWriter) Header() http.Header {
+	if h.hdr == nil {
+		h.hdr = http.Header{}
+	}
+	return h.hdr
+}
+func (h *headerOnlyWriter) WriteHeader(int) {}
+func (h *headerOnlyWriter) Write(p []byte) (int, error) {
+	return 0, errors.New("a throttled write reached the wire after its tokens were refunded")
 }

@@ -106,7 +106,8 @@ type Node struct {
 	// F4 swarm wiring (swarm.go): a timeout-free client for blob/chunk fetches
 	// (each fetch is bounded by its own context), the outbound seed rate cap
 	// (nil = unlimited), and the memoized per-hash chunk manifests served to
-	// friends (content-addressed, so immutable once built).
+	// friends (content-addressed, so immutable once built; an LRU capped at
+	// maxManifestMemo, since blob deletions do not reach in here).
 	blobClient *http.Client
 	// The node's two live rate caps (rates.go), each adjustable at runtime:
 	// outbound (what seeding costs the uplink) and inbound (what fetching costs
@@ -123,9 +124,10 @@ type Node struct {
 	// cost us — bytes and concurrent serves, per node and across the class
 	// (F7 item 6, quota.go). Friends bypass it; all-zero config admits
 	// everything, which is the shipped default.
-	quotas     *quotas
-	manifestMu sync.Mutex
-	manifests  map[string]*blobManifest
+	quotas       *quotas
+	manifestMu   sync.Mutex
+	manifests    map[string]*manifestEntry
+	manifestTick uint64
 
 	// Byte accounting for the swarm page (traffic.go): what this process has
 	// moved, per hash and per counterparty, kept in memory and drained by api's
@@ -287,7 +289,7 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 		rateResolver:   o.rateResolver,
 		quotas: newQuotas(fc.MemberRateKiB, fc.PerMemberRateKiB,
 			fc.MemberMaxTransfers, fc.PerMemberMaxTransfers),
-		manifests: map[string]*blobManifest{},
+		manifests: map[string]*manifestEntry{},
 		lastTouch: map[int64]time.Time{},
 		traffic:   newTrafficTable(),
 	}

@@ -384,3 +384,47 @@ func fetchAndVerify(t *testing.T, b *Node, hash string, want []byte, cacheDir st
 	}
 	return true
 }
+
+// TestManifestMemoIsBounded: the per-hash manifest memo used to grow without
+// bound — content-addressed and (outside the cache-evict path) never deleted,
+// so a long-lived seeder held a manifest for every blob it ever served,
+// including library blobs deleted long ago (.issues/open-issues.md, swarm
+// refactor pass findings). The memo is now an LRU capped at maxManifestMemo:
+// recency decides survival, and a hit needs no file at all (which is what the
+// path-less touch below proves).
+func TestManifestMemoIsBounded(t *testing.T) {
+	n := &Node{manifests: map[string]*manifestEntry{}}
+	dir := t.TempDir()
+	build := func(i int) string {
+		hash := fmt.Sprintf("%064x", i)
+		path := filepath.Join(dir, fmt.Sprintf("blob%d", i))
+		if err := os.WriteFile(path, []byte{byte(i), byte(i >> 8)}, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := n.manifest(path, hash); err != nil {
+			t.Fatalf("manifest %d: %v", i, err)
+		}
+		return hash
+	}
+
+	first := build(0)
+	for i := 1; i < maxManifestMemo; i++ {
+		build(i)
+	}
+	// Touch the oldest entry so RECENCY, not insertion order, decides survival.
+	// The empty path doubles as the hit proof: a miss would try to open "".
+	if _, err := n.manifest("", first); err != nil {
+		t.Fatalf("touching a memoized manifest read the file instead: %v", err)
+	}
+
+	build(maxManifestMemo) // one past the cap
+	if got := len(n.manifests); got > maxManifestMemo {
+		t.Fatalf("memo holds %d entries, cap is %d", got, maxManifestMemo)
+	}
+	if _, ok := n.manifests[first]; !ok {
+		t.Error("the just-touched entry was evicted — recency is not tracked")
+	}
+	if _, ok := n.manifests[fmt.Sprintf("%064x", 1)]; ok {
+		t.Error("the coldest entry survived past the cap")
+	}
+}
