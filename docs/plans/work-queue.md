@@ -113,6 +113,20 @@ and throughput is genuinely unaffected here — 19.0 s either way. The entire
 cost lands on the streaming reader's tail latency, which nothing measured until
 now. Both numbers are right; they answer different questions.
 
+**A second, independent scenario landed on the same cause** and is folded in
+here rather than sequenced separately. The `.issues` row claiming a stall at the
+lead-ramp → first-bulk-chunk transition (~768 KiB) was measured on 2026-08-14
+and does not hold: over a 16 MiB blob the reader never blocks at 768 KiB on a
+capped link (0 of 4 runs) because the parallel workers land the bulk chunks
+while it is still stuck at the front. Its worst read is at **256 KiB** — the
+chunk-0 → chunk-1 handover, chunk 0 being the speculative prefetch — and the
+wait window fits chunks 1+2+3 sharing the link exactly. At depth 1 that run
+becomes 18 uniform reads of 1.18 s, which is one 1 MiB chunk at 1 MiB/s: the
+floor again, with 768 KiB indistinguishable from any later chunk. Worst read
+2.48–3.25 s → 1.18 s, **total elapsed unchanged at 18.8 s**. So the ramp needs
+no fix of its own, and the case for deciding the depth is now two measurements
+from different scenarios rather than one.
+
 **The decision.** Depth is resource policy, so this is the owner's, not the
 build's — and a blanket depth 1 is the wrong answer: it would give up
 pipelining on healthy multi-holder swarms, where the second slot is what keeps
