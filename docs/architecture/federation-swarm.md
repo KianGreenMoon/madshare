@@ -147,6 +147,14 @@
   hash): a whole-file fetch verified against the content hash needs no manifest
   trust at all. It is the flat swarm id's price (§"Merkle verification (F10)")
   — solving F10 would collapse it, and nothing short of that can.
+  **One failure never falls back**: verified bytes that cannot be *renamed into
+  the cache* end the transfer directly (`errLocalRename`, tagged in both fetch
+  paths and never blamed on a holder). That is a fact about our own disk —
+  every retry would end at the same rename — and before the rule a local disk
+  error re-downloaded the blob once per holder, 3.7× the blob off the wire for
+  two holders, invisible in `TransferStats` because `resetAttempt` archives an
+  abandoned attempt's chunk counts but not its bytes
+  (`TestChaosARenameFailureIsNotAnsweredOverTheMesh`).
 - **Fast first byte** (built F4): to avoid two serial mesh round-trips before
   playback starts, a fetch **overlaps the manifest probe with a speculative
   chunk-0 fetch** — chunk 0's byte range is derived from the advertised size

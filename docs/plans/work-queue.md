@@ -234,9 +234,12 @@ are listed so the queue is honest about what it does *not* schedule.
   content/hash verification catches it). Its in-flight-chunk row is no longer
   part of this bullet: it was reproduced 2026-08-14 and split — half fixed and
   now pinned, half sequenced as slot 5 above.
-- **Fetch-path drift pair** (`.issues` §"fetch-path dig findings"): local
-  `os.Rename` failure triggers the network fallback (Low); 429 in whole-file
-  mode skips the patience rule (Info). Fix shapes are written in the rows.
+- **Fetch-path drift pair** (`.issues` §"fetch-path dig findings"): ~~local
+  `os.Rename` failure triggers the network fallback (Low)~~ — **FIXED
+  2026-08-14** (`errLocalRename` sentinel, both fetch paths end the transfer;
+  pinned by `TestChaosARenameFailureIsNotAnsweredOverTheMesh`); 429 in
+  whole-file mode skips the patience rule (Info) stays open, fix shape in the
+  row.
 - ~~**Recording-tagsets review findings**, 5 still open~~ — **stale, corrected
   2026-08-14**: every row in that section carries a fix (2026-07-14 through
   2026-08-08), each with named tests verified to fail beforehand, and the one

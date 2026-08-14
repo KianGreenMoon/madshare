@@ -675,7 +675,14 @@ func (n *Node) runTransfer(t *transfer, holders []*BlobProvider) {
 			if verr := verifyFileHash(t.partPath, t.hash); verr != nil {
 				err = fmt.Errorf("assembled blob failed verification: %w", verr)
 			} else if rerr := os.Rename(t.partPath, t.path); rerr != nil {
-				err = rerr
+				// A rename failure is a LOCAL filesystem error on fully verified
+				// bytes. The whole-file fallback cannot help — every holder's
+				// attempt ends at this same rename — so falling back re-downloads
+				// the blob once per holder to answer a disk error (measured 3.7×
+				// the blob off the wire). End the transfer here instead.
+				os.Remove(t.partPath)
+				t.finish(fmt.Errorf("federation: fetch %s: %w: %w", t.hash, errLocalRename, rerr))
+				return
 			} else {
 				n.logger.Printf("federation: fetched %s via swarm (%d chunks, %d bytes)",
 					t.hash, len(man.Chunks), man.Size)
@@ -715,6 +722,14 @@ func (n *Node) runWhole(t *transfer, holders []*BlobProvider) {
 			t.finish(nil)
 			return
 		}
+		if errors.Is(err, errLocalRename) {
+			// The holder delivered bytes that verified; the failure is our own
+			// disk. No other holder can fix it — and it is not this holder's
+			// failure to record.
+			os.Remove(t.partPath)
+			t.finish(fmt.Errorf("federation: fetch %s: %w", t.hash, err))
+			return
+		}
 		lastErr = err
 		t.stats.noteFail(wholePiece, p, err, false)
 		n.logger.Printf("federation: fetch %s from %q: %v", t.hash, p.Display(), err)
@@ -723,6 +738,14 @@ func (n *Node) runWhole(t *transfer, holders []*BlobProvider) {
 	os.Remove(t.partPath)
 	t.finish(fmt.Errorf("federation: fetch %s: %w", t.hash, lastErr))
 }
+
+// errLocalRename tags the one fetch failure where retrying over the network is
+// provably useless: the bytes verified against the content hash and could not
+// be renamed into the cache. That is a fact about OUR disk, not about any
+// holder — every retry would re-download the blob only to end at the same
+// rename — so both fetch paths end the transfer on it instead of failing over
+// (the mirror of errMeshDial, which classifies a failure as the *holder's*).
+var errLocalRename = errors.New("verified bytes could not be renamed into the cache")
 
 // fetchFrom streams the blob from one holder into the partial file, hashing as
 // it goes; matching bytes are renamed into the cache atomically.
@@ -797,7 +820,10 @@ func (n *Node) fetchFrom(t *transfer, p *BlobProvider) error {
 	if got := hex.EncodeToString(hasher.Sum(nil)); got != t.hash {
 		return fmt.Errorf("bytes hash to %s, not the requested content hash", got)
 	}
-	return os.Rename(t.partPath, t.path)
+	if rerr := os.Rename(t.partPath, t.path); rerr != nil {
+		return fmt.Errorf("%w: %w", errLocalRename, rerr)
+	}
+	return nil
 }
 
 // isBlobHash reports whether s is a well-formed content hash (64 lowercase hex
