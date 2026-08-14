@@ -303,10 +303,13 @@ Three jobs, and only one still needs it:
    4.93–5.24 MiB on the wire (17.6–25 % — ygg framing/encryption + HTTP), so a
    512 KiB/s raw cap has a payload ceiling of ~434 KiB/s before any dead air.
    No unexplained phenomenon remains.
-3. Does depth 2 buy anything at all in a **multi-holder** plan? Still never
-   measured. The sole-holder half now has a datum (§8): on a 300 ms-RTT link,
-   depth ≥ 2 is worth ~10–15 % of transfer time over depth 1 (dead air is
-   real), paid for in reader tail latency.
+3. **ANSWERED (§8, multi-holder sweep, 2026-08-15): no.** In a symmetric
+   two-holder plan depth 2 bought nothing at either scale and cost at both —
+   at 16 MiB it was *slower* than depth 1 (26.8–27.6 s vs 22.4–25.4 s) and
+   blocked the reader 9–10 s against a ~2 s floor. The one shape where the
+   second slot measurably buys transfer time is the SOLE holder (~15 %) —
+   exactly where slot 5 forces depth 1 for the reader's sake. On this
+   evidence the knob is decoration or worse.
 4. If step 2 lands, does `ChunkStall` need to become concurrency-aware — and if
    it does, is that not the same wall-clock mistake in a smaller hat? Softened
    by §8: it fired at most once per failing chaos run and never on the
@@ -382,3 +385,59 @@ is no production failure to fix; the cap's one remaining live job is reader
 tail latency (§6 row 1), which is step 3's rule, and removing `PerChunk`
 (step 2) is now purely a simplification question — its wall-clock-punishes-
 concurrency defect is real but unreachable at the depths the worker cap allows.
+
+### Multi-holder sweep — measured 2026-08-15 (question 3)
+
+Instrument extended in place: `TestMeasureMultiHolderDepth` (same file, same
+gate), the faulted-trio topology — two seeders, each behind its OWN 300 ms-RTT
+link capped at 512 KiB/s. That is the knob's **best case**, on purpose:
+symmetric, so the scheduler's load-balancing is not a variable, and latent, so
+per-holder dead air exists for a second slot to hide. If depth 2 buys nothing
+here it buys nothing anywhere. Production clock only; the seam's worker
+override now scales per holder. Two sizes, because a 9-chunk plan is mostly
+ramp + endgame and the pipelining claim is a steady-state claim — 16 MiB
+(18 chunks, bulk 1 MiB) gives the mid-transfer state room to show a benefit if
+one exists. Four runs per 4 MiB cell (two batches), two per 16 MiB cell.
+
+| size | depth | transfer (all runs, sorted) | worst reader wait | wire vs payload |
+|---|---|---|---|---|
+| 4 MiB | 1 | 7.98 / 7.99 / 9.27 / 11.86 s | **1.92 s in all four runs — the floor** | +33 % |
+| 4 MiB | 2 | 8.09 / 8.60 / 9.22 / 9.84 s | 2.26–4.20 s | +53–81 % |
+| 4 MiB | 4 | 7.06 / 8.22 / 8.48 / 8.64 s | 2.14–4.90 s | +45–63 % |
+| 16 MiB | 1 | 22.36 / 25.37 s | 1.92 / 2.55 s | +29 % |
+| 16 MiB | 2 | 26.85 / 27.59 s | **9.36 / 10.14 s** | +40–52 % |
+
+Findings:
+
+1. **Depth 2 buys nothing in a multi-holder plan, at either scale, and costs at
+   both.** At 4 MiB the transfer times overlap within noise across every depth
+   while only depth 1 keeps the reader on the floor (all four runs). At 16 MiB
+   — the steady state the pipelining claim is about — depth 1 is FASTER
+   outright, and depth 2's reader blocks 9–10 s at a stretch, 4–5× the floor.
+2. **The mechanism is visible in the stats.** Parallelism ACROSS holders
+   already fills the pipe — depth 1 at 16 MiB reached ~85 % of the two links'
+   ~868 KiB/s aggregate payload ceiling, so there is almost no dead air left
+   for a second slot to hide. What the extra slots do instead is feed the
+   **endgame hedge**: deeper dispatch leaves more chunks in flight when the
+   queue empties, each duplicated copy costs its full bytes on a capped link
+   (wire overhead +40–81 % against +29–33 % at depth 1; hedges 6–8 per 16 MiB
+   transfer at depth 2 vs 3 at depth 1), and the out-of-order arrivals are
+   what the reader waits out.
+3. **The constant's justification is inverted by the two sweeps together.**
+   The one shape where the second slot measurably buys transfer time is the
+   sole holder (~15 %, the tables above) — exactly where `requestCapLocked`
+   now forces depth 1 for the reader's sake (slot 5). In the multi-holder
+   shape the constant's comment justifies it by ("the second slot is what
+   keeps a fast holder busy across the RTT"), it is at best transfer-neutral
+   and strictly worse for the reader and the wire. scheduler.go's "2 is what
+   the pipe can use" did not survive its first multi-holder measurement.
+4. **Caveats.** Two holders only, symmetric, one RTT/bandwidth point, 2–4 runs
+   per cell; three-plus holders and asymmetric speeds are unmeasured, and part
+   of depth 2's cost is hedge interplay — a change to the hedge rules would
+   need this re-run.
+
+Consequence for steps 3–4: strengthened. The objection recorded in
+`requestCapLocked` — that a blanket depth 1 "would give up pipelining on
+healthy multi-holder swarms" — is not supported by measurement: that pipelining
+was not there to give up. The step-3 reader rule (or even a plain blanket
+depth 1) now has the evidence on its side. Still a decision, not scheduled.

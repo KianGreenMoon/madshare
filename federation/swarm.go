@@ -1332,8 +1332,9 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*BlobProvide
 	workers := max(1, min(len(holders)*2, maxChunkWorkers, len(man.Chunks)))
 	if measureRequestDepth > 0 {
 		// The measurement seam (see scheduler.go): a forced depth needs as many
-		// workers, or the sweep would measure the worker formula instead.
-		workers = max(1, min(measureRequestDepth, len(man.Chunks)))
+		// workers per holder, or the sweep would measure the worker formula
+		// instead.
+		workers = max(1, min(measureRequestDepth*len(holders), len(man.Chunks)))
 	}
 	var wg sync.WaitGroup
 	if adopted {

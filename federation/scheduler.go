@@ -85,6 +85,13 @@ const (
 	// It is the ceiling for a plan with holders to choose between. A plan with a
 	// SINGLE live holder asks it for one chunk at a time — see requestCapLocked,
 	// and the measurement that forced the split.
+	//
+	// MEASURED MULTI-HOLDER 2026-08-15 (docs/plans/maybe-to-do.md §8): in a
+	// symmetric two-holder plan the second slot bought no transfer time at
+	// either 4 or 16 MiB and cost the reader 4–5× the floor plus 40–80 % wire
+	// overhead in endgame-hedge duplicates. Read that section before citing the
+	// pipelining rationale above — the depth question is under an open decision
+	// there.
 	maxHolderRequests = 2
 
 	// maxChunkCopies is how many holders may be fetching one chunk at once
