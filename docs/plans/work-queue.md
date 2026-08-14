@@ -191,6 +191,15 @@ transfer.** Total elapsed hid this for a month.
 
 ### Parked — named triggers, do NOT schedule
 
+- **Request depth, the per-chunk deadline, and removing the cap** —
+  `docs/plans/maybe-to-do.md`, written 2026-08-14 straight after slot 5. Owner's
+  goal is that depth be *unimportant* (1, 8 or 110 the same speed); the file
+  records how far that is from true, every measurement behind it and how each was
+  taken, and a four-step order ending in less code than we have now. **It is
+  analysis, not a plan** — and step 1 is a measurement, because the recorded
+  cause of the depth-8 failure (`Timeouts.PerChunk`) does not survive its own
+  arithmetic. To be analysed before anything is scheduled.
+
 - **F10 merkle identity** — trigger: video support, or a *measured*
   all-partials reassembly failure (`federation-swarm.md`).
 - **Fully-cached availability arm** (availability.md Phase 2b) — trigger:
