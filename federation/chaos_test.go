@@ -22,7 +22,11 @@ import (
 // suite's job is catching regressions in this package, so it must not be the
 // thing that rots. Run them with:
 //
-//	MADSHARE_CHAOS=1 go test -p 1 -run Chaos ./federation/...
+//	MADSHARE_CHAOS=1 go test -p 1 ./federation/...
+//
+// Unfiltered on purpose: `-run Chaos` is NOT the whole gated set — some gated
+// tests (TestStaleHoldersCostAFetch) do not carry Chaos in their name, and one
+// stayed red unnoticed behind that filter from F9 item 3 until 2026-08-14.
 //
 // Budgets are testTimeoutScale-relative and shaped as "completes within N×" /
 // "no stall longer than X", never exact timings: the mesh is stochastic and

@@ -171,9 +171,11 @@ its "2 stale" row **is** a sole live holder at depth 1:
 | 2 stale (1 live) | 566 ms | swarm 8/8, retries 0 |
 | 3 stale (0 live) | 2.004 s | correctly fails |
 
-Suite state: `go test ./federation/` green in 172 s; `MADSHARE_CHAOS=1` green in
-380 s **except** `TestStaleHoldersCostAFetch`'s final assertion, which is red at
-HEAD for reasons already logged in `.issues` and unrelated to any of this.
+Suite state at the time of writing: `go test ./federation/` green in 172 s;
+`MADSHARE_CHAOS=1` green in 380 s **except** `TestStaleHoldersCostAFetch`'s
+final assertion — since **repaired (2026-08-14, `da0841a`)**: it now asserts
+the F9 bound (each ghost ≤ its two dispatches × `Connect`) instead of a tax
+that no longer exists, and the full chaos-enabled suite is green.
 
 ---
 

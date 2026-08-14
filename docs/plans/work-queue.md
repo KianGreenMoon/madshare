@@ -103,8 +103,9 @@ a second holder is not at depth 1.
 
 Verification: full `go test ./federation/` green in 172 s; the chaos suite
 (`MADSHARE_CHAOS=1`, 380 s) green except the pre-existing
-`TestStaleHoldersCostAFetch`, which fails identically at HEAD for the reason
-already logged in `.issues`.
+`TestStaleHoldersCostAFetch`, which failed identically at HEAD at the time —
+repaired 2026-08-14 (`da0841a`, it now asserts the Connect bound; see the
+verification ritual below), so the whole chaos suite is green again.
 
 Written up in `docs/architecture/federation-swarm.md` §"…and the ceiling drops
 to one when there is nobody else to ask", which carries both measurement tables:
