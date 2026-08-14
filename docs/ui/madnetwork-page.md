@@ -25,10 +25,19 @@ documented with the backend:
 - **One browse core, two data sources.** The library and madnetwork pages render
   through the same shared components; only the data adapter differs. No parallel
   re-implementations of rows, menus, or search.
-- **"Materialize" is the word.** Everywhere the UI copies remote content into
-  this server's library it says *Materialize* — button labels, menu items,
-  progress, toasts. "Download" now exclusively means *save the file to the
-  user's device* (a library action).
+- **The word follows where the content LANDS** (the player's half settled
+  2026-08-15). Copying remote content into **this server's** library is
+  *Materialize* — button labels, menu items, progress, toasts. Copying it onto
+  **the person's own device**, which is what madplayer does, is *Keep on this
+  device*. "Download" stays exclusively *save the file to the user's device* (a
+  library action).
+
+  They are two words because they are two acts. Materialize is right on a server
+  surface, where the question is what enters a moderated catalogue and the actor
+  is an admin; it is jargon on a player, where the question is whether you still
+  have the song on the train. A server is not "this device", and a player has no
+  catalogue to admit anything to — so one word for both would have been wrong on
+  one of them whichever word won.
 - **The view shows what is reachable — and degrades quietly.** A row is backed by
   our own library, by a complete local cache, or by a **reachable** friend.
   Tracks held only by an unreachable friend are dropped, but only at a **refresh

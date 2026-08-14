@@ -5,18 +5,18 @@
 > sources, and browse and search are its queries (the facade is
 > `docs/architecture/embedding.md`). The client also **signs in to remote
 > madshares** over HTTP, and this device's library and each server's are browsed
-> as **one merged list** (§"Two libraries, one list"). Still open: the
-> human-readable materialize target (§"Where the bytes live"), which nothing
-> feeds until the mesh arrives at 2b.
+> as **one merged list** (§"Two libraries, one list").
 >
 > Behind it: F0–F8 all shipped, including the **F7 capability tokens** this client
 > was named as the reason for (`docs/architecture/federation-access.md` §Principals &
 > access), and the UI toolkit is settled on **Gio** (see *The UI toolkit*).
-> **Level 2b, the mesh, is most of the way there**: the device becomes a node,
-> signing in enrols it, and playback now prefers the swarm and falls back to the
-> relay. What is left of 2b is the materialize target above, which it is the
-> first caller for. The access half is `federation-access.md` §"The household", and what
-> the client does with it is §"Level 2b, concretely" below.
+> **Level 2b, the mesh, is BUILT** (2026-08-15): the device becomes a node,
+> signing in enrols it, playback prefers the swarm and falls back to the relay,
+> and the **keep-on-this-device target** — 2b's first caller, and the last thing
+> it waited on — lands network music as ordinary files in a folder the client
+> manages (§"Where the bytes live"). The access half is
+> `federation-access.md` §"The household", and what the client does with it is
+> §"Level 2b, concretely" below.
 >
 > **madplayer now lives in its own repository** (split out at madshare v0.8.6),
 > beside this one. It requires madshare as an ordinary Go module pinned to a
@@ -241,8 +241,8 @@ opens a file manager. So the directories divide by *who reads them*:
 | `cache/madnetwork/` | the program | hash-named blobs the swarm fetched, and the only thing this node seeds. Opaque by design; needs no layout and gets none. |
 | **the music directory** | **a person** | `Artist/Album/NN - Title.ext`. Browsable, backup-able, indistinguishable from the rest of the collection. |
 
-**Materializing writes into the third one**, laid out from the tags. This is the
-one place the player should *not* copy the server's behaviour: on a server,
+**Keeping a track writes into the third one**, laid out from the tags. This is
+the one place the player should *not* copy the server's behaviour: on a server,
 fetching remote content stages it through the review bucket into managed storage,
 because it is becoming part of a moderated catalogue. On a player it is becoming
 part of *your music*, and music you pulled off the network should sit next to
@@ -270,12 +270,12 @@ the folders a person added.
   **When it cannot be written, fall back to the app's own data directory.** On a
   phone that is the ordinary case rather than the exception, and it is worth
   saying plainly: on Android `app.DataDir()` is app-private storage, so music
-  materialized there is NOT browsable by a file manager. That breaks the promise
+  music kept there is NOT browsable by a file manager. That breaks the promise
   this section makes, so it is a fallback with a sentence attached, never a
   silent one.
 
 - **Registering.** Immediately, as the section already argued. The managed folder
-  is a data source like any other, so a materialized file lands as an ordinary
+  is a data source like any other, so a kept file lands as an ordinary
   links-backed row — one kind of library entry, as required.
 
   It is also scanned **separately, and only for files the library is missing**.
@@ -301,14 +301,22 @@ the folders a person added.
     content-hash suffix — `05 - Title [a1b2c3].ext`. Only on collision, so the
     ordinary file keeps the ordinary name.
   - The **same content hash already at the target ignores the request.**
-    Materialize is idempotent, which matters because *Materialize all* exists and
-    gets pressed twice.
+    Keeping is idempotent, which matters because keeping a whole album is one
+    press, and it gets pressed twice.
   - A setting, **"save with technical names"**, switches the layout to
     hash-names wholesale. It is the escape hatch for a filesystem that cannot
     take the human ones — FAT on an SD card, a charset it will not encode, a path
     length it will not accept — and it is a preference rather than a fallback,
     because a program that silently changed its own layout mid-collection would
     be worse than one that asked.
+
+- **The word is "Keep on this device"** (owner, 2026-08-15), not the server's
+  *Materialize*. The cross-client rule in `docs/ui/madnetwork-page.md` now turns
+  on where the content LANDS: into a server's library it is Materialize, onto the
+  person's own device it is Keep on this device. Materialize is right on a server
+  surface, where the question is what enters a moderated catalogue and the actor
+  is an admin; on a player the question is whether you still have the song on the
+  train, and the answer should be in those words.
 
 ### Two libraries, one list
 
@@ -799,10 +807,11 @@ extensions, and the pure-Go decoders pick by extension. Two caches under one
 ceiling number, each swept by its own enforcer, is what §"A remote track is a
 download" already describes; this is the case that makes both copies real.
 
-**Materializing finally has a caller.** Level 2a deferred the human-readable
-music directory (§"Where the bytes live") because nothing produced bytes to write
-into it. The swarm does, so the writer is built here and the three questions that
-section left open get answered against a real caller rather than a guessed one.
+**Keeping finally has a caller.** Level 2a deferred the human-readable music
+directory (§"Where the bytes live") because nothing produced bytes to write into
+it. The swarm does, so the writer was built here on 2026-08-15 and the three
+questions that section left open were answered against a real caller rather than
+a guessed one.
 
 ## Before writing a client at all: `[[listen_mesh]]`
 
@@ -948,10 +957,10 @@ is a claim this project has verified only on the desktop side.
    (`docs/architecture/embedding.md`), and the provisional scanner and index are
    deleted. ~~Silent provisioning~~ (§"There is no local account"), ~~folders as
    data sources~~ and ~~browse and playback off the embedded store~~ are built.
-   **Still owed: the human-readable materialize target** (§"Where the bytes
-   live"), which is deliberately last — nothing produces bytes to materialize
-   until the mesh arrives at 2b, so building the writer before there is anything
-   to write would be guessing at its caller.
+   ~~The human-readable keep-on-this-device target~~ (§"Where the bytes live")
+   was deliberately last — nothing produced bytes to keep until the mesh arrived
+   at 2b, so building the writer before there was anything to write would have
+   been guessing at its caller. It was built with that caller, on 2026-08-15.
 4. ~~**Level 1: remote servers.**~~ Done — sign-in over HTTP, and the server's
    library merged into this device's rather than shown beside it
    (§"Two libraries, one list"). The credential is a minted API token
@@ -965,12 +974,18 @@ is a claim this project has verified only on the desktop side.
    `GET /api/albums/{id}/image?size=`; nothing renders images yet, on either
    side), and the **quality picker** for a remote track, which is
    `/api/tagsets/{id}/renditions` against the right server.
-5. **Level 2b: the mesh** — designed 2026-08-09, and built the same week except
-   for the writer. ~~Node key~~, ~~capability token from the home server~~,
-   ~~swarm fetch~~ and ~~seed-back~~ are done: signing in enrols the device, and
-   playing a network track asks who holds it, fetches from them and falls back to
-   the level-1 download. **Still owed: the materialize target**, item 3's debt,
-   which 2b is the first caller for. The access half is `federation-access.md` §"The
+
+   madplayer does now render cover art, but out of the audio FILE rather than
+   from a server — the embedder facade reports `AlbumEntry.HasImage` and offers
+   no way to reach the bytes, so there is no image twin of `Library.BlobPath`.
+   Adding one is the change that would close this item for the local half too.
+5. ~~**Level 2b: the mesh**~~ — designed 2026-08-09, built the same week except
+   for the writer, and finished 2026-08-15. ~~Node key~~, ~~capability token from
+   the home server~~, ~~swarm fetch~~, ~~seed-back~~ and ~~the keep-on-this-device
+   target~~ are done: signing in enrols the device, playing a network track asks
+   who holds it, fetches from them and falls back to the level-1 download, and
+   keeping one writes it into a folder the client manages as an ordinary
+   links-backed row. The access half is `federation-access.md` §"The
    household" (which is also where the three things that turned out to be missing
    are written down); the client's half is §"Level 2b, concretely"; the token flow
    is §"The capability token, concretely".
