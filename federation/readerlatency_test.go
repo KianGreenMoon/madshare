@@ -162,22 +162,25 @@ func TestChaosBlockedReaderIsRescuedByAHedge(t *testing.T) {
 	assertCached(t, cacheB, hash, content)
 }
 
-// TestChaosReaderLatencyOnASoleCappedHolder is a MEASUREMENT: the household
-// shape, where a listener node's only holder is its home server and the link is
-// the bottleneck. Hedging cannot reach it (hedgeLocked needs a holder that is
-// not already fetching the chunk) and reordering cannot reach a dispatched
-// chunk, so whatever the reader waits here, it waits.
+// TestChaosReaderLatencyOnASoleCappedHolder is the household shape, where a
+// listener node's only holder is its home server and the link is the bottleneck.
+// Hedging cannot reach it (hedgeLocked needs a holder that is not already
+// fetching the chunk) and reordering cannot reach a dispatched chunk, so
+// whatever the reader waits here, it waits.
 //
-// The number to read is the multiple of the floor in the summary line. Measured
-// 2026-08-14 over three runs each: at the shipped maxHolderRequests=2 the worst
-// read was 2–4× the floor, because the second slot puts a chunk nobody asked for
-// on the same capped link as the chunk the reader is blocked on; at depth 1 it
-// was the floor exactly, with total transfer time unchanged either way.
+// It was a MEASUREMENT until 2026-08-14 and is now an ASSERTION, because the
+// question it was measuring got answered: with a single live holder the plan
+// asks for one chunk at a time (requestCapLocked, work-queue slot 5), so the
+// reader waits one chunk and no more. The number to read is still the multiple
+// of the floor in the summary line.
 //
-// Deliberately NOT asserted, because docs/plans/work-queue.md §5 is an open
-// owner decision and this is the number it would move. **If the depth question
-// is answered, this is the test to tighten** — the guard below only catches a
-// rewrite going wild.
+// Measured over three runs each. At the old maxHolderRequests=2 the worst read
+// was 2–4× the floor, because the second slot put a chunk nobody had asked for
+// on the same capped link as the chunk the reader was blocked on. At depth 1 it
+// is the floor: on this link, 8 uniform reads of ~595 ms against a 500 ms floor
+// — 1.2×, identical in all three runs — and on the 128 KiB/s link the decision
+// was taken from, 2.396/2.405/2.415 s against 2 s. Total transfer time is
+// unchanged either way, which is why only a reader-timed test can see this.
 func TestChaosReaderLatencyOnASoleCappedHolder(t *testing.T) {
 	requireChaos(t)
 	content := fillBytes(2 << 20) // 8 chunks of 256 KiB
@@ -210,13 +213,13 @@ func TestChaosReaderLatencyOnASoleCappedHolder(t *testing.T) {
 	floor := time.Duration(float64(minChunkSize) / rate * float64(time.Second))
 	worst := logWaits(t, "sole capped", "one chunk at this link's rate", waits, floor, tr)
 
-	// REGRESSION GUARD, not the measurement: a reader waiting many chunk-times
-	// for one chunk means the scheduler is starving it outright, which is a
-	// different failure from spending the depth badly. Generous enough that
-	// either answer to §5 passes.
-	if limit := 8 * floor * testTimeoutScale; worst.wait > limit {
-		t.Errorf("worst read %v at offset %d is over %v (8× the link's own floor for one "+
-			"chunk) — the reader is being starved, not merely sharing\n%s",
+	// The claim: a reader on a sole capped holder waits ONE chunk, because that
+	// holder is only asked for one. Observed 1.2× the floor over three runs, so
+	// 2× is the whole handshake-and-scheduling budget and still less than half
+	// what depth 2 cost (2–4×) — a regression to sharing the link fails here.
+	if limit := 2 * floor * testTimeoutScale; worst.wait > limit {
+		t.Errorf("worst read %v at offset %d is over %v (2× the link's own floor for one "+
+			"chunk) — the reader is sharing its link with a chunk nobody asked for\n%s",
 			worst.wait, worst.off, limit, describe(tr.Stats()))
 	}
 	assertCached(t, cacheB, hash, content)

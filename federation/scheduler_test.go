@@ -520,20 +520,30 @@ func TestAFailedHedgeDoesNotRequeueAChunkStillInFlight(t *testing.T) {
 // one capped link each take eight times as long and blow Timeouts.PerChunk
 // together. Workers are capped in total, so a plan of four holders with one
 // answering reaches exactly that.
+//
+// Two holders, because that is the shape the ceiling governs: a plan down to one
+// live holder is asked for one chunk at a time instead, see the test below.
 func TestOneHolderIsNotAskedForEverythingAtOnce(t *testing.T) {
-	cp := testPlan(wideLayout(12), []*BlobProvider{{Name: "only"}})
+	holders := []*BlobProvider{{Name: "a"}, {Name: "b"}}
+	cp := testPlan(wideLayout(12), holders)
 	tr := newTransfer("h", "p", "p.part")
 
 	var out []dispatch
-	for i := 0; i < maxHolderRequests; i++ {
+	reqs := map[int]int{}
+	for i := 0; i < maxHolderRequests*len(holders); i++ {
 		d, ok := cp.take()
 		if !ok {
-			t.Fatalf("dispatch %d: the sole holder was not asked at all", i)
+			t.Fatalf("dispatch %d: the plan handed out nothing", i)
 		}
 		out = append(out, d)
+		if reqs[d.pidx]++; reqs[d.pidx] > maxHolderRequests {
+			t.Fatalf("holder %d is fetching %d chunks at once, want at most %d",
+				d.pidx, reqs[d.pidx], maxHolderRequests)
+		}
 	}
 
-	// The next worker must wait rather than pile a third request on.
+	// Every slot is taken, so the next worker must wait rather than pile another
+	// request on somebody already at depth.
 	done := make(chan bool, 1)
 	go func() {
 		_, ok := cp.take()
@@ -555,5 +565,73 @@ func TestOneHolderIsNotAskedForEverythingAtOnce(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Error("a freed request slot never woke the waiting worker")
+	}
+}
+
+// TestASoleHolderIsAskedForOneChunkAtATime pins the exception to the rule above
+// (work-queue slot 5, decided 2026-08-14). With one live holder the second
+// request slot cannot buy anything: both chunks share the one link, so a chunk
+// nobody has asked for is taking bandwidth from the chunk a reader is blocked
+// on, and neither rule that normally reclaims one applies — prioritize cannot
+// reorder a dispatch that has left the queue, and a hedge needs a second holder.
+//
+// Measured over a 128 KiB/s link, 2 MiB, three runs each: the worst blocking
+// read a streaming reader paid was 4.86 / 5.54 / 9.23 s at depth 2 against
+// 2.396 / 2.405 / 2.415 s at depth 1, which is one 256 KiB chunk at the link
+// rate — the floor. Total elapsed was 19.0 s either way, which is why the
+// throughput measurement that shipped depth 2 scored it free.
+func TestASoleHolderIsAskedForOneChunkAtATime(t *testing.T) {
+	cp := testPlan(wideLayout(12), []*BlobProvider{{Name: "only"}})
+	tr := newTransfer("h", "p", "p.part")
+
+	first, ok := cp.take()
+	if !ok {
+		t.Fatal("the sole holder was not asked at all")
+	}
+
+	done := make(chan bool, 1)
+	go func() {
+		_, ok := cp.take()
+		done <- ok
+	}()
+	select {
+	case <-done:
+		t.Fatal("a second chunk was dispatched to the only holder in the plan")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// The slot frees on the first chunk landing, so the transfer still proceeds
+	// one chunk at a time rather than stalling.
+	cp.succeed(first.idx, first.pidx, tr, time.Millisecond)
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Error("the waiting worker was sent away instead of taking the freed slot")
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("a freed request slot never woke the waiting worker")
+	}
+}
+
+// TestRetiringTheLastRivalNarrowsTheSurvivorToOneRequest is the same rule
+// arriving the way it actually arrives in a real plan: the depth is a property
+// of the plan RIGHT NOW, not of how it was built. A fetch that starts with four
+// advertised holders and loses three of them to retirement is the sole-holder
+// case by the time the survivor is carrying the transfer — which is precisely
+// the plan shape the pipelining ceiling was written for.
+func TestRetiringTheLastRivalNarrowsTheSurvivorToOneRequest(t *testing.T) {
+	holders := []*BlobProvider{{Name: "live"}, {Name: "ghost"}}
+	cp := testPlan(wideLayout(12), holders)
+
+	cp.mu.Lock()
+	if got := cp.requestCapLocked(); got != maxHolderRequests {
+		cp.mu.Unlock()
+		t.Fatalf("with two live holders the cap is %d, want %d", got, maxHolderRequests)
+	}
+	cp.prov[1].dead = true
+	got := cp.requestCapLocked()
+	cp.mu.Unlock()
+	if got != 1 {
+		t.Errorf("with the rival retired the cap is %d, want 1", got)
 	}
 }

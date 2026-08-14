@@ -73,7 +73,44 @@ log. One thing the plan did not anticipate: the knob got **two** layers, not
 the ceiling's three — the placement rule in `swarm-admin.md` names no config
 consumer for an age, and that section now records the answer.
 
-### 5. Request depth on a sole capped holder — an owner call, repro in hand
+### 5. Request depth on a sole capped holder  ✅ DONE 2026-08-14
+
+**Owner picked shape 1 — depth 1 while a plan has exactly one live holder.**
+Built as `chunkPlan.requestCapLocked` (`federation/scheduler.go`): the cap
+`rankLocked` filters on is the plan's current state rather than the constant, so
+`maxHolderRequests` still governs every plan with an alternative and the narrow
+case gets its floor. No migration, no wire change, no new constant, and no
+change to the multi-holder path.
+
+Pinned by `TestASoleHolderIsAskedForOneChunkAtATime` and
+`TestRetiringTheLastRivalNarrowsTheSurvivorToOneRequest` (the same rule arriving
+the way it arrives in a real plan — retirement, not construction), both verified
+to fail with the rule disabled. `TestOneHolderIsNotAskedForEverythingAtOnce` was
+a SOLE-holder plan and now pins the general ceiling on two holders, which is the
+shape that ceiling governs. `TestChaosReaderLatencyOnASoleCappedHolder` said in
+its own comment that it was the test to tighten once this was decided, and it is:
+**measurement → assertion at 2× the link's floor**, verified both ways — 8
+uniform reads of ~595 ms (1.2× a 500 ms floor, identical over three runs) with
+the rule, and 7 reads with a worst of 1.208 s at offset 0 (2.4×) without it.
+
+One behaviour change fell out and is deliberate: on a sole holder the speculative
+chunk-0 fetch now occupies the whole depth, so the plan waits for it rather than
+starting chunk 1 beside it. `TestChunkPlanPrioritizeAndAdoptedFlight` hung on the
+old assertion and now pins both halves — a second holder still starts at chunk 1,
+a sole holder waits. It does not re-open the dribbling-first-holder finding
+(`3ff5846`): that fix is a *second* holder taking the chunk over, and a plan with
+a second holder is not at depth 1.
+
+Verification: full `go test ./federation/` green in 172 s; the chaos suite
+(`MADSHARE_CHAOS=1`, 380 s) green except the pre-existing
+`TestStaleHoldersCostAFetch`, which fails identically at HEAD for the reason
+already logged in `.issues`.
+
+Written up in `docs/architecture/federation-swarm.md` §"…and the ceiling drops
+to one when there is nobody else to ask", which carries both measurement tables:
+the throughput one that shipped depth 2 and the reader one that narrowed it.
+
+The record of what was measured and why, kept because it is the argument:
 
 **The queue's first open slot, and the only one with a fresh measurement behind
 it.** Reproduced 2026-08-14 (`.issues/open-issues.md` §"Madnetwork playback
@@ -127,20 +164,23 @@ floor again, with 768 KiB indistinguishable from any later chunk. Worst read
 no fix of its own, and the case for deciding the depth is now two measurements
 from different scenarios rather than one.
 
-**The decision.** Depth is resource policy, so this is the owner's, not the
-build's — and a blanket depth 1 is the wrong answer: it would give up
-pipelining on healthy multi-holder swarms, where the second slot is what keeps
-a fast holder busy. Two shapes that do not:
+**The decision — taken 2026-08-14, shape 1.** Depth is resource policy, so this
+was the owner's, not the build's — and a blanket depth 1 is the wrong answer: it
+would give up pipelining on healthy multi-holder swarms, where the second slot is
+what keeps a fast holder busy. Two shapes that do not:
 
-1. **Depth 1 while a plan has exactly one live holder.** Narrowest possible;
-   the condition is already computed (`liveProvidersLocked`). Costs nothing in
-   any multi-holder plan, and the sole-holder case is precisely where the
-   second slot can only take bandwidth from the first. Recommended.
+1. **Depth 1 while a plan has exactly one live holder.** ✅ **CHOSEN.**
+   Narrowest possible; the condition is already computed
+   (`liveProvidersLocked`). Costs nothing in any multi-holder plan, and the
+   sole-holder case is precisely where the second slot can only take bandwidth
+   from the first.
 2. **Hold the second slot back while a reader is blocked.** More general — it
    also covers a two-holder plan where both are capped — and the signal already
    exists (`cp.wanted` is exactly "a reader is waiting on this"). Costs a
    little throughput on a plan whose reader is always blocked, i.e. any stream
-   slower than its link.
+   slower than its link. **Not built**, and it stays available: if a two-capped-
+   holder plan is ever measured to starve a reader, this is the shape that
+   answers it, and it composes with what shipped rather than replacing it.
 
 Neither needs a migration, a wire change, or a new constant. Verification is
 the repro pair itself, parked outside the repo (see the issue row) — the

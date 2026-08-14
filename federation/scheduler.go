@@ -81,6 +81,10 @@ const (
 	// advertised holders of which one answers put all eight workers on the
 	// survivor. Hence a cap per holder rather than a floor: 2 is what the pipe can
 	// use, and the third request is one the per-chunk budget pays for.
+	//
+	// It is the ceiling for a plan with holders to choose between. A plan with a
+	// SINGLE live holder asks it for one chunk at a time — see requestCapLocked,
+	// and the measurement that forced the split.
 	maxHolderRequests = 2
 
 	// maxChunkCopies is how many holders may be fetching one chunk at once
@@ -498,9 +502,10 @@ func (cp *chunkPlan) matchLocked() (int, int, bool) {
 // distinction earns itself.
 func (cp *chunkPlan) rankLocked() []int {
 	now := time.Now()
+	depth := cp.requestCapLocked()
 	order := make([]int, 0, len(cp.prov))
 	for i, ps := range cp.prov {
-		if ps.dead || now.Before(ps.idleUntil) || ps.reqs >= maxHolderRequests {
+		if ps.dead || now.Before(ps.idleUntil) || ps.reqs >= depth {
 			continue
 		}
 		order = append(order, i)
@@ -928,6 +933,45 @@ func (cp *chunkPlan) worseThanPeers(i int) bool {
 		return true
 	}
 	return cp.prov[i].fails >= best+providerFailureLimit
+}
+
+// requestCapLocked is how many chunks one holder may be fetching at once, right
+// now. Caller holds cp.mu.
+//
+// maxHolderRequests everywhere except the one shape where the second slot cannot
+// buy anything: a plan with a SINGLE live holder. Then both requests share one
+// link, so the chunk a reader is blocked on is competing with a chunk nobody has
+// asked for — and neither of the rules that normally reclaim a chunk applies,
+// because prioritize cannot reorder a dispatch that has left the queue and a
+// hedge needs a second holder to send.
+//
+// That is the household by construction: a madplayer's only holder is its home
+// server, which is also the deployment the mid-track stall was reported from.
+// Measured 2026-08-14, 2 MiB over a 128 KiB/s link, three runs each — the worst
+// single blocking read a streaming reader paid:
+//
+//	depth 2: 4.86 / 5.54 / 9.23 s      depth 1: 2.396 / 2.405 / 2.415 s
+//
+// A 256 KiB chunk at 128 KiB/s is ~2 s, so depth 1 is the floor and depth 2 was
+// costing up to 4× it. **Total elapsed is identical either way** (19.0 s), which
+// is exactly why the F9 measurement that shipped depth 2 scored it free: it timed
+// the TRANSFER, and the whole cost of request depth lands on reader tail latency.
+// Anyone measuring a swarm change after this should time transfer.WaitFor, not
+// the fetch.
+//
+// Narrow on purpose. A blanket depth 1 would give up pipelining on healthy
+// multi-holder swarms, where the second slot is what keeps a fast holder busy
+// across the RTT — the finding the constant above records. This condition costs
+// nothing in any plan that has an alternative, and it lifts the moment one
+// appears: "live" is not-dead, so retiring the last of four ghosts narrows the
+// survivor to depth 1 by itself. Narrowing mid-transfer drains rather than
+// preempts — a holder already at two requests keeps both and is simply not asked
+// again until it is down to none, which costs at most one chunk once.
+func (cp *chunkPlan) requestCapLocked() int {
+	if cp.liveProvidersLocked() <= 1 {
+		return 1
+	}
+	return maxHolderRequests
 }
 
 // liveProvidersLocked counts non-dead holders; caller holds cp.mu.

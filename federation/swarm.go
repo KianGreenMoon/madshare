@@ -1324,10 +1324,11 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*BlobProvide
 	// streaming relay.
 	t.beginChunks(layout, plan.prioritize)
 	// Two workers per holder, bounded in total — but what each HOLDER may be
-	// asked for at once is bounded separately (maxHolderRequests), and that is
-	// the load-bearing one: this formula counts advertised holders, not answering
-	// ones, so four holders of which one is alive puts every worker on the
-	// survivor.
+	// asked for at once is bounded separately (requestCapLocked, at most
+	// maxHolderRequests), and that is the load-bearing one: this formula counts
+	// advertised holders, not answering ones, so four holders of which one is
+	// alive puts every worker on the survivor — and once the other three are
+	// retired the survivor is a sole holder, which narrows it to one request.
 	workers := max(1, min(len(holders)*2, maxChunkWorkers, len(man.Chunks)))
 	var wg sync.WaitGroup
 	if adopted {

@@ -103,7 +103,8 @@ func TestChunkLayout(t *testing.T) {
 // points fetchSwarm uses beyond plain dispatch: prioritize jumps a pending
 // chunk to the front, and adoptFlight registers the speculative chunk-0 fetch
 // as an attempt already on the wire, so dispatch starts at chunk 1 and the
-// speculation resolves through succeed like any worker's dispatch.
+// speculation resolves through succeed like any worker's dispatch — including
+// being charged the request slot, which on a sole holder is the whole depth.
 func TestChunkPlanPrioritizeAndAdoptedFlight(t *testing.T) {
 	man := &blobManifest{ChunkSize: 10, Size: 50, Chunks: []string{"a", "b", "c", "d", "e"}}
 	layout := man.layout()
@@ -112,8 +113,8 @@ func TestChunkPlanPrioritizeAndAdoptedFlight(t *testing.T) {
 	cp := testPlan(layout, holders)
 	tr := newTransfer("h", "p", "p.part")
 	cp.prioritize(3)
-	// Each chunk is completed before the next is taken, because one holder is
-	// only asked for maxHolderRequests at a time (F9 item 4).
+	// Each chunk is completed before the next is taken, because the plan's only
+	// holder is asked for one chunk at a time (requestCapLocked).
 	for _, want := range []int{3, 0, 1, 2, 4} { // prioritized first, the rest in order
 		d, ok := cp.take()
 		if !ok || d.idx != want {
@@ -122,14 +123,18 @@ func TestChunkPlanPrioritizeAndAdoptedFlight(t *testing.T) {
 		cp.succeed(d.idx, d.pidx, tr, time.Millisecond)
 	}
 
-	cp2 := testPlan(layout, holders)
+	// Adoption on a plan with somebody else to ask: chunk 0 has left the queue
+	// and is charged to holder 0, so the FIRST dispatch is chunk 1 and it goes to
+	// the holder carrying nothing.
+	cp2 := testPlan(layout, []*BlobProvider{{Name: "h"}, {Name: "other"}})
 	cp2.adoptFlight(0, 0, func() {})
 	if len(cp2.flight[0]) != 1 || cp2.inFlight != 1 || cp2.prov[0].reqs != 1 {
 		t.Fatalf("adopted plan: flight[0]=%d inFlight=%d reqs=%d",
 			len(cp2.flight[0]), cp2.inFlight, cp2.prov[0].reqs)
 	}
-	if d, ok := cp2.take(); !ok || d.idx != 1 {
-		t.Errorf("first dispatch after adoption = (%d,%v), want (1,true)", d.idx, ok)
+	if d, ok := cp2.take(); !ok || d.idx != 1 || d.pidx != 1 {
+		t.Errorf("first dispatch after adoption = (chunk %d, holder %d, %v), want (1,1,true)",
+			d.idx, d.pidx, ok)
 	}
 	// The speculation resolving is an ordinary success: watermark, progress,
 	// and the holder's slot all come back.
@@ -140,6 +145,39 @@ func TestChunkPlanPrioritizeAndAdoptedFlight(t *testing.T) {
 	}
 	if b := cp2.watermarkBytes(); b != 10 {
 		t.Errorf("watermarkBytes = %d, want 10", b)
+	}
+
+	// ...and being a plan citizen means it is charged like one. On a SOLE holder
+	// the adopted speculation occupies that holder's only request slot, so the
+	// plan waits for chunk 0 rather than putting chunk 1 on the same link beside
+	// it — which is the point of the sole-holder depth (work-queue slot 5): the
+	// reader needs chunk 0 first, so nothing else belongs on that link yet.
+	cp3 := testPlan(layout, holders)
+	cp3.adoptFlight(0, 0, func() {})
+	waited := make(chan int, 1)
+	go func() {
+		d, ok := cp3.take()
+		if !ok {
+			waited <- -1
+			return
+		}
+		waited <- d.idx
+	}()
+	select {
+	case idx := <-waited:
+		t.Fatalf("chunk %d was dispatched to the sole holder while it is still "+
+			"fetching the speculative chunk 0", idx)
+	case <-time.After(200 * time.Millisecond):
+	}
+	// The slot comes back with the speculation, and the wait ends.
+	cp3.succeed(0, 0, tr, time.Millisecond)
+	select {
+	case idx := <-waited:
+		if idx != 1 {
+			t.Errorf("dispatch after the speculation landed = chunk %d, want 1", idx)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("the freed slot never woke the waiting worker")
 	}
 }
 

@@ -764,6 +764,67 @@ This is the one place F9 contradicted its own design, and it is worth
 remembering why the design was wrong: it reasoned about an idle *connection*,
 and the thing that runs out first is a *deadline*.
 
+##### …and the ceiling drops to one when there is nobody else to ask
+
+Built 2026-08-14. The table above measures **throughput**, and on that question
+depth 2 is free. It is not free for a **reader**, and the difference is the whole
+of this rule.
+
+With a single live holder, both request slots share one link. The second slot is
+therefore spending bandwidth on a chunk nobody has asked for while the chunk a
+streaming reader is *blocked* on crawls — and neither rule that normally reclaims
+a chunk can help: `prioritize` cannot reorder a dispatch that has already left
+the queue, and a hedge needs a second holder to send it to. That is the household
+by construction, since a listener node's only holder is its home server, and it
+is the deployment the mid-track stall was reported from.
+
+Measured 2026-08-14, 2 MiB over a 128 KiB/s link, three runs each — the worst
+single blocking read a streaming reader paid:
+
+| per-holder depth | worst reader wait | total elapsed |
+|---|---|---:|
+| 2 | 4.86 / 5.54 / 9.23 s | 19.0–23.2 s |
+| 1 | 2.396 / 2.405 / 2.415 s | 19.0–19.1 s |
+
+A 256 KiB chunk at 128 KiB/s is ~2 s, so depth 1 is the floor and depth 2 was
+costing up to 4× it *while finishing at the same moment*. Contention alone, not
+retries — the 5.54 s run reported `retries=0`; chunks blowing `Timeouts.PerChunk`
+are a second-order consequence that appears only once the link is oversubscribed.
+A second, independent scenario (a reported stall at the lead-ramp → first-bulk
+seam, ~768 KiB) landed on the same cause and produced the same answer: at depth 1
+that run becomes 18 uniform reads of one chunk time, and the seam stops being
+distinguishable from any other chunk boundary.
+
+So `requestCapLocked` returns 1 when the plan has one live holder and
+`maxHolderRequests` otherwise. **Narrow on purpose** — a blanket depth 1 would
+give up the pipelining the table above defends, on exactly the healthy
+multi-holder swarms where the second slot keeps a fast holder busy. The condition
+costs nothing in any plan with an alternative, and it lifts the moment one
+appears; equally, "live" means not-retired, so a plan that starts with four
+advertised holders and loses three of them narrows to depth 1 on its own.
+
+**The rule for anyone measuring a swarm change after this: time the reader, not
+the transfer.** Total elapsed is identical under both depths, which is why the
+throughput measurement above scored depth 2 free and this cost stayed hidden for
+a month. `federation/readerlatency_test.go` drives the relay's own loop and times
+each blocking `WaitFor`, which is the instrument that shows it — and
+`TestChaosReaderLatencyOnASoleCappedHolder`, which used to report this number
+without asserting on it because the decision was open, now asserts it. On its own
+512 KiB/s link the reader makes 8 uniform reads of ~595 ms against a 500 ms
+floor (1.2×, identical over three runs); with the rule disabled the same run
+gives 7 reads and a worst of 1.208 s at offset 0 (2.4×) — the shape of the defect
+in one line, since the second slot buys the reader a chunk it cannot use yet at
+the price of the one it is waiting for.
+
+One consequence worth stating, because it looks like a regression and is not: on
+a sole holder the **speculative chunk-0 fetch now occupies the whole depth**, so
+the plan waits for it instead of starting chunk 1 beside it. That is the rule
+working — a reader needs chunk 0 first, and there is only one link — and it is
+pinned by `TestChunkPlanPrioritizeAndAdoptedFlight`. It does not re-open the
+dribbling-first-holder finding that `adoptFlight` was built for: that fix is
+about a *second* holder taking the chunk over, and a plan with a second holder is
+not at depth 1.
+
 ##### What it cost to read
 
 `TransferStats` gained `hedges`/`hedges_won` and a per-holder `lost`. The last
