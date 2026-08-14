@@ -253,18 +253,62 @@ The cache is deliberately left alone. It is scratch space for the swarm, its
 contents come and go, and giving it a human layout would invite people to treat
 it as a library it is not.
 
-Open, and worth settling when this is built:
+#### Settled 2026-08-15 (owner)
 
-- **Does a materialized file get registered directly, or picked up by the next
-  scan?** Registering it immediately is better — a track that vanishes until a
-  rescan is a bug report — but it has to land as an ordinary links-backed row so
-  there is exactly one kind of library entry.
-- **Naming and collisions.** Tags are dirty; `/` in a title, an empty artist, two
-  different recordings with identical tags. The Unknown-artist and Other buckets
-  already name the empty cases (`docs/architecture/artist-album-model.md`), so
-  the directory layout should reuse them rather than invent placeholders.
-- **Which directory**, when several folders are scanned. Probably an explicit
-  setting rather than a guess at "the main one".
+The three questions this section left open are answered. The shape they settle
+into is one idea: **the destination is a folder madplayer MANAGES**, not one of
+the folders a person added.
+
+- **Which directory.** `<XDG_MUSIC_DIR>/madplayer`, with a setting to override
+  it. Not "the main one" of the scanned folders and not a guess — a managed
+  folder answers the question by not asking it, and it stays inside the music
+  directory rather than hiding in application storage, which is the whole point
+  of §"Where the bytes live". Read the music directory from the platform
+  (`~/.config/user-dirs.dirs` on freedesktop); it is `~/Musik` on a German
+  desktop and hardcoding `~/Music` is wrong on that machine.
+
+  **When it cannot be written, fall back to the app's own data directory.** On a
+  phone that is the ordinary case rather than the exception, and it is worth
+  saying plainly: on Android `app.DataDir()` is app-private storage, so music
+  materialized there is NOT browsable by a file manager. That breaks the promise
+  this section makes, so it is a fallback with a sentence attached, never a
+  silent one.
+
+- **Registering.** Immediately, as the section already argued. The managed folder
+  is a data source like any other, so a materialized file lands as an ordinary
+  links-backed row — one kind of library entry, as required.
+
+  It is also scanned **separately, and only for files the library is missing**.
+  The case that motivates it is entries lost while the bytes remain (a deleted
+  database, an interrupted write), where a full rescan is the wrong tool and
+  doing nothing leaves music on disk that nothing can play.
+
+  **A file a PERSON puts in the managed folder is ignored, with a warning.** Not
+  adopted, and not moved somewhere else on their behalf: the folder belongs to
+  the program, moving somebody's file is worse than refusing it, and adopting it
+  would make "managed" mean nothing. Their own music goes in a folder they added.
+
+- **Naming.** `Artist/Album/NN - Title.ext` from the tags, with the
+  Unknown-artist and Other buckets naming the empty cases as this section
+  already required — read from `database.DefaultArtistName` /
+  `DefaultAlbumTitle` rather than re-spelled, so the folder and the library row
+  cannot disagree.
+
+  - A **filesystem failure refuses and reports**. No retry under a different
+    name: a write that failed is a fact about the disk, and inventing a second
+    name to get around it is how a library ends up with files nobody meant.
+  - A **collision on the same path with different audio** gets a short
+    content-hash suffix — `05 - Title [a1b2c3].ext`. Only on collision, so the
+    ordinary file keeps the ordinary name.
+  - The **same content hash already at the target ignores the request.**
+    Materialize is idempotent, which matters because *Materialize all* exists and
+    gets pressed twice.
+  - A setting, **"save with technical names"**, switches the layout to
+    hash-names wholesale. It is the escape hatch for a filesystem that cannot
+    take the human ones — FAT on an SD card, a charset it will not encode, a path
+    length it will not accept — and it is a preference rather than a fallback,
+    because a program that silently changed its own layout mid-collection would
+    be worse than one that asked.
 
 ### Two libraries, one list
 
