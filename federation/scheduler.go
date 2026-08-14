@@ -968,11 +968,22 @@ func (cp *chunkPlan) worseThanPeers(i int) bool {
 // preempts — a holder already at two requests keeps both and is simply not asked
 // again until it is down to none, which costs at most one chunk once.
 func (cp *chunkPlan) requestCapLocked() int {
+	if measureRequestDepth > 0 {
+		return measureRequestDepth
+	}
 	if cp.liveProvidersLocked() <= 1 {
 		return 1
 	}
 	return maxHolderRequests
 }
+
+// measureRequestDepth is a MEASUREMENT SEAM (docs/plans/maybe-to-do.md step 1):
+// when > 0 it forces the per-holder request depth, bypassing both the
+// maxHolderRequests ceiling and the sole-holder narrowing, and fetchSwarm
+// raises its worker count to match. Set only by depthmeasure_test.go, never by
+// the server, and read without synchronization — the measurement sets it before
+// a transfer starts and clears it after the transfer ends.
+var measureRequestDepth = 0
 
 // liveProvidersLocked counts non-dead holders; caller holds cp.mu.
 func (cp *chunkPlan) liveProvidersLocked() int {

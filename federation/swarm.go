@@ -1330,6 +1330,11 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*BlobProvide
 	// alive puts every worker on the survivor — and once the other three are
 	// retired the survivor is a sole holder, which narrows it to one request.
 	workers := max(1, min(len(holders)*2, maxChunkWorkers, len(man.Chunks)))
+	if measureRequestDepth > 0 {
+		// The measurement seam (see scheduler.go): a forced depth needs as many
+		// workers, or the sweep would measure the worker formula instead.
+		workers = max(1, min(measureRequestDepth, len(man.Chunks)))
+	}
 	var wg sync.WaitGroup
 	if adopted {
 		// Inside the WaitGroup like any worker: the part file must outlive the

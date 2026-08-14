@@ -1,7 +1,12 @@
 # Maybe to do — request depth, the per-chunk deadline, and what they cost
 
-**Status: ANALYSIS, NOT SCHEDULED.** Nothing here is a decision and nothing here
-is queued. It is the record of a conversation on 2026-08-14, immediately after
+**Status: ANALYSIS; STEP 1 RAN 2026-08-15 — results in §8.** The verdict up
+front: **the depth-8 failure does not exist on the production constants** — it
+was an artifact of the shrunk chaos clock, whose 6-second `PerChunk` really did
+fire (the recorded attribution was correct *on the clock it ran on*; §4's
+refuting arithmetic was also correct — it assumed the production clock, which
+the measurement never used). Nothing here is a decision and nothing here is
+queued. It is the record of a conversation on 2026-08-14, immediately after
 work-queue slot 5 shipped (`30f13cc`), kept so the reasoning does not have to be
 rebuilt from scratch. Read `docs/architecture/federation-swarm.md` §"Pipelining"
 for what is actually built.
@@ -179,7 +184,7 @@ that no longer exists, and the full chaos-enabled suite is green.
 
 ---
 
-## 4. The hole in the story — read this before building anything
+## 4. The hole in the story — RESOLVED by §8 (kept as the reasoning record)
 
 The doc says depth 8 fails because it "spends `Timeouts.PerChunk` rather than the
 link". **The arithmetic does not close.**
@@ -287,12 +292,93 @@ Three jobs, and only one still needs it:
 
 ## 7. Open questions
 
-1. Which deadline actually fires at depth 8? (§4 — blocks everything else.)
-2. Why does a 512 KiB/s link deliver ~340 KiB/s in the F9 measurement? Unexplained,
-   and it may be the same phenomenon.
-3. Does depth 2 buy anything at all in a **multi-holder** plan? Never measured,
-   in either direction. If it does not, the whole knob is decoration.
+1. **ANSWERED (§8).** Which deadline fires at depth 8: `PerChunk` — the
+   chaos-shrunk 6-second one — after which the transfer dies for good because
+   the whole-file fallback is bounded by the equally shrunk `Transfer` = 6 s,
+   less than the ~9 s the file needs at this rate. On the production constants
+   **nothing fires at any depth**; depth 8 completed 9/9 with zero retries in
+   both runs.
+2. **ANSWERED (§8).** The "missing third" is mostly wire overhead: the netfault
+   cap meters raw proxied bytes, and delivering the 4 MiB payload cost
+   4.93–5.24 MiB on the wire (17.6–25 % — ygg framing/encryption + HTTP), so a
+   512 KiB/s raw cap has a payload ceiling of ~434 KiB/s before any dead air.
+   No unexplained phenomenon remains.
+3. Does depth 2 buy anything at all in a **multi-holder** plan? Still never
+   measured. The sole-holder half now has a datum (§8): on a 300 ms-RTT link,
+   depth ≥ 2 is worth ~10–15 % of transfer time over depth 1 (dead air is
+   real), paid for in reader tail latency.
 4. If step 2 lands, does `ChunkStall` need to become concurrency-aware — and if
-   it does, is that not the same wall-clock mistake in a smaller hat?
+   it does, is that not the same wall-clock mistake in a smaller hat? Softened
+   by §8: it fired at most once per failing chaos run and never on the
+   production clock, even at depth 8.
 5. Should `maxChunkWorkers = 8` itself be the only concurrency bound? It is
    already the real ceiling; the per-holder cap sits underneath it.
+
+---
+
+## 8. Step 1 results — measured 2026-08-15
+
+Instrument: `federation/depthmeasure_test.go` (`MADSHARE_MEASURE=1`, its own
+gate — deliberately not part of the chaos suite, whose unfiltered runs must not
+inherit a four-minute sweep), over a measurement seam `measureRequestDepth`
+(scheduler.go) that forces the per-holder depth — bypassing both
+`maxHolderRequests` and the sole-holder narrowing — and raises `fetchSwarm`'s
+worker count to match. Scenario = §3a's exactly: 4 MiB, one holder, 300 ms RTT,
+link capped 512 KiB/s, timing BOTH the transfer and the reader (`streamWaits`).
+Two full runs of every cell; the numbers below are run 1 / run 2.
+
+Two clocks, because §4's refutation and the original measurement used different
+ones: **chaos** = what §3a actually ran on (`PerChunk` 6 s, `ChunkStall` 2 s,
+`Transfer` 6 s), **production** = the shipped fetch deadlines (`PerChunk` 2 min,
+`ChunkStall` 20 s, `Connect` 5 s; `Control`/`Manifest` kept shrunk — they bound
+setup, not the thing measured). Deadline attribution is read off evidence the
+stats already carry: every `ChunkStall` firing is counted in `Stats.Stalls`
+before it cancels, a `PerChunk` expiry reads "context deadline exceeded" with no
+stall counted.
+
+**Chaos clock (the original §3a conditions):**
+
+| depth | transfer | worst reader wait | outcome |
+|---|---|---|---|
+| 1 | 12.39 / 12.38 s | 1.92 / 1.92 s | clean |
+| 2 | 10.56 / 10.67 s | 3.52 / 3.52 s | clean |
+| 4 | 16.82 / 16.69 s | 7.9 / 11.7 s | **marginal**: run 1 FAILED (swarm abandoned at 7/9, `PerChunk` + 1 stall), run 2 recovered with retries |
+| 8 | 17.14 / 18.54 s | 9.7 / 12.0 s | **FAILED both runs** — `PerChunk` fires, fallback dies on `Transfer` = 6 s (`mode=swarm→whole→whole`) |
+
+**Production clock (same link, same blob):**
+
+| depth | transfer | worst reader wait | outcome |
+|---|---|---|---|
+| 1 | 12.72 / 12.83 s | 1.92 / 1.92 s | clean |
+| 2 | 10.56 / 11.39 s | 2.35 / 4.73 s | clean |
+| 4 | 14.86 / 10.91 s | 6.07 / 4.41 s | clean |
+| 8 | 11.06 / 11.00 s | 3.54 / 6.81 s | clean — 9/9 chunks, zero retries, zero stalls, both runs |
+
+Findings, in the order the sections above asked them:
+
+1. **The depth-8 failure is a test-clock artifact.** On the chaos clock the
+   recorded attribution is CORRECT: eight chunks fair-sharing a 512 KiB/s link
+   (~434 KiB/s of payload after overhead) each take ~8–9 s of wall clock, which
+   outlasts the shrunk `PerChunk` = 6 s — and the transfer then fails outright
+   only because the whole-file fallback is bounded by the equally shrunk
+   `Transfer` = 6 s, under the ~9 s the whole file needs. §4's arithmetic was
+   equally correct that the production 120 s cannot fire — 16× headroom — and
+   indeed on the production clock every depth is clean. Depth 8 in production
+   is merely reader-hostile, not fatal.
+2. **The chaos clock is not proportionally shrunk**, which is the transferable
+   lesson: production `PerChunk`/`ChunkStall` = 6, chaos = 3; production
+   `Transfer`/`PerChunk` = 15, chaos = **1**. A failure measured on the chaos
+   clock is a fact about those ratios until re-checked on the real ones.
+3. **Reader tail latency is confirmed as the entire production cost of depth**
+   (§2a): the transfer total is flat across depths (10.9–12.8 s) while the
+   worst blocking read scales from the 1.92 s floor at depth 1 to 3.5–6.8 s at
+   depth 8. Slot 5's depth-1 rule is what keeps the household on the floor.
+4. **Depth 2 does buy transfer time on a latent link** — the dead-air claim the
+   F9 constant records is real: depth 1 is consistently the slowest transfer
+   (12.4–12.8 s vs 10.6–11.4 s at depth ≥ 2), ~15 % on this 300 ms RTT.
+
+Consequences for steps 2–4: unchanged in direction, changed in urgency. There
+is no production failure to fix; the cap's one remaining live job is reader
+tail latency (§6 row 1), which is step 3's rule, and removing `PerChunk`
+(step 2) is now purely a simplification question — its wall-clock-punishes-
+concurrency defect is real but unreachable at the depths the worker cap allows.
