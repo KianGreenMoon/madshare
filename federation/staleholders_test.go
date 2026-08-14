@@ -302,11 +302,28 @@ func TestStaleHoldersCostAFetch(t *testing.T) {
 			t.Errorf("%s: a live holder was present and the fetch still failed: %v", r.name, r.err)
 		}
 	}
-	// The point of the whole exercise: dead entries in the plan cost time even
-	// though a live holder is right there carrying every byte.
-	if results[1].took <= results[0].took {
-		t.Errorf("one stale holder cost nothing (%s vs %s all-live) — the tax this "+
-			"test exists to measure did not appear", results[1].took, results[0].took)
+	// The point of the whole exercise, restated for the tree this test now runs
+	// on: a stale holder may cost AT MOST its dispatches' dial deadlines. The
+	// strict "1-stale must be slower than all-live" comparison this replaces
+	// (red at HEAD, found 2026-08-14) could not survive its own fixes: a ghost
+	// absorbs two Connect-bounded dispatches and is then simply not chosen, so
+	// on a fast local mesh the stale run is routinely FASTER than the all-live
+	// one (~40ms vs ~100ms — scheduling noise dominates, inverted from what the
+	// old assertion demanded). What must never come back is the tax: each ghost
+	// gets its two dispatches × Connect, plus one Connect of slack for the
+	// scheduler's timing. Losing the dial bound (the dispatch falls through to
+	// PerChunk) or the load rule (the ghost keeps being chosen) both blow
+	// through this budget by construction.
+	for i, r := range results[1 : len(results)-1] {
+		stale := scenarios[i+1].stale
+		budget := results[0].took + time.Duration(2*stale+1)*chaosConnect
+		if r.took > budget {
+			t.Errorf("%s: took %s against a budget of %s (all-live %s + %d ghost "+
+				"dispatch(es) × Connect + slack) — a stale holder costs more than its "+
+				"dial deadline again",
+				r.name, r.took.Round(time.Millisecond), budget.Round(time.Millisecond),
+				results[0].took.Round(time.Millisecond), 2*stale)
+		}
 	}
 }
 

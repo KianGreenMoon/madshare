@@ -255,3 +255,10 @@ and no parallel suites. A new migration breaks `database_test.go`; a new
 `go vet -tags tests ./tests/mesh/...`. When a phase ships, grep the
 user-facing docs — the design doc is the one being edited, so it is the one
 that stays right.
+
+Any change under `federation/` additionally wants the chaos suite:
+`MADSHARE_CHAOS=1 go test -p 1 ./federation/` (~6 min). It is opt-in, so a
+red test there survives every default `go test ./...` — that is how
+`TestStaleHoldersCostAFetch` stayed red from F9 item 3 until 2026-08-14.
+Note `-run Chaos` is NOT the whole gated set (that test's name doesn't
+match); run the package unfiltered.
