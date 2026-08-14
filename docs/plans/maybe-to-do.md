@@ -256,6 +256,12 @@ With `Timeouts.Transfer` as the floor under both.
 
 ### Step 3 — replace the per-holder cap with the rule it approximates
 
+**DESIGNED 2026-08-15 — `docs/plans/reader-rule.md`** (not built; three
+decisions open there). The design amends the wording below — the literal
+"nobody has asked for" rule would serialize multi-holder streams, see that
+doc's §1 — and amends step 4: the constant stays as the unwatched ceiling,
+only its wrong trigger deletes.
+
 The cap is a poor proxy for what we want. The real rule is:
 
 > Do not start a chunk **nobody has asked for** while a reader is blocked on one
