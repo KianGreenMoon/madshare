@@ -466,6 +466,20 @@ The alternative — having the device sync catalogs over the mesh so
 `EnsureBlob` works untouched — needs it to be a friend or a member of
 somebody, which is the one thing it is not.
 
+**`Transfer.Abandon()` exists for the same participant** (2026-08-15).
+Transfers deliberately run on the *node's* lifetime, not the requester's
+context — cache-through is the server's shape, and its relay never abandons
+anything. A player is the opposite case: its fetches have exactly one
+consumer, and before this surface existed a fetch the player gave up on (a
+skipped track, a first byte that missed the budget) ran to completion in the
+background — in the budget-miss case in parallel with the relay downloading
+the very same bytes, on precisely the link that was too slow to answer.
+Abandon cancels the transfer's own context (a child of the node's, so a node
+stopping still stops everything); the run winds down through the ordinary
+failure paths and books its waste. Transfers are shared per hash, so an
+abandoner speaks for every joiner — a caller in a process where transfers can
+be shared must coordinate first.
+
 **Presenting the token** is the small missing middle: outbound mesh requests set
 `Madnetwork-Token` when the node holds one. It is attached to every request
 rather than only to the ones expected to need it, which costs nothing —

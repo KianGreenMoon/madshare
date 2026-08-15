@@ -127,6 +127,15 @@ type transfer struct {
 	partPath string // the growing file while the fetch runs ("" when born complete)
 	done     chan struct{}
 
+	// ctx bounds THIS transfer's fetch work (manifest probes, chunk plan,
+	// whole-file fallback). Derived from the node's transferCtx, so a node
+	// stopping still stops every transfer — but cancellable on its own, which
+	// is what Abandon is. Node-scoped bookkeeping (liveness observations,
+	// traffic) deliberately does NOT run under it: a fact observed during an
+	// abandoned fetch is still a fact. Nil on a born-complete transfer.
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	mu       sync.Mutex
 	size     int64
 	filename string
@@ -181,6 +190,16 @@ func completedTransfer(hash, path string, size int64) *transfer {
 
 func (t *transfer) Hash() string          { return t.hash }
 func (t *transfer) Done() <-chan struct{} { return t.done }
+
+// Abandon cancels the transfer's own context. The run winds down through the
+// ordinary failure paths (the workers' requests die on the dead context) and
+// finishes with an error; waste is booked and the part file cleaned up exactly
+// as for any other failed fetch. See the interface doc for who may call this.
+func (t *transfer) Abandon() {
+	if t.cancel != nil {
+		t.cancel()
+	}
+}
 
 func (t *transfer) Size() int64 {
 	t.mu.Lock()
@@ -621,6 +640,7 @@ func (n *Node) ensureBlob(ctx context.Context, hash string,
 		return nil, fmt.Errorf("federation: create cache dir: %w", err)
 	}
 	t := newTransfer(hash, final, final+".part")
+	t.ctx, t.cancel = context.WithCancel(n.transferCtx)
 	t.size = size
 	n.transfers[hash] = t
 	go n.runTransfer(t, holders)
@@ -667,7 +687,7 @@ func (n *Node) runTransfer(t *transfer, holders []*BlobProvider) {
 	// not gate the swarm start) and keeps the bytes only if they verify.
 	pf := n.speculateChunk0(t, holders)
 
-	if man := n.fetchAgreedManifest(n.transferCtx, holders, t.hash); man != nil {
+	if man := n.fetchAgreedManifest(t.ctx, holders, t.hash); man != nil {
 		t.setMeta(man.Size, man.Filename)
 		t.stats.setMode("swarm")
 		err := n.fetchSwarm(t, man, holders, pf)
@@ -710,8 +730,8 @@ func (n *Node) runWhole(t *transfer, holders []*BlobProvider) {
 	t.stats.setMode("whole")
 	var lastErr error
 	for _, p := range holders {
-		if n.transferCtx.Err() != nil {
-			t.finish(n.transferCtx.Err())
+		if t.ctx.Err() != nil {
+			t.finish(t.ctx.Err())
 			return
 		}
 		err := n.fetchFrom(t, p)
@@ -754,7 +774,7 @@ func (n *Node) fetchFrom(t *transfer, p *BlobProvider) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(n.transferCtx, n.timeouts.Transfer)
+	ctx, cancel := context.WithTimeout(t.ctx, n.timeouts.Transfer)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

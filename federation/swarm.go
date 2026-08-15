@@ -998,10 +998,10 @@ func (n *Node) fetchHave(ctx context.Context, p *BlobProvider, hash string) *hav
 // complete and partial holdings and no column distinguishes them, because a
 // scheduler that wants to know asks the holder directly and gets a live answer
 // rather than a fifteen-minute-old one.
-func (n *Node) probeCoverage(hash string, plan *chunkPlan) {
+func (n *Node) probeCoverage(ctx context.Context, hash string, plan *chunkPlan) {
 	for i, p := range plan.providers {
 		go func(i int, p *BlobProvider) {
-			if msg := n.fetchHave(n.transferCtx, p, hash); msg != nil {
+			if msg := n.fetchHave(ctx, p, hash); msg != nil {
 				plan.setCoverage(i, msg)
 			} else {
 				plan.probeUnanswered(i)
@@ -1230,7 +1230,7 @@ func (n *Node) speculateChunk0(t *transfer, holders []*BlobProvider) *chunk0Pref
 	pf.active = true
 	pf.from = holders[0]
 	pf.ch = make(chan chunk0Result, 1)
-	pctx, cancel := context.WithCancel(n.transferCtx)
+	pctx, cancel := context.WithCancel(t.ctx)
 	pf.cancel = cancel
 	go func() {
 		started := time.Now()
@@ -1306,7 +1306,7 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*BlobProvide
 			return err
 		}
 	}
-	plan := newChunkPlan(n.transferCtx, layout, holders, t.stats, n.timeouts)
+	plan := newChunkPlan(t.ctx, layout, holders, t.stats, n.timeouts)
 	adopted := false
 	if pf.active && layout.count() > 0 {
 		if _, end := layout.rangeOf(0); end == pf.guessLen {
@@ -1318,7 +1318,7 @@ func (n *Node) fetchSwarm(t *transfer, man *blobManifest, holders []*BlobProvide
 			pf.discard() // the real chunk-0 boundary differed from the guess
 		}
 	}
-	n.probeCoverage(t.hash, plan)
+	n.probeCoverage(t.ctx, t.hash, plan)
 	t.stats.setChunks(layout.count())
 	// Expose per-chunk readiness (the layout) + the seek-priority hook to the
 	// streaming relay.

@@ -77,6 +77,7 @@ func (f *fakeTransfer) Available(offset int64) int64 {
 	return 0
 }
 func (f *fakeTransfer) Done() <-chan struct{}   { return f.done }
+func (f *fakeTransfer) Abandon()                {}
 func (f *fakeTransfer) Err() error              { return f.err }
 func (f *fakeTransfer) Open() (*os.File, error) { return os.Open(f.path) }
 func (f *fakeTransfer) Stats() federation.TransferStats {

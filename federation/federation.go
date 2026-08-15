@@ -818,6 +818,19 @@ type Transfer interface {
 	// carried it, how often it retried or failed over, when the first byte
 	// landed. Safe to call at any point in the transfer's life.
 	Stats() TransferStats
+	// Abandon stops the fetch: no caller wants these bytes any more. A no-op
+	// once the transfer finished, and idempotent.
+	//
+	// Transfers deliberately run on the NODE's lifetime, not the requester's —
+	// cache-through is the server's whole shape, and its relay never calls
+	// this. It exists for the listener-node embedder (a madplayer), whose
+	// fetches have exactly one consumer and whose link is usually the slowest
+	// thing on the mesh: without it, a fetch the player gave up on ran to
+	// completion in the background, in parallel with the relay fallback for the
+	// very same bytes. Transfers are shared per hash (EnsureBlob joins), so a
+	// caller that abandons one speaks for every joiner — coordinate before
+	// calling this from anywhere a transfer can be shared.
+	Abandon()
 }
 
 // TransferStats is a point-in-time snapshot of one blob fetch: enough to answer
