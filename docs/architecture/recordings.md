@@ -89,7 +89,11 @@ exists.
 
 Identity is the **Chromaprint acoustic fingerprint** (the engine behind
 AcoustID/MusicBrainz), computed at ingest by shelling out to **`fpcalc`** — no
-CGo, same pattern as the planned `ffprobe` call. It reads only the first ~2 min,
+CGo, same pattern as the `ffprobe` call beside it. An embedder with nowhere to
+put a binary supplies its own implementation instead (`app.WithMediaTools`,
+`embedding.md` §"Analysis an embedder brings itself"); everything below is
+written about fpcalc because that is what a server runs, and reads the same
+either way. It reads only the first ~2 min,
 downsamples to a chromagram (12 pitch classes over time), and emits a compact
 int-array fingerprint. Because it is coarse and pitch-based, it is **robust to
 re-encoding**: FLAC and 128 kbps MP3 of one master fingerprint nearly

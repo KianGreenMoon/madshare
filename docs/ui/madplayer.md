@@ -710,9 +710,13 @@ but those rows belong to the `/madnetwork` page, which browses *other nodes'*
 catalogs — madplayer merges each server's **ordinary** library, and an ordinary
 track row carries no holders. If nobody holds it, or the fetch fails, or the
 device has no vouch from that server yet, the level-1 download is still there and
-still correct; 2b adds a faster path, it does not remove the one that works. This
-is also the answer to "what happens on a phone with no fpcalc": that build never
-reaches this paragraph, and everything else still runs.
+still correct; 2b adds a faster path, it does not remove the one that works.
+
+This used to carry a second answer — "what happens on a phone with no fpcalc" —
+whose answer was that such a build never reached this paragraph at all. Since
+2026-08-15 the client fingerprints in its own process, so a phone reaches the
+mesh like anything else and the question is retired. The requirement it was
+about is not: a node still may not federate unless it can fingerprint.
 
 **Measured 2026-08-09, and not yet good enough to hand to anybody.** Against a
 live server over the public yggdrasil overlay, the relay delivered a 20 MB track

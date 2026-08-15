@@ -536,14 +536,20 @@ Four decisions inside the endpoint (built 2026-08-09):
   is a **200 with empty lists**, which is the honest answer for a node that was
   itself only ever reached over the mesh.
 
-**fpcalc stays required** on a player, exactly as on a server (decided
+**Fingerprinting stays required** on a player, exactly as on a server (decided
 2026-08-09). The startup gate is not relaxed and the player does not set
-`allow_missing_fingerprinting`. The consequence is stated rather than hidden: a
-device that seeds is re-distributing audio, and an install without fpcalc cannot
-join what it fetched to what it already holds. The cost lands on **Android**,
-where fpcalc is not a package one installs — the mesh does not come up there
-until a Chromaprint build ships with the app, and until then that platform is
-level 1.
+`allow_missing_fingerprinting`. The reason is that a device which seeds is
+re-distributing audio, and an install that cannot fingerprint cannot join what
+it fetched to what it already holds.
+
+The cost used to land on **Android**, where fpcalc is not a package one
+installs, and the note here said the mesh would not come up there until a
+Chromaprint build shipped with the app. It shipped (madplayer, 2026-08-15):
+the client computes Chromaprint in its own process and hands it to
+`app.WithMediaTools`, so the requirement is met on every platform rather than
+waived on one. What made that viable is that this is a *comparison* threshold
+and not an equality test — see `embedding.md` §"Analysis an embedder brings
+itself" for the obligation an implementation takes on.
 
 **What this buys over the relay**, which is worth stating because level 1
 already plays network content through `GET /api/madnetwork/stream/{hash}` and
