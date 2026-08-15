@@ -35,6 +35,25 @@ func (h *handler) federationStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// federationUnderlay handles GET /api/admin/federation/underlay: the yggdrasil
+// transport's peering states — which underlay links are up, since when, and
+// what the last connection error was. The peer cards answer who this node
+// trusts; this answers whether the wire under all of them is carrying anything,
+// which is the first question of every "the mesh feels down" report (a friend
+// can be unreachable while every peering here is up — their problem; when these
+// are down, everything is).
+func (h *handler) federationUnderlay(w http.ResponseWriter, r *http.Request) {
+	if h.federation == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "federation is not enabled"})
+		return
+	}
+	peers := h.federation.UnderlayPeers()
+	if peers == nil {
+		peers = []federation.UnderlayPeer{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "peers": peers})
+}
+
 // federationPeers handles GET /api/admin/federation/peers: the trusted-peer
 // table, friends first (see database.ListFederationPeers), with derived mesh
 // addresses.

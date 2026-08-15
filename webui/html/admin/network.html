@@ -36,6 +36,15 @@
 
     <div class="net-inbound-warn" id="inboundWarn" hidden></div>
 
+    <!-- Subtabs: Network (trust: card, friends, map) · Underlay (the transport's
+         own links, read-only). Hidden until a running node confirms itself. -->
+    <nav class="subtabs" id="networkSubtabs" role="tablist" aria-label="Network views" hidden>
+      <button class="subtab is-active" id="tabBtnNetwork" role="tab" aria-selected="true" type="button">Network</button>
+      <button class="subtab" id="tabBtnUnderlay" role="tab" aria-selected="false" type="button">Underlay</button>
+    </nav>
+
+    <div id="tabNetwork">
+
     <!-- This node -->
     <div class="net-self" id="selfPanel" hidden>
       <h3 class="net-subhead">This node</h3>
@@ -142,6 +151,22 @@
         <li><span class="map-dot is-marked"></span>Distrusted by someone</li>
       </ul>
     </section>
+
+    </div><!-- /tabNetwork -->
+
+    <!-- Underlay: the yggdrasil transport's own peerings (read-only). -->
+    <div id="tabUnderlay" hidden>
+      <h3 class="net-subhead">Underlay peerings</h3>
+      <p class="section-copy">
+        The yggdrasil links this node dials or accepts &mdash; the wire under
+        the madnetwork. A friend can be unreachable while every link here is up
+        (that is <em>their</em> outage); when these are down, everything is.
+        A dropped link redials on a growing backoff, and a failed madnetwork
+        fetch kicks it to retry immediately.
+      </p>
+      <p class="ul-summary" id="underlaySummary" aria-live="polite"></p>
+      <div class="ul-list" id="underlayList" aria-live="polite"></div>
+    </div>
   </section>
 </main>
 

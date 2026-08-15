@@ -389,6 +389,10 @@ func (n *Node) Stop() {
 // it can still serve its own [[listen_mesh]] listeners on the same address.
 func (n *Node) Mesh() *Mesh { return n.mesh }
 
+// UnderlayPeers reports the transport's peering states (Mesh.UnderlayPeers) —
+// the read-only diagnosis surface behind /admin/network's underlay panel.
+func (n *Node) UnderlayPeers() []UnderlayPeer { return n.mesh.UnderlayPeers() }
+
 // Address returns the node's self-certifying mesh IPv6 address (200::/7).
 func (n *Node) Address() net.IP { return n.mesh.Address() }
 

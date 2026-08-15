@@ -57,7 +57,14 @@
 - **Admin surface:** `/admin/network` (own card, import form, peer list with
   accept/block/unblock/remove/rename/guest-only demotion; pending-request badge on the
   dashboard; the F6 network map) over `/api/admin/federation*`, all gated
-  `federation.manage`.
+  `federation.manage`. Two subtabs since 2026-08-15: **Network** (all of the
+  above) and **Underlay** (`#underlay`) — the yggdrasil TRANSPORT's own peering
+  states (up/down, uptime, last dial error, traffic; read-only, polled while
+  open) via `GET /api/admin/federation/underlay` → `Node.UnderlayPeers()` →
+  `core.GetPeers()`. It exists because the embedded core has no `yggdrasilctl`
+  socket, so "which link is down, since when, with what error" was invisible
+  exactly during a mesh outage; the trust table answers who we trust, this
+  answers whether the wire under all of them carries anything.
 
 ### The trust graph is a graph (built 2026-07-31)
 

@@ -4,7 +4,7 @@
 // guest-only demotion). Gated on federation.manage (the API enforces it). Pairing is
 // asynchronous — the page polls while anything is pending so state flips appear
 // without a reload. Design: docs/architecture/federation-trust.md.
-import { bootAdmin, API, toast, handleAuthError, el } from './shared.js';
+import { bootAdmin, API, toast, handleAuthError, el, fmtBytes } from './shared.js';
 import { initMap, loadMap, focusKey } from './network-map.js';
 import { copyText, selectElementText } from '../clipboard.js';
 
@@ -18,6 +18,14 @@ const cardInput    = document.getElementById('cardInput');
 const importBtn    = document.getElementById('importBtn');
 const peersHeading = document.getElementById('peersHeading');
 const peersList    = document.getElementById('peersList');
+
+const subtabBar       = document.getElementById('networkSubtabs');
+const tabBtnNetwork   = document.getElementById('tabBtnNetwork');
+const tabBtnUnderlay  = document.getElementById('tabBtnUnderlay');
+const tabNetwork      = document.getElementById('tabNetwork');
+const tabUnderlay     = document.getElementById('tabUnderlay');
+const underlaySummary = document.getElementById('underlaySummary');
+const underlayList    = document.getElementById('underlayList');
 
 const cfModal   = document.getElementById('cfModal');
 const cfTitle   = document.getElementById('cfModalTitle');
@@ -95,6 +103,93 @@ async function loadPeers() {
 
 function startPolling() { if (!pollTimer) pollTimer = setInterval(loadPeers, POLL_MS); }
 function stopPolling()  { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+
+// ── Subtabs: Network · Underlay ───────────────────────────────────────────────
+// Hash-routed (#underlay), so the state survives a reload and can be linked.
+// The #node=<key> deep link keeps meaning the Network tab (the map lives there).
+
+function showTab(name) {
+  const underlay = name === 'underlay';
+  tabNetwork.hidden  = underlay;
+  tabUnderlay.hidden = !underlay;
+  tabBtnNetwork.classList.toggle('is-active', !underlay);
+  tabBtnUnderlay.classList.toggle('is-active', underlay);
+  tabBtnNetwork.setAttribute('aria-selected', String(!underlay));
+  tabBtnUnderlay.setAttribute('aria-selected', String(underlay));
+  if (underlay) startUnderlay(); else stopUnderlay();
+}
+tabBtnNetwork.addEventListener('click', () => {
+  if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+  showTab('network');
+});
+tabBtnUnderlay.addEventListener('click', () => {
+  history.replaceState(null, '', '#underlay');
+  showTab('underlay');
+});
+
+// ── Underlay peerings (read-only; GET /api/admin/federation/underlay) ─────────
+// Polled only while the tab is open — the states move (uptime, rates, a redial
+// landing), and watching a link come back is the point of the panel.
+
+const UNDERLAY_POLL_MS = 8000;
+let underlayTimer = null;
+function startUnderlay() { if (!underlayTimer) { loadUnderlay(); underlayTimer = setInterval(loadUnderlay, UNDERLAY_POLL_MS); } }
+function stopUnderlay()  { if (underlayTimer) { clearInterval(underlayTimer); underlayTimer = null; } }
+
+async function loadUnderlay() {
+  let data;
+  try {
+    const res = await fetch(`${API}/api/admin/federation/underlay`);
+    if (handleAuthError(res)) return;
+    data = await res.json().catch(() => ({}));
+    if (!res.ok) { toast(data.error || `Could not load underlay peerings (HTTP ${res.status}).`, 'error'); stopUnderlay(); return; }
+  } catch (err) { toast(`Could not load underlay peerings: ${err.message}`, 'error'); stopUnderlay(); return; }
+  renderUnderlay(data.peers || []);
+}
+
+function fmtDur(s) {
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`;
+}
+
+function renderUnderlay(peers) {
+  const down = peers.filter(p => !p.up).length;
+  underlaySummary.textContent = peers.length ? `${peers.length - down} up · ${down} down` : '';
+  underlaySummary.classList.toggle('is-down', down > 0);
+  if (!peers.length) {
+    underlayList.replaceChildren(el('p', { class: 'net-empty', text: 'No peerings — this node has no configured peers, and nobody has dialled in.' }));
+    return;
+  }
+  underlayList.replaceChildren(...peers.map(renderUnderlayPeer));
+}
+
+function renderUnderlayPeer(p) {
+  const meta = [];
+  if (p.up) {
+    meta.push(`up ${fmtDur(p.uptime_sec || 0)}`);
+    if (p.latency_ms) meta.push(`${p.latency_ms.toFixed(1)} ms`);
+  } else if (p.last_error) {
+    meta.push(`failed ${fmtDur(p.last_error_age_sec || 0)} ago`);
+  } else {
+    meta.push('down');
+  }
+  meta.push(`↓ ${fmtBytes(p.rx_bytes || 0)}${p.rx_rate ? ` (${fmtBytes(p.rx_rate)}/s)` : ''}`);
+  meta.push(`↑ ${fmtBytes(p.tx_bytes || 0)}${p.tx_rate ? ` (${fmtBytes(p.tx_rate)}/s)` : ''}`);
+
+  const rows = [
+    el('div', { class: 'ul-head' }, [
+      el('span', { class: 'ul-badge ' + (p.up ? 'is-up' : 'is-off'), text: p.up ? 'up' : 'down' }),
+      el('span', { class: 'ul-badge', text: p.inbound ? 'in' : 'out' }),
+      el('code', { class: 'ul-uri', text: p.uri || '(unnamed link)' }),
+    ]),
+    el('div', { class: 'ul-meta', text: meta.join(' · ') }),
+  ];
+  if (!p.up && p.last_error) rows.push(el('div', { class: 'ul-err', text: p.last_error }));
+  if (p.key) rows.push(el('div', { class: 'ul-meta' }, [ 'peer key ', el('code', { text: short(p.key, 16) }) ]));
+  return el('div', { class: 'ul-row' + (p.up ? '' : ' is-down') }, rows);
+}
 
 // Contradicted identity claims (federation F6): findings this node made by
 // checking a peer's advertised fingerprints against bytes it holds itself. They
@@ -731,12 +826,21 @@ function confirmModal({ title, bodyNodes, confirmLabel, danger = true }) {
 (async function boot() {
   if (!await bootAdmin({ require: 'federation.manage' })) return;
   if (!await loadStatus()) return;
+  subtabBar.hidden = false;
   await loadPeers();
   initMap({ onBlockNode: blockMapNode, onFriendNode: friendMapNode, onPullNode: pullMapNode });
   await loadMap();
-  await focusFromHash();
-  window.addEventListener('hashchange', focusFromHash);
+  await routeHash();
+  window.addEventListener('hashchange', routeHash);
 })();
+
+// routeHash lands the page on the tab the hash names: #underlay is the Underlay
+// tab; everything else (including #node=<key> deep links) is the Network tab.
+async function routeHash() {
+  if (location.hash === '#underlay') { showTab('underlay'); return; }
+  showTab('network');
+  await focusFromHash();
+}
 
 // focusFromHash lands a `#node=<key>` link on that node: selected, centred, with
 // the view expanded if it sits past the current radius. The madnetwork library's

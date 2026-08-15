@@ -470,3 +470,36 @@
 }
 .map-path-chain { color: var(--text); word-break: break-word; }
 .map-path-len   { margin-left: auto; flex-shrink: 0; color: var(--text-muted); font-size: 0.72rem; }
+
+/* ── Underlay peerings (the Underlay subtab) ────────────────────────────────── */
+/* Read-only rows, one per yggdrasil link. Same badge language as the peer
+   cards, but its own classes: "up/down" is a wire fact, not a trust state. */
+.ul-summary { color: var(--text-muted); font-size: 0.85rem; margin: 0 0 var(--space-3); }
+.ul-summary.is-down { color: var(--error); }
+.ul-list { display: flex; flex-direction: column; gap: var(--space-2); }
+.ul-row {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--success);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface);
+}
+.ul-row.is-down { border-left-color: var(--error); }
+.ul-head { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.ul-uri  { word-break: break-all; }
+.ul-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.ul-badge.is-up  { color: var(--success); border-color: var(--success); }
+.ul-badge.is-off { color: var(--error); border-color: var(--error); }
+.ul-meta { color: var(--text-muted); font-size: 0.8rem; margin-top: var(--space-1); word-break: break-word; }
+.ul-err  { color: var(--error); font-size: 0.8rem; margin-top: var(--space-1); word-break: break-word; }

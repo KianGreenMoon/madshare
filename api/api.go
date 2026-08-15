@@ -305,6 +305,10 @@ type FederationNode interface {
 	// false makes the merged browse fail open (stop hiding unreachable friends)
 	// rather than blank the view (docs/architecture/federation.md §Availability).
 	InboundHealthy() bool
+	// UnderlayPeers is the yggdrasil TRANSPORT's own peering states — up/down,
+	// uptime, last dial error, traffic — read-only diagnosis for /admin/network's
+	// Underlay tab, because the embedded core has no yggdrasilctl socket.
+	UnderlayPeers() []federation.UnderlayPeer
 }
 
 // protect returns middleware enforcing perm, but only when auth is configured
@@ -664,6 +668,7 @@ func RegisterAdmin(r chi.Router, d Deps) {
 		r.With(fedManage).Post("/federation/peers/{peerID}/accept", h.federationPeerAccept)
 		r.With(fedManage).Post("/federation/peers/{peerID}/block", h.federationPeerBlock)
 		r.With(fedManage).Post("/federation/block", h.federationBlockKey)
+		r.With(fedManage).Get("/federation/underlay", h.federationUnderlay)
 		r.With(fedManage).Get("/federation/graph", h.federationGraph)
 		r.With(fedManage).Get("/federation/graph/find", h.federationGraphFind)
 		r.With(fedManage).Get("/federation/graph/paths", h.federationGraphPaths)

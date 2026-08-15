@@ -1133,6 +1133,29 @@ type Intervals struct {
 // WithIntervals overrides the background cadences (zero fields keep defaults).
 func WithIntervals(iv Intervals) Option { return func(o *nodeOptions) { o.intervals = iv } }
 
+// UnderlayPeer describes one yggdrasil peering of the embedded core — the
+// TRANSPORT's links, not madnetwork's trust table. Surfaced because the
+// embedded core has no yggdrasilctl admin socket, so "which peering is down,
+// since when, with what error" was otherwise invisible exactly when an admin
+// needs it (a mesh outage; the 2026-08-15 tester incident took rounds of
+// guessing that one glance here would have settled). Read-only by design.
+type UnderlayPeer struct {
+	URI     string `json:"uri"`
+	Up      bool   `json:"up"`
+	Inbound bool   `json:"inbound"`
+	// Key is the remote node's public key (hex), known only while the
+	// connection is up — a down peering knows nothing but its URI.
+	Key             string  `json:"key,omitempty"`
+	UptimeSec       int64   `json:"uptime_sec,omitempty"`
+	LastError       string  `json:"last_error,omitempty"`
+	LastErrorAgeSec int64   `json:"last_error_age_sec,omitempty"`
+	RxBytes         uint64  `json:"rx_bytes"`
+	TxBytes         uint64  `json:"tx_bytes"`
+	RxRate          uint64  `json:"rx_rate"` // bytes/sec, the core's rolling rate
+	TxRate          uint64  `json:"tx_rate"`
+	LatencyMs       float64 `json:"latency_ms,omitempty"`
+}
+
 // Timeouts overrides the deadlines on the protocol and transfer paths. A zero
 // field keeps the built-in default.
 //

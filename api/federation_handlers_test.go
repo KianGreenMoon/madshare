@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -57,6 +58,8 @@ type fakeFederation struct {
 	// bearer key, and the guest bit the caller's account earned.
 	tokenBearer    string
 	tokenGuestOnly bool
+	// The transport's peering states the underlay endpoint reports verbatim.
+	underlay []federation.UnderlayPeer
 }
 
 // federationTestTokenTTL is only how far ahead the fake stamps an expiry; the
@@ -135,8 +138,9 @@ func (f *fakeFederation) IssueCapabilityToken(bearerKey string, guestOnly bool) 
 		ExpiresAt: time.Now().Add(federationTestTokenTTL),
 	}, nil
 }
-func (f *fakeFederation) InboundHealthy() bool                    { return !f.inboundDead }
-func (f *fakeFederation) AcceptPeer(context.Context, int64) error { return f.opErr }
+func (f *fakeFederation) InboundHealthy() bool                     { return !f.inboundDead }
+func (f *fakeFederation) UnderlayPeers() []federation.UnderlayPeer { return f.underlay }
+func (f *fakeFederation) AcceptPeer(context.Context, int64) error  { return f.opErr }
 func (f *fakeFederation) BlockPeer(_ context.Context, _ int64, reason string) error {
 	f.blockReason = reason
 	return f.opErr
@@ -236,6 +240,52 @@ func TestFederationEndpoints_Disabled(t *testing.T) {
 		if resp.StatusCode != http.StatusServiceUnavailable {
 			t.Errorf("%s %s = %d, want 503 when federation is off", probe.method, probe.path, resp.StatusCode)
 		}
+	}
+}
+
+// TestFederationUnderlay pins the HTTP mapping of the underlay panel: the
+// node's peering states pass through verbatim, an empty transport answers an
+// empty list (not null), and a disabled node answers 503 like every other
+// federation surface.
+func TestFederationUnderlay(t *testing.T) {
+	fed := &fakeFederation{underlay: []federation.UnderlayPeer{
+		{URI: "tls://peer.example:12345", Up: false, LastError: "connection refused", LastErrorAgeSec: 41},
+		{URI: "wss://other.example:443", Up: true, Inbound: false, UptimeSec: 7300, RxBytes: 1 << 20, TxBytes: 2 << 10, LatencyMs: 1.5},
+	}}
+	srv := newFederationTestServer(t, fed)
+
+	resp, err := http.Get(srv.URL + "/api/admin/federation/underlay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		OK    bool                      `json:"ok"`
+		Peers []federation.UnderlayPeer `json:"peers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || !body.OK || len(body.Peers) != 2 {
+		t.Fatalf("underlay = %d ok=%v peers=%d, want 200 ok 2 peers", resp.StatusCode, body.OK, len(body.Peers))
+	}
+	if body.Peers[0].URI != "tls://peer.example:12345" || body.Peers[0].Up || body.Peers[0].LastError != "connection refused" {
+		t.Errorf("down peering did not pass through: %+v", body.Peers[0])
+	}
+	if !body.Peers[1].Up || body.Peers[1].UptimeSec != 7300 {
+		t.Errorf("up peering did not pass through: %+v", body.Peers[1])
+	}
+
+	// nil from the node = empty list on the wire, so the page always gets an array.
+	fed.underlay = nil
+	resp2, err := http.Get(srv.URL + "/api/admin/federation/underlay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	raw, _ := io.ReadAll(resp2.Body)
+	if !strings.Contains(string(raw), `"peers":[]`) {
+		t.Errorf("empty transport answered %s, want \"peers\":[]", raw)
 	}
 }
 

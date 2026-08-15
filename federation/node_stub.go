@@ -59,8 +59,11 @@ func (n *Node) Address() net.IP      { return nil }
 func (n *Node) PublicKeyHex() string { return "" }
 func (n *Node) Name() string         { return "" }
 func (n *Node) Info() NodeInfo       { return NodeInfo{} }
-func (n *Node) Nudge()               {}
-func (n *Node) InboundHealthy() bool { return true }
+
+func (m *Mesh) UnderlayPeers() []UnderlayPeer { return nil }
+func (n *Node) UnderlayPeers() []UnderlayPeer { return nil }
+func (n *Node) Nudge()                        {}
+func (n *Node) InboundHealthy() bool          { return true }
 
 func (n *Node) DialContext(context.Context, string, string) (net.Conn, error) {
 	return nil, errCompiledOut

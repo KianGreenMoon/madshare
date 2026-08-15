@@ -13,8 +13,10 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/yggdrasil-network/yggdrasil-go/src/core"
 	"github.com/yggdrasil-network/yggdrasil-go/src/multicast"
@@ -243,6 +245,46 @@ func (m *Mesh) KickPeers() {
 			m.logger.Printf("federation: kick peer %q: %v", p, err)
 		}
 	}
+}
+
+// UnderlayPeers reports the state of every yggdrasil peering the core holds —
+// configured outbound links (up or backing off), accepted inbound ones, and
+// multicast discoveries alike. Down links sort first: they are what the panel
+// reading this exists to show.
+func (m *Mesh) UnderlayPeers() []UnderlayPeer {
+	infos := m.core.GetPeers()
+	now := time.Now()
+	out := make([]UnderlayPeer, 0, len(infos))
+	for _, p := range infos {
+		up := UnderlayPeer{
+			URI:     p.URI,
+			Up:      p.Up,
+			Inbound: p.Inbound,
+			RxBytes: p.RXBytes,
+			TxBytes: p.TXBytes,
+			RxRate:  p.RXRate,
+			TxRate:  p.TXRate,
+		}
+		if len(p.Key) > 0 {
+			up.Key = hex.EncodeToString(p.Key)
+		}
+		if p.Up {
+			up.UptimeSec = int64(p.Uptime / time.Second)
+			up.LatencyMs = float64(p.Latency) / float64(time.Millisecond)
+		}
+		if p.LastError != nil {
+			up.LastError = p.LastError.Error()
+			up.LastErrorAgeSec = int64(now.Sub(p.LastErrorTime) / time.Second)
+		}
+		out = append(out, up)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Up != out[j].Up {
+			return !out[i].Up
+		}
+		return out[i].URI < out[j].URI
+	})
+	return out
 }
 
 // Address returns this node's yggdrasil address (200::/7), derived from its
