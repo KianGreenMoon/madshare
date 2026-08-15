@@ -766,6 +766,53 @@ the browse; the new `PeerStore` method means `go vet -tags tests
 the browse and lanes (SQL), the node strip, the ⓘ holder list, the F8 match
 arm and the upgrades page.
 
+### The underlay kick (built 2026-08-15)
+
+The down-mark reads a connect-class failure as evidence about the *remote*
+node. The kick reads the same failure in the other direction: if any of our
+own configured peerings is currently down, this is the moment to redial it —
+somebody just wanted the mesh and did not get it.
+
+The gap it closes is not madshare's. yggdrasil redials a lost peering on a
+backoff that doubles per failed attempt and caps, by default, at over an hour
+(`core/link.go` `defaultBackoffLimit`), and a netstack dial never touches that
+schedule. Measured (`federation/dialrecovery_measure_test.go`, the 2026-08-15
+tester report run as a scenario): after a 90 s outage, every fetch kept
+failing for another **38 s after the link was physically back** — 19 fresh
+attempts, none of which could shorten the wait, because pressing Play dials
+*through* the mesh, not *at* the peering. The result was a track reading "not
+found" for minutes while the network was fine.
+
+Mechanism: `Node.kickUnderlay()` fires from both connect-class funnels
+(`observeReply`/`observeControl`, reachability.go), throttled to one kick per
+`Intervals.Kick` (default 10 s), and calls `Mesh.KickPeers()` — which
+re-offers every peer the Mesh was given (config plus runtime `AddPeer`s) to
+the core. For a link in backoff that is yggdrasil's own kick channel and an
+immediate redial; for a healthy link it is a structural no-op (nothing listens
+on a connected link's kick channel, and the send never blocks), which is what
+makes firing on *every* connect-class failure safe.
+
+Three deliberate choices:
+
+- **The down-mark's relative guard is not consulted.** The guard separates
+  "evidence about them" from "evidence about us" — and the kick is most
+  valuable precisely in the about-us case, when everything is failing because
+  our own uplink is the peering in backoff. Opposite polarity, same trigger.
+- **The throttle sits above yggdrasil's floor.** 10 s against the 5 s
+  `minimumBackoffLimit` that bounds the `?maxbackoff=` URI parameter, so
+  demand-driven dialling is never more aggressive than the most aggressive
+  schedule an operator could configure by hand.
+- **KickPeers keeps its own peer list** rather than reading `core.GetPeers()`:
+  a multicast-discovered link is keyed by (URI, source interface) and
+  `PeerInfo` does not carry the interface, so re-adding it from there would
+  mint a second, interface-less link instead of kicking the one that exists.
+  The list holds exactly the peers that were added with no interface — the
+  shape a re-add matches.
+
+The `?maxbackoff=` URI parameter remains the operator-side complement (it
+caps the schedule itself; the kick only skips a wait when there is demand),
+and it works in `madshare.toml` today — peer URIs pass to the core verbatim.
+
 ## Quality upgrades (F8, designed and built 2026-08-02)
 
 Every phase up to here was about *reaching* other libraries. F8 is about what

@@ -240,3 +240,77 @@ func sourcesByID(t *testing.T, ms *memStore) map[int64]*ExternalNode {
 	}
 	return out
 }
+
+// ── The underlay kick ────────────────────────────────────────────────────────
+//
+// A connect-class failure also asks the transport to redial its down peerings
+// (kickUnderlay → Mesh.KickPeers), because yggdrasil's redial backoff — not
+// anything madshare holds — is what keeps a hash unfetchable after a link
+// outage ends (measured in dialrecovery_measure_test.go: ~38 s past the heal
+// after a 90 s outage). These pin the trigger and the throttle; the transport
+// half is a non-blocking channel send inside yggdrasil and needs no test here.
+
+func meshDialErr() error { return fmt.Errorf("%w: no route to this node", errMeshDial) }
+
+// TestKickFiresOnConnectClassFailureOnly: a dial that never connected kicks,
+// once per throttle window; an HTTP-level failure, a success, and a dial we
+// cancelled ourselves never do — the same classification connectFailure gives
+// the down-mark, read for the opposite purpose.
+func TestKickFiresOnConnectClassFailureOnly(t *testing.T) {
+	n := downMarkNode(newMemStore(), meshDown{})
+	kicks := 0
+	n.kickPeers = func() { kicks++ }
+
+	n.observeControl(hexKey("b"), meshDialErr())
+	if kicks != 1 {
+		t.Fatalf("connect-class failure fired %d kicks, want 1", kicks)
+	}
+
+	// Inside the throttle window a second failure is absorbed — demand may not
+	// dial a dead peer harder than Intervals.Kick allows.
+	n.observeControl(hexKey("c"), meshDialErr())
+	if kicks != 1 {
+		t.Errorf("second failure inside the throttle window kicked again (%d kicks)", kicks)
+	}
+
+	// Past the window it fires again. The clock is moved by hand — a sleep here
+	// would couple the test to the production 10 s.
+	n.kickedAt.Store(time.Now().Add(-2 * n.intervals.Kick).UnixNano())
+	n.observeControl(hexKey("b"), meshDialErr())
+	if kicks != 2 {
+		t.Errorf("failure past the throttle window did not kick (%d kicks, want 2)", kicks)
+	}
+
+	// Non-connect outcomes never kick: an HTTP answer is proof the mesh works,
+	// and a success obviously so.
+	n.kickedAt.Store(0)
+	n.observeControl(hexKey("b"), errors.New("holder answered 429 Too Many Requests"))
+	n.observeControl(hexKey("b"), nil)
+	if kicks != 2 {
+		t.Errorf("a non-connect outcome kicked the underlay (%d kicks, want 2)", kicks)
+	}
+
+	// A dial WE cancelled is ours — same exclusion as the down-mark's.
+	n.observeControl(hexKey("b"), fmt.Errorf("%w: %w", errMeshDial, context.Canceled))
+	if kicks != 2 {
+		t.Errorf("a cancelled dial kicked the underlay (%d kicks, want 2)", kicks)
+	}
+}
+
+// TestKickReachesBothFunnels: the transfer funnel (observeReply) kicks exactly
+// as the control funnel does, and a node with no transport — kickPeers nil, the
+// narrow-test shape — survives the path instead of panicking.
+func TestKickReachesBothFunnels(t *testing.T) {
+	n := downMarkNode(newMemStore(), meshDown{})
+	kicks := 0
+	n.kickPeers = func() { kicks++ }
+
+	n.observeReply(&BlobProvider{PublicKey: hexKey("b")}, meshDialErr())
+	if kicks != 1 {
+		t.Fatalf("transfer-funnel connect failure fired %d kicks, want 1", kicks)
+	}
+
+	bare := downMarkNode(newMemStore(), meshDown{})
+	bare.observeReply(&BlobProvider{PublicKey: hexKey("b")}, meshDialErr())
+	bare.observeControl(hexKey("b"), meshDialErr()) // must not panic without a transport
+}

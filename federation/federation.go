@@ -1120,6 +1120,14 @@ type Intervals struct {
 	// while a node that just left loses it immediately, because a block is
 	// enforced at meshAuth off the peer table and never from this memo.
 	MembershipTTL time.Duration
+	// Kick is the minimum spacing between underlay kicks (reachability.go
+	// kickUnderlay): a connect-class fetch failure asks the transport to redial
+	// its down peerings NOW instead of waiting out yggdrasil's backoff, and this
+	// bounds how often demand may translate into a dial. Default 10 s — above
+	// yggdrasil's own 5 s minimum backoff floor, so a kicked peering is never
+	// dialled harder than the most aggressive backoff an operator could
+	// configure.
+	Kick time.Duration
 }
 
 // WithIntervals overrides the background cadences (zero fields keep defaults).
@@ -1190,6 +1198,9 @@ func (iv Intervals) withDefaults(d Intervals) Intervals {
 	}
 	if iv.MembershipTTL <= 0 {
 		iv.MembershipTTL = d.MembershipTTL
+	}
+	if iv.Kick <= 0 {
+		iv.Kick = d.Kick
 	}
 	return iv
 }

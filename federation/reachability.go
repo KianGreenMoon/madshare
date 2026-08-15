@@ -136,6 +136,47 @@ func (n *Node) observeUnreachable(key string) {
 	}
 }
 
+// kickUnderlay asks the transport to redial its down peerings now, throttled to
+// one kick per Intervals.Kick — the other thing a connect-class failure is
+// evidence of, read in the opposite direction from the down-mark.
+//
+// yggdrasil redials a lost peering on a backoff that doubles per failed attempt
+// and caps, by default, at over an hour (core/link.go defaultBackoffLimit), and
+// a netstack dial never touches that schedule — so after an outage every fetch
+// keeps failing until the redial timer happens to fire, measured at ~38 s past
+// the heal after a 90 s outage (dialrecovery_measure_test.go), and retrying
+// from above cannot shorten it. The kick is the missing edge: a fetch that
+// failed to connect is somebody wanting the mesh NOW, and Mesh.KickPeers turns
+// that demand into an immediate redial attempt.
+//
+// Three properties make it safe to fire on every connect-class failure, with
+// only the throttle as a limit:
+//
+//   - Kicking a healthy peering is a structural no-op (nothing listens on a
+//     connected link's kick channel, and the send never blocks), so a failure
+//     that is about the REMOTE node costs nothing here.
+//   - The down-mark's relative guard is deliberately NOT consulted: the guard
+//     asks "is this evidence about them or about us", and the kick is most
+//     valuable precisely when it is about us — everything failing is the one
+//     case where our own uplink is likely the peering in backoff.
+//   - The throttle (default 10 s) keeps demand-driven dials above yggdrasil's
+//     own 5 s minimum backoff floor, so a dead peer is never hammered harder
+//     than the most aggressive maxbackoff= an operator could write.
+func (n *Node) kickUnderlay() {
+	if n.kickPeers == nil {
+		return
+	}
+	now := time.Now().UnixNano()
+	last := n.kickedAt.Load()
+	if now-last < int64(n.intervals.Kick) {
+		return
+	}
+	if !n.kickedAt.CompareAndSwap(last, now) {
+		return // a concurrent failure just kicked
+	}
+	n.kickPeers()
+}
+
 // observeReply is the transfer path's funnel: what one request against a holder
 // said about that holder's reachability.
 //
@@ -154,6 +195,7 @@ func (n *Node) observeReply(p *BlobProvider, err error) {
 		return
 	}
 	if connectFailure(err) {
+		n.kickUnderlay()
 		n.observeUnreachable(p.PublicKey)
 	}
 }
@@ -174,6 +216,7 @@ func (n *Node) observeControl(key string, err error) {
 		return
 	}
 	if connectFailure(err) {
+		n.kickUnderlay()
 		n.observeUnreachable(key)
 	}
 }

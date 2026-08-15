@@ -161,6 +161,14 @@ type Node struct {
 	lastReplyKey string
 	floorPinged  map[string]time.Time
 
+	// The underlay kick (reachability.go kickUnderlay): kickPeers asks the
+	// transport to redial its down peerings now (Mesh.KickPeers), kickedAt
+	// (unix nanos) throttles it to one kick per Intervals.Kick. A func rather
+	// than a call through n.mesh so the narrow tests — which assemble a Node
+	// with no transport — can count kicks; nil = no transport = no kick.
+	kickPeers func()
+	kickedAt  atomic.Int64
+
 	// Friend-list gossip (F6, gossip_node.go). signKey is this node's ed25519
 	// private key — the same identity the mesh address derives from — used to
 	// sign the records it publishes, since a relayed record cannot lean on the
@@ -214,6 +222,9 @@ var (
 		GraphAccept:    time.Minute,
 		GraphDigestTTL: 30 * time.Second,
 		MembershipTTL:  time.Minute,
+		// Above yggdrasil's minimumBackoffLimit (5 s), so a kicked peering is
+		// never redialled harder than the floor its own knob allows.
+		Kick: 10 * time.Second,
 	}
 	// The frontier: four member catalogs per 15-minute cycle reaches ~16 new
 	// nodes an hour, which fills the cap in about half a day without ever
@@ -320,6 +331,7 @@ func Start(fc config.FederationConfig, store PeerStore, logger *log.Logger, opts
 	// gVisor). When it reports dead, the merged browse fails open rather than
 	// blanking the view (docs/architecture/federation.md §Availability).
 	n.readerAlive = mesh.InboundReaderAlive
+	n.kickPeers = mesh.KickPeers
 	// Apply the config caps up front so the very first request is limited by what
 	// the file says, without waiting for the first override refresh to resolve.
 	n.upRate.set(int64(fc.SeedRateKiB) * 1024)

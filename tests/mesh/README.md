@@ -482,9 +482,12 @@ Measured: `unreachable_at` lands on `d`'s row above its `last_seen`, `b` and
 empty. Without the mark that state would have lasted another ~40 minutes.
 
 Healing is the same fetch again: `last_seen` moves past the mark and everything
-returns, with no clearing step and no admin action. Allow ~1 minute after `heal`
-for the yggdrasil session to re-establish — the first retries fail on the dial
-and simply move the mark forward, which is the forward-only rule working.
+returns, with no clearing step and no admin action. The first retry after
+`heal` may still fail on the dial (moving the mark forward — the forward-only
+rule working), but it also kicks the underlay redial (federation.md
+§Availability "The underlay kick"), so recovery lands within the ~10 s kick
+throttle rather than waiting out yggdrasil's own backoff, which used to cost
+~1 minute here.
 
 **The other half of the guard is worth running too:** `meshlab partition a`
 — the observer itself. Every ping fails, and *nothing* is marked, because `a`

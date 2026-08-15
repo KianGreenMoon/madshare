@@ -14,6 +14,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/yggdrasil-network/yggdrasil-go/src/core"
 	"github.com/yggdrasil-network/yggdrasil-go/src/multicast"
@@ -47,6 +48,16 @@ type Mesh struct {
 	// multicast is local-network peer discovery, nil unless [yggdrasil].multicast
 	// asked for it and it started.
 	multicast *multicast.Multicast
+	// peers is every underlay peer this Mesh was asked to dial — the config list
+	// plus anything AddPeer added at runtime — kept so KickPeers can re-offer
+	// them. Deliberately NOT read back out of core.GetPeers(): a multicast-
+	// discovered link is keyed by (uri, source interface) and PeerInfo does not
+	// carry the interface, so re-adding it from there would mint a second,
+	// interface-less link instead of kicking the one that exists. This list only
+	// holds peers that were added with no source interface, which is exactly the
+	// shape a re-add matches.
+	peerMu sync.Mutex
+	peers  []string
 }
 
 // StartTransport loads (or creates) the node key and brings the yggdrasil core
@@ -82,6 +93,7 @@ func StartTransport(yc config.YggdrasilConfig, logger *log.Logger) (*Mesh, error
 		stack:   stack,
 		logger:  logger,
 		signKey: ed25519.PrivateKey(nodeCfg.PrivateKey),
+		peers:   append([]string(nil), yc.Peers...),
 	}
 	if yc.Multicast {
 		m.startMulticast()
@@ -185,7 +197,52 @@ func (m *Mesh) AddPeer(uri string) error {
 	if err := m.core.AddPeer(u, ""); err != nil && !errors.Is(err, core.ErrLinkAlreadyConfigured) {
 		return fmt.Errorf("federation: add peer %q: %w", uri, err)
 	}
+	m.rememberPeer(uri)
 	return nil
+}
+
+// rememberPeer records a peer URI for KickPeers, once.
+func (m *Mesh) rememberPeer(uri string) {
+	m.peerMu.Lock()
+	defer m.peerMu.Unlock()
+	for _, p := range m.peers {
+		if p == uri {
+			return
+		}
+	}
+	m.peers = append(m.peers, uri)
+}
+
+// KickPeers re-offers every known underlay peer to the core, which skips the
+// pending redial backoff on any that is currently down (core/link.go: an
+// AddPeer for an existing link does a non-blocking send on its kick channel)
+// and is a structural no-op on one that is connected (nothing listens on the
+// kick channel of a healthy link, and the send never blocks).
+//
+// It exists for one caller: the connect-class fetch-failure path
+// (Node.kickUnderlay). yggdrasil redials a lost peering on a backoff that
+// doubles per failure and is capped, by default, at over an hour — measured
+// (dialrecovery_measure_test.go): after a 90 s outage, dials keep failing for
+// another ~38 s after the network is physically back, and no amount of
+// retrying from above can shorten it, because a netstack dial never touches
+// the peering layer. A kick is that missing touch: user demand ("somebody
+// pressed Play and it failed") becomes an immediate redial attempt.
+func (m *Mesh) KickPeers() {
+	m.peerMu.Lock()
+	peers := append([]string(nil), m.peers...)
+	m.peerMu.Unlock()
+	for _, p := range peers {
+		u, err := url.Parse(p)
+		if err != nil {
+			continue // validated at startup; nothing a kick could do with it
+		}
+		// ErrLinkAlreadyConfigured is the expected answer (the link exists and
+		// was kicked); anything else is logged and skipped — a kick is
+		// best-effort by nature.
+		if err := m.core.AddPeer(u, ""); err != nil && !errors.Is(err, core.ErrLinkAlreadyConfigured) {
+			m.logger.Printf("federation: kick peer %q: %v", p, err)
+		}
+	}
 }
 
 // Address returns this node's yggdrasil address (200::/7), derived from its
