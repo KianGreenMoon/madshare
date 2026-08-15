@@ -704,13 +704,40 @@ broken — it is a level-1 client, which is a working program.
 
 **Playing network content prefers the swarm and falls back to the relay.** Built
 2026-08-09. The holders come from `GET /api/madnetwork/holders/{hash}`, and on
-this client that is the **only** source rather than the fallback: an earlier
-revision named the browse row's own `versions[].holders[].key` as the cheap path,
-but those rows belong to the `/madnetwork` page, which browses *other nodes'*
-catalogs — madplayer merges each server's **ordinary** library, and an ordinary
-track row carries no holders. If nobody holds it, or the fetch fails, or the
-device has no vouch from that server yet, the level-1 download is still there and
-still correct; 2b adds a faster path, it does not remove the one that works.
+this client that is the **only** source rather than the fallback. If nobody holds
+it, or the fetch fails, or the device has no vouch from that server yet, the
+level-1 download is still there and still correct; 2b adds a faster path, it does
+not remove the one that works.
+
+**Except for madnetwork rows, where the swarm is the whole path** (owner's call,
+2026-08-15, when the browse half below was built). Those rows are *other people's*
+content, and the fallback for them would be `GET /api/madnetwork/stream/{hash}` —
+a **cache-through relay**, which makes the home server fetch and keep audio
+nobody asked it to hold, as a side effect of somebody browsing from a phone. So
+for a track whose only copies are on the mesh there is no relay: a failure is
+reported, with its reason, rather than answered by a download through the server.
+Every other kind of track keeps the fallback unchanged.
+
+**The player browses the madnetwork too** (built 2026-08-15; until then only the
+first half of "that server's library plus madnetwork through it" existed). It
+merges a THIRD kind of source — `/api/madnetwork/{artists,albums,tracks,search}`
+through each signed-in server — into the same list as the device and the
+servers, with *Only local* as the one narrowing. Two consequences for anybody
+reading the client:
+
+- A madnetwork row now DOES carry `versions[].holders[]`, and the client still
+  ignores them: an ordinary library row has none, so the endpoint is needed
+  regardless, and a browse row is as old as the screen it is on while the
+  endpoint applies the stale-holder window a fetch plan depends on.
+- The merged catalogue has no id space, so those rows are addressed by NAME
+  (`?artist=`/`?album=`), which is why the client's `Origin` carries a ref as
+  well as an id.
+
+A listener node cannot assemble that view itself, and the reason is the access
+model rather than an omission: catalogs are pulled between friends, a listener
+node has none, and its capability token buys bytes from strangers rather than
+their catalogues. The server it signed in to legitimately has the merged view;
+the holders legitimately have the bytes. That split is the whole shape.
 
 This used to carry a second answer — "what happens on a phone with no fpcalc" —
 whose answer was that such a build never reached this paragraph at all. Since
