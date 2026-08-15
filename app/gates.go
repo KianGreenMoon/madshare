@@ -19,7 +19,7 @@ import (
 // ENVIRONMENT gate says the host is missing a tool the config's promises depend
 // on. Both are fatal to startup; neither is a config-file syntax error, which is
 // why config.Load cannot make these checks itself.
-func checkGates(cfg config.Config, lg *log.Logger) error {
+func checkGates(cfg config.Config, lg *log.Logger, tools media.Tools) error {
 	// A listener may only serve the web UI if it is compiled in.
 	for idx, l := range cfg.Listen {
 		if l.Serves(config.GroupWebUI) && !webui.Available {
@@ -50,25 +50,31 @@ func checkGates(cfg config.Config, lg *log.Logger) error {
 	// Environment gate, same class as the one above: federation is enabled but
 	// this host cannot do it correctly.
 	if cfg.Federation.Enabled {
-		if err := requireFingerprinting(cfg, lg); err != nil {
+		if err := requireFingerprinting(cfg, lg, tools); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// requireFingerprinting refuses to bring up a federated node on a host without
-// fpcalc, unless [federation].allow_missing_fingerprinting says otherwise. It is
-// the one analysis tool federation cannot do without — the reasoning, including
-// why ffprobe is deliberately not gated the same way, is on
+// requireFingerprinting refuses to bring up a federated node that cannot
+// fingerprint, unless [federation].allow_missing_fingerprinting says otherwise.
+// It is the one analysis pass federation cannot do without — the reasoning,
+// including why ffprobe is deliberately not gated the same way, is on
 // config.FederationConfig.AllowMissingFingerprinting.
 //
-// A PATH lookup is the whole check, on purpose: a binary that is present but
-// broken shows up per analysis job, where the failure is recoverable and
-// visible, and probing it here would only add a startup dependency on running
-// somebody else's code.
-func requireFingerprinting(cfg config.Config, lg *log.Logger) error {
-	if _, haveFpcalc := media.ToolStatus(); haveFpcalc {
+// Asking the tools is the whole check, on purpose: an implementation that is
+// present but broken shows up per analysis job, where the failure is
+// recoverable and visible, and probing it here would only add a startup
+// dependency on running somebody else's code.
+//
+// An embedder that fingerprints in-process (app.WithMediaTools) satisfies this
+// gate the same way a server with fpcalc on PATH does. The requirement is that
+// downloaded audio gets re-fingerprinted locally, not that a particular binary
+// exists — which is why the refusal below names the binary only in its install
+// hint, the case where PATH is in fact the answer.
+func requireFingerprinting(cfg config.Config, lg *log.Logger, tools media.Tools) error {
+	if _, haveFpcalc := tools.Available(); haveFpcalc {
 		return nil
 	}
 	if cfg.Federation.AllowMissingFingerprinting {

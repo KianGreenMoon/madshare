@@ -78,6 +78,56 @@ func DecodeFingerprint(b []byte) []uint32 {
 	return out
 }
 
+// Tools is the ingest analysis a node can perform on an audio file: the tech
+// columns and the acoustic fingerprint. A server gets both by running ffprobe
+// and fpcalc, which is what ExecTools does and what everything here has always
+// meant.
+//
+// It is an interface because "run the binary on PATH" is a fact about a SERVER,
+// not about analysis. An embedder can be somewhere with no PATH to install onto
+// and no way to execute what it ships — Android refuses to run anything the app
+// wrote, and the app is a library inside somebody else's process, so there is
+// not even a self to re-exec. Everything downstream is dead there: no tech
+// columns, no fingerprints, and therefore no federation, since a node that
+// cannot fingerprint must not redistribute audio. Such an embedder brings its
+// own implementation instead (docs/architecture/embedding.md §"Analysis an
+// embedder brings itself").
+//
+// The gate does not move: fingerprinting is still REQUIRED of a federated node.
+// This only widens what may satisfy it.
+type Tools interface {
+	// Available reports which of the two this installation can perform. Read
+	// once at startup, to warn about each absence exactly once, so it must be
+	// cheap and must not depend on a particular file.
+	Available() (probe, fingerprint bool)
+
+	// ProbeTech fills the codec / quality columns for one file.
+	ProbeTech(ctx context.Context, path string) (*TechInfo, error)
+
+	// ComputeFingerprint computes one file's Chromaprint fingerprint. Whatever
+	// produces it must agree with fpcalc to within database's match threshold,
+	// because these are compared ACROSS nodes: a phone's fingerprint of a track
+	// meets a server's fingerprint of the same track.
+	ComputeFingerprint(ctx context.Context, path string) (*Fingerprint, error)
+}
+
+// ExecTools is the default Tools and the only one a server uses: ffprobe and
+// fpcalc, found on PATH and run as child processes.
+type ExecTools struct{}
+
+// Available reports which of the two binaries are on PATH.
+func (ExecTools) Available() (probe, fingerprint bool) { return ToolStatus() }
+
+// ProbeTech runs ffprobe. See the package function of the same name.
+func (ExecTools) ProbeTech(ctx context.Context, path string) (*TechInfo, error) {
+	return ProbeTech(ctx, path)
+}
+
+// ComputeFingerprint runs fpcalc. See the package function of the same name.
+func (ExecTools) ComputeFingerprint(ctx context.Context, path string) (*Fingerprint, error) {
+	return ComputeFingerprint(ctx, path)
+}
+
 // ToolStatus reports which optional analysis binaries are on PATH. Called once
 // at startup so the operator gets a single warning per missing tool; absence is
 // never fatal (see docs/architecture/recordings.md, Graceful degradation).

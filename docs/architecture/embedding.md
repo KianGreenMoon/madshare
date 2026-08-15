@@ -265,6 +265,54 @@ the configured roots, so with `allow_any` it has none to offer and the **web
 surface stays constrained even when the manager is not**. That is the right
 default for a key whose whole premise is that no web surface exists.
 
+## Analysis an embedder brings itself
+
+Ingest analysis has always been two child processes: `ffprobe` fills the tech
+columns, `fpcalc` computes the acoustic fingerprint. That is a fact about a
+**server**, not about analysis, and it does not survive contact with a phone.
+
+Three walls, and each is enough on its own. There is no PATH to install onto.
+Android refuses to execute anything the app wrote to its own data directory. And
+the app is not a process to re-exec — it is a library loaded into somebody
+else's. So `exec.LookPath` finds nothing, for good, and everything downstream is
+lost: no codec or bitrate columns, no fingerprints, no duplicate detection, and
+**no mesh at all**, because a node that cannot fingerprint must not redistribute
+audio.
+
+`app.WithMediaTools(media.Tools)` is the way out. The interface is the analysis,
+not the mechanism:
+
+```go
+type Tools interface {
+	Available() (probe, fingerprint bool)
+	ProbeTech(ctx context.Context, path string) (*TechInfo, error)
+	ComputeFingerprint(ctx context.Context, path string) (*Fingerprint, error)
+}
+```
+
+`media.ExecTools{}` is the default and is what every server uses, so a
+deployment that passes nothing behaves exactly as it always has. An embedder
+implements the three methods over decoders compiled into itself.
+
+**The federation gate does not move.** `requireFingerprinting` now asks the
+tools instead of asking PATH, and refuses a federated node that answers no —
+with the same message, install hint included, because for a server PATH really
+is the answer. What widened is *what may satisfy the requirement*, never the
+requirement. Reaching the mesh by setting `allow_missing_fingerprinting` is the
+thing this exists to avoid.
+
+Two obligations on an implementation, neither expressible in the signature:
+
+- **A fingerprint is compared across nodes.** A phone's fingerprint of a track
+  meets a server's fpcalc fingerprint of the same track, at
+  `database.maxBitErrorRate`. An implementation that is merely self-consistent
+  is worse than none — it would file every downloaded track as a new recording
+  and quietly fail the verification the gate exists for. Measure against real
+  fpcalc output on real files before shipping one.
+- **`Available()` is read once, at startup.** It reports what the installation
+  can do, not what it can do to a particular file. A format the implementation
+  cannot decode is a per-job failure, which the pool already logs and skips.
+
 ## What stays in `main`
 
 The `LICENSE.md` embed, the `-tags embedsource` source archive, flag parsing, the

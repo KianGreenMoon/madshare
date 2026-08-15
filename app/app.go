@@ -63,6 +63,10 @@ type Instance struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
+	// tools performs the ingest analysis: ffprobe and fpcalc on a server, an
+	// embedder's own implementation where those cannot run (WithMediaTools).
+	tools media.Tools
+
 	registry  *storages.Registry
 	linker    *storages.Linker
 	imagePool *imageproc.Pool
@@ -96,6 +100,7 @@ type options struct {
 	license       []byte
 	sourceArchive []byte
 	sourceRoot    string
+	tools         media.Tools
 }
 
 // Option configures Start. Each one carries something that belongs to the
@@ -143,6 +148,25 @@ func WithSourceRoot(dir string) Option {
 	return func(o *options) { o.sourceRoot = dir }
 }
 
+// WithMediaTools supplies the ingest analysis — tech columns and acoustic
+// fingerprint — in place of running ffprobe and fpcalc as child processes.
+//
+// It exists for an embedder that cannot run either: on a phone there is no PATH
+// to install onto and the system refuses to execute anything the app wrote, so
+// the default finds nothing and the node silently loses its tech columns, its
+// fingerprints, and with them the mesh. Such an embedder implements media.Tools
+// over decoders compiled into itself.
+//
+// A server never calls this. Nil is ignored, so a caller passing an unbuilt
+// dependency gets the default rather than a node that analyses nothing.
+func WithMediaTools(t media.Tools) Option {
+	return func(o *options) {
+		if t != nil {
+			o.tools = t
+		}
+	}
+}
+
 // Start brings a madshare node up from cfg and returns it running. It performs
 // every startup pass in the order the server has always performed them — the
 // order is load-bearing, and each step says what it depends on.
@@ -154,18 +178,18 @@ func WithSourceRoot(dir string) Option {
 // down before the error is returned, so a caller never has to Stop an instance
 // it did not receive.
 func Start(ctx context.Context, cfg config.Config, opts ...Option) (*Instance, error) {
-	o := options{logger: log.Default(), ui: config.DefaultUIConfig()}
+	o := options{logger: log.Default(), ui: config.DefaultUIConfig(), tools: media.ExecTools{}}
 	for _, fn := range opts {
 		fn(&o)
 	}
 
 	// Feature and environment gates first: a config the binary or the host
 	// cannot honour must fail before anything is opened or created.
-	if err := checkGates(cfg, o.logger); err != nil {
+	if err := checkGates(cfg, o.logger, o.tools); err != nil {
 		return nil, err
 	}
 
-	inst := &Instance{cfg: cfg, log: o.logger}
+	inst := &Instance{cfg: cfg, log: o.logger, tools: o.tools}
 	inst.ctx, inst.cancel = context.WithCancel(ctx)
 
 	if err := inst.start(o); err != nil {
@@ -565,7 +589,7 @@ func (i *Instance) startImagePool(filesImagesDir, imagesDir string) {
 // missing binary warns (never fatal) and that tool is skipped for every job. See
 // docs/architecture/recordings.md.
 func (i *Instance) startMediaPool(filesDir string) {
-	haveFFprobe, haveFpcalc := media.ToolStatus()
+	haveFFprobe, haveFpcalc := i.tools.Available()
 	if !haveFFprobe {
 		i.log.Printf("warning: ffprobe not found on PATH; audio tech columns (bitrate/sample rate/codec) stay empty")
 		if i.cfg.Federation.Enabled {
@@ -588,7 +612,7 @@ func (i *Instance) startMediaPool(filesDir string) {
 	// for hash" for every external file. The links dir need not exist yet; it
 	// stays empty until a symlink source populates it (data-sources P3).
 	i.registry = storages.New(filesDir, i.cfg.LinksDir())
-	i.mediaPool = mediaproc.NewPool(i.db, i.registry, i.cfg.Storage.ImageProcessingWorkers, haveFFprobe, haveFpcalc)
+	i.mediaPool = mediaproc.NewPool(i.db, i.registry, i.cfg.Storage.ImageProcessingWorkers, i.tools)
 	go i.mediaPool.Start(i.ctx)
 	// Backfill analysis for blobs uploaded before this ran (idempotent; skips
 	// files that already have a fingerprint and tech columns). Only worth doing

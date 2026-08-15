@@ -2,6 +2,7 @@ package mediaproc
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -20,6 +21,28 @@ const (
 	linkedHash  = "2222222222222222222222222222222222222222222222222222222222222222"
 	missingHash = "3333333333333333333333333333333333333333333333333333333333333333"
 )
+
+// stubTools stands in for the analysis passes so these tests say what they mean
+// on any machine. They used to declare both tools present and rely on ffprobe
+// and fpcalc failing on the garbage bytes written below — true, but true by
+// accident, and silently a different test on a host with neither installed.
+//
+// Every test here is about the POOL's behaviour around a failing pass, so the
+// stub fails both. Availability is separate, because "no tool at all" and "a
+// tool that errors on this file" are the two cases the pool treats differently.
+type stubTools struct{ probe, fingerprint bool }
+
+func (s stubTools) Available() (bool, bool) { return s.probe, s.fingerprint }
+
+func (stubTools) ProbeTech(context.Context, string) (*media.TechInfo, error) {
+	return nil, errNotAudio
+}
+
+func (stubTools) ComputeFingerprint(context.Context, string) (*media.Fingerprint, error) {
+	return nil, errNotAudio
+}
+
+var errNotAudio = errors.New("stub: not audio")
 
 // fakeRepo implements mediaproc.Repository for the worker tests. It hands out a
 // single queued job, then reports the queue empty, and records outcomes.
@@ -105,7 +128,7 @@ func linkBlob(t *testing.T, linksRoot, hash, name, target string) {
 func TestPool_NeitherToolShortCircuits(t *testing.T) {
 	repo := &fakeRepo{finished: make(chan struct{})}
 	reg := storages.New(t.TempDir(), t.TempDir())
-	pool := NewPool(repo, reg, 1, false, false)
+	pool := NewPool(repo, reg, 1, stubTools{})
 	// With no tools, Start must return immediately without touching the queue.
 	pool.Start(context.Background())
 	if repo.claimCalls != 0 {
@@ -115,16 +138,16 @@ func TestPool_NeitherToolShortCircuits(t *testing.T) {
 
 func TestPool_FinishesJobWhenToolFails(t *testing.T) {
 	filesRoot := t.TempDir()
-	// Garbage bytes: whether or not ffprobe/fpcalc are installed, the tool fails
-	// on this "file", which the worker logs and skips — the job still finishes
-	// cleanly (nil error), proving graceful degradation rather than a retry loop.
+	// The blob exists but is not audio, so both passes fail (see stubTools).
+	// The worker logs and skips them, and the job still finishes cleanly (nil
+	// error), proving graceful degradation rather than a retry loop.
 	writeBlob(t, filesRoot, localHash, "junk.mp3", []byte("not audio"))
 	reg := storages.New(filesRoot, t.TempDir())
 	repo := &fakeRepo{
 		jobs:     []*database.AnalysisJob{{ID: 1, FileID: 7, Hash: localHash}},
 		finished: make(chan struct{}),
 	}
-	pool := NewPool(repo, reg, 1, true, true)
+	pool := NewPool(repo, reg, 1, stubTools{probe: true, fingerprint: true})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -145,7 +168,7 @@ func TestPool_FinishesJobWhenToolFails(t *testing.T) {
 // TestPool_ResolvesLinkedBlob is the regression test for the links-storage bug:
 // a file whose blob lives only in the links storage (an external symlink import,
 // not under files_dir/audio) must still be located. The job finishes with a nil
-// error — the tools degrade on the garbage target, but the blob WAS found.
+// error — the passes fail on the garbage target, but the blob WAS found.
 // Before the fix the worker only probed the local audio dir and returned a
 // "blob dir missing for hash" error here, re-queuing the job on every restart.
 func TestPool_ResolvesLinkedBlob(t *testing.T) {
@@ -161,7 +184,7 @@ func TestPool_ResolvesLinkedBlob(t *testing.T) {
 		jobs:     []*database.AnalysisJob{{ID: 1, FileID: 7, Hash: linkedHash}},
 		finished: make(chan struct{}),
 	}
-	pool := NewPool(repo, reg, 1, true, true)
+	pool := NewPool(repo, reg, 1, stubTools{probe: true, fingerprint: true})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -185,7 +208,7 @@ func TestPool_MissingBlobIsRetryableError(t *testing.T) {
 		jobs:     []*database.AnalysisJob{{ID: 1, FileID: 7, Hash: missingHash}},
 		finished: make(chan struct{}),
 	}
-	pool := NewPool(repo, reg, 1, true, true)
+	pool := NewPool(repo, reg, 1, stubTools{probe: true, fingerprint: true})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

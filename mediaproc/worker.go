@@ -50,6 +50,7 @@ type Pool struct {
 	repo        Repository
 	resolver    BlobResolver
 	workers     int
+	tools       media.Tools
 	haveFFprobe bool
 	haveFpcalc  bool
 	notify      chan struct{}
@@ -57,17 +58,26 @@ type Pool struct {
 
 // NewPool creates (but does not start) a worker pool. resolver locates each
 // job's blob across all storages (local + links), so linked imports are analysed
-// just like uploads. haveFFprobe / haveFpcalc reflect tool availability (see
-// media.ToolStatus); a false flag skips that tool for every job. workers < 1 is
-// treated as 1.
-func NewPool(repo Repository, resolver BlobResolver, workers int, haveFFprobe, haveFpcalc bool) *Pool {
+// just like uploads. tools performs the analysis — ffprobe and fpcalc on a
+// server, an embedder's own implementation elsewhere — and whichever half it
+// reports unavailable is skipped for every job. workers < 1 is treated as 1.
+//
+// Availability is read ONCE, here, rather than per job: it is a fact about the
+// installation, and asking per job would turn a startup warning into a log line
+// per file.
+func NewPool(repo Repository, resolver BlobResolver, workers int, tools media.Tools) *Pool {
 	if workers < 1 {
 		workers = 1
 	}
+	if tools == nil {
+		tools = media.ExecTools{}
+	}
+	haveFFprobe, haveFpcalc := tools.Available()
 	return &Pool{
 		repo:        repo,
 		resolver:    resolver,
 		workers:     workers,
+		tools:       tools,
 		haveFFprobe: haveFFprobe,
 		haveFpcalc:  haveFpcalc,
 		notify:      make(chan struct{}, 1),
@@ -157,14 +167,14 @@ func (p *Pool) analyze(ctx context.Context, job *database.AnalysisJob) error {
 	now := time.Now().Unix()
 
 	if p.haveFFprobe {
-		if ti, err := media.ProbeTech(ctx, path); err != nil {
+		if ti, err := p.tools.ProbeTech(ctx, path); err != nil {
 			log.Printf("mediaproc: ffprobe file=%d: %v", job.FileID, err)
 		} else if err := p.repo.UpsertTechColumns(ctx, job.FileID, *ti); err != nil {
 			return err
 		}
 	}
 	if p.haveFpcalc {
-		if fp, err := media.ComputeFingerprint(ctx, path); err != nil {
+		if fp, err := p.tools.ComputeFingerprint(ctx, path); err != nil {
 			log.Printf("mediaproc: fpcalc file=%d: %v", job.FileID, err)
 		} else if err := p.repo.InsertAudioFingerprint(ctx, job.FileID, *fp, now); err != nil {
 			return err
