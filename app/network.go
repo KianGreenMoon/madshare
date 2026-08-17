@@ -75,6 +75,24 @@ type Network interface {
 	// a second link, so a caller needs no bookkeeping.
 	AddPeer(uri string) error
 
+	// UnderlayPeers reports what every peering this node holds is actually
+	// doing: up or down, which way it was dialled, since when, its traffic, and
+	// the last connection error with its age. Configured links that have never
+	// connected are in it too, and sort first.
+	//
+	// It is the other half of AddPeer, and the halves are further apart than
+	// they look. AddPeer returns as soon as the link is CONFIGURED — the dial
+	// happens on the core's own goroutine, with backoff, and a URI that will
+	// never connect returns exactly the same nil as one that connects in a
+	// millisecond. Without this an embedder can offer somebody a box to type a
+	// peer into and then has nothing to tell them, which is what a server's
+	// admin gets from /admin/network's Underlay tab and a device's owner did
+	// not (madplayer, 2026-08-18).
+	//
+	// Read-only diagnosis, and the same data that tab reads. The embedded core
+	// has no yggdrasilctl socket, so this is the only way to see it at all.
+	UnderlayPeers() []federation.UnderlayPeer
+
 	// PublishNothing pins this node's default sharing scope to Local, so nothing
 	// it holds is advertised in a catalog or served as bytes. Idempotent; a
 	// listener node calls it once its mesh is up.
@@ -136,6 +154,8 @@ func (n network) Homes(ctx context.Context) ([]federation.ExternalNode, error) {
 func (n network) Holdings() []string { return n.inst.node.CacheHoldings() }
 
 func (n network) AddPeer(uri string) error { return n.inst.node.Mesh().AddPeer(uri) }
+
+func (n network) UnderlayPeers() []federation.UnderlayPeer { return n.inst.node.UnderlayPeers() }
 
 func (n network) PublishNothing(ctx context.Context) error {
 	policy, err := n.inst.db.GetMadnetworkPolicy(ctx)

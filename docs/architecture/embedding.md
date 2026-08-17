@@ -144,6 +144,7 @@ things a device cannot have.
 | `AddHome` / `RemoveHome` / `Homes` | the community it is not in: whose word it will take about who a stranger is |
 | `Fetch(ctx, hash, size, holders)` | the holder discovery its empty catalog tables can never do |
 | `Holdings()` | the advertisement nobody would otherwise make on its behalf |
+| `AddPeer(uri)` / `UnderlayPeers()` | the underlay it may have to be told about by hand, and the `yggdrasilctl` socket an embedded core does not have |
 
 Three shapes worth knowing before calling it:
 
@@ -161,6 +162,17 @@ Three shapes worth knowing before calling it:
 - **`Holdings()` reads the cache directory, not an index.** A device advertising
   from an index could advertise a blob it has already swept, and the swarm reads
   a holder that refuses as a holder that is broken.
+- **`AddPeer` returns before anything has been dialled, so `UnderlayPeers` is
+  not optional decoration** (2026-08-18). `AddPeer` returns as soon as the link
+  is *configured*; the dial runs on the core's own goroutine with backoff, so a
+  URI that will never connect returns exactly the same `nil` as one that
+  connects in a millisecond. An embedder offering somebody a box to type a peer
+  into therefore cannot answer "did that work?" from `AddPeer` alone, and every
+  peering state — configured-and-never-connected included, sorted first — is in
+  `UnderlayPeers`. It is the same read `/admin/network`'s Underlay tab makes,
+  and it exists at all because an embedded core has no `yggdrasilctl` socket to
+  ask instead. Read-only: nothing here drops a link, which is why an embedder's
+  "remove this peer" can only mean "stop dialling it at the next start".
 
 `federation.Transfer` and `federation.HomeNode` come back as they are, on the
 same reasoning as the `database` row types above: they are the shapes the mesh

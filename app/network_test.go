@@ -311,3 +311,45 @@ func TestNetworkAddPeer(t *testing.T) {
 		t.Error("AddPeer accepted a malformed URI")
 	}
 }
+
+// TestNetworkUnderlayPeersSeesWhatAddPeerCannotSay: the two halves of the
+// underlay surface, and the gap between them is the reason the second one
+// exists. AddPeer returns nil as soon as the link is CONFIGURED — the dial runs
+// on the core's own goroutine with backoff — so its nil says nothing whatever
+// about whether anything is on the other end. An embedder offering somebody a
+// box to type a peer into has to be able to answer that afterwards.
+//
+// The peer here is one that cannot connect (127.0.0.1:1), which is the case
+// that matters: it must be VISIBLE and it must be visible as down, rather than
+// absent or indistinguishable from a working one.
+func TestNetworkUnderlayPeersSeesWhatAddPeerCannotSay(t *testing.T) {
+	if !federation.Available {
+		t.Skip("built with -tags nofederation")
+	}
+	lg, out := testLogger()
+	inst, err := app.Start(context.Background(), meshConfig(t, t.TempDir()), app.WithLogger(lg))
+	if err != nil {
+		t.Fatalf("Start: %v\nlog:\n%s", err, out)
+	}
+	defer inst.Stop(context.Background())
+
+	net, _ := inst.Network()
+	const uri = "tcp://127.0.0.1:1"
+	if err := net.AddPeer(uri); err != nil {
+		t.Fatalf("AddPeer: %v", err)
+	}
+
+	var found *federation.UnderlayPeer
+	for _, p := range net.UnderlayPeers() {
+		if strings.Contains(p.URI, "127.0.0.1:1") {
+			found = &p
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("a peer that AddPeer accepted is in no peering state at all; got %+v", net.UnderlayPeers())
+	}
+	if found.Up {
+		t.Errorf("%s reports as up — nothing is listening on port 1", found.URI)
+	}
+}
