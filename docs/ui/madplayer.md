@@ -906,6 +906,20 @@ discipline, not luck:
   already assumes this and is tuned for it (two freshness windows, passive
   `last_seen`, fail-open) — but it is why a phone is a poor sole holder of
   anything, and why "favourite → replicate" keeps coming back as a later idea.
+- **Touch has no hover, so at phone width the row actions are simply there**
+  (owner's call, 2026-08-17). On the desktop the *Play next* / *Add to queue* /
+  *Keep on this device* buttons appear on hover, so a list of music reads as a
+  list of music; a finger cannot hover, and controls that appear only once
+  already pressed are controls nobody can discover. Below the client's shared
+  narrow breakpoint they are always visible. The space is bought the same day
+  and the same way: **at phone width the origin display is dropped** — the
+  per-row library badge entirely, and the "· origin" tail of the player bar's
+  subtitle — because a 400 dp row has one line and it belongs to the title and
+  the artist. The *Downloading from X…* message keeps naming the origin at
+  every width; there it explains a wait rather than decorating a row. (The web
+  UI's answer to the same problem is the row's ⋯ menu — see
+  `player-and-queue.md` §"Favorites & quick-add"; the native client prefers
+  always-visible icons over a menu tap.)
 - **Offline is a first-class state, and one button already assumes it.**
   `/admin/cache`'s **Materialize** exists precisely for a madplayer with no
   connectivity adding a cached file to its own library: it makes no live claim
