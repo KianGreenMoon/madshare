@@ -11,17 +11,16 @@ import (
 // an ordinary member: export its own card, import somebody else's (or a bare
 // key), and manage the resulting peer rows.
 //
-// EXPERIMENTAL (2026-08-17). It exists for a madplayer pairing test, and it
-// cuts across the listener-node design on purpose: federation-access.md
-// §"The household" deliberately keeps a device OFF the friend graph, and that
-// refusal still stands as the design. An embedder that pairs anyway gets
-// exactly what a server gets — a gossiped edge, a place on everybody's map,
-// availability that counts — which is the trade the household exists to avoid.
-// Use it to test that trade, not to ship around it; this surface may be
-// removed when the test has answered its question.
+// Nothing here limits the embedder's node: a device paired through this
+// surface is a full member of the graph, exactly like a server — a gossiped
+// edge, a place on the network map, peers of its own. The listener-node path
+// (federation-access.md §"The household") remains what a device gets when it
+// does NOT pair; this surface is how an embedder chooses membership instead.
+// EXPERIMENTAL (2026-08-17): added for madplayer's befriending test, and the
+// method set may still change with what that test finds.
 //
-// Everything else about the node is unchanged: PublishNothing still pins the
-// sharing scope, so even a friend is served nothing from the library.
+// Sharing is a separate axis and is untouched: PublishNothing still pins the
+// scope, so what a paired device serves is decided exactly as before.
 type Pairing interface {
 	// Info is this node's own identity: name, mesh address, public key, and
 	// the card an admin hands to the other side.

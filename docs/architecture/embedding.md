@@ -41,7 +41,7 @@ arts, err := inst.Library().Artists(ctx)
 | `inst.Serve()` | Everything that makes it **reachable**: one `http.Server` per `[[listen]]`, plus the `[[listen_mesh]]` blocks over the netstack. |
 | `inst.Library()` | The browse/playback method set (below). |
 | `inst.Network()` | The mesh method set, and whether there is one (below). |
-| `inst.Pairing()` | **Experimental** (2026-08-17): the `/admin/network` friendship acts — own card, import card/key, accept, remove — for an embedder testing its node as an *ordinary member*. The household design (`federation-access.md` §"The household") deliberately keeps a device off the friend graph and that refusal still stands; this surface exists to test that trade, not to ship around it, and may be removed. |
+| `inst.Pairing()` | **Experimental** (2026-08-17): the `/admin/network` friendship acts — own card, import card/key, accept, remove. A node paired through it is a *full member* of the graph, exactly like a server; the household path (`federation-access.md` §"The household") remains what a device gets when it does not pair. Added for madplayer's befriending test; the method set may still change. |
 | `inst.Sources()` | The `sources.Manager`, for folders-as-data-sources. |
 | `inst.Stop(ctx)` | Graceful shutdown: workers, listeners, traffic flush, node/mesh, in-flight prune. |
 
