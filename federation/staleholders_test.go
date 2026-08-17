@@ -18,7 +18,7 @@ import (
 )
 
 // What a stale holder in a fetch plan actually costs, measured rather than
-// reasoned about (docs/ui/madplayer.md §"Level 2b, concretely").
+// reasoned about (madplayer's docs/design.md §"Level 2b, concretely").
 //
 // The report that prompted this: a madplayer fetching from a live server was
 // handed holders last seen 21 and 54 hours earlier, and the same track that took

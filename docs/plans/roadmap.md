@@ -169,4 +169,5 @@ server and no account, which is the baseline product rather than a stepping
 stone. Next is embedding the backend, which is what turns "my library" and "a
 peer's library" into one code path over two base URLs. It happens on the
 temporary `madplayer` branch, kept strictly separate from server commits. Full
-design: `docs/ui/madplayer.md`.
+design: madplayer's `docs/design.md` (moved to its repo 2026-08-17;
+`docs/ui/madplayer.md` here keeps the basics).

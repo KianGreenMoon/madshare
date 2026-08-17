@@ -611,7 +611,7 @@ The runtime layer exists because a ceiling is adjusted while watching a disk
 fill, and a knob that needs a config edit and a restart to move is a knob that
 stays wrong. The config layer exists because an **embedder has no TOML file** and
 still needs a default it chooses — madplayer sets 2 GiB there
-(`docs/ui/madplayer.md`), so its UI's *Default* is a real number rather than
+(its `docs/design.md`), so its UI's *Default* is a real number rather than
 "none".
 
 **The shipped default is 0 = off.** The mechanism is built in full; the number is
@@ -654,7 +654,7 @@ than inventing a second pattern:
   (effective / override / default) and `SetCacheCeiling` expose the setting, and a
   program with its own cache of remote audio enforces the same ceiling over its
   own directory — which is what madplayer does with its downloads
-  (`docs/ui/madplayer.md`). The ceiling therefore applies *per cache of remote
+  (its `docs/design.md`). The ceiling therefore applies *per cache of remote
   audio a node keeps*, not to their sum.
 - **Never touches an in-flight transfer** — a hash in `ActiveTransfers()` is
   skipped, which is also how it must call `ReapAbandonedPartials`. Abandoned

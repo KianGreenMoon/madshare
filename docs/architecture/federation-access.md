@@ -190,7 +190,8 @@ third kind of participant beside the full peer and the thin client (decided
 capability token"), the audience a device serves and the tracker that makes it
 findable (§"The household"), peering info, and the embedder-facing `Network()`
 surface. The client half lives in its own repository and is specified in
-`docs/ui/madplayer.md`. What follows is the shape both halves were built to.
+madplayer's `docs/design.md` (`docs/ui/madplayer.md` here keeps the short
+form). What follows is the shape both halves were built to.
 
 - **Credentials, not friendship.** It signs in to a home server with an ordinary
   account — session or API token, the same auth a browser uses. No node card,
@@ -238,7 +239,7 @@ surface. The client half lives in its own repository and is specified in
   plan.
 
 Client-side behaviour — playlist sync, and what the app does with items the
-server cannot resolve — is in `docs/ui/madplayer.md`.
+server cannot resolve — is in madplayer's `docs/design.md`.
 
 ### The capability token (F7 item 9, built 2026-08-01)
 
@@ -330,7 +331,8 @@ ceiling.
 ### The household — a listener node's own audience (level 2b, designed 2026-08-09)
 
 The token above is the *outbound* half: it is how a listener node is served by
-strangers. Building madplayer's level 2b (`docs/ui/madplayer.md`) established
+strangers. Building madplayer's level 2b (its `docs/design.md` §"Level 2b,
+concretely") established
 that the inbound half — "seeding back what it fetched" — had no mechanism
 behind it at all, in three separate places:
 
@@ -901,4 +903,5 @@ Design notes for the implementation:
   rules gate, and the per-member quotas that bound what a member may cost us.
 - `docs/architecture/auth.md` §8–§10 — the local permission model these
   principals sit beside.
-- `docs/ui/madplayer.md` — the listener node's client half.
+- `docs/ui/madplayer.md` — the listener node in brief; the client half's full
+  design is madplayer's own `docs/design.md`.

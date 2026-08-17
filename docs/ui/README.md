@@ -16,7 +16,7 @@ Read in this order. The first three are the ones people skip and then get wrong.
 
 | # | Doc | What it settles |
 |---|---|---|
-| 1 | [`madplayer.md`](madplayer.md) | The native client: what it is, the two levels of ambition, the API surface a player needs, the capability-token flow, and what the server already computes so you don't re-implement it |
+| 1 | [`madplayer.md`](madplayer.md) | The native client in brief: what it is, the listener-node contract, and what the server already computes so you don't re-implement it. The client's full design moved to the madplayer repo (`docs/design.md` there, 2026-08-17) |
 | 2 | [`artists-and-performers.md`](artists-and-performers.md) | **Which names get an artist row, and what is under each.** The rule is server-side in both catalogs; the one way to get it wrong is to group track rows client-side |
 | 3 | [`player-and-queue.md`](player-and-queue.md) | Queue, shuffle, repeat, resume, remote tracks, failure handling. Shuffle *reorders the queue* — it is not "pick a random next track" |
 | 4 | [`library-page.md`](library-page.md) | The local browse surface: drill, paging, row identity (`tagset_id`), disc grouping, search, guest narrowing |

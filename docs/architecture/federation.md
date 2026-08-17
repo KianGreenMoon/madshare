@@ -97,7 +97,7 @@ is **transparent by default** — its social graph is visible to its members.
   library stays private to the device. Consumption is one-way; the only route
   from that library into the network is an ordinary upload to the home server.
   The madshare half is built (`federation-access.md` §"The household"); the
-  client half is `docs/ui/madplayer.md`.
+  client half is madplayer's `docs/design.md` (in its own repository).
 
 ## Identity & transport
 
