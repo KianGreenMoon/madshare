@@ -116,6 +116,12 @@ is in nobody's map), and structural revocation.
   platform (XDG `.desktop` entry on Linux, Startup shortcut/registry on
   Windows), and a clean "quit fully" act that also stops the node. Unregister
   must be as easy as register.
+- **P6. Key backup** (owner, 2026-08-22). Export/import of the node identity
+  key from the UI, offered during pairing setup, with the plain warning that
+  the key IS the identity: lose it and every friendship must be re-paired,
+  every published claim is orphaned. First-run gets an "I already have a key"
+  restore path. Cheap now, a support disaster to explain later — a Windows
+  user will not know `federation.key` exists.
 
 ## Tests
 
@@ -129,6 +135,30 @@ is in nobody's map), and structural revocation.
   — and 404s the other 997 (catalog, holdings, and byte endpoints all).
 - **Listener → member upgrade.** Same key, pair with the former home server:
   friend standing wins, token becomes irrelevant, nothing double-counts.
+
+## Sequencing (owner, 2026-08-22)
+
+- **Alpha may break; beta may not.** While the project is alpha, the mesh
+  protocol may change incompatibly — every node is still upgraded by one
+  hand. At the first beta/release, the additive-only compatibility rule
+  becomes binding (and gets a mechanism, e.g. a capability field in the node
+  card), because from that point un-upgraded desktop nodes exist forever.
+- **Scale before growth — two separate things, do not conflate them:**
+  - **F10 (merkle verification)** is decided-and-parked in
+    `docs/architecture/federation-swarm.md` §"Merkle verification (F10,
+    decided-and-parked 2026-08-09)" (+ the parked row in
+    `docs/plans/work-queue.md`), with named triggers: video support, or a
+    measured all-partials reassembly gap. It buys verification granularity,
+    video-scale blobs, partial holders serving proofs, and collapses the
+    whole-file fallback. **It does not address catalog or discovery scale.**
+  - **The actual growth limit has no design yet:** every node replicates
+    whole catalogs from up to `discovery_cap` (200) sources, the merged view
+    is per-request SQL over those denormalized rows in one SQLite, and holder
+    discovery exists only as far as catalog replication reaches. Per-node
+    cost is capped, so what grows past ~200 community nodes is *invisibility*
+    (the frontier rotation recycles) and browse latency on weak hardware.
+    Before full-node mode invites communities past that order, this needs its
+    own design doc — it is a new question, not a parked one.
 
 ## Open questions (owner)
 
