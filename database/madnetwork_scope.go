@@ -102,10 +102,46 @@ func (db *DB) BlobVisibleTo(ctx context.Context, hash string, aud federation.Aud
 		JOIN recordings r ON r.id = f.recording_id
 		WHERE f.hash = ?`, args...).Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, false, nil
+		return db.coverVisibleTo(ctx, hash, aud)
 	}
 	if err != nil {
 		return false, false, fmt.Errorf("blob visible to audience: %w", err)
+	}
+	return v, true, nil
+}
+
+// coverVisibleTo is BlobVisibleTo's second arm (covers-federation M2): the hash
+// may name an album cover's source original rather than an audio rendition. A
+// cover is served to an audience exactly when the catalog would advertise it —
+// some visible tagset of its album is in the audience's scope — so bytes and
+// listing keep reading one rule, cover or not. The "never served" doctrine
+// (variants.md) is about the browser-facing API; node-to-node the original IS
+// the replication payload, canonical and self-verifying by this very hash.
+// variants_ready is deliberately not required here: the original exists from
+// the moment the cover row is claimed, and a fetcher's own worker derives its
+// variants locally either way.
+func (db *DB) coverVisibleTo(ctx context.Context, hash string, aud federation.Audience) (visible, found bool, err error) {
+	defaultDepth, err := db.nodeDefaultDepth(ctx)
+	if err != nil {
+		return false, false, err
+	}
+	args := append([]any{}, scopeArgs(defaultDepth, aud)...)
+	args = append(args, hash)
+	var v bool
+	err = db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM tagsets m
+			JOIN recordings r ON r.id = m.recording_id
+			WHERE m.album_id = ai.album_id
+			  AND `+visibleTagset+`
+			  AND (`+audienceClause(aud)+`))
+		FROM album_images ai
+		WHERE ai.image_hash = ?`, args...).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("cover visible to audience: %w", err)
 	}
 	return v, true, nil
 }

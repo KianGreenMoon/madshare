@@ -25,6 +25,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -688,10 +689,30 @@ func (i *Instance) startMesh() error {
 
 	// F3 wiring: the blob resolver serves published hashes to friends (and
 	// short-circuits fetches of hashes the library already holds); the cache dir
-	// receives fetched blobs (cache-through streaming).
+	// receives fetched blobs (cache-through streaming). Beside the audio
+	// storages it resolves album-cover source originals (covers-federation M2):
+	// a cover travels the mesh as a blob named by the sha256 of its original,
+	// living at <files>/images/<hash>/original<ext>. Whether a requester may
+	// have it is BlobVisibleTo's business (the cover arm); this only finds the
+	// file, and only under the exact name the cover pipeline writes.
+	imagesDir := filepath.Join(cfg.Storage.FilesDir, storage.ImagesSubdir)
 	resolve := func(hash string) (string, bool) {
-		path, _, ok := i.registry.Resolve(hash)
-		return path, ok
+		if path, _, ok := i.registry.Resolve(hash); ok {
+			return path, ok
+		}
+		if len(hash) != 64 || strings.ContainsAny(hash, "/\\.") {
+			return "", false // a mesh hash is 64 plain hex; never let anything else touch the path
+		}
+		names, err := os.ReadDir(filepath.Join(imagesDir, hash))
+		if err != nil {
+			return "", false
+		}
+		for _, de := range names {
+			if !de.IsDir() && strings.HasPrefix(de.Name(), "original.") {
+				return filepath.Join(imagesDir, hash, de.Name()), true
+			}
+		}
+		return "", false
 	}
 	// WithMesh hands the running transport over: from here Node.Stop owns it, so
 	// Stop stops one or the other, never both.
