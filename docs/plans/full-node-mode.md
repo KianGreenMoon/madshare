@@ -58,7 +58,8 @@ is in nobody's map), and structural revocation.
   drains its battery holding the mesh up, churns everybody's availability
   machinery, and wastes discovery-budget slots on a node that is asleep most
   of the day. Mobile builds do not offer the mode. (The phone-side network
-  policy is its own plan: `docs/plans/mobile-seeding-controls.md`.)
+  policy is its own plan, in madplayer's repo where the work is:
+  `../madplayer/docs/plans/mobile-seeding-controls.md`.)
 - **Opt-in publishing rides the existing pin.** `recordings.share_depth`
   already overrides the node default per recording (NULL = inherit = Local;
   pinned Friends/Madnetwork opens exactly that item). No migration, no new
