@@ -173,3 +173,132 @@ func TestUpdateFileMetadata_UnknownHash(t *testing.T) {
 		t.Fatalf("empty-patch err = %v, want ErrFileNotFound", err)
 	}
 }
+
+// Tags an embedder brings for a file whose bytes do not carry them.
+//
+// The case is madplayer's "keep on this device": bytes copied out of a library
+// that knew what they were, into one that can only read the file. Untagged WAVs
+// are the extreme — this reader has no WAV tag dialect at all, so the whole
+// album arrives as Unknown artist / Other — and the ordinary case is an album
+// artist that only ever existed as an edit, since metadata here is an overlay
+// and is never written back into the file.
+func TestFillMissingTags_DescribesAnUntaggedFile(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	h := hash64("fill1")
+	f := newFile(h)
+	if err := db.InsertFile(ctx, f, newUpload("01 - Plague Awake Here.wav"),
+		&MediaMetadata{ExtractedAt: 1700000000}); err != nil {
+		t.Fatalf("InsertFile: %v", err)
+	}
+
+	// What the scan alone makes of it: nothing but the filename.
+	artists, err := db.ListArtists(ctx)
+	if err != nil {
+		t.Fatalf("ListArtists: %v", err)
+	}
+	if len(artists) != 1 || artists[0].Name != DefaultArtistName {
+		t.Fatalf("artists = %v, want the %q bucket before the tags arrive",
+			names(artists), DefaultArtistName)
+	}
+
+	if _, err := db.FillMissingTags(ctx, h, MetadataPatch{
+		Title:       strPtr("Plague Awake Here"),
+		Artist:      strPtr("Vasily Kashnikov"),
+		AlbumArtist: strPtr("Pathologic 2"),
+		Album:       strPtr("Pathologic 2 OST"),
+		TrackNumber: strPtr("1"),
+	}); err != nil {
+		t.Fatalf("FillMissingTags: %v", err)
+	}
+
+	artists, err = db.ListArtists(ctx)
+	if err != nil {
+		t.Fatalf("ListArtists: %v", err)
+	}
+	if len(artists) != 1 || artists[0].Name != "Pathologic 2" {
+		t.Fatalf("artists = %v, want [Pathologic 2] — the album artist groups it", names(artists))
+	}
+	albums, err := db.ListAlbumsByArtistID(ctx, artists[0].ID)
+	if err != nil {
+		t.Fatalf("ListAlbumsByArtistID: %v", err)
+	}
+	if len(albums) != 1 || albums[0].Title != "Pathologic 2 OST" {
+		t.Fatalf("albums = %+v, want the album's own title, not %q", albums, DefaultAlbumTitle)
+	}
+	tracks, err := db.ListTracksByAlbumID(ctx, albums[0].ID)
+	if err != nil {
+		t.Fatalf("ListTracksByAlbumID: %v", err)
+	}
+	if len(tracks) != 1 || tracks[0].Title != "Plague Awake Here" {
+		t.Fatalf("tracks = %+v, want the catalogue's title rather than the filename", tracks)
+	}
+	if tracks[0].ArtistName != "Vasily Kashnikov" {
+		t.Errorf("performer = %q, want Vasily Kashnikov", tracks[0].ArtistName)
+	}
+}
+
+// The file's own tags win. This fills gaps; it does not import somebody else's
+// idea of what a file is over the tags in it — the same posture as the rest of
+// the overlay, from the other direction.
+func TestFillMissingTags_LeavesWhatTheFileAlreadySays(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	h := hash64("fill2")
+	insertSearchFile(t, db, h, "Darkness", "Theodor Bastard", "Utopia", "")
+
+	got, err := db.FillMissingTags(ctx, h, MetadataPatch{
+		Title:       strPtr("Something Else"),
+		Artist:      strPtr("Somebody Else"),
+		AlbumArtist: strPtr("Pathologic 2"),
+		Album:       strPtr("Another Album"),
+	})
+	if err != nil {
+		t.Fatalf("FillMissingTags: %v", err)
+	}
+	if got.Title != "Darkness" || got.Artist.String != "Theodor Bastard" || got.Album.String != "Utopia" {
+		t.Errorf("tags = %q/%q/%q, want the file's own", got.Title, got.Artist.String, got.Album.String)
+	}
+	// The album-artist tag was the one thing the file did not carry, so it is
+	// the one thing that changed — and it regroups the track, which is exactly
+	// the "this is the Pathologic 2 album, not a Theodor Bastard album" case.
+	if got.AlbumArtist.String != "Pathologic 2" {
+		t.Fatalf("album artist = %q, want the gap filled", got.AlbumArtist.String)
+	}
+	artists, err := db.ListArtists(ctx)
+	if err != nil {
+		t.Fatalf("ListArtists: %v", err)
+	}
+	if len(artists) != 1 || artists[0].Name != "Pathologic 2" {
+		t.Errorf("artists = %v, want [Pathologic 2]", names(artists))
+	}
+}
+
+// Knowing nothing must not erase anything, and an unknown hash is the ordinary
+// answer for a caller that has just handed a file to a scanner.
+func TestFillMissingTags_BlankValuesAndUnknownHash(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	h := hash64("fill3")
+	insertSearchFile(t, db, h, "Darkness", "Theodor Bastard", "Utopia", "")
+	got, err := db.FillMissingTags(ctx, h, MetadataPatch{
+		Title:       strPtr(""),
+		AlbumArtist: strPtr("   "),
+		TrackNumber: strPtr(""),
+	})
+	if err != nil {
+		t.Fatalf("FillMissingTags: %v", err)
+	}
+	if got.Title != "Darkness" || got.AlbumArtist.Valid {
+		t.Errorf("blank values changed the row: %q / %q", got.Title, got.AlbumArtist.String)
+	}
+
+	if _, err := db.FillMissingTags(ctx, hash64("nosuch"), MetadataPatch{
+		Artist: strPtr("Anybody"),
+	}); !errors.Is(err, ErrFileNotFound) {
+		t.Errorf("unknown hash gave %v, want ErrFileNotFound", err)
+	}
+}

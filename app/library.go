@@ -101,6 +101,27 @@ func (l library) BlobPath(objectKey string) (string, bool) {
 	return path, ok
 }
 
+// FillMissingTags writes tags onto the row for a content hash, only where the
+// file's own tags say nothing (database.FillMissingTags has the rule and the
+// reasoning). It is the one WRITE an embedder gets on the library, and it exists
+// for a single case.
+//
+// An embedder that copies audio in from another library — madplayer's "keep on
+// this device" — hands the bytes to the ordinary folder scanner, and the scanner
+// can only know what is inside the file. Everything the source library knew
+// beyond that is lost in the copy, and this is not an edge case: metadata here
+// is an overlay that is never written back into the file, so an album artist
+// that was set in a web UI exists in no blob anywhere. An album of untagged WAVs
+// loses all of it and lands in Unknown artist / Other.
+//
+// It fills gaps and overwrites nothing, so an embedder cannot use it to impose
+// one library's opinion on a file that speaks for itself. Errors are the
+// database's: ErrFileNotFound when the scan has not indexed the file yet.
+func (i *Instance) FillMissingTags(ctx context.Context, hash string, p database.MetadataPatch) error {
+	_, err := i.db.FillMissingTags(ctx, hash, p)
+	return err
+}
+
 // CacheCeiling is the download cache's size limit in its three parts, which is
 // what a settings screen needs to render it honestly
 // (docs/architecture/madnetwork-cache.md §"The retention ceiling").

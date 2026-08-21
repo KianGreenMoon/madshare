@@ -40,6 +40,7 @@ arts, err := inst.Library().Artists(ctx)
 | `app.Start(ctx, cfg, opts…)` | Everything that makes a madshare **node**: opens the DB, runs every reconciliation/backfill pass in its existing order, bootstraps the admin, starts the worker pools and the reaper, builds `api.Deps`, brings up the mesh and the madnetwork node when configured. |
 | `inst.Serve()` | Everything that makes it **reachable**: one `http.Server` per `[[listen]]`, plus the `[[listen_mesh]]` blocks over the netstack. |
 | `inst.Library()` | The browse/playback method set (below). |
+| `inst.FillMissingTags(…)` | The one library WRITE: tags for content copied in from another library, filling gaps only (below). |
 | `inst.Network()` | The mesh method set, and whether there is one (below). |
 | `inst.Pairing()` | **Experimental** (2026-08-17): the `/admin/network` friendship acts — own card, import card/key, accept, remove. A node paired through it is a *full member* of the graph, exactly like a server; the household path (`federation-access.md` §"The household") remains what a device gets when it does not pair. Added for madplayer's befriending test; the method set may still change. |
 | `inst.Sources()` | The `sources.Manager`, for folders-as-data-sources. |
@@ -108,6 +109,29 @@ has 300+ methods that change freely, and an embedder reaching into them directly
 is what makes every internal refactor a client break. That promise is the whole
 point of the facade — if an embedder needs something new, it is added here, named
 and documented, rather than borrowed from `database`.
+
+### `FillMissingTags` — the one write (2026-08-21)
+
+`inst.FillMissingTags(ctx, hash, database.MetadataPatch)` writes tags onto the
+row for a content hash, **only where the file's own tags say nothing**. It is not
+on the `Library` interface — that stays read-only — but a method on `Instance`,
+because it belongs to a different act: bringing content IN.
+
+It exists because an embedder that copies audio from another library hands the
+bytes to the ordinary folder scanner, and the scanner can only know what is
+inside the file. Everything the source library knew beyond that is lost in the
+copy — and that is the normal case, not an edge one: metadata here is an overlay
+that is never written back into the file, so an album artist somebody set in a
+web UI exists in no blob anywhere. madplayer's "keep on this device" hit both
+ends of it: an album of untagged WAVs (a format with no tag dialect the reader
+understands) arrived as *Unknown artist / Other*, and a FLAC album tagged with
+only a performer lost the album-artist it had been filed under.
+
+It fills gaps and overwrites nothing, so it cannot be used to impose one
+library's opinion on a file that speaks for itself, and a person's own edit
+survives a re-keep. `ErrFileNotFound` means the scan has not indexed the file
+yet, which for a caller that has just handed over a folder is a matter of
+waiting rather than a failure.
 
 **`BlobPath` is the one method with no HTTP equivalent.** Over the wire a track
 row's `url` is `/files/<hash>/<name>`; in-process the caller needs a *path* to

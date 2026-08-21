@@ -80,26 +80,125 @@ func (db *DB) UpdateFileMetadata(ctx context.Context, hash string, p MetadataPat
 	return db.getMetadataByFileID(ctx, fileID)
 }
 
+// FillMissingTags writes tags onto a file's appearance ONLY where the file
+// itself carries none. A field the file already answered is left exactly as it
+// is, and so is one somebody has edited since.
+//
+// It exists for content that arrives from a library that knows more about it
+// than its bytes do. Metadata here is an OVERLAY — an edit is never written back
+// into the file — so a node's catalogue routinely names an artist and an album
+// that no tag in the blob mentions. Copy those bytes to another machine, let its
+// scanner read them, and everything the first library knew is gone: an album of
+// untagged WAVs (a format with no tag dialect this reader understands at all)
+// arrives as Unknown artist / Other, and one tagged with only a performer loses
+// the album-artist grouping it was filed under. Both were reported by madplayer,
+// whose "keep on this device" is exactly that copy.
+//
+// "Missing" for the title means the appearance still carries the
+// filename-derived default an untagged import is given (migration 016), since
+// that column is required non-empty and so is never blank to test for.
+//
+// Returns ErrFileNotFound when no files row matches hash — which for a caller
+// that has just handed the file to a scanner means the scan has not reached it
+// yet, not that anything is wrong with the file.
+func (db *DB) FillMissingTags(ctx context.Context, hash string, p MetadataPatch) (*MediaMetadata, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("fill missing tags: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	fileID, tagsetID, err := representativeTagsetTx(ctx, tx, hash)
+	if err != nil {
+		return nil, err
+	}
+
+	var title, artist, albumArtist, album sql.NullString
+	var track, disc, year sql.NullInt64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT title, artist, album_artist, album, track_number, disc_number, year
+		   FROM tagsets WHERE id = ?`, tagsetID,
+	).Scan(&title, &artist, &albumArtist, &album, &track, &disc, &year); err != nil {
+		return nil, fmt.Errorf("fill missing tags: read appearance: %w", err)
+	}
+	// An untagged import's title is derived from its filename (migration 016),
+	// and tagsets.title is required non-empty — so "the file said nothing" is
+	// not a NULL to look for but that derived value, recomputed here from the
+	// same helpers the import used.
+	filename, err := firstFilenameTx(ctx, tx, fileID)
+	if err != nil {
+		return nil, err
+	}
+	untitled := title.String == titleFromFilename(filename)
+
+	keepString := func(field **string, current string) {
+		if strings.TrimSpace(current) != "" {
+			*field = nil
+		}
+	}
+	keepNumber := func(field **string, current sql.NullInt64) {
+		if current.Valid {
+			*field = nil
+		}
+	}
+	if !untitled {
+		p.Title = nil
+	}
+	keepString(&p.Artist, artist.String)
+	keepString(&p.AlbumArtist, albumArtist.String)
+	keepString(&p.Album, album.String)
+	keepNumber(&p.TrackNumber, track)
+	keepNumber(&p.DiscNumber, disc)
+	keepNumber(&p.Year, year)
+	// A supplied value that is itself blank fills nothing — the caller knowing
+	// nothing must not clear what is there, and for the title it would re-derive
+	// the filename fallback that is already in place.
+	for _, f := range []**string{&p.Title, &p.Artist, &p.AlbumArtist, &p.Album,
+		&p.TrackNumber, &p.DiscNumber, &p.Year} {
+		if *f != nil && strings.TrimSpace(**f) == "" {
+			*f = nil
+		}
+	}
+
+	if err := applyMetadataPatchTagsetTx(ctx, tx, tagsetID, p); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("fill missing tags: commit: %w", err)
+	}
+	return db.getMetadataByFileID(ctx, fileID)
+}
+
 // applyMetadataPatchTx writes one file's patch within tx (no commit), returning
 // the file id. It resolves the file id first so an unknown hash is a clean
 // ErrFileNotFound even for an empty patch, then writes the supplied fields and —
 // when an identity field changed — re-resolves the artist/album entity FKs.
 func applyMetadataPatchTx(ctx context.Context, tx *sql.Tx, hash string, p MetadataPatch) (int64, error) {
-	var fileID int64
-	err := tx.QueryRowContext(ctx, `SELECT id FROM files WHERE hash = ?`, hash).Scan(&fileID)
+	fileID, tagsetID, err := representativeTagsetTx(ctx, tx, hash)
+	if err != nil {
+		return 0, err
+	}
+	if err := applyMetadataPatchTagsetTx(ctx, tx, tagsetID, p); err != nil {
+		return 0, err
+	}
+	return fileID, nil
+}
+
+// representativeTagsetTx resolves a content hash to its file id and the
+// appearance a *file-addressed* edit targets. Provenance first: the tagset
+// actually read from this blob (a byte-dup upload may have attached extra draft
+// appearances; those are edited only through the tagset-addressed review paths).
+// Appearance dedup can leave a rendition with no tagset of its own, so fall back
+// to the recording's representative appearance rather than 404
+// (recording-tagsets P7). An unknown hash is a clean ErrFileNotFound.
+func representativeTagsetTx(ctx context.Context, tx *sql.Tx, hash string) (fileID, tagsetID int64, err error) {
+	err = tx.QueryRowContext(ctx, `SELECT id FROM files WHERE hash = ?`, hash).Scan(&fileID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, ErrFileNotFound
+		return 0, 0, ErrFileNotFound
 	}
 	if err != nil {
-		return 0, fmt.Errorf("update metadata: lookup file: %w", err)
+		return 0, 0, fmt.Errorf("update metadata: lookup file: %w", err)
 	}
-	// The appearance a *file-addressed* edit targets. Provenance first: the
-	// tagset actually read from this blob (a byte-dup upload may have attached
-	// extra draft appearances; those are edited only through the
-	// tagset-addressed review paths). Appearance dedup can leave a rendition
-	// with no tagset of its own, so fall back to the recording's representative
-	// appearance rather than 404 (recording-tagsets P7).
-	var tagsetID int64
 	if err := tx.QueryRowContext(ctx,
 		`SELECT rt.id FROM tagsets rt
 		   JOIN files f ON f.id = ?
@@ -110,14 +209,11 @@ func applyMetadataPatchTx(ctx context.Context, tx *sql.Tx, hash string, p Metada
 		fileID,
 	).Scan(&tagsetID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return 0, ErrFileNotFound
+			return 0, 0, ErrFileNotFound
 		}
-		return 0, fmt.Errorf("update metadata: representative tagset: %w", err)
+		return 0, 0, fmt.Errorf("update metadata: representative tagset: %w", err)
 	}
-	if err := applyMetadataPatchTagsetTx(ctx, tx, tagsetID, p); err != nil {
-		return 0, err
-	}
-	return fileID, nil
+	return fileID, tagsetID, nil
 }
 
 // applyMetadataPatchTagsetTx writes one appearance's patch within tx, addressed
