@@ -43,6 +43,8 @@ perfectly good cover for.
 
 ## Work items — madshare
 
+*M1–M3 shipped 2026-08-22 (commits 8cee58f, 10f486d, 8d149e6); M4/M5 still open.*
+
 - **M1. Catalog carries the cover.** `CatalogEntry` += `cover_hash`,
   `cover_ext` (both `omitempty` — additive JSON, old nodes ignore it; no
   protocol bump). `store.PublishedCatalog` joins the album cover for each
