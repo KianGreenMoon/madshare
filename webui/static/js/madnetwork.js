@@ -73,7 +73,7 @@ export async function init() {
     onOpenArtist: a => openShelf(s => s.showAlbums(a.name)),
     onOpenAlbum:  a => openShelf(s => s.showTracks(a.artist_name, a.title)),
     albumArtUrl:  a => a.cover_hash
-      ? `${API}/api/madnetwork/cover/${encodeURIComponent(a.cover_hash)}`
+      ? `${API}/api/madnetwork/cover/${encodeURIComponent(a.cover_hash)}?size=small`
       : null, // no source claims art for this album
     buildQueueTrack: t => ({
       url: t.url ? `${API}${t.url}` : `${API}/api/madnetwork/stream/${t.hash}`,

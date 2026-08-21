@@ -238,6 +238,26 @@ func (db *DB) GetAlbumCoverStatus(ctx context.Context, albumID int64) (imageHash
 	return ih.String, se.String, ready == 1, true, nil
 }
 
+// AlbumCoverByHash reports whether SOME album's cover row is keyed by this
+// image hash, and whether its variants are generated — the cover relay's
+// local-first check: art this library already processed is served from the
+// variant tree with no fetch and no re-derive. Which album owns it does not
+// matter to that caller; the variants are keyed by the hash alone.
+func (db *DB) AlbumCoverByHash(ctx context.Context, imageHash string) (sourceExt string, ready, found bool, err error) {
+	var se sql.NullString
+	var r int
+	row := db.QueryRowContext(ctx,
+		`SELECT source_ext, variants_ready FROM album_images WHERE image_hash = ? LIMIT 1`,
+		imageHash)
+	if err = row.Scan(&se, &r); errors.Is(err, sql.ErrNoRows) {
+		return "", false, false, nil
+	}
+	if err != nil {
+		return "", false, false, fmt.Errorf("album cover by hash: %w", err)
+	}
+	return se.String, r == 1, true, nil
+}
+
 // HasAlbumCover reports whether an album_images row exists for the album entity,
 // regardless of variants_ready. Used by the fill-if-missing logic.
 func (db *DB) HasAlbumCover(ctx context.Context, albumID int64) (bool, error) {

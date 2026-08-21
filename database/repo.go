@@ -524,6 +524,10 @@ type Repository interface {
 	// found is false when no row exists.
 	GetAlbumCoverStatus(ctx context.Context, albumID int64) (imageHash, sourceExt string, variantsReady, found bool, err error)
 
+	// AlbumCoverByHash reports whether some album's cover is keyed by this
+	// image hash and whether its variants are ready — the cover relay's
+	// local-first check.
+	AlbumCoverByHash(ctx context.Context, imageHash string) (sourceExt string, ready, found bool, err error)
 	// HasAlbumCover reports whether an album_images row exists for the album entity.
 	HasAlbumCover(ctx context.Context, albumID int64) (bool, error)
 

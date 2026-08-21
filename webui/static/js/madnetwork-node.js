@@ -140,7 +140,7 @@ function mountShelf(node) {
     onOpenArtist: a => shelf.showAlbums(a.name),
     onOpenAlbum: a => shelf.showTracks(a.artist_name, a.title),
     albumArtUrl: a => a.cover_hash
-      ? `${API}/api/madnetwork/cover/${encodeURIComponent(a.cover_hash)}`
+      ? `${API}/api/madnetwork/cover/${encodeURIComponent(a.cover_hash)}?size=small`
       : null, // no source claims art for this album
     buildQueueTrack: t => ({
       url: t.url ? `${API}${t.url}` : `${API}/api/madnetwork/stream/${t.hash}`,

@@ -263,6 +263,13 @@ func (h *handler) madnetworkCover(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid hash", http.StatusBadRequest)
 		return
 	}
+	// ?size= asks for a derived crop variant instead of the original — the
+	// browse thumbnails' request, sized like /api/albums/{id}/image. Absent
+	// means the original, which stays the replication-quality answer.
+	if r.URL.Query().Get("size") != "" {
+		h.madnetworkCoverVariant(w, r, hash, albumImageVariant(r))
+		return
+	}
 	t, err := h.ensureBlob(r.Context(), hash)
 	if err != nil {
 		if errors.Is(err, federation.ErrNoHolder) {
@@ -352,4 +359,114 @@ func (h *handler) electSearchAlbumCovers(ctx context.Context, hits []*database.M
 			hit.CoverHash, hit.CoverExt = b.winner(branches)
 		}
 	}
+}
+
+// madnetworkCoverVariant serves one derived crop of a network cover.
+//
+// Local first: a cover this library already processed (it is some album's art,
+// variants ready) is served straight from the variant tree — no fetch, no
+// re-derive. Otherwise the original is fetched once (the same cache-through
+// path as the full-size answer) and ALL derived variants are written into the
+// variant tree under the cover's hash — the exact bytes the resize worker
+// would produce for the same original, at the exact paths, so a cover that
+// later becomes a local album's art finds its variants already there, and the
+// variant GC reclaiming an unreferenced set costs one re-derive, not an error.
+func (h *handler) madnetworkCoverVariant(w http.ResponseWriter, r *http.Request, hash, variant string) {
+	if h.repo == nil {
+		http.Error(w, "covers not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if ext, ready, found, err := h.repo.AlbumCoverByHash(r.Context(), hash); err == nil && found && ready {
+		if mime, ok := allowedImageExtensions[ext]; ok {
+			h.serveCoverVariantFile(w, r, media.VariantPath(hash, variant, ext), mime)
+			return
+		}
+	}
+
+	// Derived already, by an earlier relay request? The tree is content-keyed,
+	// so presence IS the answer. Both extensions every ingress accepts.
+	for ext, mime := range allowedImageExtensions {
+		rel := media.VariantPath(hash, variant, ext)
+		if _, err := os.Stat(filepath.Join(h.imagesDir, rel)); err == nil {
+			h.serveCoverVariantFile(w, r, rel, mime)
+			return
+		}
+	}
+
+	t, err := h.ensureBlob(r.Context(), hash)
+	if err != nil {
+		if errors.Is(err, federation.ErrNoHolder) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "transfer unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	select {
+	case <-t.Done():
+	case <-r.Context().Done():
+		return
+	}
+	if t.Err() != nil || t.Size() > maxImageSize {
+		http.Error(w, "transfer failed", http.StatusBadGateway)
+		return
+	}
+	f, err := t.Open()
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	data := make([]byte, t.Size())
+	_, err = io.ReadFull(f, data)
+	f.Close()
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	// The bytes decide the type, as everywhere on this route.
+	mime := http.DetectContentType(data)
+	if mime != "image/jpeg" && mime != "image/png" {
+		http.Error(w, "not a servable image", http.StatusBadGateway)
+		return
+	}
+	set, ext, err := media.ProcessImage(data, mime)
+	if err != nil {
+		http.Error(w, "not a servable image", http.StatusBadGateway)
+		return
+	}
+	for _, name := range media.DerivedVariants {
+		rel := media.VariantPath(hash, name, ext)
+		dest := filepath.Join(h.imagesDir, rel)
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			http.Error(w, "storage error", http.StatusInternalServerError)
+			return
+		}
+		// Temp-and-rename: a concurrent request derives the same bytes, and
+		// the loser's rename simply reasserts them; a reader never sees half.
+		tmp, err := os.CreateTemp(filepath.Dir(dest), ".variant-*")
+		if err != nil {
+			http.Error(w, "storage error", http.StatusInternalServerError)
+			return
+		}
+		if _, err := tmp.Write(set[name]); err != nil {
+			tmp.Close()
+			os.Remove(tmp.Name())
+			http.Error(w, "storage error", http.StatusInternalServerError)
+			return
+		}
+		tmp.Close()
+		if err := os.Rename(tmp.Name(), dest); err != nil {
+			os.Remove(tmp.Name())
+			http.Error(w, "storage error", http.StatusInternalServerError)
+			return
+		}
+	}
+	h.serveCoverVariantFile(w, r, media.VariantPath(hash, variant, ext), allowedImageExtensions[ext])
+}
+
+// serveCoverVariantFile is serveImageFile plus the immutable cache header every
+// hash-addressed cover answer carries.
+func (h *handler) serveCoverVariantFile(w http.ResponseWriter, r *http.Request, objectKey, mimeType string) {
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	h.serveImageFile(w, r, objectKey, mimeType)
 }

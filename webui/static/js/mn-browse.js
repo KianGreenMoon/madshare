@@ -745,7 +745,7 @@ export function createShelf({ panel, trail, actions, source = null, rootLabel = 
         // The elected cover (covers-federation M4), relayed by this server
         // from whichever node holds it. Hash-addressed and immutable, so the
         // browser caches it as hard as a local variant.
-        artUrl: al.cover_hash ? `${API}/api/madnetwork/cover/${encodeURIComponent(al.cover_hash)}` : null,
+        artUrl: al.cover_hash ? `${API}/api/madnetwork/cover/${encodeURIComponent(al.cover_hash)}?size=small` : null,
         onOpen: () => showTracks(a, al.title),
         makeMenuItems: btn => quickAddItems(btn, () => entityTracks(a, al.title),
           { extraItems: materializeAllItems(a, al.title, qs) }),

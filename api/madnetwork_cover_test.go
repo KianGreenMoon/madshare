@@ -272,3 +272,66 @@ func TestSearchAlbumHitsCarryTheElectedCover(t *testing.T) {
 		t.Errorf("hit cover = %q, want the claimant's %q", body.Albums[0].CoverHash, coverHash)
 	}
 }
+
+// TestMadnetworkCoverRelaySized: ?size= serves a derived crop — sized like the
+// local album endpoint, derived once, and answered from the variant tree ever
+// after (the second request runs with the federation's blob taken away, so a
+// re-fetch would 404).
+func TestMadnetworkCoverRelaySized(t *testing.T) {
+	// 200×100, so the 64px thumb crop is a real resize, not a passthrough.
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 200, 100))); err != nil {
+		t.Fatal(err)
+	}
+	cover := buf.Bytes()
+	sum := sha256.Sum256(cover)
+	hash := hex.EncodeToString(sum[:])
+	tr := newFakeTransfer(t, hash, "original.png", int64(len(cover)))
+	tr.append(t, cover)
+	tr.finish()
+
+	fed := &fakeBlobFederation{blob: tr}
+	srv, _ := newModerationServerWithNetwork(t, fed)
+	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
+
+	get := func(size string) (*http.Response, []byte) {
+		t.Helper()
+		resp, err := admin.Get(srv.URL + "/api/madnetwork/cover/" + hash + "?size=" + size)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp, body
+	}
+
+	resp, body := get("thumb")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("sized cover = %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "image/png" {
+		t.Errorf("Content-Type = %q, want the source format kept", ct)
+	}
+	if cc := resp.Header.Get("Cache-Control"); !strings.Contains(cc, "immutable") {
+		t.Errorf("Cache-Control = %q, want immutable", cc)
+	}
+	img, err := png.Decode(bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("decode thumb: %v", err)
+	}
+	if b := img.Bounds(); b.Dx() != 64 || b.Dy() != 64 {
+		t.Errorf("thumb = %dx%d, want the 64px square crop", b.Dx(), b.Dy())
+	}
+
+	// The original stays the no-size answer.
+	resp, body = get("")
+	if resp.StatusCode != http.StatusOK || !bytes.Equal(body, cover) {
+		t.Errorf("no-size answer changed: %d, %d bytes", resp.StatusCode, len(body))
+	}
+
+	// Every size is on disk after one derive: no second fetch may happen.
+	fed.blob = nil
+	if resp, _ := get("small"); resp.StatusCode != http.StatusOK {
+		t.Errorf("small after derive = %d, want 200 from the variant tree", resp.StatusCode)
+	}
+}
