@@ -47,7 +47,7 @@ func (db *DB) listArtists(ctx context.Context, guest bool) ([]*ArtistEntry, erro
 		LEFT JOIN artist_images ai ON ai.artist_id = a.id
 		` + where + `
 		GROUP BY a.id
-		ORDER BY a.norm_name = ? ASC, LOWER(a.name) ASC`
+		ORDER BY a.norm_name = ? ASC, unicode_lower(a.name) ASC`
 
 	rows, err := db.QueryContext(ctx, q, normalizeKey(DefaultArtistName))
 	if err != nil {
@@ -130,8 +130,8 @@ func (db *DB) ListArtistsPage(ctx context.Context, cursor string, limit int, gue
 		// Rows strictly after the cursor in (is_unknown, lower_name, id) order.
 		where += ` AND (
 			(a.norm_name = ?) > ?
-			OR ((a.norm_name = ?) = ? AND LOWER(a.name) > ?)
-			OR ((a.norm_name = ?) = ? AND LOWER(a.name) = ? AND a.id > ?)
+			OR ((a.norm_name = ?) = ? AND unicode_lower(a.name) > ?)
+			OR ((a.norm_name = ?) = ? AND unicode_lower(a.name) = ? AND a.id > ?)
 		)`
 		args = append(args, unknown, c.Unknown, unknown, c.Unknown, c.Name, unknown, c.Unknown, c.Name, c.ID)
 	}
@@ -140,13 +140,13 @@ func (db *DB) ListArtistsPage(ctx context.Context, cursor string, limit int, gue
 	q := `
 		SELECT a.id, a.name, COUNT(*) AS track_count,
 		       CASE WHEN ai.artist_id IS NOT NULL THEN 1 ELSE 0 END AS has_image,
-		       (a.norm_name = ?) AS is_unknown, LOWER(a.name) AS sort_name
+		       (a.norm_name = ?) AS is_unknown, unicode_lower(a.name) AS sort_name
 		FROM artists a
 		JOIN tagsets m ON m.album_artist_id = a.id` + recordingJoin + `
 		LEFT JOIN artist_images ai ON ai.artist_id = a.id
 		` + where + `
 		GROUP BY a.id
-		ORDER BY a.norm_name = ? ASC, LOWER(a.name) ASC, a.id ASC
+		ORDER BY a.norm_name = ? ASC, unicode_lower(a.name) ASC, a.id ASC
 		LIMIT ?`
 
 	rows, err := db.QueryContext(ctx, q, args...)
@@ -213,7 +213,7 @@ func (db *DB) listAlbumsByArtistID(ctx context.Context, artistID int64, guest bo
 		LEFT JOIN album_images ali ON ali.album_id = al.id
 		` + where + `
 		GROUP BY al.id
-		ORDER BY al.norm_title = ? ASC, year ASC, LOWER(al.title) ASC`
+		ORDER BY al.norm_title = ? ASC, year ASC, unicode_lower(al.title) ASC`
 
 	rows, err := db.QueryContext(ctx, q, artistID, artistID, normalizeKey(DefaultAlbumTitle))
 	if err != nil {
@@ -282,7 +282,7 @@ func (db *DB) listTracksByAlbumID(ctx context.Context, albumID int64, guest bool
 		LEFT JOIN files orig ON orig.id = m.origin_file_id
 		LEFT JOIN artists par ON par.id = m.artist_id
 		` + where + `
-		ORDER BY (m.disc_number IS NULL) ASC, m.disc_number ASC, m.track_number ASC, LOWER(m.title) ASC`
+		ORDER BY (m.disc_number IS NULL) ASC, m.disc_number ASC, m.track_number ASC, unicode_lower(m.title) ASC`
 
 	rows, err := db.QueryContext(ctx, q, albumID)
 	if err != nil {
@@ -334,7 +334,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 		LEFT JOIN artist_images ai ON ai.artist_id = a.id
 		` + artistWhere + `
 		GROUP BY a.id
-		ORDER BY LOWER(a.name) ASC
+		ORDER BY unicode_lower(a.name) ASC
 		LIMIT 50`
 
 	aRows, err := db.QueryContext(ctx, artistQ, artistArgs...)
@@ -372,7 +372,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 		LEFT JOIN album_images ali ON ali.album_id = al.id
 		` + albumWhere + `
 		GROUP BY al.id
-		ORDER BY LOWER(al.title) ASC
+		ORDER BY unicode_lower(al.title) ASC
 		LIMIT 50`
 
 	alRows, err := db.QueryContext(ctx, albumQ, albumArgs...)
@@ -425,7 +425,7 @@ func (db *DB) search(ctx context.Context, q string, filtered bool) (*SearchResul
 		JOIN albums al ON al.id = m.album_id
 		JOIN artists par ON par.id = m.artist_id
 		` + trackWhere + `
-		ORDER BY LOWER(m.title) ASC
+		ORDER BY unicode_lower(m.title) ASC
 		LIMIT 50`
 
 	tRows, err := db.QueryContext(ctx, trackQ, trackArgs...)

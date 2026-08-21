@@ -294,7 +294,7 @@ JOIN media_metadata m ON m.album_artist_id = a.id   -- search: (= a.id OR m.arti
 JOIN files f ON f.id = m.file_id AND f.deleted_at IS NULL
 LEFT JOIN artist_images ai ON ai.artist_id = a.id
 GROUP BY a.id
-ORDER BY a.norm_name = ? ASC, LOWER(a.name);  -- ? = normalizeKey(DefaultArtistName)
+ORDER BY a.norm_name = ? ASC, unicode_lower(a.name);  -- ? = normalizeKey(DefaultArtistName)
 ```
 
 Browse endpoints address entities by `?artist_id=` / `?album_id=`.

@@ -160,7 +160,7 @@ GET /api/artists?limit=60&cursor=<opaque>
 `id` as a tiebreaker. Concretely:
 
 - **Artists.** Current order is
-  `ORDER BY a.norm_name = <unknown> ASC, LOWER(a.name) ASC`. Make it stable with
+  `ORDER BY a.norm_name = <unknown> ASC, unicode_lower(a.name) ASC`. Make it stable with
   `… , a.id ASC`; the cursor carries `(is_unknown_bucket, lower_name, id)` and the
   keyset predicate is the standard lexicographic
   `(k1, k2, k3) > (c1, c2, c3)` expansion.

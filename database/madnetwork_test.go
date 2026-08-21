@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -1200,5 +1201,244 @@ func TestAddSourceHoldingsIsAdditive(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("after a full sync the source has %d holdings, want 1", n)
+	}
+}
+
+// ── The A-Z list of the merged catalog (docs/ui/madnetwork-page.md §"Artist
+// identity") ────────────────────────────────────────────────────────────────
+//
+// These pin the same two rules as database/album_artist_browse_test.go, on the
+// other page: an album-artist tag is the artist, a pure performer is a search
+// hit only, and the alphabet the list is sorted and paged by is not just ASCII.
+
+// A cached entry carrying an album artist and no performer tag belongs to that
+// album artist — not to the Unknown bucket, and its album keeps its title.
+func TestMadnetworkArtists_AlbumArtistOnlyEntry(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertPeer(t, db, "aa11", "friend-a", federation.PeerFriend)
+	friend := insertSource(t, db, "aa11")
+	entry := catEntry("1", "r1", "Apparat", "The Devil's Walk", "Sweet Unrest", "hash-a1")
+	entry.Artist = "" // an album-artist tag, and nothing in the artist tag
+	if err := db.ReplaceSourceCatalog(ctx, friend, "s", 100, []federation.CatalogEntry{entry}); err != nil {
+		t.Fatalf("ReplaceSourceCatalog: %v", err)
+	}
+
+	view := MadnetworkView{}
+	artists, _, err := db.MadnetworkArtists(ctx, "", view, 0, "")
+	if err != nil {
+		t.Fatalf("MadnetworkArtists: %v", err)
+	}
+	if len(artists) != 1 || artists[0].Name != "Apparat" {
+		t.Fatalf("artists = %+v, want [Apparat] — an album-artist tag is the artist", artists)
+	}
+	albums, err := db.MadnetworkAlbums(ctx, "Apparat", view)
+	if err != nil {
+		t.Fatalf("MadnetworkAlbums: %v", err)
+	}
+	if len(albums) != 1 || albums[0].Title != "The Devil's Walk" {
+		t.Fatalf("albums = %+v, want the album's own title, not the %q bucket", albums, DefaultAlbumTitle)
+	}
+	rows, err := db.MadnetworkTracks(ctx, "Apparat", "The Devil's Walk", view)
+	if err != nil {
+		t.Fatalf("MadnetworkTracks: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("tracks = %d, want 1 — the album must open on its tracks", len(rows))
+	}
+	// The row a client renders knows the artist even though no performer tag
+	// exists: the group it was found in is the answer.
+	if rows[0].GroupArtist != "Apparat" {
+		t.Errorf("group artist = %q, want Apparat", rows[0].GroupArtist)
+	}
+}
+
+// Paging the artist list must not lose rows, whatever alphabet they are in. The
+// cursor and the SQL that compares it have to fold case the SAME way: a cursor
+// lowercased in Go against a comparison lowercased by SQLite's ASCII-only
+// lower() silently skips every remaining Cyrillic name, because a capital
+// Cyrillic letter is byte-wise smaller than a small one.
+func TestMadnetworkArtists_PagingKeepsEveryRow(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertPeer(t, db, "pg11", "friend-a", federation.PeerFriend)
+	friend := insertSource(t, db, "pg11")
+	all := []string{"Аквариум", "АукцЫон", "Кино", "Пикник", "Apparat", "Nirvana", "Zeal & Ardor"}
+	entries := make([]federation.CatalogEntry, 0, len(all))
+	for i, name := range all {
+		e := catEntry(string(rune('a'+i)), "r"+string(rune('a'+i)), name, "Album", "Title", "hash-"+string(rune('a'+i)))
+		entries = append(entries, e)
+	}
+	if err := db.ReplaceSourceCatalog(ctx, friend, "s", 100, entries); err != nil {
+		t.Fatalf("ReplaceSourceCatalog: %v", err)
+	}
+
+	view := MadnetworkView{}
+	whole, _, err := db.MadnetworkArtists(ctx, "", view, 0, "")
+	if err != nil {
+		t.Fatalf("MadnetworkArtists: %v", err)
+	}
+	if len(whole) != len(all) {
+		t.Fatalf("unpaged list = %d artists, want %d", len(whole), len(all))
+	}
+
+	var paged []string
+	cursor := ""
+	for page := 0; page < 20; page++ {
+		rows, next, err := db.MadnetworkArtists(ctx, "", view, 2, cursor)
+		if err != nil {
+			t.Fatalf("MadnetworkArtists(page %d): %v", page, err)
+		}
+		for _, a := range rows {
+			paged = append(paged, a.Name)
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	if len(paged) != len(whole) {
+		t.Fatalf("paging returned %d artists (%v), want all %d — a page boundary "+
+			"inside a non-ASCII name must not swallow the rest of the list", len(paged), paged, len(whole))
+	}
+	for i, a := range whole {
+		if paged[i] != a.Name {
+			t.Fatalf("paged order = %v, want the unpaged order %v", paged, artistNames(whole))
+		}
+	}
+}
+
+// The merged list is alphabetical case-insensitively, for every alphabet — a
+// name spelled with a small first letter belongs among its neighbours.
+func TestMadnetworkArtists_AlphabeticalOrderIsCaseInsensitive(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertPeer(t, db, "or11", "friend-a", federation.PeerFriend)
+	friend := insertSource(t, db, "or11")
+	entries := []federation.CatalogEntry{}
+	for i, name := range []string{"Пикник", "аукцЫон", "Кино", "Ленинград"} {
+		entries = append(entries, catEntry(string(rune('a'+i)), "r"+string(rune('a'+i)), name, "Album", "Title", "hash-"+string(rune('a'+i))))
+	}
+	if err := db.ReplaceSourceCatalog(ctx, friend, "s", 100, entries); err != nil {
+		t.Fatalf("ReplaceSourceCatalog: %v", err)
+	}
+
+	artists, _, err := db.MadnetworkArtists(ctx, "", MadnetworkView{}, 0, "")
+	if err != nil {
+		t.Fatalf("MadnetworkArtists: %v", err)
+	}
+	want := []string{"аукцЫон", "Кино", "Ленинград", "Пикник"}
+	got := artistNames(artists)
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("artist order = %v, want %v (alphabetical, case-folded)", got, want)
+	}
+}
+
+// A performer who plays on somebody else's release and has nothing of their own
+// is not in the A-Z list, and IS a search hit — the merged catalog's half of the
+// rule the library keeps in listArtists.
+func TestMadnetworkArtists_PurePerformerIsSearchOnly(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertPeer(t, db, "pp11", "friend-a", federation.PeerFriend)
+	friend := insertSource(t, db, "pp11")
+	comp := catEntry("1", "r1", "Various Artists", "Greatest Comp", "Halo", "hash-p1")
+	comp.Artist = "Beyonce" // the performer, under somebody else's album artist
+	own := catEntry("2", "r2", "Nirvana", "Nevermind", "Lithium", "hash-p2")
+	if err := db.ReplaceSourceCatalog(ctx, friend, "s", 100, []federation.CatalogEntry{comp, own}); err != nil {
+		t.Fatalf("ReplaceSourceCatalog: %v", err)
+	}
+
+	view := MadnetworkView{}
+	artists, _, err := db.MadnetworkArtists(ctx, "", view, 0, "")
+	if err != nil {
+		t.Fatalf("MadnetworkArtists: %v", err)
+	}
+	got := artistNames(artists)
+	for _, name := range got {
+		if name == "Beyonce" {
+			t.Errorf("a pure performer is in the A-Z list: %v", got)
+		}
+	}
+	if len(got) != 2 {
+		t.Errorf("artists = %v, want the two album artists", got)
+	}
+	hits, err := db.MadnetworkSearchArtists(ctx, "beyonce", 5, view)
+	if err != nil {
+		t.Fatalf("MadnetworkSearchArtists: %v", err)
+	}
+	if len(hits) != 1 || hits[0].Name != "Beyonce" {
+		t.Errorf("search hits = %+v, want [Beyonce] — a performer is found by name", hits)
+	}
+	// And the hit is not a dead end: the comp they play on is under their name.
+	albums, err := db.MadnetworkAlbums(ctx, "Beyonce", view)
+	if err != nil {
+		t.Fatalf("MadnetworkAlbums: %v", err)
+	}
+	if len(albums) != 1 || albums[0].Title != "Greatest Comp" {
+		t.Errorf("Beyonce's albums = %+v, want the comp she performs on", albums)
+	}
+}
+
+// artistNames is the merged artist list as plain names, for readable failures.
+func artistNames(artists []*MadnetworkArtist) []string {
+	out := make([]string, 0, len(artists))
+	for _, a := range artists {
+		out = append(out, a.Name)
+	}
+	return out
+}
+
+// Two nodes spelling one Cyrillic name differently are ONE row of the merged
+// list, exactly as two spellings of an ASCII name are. The fold has to be the
+// Unicode one on every side — the grouping key, the order and the lookup — or
+// the same band appears twice and each copy holds half the albums.
+func TestMadnetworkArtists_CyrillicCaseVariantsAreOneRow(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	insertPeer(t, db, "cv11", "friend-a", federation.PeerFriend)
+	insertPeer(t, db, "cv22", "friend-b", federation.PeerFriend)
+	a := insertSource(t, db, "cv11")
+	b := insertSource(t, db, "cv22")
+	if err := db.ReplaceSourceCatalog(ctx, a, "s", 100, []federation.CatalogEntry{
+		catEntry("1", "r1", "Кино", "Группа крови", "Легенда", "hash-c1"),
+	}); err != nil {
+		t.Fatalf("ReplaceSourceCatalog(a): %v", err)
+	}
+	if err := db.ReplaceSourceCatalog(ctx, b, "s", 100, []federation.CatalogEntry{
+		catEntry("2", "r2", "КИНО", "ГРУППА КРОВИ", "Спокойная ночь", "hash-c2"),
+	}); err != nil {
+		t.Fatalf("ReplaceSourceCatalog(b): %v", err)
+	}
+
+	view := MadnetworkView{}
+	artists, _, err := db.MadnetworkArtists(ctx, "", view, 0, "")
+	if err != nil {
+		t.Fatalf("MadnetworkArtists: %v", err)
+	}
+	if len(artists) != 1 {
+		t.Fatalf("artists = %v, want one row — two spellings of one name", artistNames(artists))
+	}
+	if artists[0].Tracks != 2 {
+		t.Errorf("tracks = %d, want 2 — both nodes' tracks belong to the one artist", artists[0].Tracks)
+	}
+	albums, err := db.MadnetworkAlbums(ctx, artists[0].Name, view)
+	if err != nil {
+		t.Fatalf("MadnetworkAlbums: %v", err)
+	}
+	if len(albums) != 1 || albums[0].Tracks != 2 {
+		t.Fatalf("albums = %+v, want one album holding both tracks", albums)
+	}
+	rows, err := db.MadnetworkTracks(ctx, artists[0].Name, albums[0].Title, view)
+	if err != nil {
+		t.Fatalf("MadnetworkTracks: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Errorf("tracks = %d, want both spellings' rows — the album opens on all of it", len(rows))
 	}
 }

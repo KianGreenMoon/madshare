@@ -276,9 +276,9 @@ func (db *DB) MadnetworkRowsForIdents(ctx context.Context, idents []string, view
 // two MUST fold to the same string for the same track — that identity is what
 // makes "we publish this too" a self holder on a remote row instead of a
 // duplicate line under it.
-const selfTrackFullIdent = `lower(` + selfAkeyExpr + `) || char(31) || lower(` + selfAlbExpr + `) ||
+const selfTrackFullIdent = `unicode_lower(` + selfAkeyExpr + `) || char(31) || unicode_lower(` + selfAlbExpr + `) ||
 	char(31) || COALESCE(m.disc_number, -1) || char(31) || COALESCE(m.track_number, -1) ||
-	char(31) || lower(m.title)`
+	char(31) || unicode_lower(m.title)`
 
 // CapPerSource fills a lane round-robin across the nodes that supplied it,
 // letting no single node contribute more than its share until the rest have had

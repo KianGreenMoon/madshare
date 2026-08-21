@@ -1008,25 +1008,25 @@ func fedcatCreditBase(view MadnetworkView) string {
 	      UNION ALL
 	      SELECT pkey AS akey, alb, title, track_number, disc_number, year, 0 AS album_artist_credit
 	      FROM fedcat_rows
-	      WHERE pkey <> '' AND lower(pkey) <> lower(akey))`
+	      WHERE pkey <> '' AND unicode_lower(pkey) <> unicode_lower(akey))`
 }
 
 // Leading ORDER BY keys forcing the unknown buckets to the bottom of the
 // alphabetical lists (the library's norm_name trick, matched on the canonical
 // default strings — remote catalogs carry no normalized ids).
-const artistBucketLast = `(lower(akey) = lower('` + DefaultArtistName + `')) ASC`
-const albumBucketLast = `(lower(alb) = lower('` + DefaultAlbumTitle + `')) ASC`
+const artistBucketLast = `(unicode_lower(akey) = unicode_lower('` + DefaultArtistName + `')) ASC`
+const albumBucketLast = `(unicode_lower(alb) = unicode_lower('` + DefaultAlbumTitle + `')) ASC`
 
 // trackIdent is the merged logical-track identity inside one artist bucket:
 // album + disc + track + title (case-insensitive) — the same text offered by
 // several friends is ONE row.
-const trackIdent = `lower(alb) || char(31) || COALESCE(disc_number, -1) || char(31) ||
-	COALESCE(track_number, -1) || char(31) || lower(title)`
+const trackIdent = `unicode_lower(alb) || char(31) || COALESCE(disc_number, -1) || char(31) ||
+	COALESCE(track_number, -1) || char(31) || unicode_lower(title)`
 
 // trackFullIdent is that identity across the whole merged view rather than
 // inside one artist bucket — the key the discovery lanes rank and the counting
 // queries count distinct.
-const trackFullIdent = `lower(akey) || char(31) || ` + trackIdent
+const trackFullIdent = `unicode_lower(akey) || char(31) || ` + trackIdent
 
 // MadnetworkArtist is one row of the merged artist list.
 type MadnetworkArtist struct {
@@ -1083,10 +1083,10 @@ func (db *DB) madnetworkArtists(ctx context.Context, q string, view MadnetworkVi
 	if c, ok := decodeArtistCursor(cursor); ok {
 		// Row-value comparison over the ORDER BY key: the bucket flag first (the
 		// unknown bucket sorts last), then the folded name. Applied row-level
-		// because the grouping key is lower(akey), which is constant per group.
+		// because the grouping key is unicode_lower(akey), which is constant per group.
 		// The cursor type is the library's — same sort key, minus the id a merged
 		// row has no equivalent of (the folded name IS the group).
-		conds = append(conds, `((`+artistBucketExpr+`), lower(akey)) > (?, ?)`)
+		conds = append(conds, `((`+artistBucketExpr+`), unicode_lower(akey)) > (?, ?)`)
 		args = append(args, c.Unknown, c.Name)
 	}
 	where := ""
@@ -1106,10 +1106,10 @@ func (db *DB) madnetworkArtists(ctx context.Context, q string, view MadnetworkVi
 		having = " HAVING MAX(album_artist_credit) = 1"
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT MIN(akey), COUNT(DISTINCT lower(alb)), COUNT(DISTINCT `+trackIdent+`)
+		SELECT MIN(akey), COUNT(DISTINCT unicode_lower(alb)), COUNT(DISTINCT `+trackIdent+`)
 		`+fedcatCreditBase(view)+where+`
-		GROUP BY lower(akey)`+having+`
-		ORDER BY `+artistBucketLast+`, lower(akey)`+page, args...)
+		GROUP BY unicode_lower(akey)`+having+`
+		ORDER BY `+artistBucketLast+`, unicode_lower(akey)`+page, args...)
 	if err != nil {
 		return nil, "", fmt.Errorf("madnetwork artists: %w", err)
 	}
@@ -1141,7 +1141,7 @@ func (db *DB) madnetworkArtists(ctx context.Context, q string, view MadnetworkVi
 // artistBucketExpr is artistBucketLast without its sort direction — the same
 // flag as a value, so the keyset cursor compares exactly what the ORDER BY
 // orders by.
-const artistBucketExpr = `lower(akey) = lower('` + DefaultArtistName + `')`
+const artistBucketExpr = `unicode_lower(akey) = unicode_lower('` + DefaultArtistName + `')`
 
 // MadnetworkAlbum is one row of an artist's merged album list.
 type MadnetworkAlbum struct {
@@ -1160,9 +1160,9 @@ func (db *DB) MadnetworkAlbums(ctx context.Context, artist string, view Madnetwo
 	rows, err := db.QueryContext(ctx, `
 		SELECT MIN(alb), COUNT(DISTINCT `+trackIdent+`), MAX(year)
 		`+fedcatCreditBase(view)+`
-		WHERE lower(akey) = lower(?)
-		GROUP BY lower(alb)
-		ORDER BY `+albumBucketLast+`, year IS NULL, year, lower(alb)`, artist)
+		WHERE unicode_lower(akey) = unicode_lower(?)
+		GROUP BY unicode_lower(alb)
+		ORDER BY `+albumBucketLast+`, year IS NULL, year, unicode_lower(alb)`, artist)
 	if err != nil {
 		return nil, fmt.Errorf("madnetwork albums: %w", err)
 	}
@@ -1235,7 +1235,7 @@ func (db *DB) remoteTrackRows(ctx context.Context, view MadnetworkView, match st
 		       COALESCE(duration, 0), COALESCE(license, ''), guest_playable, renditions
 		`+fedcatBase(view)+`
 		WHERE `+match+`
-		ORDER BY (disc_number IS NULL) ASC, disc_number ASC, track_number ASC, lower(title) ASC, source_id ASC`,
+		ORDER BY (disc_number IS NULL) ASC, disc_number ASC, track_number ASC, unicode_lower(title) ASC, source_id ASC`,
 		args...)
 	if err != nil {
 		return nil, fmt.Errorf("madnetwork tracks: %w", err)
@@ -1271,7 +1271,7 @@ func (db *DB) remoteTrackRows(ctx context.Context, view MadnetworkView, match st
 // rather than on nothing.
 func (db *DB) MadnetworkTracks(ctx context.Context, artist, album string, view MadnetworkView) ([]*MadnetworkTrackRow, error) {
 	return db.remoteTrackRows(ctx, view,
-		`(lower(akey) = lower(?) OR lower(pkey) = lower(?)) AND lower(alb) = lower(?)`, artist, artist, album)
+		`(unicode_lower(akey) = unicode_lower(?) OR unicode_lower(pkey) = unicode_lower(?)) AND unicode_lower(alb) = unicode_lower(?)`, artist, artist, album)
 }
 
 // Self-row display-identity expressions over the tagsets join (aliases par /
@@ -1302,7 +1302,7 @@ func (db *DB) ownTrackRows(ctx context.Context, view MadnetworkView, match strin
 		LEFT JOIN artists aar ON aar.id = m.album_artist_id
 		LEFT JOIN albums al   ON al.id  = m.album_id
 		WHERE `+visibleTagset+selfPublishedClause(view)+` AND `+match+`
-		ORDER BY (m.disc_number IS NULL) ASC, m.disc_number ASC, m.track_number ASC, lower(m.title) ASC, m.id ASC`,
+		ORDER BY (m.disc_number IS NULL) ASC, m.disc_number ASC, m.track_number ASC, unicode_lower(m.title) ASC, m.id ASC`,
 		args...)
 	if err != nil {
 		return nil, fmt.Errorf("madnetwork own tracks: %w", err)
@@ -1380,7 +1380,7 @@ func (db *DB) ownTrackRows(ctx context.Context, view MadnetworkView, match strin
 // the remote side.
 func (db *DB) MadnetworkOwnTracks(ctx context.Context, artist, album string, view MadnetworkView) ([]*MadnetworkTrackRow, error) {
 	return db.ownTrackRows(ctx, view,
-		`(lower(`+selfAkeyExpr+`) = lower(?) OR lower(`+selfPkeyExpr+`) = lower(?)) AND lower(`+selfAlbExpr+`) = lower(?)`,
+		`(unicode_lower(`+selfAkeyExpr+`) = unicode_lower(?) OR unicode_lower(`+selfPkeyExpr+`) = unicode_lower(?)) AND unicode_lower(`+selfAlbExpr+`) = unicode_lower(?)`,
 		artist, artist, album)
 }
 
@@ -1405,8 +1405,8 @@ func (db *DB) MadnetworkSearchAlbums(ctx context.Context, q string, limit int, v
 		SELECT MIN(akey), MIN(alb), COUNT(DISTINCT `+trackIdent+`), MAX(year)
 		`+fedcatCountBase(view)+`
 		WHERE unicode_lower(alb) LIKE unicode_lower(?) ESCAPE '\'
-		GROUP BY lower(akey), lower(alb)
-		ORDER BY `+albumBucketLast+`, lower(alb), lower(akey)
+		GROUP BY unicode_lower(akey), unicode_lower(alb)
+		ORDER BY `+albumBucketLast+`, unicode_lower(alb), unicode_lower(akey)
 		LIMIT ?`, "%"+escaped+"%", limit)
 	if err != nil {
 		return nil, fmt.Errorf("madnetwork search albums: %w", err)
@@ -1513,7 +1513,7 @@ func (db *DB) MadnetworkSummary(ctx context.Context, view MadnetworkView) ([]*Ma
 		WHERE `+notBlocked+`
 		  AND (COALESCE(s.trust_state, '') = 'friend'
 		       OR EXISTS (SELECT 1 FROM federation_catalog c2 WHERE c2.node_key = s.public_key))
-		ORDER BY (COALESCE(s.trust_state, '') = 'friend') DESC, lower(`+sourceLabelExpr+`), s.id`)
+		ORDER BY (COALESCE(s.trust_state, '') = 'friend') DESC, unicode_lower(`+sourceLabelExpr+`), s.id`)
 	if err != nil {
 		return nil, 0, fmt.Errorf("madnetwork summary: %w", err)
 	}
