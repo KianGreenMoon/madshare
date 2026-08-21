@@ -387,7 +387,7 @@ func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow, opts mergeOpts) 
 		}
 		for _, row := range group {
 			if t.Artist == "" {
-				t.Artist = row.Entry.Artist
+				t.Artist = trackCredit(row)
 			}
 			if t.Duration == 0 {
 				t.Duration = row.Entry.Duration
@@ -402,6 +402,27 @@ func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow, opts mergeOpts) 
 		tracks = append(tracks, t)
 	}
 	return tracks
+}
+
+// trackCredit is the performer to show for one cached row.
+//
+// It is database's effectiveTrackArtist over text rather than entities: the
+// performer of a track with no artist tag IS its album artist, and only then the
+// Unknown bucket. The local library resolves that at import and can never hand
+// out an empty credit; a cached row carries whatever its node published, which
+// for a file tagged with an album artist and no artist tag is nothing at all. A
+// client renders this field verbatim — as it should, the server decides the
+// names — so the fallback has to happen here or the row draws a blank.
+//
+// GroupArtist is the last resort because it is never empty: it is the bucket the
+// row was found in, which is the album's artist by construction.
+func trackCredit(row *database.MadnetworkTrackRow) string {
+	for _, s := range []string{row.Entry.Artist, row.Entry.AlbumArtist, row.GroupArtist} {
+		if strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // mergeVersions unions a track group's rows into display versions: two claimed

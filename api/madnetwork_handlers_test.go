@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -553,5 +554,44 @@ func TestMadnetworkHolders_Reachability(t *testing.T) {
 	}
 	if !reach["fresh-peer"] || reach["stale-peer"] {
 		t.Errorf("holder reachability = %+v, want fresh=true stale=false", reach)
+	}
+}
+
+// A cached row whose file carries an album-artist tag and no artist tag must
+// still name an artist in the track list. The performer of a track with no
+// performer tag IS the album artist (database's effectiveTrackArtist, the rule
+// every local row already resolves through) — so a client that renders the
+// field verbatim, as it should, never draws a blank credit.
+func TestMadnetworkTracks_ArtistFallsBackToTheAlbumArtist(t *testing.T) {
+	row := madRow(1, "alpha", "r1", "Sweet Unrest", "h-1")
+	row.GroupArtist, row.GroupAlbum = "Apparat", "The Devil's Walk"
+	row.Entry.Artist = "" // no artist tag on the file
+	row.Entry.AlbumArtist = "Apparat"
+
+	r := chi.NewRouter()
+	RegisterAPI(r, Deps{Madnetwork: &fakeMadnetwork{rows: []*database.MadnetworkTrackRow{row}}})
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/madnetwork/tracks?artist=Apparat&album=" + url.QueryEscape("The Devil's Walk"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Tracks []struct {
+			Title  string `json:"title"`
+			Artist string `json:"artist"`
+		} `json:"tracks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Tracks) != 1 {
+		t.Fatalf("tracks = %d, want 1", len(body.Tracks))
+	}
+	if body.Tracks[0].Artist != "Apparat" {
+		t.Errorf("artist = %q, want %q — an empty performer tag falls back to the album artist",
+			body.Tracks[0].Artist, "Apparat")
 	}
 }
