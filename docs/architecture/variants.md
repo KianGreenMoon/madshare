@@ -118,6 +118,14 @@ fully content-addressed source/derivative split that mirrors the audio model.
   gap). Artist covers keep no variant pipeline (deferred): their original is the
   flat `<image_hash><ext>` file, served directly.
 
+  *One deliberate exception (2026-08-22): the rule is about the browser-facing
+  API.* Node-to-node, the madnetwork serves the cover original **by its full
+  hash** as a mesh blob — replication wants the canonical bytes (self-verifying,
+  variants re-derived on the fetching node), and network covers are bounded by
+  the upload ceiling everywhere. See `federation.md` §"Covers travel the
+  madnetwork". The `/images` tree and `GET /api/albums/{album_id}/image` are
+  unchanged: derived variants only.
+
 **Why recipe-keyed, not a per-variant hash.** A cover variant's content is fully
 determined by `(original_hash, recipe)` — same source + same recipe → byte-
 identical output. So a `<variant_hash>` level is *derivable* info we'd have to

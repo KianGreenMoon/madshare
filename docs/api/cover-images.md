@@ -6,7 +6,9 @@ configuration.
 Cover images use a content-addressed **source/derivative split** (full design:
 `docs/architecture/variants.md`). The **source original** — a JPEG/PNG — is stored
 under `<files_dir>/images/<image_hash>/original<ext>`, keyed by the **full**
-`sha256` of its bytes; it is a regenerate seed and is **never served**. An
+`sha256` of its bytes; it is a regenerate seed and is **never served** on the
+browser-facing API. (Node-to-node it IS served — the mesh replicates covers by
+that very hash; see "Covers over the madnetwork" below.) An
 `image_processing_jobs` row is enqueued and a worker pool (`imageproc.Pool`)
 generates eight square **derived variants** (crop + fit at 64 / 150 / 300 / 600 px)
 under `<variants_dir>/images/<image_hash>/<recipe><ext>` — served at `/images`.
@@ -297,3 +299,28 @@ curl "http://localhost:3000/api/ui/config"
   embedded cover-art extraction (the other way covers enter the system).
 - `docs/architecture/artist-album-model.md` — the entity model covers are keyed
   to; WebP and artist-cover variants are deferred (`docs/plans/roadmap.md`).
+
+## Covers over the madnetwork (2026-08-22)
+
+Design: `docs/architecture/federation.md` §"Covers travel the madnetwork";
+plan: `docs/plans/covers-federation.md`.
+
+- **Catalog fields.** A published catalog entry carries `cover_hash` /
+  `cover_ext` — the full sha256 of the album cover's source original and its
+  extension — when (and only when) the cover's variants are ready. Additive
+  `omitempty` JSON.
+- **`GET /api/madnetwork/cover/{hash}`** (permission `madnetwork.access`,
+  federation only) relays a cover original cache-through from whoever holds it,
+  exactly like `stream/{hash}` relays audio. The response type is sniffed from
+  the bytes (JPEG/PNG only), the size is capped at the upload ceiling
+  (`maxImageSize`), and the answer is hash-addressed so it ships immutable
+  cache headers. A cover this library owns is served locally without a fetch.
+  This endpoint serves *network* covers; the local library's album art stays on
+  `GET /api/albums/{album_id}/image`, which serves derived variants only.
+- **Browse rows.** `/api/madnetwork/albums` rows and the merged track rows
+  (tracks, lanes, search) carry `cover_hash`/`cover_ext`, elected per row from
+  the sources' claims by the voices rule. Fetch the art via the relay above.
+- **Downloads attach covers.** `POST /api/madnetwork/download` also redeems the
+  entry's cover claim in the background: original fetched by hash, album cover
+  claimed fill-if-missing, variant job queued — the embedded-art flow with the
+  network as the second source of art.

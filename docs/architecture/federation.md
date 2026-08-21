@@ -409,6 +409,55 @@ extra layer. If the frontier rotation proves too slow in practice, digest relay
 is the upgrade path — it makes "which node changed" free, and only then does
 storing more pay off.
 
+### Covers travel the madnetwork (built 2026-08-22)
+
+Plan: `docs/plans/covers-federation.md`. Four decisions, in the grain of
+everything above:
+
+- **The catalog carries the cover as a claim.** Each entry advertises its
+  album's cover as `cover_hash` / `cover_ext` — the full sha256 of the cover's
+  *source original* and its extension. The hash is fetchable as a mesh blob
+  exactly like a rendition, and it is `media.ImageHash`'s own keying, so the
+  fetched bytes land in the image store under the very name the claim used.
+  Only ready covers (variants generated, full-hash keyed) are published; the
+  fields are additive `omitempty` JSON, so old nodes ignore them and the
+  protocol does not move. Migration 049 adds the two columns to the cached
+  copy.
+- **The mesh serves the original; the browser API still never does.** The
+  never-served rule (`variants.md`) is about the browser-facing surface — the
+  UI needs ≤ ~480 px. Node-to-node, the original IS the replication payload:
+  canonical bytes, self-verifying by hash, variants re-derived locally.
+  `BlobVisibleTo` grew a cover arm reading the album's own scope — a cover is
+  served to an audience exactly when some visible tagset of its album is in
+  that audience's scope, so catalog and bytes keep reading one rule for the
+  second kind of blob too. The app's blob resolver locates
+  `<files>/images/<hash>/original<ext>`; `seedableBlob` needed no change.
+- **A download redeems the cover claim** (`api/madnetwork_cover.go`): the
+  embedded-art rule applied to a second source of art. Where an upload carries
+  a cover inside the file, a download carries a claim inside the entry; the
+  attach fetches by hash, sniffs that the bytes decode before claiming (a
+  wedged claim would block fill-if-missing for that album forever), lands the
+  original, claims via `SetAlbumCoverIfAbsent` — fill-if-missing, never
+  replacing local art — and queues the local variant job. Soft-fail
+  throughout: a missing cover never costs the download.
+- **Merged rows elect a cover by the voices rule.** There is deliberately no
+  global album identity (albums merge by normalized text, sameness is
+  strengthened by shared recordings — §Trust graph's claims doctrine), so two
+  nodes can legitimately claim two covers for one album name. Browse rows
+  (albums, tracks, lanes, search) tally the claims per row and elect a winner
+  with `BranchMap.Voices` — the same election that orders tagsets and
+  versions, applied to art (`coverBallot`; ties fall deterministically to
+  holder count, then self, then smallest hash). A wrong merge costs a
+  *real* cover for a disputed name, never corrupt data: covers are
+  hash-verified end to end.
+
+Thin clients reach covers through `GET /api/madnetwork/cover/{hash}` — the
+cover twin of `stream/{hash}`: cache-through, hash-addressed (immutable cache
+headers), type sniffed from the bytes, capped at the image ceiling every upload
+boundary enforces. A cover the library owns short-circuits in `EnsureBlob` and
+never touches the network. On-relay variant derivation is deferred with the
+`variants/cache` work.
+
 ## Availability & node health
 
 > **Supersedes the reverted "10-second presence" feature.** An earlier attempt
