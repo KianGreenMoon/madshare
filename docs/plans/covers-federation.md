@@ -43,7 +43,7 @@ perfectly good cover for.
 
 ## Work items — madshare
 
-*M1–M3 shipped 2026-08-22 (commits 8cee58f, 10f486d, 8d149e6); M4/M5 shipped the same day. The whole madshare side is done; the madplayer items (P1–P3) remain.*
+*M1–M3 shipped 2026-08-22 (commits 8cee58f, 10f486d, 8d149e6); M4/M5 shipped the same day. The whole madshare side is done and tagged v0.8.13 (incl. the cover-claimant provider fix); madplayer P1–P3 shipped the same day. The plan is complete.*
 
 - **M1. Catalog carries the cover.** `CatalogEntry` += `cover_hash`,
   `cover_ext` (both `omitempty` — additive JSON, old nodes ignore it; no
