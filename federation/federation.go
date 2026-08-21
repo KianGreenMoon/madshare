@@ -1403,7 +1403,16 @@ type CatalogEntry struct {
 	Duration      float64            `json:"duration,omitempty"`
 	License       string             `json:"license,omitempty"`
 	GuestPlayable bool               `json:"guest_playable,omitempty"`
-	Renditions    []CatalogRendition `json:"renditions"`
+	// CoverHash / CoverExt advertise the entry's ALBUM cover: the full sha256 of
+	// the cover's source original and the original's extension (".jpg"/".png").
+	// The hash is fetchable as a blob over the mesh exactly like a rendition —
+	// self-verifying, so a cover claim needs no more trust than an audio one.
+	// Only ready covers are published (variants generated, full-hash keyed);
+	// both fields are additive omitempty JSON, so old nodes simply ignore them.
+	CoverHash string `json:"cover_hash,omitempty"`
+	CoverExt  string `json:"cover_ext,omitempty"`
+
+	Renditions []CatalogRendition `json:"renditions"`
 }
 
 // CatalogSerial is the deterministic serial of a snapshot: the SHA-256 (hex)

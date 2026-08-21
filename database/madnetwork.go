@@ -51,11 +51,13 @@ func (db *DB) PublishedCatalog(ctx context.Context, aud federation.Audience) ([]
 		       COALESCE(aar.name, m.album_artist, ''),
 		       COALESCE(al.title, m.album, ''),
 		       COALESCE(m.genre, ''), m.year, m.track_number, m.disc_number,
-		       COALESCE(r.license, ''), r.guest_playable
+		       COALESCE(r.license, ''), r.guest_playable,
+		       COALESCE(ai.image_hash, ''), COALESCE(ai.source_ext, '')
 		FROM tagsets m`+recordingJoin+`
 		LEFT JOIN artists par ON par.id = m.artist_id
 		LEFT JOIN artists aar ON aar.id = m.album_artist_id
 		LEFT JOIN albums al   ON al.id  = m.album_id
+		LEFT JOIN album_images ai ON ai.album_id = m.album_id AND ai.variants_ready = 1
 		WHERE `+visibleTagset+`
 		  AND (`+scope+`)
 		ORDER BY m.id`, scopeArgs(defaultDepth, aud)...)
@@ -71,8 +73,14 @@ func (db *DB) PublishedCatalog(ctx context.Context, aud federation.Audience) ([]
 		var tagsetID, recordingID int64
 		var year, track, disc sql.NullInt64
 		if err := rows.Scan(&tagsetID, &recordingID, &e.Title, &e.Artist, &e.AlbumArtist,
-			&e.Album, &e.Genre, &year, &track, &disc, &e.License, &e.GuestPlayable); err != nil {
+			&e.Album, &e.Genre, &year, &track, &disc, &e.License, &e.GuestPlayable,
+			&e.CoverHash, &e.CoverExt); err != nil {
 			return nil, fmt.Errorf("scan catalog entry: %w", err)
+		}
+		// A legacy cover row (pre-variants, no full image hash) has nothing a
+		// peer could fetch; publish neither field rather than a dangling ext.
+		if e.CoverHash == "" {
+			e.CoverExt = ""
 		}
 		e.Key = strconv.FormatInt(tagsetID, 10)
 		e.RecordingKey = strconv.FormatInt(recordingID, 10)
@@ -192,15 +200,16 @@ func (db *DB) ReplaceSourceCatalog(ctx context.Context, sourceID int64, serial s
 	ins, err := tx.PrepareContext(ctx, `
 		INSERT INTO federation_catalog (node_key, entry_key, recording_key, title, artist,
 			album_artist, album, genre, year, track_number, disc_number, duration,
-			license, guest_playable, renditions, first_seen)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			license, guest_playable, renditions, cover_hash, cover_ext, first_seen)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(node_key, entry_key) DO UPDATE SET
 			recording_key = excluded.recording_key, title = excluded.title,
 			artist = excluded.artist, album_artist = excluded.album_artist,
 			album = excluded.album, genre = excluded.genre, year = excluded.year,
 			track_number = excluded.track_number, disc_number = excluded.disc_number,
 			duration = excluded.duration, license = excluded.license,
-			guest_playable = excluded.guest_playable, renditions = excluded.renditions`)
+			guest_playable = excluded.guest_playable, renditions = excluded.renditions,
+			cover_hash = excluded.cover_hash, cover_ext = excluded.cover_ext`)
 	if err != nil {
 		return fmt.Errorf("prepare source catalog upsert: %w", err)
 	}
@@ -220,7 +229,8 @@ func (db *DB) ReplaceSourceCatalog(ctx context.Context, sourceID int64, serial s
 		}
 		if _, err := ins.ExecContext(ctx, key, e.Key, e.RecordingKey, e.Title, e.Artist,
 			e.AlbumArtist, e.Album, e.Genre, e.Year, e.TrackNumber, e.DiscNumber,
-			nullFloat(e.Duration), e.License, e.GuestPlayable, string(renditions), syncedAt); err != nil {
+			nullFloat(e.Duration), e.License, e.GuestPlayable, string(renditions),
+			e.CoverHash, e.CoverExt, syncedAt); err != nil {
 			return fmt.Errorf("upsert source catalog entry: %w", err)
 		}
 	}
@@ -269,7 +279,7 @@ func catalogRowDigests(ctx context.Context, tx *sql.Tx, nodeKey string) (map[str
 	rows, err := tx.QueryContext(ctx, `
 		SELECT entry_key, recording_key, title, artist, album_artist, album,
 		       genre, year, track_number, disc_number, duration, license,
-		       guest_playable, renditions
+		       guest_playable, renditions, cover_hash, cover_ext
 		FROM federation_catalog WHERE node_key = ?`, nodeKey)
 	if err != nil {
 		return nil, fmt.Errorf("read source catalog rows: %w", err)
@@ -284,7 +294,8 @@ func catalogRowDigests(ctx context.Context, tx *sql.Tx, nodeKey string) (map[str
 		var renditions string
 		if err := rows.Scan(&e.Key, &e.RecordingKey, &e.Title, &e.Artist,
 			&e.AlbumArtist, &e.Album, &genre, &year, &track, &disc,
-			&duration, &license, &e.GuestPlayable, &renditions); err != nil {
+			&duration, &license, &e.GuestPlayable, &renditions,
+			&e.CoverHash, &e.CoverExt); err != nil {
 			return nil, fmt.Errorf("scan source catalog row: %w", err)
 		}
 		// Normalize back to the shape entryDigest reads off an incoming entry.
@@ -314,7 +325,8 @@ func entryDigest(e *federation.CatalogEntry, renditions string) [sha256.Size]byt
 		}
 		fmt.Fprintf(h, "v%d\x1f", *v)
 	}
-	for _, s := range []string{e.RecordingKey, e.Title, e.Artist, e.AlbumArtist, e.Album, e.Genre} {
+	for _, s := range []string{e.RecordingKey, e.Title, e.Artist, e.AlbumArtist, e.Album, e.Genre,
+		e.CoverHash, e.CoverExt} {
 		h.Write([]byte(s))
 		h.Write([]byte{0x1f})
 	}
@@ -486,7 +498,8 @@ func (db *DB) madnetworkRowsForHash(ctx context.Context, hash string,
 		       `+sourceHeardExpr+`, `+srcLastSeen+`,
 		       c.entry_key, c.recording_key, c.title, c.artist, c.album_artist,
 		       c.album, COALESCE(c.genre, ''), c.year, c.track_number, c.disc_number,
-		       COALESCE(c.duration, 0), COALESCE(c.license, ''), c.guest_playable, c.renditions
+		       COALESCE(c.duration, 0), COALESCE(c.license, ''), c.guest_playable, c.renditions,
+		       c.cover_hash, c.cover_ext
 		FROM federation_catalog c`+sourceJoin("c")+`
 		WHERE c.renditions LIKE ? AND `+notBlocked+`
 		ORDER BY `+srcLastSeen+` DESC, s.id, c.entry_key`, "%"+hash+"%")
@@ -502,7 +515,7 @@ func (db *DB) madnetworkRowsForHash(ctx context.Context, hash string,
 		if err := rows.Scan(&p.SourceID, &p.PeerID, &p.PublicKey, &p.Name, &p.HeardName, &p.LastSeen,
 			&e.Key, &e.RecordingKey, &e.Title, &e.Artist, &e.AlbumArtist, &e.Album,
 			&e.Genre, &year, &track, &disc, &e.Duration, &e.License, &e.GuestPlayable,
-			&renditions); err != nil {
+			&renditions, &e.CoverHash, &e.CoverExt); err != nil {
 			return fmt.Errorf("scan madnetwork hash row: %w", err)
 		}
 		e.Year, e.TrackNumber, e.DiscNumber = nullInt(year), nullInt(track), nullInt(disc)
