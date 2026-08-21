@@ -132,3 +132,78 @@ func TestExtractTags_MIMETypeIsInformational(t *testing.T) {
 		t.Errorf("Title = %q, want %q", tags.Title, "Misdeclared")
 	}
 }
+
+// buildFLAC hand-builds a FLAC stream whose only metadata block is the Vorbis
+// comment. It is not playable audio and does not need to be: the tag reader
+// reads the block chain from the head of the file and stops at the last block,
+// which is the whole of what is under test.
+func buildFLAC(comments map[string]string) []byte {
+	var payload bytes.Buffer
+	vendor := "madshare-test"
+	_ = binary.Write(&payload, binary.LittleEndian, uint32(len(vendor)))
+	payload.WriteString(vendor)
+	_ = binary.Write(&payload, binary.LittleEndian, uint32(len(comments)))
+	for k, v := range comments {
+		c := k + "=" + v
+		_ = binary.Write(&payload, binary.LittleEndian, uint32(len(c)))
+		payload.WriteString(c)
+	}
+
+	out := []byte("fLaC")
+	// Block header: last-block flag (0x80) | block type 4 (VORBIS_COMMENT),
+	// then a 3-byte big-endian length.
+	out = append(out, 0x80|0x04,
+		byte(payload.Len()>>16), byte(payload.Len()>>8), byte(payload.Len()))
+	out = append(out, payload.Bytes()...)
+	return append(out, bytes.Repeat([]byte{0}, 256)...)
+}
+
+// The album-artist field, in every spelling a tagger writes it.
+//
+// Vorbis comments have no standard for it, so two spellings are both common in
+// the wild — Picard writes ALBUMARTIST, MP3Tag and foobar2000 write ALBUM ARTIST
+// — and a reader that knows only one of them reports a well-tagged album as
+// having no artist at all. Downstream that is not a missing field: the entity
+// resolver files the whole record under "Unknown artist", which is what a person
+// sees and reports as their album disappearing.
+func TestExtractTags_AlbumArtistSpellings(t *testing.T) {
+	for _, key := range []string{"ALBUMARTIST", "ALBUM ARTIST", "albumartist", "Album Artist", "ALBUM_ARTIST"} {
+		t.Run(key, func(t *testing.T) {
+			data := buildFLAC(map[string]string{
+				"TITLE": "Sweet Unrest",
+				"ALBUM": "The Devil's Walk",
+				key:     "Apparat",
+			})
+			tags, err := ExtractTags(bytes.NewReader(data), "audio/flac")
+			if err != nil {
+				t.Fatalf("ExtractTags: %v", err)
+			}
+			if tags.AlbumArtist != "Apparat" {
+				t.Errorf("AlbumArtist = %q for a %q comment, want Apparat", tags.AlbumArtist, key)
+			}
+			if tags.Album != "The Devil's Walk" || tags.Title != "Sweet Unrest" {
+				t.Errorf("the rest of the tags did not survive: %+v", tags)
+			}
+		})
+	}
+}
+
+// The same for ID3v2: TPE2 is the frame, and it is read whether or not the file
+// carries a TPE1 beside it.
+func TestExtractTags_AlbumArtistWithoutAnArtistFrame(t *testing.T) {
+	data := buildID3v23(map[string]string{
+		"TIT2": "Sweet Unrest",
+		"TPE2": "Apparat",
+		"TALB": "The Devil's Walk",
+	})
+	tags, err := ExtractTags(bytes.NewReader(data), "audio/mpeg")
+	if err != nil {
+		t.Fatalf("ExtractTags: %v", err)
+	}
+	if tags.AlbumArtist != "Apparat" {
+		t.Errorf("AlbumArtist = %q, want Apparat", tags.AlbumArtist)
+	}
+	if tags.Artist != "" {
+		t.Errorf("Artist = %q, want empty — the file carries no TPE1", tags.Artist)
+	}
+}

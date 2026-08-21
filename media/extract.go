@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/dhowden/tag"
 )
@@ -51,6 +52,35 @@ type CoverData struct {
 	Data     []byte
 }
 
+// albumArtistKeys are the raw tag keys an album artist is written under, beyond
+// the one the tag library knows. Vorbis comments (FLAC/OGG) have no standard for
+// the field: Picard writes ALBUMARTIST — which is all dhowden/tag reads — while
+// MP3Tag and foobar2000 write ALBUM ARTIST, and ALBUM_ARTIST turns up too. The
+// keys in a Vorbis Raw() map are already lowercased.
+//
+// This is not cosmetic. A missed album artist is not a blank field on a screen:
+// the entity resolver files the record under the Unknown-artist bucket
+// (database.effectiveArtist), so a correctly tagged album vanishes out of its
+// own place in the library and the person who tagged it has no way to see why.
+var albumArtistKeys = []string{"album artist", "album_artist", "albumartist"}
+
+// albumArtist is the tag library's answer, or the first raw key that carries
+// one. Raw() is consulted only when the reader found nothing: a format whose
+// dedicated accessor works (ID3v2's TPE2, MP4's aART) never reaches the map, and
+// a raw map keyed by something else entirely simply misses.
+func albumArtist(m tag.Metadata) string {
+	if s := strings.TrimSpace(m.AlbumArtist()); s != "" {
+		return m.AlbumArtist()
+	}
+	raw := m.Raw()
+	for _, k := range albumArtistKeys {
+		if v, ok := raw[k].(string); ok && strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // ExtractTags reads ID3/MP4/FLAC/OGG tags from r. The mimeType argument is
 // informational only — tag.ReadFrom sniffs the content itself.
 //
@@ -74,7 +104,7 @@ func ExtractTags(r io.ReadSeeker, mimeType string) (*Tags, error) {
 		Title:       m.Title(),
 		Artist:      m.Artist(),
 		Album:       m.Album(),
-		AlbumArtist: m.AlbumArtist(),
+		AlbumArtist: albumArtist(m),
 		Genre:       m.Genre(),
 		Composer:    m.Composer(),
 		Comment:     m.Comment(),
