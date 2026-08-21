@@ -612,6 +612,37 @@ func (db *DB) MadnetworkBlobProviders(ctx context.Context, hash string) (int64, 
 		return 0, nil, err
 	}
 
+	// Cover claimants (covers-federation M4). A source whose catalog names this
+	// hash as an album's cover holds the cover's ORIGINAL — the claim is made
+	// from its own image store, the way a rendition row is made from its own
+	// files. Without this arm a cover hash has no providers at all: renditions
+	// and holdings only ever carry audio, so EnsureBlob would answer ErrNoHolder
+	// for every cover the library does not already hold — which is exactly the
+	// download-attach and relay case.
+	crows, err := db.QueryContext(ctx, `
+		SELECT s.id, `+peerIDExpr+`, s.public_key, s.label,
+		       `+sourceHeardExpr+`, `+srcLastSeen+`
+		FROM federation_catalog c`+sourceJoin("c")+`
+		WHERE c.cover_hash = ? AND `+notBlocked+` AND `+srcLastSeen+` >= ?
+		GROUP BY s.public_key`, hash, cutoff)
+	if err != nil {
+		return 0, nil, fmt.Errorf("cover providers: %w", err)
+	}
+	defer crows.Close()
+	for crows.Next() {
+		var p federation.BlobProvider
+		if err := crows.Scan(&p.SourceID, &p.PeerID, &p.PublicKey, &p.Name, &p.HeardName, &p.LastSeen); err != nil {
+			return 0, nil, fmt.Errorf("scan cover provider: %w", err)
+		}
+		if _, ok := holders[p.PublicKey]; !ok {
+			cp := p
+			holders[cp.PublicKey] = &cp
+		}
+	}
+	if err := crows.Err(); err != nil {
+		return 0, nil, err
+	}
+
 	// Cache holders (federation_holdings) — nodes seeding the blob from their
 	// download cache without it being in their library catalog.
 	rows, err := db.QueryContext(ctx, `

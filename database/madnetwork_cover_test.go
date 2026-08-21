@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"daemonlord.ygg/madshare/federation"
 )
@@ -265,5 +266,42 @@ func seedClaimFile(t *testing.T, db *DB, hash, artist, album, title string) {
 	}
 	if err := db.InsertFile(context.Background(), newFile(hash), newUpload(hash+".mp3"), meta); err != nil {
 		t.Fatalf("InsertFile %s: %v", hash, err)
+	}
+}
+
+// TestCoverHashHasProviders pins the tracker half of the cover fetch — the
+// path the api-level attach test cannot see through its faked federation node:
+// EnsureBlob resolves holders via MadnetworkBlobProviders, and renditions and
+// holdings only ever carry audio, so without the cover-claimant arm every
+// cover fetch would end in ErrNoHolder.
+func TestCoverHashHasProviders(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+	if _, err := db.InsertFederationPeer(ctx, &federation.ExternalNode{
+		PublicKey: "ee11", Label: "friendly", TrustState: federation.PeerFriend, TrustedAt: 1000,
+	}); err != nil {
+		t.Fatalf("insert peer: %v", err)
+	}
+	src, err := db.EnsureCatalogSource(ctx, "ee11", 1000)
+	if err != nil {
+		t.Fatalf("ensure source: %v", err)
+	}
+	if err := db.TouchCatalogSourceSeen(ctx, src.ID, time.Now().Unix(), ""); err != nil {
+		t.Fatalf("touch source: %v", err)
+	}
+	if err := db.ReplaceSourceCatalog(ctx, src.ID, "s1", 100, []federation.CatalogEntry{{
+		Key: "e1", RecordingKey: "r1", Title: "Song", Artist: "Band", Album: "Album X",
+		CoverHash: coverHash, CoverExt: ".jpg",
+		Renditions: []federation.CatalogRendition{{Hash: strings.Repeat("dd", 32), Size: 5}},
+	}}); err != nil {
+		t.Fatalf("ReplaceSourceCatalog: %v", err)
+	}
+
+	_, holders, err := db.MadnetworkBlobProviders(ctx, coverHash)
+	if err != nil {
+		t.Fatalf("providers: %v", err)
+	}
+	if len(holders) != 1 || holders[0].PublicKey != "ee11" {
+		t.Fatalf("cover providers = %+v, want the claimant ee11", holders)
 	}
 }
