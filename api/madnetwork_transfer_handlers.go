@@ -341,6 +341,7 @@ func (h *handler) madnetworkDownload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.evictCached(hash) // a stream may have cached what the library already holds
+		go h.maybeFetchRemoteCover(entry) // held bytes can still lack the origin album's art
 		h.audit(ctx, "madnetwork.download", hash, "bytes already held; appearance attached="+strconv.FormatBool(created))
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok": true, "existed": true, "attached": created, "tagset_id": tid})
@@ -492,6 +493,7 @@ func (h *handler) runMadnetworkDownload(hash string, entry *federation.CatalogEn
 		job.mu.Unlock()
 		h.evictCached(hash) // held locally already: same duplicate, same fix
 		job.set("attached", "")
+		h.maybeFetchRemoteCover(entry) // already on a background goroutine
 		return
 	}
 
@@ -566,6 +568,9 @@ func (h *handler) runMadnetworkDownload(hash string, entry *federation.CatalogEn
 	} else {
 		job.set("staged", "")
 	}
+	// The album's cover rides along (covers-federation M3) — after the job
+	// settled, because the download is complete with or without art.
+	h.maybeFetchRemoteCover(entry)
 }
 
 // evictCached drops the download-cache copy of a blob the library holds, and
