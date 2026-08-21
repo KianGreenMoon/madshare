@@ -186,6 +186,23 @@ func (db *DB) ResolveAlbumID(ctx context.Context, artist, album string) (int64, 
 	return albumID, err
 }
 
+// AlbumNames returns an album entity's display identity — its artist's name
+// and its title — or found=false. The cover backfill needs it to ask the
+// madnetwork's claims by the same names the browse merges on.
+func (db *DB) AlbumNames(ctx context.Context, albumID int64) (artist, title string, found bool, err error) {
+	err = db.QueryRowContext(ctx,
+		`SELECT ar.name, al.title FROM albums al
+		 JOIN artists ar ON ar.id = al.artist_id
+		 WHERE al.id = ?`, albumID).Scan(&artist, &title)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, fmt.Errorf("album names: %w", err)
+	}
+	return artist, title, true, nil
+}
+
 // LookupArtistID returns the artists.id for a display name (matched by
 // normalized key), or found=false when no such entity exists. It never creates a
 // row — read paths must not materialize entities for missing names.

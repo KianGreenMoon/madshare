@@ -133,6 +133,12 @@ func (h *handler) listAlbums(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]albumItem, 0, len(albums))
 	for _, a := range albums {
+		// A coverless row on its way to a screen is the backfill's trigger:
+		// if the madnetwork claims art for this album, redeem it now, and the
+		// next view of this list has it (covers backfill; throttled inside).
+		if !a.HasImage {
+			h.maybeBackfillAlbumCover(a.ID)
+		}
 		var year *int64
 		if a.Year.Valid {
 			year = &a.Year.Int64
@@ -395,6 +401,12 @@ func (h *handler) getAlbumImage(w http.ResponseWriter, r *http.Request) {
 	}
 	mimeType, extOK := allowedImageExtensions[sourceExt]
 	if !found || !ready || imageHash == "" || !extOK {
+		// No cover here — but the madnetwork may claim one for this very album.
+		// Redeem it in the background (covers backfill); this answer stays 404
+		// and the next view finds the art.
+		if !found {
+			h.maybeBackfillAlbumCover(albumID)
+		}
 		http.NotFound(w, r)
 		return
 	}

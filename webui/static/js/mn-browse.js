@@ -125,6 +125,11 @@ export function queueTrackOf(t, artist, album) {
     rowKey: mnKey(artist, album, t.title),
     title: t.title || 'Unknown',
     artist: t.artist || artist || '',
+    album: album || '',
+    // The row's elected cover, for the OS media widget — the played FILE may
+    // carry no embedded art at all (sidecar-cover libraries), and the widget
+    // is exactly where that gap shows.
+    artUrl: t.cover_hash ? `${API}/api/madnetwork/cover/${encodeURIComponent(t.cover_hash)}?size=medium` : null,
     dur: fmtDur(t.duration) || '—',
   };
 }

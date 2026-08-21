@@ -108,12 +108,13 @@ async function drillToAlbums(artistId, artistName) {
 
 // Fetch and render the tracks panel for a given album (addressed by id). The
 // artist id/name ride along so the breadcrumb can step back up to the albums.
-async function drillToTracks(albumId, artistId, artistName, albumTitle) {
+async function drillToTracks(albumId, artistId, artistName, albumTitle, hasImage) {
   drill.level    = 'tracks';
   drill.artist   = artistName;
   drill.artistId = artistId;
   drill.album    = albumTitle;
   drill.albumId  = albumId;
+  drill.albumHasImage = !!hasImage;
 
   destroyArtistVList();   // can be reached straight from a search hit
   const panel = document.getElementById('libraryPanel');
@@ -306,7 +307,7 @@ function renderAlbumList(albums) {
       artUrl: album.has_image
         ? `${API}/api/albums/${encodeURIComponent(album.id)}/image?size=small`
         : null,
-      onOpen: () => drillToTracks(album.id, album.artist_id, album.artist_name, album.title),
+      onOpen: () => drillToTracks(album.id, album.artist_id, album.artist_name, album.title, album.has_image),
       makeMenuItems: btn => quickAddItems(btn, () => entityTracks(null, album.id, album.artist_name)),
     }));
   });
@@ -349,6 +350,12 @@ function renderTrackList(tracks) {
       // Per-track performer (matches the playlists page); falls back to the
       // album-grouping artist from the breadcrumb when a row has no performer.
       artist: t.artist_name || drill.artist || '',
+      album:  drill.album || '',
+      // The album's cover, for the OS media widget (media-session.js). medium:
+      // the widget renders bigger than a list thumb.
+      artUrl: drill.albumHasImage
+        ? `${API}/api/albums/${encodeURIComponent(drill.albumId)}/image?size=medium`
+        : null,
       dur,
     });
   });
@@ -511,7 +518,7 @@ function createSearch(signal) {
       return res.json();
     },
     onOpenArtist: a => drillToAlbums(a.id, a.name),
-    onOpenAlbum:  a => drillToTracks(a.id, a.artist_id, a.artist_name, a.title),
+    onOpenAlbum:  a => drillToTracks(a.id, a.artist_id, a.artist_name, a.title, a.has_image),
     albumArtUrl:  a => a.has_image
       ? `${API}/api/albums/${encodeURIComponent(a.id)}/image?size=small`
       : null,

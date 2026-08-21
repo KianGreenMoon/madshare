@@ -202,6 +202,9 @@ type Repository interface {
 	// read paths that must not materialize entities for unknown names.
 	LookupArtistID(ctx context.Context, name string) (id int64, found bool, err error)
 
+	// AlbumNames returns an album entity's display identity (artist name,
+	// title), for the cover backfill's claims lookup.
+	AlbumNames(ctx context.Context, albumID int64) (artist, title string, found bool, err error)
 	// LookupAlbumID returns the albums.id for (artist, album) matched by their
 	// normalized keys, or found=false. Lookup-only.
 	LookupAlbumID(ctx context.Context, artist, album string) (id int64, found bool, err error)

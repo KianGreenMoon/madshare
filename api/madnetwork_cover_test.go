@@ -10,6 +10,7 @@ import (
 	"image/png"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -333,5 +334,73 @@ func TestMadnetworkCoverRelaySized(t *testing.T) {
 	fed.blob = nil
 	if resp, _ := get("small"); resp.StatusCode != http.StatusOK {
 		t.Errorf("small after derive = %d, want 200 from the variant tree", resp.StatusCode)
+	}
+}
+
+// TestAlbumImageMissBackfillsFromTheNetwork: a coverless local album whose
+// image is requested redeems the madnetwork's claim in the background — the
+// download-attach rule extended to albums that were already here. Driven
+// through the real 404, because the trigger IS the miss.
+func TestAlbumImageMissBackfillsFromTheNetwork(t *testing.T) {
+	cover := pngBytes(t)
+	sum := sha256.Sum256(cover)
+	coverHash := hex.EncodeToString(sum[:])
+	tr := newFakeTransfer(t, coverHash, "original.png", int64(len(cover)))
+	tr.append(t, cover)
+	tr.finish()
+
+	fed := &fakeBlobFederation{blob: tr}
+	srv, db := newModerationServerWithNetwork(t, fed)
+	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
+
+	ctx := context.Background()
+	albumID, err := db.ResolveAlbumID(ctx, "Backfill Band", "Backfill Album")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.InsertFederationPeer(ctx, &federation.ExternalNode{
+		PublicKey: "aa44", Label: "friendly", TrustState: federation.PeerFriend, TrustedAt: 1000,
+	}); err != nil {
+		t.Fatalf("insert peer: %v", err)
+	}
+	src, err := db.EnsureCatalogSource(ctx, "aa44", 1000)
+	if err != nil {
+		t.Fatalf("ensure source: %v", err)
+	}
+	if err := db.TouchCatalogSourceSeen(ctx, src.ID, time.Now().Unix(), ""); err != nil {
+		t.Fatalf("touch source: %v", err)
+	}
+	if err := db.ReplaceSourceCatalog(ctx, src.ID, "s1", 100, []federation.CatalogEntry{{
+		Key: "e1", RecordingKey: "r1", Title: "Their Song", Artist: "Backfill Band",
+		AlbumArtist: "Backfill Band", Album: "Backfill Album",
+		CoverHash: coverHash, CoverExt: ".png",
+		Renditions: []federation.CatalogRendition{{Hash: strings.Repeat("db", 32), Size: 5}},
+	}}); err != nil {
+		t.Fatalf("ReplaceSourceCatalog: %v", err)
+	}
+
+	// The miss that triggers it.
+	resp, err := admin.Get(srv.URL + "/api/albums/" + strconv.FormatInt(albumID, 10) + "/image")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("coverless album image = %d, want 404 (the answer itself stays a miss)", resp.StatusCode)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if has, err := db.HasAlbumCover(ctx, albumID); err == nil && has {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the network's claim was never redeemed")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	imageHash, sourceExt, _, _, err := db.GetAlbumCoverStatus(ctx, albumID)
+	if err != nil || imageHash != coverHash || sourceExt != ".png" {
+		t.Fatalf("backfilled cover = (%q,%q) err=%v, want the claimant's", imageHash, sourceExt, err)
 	}
 }

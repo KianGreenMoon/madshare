@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	// The cover sanity decode below reads only the header, but needs the same
@@ -97,51 +98,59 @@ func (h *handler) maybeFetchRemoteCover(entry *federation.CatalogEntry) {
 		log.Printf("madnetwork cover: resolve album: %v", err)
 		return
 	}
+	h.redeemCoverClaim(ctx, albumID, artist, entry.Album, entry.CoverHash)
+}
+
+// redeemCoverClaim is the shared core of every network-cover attach: fetch the
+// original by hash (EnsureBlob verifies it), sniff that the bytes decode, land
+// the original, claim the album fill-if-missing, queue the variant job. Soft
+// at every step, like both of its callers.
+func (h *handler) redeemCoverClaim(ctx context.Context, albumID int64, artist, album, coverHash string) {
 	// Cheap pre-check before any network I/O; the atomic claim below is what
 	// actually holds under races.
 	if has, err := h.repo.HasAlbumCover(ctx, albumID); err != nil || has {
 		return
 	}
-	t, err := h.ensureBlob(ctx, entry.CoverHash)
+	t, err := h.ensureBlob(ctx, coverHash)
 	if err != nil {
-		log.Printf("madnetwork cover %s: fetch: %v", entry.CoverHash[:8], err)
+		log.Printf("madnetwork cover %s: fetch: %v", coverHash[:8], err)
 		return
 	}
 	<-t.Done()
 	if err := t.Err(); err != nil {
-		log.Printf("madnetwork cover %s: transfer: %v", entry.CoverHash[:8], err)
+		log.Printf("madnetwork cover %s: transfer: %v", coverHash[:8], err)
 		return
 	}
 	// The same ceiling every other cover ingress enforces (maxImageSize).
 	if t.Size() > maxImageSize {
-		log.Printf("madnetwork cover %s: %d bytes exceeds %d cap; skipping", entry.CoverHash[:8], t.Size(), maxImageSize)
+		log.Printf("madnetwork cover %s: %d bytes exceeds %d cap; skipping", coverHash[:8], t.Size(), maxImageSize)
 		return
 	}
 	f, err := t.Open()
 	if err != nil {
-		log.Printf("madnetwork cover %s: open: %v", entry.CoverHash[:8], err)
+		log.Printf("madnetwork cover %s: open: %v", coverHash[:8], err)
 		return
 	}
 	data := make([]byte, t.Size())
 	_, err = io.ReadFull(f, data)
 	f.Close()
 	if err != nil {
-		log.Printf("madnetwork cover %s: read: %v", entry.CoverHash[:8], err)
+		log.Printf("madnetwork cover %s: read: %v", coverHash[:8], err)
 		return
 	}
-	// EnsureBlob verified data against CoverHash; what is still only claimed is
+	// EnsureBlob verified data against the hash; what is still only claimed is
 	// that the bytes are a decodable image. Sniff the header before claiming
 	// the row (see coverExtForFormat for what a wrong claim would cost).
 	_, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
-		log.Printf("madnetwork cover %s: not a decodable image: %v", entry.CoverHash[:8], err)
+		log.Printf("madnetwork cover %s: not a decodable image: %v", coverHash[:8], err)
 		return
 	}
 	ext := coverExtForFormat(format)
 	if ext == "" {
 		return
 	}
-	objectKey := media.VariantPath(entry.CoverHash, media.VariantOriginal, ext)
+	objectKey := media.VariantPath(coverHash, media.VariantOriginal, ext)
 	destPath := filepath.Join(h.sourceImagesDir, objectKey)
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		log.Printf("madnetwork cover: mkdir %s: %v", filepath.Dir(destPath), err)
@@ -152,7 +161,7 @@ func (h *handler) maybeFetchRemoteCover(entry *federation.CatalogEntry) {
 		return
 	}
 	now := time.Now().Unix()
-	inserted, err := h.repo.SetAlbumCoverIfAbsent(ctx, albumID, entry.CoverHash, ext,
+	inserted, err := h.repo.SetAlbumCoverIfAbsent(ctx, albumID, coverHash, ext,
 		objectKey, allowedImageExtensions[ext], now)
 	if err != nil {
 		log.Printf("madnetwork cover: claim album cover: %v", err)
@@ -161,7 +170,7 @@ func (h *handler) maybeFetchRemoteCover(entry *federation.CatalogEntry) {
 	if !inserted {
 		return // somebody else's art won the album while we fetched — theirs stands
 	}
-	if err := h.repo.EnqueueImageJob(ctx, "album", artist+"\x1f"+entry.Album, entry.CoverHash, now); err != nil {
+	if err := h.repo.EnqueueImageJob(ctx, "album", artist+"\x1f"+album, coverHash, now); err != nil {
 		log.Printf("madnetwork cover: enqueue job: %v", err)
 		return
 	}
@@ -170,8 +179,8 @@ func (h *handler) maybeFetchRemoteCover(entry *federation.CatalogEntry) {
 	}
 	// The original is library-owned now; the mesh-cache copy is the same
 	// duplicate an audio download leaves, dropped for the same reason.
-	h.evictCached(entry.CoverHash)
-	log.Printf("madnetwork cover %s: attached to album %d (%s — %s)", entry.CoverHash[:8], albumID, artist, entry.Album)
+	h.evictCached(coverHash)
+	log.Printf("madnetwork cover %s: attached to album %d (%s — %s)", coverHash[:8], albumID, artist, album)
 }
 
 // ── The cover election (covers-federation M4) ────────────────────────────────
@@ -469,4 +478,72 @@ func (h *handler) madnetworkCoverVariant(w http.ResponseWriter, r *http.Request,
 func (h *handler) serveCoverVariantFile(w http.ResponseWriter, r *http.Request, objectKey, mimeType string) {
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	h.serveImageFile(w, r, objectKey, mimeType)
+}
+
+// ── The backfill: a coverless local album redeems the network's claim ────────
+
+// coverBackfill throttles miss-triggered redemptions: one attempt per album
+// per window, process-global like the download job registry and for the same
+// reason — several listeners, one library.
+var coverBackfill = struct {
+	sync.Mutex
+	last map[int64]time.Time
+}{last: map[int64]time.Time{}}
+
+// coverBackfillCooldown is how long a failed (or fruitless) attempt holds
+// before the same album may try again. The trigger is a browse painting a
+// placeholder, which happens on every page view — without this, every
+// scroll past a genuinely coverless album would re-ask the network.
+const coverBackfillCooldown = 15 * time.Minute
+
+// maybeBackfillAlbumCover runs when the library is asked for a cover it does
+// not have (the album-image 404): if the madnetwork claims art for this album,
+// redeem the claim in the background — the download-attach rule extended to
+// albums that were already here. The 404 answer itself is not delayed; the
+// next view finds the cover, which is how every other pipeline gap on these
+// pages heals too (variants_ready, analysis, durations).
+//
+// The claim is elected exactly as the browse elects it (same claims query,
+// same ballot), so what the backfill lands is what the madnetwork page was
+// already showing beside the coverless local row.
+func (h *handler) maybeBackfillAlbumCover(albumID int64) {
+	if h.federation == nil || h.madnetwork == nil {
+		return
+	}
+	coverBackfill.Lock()
+	if t, ok := coverBackfill.last[albumID]; ok && time.Since(t) < coverBackfillCooldown {
+		coverBackfill.Unlock()
+		return
+	}
+	coverBackfill.last[albumID] = time.Now()
+	coverBackfill.Unlock()
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("cover backfill: panic: %v", r)
+			}
+		}()
+		ctx := context.Background()
+		artist, title, found, err := h.repo.AlbumNames(ctx, albumID)
+		if err != nil || !found {
+			return
+		}
+		claims, err := h.madnetwork.MadnetworkAlbumCoverClaims(ctx, artist, h.madnetworkView(ctx))
+		if err != nil {
+			return
+		}
+		key := strings.ToLower(title) // unicode_lower IS strings.ToLower (database.go)
+		var ballot coverBallot
+		for _, c := range claims {
+			if c.AlbumKey == key && !c.Self { // our own claim is the absence being filled
+				ballot.add(c.CoverHash, c.CoverExt, c.SourceKey, false)
+			}
+		}
+		hash, _ := ballot.winner(h.branchesByKey(ctx))
+		if hash == "" || !isSHA256Hex(hash) {
+			return // nobody out there claims art for this album — also an answer
+		}
+		h.redeemCoverClaim(ctx, albumID, artist, title, hash)
+	}()
 }

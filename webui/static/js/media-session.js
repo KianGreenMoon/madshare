@@ -79,7 +79,7 @@ export function resolveBackend() {
     };
     const guard = (fn) => { try { fn(); } catch { /* native bridge hiccup — non-fatal */ } };
     return {
-      setMetadata: (t) => guard(() => mad.setMetadata(JSON.stringify({ title: t.title || '', artist: t.artist || '', album: t.album || '' }))),
+      setMetadata: (t) => guard(() => mad.setMetadata(JSON.stringify({ title: t.title || '', artist: t.artist || '', album: t.album || '', artUrl: t.artUrl || '' }))),
       setPlaybackState: (s) => guard(() => mad.setPlaybackState(s)),
       setActionHandler: (a, fn) => { handlers[a] = fn; },
       // The native side works in milliseconds; the player reports seconds.
@@ -92,7 +92,7 @@ export function resolveBackend() {
   if (native) {
     const guard = (fn) => { try { fn(); } catch { /* native bridge hiccup — non-fatal */ } };
     return {
-      setMetadata: (t) => guard(() => native.setMetadata({ title: t.title || '', artist: t.artist || '', album: t.album || '' })),
+      setMetadata: (t) => guard(() => native.setMetadata({ title: t.title || '', artist: t.artist || '', album: t.album || '', artUrl: t.artUrl || '' })),
       setPlaybackState: (s) => guard(() => native.setPlaybackState({ playbackState: s })),
       setActionHandler: (a, fn) => guard(() => native.setActionHandler({ action: a }, fn)),
       setPositionState: (p) => guard(() => native.setPositionState(p)),
@@ -102,7 +102,14 @@ export function resolveBackend() {
     const nav = navigator.mediaSession;
     const guard = (fn) => { try { fn(); } catch { /* unsupported bit — ignore */ } };
     return {
-      setMetadata: (t) => guard(() => { nav.metadata = new MediaMetadata({ title: t.title || '', artist: t.artist || '' }); }),
+      // artwork is what puts the cover on the lock screen / notification; a
+      // track without one gets text-only metadata, same as before.
+      setMetadata: (t) => guard(() => {
+        nav.metadata = new MediaMetadata({
+          title: t.title || '', artist: t.artist || '', album: t.album || '',
+          artwork: t.artUrl ? [{ src: t.artUrl, sizes: '300x300' }] : [],
+        });
+      }),
       setPlaybackState: (s) => guard(() => { nav.playbackState = s; }),
       setActionHandler: (a, fn) => guard(() => nav.setActionHandler(a, fn)),
       setPositionState: (p) => guard(() => nav.setPositionState(p)),

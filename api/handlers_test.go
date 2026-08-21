@@ -1389,6 +1389,10 @@ func (f *fakeRepo) AlbumCoverByHash(context.Context, string) (string, bool, bool
 	return "", false, false, nil
 }
 
+func (f *fakeRepo) AlbumNames(context.Context, int64) (string, string, bool, error) {
+	return "", "", false, nil
+}
+
 func (f *fakeRepo) UpdateFileMetadata(_ context.Context, hash string, p database.MetadataPatch) (*database.MediaMetadata, error) {
 	f.metaCalls++
 	f.lastMetaHash = hash
