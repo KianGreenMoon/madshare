@@ -1161,6 +1161,15 @@ type MadnetworkAlbum struct {
 	Title  string `json:"title"`
 	Tracks int64  `json:"tracks"`
 	Year   *int64 `json:"year,omitempty"`
+
+	// Key is the row's group identity (unicode_lower(alb)) — what pairs it
+	// with MadnetworkCoverClaim rows in the handler. Internal, never sent.
+	Key string `json:"-"`
+	// CoverHash / CoverExt are the merged view's cover verdict for this album,
+	// elected by the voices rule in the handler (never in SQL — the branch map
+	// lives with the federation node). Fetchable via /api/madnetwork/cover.
+	CoverHash string `json:"cover_hash,omitempty"`
+	CoverExt  string `json:"cover_ext,omitempty"`
 }
 
 // MadnetworkAlbums lists one artist's albums in the merged catalog; the
@@ -1171,7 +1180,7 @@ type MadnetworkAlbum struct {
 // own tracks, which is the same hybrid count the library's drill-down shows.
 func (db *DB) MadnetworkAlbums(ctx context.Context, artist string, view MadnetworkView) ([]*MadnetworkAlbum, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT MIN(alb), COUNT(DISTINCT `+trackIdent+`), MAX(year)
+		SELECT MIN(alb), COUNT(DISTINCT `+trackIdent+`), MAX(year), unicode_lower(alb)
 		`+fedcatCreditBase(view)+`
 		WHERE unicode_lower(akey) = unicode_lower(?)
 		GROUP BY unicode_lower(alb)
@@ -1184,13 +1193,89 @@ func (db *DB) MadnetworkAlbums(ctx context.Context, artist string, view Madnetwo
 	for rows.Next() {
 		var a MadnetworkAlbum
 		var year sql.NullInt64
-		if err := rows.Scan(&a.Title, &a.Tracks, &year); err != nil {
+		if err := rows.Scan(&a.Title, &a.Tracks, &year, &a.Key); err != nil {
 			return nil, fmt.Errorf("scan madnetwork album: %w", err)
 		}
 		a.Year = nullInt(year)
 		out = append(out, &a)
 	}
 	return out, rows.Err()
+}
+
+// MadnetworkCoverClaim is one node's claim about one album's cover in the
+// merged view: "the cover of <album> is <hash>". The handler tallies claims per
+// album and elects a winner by the voices rule (BranchMap.Voices) — the same
+// election that orders tagsets and versions, applied to art. AlbumKey is
+// unicode_lower(alb), pairing a claim with its MadnetworkAlbum row.
+type MadnetworkCoverClaim struct {
+	AlbumKey  string
+	CoverHash string
+	CoverExt  string
+	// SourceKey is the claimant's node key; empty for the self claim, which the
+	// voices count carries through its dedicated self voice instead.
+	SourceKey string
+	Self      bool
+}
+
+// MadnetworkAlbumCoverClaims lists the cover claims behind one artist's albums
+// (either credit, like MadnetworkTracks): every reachable unblocked source's
+// claim from its cached catalog, plus this node's own ready cover when the view
+// folds the local library in — the same two row sources as everything else on
+// the page, reduced to what a cover election needs.
+func (db *DB) MadnetworkAlbumCoverClaims(ctx context.Context, artist string, view MadnetworkView) ([]MadnetworkCoverClaim, error) {
+	var out []MadnetworkCoverClaim
+	if view.includeRemote() {
+		rows, err := db.QueryContext(ctx, `
+			SELECT unicode_lower(alb), cover_hash, cover_ext, source_key
+			`+fedcatBase(view)+`
+			WHERE cover_hash != ''
+			  AND (unicode_lower(akey) = unicode_lower(?) OR unicode_lower(pkey) = unicode_lower(?))
+			GROUP BY unicode_lower(alb), cover_hash, cover_ext, source_key`, artist, artist)
+		if err != nil {
+			return nil, fmt.Errorf("madnetwork cover claims: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var c MadnetworkCoverClaim
+			if err := rows.Scan(&c.AlbumKey, &c.CoverHash, &c.CoverExt, &c.SourceKey); err != nil {
+				return nil, fmt.Errorf("scan madnetwork cover claim: %w", err)
+			}
+			out = append(out, c)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	if view.includeOwn() {
+		// The self claim reads by the exact rule PublishedCatalog advertises
+		// by: ready variants, full-hash key, published appearance in the album.
+		rows, err := db.QueryContext(ctx, `
+			SELECT DISTINCT unicode_lower(`+selfAlbExpr+`), ai.image_hash, COALESCE(ai.source_ext, '')
+			FROM tagsets m`+recordingJoin+`
+			LEFT JOIN artists par ON par.id = m.artist_id
+			LEFT JOIN artists aar ON aar.id = m.album_artist_id
+			LEFT JOIN albums al   ON al.id  = m.album_id
+			JOIN album_images ai ON ai.album_id = m.album_id
+			     AND ai.variants_ready = 1 AND COALESCE(ai.image_hash, '') != ''
+			WHERE `+visibleTagset+selfPublishedClause(view)+`
+			  AND (unicode_lower(`+selfAkeyExpr+`) = unicode_lower(?)
+			       OR unicode_lower(`+selfPkeyExpr+`) = unicode_lower(?))`, artist, artist)
+		if err != nil {
+			return nil, fmt.Errorf("madnetwork own cover claims: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			c := MadnetworkCoverClaim{Self: true}
+			if err := rows.Scan(&c.AlbumKey, &c.CoverHash, &c.CoverExt); err != nil {
+				return nil, fmt.Errorf("scan madnetwork own cover claim: %w", err)
+			}
+			out = append(out, c)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // MadnetworkTrackRow is one RAW row of the merged track view — one per
@@ -1245,7 +1330,8 @@ func (db *DB) remoteTrackRows(ctx context.Context, view MadnetworkView, match st
 		SELECT source_id, source_label, source_last_seen, source_pinged, source_unreachable, source_key, akey, alb,
 		       entry_key, recording_key, title, artist, album_artist,
 		       COALESCE(genre, ''), year, track_number, disc_number,
-		       COALESCE(duration, 0), COALESCE(license, ''), guest_playable, renditions
+		       COALESCE(duration, 0), COALESCE(license, ''), guest_playable, renditions,
+		       cover_hash, cover_ext
 		`+fedcatBase(view)+`
 		WHERE `+match+`
 		ORDER BY (disc_number IS NULL) ASC, disc_number ASC, track_number ASC, unicode_lower(title) ASC, source_id ASC`,
@@ -1262,7 +1348,8 @@ func (db *DB) remoteTrackRows(ctx context.Context, view MadnetworkView, match st
 		if err := rows.Scan(&r.SourceID, &r.SourceName, &r.SourceLastSeen, &r.SourcePinged, &r.SourceUnreachableAt, &r.SourceKey, &r.GroupArtist, &r.GroupAlbum,
 			&r.Entry.Key, &r.Entry.RecordingKey, &r.Entry.Title, &r.Entry.Artist,
 			&r.Entry.AlbumArtist, &r.Entry.Genre, &year, &track, &disc,
-			&r.Entry.Duration, &r.Entry.License, &r.Entry.GuestPlayable, &renditions); err != nil {
+			&r.Entry.Duration, &r.Entry.License, &r.Entry.GuestPlayable, &renditions,
+			&r.Entry.CoverHash, &r.Entry.CoverExt); err != nil {
 			return nil, fmt.Errorf("scan madnetwork track: %w", err)
 		}
 		r.Entry.Album = r.GroupAlbum
@@ -1309,11 +1396,13 @@ func (db *DB) ownTrackRows(ctx context.Context, view MadnetworkView, match strin
 		SELECT m.id, m.recording_id, `+selfAkeyExpr+`, `+selfAlbExpr+`, m.title,
 		       COALESCE(par.name, m.artist, ''), COALESCE(aar.name, m.album_artist, ''),
 		       COALESCE(m.genre, ''), m.year, m.track_number, m.disc_number,
-		       COALESCE(r.license, ''), r.guest_playable
+		       COALESCE(r.license, ''), r.guest_playable,
+		       COALESCE(ai.image_hash, ''), COALESCE(ai.source_ext, '')
 		FROM tagsets m`+recordingJoin+`
 		LEFT JOIN artists par ON par.id = m.artist_id
 		LEFT JOIN artists aar ON aar.id = m.album_artist_id
 		LEFT JOIN albums al   ON al.id  = m.album_id
+		LEFT JOIN album_images ai ON ai.album_id = m.album_id AND ai.variants_ready = 1
 		WHERE `+visibleTagset+selfPublishedClause(view)+` AND `+match+`
 		ORDER BY (m.disc_number IS NULL) ASC, m.disc_number ASC, m.track_number ASC, unicode_lower(m.title) ASC, m.id ASC`,
 		args...)
@@ -1330,8 +1419,12 @@ func (db *DB) ownTrackRows(ctx context.Context, view MadnetworkView, match strin
 		var year, track, disc sql.NullInt64
 		if err := rows.Scan(&tagsetID, &recordingID, &r.GroupArtist, &r.GroupAlbum, &r.Entry.Title,
 			&r.Entry.Artist, &r.Entry.AlbumArtist, &r.Entry.Genre, &year, &track, &disc,
-			&r.Entry.License, &r.Entry.GuestPlayable); err != nil {
+			&r.Entry.License, &r.Entry.GuestPlayable,
+			&r.Entry.CoverHash, &r.Entry.CoverExt); err != nil {
 			return nil, fmt.Errorf("scan madnetwork own track: %w", err)
+		}
+		if r.Entry.CoverHash == "" {
+			r.Entry.CoverExt = "" // legacy cover row: nothing fetchable, claim nothing
 		}
 		r.Entry.Key = strconv.FormatInt(tagsetID, 10)
 		r.Entry.RecordingKey = strconv.FormatInt(recordingID, 10)

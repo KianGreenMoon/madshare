@@ -75,6 +75,9 @@ func (f *fakeMadnetwork) MadnetworkArtists(_ context.Context, _ string, view dat
 func (f *fakeMadnetwork) MadnetworkAlbums(context.Context, string, database.MadnetworkView) ([]*database.MadnetworkAlbum, error) {
 	return nil, nil
 }
+func (f *fakeMadnetwork) MadnetworkAlbumCoverClaims(context.Context, string, database.MadnetworkView) ([]database.MadnetworkCoverClaim, error) {
+	return nil, nil
+}
 func (f *fakeMadnetwork) MadnetworkTracks(_ context.Context, _, _ string, view database.MadnetworkView) ([]*database.MadnetworkTrackRow, error) {
 	f.trackView = view
 	return f.rows, nil

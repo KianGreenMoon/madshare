@@ -158,6 +158,9 @@ type CacheSweeper func(ctx context.Context, maxBytes, maxAgeDays int64) (removed
 type MadnetworkStore interface {
 	MadnetworkArtists(ctx context.Context, q string, view database.MadnetworkView, limit int, cursor string) ([]*database.MadnetworkArtist, string, error)
 	MadnetworkAlbums(ctx context.Context, artist string, view database.MadnetworkView) ([]*database.MadnetworkAlbum, error)
+	// MadnetworkAlbumCoverClaims backs the album list's cover election
+	// (covers-federation M4): every source's claim about each album's cover.
+	MadnetworkAlbumCoverClaims(ctx context.Context, artist string, view database.MadnetworkView) ([]database.MadnetworkCoverClaim, error)
 	MadnetworkTracks(ctx context.Context, artist, album string, view database.MadnetworkView) ([]*database.MadnetworkTrackRow, error)
 	MadnetworkOwnTracks(ctx context.Context, artist, album string, view database.MadnetworkView) ([]*database.MadnetworkTrackRow, error)
 	MadnetworkSummary(ctx context.Context, view database.MadnetworkView) ([]*database.MadnetworkNode, int64, error)
@@ -487,6 +490,9 @@ func RegisterAPI(r chi.Router, d Deps) {
 		// so it additionally requires file.upload.
 		if d.Federation != nil {
 			r.With(mad).Get("/api/madnetwork/stream/{hash}", h.madnetworkStream)
+			// The cover twin of stream: a hash-addressed image relayed
+			// cache-through from whoever holds it (covers-federation M4).
+			r.With(mad).Get("/api/madnetwork/cover/{hash}", h.madnetworkCover)
 			r.With(mad).Get("/api/madnetwork/transfers/{hash}", h.madnetworkTransferStatus)
 			r.With(mad, d.protect(auth.PermFileUpload)).Post("/api/madnetwork/download", h.madnetworkDownload)
 			// F7 item 9: a listener node asks its home server to vouch for it.

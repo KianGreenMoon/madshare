@@ -2,6 +2,8 @@ package database
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -158,5 +160,110 @@ func TestCoverVisibleToFollowsAlbumScope(t *testing.T) {
 	// confirming anything.
 	if _, found, err := db.BlobVisibleTo(ctx, strings.Repeat("09", 32), federation.FriendAudience); err != nil || found {
 		t.Errorf("unknown hash: found=%v err=%v, want not found", found, err)
+	}
+}
+
+// TestMadnetworkAlbumCoverClaims (covers-federation M4): the claims query hands
+// the handler everything a cover election needs — each source's claim keyed to
+// the same group identity the album rows carry, plus the self claim under the
+// exact ready-only rule the published catalog advertises by.
+func TestMadnetworkAlbumCoverClaims(t *testing.T) {
+	db := openMem(t)
+	ctx := context.Background()
+
+	// Two sources claim different covers for one album of "Claim Artist".
+	hashA, hashB := strings.Repeat("aa", 32), strings.Repeat("bb", 32)
+	for i, claim := range []struct{ key, hash string }{{"f1a1", hashA}, {"f2b2", hashB}} {
+		if _, err := db.InsertFederationPeer(ctx, &federation.ExternalNode{
+			PublicKey: claim.key, Label: claim.key, TrustState: federation.PeerFriend, TrustedAt: 1000,
+		}); err != nil {
+			t.Fatalf("insert peer: %v", err)
+		}
+		src, err := db.EnsureCatalogSource(ctx, claim.key, 1000)
+		if err != nil {
+			t.Fatalf("ensure source: %v", err)
+		}
+		if err := db.ReplaceSourceCatalog(ctx, src.ID, "s1", 100, []federation.CatalogEntry{{
+			Key: "e1", RecordingKey: "r1", Title: "Claimed Song",
+			Artist: "Claim Artist", AlbumArtist: "Claim Artist", Album: "Claim Album",
+			CoverHash: claim.hash, CoverExt: ".jpg",
+			Renditions: []federation.CatalogRendition{{Hash: strings.Repeat("dd", 31) + fmt.Sprintf("%02d", i), Size: 5}},
+		}}); err != nil {
+			t.Fatalf("ReplaceSourceCatalog: %v", err)
+		}
+	}
+
+	// The self claim: a local published track in the same album with a READY cover.
+	seedClaimFile(t, db, "claim001", "Claim Artist", "Claim Album", "Own Take")
+	selfHash := strings.Repeat("cc", 32)
+	albumID, err := db.ResolveAlbumID(ctx, "Claim Artist", "Claim Album")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SetAlbumCoverIfAbsent(ctx, albumID, selfHash, ".png",
+		selfHash+"/original.png", "image/png", 1000); err != nil {
+		t.Fatal(err)
+	}
+
+	view := MadnetworkView{IncludeSelf: true, DefaultShareDepth: federation.DepthUnlimited}
+	byHash := func(claims []MadnetworkCoverClaim) map[string]MadnetworkCoverClaim {
+		out := map[string]MadnetworkCoverClaim{}
+		for _, c := range claims {
+			out[c.CoverHash] = c
+		}
+		return out
+	}
+
+	// Before the local variants are ready, only the two remote claims exist.
+	claims, err := db.MadnetworkAlbumCoverClaims(ctx, "claim artist", view)
+	if err != nil {
+		t.Fatalf("claims: %v", err)
+	}
+	if len(claims) != 2 {
+		t.Fatalf("claims before ready = %+v, want the two remote ones", claims)
+	}
+	if _, err := db.Exec(`UPDATE album_images SET variants_ready = 1`); err != nil {
+		t.Fatal(err)
+	}
+	claims, err = db.MadnetworkAlbumCoverClaims(ctx, "claim artist", view)
+	if err != nil {
+		t.Fatalf("claims: %v", err)
+	}
+	if len(claims) != 3 {
+		t.Fatalf("claims = %+v, want two remote + one self", claims)
+	}
+	got := byHash(claims)
+	if c := got[hashA]; c.SourceKey != "f1a1" || c.Self {
+		t.Errorf("claim A = %+v, want source f1a1", c)
+	}
+	if c := got[selfHash]; !c.Self || c.SourceKey != "" || c.CoverExt != ".png" {
+		t.Errorf("self claim = %+v, want Self with no source key", c)
+	}
+
+	// Every claim's AlbumKey pairs with the album row's Key — the join the
+	// handler's election stands on.
+	albums, err := db.MadnetworkAlbums(ctx, "Claim Artist", view)
+	if err != nil || len(albums) != 1 {
+		t.Fatalf("albums = %+v err=%v, want the one album", albums, err)
+	}
+	for _, c := range claims {
+		if c.AlbumKey != albums[0].Key {
+			t.Errorf("claim key %q does not pair with album key %q", c.AlbumKey, albums[0].Key)
+		}
+	}
+}
+
+// seedClaimFile inserts one live approved file under the given artist/album.
+func seedClaimFile(t *testing.T, db *DB, hash, artist, album, title string) {
+	t.Helper()
+	meta := &MediaMetadata{
+		Title:       title,
+		Artist:      sql.NullString{String: artist, Valid: true},
+		AlbumArtist: sql.NullString{String: artist, Valid: true},
+		Album:       sql.NullString{String: album, Valid: true},
+		ExtractedAt: 1700000000,
+	}
+	if err := db.InsertFile(context.Background(), newFile(hash), newUpload(hash+".mp3"), meta); err != nil {
+		t.Fatalf("InsertFile %s: %v", hash, err)
 	}
 }

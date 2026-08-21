@@ -19,9 +19,11 @@ package api
 import (
 	"bytes"
 	"context"
+	"errors"
 	"image"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,6 +34,9 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 
+	"github.com/go-chi/chi/v5"
+
+	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/federation"
 	"daemonlord.ygg/madshare/media"
 )
@@ -167,4 +172,150 @@ func (h *handler) maybeFetchRemoteCover(entry *federation.CatalogEntry) {
 	// duplicate an audio download leaves, dropped for the same reason.
 	h.evictCached(entry.CoverHash)
 	log.Printf("madnetwork cover %s: attached to album %d (%s — %s)", entry.CoverHash[:8], albumID, artist, entry.Album)
+}
+
+// ── The cover election (covers-federation M4) ────────────────────────────────
+
+// coverBallot tallies cover claims for ONE album (or one merged track's album
+// context) and elects a winner by the voices rule — the same election that
+// orders tagsets and versions, applied to art. Claims are collected per
+// (hash, ext) candidate with the node keys behind them; the count itself is
+// BranchMap.Voices, the one place the sybil rule is written.
+type coverBallot struct {
+	order      []string // candidate keys, first-seen order (the determinism floor)
+	candidates map[string]*coverCandidate
+}
+
+type coverCandidate struct {
+	hash, ext string
+	keys      []string
+	self      bool
+}
+
+func (b *coverBallot) add(hash, ext, sourceKey string, self bool) {
+	if hash == "" {
+		return
+	}
+	if b.candidates == nil {
+		b.candidates = map[string]*coverCandidate{}
+	}
+	k := hash + ext
+	c := b.candidates[k]
+	if c == nil {
+		c = &coverCandidate{hash: hash, ext: ext}
+		b.candidates[k] = c
+		b.order = append(b.order, k)
+	}
+	if self {
+		c.self = true
+	} else if sourceKey != "" {
+		c.keys = append(c.keys, sourceKey)
+	}
+}
+
+// winner elects the candidate with the most voices; ties fall to the larger
+// raw holder count, then to a self-held cover (this library's own choice), then
+// to the lexically smallest hash — every step deterministic, so two requests
+// paint the same art.
+func (b *coverBallot) winner(branches database.BranchMap) (hash, ext string) {
+	var best *coverCandidate
+	bestVoices := -1
+	for _, k := range b.order {
+		c := b.candidates[k]
+		v := branches.Voices(c.keys, c.self)
+		switch {
+		case v > bestVoices:
+		case v < bestVoices:
+			continue
+		case len(c.keys) != len(best.keys):
+			if len(c.keys) < len(best.keys) {
+				continue
+			}
+		case c.self != best.self:
+			if !c.self {
+				continue
+			}
+		case c.hash >= best.hash:
+			continue
+		}
+		best, bestVoices = c, v
+	}
+	if best == nil {
+		return "", ""
+	}
+	return best.hash, best.ext
+}
+
+// ── The cover relay (covers-federation M4) ───────────────────────────────────
+
+// madnetworkCover handles GET /api/madnetwork/cover/{hash}: the cover twin of
+// stream/{hash} — fetch the original from whoever holds it, cache-through, and
+// serve it. A cover this library owns (or already cached) short-circuits in
+// EnsureBlob and never touches the network. v0 serves the original bytes: every
+// upload boundary in the network caps covers at maxImageSize, so the blob is
+// bounded, and thin clients downscale on their side; the on-relay variant step
+// is deferred with the variants/cache work (see docs/plans/covers-federation.md
+// M4). This does not touch the local-library rule that /api/albums serves only
+// derived variants — a network cover is a different entity with its own cap.
+func (h *handler) madnetworkCover(w http.ResponseWriter, r *http.Request) {
+	hash := strings.ToLower(chi.URLParam(r, "hash"))
+	if !isSHA256Hex(hash) {
+		http.Error(w, "invalid hash", http.StatusBadRequest)
+		return
+	}
+	t, err := h.ensureBlob(r.Context(), hash)
+	if err != nil {
+		if errors.Is(err, federation.ErrNoHolder) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "transfer unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	// Covers are small; unlike audio there is nothing to gain from streaming a
+	// growing file, so wait the fetch out and serve complete bytes with native
+	// Range/HEAD support.
+	select {
+	case <-t.Done():
+	case <-r.Context().Done():
+		return // client went away while the mesh converged
+	}
+	if t.Err() != nil {
+		http.Error(w, "transfer failed", http.StatusBadGateway)
+		return
+	}
+	if t.Size() > maxImageSize {
+		http.Error(w, "cover exceeds the image size cap", http.StatusBadGateway)
+		return
+	}
+	f, err := t.Open()
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	// The bytes decide the type — a relayed blob's name is a remote claim. Only
+	// the two formats every cover ingress accepts are served; anything else is
+	// the remote's fault, reported as such.
+	head := make([]byte, 512)
+	n, _ := io.ReadFull(f, head)
+	mimeType := http.DetectContentType(head[:n])
+	if mimeType != "image/jpeg" && mimeType != "image/png" {
+		http.Error(w, "not a servable image", http.StatusBadGateway)
+		return
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// Hash-addressed: the answer can never change, so let clients keep it.
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	http.ServeContent(w, r, "", info.ModTime(), f)
 }

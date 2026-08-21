@@ -229,13 +229,33 @@ func (h *handler) madnetworkAlbums(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "artist is required"})
 		return
 	}
-	albums, err := h.madnetwork.MadnetworkAlbums(r.Context(), artist, h.madnetworkViewFor(r))
+	view := h.madnetworkViewFor(r)
+	albums, err := h.madnetwork.MadnetworkAlbums(r.Context(), artist, view)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
 	if albums == nil {
 		albums = []*database.MadnetworkAlbum{}
+	}
+	// Elect each album's cover from the sources' claims (covers-federation M4).
+	// A failure costs the art, never the list — same soft rule as branchesByKey.
+	if claims, err := h.madnetwork.MadnetworkAlbumCoverClaims(r.Context(), artist, view); err == nil && len(claims) > 0 {
+		ballots := map[string]*coverBallot{}
+		for _, c := range claims {
+			b := ballots[c.AlbumKey]
+			if b == nil {
+				b = &coverBallot{}
+				ballots[c.AlbumKey] = b
+			}
+			b.add(c.CoverHash, c.CoverExt, c.SourceKey, c.Self)
+		}
+		branches := h.branchesByKey(r.Context())
+		for _, a := range albums {
+			if b := ballots[a.Key]; b != nil {
+				a.CoverHash, a.CoverExt = b.winner(branches)
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "albums": albums})
 }
@@ -255,6 +275,15 @@ type madnetworkTrack struct {
 	// TagsetID is the local appearance behind a self-held track (hearts,
 	// playlists); zero when this node does not publish the track itself.
 	TagsetID int64 `json:"tagset_id,omitempty"`
+
+	// CoverHash / CoverExt are the row's album-cover verdict, elected from the
+	// contributing sources' claims by the voices rule (coverBallot) and
+	// fetchable via /api/madnetwork/cover/{hash}. Track-level because a merged
+	// row IS its sources — two versions of an album on the network can
+	// legitimately paint two arts, and hiding that would decide a dispute the
+	// voices rule exists to display.
+	CoverHash string `json:"cover_hash,omitempty"`
+	CoverExt  string `json:"cover_ext,omitempty"`
 
 	Versions []madnetworkVersion `json:"versions"`
 }
@@ -398,6 +427,11 @@ func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow, opts mergeOpts) 
 				}
 			}
 		}
+		var ballot coverBallot
+		for _, row := range group {
+			ballot.add(row.Entry.CoverHash, row.Entry.CoverExt, row.SourceKey, row.Self)
+		}
+		t.CoverHash, t.CoverExt = ballot.winner(opts.branches)
 		t.Versions = mergeVersions(group, opts)
 		tracks = append(tracks, t)
 	}

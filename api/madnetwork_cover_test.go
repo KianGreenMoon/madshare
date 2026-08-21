@@ -7,11 +7,14 @@ import (
 	"encoding/hex"
 	"image"
 	"image/png"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"daemonlord.ygg/madshare/auth"
+	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/federation"
 )
 
@@ -113,5 +116,104 @@ func TestDownloadAttachesRemoteCover(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM image_processing_jobs WHERE image_hash = ?`,
 		coverHash).Scan(&jobs); err != nil || jobs != 1 {
 		t.Errorf("image jobs for the cover = %d err=%v, want 1", jobs, err)
+	}
+}
+
+// ── M4: the election and the relay ───────────────────────────────────────────
+
+// TestCoverBallotVoicesRule: the election counts voices, not keys — a farm of
+// holders behind one friendship is one voice, so a cover corroborated by two
+// independent voices beats one echoed by any number of sybils.
+func TestCoverBallotVoicesRule(t *testing.T) {
+	branches := database.BranchMap{
+		"sybil-1": {"branch-x"},
+		"sybil-2": {"branch-x"},
+	}
+	var b coverBallot
+	b.add("aaaa", ".jpg", "sybil-1", false)
+	b.add("aaaa", ".jpg", "sybil-2", false) // two keys, one branch: one voice
+	b.add("bbbb", ".png", "stranger", false)
+	b.add("bbbb", ".png", "", true) // unplaceable + self: two voices
+	if hash, ext := b.winner(branches); hash != "bbbb" || ext != ".png" {
+		t.Errorf("winner = (%q,%q), want the two-voice bbbb", hash, ext)
+	}
+
+	// A perfect tie falls through holders and self to the lexically smallest
+	// hash, so two requests always paint the same art.
+	var tie coverBallot
+	tie.add("cccc", ".jpg", "n1", false)
+	tie.add("dddd", ".jpg", "n2", false)
+	if hash, _ := tie.winner(nil); hash != "cccc" {
+		t.Errorf("tie winner = %q, want the deterministic cccc", hash)
+	}
+
+	// No claims at all elects nothing.
+	var empty coverBallot
+	if hash, ext := empty.winner(nil); hash != "" || ext != "" {
+		t.Errorf("empty ballot elected (%q,%q)", hash, ext)
+	}
+}
+
+// TestMergeTracksElectCover: the merged track row carries the elected cover —
+// the majority claim among its contributing sources.
+func TestMergeTracksElectCover(t *testing.T) {
+	row := func(source, cover string) *database.MadnetworkTrackRow {
+		r := &database.MadnetworkTrackRow{SourceKey: source}
+		r.Entry.Title = "One Song"
+		r.Entry.CoverHash, r.Entry.CoverExt = cover, ".jpg"
+		r.Entry.Renditions = []federation.CatalogRendition{{Hash: strings.Repeat("ee", 32), Size: 5}}
+		return r
+	}
+	tracks := mergeMadnetworkTracks([]*database.MadnetworkTrackRow{
+		row("n1", "aaaa"), row("n2", "bbbb"), row("n3", "bbbb"),
+	}, mergeOpts{})
+	if len(tracks) != 1 {
+		t.Fatalf("merged = %d tracks, want 1", len(tracks))
+	}
+	if tracks[0].CoverHash != "bbbb" || tracks[0].CoverExt != ".jpg" {
+		t.Errorf("track cover = (%q,%q), want the majority bbbb",
+			tracks[0].CoverHash, tracks[0].CoverExt)
+	}
+}
+
+// TestMadnetworkCoverRelay: the relay serves a fetched cover with the type its
+// BYTES carry, immutable cache headers, and a 404 for a hash nobody holds.
+func TestMadnetworkCoverRelay(t *testing.T) {
+	cover := pngBytes(t)
+	sum := sha256.Sum256(cover)
+	hash := hex.EncodeToString(sum[:])
+	tr := newFakeTransfer(t, hash, "original.png", int64(len(cover)))
+	tr.append(t, cover)
+	tr.finish()
+
+	srv := streamServer(t, tr)
+	resp, err := http.Get(srv.URL + "/api/madnetwork/cover/" + hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("cover relay = %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "image/png" {
+		t.Errorf("Content-Type = %q, want image/png (sniffed from bytes)", ct)
+	}
+	if cc := resp.Header.Get("Cache-Control"); !strings.Contains(cc, "immutable") {
+		t.Errorf("Cache-Control = %q, want an immutable hash-addressed answer", cc)
+	}
+	if !bytes.Equal(body, cover) {
+		t.Errorf("relayed %d bytes, want the cover verbatim", len(body))
+	}
+
+	// Nobody holds it: 404, indistinguishable from any other unknown hash.
+	none := streamServer(t, nil)
+	resp, err = http.Get(none.URL + "/api/madnetwork/cover/" + strings.Repeat("12", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("unknown cover = %d, want 404", resp.StatusCode)
 	}
 }
