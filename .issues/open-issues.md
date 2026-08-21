@@ -2102,3 +2102,54 @@ was confirmed by removing the new file and re-running the whole suite.
 | Severity | Issue | Status |
 |---|---|---|
 | Low (test, not product) | **The stale-holder tax this test measures no longer exists, and its final assertion demands it.** `staleholders_test.go:308` requires the 1-stale fetch to take strictly longer than the all-live one (`results[1].took <= results[0].took` → error). Measured 3/3 alone on `7bf3eed`: 47.6 / 39.3 / 45.6 ms with one stale holder against 88.2 / 114.9 / 90.7 ms all-live — the stale run is consistently about **twice as fast**, so the comparison is not marginally wrong but inverted. Every other claim in the test passes: the all-live fetch succeeds, a plan of nothing but ghosts fails, and any plan holding a live holder still completes. | **FIXED 2026-08-14 — the assertion now claims the BOUND F9 item 3 actually makes** (the first of the two repairs sketched below): each ghost may add at most its two dispatches × `Timeouts.Connect` to the fetch, plus one Connect of slack, asserted for EVERY mixed scenario (1-stale AND 2-stale), not just 1-stale. The table stays as the measurement. Verified both ways: green 3/3 on the clean tree (93ms / 49ms / 1.02s, all inside budget), and — with the dial bound temporarily neutered in `dialHolder` to simulate losing F9 item 3 — the assertion fires on the 2-stale scenario (8.04s against a 2.57s budget) **while 1-stale stays cheap (52ms, hedging rescues it)**, which is why the loop covers every mixed scenario: the old strict 1-stale comparison would have missed this exact regression even when it was red for the opposite reason. The gate half is recorded in `work-queue.md`'s verification ritual: any `federation/` change wants `MADSHARE_CHAOS=1 go test -p 1 ./federation/` unfiltered (`-run Chaos` misses this test by name). Original finding, kept as the chronology: The likely reading is that this is **F9 item 3 working better than the test's premise**: a stale holder gets one dispatch bounded by `Timeouts.Connect`, it never connects, the load rule stops asking, and the live holder carries all 8 chunks meanwhile — so the "tax" has collapsed into scheduling noise on a 2 MiB local-mesh fetch that completes in tens of milliseconds either way. If that is right the test is now measuring two noise samples with a strict `<=`, and the honest repair is either to assert a BOUND (a stale holder costs no more than `Timeouts.Connect`, which is the claim F9 item 3 actually makes) or to drop the comparison and keep the table as a measurement. Both are decisions about what the test should claim, so neither is taken here. Note the file's own comment history shows this assertion was already once wrong for a different reason (ghost keys that were not valid hex were refused locally in microseconds), which is a hint that "a stale holder must cost measurably" is simply a harder thing to pin than it looks. Worth knowing for release checks: **the chaos suite is opt-in, so this can stay red without any default `go test ./...` noticing** — it did, at least since F9 item 3 shipped. Separately, `TestChaosSeederVanishesMidTransfer` failed once in two full-suite runs (mesh-setup timeout, the known load flake) and passed otherwise. |
+
+## Artist grouping and the non-ASCII fold (2026-08-21, owner-reported)
+
+Reported as two rules to pin with tests — "the album-artist tag is the artist in
+the A-Z view, but a performer with releases of their own is listed too", and
+"search is case-insensitive, including on Cyrillic, where we had problems" —
+plus a symptom: an album with an album-artist tag and no artist tag kept on a
+device landed under *Unknown artist / Other*.
+
+The two rules were already implemented and are now pinned
+(`database/album_artist_browse_test.go`, the A-Z section of
+`database/madnetwork_test.go`, and madplayer's `internal/library/grouping_test.go`
+/ `internal/backend/tags_test.go`). Writing the tests turned up four separate
+defects around them, all in code, all fixed here — **the fold was applied to the
+search predicates when that bug was first found, and never to the identity and
+ordering expressions beside them**, which is why the symptom moved rather than
+disappeared.
+
+| Severity | Issue | Status |
+|---|---|---|
+| **High** | **Paging the merged artist list silently drops every non-ASCII row after the first page boundary.** The keyset cursor is built in Go (`strings.ToLower`, Unicode) and compared in SQL against `lower(akey)` (ASCII only), so once the cursor holds a folded Cyrillic name every remaining Cyrillic row compares *smaller* than it — a capital Cyrillic letter is byte-wise below a small one — and is skipped. Measured on the live server before the fix: `/api/madnetwork/artists` paged at `limit=5` returned **61 of 79 artists**, losing 17 Cyrillic names and keeping "Unknown artist"; unpaged it returned all 79. madplayer pages this list at 80 and would lose the same tail on any catalogue past that. | **fixed** — every identity/order expression in `database/madnetwork.go` uses `unicode_lower` (`TestMadnetworkArtists_PagingKeepsEveryRow`). |
+| **Medium** | **Two spellings of one non-ASCII name are two rows of the merged catalogue.** `GROUP BY lower(akey)` folds only ASCII, so "Кино" cached from one node and "КИНО" from another list as two artists, each holding half the albums — while the local library merges them (its key is `normalizeKey`, Unicode) and so does madplayer's cross-library merge. | **fixed** (`TestMadnetworkArtists_CyrillicCaseVariantsAreOneRow`). |
+| **Medium** | **A track with an album-artist tag and no artist tag reaches a client with an empty credit.** `mergeMadnetworkTracks` read `Entry.Artist` verbatim; a node's own rows resolve the performer entity (which falls back to the album artist) but a *cached* row carries the raw tag text. So the same album read blank from a friend and correct from its holder — and in madplayer that empty credit is what a kept track would have been FILED under on disk. | **fixed** — `trackCredit` applies `effectiveTrackArtist`'s rule over text (artist → album artist → the group it was found in). madplayer falls back independently, since an older node still sends the blank. |
+| **Medium** | **`ALBUM ARTIST` is not read from a FLAC.** dhowden/tag reads exactly one Vorbis comment key, `albumartist` (Picard's spelling). MP3Tag and foobar2000 write `ALBUM ARTIST`; that file's album artist was invisible, so a correctly tagged record was filed under **Unknown artist** with no way to see why — the reported symptom, exactly. | **fixed** — `media.albumArtist` falls back to the raw comment map (`album artist`, `album_artist`, `albumartist`); `TestExtractTags_AlbumArtistSpellings`. |
+| Low | **The A-Z order itself folds only ASCII**, in both the library and the merged catalogue, so a name spelled with a small first letter sorts in a block of its own rather than among its neighbours. | **fixed** — `unicode_lower` in the ORDER BY of `listArtists` / `ListArtistsPage` (cursor and comparison together) and the merged lists. |
+
+**Cost, measured rather than assumed.** `unicode_lower` is a Go callback, so it
+is not free the way SQLite's C `lower()` is. Over a synthetic **20 000-entry**
+catalogue on this laptop: the artist list went **45 ms → 286 ms**, a track
+search **97 ms → 342 ms**. The live catalogue is about a quarter of that size and
+these lists are fetched on navigation, not per frame, so it is paid once per
+browse — worth it against a list that loses rows. The structural fix if it ever
+bites is a stored normalized key on `federation_catalog` (what the local library
+already does with `norm_name`), written at cache-write time by the same
+`normalizeKey`: no per-row call at all, and faster than `lower()` is now.
+
+**A fix in the tag reader does not repair rows already imported.** `ingestOne`
+skips a hash the links storage already holds, so a rescan re-walks the folder
+without re-reading a single tag — by design, it is what makes a rescan cheap.
+The `ALBUM ARTIST` fix therefore applies to new imports only; an album already
+sitting in the Unknown bucket stays there until somebody edits its album artist
+(the bulk edit reclassifies, `docs/api/bulk.md`) or the file is re-imported. A
+"re-read the tags of files already in the library" pass does not exist and would
+be its own decision — it overwrites metadata a person may have corrected by hand.
+
+**Still ASCII-folded, deliberately left alone:** the admin file list and
+appearances orderings (`database/files.go` `fileSortOrder`, `database/appearances.go`)
+sort and *partition* by `LOWER(COALESCE(m.album_artist, m.artist, ''))`, so the
+"By artist / album" view splits a non-ASCII artist's group by the case of its
+first letter. Same class of bug, different page, and its keyset pagination wants
+checking with it — out of scope for a pass aimed at the library view and search.
