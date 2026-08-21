@@ -653,6 +653,7 @@ func (h *handler) madnetworkSearch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
+	h.electSearchAlbumCovers(r.Context(), albums, view)
 
 	rows, err := h.madnetwork.MadnetworkSearchTrackRows(r.Context(), q, view)
 	if err != nil {

@@ -139,7 +139,9 @@ function mountShelf(node) {
     },
     onOpenArtist: a => shelf.showAlbums(a.name),
     onOpenAlbum: a => shelf.showTracks(a.artist_name, a.title),
-    albumArtUrl: () => null, // the merged catalog carries no cover images
+    albumArtUrl: a => a.cover_hash
+      ? `${API}/api/madnetwork/cover/${encodeURIComponent(a.cover_hash)}`
+      : null, // no source claims art for this album
     buildQueueTrack: t => ({
       url: t.url ? `${API}${t.url}` : `${API}/api/madnetwork/stream/${t.hash}`,
       tagsetId: t.tagset_id || null,

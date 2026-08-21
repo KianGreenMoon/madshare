@@ -1529,6 +1529,13 @@ type MadnetworkSearchAlbum struct {
 	Title  string `json:"title"`
 	Tracks int64  `json:"track_count"`
 	Year   *int64 `json:"year,omitempty"`
+
+	// Key is the group identity (unicode_lower(alb)), pairing the hit with
+	// MadnetworkCoverClaim rows exactly as on MadnetworkAlbum. Internal.
+	Key string `json:"-"`
+	// CoverHash / CoverExt: the hit's elected cover, filled by the handler.
+	CoverHash string `json:"cover_hash,omitempty"`
+	CoverExt  string `json:"cover_ext,omitempty"`
 }
 
 // MadnetworkSearchAlbums lists merged albums whose title matches a substring.
@@ -1539,7 +1546,7 @@ func (db *DB) MadnetworkSearchAlbums(ctx context.Context, q string, limit int, v
 	}
 	escaped := strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(s)
 	rows, err := db.QueryContext(ctx, `
-		SELECT MIN(akey), MIN(alb), COUNT(DISTINCT `+trackIdent+`), MAX(year)
+		SELECT MIN(akey), MIN(alb), COUNT(DISTINCT `+trackIdent+`), MAX(year), unicode_lower(alb)
 		`+fedcatCountBase(view)+`
 		WHERE unicode_lower(alb) LIKE unicode_lower(?) ESCAPE '\'
 		GROUP BY unicode_lower(akey), unicode_lower(alb)
@@ -1553,7 +1560,7 @@ func (db *DB) MadnetworkSearchAlbums(ctx context.Context, q string, limit int, v
 	for rows.Next() {
 		var a MadnetworkSearchAlbum
 		var year sql.NullInt64
-		if err := rows.Scan(&a.Artist, &a.Title, &a.Tracks, &year); err != nil {
+		if err := rows.Scan(&a.Artist, &a.Title, &a.Tracks, &year, &a.Key); err != nil {
 			return nil, fmt.Errorf("scan madnetwork search album: %w", err)
 		}
 		a.Year = nullInt(year)

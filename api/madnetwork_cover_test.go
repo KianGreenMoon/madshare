@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"image"
 	"image/png"
 	"io"
@@ -215,5 +216,59 @@ func TestMadnetworkCoverRelay(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("unknown cover = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestSearchAlbumHitsCarryTheElectedCover: the search page's album hits get
+// the same election as the album list — through the real endpoint, so the JSON
+// field the webui reads is what is pinned.
+func TestSearchAlbumHitsCarryTheElectedCover(t *testing.T) {
+	fed := &fakeFederation{}
+	srv, db := newModerationServerWithNetwork(t, fed)
+	admin := clientFor(t, srv.URL, "admin", testAdminPassword)
+
+	ctx := context.Background()
+	coverHash := strings.Repeat("fa", 32)
+	if _, err := db.InsertFederationPeer(ctx, &federation.ExternalNode{
+		PublicKey: "aa33", Label: "friendly", TrustState: federation.PeerFriend, TrustedAt: 1000,
+	}); err != nil {
+		t.Fatalf("insert peer: %v", err)
+	}
+	src, err := db.EnsureCatalogSource(ctx, "aa33", 1000)
+	if err != nil {
+		t.Fatalf("ensure source: %v", err)
+	}
+	// Fresh, or the availability window hides the source from the browse view.
+	if err := db.TouchCatalogSourceSeen(ctx, src.ID, time.Now().Unix(), ""); err != nil {
+		t.Fatalf("touch source: %v", err)
+	}
+	if err := db.ReplaceSourceCatalog(ctx, src.ID, "s1", 100, []federation.CatalogEntry{{
+		Key: "e1", RecordingKey: "r1", Title: "Findable Song", Artist: "Search Band",
+		AlbumArtist: "Search Band", Album: "Findable Album",
+		CoverHash: coverHash, CoverExt: ".jpg",
+		Renditions: []federation.CatalogRendition{{Hash: strings.Repeat("dc", 32), Size: 5}},
+	}}); err != nil {
+		t.Fatalf("ReplaceSourceCatalog: %v", err)
+	}
+
+	resp, err := admin.Get(srv.URL + "/api/madnetwork/search?q=Findable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Albums []struct {
+			Title     string `json:"title"`
+			CoverHash string `json:"cover_hash"`
+		} `json:"albums"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Albums) != 1 {
+		t.Fatalf("album hits = %+v, want the one album", body.Albums)
+	}
+	if body.Albums[0].CoverHash != coverHash {
+		t.Errorf("hit cover = %q, want the claimant's %q", body.Albums[0].CoverHash, coverHash)
 	}
 }

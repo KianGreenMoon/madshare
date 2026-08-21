@@ -317,9 +317,11 @@ plan: `docs/plans/covers-federation.md`.
   cache headers. A cover this library owns is served locally without a fetch.
   This endpoint serves *network* covers; the local library's album art stays on
   `GET /api/albums/{album_id}/image`, which serves derived variants only.
-- **Browse rows.** `/api/madnetwork/albums` rows and the merged track rows
-  (tracks, lanes, search) carry `cover_hash`/`cover_ext`, elected per row from
-  the sources' claims by the voices rule. Fetch the art via the relay above.
+- **Browse rows.** `/api/madnetwork/albums` rows, the merged track rows
+  (tracks, lanes, search) and the search page's album hits carry
+  `cover_hash`/`cover_ext`, elected per row from the sources' claims by the
+  voices rule. Fetch the art via the relay above. The madnetwork pages'
+  album rows and search hits render it through the relay.
 - **Downloads attach covers.** `POST /api/madnetwork/download` also redeems the
   entry's cover claim in the background: original fetched by hash, album cover
   claimed fill-if-missing, variant job queued — the embedded-art flow with the

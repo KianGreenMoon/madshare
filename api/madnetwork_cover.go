@@ -319,3 +319,37 @@ func (h *handler) madnetworkCover(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	http.ServeContent(w, r, "", info.ModTime(), f)
 }
+
+// electSearchAlbumCovers fills the search page's album hits with their elected
+// covers — the same claims and the same ballot as the album list, fetched per
+// distinct hit artist (the hits are capped at a handful, so this is a couple of
+// small queries, not a fan-out). A failure costs the art, never the hits.
+func (h *handler) electSearchAlbumCovers(ctx context.Context, hits []*database.MadnetworkSearchAlbum, view database.MadnetworkView) {
+	if len(hits) == 0 {
+		return
+	}
+	branches := h.branchesByKey(ctx)
+	perArtist := map[string]map[string]*coverBallot{} // artist -> album key -> ballot
+	for _, hit := range hits {
+		ballots, ok := perArtist[hit.Artist]
+		if !ok {
+			claims, err := h.madnetwork.MadnetworkAlbumCoverClaims(ctx, hit.Artist, view)
+			if err != nil {
+				continue
+			}
+			ballots = map[string]*coverBallot{}
+			for _, c := range claims {
+				b := ballots[c.AlbumKey]
+				if b == nil {
+					b = &coverBallot{}
+					ballots[c.AlbumKey] = b
+				}
+				b.add(c.CoverHash, c.CoverExt, c.SourceKey, c.Self)
+			}
+			perArtist[hit.Artist] = ballots
+		}
+		if b := ballots[hit.Key]; b != nil {
+			hit.CoverHash, hit.CoverExt = b.winner(branches)
+		}
+	}
+}

@@ -742,7 +742,10 @@ export function createShelf({ panel, trail, actions, source = null, rootLabel = 
       wrap.append(buildAlbumRow({
         title: al.title,
         meta: `${yearPrefix}${al.tracks} track${al.tracks === 1 ? '' : 's'}`,
-        artUrl: null, // no cover images in the merged catalog
+        // The elected cover (covers-federation M4), relayed by this server
+        // from whichever node holds it. Hash-addressed and immutable, so the
+        // browser caches it as hard as a local variant.
+        artUrl: al.cover_hash ? `${API}/api/madnetwork/cover/${encodeURIComponent(al.cover_hash)}` : null,
         onOpen: () => showTracks(a, al.title),
         makeMenuItems: btn => quickAddItems(btn, () => entityTracks(a, al.title),
           { extraItems: materializeAllItems(a, al.title, qs) }),
