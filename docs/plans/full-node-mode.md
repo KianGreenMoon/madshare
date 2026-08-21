@@ -143,22 +143,57 @@ is in nobody's map), and structural revocation.
   hand. At the first beta/release, the additive-only compatibility rule
   becomes binding (and gets a mechanism, e.g. a capability field in the node
   card), because from that point un-upgraded desktop nodes exist forever.
-- **Scale before growth — two separate things, do not conflate them:**
-  - **F10 (merkle verification)** is decided-and-parked in
-    `docs/architecture/federation-swarm.md` §"Merkle verification (F10,
-    decided-and-parked 2026-08-09)" (+ the parked row in
-    `docs/plans/work-queue.md`), with named triggers: video support, or a
-    measured all-partials reassembly gap. It buys verification granularity,
-    video-scale blobs, partial holders serving proofs, and collapses the
-    whole-file fallback. **It does not address catalog or discovery scale.**
-  - **The actual growth limit has no design yet:** every node replicates
-    whole catalogs from up to `discovery_cap` (200) sources, the merged view
-    is per-request SQL over those denormalized rows in one SQLite, and holder
-    discovery exists only as far as catalog replication reaches. Per-node
-    cost is capped, so what grows past ~200 community nodes is *invisibility*
-    (the frontier rotation recycles) and browse latency on weak hardware.
-    Before full-node mode invites communities past that order, this needs its
-    own design doc — it is a new question, not a parked one.
+- **F10 (merkle verification) stays parked, on its own triggers — it is not
+  a scale answer.** (The first draft of this section filed it under scale;
+  that was wrong.) It is decided-and-parked in
+  `docs/architecture/federation-swarm.md` §"Merkle verification (F10,
+  decided-and-parked 2026-08-09)" (+ the parked row in
+  `docs/plans/work-queue.md`), with named triggers: video support, or a
+  measured all-partials reassembly gap. What it buys is verification
+  granularity, video-scale blobs, partial holders serving proofs, and the
+  collapse of the whole-file fallback. Neither trigger has fired.
+- **The growth limit is a NEW question with no design doc yet.** Three linked
+  facts set it: (1) *catalog replication* — every member replicates whole
+  catalogs from up to `discovery_cap` (200) sources on the pull rotation;
+  (2) *the merged view* is per-request SQL over those denormalized rows in
+  one SQLite file — 200 nodes × 20k-track libraries is millions of rows, on
+  exactly the weak hardware full-node mode invites in; (3) *holder discovery*
+  reaches only as far as cached catalogs do — there is no tracker and no DHT.
+  Per-node cost is capped by design, so what actually grows past
+  ~`discovery_cap` community nodes is **invisibility** (the frontier rotation
+  recycles the cold) and **browse latency**. Before full-node mode targets
+  communities of that order, this needs its own design doc. Candidate
+  directions, none chosen: search-on-demand across members instead of
+  replicate-everything; a holder-query hop ("who has hash H?" asked of
+  friends) so bytes can be found for content whose catalog was never pulled;
+  smarter cap spending (weight the rotation by observed liveness/overlap).
+
+## Ideas held for thought (2026-08-22 — recorded, not decided)
+
+Two risks with no mechanical fix; the owner regards the friendly environment
+as his own responsibility, and these are the smallest software contributions
+to it we could name. Neither is scheduled.
+
+- **A community's answer to a bad node: attribution, not reputation.** The
+  mechanism already exists — `BranchMap` knows which direct friend carries
+  node X into your view. Show it: *"reaches you through: \<friend\>"* on a
+  node's card and at block time. That converts "the network has a bad node"
+  into "**my friend** vouches for a bad node", which is a conversation humans
+  can actually have, and every remedy is already built (talk to them, demote
+  guest-only, unfriend — branch-snipping does the rest). Deliberately NOT:
+  shared blocklists or reputation scores — censorship-and-drama machinery;
+  the trust model's shape is branch-snipping plus social pressure. The
+  claim-reports table (F6) already carries the transparency half. The rest is
+  a short community-norms page — the human layer.
+- **Legal visibility: honesty at the moment of choice.** One plain sentence
+  in the scope picker when pinning to Madnetwork — *"visible to your whole
+  community, attributable to your node, redistributed by others"* — the same
+  honesty on the cache-seeding switch (*"you redistribute what you fetched"*),
+  and a plain-language "what sharing means" page in `docs/ui/` (cross-client
+  wording; both UIs must say the same thing). No content policing — wrong
+  layer, impossible anyway; the defaults (nothing shared, guests off) already
+  protect the naive. This is wording, not machinery, and it is the difference
+  between an informed user and a burned one.
 
 ## Open questions (owner)
 
@@ -180,3 +215,20 @@ is in nobody's map), and structural revocation.
 5. **Windows.** The release packaging has no Windows target; madplayer owns
    its own build story. Nothing in this plan blocks on it, but the audience
    named as the motivation ships only when that exists.
+6. **Backbone thinness.** Desktop nodes are outbound-only leaves; when nearly
+   everyone is a leaf hanging off a few public ygg peers, community traffic
+   routes through strangers' relays — throughput and a privacy surface nobody
+   chose. Does the mode want operator guidance ("somebody in the community
+   runs a `listen` node"), and should the first-run connect step prefer a
+   friend's `listen` URI over public peers when it has one?
+7. **Client-side resource defaults.** The server ships transfer limits
+   opt-in/unlimited (mechanism yes, guessed defaults no). An *autostarted
+   background node on a machine nobody administers* argues the other way:
+   madplayer's full-node mode plausibly wants conservative defaults of its
+   own (a modest seed rate, cache retention on). Which defaults, and is the
+   owner willing to bend the no-guessed-defaults rule for the client half?
+8. **The update channel is a security mechanism.** The mesh port faces the
+   whole yggdrasil internet from every user's desktop — HTTP parsing, the
+   gVisor netstack, our three fork patches. Servers get patched by admins;
+   desktops need an update story (in-app check? distro packages?), which is
+   tangled with the still-undecided module-rename/distribution question.
