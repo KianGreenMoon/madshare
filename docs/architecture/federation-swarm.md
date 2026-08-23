@@ -655,16 +655,38 @@ behind triggers that have not fired.
   madplayer's skip diagnosis — its lab reproduced a truncated sole holder whose
   self-consistent manifest streamed a verified-looking prefix into playback
   before the whole-file hash could object): when the caller ADVERTISED a size —
-  from the catalog, or a home server's holders endpoint — a sole manifest whose
-  total contradicts it is refused, and the transfer **ends with no fallback**
-  rather than giving way. A blob's size is pinned by its content hash, so one
-  of the two records is provably wrong about the blob; nothing can say which,
-  so no holder is blamed — but the whole-file path would fetch the same bytes
-  from the same suspect source while a streaming reader consumed them (whole
-  mode verifies only at the end), and an immediate explained refusal beats a
-  track that plays its first seconds and dies. Two agreeing holders outrank
-  the advertisement, which may simply be stale; an unknown (zero) advertised
-  size checks nothing.
+  from the catalog, or a home server's holders endpoint — and a sole manifest's
+  total contradicts it, the fetch runs with **reads withheld** until the
+  assembled bytes pass the content hash, and gives way to the whole-file path
+  meanwhile. A blob's size is pinned by its content hash, so one of the two
+  records is provably wrong about the blob; nothing can say which, so no holder
+  is blamed and none is dropped. Two agreeing holders outrank the
+  advertisement, which may simply be stale; an unknown (zero) advertised size
+  checks nothing.
+
+  **Withholding and not refusing, for two reasons that both bite.** The
+  advertisement is *not* an independent fact — it is a catalog row a member
+  node published (`MadnetworkBlobProviders` takes the size from the
+  most-recently-seen source advertising the hash), so it can contradict but
+  never convict. Refusing on it would turn one stale or hostile row into a
+  standing denial of that blob, with no fallback and nothing to ride out —
+  worst for a listener node, whose advertised size and whose single holder both
+  come from the same home server. And a sole *voice* means one holder
+  **answered**, not one holder exists: `agreedManifest` probes in waves of
+  `manifestProbes` and stops at the first wave that produces anything, so a
+  complete holder further down the plan is never asked, and ending the transfer
+  would throw away a copy that was there all along
+  (`TestAnHonestHolderOutsideTheProbeWaveStillDelivers`). What the contest
+  really costs is the swarm — the layout is that same holder's claim, and
+  pre-sizing the part file to a contested total would spend our disk and wire
+  before the hash could object.
+
+  **Both fetch paths carry the check**, because either can be the one that meets
+  the truncated copy: the manifest cross-check above, and `Content-Length`
+  against the same advertised size in `fetchFrom` — which is where a truncated
+  holder that serves no manifest lands, and the path that publishes every byte
+  as it arrives while verifying only at the end. Withholding is what makes the
+  fallback safe to take.
 - *Attribute blame correctly.* A corrupt chunk still retires its sender — no
   amount of environmental bad luck produces wrong bytes. But a corrupt chunk from
   a **second distinct holder** says something else: the accusation comes from the
@@ -674,9 +696,11 @@ behind triggers that have not fired.
   bytes it never got wrong), and the whole-file fallback takes over carrying its
   own reference.
 
-Neither changes what a completed fetch guarantees — the assembled whole-file
-hash is the anchor and always was, so this is denial-of-service, never
-corruption.
+None of them changes what a completed fetch guarantees — the assembled
+whole-file hash is the anchor and always was, so this is denial-of-service,
+never corruption. Nor do they add one: the size cross-check deliberately stops
+at withholding, so no claim any node can publish costs another node access to a
+blob it could otherwise have fetched.
 
 **What it cost**, measured on one machine by `TestStaleHoldersCostAFetch` (four
 nodes, 2 MiB, three holders, one of them progressively replaced by a key nothing

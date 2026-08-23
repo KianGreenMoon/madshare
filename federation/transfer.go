@@ -127,6 +127,14 @@ type transfer struct {
 	partPath string // the growing file while the fetch runs ("" when born complete)
 	done     chan struct{}
 
+	// advertised is the size the CALLER arrived with — a catalog row's, or a
+	// home server's holders endpoint reading the same rows. Kept apart from
+	// `size`, which setMeta overwrites with whatever the copy on offer claims,
+	// so the two records stay comparable for the whole fetch. 0 = the caller
+	// knew nothing. Written once before runTransfer starts and never again,
+	// which is what lets the fetch goroutines read it without the lock.
+	advertised int64
+
 	// ctx bounds THIS transfer's fetch work (manifest probes, chunk plan,
 	// whole-file fallback). Derived from the node's transferCtx, so a node
 	// stopping still stops every transfer — but cancellable on its own, which
@@ -148,6 +156,11 @@ type transfer struct {
 	// this minus what was delivered, computed once when the transfer ends
 	// (traffic.go) — which is why no discard site has to remember to report.
 	received int64
+	// withheld suppresses publication: availLocked answers 0 until the
+	// assembled bytes have passed the content hash. Set when a copy's size
+	// claim contradicts the advertised one — the fetch still runs, but nothing
+	// unverified reaches a reader while the two records disagree.
+	withheld bool
 
 	// Chunk-mode readiness (F4 swarm path): per-chunk completion so the streaming
 	// relay can read out-of-order regions (a prioritized tail/seek), the chunk
@@ -300,6 +313,11 @@ func (t *transfer) availLocked(offset int64) int64 {
 		}
 		return t.size - offset
 	}
+	// A contested size publishes nothing until the content hash has spoken, so
+	// the branch above is the only way out: verified, or never.
+	if t.withheld {
+		return 0
+	}
 	if t.layout != nil && len(t.chunkOK) > 0 {
 		ci := t.layout.chunkAt(offset)
 		if ci < 0 || ci >= len(t.chunkOK) || !t.chunkOK[ci] {
@@ -419,6 +437,28 @@ func (t *transfer) addProgress(n int64) {
 	if readable {
 		t.stats.noteFirstByte()
 	}
+}
+
+// withholdReads stops publishing bytes to readers for the rest of this
+// transfer: availLocked answers 0 until the assembled blob has passed the
+// content hash, after which the whole thing becomes readable at once.
+//
+// This is the answer to a contested size, and it is deliberately not a refusal.
+// A blob's size is pinned by its content hash, so a copy whose total disagrees
+// with the advertised one proves that ONE of the two records is wrong about the
+// blob — and nothing here can say which, because the advertisement is a catalog
+// row a member node published, not an independent fact. Refusing would let one
+// stale or hostile row deny the blob outright. Withholding costs the fetch its
+// streaming and nothing else: the hash still decides, and the reader gets
+// either the track a moment later or a clean error — never a track that plays
+// its first seconds and dies.
+//
+// No publishLocked: nothing became readable, so there is nothing to wake a
+// reader for. One-way — a transfer is never un-withheld.
+func (t *transfer) withholdReads() {
+	t.mu.Lock()
+	t.withheld = true
+	t.mu.Unlock()
 }
 
 func (t *transfer) resetProgress() {
@@ -641,7 +681,7 @@ func (n *Node) ensureBlob(ctx context.Context, hash string,
 	}
 	t := newTransfer(hash, final, final+".part")
 	t.ctx, t.cancel = context.WithCancel(n.transferCtx)
-	t.size = size
+	t.size, t.advertised = size, size
 	n.transfers[hash] = t
 	go n.runTransfer(t, holders)
 	return t, nil
@@ -664,14 +704,17 @@ func (n *Node) ensureBlob(ctx context.Context, hash string,
 // all. Either way the assembled bytes are verified against the content hash
 // before entering the cache.
 //
-// One claim is refused with NO fallback: a sole holder whose manifest total
-// contradicts a size the caller already knew (see the size cross-check below).
-// That holder has proven itself wrong about the blob, and the whole-file path
-// would fetch the same wrong bytes from the same proven-wrong source — while a
-// STREAMING reader consumed them as they landed, since whole mode verifies
-// only at the end. Ending the transfer before a byte moves is what turns "the
-// track plays its first seconds and dies" into an immediate, explained refusal
-// (madplayer's skip diagnosis, 2026-08-23 — its lab reproduces both shapes).
+// One thing is not left to the content hash alone: a size claim that
+// contradicts the one the caller arrived with. The hash catches the wrong bytes
+// — but only after the last of them, and a streaming reader has consumed the
+// rest by then, which is a track that plays its first seconds and dies
+// (madplayer's skip diagnosis, 2026-08-23: its lab grew a seeder holding a
+// correct PREFIX of a blob under the full hash, whose self-consistent manifest
+// let every chunk verify on the way into playback). Where the two records
+// disagree the fetch therefore runs with reads WITHHELD until the assembled
+// bytes verify (withholdReads). Both fetch paths carry the check, because
+// either can be the one that meets the truncated copy: the cross-check below
+// for a manifest, Content-Length in fetchFrom for whole mode.
 func (n *Node) runTransfer(t *transfer, holders []*BlobProvider) {
 	defer func() {
 		n.transferMu.Lock()
@@ -696,26 +739,26 @@ func (n *Node) runTransfer(t *transfer, holders []*BlobProvider) {
 	// not gate the swarm start) and keeps the bytes only if they verify.
 	pf := n.speculateChunk0(t, holders)
 
-	// The advertised size, read before the manifest overwrites it: the one fact
-	// about the blob that arrived independently of any holder — from the
-	// catalog, or from the home server's holders endpoint. A blob's size is
-	// pinned by its content hash, so a sole manifest that names a different
-	// total is provably wrong about the blob (or the advertisement is — nothing
-	// here can say which, so no holder is blamed; symmetric uncertainty is the
-	// same reason a corrupt chunk from a second holder condemns the MANIFEST).
-	// A quorum outranks the advertisement: two independent holders describing
-	// the blob identically is stronger evidence than a catalog row, which may
-	// simply be stale. Zero means the caller knew nothing, and no check runs.
-	advertised := t.Size()
-
+	// The size cross-check. A quorum outranks the advertisement — two holders
+	// describing the blob identically is stronger evidence than a catalog row,
+	// which may simply be stale — and a zero advertisement means the caller
+	// knew nothing, so neither is checked. What remains is a sole voice
+	// contradicting the one record we already had, and it costs the transfer
+	// its streaming, never its existence (withholdReads says why not).
+	//
+	// It also costs it the swarm. The layout is that same holder's claim, and
+	// pre-sizing the part file to a contested total would let a wrong one spend
+	// our disk and our wire before the hash could object; whole mode carries its
+	// own reference and is bounded by what each holder actually sends. Nobody is
+	// blamed and no holder is dropped — an honest complete copy further down the
+	// list still gets its turn there, which is the whole reason this is a
+	// fallback and not a refusal.
 	man, voices := n.fetchAgreedManifest(t.ctx, holders, t.hash)
-	if man != nil && voices < 2 && advertised > 0 && man.Size != advertised {
-		pf.discard()
-		n.logger.Printf("federation: fetch %s: refusing the only manifest offered — it describes %d byte(s) where %d were advertised",
-			t.hash, man.Size, advertised)
-		t.finish(fmt.Errorf("federation: fetch %s: the only copy offered describes %d byte(s) where %d were advertised — refusing bytes that cannot match their content hash",
-			t.hash, man.Size, advertised))
-		return
+	if man != nil && voices < 2 && t.advertised > 0 && man.Size != t.advertised {
+		n.logger.Printf("federation: fetch %s: the only manifest offered describes %d byte(s) where %d were advertised — withholding reads, falling back to whole-file",
+			t.hash, man.Size, t.advertised)
+		t.withholdReads()
+		man = nil
 	}
 	if man != nil {
 		t.setMeta(man.Size, man.Filename)
@@ -830,6 +873,16 @@ func (n *Node) fetchFrom(t *transfer, p *BlobProvider) error {
 	filename := ""
 	if _, params, err := mime.ParseMediaType(resp.Header.Get("Content-Disposition")); err == nil {
 		filename = filepath.Base(params["filename"])
+	}
+	// The cross-check runTransfer makes against a manifest, made here against
+	// Content-Length — because this path is where a truncated holder that serves
+	// no manifest lands, and it is the path that streams every byte to a reader
+	// while verifying only at the end. Before setMeta, which is about to
+	// overwrite `size` with this same claim.
+	if t.advertised > 0 && resp.ContentLength > 0 && resp.ContentLength != t.advertised {
+		n.logger.Printf("federation: fetch %s from %q: holder offers %d byte(s) where %d were advertised — withholding reads until the content hash decides",
+			t.hash, p.Display(), resp.ContentLength, t.advertised)
+		t.withholdReads()
 	}
 	t.setMeta(resp.ContentLength, filename)
 

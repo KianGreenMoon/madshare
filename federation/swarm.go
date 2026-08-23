@@ -515,9 +515,10 @@ func (m *blobManifest) agreement() string {
 //     picking a side.
 //
 // votes says how the answer was reached — 2 for an agreement, 1 for a sole
-// voice, 0 with a nil manifest — because the caller owes a sole voice one more
-// check the quorum already passed: runTransfer cross-checks it against the
-// advertised size, the one independent fact about the blob it may already hold.
+// voice, 0 with a nil manifest — because a sole voice owes one check a quorum
+// has already passed: runTransfer cross-checks its total against the size the
+// caller arrived with, and gives way to the whole-file path while the two
+// disagree.
 func (n *Node) fetchAgreedManifest(ctx context.Context, holders []*BlobProvider, hash string) (*blobManifest, int) {
 	return agreedManifest(ctx, holders, func(p *BlobProvider) *blobManifest {
 		return n.fetchManifest(ctx, p, hash)
