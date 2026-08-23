@@ -3,6 +3,8 @@
 package federation
 
 import (
+	"io"
+	"log"
 	"testing"
 	"time"
 )
@@ -54,6 +56,117 @@ func TestInstallMembersRefusesAStaleClobber(t *testing.T) {
 	n.memberMu.Unlock()
 	if _, ok := got.keys[k("b")]; !ok {
 		t.Error("a set computed from newer inputs was refused")
+	}
+}
+
+// TestInvalidateMembersDropsTheMemoAndItsPast is the defect found on 2026-08-23
+// reproducing madplayer's "madnetwork tracks skip": the memo's inputs can change
+// LOCALLY — a home node added, a friendship accepted or removed — and nothing
+// told the memo, so the node refused perfectly valid capability tokens for up to
+// a full MembershipTTL after AddHome. Invalidation has two halves: the memo is
+// gone so the next request recomputes, and a sweep that read the store BEFORE
+// the local action cannot re-install the perimeter that action changed — with
+// the memo nil there is no built stamp left to compare, which is what the floor
+// is for.
+func TestInvalidateMembersDropsTheMemoAndItsPast(t *testing.T) {
+	n := &Node{}
+	before := time.Now().Add(-time.Second)
+	n.installMembers(memberSetAt(before, "a"))
+
+	n.InvalidateMembers()
+	n.memberMu.Lock()
+	dropped := n.members == nil
+	n.memberMu.Unlock()
+	if !dropped {
+		t.Fatal("InvalidateMembers left the memo standing")
+	}
+
+	// The sweep finishes a round whose inputs predate the local action.
+	n.installMembers(memberSetAt(before, "a"))
+	n.memberMu.Lock()
+	resurrected := n.members != nil
+	n.memberMu.Unlock()
+	if resurrected {
+		t.Error("a set computed from pre-invalidation inputs was installed — the " +
+			"sweep resurrected the perimeter a local action just changed, stamped fresh")
+	}
+
+	// A set read after the invalidation is exactly the answer it asked for.
+	n.installMembers(memberSetAt(time.Now().Add(time.Second), "a", "b"))
+	n.memberMu.Lock()
+	got := n.members
+	n.memberMu.Unlock()
+	if got == nil {
+		t.Fatal("a set computed from post-invalidation inputs was refused")
+	}
+	if _, ok := got.keys[k("b")]; !ok {
+		t.Error("the post-invalidation set is not the one installed")
+	}
+
+	// And a nil node ignores the call, mirroring memberSet's own receivers.
+	var nilNode *Node
+	nilNode.InvalidateMembers()
+}
+
+// TestLocalPeerMutationsInvalidateTheMembershipMemo pins the wiring: every
+// local action that turns a stranger into a member or a member into a
+// non-member must drop the memo on its way out. Narrow nodes (no mesh, no
+// sweep loop), so "the memo is gone" is deterministic — nothing races to heal
+// it, and with the sweep's Nudge healing it in production these one-liners are
+// exactly the code path a request between the mutation and the sweep depends
+// on.
+func TestLocalPeerMutationsInvalidateTheMembershipMemo(t *testing.T) {
+	ctx := t.Context()
+	cases := []struct {
+		name  string
+		state string // the peer row the mutation starts from
+		act   func(t *testing.T, n *Node, id int64)
+	}{
+		{"AcceptPeer", PeerPendingIncoming, func(t *testing.T, n *Node, id int64) {
+			if err := n.AcceptPeer(ctx, id); err != nil {
+				t.Fatalf("AcceptPeer: %v", err)
+			}
+		}},
+		// ImportCard's accept arm, handlePair's flip and pairWith's flip carry the
+		// same one-line invalidation; they need a mesh identity to call, so the
+		// wiring is read rather than driven here and the mesh suites exercise it.
+		{"BlockPeer", PeerFriend, func(t *testing.T, n *Node, id int64) {
+			if err := n.BlockPeer(ctx, id, "test"); err != nil {
+				t.Fatalf("BlockPeer: %v", err)
+			}
+		}},
+		{"UnblockPeer", PeerBlocked, func(t *testing.T, n *Node, id int64) {
+			if err := n.UnblockPeer(ctx, id); err != nil {
+				t.Fatalf("UnblockPeer: %v", err)
+			}
+		}},
+		{"RemovePeer", PeerFriend, func(t *testing.T, n *Node, id int64) {
+			if err := n.RemovePeer(ctx, id); err != nil {
+				t.Fatalf("RemovePeer: %v", err)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ms := newMemStore()
+			n := &Node{store: ms, logger: log.New(io.Discard, "", 0), intervals: Intervals{MembershipTTL: time.Hour}}
+			id, err := ms.InsertFederationPeer(ctx, &ExternalNode{PublicKey: k("peer"), TrustState: tc.state})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The memo exists and, at an hour's TTL, would outlive the whole test.
+			n.installMembers(memberSetAt(time.Now().Add(-time.Second), "somebody"))
+
+			tc.act(t, n, id)
+
+			n.memberMu.Lock()
+			stale := n.members
+			n.memberMu.Unlock()
+			if stale != nil {
+				t.Errorf("%s left the membership memo standing — the perimeter it changed "+
+					"would be served for up to a full MembershipTTL", tc.name)
+			}
+		})
 	}
 }
 

@@ -15,10 +15,13 @@ import (
 // needs a node: the store reads, the memo, and the address lookup a mesh request
 // arrives with.
 //
-// It sits on every mesh request's path, which is why it is memoized. The set
-// changes only when the graph or our peer list does — both of which happen on
-// the sweep — so the cache is refreshed there and the TTL below is a backstop
-// for the case where the sweep is slow or not running at all.
+// It sits on every mesh request's path, which is why it is memoized. Gossip
+// only changes the set on the sweep, so the cache is refreshed there and the
+// TTL below is a backstop for the case where the sweep is slow or not running
+// at all. But the inputs also change LOCALLY — a friendship accepted, blocked
+// or removed, a home server signed in to or out of — and there the operator or
+// user just acted and expects it to hold immediately, not a TTL later; every
+// such mutation calls [Node.InvalidateMembers] so the next request recomputes.
 
 // memberSet is one computed view of our community, plus the index a request
 // actually needs. Mesh address derivation is one-way (address = f(key)), so a
@@ -140,13 +143,69 @@ func (n *Node) refreshMembers(peers []*ExternalNode, edges []GraphEdgeClaim, hom
 // was computed from NEWER inputs. Both producers go through it — the sweep and
 // a request that found the memo stale — because they race by construction and
 // the older answer must never win on arrival order.
+//
+// The floor is the same rule against a third producer: a local mutation
+// (InvalidateMembers) drops the memo, and a sweep that read its inputs before
+// that mutation must not resurrect the perimeter it changed — with the memo
+// gone there is nothing to compare ages against, so the floor remembers when
+// the inputs were last known to have moved.
 func (n *Node) installMembers(set *memberSet) {
 	n.memberMu.Lock()
 	defer n.memberMu.Unlock()
 	if n.members != nil && n.members.built.After(set.built) {
 		return
 	}
+	if set.built.Before(n.membersFloor) {
+		return
+	}
 	n.members = set
+}
+
+// InvalidateMembers drops the membership memo because one of its inputs just
+// changed LOCALLY — a friendship accepted, blocked or removed, a home server
+// signed in to or out of — so the next request recomputes the community from
+// the store instead of serving the old perimeter for up to MembershipTTL.
+// Without it a node refuses perfectly valid capability tokens ("issuer … is
+// not in our community") for a full TTL after AddHome, which a listener sees
+// as a minute of skipped tracks right after signing in.
+//
+// Gossip-driven changes deliberately do NOT come through here: they ride the
+// sweep and the TTL, which is the cadence hearsay deserves. The blind window
+// worth closing is the local action, where whoever acted expects it to hold
+// now.
+//
+// Dropping is enough for community(), which treats nil as missing; the floor
+// keeps a sweep that read the store BEFORE this mutation from re-installing
+// the pre-mutation perimeter afterwards (see installMembers).
+func (n *Node) InvalidateMembers() {
+	if n == nil {
+		return
+	}
+	now := time.Now()
+	n.memberMu.Lock()
+	n.members = nil
+	if now.After(n.membersFloor) {
+		n.membersFloor = now
+	}
+	n.memberMu.Unlock()
+}
+
+// Vouches reports whether key may issue capability tokens this node currently
+// honours — the standing check token verification makes on every request
+// (memberSet.vouches): our own community, ourselves, or a home server this
+// node signed in to. Exported so an embedder (and the app facade's tests) can
+// see the perimeter the memo answers with; a malformed key vouches for nobody
+// and is not an error.
+func (n *Node) Vouches(ctx context.Context, key string) (bool, error) {
+	norm, err := NormalizeKey(key)
+	if err != nil {
+		return false, nil
+	}
+	set, err := n.community(ctx)
+	if err != nil {
+		return false, err
+	}
+	return set.vouches(norm), nil
 }
 
 // community returns the member set, rebuilding it if the memo is missing or

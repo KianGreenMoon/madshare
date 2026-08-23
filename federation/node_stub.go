@@ -64,6 +64,9 @@ func (m *Mesh) UnderlayPeers() []UnderlayPeer { return nil }
 func (n *Node) UnderlayPeers() []UnderlayPeer { return nil }
 func (n *Node) Nudge()                        {}
 func (n *Node) InboundHealthy() bool          { return true }
+func (n *Node) InvalidateMembers()            {}
+
+func (n *Node) Vouches(context.Context, string) (bool, error) { return false, errCompiledOut }
 
 func (n *Node) DialContext(context.Context, string, string) (net.Conn, error) {
 	return nil, errCompiledOut

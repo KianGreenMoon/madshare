@@ -91,6 +91,54 @@ func TestListenerNodeServesWhatItsHomeServerVouchesFor(t *testing.T) {
 	})
 }
 
+// TestSigningInIsHonouredWithoutWaitingOutTheMembershipTTL is the 2026-08-23
+// defect over the real mesh: the household is a membership input, the household
+// write goes straight to the store, and a memo primed before the sign-in kept
+// answering "outsider" for up to a full MembershipTTL — a listener heard it as a
+// minute of skipped tracks right after signing in, because the seeder refused
+// its home server's perfectly valid tokens. The TTL here is an hour, so the
+// assertion is airtight: only the invalidation can make the very next request
+// see the home server, and before the fix this test fails.
+func TestSigningInIsHonouredWithoutWaitingOutTheMembershipTTL(t *testing.T) {
+	storeL, storeR := newMemStore(), newMemStore()
+	cacheL := t.TempDir()
+	content := []byte("bytes the swarm gave us")
+	hash := hashOf(content)
+	if err := os.WriteFile(filepath.Join(cacheL, hash), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	l, r := startNodePair(t, storeL, storeR,
+		[]Option{WithCacheDir(cacheL), WithIntervals(Intervals{MembershipTTL: time.Hour})},
+		nil)
+	path := "/madnetwork/v0/blob/" + hash
+
+	// Prime the memo: R asks and is refused, so L now holds a computed
+	// perimeter that, at this TTL, outlives the whole test.
+	waitFor(t, "the mesh to converge on a refusal", func() bool {
+		code, _ := meshGet(t, l, r, path, "")
+		return code == http.StatusNotFound
+	})
+
+	// The sign-in: the store learns, and the node is told its inputs moved —
+	// exactly what the app facade's AddHome does (app/network.go).
+	storeL.addHome(r.PublicKeyHex())
+	l.InvalidateMembers()
+
+	// The VERY NEXT request, not a poll: the rebuild happens in-request.
+	if code, _ := meshGet(t, l, r, path, ""); code != http.StatusOK {
+		t.Errorf("the first request after signing in = %d, want 200 — the memo "+
+			"kept serving the pre-sign-in perimeter", code)
+	}
+
+	// And signing out is the same contract in the other direction.
+	storeL.forgetHomes()
+	l.InvalidateMembers()
+	if code, _ := meshGet(t, l, r, path, ""); code != http.StatusNotFound {
+		t.Errorf("the first request after signing out = %d, want 404", code)
+	}
+}
+
 // TestListenerNodeFetchesFromHoldersItWasHanded pins the second of those gaps.
 //
 // EnsureBlob discovers its holders from this node's own cached catalogs, which

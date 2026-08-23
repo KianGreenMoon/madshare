@@ -140,11 +140,27 @@ func (n network) Address() string { return n.inst.node.Address().String() }
 func (n network) SetToken(token string) { n.inst.token.Store(&token) }
 
 func (n network) AddHome(ctx context.Context, publicKey, baseURL, name string) error {
-	return n.inst.db.AddHomeNode(ctx, publicKey, baseURL, name, time.Now().Unix())
+	if err := n.inst.db.AddHomeNode(ctx, publicKey, baseURL, name, time.Now().Unix()); err != nil {
+		return err
+	}
+	// The household is an input of the node's membership memo
+	// (federation/membership.go), and this write goes straight to the store —
+	// the node would not notice for up to a MembershipTTL, refusing the home
+	// server's perfectly valid tokens meanwhile, which a listener experiences
+	// as a minute of skipped tracks right after signing in. Recorded here,
+	// honoured on the next request.
+	n.inst.node.InvalidateMembers()
+	return nil
 }
 
 func (n network) RemoveHome(ctx context.Context, publicKey string) error {
-	return n.inst.db.RemoveHomeNode(ctx, publicKey)
+	if err := n.inst.db.RemoveHomeNode(ctx, publicKey); err != nil {
+		return err
+	}
+	// Signing out stops us serving its devices on the next request rather than
+	// on a timer — the promise this method's contract makes.
+	n.inst.node.InvalidateMembers()
+	return nil
 }
 
 func (n network) Homes(ctx context.Context) ([]federation.ExternalNode, error) {

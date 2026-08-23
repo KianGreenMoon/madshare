@@ -188,8 +188,12 @@ type Node struct {
 	// to, derived from the gossiped graph by the mutual-edge walk and indexed by
 	// mesh address. Memoized because it is on every mesh request's path, and
 	// recomputed on the sweep from the same peers+edges the retention walk reads.
-	memberMu sync.Mutex
-	members  *memberSet
+	// membersFloor is the time of the last LOCAL change to the memo's inputs
+	// (InvalidateMembers): a set computed from reads older than it describes a
+	// perimeter that action already changed, so installMembers refuses it.
+	memberMu     sync.Mutex
+	members      *memberSet
+	membersFloor time.Time
 
 	// Branch attribution for the browse (F7 item 10, branches.go): which direct
 	// friends each reachable node speaks through, so popularity can be counted

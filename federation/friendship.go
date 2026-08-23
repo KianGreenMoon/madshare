@@ -215,7 +215,8 @@ func (n *Node) handlePair(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		n.logger.Printf("federation: friendship with %q (%s) established", p.Name(), p.PublicKey)
-		n.Nudge() // start the first catalog sync right away
+		n.InvalidateMembers() // a new friend is a member on their very next request
+		n.Nudge()             // start the first catalog sync right away
 		result = "friend"
 	case p.TrustState == PeerFriend:
 		result = "friend"
@@ -292,7 +293,8 @@ func (n *Node) pairWith(ctx context.Context, p *ExternalNode) {
 			return
 		}
 		n.logger.Printf("federation: friendship with %q (%s) established", p.Name(), p.PublicKey)
-		n.Nudge() // start the first catalog sync on the next sweep
+		n.InvalidateMembers() // a new friend is a member on their very next request
+		n.Nudge()             // start the first catalog sync on the next sweep
 	}
 	n.refreshHeardName(ctx, p, msg.Name)
 }
@@ -591,6 +593,7 @@ func (n *Node) ImportCard(ctx context.Context, c Card) (*ExternalNode, error) {
 			return nil, err
 		}
 		n.logger.Printf("federation: friendship with %q (%s) established (card import accepted their request)", p.Name(), p.PublicKey)
+		n.InvalidateMembers() // the accept makes them a member now, not a TTL later
 		n.Nudge()
 		return n.store.GetFederationPeer(ctx, p.ID)
 	default: // pending_outgoing or friend — idempotent re-import
@@ -613,7 +616,8 @@ func (n *Node) AcceptPeer(ctx context.Context, id int64) error {
 		return err
 	}
 	n.logger.Printf("federation: friendship with %q (%s) established (request accepted)", p.Name(), p.PublicKey)
-	n.Nudge() // tell their node right away so its side flips too
+	n.InvalidateMembers() // the accept makes them a member now, not a TTL later
+	n.Nudge()             // tell their node right away so its side flips too
 	return nil
 }
 
@@ -638,6 +642,11 @@ func (n *Node) BlockPeer(ctx context.Context, id int64, reason string) error {
 	if err := n.store.BlockFederationPeer(ctx, id, p.TrustState, CleanMarkReason(reason), time.Now().Unix()); err != nil {
 		return err
 	}
+	// The walk never traverses a blocked node, so the block takes it AND the
+	// branch behind it out of the community — on the next request, not when the
+	// memo happens to expire. (meshAuth refuses the node itself instantly either
+	// way; this is for everyone it introduced.)
+	n.InvalidateMembers()
 	n.Nudge() // republish the mark (and drop the edge) without waiting for the tick
 	return nil
 }
@@ -673,6 +682,7 @@ func (n *Node) BlockKey(ctx context.Context, publicKey, name, reason string) err
 		return err
 	}
 	n.logger.Printf("federation: blocked %s (never a peer of ours)", key)
+	n.InvalidateMembers() // it may have been a member via the graph; the branch behind it too
 	n.Nudge()
 	return nil
 }
@@ -695,6 +705,7 @@ func (n *Node) UnblockPeer(ctx context.Context, id int64) error {
 	if err := n.store.SetFederationPeerState(ctx, id, prev, ""); err != nil {
 		return err
 	}
+	n.InvalidateMembers() // an unblocked friend (and its branch) is back on the next request
 	n.Nudge()
 	return nil
 }
@@ -713,7 +724,14 @@ func (n *Node) RemovePeer(ctx context.Context, id int64) error {
 		delete(n.attempts, p.PublicKey)
 		n.attemptMu.Unlock()
 	}
-	return n.store.DeleteFederationPeer(ctx, id)
+	if err := n.store.DeleteFederationPeer(ctx, id); err != nil {
+		return err
+	}
+	// A removed friend stops being a member on the next request — leaving it in
+	// a fresh-looking memo for up to a TTL would serve a node the admin just
+	// forgot as if nothing had happened.
+	n.InvalidateMembers()
+	return nil
 }
 
 // RenamePeer sets the local display label.
