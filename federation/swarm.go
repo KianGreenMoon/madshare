@@ -514,12 +514,14 @@ func (m *blobManifest) agreement() string {
 //     lying and nothing here can say which, so the swarm gives way rather than
 //     picking a side.
 //
-// votes says how the answer was reached — 2 for an agreement, 1 for a sole
-// voice, 0 with a nil manifest — because a sole voice owes one check a quorum
-// has already passed: runTransfer cross-checks its total against the size the
-// caller arrived with, and gives way to the whole-file path while the two
-// disagree.
-func (n *Node) fetchAgreedManifest(ctx context.Context, holders []*BlobProvider, hash string) (*blobManifest, int) {
+// quorum reports whether two holders decided it, rather than a sole voice being
+// believed, because a sole voice owes one check a quorum has already passed:
+// runTransfer cross-checks its total against the size the caller arrived with,
+// and gives way to the whole-file path while the two disagree. Deliberately a
+// flag and not a count — the rule is binary, and a number here would invite a
+// caller to read meaning into a tally this function stops taking the moment it
+// has two.
+func (n *Node) fetchAgreedManifest(ctx context.Context, holders []*BlobProvider, hash string) (*blobManifest, bool) {
 	return agreedManifest(ctx, holders, func(p *BlobProvider) *blobManifest {
 		return n.fetchManifest(ctx, p, hash)
 	})
@@ -527,14 +529,14 @@ func (n *Node) fetchAgreedManifest(ctx context.Context, holders []*BlobProvider,
 
 // agreedManifest is fetchAgreedManifest's rule with the mesh taken out of it, so
 // the three outcomes above can be exercised without three nodes.
-func agreedManifest(ctx context.Context, holders []*BlobProvider, probe func(*BlobProvider) *blobManifest) (*blobManifest, int) {
+func agreedManifest(ctx context.Context, holders []*BlobProvider, probe func(*BlobProvider) *blobManifest) (*blobManifest, bool) {
 	seen := map[string]*blobManifest{}
 	votes := map[string]int{}
 	answers := 0
 
 	for start := 0; start < len(holders); start += manifestProbes {
 		if ctx.Err() != nil {
-			return nil, 0
+			return nil, false
 		}
 		end := min(start+manifestProbes, len(holders))
 		wave := make(chan *blobManifest, end-start)
@@ -552,7 +554,7 @@ func agreedManifest(ctx context.Context, holders []*BlobProvider, probe func(*Bl
 				seen[key] = m
 			}
 			if votes[key]++; votes[key] > 1 {
-				return seen[key], 2
+				return seen[key], true
 			}
 		}
 		// A wave that produced a disagreement is already decided: a third opinion
@@ -566,10 +568,10 @@ func agreedManifest(ctx context.Context, holders []*BlobProvider, probe func(*Bl
 	}
 	if answers == 1 {
 		for _, m := range seen {
-			return m, 1
+			return m, false
 		}
 	}
-	return nil, 0
+	return nil, false
 }
 
 // ── Holdings tracker ─────────────────────────────────────────────────────────

@@ -753,8 +753,8 @@ func (n *Node) runTransfer(t *transfer, holders []*BlobProvider) {
 	// blamed and no holder is dropped — an honest complete copy further down the
 	// list still gets its turn there, which is the whole reason this is a
 	// fallback and not a refusal.
-	man, voices := n.fetchAgreedManifest(t.ctx, holders, t.hash)
-	if man != nil && voices < 2 && t.advertised > 0 && man.Size != t.advertised {
+	man, quorum := n.fetchAgreedManifest(t.ctx, holders, t.hash)
+	if man != nil && !quorum && t.advertised > 0 && man.Size != t.advertised {
 		n.logger.Printf("federation: fetch %s: the only manifest offered describes %d byte(s) where %d were advertised — withholding reads, falling back to whole-file",
 			t.hash, man.Size, t.advertised)
 		t.withholdReads()

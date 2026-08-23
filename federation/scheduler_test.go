@@ -294,14 +294,14 @@ func TestAgreedManifestNeedsASecondOpinion(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("two agree, the liar loses", func(t *testing.T) {
-		got, voices := agreedManifest(ctx, p("liar", "one", "two"), answers(map[string]*blobManifest{
+		got, quorum := agreedManifest(ctx, p("liar", "one", "two"), answers(map[string]*blobManifest{
 			"liar": liar, "one": honest, "two": honest,
 		}))
 		if got == nil || got.agreement() != honest.agreement() {
 			t.Errorf("agreed manifest = %v, want the one two holders described", got)
 		}
-		if voices != 2 {
-			t.Errorf("voices = %d, want 2 — a quorum outranks the advertised size, so the count must say quorum", voices)
+		if !quorum {
+			t.Error("quorum = false — two holders decided this, and a quorum outranks the advertised size")
 		}
 	})
 
@@ -319,14 +319,14 @@ func TestAgreedManifestNeedsASecondOpinion(t *testing.T) {
 		// The case F9 item 1 exists for: a partial seeder cannot BUILD a manifest,
 		// so a swarm of one complete holder and several partials has exactly one
 		// voice by construction. Refusing it would refuse the whole feature.
-		got, voices := agreedManifest(ctx, p("complete", "partial", "partial2"), answers(
+		got, quorum := agreedManifest(ctx, p("complete", "partial", "partial2"), answers(
 			map[string]*blobManifest{"complete": honest},
 		))
 		if got == nil || got.agreement() != honest.agreement() {
 			t.Errorf("agreed manifest = %v, want the only holder that could build one", got)
 		}
-		if voices != 1 {
-			t.Errorf("voices = %d, want 1 — a sole voice owes the size cross-check its honesty", voices)
+		if quorum {
+			t.Error("quorum = true — one holder answered, and a sole voice owes the size cross-check its honesty")
 		}
 	})
 
