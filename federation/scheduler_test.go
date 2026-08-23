@@ -294,18 +294,21 @@ func TestAgreedManifestNeedsASecondOpinion(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("two agree, the liar loses", func(t *testing.T) {
-		got := agreedManifest(ctx, p("liar", "one", "two"), answers(map[string]*blobManifest{
+		got, voices := agreedManifest(ctx, p("liar", "one", "two"), answers(map[string]*blobManifest{
 			"liar": liar, "one": honest, "two": honest,
 		}))
 		if got == nil || got.agreement() != honest.agreement() {
 			t.Errorf("agreed manifest = %v, want the one two holders described", got)
+		}
+		if voices != 2 {
+			t.Errorf("voices = %d, want 2 — a quorum outranks the advertised size, so the count must say quorum", voices)
 		}
 	})
 
 	t.Run("one against one is undecidable", func(t *testing.T) {
 		// Nothing here can say which of them is lying, so the swarm gives way to
 		// the whole-file path — which carries its own reference, the content hash.
-		if got := agreedManifest(ctx, p("liar", "one"), answers(map[string]*blobManifest{
+		if got, _ := agreedManifest(ctx, p("liar", "one"), answers(map[string]*blobManifest{
 			"liar": liar, "one": honest,
 		})); got != nil {
 			t.Errorf("agreed manifest = %v, want nil: two holders contradicted each other", got)
@@ -316,16 +319,19 @@ func TestAgreedManifestNeedsASecondOpinion(t *testing.T) {
 		// The case F9 item 1 exists for: a partial seeder cannot BUILD a manifest,
 		// so a swarm of one complete holder and several partials has exactly one
 		// voice by construction. Refusing it would refuse the whole feature.
-		got := agreedManifest(ctx, p("complete", "partial", "partial2"), answers(
+		got, voices := agreedManifest(ctx, p("complete", "partial", "partial2"), answers(
 			map[string]*blobManifest{"complete": honest},
 		))
 		if got == nil || got.agreement() != honest.agreement() {
 			t.Errorf("agreed manifest = %v, want the only holder that could build one", got)
 		}
+		if voices != 1 {
+			t.Errorf("voices = %d, want 1 — a sole voice owes the size cross-check its honesty", voices)
+		}
 	})
 
 	t.Run("nobody answers", func(t *testing.T) {
-		if got := agreedManifest(ctx, p("old", "older"), answers(nil)); got != nil {
+		if got, _ := agreedManifest(ctx, p("old", "older"), answers(nil)); got != nil {
 			t.Errorf("agreed manifest = %v, want nil (F3 fallback)", got)
 		}
 	})

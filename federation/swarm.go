@@ -513,7 +513,12 @@ func (m *blobManifest) agreement() string {
 //   - Two holders answer differently with no majority ⇒ nil. One of them is
 //     lying and nothing here can say which, so the swarm gives way rather than
 //     picking a side.
-func (n *Node) fetchAgreedManifest(ctx context.Context, holders []*BlobProvider, hash string) *blobManifest {
+//
+// votes says how the answer was reached — 2 for an agreement, 1 for a sole
+// voice, 0 with a nil manifest — because the caller owes a sole voice one more
+// check the quorum already passed: runTransfer cross-checks it against the
+// advertised size, the one independent fact about the blob it may already hold.
+func (n *Node) fetchAgreedManifest(ctx context.Context, holders []*BlobProvider, hash string) (*blobManifest, int) {
 	return agreedManifest(ctx, holders, func(p *BlobProvider) *blobManifest {
 		return n.fetchManifest(ctx, p, hash)
 	})
@@ -521,14 +526,14 @@ func (n *Node) fetchAgreedManifest(ctx context.Context, holders []*BlobProvider,
 
 // agreedManifest is fetchAgreedManifest's rule with the mesh taken out of it, so
 // the three outcomes above can be exercised without three nodes.
-func agreedManifest(ctx context.Context, holders []*BlobProvider, probe func(*BlobProvider) *blobManifest) *blobManifest {
+func agreedManifest(ctx context.Context, holders []*BlobProvider, probe func(*BlobProvider) *blobManifest) (*blobManifest, int) {
 	seen := map[string]*blobManifest{}
 	votes := map[string]int{}
 	answers := 0
 
 	for start := 0; start < len(holders); start += manifestProbes {
 		if ctx.Err() != nil {
-			return nil
+			return nil, 0
 		}
 		end := min(start+manifestProbes, len(holders))
 		wave := make(chan *blobManifest, end-start)
@@ -546,7 +551,7 @@ func agreedManifest(ctx context.Context, holders []*BlobProvider, probe func(*Bl
 				seen[key] = m
 			}
 			if votes[key]++; votes[key] > 1 {
-				return seen[key]
+				return seen[key], 2
 			}
 		}
 		// A wave that produced a disagreement is already decided: a third opinion
@@ -560,10 +565,10 @@ func agreedManifest(ctx context.Context, holders []*BlobProvider, probe func(*Bl
 	}
 	if answers == 1 {
 		for _, m := range seen {
-			return m
+			return m, 1
 		}
 	}
-	return nil
+	return nil, 0
 }
 
 // ── Holdings tracker ─────────────────────────────────────────────────────────

@@ -663,6 +663,15 @@ func (n *Node) ensureBlob(ctx context.Context, hash string,
 // against the content hash is the only move that needs no manifest trust at
 // all. Either way the assembled bytes are verified against the content hash
 // before entering the cache.
+//
+// One claim is refused with NO fallback: a sole holder whose manifest total
+// contradicts a size the caller already knew (see the size cross-check below).
+// That holder has proven itself wrong about the blob, and the whole-file path
+// would fetch the same wrong bytes from the same proven-wrong source — while a
+// STREAMING reader consumed them as they landed, since whole mode verifies
+// only at the end. Ending the transfer before a byte moves is what turns "the
+// track plays its first seconds and dies" into an immediate, explained refusal
+// (madplayer's skip diagnosis, 2026-08-23 — its lab reproduces both shapes).
 func (n *Node) runTransfer(t *transfer, holders []*BlobProvider) {
 	defer func() {
 		n.transferMu.Lock()
@@ -687,7 +696,28 @@ func (n *Node) runTransfer(t *transfer, holders []*BlobProvider) {
 	// not gate the swarm start) and keeps the bytes only if they verify.
 	pf := n.speculateChunk0(t, holders)
 
-	if man := n.fetchAgreedManifest(t.ctx, holders, t.hash); man != nil {
+	// The advertised size, read before the manifest overwrites it: the one fact
+	// about the blob that arrived independently of any holder — from the
+	// catalog, or from the home server's holders endpoint. A blob's size is
+	// pinned by its content hash, so a sole manifest that names a different
+	// total is provably wrong about the blob (or the advertisement is — nothing
+	// here can say which, so no holder is blamed; symmetric uncertainty is the
+	// same reason a corrupt chunk from a second holder condemns the MANIFEST).
+	// A quorum outranks the advertisement: two independent holders describing
+	// the blob identically is stronger evidence than a catalog row, which may
+	// simply be stale. Zero means the caller knew nothing, and no check runs.
+	advertised := t.Size()
+
+	man, voices := n.fetchAgreedManifest(t.ctx, holders, t.hash)
+	if man != nil && voices < 2 && advertised > 0 && man.Size != advertised {
+		pf.discard()
+		n.logger.Printf("federation: fetch %s: refusing the only manifest offered — it describes %d byte(s) where %d were advertised",
+			t.hash, man.Size, advertised)
+		t.finish(fmt.Errorf("federation: fetch %s: the only copy offered describes %d byte(s) where %d were advertised — refusing bytes that cannot match their content hash",
+			t.hash, man.Size, advertised))
+		return
+	}
+	if man != nil {
 		t.setMeta(man.Size, man.Filename)
 		t.stats.setMode("swarm")
 		err := n.fetchSwarm(t, man, holders, pf)

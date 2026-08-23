@@ -650,6 +650,21 @@ behind triggers that have not fired.
   refuse item 1 itself. Two holders answering *differently* with no majority ends
   the swarm attempt: nothing here can say which is lying, so it gives way to the
   whole-file path rather than picking a side.
+
+  **A sole voice owes one check a quorum has already passed** (2026-08-23, from
+  madplayer's skip diagnosis — its lab reproduced a truncated sole holder whose
+  self-consistent manifest streamed a verified-looking prefix into playback
+  before the whole-file hash could object): when the caller ADVERTISED a size —
+  from the catalog, or a home server's holders endpoint — a sole manifest whose
+  total contradicts it is refused, and the transfer **ends with no fallback**
+  rather than giving way. A blob's size is pinned by its content hash, so one
+  of the two records is provably wrong about the blob; nothing can say which,
+  so no holder is blamed — but the whole-file path would fetch the same bytes
+  from the same suspect source while a streaming reader consumed them (whole
+  mode verifies only at the end), and an immediate explained refusal beats a
+  track that plays its first seconds and dies. Two agreeing holders outrank
+  the advertisement, which may simply be stale; an unknown (zero) advertised
+  size checks nothing.
 - *Attribute blame correctly.* A corrupt chunk still retires its sender — no
   amount of environmental bad luck produces wrong bytes. But a corrupt chunk from
   a **second distinct holder** says something else: the accusation comes from the
