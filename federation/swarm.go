@@ -1208,6 +1208,12 @@ type chunk0Prefetch struct {
 	guessLen int64         // the chunk-0 length we speculatively fetched
 	cancel   context.CancelFunc
 	ch       chan chunk0Result // buffered(1): the fetch goroutine's single send
+	// done is closed when the fetch goroutine has stopped — deliberately not ch,
+	// which one of two consumers drains (settleSpeculation adopts, discard
+	// abandons) and neither of them is every path. Closing says "this goroutine
+	// is crediting no more wire bytes", which is what makes the transfer's
+	// accounting final; see settle.
+	done chan struct{}
 }
 
 // chunk0Result is what the speculative fetch resolved to: the bytes or the
@@ -1238,9 +1244,11 @@ func (n *Node) speculateChunk0(t *transfer, holders []*BlobProvider) *chunk0Pref
 	pf.active = true
 	pf.from = holders[0]
 	pf.ch = make(chan chunk0Result, 1)
+	pf.done = make(chan struct{})
 	pctx, cancel := context.WithCancel(t.ctx)
 	pf.cancel = cancel
 	go func() {
+		defer close(pf.done)
 		started := time.Now()
 		data, err := n.fetchRange(pctx, pf.from, t, 0, pf.guessLen, t.stats.noteStall)
 		pf.ch <- chunk0Result{data: data, err: err, took: time.Since(started)}
@@ -1257,6 +1265,29 @@ func (pf *chunk0Prefetch) discard() {
 	if pf.cancel != nil {
 		pf.cancel()
 	}
+}
+
+// settle stops the speculative fetch and waits for it to stop crediting wire
+// bytes, so the transfer's received count is final once it returns.
+//
+// Cancelling is not enough on its own and neither is discard: a cancelled read
+// still returns through n.wire, which credits what it got, and nothing else in
+// the transfer waits for that goroutine. runTransfer's waste accounting is
+// received-minus-delivered read at the very end, so without this the bytes a
+// discarded speculation pulled could land after they were counted — silently
+// under-reporting waste, and only for the fetches that ended soon after the
+// discard.
+//
+// Safe from any path and any number of times: it waits on a channel closed by
+// the goroutine itself, not on the result one of two consumers drains.
+func (pf *chunk0Prefetch) settle() {
+	if pf == nil || pf.done == nil {
+		return
+	}
+	if pf.cancel != nil {
+		pf.cancel()
+	}
+	<-pf.done
 }
 
 // settleSpeculation waits for the adopted speculative fetch and resolves its

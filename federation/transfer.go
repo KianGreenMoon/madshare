@@ -716,12 +716,19 @@ func (n *Node) ensureBlob(ctx context.Context, hash string,
 // either can be the one that meets the truncated copy: the cross-check below
 // for a manifest, Content-Length in fetchFrom for whole mode.
 func (n *Node) runTransfer(t *transfer, holders []*BlobProvider) {
+	// Declared out here so the deferred accounting can wait on it: the
+	// speculation below outlives every path that abandons it.
+	var pf *chunk0Prefetch
 	defer func() {
 		n.transferMu.Lock()
 		delete(n.transfers, t.hash)
 		n.transferMu.Unlock()
-		// Book the waste now that the outcome is known: every path below ends in
-		// t.finish, so received-minus-delivered is final here.
+		// Book the waste now that the outcome is known. Every path below ends in
+		// t.finish, but that is not by itself enough for received-minus-delivered
+		// to be final: the speculative chunk-0 fetch is the one reader nothing
+		// else joins, and a cancelled read still credits what it got on the way
+		// out. settle is what makes the count stop moving.
+		pf.settle()
 		n.noteTransferEnd(t)
 		// A blob that just landed is seedable from this moment, and the swarm
 		// should not wait out a fifteen-minute holdings pull to hear about it
@@ -737,7 +744,7 @@ func (n *Node) runTransfer(t *transfer, holders []*BlobProvider) {
 	// fetched from the first holder while the manifest loads. fetchSwarm adopts
 	// it into the chunk plan (never waiting on it — a dribbling holders[0] must
 	// not gate the swarm start) and keeps the bytes only if they verify.
-	pf := n.speculateChunk0(t, holders)
+	pf = n.speculateChunk0(t, holders)
 
 	// The size cross-check. A quorum outranks the advertisement — two holders
 	// describing the blob identically is stronger evidence than a catalog row,
