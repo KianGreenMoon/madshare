@@ -81,6 +81,8 @@ func main() {
 		cmdFriend(os.Args[2:])
 	case "reach":
 		cmdReach(os.Args[2:])
+	case "swarm":
+		cmdSwarm(os.Args[2:])
 	case "kill", "restart", "partition", "heal":
 		cmdNodeAction(cmd, os.Args[2:])
 	case "flap":
@@ -112,6 +114,8 @@ func usage() {
   meshlab graph                        what each node's network map holds
   meshlab check                        assert the sharing-scope rules
   meshlab reach [-runs N] [-no-fetch]  what does friendship DISTANCE cost?
+  meshlab swarm [-subject HASH] [-no-spread]  the balance run: spread the subject,
+                                       then a measured multi-holder fetch
 
 'up' runs in the foreground and holds the lab; every other command talks to it
 over the control API (-control, default %s).

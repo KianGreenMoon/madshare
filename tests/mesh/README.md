@@ -51,6 +51,8 @@ tests/mesh/
 federation/
   chaos_test.go        the scenarios, over a tcp:// underlay
   chaos_quic_test.go   the scenarios that need datagrams
+  chaosbalance_test.go the balance run — the swarm's decentralization claims
+  chaossiege_test.go   the siege run — the same lab plus liars
   chaoshelp_test.go    faulted topologies, the shrunk clock, requireChaos
   seams_test.go        the injectable intervals/timeouts + TransferStats
 ```
@@ -258,6 +260,21 @@ Over a `quic://` underlay:
 | `ScrambledPathKeepsChunksIntact` | 20 % reordered by 30 ms, 10 % duplicated, **no loss**, two holders | reassembly from two independently disordered sources still verifies per chunk *and* whole-file |
 | `SustainedLossStaysReachable` | 5 % loss, sustained | a permanently lossy friend still counts as reachable — `last_seen` keeps up, friendship survives, and the local inbound signal is not flipped by a remote fault |
 
+From the **swarm lab** (`docs/plans/swarm-lab.md` — the balance run in
+`chaosbalance_test.go`, the siege run in `chaossiege_test.go`; the `Siege*`
+names do not carry `Chaos`, which is one more reason the gated set is run
+unfiltered):
+
+| Scenario | Fault / adversary | Claim under test |
+|---|---|---|
+| `ChaosBalanceFollowsBandwidth` | three holders link-capped 1:2:4 | the byte split follows capacity and only capacity — the thin holder is deprioritized, never retired, and the aggregate beats the best single pipe |
+| `ChaosBalanceIgnoresUnderlayDistance` | fat holder two routed hops + 60 ms away, thin holder adjacent | the scheduler pays nothing for graph position: the far, fat holder carries more |
+| `ChaosDeadHoldersDoNotGateTheSwarm` | one live holder + a ghost, a cut node, a mute node | every way of being dead costs the same bounded tax (≤ 2 dispatches × `Connect` each) while the live holder carries the transfer |
+| `ChaosHolderSpreadSurvivesTheOrigin` | the origin stopped after a friend materialized | holder knowledge spreads passively via holdings — content outlives the node that introduced it |
+| `SiegeLiarMinorityIsRetired` | one liar among two honest holders | wrong bytes are unambiguous: the liar is retired on its first corrupt chunk, in place, no fallback, nobody honest blamed |
+| `SiegeLiarQuorumCannotForgeTheBytes` | two coordinated liars capture the manifest agreement | the whole-file sha256 anchor holds: a liar quorum buys wasted transfer, never forged content |
+| `SiegeOneBranchIsOneVoice` *(pure, ungated)* | a 12-key sybil farm behind one / three friendships | admitted but attributed: one branch = one voice, k infiltrated friendships = exactly k, and one block evicts a whole branch |
+
 Every QUIC scenario also asserts the **injector's own counters** (`assertLossy`,
 `assertScrambled`). A transfer that "survived 15 % loss" over a link that dropped
 nothing has proved nothing, and that is a silent failure — so the fault is
@@ -406,6 +423,7 @@ Three FLACs totalling ~80 MB took about six minutes on the maintainer's machine.
 | `meshlab scope NODE tracks guest on\|off [-limit N]` | flag recordings guest-playable |
 | `meshlab check` | assert the scope rules; exits non-zero on a failure |
 | `meshlab reach [-runs N] [-no-fetch]` | what friendship **distance** costs: mesh RTT per hop, then a real fetch |
+| `meshlab swarm [-subject HASH] [-no-spread]` | the **balance run**: spread the subject into every middle node's cache, then a measured fetch from the vantage with per-counterparty byte deltas — see below |
 
 **`madnetwork` is the number to watch.** It is what `/madnetwork` would show that
 node — its own published set plus every friend's, after the availability filter,
@@ -687,6 +705,70 @@ Three things worth keeping:
 > lab reports warm numbers there (sub-millisecond, and meaningless as a cold-start
 > figure). Read that column on the first run after `up`, or restart the lab. The
 > `ping warm` column is repeatable and is the one to compare across distances.
+
+### `meshlab swarm` — is the download balanced, and by the right thing?
+
+The person-visible half of the **balance run** (`docs/plans/swarm-lab.md`; the
+assertions live in `federation/chaosbalance_test.go`, where the clock is shrunk
+and `TransferStats` can prove *why*). This command shows the same behaviour on
+real servers, with the per-counterparty byte ledger (`GET /api/admin/swarm/peers`)
+as the instrument — the wire-level truth, counted by the accounting layer, not
+claimed by the fetcher. Specifically its **session** counters (the nested
+`session` object per row): the row's top-level bytes are the *stored* ledger,
+which the flusher writes on a 30-second cadence — an instrument that ticks
+twice a minute cannot time a 200 ms fetch, and the first cut of this command
+read it and reported empty balances. The session half is the node's live
+in-memory table: per-read updates, monotone since the process started, never
+reset by a flush.
+
+```bash
+meshlab up -topology triangle -seed ~/music -per-node 1
+meshlab swarm                        # spread the subject, then a measured fetch
+meshlab link c-b bandwidth 65536     # handicap one holder…
+meshlab swarm                        # …and watch the split move
+```
+
+Three phases. **Spread**: every middle node (everything between the first node —
+the origin — and the last — the vantage) materializes the subject through its
+own cache-through relay, then the vantage is told to pull those nodes' holdings
+(pull-now, because the production cadence is a 1-minute sweep the lab does not
+shrink — the `known` column, "how long until the fetcher *knew*", is a real
+measurement of the spread machinery, and a fresh spread can take a sweep round
+or two). **Fetch**: the vantage clears its own cache of the subject and streams
+it exactly as the web player would, hashed end to end; the per-peer download
+deltas around the fetch are the balance table. **Verdict**: who carried what
+share. Before the after-snapshot the command waits for the vantage's transfer
+to actually CLOSE (`/api/admin/swarm/live`): the reader can be done while a
+chunk dispatched to a slow holder is still timing out, since `fetchSwarm` waits
+for every worker — a long `transfer open … after the last byte` note in the
+output is that straggler, reported rather than hidden.
+
+Measured on the triangle (one ~3 MiB track, loopback): flat links split
+**53 % / 47 %** across the two holders; capping one to 64 KiB/s moved it to
+**100 % / 0 %**; partitioning a holder outright still completed and verified
+from the survivor — with the first 64 KiB costing 5–20 s, which is the dead
+holder's manifest probe dying, a finding this command surfaced
+(`.issues/open-issues.md`, "one dead holder in a two-holder plan").
+
+Everything goes through the stream relay rather than `POST /download` on
+purpose: a download stages a review-bucket draft into the library of every node
+it touches, which pollutes the lab and makes a second run short-circuit on the
+local copy. The relay lands bytes in the download cache only — which is exactly
+what makes the middles advertise them via holdings, i.e. the spread this
+command measures — and stays re-runnable (`dropCachedBlob`, same rule as
+`check`). Re-runs report `~0s` in the spread `fetch` column (the middles
+already hold the bytes) and a fresh balance every time.
+
+The link grammar is the lab's own: this command deliberately shapes nothing
+itself and asserts nothing — cap a holder, `partition` or `kill` one mid-fetch,
+and read the tables. What the chaos twin *asserts* — the split follows capacity,
+dead holders cost a bounded tax, content outlives its origin — is what you
+should *see* here, at production timescales.
+
+**Liars are deliberately not part of this arm.** A liar in meshlab would need a
+hostile madshare build; the siege run's liar is a real `federation.Node` with a
+lying resolver — same wire, same handlers — so meshlab could add nothing but
+wall-clock to it (`docs/plans/swarm-lab.md` §Placement).
 
 ## Reading a failure
 

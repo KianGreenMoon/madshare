@@ -2153,3 +2153,41 @@ sort and *partition* by `LOWER(COALESCE(m.album_artist, m.artist, ''))`, so the
 "By artist / album" view splits a non-ASCII artist's group by the case of its
 first letter. Same class of bug, different page, and its keyset pagination wants
 checking with it — out of scope for a pass aimed at the library view and search.
+
+## Swarm — one dead holder in a two-holder plan costs the first byte the whole manifest probe (measured 2026-08-24, swarm-lab meshlab run)
+
+**Status: OPEN — question, not a defect claim.** Found while verifying
+`meshlab swarm` (docs/plans/swarm-lab.md): on the live triangle lab with `a`
+partitioned and its track still advertised, the vantage's fetch **completed and
+verified from `b` alone** — but the first 64 KiB took **20.0 s** (whole file
+150 ms once it started). Reproduce: `meshlab up -topology triangle -seed … `,
+`meshlab partition a`, `meshlab swarm`.
+
+(A repeat run after a lab restart measured **5.03 s** instead — the dial to the
+dead holder died at `Connect` because no warm yggdrasil session existed. The
+cost is 5–20 s depending on how the dial dies; the mechanism below is the same
+either way, and the 20 s ceiling belongs to the warm-session cut.)
+
+The 20 s is `Timeouts.Manifest`, and the mechanism is the agreement wave:
+`agreedManifest` probes the wave in parallel and returns early only on the
+**second matching vote**; with two holders the wave is [dead, live], the live
+vote is one, and the "sole answer is believed" arm runs only after the whole
+wave resolves — which means waiting out the dead holder's probe. A dial to a
+*recently alive* node whose link is cut stalls to the probe's context (20 s),
+not `Connect` (5 s bounds `dialHolder` on the chunk path, not the manifest
+probes). With ≥ 2 live holders the second vote returns early, so the cost only
+appears in exactly the household/listener shape the docs care about: two known
+holders, one of them gone.
+
+Chunk-0 speculation does not cover it: the speculative fetch targets
+`holders[0]`, which (most-recently-seen order) may itself be the dead node, and
+the range request the player makes still waits on the manifest decision.
+
+The question for the owner (adjacent to `docs/plans/reader-rule.md`, which is
+about reader-facing latency): should the wave settle on a **sole surviving
+vote once every other probe has FAILED** — the failures are known by then, so
+no patience is being spent on anything — or is the 20 s wait the deliberate
+price of not trusting a single description while a contradicting one may still
+arrive? The down-mark does not help the first fetch (it is written *by* this
+failure), and `TestChaosDeadHoldersDoNotGateTheSwarm` bounds the transfer, not
+the first byte.

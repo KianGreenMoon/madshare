@@ -935,6 +935,48 @@ func (l *lab) routes() http.Handler {
 		writeJSON(w, http.StatusOK, report)
 	})
 
+	mux.HandleFunc("/swarm", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErr(w, http.StatusMethodNotAllowed, "POST")
+			return
+		}
+		var req struct {
+			Subject       string `json:"subject"`
+			Timeout       string `json:"timeout"`
+			SpreadTimeout string `json:"spread_timeout"`
+			NoSpread      bool   `json:"no_spread"`
+		}
+		raw, err := readBody(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "%v", err)
+			return
+		}
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &req); err != nil {
+				writeErr(w, http.StatusBadRequest, "%v", err)
+				return
+			}
+		}
+		timeout := 5 * time.Minute
+		if req.Timeout != "" {
+			if d, err := time.ParseDuration(req.Timeout); err == nil {
+				timeout = d
+			}
+		}
+		spreadTimeout := 3 * time.Minute
+		if req.SpreadTimeout != "" {
+			if d, err := time.ParseDuration(req.SpreadTimeout); err == nil {
+				spreadTimeout = d
+			}
+		}
+		report, err := l.swarm(req.Subject, timeout, spreadTimeout, req.NoSpread)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "%v", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, report)
+	})
+
 	return mux
 }
 
