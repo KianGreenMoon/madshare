@@ -1,10 +1,13 @@
 # The reader rule — request depth follows who is waiting
 
 **Status: DESIGN, NOT BUILT.** Step 3 of `docs/plans/maybe-to-do.md` §5, designed
-2026-08-15 against that file's §8 measurements. Three decisions are marked
-**DECIDE** below; nothing is scheduled until they are agreed. Companion
-reading: `federation-swarm.md` §"Pipelining" (what ships today), maybe-to-do.md
-§8 (the evidence this design stands on).
+2026-08-15 against that file's §8 measurements. Four decisions are marked
+**DECIDE** below (the fourth added 2026-08-24 from the swarm-lab results, §6);
+nothing is scheduled until they are agreed. Companion reading:
+`federation-swarm.md` §"Pipelining" (what ships today), maybe-to-do.md §8 (the
+evidence this design stands on), and `docs/plans/swarm-lab.md` — the balance
+and siege runs, whose 2026-08-24 full pass re-measured the shipped swarm and
+is folded in as §6 below.
 
 The goal, from the owner: *depth should be unimportant*. The measurements say
 what that has to mean in practice: request depth has exactly one cost that
@@ -202,16 +205,88 @@ chaos suite exists to check).
   replaces the sole-holder paragraph), maybe-to-do.md §5 (steps 3–4 verdicts),
   the `maxHolderRequests` comment (rewritten around the unwatched ceiling).
 
-## 6. DECIDE — the three open decisions
+## 6. What the swarm lab measured (2026-08-24)
 
-1. **Unwatched ceiling: keep `maxHolderRequests = 2`** (recommended, §2d) —
-   or delete the constant and let `maxChunkWorkers` bound everything, which
-   measured zero benefit, breaks the flood test on the chaos clock, and
-   spends more on endgame duplicates. Keeping 2 amends step 4 from "the cap
-   deletes" to "the cap's *wrong trigger* deletes".
+The full swarm-lab pass (`docs/plans/swarm-lab.md`: the gated chaos suite
+unfiltered, the same under `-race`, and three live `meshlab swarm` runs on a
+triangle; raw logs under `results/`, gitignored) ran with this design still
+unbuilt — so every number below describes the SHIPPED swarm, i.e. the
+"before" state this design would change. Three facts bear on the decisions.
+
+### 6a. The unwatched ceiling holds up from a third direction
+
+`TestChaosBalanceFollowsBandwidth` measured the split at shipped depth 2:
+holders capped 1:2:4 carried 8 %/33 %/58 % of the bytes (ideal 14/29/57),
+nobody healthy retired, aggregate throughput above the best single pipe.
+`TestChaosBalanceIgnoresUnderlayDistance`: the holder two routed hops and
+60 ms away with the fatter pipe out-carried the adjacent thin one 9 chunks
+to 3. On the live triangle, flat links split 51/49. **Depth 2 does not
+distort the bandwidth-following balance** — so keeping `maxHolderRequests = 2`
+as the unwatched ceiling (decision 1) costs the swarm's balance nothing
+measurable, on top of §2d's existing grounds.
+
+### 6b. The reader pays for a bad holder even when the transfer doesn't
+
+Live triangle, one holder capped to 64 KiB/s: the scheduler routed the whole
+33.5 MiB to the healthy holder (100 % / 62 KiB — the balance working), the
+transfer was fine — but the **first 64 KiB took 1.46 s against 59 ms on flat
+links (25×)**, because a lead chunk landed on the capped holder and the reader
+waited out its rescue. This extends §3's shipped defect beyond the symmetric
+two-holder shape: it is not depth that hurt here (the dispatch was the FIRST
+to that holder), it is that the reader's chunk sat on the worst link until the
+blocked-reader hedge recovered it. The watched bit does not prevent that first
+dispatch; the hedge is the rescue and its cost is what decision 3's deferred
+damper would be tuned against — this run puts the first live number on it.
+
+### 6c. The first byte's biggest enemy is not depth — it is the manifest wave
+
+The dead-holder run: one of two known holders partitioned, the fetch
+completed and verified from the survivor — and the **first byte waited
+20.0 s**, the warm-session `Timeouts.Manifest` ceiling (5.03 s in the
+cold-dial variant; `TestChaosDeadHoldersDoNotGateTheSwarm` shows the same
+shape on the chaos clock, ttfb 2.0 s of 2.5 s elapsed vs 27 ms healthy).
+Mechanism and full analysis: `.issues/open-issues.md` §"one dead holder in a
+two-holder plan" — `agreedManifest` returns early only on the second
+*matching* vote, and the "sole answer is believed" arm runs only after the
+whole wave resolves, so with holders [dead, live] the live vote waits out the
+dead probe. **Nothing in this design reaches it**: the watched bit is set
+while `WaitFor` parks during the manifest round trip, but the cap it changes
+governs chunk dispatch, which has not begun. Since this document is the
+reader-latency design, the question belongs beside its decisions — it is
+DECIDE 4 below. In the household/listener shape (two known holders, one of
+them the home server's sometimes-off peer) this 5–20 s dwarfs everything the
+depth rule wins.
+
+## 7. DECIDE — the four open decisions
+
+1. **Unwatched ceiling: keep `maxHolderRequests = 2`** (recommended, §2d,
+   now also §6a — the balance runs show depth 2 does not distort the
+   bandwidth-following split) — or delete the constant and let
+   `maxChunkWorkers` bound everything, which measured zero benefit, breaks
+   the flood test on the chaos clock, and spends more on endgame duplicates.
+   Keeping 2 amends step 4 from "the cap deletes" to "the cap's *wrong
+   trigger* deletes".
 2. **Sticky watched bit** (recommended, §2b) — or a decay rule, which needs a
    timing constant this design cannot justify. Cost of sticky is bounded and
    measured (≤ 15 %, sole-holder, abandoned-stream case only).
 3. **Endgame-hedge damper: defer** (recommended, §2e) — measure unwatched
    endgame waste first via the §4 harness cell; build a damper only if the
-   structural bound (depth 1 while watched) leaves waste worth chasing.
+   structural bound (depth 1 while watched) leaves waste worth chasing. §6b's
+   capped-lead-chunk run is the first live number on what a hedge rescue
+   costs the reader (1.46 s vs a 59 ms floor).
+4. **The manifest wave on a half-dead plan** (added 2026-08-24, §6c; full
+   entry in `.issues/open-issues.md`): should `agreedManifest` settle on a
+   **sole surviving vote once every other probe has terminally FAILED**?
+   Recommended: **yes** — it needs no new constant and weakens no trust: the
+   same sole vote is believed today anyway once the wave resolves, so the
+   5–20 s wait buys nothing after the other probes have already *failed*
+   (a failure is not a pending contradiction; the wait's purpose — letting a
+   disagreeing vote arrive — is spent). The wider alternative (adopt the
+   FIRST vote provisionally, chunk-0-speculation-style, and let the wave
+   finish in the background) buys the cold-dial 5 s too, but it does trust a
+   single description while a contradicting one may still arrive, which is
+   the line `fetchAgreedManifest` exists to hold — the siege quorum run is
+   the reminder that a manifest's word is only ever as good as the whole-file
+   anchor behind it. Decide the narrow version here; the wide one only if
+   the household numbers still hurt afterwards. This is the one decision of
+   the four that moves first-byte latency more than the depth rule itself.

@@ -33,3 +33,7 @@ webui.toml
 
 # Release artifacts (`make release`): packages, tarballs, SHA256SUMS
 /dist/
+
+# Captured test-run output (swarm lab runs, measure sweeps) — local evidence,
+# summarized into docs when it matters, never committed raw.
+/results/
