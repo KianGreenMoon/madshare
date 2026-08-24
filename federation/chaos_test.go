@@ -366,8 +366,14 @@ func TestChaosSeederVanishesMidTransfer(t *testing.T) {
 	}
 	st := tr.Stats()
 	t.Logf("seeder vanished: %s", describe(st))
-	if st.Failovers == 0 {
-		t.Errorf("no failover recorded — the transfer completed without ever re-routing a chunk\n%s", describe(st))
+	// A vanished holder's in-flight chunks are re-routed by whichever mechanism
+	// gets there first: the failed fetch is re-dispatched (a failover), or a
+	// hedge races the stalled copy to the survivor and wins before the failure
+	// even lands (F9 item 4 — the endgame fires exactly when a vanish strands
+	// the last chunks). Both are re-routes; demanding the failover alone made
+	// this pin flake whenever the hedge won the race.
+	if st.Failovers == 0 && st.HedgesWon == 0 {
+		t.Errorf("no failover and no hedge won — the transfer completed without ever re-routing a chunk\n%s", describe(st))
 	}
 	if got := providerBytes(st, c); got == 0 {
 		t.Errorf("surviving holder carried no bytes\n%s", describe(st))
