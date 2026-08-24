@@ -209,7 +209,7 @@ chaos suite exists to check).
 
 The full swarm-lab pass (`docs/plans/swarm-lab.md`: the gated chaos suite
 unfiltered, the same under `-race`, and three live `meshlab swarm` runs on a
-triangle; raw logs under `results/`, gitignored) ran with this design still
+triangle; raw logs under `tests/results/`, gitignored) ran with this design still
 unbuilt — so every number below describes the SHIPPED swarm, i.e. the
 "before" state this design would change. Three facts bear on the decisions.
 

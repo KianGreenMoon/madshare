@@ -36,4 +36,4 @@ webui.toml
 
 # Captured test-run output (swarm lab runs, measure sweeps) — local evidence,
 # summarized into docs when it matters, never committed raw.
-/results/
+/tests/results/
