@@ -5,6 +5,7 @@ import (
 
 	"daemonlord.ygg/madshare/api"
 	"daemonlord.ygg/madshare/database"
+	"daemonlord.ygg/madshare/federation"
 )
 
 // This file is the embedder's two madnetwork surfaces beyond the mesh itself
@@ -150,4 +151,31 @@ func (i *Instance) ShareDepths(ctx context.Context, tagsetIDs []int64) (map[int6
 // publishes nothing.
 func (i *Instance) Published(ctx context.Context) ([]*database.SharedTrack, error) {
 	return i.db.SharedTracks(ctx)
+}
+
+// PublishNothing pins this node's DEFAULT sharing scope to Local, so nothing
+// it holds is advertised or served unless pinned open per item. Idempotent.
+//
+// It lives on Instance — Network.PublishNothing delegates here — because the
+// default is a DB column like the per-item pins above, and an embedder's
+// closed posture must not depend on a mesh coming up: a player that pinned the
+// default only once its node started reported its whole library as "shared"
+// through ShareDepths/Published while the mesh was off. Nothing was served in
+// that state, but a sharing surface that reads open and means closed is
+// exactly the kind of honesty bug the Published view exists to prevent.
+// It does NOT touch the cache-seeding arm — seeding what you fetched and
+// publishing what you own are different claims.
+func (i *Instance) PublishNothing(ctx context.Context) error {
+	policy, err := i.db.GetMadnetworkPolicy(ctx)
+	if err != nil {
+		return err
+	}
+	if policy.DefaultShareDepth == federation.DepthPrivate {
+		return nil
+	}
+	// Read-modify-write rather than a single-key setter, because the policy is
+	// stored and read as one object: writing the depth alone through a private
+	// path would leave two ways to change it that could disagree.
+	policy.DefaultShareDepth = federation.DepthPrivate
+	return i.db.SetMadnetworkPolicy(ctx, policy)
 }

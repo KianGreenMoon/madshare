@@ -173,20 +173,7 @@ func (n network) AddPeer(uri string) error { return n.inst.node.Mesh().AddPeer(u
 
 func (n network) UnderlayPeers() []federation.UnderlayPeer { return n.inst.node.UnderlayPeers() }
 
-func (n network) PublishNothing(ctx context.Context) error {
-	policy, err := n.inst.db.GetMadnetworkPolicy(ctx)
-	if err != nil {
-		return err
-	}
-	if policy.DefaultShareDepth == federation.DepthPrivate {
-		return nil
-	}
-	// Read-modify-write rather than a single-key setter, because the policy is
-	// stored and read as one object: writing the depth alone through a private
-	// path would leave two ways to change it that could disagree.
-	policy.DefaultShareDepth = federation.DepthPrivate
-	return n.inst.db.SetMadnetworkPolicy(ctx, policy)
-}
+func (n network) PublishNothing(ctx context.Context) error { return n.inst.PublishNothing(ctx) }
 
 // Fetch turns the keys a caller has into the providers the swarm wants. A key
 // that is not 64 hex characters is dropped rather than refused: a holder list

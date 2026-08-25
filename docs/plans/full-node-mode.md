@@ -121,11 +121,20 @@ is in nobody's map), and structural revocation.
   `docs/design.md` §"Node mode").
 - **P2. The publish picker.** Browse own library, pin scope per album/track,
   and a "Published" view listing exactly what is shared — the visible half of
-  the responsibility the default protects. (The facade half is W2, built.)
+  the responsibility the default protects. **Built 2026-08-26** (album-level
+  v1: a share control on the album header cycling off → friends → madnetwork,
+  plus a node-mode-gated Settings "Sharing" page listing every published row
+  with Stop). Building it moved `PublishNothing` onto `app.Instance` and
+  madplayer now pins the default on EVERY open — a default that waited for
+  the mesh made the sharing surface report the whole library as "shared"
+  while the mesh was off.
 - **P2b. The paired browse source** *(added 2026-08-26, W4's client half)*: a
   library source over `Instance.Madnetwork()`, merged like the per-server
   madnetwork sources, so a paired player browses the community through its own
-  node with no sign-in.
+  node with no sign-in. **Built 2026-08-26** (`library.SetNode` /
+  `source_paired.go`; fetch on the node's own standing — holder plan from
+  `Madnetwork.Holders`, no vouch). Paired rows have no covers yet: the facade
+  has no cover relay, an open madshare question.
 - **P3. First-run connect step** (peer URI paste / multicast / peering pull
   from a home server, per the decision above).
 - **P4. Desktop-only gating** of the whole mode in mobile builds.
