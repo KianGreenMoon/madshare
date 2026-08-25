@@ -373,6 +373,8 @@ func (d Deps) newHandler() *handler {
 		madnetwork:      d.Madnetwork,
 		madnetworkName:  d.MadnetworkName,
 		reachWindowSec:  d.ReachableWindowSec,
+		mn: &MadnetworkBrowse{Store: d.Madnetwork, Node: d.Federation,
+			SelfName: d.MadnetworkName, ReachWindowSec: d.ReachableWindowSec},
 		cacheDir:        d.MadnetworkCacheDir,
 	}
 	if d.SourceArchive != nil || d.LicenseText != nil || d.SourceRoot != "" {

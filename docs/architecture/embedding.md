@@ -202,6 +202,50 @@ Three shapes worth knowing before calling it:
 same reasoning as the `database` row types above: they are the shapes the mesh
 already speaks, and a twin here would be one more thing to keep in agreement.
 
+## The madnetwork browse and the publish picker (built 2026-08-26)
+
+Two surfaces for the **full-node** embedder (`docs/plans/full-node-mode.md`) —
+a paired madplayer that is an ordinary member rather than a listener. A member
+pulls the community's catalogs into its own tables, and until this surface
+existed it had no way to show them: the client's browse merged only signed-in
+servers over HTTP, so pairing bought standing without a view.
+
+**`Madnetwork() (Madnetwork, bool)`** is the merged community browse — the
+in-process twin of `GET /api/madnetwork/{artists,albums,tracks,search}`, false
+when no federation node runs (mirroring the web UI, which registers the
+/madnetwork pages only where the node does). It is **the same code**, not a
+twin: the handlers and the facade share `api.MadnetworkBrowse`
+(`api/madnetwork_browse.go`), which owns the view assembly (availability
+windows, fail-open, the self-merge switch) and the merge rules (version folding
+on shared rendition hashes, branch-weighted version order, cover election) —
+every one a rule of the "what the server already computes" kind, which is
+exactly why the browse got a callable core instead of the facade re-deriving
+it. Addressing is by **name** (the merged catalog has no entity ids), rows are
+`api.MadnetworkTrack` with versions and holders as the HTTP endpoint sends
+them: `versions[0].Renditions[0]` is the default pick, and a version's holder
+**keys** are what `Network.Fetch` takes.
+
+**The sharing arm** — `SetShareDepth` / `ShareDepths` / `Published` on
+`Instance` — is full-node-mode.md's W2, the organize-then-share surface behind
+a publish picker. It hangs off the library side, not `Network()` (the owner's
+call in that doc): scopes are DB columns curated before any mesh is up, and
+none of these needs a running node. Tagset-addressed, because an appearance is
+what browse rows carry; the write is `recordings.share_depth`, the same column
+the admin UI's scope chip edits, three-valued via `database.ShareDepthUpdate`
+(pin one of federation's three scopes, or `Inherit` — which on a player, whose
+default is pinned Local by `PublishNothing`, MEANS "stop sharing").
+`Published()` lists exactly what the network can currently see, each row
+carrying its depth and whether a pin of its own or the node default did it.
+The visibility rule itself stays in one place — `audienceClause` /
+`PublishedCatalog` — and the listing is the editor-side projection of the same
+predicate (`database/sharing.go`).
+
+Propagation is asymmetric, and honestly so: a scope change is authoritative
+**immediately** for bytes and catalog serving (the clause reads the column
+live), while a friend's *listing* of it moves on the catalog sync cadence —
+its next pull, up to `Intervals.CatalogSync` away, plus our own ~1-minute
+snapshot memo.
+
 ### Direct calls bypass the permission layer
 
 Access control is not in the DB. The browse queries come in **full and guest

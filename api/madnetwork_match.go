@@ -53,7 +53,7 @@ type networkTagset struct {
 	// moderator deciding whether a label is the network's consensus is exactly
 	// the reader who needs to see when eight nodes are one voice.
 	Voices  int                `json:"voices"`
-	Holders []madnetworkHolder `json:"holders"`
+	Holders []MadnetworkHolder `json:"holders"`
 	// Match is how these nodes were tied to our recording (hash or fingerprint),
 	// and BER the measurement when it was a fingerprint. Evidence travels with
 	// the claim, so nothing on the card asks to be taken on trust.
@@ -77,7 +77,7 @@ type networkRendition struct {
 	// Held marks a rendition this node already has — the common case for a
 	// downloaded track, and the reason a hash match is not automatically news.
 	Held    bool               `json:"held,omitempty"`
-	Holders []madnetworkHolder `json:"holders"`
+	Holders []MadnetworkHolder `json:"holders"`
 }
 
 // networkTakeOn builds the arm for one recording.
@@ -220,8 +220,8 @@ func foldMatchRenditions(matches []database.NetworkMatch, opts mergeOpts, curren
 // rule the /madnetwork ⓘ panel uses. A stale holder is shown and dimmed, never
 // dropped: the match is a true fact about the network whether or not that node
 // answered a ping in the last three minutes.
-func holderOf(m database.NetworkMatch, opts mergeOpts) madnetworkHolder {
-	return madnetworkHolder{
+func holderOf(m database.NetworkMatch, opts mergeOpts) MadnetworkHolder {
+	return MadnetworkHolder{
 		Name:     m.Source.Display(),
 		LastSeen: m.Source.LastSeen,
 		Key:      m.Source.PublicKey,

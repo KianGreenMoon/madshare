@@ -135,7 +135,7 @@ func (h *handler) madnetworkHolders(w http.ResponseWriter, r *http.Request) {
 }
 
 // madnetworkBlobHolder is one node a device may fetch chunks from. Deliberately
-// not the browse page's madnetworkHolder: that one carries display state (self,
+// not the browse page's MadnetworkHolder: that one carries display state (self,
 // reachable) for a UI, this one is an address to dial.
 type madnetworkBlobHolder struct {
 	Key      string `json:"key"`

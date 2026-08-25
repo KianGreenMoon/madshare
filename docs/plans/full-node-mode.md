@@ -97,17 +97,35 @@ is in nobody's map), and structural revocation.
   listing — the facade twin of the Recordings lens's scope chip and of
   `PublishedCatalog`'s selection, so the UI can show "these N items are what
   the network sees". Reuses `SetRecordingAccess` / `visibleTagset` machinery;
-  no new query semantics.
+  no new query semantics. **Built 2026-08-26** (`Instance.SetShareDepth` /
+  `ShareDepths` / `Published`, tagset-addressed since that is what browse rows
+  carry; `database/sharing.go`; embedding.md §"The madnetwork browse and the
+  publish picker").
 - **W3. Nothing for availability.** Verify with the mesh-lab scenario below;
   no code expected.
+- **W4. The community browse on the facade** *(added 2026-08-26 — the first
+  live pairing found it missing: a paired player held the friend's catalog in
+  its own tables and had no way to show it, because the client's browse merges
+  only signed-in servers over HTTP; pairing bought standing without a view)*.
+  `Instance.Madnetwork()` — the in-process twin of
+  `/api/madnetwork/{artists,albums,tracks,search}`, sharing ONE code path with
+  those handlers (`api.MadnetworkBrowse`) so the merge rules the client must
+  not re-derive are not re-derived here either. **Built 2026-08-26.**
 
 ## Work items — madplayer
 
 - **P1. Graduate the pairing UI** from `ui.pairingEnabled` to a real,
-  discoverable feature (keep card copy/paste; QR later, if ever).
+  discoverable feature (keep card copy/paste; QR later, if ever). **Built
+  2026-08-26**: `prefs.NodeMode` is the switch, the "Paired nodes" page exists
+  exactly while the mode is on, phones do not offer it (madplayer
+  `docs/design.md` §"Node mode").
 - **P2. The publish picker.** Browse own library, pin scope per album/track,
   and a "Published" view listing exactly what is shared — the visible half of
-  the responsibility the default protects.
+  the responsibility the default protects. (The facade half is W2, built.)
+- **P2b. The paired browse source** *(added 2026-08-26, W4's client half)*: a
+  library source over `Instance.Madnetwork()`, merged like the per-server
+  madnetwork sources, so a paired player browses the community through its own
+  node with no sign-in.
 - **P3. First-run connect step** (peer URI paste / multicast / peering pull
   from a home server, per the decision above).
 - **P4. Desktop-only gating** of the whole mode in mobile builds.

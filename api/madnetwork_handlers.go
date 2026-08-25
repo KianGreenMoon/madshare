@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/federation"
@@ -19,45 +18,21 @@ import (
 // madnetwork.access. Browse-only in F2 — playing/downloading remote content
 // arrives with F3 (direct transfer).
 
-// includeSelf reports whether the merged view folds this node's own published
-// set in — on exactly when the federation node runs (h.madnetworkName is its
-// display name). With federation disabled the view stays what the friends
-// provide: nothing.
-func (h *handler) includeSelf() bool { return h.madnetworkName != "" }
+// The view/merge machinery lives on MadnetworkBrowse (madnetwork_browse.go)
+// since the browse gained its second consumer, the app facade. These handler
+// methods are delegators kept under their old names so every madnetwork
+// handler file keeps reading as it did — and so no handler can acquire a
+// private copy of a rule the facade would then not share.
+
+func (h *handler) includeSelf() bool { return h.mn.includeSelf() }
 
 // defaultReachableWindowSec mirrors config.DefaultReachableWindowSec for the
 // paths that carry no configured window (tests via NewRouter). The running
 // server always passes the (validated, ≥ min) config value.
 const defaultReachableWindowSec = 180
 
-// reachWindow is the availability freshness window in seconds: a friend is
-// "reachable" (its exclusively-held tracks are shown) when last_seen is within
-// it. Several × the node's 1-minute refresh cadence, so a single missed ping
-// never flips reachability — the margin is the anti-flap guarantee.
-func (h *handler) reachWindow() int64 {
-	if h.reachWindowSec > 0 {
-		return int64(h.reachWindowSec)
-	}
-	return defaultReachableWindowSec
-}
-
-// pullWindow is the same guarantee for a node nothing pings on our behalf — a
-// member the frontier rotation reached and no friend of ours vouches for (F7
-// item 10, docs/architecture/federation.md §Availability, "Two clocks, two
-// windows"). Its liveness clock is the catalog pull, so its window is three
-// catalog cycles rather than three ping rounds: the window measures how recently
-// we would have NOTICED, and judging such a node by the ping's window hid most
-// of what discovery had just made visible.
-//
-// Never narrower than the ping window — an operator who widens
-// reachable_window_sec past three cycles means it for every node.
-func (h *handler) pullWindow() int64 {
-	pull := int64(federation.PullFreshnessWindow / time.Second)
-	if w := h.reachWindow(); w > pull {
-		return w
-	}
-	return pull
-}
+func (h *handler) reachWindow() int64 { return h.mn.reachWindow() }
+func (h *handler) pullWindow() int64  { return h.mn.pullWindow() }
 
 // reachWindows is the pair of freshness cutoffs a request is judged by, and the
 // rule that picks between them. Passed around as one value so no caller can
@@ -118,43 +93,12 @@ func (h *handler) madnetworkViewFor(r *http.Request) database.MadnetworkView {
 }
 
 func (h *handler) madnetworkView(ctx context.Context) database.MadnetworkView {
-	now := time.Now().Unix()
-	v := database.MadnetworkView{
-		IncludeSelf: h.includeSelf(), DefaultShareDepth: federation.DepthFriends,
-		// Set before either early return: which window a node BELONGS to is a
-		// fact about who watches it, and the rows still carry it when this
-		// request is not filtering — that is what lets the ⓘ panel grey a holder
-		// correctly while the browse shows everything.
-		PingedSince: now - h.reachWindow(),
-	}
-	p, err := h.madnetwork.GetMadnetworkPolicy(ctx)
-	if err == nil {
-		v.DefaultShareDepth = p.DefaultShareDepth
-	}
-	if !h.inboundHealthy() {
-		return v // fail open
-	}
-	if err == nil && !p.HideUnavailable {
-		return v // hiding disabled by the admin
-	}
-	v.Cutoff, v.PullCutoff = now-h.reachWindow(), now-h.pullWindow()
-	return v
+	return h.mn.View(ctx)
 }
 
-// inboundHealthy reports the node's self-health (true when federation is off or
-// absent — there is nothing to fail open for).
-func (h *handler) inboundHealthy() bool {
-	return h.federation == nil || h.federation.InboundHealthy()
-}
+func (h *handler) inboundHealthy() bool { return h.mn.inboundHealthy() }
 
-// reachCutoff is the freshness cutoffs used to *display* holder reachability (the
-// ⓘ panel greys a holder past them). Always now−window, independent of the browse
-// filter cutoffs — so when the view fails open (showing everything), stale holders
-// still read as stale rather than all looking reachable.
-func (h *handler) reachCutoff() reachWindows {
-	now := time.Now().Unix()
-	return reachWindows{tight: now - h.reachWindow(), pull: now - h.pullWindow()}
-}
+func (h *handler) reachCutoff() reachWindows { return h.mn.reachCutoff() }
 
 // mergeOpts is everything folding raw rows into display tracks needs beyond the
 // rows themselves. Bundled into one value deliberately: each field is a rule the
@@ -167,13 +111,7 @@ type mergeOpts struct {
 	branches database.BranchMap
 }
 
-func (h *handler) mergeOpts(ctx context.Context) mergeOpts {
-	return mergeOpts{
-		selfName: h.madnetworkName,
-		reach:    h.reachCutoff(),
-		branches: h.branchesByKey(ctx),
-	}
-}
+func (h *handler) mergeOpts(ctx context.Context) mergeOpts { return h.mn.mergeOpts(ctx) }
 
 // madnetworkSummary handles GET /api/madnetwork/summary: every node whose
 // catalog this server holds — its own included, at 0 hops — plus the merged
@@ -202,11 +140,8 @@ const madnetworkArtistPageSize = 80
 // keyset page of the merged artist list (album-artist grouping, like the local
 // library). The cursor is opaque and comes only from a previous next_cursor.
 func (h *handler) madnetworkArtists(w http.ResponseWriter, r *http.Request) {
-	limit := madnetworkArtistPageSize
-	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
-		limit = min(v, madnetworkArtistPageSize)
-	}
-	artists, next, err := h.madnetwork.MadnetworkArtists(r.Context(), r.URL.Query().Get("q"),
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit")) // ≤0 = the cap, clamped in Artists
+	artists, next, err := h.mn.Artists(r.Context(), r.URL.Query().Get("q"),
 		h.madnetworkViewFor(r), limit, r.URL.Query().Get("cursor"))
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
@@ -229,33 +164,13 @@ func (h *handler) madnetworkAlbums(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "artist is required"})
 		return
 	}
-	view := h.madnetworkViewFor(r)
-	albums, err := h.madnetwork.MadnetworkAlbums(r.Context(), artist, view)
+	albums, err := h.mn.Albums(r.Context(), artist, h.madnetworkViewFor(r))
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
 	if albums == nil {
 		albums = []*database.MadnetworkAlbum{}
-	}
-	// Elect each album's cover from the sources' claims (covers-federation M4).
-	// A failure costs the art, never the list — same soft rule as branchesByKey.
-	if claims, err := h.madnetwork.MadnetworkAlbumCoverClaims(r.Context(), artist, view); err == nil && len(claims) > 0 {
-		ballots := map[string]*coverBallot{}
-		for _, c := range claims {
-			b := ballots[c.AlbumKey]
-			if b == nil {
-				b = &coverBallot{}
-				ballots[c.AlbumKey] = b
-			}
-			b.add(c.CoverHash, c.CoverExt, c.SourceKey, c.Self)
-		}
-		branches := h.branchesByKey(r.Context())
-		for _, a := range albums {
-			if b := ballots[a.Key]; b != nil {
-				a.CoverHash, a.CoverExt = b.winner(branches)
-			}
-		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "albums": albums})
 }
@@ -265,7 +180,7 @@ func (h *handler) madnetworkAlbums(w http.ResponseWriter, r *http.Request) {
 // "N versions" answer to catalog crossing — recordings are never merged, only
 // grouped for display when they share a rendition hash, which is proof of
 // same bytes).
-type madnetworkTrack struct {
+type MadnetworkTrack struct {
 	Title    string  `json:"title"`
 	Artist   string  `json:"artist,omitempty"` // performer display (may differ from the grouping artist)
 	Track    *int64  `json:"track_number,omitempty"`
@@ -285,12 +200,12 @@ type madnetworkTrack struct {
 	CoverHash string `json:"cover_hash,omitempty"`
 	CoverExt  string `json:"cover_ext,omitempty"`
 
-	Versions []madnetworkVersion `json:"versions"`
+	Versions []MadnetworkVersion `json:"versions"`
 }
 
-type madnetworkVersion struct {
+type MadnetworkVersion struct {
 	Renditions []federation.CatalogRendition `json:"renditions"`
-	Holders    []madnetworkHolder            `json:"holders"`
+	Holders    []MadnetworkHolder            `json:"holders"`
 	License    string                        `json:"license,omitempty"`
 	Guest      bool                          `json:"guest_playable,omitempty"`
 
@@ -308,7 +223,7 @@ type madnetworkVersion struct {
 	URL string `json:"url,omitempty"`
 }
 
-type madnetworkHolder struct {
+type MadnetworkHolder struct {
 	Name      string `json:"name"`
 	LastSeen  int64  `json:"last_seen"`
 	Self      bool   `json:"self,omitempty"`      // this server
@@ -330,22 +245,12 @@ func (h *handler) madnetworkTracks(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "artist and album are required"})
 		return
 	}
-	view := h.madnetworkViewFor(r)
-	rows, err := h.madnetwork.MadnetworkTracks(r.Context(), artist, album, view)
+	tracks, err := h.mn.Tracks(r.Context(), artist, album, h.madnetworkViewFor(r))
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	own, err := h.madnetwork.MadnetworkOwnTracks(r.Context(), artist, album, view)
-	if err != nil {
-		http.Error(w, "storage error", http.StatusInternalServerError)
-		return
-	}
-	if len(own) > 0 {
-		rows = append(rows, own...)
-		sortMadnetworkRows(rows)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tracks": mergeMadnetworkTracks(rows, h.mergeOpts(r.Context()))})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tracks": tracks})
 }
 
 // sortMadnetworkRows restores display order over a combined remote+own row
@@ -380,7 +285,7 @@ func sortMadnetworkRows(rows []*database.MadnetworkTrackRow) {
 // mergeMadnetworkTracks folds raw per-(source,appearance) rows into logical
 // tracks and versions. Rows arrive in display order; groups keep first-seen
 // order.
-func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow, opts mergeOpts) []*madnetworkTrack {
+func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow, opts mergeOpts) []*MadnetworkTrack {
 	type ident struct {
 		disc, track int64
 		title       string
@@ -396,7 +301,7 @@ func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow, opts mergeOpts) 
 		return id
 	}
 
-	tracks := []*madnetworkTrack{}
+	tracks := []*MadnetworkTrack{}
 	groups := map[ident][]*database.MadnetworkTrackRow{}
 	order := []ident{}
 	for _, row := range rows {
@@ -409,7 +314,7 @@ func mergeMadnetworkTracks(rows []*database.MadnetworkTrackRow, opts mergeOpts) 
 
 	for _, k := range order {
 		group := groups[k]
-		t := &madnetworkTrack{
+		t := &MadnetworkTrack{
 			Title: group[0].Entry.Title,
 			Track: group[0].Entry.TrackNumber,
 			Disc:  group[0].Entry.DiscNumber,
@@ -463,7 +368,7 @@ func trackCredit(row *database.MadnetworkTrackRow) string {
 // recordings are the same version iff they share a rendition content hash
 // (same bytes somewhere = same audio for sure). Everything else stays a
 // separate version — recordings are never merged on text alone.
-func mergeVersions(group []*database.MadnetworkTrackRow, opts mergeOpts) []madnetworkVersion {
+func mergeVersions(group []*database.MadnetworkTrackRow, opts mergeOpts) []MadnetworkVersion {
 	// Union-find over the group's rows, linked by shared hashes.
 	parent := make([]int, len(group))
 	for i := range parent {
@@ -500,11 +405,11 @@ func mergeVersions(group []*database.MadnetworkTrackRow, opts mergeOpts) []madne
 		sets[r] = append(sets[r], i)
 	}
 
-	versions := []madnetworkVersion{}
+	versions := []MadnetworkVersion{}
 	for _, r := range roots {
-		var v madnetworkVersion
+		var v MadnetworkVersion
 		v.Renditions = []federation.CatalogRendition{}
-		v.Holders = []madnetworkHolder{}
+		v.Holders = []MadnetworkHolder{}
 		seenHash := map[string]bool{}
 		seenPeer := map[int64]bool{}
 		objectKeys := map[string]string{} // local hash -> files object key (self rows)
@@ -532,9 +437,9 @@ func mergeVersions(group []*database.MadnetworkTrackRow, opts mergeOpts) []madne
 				seenPeer[row.SourceID] = true
 				if row.Self {
 					selfHolds = true
-					v.Holders = append(v.Holders, madnetworkHolder{Name: opts.selfName, Self: true, Reachable: true})
+					v.Holders = append(v.Holders, MadnetworkHolder{Name: opts.selfName, Self: true, Reachable: true})
 				} else {
-					v.Holders = append(v.Holders, madnetworkHolder{
+					v.Holders = append(v.Holders, MadnetworkHolder{
 						Name: row.SourceName, LastSeen: row.SourceLastSeen,
 						Reachable: opts.reach.ok(database.SourceReach{
 							LastSeen:      row.SourceLastSeen,
@@ -624,86 +529,12 @@ func (h *handler) madnetworkSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	type searchTrack struct {
-		Title      string   `json:"title"`
-		ArtistName string   `json:"artist_name,omitempty"`
-		Artist     string   `json:"artist"` // grouping artist (drill address)
-		AlbumTitle string   `json:"album_title"`
-		Duration   *float64 `json:"duration_seconds,omitempty"`
-		TagsetID   int64    `json:"tagset_id,omitempty"`
-		Hash       string   `json:"hash"`
-		URL        string   `json:"url,omitempty"` // local play address when self-held
-	}
-
-	view := h.madnetworkViewFor(r)
-	// Search matches an artist in EITHER credit, so a performer the A-Z list
-	// leaves out (they have no release of their own) is still findable by name —
-	// the split the local library's search and browse make too.
-	artists, err := h.madnetwork.MadnetworkSearchArtists(r.Context(), q, madnetworkSearchArtistCap, view)
+	res, err := h.mn.Search(r.Context(), q, h.madnetworkViewFor(r))
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	if artists == nil {
-		artists = []*database.MadnetworkArtist{}
-	}
-
-	albums, err := h.madnetwork.MadnetworkSearchAlbums(r.Context(), q, madnetworkSearchAlbumCap, view)
-	if err != nil {
-		http.Error(w, "storage error", http.StatusInternalServerError)
-		return
-	}
-	h.electSearchAlbumCovers(r.Context(), albums, view)
-
-	rows, err := h.madnetwork.MadnetworkSearchTrackRows(r.Context(), q, view)
-	if err != nil {
-		http.Error(w, "storage error", http.StatusInternalServerError)
-		return
-	}
-
-	// Group cross-album rows by their display-identity bucket and run the
-	// album-scale merge per group, so version folding stays correct.
-	type bucket struct{ artist, album string }
-	groups := map[bucket][]*database.MadnetworkTrackRow{}
-	order := []bucket{}
-	for _, row := range rows {
-		b := bucket{strings.ToLower(row.GroupArtist), strings.ToLower(row.GroupAlbum)}
-		if _, seen := groups[b]; !seen {
-			order = append(order, b)
-		}
-		groups[b] = append(groups[b], row)
-	}
-	tracks := []searchTrack{}
-	opts := h.mergeOpts(r.Context())
-merge:
-	for _, b := range order {
-		group := groups[b]
-		for _, t := range mergeMadnetworkTracks(group, opts) {
-			if len(t.Versions) == 0 || len(t.Versions[0].Renditions) == 0 {
-				continue // nothing playable to offer from search
-			}
-			var dur *float64
-			if t.Duration > 0 {
-				d := t.Duration
-				dur = &d
-			}
-			tracks = append(tracks, searchTrack{
-				Title:      t.Title,
-				ArtistName: t.Artist,
-				Artist:     group[0].GroupArtist,
-				AlbumTitle: group[0].GroupAlbum,
-				Duration:   dur,
-				TagsetID:   t.TagsetID,
-				Hash:       t.Versions[0].Renditions[0].Hash,
-				URL:        t.Versions[0].URL,
-			})
-			if len(tracks) >= madnetworkSearchTrackCap {
-				break merge
-			}
-		}
-	}
-
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok": true, "artists": artists, "albums": albums, "tracks": tracks,
+		"ok": true, "artists": res.Artists, "albums": res.Albums, "tracks": res.Tracks,
 	})
 }

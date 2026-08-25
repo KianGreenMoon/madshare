@@ -156,6 +156,11 @@ type handler struct {
 	madnetwork     MadnetworkStore
 	madnetworkName string
 	reachWindowSec int // availability freshness window (seconds); 0 = default
+	// mn is the browse core over the four fields above — the ONE copy of the
+	// merged view's rules, shared with app.Instance.Madnetwork() so an embedder
+	// browsing in-process cannot drift from these handlers. The handler's own
+	// view/merge helpers delegate to it (madnetwork_handlers.go).
+	mn *MadnetworkBrowse
 	// cacheDir is the madnetwork download cache (Deps.MadnetworkCacheDir). Used
 	// to recognise a blob that landed in the CACHE, as opposed to one the local
 	// library already held — see madnetwork_cache.go. Empty = no indexing.

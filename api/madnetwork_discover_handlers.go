@@ -74,7 +74,7 @@ func laneWeighted(lane string) bool {
 // it, plus the address to drill to and the facts that explain why it is here.
 // Every lane row is explainable — that is a rule of the page, not a nicety.
 type laneTrack struct {
-	*madnetworkTrack
+	*MadnetworkTrack
 	GroupArtist string `json:"group_artist"`
 	Album       string `json:"album"`
 	Holders     int    `json:"holders"`
@@ -229,7 +229,7 @@ func (h *handler) renderLaneTracks(candidates []*database.LaneCandidate, rows []
 		groups[b] = append(groups[b], row)
 	}
 
-	merged := map[laneKey]*madnetworkTrack{}
+	merged := map[laneKey]*MadnetworkTrack{}
 	display := map[laneKey]bucket{}
 	for b, group := range groups {
 		sortMadnetworkRows(group)
@@ -258,7 +258,7 @@ func (h *handler) renderLaneTracks(candidates []*database.LaneCandidate, rows []
 		}
 		d := display[k]
 		row := laneTrack{
-			madnetworkTrack: t,
+			MadnetworkTrack: t,
 			GroupArtist:     d.artist,
 			Album:           d.album,
 			Holders:         c.Holders,
@@ -291,12 +291,5 @@ func (h *handler) renderLaneTracks(candidates []*database.LaneCandidate, rows []
 // ranking input, and the fallback understates corroboration rather than
 // inventing it.
 func (h *handler) branchesByKey(ctx context.Context) database.BranchMap {
-	if h.federation == nil {
-		return nil
-	}
-	branches, err := h.federation.BranchMap(ctx)
-	if err != nil {
-		return nil
-	}
-	return branches
+	return h.mn.branchesByKey(ctx)
 }
