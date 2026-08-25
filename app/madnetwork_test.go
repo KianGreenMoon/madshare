@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"daemonlord.ygg/madshare/app"
@@ -79,5 +80,11 @@ func TestMadnetworkBrowsesThroughTheNode(t *testing.T) {
 	}
 	if res, err := mn.Search(ctx, "anything"); err != nil || res == nil {
 		t.Errorf("Search = %v, %v; want empty results, nil", res, err)
+	}
+	// An empty plan is an answer, not an error — the fetch's decline path
+	// depends on that.
+	hash := strings.Repeat("ab", 32)
+	if size, keys, err := mn.Holders(ctx, hash); err != nil || size != 0 || len(keys) != 0 {
+		t.Errorf("Holders on an empty community = (%d, %v, %v); want (0, none, nil)", size, keys, err)
 	}
 }

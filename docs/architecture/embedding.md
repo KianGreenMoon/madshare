@@ -223,7 +223,12 @@ exactly why the browse got a callable core instead of the facade re-deriving
 it. Addressing is by **name** (the merged catalog has no entity ids), rows are
 `api.MadnetworkTrack` with versions and holders as the HTTP endpoint sends
 them: `versions[0].Renditions[0]` is the default pick, and a version's holder
-**keys** are what `Network.Fetch` takes.
+**keys** are what `Network.Fetch` takes. `Holders(hash)` is the in-process twin
+of `GET /api/madnetwork/holders/{hash}` — the fetch plan asked at PLAY time
+rather than trusted from a browse row, because the endpoint applies the
+stale-holder window and a browse row is as old as the screen it is on (the same
+reasoning the device's remote fetcher documents). An empty plan is an answer,
+not an error.
 
 **The sharing arm** — `SetShareDepth` / `ShareDepths` / `Published` on
 `Instance` — is full-node-mode.md's W2, the organize-then-share surface behind

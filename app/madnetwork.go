@@ -50,6 +50,15 @@ type Madnetwork interface {
 	// Search is the three-section merged search (artists, albums, playable
 	// tracks), matching performers as well as album artists.
 	Search(ctx context.Context, q string) (*api.MadnetworkSearchResults, error)
+	// Holders is the fetch plan for one blob — the in-process twin of
+	// GET /api/madnetwork/holders/{hash}, answered from this node's own cached
+	// catalogs and holdings with the stale-holder window applied, most recently
+	// seen first. Freshness is why a fetch asks this at PLAY time instead of
+	// trusting a browse row's holder list: a dead holder in a plan is the most
+	// expensive thing that can happen to a fetch. An empty plan is an answer
+	// (nobody reachable holds it), not an error; the returned size is 0 when no
+	// catalog advertises one. The keys are what Network.Fetch takes.
+	Holders(ctx context.Context, hash string) (size int64, keys []string, err error)
 }
 
 // Madnetwork returns the community browse, or false when this configuration
@@ -88,6 +97,22 @@ func (m madnetworkFacade) TracksByAlbum(ctx context.Context, artist, album strin
 
 func (m madnetworkFacade) Search(ctx context.Context, q string) (*api.MadnetworkSearchResults, error) {
 	return m.b.Search(ctx, q, m.b.View(ctx))
+}
+
+func (m madnetworkFacade) Holders(ctx context.Context, hash string) (int64, []string, error) {
+	size, providers, err := m.b.Store.MadnetworkBlobProviders(ctx, hash)
+	if err != nil {
+		return 0, nil, err
+	}
+	keys := make([]string, 0, len(providers))
+	for _, p := range providers {
+		// Unaddressable: a fetch plan cannot dial a node with no key — the same
+		// rule the HTTP endpoint applies.
+		if p.PublicKey != "" {
+			keys = append(keys, p.PublicKey)
+		}
+	}
+	return size, keys, nil
 }
 
 // ── The sharing arm (full-node-mode.md W2) ───────────────────────────────────
