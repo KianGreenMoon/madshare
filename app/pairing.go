@@ -16,8 +16,13 @@ import (
 // edge, a place on the network map, peers of its own. The listener-node path
 // (federation-access.md §"The household") remains what a device gets when it
 // does NOT pair; this surface is how an embedder chooses membership instead.
-// EXPERIMENTAL (2026-08-17): added for madplayer's befriending test, and the
-// method set may still change with what that test finds.
+//
+// STABLE since 2026-08-26 (owner's call — it began 2026-08-17 as madplayer's
+// befriending experiment, and the test answered its question: node mode is a
+// supported feature now, full-node-mode.md). The method set below is promised
+// like Library()'s; what it may still GROW is parity with /admin/network's
+// remaining acts — block and rename, that plan's open question 1 — and growth
+// is additive.
 //
 // Sharing is a separate axis and is untouched: PublishNothing still pins the
 // scope, so what a paired device serves is decided exactly as before.

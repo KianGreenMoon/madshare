@@ -91,7 +91,10 @@ is in nobody's map), and structural revocation.
 - **W1. Stabilize `app.Pairing`.** Settle the method set and drop the
   EXPERIMENTAL marker. Open parity question below (block/rename); whatever is
   decided, the surface keeps mirroring acts of `/admin/network`, never
-  inventing new ones.
+  inventing new ones. **Done 2026-08-26** (owner's call): the marker is
+  dropped and the CURRENT method set — info/peers/import/accept/remove — is
+  the promised one; block/rename stay open question 1 and arrive additively
+  if decided.
 - **W2. The sharing arm on the facade.** A per-recording share-depth setter
   (three-valued, same `ValidDepth` rule as the admin PATCH) plus a published
   listing — the facade twin of the Recordings lens's scope chip and of

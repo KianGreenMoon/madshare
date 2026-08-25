@@ -42,7 +42,7 @@ arts, err := inst.Library().Artists(ctx)
 | `inst.Library()` | The browse/playback method set (below). |
 | `inst.FillMissingTags(…)` | The one library WRITE: tags for content copied in from another library, filling gaps only (below). |
 | `inst.Network()` | The mesh method set, and whether there is one (below). |
-| `inst.Pairing()` | **Experimental** (2026-08-17): the `/admin/network` friendship acts — own card, import card/key, accept, remove. A node paired through it is a *full member* of the graph, exactly like a server; the household path (`federation-access.md` §"The household") remains what a device gets when it does not pair. Added for madplayer's befriending test; the method set may still change. |
+| `inst.Pairing()` | The `/admin/network` friendship acts — own card, import card/key, accept, remove. A node paired through it is a *full member* of the graph, exactly like a server; the household path (`federation-access.md` §"The household") remains what a device gets when it does not pair. Began as madplayer's 2026-08-17 befriending experiment; **stable since 2026-08-26** (the test graduated into node mode, `docs/plans/full-node-mode.md`) — block/rename parity may still be added, additively. |
 | `inst.Sources()` | The `sources.Manager`, for folders-as-data-sources. |
 | `inst.Stop(ctx)` | Graceful shutdown: workers, listeners, traffic flush, node/mesh, in-flight prune. |
 
