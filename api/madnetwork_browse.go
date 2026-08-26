@@ -204,6 +204,12 @@ func (b *MadnetworkBrowse) Tracks(ctx context.Context, artist, album string, vie
 // names mirror /api/search so the shared search view renders both; addressing
 // is by display name (the merged catalog has no entity ids), and each track
 // carries its default rendition hash plus a direct local url when self-held.
+//
+// Size and Codec ride along with the hash because they are the rest of what a
+// mesh fetch of the hit needs: a madnetwork copy has no filename anywhere, so
+// the codec is where a player's cache file gets the extension its decoders
+// pick by, and the size is the advertisement a lying sole holder is checked
+// against. A hit without them was playable in name only.
 type MadnetworkSearchTrack struct {
 	Title      string   `json:"title"`
 	ArtistName string   `json:"artist_name,omitempty"`
@@ -212,6 +218,8 @@ type MadnetworkSearchTrack struct {
 	Duration   *float64 `json:"duration_seconds,omitempty"`
 	TagsetID   int64    `json:"tagset_id,omitempty"`
 	Hash       string   `json:"hash"`
+	Size       int64    `json:"size,omitempty"`
+	Codec      string   `json:"codec,omitempty"`
 	URL        string   `json:"url,omitempty"` // local play address when self-held
 }
 
@@ -281,6 +289,8 @@ merge:
 				Duration:   dur,
 				TagsetID:   t.TagsetID,
 				Hash:       t.Versions[0].Renditions[0].Hash,
+				Size:       t.Versions[0].Renditions[0].Size,
+				Codec:      t.Versions[0].Renditions[0].Codec,
 				URL:        t.Versions[0].URL,
 			})
 			if len(tracks) >= madnetworkSearchTrackCap {
